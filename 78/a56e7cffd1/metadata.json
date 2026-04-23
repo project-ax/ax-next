@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "78a56e7cffd1",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 6,
+  "files_touched": [
+    "packages/cli/src/main.ts",
+    "packages/core/src/chat-loop.ts",
+    "packages/llm-anthropic/src/__tests__/plugin.test.ts",
+    "packages/llm-anthropic/src/plugin.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/78/a56e7cffd1/0/metadata.json",
+      "transcript": "/78/a56e7cffd1/0/full.jsonl",
+      "content_hash": "/78/a56e7cffd1/0/content_hash.txt",
+      "prompt": "/78/a56e7cffd1/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 97,
+    "cache_creation_tokens": 102938,
+    "cache_read_tokens": 2825980,
+    "output_tokens": 16622,
+    "api_call_count": 52
+  }
+}

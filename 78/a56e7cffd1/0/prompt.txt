@@ -1,0 +1,33 @@
+i tried executing this but got an error:
+
+REDACTED ./packages/cli/dist/main.js "list the files in this directory"
+
+chat terminated: plugin-error:unknown
+
+---
+
+how do we debug errors like this? i though we added logging to make this easy?
+
+---
+
+go ahead and do that
+
+---
+
+if the observability design note called for it, why wasnt it implemented?
+
+---
+
+which week plan contains the turn boundary work?
+
+---
+
+the key is correct
+
+---
+
+yes
+
+---
+
+how can i test multiple turns?
