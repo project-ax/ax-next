@@ -4,6 +4,7 @@
   "references": [
     { "path": "packages/core" },
     { "path": "packages/test-harness" },
-    { "path": "packages/llm-mock" }
+    { "path": "packages/llm-mock" },
+    { "path": "packages/storage-sqlite" }
   ]
 }
