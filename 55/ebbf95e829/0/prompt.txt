@@ -1,0 +1,18 @@
+create PR from this branch
+
+---
+
+copy the  Ci/CD steps from ../ax
+
+---
+
+copy the github  Ci/CD steps from ../ax
+
+---
+
+1. copy from ax
+2. no
+
+---
+
+1
