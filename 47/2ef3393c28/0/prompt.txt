@@ -1,0 +1,10 @@
+Write an implementation plan for Week 4–6 of docs/plans/2026-04-22-plugin-architecture-design.md
+(real LLM + tools + sandbox). Read docs/plans/2026-04-23-week-4-6-handoff.md first — it captures
+the starting state, scope decisions to make, and the kernel follow-up items that must fold in.
+Invoke security-checklist for the sandbox / IPC / tool-bash / llm-anthropic surfaces. Branch off
+the tip of the Week 3 branch (or main if Week 3 was merged). The plan should be executable via
+subagent-driven-development.
+
+---
+
+1
