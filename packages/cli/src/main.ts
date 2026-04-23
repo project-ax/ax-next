@@ -7,6 +7,7 @@ import {
   registerChatLoop,
   type ChatOutcome,
   type Plugin,
+  type ToolDescriptor,
 } from '@ax/core';
 import { llmMockPlugin } from '@ax/llm-mock';
 import { llmAnthropicPlugin } from '@ax/llm-anthropic';
@@ -14,8 +15,12 @@ import { createStorageSqlitePlugin } from '@ax/storage-sqlite';
 import { auditLogPlugin } from '@ax/audit-log';
 import { sandboxSubprocessPlugin } from '@ax/sandbox-subprocess';
 import { toolDispatcherPlugin } from '@ax/tool-dispatcher';
-import { toolBashPlugin } from '@ax/tool-bash';
-import { toolFileIoPlugin } from '@ax/tool-file-io';
+import { toolBashPlugin, bashToolDescriptor } from '@ax/tool-bash';
+import {
+  toolFileIoPlugin,
+  readFileToolDescriptor,
+  writeFileToolDescriptor,
+} from '@ax/tool-file-io';
 import { loadAxConfig } from './config/load.js';
 
 export interface MainOptions {
@@ -47,12 +52,24 @@ export async function main(opts: MainOptions): Promise<number> {
     cfg.llm === 'anthropic' ? llmAnthropicPlugin() : llmMockPlugin(),
   ];
 
+  const toolDescriptors: ToolDescriptor[] = [
+    ...(cfg.tools.includes('bash') ? [bashToolDescriptor] : []),
+    ...(cfg.tools.includes('file-io')
+      ? [readFileToolDescriptor, writeFileToolDescriptor]
+      : []),
+  ];
+
   await bootstrap({
     bus,
     plugins,
     config:
-      cfg.llm === 'anthropic' && cfg.anthropic
-        ? { '@ax/llm-anthropic': cfg.anthropic }
+      cfg.llm === 'anthropic'
+        ? {
+            '@ax/llm-anthropic': {
+              ...(cfg.anthropic ?? {}),
+              tools: toolDescriptors,
+            },
+          }
         : {},
   });
 
