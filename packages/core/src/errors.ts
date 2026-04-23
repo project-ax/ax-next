@@ -1,6 +1,7 @@
 export type PluginErrorCode =
   | 'no-service'
   | 'duplicate-service'
+  | 'duplicate-plugin'
   | 'timeout'
   | 'invalid-payload'
   | 'invalid-manifest'
@@ -14,27 +15,34 @@ export interface PluginErrorOptions {
   code: PluginErrorCode;
   plugin: string;
   message: string;
+  hookName?: string;
   cause?: unknown;
 }
 
 export class PluginError extends Error {
   readonly code: PluginErrorCode;
   readonly plugin: string;
+  readonly hookName?: string;
 
   constructor(opts: PluginErrorOptions) {
     super(opts.message, opts.cause !== undefined ? { cause: opts.cause } : undefined);
     this.name = 'PluginError';
     this.code = opts.code;
     this.plugin = opts.plugin;
+    if (opts.hookName !== undefined) this.hookName = opts.hookName;
   }
 
+  // `cause` is intentionally omitted from toJSON() to keep stack traces out of
+  // structured logs; callers that need the cause can still read err.cause.
   toJSON(): Record<string, unknown> {
-    return {
+    const out: Record<string, unknown> = {
       name: this.name,
       code: this.code,
       plugin: this.plugin,
       message: this.message,
     };
+    if (this.hookName !== undefined) out.hookName = this.hookName;
+    return out;
   }
 }
 

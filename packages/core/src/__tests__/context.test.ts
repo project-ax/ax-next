@@ -55,6 +55,23 @@ describe('createLogger', () => {
       msg: 'x',
     });
   });
+
+  it('reserved fields (reqId/level/ts/msg) cannot be spoofed by bindings', () => {
+    const out: string[] = [];
+    const logger = createLogger({
+      reqId: 'req-real',
+      writer: (line) => out.push(line),
+      bindings: { reqId: 'spoof-via-base', level: 'spoof', ts: 'spoof', msg: 'spoof' },
+    });
+    logger.warn('actual', { reqId: 'spoof-per-call', level: 'spoof', ts: 'spoof', msg: 'spoof' });
+    const child = logger.child({ reqId: 'spoof-via-child', level: 'spoof' });
+    child.info('child-msg');
+    const a = JSON.parse(out[0]!);
+    const b = JSON.parse(out[1]!);
+    expect(a).toMatchObject({ reqId: 'req-real', level: 'warn', msg: 'actual' });
+    expect(a.ts).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(b).toMatchObject({ reqId: 'req-real', level: 'info', msg: 'child-msg' });
+  });
 });
 
 describe('makeChatContext', () => {

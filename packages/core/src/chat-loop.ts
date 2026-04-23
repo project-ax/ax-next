@@ -11,13 +11,19 @@ import { PluginError } from './errors.js';
 
 interface ChatRunInput {
   message: ChatMessage;
+  // Cap on llm-call iterations within a single chat:run. A misbehaving model
+  // that keeps emitting tool calls would otherwise spin the loop forever and
+  // re-fire all the surrounding hooks each turn.
+  maxTurns?: number;
 }
+
+const DEFAULT_MAX_TURNS = 20;
 
 export function registerChatLoop(bus: HookBus): void {
   bus.registerService<ChatRunInput, ChatOutcome>(
     'chat:run',
     'core',
-    async (ctx, { message }) => runChat(bus, ctx, message),
+    async (ctx, input) => runChat(bus, ctx, input.message, input.maxTurns ?? DEFAULT_MAX_TURNS),
   );
 }
 
@@ -25,6 +31,7 @@ async function runChat(
   bus: HookBus,
   ctx: ChatContext,
   message: ChatMessage,
+  maxTurns: number,
 ): Promise<ChatOutcome> {
   const startResult = await bus.fire('chat:start', ctx, { message });
   if (startResult.rejected) {
@@ -39,7 +46,10 @@ async function runChat(
   const messages: ChatMessage[] = [message];
 
   try {
-    while (true) {
+    for (let turn = 0; ; turn++) {
+      if (turn >= maxTurns) {
+        return await terminate(bus, ctx, `max-turns-exceeded:${maxTurns}`);
+      }
       const pre = await bus.fire<LlmRequest>('llm:pre-call', ctx, {
         messages: [...messages],
       });
@@ -58,17 +68,17 @@ async function runChat(
       if (post.payload.toolCalls.length === 0) break;
 
       for (const toolCall of post.payload.toolCalls) {
-        const pre = await bus.fire<ToolCall>('tool:pre-call', ctx, toolCall);
-        if (pre.rejected) {
+        const toolPre = await bus.fire<ToolCall>('tool:pre-call', ctx, toolCall);
+        if (toolPre.rejected) {
           messages.push({
             role: 'user',
-            content: `tool '${toolCall.name}' rejected: ${pre.reason}`,
+            content: `tool '${toolCall.name}' rejected: ${toolPre.reason}`,
           });
           continue;
         }
         let output: unknown;
         try {
-          output = await bus.call('tool:execute', ctx, pre.payload);
+          output = await bus.call('tool:execute', ctx, toolPre.payload);
         } catch (err) {
           if (err instanceof PluginError && err.code === 'no-service') {
             return await terminate(bus, ctx, `no-service:tool:execute`);
@@ -113,13 +123,8 @@ async function terminate(bus: HookBus, ctx: ChatContext, reason: string): Promis
 
 function classify(err: unknown): string {
   if (err instanceof PluginError) {
-    if (err.code === 'no-service') return `no-service:${extractServiceName(err.message)}`;
+    if (err.code === 'no-service') return `no-service:${err.hookName ?? 'unknown'}`;
     return `plugin-error:${err.code}`;
   }
   return 'unknown';
-}
-
-function extractServiceName(message: string): string {
-  const match = message.match(/'([^']+)'/);
-  return match ? match[1]! : 'unknown';
 }

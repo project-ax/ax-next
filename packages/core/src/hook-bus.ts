@@ -48,6 +48,7 @@ export class HookBus {
       throw new PluginError({
         code: 'no-service',
         plugin: 'core',
+        hookName,
         message: `no plugin registered for service hook '${hookName}'`,
       });
     }
@@ -58,6 +59,7 @@ export class HookBus {
       throw new PluginError({
         code: 'unknown',
         plugin: registered.plugin,
+        hookName,
         message: `service hook '${hookName}' threw: ${err instanceof Error ? err.message : String(err)}`,
         cause: err,
       });
@@ -86,7 +88,7 @@ export class HookBus {
         continue;
       }
       if (isRejection(result)) {
-        return { rejected: true, reason: result.reason, source: sub.plugin };
+        return { rejected: true, reason: result.reason, source: result.source ?? sub.plugin };
       }
       if (result !== undefined) {
         current = result as P;

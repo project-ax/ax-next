@@ -165,13 +165,20 @@ describe('HookBus — subscriber hooks', () => {
     }
   });
 
-  it('bus overwrites any source provided by reject() with the subscriber plugin name', async () => {
+  it('preserves a source explicitly set by reject(); falls back to subscriber plugin name', async () => {
     const bus = new HookBus();
-    bus.subscribe('h', 'actual-plugin', async () =>
+    bus.subscribe('explicit', 'actual-plugin', async () =>
       reject({ reason: 'blocked', source: 'something-else' }),
     );
-    const res = await bus.fire('h', silentCtx(), {});
-    expect(res).toMatchObject({
+    bus.subscribe('default', 'actual-plugin', async () => reject({ reason: 'blocked' }));
+    const explicit = await bus.fire('explicit', silentCtx(), {});
+    const fallback = await bus.fire('default', silentCtx(), {});
+    expect(explicit).toMatchObject({
+      rejected: true,
+      reason: 'blocked',
+      source: 'something-else',
+    });
+    expect(fallback).toMatchObject({
       rejected: true,
       reason: 'blocked',
       source: 'actual-plugin',

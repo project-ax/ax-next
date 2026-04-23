@@ -20,25 +20,27 @@ export interface CreateLoggerOptions {
   bindings?: Record<string, unknown>;
 }
 
+// reqId/level/ts/msg are reserved log fields: they're set last on every entry
+// so that caller-supplied bindings (including ones flowing in from plugin or
+// model output) can't spoof them and break log correlation.
+const RESERVED_LOG_FIELDS = ['reqId', 'level', 'ts', 'msg'] as const;
+
 export function createLogger(opts: CreateLoggerOptions): Logger {
   const writer = opts.writer ?? ((line: string) => process.stdout.write(line + '\n'));
-  const baseBindings: Record<string, unknown> = {
-    reqId: opts.reqId,
-    ...(opts.bindings ?? {}),
-  };
+  const baseBindings = stripReserved(opts.bindings);
 
   const emit = (level: LogLevel, msg: string, extra?: Record<string, unknown>): void => {
-    const entry: Record<string, unknown> = {
-      level,
-      ts: new Date().toISOString(),
-      ...baseBindings,
-      msg,
-    };
+    const entry: Record<string, unknown> = { ...baseBindings };
     if (extra) {
       for (const [k, v] of Object.entries(extra)) {
+        if (RESERVED_LOG_FIELDS.includes(k as (typeof RESERVED_LOG_FIELDS)[number])) continue;
         entry[k] = v instanceof Error ? serializeError(v) : v;
       }
     }
+    entry.level = level;
+    entry.ts = new Date().toISOString();
+    entry.reqId = opts.reqId;
+    entry.msg = msg;
     writer(JSON.stringify(entry));
   };
 
@@ -51,9 +53,19 @@ export function createLogger(opts: CreateLoggerOptions): Logger {
       createLogger({
         reqId: opts.reqId,
         ...(opts.writer !== undefined ? { writer: opts.writer } : {}),
-        bindings: { ...baseBindings, ...extra },
+        bindings: { ...baseBindings, ...stripReserved(extra) },
       }),
   };
+}
+
+function stripReserved(bindings: Record<string, unknown> | undefined): Record<string, unknown> {
+  if (bindings === undefined) return {};
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(bindings)) {
+    if (RESERVED_LOG_FIELDS.includes(k as (typeof RESERVED_LOG_FIELDS)[number])) continue;
+    out[k] = v;
+  }
+  return out;
 }
 
 function serializeError(err: Error): Record<string, unknown> {

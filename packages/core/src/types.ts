@@ -39,4 +39,4 @@ export type ChatOutcome =
 
 export type FireResult<P> =
   | { rejected: false; payload: P }
-  | (Rejection & { rejected: true });
+  | Rejection;

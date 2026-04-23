@@ -29,7 +29,7 @@ describe('createTestHarness', () => {
     expect(h.bus.hasService('eventbus:emit')).toBe(true);
   });
 
-  it('override a single service', async () => {
+  it('overrides a single service', async () => {
     const h = await createTestHarness({
       services: {
         ...MockServices.basics(),

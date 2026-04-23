@@ -23,7 +23,7 @@ The skill applies whenever the current change touches:
 - Code that opens a network connection
 - A plugin's exposed surface (registered service hooks, fired subscriber hooks)
 
-If your change touches none of the above, you can skip the skill entirely. If even one applies, walk all three sections — they cover different threat models, and a change can fail one while passing the others.
+If the change touches none of the above, we can skip the skill entirely. If even one applies, we walk all three sections — they cover different threat models, and a change can fail one while passing the others.
 
 ---
 
@@ -141,6 +141,6 @@ Write the fix in the same PR. The note in the PR description should reflect the 
 Things that look like they satisfy the checklist but don't:
 
 - **Trust by familiarity.** "It's just a string from `chat:end`, that's fine." If the string ever held tool output, it's still untrusted regardless of which hook it's flowing through now.
-- **N/A by category, not by reason.** "N/A: this is a refactor" — refactors absolutely can widen capabilities (a function that was internal becomes exported and now reachable from a plugin boundary).
+- **N/A by category, not by reason.** "N/A: this is a refactor" — refactors can still widen capabilities (e.g. an internal function becomes exported and reachable from a plugin boundary).
 - **Defer to lint.** "ESLint will catch this." It might. The checklist runs anyway because lint catches patterns, not intent.
 - **One-line "yes it's safe".** The checklist's value is in walking the failure modes — the answer matters less than having considered the question. If the section line in the PR doesn't name a specific capability or a specific untrusted-input flow, it's not real.

@@ -149,6 +149,30 @@ describe('chat:run', () => {
     }
   });
 
+  it('terminates with max-turns-exceeded when the model keeps emitting tool calls', async () => {
+    const bus = new HookBus();
+    registerChatLoop(bus);
+    let llmCalls = 0;
+    bus.registerService<LlmRequest, LlmResponse>('llm:call', 'llm-fake', async () => {
+      llmCalls += 1;
+      return {
+        assistantMessage: { role: 'assistant', content: '' },
+        toolCalls: [{ id: `t${llmCalls}`, name: 'echo', input: {} }],
+      };
+    });
+    bus.registerService('tool:execute', 'tools', async () => ({ output: 'ok' }));
+    const outcome = await bus.call<{ message: ChatMessage; maxTurns?: number }, ChatOutcome>(
+      'chat:run',
+      ctx(),
+      { message: { role: 'user', content: 'spin' }, maxTurns: 3 },
+    );
+    expect(llmCalls).toBe(3);
+    expect(outcome.kind).toBe('terminated');
+    if (outcome.kind === 'terminated') {
+      expect(outcome.reason).toBe('max-turns-exceeded:3');
+    }
+  });
+
   it('chat:end fires exactly once across all exit paths', async () => {
     const scenarios: Array<{
       name: string;

@@ -37,7 +37,11 @@ pnpm test --filter @ax/<plugin>
 
 4. **One source of truth per concept.** If two plugins both store state about the same thing (skills, tools, sessions), one of them is wrong. Coordinate through service hooks, not shared rows.
 
-5. **Capabilities are explicit and minimized.** Every plugin, tool, IPC handler, and sandbox boundary grants the smallest set of capabilities (filesystem paths, network reach, process spawn, env access, untrusted-input handling) that it needs to function — no more. Untrusted content (model output, tool output, user input crossing a trust boundary, third-party plugin code) is treated as untrusted at every hop. The whole point of v2 over openclaw is that we're the secure one — if a hook surface, IPC action, or plugin grants more reach than it strictly requires, that's the bug. When touching sandbox boundaries, IPC transport, plugin loading, or any code path that handles untrusted content, invoke the `security-checklist` skill.
+5. **Capabilities are explicit and minimized.** Every plugin, tool, IPC handler, and sandbox boundary grants the smallest set of capabilities it needs — no more. The list to think about: filesystem paths, network reach, process spawn, env access, untrusted-input handling.
+
+   Untrusted content (model output, tool output, user input crossing a trust boundary, third-party plugin code) is treated as untrusted at every hop. The whole point of v2 over openclaw is that we're the secure one — if a hook surface, IPC action, or plugin grants more reach than it strictly requires, that's the bug.
+
+   When touching sandbox boundaries, IPC transport, plugin loading, or any code path that handles untrusted content, invoke the `security-checklist` skill.
 
 ## Boundary review (required for new hooks)
 

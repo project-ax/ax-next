@@ -77,4 +77,31 @@ describe('bootstrap', () => {
       bootstrap({ bus: new HookBus(), plugins: [bad], config: {} }),
     ).rejects.toMatchObject({ name: 'PluginError', code: 'init-failed', plugin: 'bad' });
   });
+
+  it('rejects two plugins with the same manifest.name (duplicate-plugin)', async () => {
+    const a = makePlugin({ name: 'dup' });
+    const b = makePlugin({ name: 'dup' });
+    await expect(
+      bootstrap({ bus: new HookBus(), plugins: [a, b], config: {} }),
+    ).rejects.toMatchObject({ name: 'PluginError', code: 'duplicate-plugin', plugin: 'dup' });
+  });
+
+  it('inits producers before consumers regardless of plugin array order', async () => {
+    const called: string[] = [];
+    const consumer = makePlugin(
+      { name: 'consumer', calls: ['storage:get'] },
+      () => { called.push('consumer'); },
+    );
+    const producer = makePlugin(
+      { name: 'producer', registers: ['storage:get'] },
+      ({ bus }) => {
+        called.push('producer');
+        bus.registerService('storage:get', 'producer', async () => 'v');
+      },
+    );
+    // consumer is listed first to prove that init order follows the call graph,
+    // not the array order: producer must still init first.
+    await bootstrap({ bus: new HookBus(), plugins: [consumer, producer], config: {} });
+    expect(called).toEqual(['producer', 'consumer']);
+  });
 });

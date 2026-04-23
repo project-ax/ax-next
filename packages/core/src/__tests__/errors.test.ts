@@ -17,18 +17,34 @@ describe('PluginError', () => {
     expect(err).toBeInstanceOf(Error);
   });
 
-  it('serializes for logging', () => {
+  it('serializes for logging without leaking cause/stack', () => {
+    const cause = new Error('boom');
     const err = new PluginError({
       code: 'timeout',
       plugin: 'llm-anthropic',
       message: 'llm:call timed out after 60s',
+      cause,
     });
-    expect(err.toJSON()).toMatchObject({
+    const json = err.toJSON();
+    expect(json).toMatchObject({
       name: 'PluginError',
       code: 'timeout',
       plugin: 'llm-anthropic',
       message: 'llm:call timed out after 60s',
     });
+    expect('cause' in json).toBe(false);
+    expect('stack' in json).toBe(false);
+  });
+
+  it('captures and serializes hookName when provided', () => {
+    const err = new PluginError({
+      code: 'no-service',
+      plugin: 'core',
+      hookName: 'llm:call',
+      message: "no plugin registered for service hook 'llm:call'",
+    });
+    expect(err.hookName).toBe('llm:call');
+    expect(err.toJSON()).toMatchObject({ hookName: 'llm:call' });
   });
 });
 
