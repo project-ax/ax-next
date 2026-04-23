@@ -1,0 +1,10 @@
+How would a warm k8s pool design work with the new plugin architecture?
+
+---
+
+Main goal is to avoid the slow GKE autopilot pod creation process which could take a minute or longer for initially unscheduled
+Pods
+
+---
+
+Main goal is to avoid the slow GKE autopilot pod creation process which could take a minute or longer for initially unschedulable pods

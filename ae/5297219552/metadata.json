@@ -3,7 +3,7 @@
   "checkpoint_id": "ae5297219552",
   "strategy": "manual-commit",
   "branch": "feat/kernel-hook-bus",
-  "checkpoints_count": 0,
+  "checkpoints_count": 1,
   "files_touched": [
     "packages/test-harness/src/__tests__/harness.test.ts",
     "packages/test-harness/src/harness.ts",
@@ -22,13 +22,19 @@
       "transcript": "/ae/5297219552/1/full.jsonl",
       "content_hash": "/ae/5297219552/1/content_hash.txt",
       "prompt": ""
+    },
+    {
+      "metadata": "/ae/5297219552/2/metadata.json",
+      "transcript": "/ae/5297219552/2/full.jsonl",
+      "content_hash": "/ae/5297219552/2/content_hash.txt",
+      "prompt": "/ae/5297219552/2/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 78,
-    "cache_creation_tokens": 47816,
-    "cache_read_tokens": 875818,
-    "output_tokens": 18538,
-    "api_call_count": 19
+    "input_tokens": 129,
+    "cache_creation_tokens": 91319,
+    "cache_read_tokens": 1030618,
+    "output_tokens": 23784,
+    "api_call_count": 24
   }
 }

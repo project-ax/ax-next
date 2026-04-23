@@ -1,0 +1,49 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "ae5297219552",
+  "session_id": "a57d289d-4f81-485a-8a5c-a72187c82cf3",
+  "strategy": "manual-commit",
+  "created_at": "2026-04-23T10:27:41.855647Z",
+  "branch": "feat/kernel-hook-bus",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "packages/test-harness/src/__tests__/harness.test.ts",
+    "packages/test-harness/src/harness.ts",
+    "packages/test-harness/src/index.ts",
+    "packages/test-harness/src/mock-services.ts"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-opus-4-7[1m]",
+  "turn_id": "fb8fa955a138",
+  "token_usage": {
+    "input_tokens": 51,
+    "cache_creation_tokens": 43503,
+    "cache_read_tokens": 154800,
+    "output_tokens": 5246,
+    "api_call_count": 5
+  },
+  "session_metrics": {
+    "turn_count": 2
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-04-23T10:27:41.852191Z",
+    "agent_lines": 116,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 116,
+    "total_lines_changed": 116,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}
