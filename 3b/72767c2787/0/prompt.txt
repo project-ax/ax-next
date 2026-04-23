@@ -1,0 +1,9 @@
+shouldn't the claude-memory skill automatically generate memories?
+
+---
+
+yes
+
+---
+
+why didn't the write phase trigger?
