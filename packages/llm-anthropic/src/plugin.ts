@@ -65,20 +65,15 @@ async function call(
 ): Promise<LlmResponse> {
   const { system, messages } = toAnthropicMessages(input.messages);
   try {
+    // TODO(llm-tool-schemas): Forward tools to the Anthropic API once ToolDescriptor
+    // gains an input_schema field. Without real schemas the model cannot call tools
+    // correctly, so we don't forward them — better to have no tool-calling than
+    // silently broken tool-calling. Lands in a follow-up PR.
     const resp = await client.messages.create({
       model,
       max_tokens: maxTokens,
       ...(system !== undefined ? { system } : {}),
       messages,
-      ...(input.tools && input.tools.length > 0
-        ? {
-            tools: input.tools.map((t) => ({
-              name: t.name,
-              description: t.description ?? '',
-              input_schema: { type: 'object' as const, properties: {} },
-            })),
-          }
-        : {}),
     });
     return fromAnthropicMessage(resp);
   } catch (err) {

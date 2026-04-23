@@ -43,6 +43,19 @@ Specifically:
 - Text blocks are concatenated into a plain string. That string is not
   interpreted by this plugin in any way — it's just the assistant message.
 
+#### Tool-calling currently disabled at the API boundary
+
+Heads up: we do **not** forward `input.tools` to the Anthropic API right now.
+`ToolDescriptor` doesn't yet carry a real `input_schema`, and sending tools
+without one means the model gets a tool it can't call correctly — silently
+broken tool use is worse than no tool use. We'd rather fail closed.
+
+The decode path for `tool_use` blocks is still wired up (a model can always
+surprise us), so any `tool_use` that does come back is mapped to `ToolCall[]`
+and handed off for Zod-validated dispatch. Forwarding lands in a follow-up PR
+once schemas are threaded through — tracked as `TODO(llm-tool-schemas)` in
+`plugin.ts`.
+
 ### 3. Supply chain — new dep, pinned hard
 
 - Added `@anthropic-ai/sdk@0.90.0`. **Exact pin**, no caret. If you see `^0.90.0`

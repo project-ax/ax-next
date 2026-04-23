@@ -130,6 +130,22 @@ describe('@ax/llm-anthropic plugin', () => {
     expect(serialized).not.toContain('totally-secret-key');
   });
 
+  it('does not forward tools to the Anthropic API until schemas are threaded', async () => {
+    const create = vi.fn().mockResolvedValue(
+      mkMessage([{ type: 'text', text: 'ok', citations: null }]),
+    );
+    const bus = await bootWithClient({ messages: { create } as never });
+
+    await bus.call<LlmRequest, LlmResponse>('llm:call', ctx(), {
+      messages: [{ role: 'user', content: 'hello' }],
+      tools: [{ name: 'bash', description: 'run bash' }],
+    });
+
+    const args = create.mock.calls[0]![0];
+    expect(args.tools).toBeUndefined();
+    expect('tools' in args).toBe(false);
+  });
+
   it('forwards system messages as the top-level system field', async () => {
     const create = vi.fn().mockResolvedValue(
       mkMessage([{ type: 'text', text: 'ok', citations: null }]),
