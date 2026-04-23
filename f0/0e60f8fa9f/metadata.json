@@ -1,0 +1,23 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "f00e60f8fa9f",
+  "strategy": "manual-commit",
+  "branch": "feat/week-3-smallest-e2e",
+  "checkpoints_count": 0,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/f0/0e60f8fa9f/0/metadata.json",
+      "transcript": "/f0/0e60f8fa9f/0/full.jsonl",
+      "content_hash": "/f0/0e60f8fa9f/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 3,
+    "cache_creation_tokens": 2610,
+    "cache_read_tokens": 798772,
+    "output_tokens": 1826,
+    "api_call_count": 3
+  }
+}
