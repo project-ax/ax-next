@@ -164,4 +164,26 @@ describe('HookBus — subscriber hooks', () => {
       throw new Error('should be rejected');
     }
   });
+
+  it('bus overwrites any source provided by reject() with the subscriber plugin name', async () => {
+    const bus = new HookBus();
+    bus.subscribe('h', 'actual-plugin', async () =>
+      reject({ reason: 'blocked', source: 'something-else' }),
+    );
+    const res = await bus.fire('h', silentCtx(), {});
+    expect(res).toMatchObject({
+      rejected: true,
+      reason: 'blocked',
+      source: 'actual-plugin',
+    });
+  });
+
+  it('independent fires on the same bus do not leak state', async () => {
+    const bus = new HookBus();
+    bus.subscribe<{ n: number }>('h', 'inc', async (_ctx, p) => ({ n: p.n + 1 }));
+    const first = await bus.fire<{ n: number }>('h', silentCtx(), { n: 1 });
+    const second = await bus.fire<{ n: number }>('h', silentCtx(), { n: 1 });
+    expect(first).toEqual({ rejected: false, payload: { n: 2 } });
+    expect(second).toEqual({ rejected: false, payload: { n: 2 } });
+  });
 });
