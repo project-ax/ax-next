@@ -16,6 +16,7 @@ describe('Week 1-2 acceptance', () => {
       agentId: 'a',
       userId: 'u',
       logger: createLogger({ reqId: 'acceptance', writer: () => {} }),
+      workspaceRoot: process.cwd(),
     });
     const outcome: ChatOutcome = await bus.call(
       'chat:run',

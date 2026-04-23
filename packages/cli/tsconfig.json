@@ -10,6 +10,11 @@
     { "path": "../core" },
     { "path": "../llm-mock" },
     { "path": "../storage-sqlite" },
-    { "path": "../audit-log" }
+    { "path": "../audit-log" },
+    { "path": "../sandbox-subprocess" },
+    { "path": "../tool-dispatcher" },
+    { "path": "../tool-bash" },
+    { "path": "../tool-file-io" },
+    { "path": "../llm-anthropic" }
   ]
 }

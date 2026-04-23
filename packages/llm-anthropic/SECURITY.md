@@ -1,0 +1,111 @@
+# @ax/llm-anthropic — Security Notes
+
+This plugin registers the `llm:call` service and talks to Anthropic's API on the
+kernel's behalf. We're the nervous crab: here's what we worry about, and what
+we do about it.
+
+## Output contract
+
+| Surface              | What we do                                                                 |
+| -------------------- | -------------------------------------------------------------------------- |
+| Network destination  | HTTPS to `api.anthropic.com` only. Not caller-influenced.                  |
+| Auth                 | `ANTHROPIC_API_KEY` read from `process.env` **at init time**, once.        |
+| Missing key behavior | Fails fast with `PluginError({ code: 'init-failed' })`. No silent fallback.|
+| Key in logs/errors   | Never. SDK error details are swallowed (see "Injection" below).            |
+| Key forwarded        | Never. Not passed to hooks, storage, or child processes.                   |
+
+## Threat models
+
+### 1. Sandbox escape — N/A-ish
+
+We don't spawn processes, write files, or open arbitrary sockets. We make a
+single outbound HTTPS request to a fixed host via the official SDK. The usual
+capability concerns (`exec`, `fs`, env) don't apply here.
+
+The one capability we need: read one specific env var (`ANTHROPIC_API_KEY`).
+We read it exactly once at init and never look again.
+
+### 2. Prompt injection — yes, this plugin's output is untrusted
+
+Anything the model says is untrusted content. The `LlmResponse` we emit flows
+straight into:
+
+- `llm:post-call` subscribers — which can veto.
+- `toolCalls[]` → `tool:execute` → the relevant tool plugin.
+
+Specifically:
+
+- We **never** `eval`, `Function(...)`, or template-interpolate any field from
+  the SDK response.
+- `ToolCall.input` is passed through as `unknown`. Tool plugins are responsible
+  for Zod-validating their own input before acting on it. We don't pre-parse,
+  because guessing wrong here would give a false sense of safety.
+- Text blocks are concatenated into a plain string. That string is not
+  interpreted by this plugin in any way — it's just the assistant message.
+
+#### Tool-calling is now wired at the API boundary
+
+Tool descriptors are forwarded to Anthropic on every `messages.create`. The
+CLI collects descriptors from the loaded tool plugins (e.g. `bash`,
+`read_file`, `write_file`), passes them as `AnthropicPluginConfig.tools`,
+and the plugin maps each to the SDK's `{ name, description, input_schema }`
+shape. `ToolDescriptor.inputSchema` is required — no empty schemas, no
+silently neutered tool-calling.
+
+The decode path for `tool_use` blocks is unchanged: each block becomes a
+`ToolCall`, input is passed through as `unknown`, and the tool plugin does
+Zod validation before anything runs. The LLM plugin still treats tool
+results as data, not instructions.
+
+### 3. Supply chain — new dep, pinned hard
+
+- Added `@anthropic-ai/sdk@0.90.0`. **Exact pin**, no caret. If you see `^0.90.0`
+  in package.json, something drifted — fix it, don't merge around it.
+- Confirmed no `preinstall` / `postinstall` / `prepare` scripts in the SDK
+  package (`npm view @anthropic-ai/sdk@0.90.0 scripts` returned only dev
+  scripts: `build`, `test`, `format`, etc. — nothing that runs on install).
+- `pnpm why @anthropic-ai/sdk -r` at the time of writing:
+
+  ```text
+  @ax/llm-anthropic@0.0.0 (PRIVATE)
+  dependencies:
+  @anthropic-ai/sdk 0.90.0
+  ```
+
+  Transitive surface: `json-schema-to-ts@^3.1.1` (production), `zod@^3.25.0 || ^4.0.0`
+  (optional peer — satisfied by the repo's existing `zod@3.25.x`).
+
+- Bumping the SDK requires a new `SECURITY.md` note. Don't skip the re-check.
+
+## Test-only env backdoor: `AX_TEST_ANTHROPIC_FIXTURE`
+
+We have an escape hatch for end-to-end tests that spawn the real CLI as a
+subprocess and still want to keep the SDK out of the loop:
+
+- If `AX_TEST_ANTHROPIC_FIXTURE` is set at plugin init time, we `import()` the
+  path it points at and use its `default` export (or `makeClient()`) as the
+  Anthropic client. The real SDK is never constructed, and `ANTHROPIC_API_KEY`
+  is not required.
+- This is a **capability** in the invariant-5 sense. It lets the process swap
+  out the LLM client. So: what new reach does it grant?
+- Answer: none that isn't already implied. Setting an env var on a process
+  requires already being able to exec that process. If an attacker can do that,
+  they can already do far worse — they don't need our backdoor.
+- The import path is resolved against the worker's filesystem. An attacker who
+  can drop a malicious `.mjs` somewhere AND flip this env var AND get the CLI
+  re-launched could take over the LLM client. Same story: all three capabilities
+  are strictly more powerful than the backdoor itself.
+- **This env var must never be set in production builds.** If you see it set
+  outside of a test harness, that's the bug.
+
+## Manual smoke test (not in CI)
+
+`scripts/smoke.ts` makes a real API call. It is **not** wired into `pnpm test`.
+Run it manually when you want to confirm the live integration still works:
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-... pnpm tsx packages/llm-anthropic/scripts/smoke.ts
+```
+
+If this ever starts running in CI, something is wrong — it burns real tokens
+and needs a real key.

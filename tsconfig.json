@@ -5,8 +5,13 @@
     { "path": "packages/core" },
     { "path": "packages/test-harness" },
     { "path": "packages/llm-mock" },
+    { "path": "packages/llm-anthropic" },
     { "path": "packages/storage-sqlite" },
     { "path": "packages/audit-log" },
-    { "path": "packages/cli" }
+    { "path": "packages/cli" },
+    { "path": "packages/sandbox-subprocess" },
+    { "path": "packages/tool-dispatcher" },
+    { "path": "packages/tool-bash" },
+    { "path": "packages/tool-file-io" }
   ]
 }

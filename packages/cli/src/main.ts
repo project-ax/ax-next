@@ -6,14 +6,27 @@ import {
   makeChatContext,
   registerChatLoop,
   type ChatOutcome,
+  type Plugin,
+  type ToolDescriptor,
 } from '@ax/core';
 import { llmMockPlugin } from '@ax/llm-mock';
+import { llmAnthropicPlugin } from '@ax/llm-anthropic';
 import { createStorageSqlitePlugin } from '@ax/storage-sqlite';
 import { auditLogPlugin } from '@ax/audit-log';
+import { sandboxSubprocessPlugin } from '@ax/sandbox-subprocess';
+import { toolDispatcherPlugin } from '@ax/tool-dispatcher';
+import { toolBashPlugin, bashToolDescriptor } from '@ax/tool-bash';
+import {
+  toolFileIoPlugin,
+  readFileToolDescriptor,
+  writeFileToolDescriptor,
+} from '@ax/tool-file-io';
+import { loadAxConfig } from './config/load.js';
 
 export interface MainOptions {
   databasePath: string;
   message: string;
+  workspaceRoot?: string;
   stdout?: (line: string) => void;
   stderr?: (line: string) => void;
 }
@@ -22,23 +35,49 @@ export async function main(opts: MainOptions): Promise<number> {
   const out = opts.stdout ?? ((line) => process.stdout.write(line + '\n'));
   const err = opts.stderr ?? ((line) => process.stderr.write(line + '\n'));
 
+  const cfg = await loadAxConfig(process.cwd());
+
   const bus = new HookBus();
   registerChatLoop(bus);
 
+  const plugins: Plugin[] = [
+    createStorageSqlitePlugin({
+      databasePath: cfg.storageSqlite?.databasePath ?? opts.databasePath,
+    }),
+    auditLogPlugin(),
+    sandboxSubprocessPlugin(),
+    toolDispatcherPlugin(),
+    ...(cfg.tools.includes('bash') ? [toolBashPlugin()] : []),
+    ...(cfg.tools.includes('file-io') ? [toolFileIoPlugin()] : []),
+    cfg.llm === 'anthropic' ? llmAnthropicPlugin() : llmMockPlugin(),
+  ];
+
+  const toolDescriptors: ToolDescriptor[] = [
+    ...(cfg.tools.includes('bash') ? [bashToolDescriptor] : []),
+    ...(cfg.tools.includes('file-io')
+      ? [readFileToolDescriptor, writeFileToolDescriptor]
+      : []),
+  ];
+
   await bootstrap({
     bus,
-    plugins: [
-      llmMockPlugin(),
-      createStorageSqlitePlugin({ databasePath: opts.databasePath }),
-      auditLogPlugin(),
-    ],
-    config: {},
+    plugins,
+    config:
+      cfg.llm === 'anthropic'
+        ? {
+            '@ax/llm-anthropic': {
+              ...(cfg.anthropic ?? {}),
+              tools: toolDescriptors,
+            },
+          }
+        : {},
   });
 
   const ctx = makeChatContext({
     sessionId: 'cli-session',
     agentId: 'cli-agent',
     userId: 'cli-user',
+    workspaceRoot: opts.workspaceRoot ?? process.cwd(),
   });
 
   const outcome: ChatOutcome = await bus.call('chat:run', ctx, {

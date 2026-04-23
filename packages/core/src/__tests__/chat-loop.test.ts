@@ -11,6 +11,7 @@ const ctx = () =>
     agentId: 'a',
     userId: 'u',
     logger: createLogger({ reqId: 'test', writer: () => {} }),
+    workspaceRoot: process.cwd(),
   });
 
 describe('chat:run', () => {

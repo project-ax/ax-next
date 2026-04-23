@@ -45,6 +45,7 @@ export async function createTestHarness(opts: CreateTestHarnessOptions = {}): Pr
         sessionId: 'test-session',
         agentId: 'test-agent',
         userId: 'test-user',
+        workspaceRoot: process.cwd(),
         ...overrides,
       });
     },

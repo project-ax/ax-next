@@ -81,7 +81,7 @@ async function runChat(
           output = await bus.call('tool:execute', ctx, toolPre.payload);
         } catch (err) {
           if (err instanceof PluginError && err.code === 'no-service') {
-            return await terminate(bus, ctx, `no-service:tool:execute`);
+            return await terminate(bus, ctx, `no-service:${err.hookName ?? 'tool:execute'}`);
           }
           throw err;
         }

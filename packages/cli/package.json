@@ -25,7 +25,13 @@
     "@ax/core": "workspace:*",
     "@ax/llm-mock": "workspace:*",
     "@ax/storage-sqlite": "workspace:*",
-    "@ax/audit-log": "workspace:*"
+    "@ax/audit-log": "workspace:*",
+    "@ax/sandbox-subprocess": "workspace:*",
+    "@ax/tool-dispatcher": "workspace:*",
+    "@ax/tool-bash": "workspace:*",
+    "@ax/tool-file-io": "workspace:*",
+    "@ax/llm-anthropic": "workspace:*",
+    "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/node": "^25.6.0",
