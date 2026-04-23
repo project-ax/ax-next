@@ -1,0 +1,6 @@
+Write an implementation plan for Week 3 of docs/plans/2026-04-22-plugin-architecture-design.md
+(smallest viable end-to-end). Read docs/plans/2026-04-23-week-3-handoff.md first — it
+captures the starting state, scope decisions to make, and kernel API surface Week 3 consumes.
+Branch policy: the new work branches off feat/kernel-hook-bus, not main (Week 1–2 is still
+unmerged). The plan should be executable task-by-task via subagent-driven-development, same
+as the Week 1–2 plan at docs/plans/2026-04-23-kernel-hook-bus-and-chat-loop.md.
