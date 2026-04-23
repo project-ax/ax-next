@@ -17,7 +17,7 @@ async function main(): Promise<void> {
 
   const res = await bus.call<LlmRequest, LlmResponse>(
     'llm:call',
-    makeChatContext({ sessionId: 'smoke', agentId: 'smoke', userId: 'smoke' }),
+    makeChatContext({ sessionId: 'smoke', agentId: 'smoke', userId: 'smoke', workspaceRoot: process.cwd() }),
     { messages: [{ role: 'user', content: 'Say hi in one word.' }] },
   );
 

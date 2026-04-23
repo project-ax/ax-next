@@ -1,7 +1,7 @@
 import { readFile, writeFile, stat } from 'node:fs/promises';
 import { Buffer } from 'node:buffer';
 import { z } from 'zod';
-import { PluginError, type ChatContext, type Plugin } from '@ax/core';
+import { PluginError, type Plugin } from '@ax/core';
 import { safePath } from './safe-path.js';
 
 const PLUGIN_NAME = '@ax/tool-file-io';
@@ -25,14 +25,6 @@ export interface ReadFileResult {
 
 export interface WriteFileResult {
   readonly bytes: number;
-}
-
-function workspaceRoot(_ctx: ChatContext): string {
-  // TODO(workspace-abstraction): once ChatContext (or a dedicated workspace
-  // service hook) exposes a canonical workspace root, read it here. For now
-  // we fall back to process.cwd() — which is fine for the CLI happy path but
-  // is the kind of implicit capability grant invariant #5 warns about.
-  return process.cwd();
 }
 
 function parse<T>(schema: z.ZodType<T>, hookName: string, input: unknown): T {
@@ -63,7 +55,7 @@ export function toolFileIoPlugin(): Plugin {
         PLUGIN_NAME,
         async (ctx, input) => {
           const { path } = parse(ReadFileInputSchema, 'tool:execute:read_file', input);
-          const root = workspaceRoot(ctx);
+          const root = ctx.workspace.rootPath;
           const resolved = await safePath(root, path);
 
           // Defense-in-depth: stat first so we don't slurp a 4 GiB file into
@@ -101,7 +93,7 @@ export function toolFileIoPlugin(): Plugin {
             'tool:execute:write_file',
             input,
           );
-          const root = workspaceRoot(ctx);
+          const root = ctx.workspace.rootPath;
           const resolved = await safePath(root, path);
           await writeFile(resolved, content, 'utf8');
           return { bytes: Buffer.byteLength(content, 'utf8') };

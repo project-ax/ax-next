@@ -40,7 +40,7 @@ async function execute(bus: HookBus, ctx: ChatContext, input: unknown): Promise<
     ctx,
     {
       argv: ['/bin/bash', '-c', parsed.data.command],
-      cwd: workspaceRootFor(ctx),
+      cwd: ctx.workspace.rootPath,
       env: {},
       timeoutMs: parsed.data.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     },
@@ -52,11 +52,4 @@ async function execute(bus: HookBus, ctx: ChatContext, input: unknown): Promise<
     timedOut: result.timedOut,
     truncated: result.truncated,
   };
-}
-
-// TODO(workspace-abstraction): ChatContext does not yet expose a workspace
-// root (architecture doc Section 4.5). Until it does, we run commands in the
-// kernel's cwd. Documented in SECURITY.md.
-function workspaceRootFor(_ctx: ChatContext): string {
-  return process.cwd();
 }

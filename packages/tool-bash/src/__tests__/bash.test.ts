@@ -17,6 +17,7 @@ const ctx = (): ChatContext =>
     agentId: 'a',
     userId: 'u',
     logger: createLogger({ reqId: 'test', writer: () => {} }),
+    workspaceRoot: process.cwd(),
   });
 
 async function makeBus(): Promise<HookBus> {

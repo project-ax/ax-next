@@ -21,6 +21,7 @@ import { loadAxConfig } from './config/load.js';
 export interface MainOptions {
   databasePath: string;
   message: string;
+  workspaceRoot?: string;
   stdout?: (line: string) => void;
   stderr?: (line: string) => void;
 }
@@ -59,6 +60,7 @@ export async function main(opts: MainOptions): Promise<number> {
     sessionId: 'cli-session',
     agentId: 'cli-agent',
     userId: 'cli-user',
+    workspaceRoot: opts.workspaceRoot ?? process.cwd(),
   });
 
   const outcome: ChatOutcome = await bus.call('chat:run', ctx, {

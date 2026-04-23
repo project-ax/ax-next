@@ -16,10 +16,9 @@ and what we refuse to do.
   capped at 1 MiB: `write_file` enforces the cap via Zod before we touch the
   filesystem (defense-in-depth), `read_file` enforces it by `stat`-ing
   before reading so a pointer at `/dev/zero` or a giant log file can't
-  exhaust memory. The workspace root is currently `process.cwd()` with a
-  `TODO(workspace-abstraction)` — an implicit capability grant that will
-  become explicit when `ChatContext` (or a workspace service hook) gains a
-  proper root field.
+  exhaust memory. The workspace root is now explicit: we read
+  `ctx.workspace.rootPath` from `ChatContext` and pass that to `safePath`.
+  No implicit `process.cwd()` fallback — callers must declare the root.
 - **Injection:** File content is untrusted. When the model reads a file, the
   bytes flow back as a tool result and into the next model turn — same
   pattern as bash tool output. We pass it through as-is; no shell, no

@@ -81,6 +81,7 @@ describe('makeChatContext', () => {
       sessionId: 'sess-1',
       agentId: 'agent-1',
       userId: 'user-1',
+      workspaceRoot: '/tmp/ax-test',
     });
     expect(ctx.reqId).toBe('req-1');
     expect(ctx.sessionId).toBe('sess-1');
@@ -88,6 +89,7 @@ describe('makeChatContext', () => {
     expect(ctx.userId).toBe('user-1');
     expect(ctx.state).toEqual(new Map());
     expect(typeof ctx.logger.info).toBe('function');
+    expect(ctx.workspace.rootPath).toBe('/tmp/ax-test');
   });
 
   it('generates a reqId when not supplied', () => {
@@ -95,7 +97,9 @@ describe('makeChatContext', () => {
       sessionId: 'sess-1',
       agentId: 'agent-1',
       userId: 'user-1',
+      workspaceRoot: process.cwd(),
     });
     expect(ctx.reqId).toMatch(/^req-/);
+    expect(ctx.workspace.rootPath).toBe(process.cwd());
   });
 });

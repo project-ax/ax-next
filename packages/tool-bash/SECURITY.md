@@ -10,7 +10,7 @@ not.
 
 - **Sandbox:** We don't spawn anything ourselves. We call `sandbox:spawn` with
   `argv: ['/bin/bash', '-c', command]`, `env: {}` (empty, so the sandbox's
-  allow-list applies cleanly), the kernel cwd, and a 30-second default
+  allow-list applies cleanly), the workspace root, and a 30-second default
   timeout (override up to 5 minutes). The `-c` form is a full shell — glob
   expansion, pipes, subshells, the works. That IS the bash tool; if we
   stripped the shell out, we'd just be a worse `sandbox:spawn`. Isolation
@@ -18,10 +18,10 @@ not.
   byte caps, `SIGKILL` timeout, no IPC channel) is the sandbox's job, and
   it's covered by `@ax/sandbox-subprocess`'s tests. We just pass the command
   through as one argv element so no caller-side `argv` manipulation can
-  sneak in extra args. Workspace-path scoping is still a TODO — the kernel
-  doesn't yet expose a workspace root (architecture doc §4.5), so commands
-  currently run in the kernel's cwd. When the workspace abstraction lands,
-  we switch the `cwd:` line and that's it.
+  sneak in extra args. The working directory is now explicit: we read
+  `ctx.workspace.rootPath` from `ChatContext` and pass that as `cwd:`. No
+  implicit `process.cwd()` grant — the CLI (or whatever constructs the
+  context) has to declare the workspace root up front.
 - **Injection:** `command` is model output. We treat it as untrusted string
   data — it's validated by Zod (non-empty, max 16 KiB), then handed to the
   sandbox as a single argv element. No string concatenation into other

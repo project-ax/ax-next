@@ -77,6 +77,10 @@ function serializeError(err: Error): Record<string, unknown> {
   return out;
 }
 
+export interface ChatWorkspace {
+  readonly rootPath: string;
+}
+
 export interface ChatContext {
   readonly reqId: string;
   readonly sessionId: string;
@@ -84,6 +88,7 @@ export interface ChatContext {
   readonly userId: string;
   readonly logger: Logger;
   readonly state: Map<string, unknown>;
+  readonly workspace: ChatWorkspace;
 }
 
 export interface MakeChatContextOptions {
@@ -92,6 +97,14 @@ export interface MakeChatContextOptions {
   agentId: string;
   userId: string;
   logger?: Logger;
+  /**
+   * Canonical workspace root — the filesystem directory that tool plugins
+   * treat as the allowed root for path resolution and command execution.
+   * Required: forcing callers to declare this keeps capability grants
+   * explicit (invariant #5). If you want the CLI's cwd, pass
+   * `process.cwd()` — but you have to pass it.
+   */
+  workspaceRoot: string;
 }
 
 export function makeChatContext(opts: MakeChatContextOptions): ChatContext {
@@ -104,5 +117,6 @@ export function makeChatContext(opts: MakeChatContextOptions): ChatContext {
     userId: opts.userId,
     logger,
     state: new Map(),
+    workspace: { rootPath: opts.workspaceRoot },
   };
 }

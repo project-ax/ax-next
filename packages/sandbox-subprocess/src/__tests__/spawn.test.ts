@@ -11,6 +11,7 @@ function ctx(): ChatContext {
     sessionId: 'test-session',
     agentId: 'test-agent',
     userId: 'test-user',
+    workspaceRoot: process.cwd(),
   });
 }
 

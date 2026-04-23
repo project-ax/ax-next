@@ -4,7 +4,7 @@ import { HookBus, PluginError, makeChatContext, type LlmRequest, type LlmRespons
 import { llmAnthropicPlugin, type AnthropicPluginConfig } from '../plugin.js';
 
 function ctx() {
-  return makeChatContext({ sessionId: 's', agentId: 'a', userId: 'u' });
+  return makeChatContext({ sessionId: 's', agentId: 'a', userId: 'u', workspaceRoot: process.cwd() });
 }
 
 function mkMessage(content: unknown[], stop_reason = 'end_turn'): Anthropic.Messages.Message {

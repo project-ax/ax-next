@@ -10,6 +10,7 @@ const silentCtx = () =>
     agentId: 'a',
     userId: 'u',
     logger: createLogger({ reqId: 'test', writer: () => {} }),
+    workspaceRoot: process.cwd(),
   });
 
 describe('HookBus — service hooks', () => {
@@ -144,6 +145,7 @@ describe('HookBus — subscriber hooks', () => {
       agentId: 'a',
       userId: 'u',
       logger: mockLogger,
+      workspaceRoot: process.cwd(),
     });
     bus.subscribe<{ n: number }>('h', 'bad', async () => {
       throw new Error('oops');
