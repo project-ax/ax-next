@@ -31,6 +31,16 @@ export interface LlmResponse {
 export interface ToolDescriptor {
   name: string;
   description?: string;
+  /**
+   * JSON Schema for the tool's input. Used by LLM plugins (e.g.
+   * `@ax/llm-anthropic`) to tell the model how to call this tool. Kept as
+   * `unknown` because JSON Schema is big and we don't want to model it in
+   * TS — the LLM plugin is the thing that actually cares about its shape.
+   *
+   * Required: empty/missing schemas silently neuter tool-calling, so we
+   * force every tool to publish one.
+   */
+  inputSchema: unknown;
 }
 
 export type ChatOutcome =
