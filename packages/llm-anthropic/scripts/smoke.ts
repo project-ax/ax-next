@@ -21,11 +21,11 @@ async function main(): Promise<void> {
     { messages: [{ role: 'user', content: 'Say hi in one word.' }] },
   );
 
-  console.log('assistant:', res.assistantMessage.content);
-  console.log('toolCalls:', res.toolCalls);
+  process.stdout.write(`assistant: ${res.assistantMessage.content}\n`);
+  process.stdout.write(`toolCalls: ${JSON.stringify(res.toolCalls)}\n`);
 }
 
-main().catch((err) => {
-  console.error('smoke failed:', err);
+main().catch((err: unknown) => {
+  process.stderr.write(`smoke failed: ${err instanceof Error ? err.stack ?? err.message : String(err)}\n`);
   process.exit(1);
 });

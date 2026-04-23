@@ -19,7 +19,8 @@
   },
   "dependencies": {
     "@ax/core": "workspace:*",
-    "@ax/sandbox-subprocess": "workspace:*"
+    "@ax/sandbox-subprocess": "workspace:*",
+    "zod": "^3.23.8"
   },
   "devDependencies": {
     "@ax/test-harness": "workspace:*",
