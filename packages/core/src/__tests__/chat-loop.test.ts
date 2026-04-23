@@ -117,4 +117,110 @@ describe('chat:run', () => {
     );
     expect(outcome.kind).toBe('terminated');
   });
+
+  it('tool:post-call rejection vetoes the output without terminating the chat', async () => {
+    const bus = new HookBus();
+    registerChatLoop(bus);
+    const toolCall: ToolCall = { id: 't1', name: 'readFile', input: { path: '/etc/shadow' } };
+    let llmCalls = 0;
+    bus.registerService<LlmRequest, LlmResponse>('llm:call', 'llm-fake', async () => {
+      llmCalls += 1;
+      if (llmCalls === 1) {
+        return { assistantMessage: { role: 'assistant', content: '' }, toolCalls: [toolCall] };
+      }
+      return { assistantMessage: { role: 'assistant', content: 'done' }, toolCalls: [] };
+    });
+    bus.registerService('tool:execute', 'tools', async () => ({
+      output: 'SECRET_TOKEN=abc123',
+    }));
+    bus.subscribe('tool:post-call', 'output-scanner', async () =>
+      reject({ reason: 'contains secret' }),
+    );
+    const outcome = await bus.call<{ message: ChatMessage }, ChatOutcome>(
+      'chat:run', ctx(), { message: { role: 'user', content: 'read it' } },
+    );
+    expect(outcome.kind).toBe('complete');
+    if (outcome.kind === 'complete') {
+      const leak = outcome.messages.find(m => m.content.includes('SECRET_TOKEN'));
+      expect(leak).toBeUndefined();
+      const veto = outcome.messages.find(m => m.content.includes('output vetoed'));
+      expect(veto).toBeDefined();
+      expect(veto!.content).toContain('contains secret');
+    }
+  });
+
+  it('chat:end fires exactly once across all exit paths', async () => {
+    const scenarios: Array<{
+      name: string;
+      setup: (bus: HookBus) => void;
+    }> = [
+      {
+        name: 'chat:start rejection',
+        setup: (bus) => {
+          bus.subscribe('chat:start', 'block', async () => reject({ reason: 'blocked' }));
+        },
+      },
+      {
+        name: 'llm:pre-call rejection',
+        setup: (bus) => {
+          bus.subscribe('llm:pre-call', 'block', async () => reject({ reason: 'nope' }));
+          bus.registerService<LlmRequest, LlmResponse>('llm:call', 'llm', async () => ({
+            assistantMessage: { role: 'assistant', content: 'x' },
+            toolCalls: [],
+          }));
+        },
+      },
+      {
+        name: 'llm:post-call rejection',
+        setup: (bus) => {
+          bus.registerService<LlmRequest, LlmResponse>('llm:call', 'llm', async () => ({
+            assistantMessage: { role: 'assistant', content: 'x' },
+            toolCalls: [],
+          }));
+          bus.subscribe('llm:post-call', 'block', async () => reject({ reason: 'nope' }));
+        },
+      },
+      {
+        name: 'llm:call missing (no-service)',
+        setup: () => {},
+      },
+      {
+        name: 'llm:call throws',
+        setup: (bus) => {
+          bus.registerService('llm:call', 'llm', async () => { throw new Error('down'); });
+        },
+      },
+      {
+        name: 'tool:execute missing',
+        setup: (bus) => {
+          const toolCall: ToolCall = { id: 't1', name: 'bash', input: {} };
+          let n = 0;
+          bus.registerService<LlmRequest, LlmResponse>('llm:call', 'llm', async () => {
+            n += 1;
+            if (n === 1) return { assistantMessage: { role: 'assistant', content: '' }, toolCalls: [toolCall] };
+            return { assistantMessage: { role: 'assistant', content: 'done' }, toolCalls: [] };
+          });
+        },
+      },
+      {
+        name: 'normal completion',
+        setup: (bus) => {
+          bus.registerService<LlmRequest, LlmResponse>('llm:call', 'llm', async () => ({
+            assistantMessage: { role: 'assistant', content: 'hi' },
+            toolCalls: [],
+          }));
+        },
+      },
+    ];
+
+    for (const s of scenarios) {
+      const bus = new HookBus();
+      registerChatLoop(bus);
+      let endCount = 0;
+      bus.subscribe('chat:end', 'counter', async () => { endCount += 1; return undefined; });
+      s.setup(bus);
+      await bus.call('chat:run', ctx(), { message: { role: 'user', content: 'x' } });
+      expect(endCount, `scenario: ${s.name}`).toBe(1);
+    }
+  });
 });

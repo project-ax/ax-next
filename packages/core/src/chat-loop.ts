@@ -75,13 +75,21 @@ async function runChat(
           }
           throw err;
         }
-        const postTool = await bus.fire('tool:post-call', ctx, { toolCall, output });
-        const finalOutput = postTool.rejected
-          ? output
-          : (postTool.payload as { output: unknown }).output;
+        const postTool = await bus.fire<{ toolCall: ToolCall; output: unknown }>(
+          'tool:post-call',
+          ctx,
+          { toolCall, output },
+        );
+        if (postTool.rejected) {
+          messages.push({
+            role: 'user',
+            content: `[tool ${toolCall.name}] output vetoed: ${postTool.reason}`,
+          });
+          continue;
+        }
         messages.push({
           role: 'user',
-          content: `[tool ${toolCall.name}] ${JSON.stringify(finalOutput)}`,
+          content: `[tool ${toolCall.name}] ${JSON.stringify(postTool.payload.output)}`,
         });
       }
     }
