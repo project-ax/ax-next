@@ -1,0 +1,58 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "f81a422ed04b",
+  "session_id": "ca1053c7-b6bc-4505-bf65-01d77b73cef5",
+  "strategy": "manual-commit",
+  "created_at": "2026-04-23T18:39:02.533586Z",
+  "branch": "feat/week-3-smallest-e2e",
+  "checkpoints_count": 3,
+  "files_touched": [],
+  "agent": "Claude Code",
+  "model": "claude-opus-4-7[1m]",
+  "turn_id": "2e00a7d07271",
+  "checkpoint_transcript_start": 319,
+  "transcript_lines_at_start": 319,
+  "token_usage": {
+    "input_tokens": 121,
+    "cache_creation_tokens": 381496,
+    "cache_read_tokens": 21273799,
+    "output_tokens": 36366,
+    "api_call_count": 69
+  },
+  "session_metrics": {
+    "turn_count": 8
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 2,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".gitignore": 2
+      }
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 7,
+      "agent_lines_removed": 12
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 7,
+      "agent_lines_removed": 12
+    },
+    {
+      "checkpoint_number": 4,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 7,
+      "agent_lines_removed": 12
+    }
+  ]
+}

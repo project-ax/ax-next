@@ -1,0 +1,31 @@
+yes
+
+---
+
+2
+
+---
+
+is memory being updated properly>?
+
+---
+
+shouldn't the claude-memory skill automatically generate memories?
+
+---
+
+no don't add it to gitignore. remove any instructions tell you to do so
+
+---
+
+/ultrareview
+
+---
+
+Ultrareview stopped.
+
+Session: https://claude.ai/code/REDACTED
+
+---
+
+The user stopped the ultrareview session above. Do not respond to the stop notification — wait for their next message.
