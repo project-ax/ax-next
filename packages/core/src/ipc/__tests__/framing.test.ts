@@ -56,6 +56,7 @@ describe('IPC framing', () => {
     try {
       const d2 = new FrameDecoder();
       d2.feed(badPrefix);
+      throw new Error('should have thrown');
     } catch (e) {
       expect((e as PluginError).code).toBe('invalid-payload');
       expect((e as PluginError).plugin).toBe('core');
@@ -88,6 +89,7 @@ describe('IPC framing', () => {
     expect(() => encodeFrame(big)).toThrowError(PluginError);
     try {
       encodeFrame(big);
+      throw new Error('should have thrown');
     } catch (e) {
       expect((e as PluginError).code).toBe('invalid-payload');
       expect((e as PluginError).plugin).toBe('core');
