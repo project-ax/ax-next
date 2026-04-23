@@ -1,0 +1,72 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "4839812a215c",
+  "session_id": "a7977974-4eab-4529-be3b-1bf078db6ef5",
+  "strategy": "manual-commit",
+  "created_at": "2026-04-23T21:56:44.447123Z",
+  "branch": "feat/observability-invariants",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "CLAUDE.md",
+    "eslint.config.mjs"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "a4221bb550f9",
+  "token_usage": {
+    "input_tokens": 60,
+    "cache_creation_tokens": 48065,
+    "cache_read_tokens": 1485949,
+    "output_tokens": 14635,
+    "api_call_count": 30
+  },
+  "session_metrics": {
+    "turn_count": 2
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-04-23T21:56:44.440631Z",
+    "agent_lines": 16,
+    "agent_removed": 0,
+    "human_added": 74,
+    "human_modified": 2,
+    "human_removed": 0,
+    "total_committed": 91,
+    "total_lines_changed": 92,
+    "agent_percentage": 17.391304347826086,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 207,
+      "user_lines_removed": 154,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claude/skills/claude-memory/SKILL.md": 2,
+        "CLAUDE.md": 1,
+        "README.md": 177,
+        "test-bwrap.yaml": 27
+      },
+      "user_removed_per_file": {
+        ".claude/skills/claude-memory/SKILL.md": 6,
+        "CLAUDE.md": 1,
+        "docs/plans/2026-04-23-claude-memory-skill-design.md": 147
+      }
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 213,
+      "agent_lines_removed": 154
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 230,
+      "agent_lines_removed": 154
+    }
+  ]
+}

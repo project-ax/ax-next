@@ -1,0 +1,17 @@
+Is now a good time to think about logging and tracability/observability? i problem with AX was that it was really hard to track down bugs and trace individual chat turns & sessions
+
+---
+
+yes
+
+---
+
+yes
+
+---
+
+implement docs/plans/2026-04-23-observability-design-note.md
+
+---
+
+1 and 2 only
