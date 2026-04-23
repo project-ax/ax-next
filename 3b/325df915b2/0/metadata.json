@@ -1,0 +1,54 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "3b325df915b2",
+  "session_id": "2033671b-f984-4cd0-b3e5-11ae6aa6e15f",
+  "strategy": "manual-commit",
+  "created_at": "2026-04-23T10:46:06.103808Z",
+  "branch": "feat/kernel-hook-bus",
+  "checkpoints_count": 2,
+  "files_touched": [
+    ".claude/skills/ax-conventions/SKILL.md",
+    "CLAUDE.md"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "287fdac3a55b",
+  "token_usage": {
+    "input_tokens": 104,
+    "cache_creation_tokens": 86889,
+    "cache_read_tokens": 1886081,
+    "output_tokens": 36848,
+    "api_call_count": 35
+  },
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-04-23T10:46:06.094312Z",
+    "agent_lines": 34,
+    "agent_removed": 4,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 34,
+    "total_lines_changed": 38,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 34,
+      "agent_lines_removed": 4
+    }
+  ]
+}
