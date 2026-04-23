@@ -1,0 +1,50 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "21d750015a50",
+  "session_id": "25dcc5d0-26c6-4bd9-b1bc-11a716948f16",
+  "strategy": "manual-commit",
+  "created_at": "2026-04-23T20:12:20.364859Z",
+  "branch": "main",
+  "checkpoints_count": 1,
+  "files_touched": [],
+  "agent": "Claude Code",
+  "model": "claude-opus-4-7[1m]",
+  "turn_id": "63526ca04ed4",
+  "token_usage": {
+    "input_tokens": 51,
+    "cache_creation_tokens": 145446,
+    "cache_read_tokens": 1217849,
+    "output_tokens": 33652,
+    "api_call_count": 20
+  },
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 184,
+      "user_lines_removed": 12,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claude/skills/claude-memory/SKILL.md": 2,
+        "CLAUDE.md": 1,
+        "README.md": 177,
+        "docs/plans/2026-04-23-claude-memory-skill-design.md": 4
+      },
+      "user_removed_per_file": {
+        ".claude/skills/claude-memory/SKILL.md": 6,
+        "CLAUDE.md": 1,
+        "docs/plans/2026-04-23-claude-memory-skill-design.md": 5
+      }
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 184,
+      "agent_lines_removed": 12
+    }
+  ]
+}
