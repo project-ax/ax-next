@@ -1,0 +1,23 @@
+rules:
+  # No eval() anywhere in application code.
+  - id: ax-no-eval
+    pattern: eval(...)
+    message: >
+      eval() is never permitted in AX application code. Use safe
+      alternatives instead.
+    languages: [typescript]
+    severity: ERROR
+    paths:
+      include:
+        - /packages/
+
+  # No Function() constructor (eval equivalent).
+  - id: ax-no-function-constructor
+    pattern: new Function(...)
+    message: >
+      new Function() is an eval equivalent and is never permitted in AX.
+    languages: [typescript]
+    severity: ERROR
+    paths:
+      include:
+        - /packages/

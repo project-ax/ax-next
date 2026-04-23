@@ -27,7 +27,7 @@ pnpm test --filter @ax/<plugin>
 
 (Tooling lands in Week 1–2 per architecture doc Section 10.)
 
-## The four invariants (read before touching code)
+## The five invariants (read before touching code)
 
 1. **Hook surface is transport-agnostic and storage-agnostic.** No git/sqlite/k8s vocabulary in hook payloads. If a payload field name only makes sense for one backend, it leaks. (See workspace abstraction — architecture doc Section 4.5.)
 
@@ -36,6 +36,12 @@ pnpm test --filter @ax/<plugin>
 3. **No half-wired plugins.** A plugin is either fully registered + tested + reachable from the canary acceptance test, or it doesn't merge. No "wire this up later" PRs.
 
 4. **One source of truth per concept.** If two plugins both store state about the same thing (skills, tools, sessions), one of them is wrong. Coordinate through service hooks, not shared rows.
+
+5. **Capabilities are explicit and minimized.** Every plugin, tool, IPC handler, and sandbox boundary grants the smallest set of capabilities it needs — no more. The list to think about: filesystem paths, network reach, process spawn, env access, untrusted-input handling.
+
+   Untrusted content (model output, tool output, user input crossing a trust boundary, third-party plugin code) is treated as untrusted at every hop. The whole point of v2 over openclaw is that we're the secure one — if a hook surface, IPC action, or plugin grants more reach than it strictly requires, that's the bug.
+
+   When touching sandbox boundaries, IPC transport, plugin loading, or any code path that handles untrusted content, invoke the `security-checklist` skill.
 
 ## Boundary review (required for new hooks)
 
@@ -69,8 +75,9 @@ Skills are NOT written for documentation of what the code does, conventions that
 
 Day-1 skills:
 
-- `ax-conventions` — the four invariants, plugin manifest format, hook bus mechanics, boundary-review checklist.
+- `ax-conventions` — the five invariants, plugin manifest format, hook bus mechanics, boundary-review checklist.
 - `claude-memory` — per-project working memory in `.claude/memory/` (gitignored). Captures project facts, decisions, patterns, mistakes, and self-observations across sessions. See `docs/plans/2026-04-23-claude-memory-skill-design.md`.
+- `security-checklist` — three-threat-model walk (sandbox escape, prompt injection, supply chain) producing a structured PR security note. Fires on sandbox / IPC / plugin loading / untrusted content / new-dependency changes. See `docs/plans/2026-04-23-security-checklist-skill-design.md`.
 
 Everything else is deferred until earned.
 

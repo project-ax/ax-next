@@ -15,7 +15,7 @@
     "build:clean": "tsc --build --clean",
     "test": "pnpm -r run test",
     "lint": "eslint .",
-    "typecheck": "tsc --build --noEmit",
+    "typecheck": "tsc --build",
     "changeset": "changeset",
     "version-packages": "changeset version",
     "release": "pnpm build && changeset publish"
