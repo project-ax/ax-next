@@ -1,6 +1,6 @@
 ---
 name: claude-memory
-description: Use at session start to read project memory in `.claude/memory/`, during the session to capture corrections / dead ends / "remember this" / "log that", and at session end ("done", "wrap up", PR opened, tests pass) to update it. Five files — context.md, decisions.md, patterns.md, mistakes.md, meta.md — keep project facts, decisions, reusable patterns, mistakes to avoid, and self-observations about how I work on this project. Also handles first-session bootstrap (creating the directory, seeding files, gitignoring).
+description: Use at session start to read project memory in `.claude/memory/`, during the session to capture corrections / dead ends / "remember this" / "log that", and at session end ("done", "wrap up", PR opened, tests pass) to update it. Five files — context.md, decisions.md, patterns.md, mistakes.md, meta.md — keep project facts, decisions, reusable patterns, mistakes to avoid, and self-observations about how I work on this project. Also handles first-session bootstrap (creating the directory and seeding files).
 ---
 
 # claude-memory
@@ -92,10 +92,6 @@ When `.claude/memory/` does not exist:
 
 2. Run the write phase against what was just done, to seed memory with the current task's output.
 
-3. If `.gitignore` is writable and doesn't already ignore `.claude/memory/`, add it. If `.gitignore` is not writable or doesn't exist, warn the user — do not silently leave memory uncommitted-but-visible.
-
-ax-next's `.gitignore` already covers `.claude/memory/` (added in the same change that shipped this skill), so step 3 is a no-op here.
-
 ---
 
 ## Hygiene — lazy, threshold-triggered
@@ -131,7 +127,7 @@ When in doubt, the write test on each file is the arbiter: if the answer is no, 
 | Store | Audience | Committed? | What goes there |
 |---|---|---|---|
 | `~/.claude/projects/<slug>/memory/` (auto-memory) | future-me across all projects | no | user profile, cross-project preferences, feedback |
-| `<repo>/.claude/memory/` (this skill) | future-me in this project | no (gitignored) | project facts, decisions, patterns, mistakes, meta |
+| `<repo>/.claude/memory/` (this skill) | future-me in this project | no | project facts, decisions, patterns, mistakes, meta |
 | Commit messages / PR descriptions | the team | yes | anything team-visible |
 
 If something would help the team, it goes in the commit or PR — not here. If it only helps future-me on this project, it goes here. If it's about *me* across projects, it goes in auto-memory.
