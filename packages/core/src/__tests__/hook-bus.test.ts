@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { HookBus } from '../hook-bus.js';
-import { PluginError } from '../errors.js';
+import { isRejection, PluginError, reject } from '../errors.js';
 import { makeChatContext, createLogger } from '../context.js';
+import type { FireResult } from '../types.js';
 
 const silentCtx = () =>
   makeChatContext({
@@ -69,5 +70,98 @@ describe('HookBus — service hooks', () => {
       throw original;
     });
     await expect(bus.call('run', silentCtx(), {})).rejects.toBe(original);
+  });
+});
+
+describe('HookBus — subscriber hooks', () => {
+  it('fire with no subscribers returns payload unchanged', async () => {
+    const bus = new HookBus();
+    const res = await bus.fire<{ x: number }>('h', silentCtx(), { x: 1 });
+    expect(res).toEqual({ rejected: false, payload: { x: 1 } });
+  });
+
+  it('subscribers run in registration order', async () => {
+    const bus = new HookBus();
+    const calls: string[] = [];
+    bus.subscribe('h', 'a', async () => {
+      calls.push('a');
+      return undefined;
+    });
+    bus.subscribe('h', 'b', async () => {
+      calls.push('b');
+      return undefined;
+    });
+    await bus.fire('h', silentCtx(), {});
+    expect(calls).toEqual(['a', 'b']);
+  });
+
+  it('returning a modified payload chains into the next subscriber', async () => {
+    const bus = new HookBus();
+    bus.subscribe<{ n: number }>('h', 'inc', async (_ctx, p) => ({ n: p.n + 1 }));
+    bus.subscribe<{ n: number }>('h', 'dbl', async (_ctx, p) => ({ n: p.n * 2 }));
+    const res = await bus.fire<{ n: number }>('h', silentCtx(), { n: 1 });
+    expect(res).toEqual({ rejected: false, payload: { n: 4 } });
+  });
+
+  it('returning undefined is pass-through', async () => {
+    const bus = new HookBus();
+    bus.subscribe<{ n: number }>('h', 'noop', async () => undefined);
+    bus.subscribe<{ n: number }>('h', 'inc', async (_ctx, p) => ({ n: p.n + 1 }));
+    const res = await bus.fire<{ n: number }>('h', silentCtx(), { n: 1 });
+    expect(res).toEqual({ rejected: false, payload: { n: 2 } });
+  });
+
+  it('reject short-circuits the chain and fills in source', async () => {
+    const bus = new HookBus();
+    let bCalled = false;
+    bus.subscribe('h', 'a', async () => reject({ reason: 'blocked' }));
+    bus.subscribe('h', 'b', async () => {
+      bCalled = true;
+      return undefined;
+    });
+    const res = await bus.fire('h', silentCtx(), {});
+    expect(bCalled).toBe(false);
+    expect(res).toMatchObject({ rejected: true, reason: 'blocked', source: 'a' });
+    expect(isRejection(res)).toBe(true);
+  });
+
+  it('subscriber throw is isolated: logged, chain continues', async () => {
+    const bus = new HookBus();
+    const logs: Array<{ level: string; msg: string; bindings?: unknown }> = [];
+    const mockLogger = {
+      debug: () => {},
+      info: () => {},
+      warn: () => {},
+      error: (msg: string, bindings?: Record<string, unknown>) => {
+        logs.push({ level: 'error', msg, bindings });
+      },
+      child(_bindings: Record<string, unknown>) {
+        return mockLogger;
+      },
+    };
+    const ctx = makeChatContext({
+      sessionId: 's',
+      agentId: 'a',
+      userId: 'u',
+      logger: mockLogger,
+    });
+    bus.subscribe<{ n: number }>('h', 'bad', async () => {
+      throw new Error('oops');
+    });
+    bus.subscribe<{ n: number }>('h', 'good', async (_ctx, p) => ({ n: p.n + 1 }));
+    const res = await bus.fire<{ n: number }>('h', ctx, { n: 1 });
+    expect(res).toEqual({ rejected: false, payload: { n: 2 } });
+    expect(logs.find((l) => l.level === 'error')).toBeDefined();
+  });
+
+  it('FireResult type: consumers can discriminate via .rejected', async () => {
+    const bus = new HookBus();
+    bus.subscribe('h', 'a', async () => reject({ reason: 'nope' }));
+    const res: FireResult<{ n: number }> = await bus.fire('h', silentCtx(), { n: 1 });
+    if (res.rejected) {
+      expect(res.reason).toBe('nope');
+    } else {
+      throw new Error('should be rejected');
+    }
   });
 });
