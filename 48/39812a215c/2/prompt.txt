@@ -15,3 +15,7 @@ implement docs/plans/2026-04-23-observability-design-note.md
 ---
 
 1 and 2 only
+
+---
+
+commit in a new branch
