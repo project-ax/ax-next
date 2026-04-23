@@ -1,0 +1,52 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "be62e706b964",
+  "session_id": "2033671b-f984-4cd0-b3e5-11ae6aa6e15f",
+  "strategy": "manual-commit",
+  "created_at": "2026-04-23T10:05:44.884971Z",
+  "branch": "feat/kernel-hook-bus",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "packages/core/src/__tests__/hook-bus.test.ts",
+    "packages/core/src/hook-bus.ts"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-opus-4-7[1m]",
+  "turn_id": "2914ac322b58",
+  "token_usage": {
+    "input_tokens": 11,
+    "cache_creation_tokens": 13729,
+    "cache_read_tokens": 43528,
+    "output_tokens": 711,
+    "api_call_count": 2
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-04-23T10:05:44.881524Z",
+    "agent_lines": 0,
+    "agent_removed": 0,
+    "human_added": 134,
+    "human_modified": 6,
+    "human_removed": 0,
+    "total_committed": 134,
+    "total_lines_changed": 140,
+    "agent_percentage": 0,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 140,
+      "user_lines_removed": 3,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        "packages/core/src/__tests__/hook-bus.test.ts": 95,
+        "packages/core/src/hook-bus.ts": 45
+      },
+      "user_removed_per_file": {
+        "packages/core/src/__tests__/hook-bus.test.ts": 1,
+        "packages/core/src/hook-bus.ts": 2
+      }
+    }
+  ]
+}

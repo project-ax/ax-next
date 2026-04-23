@@ -1,0 +1,5 @@
+one thing that might have gotten lost in this greenfield reimplementation of ax is the whole idea behind this project: it's supposed to be a secure version of openclaw. security is still a top priority. is there a way to ensure security is maintained during the planning/execution of any new features?
+
+---
+
+one thing that might have gotten lost in this greenfield reimplementation of ax is the whole idea behind this project: it's supposed to be a secure version of openclaw. security is still a top priority. is there a way in CLAUDE.md or as a new skill to ensure security is maintained during the planning/execution of any new features?
