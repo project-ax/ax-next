@@ -1,18 +1,22 @@
 import type { Plugin } from '@ax/core';
-
-const PLUGIN_NAME = '@ax/sandbox-subprocess';
+import { HOOK_NAME, PLUGIN_NAME, spawnImpl } from './spawn.js';
+import type { SandboxSpawnInput, SandboxSpawnResult } from './types.js';
 
 export function sandboxSubprocessPlugin(): Plugin {
   return {
     manifest: {
       name: PLUGIN_NAME,
       version: '0.0.0',
-      registers: [],
+      registers: [HOOK_NAME],
       calls: [],
       subscribes: [],
     },
-    init() {
-      // sandbox:spawn service is registered in Task 2.2/2.3.
+    init({ bus }) {
+      bus.registerService<SandboxSpawnInput, SandboxSpawnResult>(
+        HOOK_NAME,
+        PLUGIN_NAME,
+        spawnImpl,
+      );
     },
   };
 }
