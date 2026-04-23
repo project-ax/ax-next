@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "ae5297219552",
+  "strategy": "manual-commit",
+  "branch": "feat/kernel-hook-bus",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "packages/test-harness/src/__tests__/harness.test.ts",
+    "packages/test-harness/src/harness.ts",
+    "packages/test-harness/src/index.ts",
+    "packages/test-harness/src/mock-services.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/ae/5297219552/0/metadata.json",
+      "transcript": "/ae/5297219552/0/full.jsonl",
+      "content_hash": "/ae/5297219552/0/content_hash.txt",
+      "prompt": "/ae/5297219552/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 77,
+    "cache_creation_tokens": 45080,
+    "cache_read_tokens": 674264,
+    "output_tokens": 15463,
+    "api_call_count": 18
+  }
+}
