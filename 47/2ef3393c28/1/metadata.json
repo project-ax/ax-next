@@ -1,0 +1,38 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "472ef3393c28",
+  "session_id": "a57d289d-4f81-485a-8a5c-a72187c82cf3",
+  "strategy": "manual-commit",
+  "created_at": "2026-04-23T21:58:25.489062Z",
+  "branch": "feat/observability-invariants",
+  "checkpoints_count": 1,
+  "files_touched": [
+    ".claude/memory/decisions.md",
+    ".claude/skills/claude-memory/SKILL.md"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-opus-4-7[1m]",
+  "turn_id": "94eb6d7238b1",
+  "token_usage": {
+    "input_tokens": 120,
+    "cache_creation_tokens": 210022,
+    "cache_read_tokens": 1531642,
+    "output_tokens": 28465,
+    "api_call_count": 24
+  },
+  "session_metrics": {
+    "turn_count": 11
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-04-23T21:58:25.481191Z",
+    "agent_lines": 3,
+    "agent_removed": 6,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 3,
+    "total_lines_changed": 156,
+    "agent_percentage": 5.769230769230769,
+    "metric_version": 2
+  }
+}
