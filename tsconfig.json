@@ -7,6 +7,7 @@
     { "path": "packages/llm-mock" },
     { "path": "packages/storage-sqlite" },
     { "path": "packages/audit-log" },
-    { "path": "packages/cli" }
+    { "path": "packages/cli" },
+    { "path": "packages/sandbox-subprocess" }
   ]
 }
