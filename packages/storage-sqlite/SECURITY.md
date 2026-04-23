@@ -74,7 +74,7 @@ Status: the plugin does not handle model/tool/external content at its own bounda
 
 ```json
 "dependencies": {
-  "kysely": "^0.27.4",
+  "kysely": "^0.28.14",
   "better-sqlite3": "^11.3.0"
 },
 "devDependencies": {
@@ -84,8 +84,9 @@ Status: the plugin does not handle model/tool/external content at its own bounda
 
 Per-dep answers:
 
-**`kysely@^0.27.4`**
+**`kysely@^0.28.14`**
 - Pinned? Caret range in the manifest; exact version in `pnpm-lock.yaml`. Accepted — this is the repo's convention.
+- Why this floor? Versions `<=0.28.13` carry two published CVEs (GHSA-wmrf-hv6w-mr66, GHSA-8cpq-38p9-67gx). Neither is reachable in our usage — we don't use JSON path APIs, `sql.lit`, or `Kysely<any>`, and we're on SQLite not MySQL — but keeping the audit surface clean matters, and the minor bump is a no-op against our portable-API usage.
 - Install scripts? None. (`package.json` `scripts` is build-only, not lifecycle.)
 - Maintainer? Igal Klebanov; established TypeScript SQL builder with wide adoption.
 - Runtime deps? Zero. Small transitive surface.
