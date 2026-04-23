@@ -31,6 +31,13 @@ export default tseslint.config(
         'error',
         { argsIgnorePattern: '^_', varsIgnorePattern: '^_' },
       ],
+      // Observability invariant 2: structured logs via ctx.logger only.
+      // v1 accumulated 96 console.log calls that bypassed the JSONL stream and
+      // made turns ungreppable by reqId. Caught cheap here, impossible later.
+      // warn/error are allowed so runtime issues can surface before a logger
+      // exists (e.g. bootstrap failures). Human-facing CLI output uses a
+      // dedicated print helper, not raw console.log.
+      'no-console': ['error', { allow: ['warn', 'error'] }],
     },
   },
 

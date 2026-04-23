@@ -43,6 +43,16 @@ pnpm test --filter @ax/<plugin>
 
    When touching sandbox boundaries, IPC transport, plugin loading, or any code path that handles untrusted content, invoke the `security-checklist` skill.
 
+## Observability invariants
+
+Debugging a chat turn in v1 was hard because correlation IDs were threaded only at entry points and 96 `console.log` calls bypassed the structured logger. v2 locks in two rules up front; a third (turn-tree correlation) is deferred until turn boundaries exist in the kernel. See `docs/plans/2026-04-23-observability-design-note.md`.
+
+1. **Correlation context rides on `ChatContext`, not hook payloads.** Every hook-bus call (`hooks.call` / `hooks.fire`) passes a `ChatContext` that already carries `reqId` and `sessionId`. Do not re-pass them as payload fields, and do not omit them at sub-phases — if a hook handler calls another hook, forward the same `ctx`. `turnId` / `parentTurnId` are planned additions for turn-tree correlation; the design note covers the open questions.
+
+2. **No `console.log` — use `ctx.logger`.** Enforced by `no-console` in `eslint.config.mjs`. The structured JSONL stream from `createLogger` is the only sanctioned output path. Human-facing CLI output (help text, prompts) goes through an explicit CLI print helper, not raw `console`.
+
+3. **One canonical terminal event per turn** (planned, not yet implemented). A turn ends with exactly one structured event carrying `{ sessionId, turnId, phase, reason, duration_ms }`, ported from v1's `logChatTermination` pattern. Lands with the turn-boundary work.
+
 ## Boundary review (required for new hooks)
 
 When adding or changing a service-hook signature, or adding a subscriber hook with a non-trivial payload, answer in the PR description:
