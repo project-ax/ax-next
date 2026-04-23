@@ -1,18 +1,15 @@
 import { describe, it, expect } from 'vitest';
 import { HookBus } from '../hook-bus.js';
 import { PluginError } from '../errors.js';
-import { makeChatContext } from '../context.js';
+import { makeChatContext, createLogger } from '../context.js';
 
-const silentCtx = () => {
-  const ctx = makeChatContext({
-    sessionId: 's', agentId: 'a', userId: 'u',
+const silentCtx = () =>
+  makeChatContext({
+    sessionId: 's',
+    agentId: 'a',
+    userId: 'u',
+    logger: createLogger({ reqId: 'test', writer: () => {} }),
   });
-  (ctx.logger as unknown as { info: () => void }).info = () => {};
-  (ctx.logger as unknown as { error: () => void }).error = () => {};
-  (ctx.logger as unknown as { warn: () => void }).warn = () => {};
-  (ctx.logger as unknown as { debug: () => void }).debug = () => {};
-  return ctx;
-};
 
 describe('HookBus — service hooks', () => {
   it('register + call returns the handler result', async () => {
@@ -59,5 +56,18 @@ describe('HookBus — service hooks', () => {
     expect(bus.hasService('x')).toBe(false);
     bus.registerService('x', 'p', async () => 0);
     expect(bus.hasService('x')).toBe(true);
+  });
+
+  it("handler's PluginError passes through unchanged (not re-wrapped)", async () => {
+    const bus = new HookBus();
+    const original = new PluginError({
+      code: 'timeout',
+      plugin: 'sandbox',
+      message: 'exec timeout',
+    });
+    bus.registerService('run', 'sandbox', async () => {
+      throw original;
+    });
+    await expect(bus.call('run', silentCtx(), {})).rejects.toBe(original);
   });
 });
