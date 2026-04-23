@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { pathToFileURL } from 'node:url';
 import {
   HookBus,
   bootstrap,
@@ -53,7 +54,7 @@ export async function main(opts: MainOptions): Promise<number> {
   return 1;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const databasePath = process.env.AX_DB ?? './ax-next-chat.sqlite';
   const message = process.argv.slice(2).join(' ') || 'hi';
   main({ databasePath, message })
