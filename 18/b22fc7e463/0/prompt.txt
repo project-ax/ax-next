@@ -33,3 +33,37 @@ The user stopped the ultrareview session above. Do not respond to the stop notif
 ---
 
 address PR comments in https://github.com/project-ax/ax-next/pull/2
+
+---
+
+┌─────────────────────┬────────────────────────────────────────────────────────┐
+│ high                │ SQL Injection via unsanitized JSON path keys when      │
+│                     │ ignoring/silencing compilation errors or using         │
+│                     │ `Kysely<any>`.                                         │
+├─────────────────────┼────────────────────────────────────────────────────────┤
+│ Package             │ kysely                                                 │
+├─────────────────────┼────────────────────────────────────────────────────────┤
+│ Vulnerable versions │ >=0.26.0 <=0.28.11                                     │
+├─────────────────────┼────────────────────────────────────────────────────────┤
+│ Patched versions    │ >=0.28.12                                              │
+├─────────────────────┼────────────────────────────────────────────────────────┤
+│ Paths               │ packages__storage-sqlite>kysely                        │
+├─────────────────────┼────────────────────────────────────────────────────────┤
+│ More info           │ https://github.com/advisories/GHSA-wmrf-hv6w-mr66      │
+└─────────────────────┴────────────────────────────────────────────────────────┘
+┌─────────────────────┬────────────────────────────────────────────────────────┐
+│ high                │ Kysely has a MySQL SQL Injection via Insufficient      │
+│                     │ Backslash Escaping in `sql.lit(string)` usage or       │
+│                     │ similar methods that append string literal values into │
+│                     │ the compiled SQL strings                               │
+├─────────────────────┼────────────────────────────────────────────────────────┤
+│ Package             │ kysely                                                 │
+├─────────────────────┼────────────────────────────────────────────────────────┤
+│ Vulnerable versions │ <=0.28.13                                              │
+├─────────────────────┼────────────────────────────────────────────────────────┤
+│ Patched versions    │ >=0.28.14                                              │
+├─────────────────────┼────────────────────────────────────────────────────────┤
+│ Paths               │ packages__storage-sqlite>kysely                        │
+├─────────────────────┼────────────────────────────────────────────────────────┤
+│ More info           │ https://github.com/advisories/GHSA-8cpq-38p9-67gx      │
+└─────────────────────┴────────────────────────────────────────────────────────┘
