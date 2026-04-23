@@ -1,0 +1,25 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "aba80041f121",
+  "strategy": "manual-commit",
+  "branch": "feat/kernel-hook-bus",
+  "checkpoints_count": 0,
+  "files_touched": [
+    ".claude/skills/security-checklist/SKILL.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/ab/a80041f121/0/metadata.json",
+      "transcript": "/ab/a80041f121/0/full.jsonl",
+      "content_hash": "/ab/a80041f121/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 1,
+    "cache_creation_tokens": 881,
+    "cache_read_tokens": 99103,
+    "output_tokens": 435,
+    "api_call_count": 1
+  }
+}
