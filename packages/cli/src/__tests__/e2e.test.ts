@@ -56,8 +56,17 @@ describe('@ax/cli end-to-end', () => {
       const chatRow = rows.find((r) => r.key.startsWith('chat:'));
       expect(chatRow).toBeDefined();
       const decoded = JSON.parse(chatRow!.value.toString('utf8'));
-      expect(decoded.outcome).toMatchObject({ kind: 'complete' });
-      expect(decoded.sessionId).toBe('cli-session');
+      expect(decoded).toMatchObject({
+        sessionId: 'cli-session',
+        outcome: {
+          kind: 'complete',
+          messages: expect.arrayContaining([
+            { role: 'assistant', content: 'hello' },
+          ]),
+        },
+      });
+      expect(chatRow!.key).toMatch(/^chat:.+/);
+      expect(typeof decoded.timestamp).toBe('string');
     } finally {
       db.close();
     }
@@ -71,6 +80,7 @@ describe('@ax/cli end-to-end', () => {
       env: { ...process.env, AX_DB: workDir },
       encoding: 'utf8',
     });
-    expect(result.status).not.toBe(0);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toMatch(/fatal:/);
   });
 });
