@@ -1,5 +1,22 @@
 import type Anthropic from '@anthropic-ai/sdk';
-import type { ChatMessage, ToolCall } from '@ax/core';
+import type { ChatMessage, ToolCall, ToolDescriptor } from '@ax/core';
+
+/**
+ * Map ax `ToolDescriptor[]` to the shape Anthropic's Messages API expects on
+ * `messages.create({ tools })`. `description` defaults to an empty string
+ * because the SDK's `Tool` type requires it; `input_schema` is passed through
+ * untyped (it's `unknown` in our descriptor — the JSON Schema is authored by
+ * the tool plugin, not by us).
+ */
+export function toAnthropicTools(
+  descriptors: ToolDescriptor[],
+): Anthropic.Messages.Tool[] {
+  return descriptors.map((d) => ({
+    name: d.name,
+    description: d.description ?? '',
+    input_schema: d.inputSchema as Anthropic.Messages.Tool['input_schema'],
+  }));
+}
 
 /**
  * Convert ax ChatMessage[] into the shape Anthropic's Messages API expects.

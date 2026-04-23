@@ -130,7 +130,35 @@ describe('@ax/llm-anthropic plugin', () => {
     expect(serialized).not.toContain('totally-secret-key');
   });
 
-  it('does not forward tools to the Anthropic API until schemas are threaded', async () => {
+  it('forwards configured tool descriptors to the Anthropic API', async () => {
+    const create = vi.fn().mockResolvedValue(
+      mkMessage([{ type: 'text', text: 'ok', citations: null }]),
+    );
+    const schema = {
+      type: 'object',
+      required: ['command'],
+      properties: { command: { type: 'string' } },
+    };
+    const bus = await bootWithClient(
+      { messages: { create } as never },
+      {
+        tools: [
+          { name: 'bash', description: 'run bash', inputSchema: schema },
+        ],
+      },
+    );
+
+    await bus.call<LlmRequest, LlmResponse>('llm:call', ctx(), {
+      messages: [{ role: 'user', content: 'hello' }],
+    });
+
+    const args = create.mock.calls[0]![0];
+    expect(args.tools).toEqual([
+      { name: 'bash', description: 'run bash', input_schema: schema },
+    ]);
+  });
+
+  it('omits the tools field when no descriptors are configured', async () => {
     const create = vi.fn().mockResolvedValue(
       mkMessage([{ type: 'text', text: 'ok', citations: null }]),
     );
@@ -138,11 +166,9 @@ describe('@ax/llm-anthropic plugin', () => {
 
     await bus.call<LlmRequest, LlmResponse>('llm:call', ctx(), {
       messages: [{ role: 'user', content: 'hello' }],
-      tools: [{ name: 'bash', description: 'run bash' }],
     });
 
     const args = create.mock.calls[0]![0];
-    expect(args.tools).toBeUndefined();
     expect('tools' in args).toBe(false);
   });
 

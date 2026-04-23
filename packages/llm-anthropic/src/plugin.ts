@@ -5,8 +5,9 @@ import {
   type LlmRequest,
   type LlmResponse,
   type Plugin,
+  type ToolDescriptor,
 } from '@ax/core';
-import { fromAnthropicMessage, toAnthropicMessages } from './mapping.js';
+import { fromAnthropicMessage, toAnthropicMessages, toAnthropicTools } from './mapping.js';
 
 const PLUGIN_NAME = '@ax/llm-anthropic';
 const DEFAULT_MODEL = 'claude-sonnet-4-5';
@@ -15,6 +16,12 @@ const DEFAULT_MAX_TOKENS = 4096;
 export interface AnthropicPluginConfig {
   model?: string;
   maxTokens?: number;
+  /**
+   * Tool descriptors to forward to the model. The CLI populates this from
+   * the loaded tool plugins; the Anthropic plugin maps each descriptor into
+   * the SDK's `Tool` shape on every `messages.create` call.
+   */
+  tools?: ToolDescriptor[];
   /** Test-only hook. Production code paths construct the real SDK. */
   client?: Pick<Anthropic, 'messages'>;
 }
@@ -33,11 +40,12 @@ export function llmAnthropicPlugin(): Plugin {
       const client = await resolveClient(cfg);
       const model = cfg.model ?? DEFAULT_MODEL;
       const maxTokens = cfg.maxTokens ?? DEFAULT_MAX_TOKENS;
+      const tools = cfg.tools && cfg.tools.length > 0 ? cfg.tools : undefined;
 
       bus.registerService<LlmRequest, LlmResponse>(
         'llm:call',
         PLUGIN_NAME,
-        async (_ctx: ChatContext, input) => call(client, model, maxTokens, input),
+        async (_ctx: ChatContext, input) => call(client, model, maxTokens, tools, input),
       );
     },
   };
@@ -90,18 +98,17 @@ async function call(
   client: Pick<Anthropic, 'messages'>,
   model: string,
   maxTokens: number,
+  tools: ToolDescriptor[] | undefined,
   input: LlmRequest,
 ): Promise<LlmResponse> {
   const { system, messages } = toAnthropicMessages(input.messages);
+  const anthropicTools = tools !== undefined ? toAnthropicTools(tools) : undefined;
   try {
-    // TODO(llm-tool-schemas): Forward tools to the Anthropic API once ToolDescriptor
-    // gains an input_schema field. Without real schemas the model cannot call tools
-    // correctly, so we don't forward them — better to have no tool-calling than
-    // silently broken tool-calling. Lands in a follow-up PR.
     const resp = await client.messages.create({
       model,
       max_tokens: maxTokens,
       ...(system !== undefined ? { system } : {}),
+      ...(anthropicTools !== undefined ? { tools: anthropicTools } : {}),
       messages,
     });
     return fromAnthropicMessage(resp);

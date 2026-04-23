@@ -43,18 +43,19 @@ Specifically:
 - Text blocks are concatenated into a plain string. That string is not
   interpreted by this plugin in any way — it's just the assistant message.
 
-#### Tool-calling currently disabled at the API boundary
+#### Tool-calling is now wired at the API boundary
 
-Heads up: we do **not** forward `input.tools` to the Anthropic API right now.
-`ToolDescriptor` doesn't yet carry a real `input_schema`, and sending tools
-without one means the model gets a tool it can't call correctly — silently
-broken tool use is worse than no tool use. We'd rather fail closed.
+Tool descriptors are forwarded to Anthropic on every `messages.create`. The
+CLI collects descriptors from the loaded tool plugins (e.g. `bash`,
+`read_file`, `write_file`), passes them as `AnthropicPluginConfig.tools`,
+and the plugin maps each to the SDK's `{ name, description, input_schema }`
+shape. `ToolDescriptor.inputSchema` is required — no empty schemas, no
+silently neutered tool-calling.
 
-The decode path for `tool_use` blocks is still wired up (a model can always
-surprise us), so any `tool_use` that does come back is mapped to `ToolCall[]`
-and handed off for Zod-validated dispatch. Forwarding lands in a follow-up PR
-once schemas are threaded through — tracked as `TODO(llm-tool-schemas)` in
-`plugin.ts`.
+The decode path for `tool_use` blocks is unchanged: each block becomes a
+`ToolCall`, input is passed through as `unknown`, and the tool plugin does
+Zod validation before anything runs. The LLM plugin still treats tool
+results as data, not instructions.
 
 ### 3. Supply chain — new dep, pinned hard
 
