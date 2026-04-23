@@ -1,0 +1,31 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "edfa925282df",
+  "session_id": "2033671b-f984-4cd0-b3e5-11ae6aa6e15f",
+  "strategy": "manual-commit",
+  "created_at": "2026-04-23T10:30:40.581027Z",
+  "branch": "feat/kernel-hook-bus",
+  "checkpoints_count": 0,
+  "files_touched": [],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "54020b171fac",
+  "checkpoint_transcript_start": 121,
+  "transcript_lines_at_start": 121,
+  "token_usage": {
+    "input_tokens": 8,
+    "cache_creation_tokens": 3244,
+    "cache_read_tokens": 173951,
+    "output_tokens": 3581,
+    "api_call_count": 3
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}
