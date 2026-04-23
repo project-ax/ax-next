@@ -1,0 +1,1 @@
+What if we’re willing to allow agents to share a large pod? What’s the best we can do in terms of sandboxing within a shared pod?
