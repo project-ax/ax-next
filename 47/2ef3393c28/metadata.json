@@ -3,7 +3,7 @@
   "checkpoint_id": "472ef3393c28",
   "strategy": "manual-commit",
   "branch": "feat/observability-invariants",
-  "checkpoints_count": 2,
+  "checkpoints_count": 3,
   "files_touched": [
     ".claude/memory/decisions.md",
     ".claude/skills/claude-memory/SKILL.md",
@@ -21,13 +21,19 @@
       "transcript": "/47/2ef3393c28/1/full.jsonl",
       "content_hash": "/47/2ef3393c28/1/content_hash.txt",
       "prompt": "/47/2ef3393c28/1/prompt.txt"
+    },
+    {
+      "metadata": "/47/2ef3393c28/2/metadata.json",
+      "transcript": "/47/2ef3393c28/2/full.jsonl",
+      "content_hash": "/47/2ef3393c28/2/content_hash.txt",
+      "prompt": "/47/2ef3393c28/2/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 300,
-    "cache_creation_tokens": 887996,
-    "cache_read_tokens": 17620780,
-    "output_tokens": 152096,
-    "api_call_count": 128
+    "input_tokens": 301,
+    "cache_creation_tokens": 889047,
+    "cache_read_tokens": 17687681,
+    "output_tokens": 152255,
+    "api_call_count": 129
   }
 }
