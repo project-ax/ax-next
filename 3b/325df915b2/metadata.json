@@ -3,7 +3,7 @@
   "checkpoint_id": "3b325df915b2",
   "strategy": "manual-commit",
   "branch": "feat/kernel-hook-bus",
-  "checkpoints_count": 2,
+  "checkpoints_count": 4,
   "files_touched": [
     ".claude/skills/ax-conventions/SKILL.md",
     "CLAUDE.md"
@@ -14,13 +14,19 @@
       "transcript": "/3b/325df915b2/0/full.jsonl",
       "content_hash": "/3b/325df915b2/0/content_hash.txt",
       "prompt": "/3b/325df915b2/0/prompt.txt"
+    },
+    {
+      "metadata": "/3b/325df915b2/1/metadata.json",
+      "transcript": "/3b/325df915b2/1/full.jsonl",
+      "content_hash": "/3b/325df915b2/1/content_hash.txt",
+      "prompt": "/3b/325df915b2/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 104,
-    "cache_creation_tokens": 86889,
-    "cache_read_tokens": 1886081,
-    "output_tokens": 36848,
-    "api_call_count": 35
+    "input_tokens": 124,
+    "cache_creation_tokens": 331436,
+    "cache_read_tokens": 3046028,
+    "output_tokens": 42386,
+    "api_call_count": 41
   }
 }
