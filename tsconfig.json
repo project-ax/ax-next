@@ -8,6 +8,7 @@
     { "path": "packages/storage-sqlite" },
     { "path": "packages/audit-log" },
     { "path": "packages/cli" },
-    { "path": "packages/sandbox-subprocess" }
+    { "path": "packages/sandbox-subprocess" },
+    { "path": "packages/tool-dispatcher" }
   ]
 }
