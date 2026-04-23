@@ -72,7 +72,7 @@ Status: the plugin does not handle model/tool/external content at its own bounda
 
 `package.json` changes (to land in Task 5 / Task 6):
 
-```
+```json
 "dependencies": {
   "kysely": "^0.27.4",
   "better-sqlite3": "^11.3.0"
@@ -106,7 +106,7 @@ Action for Task 5: when the lockfile diff lands, scan the new transitive entries
 
 ## PR note (copy into the PR description)
 
-```
+```markdown
 ## Security review
 - Sandbox: New plugin opens one SQLite file at an operator-supplied databasePath and registers storage:get / storage:set. Reachable FS is one fixed path per plugin instance (never caller-influenced). No spawn, no network, no env, no handles across the hook bus. SQL goes through Kysely's parameterized API — no raw SQL.
 - Injection: N/A — plugin handles no model/tool/external/user-uploaded content at its own boundary. Caller-supplied key is bound as a SQL parameter; caller-supplied value is stored as opaque BLOB and never parsed, rendered, or executed. Callers that store untrusted bytes must treat them as untrusted on read.
