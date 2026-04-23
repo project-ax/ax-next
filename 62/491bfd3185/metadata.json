@@ -1,0 +1,23 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "62491bfd3185",
+  "strategy": "manual-commit",
+  "branch": "feat/kernel-hook-bus",
+  "checkpoints_count": 0,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/62/491bfd3185/0/metadata.json",
+      "transcript": "/62/491bfd3185/0/full.jsonl",
+      "content_hash": "/62/491bfd3185/0/content_hash.txt",
+      "prompt": "/62/491bfd3185/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 9,
+    "cache_creation_tokens": 117712,
+    "cache_read_tokens": 306120,
+    "output_tokens": 7262,
+    "api_call_count": 4
+  }
+}
