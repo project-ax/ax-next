@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "fe78a6762e12",
+  "strategy": "manual-commit",
+  "branch": "feat/kernel-hook-bus",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "packages/core/src/index.ts",
+    "packages/core/src/plugin.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/fe/78a6762e12/0/metadata.json",
+      "transcript": "/fe/78a6762e12/0/full.jsonl",
+      "content_hash": "/fe/78a6762e12/0/content_hash.txt",
+      "prompt": "/fe/78a6762e12/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 13,
+    "cache_creation_tokens": 3618,
+    "cache_read_tokens": 105521,
+    "output_tokens": 1602,
+    "api_call_count": 3
+  }
+}
