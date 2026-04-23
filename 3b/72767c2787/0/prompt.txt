@@ -7,3 +7,7 @@ yes
 ---
 
 why didn't the write phase trigger?
+
+---
+
+commit
