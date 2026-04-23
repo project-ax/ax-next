@@ -1,10 +1,45 @@
-import { PluginError, type ChatContext, type HookBus, type Plugin } from '@ax/core';
+import {
+  PluginError,
+  type ChatContext,
+  type HookBus,
+  type Plugin,
+  type ToolDescriptor,
+} from '@ax/core';
 import type { SandboxSpawnInput, SandboxSpawnResult } from '@ax/sandbox-subprocess';
 import { BashInputSchema, type BashResult } from './types.js';
 
 const PLUGIN_NAME = '@ax/tool-bash';
 const HOOK_NAME = 'tool:execute:bash';
 const DEFAULT_TIMEOUT_MS = 30_000;
+
+/**
+ * Published descriptor for the `bash` tool. The JSON Schema mirrors
+ * `BashInputSchema` (Zod) — keep them in sync.
+ */
+export const bashToolDescriptor: ToolDescriptor = {
+  name: 'bash',
+  description:
+    'Run a shell command via /bin/bash -c in the workspace. Returns stdout, stderr, exit code, and whether output was truncated or the command timed out.',
+  inputSchema: {
+    type: 'object',
+    required: ['command'],
+    additionalProperties: false,
+    properties: {
+      command: {
+        type: 'string',
+        minLength: 1,
+        maxLength: 16384,
+        description: 'Shell command to execute.',
+      },
+      timeoutMs: {
+        type: 'integer',
+        minimum: 1,
+        maximum: 300000,
+        description: 'Optional timeout in milliseconds. Max 5 minutes.',
+      },
+    },
+  },
+};
 
 export function toolBashPlugin(): Plugin {
   return {

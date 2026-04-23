@@ -1,7 +1,7 @@
 import { readFile, writeFile, stat } from 'node:fs/promises';
 import { Buffer } from 'node:buffer';
 import { z } from 'zod';
-import { PluginError, type Plugin } from '@ax/core';
+import { PluginError, type Plugin, type ToolDescriptor } from '@ax/core';
 import { safePath } from './safe-path.js';
 
 const PLUGIN_NAME = '@ax/tool-file-io';
@@ -26,6 +26,57 @@ export interface ReadFileResult {
 export interface WriteFileResult {
   readonly bytes: number;
 }
+
+/**
+ * Published descriptor for the `read_file` tool. JSON Schema mirrors
+ * `ReadFileInputSchema` — keep them in sync.
+ */
+export const readFileToolDescriptor: ToolDescriptor = {
+  name: 'read_file',
+  description:
+    'Read a UTF-8 text file from within the workspace. Paths must be relative to the workspace root. Max file size is 1 MiB.',
+  inputSchema: {
+    type: 'object',
+    required: ['path'],
+    additionalProperties: false,
+    properties: {
+      path: {
+        type: 'string',
+        minLength: 1,
+        maxLength: 4096,
+        description: 'Path to the file, relative to the workspace root.',
+      },
+    },
+  },
+};
+
+/**
+ * Published descriptor for the `write_file` tool. JSON Schema mirrors
+ * `WriteFileInputSchema` — keep them in sync.
+ */
+export const writeFileToolDescriptor: ToolDescriptor = {
+  name: 'write_file',
+  description:
+    'Write a UTF-8 text file inside the workspace. Paths must be relative to the workspace root. Max content size is 1 MiB.',
+  inputSchema: {
+    type: 'object',
+    required: ['path', 'content'],
+    additionalProperties: false,
+    properties: {
+      path: {
+        type: 'string',
+        minLength: 1,
+        maxLength: 4096,
+        description: 'Path to the file, relative to the workspace root.',
+      },
+      content: {
+        type: 'string',
+        maxLength: MAX_BYTES,
+        description: 'UTF-8 string content to write.',
+      },
+    },
+  },
+};
 
 function parse<T>(schema: z.ZodType<T>, hookName: string, input: unknown): T {
   const parsed = schema.safeParse(input);

@@ -10,7 +10,11 @@ import {
   createLogger,
   type ChatContext,
 } from '@ax/core';
-import { toolFileIoPlugin } from '../plugin.js';
+import {
+  toolFileIoPlugin,
+  readFileToolDescriptor,
+  writeFileToolDescriptor,
+} from '../plugin.js';
 
 function ctx(workspaceRoot: string): ChatContext {
   return makeChatContext({
@@ -21,6 +25,33 @@ function ctx(workspaceRoot: string): ChatContext {
     workspaceRoot,
   });
 }
+
+describe('tool descriptors', () => {
+  it('read_file descriptor has a sane JSON Schema', () => {
+    expect(readFileToolDescriptor.name).toBe('read_file');
+    const s = readFileToolDescriptor.inputSchema as {
+      type: string;
+      required: string[];
+      properties: Record<string, unknown>;
+    };
+    expect(s.type).toBe('object');
+    expect(s.required).toContain('path');
+    expect(s.properties.path).toBeDefined();
+  });
+
+  it('write_file descriptor has a sane JSON Schema', () => {
+    expect(writeFileToolDescriptor.name).toBe('write_file');
+    const s = writeFileToolDescriptor.inputSchema as {
+      type: string;
+      required: string[];
+      properties: Record<string, unknown>;
+    };
+    expect(s.type).toBe('object');
+    expect(s.required).toEqual(expect.arrayContaining(['path', 'content']));
+    expect(s.properties.path).toBeDefined();
+    expect(s.properties.content).toBeDefined();
+  });
+});
 
 describe('@ax/tool-file-io', () => {
   let root: string;

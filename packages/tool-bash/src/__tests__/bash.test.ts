@@ -8,7 +8,7 @@ import {
   type ChatContext,
 } from '@ax/core';
 import { sandboxSubprocessPlugin } from '@ax/sandbox-subprocess';
-import { toolBashPlugin } from '../plugin.js';
+import { toolBashPlugin, bashToolDescriptor } from '../plugin.js';
 import type { BashResult } from '../types.js';
 
 const ctx = (): ChatContext =>
@@ -29,6 +29,22 @@ async function makeBus(): Promise<HookBus> {
   });
   return bus;
 }
+
+describe('bashToolDescriptor', () => {
+  it('publishes a JSON Schema compatible with BashInputSchema', () => {
+    expect(bashToolDescriptor.name).toBe('bash');
+    expect(typeof bashToolDescriptor.description).toBe('string');
+    const schema = bashToolDescriptor.inputSchema as {
+      type: string;
+      required: string[];
+      properties: Record<string, unknown>;
+    };
+    expect(schema.type).toBe('object');
+    expect(schema.required).toContain('command');
+    expect(schema.properties.command).toBeDefined();
+    expect(schema.properties.timeoutMs).toBeDefined();
+  });
+});
 
 describe('@ax/tool-bash', () => {
   it('runs echo and captures stdout', async () => {
