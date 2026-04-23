@@ -146,6 +146,24 @@ describe('@ax/llm-anthropic plugin', () => {
     expect('tools' in args).toBe(false);
   });
 
+  it('loads a client from AX_TEST_ANTHROPIC_FIXTURE and bypasses API-key requirement', async () => {
+    delete process.env.ANTHROPIC_API_KEY;
+    const fixtureUrl = new URL('./fixtures/fake-client.mjs', import.meta.url);
+    process.env.AX_TEST_ANTHROPIC_FIXTURE = fixtureUrl.href;
+    try {
+      const bus = new HookBus();
+      const p = llmAnthropicPlugin();
+      await p.init({ bus, config: undefined });
+
+      const res = await bus.call<LlmRequest, LlmResponse>('llm:call', ctx(), {
+        messages: [{ role: 'user', content: 'hello' }],
+      });
+      expect(res.assistantMessage).toEqual({ role: 'assistant', content: 'fixture-reply' });
+    } finally {
+      delete process.env.AX_TEST_ANTHROPIC_FIXTURE;
+    }
+  });
+
   it('forwards system messages as the top-level system field', async () => {
     const create = vi.fn().mockResolvedValue(
       mkMessage([{ type: 'text', text: 'ok', citations: null }]),

@@ -28,11 +28,9 @@ export function llmAnthropicPlugin(): Plugin {
       calls: [],
       subscribes: [],
     },
-    init({ bus, config }) {
+    async init({ bus, config }) {
       const cfg = (config as AnthropicPluginConfig | undefined) ?? {};
-      // Check cfg.client first so tests that inject a stub never touch env.
-      const client: Pick<Anthropic, 'messages'> =
-        cfg.client ?? new Anthropic({ apiKey: requireApiKey() });
+      const client = await resolveClient(cfg);
       const model = cfg.model ?? DEFAULT_MODEL;
       const maxTokens = cfg.maxTokens ?? DEFAULT_MAX_TOKENS;
 
@@ -43,6 +41,37 @@ export function llmAnthropicPlugin(): Plugin {
       );
     },
   };
+}
+
+async function resolveClient(
+  cfg: AnthropicPluginConfig,
+): Promise<Pick<Anthropic, 'messages'>> {
+  // 1) In-process injection — used by unit tests that import the plugin directly.
+  if (cfg.client) return cfg.client;
+
+  // 2) Test-only env backdoor — lets an e2e spawn a real CLI subprocess and
+  // still swap the SDK for a fixture. Requires already having process-exec
+  // capability to set the env var, so this doesn't grant any new reach.
+  // Documented in SECURITY.md. MUST NOT fire in production builds.
+  const fixturePath = process.env.AX_TEST_ANTHROPIC_FIXTURE;
+  if (fixturePath && fixturePath.length > 0) {
+    const mod = (await import(fixturePath)) as {
+      default?: Pick<Anthropic, 'messages'>;
+      makeClient?: () => Pick<Anthropic, 'messages'>;
+    };
+    const client = mod.default ?? mod.makeClient?.();
+    if (!client) {
+      throw new PluginError({
+        code: 'init-failed',
+        plugin: PLUGIN_NAME,
+        message: `AX_TEST_ANTHROPIC_FIXTURE module has no default or makeClient export: ${fixturePath}`,
+      });
+    }
+    return client;
+  }
+
+  // 3) Real SDK.
+  return new Anthropic({ apiKey: requireApiKey() });
 }
 
 function requireApiKey(): string {

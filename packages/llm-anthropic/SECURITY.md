@@ -76,6 +76,27 @@ once schemas are threaded through — tracked as `TODO(llm-tool-schemas)` in
 
 - Bumping the SDK requires a new `SECURITY.md` note. Don't skip the re-check.
 
+## Test-only env backdoor: `AX_TEST_ANTHROPIC_FIXTURE`
+
+We have an escape hatch for end-to-end tests that spawn the real CLI as a
+subprocess and still want to keep the SDK out of the loop:
+
+- If `AX_TEST_ANTHROPIC_FIXTURE` is set at plugin init time, we `import()` the
+  path it points at and use its `default` export (or `makeClient()`) as the
+  Anthropic client. The real SDK is never constructed, and `ANTHROPIC_API_KEY`
+  is not required.
+- This is a **capability** in the invariant-5 sense. It lets the process swap
+  out the LLM client. So: what new reach does it grant?
+- Answer: none that isn't already implied. Setting an env var on a process
+  requires already being able to exec that process. If an attacker can do that,
+  they can already do far worse — they don't need our backdoor.
+- The import path is resolved against the worker's filesystem. An attacker who
+  can drop a malicious `.mjs` somewhere AND flip this env var AND get the CLI
+  re-launched could take over the LLM client. Same story: all three capabilities
+  are strictly more powerful than the backdoor itself.
+- **This env var must never be set in production builds.** If you see it set
+  outside of a test harness, that's the bug.
+
 ## Manual smoke test (not in CI)
 
 `scripts/smoke.ts` makes a real API call. It is **not** wired into `pnpm test`.
