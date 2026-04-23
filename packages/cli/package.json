@@ -1,0 +1,37 @@
+{
+  "name": "@ax/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "ax-next": "./dist/main.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc --build",
+    "postbuild": "chmod +x dist/main.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@ax/core": "workspace:*",
+    "@ax/llm-mock": "workspace:*",
+    "@ax/storage-sqlite": "workspace:*",
+    "@ax/audit-log": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "better-sqlite3": "^11.3.0",
+    "@types/better-sqlite3": "^7.6.12",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.4"
+  }
+}

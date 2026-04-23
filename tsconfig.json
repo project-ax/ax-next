@@ -3,6 +3,10 @@
   "files": [],
   "references": [
     { "path": "packages/core" },
-    { "path": "packages/test-harness" }
+    { "path": "packages/test-harness" },
+    { "path": "packages/llm-mock" },
+    { "path": "packages/storage-sqlite" },
+    { "path": "packages/audit-log" },
+    { "path": "packages/cli" }
   ]
 }
