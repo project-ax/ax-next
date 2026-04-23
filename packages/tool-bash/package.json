@@ -19,10 +19,10 @@
   },
   "dependencies": {
     "@ax/core": "workspace:*",
-    "@ax/sandbox-subprocess": "workspace:*",
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@ax/sandbox-subprocess": "workspace:*",
     "@ax/test-harness": "workspace:*",
     "@types/node": "^25.6.0",
     "typescript": "^6.0.3",

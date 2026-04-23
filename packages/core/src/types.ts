@@ -43,6 +43,28 @@ export interface ToolDescriptor {
   inputSchema: unknown;
 }
 
+// Payload types for the `sandbox:spawn` service hook. Shared hook contracts
+// live in @ax/core so tool plugins can call the sandbox through the bus
+// without a cross-plugin import (invariant #2).
+export interface SandboxSpawnInput {
+  readonly argv: readonly [string, ...string[]];
+  readonly cwd: string;
+  readonly env: Readonly<Record<string, string>>;
+  readonly stdin?: string;
+  readonly timeoutMs?: number;
+  readonly maxStdoutBytes?: number;
+  readonly maxStderrBytes?: number;
+}
+
+export interface SandboxSpawnResult {
+  readonly exitCode: number | null;
+  readonly signal: NodeJS.Signals | null;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly truncated: { readonly stdout: boolean; readonly stderr: boolean };
+  readonly timedOut: boolean;
+}
+
 export type ChatOutcome =
   | { kind: 'complete'; messages: ChatMessage[] }
   | { kind: 'terminated'; reason: string; error?: unknown };

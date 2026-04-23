@@ -57,4 +57,15 @@ export default tseslint.config(
       'no-restricted-imports': 'off',
     },
   },
+
+  // Tests often bootstrap a real sibling plugin to exercise a bus contract
+  // end-to-end (e.g. tool-bash + sandbox-subprocess). The rule guards
+  // runtime plugin code — test fixtures wiring multiple plugins together
+  // to drive the bus are the legitimate escape hatch.
+  {
+    files: ['**/__tests__/**/*', '**/*.test.ts'],
+    rules: {
+      'no-restricted-imports': 'off',
+    },
+  },
 );

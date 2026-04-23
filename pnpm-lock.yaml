@@ -223,13 +223,13 @@ importers:
       '@ax/core':
         specifier: workspace:*
         version: link:../core
-      '@ax/sandbox-subprocess':
-        specifier: workspace:*
-        version: link:../sandbox-subprocess
       zod:
         specifier: ^3.23.8
         version: 3.25.76
     devDependencies:
+      '@ax/sandbox-subprocess':
+        specifier: workspace:*
+        version: link:../sandbox-subprocess
       '@ax/test-harness':
         specifier: workspace:*
         version: link:../test-harness

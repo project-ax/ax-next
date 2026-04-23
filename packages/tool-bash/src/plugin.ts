@@ -3,9 +3,10 @@ import {
   type ChatContext,
   type HookBus,
   type Plugin,
+  type SandboxSpawnInput,
+  type SandboxSpawnResult,
   type ToolDescriptor,
 } from '@ax/core';
-import type { SandboxSpawnInput, SandboxSpawnResult } from '@ax/sandbox-subprocess';
 import { BashInputSchema, type BashResult } from './types.js';
 
 const PLUGIN_NAME = '@ax/tool-bash';

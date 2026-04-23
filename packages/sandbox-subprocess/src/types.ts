@@ -1,25 +1,9 @@
 import { z } from 'zod';
 
-export interface SandboxSpawnInput {
-  // Fixed argv; argv[0] is the binary, rest are arguments. No shell expansion —
-  // the host MUST NOT pass shell: true semantics through this hook.
-  readonly argv: readonly [string, ...string[]];
-  readonly cwd: string;
-  readonly env: Readonly<Record<string, string>>;
-  readonly stdin?: string;
-  readonly timeoutMs?: number;
-  readonly maxStdoutBytes?: number;
-  readonly maxStderrBytes?: number;
-}
-
-export interface SandboxSpawnResult {
-  readonly exitCode: number | null;
-  readonly signal: NodeJS.Signals | null;
-  readonly stdout: string;
-  readonly stderr: string;
-  readonly truncated: { readonly stdout: boolean; readonly stderr: boolean };
-  readonly timedOut: boolean;
-}
+// Payload types live in @ax/core (shared hook contract). Re-exported here
+// for intra-package convenience; external consumers should import them from
+// @ax/core so the no-cross-plugin-imports lint invariant (#2) is respected.
+export type { SandboxSpawnInput, SandboxSpawnResult } from '@ax/core';
 
 export const SandboxSpawnInputSchema = z.object({
   argv: z

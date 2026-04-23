@@ -47,7 +47,6 @@ export async function safePath(root: string, candidate: string): Promise<string>
 async function realpathAncestor(p: string): Promise<string> {
   const tail: string[] = [];
   let cur = p;
-  // eslint-disable-next-line no-constant-condition
   while (true) {
     try {
       const real = await realpath(cur);
