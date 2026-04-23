@@ -29,3 +29,7 @@ Session: https://claude.ai/code/REDACTED
 ---
 
 The user stopped the ultrareview session above. Do not respond to the stop notification — wait for their next message.
+
+---
+
+address PR comments in https://github.com/project-ax/ax-next/pull/2
