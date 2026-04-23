@@ -1,6 +1,6 @@
 ---
 name: ax-conventions
-description: Use when writing or modifying any AX plugin or hook — covers the four invariants (transport/storage-agnostic hooks, no cross-plugin imports, no half-wired plugins, one source of truth), the plugin manifest format, hook bus mechanics, the boundary review checklist, and common patterns
+description: Use when writing or modifying any AX plugin or hook — covers the five invariants (transport/storage-agnostic hooks, no cross-plugin imports, no half-wired plugins, one source of truth, capabilities explicit and minimized), the plugin manifest format, hook bus mechanics, the boundary review checklist, and common patterns
 ---
 
 # AX conventions
@@ -9,7 +9,7 @@ The architecture spec is `docs/plans/2026-04-22-plugin-architecture-design.md` �
 
 ---
 
-## The four invariants
+## The five invariants
 
 ### 1. Hook surface is transport-agnostic and storage-agnostic
 
@@ -66,6 +66,33 @@ If two plugins both hold state about the same thing (skills, tools, sessions, sa
 **Good:** `sandbox-k8s` owns the concept and exposes `sandbox:lookup(id)`. If it needs durability, it calls `storage:set` — the table is an implementation detail, not a shared resource.
 
 Corollary: **no foreign keys across plugin boundaries.** Each plugin's schema evolves independently.
+
+### 5. Capabilities are explicit and minimized
+
+Every plugin, tool, IPC handler, and sandbox boundary grants the smallest set of capabilities (filesystem paths, network reach, process spawn, env access, untrusted-input handling) that it needs — no more. Untrusted content (model output, tool output, user input crossing a trust boundary, third-party plugin code) is treated as untrusted at every hop.
+
+The whole point of v2 over openclaw is that we're the secure one. If a hook surface, IPC action, or plugin grants more reach than it strictly requires, that's the bug.
+
+**Bad:**
+
+```ts
+'tool:execute' (ctx, { name, args }) → { output }
+// where `args` flows directly into a shell command, or `output` is
+// pasted into the next LLM prompt without ever being marked untrusted
+```
+
+**Good:**
+
+```ts
+// Tool input is constrained at the schema; the tool itself spawns
+// processes with a fixed argv (caller-controlled args, not argv0).
+// Output is tagged so downstream subscribers know it's untrusted.
+'tool:execute' (ctx, { name, args }) → { output: UntrustedString }
+```
+
+**Fires on:** sandbox boundaries, IPC transport, plugin loading, hook payloads carrying untrusted content, new dependencies, code that uses caller-provided file paths / spawns processes / opens network connections.
+
+**What to do:** invoke the `security-checklist` skill. It walks three threat models (sandbox escape, prompt injection, supply chain) and produces a structured PR security note.
 
 ---
 
