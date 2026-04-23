@@ -1,0 +1,31 @@
+{
+  "name": "ax-next",
+  "version": "0.0.0",
+  "private": true,
+  "description": "AX v2 — plugin-based personal AI agent (greenfield rewrite)",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0",
+    "pnpm": ">=10.0.0"
+  },
+  "packageManager": "pnpm@10.23.0",
+  "scripts": {
+    "build": "tsc --build",
+    "build:clean": "tsc --build --clean",
+    "test": "pnpm -r run test",
+    "lint": "eslint .",
+    "typecheck": "tsc --build --noEmit",
+    "changeset": "changeset",
+    "version-packages": "changeset version",
+    "release": "pnpm build && changeset publish"
+  },
+  "devDependencies": {
+    "@changesets/cli": "^2.31.0",
+    "@types/node": "^25.6.0",
+    "eslint": "^10.2.1",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.59.0",
+    "vitest": "^4.1.4"
+  }
+}
