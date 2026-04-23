@@ -18,4 +18,20 @@ describe('wire schemas', () => {
     expect(WireResponseSchema.safeParse({ id: '1', ok: true, result: { stdout: '' } }).success).toBe(true);
     expect(WireResponseSchema.safeParse({ id: '1', ok: false, error: { code: 'timeout', message: 't' } }).success).toBe(true);
   });
+  it('rejects an id longer than 64 chars', () => {
+    const bad = WireRequestSchema.safeParse({
+      id: 'a'.repeat(65),
+      action: 'tool:execute:bash',
+      payload: {},
+    });
+    expect(bad.success).toBe(false);
+  });
+  it('rejects an action longer than 128 chars', () => {
+    const bad = WireRequestSchema.safeParse({
+      id: '1',
+      action: 'a'.repeat(129),
+      payload: {},
+    });
+    expect(bad.success).toBe(false);
+  });
 });
