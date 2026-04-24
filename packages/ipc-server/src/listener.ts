@@ -1,8 +1,8 @@
 import * as http from 'node:http';
 import { promises as fs } from 'node:fs';
-import { MAX_FRAME, makeChatContext, type HookBus } from '@ax/core';
+import { makeChatContext, type HookBus } from '@ax/core';
 import { authenticate } from './auth.js';
-import { BadJsonError, readJsonBody, TooLargeError } from './body.js';
+import { dispatch } from './dispatcher.js';
 import { writeJsonError } from './response.js';
 
 // ---------------------------------------------------------------------------
@@ -19,12 +19,13 @@ import { writeJsonError } from './response.js';
 //   4. Cross-session gate — resolved sessionId must match the listener's
 //                           owning session. Otherwise → 403. Closes the
 //                           cross-session confusion window.
-//   5. Body size gate    — POST body read with MAX_FRAME cap (I11). Over →
+//   5. Body size gate    — enforced by the dispatcher's body reader
+//                          (Task 4), which uses MAX_FRAME (I11). Over →
 //                          413 (and req.destroy()); bad JSON → 400.
 //
-// After all five, the dispatcher returns 501 in Task 3 — deliberately a
-// reachable placeholder so I3 (no half-wired code) stays clean. Task 4
-// wires per-action handlers behind this exact guard stack.
+// After all four pre-dispatch gates, the dispatcher (src/dispatcher.ts)
+// picks a handler by (method, path), reads the body if needed, and writes
+// the response.
 //
 // I12: long-poll timeout is 30 s. Node's default idle socket timeout is 0
 // (disabled for HTTP servers) but we set it to 60 s explicitly so any
@@ -86,14 +87,17 @@ export async function createListener(opts: CreateListenerOptions): Promise<Liste
       }
     }
 
-    // 3. auth gate
-    const ctx = makeChatContext({
+    // 3. auth gate — pre-auth ctx uses a rootPath placeholder; rebuild with
+    //    the real workspaceRoot after auth succeeds so downstream handlers
+    //    (e.g. future tool.execute-host) see the authenticated session's
+    //    workspace. The 4xx error paths below run on THIS pre-auth ctx.
+    const preAuthCtx = makeChatContext({
       sessionId: opts.sessionId,
       agentId: 'ipc-server',
       userId: 'ipc-server',
       workspace: { rootPath: '/' },
     });
-    const auth = await authenticate(req.headers.authorization, opts.bus, ctx);
+    const auth = await authenticate(req.headers.authorization, opts.bus, preAuthCtx);
     if (!auth.ok) {
       return writeJsonError(res, auth.status, auth.body.error.code, auth.body.error.message);
     }
@@ -109,39 +113,16 @@ export async function createListener(opts: CreateListenerOptions): Promise<Liste
       );
     }
 
-    // 5. body-size gate (POST only).
-    if (req.method === 'POST') {
-      try {
-        await readJsonBody(req, MAX_FRAME);
-      } catch (err) {
-        if (err instanceof TooLargeError) {
-          // Write the 413 first so the client sees the rejection. Node's
-          // http server sends the response even if the client hasn't
-          // finished uploading the body, and setting Connection: close
-          // tells the client not to reuse the socket (they'd be out of
-          // sync anyway). For the mid-stream overflow path, readJsonBody
-          // already called req.destroy() and the response socket is dead
-          // — writeJsonError then becomes a best-effort no-op, which is
-          // fine; the client's own socket teardown handles the signaling.
-          if (!res.headersSent) {
-            try {
-              res.setHeader('Connection', 'close');
-            } catch {
-              // Response already closed; ignore.
-            }
-          }
-          writeJsonError(res, 413, 'VALIDATION', 'body too large');
-          return;
-        }
-        if (err instanceof BadJsonError) {
-          return writeJsonError(res, 400, 'VALIDATION', `invalid json: ${err.message}`);
-        }
-        throw err;
-      }
-    }
-
-    // Placeholder — Task 4 will route on `req.url` here.
-    return writeJsonError(res, 501, 'INTERNAL', 'dispatcher not wired yet (Task 4)');
+    // Per-request ChatContext with a fresh reqId and the REAL workspaceRoot
+    // from the auth result. The dispatcher reads the body under MAX_FRAME
+    // (I11) and routes to the per-action handler.
+    const ctx = makeChatContext({
+      sessionId: auth.sessionId,
+      agentId: 'ipc-server',
+      userId: 'ipc-server',
+      workspace: { rootPath: auth.workspaceRoot },
+    });
+    await dispatch(req, res, ctx, opts.bus);
   };
 
   // I12: bump idle timeout so 30 s long-polls (Task 4) aren't killed.

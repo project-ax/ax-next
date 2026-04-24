@@ -61,7 +61,25 @@ export function createIpcServerPlugin(): Plugin {
       name: PLUGIN_NAME,
       version: '0.0.0',
       registers: ['ipc:start', 'ipc:stop'],
-      calls: ['session:resolve-token'],
+      // The dispatcher (Task 4) calls these synchronous service hooks.
+      // Subscriber hooks fired by the dispatcher (`llm:pre-call`,
+      // `llm:post-call`, `tool:pre-call`, `tool:post-call`, `chat:turn-end`,
+      // `chat:end`) are NOT declared here — subscriber hooks don't require
+      // a registered service and `bus.fire` with no subscribers is a safe
+      // no-op.
+      //
+      // `tool:execute:<name>` service hooks are looked up *dynamically* via
+      // `bus.hasService(...)` at dispatch time. They are deliberately NOT
+      // listed in `calls` — we can't enumerate every tool name at manifest
+      // time, and the verifyCalls startup check only enforces named hooks.
+      // This is the same "dynamic service hook" exception that
+      // @ax/tool-dispatcher uses for per-tool `tool:execute:<name>` routes.
+      calls: [
+        'session:resolve-token',
+        'session:claim-work',
+        'llm:call',
+        'tool:list',
+      ],
       subscribes: [],
     },
     init({ bus }) {

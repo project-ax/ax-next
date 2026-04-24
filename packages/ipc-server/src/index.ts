@@ -8,3 +8,4 @@ export {
   type ReadBodyResult,
 } from './body.js';
 export { writeJsonError, writeJsonOk } from './response.js';
+export { dispatch } from './dispatcher.js';

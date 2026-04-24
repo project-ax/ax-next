@@ -64,6 +64,7 @@ async function makeHarness(sessionId = 's-list'): Promise<Harness> {
 
 interface RequestOptions {
   method: string;
+  path?: string;
   headers?: Record<string, string>;
   body?: string | Buffer;
 }
@@ -91,7 +92,7 @@ function requestOverSocket(
     const req = http.request(
       {
         socketPath,
-        path: '/dispatch-placeholder',
+        path: opts.path ?? '/dispatch-placeholder',
         method: opts.method,
         headers,
       },
@@ -194,7 +195,11 @@ describe('createListener', () => {
     expect(res.body).not.toContain(bogus);
   });
 
-  it('accepts a valid POST and returns 501 (placeholder dispatcher)', async () => {
+  it('accepts a valid POST to an unknown path and returns 404 VALIDATION', async () => {
+    // After all five inbound gates pass, the dispatcher routes on req.url.
+    // The test client hits `/dispatch-placeholder`, which is not a protocol
+    // path — so the dispatcher returns 404 VALIDATION. This replaces the
+    // Task-3 placeholder 501 now that the dispatcher is wired (Task 4).
     const h = await makeHarness();
     harnesses.push(h);
     const res = await requestOverSocket(h.socketPath, {
@@ -205,18 +210,22 @@ describe('createListener', () => {
       },
       body: '{"hello":"world"}',
     });
-    expect(res.status).toBe(501);
+    expect(res.status).toBe(404);
     const parsed = JSON.parse(res.body);
-    expect(parsed.error.code).toBe('INTERNAL');
-    expect(parsed.error.message).toContain('Task 4');
+    expect(parsed.error.code).toBe('VALIDATION');
+    expect(parsed.error.message).toMatch(/unknown path/);
   });
 
   it('rejects POST with a 5 MiB body (Content-Length) with 413', async () => {
+    // Body-size fail-fast happens inside the dispatcher's body reader —
+    // route at a real protocol path so we reach it. Any known-action path
+    // works; /workspace.commit-notify is a stub and needs no services.
     const h = await makeHarness();
     harnesses.push(h);
     // Claim 5 MiB via Content-Length, send the empty body — fail-fast path.
     const res = await requestOverSocket(h.socketPath, {
       method: 'POST',
+      path: '/workspace.commit-notify',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${h.token}`,
@@ -235,6 +244,7 @@ describe('createListener', () => {
     harnesses.push(h);
     const res = await requestOverSocket(h.socketPath, {
       method: 'POST',
+      path: '/workspace.commit-notify',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${h.token}`,
@@ -251,6 +261,13 @@ describe('createListener', () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'ax-ipc-test-'));
     const socketPath = path.join(tempDir, 'ipc.sock');
     const h = await createTestHarness({
+      // @ax/ipc-server declares calls on `llm:call` and `tool:list` — stub
+      // them to satisfy bootstrap's verifyCalls. No request path hits them
+      // in this test.
+      services: {
+        'llm:call': async () => ({ assistantMessage: { role: 'assistant', content: '' }, toolCalls: [] }),
+        'tool:list': async () => ({ tools: [] }),
+      },
       plugins: [createSessionInmemoryPlugin(), createIpcServerPlugin()],
     });
     const ctx = h.ctx();
@@ -271,6 +288,10 @@ describe('createListener', () => {
     const socketPath = path.join(tempDir, 'ipc.sock');
     const secondSocketPath = path.join(tempDir, 'ipc-2.sock');
     const h = await createTestHarness({
+      services: {
+        'llm:call': async () => ({ assistantMessage: { role: 'assistant', content: '' }, toolCalls: [] }),
+        'tool:list': async () => ({ tools: [] }),
+      },
       plugins: [createSessionInmemoryPlugin(), createIpcServerPlugin()],
     });
     const ctx = h.ctx();
