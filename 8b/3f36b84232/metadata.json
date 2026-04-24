@@ -3,21 +3,29 @@
   "checkpoint_id": "8b3f36b84232",
   "strategy": "manual-commit",
   "branch": "feat/week-6.5a-topology-shift",
-  "checkpoints_count": 1,
-  "files_touched": null,
+  "checkpoints_count": 2,
+  "files_touched": [
+    "tsconfig.json"
+  ],
   "sessions": [
     {
       "metadata": "/8b/3f36b84232/0/metadata.json",
       "transcript": "/8b/3f36b84232/0/full.jsonl",
       "content_hash": "/8b/3f36b84232/0/content_hash.txt",
       "prompt": "/8b/3f36b84232/0/prompt.txt"
+    },
+    {
+      "metadata": "/8b/3f36b84232/1/metadata.json",
+      "transcript": "/8b/3f36b84232/1/full.jsonl",
+      "content_hash": "/8b/3f36b84232/1/content_hash.txt",
+      "prompt": "/8b/3f36b84232/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 49,
-    "cache_creation_tokens": 641319,
-    "cache_read_tokens": 2816697,
-    "output_tokens": 64790,
-    "api_call_count": 26
+    "input_tokens": 1302,
+    "cache_creation_tokens": 1830082,
+    "cache_read_tokens": 44621079,
+    "output_tokens": 301609,
+    "api_call_count": 162
   }
 }

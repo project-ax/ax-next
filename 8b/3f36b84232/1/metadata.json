@@ -1,0 +1,37 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "8b3f36b84232",
+  "session_id": "6d0fd8c6-b20b-43c7-87e4-f6e69b72cc80",
+  "strategy": "manual-commit",
+  "created_at": "2026-04-24T11:49:01.409436Z",
+  "branch": "feat/week-6.5a-topology-shift",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "tsconfig.json"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-opus-4-7[1m]",
+  "turn_id": "5662cdad4b23",
+  "token_usage": {
+    "input_tokens": 1253,
+    "cache_creation_tokens": 1188763,
+    "cache_read_tokens": 41804382,
+    "output_tokens": 236819,
+    "api_call_count": 136
+  },
+  "session_metrics": {
+    "turn_count": 5
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-04-24T11:49:01.367711Z",
+    "agent_lines": 0,
+    "agent_removed": 0,
+    "human_added": 820,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 820,
+    "total_lines_changed": 820,
+    "agent_percentage": 0,
+    "metric_version": 2
+  }
+}
