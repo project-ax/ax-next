@@ -361,6 +361,12 @@ importers:
         specifier: ^3.23.8
         version: 3.25.76
     devDependencies:
+      '@ax/credentials':
+        specifier: workspace:*
+        version: link:../credentials
+      '@ax/tool-dispatcher':
+        specifier: workspace:*
+        version: link:../tool-dispatcher
       '@types/node':
         specifier: ^25.6.0
         version: 25.6.0
