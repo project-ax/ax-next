@@ -1,0 +1,87 @@
+// ax-next credentials set <id>
+//
+// A stdin-only path for writing a secret. The secret value NEVER appears in
+// argv — we read it from stdin so it doesn't leak to `ps` / `/proc/<pid>/cmdline`
+// / shell history. We also don't echo it back on stdout or stderr; the only
+// confirmation is the id. Paranoid? Sure. Also correct.
+import { HookBus, bootstrap, makeChatContext, PluginError } from '@ax/core';
+import { createStorageSqlitePlugin } from '@ax/storage-sqlite';
+import { createCredentialsPlugin } from '@ax/credentials';
+
+const DEFAULT_SQLITE_PATH = './ax-next-chat.sqlite';
+
+export interface RunCredentialsOptions {
+  /** argv slice starting at the subcommand args, e.g. ['set', 'gh-token']. */
+  argv: string[];
+  /** The secret source. Reads all chunks to EOF, UTF-8 decodes, strips one trailing \n. */
+  stdin: NodeJS.ReadableStream | AsyncIterable<Buffer | string>;
+  stdout?: (line: string) => void;
+  stderr?: (line: string) => void;
+  /** Defaults to ./ax-next-chat.sqlite (same as main()). Tests override. */
+  sqlitePath?: string;
+}
+
+const USAGE = `usage: ax-next credentials set <id>
+  <id> must match [a-z0-9][a-z0-9_.-]{0,127}
+  the secret is read from stdin (NOT argv) — pipe or paste then EOF
+
+env:
+  AX_CREDENTIALS_KEY  required, 32 bytes (64 hex chars or 44 base64 chars)`;
+
+export async function runCredentialsCommand(opts: RunCredentialsOptions): Promise<number> {
+  const out = opts.stdout ?? ((line: string) => process.stdout.write(line + '\n'));
+  const err = opts.stderr ?? ((line: string) => process.stderr.write(line + '\n'));
+
+  const verb = opts.argv[0];
+  if (verb !== 'set') {
+    err(USAGE);
+    return 2;
+  }
+  const id = opts.argv[1];
+  if (id === undefined || id === '') {
+    err(USAGE);
+    return 2;
+  }
+
+  // Read stdin to a Buffer (preserves bytes), then UTF-8 decode.
+  const chunks: Buffer[] = [];
+  for await (const chunk of opts.stdin) {
+    chunks.push(typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : Buffer.from(chunk));
+  }
+  let value = Buffer.concat(chunks).toString('utf8');
+  // Strip exactly one trailing \n — covers `echo $TOKEN | ax-next ...` and a
+  // single hand-typed newline before EOF. Don't trim aggressively: the user
+  // might genuinely want trailing whitespace inside their token.
+  if (value.endsWith('\n')) value = value.slice(0, -1);
+
+  const bus = new HookBus();
+  try {
+    await bootstrap({
+      bus,
+      plugins: [
+        createStorageSqlitePlugin({ databasePath: opts.sqlitePath ?? DEFAULT_SQLITE_PATH }),
+        createCredentialsPlugin(),
+      ],
+      config: {},
+    });
+    await bus.call(
+      'credentials:set',
+      makeChatContext({ sessionId: 'cli', agentId: 'cli', userId: 'cli' }),
+      { id, value },
+    );
+  } catch (e) {
+    if (e instanceof PluginError) {
+      // PluginError messages are curated by @ax/credentials specifically to
+      // avoid echoing plaintext. Still — only surface `.message`, never `.cause`.
+      err(`error: ${e.message}`);
+      return 1;
+    }
+    // Unexpected failure. We don't stringify `e` because it might (somehow) have
+    // captured the secret value in a message. Be boring on purpose.
+    err('error: unexpected failure');
+    return 1;
+  }
+
+  out(`credential '${id}' stored`);
+  return 0;
+}

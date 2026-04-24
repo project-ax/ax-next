@@ -82,12 +82,20 @@ interface PostCallEvent {
 
 describe.skipIf(!claudeBinaryAvailable)('claude-sdk runner e2e', () => {
   let tmp: string;
+  let originalCredKey: string | undefined;
 
   beforeEach(async () => {
     tmp = await mkTmp();
+    originalCredKey = process.env.AX_CREDENTIALS_KEY;
+    // @ax/credentials is wired into the chat path; its init() needs a
+    // 32-byte key. This test doesn't touch credentials, but bootstrap
+    // still calls init() on every plugin.
+    process.env.AX_CREDENTIALS_KEY = '42'.repeat(32);
   });
 
   afterEach(async () => {
+    if (originalCredKey === undefined) delete process.env.AX_CREDENTIALS_KEY;
+    else process.env.AX_CREDENTIALS_KEY = originalCredKey;
     if (tmp) await fs.rm(tmp, { recursive: true, force: true });
   });
 

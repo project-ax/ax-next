@@ -11,6 +11,7 @@ import {
 import { llmMockPlugin } from '@ax/llm-mock';
 import { createLlmAnthropicPlugin } from '@ax/llm-anthropic';
 import { createStorageSqlitePlugin } from '@ax/storage-sqlite';
+import { createCredentialsPlugin } from '@ax/credentials';
 import { auditLogPlugin } from '@ax/audit-log';
 import { createSandboxSubprocessPlugin } from '@ax/sandbox-subprocess';
 import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
@@ -20,8 +21,11 @@ import { createChatOrchestratorPlugin } from '@ax/chat-orchestrator';
 import { createToolDispatcherPlugin } from '@ax/tool-dispatcher';
 import { createToolBashPlugin } from '@ax/tool-bash';
 import { createToolFileIoPlugin } from '@ax/tool-file-io';
+import { createMcpClientPlugin } from '@ax/mcp-client';
 import { AxConfigSchema, type AxConfig, type AxConfigInput } from './config/schema.js';
 import { loadAxConfig } from './config/load.js';
+import { runCredentialsCommand } from './commands/credentials.js';
+import { runMcpCommand } from './commands/mcp.js';
 
 // `@ax/cli` is the ONE package permitted to import sibling plugins directly
 // (eslint.config.mjs no-restricted-imports allowlist); this is also the one
@@ -128,6 +132,13 @@ export async function main(opts: MainOptions): Promise<number> {
     }),
   );
 
+  // Credentials sits immediately after storage (it calls storage:get/set) and
+  // before any plugin that resolves `credential_ref`s via credentials:get
+  // (e.g. @ax/mcp-client lands in Task 16). Bootstrap is topologically
+  // ordered by declared calls/registers, but pushing in-order keeps the
+  // intent obvious to readers. Init requires AX_CREDENTIALS_KEY in env.
+  plugins.push(createCredentialsPlugin());
+
   // Audit log is part of the canary loop.
   plugins.push(auditLogPlugin());
 
@@ -163,6 +174,15 @@ export async function main(opts: MainOptions): Promise<number> {
   if (cfg.tools.includes('file-io')) {
     plugins.push(createToolFileIoPlugin());
   }
+
+  // MCP-sourced tools register through the same `tool:register` surface as
+  // bash/file-io. Push unconditionally: when no MCP configs are stored,
+  // `loadConfigs` returns an empty array and init is a no-op. Ordering
+  // note: must come AFTER tool-dispatcher (which registers `tool:register`)
+  // and AFTER credentials + storage-sqlite (which it calls during init).
+  // Bootstrap's topological sort handles this either way, but keeping the
+  // push order aligned with the call graph keeps readers grounded.
+  plugins.push(createMcpClientPlugin());
 
   // LLM selection. `exactOptionalPropertyTypes` on the Anthropic plugin
   // config means we can't just splat through fields whose type is
@@ -225,11 +245,44 @@ export async function main(opts: MainOptions): Promise<number> {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const sqlitePath = process.env.AX_DB ?? DEFAULT_SQLITE_PATH;
-  const message = process.argv.slice(2).join(' ') || 'hi';
-  main({ message, sqlitePath })
-    .then((code) => process.exit(code))
-    .catch((e) => {
-      process.stderr.write(`fatal: ${e instanceof Error ? e.message : String(e)}\n`);
-      process.exit(2);
-    });
+  const argv = process.argv.slice(2);
+
+  // Subcommand dispatch. Intercept BEFORE the chat path so we don't bootstrap
+  // the full LLM/sandbox/orchestrator plugin set for what's essentially a
+  // "write a row to sqlite" operation — and so we don't race the chat path's
+  // DB init.
+  if (argv[0] === 'credentials') {
+    runCredentialsCommand({
+      argv: argv.slice(1),
+      stdin: process.stdin,
+      sqlitePath,
+    })
+      .then((code) => process.exit(code))
+      .catch((e) => {
+        // The command itself turns PluginError into stderr+exit-1. Anything
+        // reaching here is truly unexpected — be boring so we don't echo
+        // something we shouldn't.
+        process.stderr.write(`fatal: ${e instanceof Error ? e.message : String(e)}\n`);
+        process.exit(2);
+      });
+  } else if (argv[0] === 'mcp') {
+    runMcpCommand({
+      argv: argv.slice(1),
+      stdin: process.stdin,
+      sqlitePath,
+    })
+      .then((code) => process.exit(code))
+      .catch((e) => {
+        process.stderr.write(`fatal: ${e instanceof Error ? e.message : String(e)}\n`);
+        process.exit(2);
+      });
+  } else {
+    const message = argv.join(' ') || 'hi';
+    main({ message, sqlitePath })
+      .then((code) => process.exit(code))
+      .catch((e) => {
+        process.stderr.write(`fatal: ${e instanceof Error ? e.message : String(e)}\n`);
+        process.exit(2);
+      });
+  }
 }
