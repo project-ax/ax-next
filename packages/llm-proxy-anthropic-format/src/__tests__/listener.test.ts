@@ -1,6 +1,6 @@
 import * as http from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
-import { HookBus, makeChatContext } from '@ax/core';
+import { HookBus, makeChatContext, PluginError } from '@ax/core';
 import type { ChatContext, ServiceHandler } from '@ax/core';
 import type { LlmCallRequest, LlmCallResponse } from '@ax/ipc-protocol';
 import { createProxyListener, type ProxyListener } from '../listener.js';
@@ -300,9 +300,12 @@ describe('createProxyListener', () => {
     expect(parsed.error.message).toBe('body too large');
   });
 
-  it('rejects malformed JSON with 400 invalid_request_error', async () => {
+  it('rejects malformed JSON with 400 invalid_request_error and a fixed message', async () => {
     const h = await makeHarness();
     harnesses.push(h);
+    // V8's SyntaxError.message echoes a substring of the body. Include a
+    // marker in the body to confirm the error response does NOT include it.
+    const bodyFragment = 'leak-marker-xyz';
     const res = await httpRequest(h.listener.url, {
       method: 'POST',
       path: '/v1/messages',
@@ -310,12 +313,13 @@ describe('createProxyListener', () => {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${GOOD_TOKEN}`,
       },
-      body: '{"a":',
+      body: `{"a": "${bodyFragment}",`,
     });
     expect(res.status).toBe(400);
     const parsed = JSON.parse(res.body);
     expect(parsed.error.type).toBe('invalid_request_error');
-    expect(parsed.error.message).toMatch(/^invalid json:/);
+    expect(parsed.error.message).toBe('invalid JSON body');
+    expect(res.body).not.toContain(bodyFragment);
   });
 
   it('rejects schema violation (missing messages) with 400', async () => {
@@ -338,10 +342,12 @@ describe('createProxyListener', () => {
     expect(res.body).not.toContain(GOOD_TOKEN);
   });
 
-  it('propagates llm:call throwing as 502 api_error', async () => {
+  it('masks a bare Error from llm:call behind the generic 502 message', async () => {
     const h = await makeHarness({
       llmCall: async () => {
-        throw new Error('upstream exploded');
+        // A raw Error.message might contain prompt fragments or internal
+        // details; the 502 body must not echo it.
+        throw new Error('upstream exploded: secret-prompt-leak-xyz');
       },
     });
     harnesses.push(h);
@@ -357,7 +363,35 @@ describe('createProxyListener', () => {
     expect(res.status).toBe(502);
     const parsed = JSON.parse(res.body);
     expect(parsed.error.type).toBe('api_error');
-    expect(parsed.error.message).toContain('upstream exploded');
+    expect(parsed.error.message).toBe('upstream llm call failed');
+    expect(res.body).not.toContain('secret-prompt-leak-xyz');
+  });
+
+  it('forwards a PluginError message from llm:call verbatim', async () => {
+    const h = await makeHarness({
+      llmCall: async () => {
+        throw new PluginError({
+          code: 'upstream',
+          plugin: 'mock',
+          hookName: 'llm:call',
+          message: 'provider rate-limited',
+        });
+      },
+    });
+    harnesses.push(h);
+    const res = await httpRequest(h.listener.url, {
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${GOOD_TOKEN}`,
+      },
+      body: validBody(),
+    });
+    expect(res.status).toBe(502);
+    const parsed = JSON.parse(res.body);
+    expect(parsed.error.type).toBe('api_error');
+    expect(parsed.error.message).toContain('provider rate-limited');
   });
 
   it('GET /v1/messages returns 405 method not allowed', async () => {

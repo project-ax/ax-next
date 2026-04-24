@@ -3,23 +3,8 @@ import { createProxyListener, type ProxyListener } from './listener.js';
 
 const PLUGIN_NAME = '@ax/llm-proxy-anthropic-format';
 
-// ---------------------------------------------------------------------------
-// @ax/llm-proxy-anthropic-format plugin
-//
-// Registers two service hooks:
-//
-//   - `llm-proxy:start` — bind a per-session HTTP proxy on
-//                         127.0.0.1:<ephemeral>. Returns `{url, port}` so
-//                         the sandbox can inject `AX_LLM_PROXY_URL` into
-//                         the runner child. Collision on sessionId is a
-//                         PluginError('already-running') — wiring bug.
-//   - `llm-proxy:stop`  — close the proxy for a sessionId. Idempotent;
-//                         unknown sessionId → warn + no-op.
-//
-// The listener itself calls `session:resolve-token` (for bearer auth) and
-// `llm:call` (to execute the turn) through the bus — never directly. That
-// preserves I2 (no cross-plugin imports) at runtime.
-// ---------------------------------------------------------------------------
+// I2: the listener reaches other plugins only through the bus
+// (`session:resolve-token`, `llm:call`) — never via direct imports.
 
 interface LlmProxyStartInput {
   sessionId: string;

@@ -1,6 +1,13 @@
 import * as http from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { MAX_FRAME, makeChatContext, type ChatContext, type HookBus, type Logger } from '@ax/core';
+import {
+  MAX_FRAME,
+  makeChatContext,
+  PluginError,
+  type ChatContext,
+  type HookBus,
+  type Logger,
+} from '@ax/core';
 import type { LlmCallRequest, LlmCallResponse } from '@ax/ipc-protocol';
 import {
   AnthropicRequestSchema,
@@ -11,28 +18,8 @@ import { synthesizeSseFrames } from './sse-frames.js';
 import { translateAnthropicRequest, TranslationError } from './translate-request.js';
 import { translateLlmResponse } from './translate-response.js';
 
-// ---------------------------------------------------------------------------
-// Proxy listener
-//
-// Speaks the Anthropic Messages API on 127.0.0.1:<ephemeral> so that
-// claude-sdk's `query()` can be pointed at it via ANTHROPIC_BASE_URL. The
-// proxy forwards into the host via two hooks — `session:resolve-token` for
-// auth and `llm:call` for the actual model turn — then translates the
-// LlmCallResponse back into Anthropic's response or SSE shape.
-//
-// Five gates run per request, in order:
-//   1. Method + path — POST /v1/messages only (GET /_healthz is a liveness
-//      hatch); everything else is 404 or 405.
-//   2. Auth — Authorization: Bearer <token> resolves via session:resolve-token.
-//      Missing / malformed / unknown → 401. Token is NEVER echoed in a
-//      response body (I5).
-//   3. Body size — fails fast on Content-Length > MAX_FRAME; otherwise a
-//      mid-stream cap throws TooLargeError.
-//   4. JSON + schema — JSON.parse failure → 400 (invalid_request_error);
-//      AnthropicRequestSchema failure → 400 likewise.
-//   5. Translation → llm:call. TranslationError → 400; llm:call throwing
-//      propagates as 502 (api_error).
-// ---------------------------------------------------------------------------
+// I5: tokens and raw request bodies never appear in response envelopes; all
+// 4xx/5xx bodies go through writeError with a fixed message.
 
 const BEARER_PREFIX = 'bearer ';
 const SHUTDOWN_GRACE_MS = 5_000;
@@ -167,13 +154,11 @@ export async function createProxyListener(
     let parsedJson: unknown;
     try {
       parsedJson = JSON.parse(rawBody.toString('utf8'));
-    } catch (err) {
-      writeError(
-        res,
-        400,
-        'invalid_request_error',
-        `invalid json: ${(err as Error).message}`,
-      );
+    } catch {
+      // V8's SyntaxError.message echoes a substring of the body at the
+      // failure position — keep the response generic (matches the schema-
+      // validation branch below).
+      writeError(res, 400, 'invalid_request_error', 'invalid JSON body');
       return;
     }
 
@@ -213,7 +198,15 @@ export async function createProxyListener(
         llmReq,
       );
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'upstream llm call failed';
+      // Only forward messages from PluginError with a domain-specific code —
+      // those are under our control. HookBus wraps bare thrown Errors into a
+      // PluginError with code 'unknown' whose message inlines the upstream
+      // text (may contain prompt fragments or internal details), so mask
+      // that case behind a generic message.
+      const message =
+        err instanceof PluginError && err.code !== 'unknown'
+          ? err.message
+          : 'upstream llm call failed';
       writeError(res, 502, 'api_error', message);
       return;
     }

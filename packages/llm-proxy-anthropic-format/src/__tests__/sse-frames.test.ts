@@ -2,16 +2,92 @@ import { describe, it, expect } from 'vitest';
 import { synthesizeSseFrames } from '../sse-frames.js';
 import type { AnthropicResponse } from '../anthropic-schemas.js';
 
-interface ParsedFrame {
-  event: string;
-  data: unknown;
+// Typed view of the frames we synthesize. Keeps the test file `any`-free while
+// still letting individual cases narrow by `event`. We model only the fields
+// the tests read — upstream Anthropic frame schemas are far richer, but the
+// narrowed shape below is sufficient for these expectations.
+
+interface MessageStartData {
+  type: 'message_start';
+  message: {
+    id: string;
+    type: 'message';
+    role: 'assistant';
+    model: string;
+    content: unknown[];
+    stop_reason: string | null;
+    stop_sequence: string | null;
+    usage: { input_tokens: number; output_tokens: number };
+  };
 }
+
+interface TextContentBlock {
+  type: 'text';
+  text: string;
+}
+
+interface ToolUseContentBlock {
+  type: 'tool_use';
+  id: string;
+  name: string;
+  input: unknown;
+}
+
+type StartContentBlock = TextContentBlock | ToolUseContentBlock;
+
+interface ContentBlockStartData {
+  type: 'content_block_start';
+  index: number;
+  content_block: StartContentBlock;
+}
+
+interface TextDelta {
+  type: 'text_delta';
+  text: string;
+}
+
+interface InputJsonDelta {
+  type: 'input_json_delta';
+  partial_json: string;
+}
+
+interface ContentBlockDeltaData {
+  type: 'content_block_delta';
+  index: number;
+  delta: TextDelta | InputJsonDelta;
+}
+
+interface ContentBlockStopData {
+  type: 'content_block_stop';
+  index: number;
+}
+
+interface MessageDeltaData {
+  type: 'message_delta';
+  delta: {
+    stop_reason: string | null;
+    stop_sequence: string | null;
+  };
+  usage: { output_tokens: number };
+}
+
+interface MessageStopData {
+  type: 'message_stop';
+}
+
+type ParsedFrame =
+  | { event: 'message_start'; data: MessageStartData }
+  | { event: 'content_block_start'; data: ContentBlockStartData }
+  | { event: 'content_block_delta'; data: ContentBlockDeltaData }
+  | { event: 'content_block_stop'; data: ContentBlockStopData }
+  | { event: 'message_delta'; data: MessageDeltaData }
+  | { event: 'message_stop'; data: MessageStopData };
 
 function parseSseFrames(raw: string): ParsedFrame[] {
   return raw
     .split('\n\n')
     .filter((s) => s.length > 0)
-    .map((chunk) => {
+    .map((chunk): ParsedFrame => {
       const lines = chunk.split('\n');
       const eventLine = lines.find((l) => l.startsWith('event: '));
       const dataLine = lines.find((l) => l.startsWith('data: '));
@@ -19,9 +95,22 @@ function parseSseFrames(raw: string): ParsedFrame[] {
         throw new Error(`Malformed SSE chunk: ${JSON.stringify(chunk)}`);
       }
       const event = eventLine.slice('event: '.length);
-      const data = JSON.parse(dataLine.slice('data: '.length));
-      return { event, data };
+      const data: unknown = JSON.parse(dataLine.slice('data: '.length));
+      // The synthesizer is the only producer, so each (event, data.type)
+      // pairing is known. We trust the shape here — the translator + schema
+      // tests cover the producing side.
+      return { event, data } as ParsedFrame;
     });
+}
+
+function expectFrame<E extends ParsedFrame['event']>(
+  frame: ParsedFrame,
+  event: E,
+): Extract<ParsedFrame, { event: E }> {
+  if (frame.event !== event) {
+    throw new Error(`expected frame event '${event}', got '${frame.event}'`);
+  }
+  return frame as Extract<ParsedFrame, { event: E }>;
 }
 
 function baseMessage(overrides: Partial<AnthropicResponse> = {}): AnthropicResponse {
@@ -60,7 +149,7 @@ describe('synthesizeSseFrames', () => {
     });
 
     it('message_start carries a zeroed-content, zero-output-token message copy', () => {
-      const { data } = frames[0] as { data: any };
+      const { data } = expectFrame(frames[0], 'message_start');
       expect(data.type).toBe('message_start');
       expect(data.message.id).toBe('msg_01abc');
       expect(data.message.type).toBe('message');
@@ -74,9 +163,9 @@ describe('synthesizeSseFrames', () => {
     });
 
     it('emits a single text_delta with the full text', () => {
-      const start = frames[1] as { data: any };
-      const delta = frames[2] as { data: any };
-      const stop = frames[3] as { data: any };
+      const start = expectFrame(frames[1], 'content_block_start');
+      const delta = expectFrame(frames[2], 'content_block_delta');
+      const stop = expectFrame(frames[3], 'content_block_stop');
 
       expect(start.data).toEqual({
         type: 'content_block_start',
@@ -95,7 +184,7 @@ describe('synthesizeSseFrames', () => {
     });
 
     it('message_delta reflects final stop_reason and output_tokens', () => {
-      const { data } = frames[4] as { data: any };
+      const { data } = expectFrame(frames[4], 'message_delta');
       expect(data.type).toBe('message_delta');
       expect(data.delta.stop_reason).toBe('end_turn');
       expect(data.delta.stop_sequence).toBeNull();
@@ -103,7 +192,7 @@ describe('synthesizeSseFrames', () => {
     });
 
     it('message_stop is the final frame', () => {
-      const { data } = frames[5] as { data: any };
+      const { data } = expectFrame(frames[5], 'message_stop');
       expect(data).toEqual({ type: 'message_stop' });
     });
 
@@ -146,16 +235,16 @@ describe('synthesizeSseFrames', () => {
         'message_delta',
         'message_stop',
       ]);
-      expect((frames[1].data as any).index).toBe(0);
-      expect((frames[2].data as any).index).toBe(0);
-      expect((frames[3].data as any).index).toBe(0);
-      expect((frames[4].data as any).index).toBe(1);
-      expect((frames[5].data as any).index).toBe(1);
-      expect((frames[6].data as any).index).toBe(1);
+      expect(expectFrame(frames[1], 'content_block_start').data.index).toBe(0);
+      expect(expectFrame(frames[2], 'content_block_delta').data.index).toBe(0);
+      expect(expectFrame(frames[3], 'content_block_stop').data.index).toBe(0);
+      expect(expectFrame(frames[4], 'content_block_start').data.index).toBe(1);
+      expect(expectFrame(frames[5], 'content_block_delta').data.index).toBe(1);
+      expect(expectFrame(frames[6], 'content_block_stop').data.index).toBe(1);
     });
 
     it('tool_use content_block_start has empty {} input', () => {
-      const toolStart = frames[4].data as any;
+      const toolStart = expectFrame(frames[4], 'content_block_start').data;
       expect(toolStart.content_block).toEqual({
         type: 'tool_use',
         id: 'tu_1',
@@ -165,15 +254,16 @@ describe('synthesizeSseFrames', () => {
     });
 
     it('tool_use delta carries input_json_delta with stringified input', () => {
-      const toolDelta = frames[5].data as any;
+      const toolDelta = expectFrame(frames[5], 'content_block_delta').data;
       expect(toolDelta.delta.type).toBe('input_json_delta');
+      if (toolDelta.delta.type !== 'input_json_delta') throw new Error('narrowing');
       expect(toolDelta.delta.partial_json).toBe(
         JSON.stringify({ command: 'echo ok', timeout: 5 }),
       );
     });
 
     it('final message_delta carries tool_use stop_reason', () => {
-      const final = frames[7].data as any;
+      const final = expectFrame(frames[7], 'message_delta').data;
       expect(final.delta.stop_reason).toBe('tool_use');
       expect(final.usage.output_tokens).toBe(3);
     });
@@ -206,19 +296,21 @@ describe('synthesizeSseFrames', () => {
     });
 
     it('has the single tool_use block at index 0', () => {
-      const start = frames[1].data as any;
+      const start = expectFrame(frames[1], 'content_block_start').data;
       expect(start.index).toBe(0);
       expect(start.content_block.type).toBe('tool_use');
+      if (start.content_block.type !== 'tool_use') throw new Error('narrowing');
       expect(start.content_block.id).toBe('tu_7');
       expect(start.content_block.name).toBe('Read');
       expect(start.content_block.input).toEqual({});
 
-      const delta = frames[2].data as any;
+      const delta = expectFrame(frames[2], 'content_block_delta').data;
       expect(delta.index).toBe(0);
       expect(delta.delta.type).toBe('input_json_delta');
+      if (delta.delta.type !== 'input_json_delta') throw new Error('narrowing');
       expect(delta.delta.partial_json).toBe(JSON.stringify({ path: '/tmp/x' }));
 
-      const stop = frames[3].data as any;
+      const stop = expectFrame(frames[3], 'content_block_stop').data;
       expect(stop).toEqual({ type: 'content_block_stop', index: 0 });
     });
   });
@@ -290,10 +382,13 @@ describe('synthesizeSseFrames', () => {
       });
       const raw = synthesizeSseFrames(msg);
       const frames = parseSseFrames(raw);
-      const delta = frames.find((f) => f.event === 'content_block_delta')!
-        .data as any;
-      expect(delta.delta.type).toBe('text_delta');
-      expect(delta.delta.text).toBe('hello\nworld');
+      const deltaFrame = frames.find(
+        (f): f is Extract<ParsedFrame, { event: 'content_block_delta' }> =>
+          f.event === 'content_block_delta',
+      )!;
+      expect(deltaFrame.data.delta.type).toBe('text_delta');
+      if (deltaFrame.data.delta.type !== 'text_delta') throw new Error('narrowing');
+      expect(deltaFrame.data.delta.text).toBe('hello\nworld');
     });
 
     it('escapes quotes and backslashes inside text_delta', () => {
@@ -302,9 +397,12 @@ describe('synthesizeSseFrames', () => {
         content: [{ type: 'text', text: tricky }],
       });
       const frames = parseSseFrames(synthesizeSseFrames(msg));
-      const delta = frames.find((f) => f.event === 'content_block_delta')!
-        .data as any;
-      expect(delta.delta.text).toBe(tricky);
+      const deltaFrame = frames.find(
+        (f): f is Extract<ParsedFrame, { event: 'content_block_delta' }> =>
+          f.event === 'content_block_delta',
+      )!;
+      if (deltaFrame.data.delta.type !== 'text_delta') throw new Error('narrowing');
+      expect(deltaFrame.data.delta.text).toBe(tricky);
     });
 
     it('tool_use input_json_delta stringifies the full input including nested objects', () => {
@@ -320,10 +418,13 @@ describe('synthesizeSseFrames', () => {
         stop_reason: 'tool_use',
       });
       const frames = parseSseFrames(synthesizeSseFrames(msg));
-      const delta = frames.find((f) => f.event === 'content_block_delta')!
-        .data as any;
-      expect(delta.delta.partial_json).toBe(JSON.stringify(input));
-      expect(JSON.parse(delta.delta.partial_json)).toEqual(input);
+      const deltaFrame = frames.find(
+        (f): f is Extract<ParsedFrame, { event: 'content_block_delta' }> =>
+          f.event === 'content_block_delta',
+      )!;
+      if (deltaFrame.data.delta.type !== 'input_json_delta') throw new Error('narrowing');
+      expect(deltaFrame.data.delta.partial_json).toBe(JSON.stringify(input));
+      expect(JSON.parse(deltaFrame.data.delta.partial_json)).toEqual(input);
     });
   });
 });
