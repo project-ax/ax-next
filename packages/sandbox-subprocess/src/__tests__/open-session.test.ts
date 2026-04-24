@@ -6,6 +6,7 @@ import { PluginError } from '@ax/core';
 import { createTestHarness } from '@ax/test-harness';
 import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
 import { createIpcServerPlugin } from '@ax/ipc-server';
+import { createLlmProxyAnthropicFormatPlugin } from '@ax/llm-proxy-anthropic-format';
 import { createSandboxSubprocessPlugin } from '../plugin.js';
 import type { OpenSessionResult } from '../open-session.js';
 
@@ -46,6 +47,7 @@ async function makeHarness() {
     plugins: [
       createSessionInmemoryPlugin(),
       createIpcServerPlugin(),
+      createLlmProxyAnthropicFormatPlugin(),
       createSandboxSubprocessPlugin(),
     ],
   });
@@ -125,6 +127,7 @@ describe('sandbox:open-session', () => {
     expect(parsed.AX_WORKSPACE_ROOT).toBe(ws);
     expect(typeof parsed.AX_AUTH_TOKEN).toBe('string');
     expect((parsed.AX_AUTH_TOKEN ?? '').length).toBeGreaterThan(0);
+    expect(parsed.AX_LLM_PROXY_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
     // The token must NOT be echoed in the returned surface.
     expect(JSON.stringify(result)).not.toContain(parsed.AX_AUTH_TOKEN);
 
@@ -331,6 +334,101 @@ describe('sandbox:open-session', () => {
     await result.handle.kill();
     await result.handle.exited;
     await new Promise((r) => setTimeout(r, 50));
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
+  it('stops the llm-proxy on child close (port is released)', async () => {
+    const ws = await mkWorkspace();
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    const result = await h.bus.call<unknown, OpenSessionResult>(
+      'sandbox:open-session',
+      ctx,
+      { sessionId: 'proxy-stop-1', workspaceRoot: ws, runnerBinary: ECHO_STUB },
+    );
+    const line = await readFirstStdoutLine(result);
+    const parsed = JSON.parse(line) as Record<string, string | null>;
+    const proxyUrl = parsed.AX_LLM_PROXY_URL ?? '';
+    expect(proxyUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    const proxyPort = Number(new URL(proxyUrl).port);
+
+    await result.handle.kill();
+    await result.handle.exited;
+
+    // Poll: re-bind on the port to prove llm-proxy:stop released it.
+    let bound = false;
+    for (let i = 0; i < 20; i++) {
+      const reclaim = (await import('node:http')).createServer();
+      try {
+        await new Promise<void>((resolve, reject) => {
+          reclaim.once('error', reject);
+          reclaim.listen(proxyPort, '127.0.0.1', () => resolve());
+        });
+        bound = true;
+        await new Promise<void>((r) => reclaim.close(() => r()));
+        break;
+      } catch {
+        // Port still held — wait and retry.
+      }
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    expect(bound).toBe(true);
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
+  it('rolls back ipc + session + tempdir when llm-proxy:start fails', async () => {
+    const ws = await mkWorkspace();
+    // Build a harness where llm-proxy:start always throws.
+    const h = await createTestHarness({
+      services: {
+        'llm:call': async () => ({
+          assistantMessage: { role: 'assistant', content: '' },
+          toolCalls: [],
+        }),
+        'tool:list': async () => ({ tools: [] }),
+        'llm-proxy:start': async () => {
+          throw new PluginError({
+            code: 'bind-failed',
+            plugin: 'test-mock',
+            hookName: 'llm-proxy:start',
+            message: 'boom',
+          });
+        },
+        'llm-proxy:stop': async () => ({}),
+      },
+      plugins: [
+        createSessionInmemoryPlugin(),
+        createIpcServerPlugin(),
+        createSandboxSubprocessPlugin(),
+      ],
+    });
+    const ctx = h.ctx();
+
+    let caught: unknown;
+    try {
+      await h.bus.call<unknown, OpenSessionResult>(
+        'sandbox:open-session',
+        ctx,
+        { sessionId: 'rb-1', workspaceRoot: ws, runnerBinary: ECHO_STUB },
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).message).toContain('boom');
+
+    // Rollback: ipc-server's `ipc:start` tracks listeners by sessionId with
+    // an 'already-running' guard. If rollback didn't call `ipc:stop`, a
+    // fresh `ipc:start` on the same sessionId would throw 'already-running'.
+    // Verify that the listener slot is free.
+    const rebindDir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? '/tmp', 'ax-ipc-rb-'));
+    const rebindSock = path.join(rebindDir, 'ipc.sock');
+    await expect(
+      h.bus.call('ipc:start', ctx, { socketPath: rebindSock, sessionId: 'rb-1' }),
+    ).resolves.toMatchObject({ running: true });
+    await h.bus.call('ipc:stop', ctx, { sessionId: 'rb-1' });
+    await fs.rm(rebindDir, { recursive: true, force: true });
+
     await fs.rm(ws, { recursive: true, force: true });
   });
 });

@@ -15,6 +15,7 @@ import { auditLogPlugin } from '@ax/audit-log';
 import { createSandboxSubprocessPlugin } from '@ax/sandbox-subprocess';
 import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
 import { createIpcServerPlugin } from '@ax/ipc-server';
+import { createLlmProxyAnthropicFormatPlugin } from '@ax/llm-proxy-anthropic-format';
 import { createChatOrchestratorPlugin } from '@ax/chat-orchestrator';
 import { createToolDispatcherPlugin } from '@ax/tool-dispatcher';
 import { createToolBashPlugin } from '@ax/tool-bash';
@@ -37,8 +38,19 @@ import { loadAxConfig } from './config/load.js';
 // `./turn-loop`, so a direct `./dist/main.js` subpath is blocked by Node's
 // exports-map enforcement.
 const requireFromCli = createRequire(import.meta.url);
-function resolveRunnerBinary(): string {
-  return requireFromCli.resolve('@ax/agent-native-runner');
+export function resolveRunnerBinary(runner: AxConfig['runner']): string {
+  // Exhaustive so a future `runner` variant in schema.ts fails typecheck
+  // here instead of silently falling through to the native runner.
+  switch (runner) {
+    case 'claude-sdk':
+      return requireFromCli.resolve('@ax/agent-claude-sdk-runner');
+    case 'native':
+      return requireFromCli.resolve('@ax/agent-native-runner');
+    default: {
+      const _exhaustive: never = runner;
+      throw new Error(`unknown runner: ${String(_exhaustive)}`);
+    }
+  }
 }
 const DEFAULT_CHAT_TIMEOUT_MS = 10 * 60_000;
 
@@ -75,6 +87,22 @@ export interface MainOptions {
   anthropicClientFactory?: (apiKey: string) => {
     messages: { create(req: Record<string, unknown>): Promise<unknown> };
   };
+  /**
+   * Test-seam ONLY. Extra plugins appended AFTER the config-driven plugin
+   * set, before bootstrap. Lets library-mode tests inject observer plugins
+   * (e.g. a `tool:post-call` subscriber that records events) and stub
+   * service registrations (see `skipDefaultLlm`). Not reachable from
+   * file-based config — plugins aren't JSON-serializable.
+   */
+  extraPlugins?: Plugin[];
+  /**
+   * Test-seam ONLY. When true, the default LLM plugin selected by
+   * `cfg.llm` is NOT pushed — callers must supply an `llm:call` registrar
+   * through `extraPlugins`. Exists because the hook bus enforces exactly
+   * one registrar per service hook, so "override the default" means "don't
+   * register the default". Not reachable from file-based config.
+   */
+  skipDefaultLlm?: boolean;
 }
 
 const DEFAULT_SQLITE_PATH = './ax-next-chat.sqlite';
@@ -116,9 +144,10 @@ export async function main(opts: MainOptions): Promise<number> {
   // the runner (delivered by @ax/ipc-server).
   plugins.push(createSessionInmemoryPlugin());
   plugins.push(createIpcServerPlugin());
+  plugins.push(createLlmProxyAnthropicFormatPlugin());
   plugins.push(
     createChatOrchestratorPlugin({
-      runnerBinary: resolveRunnerBinary(),
+      runnerBinary: resolveRunnerBinary(cfg.runner),
       chatTimeoutMs: DEFAULT_CHAT_TIMEOUT_MS,
     }),
   );
@@ -138,25 +167,38 @@ export async function main(opts: MainOptions): Promise<number> {
   // LLM selection. `exactOptionalPropertyTypes` on the Anthropic plugin
   // config means we can't just splat through fields whose type is
   // `string | undefined` — we strip undefined keys first.
-  if (cfg.llm === 'anthropic') {
-    const a = cfg.anthropic ?? {};
-    const anthropicCfg: {
-      model?: string;
-      maxTokens?: number;
-      clientFactory?: (apiKey: string) => {
-        messages: { create(req: Record<string, unknown>): Promise<unknown> };
-      };
-    } = {};
-    if (a.model !== undefined) anthropicCfg.model = a.model;
-    if (a.maxTokens !== undefined) anthropicCfg.maxTokens = a.maxTokens;
-    // `anthropicClientFactory` is MainOptions-only (not in AxConfig), so we
-    // thread it through here for the library-mode e2e test seam.
-    if (opts.anthropicClientFactory !== undefined) {
-      anthropicCfg.clientFactory = opts.anthropicClientFactory;
+  //
+  // `skipDefaultLlm` is a test-only seam: callers that want to supply their
+  // own `llm:call` registrar via `extraPlugins` set it so we don't emit a
+  // default (duplicate-service would throw at bootstrap).
+  if (opts.skipDefaultLlm !== true) {
+    if (cfg.llm === 'anthropic') {
+      const a = cfg.anthropic ?? {};
+      const anthropicCfg: {
+        model?: string;
+        maxTokens?: number;
+        clientFactory?: (apiKey: string) => {
+          messages: { create(req: Record<string, unknown>): Promise<unknown> };
+        };
+      } = {};
+      if (a.model !== undefined) anthropicCfg.model = a.model;
+      if (a.maxTokens !== undefined) anthropicCfg.maxTokens = a.maxTokens;
+      // `anthropicClientFactory` is MainOptions-only (not in AxConfig), so we
+      // thread it through here for the library-mode e2e test seam.
+      if (opts.anthropicClientFactory !== undefined) {
+        anthropicCfg.clientFactory = opts.anthropicClientFactory;
+      }
+      plugins.push(createLlmAnthropicPlugin(anthropicCfg));
+    } else {
+      plugins.push(llmMockPlugin());
     }
-    plugins.push(createLlmAnthropicPlugin(anthropicCfg));
-  } else {
-    plugins.push(llmMockPlugin());
+  }
+
+  // Library-mode test-only: extra plugins appended last so they can add
+  // subscribers that observe the full plugin set and (in combination with
+  // `skipDefaultLlm`) supply an alternative `llm:call` registrar.
+  if (opts.extraPlugins !== undefined) {
+    plugins.push(...opts.extraPlugins);
   }
 
   await bootstrap({ bus, plugins, config: {} });

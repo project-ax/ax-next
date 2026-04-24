@@ -30,14 +30,17 @@
     "@ax/sandbox-subprocess": "workspace:*",
     "@ax/session-inmemory": "workspace:*",
     "@ax/ipc-server": "workspace:*",
+    "@ax/llm-proxy-anthropic-format": "workspace:*",
     "@ax/chat-orchestrator": "workspace:*",
     "@ax/agent-native-runner": "workspace:*",
+    "@ax/agent-claude-sdk-runner": "workspace:*",
     "@ax/tool-dispatcher": "workspace:*",
     "@ax/tool-bash": "workspace:*",
     "@ax/tool-file-io": "workspace:*",
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@ax/test-harness": "workspace:*",
     "@types/node": "^25.6.0",
     "better-sqlite3": "^11.3.0",
     "@types/better-sqlite3": "^7.6.12",

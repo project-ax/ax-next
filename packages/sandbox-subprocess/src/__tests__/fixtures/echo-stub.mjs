@@ -16,6 +16,7 @@ const env = {
   AX_SESSION_ID: process.env.AX_SESSION_ID ?? null,
   AX_AUTH_TOKEN: process.env.AX_AUTH_TOKEN ?? null,
   AX_WORKSPACE_ROOT: process.env.AX_WORKSPACE_ROOT ?? null,
+  AX_LLM_PROXY_URL: process.env.AX_LLM_PROXY_URL ?? null,
   FOO: process.env.FOO ?? null,
 };
 process.stdout.write(JSON.stringify(env) + '\n');

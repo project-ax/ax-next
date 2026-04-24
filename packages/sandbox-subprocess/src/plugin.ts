@@ -15,7 +15,14 @@ export function createSandboxSubprocessPlugin(): Plugin {
       // open-session mints a session + token, starts the IPC listener, then
       // spawns the runner. Declaring these calls lets bootstrap's verifyCalls
       // catch a missing producer at boot instead of first-call time.
-      calls: ['session:create', 'session:terminate', 'ipc:start', 'ipc:stop'],
+      calls: [
+        'session:create',
+        'session:terminate',
+        'ipc:start',
+        'ipc:stop',
+        'llm-proxy:start',
+        'llm-proxy:stop',
+      ],
       subscribes: [],
     },
     async init({ bus }) {

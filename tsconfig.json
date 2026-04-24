@@ -20,6 +20,8 @@
     { "path": "packages/tool-bash-impl" },
     { "path": "packages/tool-file-io-impl" },
     { "path": "packages/agent-native-runner" },
+    { "path": "packages/agent-claude-sdk-runner" },
+    { "path": "packages/llm-proxy-anthropic-format" },
     { "path": "packages/chat-orchestrator" }
   ]
 }

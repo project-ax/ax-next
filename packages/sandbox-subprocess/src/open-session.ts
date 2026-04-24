@@ -79,6 +79,16 @@ interface SessionTerminateInput {
 interface IpcStopInput {
   sessionId: string;
 }
+interface LlmProxyStartInput {
+  sessionId: string;
+}
+interface LlmProxyStartOutput {
+  url: string;
+  port: number;
+}
+interface LlmProxyStopInput {
+  sessionId: string;
+}
 
 export async function openSessionImpl(
   ctx: ChatContext,
@@ -153,9 +163,34 @@ export async function openSessionImpl(
     throw err;
   }
 
-  // 6. Build child env. I5: caller-side env NEVER flows in — this hook's
+  // 6. Start the LLM proxy BEFORE spawning the runner so the runner's first
+  //    `query()` call can't race the proxy bind. A failure here rolls back
+  //    the ipc listener and session we minted above.
+  let proxy: LlmProxyStartOutput;
+  try {
+    proxy = await bus.call<LlmProxyStartInput, LlmProxyStartOutput>(
+      'llm-proxy:start',
+      ctx,
+      { sessionId: created.sessionId },
+    );
+  } catch (err) {
+    await bus
+      .call<IpcStopInput, Record<string, never>>('ipc:stop', ctx, {
+        sessionId: created.sessionId,
+      })
+      .catch(() => undefined);
+    await bus
+      .call<SessionTerminateInput, Record<string, never>>('session:terminate', ctx, {
+        sessionId: created.sessionId,
+      })
+      .catch(() => undefined);
+    await fs.rm(socketDir, { recursive: true, force: true }).catch(() => undefined);
+    throw err;
+  }
+
+  // 7. Build child env. I5: caller-side env NEVER flows in — this hook's
   //    input doesn't accept env, so the only sources are
-  //      (a) our four session-scoped injects, and
+  //      (a) our five session-scoped injects, and
   //      (b) the allowlist from the parent process.
   //    Allowlist merges LAST so PATH/HOME/etc. from the host always win.
   const sessionEnv: Record<string, string> = {
@@ -163,10 +198,11 @@ export async function openSessionImpl(
     AX_SESSION_ID: created.sessionId,
     AX_AUTH_TOKEN: created.token,
     AX_WORKSPACE_ROOT: input.workspaceRoot,
+    AX_LLM_PROXY_URL: proxy.url,
   };
   const env = { ...sessionEnv, ...allowlistFromParent() };
 
-  // 7. Spawn. argv[0] is the literal 'node', which trivially matches the
+  // 8. Spawn. argv[0] is the literal 'node', which trivially matches the
   //    existing ARGV0 regex — no extra validation here. shell:false, fixed
   //    argv, stdio piped (parent keeps stdin closed; child's stdout/stderr
   //    are pipes we can read).
@@ -180,7 +216,10 @@ export async function openSessionImpl(
     });
   } catch (cause) {
     // Synchronous spawn errors are rare (usually an async 'error' event) —
-    // but handle them cleanly. Clean up the session + listener + tempdir.
+    // but handle them cleanly. Clean up the session + listener + proxy + tempdir.
+    await bus
+      .call('llm-proxy:stop', ctx, { sessionId: created.sessionId })
+      .catch(() => undefined);
     await bus
       .call('ipc:stop', ctx, { sessionId: created.sessionId })
       .catch(() => undefined);
@@ -197,7 +236,7 @@ export async function openSessionImpl(
     });
   }
 
-  // 8. Exited promise. Resolves once the child's stdio pipes are drained
+  // 9. Exited promise. Resolves once the child's stdio pipes are drained
   //    (close) — not exit, which fires before pipes drain.
   const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
     (resolve) => {
@@ -205,10 +244,11 @@ export async function openSessionImpl(
     },
   );
 
-  // 9. Cleanup on child close: terminate the session (revokes the token),
-  //    stop the listener, and remove the tempdir. All three are best-effort
-  //    — failures log at warn (no token, no socketPath in info+). We don't
-  //    propagate errors from here; the caller already has `exited`.
+  // 10. Cleanup on child close: terminate the session (revokes the token),
+  //     stop the proxy, stop the listener, and remove the tempdir. All four
+  //     are best-effort — failures log at warn (no token, no socketPath in
+  //     info+). We don't propagate errors from here; the caller already
+  //     has `exited`.
   child.once('close', () => {
     void (async () => {
       try {
@@ -219,6 +259,16 @@ export async function openSessionImpl(
         );
       } catch (err) {
         ctx.logger.warn('session_terminate_failed', {
+          sessionId: created.sessionId,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
+      try {
+        await bus.call<LlmProxyStopInput, Record<string, never>>('llm-proxy:stop', ctx, {
+          sessionId: created.sessionId,
+        });
+      } catch (err) {
+        ctx.logger.warn('llm_proxy_stop_failed', {
           sessionId: created.sessionId,
           err: err instanceof Error ? err.message : String(err),
         });
@@ -251,14 +301,14 @@ export async function openSessionImpl(
     ctx.logger.debug('runner_child_error', { err: err.message });
   });
 
-  // 10. Stderr → debug. reqId is already bound on ctx.logger so per-request
+  // 11. Stderr → debug. reqId is already bound on ctx.logger so per-request
   //     correlation is automatic; no token anywhere.
   child.stderr.setEncoding('utf8');
   child.stderr.on('data', (chunk: string) => {
     ctx.logger.debug('runner_stderr', { chunk });
   });
 
-  // 11. kill(): SIGTERM, escalate to SIGKILL after 5s if still alive. A no-op
+  // 12. kill(): SIGTERM, escalate to SIGKILL after 5s if still alive. A no-op
   //     if the child has already exited (exitCode !== null).
   const kill = async (): Promise<void> => {
     if (child.exitCode !== null) return;
