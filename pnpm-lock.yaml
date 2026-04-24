@@ -195,7 +195,19 @@ importers:
       '@ax/core':
         specifier: workspace:*
         version: link:../core
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
     devDependencies:
+      '@ax/ipc-server':
+        specifier: workspace:*
+        version: link:../ipc-server
+      '@ax/session-inmemory':
+        specifier: workspace:*
+        version: link:../session-inmemory
+      '@ax/test-harness':
+        specifier: workspace:*
+        version: link:../test-harness
       '@types/node':
         specifier: ^25.6.0
         version: 25.6.0

@@ -1,18 +1,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { PluginError, type SandboxSpawnParsed, type SandboxSpawnResult } from '@ax/core';
+import { allowlistFromParent } from './env.js';
 
 const ARGV0_RE = /^[A-Za-z0-9_./-]+$/;
-
-function allowlistFromParent(): Record<string, string> {
-  return {
-    PATH: process.env.PATH ?? '/usr/bin:/bin',
-    HOME: process.env.HOME ?? '/',
-    LANG: process.env.LANG ?? 'C',
-    LC_ALL: process.env.LC_ALL ?? 'C',
-    TZ: process.env.TZ ?? 'UTC',
-    NODE_OPTIONS: '',
-  };
-}
 
 export async function spawnImpl(
   _ctx: unknown,
