@@ -26,6 +26,7 @@
     { "path": "packages/chat-orchestrator" },
     { "path": "./packages/credentials" },
     { "path": "packages/mcp-client" },
-    { "path": "packages/workspace-git" }
+    { "path": "packages/workspace-git" },
+    { "path": "packages/database-postgres" }
   ]
 }
