@@ -1,4 +1,10 @@
 import { z } from 'zod';
+import { asWorkspaceVersion, type WorkspaceVersion } from '@ax/core';
+
+// Re-export so existing consumers importing from `@ax/ipc-protocol` keep
+// working transparently — canonical declaration lives in `@ax/core` so
+// nothing is tempted to reach into a workspace backend for the shared type.
+export { asWorkspaceVersion, type WorkspaceVersion };
 
 // ---------------------------------------------------------------------------
 // Shared shapes
@@ -45,28 +51,6 @@ export const ToolDescriptorSchema = z.object({
   executesIn: z.enum(['sandbox', 'host']),
 });
 export type ToolDescriptor = z.infer<typeof ToolDescriptorSchema>;
-
-/**
- * Opaque handle for a workspace commit as observed by the host.
- * At runtime this is just a string; the brand is documentation.
- *
- * Opaque token. Pass to workspace hooks; never parse.
- *
- * Construct via {@link asWorkspaceVersion} at the host-side boundary
- * (where a backend plugin mints the concrete value). The wire schema
- * applies the brand automatically via transform so parsed responses
- * carry it without callers casting.
- */
-export type WorkspaceVersion = string & { readonly __brand: 'WorkspaceVersion' };
-
-/**
- * Host-side helper: narrow a raw string from a workspace backend into a
- * `WorkspaceVersion`. Only callers that mint version tokens (workspace
- * plugins) should use this — everyone else receives branded values
- * through the wire schemas.
- */
-export const asWorkspaceVersion = (v: string): WorkspaceVersion =>
-  v as WorkspaceVersion;
 
 // ---------------------------------------------------------------------------
 // llm.call
