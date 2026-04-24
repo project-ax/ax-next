@@ -16,7 +16,17 @@ export async function spawnImpl(
   _ctx: unknown,
   input: SandboxSpawnInput,
 ): Promise<SandboxSpawnResult> {
-  const env = { ...input.env, ...allowlistFromParent() };
+  // I2: caller env is filtered down to allowlist keys, then the parent's
+  // allowlist values are merged LAST so the parent always wins on keys
+  // both sides set (e.g. PATH). Caller keys NOT in the allowlist (e.g.
+  // ANTHROPIC_API_KEY) are dropped entirely before reaching the child.
+  const allowlist = allowlistFromParent();
+  const filteredCallerEnv: Record<string, string> = {};
+  for (const key of Object.keys(allowlist)) {
+    const v = input.env[key];
+    if (v !== undefined) filteredCallerEnv[key] = v;
+  }
+  const env = { ...filteredCallerEnv, ...allowlist };
 
   return new Promise<SandboxSpawnResult>((resolve, reject) => {
     const child = spawn(input.argv[0], input.argv.slice(1), {

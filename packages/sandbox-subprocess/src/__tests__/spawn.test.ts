@@ -49,4 +49,28 @@ describe('spawnImpl', () => {
     expect(result.stdout.length).toBe(1024);
     expect(result.truncated.stdout).toBe(true);
   });
+
+  it('env allowlist wins: caller cannot override PATH, ANTHROPIC_API_KEY never reaches child (I2)', async () => {
+    const prior = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = 'secret-parent';
+    try {
+      const input = SandboxSpawnInputSchema.parse({
+        argv: [
+          'node',
+          '-e',
+          'console.log(JSON.stringify({key:process.env.ANTHROPIC_API_KEY ?? "GONE", path:process.env.PATH}))',
+        ],
+        cwd: '/tmp',
+        env: { ANTHROPIC_API_KEY: 'caller-supplied', PATH: '/evil:only' },
+      });
+      const result = await spawnImpl(undefined, input);
+      const parsed = JSON.parse(result.stdout) as { key: string; path: string };
+      expect(parsed.key).toBe('GONE');
+      expect(parsed.path).not.toBe('/evil:only');
+      expect(parsed.path).toContain(process.env.PATH ?? '');
+    } finally {
+      if (prior === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = prior;
+    }
+  });
 });
