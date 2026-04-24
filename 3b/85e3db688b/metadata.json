@@ -3,21 +3,35 @@
   "checkpoint_id": "3b85e3db688b",
   "strategy": "manual-commit",
   "branch": "feat/week-6.5a-topology-shift",
-  "checkpoints_count": 1,
-  "files_touched": null,
+  "checkpoints_count": 2,
+  "files_touched": [
+    "eslint.config.mjs",
+    "packages/agent-runner-core/src/inbox-loop.ts",
+    "packages/agent-runner-core/src/index.ts",
+    "packages/agent-runner-core/src/ipc-client.ts",
+    "packages/agent-runner-core/src/local-dispatcher.ts",
+    "pnpm-lock.yaml",
+    "tsconfig.json"
+  ],
   "sessions": [
     {
       "metadata": "/3b/85e3db688b/0/metadata.json",
       "transcript": "/3b/85e3db688b/0/full.jsonl",
       "content_hash": "/3b/85e3db688b/0/content_hash.txt",
       "prompt": ""
+    },
+    {
+      "metadata": "/3b/85e3db688b/1/metadata.json",
+      "transcript": "/3b/85e3db688b/1/full.jsonl",
+      "content_hash": "/3b/85e3db688b/1/content_hash.txt",
+      "prompt": "/3b/85e3db688b/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 215,
-    "cache_creation_tokens": 801864,
-    "cache_read_tokens": 22690187,
-    "output_tokens": 149446,
-    "api_call_count": 101
+    "input_tokens": 227,
+    "cache_creation_tokens": 852803,
+    "cache_read_tokens": 22938445,
+    "output_tokens": 154200,
+    "api_call_count": 108
   }
 }

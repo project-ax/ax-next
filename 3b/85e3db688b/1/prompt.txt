@@ -1,0 +1,7 @@
+if i wanted to build an MVP version of AX with the following features, what remaining features would it need:
+- essentially allowing our team to run an equivalent of claude cowork on our internal k8s cluster
+- allowing users to setup MCP connections in admin interface that are available to the claude cowork agents running on k8s
+- using git as the workspace provider for claude cowork so it survives pod termination
+- allowing cowork agents running pods to spawn subagents
+- allowing users to access agent from slack or web UI
+- support personal agent (created by users and private to them) or shared team agents
