@@ -107,4 +107,19 @@ describe('spawnImpl', () => {
     const result = await spawnImpl(undefined, input);
     expect(result.stdout).toBe(expected);
   });
+
+  it('swallows stdin EPIPE when the child closes stdin early (I7)', async () => {
+    const input = SandboxSpawnInputSchema.parse({
+      argv: [
+        'node',
+        '-e',
+        'process.stdin.destroy(); setTimeout(()=>process.exit(0),20)',
+      ],
+      cwd: '/tmp',
+      env: {},
+      stdin: 'x'.repeat(10_000),
+    });
+    const result = await spawnImpl(undefined, input);
+    expect(result.exitCode).toBe(0);
+  });
 });

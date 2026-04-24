@@ -83,11 +83,29 @@ export async function spawnImpl(
       }
     });
 
-    child.stdin.end();
+    // I7: attach the error handler BEFORE writing so EPIPE / ECONNRESET
+    // from a child that closes stdin early is swallowed here instead of
+    // crashing the host with an unhandled 'error' event.
+    child.stdin.on('error', () => {
+      /* swallowed; expected on early-close races */
+    });
+    if (input.stdin !== undefined) {
+      child.stdin.end(input.stdin);
+    } else {
+      child.stdin.end();
+    }
 
     child.on('error', (err) => {
       clearTimeout(killTimer);
-      reject(err);
+      reject(
+        new PluginError({
+          code: 'invalid-payload',
+          plugin: '@ax/sandbox-subprocess',
+          hookName: 'sandbox:spawn',
+          message: `spawn failed: ${err.message}`,
+          cause: err,
+        }),
+      );
     });
 
     child.on('exit', (exitCode, signal) => {
