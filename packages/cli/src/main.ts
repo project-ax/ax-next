@@ -21,6 +21,7 @@ import { createChatOrchestratorPlugin } from '@ax/chat-orchestrator';
 import { createToolDispatcherPlugin } from '@ax/tool-dispatcher';
 import { createToolBashPlugin } from '@ax/tool-bash';
 import { createToolFileIoPlugin } from '@ax/tool-file-io';
+import { createMcpClientPlugin } from '@ax/mcp-client';
 import { AxConfigSchema, type AxConfig, type AxConfigInput } from './config/schema.js';
 import { loadAxConfig } from './config/load.js';
 import { runCredentialsCommand } from './commands/credentials.js';
@@ -173,6 +174,15 @@ export async function main(opts: MainOptions): Promise<number> {
   if (cfg.tools.includes('file-io')) {
     plugins.push(createToolFileIoPlugin());
   }
+
+  // MCP-sourced tools register through the same `tool:register` surface as
+  // bash/file-io. Push unconditionally: when no MCP configs are stored,
+  // `loadConfigs` returns an empty array and init is a no-op. Ordering
+  // note: must come AFTER tool-dispatcher (which registers `tool:register`)
+  // and AFTER credentials + storage-sqlite (which it calls during init).
+  // Bootstrap's topological sort handles this either way, but keeping the
+  // push order aligned with the call graph keeps readers grounded.
+  plugins.push(createMcpClientPlugin());
 
   // LLM selection. `exactOptionalPropertyTypes` on the Anthropic plugin
   // config means we can't just splat through fields whose type is
