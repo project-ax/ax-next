@@ -1,0 +1,42 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "cd3411e2be8c",
+  "session_id": "6d0fd8c6-b20b-43c7-87e4-f6e69b72cc80",
+  "strategy": "manual-commit",
+  "created_at": "2026-04-24T01:18:29.535634Z",
+  "branch": "feat/week-4-6-real-llm-v2",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "packages/core/src/__tests__/acceptance.test.ts",
+    "packages/core/src/__tests__/chat-loop.test.ts",
+    "packages/core/src/chat-loop.ts",
+    "packages/test-harness/src/__tests__/harness.test.ts"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-opus-4-7[1m]",
+  "turn_id": "709df1adf297",
+  "checkpoint_transcript_start": 224,
+  "transcript_lines_at_start": 224,
+  "token_usage": {
+    "input_tokens": 2,
+    "cache_creation_tokens": 9176,
+    "cache_read_tokens": 400841,
+    "output_tokens": 6635,
+    "api_call_count": 2
+  },
+  "session_metrics": {
+    "turn_count": 2
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-04-24T01:18:29.51713Z",
+    "agent_lines": 54,
+    "agent_removed": 19,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 54,
+    "total_lines_changed": 73,
+    "agent_percentage": 100,
+    "metric_version": 2
+  }
+}
