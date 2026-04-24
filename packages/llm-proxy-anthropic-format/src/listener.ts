@@ -23,7 +23,11 @@ import { translateLlmResponse } from './translate-response.js';
 
 const BEARER_PREFIX = 'bearer ';
 const SHUTDOWN_GRACE_MS = 5_000;
-const IDLE_TIMEOUT_MS = 60_000;
+// A /v1/messages request waits on an upstream `llm:call` that can legitimately
+// run for minutes. The socket idle timeout must match that upper bound so it
+// does not tear down an in-flight request; 10 minutes mirrors the host-side
+// IPC `llm.call` ceiling in @ax/ipc-protocol.
+const IDLE_TIMEOUT_MS = 10 * 60_000;
 
 export interface ProxyListener {
   readonly port: number;
@@ -318,11 +322,14 @@ function extractBearerOrApiKey(
   headers: http.IncomingHttpHeaders,
 ): string | null | undefined {
   // `X-Api-Key` is the @anthropic-ai/sdk default (driven by
-  // `ANTHROPIC_API_KEY`). Node lowercases header names for us.
+  // `ANTHROPIC_API_KEY`). Node lowercases header names for us. A whitespace-
+  // only value is treated as missing so an ill-formed x-api-key doesn't
+  // shadow a valid `Authorization: Bearer` fallback.
   const apiKeyRaw = headers['x-api-key'];
   const apiKey = Array.isArray(apiKeyRaw) ? apiKeyRaw[0] : apiKeyRaw;
-  if (typeof apiKey === 'string' && apiKey.length > 0) {
-    return apiKey.trim().length === 0 ? null : apiKey.trim();
+  if (typeof apiKey === 'string') {
+    const trimmed = apiKey.trim();
+    if (trimmed.length > 0) return trimmed;
   }
 
   // `Authorization: Bearer <token>` is the canonical HTTP form and what the

@@ -7,6 +7,7 @@ import {
 } from './anthropic-schemas.js';
 
 // Reserved prefixes: native-runner emits '[tool ...]' for tool RESULTS; we emit '[tool_use ...]' and '[tool_result ...]' so all three forms remain unambiguous when rehydrated into history.
+// A tool_result whose `is_error === true` is rendered as '[tool_result <id> error] ...' so the error signal survives the round-trip into history; absence of the `error` qualifier means success.
 export const TOOL_USE_PREFIX = 'tool_use';
 export const TOOL_RESULT_PREFIX = 'tool_result';
 
@@ -101,19 +102,23 @@ function renderBlock(
         throw new TranslationError('user message may not contain tool_use block');
       }
       return `[${TOOL_USE_PREFIX} ${block.name}] ${JSON.stringify(block.input ?? {})}`;
-    case 'tool_result':
+    case 'tool_result': {
       if (role === 'assistant') {
         throw new TranslationError(
           'assistant message may not contain tool_result block',
         );
       }
-      return `[${TOOL_RESULT_PREFIX} ${block.tool_use_id}] ${renderToolResultContent(block)}`;
+      const qualifier = block.is_error === true ? ' error' : '';
+      return `[${TOOL_RESULT_PREFIX} ${block.tool_use_id}${qualifier}] ${renderToolResultContent(block)}`;
+    }
     case 'image':
       // Images dropped: ingestion is out of scope here.
       return undefined;
     default: {
       const _exhaustive: never = block;
-      return _exhaustive;
+      throw new TypeError(
+        `Unknown content block type: ${JSON.stringify(_exhaustive)}`,
+      );
     }
   }
 }

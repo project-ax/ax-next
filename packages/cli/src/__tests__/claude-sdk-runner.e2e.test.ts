@@ -129,15 +129,14 @@ describe('claude-sdk runner e2e', () => {
             'llm:call',
             '@ax/test-llm-stub',
             async (_ctx, req) => {
-              const systemText =
-                req.messages.find((m) => m.role === 'system')?.content ?? '';
-              const isTitleSummary = systemText.includes(
-                'Generate a concise, sentence-case title',
-              );
-              if (isTitleSummary) {
-                // Return a valid-looking title JSON; no tool calls. This
-                // request isn't part of the user-driven turn sequence, so
-                // we don't advance the counter.
+              // Structural discriminator: the `claude` CLI emits an
+              // auxiliary title-summary request with NO tools declared.
+              // Every main-turn request comes from a session that
+              // advertised the tool catalog, so `tools` is non-empty. This
+              // survives SDK system-prompt wording changes that broke the
+              // earlier substring check.
+              const hasTools = Array.isArray(req.tools) && req.tools.length > 0;
+              if (!hasTools) {
                 return {
                   assistantMessage: {
                     role: 'assistant',
@@ -148,6 +147,16 @@ describe('claude-sdk runner e2e', () => {
               }
 
               mainTurnCount += 1;
+              if (mainTurnCount > 3) {
+                // Loud failure if title-detection ever silently drifts —
+                // better to crash the test than to pass with the wrong
+                // turn sequence. The canned script has three main turns
+                // (bash tool_use → mcp tool_use → terminal); anything
+                // beyond that means a turn was miscategorized.
+                throw new Error(
+                  'unexpected mainTurnCount > 3 — title-detection likely drifted',
+                );
+              }
               if (mainTurnCount === 1) {
                 // Main turn 1: ask the SDK to run the built-in Bash tool.
                 return {

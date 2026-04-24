@@ -324,10 +324,21 @@ describe('main()', () => {
     );
     expect(chatEnds).toHaveLength(1);
     const payload = chatEnds[0]?.[1] as {
-      outcome: { kind: string; reason?: string };
+      outcome: {
+        kind: string;
+        reason?: string;
+        error?: { name: string; message: string; stack?: string };
+      };
     };
     expect(payload.outcome.kind).toBe('terminated');
-    expect(payload.outcome.reason).toBe('Error');
+    expect(payload.outcome.reason).toBe('Error: simulated SDK failure');
+    expect(payload.outcome.error?.name).toBe('Error');
+    expect(payload.outcome.error?.message).toBe('simulated SDK failure');
+    // The serialized error must survive JSON.stringify — an Error instance
+    // would stringify to `{}`, losing all the diagnostic information the
+    // host relies on when surfacing a terminated chat.
+    const round = JSON.parse(JSON.stringify(payload.outcome.error));
+    expect(round.message).toBe('simulated SDK failure');
 
     expect(fakeClient.close).toHaveBeenCalledTimes(1);
   });

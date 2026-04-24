@@ -33,18 +33,28 @@ export interface CreateCanUseToolOptions {
 }
 
 export function createCanUseTool(_opts: CreateCanUseToolOptions): CanUseTool {
-  return async (toolName, input) => {
+  return async (toolName, input, _options) => {
     const klass = classifySdkToolName(toolName);
 
-    if (klass.kind === 'disabled') {
-      return { behavior: 'deny', message: 'tool disabled by policy' };
+    // Exhaustive classifier switch (defense in depth). Default to deny so a
+    // future classifier variant that forgets to add a case here fails
+    // closed rather than silently allowing the call.
+    switch (klass.kind) {
+      case 'disabled':
+        return { behavior: 'deny', message: 'tool disabled by policy' };
+      case 'builtin':
+      case 'mcp-host':
+        // Allow pass-through. The host-side `tool:pre-call` subscriber
+        // chain already ran inside the PreToolUse hook (see
+        // pre-tool-use.ts); if it rejected, the SDK would never route the
+        // call here. We echo the input unchanged because PreToolUse
+        // already forwarded any `modifiedCall.input` to the SDK.
+        return { behavior: 'allow', updatedInput: input };
+      default: {
+        const _exhaustive: never = klass;
+        void _exhaustive;
+        return { behavior: 'deny', message: 'unclassified tool' };
+      }
     }
-
-    // Allow pass-through. The host-side `tool:pre-call` subscriber chain
-    // already ran inside the PreToolUse hook (see pre-tool-use.ts); if it
-    // rejected, the SDK would never route the call here. We echo the
-    // input unchanged because PreToolUse already forwarded any
-    // `modifiedCall.input` to the SDK.
-    return { behavior: 'allow', updatedInput: input };
   };
 }

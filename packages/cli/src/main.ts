@@ -39,10 +39,18 @@ import { loadAxConfig } from './config/load.js';
 // exports-map enforcement.
 const requireFromCli = createRequire(import.meta.url);
 export function resolveRunnerBinary(runner: AxConfig['runner']): string {
-  if (runner === 'claude-sdk') {
-    return requireFromCli.resolve('@ax/agent-claude-sdk-runner');
+  // Exhaustive so a future `runner` variant in schema.ts fails typecheck
+  // here instead of silently falling through to the native runner.
+  switch (runner) {
+    case 'claude-sdk':
+      return requireFromCli.resolve('@ax/agent-claude-sdk-runner');
+    case 'native':
+      return requireFromCli.resolve('@ax/agent-native-runner');
+    default: {
+      const _exhaustive: never = runner;
+      throw new Error(`unknown runner: ${String(_exhaustive)}`);
+    }
   }
-  return requireFromCli.resolve('@ax/agent-native-runner');
 }
 const DEFAULT_CHAT_TIMEOUT_MS = 10 * 60_000;
 

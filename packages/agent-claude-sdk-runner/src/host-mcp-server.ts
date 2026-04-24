@@ -66,7 +66,16 @@ function shapeFromInputSchema(
   inputSchema: Record<string, unknown>,
 ): Record<string, z.ZodTypeAny> {
   const rawProps = (inputSchema as { properties?: unknown }).properties;
-  if (rawProps === null || typeof rawProps !== 'object') return {};
+  // Reject non-object shapes outright, including arrays — `typeof [] ===
+  // 'object'` would otherwise iterate numeric indices from a malformed
+  // descriptor and produce a shape keyed by array indices.
+  if (
+    rawProps === null ||
+    typeof rawProps !== 'object' ||
+    Array.isArray(rawProps)
+  ) {
+    return {};
+  }
   const shape: Record<string, z.ZodTypeAny> = {};
   for (const key of Object.keys(rawProps as Record<string, unknown>)) {
     shape[key] = z.unknown();

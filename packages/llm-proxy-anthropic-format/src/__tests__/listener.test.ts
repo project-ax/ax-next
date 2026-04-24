@@ -452,6 +452,26 @@ describe('createProxyListener', () => {
     expect(res.status).toBe(200);
   });
 
+  // Regression: a whitespace-only `X-Api-Key` must not shadow the
+  // `Authorization: Bearer` fallback. Before the fix the proxy returned 401
+  // "invalid authorization scheme" as soon as x-api-key was present at all,
+  // even if Authorization was valid.
+  it('falls through to Authorization when X-Api-Key is whitespace-only', async () => {
+    const h = await makeHarness();
+    harnesses.push(h);
+    const res = await httpRequest(h.listener.url, {
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Api-Key': '   ',
+        Authorization: `Bearer ${GOOD_TOKEN}`,
+      },
+      body: validBody(),
+    });
+    expect(res.status).toBe(200);
+  });
+
   // Regression: the Anthropic API accepts `system` as either a string or an
   // array of text blocks. The `claude` CLI uses the array form. Schema
   // rejecting the array form blocked every real claude-sdk request as 400.

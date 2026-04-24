@@ -94,7 +94,9 @@ export async function main(): Promise<number> {
 
   let exitCode = 0;
   let terminatedReason: string | undefined;
-  let terminatedError: unknown;
+  let terminatedError:
+    | { name: string; message: string; stack?: string }
+    | undefined;
 
   try {
     const queryIter = query({
@@ -154,20 +156,32 @@ export async function main(): Promise<number> {
     }
   } catch (err) {
     exitCode = 1;
-    terminatedReason = err instanceof Error ? err.name : 'unknown';
-    terminatedError = err;
+    if (err instanceof Error) {
+      terminatedReason = `${err.name}: ${err.message}`;
+      terminatedError = {
+        name: err.name,
+        message: err.message,
+        ...(err.stack !== undefined ? { stack: err.stack } : {}),
+      };
+    } else {
+      terminatedReason = String(err);
+      terminatedError = { name: 'NonError', message: String(err) };
+    }
   }
 
   // Single event.chat-end at the end of the runner's life, awaited so the
   // event reaches the wire before the process exits. If the host is
-  // already gone, swallow — there's nothing left to signal to.
+  // already gone, swallow — there's nothing left to signal to. The
+  // `error` shape here is a plain object so the event payload survives
+  // JSON.stringify (an `Error` instance would serialize to `{}`, stripping
+  // the diagnostic).
   const outcome =
     exitCode === 0
       ? { kind: 'complete' as const, messages: history }
       : {
           kind: 'terminated' as const,
           reason: terminatedReason ?? 'unknown',
-          error: terminatedError,
+          ...(terminatedError !== undefined ? { error: terminatedError } : {}),
         };
   await client.event('event.chat-end', { outcome }).catch(() => {
     /* swallow */

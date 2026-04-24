@@ -102,6 +102,52 @@ describe('translateAnthropicRequest', () => {
     ]);
   });
 
+  it('serializes tool_result with is_error=true using the [id error] qualifier', () => {
+    const out = translateAnthropicRequest({
+      model: 'm',
+      max_tokens: 10,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'tu_err',
+              content: 'boom',
+              is_error: true,
+            },
+          ],
+        },
+      ],
+    });
+    expect(out.messages).toEqual([
+      { role: 'user', content: '[tool_result tu_err error] boom' },
+    ]);
+  });
+
+  it('serializes tool_result with is_error=false (default) without the error qualifier', () => {
+    const out = translateAnthropicRequest({
+      model: 'm',
+      max_tokens: 10,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'tu_ok',
+              content: 'ok',
+              is_error: false,
+            },
+          ],
+        },
+      ],
+    });
+    expect(out.messages).toEqual([
+      { role: 'user', content: '[tool_result tu_ok] ok' },
+    ]);
+  });
+
   it('serializes user tool_result block with block-array content', () => {
     const out = translateAnthropicRequest({
       model: 'm',
