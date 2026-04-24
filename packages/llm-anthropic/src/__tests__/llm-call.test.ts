@@ -107,7 +107,7 @@ describe('llm-anthropic', () => {
       { content: [{ type: 'text', text: 'recovered' }] },
     ]);
     const bus = new HookBus();
-    await createLlmAnthropicPlugin({ clientFactory: () => client }).init({ bus, config: {} });
+    await createLlmAnthropicPlugin({ clientFactory: () => client, retryDelayMs: 10 }).init({ bus, config: {} });
     const r = await bus.call<LlmRequest, LlmResponse>('llm:call', ctx(), {
       messages: [{ role: 'user', content: 'x' }],
     });
@@ -122,7 +122,7 @@ describe('llm-anthropic', () => {
       apiError(500, 'still fire'),
     ]);
     const bus = new HookBus();
-    await createLlmAnthropicPlugin({ clientFactory: () => client }).init({ bus, config: {} });
+    await createLlmAnthropicPlugin({ clientFactory: () => client, retryDelayMs: 10 }).init({ bus, config: {} });
     const err = await bus
       .call('llm:call', ctx(), { messages: [{ role: 'user', content: 'x' }] })
       .catch((e: unknown) => e);

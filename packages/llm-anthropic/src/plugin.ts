@@ -12,7 +12,7 @@ const PLUGIN_NAME = '@ax/llm-anthropic';
 const DEFAULT_MODEL = 'claude-sonnet-4-6';
 const DEFAULT_MAX_TOKENS = 4096;
 const TRANSIENT_STATUSES = new Set<number>([429, 500, 502, 503, 504]);
-const RETRY_DELAY_MS = 1000;
+const DEFAULT_RETRY_DELAY_MS = 1000;
 
 /**
  * Minimal structural interface for the Anthropic SDK client. Only the one
@@ -35,6 +35,12 @@ export interface LlmAnthropicConfig {
    * a mock at runtime.
    */
   clientFactory?: (apiKey: string) => AnthropicClient;
+  /**
+   * Override the single-retry backoff. Exists primarily so test suites don't
+   * wait a full second in the 5xx-retry path. Production callers should
+   * leave this undefined to get the 1 s default.
+   */
+  retryDelayMs?: number;
 }
 
 export function createLlmAnthropicPlugin(cfg: LlmAnthropicConfig = {}): Plugin {
@@ -84,7 +90,7 @@ async function callWithRetry(
     } catch (e) {
       lastErr = e;
       if (attempt === 0 && isTransient(e)) {
-        await sleep(RETRY_DELAY_MS);
+        await sleep(cfg.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS);
         continue;
       }
       throw new PluginError({
