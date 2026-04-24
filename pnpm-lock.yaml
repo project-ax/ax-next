@@ -483,6 +483,34 @@ importers:
         specifier: ^4.1.4
         version: 4.1.5(@types/node@25.6.0)(vite@8.0.10(@types/node@25.6.0)(yaml@2.8.3))
 
+  packages/storage-postgres:
+    dependencies:
+      '@ax/core':
+        specifier: workspace:*
+        version: link:../core
+      kysely:
+        specifier: 0.28.16
+        version: 0.28.16
+    devDependencies:
+      '@ax/database-postgres':
+        specifier: workspace:*
+        version: link:../database-postgres
+      '@ax/test-harness':
+        specifier: workspace:*
+        version: link:../test-harness
+      '@testcontainers/postgresql':
+        specifier: 11.14.0
+        version: 11.14.0
+      '@types/node':
+        specifier: ^25.6.0
+        version: 25.6.0
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^4.1.4
+        version: 4.1.5(@types/node@25.6.0)(vite@8.0.10(@types/node@25.6.0)(yaml@2.8.3))
+
   packages/storage-sqlite:
     dependencies:
       '@ax/core':
