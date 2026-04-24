@@ -120,12 +120,21 @@ importers:
 
   packages/cli:
     dependencies:
+      '@ax/agent-native-runner':
+        specifier: workspace:*
+        version: link:../agent-native-runner
       '@ax/audit-log':
         specifier: workspace:*
         version: link:../audit-log
+      '@ax/chat-orchestrator':
+        specifier: workspace:*
+        version: link:../chat-orchestrator
       '@ax/core':
         specifier: workspace:*
         version: link:../core
+      '@ax/ipc-server':
+        specifier: workspace:*
+        version: link:../ipc-server
       '@ax/llm-anthropic':
         specifier: workspace:*
         version: link:../llm-anthropic
@@ -135,6 +144,9 @@ importers:
       '@ax/sandbox-subprocess':
         specifier: workspace:*
         version: link:../sandbox-subprocess
+      '@ax/session-inmemory':
+        specifier: workspace:*
+        version: link:../session-inmemory
       '@ax/storage-sqlite':
         specifier: workspace:*
         version: link:../storage-sqlite

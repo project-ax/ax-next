@@ -13,6 +13,10 @@
     { "path": "../storage-sqlite" },
     { "path": "../audit-log" },
     { "path": "../sandbox-subprocess" },
+    { "path": "../session-inmemory" },
+    { "path": "../ipc-server" },
+    { "path": "../chat-orchestrator" },
+    { "path": "../agent-native-runner" },
     { "path": "../tool-dispatcher" },
     { "path": "../tool-bash" },
     { "path": "../tool-file-io" }

@@ -1,10 +1,10 @@
 #!/usr/bin/env node
+import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import {
   HookBus,
   bootstrap,
   makeChatContext,
-  registerChatLoop,
   type ChatOutcome,
   type Plugin,
 } from '@ax/core';
@@ -13,11 +13,32 @@ import { createLlmAnthropicPlugin } from '@ax/llm-anthropic';
 import { createStorageSqlitePlugin } from '@ax/storage-sqlite';
 import { auditLogPlugin } from '@ax/audit-log';
 import { createSandboxSubprocessPlugin } from '@ax/sandbox-subprocess';
+import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
+import { createIpcServerPlugin } from '@ax/ipc-server';
+import { createChatOrchestratorPlugin } from '@ax/chat-orchestrator';
 import { createToolDispatcherPlugin } from '@ax/tool-dispatcher';
 import { createToolBashPlugin } from '@ax/tool-bash';
 import { createToolFileIoPlugin } from '@ax/tool-file-io';
 import { AxConfigSchema, type AxConfig, type AxConfigInput } from './config/schema.js';
 import { loadAxConfig } from './config/load.js';
+
+// Resolve the agent-native-runner binary at load time. `@ax/cli` is the ONE
+// package permitted to import sibling plugins directly (eslint.config.mjs
+// no-restricted-imports allowlist); this is also the one spot where we pin
+// down the runner binary location (I8). `createRequire` from the CLI's own
+// URL is robust against pnpm hoisting and works identically in dev + prod —
+// we get the installed `@ax/agent-native-runner`'s main entry regardless of
+// how the workspace symlinks shake out.
+//
+// We resolve the package's `.` export (which is `dist/main.js`) rather than
+// a subpath specifier: the runner's `exports` field only exposes `.` and
+// `./turn-loop`, so a direct `./dist/main.js` subpath is blocked by Node's
+// exports-map enforcement.
+const requireFromCli = createRequire(import.meta.url);
+const DEFAULT_RUNNER_BINARY: string = requireFromCli.resolve(
+  '@ax/agent-native-runner',
+);
+const DEFAULT_CHAT_TIMEOUT_MS = 10 * 60_000;
 
 export interface MainOptions {
   message: string;
@@ -67,7 +88,6 @@ export async function main(opts: MainOptions): Promise<number> {
       : await loadAxConfig({ cwd });
 
   const bus = new HookBus();
-  registerChatLoop(bus);
 
   const plugins: Plugin[] = [];
 
@@ -87,9 +107,24 @@ export async function main(opts: MainOptions): Promise<number> {
     plugins.push(createSandboxSubprocessPlugin());
   }
 
+  // Session + IPC + chat orchestration. Together these replace the old
+  // in-process `registerChatLoop` — `chat:run` is now registered by
+  // @ax/chat-orchestrator, which drives the per-chat lifecycle through
+  // sandbox:open-session + session:queue-work and awaits chat:end from
+  // the runner (delivered by @ax/ipc-server).
+  plugins.push(createSessionInmemoryPlugin());
+  plugins.push(createIpcServerPlugin());
+  plugins.push(
+    createChatOrchestratorPlugin({
+      runnerBinary: DEFAULT_RUNNER_BINARY,
+      chatTimeoutMs: DEFAULT_CHAT_TIMEOUT_MS,
+    }),
+  );
+
   // Tool dispatcher is the single entry point for `tool:execute`, fanning
   // out to whatever tool plugins register descriptors. Always present when
-  // we might have tools.
+  // we might have tools. (After Task 7, bash/file-io here are descriptor-
+  // only — actual execution runs in the sandbox via the impl packages.)
   plugins.push(createToolDispatcherPlugin());
   if (cfg.tools.includes('bash')) {
     plugins.push(createToolBashPlugin());
