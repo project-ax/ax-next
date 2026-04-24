@@ -24,6 +24,7 @@ import { createToolFileIoPlugin } from '@ax/tool-file-io';
 import { AxConfigSchema, type AxConfig, type AxConfigInput } from './config/schema.js';
 import { loadAxConfig } from './config/load.js';
 import { runCredentialsCommand } from './commands/credentials.js';
+import { runMcpCommand } from './commands/mcp.js';
 
 // `@ax/cli` is the ONE package permitted to import sibling plugins directly
 // (eslint.config.mjs no-restricted-imports allowlist); this is also the one
@@ -251,6 +252,17 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         // The command itself turns PluginError into stderr+exit-1. Anything
         // reaching here is truly unexpected — be boring so we don't echo
         // something we shouldn't.
+        process.stderr.write(`fatal: ${e instanceof Error ? e.message : String(e)}\n`);
+        process.exit(2);
+      });
+  } else if (argv[0] === 'mcp') {
+    runMcpCommand({
+      argv: argv.slice(1),
+      stdin: process.stdin,
+      sqlitePath,
+    })
+      .then((code) => process.exit(code))
+      .catch((e) => {
         process.stderr.write(`fatal: ${e instanceof Error ? e.message : String(e)}\n`);
         process.exit(2);
       });

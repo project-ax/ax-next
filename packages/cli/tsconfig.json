@@ -22,6 +22,7 @@
     { "path": "../agent-claude-sdk-runner" },
     { "path": "../tool-dispatcher" },
     { "path": "../tool-bash" },
-    { "path": "../tool-file-io" }
+    { "path": "../tool-file-io" },
+    { "path": "../mcp-client" }
   ]
 }

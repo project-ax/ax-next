@@ -175,6 +175,9 @@ importers:
       '@ax/llm-proxy-anthropic-format':
         specifier: workspace:*
         version: link:../llm-proxy-anthropic-format
+      '@ax/mcp-client':
+        specifier: workspace:*
+        version: link:../mcp-client
       '@ax/sandbox-subprocess':
         specifier: workspace:*
         version: link:../sandbox-subprocess
