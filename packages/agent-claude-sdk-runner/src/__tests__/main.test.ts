@@ -246,6 +246,7 @@ describe('main()', () => {
         disallowedTools: string[];
         mcpServers: Record<string, unknown>;
         settingSources: string[];
+        systemPrompt: { type: string; preset: string };
         env: { ANTHROPIC_BASE_URL: string; ANTHROPIC_API_KEY: string };
       };
     };
@@ -254,6 +255,10 @@ describe('main()', () => {
     );
     expect(queryArg.options.mcpServers).toHaveProperty('ax-host-tools');
     expect(queryArg.options.settingSources).toEqual([]);
+    expect(queryArg.options.systemPrompt).toEqual({
+      type: 'preset',
+      preset: 'claude_code',
+    });
     expect(queryArg.options.env.ANTHROPIC_BASE_URL).toBe(
       COMPLETE_ENV.AX_LLM_PROXY_URL,
     );

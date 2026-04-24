@@ -30,7 +30,7 @@ importers:
   packages/agent-claude-sdk-runner:
     dependencies:
       '@anthropic-ai/claude-agent-sdk':
-        specifier: ^0.2.119
+        specifier: 0.2.119
         version: 0.2.119(zod@3.25.76)
       '@ax/agent-runner-core':
         specifier: workspace:*
