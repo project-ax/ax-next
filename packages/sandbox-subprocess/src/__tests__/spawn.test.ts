@@ -25,4 +25,16 @@ describe('spawnImpl', () => {
     const result = await spawnImpl(undefined, input);
     expect(result.exitCode).toBe(3);
   });
+
+  it('enforces timeoutMs by killing the child with SIGKILL', async () => {
+    const input = SandboxSpawnInputSchema.parse({
+      argv: ['node', '-e', 'setInterval(()=>{},1000)'],
+      cwd: '/tmp',
+      env: {},
+      timeoutMs: 200,
+    });
+    const result = await spawnImpl(undefined, input);
+    expect(result.timedOut).toBe(true);
+    expect(result.signal).toBe('SIGKILL');
+  });
 });

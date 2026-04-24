@@ -28,6 +28,12 @@ export async function spawnImpl(
 
     let stdout = Buffer.alloc(0);
     let stderr = Buffer.alloc(0);
+    let timedOut = false;
+
+    const killTimer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGKILL');
+    }, input.timeoutMs);
 
     child.stdout.on('data', (chunk: Buffer) => {
       stdout = Buffer.concat([stdout, chunk]);
@@ -40,17 +46,19 @@ export async function spawnImpl(
     child.stdin.end();
 
     child.on('error', (err) => {
+      clearTimeout(killTimer);
       reject(err);
     });
 
     child.on('exit', (exitCode, signal) => {
+      clearTimeout(killTimer);
       resolve({
         exitCode,
         signal,
         stdout: stdout.toString('utf8'),
         stderr: stderr.toString('utf8'),
         truncated: { stdout: false, stderr: false },
-        timedOut: false,
+        timedOut,
       });
     });
   });
