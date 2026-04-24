@@ -1,0 +1,5 @@
+i want to create the best experience for the user on the web UI. should we adopt a standard chat UI that has a sidebar full of old sessions and a main chat view with a composer at the bottom? or should we take a different approach that provides a consistent experience with Slack where this is a single continous DM session during which the user may switch topics frequently? For this approach, there would be a similar single chat history but perhaps with a UI solution for indicating when a topic switch has occured?
+
+---
+
+what do you think is best?
