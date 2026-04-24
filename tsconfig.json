@@ -23,6 +23,7 @@
     { "path": "packages/agent-claude-sdk-runner" },
     { "path": "packages/llm-proxy-anthropic-format" },
     { "path": "packages/chat-orchestrator" },
-    { "path": "./packages/credentials" }
+    { "path": "./packages/credentials" },
+    { "path": "packages/mcp-client" }
   ]
 }
