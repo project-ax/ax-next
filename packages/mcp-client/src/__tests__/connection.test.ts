@@ -131,10 +131,12 @@ describe('McpConnection', () => {
       await conn.connect();
       expect(conn.state).toBe('ready');
 
-      const tools = await conn.listTools();
-      expect(tools).toHaveLength(1);
-      expect(tools[0]?.name).toBe('echo');
-      expect(tools[0]?.description).toBe('echoes its input');
+      const listed = await conn.listTools();
+      expect(listed.ok).toBe(true);
+      if (!listed.ok) throw new Error('expected ok');
+      expect(listed.tools).toHaveLength(1);
+      expect(listed.tools[0]?.name).toBe('echo');
+      expect(listed.tools[0]?.description).toBe('echoes its input');
     } finally {
       await conn.disconnect();
       await dispose();
@@ -151,9 +153,10 @@ describe('McpConnection', () => {
     });
     try {
       await conn.connect();
-      const result = (await conn.callTool('echo', { text: 'hello' })) as {
-        content: Array<{ type: string; text: string }>;
-      };
+      const called = await conn.callTool('echo', { text: 'hello' });
+      expect(called.ok).toBe(true);
+      if (!called.ok) throw new Error('expected ok');
+      const result = called.result as { content: Array<{ type: string; text: string }> };
       expect(result.content).toEqual([{ type: 'text', text: 'hello' }]);
     } finally {
       await conn.disconnect();
@@ -314,8 +317,10 @@ describe('McpConnection', () => {
       expect(conn.state).toBe('unhealthy');
       await conn.connect();
       expect(conn.state).toBe('ready');
-      const tools = await conn.listTools();
-      expect(tools).toHaveLength(1);
+      const listed = await conn.listTools();
+      expect(listed.ok).toBe(true);
+      if (!listed.ok) throw new Error('expected ok');
+      expect(listed.tools).toHaveLength(1);
     } finally {
       await conn.disconnect();
       await dispose();
