@@ -54,12 +54,27 @@ importers:
       '@ax/core':
         specifier: workspace:*
         version: link:../core
+      '@ax/llm-anthropic':
+        specifier: workspace:*
+        version: link:../llm-anthropic
       '@ax/llm-mock':
         specifier: workspace:*
         version: link:../llm-mock
+      '@ax/sandbox-subprocess':
+        specifier: workspace:*
+        version: link:../sandbox-subprocess
       '@ax/storage-sqlite':
         specifier: workspace:*
         version: link:../storage-sqlite
+      '@ax/tool-bash':
+        specifier: workspace:*
+        version: link:../tool-bash
+      '@ax/tool-dispatcher':
+        specifier: workspace:*
+        version: link:../tool-dispatcher
+      '@ax/tool-file-io':
+        specifier: workspace:*
+        version: link:../tool-file-io
       zod:
         specifier: ^3.23.8
         version: 3.25.76
