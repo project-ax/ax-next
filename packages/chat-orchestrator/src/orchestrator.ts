@@ -52,6 +52,17 @@ export interface ChatOrchestratorConfig {
   // hangs without emitting chat-end, we synthesize a terminated outcome
   // after this elapses.
   chatTimeoutMs?: number;
+  // One-shot mode (default true for 6.5a): on the first `chat:turn-end` the
+  // orchestrator queues a `cancel` entry into the runner's inbox, so the
+  // runner exits cleanly after processing the single user message and emits
+  // its final `event.chat-end`. Callers driving multi-message sessions set
+  // this to false and queue additional user messages themselves.
+  //
+  // Why this lives here: the runner is persistent by design (design doc
+  // §"Runner comparison") so it can service future multi-message flows.
+  // Week 6.5a's only caller (the CLI) is one-shot. Rather than bifurcate the
+  // runner's behavior, the orchestrator owns the "this chat is done" signal.
+  oneShot?: boolean;
 }
 
 export interface ChatRunInput {
@@ -147,9 +158,15 @@ export function createOrchestrator(
 ): {
   runChat(ctx: ChatContext, input: ChatRunInput): Promise<ChatOutcome>;
   onChatEnd(ctx: ChatContext, payload: { outcome: ChatOutcome }): void;
+  onTurnEnd(ctx: ChatContext): void;
 } {
   const waitersBySessionId = new Map<string, Deferred<ChatOutcome>>();
   const chatTimeoutMs = config.chatTimeoutMs ?? DEFAULT_CHAT_TIMEOUT_MS;
+  const oneShot = config.oneShot ?? true;
+  // Sessions that have already been cancelled — prevents a second
+  // chat:turn-end (from a misbehaving runner) from queueing a duplicate
+  // cancel entry.
+  const cancelledSessions = new Set<string>();
 
   async function runChat(
     ctx: ChatContext,
@@ -325,9 +342,46 @@ export function createOrchestrator(
     if (deferred !== undefined && !deferred.settled) {
       deferred.resolve(payload.outcome);
     }
+    // Cleanup: forget we cancelled this session, in case the same sessionId
+    // gets reused by a later chat:run (shouldn't happen — ctx.sessionId is
+    // fresh per request in practice — but the cleanup keeps the set from
+    // growing unbounded in a long-lived host).
+    cancelledSessions.delete(ctx.sessionId);
   }
 
-  return { runChat, onChatEnd };
+  function onTurnEnd(ctx: ChatContext): void {
+    // One-shot mode: the runner just finished processing the single user
+    // message and is now waiting on inbox.next() for another. We don't have
+    // one, so queue a cancel — the runner's inbox loop will receive it,
+    // break out of its outer loop, emit event.chat-end, and exit cleanly.
+    //
+    // Guards:
+    //   - oneShot must be true (multi-message hosts opt out).
+    //   - sessionId must be an in-flight chat:run (skip unrelated turn-ends).
+    //   - don't double-queue (a runner that fires turn-end twice must not
+    //     queue two cancels).
+    if (!oneShot) return;
+    if (!waitersBySessionId.has(ctx.sessionId)) return;
+    if (cancelledSessions.has(ctx.sessionId)) return;
+    cancelledSessions.add(ctx.sessionId);
+    // Fire-and-forget. If this fails (e.g. session already terminated), the
+    // sandbox-exit path will resolve the deferred as terminated and the chat
+    // still completes cleanly — logging is enough.
+    void bus
+      .call<SessionQueueWorkInput, SessionQueueWorkOutput>(
+        'session:queue-work',
+        ctx,
+        { sessionId: ctx.sessionId, entry: { type: 'cancel' as const } } as unknown as SessionQueueWorkInput,
+      )
+      .catch((err) => {
+        ctx.logger.warn('one_shot_cancel_queue_failed', {
+          sessionId: ctx.sessionId,
+          err,
+        });
+      });
+  }
+
+  return { runChat, onChatEnd, onTurnEnd };
 }
 
 // A distinct error type so the runChat finally block can tell "we timed out"

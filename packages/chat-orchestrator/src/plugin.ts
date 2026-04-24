@@ -43,7 +43,13 @@ export function createChatOrchestratorPlugin(
       // runner (via the IPC server's /event.chat-end handler). The
       // subscriber is a pass-through: resolves the waiting deferred,
       // returns undefined, doesn't veto and doesn't transform.
-      subscribes: ['chat:end'],
+      //
+      // We also listen to `chat:turn-end` so that in one-shot mode
+      // (the default for 6.5a) we queue a `cancel` into the runner's
+      // inbox after the first user message completes — the runner is
+      // persistent by design, so without this signal it would block
+      // forever on inbox.next() and the chat:run would time out.
+      subscribes: ['chat:end', 'chat:turn-end'],
     },
     init({ bus }) {
       const orch = createOrchestrator(bus, config);
@@ -60,6 +66,15 @@ export function createChatOrchestratorPlugin(
         async (ctx, payload) => {
           orch.onChatEnd(ctx, payload);
           return undefined; // pass-through; no transform, no veto.
+        },
+      );
+
+      bus.subscribe<{ reason?: string }>(
+        'chat:turn-end',
+        PLUGIN_NAME,
+        async (ctx) => {
+          orch.onTurnEnd(ctx);
+          return undefined;
         },
       );
     },
