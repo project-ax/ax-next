@@ -8,12 +8,15 @@
 //                                      │
 //                                      └── fail ── ► unhealthy
 //
-//   any state    ──disconnect()──► closed   (idempotent)
+//   unhealthy     ──connect()──►  connecting    (retry path for Task 11)
+//   closed        ──connect()──►  (rejected: construct a new McpConnection)
 //
-// Reconnect-with-backoff (Task 11) will add transitions unhealthy→connecting
-// and hook into the SDK transport's `onclose`/`onerror` callbacks. We keep
-// the `unhealthy` slot in the state union now so that layer has somewhere to
-// land without a breaking API change.
+//   any state     ──disconnect()──► closed      (idempotent)
+//
+// Reconnect-with-backoff (Task 11) will drive unhealthy→connecting from the
+// SDK transport's `onclose`/`onerror` callbacks. We allow that transition
+// from `connect()` already so the retry layer doesn't need to reach into
+// private state to re-arm an attempt.
 //
 // We deliberately do NOT emit MCP_SERVER_UNAVAILABLE here — that's the job
 // of the plugin layer that wraps callTool() once the bus is available
@@ -117,18 +120,31 @@ export class McpConnection {
    * rather than `closed` so Task 11's backoff layer can distinguish
    * "never came up" from "explicitly torn down".
    *
-   * Calling `connect()` on a connection that isn't `disconnected` throws —
-   * double-connect is a programming error, not something we want to paper
-   * over by silently returning.
+   * Allowed from `'disconnected'` (fresh connection) and `'unhealthy'`
+   * (retry after a failed attempt — Task 11's reconnect path). Rejected
+   * from `'connecting'` / `'ready'` (double-connect is a programming error)
+   * and from `'closed'` (once explicitly torn down, construct a new
+   * McpConnection — we don't resurrect a closed one).
    */
   async connect(): Promise<void> {
-    if (this._state !== 'disconnected') {
+    if (this._state === 'closed') {
+      throw new PluginError({
+        code: 'mcp-closed',
+        plugin: PLUGIN_NAME,
+        message: `connection for '${this.serverId}' is closed; construct a new McpConnection to reconnect`,
+      });
+    }
+    if (this._state !== 'disconnected' && this._state !== 'unhealthy') {
       throw new PluginError({
         code: 'mcp-already-connected',
         plugin: PLUGIN_NAME,
         message: `connection for '${this.serverId}' is in state '${this._state}'`,
       });
     }
+    // Clear any residue from a prior failed attempt so the retry path
+    // doesn't accidentally reuse a half-built client or transport.
+    this.client = undefined;
+    this.transport = undefined;
     this._state = 'connecting';
     try {
       const buildTransport = this.opts.transportFactory ?? createTransport;
@@ -205,11 +221,17 @@ export class McpConnection {
     this._state = 'closed';
     try {
       await this.client?.close();
-    } catch {
+    } catch (err) {
       // Disconnect is best-effort — the server might already be dead or
       // the transport might have errored out. We've already committed to
-      // the 'closed' state; swallowing here avoids leaking SDK-internal
-      // errors to callers who just wanted to clean up.
+      // the 'closed' state and we don't rethrow (callers in `finally`
+      // blocks shouldn't have to guard against it), but a failed close
+      // can mean a wedged transport or stuck subprocess. Log a warning
+      // so operators can see it rather than silently swallowing.
+      this.opts.ctx.logger.warn('mcp_disconnect_close_failed', {
+        serverId: this.serverId,
+        err: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 

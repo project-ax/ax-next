@@ -260,6 +260,92 @@ describe('McpConnection', () => {
     }
   });
 
+  it('disconnect() from unhealthy succeeds and reaches closed', async () => {
+    // Induce a connect failure to land in `unhealthy`, then assert the
+    // cleanup path still works — operators need a way to tear down a
+    // connection that never came up.
+    const brokenTransport: Transport = {
+      async start() {
+        throw new Error('boom');
+      },
+      async send() {},
+      async close() {},
+    };
+    const conn = new McpConnection({
+      config: stdioConfig(),
+      bus: unusedBus,
+      ctx: ctx(),
+      transportFactory: async () => brokenTransport as unknown as McpClientTransport,
+    });
+    await expect(conn.connect()).rejects.toMatchObject({ code: 'mcp-connect-failed' });
+    expect(conn.state).toBe('unhealthy');
+    await expect(conn.disconnect()).resolves.toBeUndefined();
+    expect(conn.state).toBe('closed');
+  });
+
+  it('connect() from unhealthy is allowed and can recover with a working transport', async () => {
+    // First attempt uses a broken transport so we land in `unhealthy`;
+    // second attempt swaps in a working one. This is the reconnect shape
+    // Task 11 needs — if this passes, the `connect()` guard no longer
+    // blocks the retry path.
+    const { clientTransport, dispose } = await makeLinkedServer();
+    let attempt = 0;
+    const conn = new McpConnection({
+      config: stdioConfig(),
+      bus: unusedBus,
+      ctx: ctx(),
+      transportFactory: async () => {
+        attempt += 1;
+        if (attempt === 1) {
+          const broken: Transport = {
+            async start() {
+              throw new Error('transient');
+            },
+            async send() {},
+            async close() {},
+          };
+          return broken as unknown as McpClientTransport;
+        }
+        return clientTransport;
+      },
+    });
+    try {
+      await expect(conn.connect()).rejects.toMatchObject({ code: 'mcp-connect-failed' });
+      expect(conn.state).toBe('unhealthy');
+      await conn.connect();
+      expect(conn.state).toBe('ready');
+      const tools = await conn.listTools();
+      expect(tools).toHaveLength(1);
+    } finally {
+      await conn.disconnect();
+      await dispose();
+    }
+  });
+
+  it('connect() from closed rejects with mcp-closed', async () => {
+    // Once a connection has been explicitly torn down, resurrecting it
+    // is a bug — callers should construct a new McpConnection instead.
+    const { clientTransport, dispose } = await makeLinkedServer();
+    const conn = new McpConnection({
+      config: stdioConfig(),
+      bus: unusedBus,
+      ctx: ctx(),
+      transportFactory: async () => clientTransport,
+    });
+    try {
+      await conn.connect();
+      await conn.disconnect();
+      expect(conn.state).toBe('closed');
+      await expect(conn.connect()).rejects.toMatchObject({
+        name: 'PluginError',
+        code: 'mcp-closed',
+        plugin: '@ax/mcp-client',
+      });
+    } finally {
+      await dispose();
+    }
+  });
+
   it('connect() failure preserves structured cause chain', async () => {
     const inner = new Error('dns nxdomain');
     const brokenTransport: Transport = {
