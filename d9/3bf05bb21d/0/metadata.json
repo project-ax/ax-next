@@ -1,0 +1,41 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "d93bf05bb21d",
+  "session_id": "33707baf-5451-4bfa-82e9-af7d0fb803a4",
+  "strategy": "manual-commit",
+  "created_at": "2026-04-24T00:17:56.191162Z",
+  "branch": "feat/week-7-9-k8s-deployment",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "packages/test-harness/src/__tests__/workspace-contract-suite.test.ts",
+    "packages/test-harness/src/index.ts",
+    "packages/test-harness/src/workspace-contract-suite.ts"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-opus-4-7[1m]",
+  "turn_id": "106313e5097f",
+  "checkpoint_transcript_start": 188,
+  "transcript_lines_at_start": 188,
+  "token_usage": {
+    "input_tokens": 44,
+    "cache_creation_tokens": 600,
+    "cache_read_tokens": 109604,
+    "output_tokens": 2566,
+    "api_call_count": 1
+  },
+  "session_metrics": {
+    "turn_count": 2
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-04-24T00:17:56.182284Z",
+    "agent_lines": 267,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 267,
+    "total_lines_changed": 267,
+    "agent_percentage": 100,
+    "metric_version": 2
+  }
+}

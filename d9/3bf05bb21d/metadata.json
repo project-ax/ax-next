@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "d93bf05bb21d",
+  "strategy": "manual-commit",
+  "branch": "feat/week-7-9-k8s-deployment",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "packages/test-harness/src/__tests__/workspace-contract-suite.test.ts",
+    "packages/test-harness/src/index.ts",
+    "packages/test-harness/src/workspace-contract-suite.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/d9/3bf05bb21d/0/metadata.json",
+      "transcript": "/d9/3bf05bb21d/0/full.jsonl",
+      "content_hash": "/d9/3bf05bb21d/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 44,
+    "cache_creation_tokens": 600,
+    "cache_read_tokens": 109604,
+    "output_tokens": 2566,
+    "api_call_count": 1
+  }
+}
