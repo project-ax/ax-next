@@ -8,7 +8,6 @@ import {
 // Integration test: wire the dispatcher alongside tool-file-io so the
 // full tool:register path is exercised. Test-only — runtime package.json
 // deps stay free of cross-plugin references.
-// eslint-disable-next-line no-restricted-imports
 import { createToolDispatcherPlugin } from '@ax/tool-dispatcher';
 import {
   createToolFileIoPlugin,

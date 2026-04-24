@@ -21,8 +21,17 @@
 // sandbox-side code.
 //
 // Exceptions (rule turned off):
-//   packages/cli/**   — the CLI loads plugins per ax.config.ts
-//   presets/**        — presets are meta-packages that reference plugins
+//   packages/cli/**                 — the CLI loads plugins per ax.config.ts
+//   presets/**                      — meta-packages that reference plugins
+//   packages/agent-*-runner/**      — runner binaries legitimately wire
+//                                     sandbox-side tool-impl packages into
+//                                     the local dispatcher; they live on
+//                                     the sandbox side of the trust
+//                                     boundary and aren't host-side plugins
+//   packages/*/src/__tests__/**     — test files may reach into peer
+//                                     plugins to drive realistic integration
+//                                     scenarios (e.g. the ipc-server tests
+//                                     use session-inmemory to mint tokens)
 
 import tseslint from 'typescript-eslint';
 
@@ -71,7 +80,12 @@ export default tseslint.config(
   },
 
   {
-    files: ['packages/cli/**', 'presets/**'],
+    files: [
+      'packages/cli/**',
+      'presets/**',
+      'packages/agent-*-runner/**',
+      'packages/*/src/__tests__/**',
+    ],
     rules: {
       'no-restricted-imports': 'off',
     },

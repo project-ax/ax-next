@@ -9,7 +9,6 @@ import {
 // tool:register path is exercised. Test-only — runtime package.json deps
 // stay free of cross-plugin references, so the no-restricted-imports
 // rule still protects every non-test file.
-// eslint-disable-next-line no-restricted-imports
 import { createToolDispatcherPlugin } from '@ax/tool-dispatcher';
 import { createToolBashPlugin, bashToolDescriptor } from '../index.js';
 
