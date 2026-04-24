@@ -40,11 +40,8 @@ describe('createTestHarness', () => {
     expect(v).toBe('mocked-value');
   });
 
-  it('chat:run returns terminated:llm:call:no-service when no llm plugin is loaded (Week 1-2 goal)', async () => {
-    const h = await createTestHarness({ withChatLoop: true });
-    const outcome = await h.bus.call('chat:run', h.ctx(), {
-      message: { role: 'user', content: 'hi' },
-    });
-    expect(outcome).toMatchObject({ kind: 'terminated', reason: 'llm:call:no-service' });
+  it('does not register chat:run by default (orchestrator is an explicit plugin in 6.5a)', async () => {
+    const h = await createTestHarness({});
+    expect(h.bus.hasService('chat:run')).toBe(false);
   });
 });

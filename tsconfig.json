@@ -19,6 +19,7 @@
     { "path": "packages/agent-runner-core" },
     { "path": "packages/tool-bash-impl" },
     { "path": "packages/tool-file-io-impl" },
-    { "path": "packages/agent-native-runner" }
+    { "path": "packages/agent-native-runner" },
+    { "path": "packages/chat-orchestrator" }
   ]
 }

@@ -2,7 +2,6 @@ export * from './errors.js';
 export * from './context.js';
 export * from './types.js';
 export * from './hook-bus.js';
-export { registerChatLoop } from './chat-loop.js';
 export * from './plugin.js';
 export * from './bootstrap.js';
 export {
