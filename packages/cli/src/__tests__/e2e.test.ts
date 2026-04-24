@@ -39,7 +39,12 @@ describe('@ax/cli end-to-end', () => {
     const dbPath = join(workDir, 'e2e.sqlite');
 
     const result = spawnSync('node', [cliEntry, 'hi'], {
-      env: { ...process.env, AX_DB: dbPath },
+      env: {
+        ...process.env,
+        AX_DB: dbPath,
+        // @ax/credentials is wired into the chat path; init() requires this.
+        AX_CREDENTIALS_KEY: '42'.repeat(32),
+      },
       encoding: 'utf8',
     });
 

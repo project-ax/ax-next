@@ -27,6 +27,7 @@ async function mkTmp(): Promise<string> {
 describe('real-llm e2e (library mode, stubbed client)', () => {
   let tmp: string;
   let originalKey: string | undefined;
+  let originalCredKey: string | undefined;
 
   beforeEach(async () => {
     tmp = await mkTmp();
@@ -34,11 +35,18 @@ describe('real-llm e2e (library mode, stubbed client)', () => {
     // The llm-anthropic plugin's init() requires this env var to be set,
     // even when we inject a stub client (the key is passed to the factory).
     process.env.ANTHROPIC_API_KEY = 'sk-fake-for-test';
+    originalCredKey = process.env.AX_CREDENTIALS_KEY;
+    // @ax/credentials is wired into the chat path; its init() requires a
+    // 32-byte key in env. This test doesn't exercise credential storage, but
+    // bootstrap still runs the plugin's init().
+    process.env.AX_CREDENTIALS_KEY = '42'.repeat(32);
   });
 
   afterEach(async () => {
     if (originalKey === undefined) delete process.env.ANTHROPIC_API_KEY;
     else process.env.ANTHROPIC_API_KEY = originalKey;
+    if (originalCredKey === undefined) delete process.env.AX_CREDENTIALS_KEY;
+    else process.env.AX_CREDENTIALS_KEY = originalCredKey;
     if (tmp) await fs.rm(tmp, { recursive: true, force: true });
   });
 
