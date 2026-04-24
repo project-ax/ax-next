@@ -23,6 +23,7 @@
   },
   "devDependencies": {
     "@ax/ipc-server": "workspace:*",
+    "@ax/llm-proxy-anthropic-format": "workspace:*",
     "@ax/session-inmemory": "workspace:*",
     "@ax/test-harness": "workspace:*",
     "@types/node": "^25.6.0",

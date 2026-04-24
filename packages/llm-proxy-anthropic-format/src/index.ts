@@ -10,6 +10,15 @@ export {
 } from './translate-response.js';
 export { synthesizeSseFrames } from './sse-frames.js';
 export {
+  createProxyListener,
+  type ProxyListener,
+  type CreateProxyListenerOptions,
+} from './listener.js';
+export {
+  createLlmProxyAnthropicFormatPlugin,
+  type CreateLlmProxyAnthropicFormatPluginOptions,
+} from './plugin.js';
+export {
   AnthropicRequestSchema,
   AnthropicMessageSchema,
   AnthropicContentBlockSchema,

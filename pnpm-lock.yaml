@@ -166,6 +166,9 @@ importers:
       '@ax/llm-mock':
         specifier: workspace:*
         version: link:../llm-mock
+      '@ax/llm-proxy-anthropic-format':
+        specifier: workspace:*
+        version: link:../llm-proxy-anthropic-format
       '@ax/sandbox-subprocess':
         specifier: workspace:*
         version: link:../sandbox-subprocess
@@ -333,6 +336,9 @@ importers:
       '@ax/ipc-server':
         specifier: workspace:*
         version: link:../ipc-server
+      '@ax/llm-proxy-anthropic-format':
+        specifier: workspace:*
+        version: link:../llm-proxy-anthropic-format
       '@ax/session-inmemory':
         specifier: workspace:*
         version: link:../session-inmemory
