@@ -59,11 +59,15 @@ export function createLocalDispatcher(): LocalDispatcher {
       // Wrap with the tool name for easier debugging. Original error
       // preserved as `cause` so callers can drill down. Using Error's
       // options-bag signature (cause) keeps stack traces intact.
-      const wrapped = new Error(
-        `local dispatcher: tool '${call.name}' failed: ${(err as Error).message ?? String(err)}`,
+      //
+      // Narrow with `instanceof Error` first — a thrown `null` / `undefined`
+      // / `BigInt` would otherwise explode on `.message` access and lose the
+      // original cause. Belt-and-suspenders for weird executors.
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `local dispatcher: tool '${call.name}' failed: ${msg}`,
         { cause: err },
       );
-      throw wrapped;
     }
   };
 

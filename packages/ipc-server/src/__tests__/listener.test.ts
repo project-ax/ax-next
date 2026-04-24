@@ -212,7 +212,7 @@ describe('createListener', () => {
     });
     expect(res.status).toBe(404);
     const parsed = JSON.parse(res.body);
-    expect(parsed.error.code).toBe('VALIDATION');
+    expect(parsed.error.code).toBe('NOT_FOUND');
     expect(parsed.error.message).toMatch(/unknown path/);
   });
 

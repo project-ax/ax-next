@@ -175,7 +175,8 @@ function requestOnce(
             if (!overflowed) {
               overflowed = true;
               // Destroying the response ends the stream; we'll surface a
-              // HostUnavailableError on 'error' or 'close'.
+              // HostUnavailableError on 'error' (NOT 'end' — res.destroy(err)
+              // emits 'error' and 'close', not 'end').
               res.destroy(new Error('response body too large'));
             }
             return;
@@ -183,18 +184,20 @@ function requestOnce(
           chunks.push(chunk);
         });
         res.on('end', () => {
-          if (overflowed) {
-            settle(() =>
-              reject(new HostUnavailableError('response body exceeded cap')),
-            );
-            return;
-          }
+          // By the time 'end' fires, no destroy has run — resolve normally.
           settle(() =>
             resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks) }),
           );
         });
         res.on('error', (err) => {
-          settle(() => reject(new HostUnavailableError('response stream error', err)));
+          // Overflow path funnels through here (res.destroy was called with
+          // a 'response body too large' error). Translate to a specific
+          // HostUnavailableError message so callers see the real reason
+          // instead of a generic "stream error."
+          const message = overflowed
+            ? 'response body exceeded cap'
+            : 'response stream error';
+          settle(() => reject(new HostUnavailableError(message, err)));
         });
       },
     );
@@ -250,7 +253,18 @@ export function createIpcClient(opts: IpcClientOptions): IpcClient {
   const backoff = opts.retryBackoff ?? defaultBackoff;
 
   const timeoutFor = (action: IpcActionName): number => {
-    return opts.timeouts?.[action] ?? IPC_TIMEOUTS_MS[action];
+    if (opts.timeouts?.[action] !== undefined) return opts.timeouts[action]!;
+    // For long-poll endpoints, the server-side deadline IS IPC_TIMEOUTS_MS
+    // (the server holds the request open for that long). If the client aborts
+    // at the same value, a race window exists where the client's abort fires
+    // just as the server is about to return `{type:'timeout'}` — producing a
+    // spurious HostUnavailableError instead of a clean timeout response the
+    // inbox loop knows how to handle. Add a grace period on top so the
+    // server always responds first.
+    if (action === 'session.next-message') {
+      return IPC_TIMEOUTS_MS[action] + 5_000;
+    }
+    return IPC_TIMEOUTS_MS[action];
   };
 
   // Retry loop. `shouldRetry` decides whether the error is transient and

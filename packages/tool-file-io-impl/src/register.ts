@@ -13,6 +13,12 @@ export interface RegisterOptions {
  * The two closures capture `options.workspaceRoot` so that every
  * tool call is constrained to the workspace the runner was launched
  * against. safePath enforces the boundary on every call.
+ *
+ * Non-string `path` / `content` are rejected explicitly rather than
+ * coerced via `String(...)`. Coercion would turn `{ foo: 1 }` into
+ * `"[object Object]"` and push the resulting garbage string all the
+ * way into `fs.writeFile` — a silent data-corruption path. The model
+ * should see a clear input-shape error it can recover from.
  */
 export function registerWithDispatcher(
   dispatcher: LocalDispatcher,
@@ -23,24 +29,24 @@ export function registerWithDispatcher(
     if (typeof input !== 'object' || input === null) {
       throw new Error('read_file: input must be an object');
     }
-    const record = input as { path?: unknown };
-    return readFile(
-      { path: String(record.path ?? '') },
-      { workspaceRoot: options.workspaceRoot },
-    );
+    const { path } = input as { path?: unknown };
+    if (typeof path !== 'string') {
+      throw new Error('read_file: input.path must be a string');
+    }
+    return readFile({ path }, { workspaceRoot: options.workspaceRoot });
   });
   dispatcher.register('write_file', async (call: ToolCall) => {
     const input = call.input;
     if (typeof input !== 'object' || input === null) {
       throw new Error('write_file: input must be an object');
     }
-    const record = input as { path?: unknown; content?: unknown };
-    return writeFile(
-      {
-        path: String(record.path ?? ''),
-        content: String(record.content ?? ''),
-      },
-      { workspaceRoot: options.workspaceRoot },
-    );
+    const { path, content } = input as { path?: unknown; content?: unknown };
+    if (typeof path !== 'string') {
+      throw new Error('write_file: input.path must be a string');
+    }
+    if (typeof content !== 'string') {
+      throw new Error('write_file: input.content must be a string');
+    }
+    return writeFile({ path, content }, { workspaceRoot: options.workspaceRoot });
   });
 }

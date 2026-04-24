@@ -73,9 +73,18 @@ export function createInboxLoop(opts: InboxLoopOptions): InboxLoop {
         cursor = raw.cursor;
         return { type: 'user-message', payload: raw.payload };
       }
-      // cancel
-      cursor = raw.cursor;
-      return { type: 'cancel' };
+      if (raw.type === 'cancel') {
+        cursor = raw.cursor;
+        return { type: 'cancel' };
+      }
+      // Reject anything outside the three discriminated-union arms loudly —
+      // a silent fall-through to 'cancel' would mask protocol drift or a
+      // forward-compatible variant that arrives before the runner knows how
+      // to handle it. The ipc-client's schema validation should catch this
+      // upstream, but defense-in-depth at the loop boundary too.
+      throw new Error(
+        `inbox-loop: unexpected session.next-message response type: ${String((raw as { type?: unknown }).type)}`,
+      );
     }
   };
 

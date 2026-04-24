@@ -12,6 +12,7 @@ export const IpcErrorCodeSchema = z.enum([
   'HOST_UNAVAILABLE',
   'VALIDATION',
   'HOOK_REJECTED',
+  'NOT_FOUND',
   'INTERNAL',
 ]);
 export type IpcErrorCode = z.infer<typeof IpcErrorCodeSchema>;

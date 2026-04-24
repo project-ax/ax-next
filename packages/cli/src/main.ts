@@ -22,22 +22,24 @@ import { createToolFileIoPlugin } from '@ax/tool-file-io';
 import { AxConfigSchema, type AxConfig, type AxConfigInput } from './config/schema.js';
 import { loadAxConfig } from './config/load.js';
 
-// Resolve the agent-native-runner binary at load time. `@ax/cli` is the ONE
-// package permitted to import sibling plugins directly (eslint.config.mjs
-// no-restricted-imports allowlist); this is also the one spot where we pin
-// down the runner binary location (I8). `createRequire` from the CLI's own
-// URL is robust against pnpm hoisting and works identically in dev + prod —
-// we get the installed `@ax/agent-native-runner`'s main entry regardless of
-// how the workspace symlinks shake out.
+// `@ax/cli` is the ONE package permitted to import sibling plugins directly
+// (eslint.config.mjs no-restricted-imports allowlist); this is also the one
+// spot where we pin down the runner binary location (I8).
+//
+// Lazy-resolve the agent-native-runner binary inside main() rather than at
+// module load. Library-mode consumers (tests, embedders using configOverride)
+// that never invoke chat:run shouldn't fail to import @ax/cli just because
+// the runner's dist/ hasn't been built yet. `createRequire` from the CLI's
+// own URL is robust against pnpm hoisting and works identically in dev + prod.
 //
 // We resolve the package's `.` export (which is `dist/main.js`) rather than
 // a subpath specifier: the runner's `exports` field only exposes `.` and
 // `./turn-loop`, so a direct `./dist/main.js` subpath is blocked by Node's
 // exports-map enforcement.
 const requireFromCli = createRequire(import.meta.url);
-const DEFAULT_RUNNER_BINARY: string = requireFromCli.resolve(
-  '@ax/agent-native-runner',
-);
+function resolveRunnerBinary(): string {
+  return requireFromCli.resolve('@ax/agent-native-runner');
+}
 const DEFAULT_CHAT_TIMEOUT_MS = 10 * 60_000;
 
 export interface MainOptions {
@@ -116,7 +118,7 @@ export async function main(opts: MainOptions): Promise<number> {
   plugins.push(createIpcServerPlugin());
   plugins.push(
     createChatOrchestratorPlugin({
-      runnerBinary: DEFAULT_RUNNER_BINARY,
+      runnerBinary: resolveRunnerBinary(),
       chatTimeoutMs: DEFAULT_CHAT_TIMEOUT_MS,
     }),
   );

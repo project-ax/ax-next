@@ -23,10 +23,15 @@ import { runTurnLoop, type TurnLoopOutcome } from './turn-loop.js';
 // the sandbox still can't exfiltrate ANTHROPIC_API_KEY / etc — the key
 // never entered this process.
 //
-// Exit codes:
-//   0 — clean exit (inbox yielded `cancel`).
-//   1 — terminated (session-invalid, host-unavailable-after-retries, etc.).
+// Exit codes (mapped from the runner's `TurnLoopOutcome.kind`):
+//   0 — turn loop completed normally (TurnLoopOutcome.kind === 'complete',
+//       reached either via an inbox `cancel` entry or the model ending the
+//       conversation with no tool calls).
+//   1 — turn loop terminated (TurnLoopOutcome.kind === 'terminated' —
+//       session-invalid, host-unavailable-after-retries, inbox-loop error).
 //   2 — fatal during bootstrap (missing env, initial tool.list failure).
+//       These are errors that escape main() before the turn loop starts,
+//       so there is no TurnLoopOutcome to report.
 // ---------------------------------------------------------------------------
 
 export async function main(): Promise<number> {

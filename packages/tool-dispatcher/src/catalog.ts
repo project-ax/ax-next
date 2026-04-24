@@ -14,6 +14,25 @@ const TOOL_NAME_RE = /^[a-z][a-z0-9_.-]{0,63}$/;
 
 const PLUGIN_NAME = '@ax/tool-dispatcher';
 
+// Render an arbitrary value as a printable diagnostic string without
+// ever throwing. `JSON.stringify` blows up on BigInts, circular refs,
+// and custom `toJSON`s that throw — any of which would bubble out of
+// `validateDescriptor` as a raw `TypeError` instead of our structured
+// `PluginError('invalid-payload')`.
+function safeDisplay(value: unknown): string {
+  try {
+    const s = JSON.stringify(value);
+    if (typeof s === 'string') return s;
+  } catch {
+    // fall through
+  }
+  try {
+    return String(value);
+  } catch {
+    return '<unprintable>';
+  }
+}
+
 /**
  * In-memory tool catalog. Single source of truth (invariant I4) — only
  * `@ax/tool-dispatcher` owns the map. Other plugins read via `tool:list`
@@ -84,9 +103,10 @@ function validateDescriptor(input: unknown): ToolDescriptor {
   const d = input as Record<string, unknown>;
 
   if (typeof d.name !== 'string' || !TOOL_NAME_RE.test(d.name)) {
-    // JSON.stringify(undefined) === undefined (not 'undefined'), so fall
-    // back to String() for a printable diagnostic.
-    const display = (JSON.stringify(d.name) ?? String(d.name)).slice(0, 64);
+    // JSON.stringify(undefined) === undefined, and JSON.stringify throws on
+    // BigInts or circular objects / throwing toJSON's. Guard both paths so
+    // the caller always gets a PluginError, not a raw TypeError.
+    const display = safeDisplay(d.name).slice(0, 64);
     throw new PluginError({
       code: 'invalid-payload',
       plugin: PLUGIN_NAME,

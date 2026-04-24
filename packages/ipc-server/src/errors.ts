@@ -12,10 +12,13 @@ import type { HandlerErr } from './handlers/types.js';
 //   - The caller-side logger receives the real error (hookName, plugin,
 //     cause) at `error` level for debugging.
 //
-// Callers pass the logger's `ctx.logger.error` into `unexpectedError()` so
+// Callers pass the logger's `ctx.logger.error` into `logInternalError()` so
 // the leak-prevention is localized to these helpers — dispatcher and
 // handlers can't accidentally spill a stack trace by returning the wrong
-// shape.
+// shape. The wire-shape helpers below (`validationError`, `notFound`,
+// `hookRejected`, `mapPluginError`, `internalError`) produce
+// sanitized responses; `logInternalError` is the matching observability
+// side that logs the real cause for debugging.
 // ---------------------------------------------------------------------------
 
 /** Validation failure — bad JSON shape, missing fields, etc. */
@@ -23,9 +26,11 @@ export function validationError(message: string): HandlerErr {
   return { status: 400, body: { error: { code: 'VALIDATION', message } } };
 }
 
-/** 404 is reserved for "unknown route / unknown host tool". */
+/** 404 for "unknown route / unknown host tool" — distinct from 400 VALIDATION
+ *  (malformed request) since the client can legitimately ask about a tool the
+ *  host doesn't expose. */
 export function notFound(message: string): HandlerErr {
-  return { status: 404, body: { error: { code: 'VALIDATION', message } } };
+  return { status: 404, body: { error: { code: 'NOT_FOUND', message } } };
 }
 
 /** A subscriber chain returned `reject`; the action is vetoed. */

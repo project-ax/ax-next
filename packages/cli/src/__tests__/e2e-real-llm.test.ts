@@ -143,7 +143,19 @@ describe('real-llm e2e (library mode, stubbed client)', () => {
             name: 'bash',
             // Emits two lines: self PID, parent PID. The runner is the
             // parent, not the host.
-            input: { command: 'echo "self=$$"; echo "parent=$(ps -o ppid= -p $$)"' },
+            // Portable PPID probe: /proc/self/status works on Linux (including
+            // BusyBox / Alpine where `ps -p` is unsupported), and `ps -o
+            // ppid=` without `-p` works on macOS BSD ps. We try /proc first,
+            // then fall back to a macOS-compatible `ps` invocation.
+            input: {
+              command:
+                'echo "self=$$"; ' +
+                'if [ -r /proc/self/status ]; then ' +
+                '  awk \'/^PPid:/ {print "parent=" $2}\' /proc/self/status; ' +
+                'else ' +
+                '  echo "parent=$(ps -o ppid= $$ | tr -d \' \')"; ' +
+                'fi',
+            },
           },
         ],
         stop_reason: 'tool_use',

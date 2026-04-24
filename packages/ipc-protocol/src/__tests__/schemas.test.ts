@@ -354,12 +354,13 @@ describe('events', () => {
 });
 
 describe('errors', () => {
-  it('enum covers exactly the five codes', () => {
+  it('enum covers exactly the six codes', () => {
     const expected = [
       'SESSION_INVALID',
       'HOST_UNAVAILABLE',
       'VALIDATION',
       'HOOK_REJECTED',
+      'NOT_FOUND',
       'INTERNAL',
     ] as const;
     // Values are iterable via options

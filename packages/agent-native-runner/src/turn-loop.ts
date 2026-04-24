@@ -1,4 +1,5 @@
 import type { IpcClient, InboxLoop, LocalDispatcher } from '@ax/agent-runner-core';
+import { SessionInvalidError } from '@ax/agent-runner-core';
 import type {
   ChatMessage,
   LlmCallResponse,
@@ -166,11 +167,17 @@ async function runOneToolCall(
       output = resp.output;
     }
   } catch (err) {
-    // Surface tool failure back to the model as a user-role message.
-    // This matches Week 4-6 chat-loop behavior: the model sees the error
-    // and gets a chance to retry or recover. Note: we DO NOT re-throw
-    // to the outer loop, because a single-tool failure is not a session
-    // terminator.
+    // Terminal session errors (401 from the IPC server → the host revoked
+    // the token, session is gone) must unwind to the outer loop so the
+    // runner's termination `reason` reflects the first terminal signal,
+    // NOT whatever spurious "tool failed" narrative the model would see
+    // next. Re-throw to the outer catch in runTurnLoop.
+    if (err instanceof SessionInvalidError) throw err;
+    // Non-terminal failures (local executor threw, host returned a 5xx
+    // after exhausting retries, etc.) flow through to the model as a
+    // tool-error message — matches Week 4-6 chat-loop behavior so the
+    // model can retry or narrate the failure. A single-tool failure is
+    // not a session terminator.
     history.push({
       role: 'user',
       content: `[tool ${effective.name}] error: ${err instanceof Error ? err.message : String(err)}`,

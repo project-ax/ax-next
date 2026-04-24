@@ -375,7 +375,7 @@ describe('dispatcher', () => {
     );
     expect(res.status).toBe(404);
     const parsed = JSON.parse(res.body);
-    expect(parsed.error.code).toBe('VALIDATION');
+    expect(parsed.error.code).toBe('NOT_FOUND');
     expect(parsed.error.message).toContain("no host-side tool for 'nobody'");
   });
 
@@ -686,13 +686,13 @@ describe('dispatcher', () => {
   // Unknown path
   // -------------------------------------------------------------------------
 
-  it('POST /nope → 404 VALIDATION unknown path', async () => {
+  it('POST /nope → 404 NOT_FOUND unknown path', async () => {
     const s = await setup({});
     setups.push(s);
     const res = await doRequest(s.socketPath, 'POST', '/nope', s.token, '{}');
     expect(res.status).toBe(404);
     const parsed = JSON.parse(res.body);
-    expect(parsed.error.code).toBe('VALIDATION');
+    expect(parsed.error.code).toBe('NOT_FOUND');
     expect(parsed.error.message).toMatch(/unknown path/);
   });
 

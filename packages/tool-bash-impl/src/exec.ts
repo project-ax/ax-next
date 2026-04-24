@@ -110,8 +110,14 @@ export async function executeBash(
       },
     );
 
-    let stdout = Buffer.alloc(0);
-    let stderr = Buffer.alloc(0);
+    // Accumulate chunks in arrays and concat once on 'close'.
+    // Per-'data' Buffer.concat is O(n^2) in the number of chunks — a 1 MiB
+    // output delivered in 256 × 4 KiB chunks was moving ~32 MiB of memory
+    // before. Arrays + single concat keeps it O(n).
+    const stdoutChunks: Buffer[] = [];
+    let stdoutLen = 0;
+    const stderrChunks: Buffer[] = [];
+    let stderrLen = 0;
     const truncated = { stdout: false, stderr: false };
     let timedOut = false;
 
@@ -122,23 +128,27 @@ export async function executeBash(
 
     child.stdout.on('data', (chunk: Buffer) => {
       if (truncated.stdout) return;
-      const remaining = maxStdoutBytes - stdout.length;
+      const remaining = maxStdoutBytes - stdoutLen;
       if (chunk.length > remaining) {
-        stdout = Buffer.concat([stdout, chunk.subarray(0, remaining)]);
+        stdoutChunks.push(chunk.subarray(0, remaining));
+        stdoutLen += remaining;
         truncated.stdout = true;
       } else {
-        stdout = Buffer.concat([stdout, chunk]);
+        stdoutChunks.push(chunk);
+        stdoutLen += chunk.length;
       }
     });
 
     child.stderr.on('data', (chunk: Buffer) => {
       if (truncated.stderr) return;
-      const remaining = maxStderrBytes - stderr.length;
+      const remaining = maxStderrBytes - stderrLen;
       if (chunk.length > remaining) {
-        stderr = Buffer.concat([stderr, chunk.subarray(0, remaining)]);
+        stderrChunks.push(chunk.subarray(0, remaining));
+        stderrLen += remaining;
         truncated.stderr = true;
       } else {
-        stderr = Buffer.concat([stderr, chunk]);
+        stderrChunks.push(chunk);
+        stderrLen += chunk.length;
       }
     });
 
@@ -165,8 +175,8 @@ export async function executeBash(
       resolve({
         exitCode,
         signal,
-        stdout: stdout.toString('utf8'),
-        stderr: stderr.toString('utf8'),
+        stdout: Buffer.concat(stdoutChunks, stdoutLen).toString('utf8'),
+        stderr: Buffer.concat(stderrChunks, stderrLen).toString('utf8'),
         truncated,
         timedOut,
       });
