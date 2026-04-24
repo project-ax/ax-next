@@ -25,6 +25,7 @@
     { "path": "packages/llm-proxy-anthropic-format" },
     { "path": "packages/chat-orchestrator" },
     { "path": "./packages/credentials" },
-    { "path": "packages/mcp-client" }
+    { "path": "packages/mcp-client" },
+    { "path": "packages/workspace-git" }
   ]
 }
