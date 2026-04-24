@@ -12,18 +12,19 @@ import { PluginError, type Plugin } from '@ax/core';
  *   }) -> { unsubscribe: () => void }
  *
  * Rules:
- * - Channel names must match `^[a-z0-9:_-]+$`. Anything else throws PluginError.
- * - Payloads must round-trip through JSON.stringify. We enforce this up front so
- *   the postgres-backed peer (which only accepts JSON-safe payloads) doesn't
- *   silently diverge from the in-process one.
- * - Subscribers on a channel fire in registration order. emit() awaits
- *   Promise.allSettled so one slow/failing subscriber can't block the others.
- * - If a subscriber throws, we log `eventbus_subscriber_failed` at error level
- *   via ctx.logger and continue delivering to the rest. Never console.log.
+ * - Subscribers on a channel fire in registration order. emit() awaits each
+ *   handler before invoking the next so side-effects remain ordered.
+ * - If a subscriber throws, we log `eventbus_subscriber_failed` at error
+ *   level via ctx.logger and continue delivering to the rest. Never
+ *   console.log.
+ *
+ * Out of scope here (belongs in the postgres peer where the wire format
+ * demands it): channel-name sanitization, JSON-safety pre-checks, payload
+ * size limits. The in-process impl trivially delivers any payload the
+ * in-memory Map will hold, including Date/Map/Set/BigInt/function.
  */
 
 const PLUGIN_NAME = '@ax/eventbus-inprocess';
-const CHANNEL_RE = /^[a-z0-9:_-]+$/;
 
 export interface EventbusEmitInput {
   channel: string;
@@ -62,23 +63,20 @@ export function createEventbusInprocessPlugin(): Plugin {
         'eventbus:emit',
         PLUGIN_NAME,
         async (ctx, { channel, payload }) => {
-          assertChannel(channel);
-          assertJsonSafe(payload);
           const entries = channels.get(channel);
           if (entries === undefined || entries.length === 0) return;
           // Snapshot so subscribers that unsubscribe during delivery don't
           // reshape the iteration mid-flight.
           const snapshot = entries.slice();
-          const results = await Promise.allSettled(
-            snapshot.map((e) => e.handler(payload)),
-          );
-          for (const r of results) {
-            if (r.status !== 'rejected') continue;
-            const reason: unknown = r.reason;
-            ctx.logger.error('eventbus_subscriber_failed', {
-              channel,
-              err: reason instanceof Error ? reason : new Error(String(reason)),
-            });
+          for (const e of snapshot) {
+            try {
+              await e.handler(payload);
+            } catch (err) {
+              ctx.logger.error('eventbus_subscriber_failed', {
+                channel,
+                err: err instanceof Error ? err : new Error(String(err)),
+              });
+            }
           }
         },
       );
@@ -87,7 +85,6 @@ export function createEventbusInprocessPlugin(): Plugin {
         'eventbus:subscribe',
         PLUGIN_NAME,
         async (_ctx, { channel, handler }) => {
-          assertChannel(channel);
           if (typeof handler !== 'function') {
             throw new PluginError({
               code: 'invalid-payload',
@@ -114,38 +111,4 @@ export function createEventbusInprocessPlugin(): Plugin {
       );
     },
   };
-}
-
-function assertChannel(channel: unknown): asserts channel is string {
-  if (typeof channel !== 'string' || !CHANNEL_RE.test(channel)) {
-    throw new PluginError({
-      code: 'invalid-payload',
-      plugin: PLUGIN_NAME,
-      message: `invalid channel name ${JSON.stringify(channel)}; must match ${CHANNEL_RE.source}`,
-    });
-  }
-}
-
-function assertJsonSafe(payload: unknown): void {
-  let encoded: string | undefined;
-  try {
-    encoded = JSON.stringify(payload);
-  } catch (err) {
-    throw new PluginError({
-      code: 'invalid-payload',
-      plugin: PLUGIN_NAME,
-      message: `eventbus payload is not JSON-serializable: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-      cause: err,
-    });
-  }
-  if (encoded === undefined) {
-    // JSON.stringify returns undefined for bare functions, symbols, etc.
-    throw new PluginError({
-      code: 'invalid-payload',
-      plugin: PLUGIN_NAME,
-      message: `eventbus payload is not JSON-serializable (JSON.stringify returned undefined)`,
-    });
-  }
 }
