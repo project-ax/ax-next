@@ -37,4 +37,16 @@ describe('spawnImpl', () => {
     expect(result.timedOut).toBe(true);
     expect(result.signal).toBe('SIGKILL');
   });
+
+  it('caps stdout and marks truncated.stdout', async () => {
+    const input = SandboxSpawnInputSchema.parse({
+      argv: ['node', '-e', 'process.stdout.write("x".repeat(2_000_000))'],
+      cwd: '/tmp',
+      env: {},
+      maxStdoutBytes: 1024,
+    });
+    const result = await spawnImpl(undefined, input);
+    expect(result.stdout.length).toBe(1024);
+    expect(result.truncated.stdout).toBe(true);
+  });
 });

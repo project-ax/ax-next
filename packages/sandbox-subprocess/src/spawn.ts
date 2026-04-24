@@ -28,6 +28,7 @@ export async function spawnImpl(
 
     let stdout = Buffer.alloc(0);
     let stderr = Buffer.alloc(0);
+    const truncated = { stdout: false, stderr: false };
     let timedOut = false;
 
     const killTimer = setTimeout(() => {
@@ -36,11 +37,25 @@ export async function spawnImpl(
     }, input.timeoutMs);
 
     child.stdout.on('data', (chunk: Buffer) => {
-      stdout = Buffer.concat([stdout, chunk]);
+      if (truncated.stdout) return;
+      const remaining = input.maxStdoutBytes - stdout.length;
+      if (chunk.length > remaining) {
+        stdout = Buffer.concat([stdout, chunk.subarray(0, remaining)]);
+        truncated.stdout = true;
+      } else {
+        stdout = Buffer.concat([stdout, chunk]);
+      }
     });
 
     child.stderr.on('data', (chunk: Buffer) => {
-      stderr = Buffer.concat([stderr, chunk]);
+      if (truncated.stderr) return;
+      const remaining = input.maxStderrBytes - stderr.length;
+      if (chunk.length > remaining) {
+        stderr = Buffer.concat([stderr, chunk.subarray(0, remaining)]);
+        truncated.stderr = true;
+      } else {
+        stderr = Buffer.concat([stderr, chunk]);
+      }
     });
 
     child.stdin.end();
@@ -57,7 +72,7 @@ export async function spawnImpl(
         signal,
         stdout: stdout.toString('utf8'),
         stderr: stderr.toString('utf8'),
-        truncated: { stdout: false, stderr: false },
+        truncated,
         timedOut,
       });
     });
