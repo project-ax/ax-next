@@ -16,7 +16,7 @@ export function encryptWithKey(key: Buffer, plaintext: string): Uint8Array {
     });
   }
   const iv = randomBytes(IV_LEN);
-  const cipher = createCipheriv(ALGO, key, iv);
+  const cipher = createCipheriv(ALGO, key, iv, { authTagLength: TAG_LEN });
   const ct = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
   const tag = cipher.getAuthTag();
   return new Uint8Array(Buffer.concat([iv, ct, tag]));
@@ -41,7 +41,10 @@ export function decryptWithKey(key: Buffer, blob: Uint8Array): string {
   const iv = buf.subarray(0, IV_LEN);
   const tag = buf.subarray(buf.length - TAG_LEN);
   const ct = buf.subarray(IV_LEN, buf.length - TAG_LEN);
-  const decipher = createDecipheriv(ALGO, key, iv);
+  // Pin authTagLength so a forged blob can't trick us into accepting a
+  // shorter-than-expected tag (semgrep gcm-no-tag-length / sg.run/NbGG1).
+  // We only ever produce 16-byte tags, so anything else is hostile.
+  const decipher = createDecipheriv(ALGO, key, iv, { authTagLength: TAG_LEN });
   decipher.setAuthTag(tag);
   try {
     return Buffer.concat([decipher.update(ct), decipher.final()]).toString('utf8');
