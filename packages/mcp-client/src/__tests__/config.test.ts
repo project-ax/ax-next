@@ -151,7 +151,7 @@ describe('McpServerConfigSchema', () => {
     ).toThrow(PluginError);
   });
 
-  it('rejects an inline `secret` nested inside headerCredentialRefs values-as-object variant', () => {
+  it('rejects an inline secret nested two levels deep', () => {
     // Not a valid schema shape, but the secret scan happens first — so it
     // should still be caught before the schema even sees it.
     expect(() =>
@@ -166,6 +166,21 @@ describe('McpServerConfigSchema', () => {
     expect(() =>
       parseConfig({ ...validHttp, api_key: 'sk-xxx' }),
     ).toThrow(PluginError);
+  });
+
+  it('does not infinite-loop on cyclic input', () => {
+    const a: Record<string, unknown> = {
+      id: 'x',
+      enabled: true,
+      transport: 'stdio',
+      command: 'foo',
+      args: [],
+    };
+    a.self = a;
+    // We don't care whether it parses or rejects — only that it returns
+    // without blowing the stack. Zod's strict mode will reject `self` as an
+    // unrecognized key, but that's a PluginError/ZodError, not a RangeError.
+    expect(() => parseConfig(a)).not.toThrow(/Maximum call stack/);
   });
 });
 

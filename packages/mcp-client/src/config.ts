@@ -17,10 +17,12 @@ const INDEX_KEY = 'mcp-server-index';
 // this check exists only to catch the obvious `password: 'hunter2'` mistake.
 const SECRET_LIKE = ['password', 'secret', 'token', 'apikey', 'api_key'] as const;
 
-function rejectInlineSecrets(obj: unknown, path = ''): void {
+function rejectInlineSecrets(obj: unknown, path = '', seen = new WeakSet<object>()): void {
   if (obj === null || typeof obj !== 'object') return;
+  if (seen.has(obj as object)) return;
+  seen.add(obj as object);
   if (Array.isArray(obj)) {
-    obj.forEach((v, i) => rejectInlineSecrets(v, `${path}[${i}]`));
+    obj.forEach((v, i) => rejectInlineSecrets(v, `${path}[${i}]`, seen));
     return;
   }
   for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
@@ -32,7 +34,7 @@ function rejectInlineSecrets(obj: unknown, path = ''): void {
         message: `inline secret field '${path}${k}' rejected — use credentialRefs / headerCredentialRefs instead`,
       });
     }
-    rejectInlineSecrets(v, `${path}${k}.`);
+    rejectInlineSecrets(v, `${path}${k}.`, seen);
   }
 }
 
