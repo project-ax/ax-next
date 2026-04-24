@@ -1,0 +1,23 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "5f0779520231",
+  "strategy": "manual-commit",
+  "branch": "feat/week-6.5a-topology-shift",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/5f/0779520231/0/metadata.json",
+      "transcript": "/5f/0779520231/0/full.jsonl",
+      "content_hash": "/5f/0779520231/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 152,
+    "cache_creation_tokens": 758119,
+    "cache_read_tokens": 17746210,
+    "output_tokens": 124012,
+    "api_call_count": 86
+  }
+}
