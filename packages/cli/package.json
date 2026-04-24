@@ -25,7 +25,8 @@
     "@ax/core": "workspace:*",
     "@ax/llm-mock": "workspace:*",
     "@ax/storage-sqlite": "workspace:*",
-    "@ax/audit-log": "workspace:*"
+    "@ax/audit-log": "workspace:*",
+    "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/node": "^25.6.0",
