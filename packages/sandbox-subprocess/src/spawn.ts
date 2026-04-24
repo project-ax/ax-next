@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { PluginError, type SandboxSpawnInput, type SandboxSpawnResult } from '@ax/core';
 
 const ARGV0_RE = /^[A-Za-z0-9_./-]+$/;
@@ -22,12 +22,17 @@ export async function spawnImpl(
   // but this fail-fast check catches mistakes earlier and makes intent
   // explicit. Truncate the reflected value in the error message so a caller
   // can't exfiltrate unbounded data into logs via argv[0].
-  if (!ARGV0_RE.test(input.argv[0])) {
+  //
+  // Zod already guarantees argv.length >= 1 (see SandboxSpawnInputSchema),
+  // but with noUncheckedIndexedAccess TS still narrows the tuple access to
+  // `string | undefined`, so we assert the invariant here.
+  const argv0 = input.argv[0];
+  if (argv0 === undefined || !ARGV0_RE.test(argv0)) {
     throw new PluginError({
       code: 'invalid-payload',
       plugin: '@ax/sandbox-subprocess',
       hookName: 'sandbox:spawn',
-      message: `invalid-argv: ${JSON.stringify(input.argv[0]).slice(0, 80)}`,
+      message: `invalid-argv: ${JSON.stringify(argv0 ?? '').slice(0, 80)}`,
     });
   }
 
@@ -44,12 +49,20 @@ export async function spawnImpl(
   const env = { ...filteredCallerEnv, ...allowlist };
 
   return new Promise<SandboxSpawnResult>((resolve, reject) => {
-    const child = spawn(input.argv[0], input.argv.slice(1), {
-      shell: false,
-      cwd: input.cwd,
-      env,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
+    // Annotate the return type explicitly: with @types/node's overloaded
+    // spawn() signature, TS sometimes can't narrow from the stdio option
+    // alone. ['pipe','pipe','pipe'] gives us a ChildProcessWithoutNullStreams,
+    // which has non-nullable stdin/stdout/stderr.
+    const child: ChildProcessWithoutNullStreams = spawn(
+      argv0,
+      input.argv.slice(1),
+      {
+        shell: false,
+        cwd: input.cwd,
+        env,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      },
+    );
 
     let stdout = Buffer.alloc(0);
     let stderr = Buffer.alloc(0);
