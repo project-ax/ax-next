@@ -17,6 +17,7 @@
     { "path": "packages/tool-file-io" },
     { "path": "packages/llm-anthropic" },
     { "path": "packages/agent-runner-core" },
-    { "path": "packages/tool-bash-impl" }
+    { "path": "packages/tool-bash-impl" },
+    { "path": "packages/tool-file-io-impl" }
   ]
 }

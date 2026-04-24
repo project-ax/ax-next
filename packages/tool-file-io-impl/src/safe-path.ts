@@ -1,18 +1,14 @@
-// This module will move to @ax/tool-file-io-impl in Task 10. It is
-// currently orphaned in this package (nothing in src/plugin.ts imports
-// it any longer) but its tests still exercise the canonicalization
-// contract. Keeping it in place avoids churn on the Task 10 move.
+// Moved from @ax/tool-file-io in Task 10 — runs sandbox-side.
+//
+// This module enforces the workspace-root boundary for read_file / write_file.
+// Sandbox-side code cannot import @ax/core (invariant I2), so the original
+// `PluginError` rejections become plain `Error` throws here. The caller in
+// exec.ts / register.ts wraps these into tool-call failure results.
 import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
-import { PluginError } from '@ax/core';
 
 function reject(message: string): never {
-  throw new PluginError({
-    code: 'invalid-payload',
-    plugin: '@ax/tool-file-io',
-    hookName: 'safePath',
-    message,
-  });
+  throw new Error(`safePath: ${message}`);
 }
 
 /**
@@ -57,7 +53,7 @@ export async function safePath(rootAbs: string, userPath: string): Promise<strin
   // Walk up to the nearest existing ancestor, realpath that, re-check boundary,
   // then rejoin the non-existent suffix. This allows write_file on a
   // non-existent leaf while still canonicalizing any existing symlinks.
-  // The catch swallows only filesystem errors (ENOENT); a PluginError from
+  // The catch swallows only filesystem errors (ENOENT); the Error from
   // the boundary check must propagate, otherwise a symlink escape would walk
   // up past the offending link and silently succeed.
   let probe = resolved;
