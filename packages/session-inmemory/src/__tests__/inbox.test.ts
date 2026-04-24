@@ -85,13 +85,34 @@ describe('@ax/session-inmemory inbox', () => {
     expect(result).toEqual({ type: 'timeout', cursor: 0 });
   });
 
-  it('claim after terminate resolves immediately as timeout (no wait)', async () => {
+  it('terminate on an unknown session is a no-op — later queue/claim work normally', async () => {
     const inbox = createInbox();
+    // Regression: early impl lazy-created a terminated marker here, which
+    // poisoned a subsequent queue/claim on the same sessionId (e.g. after
+    // the caller recreated the session through the store). Terminating an
+    // inbox that has no state should leave the inbox empty, not marked.
+    inbox.terminate('s-unknown');
+    const { cursor } = inbox.queue('s-unknown', userMsg('hello'));
+    expect(cursor).toBe(0);
+    const result = await inbox.claim('s-unknown', 0, 500);
+    expect(result).toEqual({
+      type: 'user-message',
+      payload: { role: 'user', content: 'hello' },
+      cursor: 1,
+    });
+  });
+
+  it('claim on a terminated session (known-but-terminated) resolves immediately as timeout', async () => {
+    const inbox = createInbox();
+    // Materialize the per-session state first (via a benign queue+claim),
+    // then terminate. A subsequent claim should fast-path on the flag.
+    inbox.queue('s-1', userMsg('seed'));
+    await inbox.claim('s-1', 0, 500);
     inbox.terminate('s-1');
     const start = Date.now();
-    const result = await inbox.claim('s-1', 0, 5000);
+    const result = await inbox.claim('s-1', 1, 5000);
     const elapsed = Date.now() - start;
-    expect(elapsed).toBeLessThan(50); // fast path
-    expect(result).toEqual({ type: 'timeout', cursor: 0 });
+    expect(elapsed).toBeLessThan(50);
+    expect(result).toEqual({ type: 'timeout', cursor: 1 });
   });
 });

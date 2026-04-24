@@ -126,4 +126,74 @@ describe('@ax/session-inmemory plugin', () => {
     expect(caught).toBeInstanceOf(PluginError);
     expect((caught as PluginError).code).toBe('unknown-session');
   });
+
+  it('terminate-then-create with the same sessionId is clean: queue/claim work normally', async () => {
+    // Regression: earlier impl lazy-wrote a terminated marker in the inbox
+    // on `terminate(unknown)`, which poisoned a subsequent `create` with the
+    // same sessionId — the fresh session's first `claim` short-circuited to
+    // `timeout` because the stale inbox flag was still set.
+    const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
+    const ctx = h.ctx();
+
+    await h.bus.call<SessionTerminateInput, SessionTerminateOutput>(
+      'session:terminate',
+      ctx,
+      { sessionId: 's-reuse' },
+    );
+
+    await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+      'session:create',
+      ctx,
+      { sessionId: 's-reuse', workspaceRoot: '/tmp/ws' },
+    );
+
+    await h.bus.call<SessionQueueWorkInput, SessionQueueWorkOutput>(
+      'session:queue-work',
+      ctx,
+      {
+        sessionId: 's-reuse',
+        entry: { type: 'user-message', payload: { role: 'user', content: 'hi' } },
+      },
+    );
+
+    const claimed = await h.bus.call<SessionClaimWorkInput, SessionClaimWorkOutput>(
+      'session:claim-work',
+      ctx,
+      { sessionId: 's-reuse', cursor: 0, timeoutMs: 500 },
+    );
+    expect(claimed).toEqual({
+      type: 'user-message',
+      payload: { role: 'user', content: 'hi' },
+      cursor: 1,
+    });
+  });
+
+  it('queue-work rejects a user-message with a role outside user|assistant|system', async () => {
+    const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
+    const ctx = h.ctx();
+    await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+      'session:create',
+      ctx,
+      { sessionId: 's-role', workspaceRoot: '/tmp/ws' },
+    );
+    let caught: unknown;
+    try {
+      await h.bus.call<SessionQueueWorkInput, SessionQueueWorkOutput>(
+        'session:queue-work',
+        ctx,
+        {
+          sessionId: 's-role',
+          // Intentionally invalid role to exercise the runtime enum guard.
+          entry: {
+            type: 'user-message',
+            payload: { role: 'admin' as 'user', content: 'hi' },
+          },
+        },
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('invalid-payload');
+  });
 });

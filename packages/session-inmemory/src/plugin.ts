@@ -59,6 +59,8 @@ function requireNonNegativeInt(
   }
 }
 
+const VALID_ROLES = new Set(['user', 'assistant', 'system']);
+
 function requireInboxEntry(
   value: unknown,
   hookName: string,
@@ -77,7 +79,6 @@ function requireInboxEntry(
     if (
       typeof payload !== 'object' ||
       payload === null ||
-      typeof (payload as { role?: unknown }).role !== 'string' ||
       typeof (payload as { content?: unknown }).content !== 'string'
     ) {
       throw new PluginError({
@@ -85,6 +86,18 @@ function requireInboxEntry(
         plugin: PLUGIN_NAME,
         hookName,
         message: `'entry.payload' must be a ChatMessage`,
+      });
+    }
+    // Enforce the ChatMessage role enum at runtime, not just at the type
+    // level — this hook is a trust boundary (the IPC server will feed
+    // untrusted wire payloads through here once Task 3 lands).
+    const role = (payload as { role?: unknown }).role;
+    if (typeof role !== 'string' || !VALID_ROLES.has(role)) {
+      throw new PluginError({
+        code: 'invalid-payload',
+        plugin: PLUGIN_NAME,
+        hookName,
+        message: `'entry.payload.role' must be 'user' | 'assistant' | 'system'`,
       });
     }
     return;

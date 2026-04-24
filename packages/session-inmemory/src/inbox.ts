@@ -104,15 +104,13 @@ export function createInbox(): Inbox {
           finish({ type: 'timeout', cursor });
         };
 
-        const timer = setTimeout(() => {
+        const timer: ReturnType<typeof setTimeout> = setTimeout(() => {
           // On timer: always resolve timeout with echo cursor, no advancement.
           finish({ type: 'timeout', cursor });
         }, timeoutMs);
         // Don't keep the event loop alive solely for a blocked claim — if the
         // process is otherwise idle, a 30 s long-poll shouldn't block shutdown.
-        if (typeof timer === 'object' && timer !== null && 'unref' in timer) {
-          (timer as { unref: () => unknown }).unref();
-        }
+        timer.unref();
 
         state.waiters.add(wake);
       });
@@ -121,12 +119,11 @@ export function createInbox(): Inbox {
     terminate(sessionId) {
       const state = sessions.get(sessionId);
       if (state === undefined) {
-        // Lazy-init a terminated marker so any later queue/claim sees it.
-        sessions.set(sessionId, {
-          entries: [],
-          waiters: new Set(),
-          terminated: true,
-        });
+        // No per-session state has been materialized — nothing to tear down.
+        // The plugin layer already gates queue/claim behind store.get(), so we
+        // never need a lazy "terminated marker" here. Writing one would poison
+        // a same-sessionId re-create sequence (terminate unknown → create →
+        // claim would short-circuit on the stale flag).
         return;
       }
       state.terminated = true;

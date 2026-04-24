@@ -68,6 +68,7 @@ export interface SessionTerminateInput {
   sessionId: string;
 }
 
-// Empty-object return — idempotent terminate. Declared as an interface (not
-// `{}`) so future additions are type-safe if we ever need to return anything.
+// Empty-object return — idempotent terminate. `Record<string, never>` (rather
+// than bare `{}`) is the TS idiom for "no properties allowed"; the bus's return
+// shape stays explicit so a future widening is an intentional type change.
 export type SessionTerminateOutput = Record<string, never>;

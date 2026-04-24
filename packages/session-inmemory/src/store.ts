@@ -1,16 +1,12 @@
 import { randomBytes } from 'node:crypto';
-import { PluginError, type PluginErrorCode } from '@ax/core';
+import { PluginError } from '@ax/core';
 
 const PLUGIN_NAME = '@ax/session-inmemory';
 
-// The plugin's public contract uses plugin-specific error codes
-// (`duplicate-session`, `unknown-session`) that are narrower than the generic
-// core PluginErrorCode union. Cast through `as PluginErrorCode` so callers can
-// still pattern-match on `err.code`. A future slice may widen the core enum;
-// until then we keep the plugin's error vocabulary here rather than forcing
-// generic codes that would lose meaning.
-export const DUPLICATE_SESSION: PluginErrorCode = 'duplicate-session' as PluginErrorCode;
-export const UNKNOWN_SESSION: PluginErrorCode = 'unknown-session' as PluginErrorCode;
+// Plugin-specific error codes. Core's `PluginErrorCode` union is open
+// (`| (string & {})`), so these flow through without casts.
+export const DUPLICATE_SESSION = 'duplicate-session';
+export const UNKNOWN_SESSION = 'unknown-session';
 
 // ---------------------------------------------------------------------------
 // Session store
