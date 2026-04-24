@@ -19,3 +19,9 @@ export {
   IpcRequestError,
   SessionInvalidError,
 } from './errors.js';
+export {
+  createDiffAccumulator,
+  toWireChanges,
+  type AccumulatedFileChange,
+  type DiffAccumulator,
+} from './diff-accumulator.js';

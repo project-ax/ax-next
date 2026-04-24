@@ -59,16 +59,21 @@ let fakeInbox: FakeInbox;
 let createIpcClientMock: Mock;
 let createInboxLoopMock: Mock;
 
-vi.mock('@ax/agent-runner-core', () => ({
-  createIpcClient: (opts: IpcClientOptions): IpcClient => {
-    createIpcClientMock(opts);
-    return fakeClient;
-  },
-  createInboxLoop: (opts: InboxLoopOptions): InboxLoop => {
-    createInboxLoopMock(opts);
-    return fakeInbox;
-  },
-}));
+vi.mock('@ax/agent-runner-core', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('@ax/agent-runner-core')>();
+  return {
+    ...actual,
+    createIpcClient: (opts: IpcClientOptions): IpcClient => {
+      createIpcClientMock(opts);
+      return fakeClient;
+    },
+    createInboxLoop: (opts: InboxLoopOptions): InboxLoop => {
+      createInboxLoopMock(opts);
+      return fakeInbox;
+    },
+  };
+});
 
 const COMPLETE_ENV = {
   AX_IPC_SOCKET: '/tmp/ax.sock',
@@ -185,6 +190,9 @@ describe('main()', () => {
     fakeClient = buildFakeClient();
     fakeClient.call.mockImplementation(async (action: string) => {
       if (action === 'tool.list') return { tools: [] };
+      if (action === 'workspace.commit-notify') {
+        return { accepted: true, version: 'v1', delta: null };
+      }
       throw new Error(`unexpected call: ${action}`);
     });
     fakeInbox = buildFakeInbox([userEntry('please summarize'), cancelEntry]);
@@ -217,6 +225,12 @@ describe('main()', () => {
 
     expect(fakeClient.call).toHaveBeenCalledTimes(1);
     expect(fakeClient.call).toHaveBeenCalledWith('tool.list', {});
+    // Empty turns (no file changes accumulated) skip commit-notify; the
+    // event.turn-end below is the heartbeat the host keys off (Task 7c).
+    const commitNotifies = fakeClient.call.mock.calls.filter(
+      (c) => c[0] === 'workspace.commit-notify',
+    );
+    expect(commitNotifies).toHaveLength(0);
 
     const turnEnds = fakeClient.event.mock.calls.filter(
       (c) => c[0] === 'event.turn-end',

@@ -1,12 +1,22 @@
 #!/usr/bin/env node
+import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import {
   query,
   type SDKAssistantMessage,
   type SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
-import { createInboxLoop, createIpcClient } from '@ax/agent-runner-core';
-import type { ChatMessage, ToolListResponse } from '@ax/ipc-protocol';
+import {
+  createDiffAccumulator,
+  createInboxLoop,
+  createIpcClient,
+  toWireChanges,
+} from '@ax/agent-runner-core';
+import type {
+  ChatMessage,
+  ToolListResponse,
+  WorkspaceCommitNotifyResponse,
+} from '@ax/ipc-protocol';
 import { createCanUseTool } from './can-use-tool.js';
 import { readRunnerEnv } from './env.js';
 import { createHostMcpServer } from './host-mcp-server.js';
@@ -69,6 +79,13 @@ export async function main(): Promise<number> {
 
   const hostMcpServer = createHostMcpServer({ client, tools });
   const inbox = createInboxLoop({ client });
+  // Per-turn diff accumulator (Task 7c). PostToolUse populates; the
+  // `result` SDK message drains and ships a single `workspace.commit-
+  // notify`. Workspace commits are turn-end, NOT per-tool-call.
+  const diffs = createDiffAccumulator();
+  // Tracks the last accepted workspace version so the host's optimistic-
+  // concurrency check sees a coherent lineage across turns.
+  let parentVersion: string | null = null;
   // Host-side bookkeeping for the final event.chat-end outcome. The SDK
   // maintains its OWN transcript internally; this array is only the shape
   // the host cares about (user/assistant text round-tripped through
@@ -119,7 +136,17 @@ export async function main(): Promise<number> {
         canUseTool: createCanUseTool({ client }),
         hooks: {
           PreToolUse: [{ hooks: [createPreToolUseHook({ client })] }],
-          PostToolUse: [{ hooks: [createPostToolUseHook({ client })] }],
+          PostToolUse: [
+            {
+              hooks: [
+                createPostToolUseHook({
+                  client,
+                  diffs,
+                  workspaceRoot: env.workspaceRoot,
+                }),
+              ],
+            },
+          ],
         },
         mcpServers: { [MCP_HOST_SERVER_NAME]: hostMcpServer },
         // Empty settingSources = SDK isolation mode: the runner does NOT
@@ -143,6 +170,32 @@ export async function main(): Promise<number> {
           history.push({ role: 'assistant', content: text });
         }
       } else if (msg.type === 'result') {
+        // Turn boundary. Drain the per-turn diff accumulator and ship a
+        // single `workspace.commit-notify` when there are changes. We
+        // skip empty turns deliberately: a host with no workspace plugin
+        // registered would log an internal error on each empty notify,
+        // and `event.turn-end` already carries the heartbeat signal.
+        // Failures here MUST NOT terminate the chat — the next turn
+        // retries against whatever parent version we last knew.
+        if (!diffs.isEmpty()) {
+          const drained = diffs.drain();
+          try {
+            const resp = (await client.call('workspace.commit-notify', {
+              parentVersion,
+              commitRef: randomUUID(),
+              message: 'turn',
+              changes: toWireChanges(drained),
+            })) as WorkspaceCommitNotifyResponse;
+            if (resp.accepted) {
+              parentVersion = resp.version as unknown as string;
+            }
+            // accepted:false is logged on the host; the runner just keeps
+            // its previous parent and tries again next turn.
+          } catch {
+            /* swallow — workspace commits are recoverable */
+          }
+        }
+
         // One turn of assistant output finished. The SDK now awaits the
         // next yield from userMessages() — i.e. the next inbox pull.
         await client

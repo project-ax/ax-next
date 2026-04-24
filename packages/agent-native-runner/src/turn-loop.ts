@@ -1,5 +1,10 @@
-import type { IpcClient, InboxLoop, LocalDispatcher } from '@ax/agent-runner-core';
-import { SessionInvalidError } from '@ax/agent-runner-core';
+import type {
+  DiffAccumulator,
+  IpcClient,
+  InboxLoop,
+  LocalDispatcher,
+} from '@ax/agent-runner-core';
+import { SessionInvalidError, toWireChanges } from '@ax/agent-runner-core';
 import type {
   ChatMessage,
   LlmCallResponse,
@@ -7,7 +12,9 @@ import type {
   ToolDescriptor,
   ToolExecuteHostResponse,
   ToolPreCallResponse,
+  WorkspaceCommitNotifyResponse,
 } from '@ax/ipc-protocol';
+import { randomUUID } from 'node:crypto';
 
 // ---------------------------------------------------------------------------
 // Sandbox-side turn loop.
@@ -59,6 +66,17 @@ export interface TurnLoopDeps {
    * outer loop — the runner goes back to `inbox.next()` for more input.
    */
   maxTurns?: number;
+  /**
+   * Per-turn diff accumulator. The dispatcher writes into this whenever a
+   * file-mutating tool succeeds; we drain it at turn boundary and ship one
+   * `workspace.commit-notify` request per turn (Task 7c).
+   *
+   * Optional so existing tests that don't care about workspace commits
+   * keep compiling; runner main.ts always supplies one.
+   */
+  diffs?: DiffAccumulator;
+  /** Test seam for commitRef generation. */
+  commitRefGen?: () => string;
 }
 
 export type TurnLoopOutcome =
@@ -69,7 +87,11 @@ const DEFAULT_MAX_TURNS = 20;
 
 export async function runTurnLoop(deps: TurnLoopDeps): Promise<TurnLoopOutcome> {
   const maxTurns = deps.maxTurns ?? DEFAULT_MAX_TURNS;
+  const commitRefGen = deps.commitRefGen ?? (() => randomUUID());
   const history: ChatMessage[] = [];
+  // Track parent version across turns so the host's optimistic-concurrency
+  // check sees a coherent lineage. `null` until the first accepted commit.
+  let parentVersion: string | null = null;
 
   try {
     for (;;) {
@@ -87,6 +109,35 @@ export async function runTurnLoop(deps: TurnLoopDeps): Promise<TurnLoopOutcome> 
       history.push({ role: 'user', content: entry.payload.content });
 
       await runOneUserMessage(history, deps, maxTurns);
+
+      // Aggregate the per-turn diff and ship a single commit-notify when
+      // there are changes. We deliberately skip empty turns: a host that
+      // has no workspace plugin registered would log an internal error on
+      // every empty notify, which is noise. Empty diffs carry no signal
+      // beyond a "turn ended" heartbeat — and `event.turn-end` already
+      // covers that. Failures here MUST NOT terminate the runner; the
+      // next turn retries against whatever version we last knew.
+      if (deps.diffs !== undefined && !deps.diffs.isEmpty()) {
+        const drained = deps.diffs.drain();
+        try {
+          const resp = (await deps.client.call('workspace.commit-notify', {
+            parentVersion,
+            commitRef: commitRefGen(),
+            message: 'turn',
+            changes: toWireChanges(drained),
+          })) as WorkspaceCommitNotifyResponse;
+          if (resp.accepted) {
+            parentVersion = resp.version as unknown as string;
+          }
+          // accepted:false (parent-mismatch / pre-apply rejection) leaves
+          // parentVersion unchanged — next turn will retry against the
+          // same parent the host saw.
+        } catch {
+          // Connection-level failures after retry exhaustion: drop the
+          // diff and keep going. Workspace commits are recoverable on the
+          // next turn; a hung runner is not.
+        }
+      }
 
       // Fire-and-forget: the host uses this to know the runner is idle.
       // We explicitly do NOT await — a failed event must not stall the

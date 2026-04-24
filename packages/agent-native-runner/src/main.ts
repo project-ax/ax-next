@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { pathToFileURL } from 'node:url';
 import {
+  createDiffAccumulator,
   createIpcClient,
   createInboxLoop,
   createLocalDispatcher,
@@ -42,8 +43,15 @@ export async function main(): Promise<number> {
   });
 
   const dispatcher = createLocalDispatcher();
+  // Per-turn diff accumulator. The file-io tool registers an observer that
+  // pushes every successful write/delete in here; the turn loop drains it
+  // at turn boundary into one `workspace.commit-notify` request (Task 7c).
+  const diffs = createDiffAccumulator();
   registerBash(dispatcher, { workspaceRoot: env.workspaceRoot });
-  registerFileIo(dispatcher, { workspaceRoot: env.workspaceRoot });
+  registerFileIo(dispatcher, {
+    workspaceRoot: env.workspaceRoot,
+    onFileChange: (change) => diffs.record(change),
+  });
 
   // Fetch the tool catalog once. Tools are session-lifetime-immutable; a
   // plugin added mid-session wouldn't reach this runner anyway (the host
@@ -52,7 +60,7 @@ export async function main(): Promise<number> {
 
   const inbox = createInboxLoop({ client });
 
-  const outcome = await runTurnLoop({ client, inbox, dispatcher, tools });
+  const outcome = await runTurnLoop({ client, inbox, dispatcher, tools, diffs });
 
   // Emit the final chat-end event. We AWAIT this one (unlike the mid-loop
   // turn-end / tool-post-call events) because it's the signal the host
