@@ -1,0 +1,1 @@
+what about easily exposing tool calls, uploading/downloading files, async messages from agent?
