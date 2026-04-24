@@ -181,6 +181,25 @@ importers:
         specifier: ^4.1.4
         version: 4.1.5(@types/node@25.6.0)(vite@8.0.10(@types/node@25.6.0))
 
+  packages/session-inmemory:
+    dependencies:
+      '@ax/core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@ax/test-harness':
+        specifier: workspace:*
+        version: link:../test-harness
+      '@types/node':
+        specifier: ^25.6.0
+        version: 25.6.0
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^4.1.4
+        version: 4.1.5(@types/node@25.6.0)(vite@8.0.10(@types/node@25.6.0))
+
   packages/storage-sqlite:
     dependencies:
       '@ax/core':

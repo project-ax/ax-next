@@ -10,6 +10,7 @@
     { "path": "packages/cli" },
     { "path": "packages/sandbox-subprocess" },
     { "path": "packages/ipc-protocol" },
+    { "path": "packages/session-inmemory" },
     { "path": "packages/tool-dispatcher" },
     { "path": "packages/tool-bash" },
     { "path": "packages/tool-file-io" },
