@@ -41,6 +41,17 @@ export interface MainOptions {
   workspaceRoot?: string;
   stdout?: (line: string) => void;
   stderr?: (line: string) => void;
+  /**
+   * Test-seam ONLY. When set and `cfg.llm === 'anthropic'`, replaces the real
+   * SDK client with the factory result — same hatch the llm-anthropic plugin
+   * already exposes, threaded through here for library-mode tests. Lives on
+   * `MainOptions` (not in the JSON config schema) because functions aren't
+   * JSON-serializable and this seam must not be reachable from file-based
+   * config. Not used in binary-mode.
+   */
+  anthropicClientFactory?: (apiKey: string) => {
+    messages: { create(req: Record<string, unknown>): Promise<unknown> };
+  };
 }
 
 const DEFAULT_SQLITE_PATH = './ax-next-chat.sqlite';
@@ -92,9 +103,20 @@ export async function main(opts: MainOptions): Promise<number> {
   // `string | undefined` — we strip undefined keys first.
   if (cfg.llm === 'anthropic') {
     const a = cfg.anthropic ?? {};
-    const anthropicCfg: { model?: string; maxTokens?: number } = {};
+    const anthropicCfg: {
+      model?: string;
+      maxTokens?: number;
+      clientFactory?: (apiKey: string) => {
+        messages: { create(req: Record<string, unknown>): Promise<unknown> };
+      };
+    } = {};
     if (a.model !== undefined) anthropicCfg.model = a.model;
     if (a.maxTokens !== undefined) anthropicCfg.maxTokens = a.maxTokens;
+    // `anthropicClientFactory` is MainOptions-only (not in AxConfig), so we
+    // thread it through here for the library-mode e2e test seam.
+    if (opts.anthropicClientFactory !== undefined) {
+      anthropicCfg.clientFactory = opts.anthropicClientFactory;
+    }
     plugins.push(createLlmAnthropicPlugin(anthropicCfg));
   } else {
     plugins.push(llmMockPlugin());
