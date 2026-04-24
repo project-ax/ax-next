@@ -1,7 +1,6 @@
 import {
   HookBus,
   makeChatContext,
-  registerChatLoop,
   bootstrap,
   type ChatContext,
   type Plugin,
@@ -16,15 +15,20 @@ export interface TestHarness {
 export interface CreateTestHarnessOptions {
   services?: Record<string, ServiceHandler>;
   plugins?: Plugin[];
-  withChatLoop?: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// createTestHarness
+//
+// Spins up a bare bus + ctx factory, optionally with service-hook mocks and
+// real plugins booted through `bootstrap`. The Week 1-2 `withChatLoop`
+// option is GONE — chat:run is no longer a kernel primitive. Tests that
+// want chat:run construct `@ax/chat-orchestrator` explicitly and pass it
+// via `plugins:`.
+// ---------------------------------------------------------------------------
 
 export async function createTestHarness(opts: CreateTestHarnessOptions = {}): Promise<TestHarness> {
   const bus = new HookBus();
-
-  if (opts.withChatLoop !== false) {
-    registerChatLoop(bus);
-  }
 
   if (opts.services) {
     for (const [hook, handler] of Object.entries(opts.services)) {

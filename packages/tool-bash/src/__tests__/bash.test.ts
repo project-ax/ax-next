@@ -1,37 +1,29 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import {
   HookBus,
   makeChatContext,
   createLogger,
-  type SandboxSpawnInput,
-  type SandboxSpawnResult,
+  type ToolDescriptor,
 } from '@ax/core';
-// Integration test: wire the real sandbox plugin alongside tool-bash so the
-// end-to-end sandbox:spawn path runs in one process. This is test-only — the
-// plugin's runtime deps in package.json stay free of cross-plugin references,
-// so the no-restricted-imports rule still protects every non-test file.
-// eslint-disable-next-line no-restricted-imports
-import { createSandboxSubprocessPlugin } from '@ax/sandbox-subprocess';
+// Integration test: wire the dispatcher alongside tool-bash so the full
+// tool:register path is exercised. Test-only — runtime package.json deps
+// stay free of cross-plugin references, so the no-restricted-imports
+// rule still protects every non-test file.
+import { createToolDispatcherPlugin } from '@ax/tool-dispatcher';
 import { createToolBashPlugin, bashToolDescriptor } from '../index.js';
 
-const ctx = (rootPath: string) =>
+const ctx = () =>
   makeChatContext({
     sessionId: 's',
     agentId: 'a',
     userId: 'u',
     logger: createLogger({ reqId: 'test', writer: () => {} }),
-    workspace: { rootPath },
   });
 
-describe('tool-bash', () => {
-  it('registers tool:execute:bash', async () => {
-    const bus = new HookBus();
-    await createToolBashPlugin().init({ bus, config: {} });
-    expect(bus.hasService('tool:execute:bash')).toBe(true);
-  });
-
-  it('descriptor input schema names command and timeoutMs', () => {
+describe('tool-bash (descriptor-only)', () => {
+  it('descriptor declares executesIn: "sandbox" and the expected input shape', () => {
     expect(bashToolDescriptor.name).toBe('bash');
+    expect(bashToolDescriptor.executesIn).toBe('sandbox');
     const required = (bashToolDescriptor.inputSchema as { required: string[] }).required;
     expect(required).toContain('command');
     const props = (bashToolDescriptor.inputSchema as {
@@ -40,85 +32,34 @@ describe('tool-bash', () => {
     expect(Object.keys(props)).toEqual(expect.arrayContaining(['command', 'timeoutMs']));
   });
 
-  it('delegates to sandbox:spawn with /bin/bash -c <command>, env:{}, cwd=workspace.rootPath', async () => {
+  it('plugin.init() calls tool:register with the bash descriptor', async () => {
     const bus = new HookBus();
-    const spy = vi.fn(
-      async (_c: unknown, _i: SandboxSpawnInput): Promise<SandboxSpawnResult> => ({
-        exitCode: 0,
-        signal: null,
-        stdout: 'ran',
-        stderr: '',
-        truncated: { stdout: false, stderr: false },
-        timedOut: false,
-      }),
-    );
-    bus.registerService<SandboxSpawnInput, SandboxSpawnResult>(
-      'sandbox:spawn',
-      'fake-sandbox',
-      spy,
-    );
+    await createToolDispatcherPlugin().init({ bus, config: {} });
     await createToolBashPlugin().init({ bus, config: {} });
 
-    const r = await bus.call('tool:execute:bash', ctx('/tmp/ws'), {
-      command: 'echo hi',
-    });
-    expect(r).toMatchObject({ stdout: 'ran', stderr: '', exitCode: 0, timedOut: false });
-
-    expect(spy).toHaveBeenCalledOnce();
-    const arg = spy.mock.calls[0]![1];
-    expect(arg.argv).toEqual(['/bin/bash', '-c', 'echo hi']);
-    expect(arg.env).toEqual({});
-    expect(arg.cwd).toBe('/tmp/ws');
-    expect(arg.timeoutMs).toBe(30_000);
+    const list = await bus.call<Record<string, never>, { tools: ToolDescriptor[] }>(
+      'tool:list',
+      ctx(),
+      {},
+    );
+    expect(list.tools).toHaveLength(1);
+    expect(list.tools[0]).toEqual(bashToolDescriptor);
   });
 
-  it('rejects oversize command (>16 KiB) at Zod BEFORE invoking sandbox:spawn', async () => {
+  it('plugin registers zero service hooks (descriptor-only)', async () => {
     const bus = new HookBus();
-    const spy = vi.fn();
-    bus.registerService('sandbox:spawn', 'fake', spy);
+    await createToolDispatcherPlugin().init({ bus, config: {} });
     await createToolBashPlugin().init({ bus, config: {} });
-    await expect(
-      bus.call('tool:execute:bash', ctx('/tmp'), { command: 'x'.repeat(16_385) }),
-    ).rejects.toThrow();
-    expect(spy).not.toHaveBeenCalled();
+    // The Week 4-6 tool:execute:bash service is gone — execution lives
+    // sandbox-side in @ax/tool-bash-impl (arriving in Task 9).
+    expect(bus.hasService('tool:execute:bash')).toBe(false);
+    expect(bus.hasService('tool:execute')).toBe(false);
   });
 
-  it('honors caller timeoutMs', async () => {
-    const bus = new HookBus();
-    let seen: SandboxSpawnInput | null = null;
-    bus.registerService<SandboxSpawnInput, SandboxSpawnResult>(
-      'sandbox:spawn',
-      'fake',
-      async (_c, i) => {
-        seen = i;
-        return {
-          exitCode: 0,
-          signal: null,
-          stdout: '',
-          stderr: '',
-          truncated: { stdout: false, stderr: false },
-          timedOut: false,
-        };
-      },
-    );
-    await createToolBashPlugin().init({ bus, config: {} });
-    await bus.call('tool:execute:bash', ctx('/tmp'), {
-      command: 'sleep 1',
-      timeoutMs: 15_000,
-    });
-    expect(seen!.timeoutMs).toBe(15_000);
-  });
-
-  it('integrates with real @ax/sandbox-subprocess: echo hello', async () => {
-    const bus = new HookBus();
-    await createSandboxSubprocessPlugin().init({ bus, config: {} });
-    await createToolBashPlugin().init({ bus, config: {} });
-    const r = await bus.call<unknown, { stdout: string; exitCode: number | null }>(
-      'tool:execute:bash',
-      ctx(process.cwd()),
-      { command: 'echo hello' },
-    );
-    expect(r.exitCode).toBe(0);
-    expect(r.stdout.trim()).toBe('hello');
+  it('manifest declares registers: [] and calls: ["tool:register"]', () => {
+    const plugin = createToolBashPlugin();
+    expect(plugin.manifest.registers).toEqual([]);
+    expect(plugin.manifest.calls).toEqual(['tool:register']);
+    expect(plugin.manifest.subscribes).toEqual([]);
   });
 });

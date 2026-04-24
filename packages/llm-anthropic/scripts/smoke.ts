@@ -1,4 +1,3 @@
-/* eslint-disable no-console -- manual smoke script, intentional console I/O */
 // Manual smoke script — NOT run in CI.
 //
 // Runs one real call against api.anthropic.com using the locally-set

@@ -9,9 +9,17 @@
     { "path": "packages/audit-log" },
     { "path": "packages/cli" },
     { "path": "packages/sandbox-subprocess" },
+    { "path": "packages/ipc-protocol" },
+    { "path": "packages/ipc-server" },
+    { "path": "packages/session-inmemory" },
     { "path": "packages/tool-dispatcher" },
     { "path": "packages/tool-bash" },
     { "path": "packages/tool-file-io" },
-    { "path": "packages/llm-anthropic" }
+    { "path": "packages/llm-anthropic" },
+    { "path": "packages/agent-runner-core" },
+    { "path": "packages/tool-bash-impl" },
+    { "path": "packages/tool-file-io-impl" },
+    { "path": "packages/agent-native-runner" },
+    { "path": "packages/chat-orchestrator" }
   ]
 }

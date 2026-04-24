@@ -122,4 +122,109 @@ describe('real-llm e2e (library mode, stubbed client)', () => {
       db.close();
     }
   });
+
+  it('bash runs in a grandchild process, not the host — topology-shift contract', async () => {
+    // Week 6.5a's acceptance contract: the agent loop (and every tool it
+    // runs) lives in a subprocess sandbox, not in the host process. If this
+    // test regresses, we've lost the subprocess isolation that was the
+    // entire point of this slice.
+    //
+    // We ask bash to print its own PID and PPID. The host process's PID is
+    // `process.pid`. Bash's PPID is the runner (its parent), which is in
+    // turn the host's child. So the bash process's PPID must NOT be the
+    // host PID — if it is, the bash was spawned directly by the host (the
+    // Week 4-6 topology) and the topology shift didn't take.
+    const responses: unknown[] = [
+      {
+        content: [
+          {
+            type: 'tool_use',
+            id: 't1',
+            name: 'bash',
+            // Emits two lines: self PID, parent PID. The runner is the
+            // parent, not the host.
+            // Portable PPID probe: /proc/self/status works on Linux (including
+            // BusyBox / Alpine where `ps -p` is unsupported), and `ps -o
+            // ppid=` without `-p` works on macOS BSD ps. We try /proc first,
+            // then fall back to a macOS-compatible `ps` invocation.
+            input: {
+              command:
+                'echo "self=$$"; ' +
+                'if [ -r /proc/self/status ]; then ' +
+                '  awk \'/^PPid:/ {print "parent=" $2}\' /proc/self/status; ' +
+                'else ' +
+                '  echo "parent=$(ps -o ppid= $$ | tr -d \' \')"; ' +
+                'fi',
+            },
+          },
+        ],
+        stop_reason: 'tool_use',
+      },
+      {
+        content: [{ type: 'text', text: 'inspected' }],
+        stop_reason: 'end_turn',
+      },
+    ];
+    const createSpy = vi.fn(async (_req: Record<string, unknown>) => {
+      const next = responses.shift();
+      if (next === undefined) throw new Error('no more queued mock responses');
+      return next;
+    });
+
+    const lines: string[] = [];
+    const errLines: string[] = [];
+    const sqlitePath = path.join(tmp, 'topology.sqlite');
+
+    const hostPid = process.pid;
+
+    const code = await main({
+      message: 'inspect',
+      configOverride: {
+        llm: 'anthropic',
+        tools: ['bash'],
+        sandbox: 'subprocess',
+        storage: 'sqlite',
+      },
+      workspaceRoot: tmp,
+      sqlitePath,
+      stdout: (line) => lines.push(line),
+      stderr: (line) => errLines.push(line),
+      anthropicClientFactory: (_key) => ({ messages: { create: createSpy } }),
+    });
+
+    expect(errLines).toEqual([]);
+    expect(code).toBe(0);
+
+    // Pull the recorded tool-result from the audit-log row so we can parse
+    // the bash output, then extract the parent PID bash observed.
+    const db = new BetterSqlite3(sqlitePath, { readonly: true });
+    let parentPid: number | undefined;
+    try {
+      const rows = db
+        .prepare('SELECT key, value FROM kv')
+        .all() as Array<{ key: string; value: Buffer }>;
+      const chatRow = rows.find((r) => r.key.startsWith('chat:'));
+      const decoded = JSON.parse(chatRow!.value.toString('utf8'));
+      const messages = decoded.outcome.messages as Array<{ role: string; content: string }>;
+      const toolResult = messages.find(
+        (m) => m.role === 'user' && m.content.startsWith('[tool bash]'),
+      );
+      expect(toolResult).toBeTruthy();
+      // Pull `parent=<pid>` from the JSON-stringified stdout captured in the
+      // tool-result message. The runner writes stdout verbatim and the
+      // content body is `[tool bash] <JSON.stringify(output)>`.
+      const match = toolResult!.content.match(/parent=\s*(\d+)/);
+      expect(match).toBeTruthy();
+      parentPid = Number(match![1]);
+    } finally {
+      db.close();
+    }
+
+    // Bash's parent is the runner process. The runner is spawned by the
+    // host as a child — so runner.pid !== host.pid, and therefore
+    // parentPid !== host.pid. A regression that reinstates in-host tool
+    // execution would make parentPid === host.pid.
+    expect(parentPid).toBeDefined();
+    expect(parentPid).not.toBe(hostPid);
+  }, 60_000);
 });

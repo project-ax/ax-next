@@ -25,15 +25,9 @@ describe('@ax/llm-mock', () => {
     expect(p.manifest.subscribes).toEqual([]);
   });
 
-  it('end-to-end: chat:run with llm-mock loaded completes with "hello"', async () => {
-    const h = await createTestHarness({ plugins: [llmMockPlugin()] });
-    const outcome = await h.bus.call('chat:run', h.ctx(), {
-      message: { role: 'user', content: 'anything' },
-    });
-    expect(outcome).toMatchObject({ kind: 'complete' });
-    if (outcome.kind === 'complete') {
-      const last = outcome.messages[outcome.messages.length - 1];
-      expect(last).toEqual({ role: 'assistant', content: 'hello' });
-    }
-  });
+  // NOTE: the Week 1-2 "chat:run + llm-mock end-to-end" case lived here
+  // because the kernel provided chat:run. In 6.5a chat:run is the
+  // @ax/chat-orchestrator plugin's service hook and drives a runner
+  // subprocess — llm-mock no longer participates in a host-side loop. The
+  // equivalent acceptance lands in Task 15 (subprocess topology).
 });

@@ -1,3 +1,9 @@
+// Core-emitted codes are the documented set; plugins may extend with their
+// own domain codes (e.g. 'duplicate-session', 'unknown-session'). The
+// `(string & {})` branch preserves autocomplete on the known literals while
+// keeping the union open — see TS FAQ "string literal union with autocomplete."
+// Plugins should still prefer reusing an existing code when it fits (e.g.
+// 'invalid-payload' for malformed input).
 export type PluginErrorCode =
   | 'no-service'
   | 'duplicate-service'
@@ -9,7 +15,8 @@ export type PluginErrorCode =
   | 'missing-service'
   | 'init-failed'
   | 'subscriber-failed'
-  | 'unknown';
+  | 'unknown'
+  | (string & {});
 
 export interface PluginErrorOptions {
   code: PluginErrorCode;
