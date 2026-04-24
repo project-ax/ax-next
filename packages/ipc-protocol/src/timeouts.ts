@@ -1,0 +1,21 @@
+/**
+ * Per-action timeout ceilings for host-side RPC dispatch (milliseconds).
+ *
+ * Frozen at module load so callers can't mutate them at runtime. Body-size
+ * policing lives elsewhere (see `@ax/core/src/ipc/framing.ts` `MAX_FRAME`,
+ * 4 MiB) — this map is strictly about how long a single in-flight RPC is
+ * allowed to take.
+ *
+ * The keyset is the authoritative list of sandbox→host action names.
+ */
+export const IPC_TIMEOUTS_MS = Object.freeze({
+  'llm.call': 5 * 60_000,
+  'tool.pre-call': 10_000,
+  'tool.execute-host': 30_000,
+  'tool.list': 5_000,
+  'workspace.commit-notify': 30_000,
+  'session.next-message': 30_000,
+});
+
+/** The closed set of sandbox→host RPC action names. */
+export type IpcActionName = keyof typeof IPC_TIMEOUTS_MS;
