@@ -121,7 +121,13 @@ export async function spawnImpl(
       );
     });
 
-    child.on('exit', (exitCode, signal) => {
+    // Resolve on 'close', not 'exit': Node's 'exit' event fires when the child
+    // process terminates, but stdio pipes may still have buffered data that
+    // hasn't been emitted as 'data' events yet. 'close' fires AFTER all stdio
+    // streams are closed and drained, guaranteeing we've captured every byte
+    // the child wrote. Small outputs often survive the race by luck; larger
+    // outputs can truncate non-deterministically on busy systems.
+    child.on('close', (exitCode, signal) => {
       clearTimeout(killTimer);
       resolve({
         exitCode,
