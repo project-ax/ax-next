@@ -14,6 +14,8 @@ import {
   ToolDescriptorSchema,
   ToolCallSchema,
   ChatMessageSchema,
+  asWorkspaceVersion,
+  type WorkspaceVersion,
 } from '../actions.js';
 import {
   EventStreamChunkSchema,
@@ -139,6 +141,11 @@ describe('tool.list', () => {
     expect(res.tools).toEqual([]);
   });
 
+  it('rejects an unknown key on the request (strict)', () => {
+    const r = ToolListRequestSchema.safeParse({ surprise: true });
+    expect(r.success).toBe(false);
+  });
+
   it('round-trips a populated catalog', () => {
     const res = ToolListResponseSchema.parse({
       tools: [
@@ -179,7 +186,16 @@ describe('workspace.commit-notify', () => {
     if (parsed.accepted) {
       expect(parsed.version).toBe('v-token-abc');
       expect(parsed.delta).toBeNull();
+      // Brand check: the transform gives parsed.version the
+      // WorkspaceVersion brand so callers don't need a cast.
+      const branded: WorkspaceVersion = parsed.version;
+      expect(branded).toBe('v-token-abc');
     }
+  });
+
+  it('brands version via asWorkspaceVersion helper', () => {
+    const v: WorkspaceVersion = asWorkspaceVersion('raw-from-backend');
+    expect(v).toBe('raw-from-backend');
   });
 
   it('accepts the rejected shape with a reason', () => {

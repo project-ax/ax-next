@@ -51,8 +51,22 @@ export type ToolDescriptor = z.infer<typeof ToolDescriptorSchema>;
  * At runtime this is just a string; the brand is documentation.
  *
  * Opaque token. Pass to workspace hooks; never parse.
+ *
+ * Construct via {@link asWorkspaceVersion} at the host-side boundary
+ * (where a backend plugin mints the concrete value). The wire schema
+ * applies the brand automatically via transform so parsed responses
+ * carry it without callers casting.
  */
 export type WorkspaceVersion = string & { readonly __brand: 'WorkspaceVersion' };
+
+/**
+ * Host-side helper: narrow a raw string from a workspace backend into a
+ * `WorkspaceVersion`. Only callers that mint version tokens (workspace
+ * plugins) should use this — everyone else receives branded values
+ * through the wire schemas.
+ */
+export const asWorkspaceVersion = (v: string): WorkspaceVersion =>
+  v as WorkspaceVersion;
 
 // ---------------------------------------------------------------------------
 // llm.call
@@ -129,7 +143,10 @@ export type ToolExecuteHostResponse = z.infer<typeof ToolExecuteHostResponseSche
 // tool.list
 // ---------------------------------------------------------------------------
 
-export const ToolListRequestSchema = z.object({});
+// `.strict()` because tool.list takes no parameters today and stuffing
+// unknown fields into the request body is almost certainly a protocol
+// misuse — better to fail loudly than to silently drop them.
+export const ToolListRequestSchema = z.object({}).strict();
 export type ToolListRequest = z.infer<typeof ToolListRequestSchema>;
 
 export const ToolListResponseSchema = z.object({
@@ -161,7 +178,10 @@ export const WorkspaceCommitNotifyResponseSchema = z.discriminatedUnion(
   [
     z.object({
       accepted: z.literal(true),
-      version: z.string(),
+      // Brand the parsed wire value so consumers pick up the opaque-token
+      // contract automatically — no cast needed, and the type system
+      // catches accidental `.startsWith('sha')`-style backend sniffing.
+      version: z.string().transform((v) => v as WorkspaceVersion),
       delta: z.null(),
     }),
     z.object({
@@ -183,6 +203,12 @@ export type WorkspaceCommitNotifyResponse = z.infer<
 //
 // Only the response body is protocol-level — the three variants are what
 // the sandbox inbox loop branches on.
+//
+// Cursor semantics: the response `cursor` is the NEXT cursor the client
+// should request. On `user-message` / `cancel` it's the index of the
+// delivered entry + 1; on `timeout` it's the cursor the client sent
+// (echo — no entry was delivered, so no advancement). The sandbox inbox
+// loop stores this value verbatim and passes it back on the next GET.
 // ---------------------------------------------------------------------------
 
 export const SessionNextMessageResponseSchema = z.discriminatedUnion('type', [
