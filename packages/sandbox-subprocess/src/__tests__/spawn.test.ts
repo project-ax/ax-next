@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import { mkdtemp, realpath } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { SandboxSpawnInputSchema } from '@ax/core';
 import { spawnImpl } from '../spawn.js';
 
@@ -91,5 +94,17 @@ describe('spawnImpl', () => {
     });
     const result = await spawnImpl(undefined, input);
     expect(result.stdout.trim()).toBe('$HOME');
+  });
+
+  it('honors cwd', async () => {
+    const tmp = await mkdtemp(join(tmpdir(), 'ax-cwd-'));
+    const expected = await realpath(tmp);
+    const input = SandboxSpawnInputSchema.parse({
+      argv: ['node', '-e', 'process.stdout.write(process.cwd())'],
+      cwd: tmp,
+      env: {},
+    });
+    const result = await spawnImpl(undefined, input);
+    expect(result.stdout).toBe(expected);
   });
 });
