@@ -6,6 +6,7 @@
     { "path": "packages/test-harness" },
     { "path": "packages/llm-mock" },
     { "path": "packages/storage-sqlite" },
+    { "path": "packages/eventbus-inprocess" },
     { "path": "packages/audit-log" },
     { "path": "packages/cli" },
     { "path": "packages/sandbox-subprocess" },
