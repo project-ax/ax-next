@@ -29,11 +29,16 @@ export function createToolDispatcherPlugin(): Plugin {
         async (ctx, input) => {
           const name = (input as { name?: unknown })?.name;
           if (typeof name !== 'string' || !TOOL_NAME_RE.test(name)) {
+            // JSON.stringify(undefined) === undefined (not "undefined"), and
+            // the same for functions and some symbols, so calling .slice on
+            // the raw result can throw. Fall back to String(name) so the
+            // error message is always a printable diagnostic.
+            const display = (JSON.stringify(name) ?? String(name)).slice(0, 64);
             throw new PluginError({
               code: 'invalid-payload',
               plugin: PLUGIN_NAME,
               hookName: 'tool:execute',
-              message: `invalid tool name: ${JSON.stringify(name).slice(0, 64)}`,
+              message: `invalid tool name: ${display}`,
             });
           }
           const sub = `tool:execute:${name}`;

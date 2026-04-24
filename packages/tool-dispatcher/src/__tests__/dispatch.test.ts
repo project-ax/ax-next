@@ -68,6 +68,17 @@ describe('tool-dispatcher', () => {
     expect(err.code).toBe('invalid-payload');
   });
 
+  it('rejects a payload missing the name field ({}) without crashing', async () => {
+    const bus = new HookBus();
+    await createToolDispatcherPlugin().init({ bus, config: {} });
+    const err = await bus
+      .call<ToolCall, unknown>('tool:execute', ctx(), { id: 't1', name: undefined as unknown as string, input: {} })
+      .catch((e) => e);
+    expect(err).toBeInstanceOf(PluginError);
+    expect(err.code).toBe('invalid-payload');
+    expect(err.message).toContain('invalid tool name');
+  });
+
   it('rejects empty tool name', async () => {
     const bus = new HookBus();
     await createToolDispatcherPlugin().init({ bus, config: {} });
