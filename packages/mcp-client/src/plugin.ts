@@ -111,6 +111,18 @@ export function createMcpClientPlugin(opts: CreateMcpClientPluginOptions = {}): 
         configs
           .filter((c) => c.enabled)
           .map(async (config) => {
+            // HTTPS-by-default: if an HTTP/SSE config points at plain http://,
+            // warn so operators know secrets traverse the wire in cleartext.
+            // The config still works (Task 8 accepts http:// for dev loops).
+            if (
+              (config.transport === 'streamable-http' || config.transport === 'sse') &&
+              config.url.startsWith('http://')
+            ) {
+              initCtx.logger.warn('mcp_plain_http_transport', {
+                serverId: config.id,
+                hint: 'secrets will traverse the wire in cleartext; prefer https://',
+              });
+            }
             const connection = new McpConnection({
               config,
               bus,

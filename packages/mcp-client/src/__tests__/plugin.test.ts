@@ -462,6 +462,86 @@ describe('@ax/mcp-client plugin', () => {
     await serverGood.dispose();
   });
 
+  it('warns at init when a streamable-http config uses plain http://', async () => {
+    const bus = new HookBus();
+
+    await bootstrap({
+      bus,
+      plugins: [memStoragePlugin(), createCredentialsPlugin()],
+      config: {},
+    });
+    await saveConfig(bus, ctx(), {
+      id: 'plain',
+      enabled: true,
+      transport: 'streamable-http',
+      url: 'http://example.invalid/mcp',
+    });
+
+    await createToolDispatcherPlugin().init({ bus, config: undefined });
+
+    // Capture stdout so we can assert the warn log was emitted. The connect
+    // itself is expected to fail (we reject in transportFactory) — that's
+    // fine; the warn fires BEFORE connect(), so it's still on the tape.
+    const captured: string[] = [];
+    const origWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((chunk: unknown) => {
+      captured.push(typeof chunk === 'string' ? chunk : String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    try {
+      await createMcpClientPlugin({
+        transportFactory: async () => {
+          throw new Error('unreachable — warn should still fire');
+        },
+      }).init({ bus, config: undefined });
+    } finally {
+      process.stdout.write = origWrite;
+    }
+
+    const matched = captured.filter((line) => /plain HTTP|cleartext/i.test(line));
+    expect(matched.length).toBeGreaterThan(0);
+  });
+
+  it('does NOT warn when a streamable-http config uses https://', async () => {
+    const bus = new HookBus();
+    const serverA = await makeFakeMcpServer({
+      tools: [{ name: 'echo', inputSchema: { type: 'object' } }],
+    });
+
+    await bootstrap({
+      bus,
+      plugins: [memStoragePlugin(), createCredentialsPlugin()],
+      config: {},
+    });
+    await saveConfig(bus, ctx(), {
+      id: 'secure',
+      enabled: true,
+      transport: 'streamable-http',
+      url: 'https://example.test/mcp',
+    });
+
+    await createToolDispatcherPlugin().init({ bus, config: undefined });
+
+    const captured: string[] = [];
+    const origWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((chunk: unknown) => {
+      captured.push(typeof chunk === 'string' ? chunk : String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+    try {
+      await createMcpClientPlugin({
+        transportFactory: async () => serverA.clientTransport,
+      }).init({ bus, config: undefined });
+    } finally {
+      process.stdout.write = origWrite;
+    }
+
+    const matched = captured.filter((line) => /plain HTTP|cleartext/i.test(line));
+    expect(matched).toEqual([]);
+
+    await serverA.dispose();
+  });
+
   it('manifest declares the expected calls and no static registers', async () => {
     const plugin = createMcpClientPlugin();
     expect(plugin.manifest).toMatchObject({
