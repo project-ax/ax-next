@@ -21,7 +21,7 @@ const ctx = (rootPath: string) =>
     workspace: { rootPath },
   });
 
-async function makeBus(root: string) {
+async function makeBus() {
   const bus = new HookBus();
   await createToolFileIoPlugin().init({ bus, config: {} });
   return bus;
@@ -31,14 +31,14 @@ describe('tool-file-io', () => {
   it('read_file returns contents for a file inside workspace', async () => {
     const root = await mkRoot();
     await fs.writeFile(path.join(root, 'a.txt'), 'hello');
-    const bus = await makeBus(root);
+    const bus = await makeBus();
     const r = await bus.call('tool:execute:read_file', ctx(root), { path: 'a.txt' });
     expect(r).toMatchObject({ path: 'a.txt', content: 'hello', bytes: 5 });
   });
 
   it('read_file rejects a path outside workspace', async () => {
     const root = await mkRoot();
-    const bus = await makeBus(root);
+    const bus = await makeBus();
     await expect(bus.call('tool:execute:read_file', ctx(root), { path: '../etc/passwd' }))
       .rejects.toBeInstanceOf(PluginError);
   });
@@ -46,7 +46,7 @@ describe('tool-file-io', () => {
   it('read_file rejects files larger than 1 MiB (pre-read stat check)', async () => {
     const root = await mkRoot();
     await fs.writeFile(path.join(root, 'big.txt'), Buffer.alloc(1_048_577, 'x'));
-    const bus = await makeBus(root);
+    const bus = await makeBus();
     const err = await bus.call('tool:execute:read_file', ctx(root), { path: 'big.txt' })
       .catch((e) => e);
     expect(err).toBeInstanceOf(PluginError);
@@ -55,7 +55,7 @@ describe('tool-file-io', () => {
 
   it('write_file writes bytes inside workspace and returns byte count', async () => {
     const root = await mkRoot();
-    const bus = await makeBus(root);
+    const bus = await makeBus();
     const r = await bus.call<unknown, { path: string; bytes: number }>(
       'tool:execute:write_file',
       ctx(root),
@@ -67,7 +67,7 @@ describe('tool-file-io', () => {
 
   it('write_file rejects a path outside workspace', async () => {
     const root = await mkRoot();
-    const bus = await makeBus(root);
+    const bus = await makeBus();
     await expect(bus.call('tool:execute:write_file', ctx(root), {
       path: '../escape.txt', content: 'x',
     })).rejects.toBeInstanceOf(PluginError);
@@ -75,7 +75,7 @@ describe('tool-file-io', () => {
 
   it('I4: write_file rejects a multi-byte string that exceeds 1 MiB in UTF-8', async () => {
     const root = await mkRoot();
-    const bus = await makeBus(root);
+    const bus = await makeBus();
     // "😀" is 4 UTF-8 bytes but 2 UTF-16 code units. 300_000 * 4 = 1_200_000 bytes > 1 MiB,
     // while str.length = 600_000 (would pass a naive Zod .max(1_048_576) check on strings).
     const s = '😀'.repeat(300_000);
@@ -90,7 +90,7 @@ describe('tool-file-io', () => {
 
   it('write_file accepts a 1 KiB ASCII string', async () => {
     const root = await mkRoot();
-    const bus = await makeBus(root);
+    const bus = await makeBus();
     const r = await bus.call<unknown, { path: string; bytes: number }>(
       'tool:execute:write_file',
       ctx(root),
@@ -101,7 +101,7 @@ describe('tool-file-io', () => {
 
   it('write_file creates missing parent directories', async () => {
     const root = await mkRoot();
-    const bus = await makeBus(root);
+    const bus = await makeBus();
     await bus.call('tool:execute:write_file', ctx(root), {
       path: 'a/b/c.txt', content: 'hi',
     });

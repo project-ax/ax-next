@@ -6,6 +6,11 @@ import {
   type SandboxSpawnInput,
   type SandboxSpawnResult,
 } from '@ax/core';
+// Integration test: wire the real sandbox plugin alongside tool-bash so the
+// end-to-end sandbox:spawn path runs in one process. This is test-only — the
+// plugin's runtime deps in package.json stay free of cross-plugin references,
+// so the no-restricted-imports rule still protects every non-test file.
+// eslint-disable-next-line no-restricted-imports
 import { createSandboxSubprocessPlugin } from '@ax/sandbox-subprocess';
 import { createToolBashPlugin, bashToolDescriptor } from '../index.js';
 

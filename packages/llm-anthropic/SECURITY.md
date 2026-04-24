@@ -16,7 +16,7 @@ This package registers the `llm:call` service hook, wrapping `@anthropic-ai/sdk`
 
 ## Install scripts (at pin time)
 
-```
+```console
 $ npm view @anthropic-ai/sdk@0.91.0 scripts
 {
   test: './scripts/test',
@@ -32,7 +32,7 @@ None of the keys in the list (`preinstall`, `install`, `postinstall`, `prepare`,
 
 ## Transitive dependencies (at pin time)
 
-```
+```console
 $ pnpm --filter @ax/llm-anthropic list
 @ax/llm-anthropic@0.0.0 /Users/vpulim/dev/ai/ax-next/packages/llm-anthropic (PRIVATE)
 
@@ -43,15 +43,15 @@ dependencies:
 
 `@anthropic-ai/sdk@0.91.0` `dependencies`:
 
-```
-{ 'json-schema-to-ts': '^3.1.1' }
+```json
+{ "json-schema-to-ts": "^3.1.1" }
 ```
 
 `json-schema-to-ts@3.1.1` pulls in `@babel/runtime` and `ts-algebra@2.0.0` — the latter is a type-level compile-time helper (no runtime side effects), the former is a standard runtime helper library.
 
 Resolved in `node_modules/.pnpm`:
 
-```
+```text
 @anthropic-ai+sdk@0.91.0_zod@3.25.76
 json-schema-to-ts@3.1.1
 ts-algebra@2.0.0

@@ -92,7 +92,7 @@ describe('llm-anthropic', () => {
     expect(r.toolCalls).toEqual([{ id: 't1', name: 'bash', input: { command: 'ls' } }]);
   });
 
-  it('missing ANTHROPIC_API_KEY at init -> PluginError with no key leak', async () => {
+  it('missing ANTHROPIC_API_KEY at init -> PluginError init-failed', async () => {
     delete process.env.ANTHROPIC_API_KEY;
     const bus = new HookBus();
     let err: unknown;
@@ -103,7 +103,9 @@ describe('llm-anthropic', () => {
     }
     expect(err).toBeInstanceOf(PluginError);
     expect((err as PluginError).code).toBe('init-failed');
-    expect((err as PluginError).message).not.toMatch(/sk-|key-value/i);
+    // The message is a static literal — there is no env value TO leak when the
+    // key is absent. Key-leak-on-failure is exercised by the 401 test below,
+    // where a real key value is present and the surfaced message redacts it.
   });
 
   it('API 401: surfaces PluginError with redacted message', async () => {

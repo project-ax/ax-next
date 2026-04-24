@@ -51,7 +51,7 @@ describe('framing', () => {
   });
 
   it('encodeFrame throws PluginError on circular input (not raw TypeError)', () => {
-    const obj: any = {};
+    const obj: Record<string, unknown> = {};
     obj.self = obj;
     expect(() => encodeFrame(obj)).toThrow(PluginError);
   });
