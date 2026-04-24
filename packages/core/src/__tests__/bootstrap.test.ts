@@ -78,6 +78,18 @@ describe('bootstrap', () => {
     ).rejects.toMatchObject({ name: 'PluginError', code: 'init-failed', plugin: 'bad' });
   });
 
+  it('rejects two plugins registering the same service hook (duplicate-service)', async () => {
+    const a = makePlugin({ name: 'a', registers: ['storage:get'] });
+    const b = makePlugin({ name: 'b', registers: ['storage:get'] });
+    await expect(
+      bootstrap({ bus: new HookBus(), plugins: [a, b], config: {} }),
+    ).rejects.toMatchObject({
+      name: 'PluginError',
+      code: 'duplicate-service',
+      hookName: 'storage:get',
+    });
+  });
+
   it('rejects two plugins with the same manifest.name (duplicate-plugin)', async () => {
     const a = makePlugin({ name: 'dup' });
     const b = makePlugin({ name: 'dup' });

@@ -24,9 +24,7 @@ export async function bootstrap(opts: BootstrapOptions): Promise<void> {
   }
 
   checkDuplicatePluginNames(plugins);
-  const producers = checkDuplicateRegisters(plugins);
-  const graph = buildCallGraph(plugins, producers);
-  detectCycles(graph);
+  const graph = validateDependencyGraph(plugins);
   const order = topologicalOrder(plugins, graph);
 
   for (const p of order) {
@@ -44,6 +42,20 @@ export async function bootstrap(opts: BootstrapOptions): Promise<void> {
   }
 
   verifyCalls(plugins, bus);
+}
+
+// Runs the three graph-level validations a plugin set must pass before init:
+//   1. no two plugins register the same service hook (duplicate-producer),
+//   2. every declared `calls` entry that a peer produces is wired into the graph,
+//   3. the resulting inter-plugin call graph is acyclic.
+// Returns the graph so `topologicalOrder` can consume it without rebuilding.
+// Missing-service checks happen AFTER init (see `verifyCalls`) because a plugin
+// may register at init-time; they are not part of the manifest-only graph.
+function validateDependencyGraph(plugins: Plugin[]): Map<string, string[]> {
+  const producers = checkDuplicateRegisters(plugins);
+  const graph = buildCallGraph(plugins, producers);
+  assertAcyclic(graph);
+  return graph;
 }
 
 function checkDuplicatePluginNames(plugins: Plugin[]): void {
@@ -92,7 +104,7 @@ function buildCallGraph(plugins: Plugin[], producers: Map<string, string>): Map<
   return graph;
 }
 
-function detectCycles(graph: Map<string, string[]>): void {
+function assertAcyclic(graph: Map<string, string[]>): void {
   const visiting = new Set<string>();
   const done = new Set<string>();
 
@@ -119,8 +131,8 @@ function detectCycles(graph: Map<string, string[]>): void {
 }
 
 // Returns plugins in init order: a plugin's declared producers (the plugins
-// that register hooks it `calls`) come before it. Assumes detectCycles has
-// already passed, so a DFS post-order is a valid topological order. Original
+// that register hooks it `calls`) come before it. Assumes validateDependencyGraph
+// has already passed, so a DFS post-order is a valid topological order. Original
 // array order is preserved among plugins that don't depend on each other.
 function topologicalOrder(plugins: Plugin[], graph: Map<string, string[]>): Plugin[] {
   const byName = new Map(plugins.map((p) => [p.manifest.name, p] as const));
