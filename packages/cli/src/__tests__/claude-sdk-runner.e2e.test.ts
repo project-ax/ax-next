@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import * as os from 'node:os';
+import { createRequire } from 'node:module';
 
 import { main } from '../main.js';
 import { createTestHostToolPlugin } from '@ax/test-harness';
@@ -11,6 +13,39 @@ import {
   type Plugin,
   type ToolCall,
 } from '@ax/core';
+
+// The claude-agent-sdk ships precompiled native `claude` binaries as
+// platform-specific optional deps (~150MB each). pnpm only installs the
+// variant matching the current host platform/libc, so the lockfile baked
+// on a Mac dev machine doesn't carry the linux-x64-glibc binary CI needs.
+// Until CI installs the right variant explicitly, skip this test there
+// rather than fail. The unit-level `main()` test in @ax/agent-claude-sdk-runner
+// covers the wiring; this test is the dev-loop integration check.
+const claudeBinaryAvailable = (() => {
+  const requireFromHere = createRequire(import.meta.url);
+  const variants = [
+    'darwin-arm64',
+    'darwin-x64',
+    'linux-x64',
+    'linux-x64-musl',
+    'linux-arm64',
+    'linux-arm64-musl',
+    'win32-x64',
+    'win32-arm64',
+  ];
+  for (const v of variants) {
+    try {
+      const pkg = requireFromHere.resolve(
+        `@anthropic-ai/claude-agent-sdk-${v}/package.json`,
+      );
+      const candidate = path.join(path.dirname(pkg), 'claude');
+      if (existsSync(candidate)) return true;
+    } catch {
+      // variant not installed for this platform — try next
+    }
+  }
+  return false;
+})();
 
 // ---------------------------------------------------------------------------
 // Week 6.5d acceptance test — runner: 'claude-sdk' end-to-end.
@@ -54,7 +89,7 @@ interface PostCallEvent {
   output: unknown;
 }
 
-describe('claude-sdk runner e2e', () => {
+describe.skipIf(!claudeBinaryAvailable)('claude-sdk runner e2e', () => {
   let tmp: string;
 
   beforeEach(async () => {
