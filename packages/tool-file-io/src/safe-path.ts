@@ -1,3 +1,7 @@
+// This module will move to @ax/tool-file-io-impl in Task 10. It is
+// currently orphaned in this package (nothing in src/plugin.ts imports
+// it any longer) but its tests still exercise the canonicalization
+// contract. Keeping it in place avoids churn on the Task 10 move.
 import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
 import { PluginError } from '@ax/core';

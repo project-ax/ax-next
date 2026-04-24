@@ -286,13 +286,10 @@ importers:
       '@ax/core':
         specifier: workspace:*
         version: link:../core
-      zod:
-        specifier: ^3.23.8
-        version: 3.25.76
     devDependencies:
-      '@ax/sandbox-subprocess':
+      '@ax/tool-dispatcher':
         specifier: workspace:*
-        version: link:../sandbox-subprocess
+        version: link:../tool-dispatcher
       '@types/node':
         specifier: ^25.6.0
         version: 25.6.0
@@ -324,10 +321,10 @@ importers:
       '@ax/core':
         specifier: workspace:*
         version: link:../core
-      zod:
-        specifier: ^3.23.8
-        version: 3.25.76
     devDependencies:
+      '@ax/tool-dispatcher':
+        specifier: workspace:*
+        version: link:../tool-dispatcher
       '@types/node':
         specifier: ^25.6.0
         version: 25.6.0

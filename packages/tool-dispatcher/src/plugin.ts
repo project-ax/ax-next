@@ -1,57 +1,50 @@
-import { PluginError, type Plugin, type ToolCall } from '@ax/core';
+import type { Plugin, ToolDescriptor } from '@ax/core';
+import { ToolCatalog } from './catalog.js';
 
 const PLUGIN_NAME = '@ax/tool-dispatcher';
 
-// Tool names become hook-name suffixes (`tool:execute:${name}`). Restrict to a
-// shape that cannot collide with other hook-name segments or reintroduce
-// traversal-like tokens from upstream inputs. Belt-and-suspenders — the bus's
-// hasService() lookup is a Map read, so an escape character here doesn't open
-// a path today, but a future IPC-exposed path would.
-const TOOL_NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
-
+/**
+ * Tool dispatcher — owns the single source of truth for the tool catalog
+ * (invariant I4). Tool-provider plugins declare their tools by calling
+ * `tool:register` during their own `init()`. The agent runtime reads the
+ * catalog via `tool:list` (which seals it on first call, so all
+ * registrations must complete before any list query).
+ *
+ * The dispatcher does NOT execute tools. After 6.5a the shape is:
+ *  - `executesIn: 'sandbox'` tools are dispatched inside the sandbox by
+ *    `@ax/agent-runner-core`'s local dispatcher.
+ *  - `executesIn: 'host'` tools (none in 6.5a) round-trip through the
+ *    `tool.execute-host` IPC action and land on whichever plugin
+ *    registered `tool:execute:${name}` on the host.
+ *
+ * So there is no `tool:execute` umbrella anymore — the Week 4-6 fan-out
+ * service has been retired along with its caller.
+ */
 export function createToolDispatcherPlugin(): Plugin {
   return {
     manifest: {
       name: PLUGIN_NAME,
       version: '0.0.0',
-      registers: ['tool:execute'],
-      // `calls` is intentionally empty: sub-services are resolved at dispatch
-      // time via bus.hasService() because the set of registered tools is
-      // configuration-driven, not a manifest-declared dependency. Documented
-      // as the one exception to the "no half-wired plugins" invariant.
+      registers: ['tool:register', 'tool:list'],
       calls: [],
       subscribes: [],
     },
     async init({ bus }) {
-      bus.registerService<ToolCall, unknown>(
-        'tool:execute',
+      const catalog = new ToolCatalog();
+
+      bus.registerService<ToolDescriptor, { ok: true }>(
+        'tool:register',
         PLUGIN_NAME,
-        async (ctx, input) => {
-          const name = (input as { name?: unknown })?.name;
-          if (typeof name !== 'string' || !TOOL_NAME_RE.test(name)) {
-            // JSON.stringify(undefined) === undefined (not "undefined"), and
-            // the same for functions and some symbols, so calling .slice on
-            // the raw result can throw. Fall back to String(name) so the
-            // error message is always a printable diagnostic.
-            const display = (JSON.stringify(name) ?? String(name)).slice(0, 64);
-            throw new PluginError({
-              code: 'invalid-payload',
-              plugin: PLUGIN_NAME,
-              hookName: 'tool:execute',
-              message: `invalid tool name: ${display}`,
-            });
-          }
-          const sub = `tool:execute:${name}`;
-          if (!bus.hasService(sub)) {
-            throw new PluginError({
-              code: 'no-service',
-              plugin: PLUGIN_NAME,
-              hookName: sub,
-              message: `no tool plugin registers '${sub}'`,
-            });
-          }
-          return bus.call(sub, ctx, (input as { input?: unknown }).input);
+        async (_ctx, input) => {
+          catalog.register(input);
+          return { ok: true };
         },
+      );
+
+      bus.registerService<Record<string, never>, { tools: ToolDescriptor[] }>(
+        'tool:list',
+        PLUGIN_NAME,
+        async () => ({ tools: catalog.list() }),
       );
     },
   };

@@ -35,6 +35,15 @@ export interface ToolDescriptor {
   // the shape to the model. Kept as an opaque object so plugins can emit any
   // valid JSON Schema draft without coupling to a specific zod version.
   inputSchema: Record<string, unknown>;
+  /**
+   * Where the tool physically runs:
+   * - `'sandbox'`: the agent runtime dispatches locally, never hits the host.
+   * - `'host'`: the agent sends `tool.execute-host` and waits for the host.
+   *
+   * Must match the corresponding field on `@ax/ipc-protocol`'s
+   * `ToolDescriptorSchema` — see that file for the cross-boundary shape.
+   */
+  executesIn: 'sandbox' | 'host';
 }
 
 export type ChatOutcome =
