@@ -19,7 +19,8 @@ import { MAX_FRAME } from '@ax/core';
 // propagate unchanged — they already say what they need to say.
 // ---------------------------------------------------------------------------
 
-export const DEFAULT_MAX_BODY_BYTES = MAX_FRAME;
+// Cap lives in @ax/core as MAX_FRAME — one source of truth (invariant I4).
+// Callers pass it explicitly into readJsonBody(); we don't re-export it here.
 
 /** The accumulated body exceeded the cap. Listener maps this to 413. */
 export class TooLargeError extends Error {
@@ -44,7 +45,7 @@ export interface ReadBodyResult {
 
 export async function readJsonBody(
   req: http.IncomingMessage,
-  maxBytes: number = DEFAULT_MAX_BODY_BYTES,
+  maxBytes: number = MAX_FRAME,
 ): Promise<ReadBodyResult> {
   // ----- fail fast on declared Content-Length -----
   // Note: we only trust Content-Length to REJECT. An undersized or missing

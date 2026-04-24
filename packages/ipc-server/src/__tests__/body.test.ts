@@ -1,8 +1,8 @@
 import * as http from 'node:http';
 import { describe, it, expect, afterEach } from 'vitest';
+import { MAX_FRAME } from '@ax/core';
 import {
   BadJsonError,
-  DEFAULT_MAX_BODY_BYTES,
   readJsonBody,
   TooLargeError,
 } from '../body.js';
@@ -122,7 +122,7 @@ describe('readJsonBody', () => {
   });
 
   it('reads a small JSON body and returns parsed value + bytesRead', async () => {
-    const h = await startHarness(DEFAULT_MAX_BODY_BYTES);
+    const h = await startHarness(MAX_FRAME);
     harnesses.push(h);
     await post(h.url, { body: JSON.stringify({ hello: 'world' }) });
     const got = await h.received;
@@ -174,7 +174,7 @@ describe('readJsonBody', () => {
   });
 
   it('rejects with BadJsonError on invalid JSON', async () => {
-    const h = await startHarness(DEFAULT_MAX_BODY_BYTES);
+    const h = await startHarness(MAX_FRAME);
     harnesses.push(h);
     await post(h.url, { body: '{"a":' });
     const got = await h.received;

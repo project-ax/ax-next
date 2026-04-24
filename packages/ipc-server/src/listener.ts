@@ -147,6 +147,17 @@ export async function createListener(opts: CreateListenerOptions): Promise<Liste
   // I12: bump idle timeout so 30 s long-polls (Task 4) aren't killed.
   server.setTimeout(IDLE_TIMEOUT_MS);
 
+  // Best-effort cleanup of a stale socket file from a prior crashed listener.
+  // Binding over a stale unix socket yields EADDRINUSE; since we own the
+  // per-session tempdir, an unlink here is safe — no other process can be
+  // legitimately listening on this path. ENOENT is the expected "nothing to
+  // clean up" case.
+  try {
+    await fs.unlink(opts.socketPath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
+
   await new Promise<void>((resolve, reject) => {
     const onError = (err: Error): void => reject(err);
     server.once('error', onError);

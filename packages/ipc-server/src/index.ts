@@ -5,7 +5,6 @@ export {
   readJsonBody,
   BadJsonError,
   TooLargeError,
-  DEFAULT_MAX_BODY_BYTES,
   type ReadBodyResult,
 } from './body.js';
 export { writeJsonError, writeJsonOk } from './response.js';
