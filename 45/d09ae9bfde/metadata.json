@@ -1,0 +1,23 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "45d09ae9bfde",
+  "strategy": "manual-commit",
+  "branch": "feat/week-4-6-real-llm-v2",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/45/d09ae9bfde/0/metadata.json",
+      "transcript": "/45/d09ae9bfde/0/full.jsonl",
+      "content_hash": "/45/d09ae9bfde/0/content_hash.txt",
+      "prompt": "/45/d09ae9bfde/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 1199,
+    "cache_creation_tokens": 1114741,
+    "cache_read_tokens": 22935510,
+    "output_tokens": 207757,
+    "api_call_count": 92
+  }
+}
