@@ -122,4 +122,14 @@ describe('spawnImpl', () => {
     const result = await spawnImpl(undefined, input);
     expect(result.exitCode).toBe(0);
   });
+
+  it('does not inherit a Node IPC channel', async () => {
+    const input = SandboxSpawnInputSchema.parse({
+      argv: ['node', '-e', 'console.log(typeof process.channel)'],
+      cwd: '/tmp',
+      env: {},
+    });
+    const result = await spawnImpl(undefined, input);
+    expect(result.stdout.trim()).toBe('undefined');
+  });
 });
