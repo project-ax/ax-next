@@ -3,7 +3,7 @@ import { HookBus } from '../hook-bus.js';
 import { registerChatLoop } from '../chat-loop.js';
 import { makeChatContext, createLogger } from '../context.js';
 import type { ChatMessage, ChatOutcome, LlmRequest, LlmResponse, ToolCall } from '../types.js';
-import { reject } from '../errors.js';
+import { reject, PluginError } from '../errors.js';
 
 const ctx = () =>
   makeChatContext({
@@ -14,7 +14,7 @@ const ctx = () =>
   });
 
 describe('chat:run', () => {
-  it('returns terminated with reason no-service:llm:call when llm:call is not registered', async () => {
+  it('returns terminated with reason llm:call:no-service when llm:call is not registered', async () => {
     const bus = new HookBus();
     registerChatLoop(bus);
     const outcome = await bus.call<{ message: ChatMessage }, ChatOutcome>(
@@ -24,7 +24,50 @@ describe('chat:run', () => {
     );
     expect(outcome.kind).toBe('terminated');
     if (outcome.kind === 'terminated') {
-      expect(outcome.reason).toBe('no-service:llm:call');
+      expect(outcome.reason).toBe('llm:call:no-service');
+    }
+  });
+
+  it('terminates with ${hookName}:${code} when a service throws PluginError with hookName', async () => {
+    const bus = new HookBus();
+    registerChatLoop(bus);
+    bus.registerService<LlmRequest, LlmResponse>('llm:call', 'fake-llm', async () => {
+      throw new PluginError({
+        code: 'init-failed',
+        plugin: 'fake-llm',
+        hookName: 'llm:call',
+        message: 'unauthorized',
+      });
+    });
+    const outcome = await bus.call<{ message: ChatMessage }, ChatOutcome>(
+      'chat:run',
+      ctx(),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('terminated');
+    if (outcome.kind === 'terminated') {
+      expect(outcome.reason).toBe('llm:call:init-failed');
+    }
+  });
+
+  it('falls back to ${plugin}:${code} when hookName is absent', async () => {
+    const bus = new HookBus();
+    registerChatLoop(bus);
+    bus.registerService<LlmRequest, LlmResponse>('llm:call', 'fake-llm', async () => {
+      throw new PluginError({
+        code: 'init-failed',
+        plugin: 'fake-llm',
+        message: 'blew up',
+      });
+    });
+    const outcome = await bus.call<{ message: ChatMessage }, ChatOutcome>(
+      'chat:run',
+      ctx(),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('terminated');
+    if (outcome.kind === 'terminated') {
+      expect(outcome.reason).toBe('fake-llm:init-failed');
     }
   });
 

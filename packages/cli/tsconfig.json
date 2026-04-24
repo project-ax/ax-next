@@ -9,7 +9,12 @@
   "references": [
     { "path": "../core" },
     { "path": "../llm-mock" },
+    { "path": "../llm-anthropic" },
     { "path": "../storage-sqlite" },
-    { "path": "../audit-log" }
+    { "path": "../audit-log" },
+    { "path": "../sandbox-subprocess" },
+    { "path": "../tool-dispatcher" },
+    { "path": "../tool-bash" },
+    { "path": "../tool-file-io" }
   ]
 }

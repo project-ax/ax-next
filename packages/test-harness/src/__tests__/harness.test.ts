@@ -40,11 +40,11 @@ describe('createTestHarness', () => {
     expect(v).toBe('mocked-value');
   });
 
-  it('chat:run returns terminated:no-service:llm:call when no llm plugin is loaded (Week 1-2 goal)', async () => {
+  it('chat:run returns terminated:llm:call:no-service when no llm plugin is loaded (Week 1-2 goal)', async () => {
     const h = await createTestHarness({ withChatLoop: true });
     const outcome = await h.bus.call('chat:run', h.ctx(), {
       message: { role: 'user', content: 'hi' },
     });
-    expect(outcome).toMatchObject({ kind: 'terminated', reason: 'no-service:llm:call' });
+    expect(outcome).toMatchObject({ kind: 'terminated', reason: 'llm:call:no-service' });
   });
 });

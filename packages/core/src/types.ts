@@ -31,6 +31,10 @@ export interface LlmResponse {
 export interface ToolDescriptor {
   name: string;
   description?: string;
+  // JSON Schema for the tool's input. Required so LLM providers can forward
+  // the shape to the model. Kept as an opaque object so plugins can emit any
+  // valid JSON Schema draft without coupling to a specific zod version.
+  inputSchema: Record<string, unknown>;
 }
 
 export type ChatOutcome =

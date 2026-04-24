@@ -77,6 +77,13 @@ function serializeError(err: Error): Record<string, unknown> {
   return out;
 }
 
+export interface WorkspaceContext {
+  // Absolute path to the workspace root. Used as the cwd for sandboxed
+  // tool executions. Kept as a plain string so the shape is
+  // storage/transport-agnostic (no git/volume vocabulary).
+  readonly rootPath: string;
+}
+
 export interface ChatContext {
   readonly reqId: string;
   readonly sessionId: string;
@@ -84,6 +91,7 @@ export interface ChatContext {
   readonly userId: string;
   readonly logger: Logger;
   readonly state: Map<string, unknown>;
+  readonly workspace: WorkspaceContext;
 }
 
 export interface MakeChatContextOptions {
@@ -92,11 +100,15 @@ export interface MakeChatContextOptions {
   agentId: string;
   userId: string;
   logger?: Logger;
+  // Optional for dev ergonomics — defaults to process.cwd(). Real callers
+  // (CLI boot, runner) should supply an explicit workspace.
+  workspace?: WorkspaceContext;
 }
 
 export function makeChatContext(opts: MakeChatContextOptions): ChatContext {
   const reqId = opts.reqId ?? makeReqId();
   const logger = opts.logger ?? createLogger({ reqId });
+  const workspace = opts.workspace ?? { rootPath: process.cwd() };
   return {
     reqId,
     sessionId: opts.sessionId,
@@ -104,5 +116,6 @@ export function makeChatContext(opts: MakeChatContextOptions): ChatContext {
     userId: opts.userId,
     logger,
     state: new Map(),
+    workspace,
   };
 }

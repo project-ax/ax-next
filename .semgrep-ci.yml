@@ -1,5 +1,8 @@
 rules:
   # CI-only: flag console.log in plugin code (should use createLogger from @ax/core).
+  # Per-package `scripts/` trees are exempt: they are manual / smoke scripts
+  # invoked by hand (not plugin runtime code), so routing their output through
+  # a structured logger would defeat the point of running them.
   - id: ax-no-console-in-plugins
     pattern: console.log(...)
     message: >
@@ -11,6 +14,8 @@ rules:
     paths:
       include:
         - /packages/
+      exclude:
+        - /packages/*/scripts/
 
   # CI-only: catch __proto__ or constructor.prototype pollution vectors.
   - id: ax-no-prototype-pollution

@@ -98,4 +98,23 @@ describe('makeChatContext', () => {
     });
     expect(ctx.reqId).toMatch(/^req-/);
   });
+
+  it('defaults workspace.rootPath to process.cwd() when not supplied', () => {
+    const ctx = makeChatContext({
+      sessionId: 'sess-1',
+      agentId: 'agent-1',
+      userId: 'user-1',
+    });
+    expect(ctx.workspace.rootPath).toBe(process.cwd());
+  });
+
+  it('carries an explicit workspace.rootPath through', () => {
+    const ctx = makeChatContext({
+      sessionId: 'sess-1',
+      agentId: 'agent-1',
+      userId: 'user-1',
+      workspace: { rootPath: '/tmp/some/ws' },
+    });
+    expect(ctx.workspace.rootPath).toBe('/tmp/some/ws');
+  });
 });
