@@ -2,6 +2,7 @@ import { fileURLToPath } from 'node:url';
 
 export * from './harness.js';
 export * from './mock-services.js';
+export { createMockWorkspacePlugin } from './mock-workspace.js';
 export { createTestHostToolPlugin } from './test-host-tool.js';
 
 /**
