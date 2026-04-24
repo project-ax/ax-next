@@ -27,6 +27,7 @@
     "@ax/llm-anthropic": "workspace:*",
     "@ax/storage-sqlite": "workspace:*",
     "@ax/audit-log": "workspace:*",
+    "@ax/credentials": "workspace:*",
     "@ax/sandbox-subprocess": "workspace:*",
     "@ax/session-inmemory": "workspace:*",
     "@ax/ipc-server": "workspace:*",

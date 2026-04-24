@@ -22,6 +22,7 @@ import { createToolBashPlugin } from '@ax/tool-bash';
 import { createToolFileIoPlugin } from '@ax/tool-file-io';
 import { AxConfigSchema, type AxConfig, type AxConfigInput } from './config/schema.js';
 import { loadAxConfig } from './config/load.js';
+import { runCredentialsCommand } from './commands/credentials.js';
 
 // `@ax/cli` is the ONE package permitted to import sibling plugins directly
 // (eslint.config.mjs no-restricted-imports allowlist); this is also the one
@@ -225,11 +226,33 @@ export async function main(opts: MainOptions): Promise<number> {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const sqlitePath = process.env.AX_DB ?? DEFAULT_SQLITE_PATH;
-  const message = process.argv.slice(2).join(' ') || 'hi';
-  main({ message, sqlitePath })
-    .then((code) => process.exit(code))
-    .catch((e) => {
-      process.stderr.write(`fatal: ${e instanceof Error ? e.message : String(e)}\n`);
-      process.exit(2);
-    });
+  const argv = process.argv.slice(2);
+
+  // Subcommand dispatch. Intercept BEFORE the chat path so we don't bootstrap
+  // the full LLM/sandbox/orchestrator plugin set for what's essentially a
+  // "write a row to sqlite" operation — and so we don't race the chat path's
+  // DB init.
+  if (argv[0] === 'credentials') {
+    runCredentialsCommand({
+      argv: argv.slice(1),
+      stdin: process.stdin,
+      sqlitePath,
+    })
+      .then((code) => process.exit(code))
+      .catch((e) => {
+        // The command itself turns PluginError into stderr+exit-1. Anything
+        // reaching here is truly unexpected — be boring so we don't echo
+        // something we shouldn't.
+        process.stderr.write(`fatal: ${e instanceof Error ? e.message : String(e)}\n`);
+        process.exit(2);
+      });
+  } else {
+    const message = argv.join(' ') || 'hi';
+    main({ message, sqlitePath })
+      .then((code) => process.exit(code))
+      .catch((e) => {
+        process.stderr.write(`fatal: ${e instanceof Error ? e.message : String(e)}\n`);
+        process.exit(2);
+      });
+  }
 }

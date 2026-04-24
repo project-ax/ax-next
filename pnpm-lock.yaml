@@ -160,6 +160,9 @@ importers:
       '@ax/core':
         specifier: workspace:*
         version: link:../core
+      '@ax/credentials':
+        specifier: workspace:*
+        version: link:../credentials
       '@ax/ipc-server':
         specifier: workspace:*
         version: link:../ipc-server

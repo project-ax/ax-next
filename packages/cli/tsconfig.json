@@ -12,6 +12,7 @@
     { "path": "../llm-anthropic" },
     { "path": "../storage-sqlite" },
     { "path": "../audit-log" },
+    { "path": "../credentials" },
     { "path": "../sandbox-subprocess" },
     { "path": "../session-inmemory" },
     { "path": "../ipc-server" },
