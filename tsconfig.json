@@ -11,6 +11,7 @@
     { "path": "packages/sandbox-subprocess" },
     { "path": "packages/tool-dispatcher" },
     { "path": "packages/tool-bash" },
-    { "path": "packages/tool-file-io" }
+    { "path": "packages/tool-file-io" },
+    { "path": "packages/llm-anthropic" }
   ]
 }
