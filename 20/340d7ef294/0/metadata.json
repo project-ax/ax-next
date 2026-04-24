@@ -1,0 +1,51 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "20340d7ef294",
+  "session_id": "5dc93ddf-a572-4098-8da1-01ba74901a59",
+  "strategy": "manual-commit",
+  "created_at": "2026-04-24T12:03:21.542539Z",
+  "branch": "feat/week-6.5a-topology-shift",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "packages/session-inmemory/package.json",
+    "packages/session-inmemory/src/__tests__/inbox.test.ts",
+    "packages/session-inmemory/src/__tests__/plugin.test.ts",
+    "packages/session-inmemory/src/__tests__/store.test.ts",
+    "packages/session-inmemory/src/inbox.ts",
+    "packages/session-inmemory/src/index.ts",
+    "packages/session-inmemory/src/plugin.ts",
+    "packages/session-inmemory/src/store.ts",
+    "packages/session-inmemory/src/types.ts",
+    "packages/session-inmemory/tsconfig.json",
+    "packages/session-inmemory/vitest.config.ts",
+    "pnpm-lock.yaml",
+    "tsconfig.json"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-opus-4-7[1m]",
+  "turn_id": "16cc77c4c02e",
+  "checkpoint_transcript_start": 319,
+  "transcript_lines_at_start": 319,
+  "token_usage": {
+    "input_tokens": 1,
+    "cache_creation_tokens": 720,
+    "cache_read_tokens": 217858,
+    "output_tokens": 5733,
+    "api_call_count": 1
+  },
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-04-24T12:03:21.521601Z",
+    "agent_lines": 908,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 908,
+    "total_lines_changed": 908,
+    "agent_percentage": 100,
+    "metric_version": 2
+  }
+}
