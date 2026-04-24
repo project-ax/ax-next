@@ -24,7 +24,7 @@ describe('Week 1-2 acceptance', () => {
     );
     expect(outcome.kind).toBe('terminated');
     if (outcome.kind === 'terminated') {
-      expect(outcome.reason).toBe('no-service:llm:call');
+      expect(outcome.reason).toBe('llm:call:no-service');
       expect(outcome.error).toBeDefined();
     }
   });

@@ -76,15 +76,7 @@ async function runChat(
           });
           continue;
         }
-        let output: unknown;
-        try {
-          output = await bus.call('tool:execute', ctx, toolPre.payload);
-        } catch (err) {
-          if (err instanceof PluginError && err.code === 'no-service') {
-            return await terminate(bus, ctx, `no-service:tool:execute`);
-          }
-          throw err;
-        }
+        const output: unknown = await bus.call('tool:execute', ctx, toolPre.payload);
         const postTool = await bus.fire<{ toolCall: ToolCall; output: unknown }>(
           'tool:post-call',
           ctx,
@@ -108,7 +100,7 @@ async function runChat(
     await bus.fire('chat:end', ctx, { outcome });
     return outcome;
   } catch (err) {
-    const reason = classify(err);
+    const reason = reasonFromError(err);
     const outcome: ChatOutcome = { kind: 'terminated', reason, error: err };
     await bus.fire('chat:end', ctx, { outcome });
     return outcome;
@@ -121,10 +113,10 @@ async function terminate(bus: HookBus, ctx: ChatContext, reason: string): Promis
   return outcome;
 }
 
-function classify(err: unknown): string {
+function reasonFromError(err: unknown): string {
   if (err instanceof PluginError) {
-    if (err.code === 'no-service') return `no-service:${err.hookName ?? 'unknown'}`;
-    return `plugin-error:${err.code}`;
+    const head = err.hookName ?? err.plugin;
+    return `${head}:${err.code}`;
   }
   return 'unknown';
 }
