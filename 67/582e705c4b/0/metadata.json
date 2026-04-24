@@ -1,0 +1,37 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "67582e705c4b",
+  "session_id": "6d0fd8c6-b20b-43c7-87e4-f6e69b72cc80",
+  "strategy": "manual-commit",
+  "created_at": "2026-04-24T08:49:56.676102Z",
+  "branch": "feat/week-4-6-real-llm-v2",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "packages/llm-anthropic/scripts/smoke.ts"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-opus-4-7[1m]",
+  "turn_id": "73e2881c0ca2",
+  "token_usage": {
+    "input_tokens": 1228,
+    "cache_creation_tokens": 1164976,
+    "cache_read_tokens": 32779458,
+    "output_tokens": 229142,
+    "api_call_count": 116
+  },
+  "session_metrics": {
+    "turn_count": 3
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-04-24T08:49:56.632771Z",
+    "agent_lines": 0,
+    "agent_removed": 0,
+    "human_added": 25,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 25,
+    "total_lines_changed": 42,
+    "agent_percentage": 0,
+    "metric_version": 2
+  }
+}
