@@ -4,6 +4,7 @@ import type {
   AnthropicResponse,
   AnthropicResponseContentBlock,
   AnthropicStopReason,
+  AnthropicUsage,
 } from './anthropic-schemas.js';
 
 export interface TranslateResponseOptions {
@@ -16,6 +17,12 @@ const KNOWN_STOP_REASONS = new Set<AnthropicStopReason>([
   'max_tokens',
   'stop_sequence',
 ]);
+
+// Anthropic response consumers treat usage as required; zeros are safer than an omitted field.
+const ZERO_USAGE: AnthropicUsage = Object.freeze({
+  input_tokens: 0,
+  output_tokens: 0,
+});
 
 export function translateLlmResponse(
   resp: LlmCallResponse,
@@ -46,10 +53,12 @@ export function translateLlmResponse(
     stop_reason: computeStopReason(resp),
     stop_sequence: null,
     content,
-    usage: {
-      input_tokens: resp.usage?.inputTokens ?? 0,
-      output_tokens: resp.usage?.outputTokens ?? 0,
-    },
+    usage: resp.usage
+      ? {
+          input_tokens: resp.usage.inputTokens ?? 0,
+          output_tokens: resp.usage.outputTokens ?? 0,
+        }
+      : ZERO_USAGE,
   };
 }
 

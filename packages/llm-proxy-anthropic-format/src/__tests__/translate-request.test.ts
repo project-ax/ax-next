@@ -241,4 +241,47 @@ describe('translateAnthropicRequest', () => {
       expect((e as Error).message).toMatch(/messages/i);
     }
   });
+
+  it('rejects tool_use block on a user message', () => {
+    expect(() =>
+      translateAnthropicRequest({
+        model: 'm',
+        max_tokens: 10,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_use',
+                id: 'tu_1',
+                name: 'Bash',
+                input: { command: 'echo nope' },
+              },
+            ],
+          },
+        ],
+      }),
+    ).toThrow(TranslationError);
+  });
+
+  it('rejects tool_result block on an assistant message', () => {
+    expect(() =>
+      translateAnthropicRequest({
+        model: 'm',
+        max_tokens: 10,
+        messages: [
+          {
+            role: 'assistant',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 'tu_1',
+                content: 'result text',
+              },
+            ],
+          },
+        ],
+      }),
+    ).toThrow(TranslationError);
+  });
 });

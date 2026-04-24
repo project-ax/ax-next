@@ -1,6 +1,8 @@
 export {
   translateAnthropicRequest,
   TranslationError,
+  TOOL_USE_PREFIX,
+  TOOL_RESULT_PREFIX,
 } from './translate-request.js';
 export {
   translateLlmResponse,

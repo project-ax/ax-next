@@ -6,6 +6,10 @@ import {
   type AnthropicToolResultBlock,
 } from './anthropic-schemas.js';
 
+// Reserved prefixes: native-runner emits '[tool ...]' for tool RESULTS; we emit '[tool_use ...]' and '[tool_result ...]' so all three forms remain unambiguous when rehydrated into history.
+export const TOOL_USE_PREFIX = 'tool_use';
+export const TOOL_RESULT_PREFIX = 'tool_result';
+
 export class TranslationError extends Error {
   constructor(message: string, options?: { cause?: unknown }) {
     super(message);
@@ -65,26 +69,38 @@ function flattenMessage(m: AnthropicMessage): ChatMessage {
   }
   const parts: string[] = [];
   for (const block of m.content) {
-    const rendered = renderBlock(block);
+    const rendered = renderBlock(block, m.role);
     if (rendered !== undefined) parts.push(rendered);
   }
   return { role: m.role, content: parts.join('\n') };
 }
 
-function renderBlock(block: AnthropicContentBlock): string | undefined {
+function renderBlock(
+  block: AnthropicContentBlock,
+  role: 'user' | 'assistant',
+): string | undefined {
   switch (block.type) {
     case 'text':
       return block.text;
     case 'tool_use':
-      return `[tool_use ${block.name}] ${JSON.stringify(block.input ?? {})}`;
+      if (role === 'user') {
+        throw new TranslationError('user message may not contain tool_use block');
+      }
+      return `[${TOOL_USE_PREFIX} ${block.name}] ${JSON.stringify(block.input ?? {})}`;
     case 'tool_result':
-      return `[tool_result ${block.tool_use_id}] ${renderToolResultContent(block)}`;
+      if (role === 'assistant') {
+        throw new TranslationError(
+          'assistant message may not contain tool_result block',
+        );
+      }
+      return `[${TOOL_RESULT_PREFIX} ${block.tool_use_id}] ${renderToolResultContent(block)}`;
     case 'image':
-      // Dropped silently; the HTTP listener will add warn-logging once it
-      // has access to a logger. Image ingestion is Week 13+ work.
+      // Images dropped: ingestion is out of scope here.
       return undefined;
-    default:
-      return undefined;
+    default: {
+      const _exhaustive: never = block;
+      return _exhaustive;
+    }
   }
 }
 
