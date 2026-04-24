@@ -1,0 +1,9 @@
+commit
+
+---
+
+Write an implementation plan for Week 7–9 of docs/plans/2026-04-22-plugin-architecture-design.md
+(k8s deployment shape). Read docs/plans/2026-04-23-week-7-9-handoff.md first — it flags Section
+4.5's workspace contract as the hardest part of the slice and calls out legacy helpers to port.
+Invoke security-checklist for every package in this slice. Branch off the tip of Week 4–6.
+The plan should be executable via subagent-driven-development.
