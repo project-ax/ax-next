@@ -1,0 +1,52 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "3b85e3db688b",
+  "session_id": "a7977974-4eab-4529-be3b-1bf078db6ef5",
+  "strategy": "manual-commit",
+  "created_at": "2026-04-24T13:15:18.513943Z",
+  "branch": "feat/week-6.5a-topology-shift",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "eslint.config.mjs"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "1e6ce8720fb5",
+  "checkpoint_transcript_start": 143,
+  "transcript_lines_at_start": 143,
+  "token_usage": {
+    "input_tokens": 208,
+    "cache_creation_tokens": 87209,
+    "cache_read_tokens": 994869,
+    "output_tokens": 10940,
+    "api_call_count": 13
+  },
+  "session_metrics": {
+    "turn_count": 5
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-04-24T13:15:18.505116Z",
+    "agent_lines": 0,
+    "agent_removed": 0,
+    "human_added": 1142,
+    "human_modified": 22,
+    "human_removed": 0,
+    "total_committed": 1153,
+    "total_lines_changed": 1165,
+    "agent_percentage": 0,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 209,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        "README.md": 177,
+        "test-bwrap.yaml": 32
+      }
+    }
+  ]
+}
