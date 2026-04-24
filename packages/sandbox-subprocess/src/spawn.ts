@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { PluginError, type SandboxSpawnInput, type SandboxSpawnResult } from '@ax/core';
+import { PluginError, type SandboxSpawnParsed, type SandboxSpawnResult } from '@ax/core';
 
 const ARGV0_RE = /^[A-Za-z0-9_./-]+$/;
 
@@ -16,7 +16,7 @@ function allowlistFromParent(): Record<string, string> {
 
 export async function spawnImpl(
   _ctx: unknown,
-  input: SandboxSpawnInput,
+  input: SandboxSpawnParsed,
 ): Promise<SandboxSpawnResult> {
   // Defense-in-depth: shell:false already prevents metachar interpretation,
   // but this fail-fast check catches mistakes earlier and makes intent

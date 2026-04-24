@@ -12,7 +12,16 @@ export const SandboxSpawnInputSchema = z.object({
   maxStderrBytes: z.number().int().positive().max(10 * 1024 * 1024).default(1_048_576),
 });
 
-export type SandboxSpawnInput = z.infer<typeof SandboxSpawnInputSchema>;
+// Caller-side shape: defaulted fields (timeoutMs, maxStdoutBytes,
+// maxStderrBytes) are OPTIONAL here because zod will fill them in at parse
+// time. Consumers that hand a request to bus.call('sandbox:spawn', ...)
+// use this type.
+export type SandboxSpawnInput = z.input<typeof SandboxSpawnInputSchema>;
+
+// Post-parse shape: every defaulted field is resolved. Providers that
+// receive a pre-parsed request (i.e. after SandboxSpawnInputSchema.parse)
+// use this type so their field accesses don't need optional-chaining.
+export type SandboxSpawnParsed = z.output<typeof SandboxSpawnInputSchema>;
 
 export const SandboxSpawnResultSchema = z.object({
   exitCode: z.number().int().nullable(),

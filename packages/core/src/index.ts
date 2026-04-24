@@ -16,5 +16,6 @@ export {
   SandboxSpawnInputSchema,
   SandboxSpawnResultSchema,
   type SandboxSpawnInput,
+  type SandboxSpawnParsed,
   type SandboxSpawnResult,
 } from './sandbox.js';
