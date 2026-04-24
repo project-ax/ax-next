@@ -73,4 +73,13 @@ describe('spawnImpl', () => {
       else process.env.ANTHROPIC_API_KEY = prior;
     }
   });
+
+  it('rejects argv[0] containing shell metacharacters', async () => {
+    const input = SandboxSpawnInputSchema.parse({
+      argv: ['/bin/bash; rm -rf /', 'noop'],
+      cwd: '/tmp',
+      env: {},
+    });
+    await expect(spawnImpl(undefined, input)).rejects.toThrow(/invalid-argv/);
+  });
 });

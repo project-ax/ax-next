@@ -1,5 +1,7 @@
 import { spawn } from 'node:child_process';
-import type { SandboxSpawnInput, SandboxSpawnResult } from '@ax/core';
+import { PluginError, type SandboxSpawnInput, type SandboxSpawnResult } from '@ax/core';
+
+const ARGV0_RE = /^[A-Za-z0-9_./-]+$/;
 
 function allowlistFromParent(): Record<string, string> {
   return {
@@ -16,6 +18,19 @@ export async function spawnImpl(
   _ctx: unknown,
   input: SandboxSpawnInput,
 ): Promise<SandboxSpawnResult> {
+  // Defense-in-depth: shell:false already prevents metachar interpretation,
+  // but this fail-fast check catches mistakes earlier and makes intent
+  // explicit. Truncate the reflected value in the error message so a caller
+  // can't exfiltrate unbounded data into logs via argv[0].
+  if (!ARGV0_RE.test(input.argv[0])) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: '@ax/sandbox-subprocess',
+      hookName: 'sandbox:spawn',
+      message: `invalid-argv: ${JSON.stringify(input.argv[0]).slice(0, 80)}`,
+    });
+  }
+
   // I2: caller env is filtered down to allowlist keys, then the parent's
   // allowlist values are merged LAST so the parent always wins on keys
   // both sides set (e.g. PATH). Caller keys NOT in the allowlist (e.g.
