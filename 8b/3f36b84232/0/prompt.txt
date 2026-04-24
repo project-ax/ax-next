@@ -1,0 +1,10 @@
+Write an implementation plan for Week 6.5a of docs/plans/2026-04-22-plugin-architecture-design.md
+(agent sandboxing — topology shift). Read docs/plans/2026-04-24-week-6.5-agent-sandbox-design.md
+first — it specifies the IPC protocol, plugin decomposition, and runner contract. Scope is
+strictly the topology shift: @ax/ipc-protocol, @ax/ipc-server, @ax/sandbox-subprocess extensions
+(sandbox:open-session), @ax/session-inmemory, @ax/chat-orchestrator, @ax/agent-runner-core,
+@ax/agent-native-runner, tool refactor (host→sandbox). Keep @ax/llm-anthropic unchanged; no
+streaming; no new providers. Acceptance: Week 4-6's chat behavior is preserved, now with the
+loop running in a subprocess sandbox. Invoke security-checklist for @ax/ipc-server and the
+@ax/sandbox-subprocess session-lifetime extensions. Branch off the tip of Week 4-6. The plan
+should be executable via subagent-driven-development.
