@@ -128,6 +128,26 @@ export function namespaceTools(
   serverId: string,
   tools: McpToolDescriptor[],
 ): NamespaceResult {
+  // Detect duplicate remote names early — a spec-violating MCP server
+  // could otherwise produce two descriptors with identical `finalName`
+  // (same hash input `serverId:remoteName`) and a `nameMap` with only one
+  // entry, breaking the file's stated invariants. Worse, the failure
+  // would surface downstream as an opaque `duplicate-tool` error from
+  // `@ax/tool-dispatcher` with no hint of which server misbehaved. Per
+  // invariant I5, MCP server output is untrusted; refuse it here with
+  // full context (server id + offending tool name).
+  const seenOriginal = new Set<string>();
+  for (const t of tools) {
+    if (seenOriginal.has(t.name)) {
+      throw new PluginError({
+        code: 'duplicate-remote-tool',
+        plugin: PLUGIN_NAME,
+        message: `MCP server '${serverId}' advertised duplicate tool name '${t.name}'`,
+      });
+    }
+    seenOriginal.add(t.name);
+  }
+
   // First pass: compute each tool's initial candidate name.
   const candidates = tools.map((t) => ({
     original: t,

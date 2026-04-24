@@ -170,4 +170,30 @@ describe('namespaceTools', () => {
       expect(d.name).toMatch(TOOL_NAME_RE);
     }
   });
+
+  it('throws duplicate-remote-tool when an MCP server advertises the same tool name twice', () => {
+    // A spec-violating MCP server that returns two tools with identical
+    // `name` would otherwise crash @ax/tool-dispatcher's duplicate-tool
+    // check with no hint of which server was at fault. Invariant I5 says
+    // MCP output is untrusted — we reject it at the discovery boundary.
+    const tools = [
+      { name: 'read_file', inputSchema: {} as Record<string, unknown> },
+      { name: 'read_file', inputSchema: {} as Record<string, unknown> },
+    ];
+    expect(() => namespaceTools('fs', tools)).toThrow(/duplicate-remote-tool|duplicate tool/i);
+  });
+
+  it('produces identical results across calls (deterministic for reconnects)', () => {
+    // Reconnects re-run namespacing; if the output drifted call-to-call
+    // (e.g., via Map iteration order or nondeterministic hashing), the
+    // dispatcher catalog would churn on every reconnect. Lock it down.
+    const tools = [
+      { name: 'GetRepo', inputSchema: {} as Record<string, unknown> },
+      { name: 'list', inputSchema: {} as Record<string, unknown> },
+    ];
+    const a = namespaceTools('gh', tools);
+    const b = namespaceTools('gh', tools);
+    expect(a.descriptors).toEqual(b.descriptors);
+    expect([...a.nameMap.entries()]).toEqual([...b.nameMap.entries()]);
+  });
 });
