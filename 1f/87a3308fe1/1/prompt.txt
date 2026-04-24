@@ -1,0 +1,9 @@
+why can't a claude agent just spawn subagents locally that are a black box to the host except for the http and tool calls?
+
+---
+
+why can't a claude agent just spawn subagents locally that are a black box to the host except for the http and tool calls and do it within the running running sandbox instead of spawing new sandboxes?
+
+---
+
+Why do we need a new tool? Why can't claude agent sdk just use its existing Task tool to spawn subagents?
