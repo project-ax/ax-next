@@ -82,4 +82,14 @@ describe('spawnImpl', () => {
     });
     await expect(spawnImpl(undefined, input)).rejects.toThrow(/invalid-argv/);
   });
+
+  it('does not perform shell expansion on argv (shell:false contract)', async () => {
+    const input = SandboxSpawnInputSchema.parse({
+      argv: ['/bin/echo', '$HOME'],
+      cwd: '/tmp',
+      env: {},
+    });
+    const result = await spawnImpl(undefined, input);
+    expect(result.stdout.trim()).toBe('$HOME');
+  });
 });
