@@ -165,7 +165,9 @@ export async function main(): Promise<number> {
   await client.event('event.chat-end', { outcome }).catch(() => {
     /* swallow */
   });
-  await client.close();
+  await client.close().catch(() => {
+    /* close is best-effort; a clean chat shouldn't exit non-zero on teardown */
+  });
   return exitCode;
 }
 
