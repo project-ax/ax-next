@@ -33,6 +33,7 @@
     "@ax/llm-proxy-anthropic-format": "workspace:*",
     "@ax/chat-orchestrator": "workspace:*",
     "@ax/agent-native-runner": "workspace:*",
+    "@ax/agent-claude-sdk-runner": "workspace:*",
     "@ax/tool-dispatcher": "workspace:*",
     "@ax/tool-bash": "workspace:*",
     "@ax/tool-file-io": "workspace:*",

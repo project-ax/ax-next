@@ -22,6 +22,7 @@ describe('loadAxConfig', () => {
       sandbox: 'subprocess',
       tools: ['bash', 'file-io'],
       storage: 'sqlite',
+      runner: 'native',
     });
   });
 

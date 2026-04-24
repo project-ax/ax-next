@@ -145,6 +145,9 @@ importers:
 
   packages/cli:
     dependencies:
+      '@ax/agent-claude-sdk-runner':
+        specifier: workspace:*
+        version: link:../agent-claude-sdk-runner
       '@ax/agent-native-runner':
         specifier: workspace:*
         version: link:../agent-native-runner

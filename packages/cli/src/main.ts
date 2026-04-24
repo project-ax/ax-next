@@ -38,7 +38,10 @@ import { loadAxConfig } from './config/load.js';
 // `./turn-loop`, so a direct `./dist/main.js` subpath is blocked by Node's
 // exports-map enforcement.
 const requireFromCli = createRequire(import.meta.url);
-function resolveRunnerBinary(): string {
+export function resolveRunnerBinary(runner: AxConfig['runner']): string {
+  if (runner === 'claude-sdk') {
+    return requireFromCli.resolve('@ax/agent-claude-sdk-runner');
+  }
   return requireFromCli.resolve('@ax/agent-native-runner');
 }
 const DEFAULT_CHAT_TIMEOUT_MS = 10 * 60_000;
@@ -120,7 +123,7 @@ export async function main(opts: MainOptions): Promise<number> {
   plugins.push(createLlmProxyAnthropicFormatPlugin());
   plugins.push(
     createChatOrchestratorPlugin({
-      runnerBinary: resolveRunnerBinary(),
+      runnerBinary: resolveRunnerBinary(cfg.runner),
       chatTimeoutMs: DEFAULT_CHAT_TIMEOUT_MS,
     }),
   );

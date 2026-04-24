@@ -15,6 +15,13 @@ export const AxConfigSchema = z
     sandbox: z.enum(['subprocess']).default('subprocess'),
     tools: z.array(z.enum(['bash', 'file-io'])).default(['bash', 'file-io']),
     storage: z.enum(['sqlite']).default('sqlite'),
+    /**
+     * Which agent-runner binary the sandbox spawns per chat turn. `native`
+     * drives `@ax/agent-native-runner` (the mock/canary loop); `claude-sdk`
+     * drives `@ax/agent-claude-sdk-runner` (real Anthropic agent SDK, routed
+     * through the local LLM proxy).
+     */
+    runner: z.enum(['native', 'claude-sdk']).default('native'),
     anthropic: z
       .object({
         model: z.string().optional(),
