@@ -96,4 +96,22 @@ describe('test-host-echo stub plugin', () => {
     expect(err).toBeInstanceOf(PluginError);
     expect(err.code).toBe('invalid-payload');
   });
+
+  // Regression: the IPC dispatcher for `tool.execute-host` invokes this
+  // service hook with the whole `ToolCall` envelope (`{id, name, input}`),
+  // not the bare input object. The Task-13 stub originally parsed the raw
+  // argument and failed in production with `text: undefined`. It now
+  // unwraps `.input` when present. Caught by Week 6.5d Task 14 e2e.
+  it('accepts the full ToolCall envelope from tool.execute-host', async () => {
+    const bus = await bootBus();
+    const res = await bus.call<
+      { id: string; name: string; input: { text: string } },
+      { output: string }
+    >(
+      'tool:execute:test-host-echo',
+      ctx(),
+      { id: 'call-1', name: 'test-host-echo', input: { text: 'wrapped' } },
+    );
+    expect(res).toEqual({ output: 'wrapped' });
+  });
 });

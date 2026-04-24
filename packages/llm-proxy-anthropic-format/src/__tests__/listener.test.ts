@@ -412,6 +412,70 @@ describe('createProxyListener', () => {
     expect(parsed.error.type).toBe('not_found_error');
   });
 
+  // Regression: the `claude` CLI spawned by the claude-sdk runner appends
+  // `?beta=true` to every /v1/messages POST. An exact-string URL match
+  // rejected these as 404 and the whole claude-sdk runner topology
+  // crashed before the first tool call. Caught by Week 6.5d Task 14 e2e.
+  it('accepts POST /v1/messages with a query string (e.g. ?beta=true)', async () => {
+    const h = await makeHarness();
+    harnesses.push(h);
+    const res = await httpRequest(h.listener.url, {
+      method: 'POST',
+      path: '/v1/messages?beta=true',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${GOOD_TOKEN}`,
+      },
+      body: validBody(),
+    });
+    expect(res.status).toBe(200);
+    const parsed = JSON.parse(res.body);
+    expect(parsed.type).toBe('message');
+  });
+
+  // Regression: the @anthropic-ai/sdk (and therefore the `claude` CLI) sends
+  // the API key as `X-Api-Key: <token>`, not `Authorization: Bearer`. The
+  // proxy rejected every such request as 401 until we added X-Api-Key
+  // support. Caught by Week 6.5d Task 14 e2e.
+  it('accepts X-Api-Key: <token> as equivalent to Authorization: Bearer', async () => {
+    const h = await makeHarness();
+    harnesses.push(h);
+    const res = await httpRequest(h.listener.url, {
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Api-Key': GOOD_TOKEN,
+      },
+      body: validBody(),
+    });
+    expect(res.status).toBe(200);
+  });
+
+  // Regression: the Anthropic API accepts `system` as either a string or an
+  // array of text blocks. The `claude` CLI uses the array form. Schema
+  // rejecting the array form blocked every real claude-sdk request as 400.
+  // Caught by Week 6.5d Task 14 e2e.
+  it('accepts system as an array of {type:"text", text} blocks', async () => {
+    const h = await makeHarness();
+    harnesses.push(h);
+    const res = await httpRequest(h.listener.url, {
+      method: 'POST',
+      path: '/v1/messages',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${GOOD_TOKEN}`,
+      },
+      body: validBody({
+        system: [
+          { type: 'text', text: 'You are a helpful agent.' },
+          { type: 'text', text: 'Be concise.' },
+        ],
+      }),
+    });
+    expect(res.status).toBe(200);
+  });
+
   it('close() releases the port (re-bind on same port succeeds)', async () => {
     const h = await makeHarness();
     const firstPort = h.listener.port;

@@ -83,7 +83,14 @@ export async function createProxyListener(
       return;
     }
 
-    if (req.url !== '/v1/messages') {
+    // The `claude` CLI binary appends `?beta=true` (and possibly other query
+    // flags) to every /v1/messages request. Compare the path only, ignoring
+    // the query string — the proxy doesn't use those flags anyway; they're
+    // Anthropic-API hints that no longer apply once we've translated into
+    // LlmCallRequest.
+    const pathOnly =
+      req.url === undefined ? '' : req.url.split('?', 1)[0] ?? '';
+    if (pathOnly !== '/v1/messages') {
       writeError(res, 404, 'not_found_error', 'unknown path');
       return;
     }
@@ -93,21 +100,19 @@ export async function createProxyListener(
       return;
     }
 
-    // Auth gate.
-    const authHeader = req.headers.authorization ?? '';
-    if (authHeader.length === 0) {
+    // Auth gate. Accept either `Authorization: Bearer <token>` (the shape
+    // most clients default to when given an API key) OR `X-Api-Key: <token>`
+    // (the shape `@anthropic-ai/sdk` — and therefore the `claude` CLI that
+    // the agent-claude-sdk runner spawns — uses when it sees
+    // ANTHROPIC_API_KEY in the environment). Both resolve to the same
+    // session-token lookup; rejecting one form silently blocks the whole
+    // claude-sdk runner topology.
+    const token = extractBearerOrApiKey(req.headers);
+    if (token === undefined) {
       writeError(res, 401, 'authentication_error', 'missing bearer token');
       return;
     }
-    if (
-      authHeader.length <= BEARER_PREFIX.length ||
-      authHeader.slice(0, BEARER_PREFIX.length).toLowerCase() !== BEARER_PREFIX
-    ) {
-      writeError(res, 401, 'authentication_error', 'invalid authorization scheme');
-      return;
-    }
-    const token = authHeader.slice(BEARER_PREFIX.length).trim();
-    if (token.length === 0) {
+    if (token === null) {
       writeError(res, 401, 'authentication_error', 'invalid authorization scheme');
       return;
     }
@@ -296,6 +301,45 @@ function buildCtx(sessionId: string, rootPath: string): ChatContext {
     userId: 'proxy',
     workspace: { rootPath },
   });
+}
+
+/**
+ * Resolve the request auth token from either `Authorization: Bearer <token>`
+ * or `X-Api-Key: <token>`.
+ *
+ *   - Returns the token string on success.
+ *   - Returns `undefined` if neither header is present (→ 401 "missing").
+ *   - Returns `null` if a header is present but malformed (→ 401 "invalid
+ *     scheme"); this distinguishes "you forgot auth" from "you tried but
+ *     sent the wrong shape" so the failing client gets a pointer at the
+ *     actual problem.
+ */
+function extractBearerOrApiKey(
+  headers: http.IncomingHttpHeaders,
+): string | null | undefined {
+  // `X-Api-Key` is the @anthropic-ai/sdk default (driven by
+  // `ANTHROPIC_API_KEY`). Node lowercases header names for us.
+  const apiKeyRaw = headers['x-api-key'];
+  const apiKey = Array.isArray(apiKeyRaw) ? apiKeyRaw[0] : apiKeyRaw;
+  if (typeof apiKey === 'string' && apiKey.length > 0) {
+    return apiKey.trim().length === 0 ? null : apiKey.trim();
+  }
+
+  // `Authorization: Bearer <token>` is the canonical HTTP form and what the
+  // v1 proxy docs advertise.
+  const authHeader = headers.authorization;
+  if (typeof authHeader !== 'string' || authHeader.length === 0) {
+    return undefined;
+  }
+  if (
+    authHeader.length <= BEARER_PREFIX.length ||
+    authHeader.slice(0, BEARER_PREFIX.length).toLowerCase() !== BEARER_PREFIX
+  ) {
+    return null;
+  }
+  const tok = authHeader.slice(BEARER_PREFIX.length).trim();
+  if (tok.length === 0) return null;
+  return tok;
 }
 
 class TooLargeError extends Error {

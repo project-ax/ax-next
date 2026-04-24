@@ -1,0 +1,261 @@
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import * as path from 'node:path';
+import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
+
+import { main } from '../main.js';
+import { createTestHostToolPlugin } from '@ax/test-harness';
+import {
+  type LlmRequest,
+  type LlmResponse,
+  type Plugin,
+  type ToolCall,
+} from '@ax/core';
+
+// ---------------------------------------------------------------------------
+// Week 6.5d acceptance test — runner: 'claude-sdk' end-to-end.
+//
+// This is the core acceptance artifact for the entire 6.5d slice. It
+// exercises the full topology:
+//
+//   host (this test process)
+//     └── @ax/sandbox-subprocess spawns
+//         └── @ax/agent-claude-sdk-runner (node subprocess)
+//             ├── @ax/agent-runner-core   — IPC client to host
+//             ├── in-process MCP server   — for executesIn:'host' tools
+//             └── @anthropic-ai/claude-agent-sdk spawns
+//                 └── `claude` (native grandchild)
+//                     └── HTTP POST → @ax/llm-proxy-anthropic-format
+//                         └── bus.call('llm:call') → stub LLM plugin
+//
+// What we verify:
+//   1. rc === 0 (chat outcome is `complete`).
+//   2. Both the built-in `Bash` tool AND the host-mediated MCP tool
+//      `test-host-echo` fire `tool:pre-call` and `tool:post-call` on
+//      the host, in the order the stub LLM drove them.
+//
+// Tool names in observers: the runner's classifier strips the
+// `mcp__ax-host-tools__` prefix before forwarding to host subscribers —
+// that's by design (subscribers see the ax-native tool name they
+// registered). So the host observes `test-host-echo`, not
+// `mcp__ax-host-tools__test-host-echo`.
+// ---------------------------------------------------------------------------
+
+async function mkTmp(): Promise<string> {
+  return await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'ax-e2e-sdk-')));
+}
+
+interface PreCallEvent {
+  name: string;
+  input: unknown;
+}
+interface PostCallEvent {
+  name: string;
+  output: unknown;
+}
+
+describe('claude-sdk runner e2e', () => {
+  let tmp: string;
+
+  beforeEach(async () => {
+    tmp = await mkTmp();
+  });
+
+  afterEach(async () => {
+    if (tmp) await fs.rm(tmp, { recursive: true, force: true });
+  });
+
+  it(
+    'built-in Bash + host MCP test-host-echo both fire pre/post subscribers',
+    // Real subprocess + real claude CLI grandchild + real HTTP proxy —
+    // the full loop is I/O-bound. 60s is generous for local runs; CI may
+    // need more if this ever turns flaky.
+    { timeout: 60_000 },
+    async () => {
+      const preCallEvents: PreCallEvent[] = [];
+      const postCallEvents: PostCallEvent[] = [];
+
+      // Observer plugin: records every tool:pre-call and tool:post-call.
+      // Returning `undefined` from a subscriber is pass-through (no veto,
+      // no transform) so neither Bash nor the MCP tool is affected.
+      const observerPlugin: Plugin = {
+        manifest: {
+          name: '@ax/test-observer',
+          version: '0.0.0',
+          registers: [],
+          calls: [],
+          subscribes: ['tool:pre-call', 'tool:post-call'],
+        },
+        init({ bus }) {
+          bus.subscribe<ToolCall>(
+            'tool:pre-call',
+            '@ax/test-observer',
+            async (_ctx, call) => {
+              preCallEvents.push({ name: call.name, input: call.input });
+              return undefined;
+            },
+          );
+          bus.subscribe<{ toolCall: ToolCall; output: unknown }>(
+            'tool:post-call',
+            '@ax/test-observer',
+            async (_ctx, payload) => {
+              postCallEvents.push({
+                name: payload.toolCall.name,
+                output: payload.output,
+              });
+              return undefined;
+            },
+          );
+        },
+      };
+
+      // Stub LLM plugin: three-phase response chain driven by a turn counter
+      // that ONLY advances for main-turn requests. The `claude` CLI issues a
+      // short auxiliary request (session-title generation) before the first
+      // real user turn — we detect it by its system-prompt preamble and
+      // short-circuit with a harmless text-only response so it doesn't
+      // consume a slot in the canned sequence.
+      let mainTurnCount = 0;
+      const stubLlmPlugin: Plugin = {
+        manifest: {
+          name: '@ax/test-llm-stub',
+          version: '0.0.0',
+          registers: ['llm:call'],
+          calls: [],
+          subscribes: [],
+        },
+        init({ bus }) {
+          bus.registerService<LlmRequest, LlmResponse>(
+            'llm:call',
+            '@ax/test-llm-stub',
+            async (_ctx, req) => {
+              const systemText =
+                req.messages.find((m) => m.role === 'system')?.content ?? '';
+              const isTitleSummary = systemText.includes(
+                'Generate a concise, sentence-case title',
+              );
+              if (isTitleSummary) {
+                // Return a valid-looking title JSON; no tool calls. This
+                // request isn't part of the user-driven turn sequence, so
+                // we don't advance the counter.
+                return {
+                  assistantMessage: {
+                    role: 'assistant',
+                    content: '{"title":"Acceptance test"}',
+                  },
+                  toolCalls: [],
+                };
+              }
+
+              mainTurnCount += 1;
+              if (mainTurnCount === 1) {
+                // Main turn 1: ask the SDK to run the built-in Bash tool.
+                return {
+                  assistantMessage: {
+                    role: 'assistant',
+                    content: 'running bash',
+                  },
+                  toolCalls: [
+                    {
+                      id: 'tu_1',
+                      name: 'Bash',
+                      input: { command: 'echo hi' },
+                    },
+                  ],
+                };
+              }
+              if (mainTurnCount === 2) {
+                // Main turn 2: ask to invoke the host-side MCP tool. The
+                // SDK routes MCP tool calls by their prefixed name.
+                return {
+                  assistantMessage: {
+                    role: 'assistant',
+                    content: 'now echo',
+                  },
+                  toolCalls: [
+                    {
+                      id: 'tu_2',
+                      name: 'mcp__ax-host-tools__test-host-echo',
+                      input: { text: 'acceptance' },
+                    },
+                  ],
+                };
+              }
+              // Main turn 3+: terminal — no tool calls, stop_reason becomes
+              // end_turn on the proxy's translate-response path.
+              return {
+                assistantMessage: {
+                  role: 'assistant',
+                  content: 'all done',
+                },
+                toolCalls: [],
+              };
+            },
+          );
+        },
+      };
+
+      const sqlitePath = path.join(tmp, 'e2e.sqlite');
+      const stdoutLines: string[] = [];
+      const stderrLines: string[] = [];
+
+      const rc = await main({
+        message: 'please run echo then call test-host-echo',
+        configOverride: {
+          // llm: 'mock' satisfies the schema; we're skipping the default
+          // LLM plugin anyway, so the concrete value doesn't matter.
+          llm: 'mock',
+          runner: 'claude-sdk',
+          // We don't need bash/file-io host impls for this flow — the
+          // claude-sdk runner's built-in `Bash` runs inside the claude
+          // grandchild, and the MCP tool routes to the test-host plugin
+          // we inject via extraPlugins.
+          tools: [],
+          sandbox: 'subprocess',
+          storage: 'sqlite',
+        },
+        workspaceRoot: tmp,
+        sqlitePath,
+        stdout: (line) => stdoutLines.push(line),
+        stderr: (line) => stderrLines.push(line),
+        // Test-only seams (see main.ts MainOptions JSDoc).
+        skipDefaultLlm: true,
+        extraPlugins: [
+          observerPlugin,
+          createTestHostToolPlugin(),
+          stubLlmPlugin,
+        ],
+      });
+
+      expect(stderrLines).toEqual([]);
+      expect(rc).toBe(0);
+      // `stdoutLines` is only captured for symmetry with stderr; the final
+      // assistant text 'all done' goes here but we don't assert on the body
+      // — the observer-event arrays are the acceptance contract.
+      expect(stdoutLines).not.toEqual([]);
+
+      // Both subscriber arrays should carry the same two names, in order:
+      // Bash (built-in, handled inside claude) then test-host-echo (routed
+      // through our in-process MCP server).
+      expect(preCallEvents.map((e) => e.name)).toEqual([
+        'Bash',
+        'test-host-echo',
+      ]);
+      expect(postCallEvents.map((e) => e.name)).toEqual([
+        'Bash',
+        'test-host-echo',
+      ]);
+
+      // The stub LLM's echo call carries `text: 'acceptance'`. The host-side
+      // `tool:execute:test-host-echo` hook returns `{output: 'acceptance'}`,
+      // the host MCP wrapper renders that as an MCP content-block list
+      // `[{type:'text', text:'{"output":"acceptance"}'}]`, and that's what
+      // the SDK's PostToolUse hook passes back as `tool_response`. We
+      // assert the payload round-trips the literal 'acceptance' substring
+      // through the whole chain so any future change in wire formatting
+      // gets a loud test failure instead of silent data loss.
+      const echoPost = postCallEvents.find((e) => e.name === 'test-host-echo');
+      expect(JSON.stringify(echoPost?.output)).toContain('acceptance');
+    },
+  );
+});

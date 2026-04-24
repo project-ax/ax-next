@@ -1,6 +1,7 @@
 import type { IpcClient } from '@ax/agent-runner-core';
 import type { ToolDescriptor } from '@ax/ipc-protocol';
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import {
   buildHostToolEntries,
   createHostMcpServer,
@@ -169,6 +170,38 @@ describe('buildHostToolEntries', () => {
     const payload = calls[0]?.payload as { call: { id: string } };
     expect(typeof payload.call.id).toBe('string');
     expect(payload.call.id.length).toBeGreaterThan(0);
+  });
+
+  // Regression: the SDK's `tool()` helper wraps our raw shape in
+  // `z.object(shape)`, which STRIPS keys not declared in the shape before
+  // the handler sees them. If we pass an empty shape the model's input is
+  // erased. We build the shape from `inputSchema.properties` so declared
+  // keys survive. Caught by Week 6.5d e2e Task 14.
+  it('builds a per-property shape so the SDK preserves declared input keys', () => {
+    const toolWithProps: ToolDescriptor = {
+      name: 'echo.host',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          text: { type: 'string' },
+          count: { type: 'number' },
+        },
+        required: ['text'],
+      },
+      executesIn: 'host',
+    };
+    const { client } = mkClient(async () => ({ output: 'ok' }));
+    const entries = buildHostToolEntries(client, [toolWithProps]);
+    type InternalEntry = ToolEntry & {
+      inputSchema: Record<string, z.ZodTypeAny>;
+    };
+    const shape = (entries[0] as InternalEntry).inputSchema;
+    expect(Object.keys(shape).sort()).toEqual(['count', 'text']);
+    // Defensive: confirm the entries are indeed Zod types (so the SDK's
+    // internal z.object(shape) wrap works without a runtime type crash).
+    for (const key of Object.keys(shape)) {
+      expect(shape[key]).toHaveProperty('_def');
+    }
   });
 
   it('tolerates a missing description by falling back to empty string', () => {

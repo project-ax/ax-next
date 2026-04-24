@@ -65,11 +65,25 @@ export const AnthropicToolSpecSchema = z
   })
   .passthrough();
 
+// The Anthropic Messages API accepts `system` as either a plain string or an
+// array of content blocks (string-shaped blocks only — `cache_control` and
+// other passthrough fields are carried verbatim). The `claude` CLI the
+// claude-sdk runner spawns uses the block-array form; earlier clients often
+// use the string form. Accept both and let `translate-request` flatten.
+export const AnthropicSystemBlockSchema = z
+  .object({
+    type: z.literal('text'),
+    text: z.string(),
+  })
+  .passthrough();
+
 export const AnthropicRequestSchema = z
   .object({
     model: z.string(),
     max_tokens: z.number().int().positive(),
-    system: z.string().optional(),
+    system: z
+      .union([z.string(), z.array(AnthropicSystemBlockSchema)])
+      .optional(),
     messages: z.array(AnthropicMessageSchema),
     tools: z.array(AnthropicToolSpecSchema).optional(),
     temperature: z.number().optional(),

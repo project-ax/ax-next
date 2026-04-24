@@ -31,8 +31,12 @@ export function translateAnthropicRequest(raw: unknown): LlmCallRequest {
   const req = parsed.data;
 
   const messages: ChatMessage[] = [];
-  if (typeof req.system === 'string' && req.system.length > 0) {
-    messages.push({ role: 'system', content: req.system });
+  // `system` may be a plain string or an array of `{type:'text',text}` blocks
+  // (the Anthropic API accepts both; the `claude` CLI uses the array form).
+  // Flatten to a single `system` ChatMessage with the text joined by newlines.
+  const systemText = flattenSystem(req.system);
+  if (systemText.length > 0) {
+    messages.push({ role: 'system', content: systemText });
   }
   for (const m of req.messages) {
     messages.push(flattenMessage(m));
@@ -61,6 +65,16 @@ export function translateAnthropicRequest(raw: unknown): LlmCallRequest {
     );
   }
   return out;
+}
+
+function flattenSystem(
+  system: string | Array<{ type: 'text'; text: string }> | undefined,
+): string {
+  if (system === undefined) return '';
+  if (typeof system === 'string') return system;
+  return system
+    .flatMap((block) => (block.type === 'text' ? [block.text] : []))
+    .join('\n');
 }
 
 function flattenMessage(m: AnthropicMessage): ChatMessage {

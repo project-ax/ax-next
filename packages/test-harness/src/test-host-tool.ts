@@ -45,7 +45,19 @@ export function createTestHostToolPlugin(): Plugin {
         EXECUTE_HOOK,
         PLUGIN_NAME,
         async (_ctx, raw) => {
-          const parsed = InputSchema.safeParse(raw);
+          // The IPC dispatcher for `tool.execute-host` calls this service
+          // hook with the whole `ToolCall` envelope — `{id, name, input}`
+          // — not just `input`. Pluck `input` before schema-validating it
+          // so our assertion keeps matching the shape the tool actually
+          // advertises in its inputSchema. Accept the bare `input` shape
+          // too so older tests that called this hook directly keep working.
+          const candidate =
+            raw !== null &&
+            typeof raw === 'object' &&
+            'input' in (raw as Record<string, unknown>)
+              ? (raw as { input: unknown }).input
+              : raw;
+          const parsed = InputSchema.safeParse(candidate);
           if (!parsed.success) {
             throw new PluginError({
               code: 'invalid-payload',

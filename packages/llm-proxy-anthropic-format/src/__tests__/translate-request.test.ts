@@ -137,6 +137,37 @@ describe('translateAnthropicRequest', () => {
     ]);
   });
 
+  // Regression: the Anthropic API accepts `system` as an array of text
+  // blocks. The `claude` CLI (spawned by the claude-sdk runner) uses that
+  // form exclusively. Joining with '\n' mirrors how the Anthropic server
+  // concatenates blocks when building the prompt. Caught by Week 6.5d
+  // Task 14 e2e.
+  it('joins system as an array of {type:"text", text} blocks with newlines', () => {
+    const out = translateAnthropicRequest({
+      model: 'm',
+      max_tokens: 10,
+      system: [
+        { type: 'text', text: 'line one' },
+        { type: 'text', text: 'line two' },
+      ],
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+    expect(out.messages).toEqual([
+      { role: 'system', content: 'line one\nline two' },
+      { role: 'user', content: 'hi' },
+    ]);
+  });
+
+  it('omits the system message when the system array is empty', () => {
+    const out = translateAnthropicRequest({
+      model: 'm',
+      max_tokens: 10,
+      system: [],
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+    expect(out.messages).toEqual([{ role: 'user', content: 'hi' }]);
+  });
+
   it('translates tools with executesIn host sentinel', () => {
     const out = translateAnthropicRequest({
       model: 'm',

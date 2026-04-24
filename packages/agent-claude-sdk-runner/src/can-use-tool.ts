@@ -1,41 +1,38 @@
 // ---------------------------------------------------------------------------
-// canUseTool → tool.pre-call IPC adapter.
+// canUseTool → belt-and-suspenders allow-path.
 //
-// Bridges claude-agent-sdk's `CanUseTool` callback to our host's
-// `tool.pre-call` action. Every tool invocation the SDK is about to make
-// passes through here; we forward it to the host's subscriber chain
-// (permission check, arg rewriting, audit log) and translate the host's
-// verdict back into what the SDK expects.
+// Previously this hook drove `tool.pre-call` — the architecture doc called
+// it the primary bridge. In practice, `canUseTool` only fires when the
+// CLI's own permission system decides a tool needs a prompt, and built-ins
+// like `Bash echo hi` (under permissionMode 'default') are pre-approved
+// internally and never reach here. That left the host blind to those
+// invocations.
 //
-// Two fast-paths bypass IPC entirely:
+// As of Week 6.5d Task 14 the pre-call IPC forwarding moved into the
+// PreToolUse hook, which the SDK fires for EVERY tool use. This callback
+// is kept as a belt-and-suspenders allow-path so the SDK's permission
+// machinery remains satisfied when it DOES route through canUseTool
+// (e.g. third-party MCP tools) — the host has already seen and
+// adjudicated the call via PreToolUse at that point, so canUseTool only
+// needs to translate the SDK's permission-request envelope into an
+// `{behavior:'allow'}` reply.
+//
+// Two fast-paths:
 //   * `disabled` names — the SDK's `disallowedTools` should already have
-//     filtered these out; we refuse anyway as defense in depth. The host
-//     never hears about them.
-//
-// Everything else becomes a `tool.pre-call` call. Errors from the IPC
-// client propagate; the SDK surfaces them as a turn failure, which is
-// the correct behavior — a host that can't answer pre-call has no way
-// to adjudicate the tool call at all.
+//     filtered these out; we refuse anyway as defense in depth.
+//   * Everything else allows. PreToolUse is the authoritative gate; if it
+//     denied, the SDK will never reach canUseTool.
 // ---------------------------------------------------------------------------
 
-import { randomUUID } from 'node:crypto';
 import type { CanUseTool } from '@anthropic-ai/claude-agent-sdk';
 import type { IpcClient } from '@ax/agent-runner-core';
-import {
-  ToolPreCallResponseSchema,
-  type ToolPreCallResponse,
-} from '@ax/ipc-protocol';
 import { classifySdkToolName } from './tool-names.js';
 
 export interface CreateCanUseToolOptions {
   client: IpcClient;
-  /** Test seam: override the per-call id generator. Defaults to `randomUUID`. */
-  idGen?: () => string;
 }
 
-export function createCanUseTool(opts: CreateCanUseToolOptions): CanUseTool {
-  const idGen = opts.idGen ?? ((): string => randomUUID());
-
+export function createCanUseTool(_opts: CreateCanUseToolOptions): CanUseTool {
   return async (toolName, input) => {
     const klass = classifySdkToolName(toolName);
 
@@ -43,29 +40,11 @@ export function createCanUseTool(opts: CreateCanUseToolOptions): CanUseTool {
       return { behavior: 'deny', message: 'tool disabled by policy' };
     }
 
-    const id = idGen();
-    const raw = await opts.client.call('tool.pre-call', {
-      call: { id, name: klass.axName, input },
-    });
-
-    // The IpcClient already Zod-parses the response against
-    // ToolPreCallResponseSchema. We re-assert the narrowed type here for
-    // TypeScript's benefit — safeParse on the known-good value is cheap
-    // and keeps this file from depending on how the client validates.
-    const parsed = ToolPreCallResponseSchema.parse(raw) as ToolPreCallResponse;
-
-    if (parsed.verdict === 'allow') {
-      const maybeInput = parsed.modifiedCall?.input;
-      return {
-        behavior: 'allow',
-        updatedInput:
-          maybeInput !== undefined
-            ? (maybeInput as Record<string, unknown>)
-            : input,
-      };
-    }
-
-    // verdict === 'reject'
-    return { behavior: 'deny', message: parsed.reason };
+    // Allow pass-through. The host-side `tool:pre-call` subscriber chain
+    // already ran inside the PreToolUse hook (see pre-tool-use.ts); if it
+    // rejected, the SDK would never route the call here. We echo the
+    // input unchanged because PreToolUse already forwarded any
+    // `modifiedCall.input` to the SDK.
+    return { behavior: 'allow', updatedInput: input };
   };
 }

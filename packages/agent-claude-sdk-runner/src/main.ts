@@ -11,6 +11,7 @@ import { createCanUseTool } from './can-use-tool.js';
 import { readRunnerEnv } from './env.js';
 import { createHostMcpServer } from './host-mcp-server.js';
 import { createPostToolUseHook } from './post-tool-use.js';
+import { createPreToolUseHook } from './pre-tool-use.js';
 import { DISABLED_BUILTINS, MCP_HOST_SERVER_NAME } from './tool-names.js';
 
 // ---------------------------------------------------------------------------
@@ -108,8 +109,14 @@ export async function main(): Promise<number> {
         },
         cwd: env.workspaceRoot,
         disallowedTools: [...DISABLED_BUILTINS],
+        // canUseTool stays as a belt-and-suspenders allow-path. The real
+        // pre-call hook-bus forwarding happens in the PreToolUse hook below,
+        // which ALWAYS fires (canUseTool only fires when the CLI decides a
+        // tool needs a permission prompt — built-ins like Bash with benign
+        // input don't reach it). See pre-tool-use.ts for the rationale.
         canUseTool: createCanUseTool({ client }),
         hooks: {
+          PreToolUse: [{ hooks: [createPreToolUseHook({ client })] }],
           PostToolUse: [{ hooks: [createPostToolUseHook({ client })] }],
         },
         mcpServers: { [MCP_HOST_SERVER_NAME]: hostMcpServer },
