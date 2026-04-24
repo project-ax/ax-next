@@ -45,7 +45,7 @@ export function decryptWithKey(key: Buffer, blob: Uint8Array): string {
   decipher.setAuthTag(tag);
   try {
     return Buffer.concat([decipher.update(ct), decipher.final()]).toString('utf8');
-  } catch (_err) {
+  } catch {
     throw new PluginError({
       code: 'decrypt-failed',
       plugin: PLUGIN_NAME,
