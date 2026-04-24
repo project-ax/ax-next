@@ -60,6 +60,24 @@ describe('llm-anthropic', () => {
     expect(r.toolCalls).toEqual([]);
   });
 
+  it('routes system messages to top-level system, not role:user', async () => {
+    const client = makeFakeClient([{ content: [{ type: 'text', text: 'ok' }] }]);
+    const bus = new HookBus();
+    await createLlmAnthropicPlugin({ clientFactory: () => client }).init({ bus, config: {} });
+    await bus.call<LlmRequest, LlmResponse>('llm:call', ctx(), {
+      messages: [
+        { role: 'system', content: 'You are terse.' },
+        { role: 'user', content: 'hi' },
+        { role: 'system', content: 'Reply with one word.' },
+      ],
+    });
+    expect(client.seen).toHaveLength(1);
+    const req = client.seen[0] as { messages: Array<{ role: string; content: string }>; system?: string };
+    expect(req.system).toBe('You are terse.\n\nReply with one word.');
+    expect(req.messages).toEqual([{ role: 'user', content: 'hi' }]);
+    expect(req.messages.some((m) => m.role === 'system')).toBe(false);
+  });
+
   it('maps tool_use block to toolCalls[]', async () => {
     const client = makeFakeClient([
       {

@@ -141,13 +141,28 @@ function toAnthropicRequest(
   input: LlmRequest,
   cfg: LlmAnthropicConfig,
 ): Record<string, unknown> {
+  // The Anthropic Messages API models system prompts as a top-level `system`
+  // string, NOT as a message with role:'system'. Mapping them to role:'user'
+  // would silently downgrade a system instruction into a user turn, degrading
+  // model behavior. Extract all role:'system' entries and concatenate them
+  // (matches the behavior of sending multiple system-level instructions).
+  const systemParts: string[] = [];
+  const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+  for (const m of input.messages) {
+    if (m.role === 'system') {
+      systemParts.push(m.content);
+      continue;
+    }
+    messages.push({
+      role: m.role === 'assistant' ? 'assistant' : 'user',
+      content: m.content,
+    });
+  }
   return {
     model: cfg.model ?? DEFAULT_MODEL,
     max_tokens: cfg.maxTokens ?? DEFAULT_MAX_TOKENS,
-    messages: input.messages.map((m) => ({
-      role: m.role === 'assistant' ? 'assistant' : 'user',
-      content: m.content,
-    })),
+    messages,
+    ...(systemParts.length > 0 ? { system: systemParts.join('\n\n') } : {}),
     ...(input.tools && input.tools.length > 0
       ? {
           tools: input.tools.map((t) => ({
