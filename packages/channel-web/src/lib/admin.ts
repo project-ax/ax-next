@@ -61,13 +61,75 @@ export async function deleteAgent(id: string): Promise<void> {
 }
 
 // MCP servers ------------------------------------------------------------
-// Tasks 23 fills out create/patch/delete/test; the list helper is exposed
-// here so AgentForm can hint at available IDs in the chip input.
+// Task 23 wires create/patch/delete/test for the McpServerForm.
+// `listMcpServers` is also called from AgentForm's chip-input placeholder.
+
+export interface McpServerInput {
+  name: string;
+  url: string;
+  transport: 'http' | 'stdio' | 'sse';
+  credentials_id?: string;
+}
 
 export async function listMcpServers(): Promise<McpServer[]> {
   const res = await fetch('/api/admin/mcp-servers', { credentials: 'include' });
   if (!res.ok) throw new Error(`list mcp: ${res.status}`);
   return (await res.json()).servers;
+}
+
+export async function createMcpServer(
+  input: McpServerInput,
+): Promise<{ id: string }> {
+  const res = await fetch('/api/admin/mcp-servers', {
+    method: 'POST',
+    headers,
+    credentials: 'include',
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw new Error(`create mcp: ${res.status}`);
+  return res.json();
+}
+
+export async function patchMcpServer(
+  id: string,
+  patch: Partial<McpServerInput>,
+): Promise<void> {
+  const res = await fetch(
+    `/api/admin/mcp-servers/${encodeURIComponent(id)}`,
+    {
+      method: 'PATCH',
+      headers,
+      credentials: 'include',
+      body: JSON.stringify(patch),
+    },
+  );
+  if (!res.ok) throw new Error(`patch mcp: ${res.status}`);
+}
+
+export async function deleteMcpServer(id: string): Promise<void> {
+  const res = await fetch(
+    `/api/admin/mcp-servers/${encodeURIComponent(id)}`,
+    { method: 'DELETE', credentials: 'include' },
+  );
+  if (!res.ok) throw new Error(`delete mcp: ${res.status}`);
+}
+
+// `testMcpServer` is unusual: it doesn't throw on HTTP failure — it folds
+// the error into the returned shape. The Test button surfaces ok/error
+// inline, and a thrown error would just become an unhandled rejection.
+export async function testMcpServer(
+  id: string,
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(
+      `/api/admin/mcp-servers/${encodeURIComponent(id)}/test`,
+      { method: 'POST', credentials: 'include' },
+    );
+    if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
+    return res.json();
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 // Teams ------------------------------------------------------------------
