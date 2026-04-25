@@ -93,7 +93,10 @@ const splitChips = (s: string): string[] =>
 
 export function AgentForm() {
   const [agents, setAgents] = useState<Agent[]>([]);
-  const [teams, setTeams] = useState<Team[]>([]);
+  // `null` = not yet loaded (radio disabled), `[]` = loaded but empty.
+  // Distinguishing the two prevents writing an empty `owner_id` if the
+  // user toggles to `team` before `/api/admin/teams` resolves.
+  const [teams, setTeams] = useState<Team[] | null>(null);
   const [mcps, setMcps] = useState<McpServer[]>([]);
   const [editing, setEditing] = useState<Agent | 'new' | null>(null);
   const [form, setForm] = useState<FormState>(() => emptyForm());
@@ -195,7 +198,7 @@ export function AgentForm() {
 
   const ownerOptions =
     form.owner_type === 'team'
-      ? teams.map((t) => ({ id: t.id, name: t.name }))
+      ? (teams ?? []).map((t) => ({ id: t.id, name: t.name }))
       : KNOWN_USERS;
 
   return (
@@ -317,15 +320,22 @@ export function AgentForm() {
                   name="owner_type"
                   value="team"
                   checked={form.owner_type === 'team'}
+                  // Disable until teams are loaded — flipping to `team`
+                  // before then would write an empty owner_id and the
+                  // server would reject the submit.
+                  disabled={teams === null}
                   onChange={() =>
                     setForm((f) => ({
                       ...f,
                       owner_type: 'team',
-                      owner_id: teams[0]?.id ?? '',
+                      owner_id: teams?.[0]?.id ?? '',
                     }))
                   }
                 />{' '}
                 team
+                {teams === null && (
+                  <span className="form-hint"> (loading teams…)</span>
+                )}
               </label>
             </div>
 

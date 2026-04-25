@@ -87,19 +87,28 @@ export const agentStoreActions = {
     opts: { activeSessionId: string | null; hasMessages: boolean },
   ): Promise<void> => {
     if (opts.activeSessionId && !opts.hasMessages) {
-      // Empty session — retag in place.
+      // Empty session — retag in place. Don't commit `selectedAgentId`
+      // unless the server accepted the PATCH; otherwise the chip would
+      // show an agent the session is not actually tagged with.
+      let ok = false;
       try {
-        await fetch(`/api/chat/sessions/${encodeURIComponent(opts.activeSessionId)}`, {
+        const res = await fetch(`/api/chat/sessions/${encodeURIComponent(opts.activeSessionId)}`, {
           method: 'PATCH',
           headers: { 'content-type': 'application/json' },
           credentials: 'include',
           body: JSON.stringify({ agentId: id }),
         });
+        ok = res.ok;
+        if (!ok) {
+          console.warn('[agent-store] retag PATCH failed', res.status);
+        }
       } catch (err) {
         // Mock backend is best-effort in dev; surface but don't crash.
         console.warn('[agent-store] retag failed', err);
       }
-      set({ selectedAgentId: id, pendingAgentId: null });
+      if (ok) {
+        set({ selectedAgentId: id, pendingAgentId: null });
+      }
       return;
     }
     if (opts.hasMessages) {

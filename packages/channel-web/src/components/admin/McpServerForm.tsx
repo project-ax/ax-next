@@ -141,11 +141,23 @@ export function McpServerForm() {
 
   const onTest = async (id: string) => {
     setTestStatus((prev) => ({ ...prev, [id]: 'testing' }));
-    const result = await testMcpServer(id);
-    setTestStatus((prev) => ({
-      ...prev,
-      [id]: result.ok ? 'ok' : `error: ${result.error ?? 'failed'}`,
-    }));
+    // `testMcpServer` is documented as not-throwing — it folds errors
+    // into `{ ok: false, error }`. The try/catch here is defensive: if a
+    // future refactor (or a programmer error in the helper) ever lets a
+    // throw escape, the badge would otherwise stay stuck on "testing…"
+    // forever.
+    try {
+      const result = await testMcpServer(id);
+      setTestStatus((prev) => ({
+        ...prev,
+        [id]: result.ok ? 'ok' : `error: ${result.error ?? 'failed'}`,
+      }));
+    } catch (err) {
+      setTestStatus((prev) => ({
+        ...prev,
+        [id]: `error: ${err instanceof Error ? err.message : String(err)}`,
+      }));
+    }
   };
 
   const renderBadge = (status: TestStatus | undefined) => {

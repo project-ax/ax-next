@@ -169,4 +169,39 @@ describe('AdminPanel — MCP servers', () => {
       expect(screen.getByText(/error/i)).toBeTruthy();
     });
   });
+
+  it('Test button surfaces error if fetch throws (defensive try/catch)', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        servers: [
+          {
+            id: 'mcp-1',
+            name: 'fs',
+            url: 'stdio://fs',
+            transport: 'stdio',
+            created_at: 0,
+            updated_at: 0,
+          },
+        ],
+      }),
+    });
+    // Network failure — the helper today catches this internally, but
+    // this test guards against a future refactor that lets a throw
+    // escape `testMcpServer`. The badge must move out of "testing…".
+    fetchMock.mockRejectedValueOnce(new Error('network'));
+    render(
+      <UserProvider value={adminUser}>
+        <AdminPanel view="mcp-servers" onClose={() => {}} />
+      </UserProvider>,
+    );
+    await waitFor(() => screen.getByText('fs'));
+    fireEvent.click(screen.getByText(/Test/i));
+    await waitFor(() => {
+      // Whatever path we took (current helper or future bypass), the
+      // badge must end on `error`, not stuck on `testing…`.
+      expect(screen.getByText(/error/i)).toBeTruthy();
+      expect(screen.queryByText(/testing/i)).toBeNull();
+    });
+  });
 });
