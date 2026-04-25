@@ -52,7 +52,7 @@ The model can influence one thing this plugin sees: the bytes inside an HTTP req
 ### Untrusted strings entering the slice
 
 - **HTTP request bodies** from runner pods. Read by `readJsonBody` (`@ax/ipc-core/src/body.ts`) under the `MAX_FRAME` cap (4 MiB, defined once in `@ax/core/src/ipc/framing.ts`). The reader fails fast on `Content-Length > cap` (413 before any body bytes are buffered) and also enforces the cap mid-stream against clients that lie in `Content-Length` or use chunked encoding.
-- **`Authorization` header** value. Compared case-insensitively to `bearer ` and the rest is treated as opaque base64url. The token never appears in any log or error message.
+- **`Authorization` header** value. Compared case-insensitively to the literal prefix `bearer` followed by a space, and the rest is treated as opaque base64url. The token never appears in any log or error message.
 
 ### Bad destinations — gated by Zod
 
