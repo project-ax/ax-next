@@ -56,8 +56,8 @@ import {
 //
 // Response-body cap: we drain into a Buffer capped at MAX_RESPONSE_BYTES.
 // @ax/core has a MAX_FRAME of 4 MiB, but this package must not import the
-// kernel (sandbox-side), so we redeclare the same ceiling here. Task 14
-// may unify if that boundary shifts.
+// kernel (sandbox-side), so we redeclare the same ceiling here. We may
+// unify if that boundary shifts.
 // ---------------------------------------------------------------------------
 
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
