@@ -2,7 +2,7 @@ import * as http from 'node:http';
 import { promises as fsp } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createIpcClient } from '../ipc-client.js';
 import {
   HostUnavailableError,
@@ -258,30 +258,92 @@ describe('createIpcClient', () => {
     expect(result).toEqual({ type: 'timeout', cursor: 0 });
   });
 
-  it('http: target reaches the wire (no defensive "not implemented" guard)', async () => {
-    // Bind a free port on 127.0.0.1, then immediately close it. The client
-    // gets a real ECONNREFUSED — proves the request reached node:http and
-    // wasn't blocked by the defensive guard.
-    const probe = http.createServer();
-    await new Promise<void>((resolve) =>
-      probe.listen(0, '127.0.0.1', () => resolve()),
-    );
-    const addr = probe.address();
-    const port = typeof addr === 'object' && addr !== null ? addr.port : 0;
-    await new Promise<void>((resolve) => probe.close(() => resolve()));
+  describe('http:// transport round-trip', () => {
+    let server: http.Server;
+    let port: number;
+    const TOKEN = 'test-bearer-token';
 
-    const client = createIpcClient({
-      runnerEndpoint: `http://127.0.0.1:${port}`,
-      token: 'tok-abc',
-      maxRetries: 0,
+    beforeEach(async () => {
+      server = http.createServer((req, res) => {
+        // Auth check: require the expected bearer token.
+        const auth = req.headers.authorization;
+        if (auth !== `Bearer ${TOKEN}`) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              error: { code: 'SESSION_INVALID', message: 'unknown token' },
+            }),
+          );
+          return;
+        }
+
+        // Drain body, then respond. Only POST /tool.list is wired here — any
+        // other route returns 404 so a misrouted call surfaces clearly.
+        const chunks: Buffer[] = [];
+        req.on('data', (chunk: Buffer) => {
+          chunks.push(chunk);
+        });
+        req.on('end', () => {
+          if (req.url === '/tool.list' && req.method === 'POST') {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(
+              JSON.stringify({
+                tools: [
+                  {
+                    name: 'echo',
+                    description: 'echo',
+                    inputSchema: { type: 'object' },
+                    executesIn: 'sandbox',
+                  },
+                ],
+              }),
+            );
+            return;
+          }
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              error: { code: 'NOT_FOUND', message: 'unknown path' },
+            }),
+          );
+        });
+      });
+
+      await new Promise<void>((resolve) => {
+        server.listen(0, '127.0.0.1', () => {
+          const addr = server.address();
+          if (typeof addr === 'object' && addr !== null) port = addr.port;
+          resolve();
+        });
+      });
     });
 
-    await expect(client.call('tool.list', {})).rejects.toBeInstanceOf(
-      HostUnavailableError,
-    );
-    await expect(client.call('tool.list', {})).rejects.not.toThrow(
-      /not implemented/,
-    );
+    afterEach(async () => {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    });
+
+    it('round-trips tool.list with valid bearer auth', async () => {
+      const client = createIpcClient({
+        runnerEndpoint: `http://127.0.0.1:${port}`,
+        token: TOKEN,
+      });
+      const result = (await client.call('tool.list', {})) as {
+        tools: unknown[];
+      };
+      expect(result.tools).toHaveLength(1);
+      expect((result.tools[0] as { name: string }).name).toBe('echo');
+    });
+
+    it('surfaces 401 as SessionInvalidError', async () => {
+      const client = createIpcClient({
+        runnerEndpoint: `http://127.0.0.1:${port}`,
+        token: 'wrong-token',
+        maxRetries: 0,
+      });
+      await expect(client.call('tool.list', {})).rejects.toThrow(
+        SessionInvalidError,
+      );
+    });
   });
 
   it('rejects unsupported runnerEndpoint scheme', () => {
