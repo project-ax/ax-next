@@ -18,7 +18,7 @@
 
   --sans: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   --mono: 'IBM Plex Mono', 'JetBrains Mono', ui-monospace, monospace;
-  --serif: 'IBM Plex Serif', Georgia, serif;
+  --serif: var(--sans);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -73,7 +73,7 @@ body {
   color: var(--ink);
   font-family: var(--sans);
   font-size: 15px;
-  line-height: 1.55;
+  line-height: 1.58;
   letter-spacing: -0.005em;
   font-feature-settings: 'ss02', 'ss05';
   -webkit-font-smoothing: antialiased;
