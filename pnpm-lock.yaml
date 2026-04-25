@@ -868,9 +868,9 @@ importers:
       '@ax/eventbus-postgres':
         specifier: workspace:*
         version: link:../../packages/eventbus-postgres
-      '@ax/ipc-server':
+      '@ax/ipc-http':
         specifier: workspace:*
-        version: link:../../packages/ipc-server
+        version: link:../../packages/ipc-http
       '@ax/llm-anthropic':
         specifier: workspace:*
         version: link:../../packages/llm-anthropic

@@ -25,6 +25,7 @@ import {
   createSandboxK8sPlugin,
   type K8sCoreApi,
 } from '@ax/sandbox-k8s';
+import type { IpcHttpPlugin } from '@ax/ipc-http';
 import type {
   EventbusEmitInput,
   EventbusPostgresPlugin,
@@ -82,6 +83,7 @@ let kysely: Kysely<unknown>;
 const pluginInstances: {
   eventbus?: EventbusPostgresPlugin;
   session?: SessionPostgresPlugin;
+  ipcHttp?: IpcHttpPlugin;
 } = {};
 
 // Minimal K8sCoreApi stub. Every method throws if called — and that's the
@@ -119,6 +121,15 @@ beforeAll(async () => {
     session: { connectionString },
     workspace: { repoRoot: workspaceRoot },
     sandbox: { namespace: 'ax-acceptance' },
+    // Use port 0 so the @ax/ipc-http listener binds to a free OS-assigned
+    // port — the acceptance test never invokes the listener, but the
+    // plugin's init() does call .listen(). Loopback bind keeps any
+    // accidental bind from being externally reachable.
+    ipc: {
+      host: '127.0.0.1',
+      port: 0,
+      hostIpcUrl: 'http://test-host.test.svc.cluster.local:80',
+    },
     anthropic: { model: 'claude-sonnet-4-6' },
     // Pin the runner binary to a stub path. The chat-orchestrator validates
     // it only when `sandbox:open-session` is invoked — which the acceptance
@@ -140,9 +151,12 @@ beforeAll(async () => {
     if (p.manifest.name === '@ax/sandbox-k8s') {
       // Recreate sandbox-k8s with the stub api. resolveConfig is fine with
       // the same defaults the preset would have produced — namespace is the
-      // only field we care about for the manifest scan.
+      // only field we care about for the manifest scan. hostIpcUrl is
+      // required by the resolved-config validator, so we pass the same
+      // stub URL the preset config holds.
       return createSandboxK8sPlugin({
         namespace: 'ax-acceptance',
+        hostIpcUrl: 'http://test-host.test.svc.cluster.local:80',
         api: makeNoopK8sApi(),
       });
     }
@@ -164,6 +178,8 @@ beforeAll(async () => {
       pluginInstances.eventbus = p as EventbusPostgresPlugin;
     } else if (p.manifest.name === '@ax/session-postgres') {
       pluginInstances.session = p as SessionPostgresPlugin;
+    } else if (p.manifest.name === '@ax/ipc-http') {
+      pluginInstances.ipcHttp = p as IpcHttpPlugin;
     }
   }
 
@@ -189,6 +205,7 @@ afterAll(async () => {
   // Shut down the LISTEN clients and pools BEFORE stopping the container,
   // otherwise the abrupt server shutdown surfaces as unhandled
   // `terminating connection due to administrator command` from pg-protocol.
+  await pluginInstances.ipcHttp?.closeListener().catch(() => {});
   await pluginInstances.session?.shutdown().catch(() => {});
   await pluginInstances.eventbus?.shutdown().catch(() => {});
   await kysely?.destroy().catch(() => {});

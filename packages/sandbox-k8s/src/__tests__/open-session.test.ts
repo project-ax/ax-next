@@ -14,12 +14,14 @@ import { makeMockK8sApi, type MockK8sApi } from './mock-k8s.js';
 // for real.
 //
 // We do NOT exercise actual IPC. The runnerEndpoint comes back as
-// `http://podIP:7777` and the orchestrator's contract is to treat it as
-// opaque — pod-side HTTP server lands later. These tests assert on the
-// pod spec content, env wiring, and lifecycle.
+// `config.hostIpcUrl` (the host's @ax/ipc-http listener URL); pod IP is
+// still resolved for the readiness signal but does not determine the
+// endpoint. These tests assert on the pod spec content, env wiring,
+// and lifecycle.
 // ---------------------------------------------------------------------------
 
 const FAST_POLL = { readinessPollMs: 1, readinessTimeoutMs: 2_000 };
+const TEST_HOST_IPC_URL = 'http://test-host:8080';
 
 async function makeHarness(api: MockK8sApi) {
   return createTestHarness({
@@ -29,6 +31,7 @@ async function makeHarness(api: MockK8sApi) {
         api,
         namespace: 'ax-test',
         image: 'ax-next/agent:test',
+        hostIpcUrl: TEST_HOST_IPC_URL,
         ...FAST_POLL,
       }),
     ],
@@ -77,6 +80,9 @@ describe('sandbox:open-session (k8s)', () => {
     expect(env.AX_AUTH_TOKEN!.length).toBeGreaterThan(0);
     expect(env.AX_WORKSPACE_ROOT).toBe('/tmp/ws');
     expect(env.AX_RUNNER_BINARY).toBe('/opt/ax/runner.js');
+    // AX_RUNNER_ENDPOINT is the host's @ax/ipc-http URL (config.hostIpcUrl),
+    // stamped at spec-build time — no pod-IP-derived placeholder.
+    expect(env.AX_RUNNER_ENDPOINT).toBe(TEST_HOST_IPC_URL);
     // requestId comes from ctx.reqId — present in test harness contexts.
     expect(env.AX_REQUEST_ID).toBeDefined();
   });
@@ -162,6 +168,7 @@ describe('sandbox:open-session (k8s)', () => {
           api,
           namespace: 'ax-test',
           image: 'foo/bar:v2',
+          hostIpcUrl: TEST_HOST_IPC_URL,
           ...FAST_POLL,
         }),
       ],
@@ -178,9 +185,11 @@ describe('sandbox:open-session (k8s)', () => {
     expect(body.spec.containers[0]!.image).toBe('foo/bar:v2');
   });
 
-  it('returns runnerEndpoint = http://<podIP>:7777 once the pod reaches Ready with an IP', async () => {
+  it('returns runnerEndpoint = config.hostIpcUrl once the pod reaches Ready', async () => {
     const api = makeMockK8sApi();
     // First read returns Pending without IP; second returns Ready with IP.
+    // The pod IP is still resolved for the readiness signal — but the
+    // returned runnerEndpoint is the host's @ax/ipc-http URL, not pod IP.
     api.setReadResponses(
       { status: { phase: 'Pending' } },
       readyPod('10.42.0.5'),
@@ -196,7 +205,7 @@ describe('sandbox:open-session (k8s)', () => {
         runnerBinary: '/opt/ax/runner.js',
       },
     );
-    expect(result.runnerEndpoint).toBe('http://10.42.0.5:7777');
+    expect(result.runnerEndpoint).toBe(TEST_HOST_IPC_URL);
   });
 
   it('rejects relative runnerBinary with PluginError(invalid-payload)', async () => {

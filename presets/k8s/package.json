@@ -36,7 +36,7 @@
     "@ax/audit-log": "workspace:*",
     "@ax/mcp-client": "workspace:*",
     "@ax/credentials": "workspace:*",
-    "@ax/ipc-server": "workspace:*"
+    "@ax/ipc-http": "workspace:*"
   },
   "devDependencies": {
     "@ax/llm-mock": "workspace:*",

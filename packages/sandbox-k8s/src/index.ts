@@ -15,4 +15,4 @@ export {
 } from './open-session.js';
 export type { K8sCoreApi } from './k8s-api.js';
 export { isPodGoneError } from './kill.js';
-export { RUNNER_PORT, buildPodSpec, type PodSpec } from './pod-spec.js';
+export { buildPodSpec, type PodSpec } from './pod-spec.js';

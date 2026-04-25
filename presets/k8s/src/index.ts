@@ -15,7 +15,7 @@ import { createToolFileIoPlugin } from '@ax/tool-file-io';
 import { auditLogPlugin } from '@ax/audit-log';
 import { createMcpClientPlugin } from '@ax/mcp-client';
 import { createCredentialsPlugin } from '@ax/credentials';
-import { createIpcServerPlugin } from '@ax/ipc-server';
+import { createIpcHttpPlugin } from '@ax/ipc-http';
 
 // ---------------------------------------------------------------------------
 // @ax/preset-k8s — production assembly: postgres trio + workspace-git +
@@ -45,7 +45,7 @@ import { createIpcServerPlugin } from '@ax/ipc-server';
 //   2. eventbus / session (cross-process coordination)
 //   3. workspace (versioned content)
 //   4. audit-log (subscribes to chat:end; calls storage:set)
-//   5. sandbox / ipc-server / llm-proxy / chat-orchestrator (control plane)
+//   5. sandbox / ipc-http / llm-proxy / chat-orchestrator (control plane)
 //   6. tool-dispatcher → tool descriptors → mcp-client (catalog assembly)
 //   7. llm-anthropic (last; everything else is in place when init runs)
 // ---------------------------------------------------------------------------
@@ -111,6 +111,25 @@ export interface K8sPresetConfig {
     activeDeadlineSeconds?: number;
     readinessPollMs?: number;
     readinessTimeoutMs?: number;
+  };
+  /**
+   * IPC listener config — the host pod's @ax/ipc-http TCP listener that
+   * runner pods connect to. `hostIpcUrl` is required (no useful default;
+   * it depends on the chart's Service config). `host`/`port` default to
+   * '0.0.0.0' / 8080 — the bind address inside the host pod.
+   */
+  ipc: {
+    /** Host the @ax/ipc-http listener binds to. Default '0.0.0.0'. */
+    host?: string;
+    /** Port the @ax/ipc-http listener binds to. Default 8080. */
+    port?: number;
+    /**
+     * Cluster-internal URL the runner pods use to reach the host's IPC
+     * listener (e.g. `http://ax-next-host.ax-next.svc.cluster.local:80`).
+     * Required — there is no useful default; the right value comes from
+     * the chart's Service config (Task 12 wires the env-read).
+     */
+    hostIpcUrl: string;
   };
   /**
    * Anthropic LLM config. ANTHROPIC_API_KEY must be in env at plugin init
@@ -193,6 +212,7 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // sandbox-k8s registers `sandbox:open-session`. No subprocess fallback
   // here — this preset is k8s-only.
   const sandboxOpts = {
+    hostIpcUrl: config.ipc.hostIpcUrl,
     ...(config.sandbox?.namespace !== undefined
       ? { namespace: config.sandbox.namespace }
       : {}),
@@ -229,7 +249,12 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   };
   plugins.push(createSandboxK8sPlugin(sandboxOpts));
 
-  plugins.push(createIpcServerPlugin());
+  plugins.push(
+    createIpcHttpPlugin({
+      host: config.ipc.host ?? '0.0.0.0',
+      port: config.ipc.port ?? 8080,
+    }),
+  );
   plugins.push(createLlmProxyAnthropicFormatPlugin());
 
   const orchestratorCfg: Parameters<typeof createChatOrchestratorPlugin>[0] = {
