@@ -34,6 +34,7 @@
     { "path": "packages/storage-postgres" },
     { "path": "packages/eventbus-postgres" },
     { "path": "packages/session-postgres" },
+    { "path": "packages/channel-web" },
     { "path": "presets/k8s" }
   ]
 }
