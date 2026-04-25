@@ -147,14 +147,30 @@ export function createInbox(opts: InboxOptions): Inbox {
   async function ensureListen(sessionId: string): Promise<() => Promise<void>> {
     const channel = channelFor(sessionId);
     const cur = listenedChannels.get(channel) ?? 0;
+    // Bump the refcount SYNCHRONOUSLY before any await — otherwise two
+    // concurrent ensureListen calls both read `cur = 0`, both await LISTEN,
+    // and both set the count to 1 (clobbering one increment). When the
+    // first releaser fires, count goes 1 → 0 and we UNLISTEN, even though
+    // the second waiter is still parked on the channel — silent timeout
+    // instead of receiving the entry.
+    listenedChannels.set(channel, cur + 1);
     if (cur === 0) {
       // First subscriber on this channel — issue LISTEN.
       // pg.escapeIdentifier wraps in double-quotes and escapes any embedded
       // quotes; even though our channel passed the regex, escapeIdentifier
       // is the documented-correct way to embed an identifier into SQL.
-      await listenClient.query(`LISTEN ${pg.escapeIdentifier(channel)}`);
+      try {
+        await listenClient.query(`LISTEN ${pg.escapeIdentifier(channel)}`);
+      } catch (err) {
+        // LISTEN failed — roll back the increment so the bookkeeping doesn't
+        // leak. Use the live value (other concurrent ensureListen calls may
+        // have bumped it further) and decrement, deleting on the way to 0.
+        const after = listenedChannels.get(channel) ?? 1;
+        if (after <= 1) listenedChannels.delete(channel);
+        else listenedChannels.set(channel, after - 1);
+        throw err;
+      }
     }
-    listenedChannels.set(channel, cur + 1);
     return async () => {
       const next = (listenedChannels.get(channel) ?? 1) - 1;
       if (next <= 0) {
