@@ -5,8 +5,14 @@ export {
   type AuthSessionRow,
   type UserRow,
 } from './migrations.js';
-export type { AuthStore } from './store.js';
+export {
+  createAuthStore,
+  mintSessionId,
+  mintUserId,
+  type AuthStore,
+} from './store.js';
 export type {
+  AuthConfig,
   CreateBootstrapUserInput,
   CreateBootstrapUserOutput,
   GetUserInput,

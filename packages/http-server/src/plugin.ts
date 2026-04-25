@@ -353,9 +353,15 @@ async function handle(
   }
 
   const cookies = parseCookieHeader(headers['cookie']);
+  // Project URL.searchParams into a plain object once; handlers reading
+  // a missing key get `undefined` and don't have to defend against the
+  // URLSearchParams API (which silently coerces missing → empty string).
+  const query: Record<string, string> = {};
+  for (const [k, v] of url.searchParams.entries()) query[k.toLowerCase()] = v;
   const adapterReq: HttpRequest = {
     method,
     path,
+    query,
     headers,
     body,
     cookies,

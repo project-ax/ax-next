@@ -54,3 +54,32 @@ export interface CreateBootstrapUserOutput {
    */
   oneTimeToken: string;
 }
+
+/**
+ * Plugin config. Pass at least one of `providers.google` or `devBootstrap`;
+ * init throws `no-auth-providers` otherwise. The CLI's `serve` boot path
+ * derives this from env (see `loadAuthConfigFromEnv`); programmatic callers
+ * can pass it directly for tests / preset wiring.
+ *
+ * Why both `providers.google` and `devBootstrap` are optional individually:
+ * production usually has only `google`; laptops usually have only the
+ * dev-bootstrap token. Requiring both would force ops to ship a bogus
+ * google client_secret in dev or a bogus token in prod.
+ */
+export interface AuthConfig {
+  providers: {
+    google?: {
+      clientId: string;
+      clientSecret: string;
+      issuer: string;
+      redirectUri: string;
+    };
+  };
+  devBootstrap?: {
+    token: string;
+  };
+  /** Cookie name for the http login session. Default 'ax_auth_session'. */
+  sessionCookieName?: string;
+  /** Session lifetime in seconds. Default 7 days. */
+  sessionLifetimeSeconds?: number;
+}

@@ -3,20 +3,10 @@ import {
   PostgreSqlContainer,
   type StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
-import { PluginError } from '@ax/core';
 import { createTestHarness } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createAuthPlugin } from '../plugin.js';
-import type {
-  CreateBootstrapUserInput,
-  CreateBootstrapUserOutput,
-  GetUserInput,
-  GetUserOutput,
-  HttpRequestLike,
-  RequireUserInput,
-  RequireUserOutput,
-  User,
-} from '../types.js';
+import type { HttpRequestLike, User } from '../types.js';
 
 let container: StartedPostgreSqlContainer;
 let connectionString: string;
@@ -24,17 +14,23 @@ const harnesses: Awaited<ReturnType<typeof createTestHarness>>[] = [];
 
 async function makeHarness() {
   const h = await createTestHarness({
-    // Stand-in for @ax/http-server's http:register-route. Task 3 declares
-    // the call in the manifest so bootstrap topo-sort sees it now; Task 4
-    // is the first commit that actually invokes it. Until then the mock
-    // just records the registration and returns a no-op unregister so
-    // bootstrap's verifyCalls passes.
+    // Task 4 actually invokes http:register-route; the mock records the
+    // calls so this file can stay focused on type-shape + manifest +
+    // migration assertions (no full HTTP boot needed). Real-route flow
+    // is exercised in oidc.test.ts / dev-bootstrap.test.ts /
+    // cookie-session.test.ts.
     services: {
       'http:register-route': async () => ({ unregister: () => {} }),
     },
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),
-      createAuthPlugin(),
+      // devBootstrap config so init has at least one auth path; the
+      // env-token here is unrelated to NODE_ENV and is fine in test mode
+      // (NODE_ENV is unset → not 'production').
+      createAuthPlugin({
+        providers: {},
+        devBootstrap: { token: 'types-test-token' },
+      }),
     ],
   });
   harnesses.push(h);
@@ -99,55 +95,6 @@ describe('@ax/auth types + manifest + stubs', () => {
     expect(h.bus.hasService('auth:create-bootstrap-user')).toBe(true);
     // Spot-check we didn't accidentally register a Task-4-only hook here.
     expect(h.bus.hasService('auth:sign-out')).toBe(false);
-  });
-
-  it('auth:require-user stub throws PluginError code not-implemented', async () => {
-    const h = await makeHarness();
-    let caught: unknown;
-    try {
-      await h.bus.call<RequireUserInput, RequireUserOutput>(
-        'auth:require-user',
-        h.ctx(),
-        { req: { headers: {}, signedCookie: () => null } },
-      );
-    } catch (err) {
-      caught = err;
-    }
-    expect(caught).toBeInstanceOf(PluginError);
-    expect((caught as PluginError).code).toBe('not-implemented');
-    expect((caught as PluginError).plugin).toBe('@ax/auth');
-  });
-
-  it('auth:get-user stub throws PluginError code not-implemented', async () => {
-    const h = await makeHarness();
-    let caught: unknown;
-    try {
-      await h.bus.call<GetUserInput, GetUserOutput>(
-        'auth:get-user',
-        h.ctx(),
-        { userId: 'u1' },
-      );
-    } catch (err) {
-      caught = err;
-    }
-    expect(caught).toBeInstanceOf(PluginError);
-    expect((caught as PluginError).code).toBe('not-implemented');
-  });
-
-  it('auth:create-bootstrap-user stub throws PluginError code not-implemented', async () => {
-    const h = await makeHarness();
-    let caught: unknown;
-    try {
-      await h.bus.call<CreateBootstrapUserInput, CreateBootstrapUserOutput>(
-        'auth:create-bootstrap-user',
-        h.ctx(),
-        { displayName: 'Admin' },
-      );
-    } catch (err) {
-      caught = err;
-    }
-    expect(caught).toBeInstanceOf(PluginError);
-    expect((caught as PluginError).code).toBe('not-implemented');
   });
 
   it('init runs the migration so auth_v1_* tables are reachable', async () => {

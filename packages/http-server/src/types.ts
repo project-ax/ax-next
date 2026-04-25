@@ -14,6 +14,14 @@ export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 export interface HttpRequest {
   readonly method: HttpMethod;
   readonly path: string;
+  /**
+   * Parsed query parameters, lowercased keys, repeated keys collapsed to
+   * the LAST value. Empty object when the URL has no `?...`. Provided so
+   * route handlers (e.g. /auth/callback?code=...&state=...) don't have to
+   * re-parse from the original URL — the http-server already did so to
+   * route the request.
+   */
+  readonly query: Record<string, string>;
   readonly headers: Record<string, string>;
   readonly body: Buffer;
   readonly cookies: Record<string, string>;

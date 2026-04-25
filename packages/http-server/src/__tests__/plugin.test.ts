@@ -190,6 +190,30 @@ describe('@ax/http-server', () => {
     }
   });
 
+  it('parses query string into req.query (lowercased keys)', async () => {
+    let captured: Record<string, string> = {};
+    await registerRoute('GET', '/q', async (req, res) => {
+      captured = req.query;
+      res.status(200).text('ok');
+    });
+    await fetch(`http://127.0.0.1:${port}/q?Code=abc&State=xyz&empty=`);
+    expect(captured.code).toBe('abc');
+    expect(captured.state).toBe('xyz');
+    expect(captured.empty).toBe('');
+    // Path is exact-match; query string isn't part of the routing key.
+    // (No request to /q?... is routed to a different handler than /q.)
+  });
+
+  it('req.query is empty object when URL has no querystring', async () => {
+    let captured: unknown;
+    await registerRoute('GET', '/noq', async (req, res) => {
+      captured = req.query;
+      res.status(200).text('ok');
+    });
+    await fetch(`http://127.0.0.1:${port}/noq`);
+    expect(captured).toEqual({});
+  });
+
   it('parses cookies into req.cookies', async () => {
     let capturedCookies: Record<string, string> = {};
     await registerRoute('GET', '/c', async (req, res) => {
