@@ -61,11 +61,17 @@ beforeEach(() => {
 });
 
 describe('AgentChip + AgentMenu', () => {
-  it('lists agents in the menu and shows checkmark on selected', () => {
+  it('lists agents in the menu and marks selected with aria-current', () => {
     agentStoreActions.setSelectedAgent('tide');
-    render(<AgentChip />);
+    const { container } = render(<AgentChip />);
     fireEvent.click(screen.getByRole('button', { name: /tide/i }));
-    expect(screen.getAllByRole('menuitem')).toHaveLength(2);
+    // Menu rows are plain buttons (role=menu/menuitem semantics dropped
+    // until full keyboard nav is implemented). Two rows exist; the
+    // active one carries `aria-current="true"`.
+    const rows = container.querySelectorAll('button.agent-menu-row');
+    expect(rows).toHaveLength(2);
+    const active = container.querySelectorAll('button[aria-current="true"]');
+    expect(active).toHaveLength(1);
     const checks = screen.getAllByText('✓');
     expect(checks).toHaveLength(1);
   });
@@ -74,9 +80,13 @@ describe('AgentChip + AgentMenu', () => {
     agentStoreActions.setSelectedAgent('tide');
     agentStoreActions.setActiveSession('sess-1', false);
     fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({}) });
-    render(<AgentChip />);
+    const { container } = render(<AgentChip />);
     fireEvent.click(screen.getByRole('button', { name: /tide/i }));
-    fireEvent.click(screen.getByRole('menuitem', { name: /mercy/i }));
+    const mercyRow = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('button.agent-menu-row'),
+    ).find((b) => /mercy/i.test(b.textContent ?? ''));
+    expect(mercyRow).toBeTruthy();
+    fireEvent.click(mercyRow!);
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
         '/api/chat/sessions/sess-1',
@@ -88,9 +98,12 @@ describe('AgentChip + AgentMenu', () => {
   it('non-empty session: picking a different agent sets pending (no new session yet)', () => {
     agentStoreActions.setSelectedAgent('tide');
     agentStoreActions.setActiveSession('sess-1', true);
-    render(<AgentChip />);
+    const { container } = render(<AgentChip />);
     fireEvent.click(screen.getByRole('button', { name: /tide/i }));
-    fireEvent.click(screen.getByRole('menuitem', { name: /mercy/i }));
+    const mercyRow = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('button.agent-menu-row'),
+    ).find((b) => /mercy/i.test(b.textContent ?? ''));
+    fireEvent.click(mercyRow!);
     // No PATCH, no POST — just pendingAgentId set
     expect(fetchMock).not.toHaveBeenCalled();
     // Chip now shows mercy
@@ -101,9 +114,12 @@ describe('AgentChip + AgentMenu', () => {
     // Set up a pending switch first (mercy pending while on sess-1).
     agentStoreActions.setSelectedAgent('tide');
     agentStoreActions.setActiveSession('sess-1', true);
-    render(<AgentChip />);
+    const { container } = render(<AgentChip />);
     fireEvent.click(screen.getByRole('button', { name: /tide/i }));
-    fireEvent.click(screen.getByRole('menuitem', { name: /mercy/i }));
+    const mercyRow = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('button.agent-menu-row'),
+    ).find((b) => /mercy/i.test(b.textContent ?? ''));
+    fireEvent.click(mercyRow!);
     // Confirm pending was set (chip now reads mercy).
     expect(screen.getByRole('button', { name: /mercy/i })).toBeTruthy();
 

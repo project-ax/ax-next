@@ -20,32 +20,43 @@ export interface AgentMenuProps {
 }
 
 export function AgentMenu({ agents, activeId, onPick }: AgentMenuProps) {
+  // We deliberately do NOT use `role="menu"` / `role="menuitem"` here.
+  // WAI-ARIA expects menus to implement full keyboard navigation
+  // (arrow up/down to traverse, Esc to close, Enter to activate). We
+  // don't, and shipping the role without the semantics is worse than
+  // letting the popover stay a plain group of buttons — each button
+  // already has its own accessibility, and `aria-current="true"` on
+  // the active row gives screen readers the "this is the selected one"
+  // signal without false-promising menu keyboard nav.
   return (
-    <div className="agent-menu" role="menu">
+    <div className="agent-menu">
       <div className="agent-menu-label">switch agent</div>
       <div className="agent-menu-rows">
-        {agents.map((agent) => (
-          <button
-            key={agent.id}
-            className="agent-menu-row"
-            role="menuitem"
-            type="button"
-            onClick={() => onPick(agent.id)}
-          >
-            <span className="agent-menu-row-avatar" aria-hidden="true">
-              <span className="dot" />
-            </span>
-            <div className="agent-menu-row-text">
-              <div className="agent-menu-row-name">{agent.name}</div>
-              <div className="agent-menu-row-desc">{agent.desc}</div>
-            </div>
-            {activeId === agent.id && (
-              <span className="agent-menu-row-check" aria-hidden="true">
-                ✓
+        {agents.map((agent) => {
+          const isActive = activeId === agent.id;
+          return (
+            <button
+              key={agent.id}
+              className="agent-menu-row"
+              type="button"
+              {...(isActive ? { 'aria-current': 'true' as const } : {})}
+              onClick={() => onPick(agent.id)}
+            >
+              <span className="agent-menu-row-avatar" aria-hidden="true">
+                <span className="dot" />
               </span>
-            )}
-          </button>
-        ))}
+              <div className="agent-menu-row-text">
+                <div className="agent-menu-row-name">{agent.name}</div>
+                <div className="agent-menu-row-desc">{agent.desc}</div>
+              </div>
+              {isActive && (
+                <span className="agent-menu-row-check" aria-hidden="true">
+                  ✓
+                </span>
+              )}
+            </button>
+          );
+        })}
       </div>
       <div className="agent-menu-foot agent-menu-note">
         a new session starts on your next message
