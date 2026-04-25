@@ -64,6 +64,12 @@ spec:
               value: {{ join "," .Values.imagePullSecrets | quote }}
             {{- end }}
 
+            # Cluster-internal URL runner pods use to reach our IPC listener
+            # (@ax/ipc-http). @ax/sandbox-k8s reads this and stamps it onto
+            # every runner pod's AX_RUNNER_ENDPOINT env var.
+            - name: AX_K8S_HOST_IPC_URL
+              value: {{ include "ax-next.hostIpcUrl" . | quote }}
+
             # Workspace dir lives on the host pod's PVC.
             - name: AX_WORKSPACE_ROOT
               value: {{ .Values.workspace.mountPath | quote }}

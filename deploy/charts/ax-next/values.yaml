@@ -35,6 +35,11 @@ namespace:
 host:
   ports:
     http: 8080
+  # Service port that runner pods connect to for IPC. The host Service
+  # maps :ipcServicePort → :ports.http (containerPort). Decoupled from
+  # ports.http so operators can front the host with the conventional :80
+  # while the container listens on :8080.
+  ipcServicePort: 80
   resources:
     requests:
       cpu: 200m

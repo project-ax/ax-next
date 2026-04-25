@@ -11,6 +11,6 @@ spec:
     {{- include "ax-next.selectorLabels" (dict "component" "host" "context" $) | nindent 4 }}
   ports:
     - name: http
-      port: 80
+      port: {{ .Values.host.ipcServicePort | default 80 }}
       targetPort: http
       protocol: TCP
