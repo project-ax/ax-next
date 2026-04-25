@@ -57,7 +57,7 @@ describe('createIpcHttpPlugin', () => {
   it('binds a listener at init() and serves /healthz', async () => {
     const port = await pickFreePort();
     const plugin = createIpcHttpPlugin({ host: '127.0.0.1', port });
-    await createTestHarness({
+    const harness = await createTestHarness({
       plugins: [createSessionInmemoryPlugin(), stubLlmAndTools, plugin],
     });
 
@@ -67,10 +67,9 @@ describe('createIpcHttpPlugin', () => {
       const body = (await res.json()) as { ok: boolean };
       expect(body.ok).toBe(true);
     } finally {
-      // Tear down the listener explicitly — kernel-shutdown lifecycle
-      // doesn't exist yet, so the plugin exposes closeListener() for
-      // tests + future kernel shutdown.
-      await plugin.closeListener();
+      // Drive teardown through the harness — it calls Plugin.shutdown on
+      // each plugin, which closes the listener.
+      await harness.close({ onError: () => {} });
     }
   });
 
