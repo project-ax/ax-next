@@ -1,0 +1,12 @@
+Write an implementation plan for the kernel shutdown lifecycle (follow-up
+#3 from docs/plans/2026-04-25-week-7-9-followups.md). Read
+docs/plans/2026-04-25-kernel-shutdown-handoff.md first — it has the
+architecture decisions (kernel orchestrates, host wires signals; reverse
+topological order; per-plugin 10s timeout with isolated failures;
+init-failure rollback uses the same lifecycle), the per-plugin checklist
+with file:line pointers, and the test list. The two postgres plugins
+already have working shutdown() impls that just need to be moved into the
+right slot — most of the work is the kernel-side orchestration plus a
+sweep through six plugins. No security-checklist needed (internal
+lifecycle, no new capability surface). Branch off main. The plan should
+be executable via subagent-driven-development.
