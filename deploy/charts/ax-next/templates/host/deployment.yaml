@@ -1,7 +1,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "ax-next.fullname" . }}-host
+  name: {{ include "ax-next.hostComponentName" . }}
   namespace: {{ include "ax-next.hostNamespace" . }}
   labels:
     {{- include "ax-next.componentLabels" (dict "component" "host" "context" $) | nindent 4 }}
@@ -25,7 +25,7 @@ spec:
         checksum/config: {{ include (print $.Template.BasePath "/configmap-ax-config.yaml") . | sha256sum }}
         checksum/secret: {{ include (print $.Template.BasePath "/hook-secret.yaml") . | sha256sum }}
     spec:
-      serviceAccountName: {{ include "ax-next.fullname" . }}-host
+      serviceAccountName: {{ include "ax-next.hostComponentName" . }}
       terminationGracePeriodSeconds: {{ .Values.host.terminationGracePeriodSeconds | default 30 }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:

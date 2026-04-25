@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "ax-next.fullname" . }}-host
+  name: {{ include "ax-next.hostComponentName" . }}
   namespace: {{ include "ax-next.hostNamespace" . }}
   labels:
     {{- include "ax-next.componentLabels" (dict "component" "host" "context" $) | nindent 4 }}
