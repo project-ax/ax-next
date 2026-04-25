@@ -1,0 +1,1708 @@
+:root {
+  --bg: #f6f6f3;
+  --surface-raised: #fcfbf8;
+  --bg-deep: #eeede8;
+  --ink: #17181a;
+  --ink-soft: #44464b;
+  --ink-mute: #8a857a;
+  --ink-ghost: #b8b3a6;
+  --rule: #dad8cf;
+  --accent: #1e6b6b;
+  --accent-soft: #dce9e7;
+  --you-wash: #ecede6;
+  --you-ink: #17181a;
+  --danger: #c25450;
+
+  --shadow-sm: 0 1px 2px rgba(23, 24, 26, 0.04), 0 1px 1px rgba(23, 24, 26, 0.03);
+  --shadow-md: 0 8px 24px rgba(23, 24, 26, 0.06), 0 1px 2px rgba(23, 24, 26, 0.04);
+
+  --sans: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --mono: 'IBM Plex Mono', 'JetBrains Mono', ui-monospace, monospace;
+  --serif: var(--sans);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #15171a;
+    --surface-raised: #1f2125;
+    --bg-deep: #1c1e22;
+    --ink: #e8e4da;
+    --ink-soft: #b0ab9f;
+    --ink-mute: #7e7a72;
+    --ink-ghost: #4a4842;
+    --rule: #2b2d32;
+    --accent: #4ba39e;
+    --accent-soft: #1f2f34;
+    --you-wash: #22242a;
+    --you-ink: #e8e4da;
+
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+    --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.4);
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #15171a;
+  --surface-raised: #1f2125;
+  --bg-deep: #1c1e22;
+  --ink: #e8e4da;
+  --ink-soft: #b0ab9f;
+  --ink-mute: #7e7a72;
+  --ink-ghost: #4a4842;
+  --rule: #2b2d32;
+  --accent: #4ba39e;
+  --accent-soft: #1f2f34;
+  --you-wash: #22242a;
+  --you-ink: #e8e4da;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.4);
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.58;
+  letter-spacing: -0.005em;
+  font-feature-settings: 'ss02', 'ss05';
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* =============================================================
+   SIDEBAR — copied verbatim from design_handoff_tide/Tide Sessions.html
+   so visual diff against the design source is zero. Mobile slide-over
+   rules live at the bottom of this file under the
+   `@media (max-width: 720px)` block (Task 27).
+   ============================================================= */
+
+.sidebar {
+  width: 240px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--rule);
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
+  height: 100vh;
+  overflow: visible; /* allow popovers to escape */
+  transition: width 220ms cubic-bezier(.2,.7,.2,1);
+}
+body.sidebar-collapsed .sidebar { width: 56px; }
+
+.sidebar-head {
+  padding: 14px 12px 10px;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  position: relative;
+}
+body.sidebar-collapsed .sidebar-head {
+  padding: 14px 8px 10px;
+  justify-content: center;
+}
+
+/* BRAND — wordmark at top of sidebar */
+.brand {
+  display: flex;
+  align-items: center;
+  padding: 4px 0 6px;
+  text-decoration: none;
+  color: inherit;
+  min-width: 0;
+}
+.brand-word {
+  font-family: var(--serif);
+  font-size: 20px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+  line-height: 1;
+}
+body.sidebar-collapsed .brand-word { display: none; }
+body.sidebar-collapsed .brand { display: none; }
+
+/* AGENT CHIP — primary identity at top of sidebar */
+.agent-chip {
+  all: unset;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px 7px 8px;
+  border-radius: 8px;
+  transition: background 120ms ease;
+  min-width: 0;
+}
+.agent-chip:hover { background: var(--bg-deep); }
+.agent-chip[aria-expanded="true"] { background: var(--bg-deep); }
+.agent-chip-avatar {
+  width: 22px; height: 22px;
+  border-radius: 6px;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 22%, var(--bg-deep)), var(--bg-deep));
+  border: 1px solid var(--rule);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.agent-chip-avatar .dot {
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.agent-chip-name {
+  font-family: var(--serif);
+  font-size: 15px;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+  line-height: 1;
+}
+.agent-chip-caret {
+  width: 10px; height: 10px;
+  color: var(--ink-mute);
+  margin-left: auto;
+  flex-shrink: 0;
+  transition: transform 160ms ease;
+}
+.agent-chip[aria-expanded="true"] .agent-chip-caret { transform: rotate(180deg); }
+
+/* NEW SESSION BUTTON — secondary in hierarchy */
+.new-session-btn {
+  all: unset;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  letter-spacing: 0.01em;
+  transition: background 120ms ease, color 120ms ease;
+}
+.new-session-btn:hover {
+  background: var(--bg-deep);
+  color: var(--ink);
+}
+.new-session-btn svg {
+  width: 13px;
+  height: 13px;
+  color: var(--ink-mute);
+  flex-shrink: 0;
+}
+.new-session-btn:hover svg { color: var(--ink); }
+.new-session-btn .label { min-width: 0; }
+.new-session-btn .kbd {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-ghost);
+  letter-spacing: 0.02em;
+  opacity: 0;
+  transition: opacity 140ms ease;
+}
+.new-session-btn:hover .kbd,
+.new-session-btn:focus-visible .kbd { opacity: 1; }
+body.sidebar-collapsed .new-session-btn .label,
+body.sidebar-collapsed .new-session-btn .kbd { display: none; }
+body.sidebar-collapsed .new-session-btn { justify-content: center; padding: 8px; }
+
+.sessions-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 0 12px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ink-ghost) transparent;
+}
+body.sidebar-collapsed .sessions-scroll { visibility: hidden; pointer-events: none; }
+.sessions-scroll::-webkit-scrollbar { width: 6px; }
+.sessions-scroll::-webkit-scrollbar-track { background: transparent; }
+.sessions-scroll::-webkit-scrollbar-thumb { background: var(--ink-ghost); border-radius: 3px; }
+
+/* SIDEBAR COLLAPSE TOGGLE — desktop only, sits at top-right of sidebar head */
+.sidebar-collapse {
+  all: unset;
+  cursor: pointer;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-mute);
+  border-radius: 4px;
+  flex-shrink: 0;
+  transition: color 140ms ease, background 140ms ease;
+}
+.sidebar-collapse:hover { color: var(--ink); background: var(--bg-deep); }
+.sidebar-collapse:focus-visible { color: var(--ink); background: var(--bg-deep); }
+.sidebar-collapse svg { width: 16px; height: 16px; }
+
+/* SIDEBAR MOBILE TOGGLE — mobile only (hamburger). Hidden by default;
+   the @media (max-width: 720px) block at the bottom of this file flips
+   it to inline-flex. Lives in the session header's left slot. */
+.sidebar-toggle {
+  all: unset;
+  cursor: pointer;
+  display: none;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  color: var(--ink-mute);
+  flex-shrink: 0;
+  transition: color 120ms ease, background 120ms ease;
+}
+.sidebar-toggle:hover,
+.sidebar-toggle:focus-visible { color: var(--ink); background: var(--bg-deep); }
+.sidebar-toggle svg { width: 16px; height: 16px; }
+
+/* SIDEBAR SCRIM — mobile-only overlay rendered when body.sidebar-open.
+   Tapping it closes the sidebar. We render the element from React (in
+   App.tsx) rather than via ::after so the click lands on a real DOM
+   node with its own handler. */
+.sidebar-scrim { display: none; }
+
+/* USER ROW at bottom — popover (.user-menu) styles arrive in Task 21 */
+.user-row-wrap {
+  border-top: 1px solid var(--rule);
+  padding: 8px;
+  position: relative;
+}
+.user-row {
+  all: unset;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 8px;
+  border-radius: 8px;
+  width: calc(100% - 16px);
+  transition: background 120ms ease;
+}
+.user-row:hover,
+.user-row[aria-expanded="true"] { background: var(--bg-deep); }
+.user-avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 26%, var(--bg-deep)), var(--bg-deep));
+  border: 1px solid var(--rule);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--serif);
+  font-size: 11px;
+  color: var(--ink);
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+}
+.user-avatar.lg { width: 32px; height: 32px; font-size: 12.5px; }
+.user-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+}
+.user-row .user-name {
+  font-size: 12.5px;
+  color: var(--ink);
+  line-height: 1.15;
+  letter-spacing: -0.005em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.user-row .user-email {
+  font-size: 10.5px;
+  color: var(--ink-mute);
+  line-height: 1.15;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.user-caret {
+  width: 10px; height: 10px;
+  color: var(--ink-mute);
+  flex-shrink: 0;
+  transition: transform 160ms ease;
+}
+.user-row[aria-expanded="true"] .user-caret { transform: rotate(180deg); }
+body.sidebar-collapsed .user-meta,
+body.sidebar-collapsed .user-caret { display: none; }
+body.sidebar-collapsed .user-row { justify-content: center; padding: 7px; }
+
+/* =============================================================
+   USER MENU — popover above the user row at the bottom of the sidebar.
+   Copied from `design_handoff_tide/Tide Sessions.html` (Task 21). The
+   design's tri-toggle theme switcher is structural here; Task 25 wires
+   the actual theme behavior.
+   ============================================================= */
+
+.user-menu {
+  position: absolute;
+  bottom: calc(100% - 4px);
+  left: 8px;
+  right: 8px;
+  z-index: 70;
+  background: var(--bg);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  box-shadow: 0 -8px 40px -8px rgba(0,0,0,0.18), 0 -2px 6px rgba(0,0,0,0.04);
+  padding: 6px;
+  animation: userMenuPopIn 140ms cubic-bezier(.2,.7,.2,1);
+}
+body.sidebar-collapsed .user-menu {
+  left: 56px;
+  right: auto;
+  bottom: 8px;
+  width: 240px;
+}
+@keyframes userMenuPopIn {
+  from { opacity: 0; transform: translateY(4px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.user-menu-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px 10px;
+  border-bottom: 1px solid var(--rule);
+  margin-bottom: 4px;
+}
+.user-menu-head .user-menu-name {
+  font-family: var(--serif);
+  font-size: 14px;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+  line-height: 1.1;
+}
+.user-menu-head .user-menu-email {
+  font-size: 11px;
+  color: var(--ink-mute);
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.user-menu-item {
+  all: unset;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  transition: background 100ms ease, color 100ms ease;
+}
+.user-menu-item:hover { background: var(--bg-deep); color: var(--ink); }
+.user-menu-divider {
+  height: 1px;
+  background: var(--rule);
+  margin: 4px 0;
+}
+.user-menu-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+}
+.user-menu-row .user-menu-row-label { flex: 1; }
+.theme-seg {
+  display: inline-flex;
+  background: var(--bg-deep);
+  border-radius: 6px;
+  padding: 2px;
+  border: 1px solid var(--rule);
+}
+.theme-seg button {
+  all: unset;
+  cursor: pointer;
+  padding: 2px 8px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  font-size: 10.5px;
+  color: var(--ink-mute);
+  transition: background 120ms ease, color 120ms ease;
+}
+.theme-seg button:hover { color: var(--ink); }
+.theme-seg button[aria-checked="true"],
+.theme-seg button[data-active] {
+  background: var(--accent-soft);
+  color: var(--ink);
+  box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+}
+.user-menu-foot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 10px 4px;
+  margin-top: 4px;
+  border-top: 1px solid var(--rule);
+}
+.user-menu-logo {
+  width: 56px;
+  height: auto;
+  opacity: 0.7;
+}
+
+/* =============================================================
+   AGENT MENU — popover under the agent chip.
+   Adapted from `design_handoff_tide/Tide Sessions.html`. The design's
+   row class names were `.agent-row*`; we use `.agent-menu-row*` so all
+   menu rules sit under one obvious namespace.
+   ============================================================= */
+
+.agent-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 70;
+  background: var(--bg);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px -8px rgba(0,0,0,0.18), 0 2px 6px rgba(0,0,0,0.04);
+  padding: 6px;
+  min-width: 260px;
+  animation: agentMenuPopIn 140ms cubic-bezier(.2,.7,.2,1);
+}
+@keyframes agentMenuPopIn {
+  from { opacity: 0; transform: translateY(-4px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.agent-menu-label {
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-ghost);
+  padding: 8px 10px 4px;
+}
+.agent-menu-rows { display: flex; flex-direction: column; gap: 1px; }
+.agent-menu-row {
+  all: unset;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  transition: background 100ms ease;
+}
+.agent-menu-row:hover { background: var(--bg-deep); }
+.agent-menu-row[aria-selected="true"] { background: var(--bg-deep); }
+.agent-menu-row-avatar {
+  width: 22px; height: 22px;
+  border-radius: 6px;
+  background: var(--bg-deep);
+  border: 1px solid var(--rule);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.agent-menu-row-avatar .dot {
+  width: 5px; height: 5px; border-radius: 50%;
+  background: var(--accent);
+}
+.agent-menu-row-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+}
+.agent-menu-row-name {
+  font-family: var(--serif);
+  font-size: 14px;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+  line-height: 1.1;
+}
+.agent-menu-row-desc {
+  font-size: 11px;
+  color: var(--ink-mute);
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-menu-row-check {
+  width: 14px; height: 14px;
+  color: var(--accent);
+  flex-shrink: 0;
+  font-size: 12px;
+  line-height: 1;
+}
+.agent-menu-foot {
+  padding: 4px 0 2px;
+  margin-top: 4px;
+  border-top: 1px solid var(--rule);
+}
+.agent-menu-note {
+  padding: 8px 10px 4px;
+  font-size: 10.5px;
+  color: var(--ink-ghost);
+  letter-spacing: 0.04em;
+  text-align: center;
+}
+
+/* =============================================================
+   SESSION LIST — adapted from `design_handoff_tide/Tide Sessions.html`.
+   The design's row class names were `.session-item` / `.session-agent-dot`
+   / `.session-title` / `.session-more`; we use the `.session-row*`
+   namespace so all row rules sit under one obvious family and don't
+   collide with the older `.session-item` ports if any leak through.
+   The 34px row height is **load-bearing** for Task 14's inline
+   delete-confirm — the confirm UI swaps row contents in place at the
+   same height, so the list doesn't reflow on confirm/cancel.
+   ============================================================= */
+
+.sessions-group-label {
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-ghost);
+  padding: 8px 12px 4px;
+  font-weight: 500;
+}
+
+.session-row {
+  all: unset;
+  cursor: pointer;
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 4px;
+  color: var(--ink-soft);
+  transition: background 120ms ease, color 120ms ease;
+  position: relative;
+  box-sizing: border-box;
+  height: 34px;
+  width: 100%;
+}
+.session-row:hover {
+  background: var(--bg-deep);
+  color: var(--ink);
+}
+.session-row.active {
+  background: var(--bg-deep);
+  color: var(--ink);
+}
+.session-row.active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 10px;
+  bottom: 10px;
+  width: 2px;
+  background: var(--accent);
+  border-radius: 2px;
+}
+.session-row-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-top: 7px;
+  flex-shrink: 0;
+  opacity: 0.8;
+}
+.session-row:hover .session-row-dot,
+.session-row.active .session-row-dot { opacity: 1; }
+.session-row-title {
+  font-size: 13px;
+  line-height: 1.35;
+  letter-spacing: -0.005em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+.session-row-more {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  color: var(--ink-ghost);
+  opacity: 0;
+  transition: opacity 120ms ease, background 120ms ease, color 120ms ease;
+  cursor: pointer;
+  margin-top: 1px;
+}
+.session-row:hover .session-row-more,
+.session-row.active .session-row-more { opacity: 1; }
+.session-row-more:hover {
+  background: var(--bg);
+  color: var(--ink);
+}
+
+/* Inline rename: while .session-row-title is contenteditable, give it a
+   subtle visual cue. We keep the same height and font metrics so the
+   row doesn't reflow. */
+.session-row-title[contenteditable] {
+  outline: none;
+  cursor: text;
+  background: var(--bg-deep);
+  border-radius: 3px;
+  padding: 0 3px;
+  margin: 0 -3px;
+}
+
+/* Per-row floating menu (rename / delete) — opened by the ⋯ button. */
+.session-row-menu {
+  position: absolute;
+  top: 28px;
+  right: 8px;
+  z-index: 30;
+  background: var(--bg);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 4px;
+  min-width: 130px;
+  box-shadow: var(--shadow-md);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.session-row-menu-item {
+  all: unset;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  font-size: 12.5px;
+  color: var(--ink);
+  border-radius: 3px;
+  transition: background 100ms ease, color 100ms ease;
+}
+.session-row-menu-item:hover {
+  background: var(--bg-deep);
+}
+.session-row-menu-item.danger {
+  color: var(--danger);
+}
+.session-row-menu-item.danger:hover {
+  background: color-mix(in oklch, var(--danger) 14%, transparent);
+}
+
+/* Inline delete-confirm — replaces row contents in place at 34px height
+   so the list doesn't reflow on confirm/cancel. */
+.session-row.confirming-delete {
+  background: color-mix(in oklch, var(--danger) 10%, transparent);
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  cursor: default;
+  /* height: 34px is inherited from .session-row above. */
+}
+.session-row.confirming-delete::before {
+  /* Suppress the .active accent bar if the row was active when confirm
+     opened. */
+  display: none;
+}
+.session-row-confirm-text {
+  flex: 1;
+  font-size: 12px;
+  color: var(--ink);
+  line-height: 1.35;
+  letter-spacing: -0.005em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.session-row-confirm-cancel,
+.session-row-confirm-delete {
+  all: unset;
+  cursor: pointer;
+  font-size: 11.5px;
+  line-height: 1;
+  padding: 3px 7px;
+  border-radius: 3px;
+  transition: background 100ms ease, color 100ms ease;
+}
+.session-row-confirm-cancel {
+  color: var(--ink-soft);
+}
+.session-row-confirm-cancel:hover {
+  color: var(--ink);
+}
+.session-row-confirm-delete {
+  color: var(--danger);
+  font-weight: 500;
+}
+.session-row-confirm-delete:hover {
+  background: var(--danger);
+  color: white;
+}
+
+/* =============================================================
+   SESSION HEADER — sticky 56px bar at the top of the main pane.
+   Adapted from `design_handoff_tide/Tide Sessions.html`. The
+   plan's spec (Task 16) overrides the design's tiny-uppercase
+   breadcrumb with a serif 17/500 title — the breadcrumb IS the
+   session title here.
+   ============================================================= */
+
+.header {
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  height: 56px;
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid var(--rule);
+  z-index: 10;
+}
+.header-inner {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 16px;
+}
+.header-left {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  min-width: 0;
+}
+.session-breadcrumb {
+  font-family: var(--serif);
+  font-size: 17px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 4px 8px;
+  margin: 0 -8px;
+  border-radius: 4px;
+  cursor: text;
+  transition: background 120ms ease;
+}
+.session-breadcrumb:hover {
+  background: var(--bg-deep);
+}
+.session-breadcrumb[contenteditable] {
+  outline: 1px solid var(--rule);
+  background: var(--bg);
+  cursor: text;
+  overflow: visible;
+  text-overflow: clip;
+}
+.session-breadcrumb[contenteditable]:focus {
+  outline: 1px solid var(--accent);
+}
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.header-action {
+  all: unset;
+  cursor: pointer;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  color: var(--ink-mute);
+  font-size: 14px;
+  line-height: 1;
+  transition: color 120ms ease, background 120ms ease;
+}
+.header-action:hover,
+.header-action:focus-visible {
+  color: var(--ink);
+  background: var(--bg-deep);
+}
+.header-action .kbd {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+  color: inherit;
+}
+
+/* =============================================================
+   COMPOSER — fixed to the bottom of the chat pane (not over the
+   sidebar). Adapted from `design_handoff_tide/Tide Sessions.html`.
+   The 28px attach button + 30px send circle + 28px textarea
+   min-height are load-bearing: at the field's `align-items:
+   flex-end`, equal heights mean the bottoms align AND the
+   optical centers align on the first line. Don't drop the
+   28px floor on the textarea — the natural 22px wrecks this.
+   ============================================================= */
+
+.composer {
+  position: fixed;
+  bottom: 0;
+  left: 240px;
+  right: 0;
+  transition: left 220ms cubic-bezier(.2,.7,.2,1);
+  padding: 40px 24px 22px;
+  background: linear-gradient(
+    to top,
+    var(--bg) 60%,
+    color-mix(in srgb, var(--bg) 80%, transparent) 85%,
+    transparent 100%
+  );
+  display: flex;
+  justify-content: center;
+  z-index: 20;
+}
+body.sidebar-collapsed .composer { left: 56px; }
+
+.composer-inner {
+  width: 100%;
+  max-width: 640px;
+  /* Per Tide spec the inner wrap also handles top/bottom rhythm
+     for the field; the outer .composer carries the fade-out. */
+  margin: 0 auto;
+  padding: 12px 24px 16px;
+}
+
+.composer-field {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  background: var(--surface-raised);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  padding: 10px 12px 10px 14px;
+  box-shadow: var(--shadow-sm);
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+.composer-field:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--rule));
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 14%, transparent),
+    var(--shadow-sm);
+}
+
+.composer-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  resize: none;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.55;
+  /* 28px floor matches attach-btn (28px) and send-btn (30px) when
+     align-items: flex-end so the first line bottom-aligns and
+     optically centers. */
+  min-height: 28px;
+  max-height: 200px;
+  padding: 2px 0;
+  box-sizing: border-box;
+}
+.composer-input::placeholder { color: var(--ink-mute); }
+
+.attach-btn {
+  all: unset;
+  cursor: pointer;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  color: var(--ink-mute);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-right: 4px;
+  transition: background 120ms ease, color 120ms ease;
+  font-size: 16px;
+  line-height: 1;
+}
+.attach-btn:hover:not([disabled]) {
+  background: var(--bg-deep);
+  color: var(--ink);
+}
+.attach-btn[aria-expanded="true"] {
+  background: var(--bg-deep);
+  color: var(--ink);
+}
+.attach-btn[disabled] {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.send-btn {
+  all: unset;
+  cursor: pointer;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--ink-ghost);
+  color: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background 140ms ease, transform 140ms ease, filter 140ms ease;
+}
+/* When the textarea has any content, light up the send circle. We use
+   `:has()` against the placeholder-shown state so this is a pure-CSS
+   ready toggle — no JS observer needed. */
+.composer-field:has(.composer-input:not(:placeholder-shown)) .send-btn,
+.send-btn.ready {
+  background: var(--accent);
+}
+.composer-field:has(.composer-input:not(:placeholder-shown)) .send-btn:hover,
+.send-btn.ready:hover {
+  transform: scale(1.05);
+  filter: brightness(1.05);
+}
+
+.composer-hint {
+  margin-top: 8px;
+  font-size: 10.5px;
+  color: var(--ink-ghost);
+  text-align: center;
+  letter-spacing: 0.04em;
+  opacity: 0;
+  transition: opacity 140ms ease;
+  pointer-events: none;
+}
+.composer:hover .composer-hint,
+.composer:focus-within .composer-hint {
+  opacity: 1;
+}
+.composer-hint kbd {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-mute);
+}
+
+/* =============================================================
+   SEARCH MODE — Task 26. The bar sits above the timeline (inside the
+   thread root, above the viewport) when search is open. The body class
+   `.searching` activates the CSS rule that hides the composer's attach
+   button — per Tide spec, search mode and attach are mutually
+   exclusive affordances.
+   ============================================================= */
+
+.search-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 24px;
+  border-bottom: 1px solid var(--rule);
+  background: var(--surface-raised);
+}
+.search-input {
+  flex: 1;
+  background: transparent;
+  border: 0;
+  outline: 0;
+  font: inherit;
+  color: inherit;
+  padding: 0;
+}
+.search-input::placeholder { color: var(--ink-mute); }
+.search-clear {
+  all: unset;
+  cursor: pointer;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-mute);
+  font-size: 16px;
+  line-height: 1;
+  transition: color 120ms ease, background 120ms ease;
+}
+.search-clear:hover,
+.search-clear:focus-visible {
+  color: var(--ink);
+  background: var(--bg-deep);
+}
+.search-semantic {
+  all: unset;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--ink-mute);
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--rule);
+  transition: color 120ms ease, background 120ms ease;
+}
+.search-semantic:hover { color: var(--ink); background: var(--bg-deep); }
+
+.search-results-banner {
+  padding: 8px 24px;
+  font-size: 12px;
+  color: var(--ink-mute);
+  background: var(--bg-deep);
+  border-bottom: 1px solid var(--rule);
+  font-family: var(--mono);
+  letter-spacing: 0.01em;
+}
+
+/* When the search bar is open, hide the composer's attach button so
+   the user can't start an upload mid-search. CSS-only — no JS branch
+   in the composer reads the search state. */
+body.searching .attach-btn { display: none; }
+
+/* =============================================================
+   THREAD + TIMELINE — adapted from `design_handoff_tide/Tide
+   Sessions.html` (`.timeline`, `.msg`, `.msg-body`, `.msg-actions`,
+   `.intro`). Tide uses no avatars and no meta column — role is
+   conveyed by alignment + a subtle wash on the user side. Bottom
+   padding (220px) is load-bearing: it clears the fixed-bottom
+   composer so the last message is fully visible above it.
+   ============================================================= */
+
+.thread-root {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.timeline {
+  flex: 1;
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 24px 24px 220px;
+  overflow-y: auto;
+}
+
+/* Welcome empty state — replaces Tide's `.intro` namespace with
+   `.thread-welcome*` so the file's intro tokens (used by Tide's
+   marketing demo) don't accidentally clash. */
+.thread-welcome {
+  text-align: center;
+  color: var(--ink-mute);
+  padding: 64px 0 40px;
+  font-size: 13.5px;
+}
+.thread-welcome-big {
+  font-family: var(--serif);
+  font-size: 22px;
+  color: var(--ink);
+  margin-bottom: 6px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+.thread-welcome-sub {
+  color: var(--ink-mute);
+}
+
+/* ---- Message: no avatar, no meta column. Just text. ---- */
+.msg {
+  margin-bottom: 22px;
+  position: relative;
+  max-width: 100%;
+}
+
+.msg-body {
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--ink);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+.msg-body p { margin-bottom: 0.6em; }
+.msg-body p:last-child { margin-bottom: 0; }
+
+/* User: right-aligned with a warm wash. The wash is `--you-wash`
+   (a barely-visible warm tint) — not a bubble in the chat-app sense,
+   more like a highlighted run of text. */
+.msg.you {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+.msg.you .msg-body {
+  background: var(--you-wash);
+  color: var(--you-ink);
+  padding: 7px 12px;
+  border-radius: 6px;
+  max-width: 78%;
+}
+.msg.you .msg-actions {
+  justify-content: flex-end;
+}
+
+/* Agent: serif (well, the channel-web token aliases `--serif` to
+   `--sans` for now), inline prose, capped at ~56ch for readability. */
+.msg.agent .msg-body {
+  font-family: var(--serif);
+  font-size: 15px;
+  line-height: 1.55;
+  letter-spacing: -0.008em;
+  max-width: 56ch;
+}
+
+/* Action bar — autohides until message hover or focus. Keep button
+   sizes small + monochrome; the actions are quiet by design. */
+.msg-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--ink-ghost);
+  opacity: 0;
+  transition: opacity 140ms ease;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  font-family: var(--mono);
+}
+.msg:hover .msg-actions,
+.msg-actions:focus-within { opacity: 1; }
+.msg-action {
+  all: unset;
+  cursor: pointer;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 4px;
+  color: var(--ink-mute);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 120ms ease, background 120ms ease;
+  font-family: inherit;
+  font-size: inherit;
+  letter-spacing: inherit;
+}
+.msg-action:hover { color: var(--ink); background: var(--bg-deep); }
+
+/* Inline edit composer — replaces a user message body in place when
+   the user clicks "edit". Lives at full row width with right-aligned
+   action buttons (cancel + update). */
+.msg-edit {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  margin-bottom: 22px;
+  background: var(--surface-raised);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  box-shadow: var(--shadow-sm);
+}
+.msg-edit-input {
+  resize: none;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.55;
+  min-height: 60px;
+  padding: 12px 14px;
+  box-sizing: border-box;
+}
+.msg-edit-input::placeholder { color: var(--ink-mute); }
+.msg-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--rule);
+}
+.msg-edit-cancel,
+.msg-edit-send {
+  all: unset;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: var(--mono);
+  letter-spacing: 0.02em;
+  padding: 5px 10px;
+  border-radius: 4px;
+  transition: background 120ms ease, color 120ms ease;
+}
+.msg-edit-cancel {
+  color: var(--ink-mute);
+}
+.msg-edit-cancel:hover {
+  color: var(--ink);
+  background: var(--bg-deep);
+}
+.msg-edit-send {
+  color: var(--bg);
+  background: var(--accent);
+}
+.msg-edit-send:hover {
+  filter: brightness(1.05);
+}
+
+/* =============================================================
+   APP SHELL — root layout for the authenticated state, plus the
+   short-lived loading state shown while `/api/auth/get-session`
+   is in flight.
+   ============================================================= */
+
+.app-layout {
+  display: flex;
+  min-height: 100vh;
+}
+
+.pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  min-width: 0;
+}
+
+.app-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  color: var(--ink-mute);
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+
+/* =============================================================
+   LOGIN PAGE — unauthenticated landing. Centered card, brand
+   wordmark, single Google CTA. Matches the Tide aesthetic: warm
+   surface-raised panel, soft shadow, no chrome, no marketing.
+   ============================================================= */
+
+.login-page {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 24px;
+  background: var(--bg);
+}
+
+.login-card {
+  width: 100%;
+  max-width: 360px;
+  background: var(--surface-raised);
+  border: 1px solid var(--rule);
+  border-radius: 14px;
+  box-shadow: var(--shadow-md);
+  padding: 36px 32px 28px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  text-align: center;
+}
+
+.login-brand {
+  font-family: var(--serif);
+  font-size: 28px;
+  font-weight: 500;
+  letter-spacing: -0.015em;
+  color: var(--ink);
+  line-height: 1;
+}
+
+.login-blurb {
+  font-size: 13px;
+  color: var(--ink-mute);
+  letter-spacing: -0.005em;
+  line-height: 1.4;
+  margin: 0 0 6px;
+}
+
+.login-cta {
+  all: unset;
+  cursor: pointer;
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--accent);
+  color: var(--bg);
+  font-family: var(--sans);
+  font-size: 13.5px;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  padding: 10px 14px;
+  border-radius: 8px;
+  text-align: center;
+  transition: transform 140ms ease, filter 140ms ease, box-shadow 140ms ease;
+  box-shadow: var(--shadow-sm);
+}
+.login-cta:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.05);
+  box-shadow: var(--shadow-md);
+}
+.login-cta:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 50%, transparent);
+  outline-offset: 2px;
+}
+
+/* =============================================================
+   ADMIN PANEL — overlay + modal panel for admin views (Task 22).
+   The chrome is shared across the agents form (Task 22), MCP
+   servers form (Task 23), and the teams placeholder (Task 24).
+   Tone-wise, we want the same warm surface-raised feel as the
+   login card — admin work isn't the main attraction, it's a
+   short side-trip, so the panel sits quietly above the chat.
+   ============================================================= */
+
+.admin-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.admin-panel {
+  width: min(720px, 90vw);
+  max-height: 80vh;
+  background: var(--bg);
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  box-shadow: var(--shadow-md);
+  display: flex;
+  flex-direction: column;
+}
+
+.admin-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.admin-panel-title {
+  font-family: var(--serif);
+  font-size: 17px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+  margin: 0;
+}
+
+.admin-panel-close {
+  all: unset;
+  cursor: pointer;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  color: var(--ink-mute);
+  font-size: 20px;
+  line-height: 1;
+  transition: color 120ms ease, background 120ms ease;
+}
+.admin-panel-close:hover,
+.admin-panel-close:focus-visible {
+  color: var(--ink);
+  background: var(--bg-deep);
+}
+
+.admin-panel-body {
+  overflow-y: auto;
+  padding: 16px 20px;
+}
+
+.admin-form-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.admin-list-toolbar {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.admin-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.admin-list-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--rule);
+  background: var(--surface-raised);
+}
+
+.admin-list-swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  border: 1px solid var(--rule);
+  flex-shrink: 0;
+}
+
+.admin-list-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.admin-list-name {
+  font-family: var(--serif);
+  font-size: 14px;
+  color: var(--ink);
+  letter-spacing: -0.005em;
+  line-height: 1.2;
+}
+
+.admin-list-meta {
+  font-size: 11.5px;
+  color: var(--ink-mute);
+  line-height: 1.2;
+  font-family: var(--mono);
+  letter-spacing: 0.01em;
+}
+
+.admin-list-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.admin-empty {
+  text-align: center;
+  font-size: 13px;
+  color: var(--ink-mute);
+  padding: 24px 0;
+}
+
+.admin-error {
+  background: color-mix(in oklch, var(--danger) 10%, transparent);
+  border: 1px solid color-mix(in oklch, var(--danger) 40%, transparent);
+  color: var(--danger);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 12.5px;
+}
+
+.admin-btn {
+  all: unset;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: var(--mono);
+  letter-spacing: 0.02em;
+  padding: 5px 10px;
+  border-radius: 4px;
+  color: var(--ink-soft);
+  background: var(--bg-deep);
+  border: 1px solid var(--rule);
+  transition: background 120ms ease, color 120ms ease, filter 120ms ease;
+}
+.admin-btn:hover:not([disabled]) {
+  color: var(--ink);
+  background: var(--bg);
+}
+.admin-btn[disabled] {
+  cursor: default;
+  opacity: 0.6;
+}
+.admin-btn-primary {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: var(--accent);
+}
+.admin-btn-primary:hover:not([disabled]) {
+  background: var(--accent);
+  color: var(--bg);
+  filter: brightness(1.05);
+}
+.admin-btn-danger {
+  color: var(--danger);
+}
+.admin-btn-danger:hover:not([disabled]) {
+  background: color-mix(in oklch, var(--danger) 14%, transparent);
+  color: var(--danger);
+}
+
+.admin-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.admin-form-grid {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  gap: 8px 12px;
+  align-items: center;
+}
+
+.admin-form-grid label,
+.admin-form-grid .admin-form-label {
+  font-size: 12px;
+  color: var(--ink-soft);
+  font-family: var(--mono);
+  letter-spacing: 0.02em;
+}
+
+.admin-form-grid textarea {
+  align-self: start;
+}
+
+.admin-form-grid input[type='text'],
+.admin-form-grid input[type='color'],
+.admin-form-grid select,
+.admin-form-grid textarea {
+  background: var(--surface-raised);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-family: var(--sans);
+  font-size: 13.5px;
+  color: var(--ink);
+  outline: none;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.admin-form-grid input[type='color'] {
+  padding: 2px;
+  width: 40px;
+  height: 28px;
+}
+
+.admin-form-grid input[type='text']:focus,
+.admin-form-grid select:focus,
+.admin-form-grid textarea:focus {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--rule));
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.admin-form-radios {
+  display: flex;
+  gap: 14px;
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.admin-form-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.admin-stub {
+  text-align: center;
+  font-size: 13px;
+  color: var(--ink-mute);
+  padding: 32px 0;
+}
+
+.admin-teams-note {
+  font-size: 12px;
+  color: var(--ink-mute);
+  margin: 0 0 12px;
+  line-height: 1.5;
+}
+.admin-teams-note code {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink-soft);
+  background: var(--bg-deep);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: 1px 5px;
+}
+
+/* =============================================================
+   MOBILE — slide-over sidebar (Task 27).
+   At <= 720px, the sidebar lifts off the page flow and slides in over
+   the chat. Width override (280px !important) wins over the desktop
+   collapsed-rail width (56px) so even if the user collapsed on
+   desktop and then resized to mobile, the slide-over is full-width.
+   The composer goes edge-to-edge. The hamburger toggle replaces the
+   collapse toggle. The scrim catches taps to close.
+   ============================================================= */
+
+@media (max-width: 720px) {
+  .sidebar {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 280px !important;
+    transform: translateX(-100%);
+    transition: transform 200ms cubic-bezier(.2,.7,.2,1);
+    z-index: 50;
+    box-shadow: 0 0 40px rgba(0, 0, 0, 0.08);
+  }
+  body.sidebar-open .sidebar { transform: translateX(0); }
+  /* Desktop collapse is irrelevant on mobile — keep the rail at full
+     slide-over width and rely on `sidebar-open` to show/hide. */
+  body.sidebar-collapsed .sidebar { transform: translateX(-100%); }
+  body.sidebar-open.sidebar-collapsed .sidebar { transform: translateX(0); }
+
+  .sidebar-toggle { display: inline-flex; }
+  .sidebar-collapse { display: none; }
+
+  .composer { left: 0; }
+  body.sidebar-collapsed .composer { left: 0; }
+
+  .sidebar-scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.4);
+    z-index: 40;
+  }
+}
