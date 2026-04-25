@@ -249,6 +249,14 @@ export function chatMiddleware(
       const inMessages = Array.isArray(body.messages) ? body.messages : [];
       const messagesCol = store.collection<HistoryMessage>('messages');
 
+      // Validate request shape BEFORE mutating any persisted state — an empty
+      // or assistant-led messages array would otherwise wipe history then 400.
+      const lastIn = inMessages[inMessages.length - 1];
+      if (!lastIn || lastIn.role !== 'user') {
+        send(res, 400, { error: 'last message must be a user turn' });
+        return true;
+      }
+
       // Edit/retry truncation: if client sends a shorter array than persisted,
       // drop persisted entries beyond the new length BEFORE appending the new turn.
       const persistedForSession = messagesCol
@@ -271,11 +279,6 @@ export function chatMiddleware(
       }
 
       // Append the new (last) user turn.
-      const lastIn = inMessages[inMessages.length - 1];
-      if (!lastIn || lastIn.role !== 'user') {
-        send(res, 400, { error: 'last message must be a user turn' });
-        return true;
-      }
       const userIndex = persistedForSession.length;
       const userTurn: HistoryMessage = {
         id: `${sessionId}:${userIndex}`,

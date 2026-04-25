@@ -128,4 +128,37 @@ describe('mock chat completions SSE', () => {
       expect(after[1]!.role).toBe('assistant');
     } finally { await close(); }
   }, 20_000);
+
+  it('rejects invalid messages array without wiping persisted history', async () => {
+    // Pre-seed a session with prior history
+    store.collection<{ id: string; user_id: string; agent_id: string; title: string; created_at: number; updated_at: number }>('sessions').upsert({ id: 'u2:thread-bad', user_id: 'u2', agent_id: 'tide', title: 't', created_at: 1, updated_at: 1 });
+    const messages = store.collection<{ id: string; session_id: string; role: 'user'|'assistant'; content: string; created_at: number }>('messages');
+    messages.upsert({ id: 'u2:thread-bad:0', session_id: 'u2:thread-bad', role: 'user', content: 'first', created_at: 1 });
+    messages.upsert({ id: 'u2:thread-bad:1', session_id: 'u2:thread-bad', role: 'assistant', content: 'reply1', created_at: 2 });
+
+    const { url, close } = await startServer(store);
+    try {
+      // Send empty messages — server should reject WITHOUT mutating state
+      const res = await fetch(`${url}/api/chat/completions`, {
+        method: 'POST',
+        headers: { cookie: ALICE, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'default', stream: true, user: 'u2/thread-bad',
+          messages: [],
+        }),
+      });
+      expect(res.status).toBe(400);
+
+      // Drain body if any (may be empty for 400)
+      if (res.body) {
+        const reader = res.body.getReader();
+        while (!(await reader.read()).done) { /* drain */ }
+      }
+
+      // Persisted history must be intact
+      const after = messages.list().filter((m) => m.session_id === 'u2:thread-bad');
+      expect(after).toHaveLength(2);
+      expect(after[0]!.content).toBe('first');
+    } finally { await close(); }
+  });
 });
