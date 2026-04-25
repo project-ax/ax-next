@@ -50,10 +50,9 @@ postgres:
     enabled: false
   embedded:
     enabled: true
-    auth:
-      database: ax_next
-      username: ax_next
 
+# Auth (database + username) lives under `postgresql.auth.*` — the
+# Bitnami subchart's keys are the single source of truth.
 postgresql:
   primary:
     persistence:
