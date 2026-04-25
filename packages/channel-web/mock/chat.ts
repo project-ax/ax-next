@@ -345,9 +345,14 @@ async function streamReply(
   );
 
   let timer: NodeJS.Timeout | undefined;
+  // On disconnect, just flip the cancelled flag. The pending 12ms timer
+  // (if any) will fire its callback, the next loop iteration's
+  // `if (cancelled.value || res.writableEnded) return;` will exit cleanly,
+  // and the `finally` block runs. If we cleared the timer here without
+  // also resolving the Promise the inner `await` would hang forever and
+  // the request would leak.
   const onClose = (): void => {
     cancelled.value = true;
-    if (timer) clearTimeout(timer);
   };
   req.on('close', onClose);
 

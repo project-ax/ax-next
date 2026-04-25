@@ -129,6 +129,80 @@ describe('mock chat completions SSE', () => {
     } finally { await close(); }
   }, 20_000);
 
+  it('cleans up cleanly when client disconnects mid-stream', async () => {
+    // Pre-seed a session so we can assert no partial assistant turn was persisted.
+    store
+      .collection<{
+        id: string;
+        user_id: string;
+        agent_id: string;
+        title: string;
+        created_at: number;
+        updated_at: number;
+      }>('sessions')
+      .upsert({
+        id: 'u2:thread-cancel',
+        user_id: 'u2',
+        agent_id: 'tide',
+        title: 't',
+        created_at: 1,
+        updated_at: 1,
+      });
+
+    const { server, url, close } = await startServer(store);
+    try {
+      const ac = new AbortController();
+      const reqPromise = fetch(`${url}/api/chat/completions`, {
+        method: 'POST',
+        signal: ac.signal,
+        headers: { cookie: ALICE, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'default',
+          stream: true,
+          user: 'u2/thread-cancel',
+          messages: [{ role: 'user', content: 'hello world this is a long message' }],
+        }),
+      }).catch(() => undefined);
+
+      // Wait long enough for at least one chunk (~12ms ticks) then abort.
+      await new Promise((r) => setTimeout(r, 30));
+      ac.abort();
+
+      // The fetch promise itself either resolves or rejects on abort.
+      await reqPromise;
+
+      // Verify the server handler doesn't hang: closing the server should
+      // complete in a reasonable time (server.close waits for in-flight
+      // handlers to finish). If the handler leaks a Promise that never
+      // resolves, this would hang past the test timeout.
+      const closeStart = Date.now();
+      await close();
+      const closeMs = Date.now() - closeStart;
+      // Generous: the loop should exit within a few 12ms ticks.
+      expect(closeMs).toBeLessThan(2_000);
+
+      // No partial assistant turn should be persisted.
+      const messages = store
+        .collection<{
+          id: string;
+          session_id: string;
+          role: 'user' | 'assistant';
+          content: string;
+        }>('messages')
+        .list()
+        .filter((m) => m.session_id === 'u2:thread-cancel');
+      const assistant = messages.filter((m) => m.role === 'assistant');
+      expect(assistant).toHaveLength(0);
+    } finally {
+      // close() above already shuts down; double-close is a no-op but guard.
+      try {
+        server.close();
+      } catch {
+        /* already closed */
+      }
+    }
+  }, 10_000);
+
   it('rejects invalid messages array without wiping persisted history', async () => {
     // Pre-seed a session with prior history
     store.collection<{ id: string; user_id: string; agent_id: string; title: string; created_at: number; updated_at: number }>('sessions').upsert({ id: 'u2:thread-bad', user_id: 'u2', agent_id: 'tide', title: 't', created_at: 1, updated_at: 1 });
