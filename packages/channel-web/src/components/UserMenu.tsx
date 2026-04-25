@@ -70,11 +70,22 @@ export function UserMenu({
             <div className="user-menu-name">{user.name}</div>
             <div className="user-menu-email">{user.email}</div>
           </div>
+          {/*
+            Account / Preferences are placeholders until the screens
+            land. Disabled (rather than removed) so the menu shape is
+            visible to designers without misleading users into thinking
+            they go somewhere. Disabled buttons announce their state to
+            screen readers and don't trap focus.
+            TODO: wire when account/preferences screens land.
+          */}
           <button
             type="button"
             className="user-menu-item"
             role="menuitem"
             data-action="account"
+            disabled
+            aria-disabled="true"
+            title="Coming soon"
           >
             Account
           </button>
@@ -83,6 +94,9 @@ export function UserMenu({
             className="user-menu-item"
             role="menuitem"
             data-action="preferences"
+            disabled
+            aria-disabled="true"
+            title="Coming soon"
           >
             Preferences
           </button>
