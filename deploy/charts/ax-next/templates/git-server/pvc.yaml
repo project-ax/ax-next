@@ -1,0 +1,29 @@
+{{- if .Values.gitServer.enabled }}
+{{/*
+PersistentVolumeClaim for the git-server's bare repo.
+
+This is the source of truth for every session's workspace state when
+workspace.backend == "http". `helm.sh/resource-policy: keep` means
+`helm uninstall` does NOT delete this PVC — losing it would destroy every
+session's history. Operators who genuinely want a fresh repo delete the
+PVC manually.
+*/}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "ax-next.gitServerComponentName" . }}-repo
+  namespace: {{ include "ax-next.hostNamespace" . }}
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    {{- include "ax-next.componentLabels" (dict "component" "git-server" "context" $) | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.gitServer.accessMode | default "ReadWriteOnce" }}
+  resources:
+    requests:
+      storage: {{ .Values.gitServer.storage }}
+  {{- if .Values.gitServer.storageClassName }}
+  storageClassName: {{ .Values.gitServer.storageClassName }}
+  {{- end }}
+{{- end }}

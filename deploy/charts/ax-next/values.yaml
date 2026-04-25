@@ -64,14 +64,60 @@ host:
   env: []
 
 # ─── Workspace persistence ───────────────────────────────────────
-# Single-replica only this slice. The host's `@ax/workspace-git` writes
-# to a PVC mounted inside the host pod. Multi-replica + shared git server
-# is a future PR (Week 10+).
+# `local` (the historical default): the host's `@ax/workspace-git` writes
+# directly to the PVC mounted inside the host pod at workspace.mountPath.
+# Single-replica only — two hosts would race for the same bare repo.
+# `http`: the host's `@ax/workspace-git-http` forwards every workspace op
+# over HTTP to the dedicated git-server pod, which is the unique writer.
+# Multi-replica capable. When `http`, set gitServer.enabled=true (and the
+# local PVC fields below stop mattering — they're not mounted).
 workspace:
+  backend: local         # local | http
   storage: 10Gi
   storageClassName: ""   # empty → cluster default
   accessMode: ReadWriteOnce
   mountPath: /var/lib/ax-next/workspaces
+
+# ─── Git-server pod (workspace.backend: http only) ────────────────
+# Dedicated pod that owns the bare repo on a PVC. Every host replica talks
+# to it for workspace ops. ALWAYS replicas: 1 — adding more would re-
+# introduce the multi-writer race we're solving here. Not a knob.
+gitServer:
+  enabled: false         # set true when workspace.backend == "http"
+  port: 7780
+  service:
+    port: 7780
+  storage: 10Gi
+  storageClassName: ""   # empty → cluster default
+  accessMode: ReadWriteOnce
+  mountPath: /var/lib/ax-next/repo
+  # Auth token: if empty, the chart generates a 48-char random token at
+  # install time via the lookup-or-generate pattern. Operators can override
+  # for deterministic deploys (e.g., GitOps).
+  auth:
+    token: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  # Same image as host + runners — bundled-binary pattern.
+  command: ["node", "/opt/ax-next/git-server/index.js"]
+  terminationGracePeriodSeconds: 30
+  readinessProbe:
+    httpGet:
+      path: /healthz
+      port: git
+    initialDelaySeconds: 5
+    periodSeconds: 10
+  livenessProbe:
+    httpGet:
+      path: /healthz
+      port: git
+    initialDelaySeconds: 10
+    periodSeconds: 30
 
 # ─── Runner pod runtime ──────────────────────────────────────────
 # `runtimeClassName` defaults to gvisor — the sandbox-k8s plugin's
