@@ -39,7 +39,7 @@ import type {
 //        ChatContext already, which is the kernel-level primitive.
 //   I5 — Capabilities explicit. The orchestrator only calls the exact hooks
 //        in its manifest (session:queue-work / session:terminate /
-//        sandbox:open-session / ipc:stop). It does NOT spawn, it does NOT
+//        sandbox:open-session). It does NOT spawn, it does NOT
 //        touch the filesystem, it does NOT open sockets. Those are
 //        sandbox-subprocess / ipc-server's jobs.
 // ---------------------------------------------------------------------------
