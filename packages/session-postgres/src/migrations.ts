@@ -54,6 +54,46 @@ export async function runSessionMigration<DB>(db: Kysely<DB>): Promise<void> {
   // Index for the hot-path "next entry at cursor" lookup. Composite on
   // (session_id, cursor) is already unique, so the unique constraint
   // serves the same lookup — no extra index needed.
+
+  // ----- v2 schema (Week 9.5) -----
+  //
+  // Side-table that pairs a v1 session_id with the {user_id, agent_id,
+  // agent_config_json} that minted it. We do NOT add columns to v1 —
+  // forward-only schema evolution lets a rolling deploy run old code
+  // (which doesn't know about user/agent) alongside new code, and keeps
+  // I10 (session ↔ agent immutability) crisp: this table is INSERT-once
+  // per session, never UPDATEd. Existing v1 sessions that pre-date 9.5
+  // simply have no v2 row — `resolveToken` returns nulls for those, and
+  // the orchestrator decides what to do.
+  //
+  // `agent_config_json` is the FROZEN snapshot of the resolving agent's
+  // config at session-creation time. The runner reads it via
+  // `session:get-config`. Frozen-at-creation is the correct semantics
+  // (matches I10 — switching agents = new session, not mutate). Live
+  // edits to the agent row (admin PATCH) DO NOT affect in-flight sessions.
+  // The shape is opaque at the SQL layer — see SessionAgentConfigRow.
+  await sql`
+    CREATE TABLE IF NOT EXISTS session_postgres_v2_session_agent (
+      session_id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      agent_config_json JSONB NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `.execute(db);
+
+  // Indexes for the read patterns we need before Week 12 — `user_id` for
+  // "list this user's sessions" admin views, `agent_id` for "what's running
+  // against agent X right now" debugging. Both are bounded-cardinality and
+  // queried more often than session_id-by-itself.
+  await sql`
+    CREATE INDEX IF NOT EXISTS session_postgres_v2_session_agent_user_id_idx
+      ON session_postgres_v2_session_agent (user_id)
+  `.execute(db);
+  await sql`
+    CREATE INDEX IF NOT EXISTS session_postgres_v2_session_agent_agent_id_idx
+      ON session_postgres_v2_session_agent (agent_id)
+  `.execute(db);
 }
 
 export interface SessionRow {
@@ -73,7 +113,27 @@ export interface InboxRow {
   created_at: Date;
 }
 
+/**
+ * v2 side-table pairing a session with its {user_id, agent_id} owners and
+ * the FROZEN agent config snapshot. Insert-once per session_id (the PK
+ * enforces it); there is intentionally no `updated_at` — Invariant I10
+ * (session ↔ agent immutability) is the contract and we want a missing
+ * UPDATE-time column to make the contract obvious to anyone reading.
+ *
+ * `agent_config_json` is stored as JSONB but is opaque at the SQL layer.
+ * Shape lives in TypeScript (`SessionAgentConfig` in store.ts) — kept off
+ * the migration to keep the migration file shape-agnostic.
+ */
+export interface SessionAgentRow {
+  session_id: string;
+  user_id: string;
+  agent_id: string;
+  agent_config_json: unknown;
+  created_at: Date;
+}
+
 export interface SessionDatabase {
   session_postgres_v1_sessions: SessionRow;
   session_postgres_v1_inbox: InboxRow;
+  session_postgres_v2_session_agent: SessionAgentRow;
 }
