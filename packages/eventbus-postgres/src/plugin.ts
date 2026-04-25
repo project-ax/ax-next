@@ -57,19 +57,9 @@ export interface EventbusSubscription {
   unsubscribe: () => void;
 }
 
-/**
- * Same shape as a Plugin, but with a `shutdown()` escape hatch tests use
- * to drain the dedicated LISTEN client before stopping the testcontainer.
- * Production callers should NOT depend on this — when the kernel gains a
- * shutdown lifecycle, it'll move there.
- */
-export interface EventbusPostgresPlugin extends Plugin {
-  shutdown(): Promise<void>;
-}
-
 export function createEventbusPostgresPlugin(
   config: EventbusPostgresConfig,
-): EventbusPostgresPlugin {
+): Plugin {
   validateConnectionString(config.connectionString);
 
   // Local per-instance subscriber map. Keeps every subscriber of the same

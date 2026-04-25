@@ -5,19 +5,18 @@ import { PluginError } from '@ax/core';
 import {
   createEventbusPostgresPlugin,
   type EventbusEmitInput,
-  type EventbusPostgresPlugin,
   type EventbusSubscribeInput,
   type EventbusSubscription,
 } from '../plugin.js';
 
 let container: StartedPostgreSqlContainer;
 let connectionString: string;
-const opened: EventbusPostgresPlugin[] = [];
+const harnesses: Awaited<ReturnType<typeof createTestHarness>>[] = [];
 
 async function makeBus() {
   const plugin = createEventbusPostgresPlugin({ connectionString });
   const h = await createTestHarness({ plugins: [plugin] });
-  opened.push(plugin);
+  harnesses.push(h);
   return h;
 }
 
@@ -30,11 +29,12 @@ afterEach(async () => {
   // Drain the dedicated LISTEN client for each instance so the next test
   // starts clean and the container doesn't get torn down with active
   // connections (which would surface as unhandled `terminating connection`
-  // errors from pg-protocol). There's no kernel shutdown lifecycle yet
-  // (TODO: kernel-shutdown), so the factory exposes shutdown() directly.
-  while (opened.length > 0) {
-    const p = opened.pop()!;
-    await p.shutdown().catch(() => {});
+  // errors from pg-protocol). The harness drives Plugin.shutdown for us;
+  // onError is a no-op sink because tests deliberately exercise teardown
+  // edge cases and we don't want stderr noise.
+  while (harnesses.length > 0) {
+    const h = harnesses.pop()!;
+    await h.close({ onError: () => {} });
   }
 });
 
