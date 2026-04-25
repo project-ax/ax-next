@@ -22,12 +22,14 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAgentStore } from '../lib/agent-store';
+import { searchStoreActions, useSearchStore } from '../lib/search-store';
 import { sessionStoreActions, useSessionStore } from '../lib/session-store';
 import { SidebarCollapseToggle } from './SidebarCollapseToggle';
 
 export function SessionHeader() {
   const { sessions, activeSessionId } = useSessionStore();
   const { agents, selectedAgentId, pendingAgentId } = useAgentStore();
+  const { open: searchOpen } = useSearchStore();
   const activeAgentId =
     pendingAgentId ?? selectedAgentId ?? agents[0]?.id ?? null;
 
@@ -147,6 +149,22 @@ export function SessionHeader() {
           {title}
         </div>
         <div className="header-actions">
+          <button
+            className="header-action"
+            type="button"
+            aria-label="Search"
+            aria-pressed={searchOpen}
+            title="Search messages"
+            onClick={() => {
+              if (searchOpen) {
+                searchStoreActions.close();
+              } else {
+                searchStoreActions.open();
+              }
+            }}
+          >
+            <span aria-hidden="true">⌕</span>
+          </button>
           <button
             className="header-action"
             type="button"

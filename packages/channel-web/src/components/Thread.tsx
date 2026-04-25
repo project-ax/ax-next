@@ -39,8 +39,10 @@ import {
   ThreadPrimitive,
 } from '@assistant-ui/react';
 import type { FC } from 'react';
+import { useSearchStore } from '../lib/search-store';
 import { MarkdownText } from './MarkdownText';
 import { Composer } from './Composer';
+import { SearchBar } from './SearchBar';
 
 // Empty-state predicate. Hooked to messages.length rather than
 // `thread.isEmpty` because the latter returns `false` while the
@@ -51,19 +53,39 @@ const isThreadEmpty = (s: {
   thread: { messages?: readonly unknown[] };
 }): boolean => (s.thread.messages?.length ?? 0) === 0;
 
-export const Thread: FC = () => (
-  <ThreadPrimitive.Root className="thread-root">
-    <ThreadPrimitive.Viewport className="timeline">
-      <AuiIf condition={isThreadEmpty}>
-        <ThreadWelcome />
-      </AuiIf>
-      <ThreadPrimitive.Messages
-        components={{ UserMessage, AssistantMessage, EditComposer }}
-      />
-    </ThreadPrimitive.Viewport>
-    <Composer />
-  </ThreadPrimitive.Root>
-);
+export const Thread: FC = () => {
+  // Search bar lives above the timeline rather than inside the composer.
+  // Plan suggested either placement; banner above the viewport is the
+  // less-invasive choice — the composer doesn't need to know about
+  // search state, and CSS hides .attach-btn via body.searching anyway.
+  //
+  // TODO(assistant-ui): wire actual message-text filtering here when
+  // assistant-ui exposes a stable message-iteration API. Today there's
+  // no clean way to read+filter messages from the runtime store without
+  // reaching into private internals, so we show a "filter active" banner
+  // and defer the substring match until we can do it without leakage.
+  const { open: searchOpen, query } = useSearchStore();
+  return (
+    <ThreadPrimitive.Root className="thread-root">
+      {searchOpen && <SearchBar />}
+      {searchOpen && query.length > 0 && (
+        <div className="search-results-banner" role="status">
+          Showing all messages — text filtering will land when assistant-ui
+          exposes a stable message-iteration API.
+        </div>
+      )}
+      <ThreadPrimitive.Viewport className="timeline">
+        <AuiIf condition={isThreadEmpty}>
+          <ThreadWelcome />
+        </AuiIf>
+        <ThreadPrimitive.Messages
+          components={{ UserMessage, AssistantMessage, EditComposer }}
+        />
+      </ThreadPrimitive.Viewport>
+      <Composer />
+    </ThreadPrimitive.Root>
+  );
+};
 
 const ThreadWelcome: FC = () => (
   <div className="thread-welcome">

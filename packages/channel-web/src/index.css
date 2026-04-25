@@ -989,6 +989,80 @@ body.sidebar-collapsed .composer { left: 56px; }
 }
 
 /* =============================================================
+   SEARCH MODE — Task 26. The bar sits above the timeline (inside the
+   thread root, above the viewport) when search is open. The body class
+   `.searching` activates the CSS rule that hides the composer's attach
+   button — per Tide spec, search mode and attach are mutually
+   exclusive affordances.
+   ============================================================= */
+
+.search-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 24px;
+  border-bottom: 1px solid var(--rule);
+  background: var(--surface-raised);
+}
+.search-input {
+  flex: 1;
+  background: transparent;
+  border: 0;
+  outline: 0;
+  font: inherit;
+  color: inherit;
+  padding: 0;
+}
+.search-input::placeholder { color: var(--ink-mute); }
+.search-clear {
+  all: unset;
+  cursor: pointer;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-mute);
+  font-size: 16px;
+  line-height: 1;
+  transition: color 120ms ease, background 120ms ease;
+}
+.search-clear:hover,
+.search-clear:focus-visible {
+  color: var(--ink);
+  background: var(--bg-deep);
+}
+.search-semantic {
+  all: unset;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--ink-mute);
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--rule);
+  transition: color 120ms ease, background 120ms ease;
+}
+.search-semantic:hover { color: var(--ink); background: var(--bg-deep); }
+
+.search-results-banner {
+  padding: 8px 24px;
+  font-size: 12px;
+  color: var(--ink-mute);
+  background: var(--bg-deep);
+  border-bottom: 1px solid var(--rule);
+  font-family: var(--mono);
+  letter-spacing: 0.01em;
+}
+
+/* When the search bar is open, hide the composer's attach button so
+   the user can't start an upload mid-search. CSS-only — no JS branch
+   in the composer reads the search state. */
+body.searching .attach-btn { display: none; }
+
+/* =============================================================
    THREAD + TIMELINE — adapted from `design_handoff_tide/Tide
    Sessions.html` (`.timeline`, `.msg`, `.msg-body`, `.msg-actions`,
    `.intro`). Tide uses no avatars and no meta column — role is
