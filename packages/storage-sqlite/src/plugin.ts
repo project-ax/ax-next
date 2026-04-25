@@ -19,10 +19,6 @@ export function createStorageSqlitePlugin(config: StorageSqliteConfig): Plugin {
       calls: [],
       subscribes: [],
     },
-    // TODO(kernel-shutdown): the kernel has no plugin shutdown lifecycle yet.
-    // When it lands, this plugin should destroy `db` so better-sqlite3 can flush
-    // WAL and release the file handle cleanly. Today the process exits before
-    // anything can close; acceptable because CLI runs are one-shot.
     init({ bus }) {
       db = openDatabase(config.databasePath);
 
@@ -56,6 +52,14 @@ export function createStorageSqlitePlugin(config: StorageSqliteConfig): Plugin {
             .execute();
         },
       );
+    },
+    async shutdown() {
+      if (db !== undefined) {
+        await db.destroy().catch(() => {
+          // best-effort; better-sqlite3's close is sync but Kysely wraps it.
+        });
+        db = undefined;
+      }
     },
   };
 }
