@@ -70,6 +70,68 @@ describe('mock auth', () => {
     }
   });
 
+  it('rejects absolute callbackURL on /api/auth/callback (open-redirect guard)', async () => {
+    const { server, url } = await startServer(store);
+    try {
+      const res = await fetch(
+        `${url}/api/auth/callback?user=u2&callbackURL=${encodeURIComponent('https://evil.example/path')}`,
+        { redirect: 'manual' },
+      );
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('/');
+    } finally {
+      server.close();
+    }
+  });
+
+  it('rejects scheme-relative callbackURL (//evil) on /api/auth/callback', async () => {
+    const { server, url } = await startServer(store);
+    try {
+      const res = await fetch(
+        `${url}/api/auth/callback?user=u2&callbackURL=${encodeURIComponent('//evil.example/path')}`,
+        { redirect: 'manual' },
+      );
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('/');
+    } finally {
+      server.close();
+    }
+  });
+
+  it('rejects absolute callbackURL on /api/auth/sign-in/social', async () => {
+    const { server, url } = await startServer(store);
+    try {
+      const res = await fetch(`${url}/api/auth/sign-in/social`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          provider: 'google',
+          callbackURL: 'https://evil.example/path',
+        }),
+      });
+      expect(res.status).toBe(200);
+      const { url: callbackPath } = await res.json();
+      // The encoded callbackURL inside the path-relative callback should be `/`.
+      expect(callbackPath).toMatch(/callbackURL=%2F$/);
+    } finally {
+      server.close();
+    }
+  });
+
+  it('preserves a path-relative callbackURL', async () => {
+    const { server, url } = await startServer(store);
+    try {
+      const res = await fetch(
+        `${url}/api/auth/callback?user=u2&callbackURL=${encodeURIComponent('/foo?bar=1')}`,
+        { redirect: 'manual' },
+      );
+      expect(res.status).toBe(302);
+      expect(res.headers.get('location')).toBe('/foo?bar=1');
+    } finally {
+      server.close();
+    }
+  });
+
   it('clears the cookie on sign-out', async () => {
     const { server, url } = await startServer(store);
     try {

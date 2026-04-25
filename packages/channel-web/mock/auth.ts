@@ -15,6 +15,28 @@ const SET_COOKIE = (id: string) =>
   `${COOKIE_NAME}=${id}; Path=/; SameSite=Lax`;
 const CLEAR_COOKIE = `${COOKIE_NAME}=; Path=/; Max-Age=0`;
 
+/**
+ * Force `callbackURL` to be a path-relative URL or fall back to `/`.
+ *
+ * Open-redirect mitigation: a raw `callbackURL` sent through to the
+ * `Location:` header would let an attacker craft a sign-in link that
+ * lands the user on `https://evil.example` after auth, with the
+ * domain's session cookie freshly set. Mock-only today, but the pattern
+ * propagates — keep it tight here so the real backend inherits the
+ * same guard when this code is rewritten.
+ *
+ * Allowed: `/`, `/foo`, `/foo?bar=baz`. Rejected (mapped to `/`):
+ * absolute URLs, scheme-relative URLs (`//evil.example`), anything
+ * not starting with a single `/`, and `null`/`undefined`.
+ */
+function sanitizeCallbackURL(raw: string | null | undefined): string {
+  if (typeof raw !== 'string') return '/';
+  if (!raw.startsWith('/')) return '/';
+  // Reject scheme-relative URLs like `//evil.example/path`.
+  if (raw.startsWith('//')) return '/';
+  return raw;
+}
+
 function readCookie(req: IncomingMessage, name: string): string | undefined {
   const header = req.headers.cookie ?? '';
   for (const part of header.split(/;\s*/)) {
@@ -117,7 +139,7 @@ export function authMiddleware(
 
     if (path === '/api/auth/sign-in/social' && method === 'POST') {
       const body = (await readJsonBody(req)) as { callbackURL?: string };
-      const callbackURL = body.callbackURL ?? '/';
+      const callbackURL = sanitizeCallbackURL(body.callbackURL);
       // Default mock user: u2 (Alice, regular user). Tests targeting admin
       // (u1) hit /api/auth/callback?user=u1 directly.
       const callback = `/api/auth/callback?user=u2&callbackURL=${encodeURIComponent(callbackURL)}`;
@@ -128,7 +150,7 @@ export function authMiddleware(
     if (path === '/api/auth/callback' && method === 'GET') {
       const params = new URLSearchParams(query);
       const userId = params.get('user') ?? '';
-      const callbackURL = params.get('callbackURL') ?? '/';
+      const callbackURL = sanitizeCallbackURL(params.get('callbackURL'));
       const user = store.collection<User>('users').get(userId);
       if (!user) {
         send(res, 400, { error: 'unknown user' });
