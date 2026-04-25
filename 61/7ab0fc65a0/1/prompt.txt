@@ -1,0 +1,28 @@
+Fix the ts errors
+
+---
+
+yes
+
+---
+
+address the PR comments and fix this:
+
+src/__tests__/acceptance.test.ts [ src/__tests__/acceptance.test.ts ]
+presets/k8s test: TypeError: pluginInstances.ipcHttp?.closeListener is not a function
+presets/k8s test:  ❯ src/__tests__/acceptance.test.ts:208:34
+presets/k8s test:     206|   // otherwise the abrupt server shutdown surfaces as unhandled
+presets/k8s test:     207|   // `terminating connection due to administrator command` from pg-pro…
+presets/k8s test:     208|   await pluginInstances.ipcHttp?.closeListener().catch(() => {});
+presets/k8s test:        |                                  ^
+presets/k8s test:     209|   await pluginInstances.session?.shutdown().catch(() => {});
+presets/k8s test:     210|   await pluginInstances.eventbus?.shutdown().catch(() => {});
+presets/k8s test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+presets/k8s test:  Test Files  1 failed | 1 passed (2)
+presets/k8s test:       Tests  32 passed (32)
+presets/k8s test:    Start at  17:06:11
+presets/k8s test:    Duration  3.02s (transform 568ms, setup 0ms, import 1.87s, tests 1.96s, environment 0ms)
+presets/k8s test: ::error file=/home/runner/work/ax-next/ax-next/presets/k8s/src/__tests__/acceptance.test.ts,title=src/__tests__/acceptance.test.ts,line=208,column=34::TypeError: pluginInstances.ipcHttp?.closeListener is not a function%0A ❯ src/__tests__/acceptance.test.ts:208:34%0A%0A
+presets/k8s test: Failed
+/home/runner/work/ax-next/ax-next/presets/k8s:
+ ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @ax/preset-k8s@0.0.0 test: `vitest run`
