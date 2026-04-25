@@ -9,7 +9,19 @@ import {
 } from '@ax/core';
 import { Router } from './router.js';
 import {
+  assertKeyLength,
+  buildClearCookieHeader,
+  buildSetCookieHeader,
+  parseCookieKey,
+  signCookieValue,
+  verifyCookieValue,
+  type CookieEnv,
+  type SignedCookieOptions,
+} from './cookies.js';
+import { createCsrfSubscriber } from './csrf.js';
+import {
   MAX_BODY_BYTES,
+  type ClearCookieOptions,
   type HttpMethod,
   type HttpRegisterRouteInput,
   type HttpRegisterRouteOutput,
@@ -40,6 +52,18 @@ export interface CreateHttpServerPluginOptions {
   host: string;
   /** Pass 0 to let the OS assign a free port; readable via `boundPort()`. */
   port: number;
+  /**
+   * Exact-match Origin allow-list for CSRF on state-changing methods.
+   * Empty array means only `X-Requested-With: ax-admin` callers can mutate
+   * state — emits a stderr warn unless `AX_HTTP_ALLOW_NO_ORIGINS=1`.
+   */
+  allowedOrigins?: readonly string[];
+  /**
+   * Test seam for the cookie signing key. Production reads
+   * `AX_HTTP_COOKIE_KEY` env at init (64 hex chars or 44 base64 chars).
+   * If neither is set, init fails with `invalid-cookie-key`.
+   */
+  cookieKey?: Buffer;
 }
 
 export interface HttpServerPlugin extends Plugin {
@@ -53,6 +77,9 @@ export function createHttpServerPlugin(
   const router = new Router();
   let server: http.Server | null = null;
   let boundPort: number | null = null;
+
+  const allowedOrigins = opts.allowedOrigins ?? [];
+  const trustProxy = (): boolean => process.env.AX_TRUST_PROXY === '1';
 
   const fireRequest = async (
     bus: HookBus,
@@ -86,6 +113,9 @@ export function createHttpServerPlugin(
       version: '0.0.0',
       registers: ['http:register-route'],
       calls: [],
+      // CSRF guard subscribes to http:request internally; subscribers
+      // don't form bootstrap dependency edges, so they stay out of the
+      // manifest (only `calls` does, per @ax/core/bootstrap).
       subscribes: [],
     },
     boundPort(): number {
@@ -99,6 +129,20 @@ export function createHttpServerPlugin(
       return boundPort;
     },
     async init({ bus }) {
+      const cookieKey = resolveCookieKey(opts.cookieKey);
+
+      if (allowedOrigins.length === 0 && process.env.AX_HTTP_ALLOW_NO_ORIGINS !== '1') {
+        process.stderr.write(
+          `[ax/http-server] WARNING: allowedOrigins is empty; only X-Requested-With: ax-admin callers can mutate state. Set AX_HTTP_ALLOW_NO_ORIGINS=1 to silence this warning.\n`,
+        );
+      }
+
+      bus.subscribe(
+        'http:request',
+        `${PLUGIN_NAME}/csrf`,
+        createCsrfSubscriber({ allowedOrigins }),
+      );
+
       bus.registerService<HttpRegisterRouteInput, HttpRegisterRouteOutput>(
         'http:register-route',
         PLUGIN_NAME,
@@ -139,25 +183,32 @@ export function createHttpServerPlugin(
       );
 
       const srv = http.createServer((req, res) => {
-        void handle(req, res, bus, router, fireRequest, fireResponseSent).catch(
-          (err: unknown) => {
-            try {
-              if (!res.headersSent) {
-                res.writeHead(500, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ error: 'internal' }));
-              } else {
-                res.end();
-              }
-            } catch {
-              // socket already dead
+        void handle(
+          req,
+          res,
+          bus,
+          router,
+          cookieKey,
+          trustProxy,
+          fireRequest,
+          fireResponseSent,
+        ).catch((err: unknown) => {
+          try {
+            if (!res.headersSent) {
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'internal' }));
+            } else {
+              res.end();
             }
-            process.stderr.write(
-              `[ax/http-server] unhandled handler error: ${
-                err instanceof Error ? err.message : String(err)
-              }\n`,
-            );
-          },
-        );
+          } catch {
+            // socket already dead
+          }
+          process.stderr.write(
+            `[ax/http-server] unhandled handler error: ${
+              err instanceof Error ? err.message : String(err)
+            }\n`,
+          );
+        });
       });
 
       // Slowloris mitigations — see HEADERS_TIMEOUT_MS comment above.
@@ -201,11 +252,30 @@ export function createHttpServerPlugin(
   };
 }
 
+function resolveCookieKey(opt: Buffer | undefined): Buffer {
+  if (opt !== undefined) {
+    assertKeyLength(opt);
+    return opt;
+  }
+  const fromEnv = process.env.AX_HTTP_COOKIE_KEY;
+  if (typeof fromEnv === 'string' && fromEnv.length > 0) {
+    return parseCookieKey(fromEnv);
+  }
+  throw new PluginError({
+    code: 'invalid-cookie-key',
+    plugin: PLUGIN_NAME,
+    message:
+      'cookie signing key required: pass cookieKey to createHttpServerPlugin or set AX_HTTP_COOKIE_KEY (32 bytes; 64 hex chars or 44 base64 chars)',
+  });
+}
+
 async function handle(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   bus: HookBus,
   router: Router,
+  cookieKey: Buffer,
+  trustProxy: () => boolean,
   fireRequest: (
     bus: HookBus,
     ctx: ChatContext,
@@ -224,6 +294,7 @@ async function handle(
   const url = new URL(req.url ?? '/', 'http://http-server.local');
   const path = url.pathname;
   const headers = lowercaseHeaders(req.headers);
+  const cookieEnv: CookieEnv = { isSecureRequest: deriveSecure(req, headers, trustProxy) };
 
   const ctx = makeChatContext({
     sessionId: 'http-server',
@@ -288,8 +359,13 @@ async function handle(
     headers,
     body,
     cookies,
+    signedCookie(name: string): string | null {
+      const raw = cookies[name];
+      if (raw === undefined) return null;
+      return verifyCookieValue(cookieKey, raw);
+    },
   };
-  const writer = new ResponseWriter(res);
+  const writer = new ResponseWriter(res, cookieKey, cookieEnv);
   const adapterRes: HttpResponse = writer.adapter;
 
   let finalStatus = writer.statusCode;
@@ -336,6 +412,25 @@ async function handle(
     status: finalStatus,
     durationMs: Date.now() - startedAt,
   });
+}
+
+function deriveSecure(
+  req: http.IncomingMessage,
+  headers: Record<string, string>,
+  trustProxy: () => boolean,
+): boolean {
+  // Direct TLS termination (encrypted property is set by tls.Server). The
+  // node:http server we use here doesn't speak TLS itself; this branch is
+  // future-proofing for an https.Server reuse and the rarer dev case where
+  // ax-next is fronted by nothing.
+  const sock = (req.socket as { encrypted?: boolean } | null) ?? null;
+  if (sock?.encrypted === true) return true;
+  if (!trustProxy()) return false;
+  const xfp = headers['x-forwarded-proto'];
+  if (typeof xfp !== 'string') return false;
+  // Comma-separated list when multiple proxies; first hop is closest to the client.
+  const first = xfp.split(',')[0]?.trim().toLowerCase();
+  return first === 'https';
 }
 
 class BodyTooLargeError extends Error {
@@ -394,12 +489,19 @@ class ResponseWriter {
   finished = false;
   statusCode = 200;
   private headers = new Map<string, string>();
+  // Set-Cookie is a multi-value header; flatten to array so multiple
+  // cookies in one response write distinct header lines.
+  private setCookies: string[] = [];
   private res: http.ServerResponse;
+  private cookieKey: Buffer;
+  private cookieEnv: CookieEnv;
 
   readonly adapter: HttpResponse;
 
-  constructor(res: http.ServerResponse) {
+  constructor(res: http.ServerResponse, cookieKey: Buffer, cookieEnv: CookieEnv) {
     this.res = res;
+    this.cookieKey = cookieKey;
+    this.cookieEnv = cookieEnv;
     this.adapter = {
       status: (n: number) => {
         if (this.finished) {
@@ -449,6 +551,17 @@ class ResponseWriter {
         this.finished = true;
         this.flushEmpty();
       },
+      setSignedCookie: (name: string, value: string, opts?: SignedCookieOptions) => {
+        if (this.finished) throw new Error('response already finished');
+        const wire = signCookieValue(this.cookieKey, value);
+        const header = buildSetCookieHeader(name, wire, opts ?? {}, this.cookieEnv);
+        this.setCookies.push(header);
+      },
+      clearCookie: (name: string, opts?: ClearCookieOptions) => {
+        if (this.finished) throw new Error('response already finished');
+        const header = buildClearCookieHeader(name, opts ?? {}, this.cookieEnv);
+        this.setCookies.push(header);
+      },
     };
   }
 
@@ -466,8 +579,11 @@ class ResponseWriter {
   }
 
   private writeHead(): void {
-    const headersOut: Record<string, string> = {};
+    const headersOut: Record<string, string | string[]> = {};
     for (const [k, v] of this.headers) headersOut[k] = v;
+    if (this.setCookies.length > 0) {
+      headersOut['set-cookie'] = this.setCookies;
+    }
     this.res.writeHead(this.statusCode, headersOut);
   }
 }

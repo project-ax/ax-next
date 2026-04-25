@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { reject, type SubscriberHandler } from '@ax/core';
 import { createTestHarness, type TestHarness } from '@ax/test-harness';
@@ -7,6 +8,8 @@ import type {
   HttpRegisterRouteOutput,
   HttpRouteHandler,
 } from '../types.js';
+
+const COOKIE_KEY = randomBytes(32);
 
 // ---------------------------------------------------------------------------
 // Tests for @ax/http-server.
@@ -33,7 +36,18 @@ describe('@ax/http-server', () => {
   let port: number;
 
   beforeEach(async () => {
-    plugin = createHttpServerPlugin({ host: '127.0.0.1', port: 0 });
+    plugin = createHttpServerPlugin({
+      host: '127.0.0.1',
+      port: 0,
+      cookieKey: COOKIE_KEY,
+      // The CSRF guard fires for any state-changing method; tests below
+      // that exercise other rejection reasons send X-Requested-With:
+      // ax-admin to bypass it and let the test's subscriber run.
+      allowedOrigins: [],
+    });
+    // Empty allowedOrigins logs a stderr warn unless the escape hatch is
+    // set; pin it to keep test output quiet.
+    process.env.AX_HTTP_ALLOW_NO_ORIGINS = '1';
     harness = await createTestHarness({ plugins: [plugin] });
     port = plugin.boundPort();
   });
@@ -82,7 +96,10 @@ describe('@ax/http-server', () => {
     });
     const r = await fetch(`http://127.0.0.1:${port}/echo`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        'x-requested-with': 'ax-admin',
+      },
       body: JSON.stringify({ msg: 'hello' }),
     });
     expect(r.status).toBe(200);
@@ -99,7 +116,10 @@ describe('@ax/http-server', () => {
     const oversized = 'x'.repeat(2 * 1024 * 1024);
     const r = await fetch(`http://127.0.0.1:${port}/upload`, {
       method: 'POST',
-      headers: { 'content-type': 'application/octet-stream' },
+      headers: {
+        'content-type': 'application/octet-stream',
+        'x-requested-with': 'ax-admin',
+      },
       body: oversized,
     });
     expect(r.status).toBe(413);
@@ -123,7 +143,10 @@ describe('@ax/http-server', () => {
     });
     const r = await fetch(`http://127.0.0.1:${port}/upload`, {
       method: 'POST',
-      headers: { 'content-type': 'application/octet-stream' },
+      headers: {
+        'content-type': 'application/octet-stream',
+        'x-requested-with': 'ax-admin',
+      },
       body: stream,
       // duplex required for streaming bodies in newer Node fetch.
       // @ts-expect-error — duplex isn't in the lib types yet.
@@ -142,7 +165,10 @@ describe('@ax/http-server', () => {
     await registerRoute('GET', '/x', async (_req, res) => {
       res.status(200).text('ok');
     });
-    const r = await fetch(`http://127.0.0.1:${port}/x`, { method: 'POST' });
+    const r = await fetch(`http://127.0.0.1:${port}/x`, {
+      method: 'POST',
+      headers: { 'x-requested-with': 'ax-admin' },
+    });
     expect(r.status).toBe(405);
     expect(r.headers.get('allow')).toBe('GET');
   });
@@ -213,7 +239,12 @@ describe('@ax/http-server', () => {
     harness.bus.subscribe('http:request', 'test-csrf', csrfGuard);
     const r = await fetch(`http://127.0.0.1:${port}/protected`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        // Bypass the plugin's built-in CSRF guard so the test's
+        // subscriber gets to fire.
+        'x-requested-with': 'ax-admin',
+      },
       body: '{}',
     });
     expect(r.status).toBe(403);
@@ -229,7 +260,10 @@ describe('@ax/http-server', () => {
     );
     const r = await fetch(`http://127.0.0.1:${port}/x`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        'x-requested-with': 'ax-admin',
+      },
       body: '{}',
     });
     expect(r.status).toBe(400);

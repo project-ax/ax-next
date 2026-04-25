@@ -10,4 +10,7 @@ export {
   type HttpRegisterRouteOutput,
   type HttpRequestEvent,
   type HttpResponseSentEvent,
+  type ClearCookieOptions,
 } from './types.js';
+export type { SignedCookieOptions } from './cookies.js';
+export { evaluateCsrf, type CsrfReason, type CsrfGuardConfig } from './csrf.js';

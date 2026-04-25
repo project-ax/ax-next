@@ -1,9 +1,15 @@
+import type { SignedCookieOptions } from './cookies.js';
+
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
 /**
  * Request adapter. `headers` keys are lowercased. `body` is capped at
  * MAX_BODY_BYTES (1 MiB) — over that, the plugin returns 413 before the
- * handler runs. `cookies` are raw values; signing lands in Task 2.
+ * handler runs.
+ *
+ * `cookies` are RAW values straight from the Cookie header. For
+ * tamper-evident reads use `signedCookie(name)`, which returns the
+ * verified plaintext or `null` if the cookie is missing / mangled / forged.
  */
 export interface HttpRequest {
   readonly method: HttpMethod;
@@ -11,12 +17,27 @@ export interface HttpRequest {
   readonly headers: Record<string, string>;
   readonly body: Buffer;
   readonly cookies: Record<string, string>;
+  /**
+   * Returns the verified plaintext for an HMAC-signed cookie, or null
+   * when the cookie is absent, malformed, or the HMAC check fails.
+   * Comparison is constant-time. Never throws.
+   */
+  signedCookie(name: string): string | null;
 }
+
+export type ClearCookieOptions = Pick<
+  SignedCookieOptions,
+  'path' | 'domain' | 'sameSite' | 'secure'
+>;
 
 /**
  * Response adapter. Single-shot: any of `text`/`json`/`end`/`redirect`
  * finishes the response; a second call throws. `status` defaults to 200,
  * `header` names are lowercased, `redirect` defaults to 302.
+ *
+ * `setSignedCookie` / `clearCookie` append a Set-Cookie header with the
+ * locked defaults (HttpOnly, SameSite=Lax, Path=/). Secure is derived
+ * from the request protocol unless explicitly overridden via opts.secure.
  */
 export interface HttpResponse {
   status(n: number): HttpResponse;
@@ -25,6 +46,8 @@ export interface HttpResponse {
   json(v: unknown): void;
   end(): void;
   redirect(url: string, status?: number): void;
+  setSignedCookie(name: string, value: string, opts?: SignedCookieOptions): void;
+  clearCookie(name: string, opts?: ClearCookieOptions): void;
 }
 
 export type HttpRouteHandler = (
