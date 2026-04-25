@@ -709,3 +709,159 @@ body.sidebar-collapsed .user-row { justify-content: center; padding: 7px; }
   letter-spacing: 0.02em;
   color: inherit;
 }
+
+/* =============================================================
+   COMPOSER — fixed to the bottom of the chat pane (not over the
+   sidebar). Adapted from `design_handoff_tide/Tide Sessions.html`.
+   The 28px attach button + 30px send circle + 28px textarea
+   min-height are load-bearing: at the field's `align-items:
+   flex-end`, equal heights mean the bottoms align AND the
+   optical centers align on the first line. Don't drop the
+   28px floor on the textarea — the natural 22px wrecks this.
+   ============================================================= */
+
+.composer {
+  position: fixed;
+  bottom: 0;
+  left: 240px;
+  right: 0;
+  transition: left 220ms cubic-bezier(.2,.7,.2,1);
+  padding: 40px 24px 22px;
+  background: linear-gradient(
+    to top,
+    var(--bg) 60%,
+    color-mix(in srgb, var(--bg) 80%, transparent) 85%,
+    transparent 100%
+  );
+  display: flex;
+  justify-content: center;
+  z-index: 20;
+}
+body.sidebar-collapsed .composer { left: 56px; }
+@media (max-width: 720px) {
+  .composer { left: 0; }
+}
+
+.composer-inner {
+  width: 100%;
+  max-width: 640px;
+  /* Per Tide spec the inner wrap also handles top/bottom rhythm
+     for the field; the outer .composer carries the fade-out. */
+  margin: 0 auto;
+  padding: 12px 24px 16px;
+}
+
+.composer-field {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  background: var(--surface-raised);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  padding: 10px 12px 10px 14px;
+  box-shadow: var(--shadow-sm);
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+.composer-field:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--rule));
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 14%, transparent),
+    var(--shadow-sm);
+}
+
+.composer-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  resize: none;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.55;
+  /* 28px floor matches attach-btn (28px) and send-btn (30px) when
+     align-items: flex-end so the first line bottom-aligns and
+     optically centers. */
+  min-height: 28px;
+  max-height: 200px;
+  padding: 2px 0;
+  box-sizing: border-box;
+}
+.composer-input::placeholder { color: var(--ink-mute); }
+
+.attach-btn {
+  all: unset;
+  cursor: pointer;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  color: var(--ink-mute);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-right: 4px;
+  transition: background 120ms ease, color 120ms ease;
+  font-size: 16px;
+  line-height: 1;
+}
+.attach-btn:hover:not([disabled]) {
+  background: var(--bg-deep);
+  color: var(--ink);
+}
+.attach-btn[aria-expanded="true"] {
+  background: var(--bg-deep);
+  color: var(--ink);
+}
+.attach-btn[disabled] {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.send-btn {
+  all: unset;
+  cursor: pointer;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--ink-ghost);
+  color: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background 140ms ease, transform 140ms ease, filter 140ms ease;
+}
+/* When the textarea has any content, light up the send circle. We use
+   `:has()` against the placeholder-shown state so this is a pure-CSS
+   ready toggle — no JS observer needed. */
+.composer-field:has(.composer-input:not(:placeholder-shown)) .send-btn,
+.send-btn.ready {
+  background: var(--accent);
+}
+.composer-field:has(.composer-input:not(:placeholder-shown)) .send-btn:hover,
+.send-btn.ready:hover {
+  transform: scale(1.05);
+  filter: brightness(1.05);
+}
+
+.composer-hint {
+  margin-top: 8px;
+  font-size: 10.5px;
+  color: var(--ink-ghost);
+  text-align: center;
+  letter-spacing: 0.04em;
+  opacity: 0;
+  transition: opacity 140ms ease;
+  pointer-events: none;
+}
+.composer:hover .composer-hint,
+.composer:focus-within .composer-hint {
+  opacity: 1;
+}
+.composer-hint kbd {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-mute);
+}
