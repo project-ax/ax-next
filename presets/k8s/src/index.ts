@@ -356,7 +356,12 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
 export function workspaceConfigFromEnv(
   env: NodeJS.ProcessEnv = process.env,
 ): K8sWorkspaceConfig {
-  const backend = env.AX_WORKSPACE_BACKEND ?? 'local';
+  // Treat empty string as unset. Helm templates frequently render
+  // `value: "{{ .Values.workspace.backend }}"` with an empty value when
+  // the user hasn't overridden it; we want that case to default to local
+  // rather than fall through to the unknown-backend branch.
+  const rawBackend = env.AX_WORKSPACE_BACKEND;
+  const backend = rawBackend === undefined || rawBackend === '' ? 'local' : rawBackend;
 
   if (backend === 'local') {
     const repoRoot = env.AX_WORKSPACE_ROOT;

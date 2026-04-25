@@ -74,7 +74,7 @@ describe('multi-replica concurrent applies', () => {
     async function applyWithRetry(
       idx: number,
       currentParent: WorkspaceVersion,
-    ): Promise<WorkspaceVersion> {
+    ): Promise<{ version: WorkspaceVersion; retries: number }> {
       let attempt = 0;
       let p: WorkspaceVersion = currentParent;
       while (true) {
@@ -92,7 +92,7 @@ describe('multi-replica concurrent applies', () => {
             ],
             parent: p,
           });
-          return r.version;
+          return { version: r.version, retries: attempt };
         } catch (err) {
           if (err instanceof PluginError && err.code === 'parent-mismatch') {
             attempt++;
@@ -118,12 +118,27 @@ describe('multi-replica concurrent applies', () => {
       }
     }
 
-    const results = await Promise.all(
+    const outcomes = await Promise.all(
       [0, 1, 2].map((i) => applyWithRetry(i, seed.version)),
     );
+    const results = outcomes.map((o) => o.version);
+    const totalRetries = outcomes.reduce((acc, o) => acc + o.retries, 0);
+
     // Three distinct successful versions — proves a linear history with
     // three commits past the seed.
     expect(new Set(results).size).toBe(3);
+
+    // Assert the retry path was actually exercised. With three concurrent
+    // applies racing the same parent, exactly one wins on attempt 0; the
+    // other two get parent-mismatch and retry. The minimum total-retries
+    // across replicas is therefore N-1 = 2 (well-behaved retry fans out
+    // perfectly) and could be higher if the second-place replica also
+    // collides with the third on its retry. If totalRetries is 0, either
+    // the test is no longer racing the mutex (e.g. someone added a
+    // host-side serializing lock) or the parent-mismatch → retry path
+    // regressed. Either way we want the failure here, not as a silent
+    // pass that proves nothing.
+    expect(totalRetries).toBeGreaterThanOrEqual(2);
 
     // Final list (from any replica) shows seed + all three replica files.
     const finalList = await harnesses[0]!.bus.call<
