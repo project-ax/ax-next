@@ -30,6 +30,7 @@
     { "path": "./packages/credentials" },
     { "path": "packages/mcp-client" },
     { "path": "packages/workspace-git" },
+    { "path": "packages/workspace-git-core" },
     { "path": "packages/database-postgres" },
     { "path": "packages/storage-postgres" },
     { "path": "packages/eventbus-postgres" },
