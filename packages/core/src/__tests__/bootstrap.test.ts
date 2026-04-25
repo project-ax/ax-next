@@ -52,9 +52,12 @@ describe('bootstrap', () => {
       ({ bus }) => { bus.registerService('storage:get', 'provider', async () => 'v'); },
     );
     const consumer = makePlugin({ name: 'consumer', calls: ['storage:get'] });
-    await expect(
-      bootstrap({ bus: new HookBus(), plugins: [provider, consumer], config: {} }),
-    ).resolves.toBeUndefined();
+    const handle = await bootstrap({
+      bus: new HookBus(),
+      plugins: [provider, consumer],
+      config: {},
+    });
+    expect(typeof handle.shutdown).toBe('function');
   });
 
   it('detects cycles in declared calls', async () => {
@@ -115,5 +118,152 @@ describe('bootstrap', () => {
     // not the array order: producer must still init first.
     await bootstrap({ bus: new HookBus(), plugins: [consumer, producer], config: {} });
     expect(called).toEqual(['producer', 'consumer']);
+  });
+});
+
+describe('bootstrap shutdown', () => {
+  it('returns a KernelHandle whose shutdown calls plugins in reverse topological order', async () => {
+    const order: string[] = [];
+    const a = makePlugin(
+      { name: 'a', registers: ['a:do'] },
+      ({ bus }) => { bus.registerService('a:do', 'a', async () => 0); },
+    );
+    (a as Plugin).shutdown = () => { order.push('a'); };
+
+    const b = makePlugin(
+      { name: 'b', registers: ['b:do'], calls: ['a:do'] },
+      ({ bus }) => { bus.registerService('b:do', 'b', async () => 0); },
+    );
+    (b as Plugin).shutdown = () => { order.push('b'); };
+
+    const c = makePlugin(
+      { name: 'c', calls: ['b:do'] },
+    );
+    (c as Plugin).shutdown = () => { order.push('c'); };
+
+    const handle = await bootstrap({
+      bus: new HookBus(),
+      plugins: [a, b, c],
+      config: {},
+    });
+    await handle.shutdown();
+    // Init order: a, b, c (topological). Reverse: c, b, a.
+    expect(order).toEqual(['c', 'b', 'a']);
+  });
+
+  it('skips plugins without a shutdown method', async () => {
+    const order: string[] = [];
+    const a = makePlugin({ name: 'a' });
+    const b = makePlugin({ name: 'b' });
+    (b as Plugin).shutdown = () => { order.push('b'); };
+    const handle = await bootstrap({
+      bus: new HookBus(),
+      plugins: [a, b],
+      config: {},
+    });
+    await handle.shutdown();
+    expect(order).toEqual(['b']);
+  });
+
+  it('a throwing shutdown does not block peer plugins; failure is reported', async () => {
+    const order: string[] = [];
+    const errors: { plugin: string; err: unknown }[] = [];
+    const a = makePlugin({ name: 'a' });
+    (a as Plugin).shutdown = () => { order.push('a'); };
+    const b = makePlugin({ name: 'b' });
+    (b as Plugin).shutdown = async () => { throw new Error('boom'); };
+    const c = makePlugin({ name: 'c' });
+    (c as Plugin).shutdown = () => { order.push('c'); };
+
+    const handle = await bootstrap({
+      bus: new HookBus(),
+      plugins: [a, b, c],
+      config: {},
+      onShutdownError: (plugin, err) => errors.push({ plugin, err }),
+    });
+    await handle.shutdown();
+    // Reverse order: c (ok), b (throws), a (ok). All three slots run.
+    expect(order).toEqual(['c', 'a']);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.plugin).toBe('b');
+    expect((errors[0]!.err as Error).message).toBe('boom');
+  });
+
+  it('a hanging shutdown is timed out; peer plugins still run', async () => {
+    const order: string[] = [];
+    const errors: { plugin: string; err: unknown }[] = [];
+    const a = makePlugin({ name: 'a' });
+    (a as Plugin).shutdown = () => { order.push('a'); };
+    const b = makePlugin({ name: 'b' });
+    (b as Plugin).shutdown = () => new Promise<void>(() => {}); // never resolves
+    const c = makePlugin({ name: 'c' });
+    (c as Plugin).shutdown = () => { order.push('c'); };
+
+    const handle = await bootstrap({
+      bus: new HookBus(),
+      plugins: [a, b, c],
+      config: {},
+      shutdownTimeoutMs: 50,
+      onShutdownError: (plugin, err) => errors.push({ plugin, err }),
+    });
+    await handle.shutdown();
+    expect(order).toEqual(['c', 'a']);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.plugin).toBe('b');
+    expect(String(errors[0]!.err)).toMatch(/exceeded 50ms/);
+  });
+
+  it('handle.shutdown is idempotent — second call resolves without re-running plugins', async () => {
+    let count = 0;
+    const a = makePlugin({ name: 'a' });
+    (a as Plugin).shutdown = () => { count++; };
+    const handle = await bootstrap({
+      bus: new HookBus(),
+      plugins: [a],
+      config: {},
+    });
+    await handle.shutdown();
+    await handle.shutdown();
+    await handle.shutdown();
+    expect(count).toBe(1);
+  });
+
+  it('init failure runs shutdown on plugins 0..N-1 in reverse order before re-throwing', async () => {
+    const order: string[] = [];
+    const a = makePlugin({ name: 'a' });
+    (a as Plugin).shutdown = () => { order.push('a-down'); };
+    const b = makePlugin({ name: 'b' });
+    (b as Plugin).shutdown = () => { order.push('b-down'); };
+    const c = makePlugin({ name: 'c' }, () => { throw new Error('c-init-failed'); });
+    (c as Plugin).shutdown = () => { order.push('c-down'); };
+    const d = makePlugin({ name: 'd' });
+    (d as Plugin).shutdown = () => { order.push('d-down'); };
+
+    await expect(
+      bootstrap({ bus: new HookBus(), plugins: [a, b, c, d], config: {} }),
+    ).rejects.toMatchObject({ name: 'PluginError', code: 'init-failed', plugin: 'c' });
+    // Plugins a, b initialized; c failed (its shutdown is NOT called); d never
+    // initialized. Rollback runs b then a.
+    expect(order).toEqual(['b-down', 'a-down']);
+  });
+
+  it('init-failure rollback isolates throwing/timing-out shutdowns', async () => {
+    const errors: { plugin: string; err: unknown }[] = [];
+    const a = makePlugin({ name: 'a' });
+    (a as Plugin).shutdown = () => { /* ok */ };
+    const b = makePlugin({ name: 'b' });
+    (b as Plugin).shutdown = () => { throw new Error('b-down-failed'); };
+    const c = makePlugin({ name: 'c' }, () => { throw new Error('c-init-failed'); });
+
+    await expect(
+      bootstrap({
+        bus: new HookBus(),
+        plugins: [a, b, c],
+        config: {},
+        onShutdownError: (plugin, err) => errors.push({ plugin, err }),
+      }),
+    ).rejects.toMatchObject({ code: 'init-failed', plugin: 'c' });
+    // Both rollback shutdowns ran; b's failure went to onShutdownError.
+    expect(errors.map((e) => e.plugin)).toEqual(['b']);
   });
 });

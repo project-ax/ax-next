@@ -2,14 +2,58 @@ import type { HookBus } from './hook-bus.js';
 import { PluginError } from './errors.js';
 import { PluginManifestSchema, type Plugin } from './plugin.js';
 
+const DEFAULT_SHUTDOWN_TIMEOUT_MS = 10_000;
+
 export interface BootstrapOptions {
   bus: HookBus;
   plugins: Plugin[];
   config: Record<string, unknown>;
+  /**
+   * Per-plugin shutdown timeout in milliseconds. Defaults to 10_000 to
+   * match `IPC_TIMEOUTS_MS` and give slow drains (in-flight queries,
+   * LISTEN client end, k8s informer cleanup) breathing room without
+   * unbounded waits. A misbehaving plugin can't hold the process
+   * hostage past this ceiling.
+   */
+  shutdownTimeoutMs?: number;
+  /**
+   * Sink for shutdown errors. Invoked once per plugin whose
+   * `shutdown()` throws or times out. The kernel always logs to
+   * `process.stderr` if no sink is provided. Hosts that want
+   * structured logs (e.g., the `serve` binary feeding a JSON logger)
+   * pass an explicit sink.
+   *
+   * Init-failure rollback uses the same sink — that path also calls
+   * `shutdown()` on already-initialized plugins, and their failures
+   * deserve the same routing as a normal-shutdown failure.
+   */
+  onShutdownError?: (pluginName: string, err: unknown) => void;
 }
 
-export async function bootstrap(opts: BootstrapOptions): Promise<void> {
+/**
+ * Returned by `bootstrap()`. The host calls `shutdown()` on SIGTERM /
+ * SIGINT (or whenever the process needs a clean teardown). Idempotent:
+ * the first call kicks off the shutdown sequence and caches its
+ * promise; subsequent calls return the cached promise without
+ * re-running any plugin's `shutdown()`.
+ *
+ * The kernel intentionally does NOT install signal handlers — that's
+ * the host's job. Tests drive `shutdown()` directly; embedded uses
+ * keep their parent process in charge of signal lifecycle.
+ */
+export interface KernelHandle {
+  shutdown(): Promise<void>;
+}
+
+export async function bootstrap(opts: BootstrapOptions): Promise<KernelHandle> {
   const { bus, plugins, config } = opts;
+  const shutdownTimeoutMs = opts.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS;
+  const onShutdownError =
+    opts.onShutdownError ??
+    ((name: string, err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`kernel: plugin '${name}' shutdown failed: ${msg}\n`);
+    });
 
   for (const p of plugins) {
     const parsed = PluginManifestSchema.safeParse(p.manifest);
@@ -27,10 +71,19 @@ export async function bootstrap(opts: BootstrapOptions): Promise<void> {
   const graph = validateDependencyGraph(plugins);
   const order = topologicalOrder(plugins, graph);
 
+  // Track which plugins have completed init so a mid-init failure can roll
+  // back only the prefix that succeeded (I4). The failing plugin itself is
+  // NOT included — its init didn't complete, so its resources may not
+  // exist, and calling its shutdown could race or NPE on partial state.
+  const initialized: Plugin[] = [];
   for (const p of order) {
     try {
       await p.init({ bus, config: config[p.manifest.name] });
+      initialized.push(p);
     } catch (err) {
+      // Roll back already-initialized plugins under the same per-plugin
+      // timeout + isolation as normal shutdown.
+      await runShutdownLoop(initialized, shutdownTimeoutMs, onShutdownError);
       if (err instanceof PluginError) throw err;
       throw new PluginError({
         code: 'init-failed',
@@ -42,6 +95,72 @@ export async function bootstrap(opts: BootstrapOptions): Promise<void> {
   }
 
   verifyCalls(plugins, bus);
+
+  // Idempotent handle: cache the first shutdown's promise so SIGINT-then-
+  // SIGTERM (common during deploys) doesn't re-run plugin shutdowns.
+  let shutdownPromise: Promise<void> | undefined;
+  return {
+    shutdown(): Promise<void> {
+      if (shutdownPromise === undefined) {
+        shutdownPromise = runShutdownLoop(
+          initialized,
+          shutdownTimeoutMs,
+          onShutdownError,
+        );
+      }
+      return shutdownPromise;
+    },
+  };
+}
+
+// Walks `plugins` in REVERSE order, calling each plugin's optional
+// `shutdown()` under a per-plugin timeout. Per-plugin failures are reported
+// to `onError` but never rejected — the next plugin's shutdown still runs
+// (I2). The reverse of init-time topological order is shutdown order (I1):
+// a plugin that consumed another's services during init must close before
+// the producer does.
+async function runShutdownLoop(
+  plugins: Plugin[],
+  timeoutMs: number,
+  onError: (pluginName: string, err: unknown) => void,
+): Promise<void> {
+  for (let i = plugins.length - 1; i >= 0; i--) {
+    const p = plugins[i]!;
+    if (typeof p.shutdown !== 'function') continue;
+    try {
+      await withTimeout(
+        Promise.resolve(p.shutdown()),
+        timeoutMs,
+        `plugin '${p.manifest.name}' shutdown exceeded ${timeoutMs}ms`,
+      );
+    } catch (err) {
+      onError(p.manifest.name, err);
+    }
+  }
+}
+
+function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  message: string,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    // Don't keep the event loop alive on the timer alone. Mirrors the
+    // test-harness `withTimeout` (harness.ts:128-149): a Node process
+    // otherwise idle should still be allowed to exit.
+    timer.unref?.();
+    promise.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
 }
 
 // Runs the three graph-level validations a plugin set must pass before init:
