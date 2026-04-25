@@ -47,7 +47,7 @@ Per-component labels — call with (dict "component" "host" "context" $)
 */}}
 {{- define "ax-next.componentLabels" -}}
 {{ include "ax-next.labels" .context }}
-app.kubernetes.io/name: {{ include "ax-next.fullname" .context }}-{{ .component }}
+app.kubernetes.io/name: {{ printf "%s-%s" (include "ax-next.fullname" .context) .component | trunc 63 | trimSuffix "-" }}
 app.kubernetes.io/component: {{ .component }}
 {{- end }}
 
@@ -56,7 +56,7 @@ Per-component selector labels — stable across upgrades.
 Call with (dict "component" "host" "context" $).
 */}}
 {{- define "ax-next.selectorLabels" -}}
-app.kubernetes.io/name: {{ include "ax-next.fullname" .context }}-{{ .component }}
+app.kubernetes.io/name: {{ printf "%s-%s" (include "ax-next.fullname" .context) .component | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
 {{/*
