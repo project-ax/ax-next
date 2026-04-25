@@ -11,6 +11,7 @@
 import type { AdminView } from '../../lib/admin';
 import { AgentForm } from './AgentForm';
 import { McpServerForm } from './McpServerForm';
+import { TeamList } from './TeamList';
 
 const TITLES: Record<Exclude<AdminView, null>, string> = {
   agents: 'Agents',
@@ -48,11 +49,7 @@ export function AdminPanel({
         <div className="admin-panel-body">
           {view === 'agents' && <AgentForm />}
           {view === 'mcp-servers' && <McpServerForm />}
-          {view === 'teams' && (
-            <div className="admin-stub">
-              Teams placeholder lands in Task 24.
-            </div>
-          )}
+          {view === 'teams' && <TeamList />}
         </div>
       </div>
     </div>
