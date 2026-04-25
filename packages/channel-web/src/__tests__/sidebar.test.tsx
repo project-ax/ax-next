@@ -21,26 +21,22 @@ describe('Sidebar', () => {
     expect(sidebar.tagName).toBe('ASIDE');
     expect(sidebar.className).toContain('sidebar');
     expect(container.querySelector('.brand-word')?.textContent).toBe('tide');
-    expect(container.querySelector('.agent-chip')).toBeTruthy();
+    expect(container.querySelector('.sidebar-collapse')).toBeTruthy();
     expect(container.querySelector('.new-session-btn')).toBeTruthy();
     expect(container.querySelector('.sessions-scroll')).toBeTruthy();
     expect(container.querySelector('.user-row-wrap')).toBeTruthy();
     expect(container.querySelector('.user-row .user-avatar')).toBeTruthy();
   });
 
-  it('agent-chip and user-row are buttons with aria-haspopup', () => {
+  it('user-row is a button with aria-haspopup', () => {
     const { container } = render(
       <UserProvider value={testUser}>
         <Sidebar />
       </UserProvider>,
     );
-    const chip = container.querySelector('button.agent-chip');
-    expect(chip).toBeTruthy();
-    expect(chip?.getAttribute('aria-haspopup')).toBe('true');
+    // AgentChip moved to SessionHeader per Tide Sessions.html layout.
+    expect(container.querySelector('button.agent-chip')).toBeNull();
 
-    // The test name promises both — assert the user-row too. UserMenu
-    // renders the user-row only when a user is in context, which is
-    // why the surrounding describe wraps Sidebar in UserProvider.
     const userRow = container.querySelector('button.user-row');
     expect(userRow).toBeTruthy();
     expect(userRow?.getAttribute('aria-haspopup')).toBe('true');

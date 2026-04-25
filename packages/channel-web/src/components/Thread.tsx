@@ -37,12 +37,27 @@ import {
   ComposerPrimitive,
   MessagePrimitive,
   ThreadPrimitive,
+  useMessage,
 } from '@assistant-ui/react';
+import { Check, Copy, Pencil, RotateCcw } from 'lucide-react';
 import type { FC } from 'react';
 import { useSearchStore } from '../lib/search-store';
 import { MarkdownText } from './MarkdownText';
 import { Composer } from './Composer';
 import { SearchBar } from './SearchBar';
+
+/**
+ * MessageTime — renders the message createdAt as a lowercase clock-time
+ * label (e.g., "9:12 am") in the message footer. Mirrors Tide Sessions.html.
+ */
+const MessageTime: FC = () => {
+  const ts = useMessage((m) => m.createdAt);
+  if (!ts) return null;
+  const text = ts
+    .toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+    .toLowerCase();
+  return <span className="msg-time">{text}</span>;
+};
 
 // Empty-state predicate. Hooked to messages.length rather than
 // `thread.isEmpty` because the latter returns `false` while the
@@ -74,13 +89,19 @@ export const Thread: FC = () => {
           exposes a stable message-iteration API.
         </div>
       )}
-      <ThreadPrimitive.Viewport className="timeline">
-        <AuiIf condition={isThreadEmpty}>
-          <ThreadWelcome />
-        </AuiIf>
-        <ThreadPrimitive.Messages
-          components={{ UserMessage, AssistantMessage, EditComposer }}
-        />
+      <ThreadPrimitive.Viewport className="timeline-scroll">
+        {/* The Viewport is the full-pane-width scroll container so the
+            scrollbar sits flush with the right edge of the pane (matches
+            the design). The inner `.timeline` keeps the messages centered
+            within a 640px column. */}
+        <div className="timeline">
+          <AuiIf condition={isThreadEmpty}>
+            <ThreadWelcome />
+          </AuiIf>
+          <ThreadPrimitive.Messages
+            components={{ UserMessage, AssistantMessage, EditComposer }}
+          />
+        </div>
       </ThreadPrimitive.Viewport>
       <Composer />
     </ThreadPrimitive.Root>
@@ -100,19 +121,17 @@ const UserMessage: FC = () => (
       <div className="msg-body">
         <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
       </div>
-      <ActionBarPrimitive.Root
-        hideWhenRunning
-        autohide="not-last"
-        className="msg-actions"
-      >
-        <ActionBarPrimitive.Copy asChild>
-          <button type="button" className="msg-action" aria-label="Copy">
-            copy
+      <ActionBarPrimitive.Root className="msg-actions">
+        <MessageTime />
+        <ActionBarPrimitive.Copy asChild copiedDuration={1000}>
+          <button type="button" className="msg-action" aria-label="Copy" title="Copy">
+            <Copy size={13} aria-hidden="true" className="msg-action-icon-copy" />
+            <Check size={13} aria-hidden="true" className="msg-action-icon-check" />
           </button>
         </ActionBarPrimitive.Copy>
         <ActionBarPrimitive.Edit asChild>
-          <button type="button" className="msg-action" aria-label="Edit">
-            edit
+          <button type="button" className="msg-action" aria-label="Edit" title="Edit">
+            <Pencil size={13} aria-hidden="true" />
           </button>
         </ActionBarPrimitive.Edit>
       </ActionBarPrimitive.Root>
@@ -126,19 +145,17 @@ const AssistantMessage: FC = () => (
       <div className="msg-body">
         <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
       </div>
-      <ActionBarPrimitive.Root
-        hideWhenRunning
-        autohide="not-last"
-        className="msg-actions"
-      >
-        <ActionBarPrimitive.Copy asChild>
-          <button type="button" className="msg-action" aria-label="Copy">
-            copy
+      <ActionBarPrimitive.Root className="msg-actions">
+        <MessageTime />
+        <ActionBarPrimitive.Copy asChild copiedDuration={1000}>
+          <button type="button" className="msg-action" aria-label="Copy" title="Copy">
+            <Copy size={13} aria-hidden="true" className="msg-action-icon-copy" />
+            <Check size={13} aria-hidden="true" className="msg-action-icon-check" />
           </button>
         </ActionBarPrimitive.Copy>
         <ActionBarPrimitive.Reload asChild>
-          <button type="button" className="msg-action" aria-label="Retry">
-            retry
+          <button type="button" className="msg-action" aria-label="Retry" title="Retry">
+            <RotateCcw size={13} aria-hidden="true" />
           </button>
         </ActionBarPrimitive.Reload>
       </ActionBarPrimitive.Root>
@@ -146,20 +163,20 @@ const AssistantMessage: FC = () => (
   </MessagePrimitive.Root>
 );
 
+/**
+ * EditComposer — in-place edit for user messages.
+ *
+ * Visually mirrors the user message bubble (right-aligned, you-wash background)
+ * with an accent halo to signal edit mode. No visible cancel/update buttons —
+ * Enter commits (ComposerPrimitive default), Escape cancels (cancelOnEscape).
+ * Mirrors the Tide design's `.msg-body.editing` in-place edit pattern.
+ */
 const EditComposer: FC = () => (
-  <ComposerPrimitive.Root className="msg-edit">
-    <ComposerPrimitive.Input className="msg-edit-input" autoFocus />
-    <div className="msg-edit-actions">
-      <ComposerPrimitive.Cancel asChild>
-        <button type="button" className="msg-edit-cancel">
-          cancel
-        </button>
-      </ComposerPrimitive.Cancel>
-      <ComposerPrimitive.Send asChild>
-        <button type="button" className="msg-edit-send">
-          update
-        </button>
-      </ComposerPrimitive.Send>
-    </div>
+  <ComposerPrimitive.Root className="msg you msg-edit">
+    <ComposerPrimitive.Input
+      className="msg-edit-input"
+      autoFocus
+      rows={1}
+    />
   </ComposerPrimitive.Root>
 );

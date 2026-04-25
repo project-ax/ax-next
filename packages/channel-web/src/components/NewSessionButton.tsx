@@ -34,9 +34,14 @@ export function NewSessionButton() {
         void handleClick();
       }}
     >
-      <span className="plus" aria-hidden="true">
-        +
-      </span>
+      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path
+          d="M8 3 L8 13 M3 8 L13 8"
+          stroke="currentColor"
+          strokeWidth="1.4"
+          strokeLinecap="round"
+        />
+      </svg>
       <span className="label">new session</span>
       <span className="kbd">⌘N</span>
     </button>

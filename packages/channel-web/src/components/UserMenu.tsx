@@ -16,12 +16,21 @@
  * bug, that's a security bug — and the fix lives on the server, not here.
  */
 import { useEffect, useRef, useState } from 'react';
+import { LogOut, Moon, Settings, Sun, UserRound } from 'lucide-react';
 import { useUser } from '../lib/user-context';
 import { signOut } from '../lib/auth';
 import type { AdminView } from '../lib/admin';
-import { useTheme, setTheme } from '../lib/theme';
+import { useTheme, setTheme, type Theme } from '../lib/theme';
 
-const THEMES = ['auto', 'light', 'dark'] as const;
+interface ThemeOption {
+  value: Theme;
+  label: string;
+  Icon: typeof Sun;
+}
+const THEME_OPTIONS: ThemeOption[] = [
+  { value: 'light', label: 'Light', Icon: Sun },
+  { value: 'dark', label: 'Dark', Icon: Moon },
+];
 
 export function UserMenu({
   onOpenAdmin,
@@ -59,16 +68,29 @@ export function UserMenu({
         </span>
         <span className="user-meta">
           <span className="user-name">{user.name}</span>
+          <span className="user-email">{user.email}</span>
         </span>
-        <span className="user-caret" aria-hidden="true">
-          ▾
-        </span>
+        <svg className="user-caret" viewBox="0 0 10 10" aria-hidden="true">
+          <path
+            d="M2.5 6 L5 3.5 L7.5 6"
+            stroke="currentColor"
+            strokeWidth="1.4"
+            fill="none"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
       </button>
       {open && (
         <div className="user-menu" role="menu">
           <div className="user-menu-head">
-            <div className="user-menu-name">{user.name}</div>
-            <div className="user-menu-email">{user.email}</div>
+            <span className="user-avatar lg" aria-hidden="true">
+              {user.name[0]?.toUpperCase() ?? 'U'}
+            </span>
+            <div className="user-menu-meta">
+              <div className="user-menu-name">{user.name}</div>
+              <div className="user-menu-email">{user.email}</div>
+            </div>
           </div>
           {/*
             Account / Preferences are placeholders until the screens
@@ -87,18 +109,21 @@ export function UserMenu({
             aria-disabled="true"
             title="Coming soon"
           >
-            Account
+            <UserRound aria-hidden="true" />
+            <span>Account &amp; billing</span>
           </button>
           <button
             type="button"
             className="user-menu-item"
             role="menuitem"
-            data-action="preferences"
+            data-action="settings"
             disabled
             aria-disabled="true"
             title="Coming soon"
           >
-            Preferences
+            <Settings aria-hidden="true" />
+            <span>Settings</span>
+            <span className="kbd">⌘,</span>
           </button>
           {isAdmin && (
             <>
@@ -143,19 +168,22 @@ export function UserMenu({
           )}
           <div className="user-menu-divider" />
           <div className="user-menu-row" data-action="theme">
+            <Moon aria-hidden="true" />
             <span className="user-menu-row-label">Theme</span>
             <div className="theme-seg" role="radiogroup" aria-label="Theme">
-              {THEMES.map((value) => (
+              {THEME_OPTIONS.map(({ value, label, Icon }) => (
                 <button
                   key={value}
                   type="button"
                   data-value={value}
                   role="radio"
                   aria-checked={theme === value}
+                  aria-label={label}
+                  title={label}
                   data-active={theme === value || undefined}
                   onClick={() => setTheme(value)}
                 >
-                  {value}
+                  <Icon aria-hidden="true" />
                 </button>
               ))}
             </div>
@@ -168,10 +196,11 @@ export function UserMenu({
             onClick={() => signOut()}
             data-action="sign-out"
           >
-            Sign out
+            <LogOut aria-hidden="true" />
+            <span>Sign out</span>
           </button>
           <div className="user-menu-foot">
-            <img src="/ax-logo.svg" alt="ax" className="user-menu-logo" />
+            <span>tide v0.3</span>
           </div>
         </div>
       )}

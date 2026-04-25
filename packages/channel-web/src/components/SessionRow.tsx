@@ -333,7 +333,16 @@ export function SessionRow({
             role="menuitem"
             onClick={() => enterRename()}
           >
-            rename
+            <svg viewBox="0 0 14 14" aria-hidden="true">
+              <path
+                d="M2 12 L4 12 L11 5 L9 3 L2 10 Z"
+                stroke="currentColor"
+                strokeWidth="1.2"
+                fill="none"
+                strokeLinejoin="round"
+              />
+            </svg>
+            <span>Rename</span>
           </button>
           <button
             type="button"
@@ -342,7 +351,17 @@ export function SessionRow({
             role="menuitem"
             onClick={() => enterConfirmDelete()}
           >
-            delete
+            <svg viewBox="0 0 14 14" aria-hidden="true">
+              <path
+                d="M3 4 L11 4 M5 4 L5 2 L9 2 L9 4 M4.5 4 L5 12 L9 12 L9.5 4"
+                stroke="currentColor"
+                strokeWidth="1.2"
+                fill="none"
+                strokeLinejoin="round"
+                strokeLinecap="round"
+              />
+            </svg>
+            <span>Delete</span>
           </button>
         </div>
       ) : null}

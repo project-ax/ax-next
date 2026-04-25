@@ -43,7 +43,10 @@ export function AgentMenu({ agents, activeId, onPick }: AgentMenuProps) {
               onClick={() => onPick(agent.id)}
             >
               <span className="agent-menu-row-avatar" aria-hidden="true">
-                <span className="dot" />
+                <span
+                  className="dot"
+                  style={agent.color ? { background: agent.color } : undefined}
+                />
               </span>
               <div className="agent-menu-row-text">
                 <div className="agent-menu-row-name">{agent.name}</div>

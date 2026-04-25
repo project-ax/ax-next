@@ -25,6 +25,8 @@ const fetchMock = vi.fn();
 
 beforeEach(() => {
   fetchMock.mockReset();
+  // Default: agents fetch returns empty list; PATCH succeeds.
+  fetchMock.mockResolvedValue({ ok: true, json: async () => ({ agents: [] }) });
   globalThis.fetch = fetchMock as unknown as typeof fetch;
   sessionStoreActions.setSessions([
     {
@@ -47,11 +49,11 @@ describe('SessionHeader', () => {
     );
   });
 
-  it('double-click enters rename mode; Enter commits via PATCH', async () => {
+  it('single-click enters rename mode; Enter commits via PATCH', async () => {
     fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({}) });
     render(<SessionHeader />);
     const title = screen.getByTestId('session-header-title');
-    fireEvent.doubleClick(title);
+    fireEvent.click(title);
     expect(title.getAttribute('contenteditable')).toMatch(
       /plaintext-only|true/,
     );
@@ -68,22 +70,27 @@ describe('SessionHeader', () => {
   it('Esc cancels rename — no PATCH', () => {
     render(<SessionHeader />);
     const title = screen.getByTestId('session-header-title');
-    fireEvent.doubleClick(title);
+    fireEvent.click(title);
     title.textContent = 'wont save';
     fireEvent.keyDown(title, { key: 'Escape' });
-    expect(fetchMock).not.toHaveBeenCalled();
+    // No PATCH should have fired — only the /api/agents hydration call.
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      '/api/chat/sessions/s-1',
+      expect.anything(),
+    );
   });
 
-  it('renders New Session button', () => {
-    render(<SessionHeader />);
-    expect(screen.getByLabelText(/new session/i)).toBeTruthy();
+  it('renders the agent chip in the header-left slot', () => {
+    const { container } = render(<SessionHeader />);
+    // AgentChip moved from Sidebar to SessionHeader per Tide Sessions.html.
+    expect(container.querySelector('.agent-chip')).toBeTruthy();
   });
 
   it('parent re-render during rename does not clobber typed text', async () => {
     fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({}) });
     render(<SessionHeader />);
     const title = screen.getByTestId('session-header-title');
-    fireEvent.doubleClick(title);
+    fireEvent.click(title);
 
     // User types into the contentEditable buffer.
     title.textContent = 'partially typed';

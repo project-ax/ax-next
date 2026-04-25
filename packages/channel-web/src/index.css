@@ -381,11 +381,18 @@ body.sidebar-collapsed .user-menu {
 }
 .user-menu-head {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 8px 10px 10px;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
   border-bottom: 1px solid var(--rule);
   margin-bottom: 4px;
+}
+.user-menu-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
 }
 .user-menu-head .user-menu-name {
   font-family: var(--serif);
@@ -413,8 +420,28 @@ body.sidebar-collapsed .user-menu {
   font-size: 12.5px;
   color: var(--ink-soft);
   transition: background 100ms ease, color 100ms ease;
+  /* `all: unset` strips the button's default block sizing — without
+     width:100% the row shrinks to content width and `margin-left: auto`
+     on the kbd has no free space to consume. */
+  width: 100%;
+  box-sizing: border-box;
 }
 .user-menu-item:hover { background: var(--bg-deep); color: var(--ink); }
+.user-menu-item svg {
+  width: 13px;
+  height: 13px;
+  color: var(--ink-mute);
+  flex-shrink: 0;
+  stroke-width: 1.4;
+}
+.user-menu-item:hover svg { color: var(--ink); }
+.user-menu-item .kbd {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-ghost);
+  letter-spacing: 0.02em;
+}
 .user-menu-divider {
   height: 1px;
   background: var(--rule);
@@ -429,6 +456,13 @@ body.sidebar-collapsed .user-menu {
   font-size: 12.5px;
   color: var(--ink-soft);
 }
+.user-menu-row svg {
+  width: 13px;
+  height: 13px;
+  color: var(--ink-mute);
+  flex-shrink: 0;
+  stroke-width: 1.4;
+}
 .user-menu-row .user-menu-row-label { flex: 1; }
 .theme-seg {
   display: inline-flex;
@@ -440,16 +474,16 @@ body.sidebar-collapsed .user-menu {
 .theme-seg button {
   all: unset;
   cursor: pointer;
-  padding: 2px 8px;
+  padding: 2px 6px;
   height: 22px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border-radius: 4px;
-  font-size: 10.5px;
   color: var(--ink-mute);
   transition: background 120ms ease, color 120ms ease;
 }
+.theme-seg button svg { width: 12px; height: 12px; stroke-width: 1.4; }
 .theme-seg button:hover { color: var(--ink); }
 .theme-seg button[aria-checked="true"],
 .theme-seg button[data-active] {
@@ -458,17 +492,13 @@ body.sidebar-collapsed .user-menu {
   box-shadow: 0 1px 2px rgba(0,0,0,0.06);
 }
 .user-menu-foot {
-  display: flex;
-  align-items: center;
-  justify-content: center;
   padding: 8px 10px 4px;
   margin-top: 4px;
   border-top: 1px solid var(--rule);
-}
-.user-menu-logo {
-  width: 56px;
-  height: auto;
-  opacity: 0.7;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-ghost);
 }
 
 /* =============================================================
@@ -583,11 +613,11 @@ body.sidebar-collapsed .user-menu {
    ============================================================= */
 
 .sessions-group-label {
-  font-size: 10px;
+  font-size: 10.5px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--ink-ghost);
-  padding: 8px 12px 4px;
+  padding: 14px 12px 6px;
   font-weight: 500;
 }
 
@@ -641,9 +671,23 @@ body.sidebar-collapsed .user-menu {
   letter-spacing: -0.005em;
   white-space: nowrap;
   overflow: hidden;
-  text-overflow: ellipsis;
+  /* Fade out at the right edge instead of `…` — reads cleaner next to the
+     ⋯ button. On hover/active the runway widens so the trailing chars
+     don't slide under the more-button. */
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent 100%);
+          mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent 100%);
   flex: 1;
   min-width: 0;
+}
+.session-row:hover .session-row-title,
+.session-row.active .session-row-title {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent 100%);
+          mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent 100%);
+}
+.session-row-title[contenteditable] {
+  -webkit-mask-image: none;
+          mask-image: none;
+  overflow: visible;
 }
 .session-row-more {
   flex-shrink: 0;
@@ -706,6 +750,13 @@ body.sidebar-collapsed .user-menu {
   border-radius: 3px;
   transition: background 100ms ease, color 100ms ease;
 }
+.session-row-menu-item svg {
+  width: 12px;
+  height: 12px;
+  color: var(--ink-soft);
+  flex-shrink: 0;
+}
+.session-row-menu-item.danger svg { color: var(--danger); }
 .session-row-menu-item:hover {
   background: var(--bg-deep);
 }
@@ -778,51 +829,52 @@ body.sidebar-collapsed .user-menu {
   position: sticky;
   top: 0;
   background: var(--bg);
-  height: 56px;
+  padding: 22px 24px 18px;
   display: flex;
-  align-items: center;
-  border-bottom: 1px solid var(--rule);
+  justify-content: center;
   z-index: 10;
 }
 .header-inner {
   width: 100%;
+  max-width: 640px;
   display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 0 16px;
+  align-items: baseline;
+  justify-content: space-between;
 }
 .header-left {
+  position: relative;
   display: flex;
   align-items: center;
   flex-shrink: 0;
-  min-width: 0;
 }
 .session-breadcrumb {
-  font-family: var(--serif);
-  font-size: 17px;
-  font-weight: 500;
-  letter-spacing: -0.01em;
-  color: var(--ink);
-  flex: 1;
-  min-width: 0;
+  font-size: 10.5px;
+  color: var(--ink-ghost);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  max-width: 360px;
+  align-self: center;
+  margin-left: auto;
   padding: 4px 8px;
-  margin: 0 -8px;
+  margin-right: -8px;
   border-radius: 4px;
   cursor: text;
-  transition: background 120ms ease;
+  transition: background 120ms ease, color 120ms ease;
 }
 .session-breadcrumb:hover {
   background: var(--bg-deep);
+  color: var(--ink-mute);
 }
 .session-breadcrumb[contenteditable] {
-  outline: 1px solid var(--rule);
   background: var(--bg);
-  cursor: text;
+  color: var(--ink);
+  outline: 1px solid var(--rule);
   overflow: visible;
   text-overflow: clip;
+  cursor: text;
 }
 .session-breadcrumb[contenteditable]:focus {
   outline: 1px solid var(--accent);
@@ -830,33 +882,7 @@ body.sidebar-collapsed .user-menu {
 .header-actions {
   display: flex;
   align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-}
-.header-action {
-  all: unset;
-  cursor: pointer;
-  width: 28px;
-  height: 28px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 4px;
-  color: var(--ink-mute);
-  font-size: 14px;
-  line-height: 1;
-  transition: color 120ms ease, background 120ms ease;
-}
-.header-action:hover,
-.header-action:focus-visible {
-  color: var(--ink);
-  background: var(--bg-deep);
-}
-.header-action .kbd {
-  font-family: var(--mono);
-  font-size: 10.5px;
-  letter-spacing: 0.02em;
-  color: inherit;
+  gap: 16px;
 }
 
 /* =============================================================
@@ -873,7 +899,9 @@ body.sidebar-collapsed .user-menu {
   position: fixed;
   bottom: 0;
   left: 240px;
-  right: 0;
+  /* Stop short of the scrollbar so the gradient fade doesn't bleed over
+     the scroll handle — only chat messages should fade behind the composer. */
+  right: var(--scrollbar-gutter);
   transition: left 220ms cubic-bezier(.2,.7,.2,1);
   padding: 40px 24px 22px;
   background: linear-gradient(
@@ -891,10 +919,7 @@ body.sidebar-collapsed .composer { left: 56px; }
 .composer-inner {
   width: 100%;
   max-width: 640px;
-  /* Per Tide spec the inner wrap also handles top/bottom rhythm
-     for the field; the outer .composer carries the fade-out. */
-  margin: 0 auto;
-  padding: 12px 24px 16px;
+  position: relative;
 }
 
 .composer-field {
@@ -949,9 +974,8 @@ body.sidebar-collapsed .composer { left: 56px; }
   flex-shrink: 0;
   margin-right: 4px;
   transition: background 120ms ease, color 120ms ease;
-  font-size: 16px;
-  line-height: 1;
 }
+.attach-btn svg { width: 14px; height: 14px; }
 .attach-btn:hover:not([disabled]) {
   background: var(--bg-deep);
   color: var(--ink);
@@ -965,6 +989,50 @@ body.sidebar-collapsed .composer { left: 56px; }
   opacity: 0.6;
 }
 
+/* Attach menu — popup above the + button. Single "Attach file…" item
+   today; structured as a menu so additional sources (drive, paste image,
+   etc.) can be added without restructuring the trigger. */
+.attach-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 40;
+  background: var(--bg);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  padding: 4px;
+  min-width: 180px;
+  box-shadow: 0 12px 40px -8px rgba(0, 0, 0, 0.18), 0 2px 6px rgba(0, 0, 0, 0.04);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  animation: attachMenuPopIn 140ms cubic-bezier(.2, .7, .2, 1);
+}
+@keyframes attachMenuPopIn {
+  from { opacity: 0; transform: translateY(4px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.attach-menu-item {
+  all: unset;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  font-size: 13px;
+  color: var(--ink);
+  border-radius: 4px;
+  transition: background 100ms ease;
+}
+.attach-menu-item svg {
+  width: 14px;
+  height: 14px;
+  color: var(--ink-soft);
+  flex-shrink: 0;
+  stroke-width: 1.4;
+}
+.attach-menu-item:hover { background: var(--bg-deep); }
+
 .send-btn {
   all: unset;
   cursor: pointer;
@@ -972,13 +1040,14 @@ body.sidebar-collapsed .composer { left: 56px; }
   height: 30px;
   border-radius: 50%;
   background: var(--ink-ghost);
-  color: var(--bg);
+  color: #ffffff;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
   transition: background 140ms ease, transform 140ms ease, filter 140ms ease;
 }
+.send-btn svg { width: 14px; height: 14px; }
 /* When the textarea has any content, light up the send circle. We use
    `:has()` against the placeholder-shown state so this is a pure-CSS
    ready toggle — no JS observer needed. */
@@ -1102,13 +1171,25 @@ body.searching .attach-btn { display: none; }
   min-height: 0;
 }
 
-.timeline {
+.timeline-scroll {
   flex: 1;
   width: 100%;
-  max-width: 720px;
+  min-height: 0;
+  overflow-y: auto;
+  /* Reserve a stable scrollbar gutter so the right edge stays consistent
+     whether the scrollbar is visible or not. Pairs with the composer's
+     `right: var(--scrollbar-gutter)` so the composer's gradient stops
+     before the scrollbar track and never fades the scrollbar handle. */
+  scrollbar-gutter: stable;
+}
+:root {
+  --scrollbar-gutter: 15px;
+}
+.timeline {
+  width: 100%;
+  max-width: 640px;
   margin: 0 auto;
   padding: 24px 24px 220px;
-  overflow-y: auto;
 }
 
 /* Welcome empty state — replaces Tide's `.intro` namespace with
@@ -1179,8 +1260,8 @@ body.searching .attach-btn { display: none; }
   max-width: 56ch;
 }
 
-/* Action bar — autohides until message hover or focus. Keep button
-   sizes small + monochrome; the actions are quiet by design. */
+/* Action bar — autohides until message hover or focus. Per Tide spec the
+   timestamp sits in front of the icons and the whole row is mono-styled. */
 .msg-actions {
   display: flex;
   gap: 8px;
@@ -1195,84 +1276,62 @@ body.searching .attach-btn { display: none; }
   font-family: var(--mono);
 }
 .msg:hover .msg-actions,
-.msg-actions:focus-within { opacity: 1; }
+.msg-actions:has(:focus-visible) { opacity: 1; }
+.msg-time { padding-right: 4px; }
 .msg-action {
   all: unset;
   cursor: pointer;
+  width: 22px;
   height: 22px;
-  padding: 0 6px;
   border-radius: 4px;
   color: var(--ink-mute);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   transition: color 120ms ease, background 120ms ease;
-  font-family: inherit;
-  font-size: inherit;
-  letter-spacing: inherit;
 }
 .msg-action:hover { color: var(--ink); background: var(--bg-deep); }
-
-/* Inline edit composer — replaces a user message body in place when
-   the user clicks "edit". Lives at full row width with right-aligned
-   action buttons (cancel + update). */
-.msg-edit {
-  display: flex;
-  flex-direction: column;
-  width: 100%;
-  margin-bottom: 22px;
-  background: var(--surface-raised);
-  border: 1px solid var(--rule);
-  border-radius: 8px;
-  box-shadow: var(--shadow-sm);
+.msg-action svg {
+  width: 13px;
+  height: 13px;
+  display: block;
+  stroke-width: 1.4;
 }
+/* Copy → checkmark swap. ActionBarPrimitive.Copy sets data-copied="true"
+   on success; we render both icons in the button and toggle visibility. */
+.msg-action[data-copied="true"] { color: var(--accent); }
+.msg-action[data-copied="true"] .msg-action-icon-copy { display: none; }
+.msg-action:not([data-copied]) .msg-action-icon-check { display: none; }
+
+/* In-place edit for user messages. The form takes the same right-aligned
+   bubble slot as `.msg.you` (which is already applied as a sibling class).
+   The textarea inherits the bubble's wash + radius and shows an accent
+   halo to signal edit mode. No visible buttons — Enter commits (built into
+   ComposerPrimitive.Input), Escape cancels (cancelOnEscape default). */
+.msg-edit { margin-bottom: 22px; }
 .msg-edit-input {
   resize: none;
   border: 0;
   outline: 0;
-  background: transparent;
-  color: var(--ink);
+  background: var(--you-wash);
+  color: var(--you-ink);
   font-family: var(--sans);
   font-size: 15px;
-  line-height: 1.55;
-  min-height: 60px;
-  padding: 12px 14px;
+  line-height: 1.6;
+  padding: 7px 12px;
+  border-radius: 6px;
+  /* `field-sizing: content` makes the textarea grow horizontally with its
+     content; combined with max-width: 78% (matching .msg.you .msg-body),
+     it caps at the user-message bubble width and then wraps + grows
+     vertically. Falls back to a sensible default on older browsers. */
+  field-sizing: content;
+  width: auto;
+  max-width: 78%;
+  min-width: 0;
   box-sizing: border-box;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
 }
 .msg-edit-input::placeholder { color: var(--ink-mute); }
-.msg-edit-actions {
-  display: flex;
-  justify-content: flex-end;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  border-top: 1px solid var(--rule);
-}
-.msg-edit-cancel,
-.msg-edit-send {
-  all: unset;
-  cursor: pointer;
-  font-size: 12px;
-  font-family: var(--mono);
-  letter-spacing: 0.02em;
-  padding: 5px 10px;
-  border-radius: 4px;
-  transition: background 120ms ease, color 120ms ease;
-}
-.msg-edit-cancel {
-  color: var(--ink-mute);
-}
-.msg-edit-cancel:hover {
-  color: var(--ink);
-  background: var(--bg-deep);
-}
-.msg-edit-send {
-  color: var(--bg);
-  background: var(--accent);
-}
-.msg-edit-send:hover {
-  filter: brightness(1.05);
-}
 
 /* =============================================================
    APP SHELL — root layout for the authenticated state, plus the
@@ -1282,15 +1341,20 @@ body.searching .attach-btn { display: none; }
 
 .app-layout {
   display: flex;
-  min-height: 100vh;
+  height: 100vh;
 }
 
 .pane {
   flex: 1;
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
   min-width: 0;
+  /* Cap pane height so the inner viewport (.timeline) actually scrolls
+     instead of letting the document grow. Without this, flex:1 timeline
+     also grows, scrollHeight tracks clientHeight, and auto-scroll has
+     nothing to scroll into. */
+  min-height: 0;
+  height: 100%;
 }
 
 .app-loading {

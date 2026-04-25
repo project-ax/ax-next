@@ -10,12 +10,13 @@
  * > first agent. The pending agent wins so the chip immediately reflects
  * a deferred switch even though no session exists for it yet.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { agentStoreActions, useAgentStore } from '../lib/agent-store';
 import { AgentMenu } from './AgentMenu';
 
 export function AgentChip() {
   const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
   const {
     agents,
     selectedAgentId,
@@ -27,6 +28,16 @@ export function AgentChip() {
   const activeId = pendingAgentId ?? selectedAgentId;
   const active = agents.find((a) => a.id === activeId) ?? agents[0];
 
+  // Outside-click closes the menu — same pattern as UserMenu.
+  useEffect(() => {
+    if (!open) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, [open]);
+
   const handlePick = (agentId: string): void => {
     setOpen(false);
     void agentStoreActions.pickAgent(agentId, {
@@ -36,7 +47,7 @@ export function AgentChip() {
   };
 
   return (
-    <div className="agent-chip-wrap" style={{ position: 'relative' }}>
+    <div ref={wrapRef} className="agent-chip-wrap" style={{ position: 'relative' }}>
       <button
         className="agent-chip"
         aria-haspopup="true"
@@ -45,12 +56,22 @@ export function AgentChip() {
         onClick={() => setOpen((v) => !v)}
       >
         <span className="agent-chip-avatar" aria-hidden="true">
-          <span className="dot" />
+          <span
+            className="dot"
+            style={active?.color ? { background: active.color } : undefined}
+          />
         </span>
         <span className="agent-chip-name">{active?.name ?? '—'}</span>
-        <span className="agent-chip-caret" aria-hidden="true">
-          ▾
-        </span>
+        <svg className="agent-chip-caret" viewBox="0 0 10 10" aria-hidden="true">
+          <path
+            d="M2.5 4 L5 6.5 L7.5 4"
+            stroke="currentColor"
+            strokeWidth="1.4"
+            fill="none"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
       </button>
       {open && <AgentMenu agents={agents} activeId={activeId} onPick={handlePick} />}
     </div>

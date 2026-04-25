@@ -13,25 +13,23 @@
  * CSS rules in `index.css` (also copied verbatim from that file) carry
  * over without visual drift.
  */
-import { AgentChip, useHydrateAgents } from './AgentChip';
 import { NewSessionButton } from './NewSessionButton';
 import { SessionList } from './SessionList';
+import { SidebarCollapseToggle } from './SidebarCollapseToggle';
 import { UserMenu } from './UserMenu';
 import type { AdminView } from '../lib/admin';
 
 export function Sidebar({
   onOpenAdmin,
 }: { onOpenAdmin?: ((view: AdminView) => void) | undefined } = {}) {
-  // Fetch /api/agents once on mount so the chip + menu can render names.
-  useHydrateAgents();
   return (
     <aside className="sidebar" data-testid="sidebar" id="sidebar">
       <div className="sidebar-head">
         <div className="brand">
           <span className="brand-word">tide</span>
         </div>
+        <SidebarCollapseToggle />
       </div>
-      <AgentChip />
       <NewSessionButton />
       <div className="sessions-scroll" role="navigation" aria-label="sessions">
         <SessionList />

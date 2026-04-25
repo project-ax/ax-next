@@ -1,44 +1,24 @@
 /**
- * SessionHeader — sticky 56px top bar of the main pane.
+ * SessionHeader — sticky top bar of the main pane.
  *
- * Shows the active session title (serif 17/500). Double-click to inline-
- * rename: the title becomes `contenteditable="plaintext-only"`, Enter or
- * blur commits via `PATCH /api/chat/sessions/:id { title }`, Esc cancels.
- * Mirrors the per-row rename in `SessionRow.tsx` so the two affordances
- * feel the same.
+ * Left slot: AgentChip (agent identity + switcher, per Tide Sessions.html).
+ * Right slot: session title as small uppercase ghost label (double-click to rename).
  *
- * Right-aligned actions:
- *   - ⌘N: triggers a new session for the active agent (same path as
- *     `NewSessionButton`). The ⌘N keyboard shortcut lives on `App.tsx`
- *     (alongside ⌘\) so it works even when the header isn't focused.
- *   - ⋯: stub more-menu. Toggles local state; the menu items themselves
- *     come in later tasks.
- *   - SidebarCollapseToggle: moved here from the sidebar head per the
- *     Tide design — the toggle lives at the top of the main pane, not
- *     inside the sidebar.
- *
- * If no active session is selected, the header still renders (so the
- * 56px slot exists for layout) with an empty title.
+ * The rename flow: double-click → contenteditable, Enter/blur commits via
+ * PATCH /api/chat/sessions/:id, Esc cancels. Mirrors SessionRow.tsx.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useAgentStore } from '../lib/agent-store';
-import { searchStoreActions, useSearchStore } from '../lib/search-store';
 import { sessionStoreActions, useSessionStore } from '../lib/session-store';
-import { SidebarCollapseToggle } from './SidebarCollapseToggle';
+import { AgentChip, useHydrateAgents } from './AgentChip';
 import { SidebarMobileToggle } from './SidebarMobileToggle';
 
 export function SessionHeader() {
+  useHydrateAgents();
   const { sessions, activeSessionId } = useSessionStore();
-  const { agents, selectedAgentId, pendingAgentId } = useAgentStore();
-  const { open: searchOpen } = useSearchStore();
-  const activeAgentId =
-    pendingAgentId ?? selectedAgentId ?? agents[0]?.id ?? null;
-
   const active = sessions.find((s) => s.id === activeSessionId) ?? null;
   const title = active?.title ?? '';
 
   const [isRenaming, setIsRenaming] = useState(false);
-  const [moreOpen, setMoreOpen] = useState(false);
   const titleRef = useRef<HTMLDivElement | null>(null);
   // Track whether the rename committed (Enter / blur after typing) vs.
   // cancelled (Escape) so the blur handler doesn't double-commit a
@@ -124,15 +104,6 @@ export function SessionHeader() {
     setIsRenaming(true);
   }, []);
 
-  const handleNewSession = useCallback(async (): Promise<void> => {
-    if (!activeAgentId) return;
-    try {
-      await sessionStoreActions.createAndActivate(activeAgentId);
-    } catch (err) {
-      console.warn('[session-header] create session failed', err);
-    }
-  }, [activeAgentId]);
-
   // contenteditable React typing differs across versions; setting via
   // attribute object sidesteps the union narrowing. Mirrors SessionRow.
   const titleEditableProps = isRenaming
@@ -146,16 +117,18 @@ export function SessionHeader() {
     <header className="header">
       <div className="header-inner">
         <div className="header-left">
-          {/* Agent chip lives in the sidebar per Tide design — header-left
-              hosts the mobile-only sidebar toggle (hamburger). The toggle
-              hides itself on desktop via CSS, so this slot is empty there. */}
+          {/* Mobile hamburger — hidden on desktop via CSS. */}
           <SidebarMobileToggle />
+          {/* Agent chip: identity + agent switcher, left-aligned per Tide Sessions.html. */}
+          <AgentChip />
         </div>
         <div
           ref={titleRef}
           className="session-breadcrumb"
           data-testid="session-header-title"
-          onDoubleClick={enterRename}
+          onClick={() => {
+            if (!isRenaming) enterRename();
+          }}
           onKeyDown={(e) => {
             if (!isRenaming) return;
             if (e.key === 'Enter') {
@@ -172,52 +145,9 @@ export function SessionHeader() {
           }}
           {...titleEditableProps}
         >
-          {/* While renaming we leave the div's text alone — the imperative
-              effect seeds it on entry, and React reconciling `{title}`
-              would clobber any in-progress edit if the parent re-renders
-              (e.g., a session-store update). */}
           {!isRenaming ? title : null}
         </div>
-        <div className="header-actions">
-          <button
-            className="header-action"
-            type="button"
-            aria-label="Search"
-            aria-pressed={searchOpen}
-            title="Search messages"
-            onClick={() => {
-              if (searchOpen) {
-                searchStoreActions.close();
-              } else {
-                searchStoreActions.open();
-              }
-            }}
-          >
-            <span aria-hidden="true">⌕</span>
-          </button>
-          <button
-            className="header-action"
-            type="button"
-            aria-label="New session"
-            title="New session (⌘N)"
-            onClick={() => {
-              void handleNewSession();
-            }}
-          >
-            <span className="kbd">⌘N</span>
-          </button>
-          <button
-            className="header-action"
-            type="button"
-            aria-label="More"
-            aria-haspopup="true"
-            aria-expanded={moreOpen}
-            onClick={() => setMoreOpen((v) => !v)}
-          >
-            ⋯
-          </button>
-          <SidebarCollapseToggle />
-        </div>
+        <div className="header-actions" />
       </div>
     </header>
   );
