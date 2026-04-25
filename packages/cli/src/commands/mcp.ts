@@ -64,7 +64,7 @@ async function withBus<T>(
   fn: (bus: HookBus, ctx: ChatContext) => Promise<T>,
 ): Promise<T> {
   const bus = new HookBus();
-  await bootstrap({
+  const handle = await bootstrap({
     bus,
     plugins: [
       createStorageSqlitePlugin({ databasePath: opts.sqlitePath ?? DEFAULT_SQLITE_PATH }),
@@ -73,7 +73,13 @@ async function withBus<T>(
     config: {},
   });
   const ctx = makeChatContext({ sessionId: 'cli', agentId: 'cli', userId: 'cli' });
-  return fn(bus, ctx);
+  try {
+    return await fn(bus, ctx);
+  } finally {
+    // Reverse-topological shutdown so storage-sqlite WAL flushes before exit.
+    // Each verb opens a fresh kernel via withBus, so each verb closes its own.
+    await handle.shutdown();
+  }
 }
 
 export async function runMcpCommand(opts: RunMcpOptions): Promise<number> {

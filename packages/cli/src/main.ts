@@ -222,7 +222,7 @@ export async function main(opts: MainOptions): Promise<number> {
     plugins.push(...opts.extraPlugins);
   }
 
-  await bootstrap({ bus, plugins, config: {} });
+  const handle = await bootstrap({ bus, plugins, config: {} });
 
   const ctx = makeChatContext({
     sessionId: 'cli-session',
@@ -231,17 +231,21 @@ export async function main(opts: MainOptions): Promise<number> {
     workspace: { rootPath: opts.workspaceRoot ?? cwd },
   });
 
-  const outcome: ChatOutcome = await bus.call('chat:run', ctx, {
-    message: { role: 'user', content: opts.message },
-  });
+  try {
+    const outcome: ChatOutcome = await bus.call('chat:run', ctx, {
+      message: { role: 'user', content: opts.message },
+    });
 
-  if (outcome.kind === 'complete') {
-    const last = outcome.messages[outcome.messages.length - 1];
-    out(last?.content ?? '');
-    return 0;
+    if (outcome.kind === 'complete') {
+      const last = outcome.messages[outcome.messages.length - 1];
+      out(last?.content ?? '');
+      return 0;
+    }
+    err(`chat terminated: ${outcome.reason}`);
+    return 1;
+  } finally {
+    await handle.shutdown();
   }
-  err(`chat terminated: ${outcome.reason}`);
-  return 1;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
@@ -290,6 +294,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       });
   } else {
     const message = argv.join(' ') || 'hi';
+    // Note: SIGINT/SIGTERM during chat:run is NOT gracefully handled here.
+    // The CLI is one-shot — for a clean shutdown we'd need to thread cancel
+    // signals into the chat:run hook, which is its own slice. The try/finally
+    // around chat:run inside main() handles the normal completion path
+    // (incl. errors that bubble up) for storage-sqlite WAL flush etc.
     main({ message, sqlitePath })
       .then((code) => process.exit(code))
       .catch((e) => {
