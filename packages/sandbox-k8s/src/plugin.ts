@@ -36,6 +36,17 @@ export function createSandboxK8sPlugin(
       subscribes: [],
     },
     async init({ bus }) {
+      // Verified during the kernel-shutdown slice: @kubernetes/client-node@1.x
+      // uses node-fetch and allocates a fresh http/https/proxy Agent per
+      // request inside `applySecurityAuthentication` (see
+      // node_modules/@kubernetes/client-node/dist/config.js: `createAgent` and
+      // `applySecurityAuthentication`, called from each generated method in
+      // dist/gen/apis/CoreV1Api.js). The Agent lives on the per-request
+      // `requestContext`, not on the API client or KubeConfig — there is no
+      // long-lived per-client Agent for us to `.destroy()`. So no `shutdown()`
+      // slot is needed for this plugin until that changes (e.g., if the
+      // library starts caching an Agent on the client for connection reuse,
+      // or moves back to axios with an explicit instance).
       const api = apiOverride ?? (await createDefaultK8sApi());
 
       // I5: warn loudly when an operator opts out of gVisor. The
