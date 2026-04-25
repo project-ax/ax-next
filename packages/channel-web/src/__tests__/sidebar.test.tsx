@@ -37,5 +37,12 @@ describe('Sidebar', () => {
     const chip = container.querySelector('button.agent-chip');
     expect(chip).toBeTruthy();
     expect(chip?.getAttribute('aria-haspopup')).toBe('true');
+
+    // The test name promises both — assert the user-row too. UserMenu
+    // renders the user-row only when a user is in context, which is
+    // why the surrounding describe wraps Sidebar in UserProvider.
+    const userRow = container.querySelector('button.user-row');
+    expect(userRow).toBeTruthy();
+    expect(userRow?.getAttribute('aria-haspopup')).toBe('true');
   });
 });

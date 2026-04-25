@@ -12,7 +12,11 @@ describe('design tokens', () => {
                        '--bg-deep', '--ink-soft', '--ink-mute', '--ink-ghost',
                        '--accent-soft', '--you-wash', '--you-ink', '--danger',
                        '--shadow-sm', '--shadow-md', '--sans', '--mono', '--serif']) {
-      expect(src).toContain(tok);
+      // Match the token immediately followed by `:` (a CSS declaration)
+      // — defeats prefix matching where e.g. `--bg` would be satisfied
+      // by `--bg-deep` even if `--bg` itself were missing.
+      const escaped = tok.replace(/-/g, '\\-');
+      expect(src).toMatch(new RegExp(`${escaped}\\s*:`));
     }
     expect(src).toContain('[data-theme="dark"]');
     expect(src).toContain('prefers-color-scheme: dark');

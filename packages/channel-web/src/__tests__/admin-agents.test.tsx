@@ -131,6 +131,11 @@ describe('AdminPanel — agents', () => {
         <AdminPanel view="agents" onClose={onClose} />
       </UserProvider>,
     );
+    // Wait for the initial /api/admin/agents fetch to settle so the list
+    // (or empty state) is in the DOM before we click close. Otherwise we
+    // race the unmount against the pending state update and React logs
+    // an act() warning.
+    await waitFor(() => screen.getByText(/New agent/i));
     fireEvent.click(screen.getByLabelText(/close/i));
     expect(onClose).toHaveBeenCalled();
   });
