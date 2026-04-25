@@ -29,6 +29,7 @@
     { "path": "packages/workspace-git" },
     { "path": "packages/database-postgres" },
     { "path": "packages/storage-postgres" },
-    { "path": "packages/eventbus-postgres" }
+    { "path": "packages/eventbus-postgres" },
+    { "path": "packages/session-postgres" }
   ]
 }
