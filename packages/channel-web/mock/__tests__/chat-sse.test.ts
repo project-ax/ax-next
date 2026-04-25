@@ -1,0 +1,131 @@
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createServer, type Server } from 'node:http';
+import { Store } from '../store';
+import { authMiddleware } from '../auth';
+import { chatMiddleware } from '../chat';
+
+async function startServer(store: Store): Promise<{ server: Server; url: string; close: () => Promise<void> }> {
+  const auth = authMiddleware(store);
+  const chat = chatMiddleware(store);
+  const server = createServer(async (req, res) => {
+    if (await auth(req, res)) return;
+    if (await chat(req, res)) return;
+    res.statusCode = 404; res.end();
+  });
+  await new Promise<void>((r) => server.listen(0, r));
+  const port = (server.address() as { port: number }).port;
+  return { server, url: `http://127.0.0.1:${port}`, close: () => new Promise<void>((r) => server.close(() => r())) };
+}
+
+const ALICE = 'mock-session=u2';
+
+async function readSse(stream: ReadableStream<Uint8Array>): Promise<string> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let out = '';
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    out += decoder.decode(value);
+  }
+  return out;
+}
+
+describe('mock chat completions SSE', () => {
+  let dir: string;
+  let store: Store;
+
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'mock-sse-')); store = new Store(dir); store.seed(); });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('streams an OpenAI-shaped SSE response with status + finish + [DONE]', async () => {
+    const { url, close } = await startServer(store);
+    try {
+      const res = await fetch(`${url}/api/chat/completions`, {
+        method: 'POST',
+        headers: { cookie: ALICE, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'default', stream: true, user: 'u2/thread-1',
+          messages: [{ role: 'user', content: 'hello' }],
+        }),
+      });
+      expect(res.status).toBe(200);
+      expect(res.headers.get('content-type')).toMatch(/text\/event-stream/);
+      const body = await readSse(res.body!);
+      expect(body).toContain('event: status');
+      expect(body).toMatch(/data: \{"choices":\[\{"delta":\{"content":"/);
+      expect(body).toContain('"finish_reason":"stop"');
+      expect(body).toContain('data: [DONE]');
+    } finally { await close(); }
+  }, 20_000);
+
+  it('persists user + assistant turns and auto-titles the session', async () => {
+    const { url, close } = await startServer(store);
+    try {
+      const res = await fetch(`${url}/api/chat/completions`, {
+        method: 'POST',
+        headers: { cookie: ALICE, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'default', stream: true, user: 'u2/thread-2',
+          messages: [{ role: 'user', content: 'what is your favorite color?' }],
+        }),
+      });
+      await readSse(res.body!);
+      const sessions = store.collection<{ id: string; title: string; user_id: string; agent_id: string }>('sessions').list();
+      const sess = sessions.find((s) => s.id === 'u2:thread-2');
+      expect(sess).toBeDefined();
+      expect(sess!.title).toMatch(/what is your favorite color/i);
+      const msgs = store.collection<{ id: string; session_id: string; role: 'user' | 'assistant' }>('messages').list().filter((m) => m.session_id === 'u2:thread-2');
+      expect(msgs).toHaveLength(2);
+      expect(msgs[0]!.role).toBe('user');
+      expect(msgs[1]!.role).toBe('assistant');
+    } finally { await close(); }
+  }, 20_000);
+
+  it('rejects cross-user thread (cookie u2 trying user=u1/...)', async () => {
+    const { url, close } = await startServer(store);
+    try {
+      const res = await fetch(`${url}/api/chat/completions`, {
+        method: 'POST',
+        headers: { cookie: ALICE, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'default', stream: true, user: 'u1/thread-x',
+          messages: [{ role: 'user', content: 'hi' }],
+        }),
+      });
+      expect(res.status).toBe(403);
+    } finally { await close(); }
+  });
+
+  it('truncates persisted history when client sends a shorter messages array', async () => {
+    // Pre-seed a session with 3 prior messages
+    store.collection<{ id: string; user_id: string; agent_id: string; title: string; created_at: number; updated_at: number }>('sessions').upsert({ id: 'u2:thread-3', user_id: 'u2', agent_id: 'tide', title: 't', created_at: 1, updated_at: 1 });
+    const messages = store.collection<{ id: string; session_id: string; role: 'user'|'assistant'; content: string; created_at: number }>('messages');
+    messages.upsert({ id: 'u2:thread-3:0', session_id: 'u2:thread-3', role: 'user', content: 'first', created_at: 1 });
+    messages.upsert({ id: 'u2:thread-3:1', session_id: 'u2:thread-3', role: 'assistant', content: 'reply1', created_at: 2 });
+    messages.upsert({ id: 'u2:thread-3:2', session_id: 'u2:thread-3', role: 'user', content: 'second', created_at: 3 });
+
+    const { url, close } = await startServer(store);
+    try {
+      // Client sends only 1 message (a re-edit of the first user turn) — server should truncate
+      const res = await fetch(`${url}/api/chat/completions`, {
+        method: 'POST',
+        headers: { cookie: ALICE, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'default', stream: true, user: 'u2/thread-3',
+          messages: [{ role: 'user', content: 'first edited' }],
+        }),
+      });
+      await readSse(res.body!);
+      const after = messages.list().filter((m) => m.session_id === 'u2:thread-3');
+      // After truncation: user turn (edited) + assistant turn = 2 messages
+      expect(after).toHaveLength(2);
+      expect(after[0]!.content).toBe('first edited');
+      expect(after[0]!.role).toBe('user');
+      expect(after[1]!.role).toBe('assistant');
+    } finally { await close(); }
+  }, 20_000);
+});

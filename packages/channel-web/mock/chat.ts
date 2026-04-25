@@ -182,9 +182,227 @@ export function chatMiddleware(
       }
     }
 
-    // TODO(Task 6): POST /api/chat/completions — SSE chat completions handler
-    // lands here. Will reuse canUseAgent + create-session-if-missing flow.
+    // POST /api/chat/completions — SSE chat completions
+    if (path === '/api/chat/completions' && method === 'POST') {
+      const user = requireSession(req, store);
+      if (!user) return send(res, 401, {}), true;
+
+      const body = (await readJsonBody(req)) as {
+        model?: string;
+        stream?: boolean;
+        user?: string;
+        messages?: Array<{ role: 'user' | 'assistant'; content: string | ContentBlock[] }>;
+      };
+
+      const userField = typeof body.user === 'string' ? body.user : '';
+      const slash = userField.indexOf('/');
+      if (slash <= 0) {
+        send(res, 400, { error: 'invalid user field' });
+        return true;
+      }
+      const userId = userField.slice(0, slash);
+      const threadId = userField.slice(slash + 1);
+      if (!threadId) {
+        send(res, 400, { error: 'invalid user field' });
+        return true;
+      }
+
+      // Cookie owner must match the userId encoded in the user field.
+      // Prevents Alice from posting to Admin's threads.
+      if (userId !== user.id) {
+        send(res, 403, { error: 'forbidden' });
+        return true;
+      }
+
+      const sessionId = `${userId}:${threadId}`;
+      const sessions = store.collection<Session>('sessions');
+      let session = sessions.get(sessionId);
+
+      // Create-if-missing: pick the first agent the user can use, sorted by id.
+      if (!session) {
+        const allAgents = store.collection<Agent>('agents').list();
+        const usable = allAgents
+          .filter((a) => canUseAgent(user, a, store))
+          .sort((a, b) => a.id.localeCompare(b.id));
+        const defaultAgent = usable[0];
+        if (!defaultAgent) {
+          send(res, 403, { error: 'no usable agent' });
+          return true;
+        }
+        const now = Date.now();
+        session = {
+          id: sessionId,
+          user_id: user.id,
+          agent_id: defaultAgent.id,
+          title: 'new session',
+          created_at: now,
+          updated_at: now,
+        };
+        sessions.upsert(session);
+      } else if (session.user_id !== user.id) {
+        // Defense-in-depth: shouldn't happen given userId check above,
+        // but treat any owner mismatch as 403.
+        send(res, 403, { error: 'forbidden' });
+        return true;
+      }
+
+      const inMessages = Array.isArray(body.messages) ? body.messages : [];
+      const messagesCol = store.collection<HistoryMessage>('messages');
+
+      // Edit/retry truncation: if client sends a shorter array than persisted,
+      // drop persisted entries beyond the new length BEFORE appending the new turn.
+      const persistedForSession = messagesCol
+        .list()
+        .filter((m) => m.session_id === sessionId)
+        .sort((a, b) => {
+          // Order by suffix index when ids follow `${sessionId}:${i}`.
+          const ai = Number(a.id.slice(sessionId.length + 1));
+          const bi = Number(b.id.slice(sessionId.length + 1));
+          if (Number.isFinite(ai) && Number.isFinite(bi)) return ai - bi;
+          return a.created_at - b.created_at;
+        });
+      const targetPriorCount = Math.max(0, inMessages.length - 1);
+      if (persistedForSession.length > targetPriorCount) {
+        for (let i = targetPriorCount; i < persistedForSession.length; i++) {
+          const row = persistedForSession[i];
+          if (row) messagesCol.remove(row.id);
+        }
+        persistedForSession.length = targetPriorCount;
+      }
+
+      // Append the new (last) user turn.
+      const lastIn = inMessages[inMessages.length - 1];
+      if (!lastIn || lastIn.role !== 'user') {
+        send(res, 400, { error: 'last message must be a user turn' });
+        return true;
+      }
+      const userIndex = persistedForSession.length;
+      const userTurn: HistoryMessage = {
+        id: `${sessionId}:${userIndex}`,
+        session_id: sessionId,
+        role: 'user',
+        content: lastIn.content,
+        created_at: Date.now(),
+      };
+      messagesCol.upsert(userTurn);
+
+      // Auto-derive title on first user turn.
+      const userText = extractText(lastIn.content);
+      if (session.title === 'new session') {
+        const slug = userText.replace(/\s+/g, ' ').trim().slice(0, 60);
+        if (slug.length > 0) {
+          session = { ...session, title: slug, updated_at: Date.now() };
+          sessions.upsert(session);
+        }
+      }
+
+      // Stream the reply.
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache, no-transform');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no');
+      res.flushHeaders();
+
+      const reply = `(mock) You said: "${userText.slice(0, 200)}"`;
+      const cancelled = { value: false };
+
+      try {
+        await streamReply(req, res, reply, cancelled);
+      } catch {
+        // Stream errors (write after close, etc.) — bail without persisting.
+        return true;
+      }
+
+      if (cancelled.value) {
+        // Client disconnected mid-stream; don't persist a partial assistant turn.
+        return true;
+      }
+
+      const assistantTurn: HistoryMessage = {
+        id: `${sessionId}:${userIndex + 1}`,
+        session_id: sessionId,
+        role: 'assistant',
+        content: reply,
+        created_at: Date.now(),
+      };
+      messagesCol.upsert(assistantTurn);
+      sessions.upsert({ ...session, updated_at: Date.now() });
+      return true;
+    }
 
     return false;
   };
+}
+
+function extractText(content: string | ContentBlock[]): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
+    .map((p) => p.text)
+    .join('');
+}
+
+async function streamReply(
+  req: IncomingMessage,
+  res: ServerResponse,
+  text: string,
+  cancelled: { value: boolean },
+): Promise<void> {
+  // status: planning…
+  res.write('event: status\n');
+  res.write(
+    `data: ${JSON.stringify({ operation: 'plan', phase: 'start', message: 'planning…' })}\n\n`,
+  );
+
+  let timer: NodeJS.Timeout | undefined;
+  const onClose = (): void => {
+    cancelled.value = true;
+    if (timer) clearTimeout(timer);
+  };
+  req.on('close', onClose);
+
+  try {
+    // 30%-of-turns diagnostic, emitted right after the first content chunk.
+    const wantDiagnostic = Math.random() < 0.3;
+    let diagnosticEmitted = false;
+
+    for (let i = 0; i < text.length; i++) {
+      if (cancelled.value || res.writableEnded) return;
+      const ch = text[i];
+      const chunk = `data: ${JSON.stringify({ choices: [{ delta: { content: ch } }] })}\n\n`;
+      res.write(chunk);
+
+      if (i === 0 && wantDiagnostic && !diagnosticEmitted) {
+        diagnosticEmitted = true;
+        res.write('event: diagnostic\n');
+        res.write(
+          `data: ${JSON.stringify({
+            severity: 'info',
+            kind: 'mock_note',
+            message: 'this is a mocked response',
+            timestamp: new Date().toISOString(),
+          })}\n\n`,
+        );
+      }
+
+      // 12ms tick between chunks
+      await new Promise<void>((resolve) => {
+        timer = setTimeout(() => {
+          timer = undefined;
+          resolve();
+        }, 12);
+      });
+    }
+
+    if (cancelled.value || res.writableEnded) return;
+
+    res.write(`data: ${JSON.stringify({ choices: [{ finish_reason: 'stop' }] })}\n\n`);
+    res.write('data: [DONE]\n\n');
+    res.end();
+  } finally {
+    req.off('close', onClose);
+    if (timer) clearTimeout(timer);
+  }
 }
