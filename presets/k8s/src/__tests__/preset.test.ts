@@ -94,6 +94,7 @@ describe('@ax/preset-k8s wiring', () => {
     const names = plugins.map((p) => p.manifest.name).sort();
     expect(names).toEqual(
       [
+        '@ax/agents',
         '@ax/audit-log',
         '@ax/chat-orchestrator',
         '@ax/credentials',

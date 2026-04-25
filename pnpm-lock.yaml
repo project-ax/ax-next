@@ -1073,6 +1073,9 @@ importers:
       '@ax/agent-runner-core':
         specifier: workspace:*
         version: link:../../packages/agent-runner-core
+      '@ax/agents':
+        specifier: workspace:*
+        version: link:../../packages/agents
       '@ax/audit-log':
         specifier: workspace:*
         version: link:../../packages/audit-log

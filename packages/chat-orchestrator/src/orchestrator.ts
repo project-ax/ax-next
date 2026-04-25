@@ -1,9 +1,4 @@
-import type {
-  ChatContext,
-  ChatMessage,
-  ChatOutcome,
-  HookBus,
-} from '@ax/core';
+import { PluginError, type ChatContext, type ChatMessage, type ChatOutcome, type HookBus } from '@ax/core';
 
 // ---------------------------------------------------------------------------
 // @ax/chat-orchestrator — per-chat control plane
@@ -87,10 +82,57 @@ interface SessionQueueWorkOutput {
 interface SessionTerminateInput {
   sessionId: string;
 }
+
+// agents:resolve — registered by @ax/agents. The orchestrator hard-depends
+// on this hook now; with the multi-tenant slice every chat goes through an
+// agent, including dev/test paths (the test harness mocks the hook). I2:
+// no @ax/agents import — the shape is duplicated here.
+interface AgentsResolveInput {
+  agentId: string;
+  userId: string;
+}
+interface AgentRecord {
+  id: string;
+  ownerId: string;
+  ownerType: 'user' | 'team';
+  visibility: 'personal' | 'team';
+  displayName: string;
+  systemPrompt: string;
+  allowedTools: string[];
+  mcpConfigIds: string[];
+  model: string;
+  workspaceRef: string | null;
+}
+interface AgentsResolveOutput {
+  agent: AgentRecord;
+}
+
+// AgentConfig sent through sandbox:open-session and persisted on the
+// session row. The session-postgres / session-inmemory plugins both
+// declare the same shape; drift is caught at the bus call site.
+interface AgentConfig {
+  systemPrompt: string;
+  allowedTools: string[];
+  mcpConfigIds: string[];
+  model: string;
+}
+
 interface OpenSessionInput {
   sessionId: string;
   workspaceRoot: string;
   runnerBinary: string;
+  /**
+   * Owner triple — userId / agentId / agentConfig. Resolved by the
+   * orchestrator from agents:resolve and forwarded through the sandbox
+   * plugin so the v2 session row can be written atomically with the
+   * session itself. The runner reads this back via session:get-config
+   * (Task 6d).
+   */
+  owner: {
+    userId: string;
+    agentId: string;
+    agentConfig: AgentConfig;
+  };
 }
 interface OpenSessionHandle {
   kill(): Promise<void>;
@@ -189,7 +231,49 @@ export function createOrchestrator(
       return outcome;
     }
 
-    // 2. Register the waiter BEFORE opening the sandbox — the runner may
+    // 2. agents:resolve — Week 9.5 ACL gate. EVERY chat goes through here.
+    //    The agents plugin throws PluginError('forbidden' | 'not-found')
+    //    when the user can't reach the named agent; we map that to a
+    //    `terminated` outcome with `reason: 'agent-resolve:<code>'` so
+    //    audit-log subscribers see exactly one chat:end and the call
+    //    site can branch on the prefix.
+    //
+    //    A non-PluginError throw (impl bug, transport blip) gets the
+    //    same shape with `reason: 'agent-resolve:internal'` rather than
+    //    leaking through — chat:run's contract is "always returns a
+    //    ChatOutcome", and we'd rather degrade visibly than 500 the
+    //    whole bus.call chain.
+    let agent: AgentRecord;
+    try {
+      const resolved = await bus.call<AgentsResolveInput, AgentsResolveOutput>(
+        'agents:resolve',
+        ctx,
+        { agentId: ctx.agentId, userId: ctx.userId },
+      );
+      agent = resolved.agent;
+    } catch (err) {
+      const code = err instanceof PluginError ? err.code : 'internal';
+      const outcome: ChatOutcome = {
+        kind: 'terminated',
+        reason: `agent-resolve:${code}`,
+        error: err,
+      };
+      await bus.fire('chat:end', ctx, { outcome });
+      return outcome;
+    }
+
+    // 3. Build the agent config snapshot we'll freeze on the session.
+    //    Per Invariant I10: this is captured ONCE at session creation;
+    //    live edits to the agent row (via /admin/agents PATCH in Task 9)
+    //    do not affect in-flight sessions.
+    const agentConfig: AgentConfig = {
+      systemPrompt: agent.systemPrompt,
+      allowedTools: agent.allowedTools,
+      mcpConfigIds: agent.mcpConfigIds,
+      model: agent.model,
+    };
+
+    // 4. Register the waiter BEFORE opening the sandbox — the runner may
     //    emit chat:end before open-session resolves in pathological cases
     //    (extremely fast runner, racey test harness). Map it now so the
     //    subscriber can't miss the fire. The sessionId is `ctx.sessionId`
@@ -201,10 +285,21 @@ export function createOrchestrator(
     const deferred = newDeferred<ChatOutcome>();
     waitersBySessionId.set(sessionId, deferred);
 
-    // 3. Open the sandbox. sandbox:open-session internally calls
-    //    session:create (minting the session + token), starts the IPC
+    // 5. Open the sandbox. sandbox:open-session internally calls
+    //    session:create (minting the session + token AND writing the v2
+    //    owner row from the `owner` field below), starts the IPC
     //    listener, and spawns the runner subprocess. The token never
     //    returns here — it flows only into the child env (I9).
+    //
+    //    Workspace resolution: agent.workspaceRef is currently a
+    //    pass-through field. Wiring `workspace:resolve-ref` is a separate
+    //    concern that becomes load-bearing only when @ax/workspace-git
+    //    grows multi-ref support; for the MVP we use ctx.workspace
+    //    (already populated upstream, e.g. from the channel's session
+    //    bootstrap) and leave workspaceRef unconsumed. A subscriber
+    //    of `agents:resolved` could observe a mismatch — that's a Task
+    //    16+ concern, called out here so a future reader doesn't think
+    //    workspaceRef is silently dropped.
     let handle: OpenSessionHandle;
     try {
       const opened = await bus.call<OpenSessionInput, OpenSessionResult>(
@@ -214,6 +309,11 @@ export function createOrchestrator(
           sessionId,
           workspaceRoot: ctx.workspace.rootPath,
           runnerBinary: config.runnerBinary,
+          owner: {
+            userId: ctx.userId,
+            agentId: agent.id,
+            agentConfig,
+          },
         },
       );
       handle = opened.handle;

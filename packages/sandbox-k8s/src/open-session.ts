@@ -36,10 +36,26 @@ import { buildPodSpec } from './pod-spec.js';
 const PLUGIN_NAME = '@ax/sandbox-k8s';
 const HOOK_NAME = 'sandbox:open-session';
 
+// Owner triple — same shape sandbox-subprocess accepts. Forwarded to
+// session:create so the v2 row is written atomically with v1.
+export const AgentConfigSchema = z.object({
+  systemPrompt: z.string(),
+  allowedTools: z.array(z.string()),
+  mcpConfigIds: z.array(z.string()),
+  model: z.string(),
+});
+
 export const OpenSessionInputSchema = z.object({
   sessionId: z.string().min(1),
   workspaceRoot: z.string().regex(/^\//, 'workspaceRoot must be absolute'),
   runnerBinary: z.string().regex(/^\//, 'runnerBinary must be absolute'),
+  owner: z
+    .object({
+      userId: z.string().min(1),
+      agentId: z.string().min(1),
+      agentConfig: AgentConfigSchema,
+    })
+    .optional(),
 });
 
 export type OpenSessionInput = z.input<typeof OpenSessionInputSchema>;
@@ -60,6 +76,16 @@ export interface OpenSessionResult {
 interface SessionCreateInput {
   sessionId: string;
   workspaceRoot: string;
+  owner?: {
+    userId: string;
+    agentId: string;
+    agentConfig: {
+      systemPrompt: string;
+      allowedTools: string[];
+      mcpConfigIds: string[];
+      model: string;
+    };
+  };
 }
 interface SessionCreateOutput {
   sessionId: string;
@@ -112,13 +138,21 @@ export function createOpenSession(deps: OpenSessionDeps) {
     const podLog: Logger = ctx.logger.child({ podName, pid });
 
     // 2. Mint session + token. Failures here don't leave anything to clean
-    //    up — there's no pod yet.
+    //    up — there's no pod yet. The owner triple (Week 9.5) is forwarded
+    //    so the v2 row is written atomically with v1.
     let created: SessionCreateOutput;
     try {
+      const sessionCreateInput: SessionCreateInput = {
+        sessionId: input.sessionId,
+        workspaceRoot: input.workspaceRoot,
+      };
+      if (input.owner !== undefined) {
+        sessionCreateInput.owner = input.owner;
+      }
       created = await deps.bus.call<SessionCreateInput, SessionCreateOutput>(
         'session:create',
         ctx,
-        { sessionId: input.sessionId, workspaceRoot: input.workspaceRoot },
+        sessionCreateInput,
       );
     } catch (err) {
       podLog.warn('session_create_failed', {

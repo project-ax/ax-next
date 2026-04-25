@@ -17,6 +17,7 @@ import { auditLogPlugin } from '@ax/audit-log';
 import { createMcpClientPlugin } from '@ax/mcp-client';
 import { createCredentialsPlugin } from '@ax/credentials';
 import { createIpcHttpPlugin } from '@ax/ipc-http';
+import { createAgentsPlugin } from '@ax/agents';
 
 // ---------------------------------------------------------------------------
 // @ax/preset-k8s — production assembly: postgres trio + workspace-git +
@@ -291,6 +292,13 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
     }),
   );
   plugins.push(createLlmProxyAnthropicFormatPlugin());
+
+  // Agents plugin — registers `agents:resolve` (the ACL gate the
+  // orchestrator hard-depends on as of Week 9.5). Goes before the
+  // orchestrator so manifest resolution is tidy; the kernel's topological
+  // sort would handle either order. Reuses the shared postgres pool via
+  // `database:get-instance` (no second pool).
+  plugins.push(createAgentsPlugin());
 
   const orchestratorCfg: Parameters<typeof createChatOrchestratorPlugin>[0] = {
     runnerBinary: config.chat?.runnerBinary ?? defaultRunnerBinary(),

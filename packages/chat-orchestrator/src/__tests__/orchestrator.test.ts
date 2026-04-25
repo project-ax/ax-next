@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   HookBus,
+  PluginError,
   makeChatContext,
   createLogger,
   reject,
@@ -10,6 +11,22 @@ import {
 } from '@ax/core';
 import { createTestHarness } from '@ax/test-harness';
 import { createChatOrchestratorPlugin } from '../index.js';
+
+// Default agent stub — every test gets its own copy via spread to avoid
+// accidental mutation. Mirrors @ax/agents' AgentRecord shape (the
+// orchestrator duplicates it locally per I2).
+const TEST_AGENT = {
+  id: 'test-agent',
+  ownerId: 'test-user',
+  ownerType: 'user' as const,
+  visibility: 'personal' as const,
+  displayName: 'Test',
+  systemPrompt: 'be helpful',
+  allowedTools: ['file.read'],
+  mcpConfigIds: [],
+  model: 'claude-sonnet-4-7',
+  workspaceRef: null,
+};
 
 // ---------------------------------------------------------------------------
 // Orchestrator tests
@@ -42,26 +59,39 @@ interface MockBundle {
     sessionTerminate: number;
     sandboxOpen: number;
     killCalls: number;
+    agentsResolve: number;
+    lastSandboxInput: unknown;
   };
   lastQueuedMessage(): ChatMessage | undefined;
 }
 
 // Builds a default mock bundle. Callers can override individual services.
 // The orchestrator itself does NOT call session:create (sandbox:open-session
-// does), so we don't mock session:create here.
+// does), so we don't mock session:create here. agents:resolve IS mocked
+// because Week 9.5's orchestrator hard-depends on it.
 function buildMocks(opts: {
   openSession?: ServiceHandler;
   queueWork?: ServiceHandler;
+  agentsResolve?: ServiceHandler;
 } = {}): MockBundle {
   const calls = {
     sessionQueueWork: 0,
     sessionTerminate: 0,
     sandboxOpen: 0,
     killCalls: 0,
+    agentsResolve: 0,
+    lastSandboxInput: undefined as unknown,
   };
   let lastQueued: ChatMessage | undefined;
 
   const services: Record<string, ServiceHandler> = {
+    'agents:resolve': async (ctx, input) => {
+      calls.agentsResolve += 1;
+      if (opts.agentsResolve !== undefined) {
+        return opts.agentsResolve(ctx, input);
+      }
+      return { agent: { ...TEST_AGENT } };
+    },
     'session:queue-work':
       opts.queueWork ??
       (async (_ctx, input: unknown) => {
@@ -78,6 +108,7 @@ function buildMocks(opts: {
       return {};
     },
     'sandbox:open-session': async (ctx, input: unknown) => {
+      calls.lastSandboxInput = input;
       calls.sandboxOpen += 1;
       if (opts.openSession !== undefined) {
         // Delegate to override but still wrap the returned handle so we can
@@ -427,6 +458,194 @@ describe('chat-orchestrator', () => {
       );
       expect(outcome.kind, `scenario ${s.name}`).toBe(s.expectKind);
       expect(endCount, `scenario ${s.name}`).toBe(1);
+    }
+  });
+
+  // ---------------------------------------------------------------------
+  // Week 9.5 — agents:resolve gate
+  // ---------------------------------------------------------------------
+
+  it('agents:resolve rejecting forbidden → terminated outcome with reason agent-resolve:forbidden, sandbox NOT opened', async () => {
+    const mocks = buildMocks({
+      agentsResolve: async () => {
+        throw new PluginError({
+          code: 'forbidden',
+          plugin: '@ax/agents',
+          hookName: 'agents:resolve',
+          message: `agent 'a-1' not accessible to user 'u-1'`,
+        });
+      },
+    });
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinary: '/irrelevant',
+          chatTimeoutMs: 5_000,
+        }),
+      ],
+    });
+    const endFires: ChatOutcome[] = [];
+    h.bus.subscribe('chat:end', 'obs', async (_ctx, p: unknown) => {
+      endFires.push((p as { outcome: ChatOutcome }).outcome);
+      return undefined;
+    });
+    const outcome = await h.bus.call<unknown, ChatOutcome>(
+      'chat:run',
+      silentCtx('forbidden-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('terminated');
+    if (outcome.kind === 'terminated') {
+      expect(outcome.reason).toBe('agent-resolve:forbidden');
+    }
+    // Sandbox MUST NOT be opened when ACL rejects.
+    expect(mocks.calls.sandboxOpen).toBe(0);
+    // chat:end fires exactly once on the rejection path.
+    expect(endFires).toHaveLength(1);
+  });
+
+  it('agents:resolve rejecting not-found → terminated outcome with reason agent-resolve:not-found', async () => {
+    const mocks = buildMocks({
+      agentsResolve: async () => {
+        throw new PluginError({
+          code: 'not-found',
+          plugin: '@ax/agents',
+          hookName: 'agents:resolve',
+          message: `agent 'no-such' not found`,
+        });
+      },
+    });
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinary: '/irrelevant',
+          chatTimeoutMs: 5_000,
+        }),
+      ],
+    });
+    const outcome = await h.bus.call<unknown, ChatOutcome>(
+      'chat:run',
+      silentCtx('nf-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('terminated');
+    if (outcome.kind === 'terminated') {
+      expect(outcome.reason).toBe('agent-resolve:not-found');
+    }
+    expect(mocks.calls.sandboxOpen).toBe(0);
+  });
+
+  it('agents:resolve happy path passes the agent owner triple to sandbox:open-session', async () => {
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          id: 'a-resolved',
+          systemPrompt: 'you are a poet',
+          allowedTools: ['file.read', 'bash.exec'],
+          mcpConfigIds: ['mcp-1'],
+          model: 'claude-opus-4-7',
+        },
+      }),
+    });
+    let busRef: HookBus | null = null;
+    // Replace open-session with a happy-path version that fires chat:end.
+    mocks.services['sandbox:open-session'] = async (_ctx, input: unknown) => {
+      mocks.calls.sandboxOpen += 1;
+      mocks.calls.lastSandboxInput = input;
+      const sessionId = (input as { sessionId: string }).sessionId;
+      setImmediate(() => {
+        void busRef!.fire(
+          'chat:end',
+          makeChatContext({
+            sessionId,
+            agentId: 'a-resolved',
+            userId: 'test-user',
+            logger: createLogger({ reqId: 'r', writer: () => undefined }),
+          }),
+          { outcome: { kind: 'complete', messages: [] } },
+        );
+      });
+      return {
+        runnerEndpoint: 'unix:///tmp/x.sock',
+        handle: {
+          kill: async () => undefined,
+          exited: new Promise(() => undefined),
+        },
+      };
+    };
+
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinary: '/irrelevant',
+          chatTimeoutMs: 5_000,
+        }),
+      ],
+    });
+    busRef = h.bus;
+
+    const outcome = await h.bus.call<unknown, ChatOutcome>(
+      'chat:run',
+      silentCtx('owned-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+    expect(mocks.calls.agentsResolve).toBe(1);
+    expect(mocks.calls.sandboxOpen).toBe(1);
+    // The owner field carries through to sandbox:open-session unchanged.
+    const last = mocks.calls.lastSandboxInput as {
+      owner: {
+        userId: string;
+        agentId: string;
+        agentConfig: {
+          systemPrompt: string;
+          allowedTools: string[];
+          mcpConfigIds: string[];
+          model: string;
+        };
+      };
+    };
+    expect(last.owner.userId).toBe('test-user');
+    expect(last.owner.agentId).toBe('a-resolved');
+    expect(last.owner.agentConfig).toEqual({
+      systemPrompt: 'you are a poet',
+      allowedTools: ['file.read', 'bash.exec'],
+      mcpConfigIds: ['mcp-1'],
+      model: 'claude-opus-4-7',
+    });
+  });
+
+  it('agents:resolve throwing a non-PluginError → terminated outcome with the bus-wrapped code', async () => {
+    // The bus wraps non-PluginError throws as PluginError(code='unknown').
+    // We document and depend on that wrapping here so the orchestrator's
+    // reason-prefix is stable even when the agents impl throws something
+    // weird.
+    const mocks = buildMocks({
+      agentsResolve: async () => {
+        throw new Error('database fell over');
+      },
+    });
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinary: '/irrelevant',
+          chatTimeoutMs: 5_000,
+        }),
+      ],
+    });
+    const outcome = await h.bus.call<unknown, ChatOutcome>(
+      'chat:run',
+      silentCtx('boom-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('terminated');
+    if (outcome.kind === 'terminated') {
+      expect(outcome.reason).toBe('agent-resolve:unknown');
     }
   });
 

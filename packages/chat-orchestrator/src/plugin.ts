@@ -34,10 +34,16 @@ export function createChatOrchestratorPlugin(
       // its own per-session listener on child-close (no host-side caller
       // needed), and the k8s preset uses @ax/ipc-http which has a
       // process-scoped listener with no per-session start/stop hooks.
+      //
+      // `agents:resolve` is a HARD dep as of Week 9.5 — every chat goes
+      // through the ACL gate before the sandbox is spawned. This forces
+      // any preset that wires the orchestrator to also wire @ax/agents,
+      // which is the intended coupling.
       calls: [
         'session:queue-work',
         'session:terminate',
         'sandbox:open-session',
+        'agents:resolve',
       ],
       // We listen to `chat:end` to capture the outcome emitted by the
       // runner (via the IPC server's /event.chat-end handler). The
