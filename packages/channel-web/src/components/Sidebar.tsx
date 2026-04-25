@@ -3,7 +3,12 @@
  *
  * Structure-only for the parts that haven't been earned yet. Live wiring
  * so far: agent chip + menu (Task 12), session list + new-session button
- * (Task 13). Coming next: collapse toggle (15), user menu (21).
+ * (Task 13), inline rename + delete (Task 14). Coming next: user menu
+ * (21).
+ *
+ * The collapse toggle used to live in `.sidebar-head`; Task 16 moved it
+ * to the session header per the Tide design — the toggle belongs at the
+ * top of the main pane, not inside the sidebar.
  *
  * Class names match `design_handoff_tide/Tide Sessions.html` so the
  * CSS rules in `index.css` (also copied verbatim from that file) carry
@@ -12,7 +17,6 @@
 import { AgentChip, useHydrateAgents } from './AgentChip';
 import { NewSessionButton } from './NewSessionButton';
 import { SessionList } from './SessionList';
-import { SidebarCollapseToggle } from './SidebarCollapseToggle';
 
 export function Sidebar() {
   // Fetch /api/agents once on mount so the chip + menu can render names.
@@ -23,8 +27,6 @@ export function Sidebar() {
         <div className="brand">
           <span className="brand-word">tide</span>
         </div>
-        {/* Toggle lives here for now; Task 16 may move it to the session header. */}
-        <SidebarCollapseToggle />
       </div>
       <AgentChip />
       <NewSessionButton />
