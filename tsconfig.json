@@ -13,6 +13,7 @@
     { "path": "packages/sandbox-k8s" },
     { "path": "packages/ipc-protocol" },
     { "path": "packages/ipc-core" },
+    { "path": "packages/ipc-http" },
     { "path": "packages/ipc-server" },
     { "path": "packages/session-inmemory" },
     { "path": "packages/tool-dispatcher" },

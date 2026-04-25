@@ -1,0 +1,3 @@
+# @ax/ipc-http
+
+The TCP-over-HTTP IPC listener — sibling to `@ax/ipc-server` (Unix-socket transport). Both build on `@ax/ipc-core`, which holds the transport-agnostic dispatcher, auth, body parsing, response writing, error mapping, and handler registry. We only swap the wire layer here. Used by k8s-mode presets where the host pod needs to listen for inbound IPC from runner pods across the cluster network — Unix sockets don't reach across pod boundaries, so we trade them for HTTP. The runner is still the IPC client in both transports; the topology is identical, just the bytes on the wire differ.
