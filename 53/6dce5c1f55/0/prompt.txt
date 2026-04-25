@@ -1,0 +1,14 @@
+Write an implementation plan for HTTP runner-IPC (follow-up #1 from
+docs/plans/2026-04-25-week-7-9-followups.md). Read
+docs/plans/2026-04-25-http-runner-ipc-handoff.md first — it has file
+pointers, scope decisions (TLS posture, keep-alive, parseRunnerEndpoint
+location), and the security walk this slice requires. The shared-
+primitives question is already decided: extract @ax/ipc-core from
+@ax/ipc-server in a prep commit, then add @ax/ipc-http on top. Branch off
+main (PR #9 merged). Invoke security-checklist — this is the first plugin
+opening an inbound network listener; bearer auth + timingSafeEqual is
+the gate. The plan should be executable via subagent-driven-development.
+
+---
+
+B
