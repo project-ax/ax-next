@@ -1,0 +1,35 @@
+{
+  "name": "@ax/workspace-git-http",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./server": {
+      "types": "./dist/server/index.d.ts",
+      "default": "./dist/server/index.js"
+    }
+  },
+  "files": ["dist", "SECURITY.md"],
+  "scripts": {
+    "build": "tsc --build",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@ax/core": "workspace:*",
+    "@ax/workspace-protocol": "workspace:*",
+    "@ax/workspace-git-core": "workspace:*"
+  },
+  "devDependencies": {
+    "@ax/test-harness": "workspace:*",
+    "@types/node": "^25.6.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.4"
+  }
+}
