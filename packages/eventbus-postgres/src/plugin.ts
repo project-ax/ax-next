@@ -1,4 +1,4 @@
-import { PluginError, type Plugin } from '@ax/core';
+import { createLogger, PluginError, type Logger, type Plugin } from '@ax/core';
 import { Listener } from './listener.js';
 
 /**
@@ -32,6 +32,13 @@ const CHANNEL_RE = /^[a-zA-Z0-9_]+$/;
 
 export interface EventbusPostgresConfig {
   connectionString: string;
+  /**
+   * Optional logger for background events that don't ride a request — pg.Client
+   * 'error' events on the dedicated LISTEN connection (postgres restart, idle
+   * socket close) and reconnect-attempt failures. Defaults to a stdout JSON
+   * logger tagged `reqId=eventbus-postgres-bg`.
+   */
+  logger?: Logger;
 }
 
 export interface EventbusEmitInput {
@@ -81,7 +88,12 @@ export function createEventbusPostgresPlugin(
       subscribes: [],
     },
     init({ bus }) {
-      listener = new Listener({ connectionString: config.connectionString });
+      const bgLogger =
+        config.logger ?? createLogger({ reqId: 'eventbus-postgres-bg' });
+      listener = new Listener({
+        connectionString: config.connectionString,
+        logger: bgLogger,
+      });
 
       bus.registerService<EventbusEmitInput, void>(
         'eventbus:emit',

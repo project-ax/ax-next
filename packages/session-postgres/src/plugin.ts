@@ -1,4 +1,4 @@
-import { PluginError, type Plugin } from '@ax/core';
+import { createLogger, PluginError, type Logger, type Plugin } from '@ax/core';
 import { Kysely, PostgresDialect } from 'kysely';
 import pg from 'pg';
 import {
@@ -44,6 +44,13 @@ const PLUGIN_NAME = '@ax/session-postgres';
 export interface SessionPostgresConfig {
   connectionString: string;
   poolMax?: number;
+  /**
+   * Optional logger for background events that don't ride a request — pg.Pool
+   * idle errors, LISTEN client socket errors, init failure cleanup. Defaults
+   * to a stdout JSON logger tagged `reqId=session-postgres-bg`. Tests can
+   * pass a noop or recording logger.
+   */
+  logger?: Logger;
 }
 
 // Same input/output shapes as session-inmemory — kept here as locally
@@ -218,17 +225,58 @@ export function createSessionPostgresPlugin(
     },
 
     async init({ bus }) {
+      const bgLogger =
+        config.logger ?? createLogger({ reqId: 'session-postgres-bg' });
+
       pool = new pg.Pool({
         connectionString: config.connectionString,
         max: config.poolMax ?? 10,
       });
+      // pg.Pool emits 'error' for idle-pool errors (e.g., postgres restart in
+      // k8s closing an idle connection). Without a listener Node treats them
+      // as unhandled and crashes the process.
+      pool.on('error', (err) => {
+        bgLogger.error('session_postgres_pool_error', {
+          err: err instanceof Error ? err : new Error(String(err)),
+        });
+      });
       kysely = new Kysely<SessionDatabase>({
         dialect: new PostgresDialect({ pool }),
       });
-      await runSessionMigration(kysely);
 
       listenClient = new pg.Client({ connectionString: config.connectionString });
-      await listenClient.connect();
+      // Same risk on the LISTEN client — long-lived, idle most of the time,
+      // exactly the connection a postgres restart will tear down. Crash-by-
+      // unhandled-'error' is the failure mode we're avoiding here.
+      listenClient.on('error', (err) => {
+        bgLogger.error('session_postgres_listen_client_error', {
+          err: err instanceof Error ? err : new Error(String(err)),
+        });
+      });
+
+      // Wrap the awaits: if the migration or the LISTEN client connect throws,
+      // close the partial allocations before re-throwing so we don't leak a
+      // pool / socket. The kernel doesn't yet call shutdown() on init failure
+      // (TODO: kernel-shutdown), so init owns the cleanup itself.
+      try {
+        await runSessionMigration(kysely);
+        await listenClient.connect();
+      } catch (err) {
+        try {
+          await listenClient.end();
+        } catch {
+          // best-effort
+        }
+        try {
+          await kysely.destroy();
+        } catch {
+          // best-effort; destroy() also closes the pool, so we don't double-end.
+        }
+        listenClient = undefined;
+        kysely = undefined;
+        pool = undefined;
+        throw err;
+      }
 
       store = createSessionStore(kysely);
       inbox = createInbox({

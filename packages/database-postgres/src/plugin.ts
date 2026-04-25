@@ -1,4 +1,4 @@
-import { PluginError, type Plugin } from '@ax/core';
+import { createLogger, PluginError, type Logger, type Plugin } from '@ax/core';
 import { Kysely, PostgresDialect } from 'kysely';
 import pg from 'pg';
 
@@ -33,6 +33,13 @@ const PLUGIN_NAME = '@ax/database-postgres';
 export interface DatabasePostgresConfig {
   connectionString: string;
   poolMax?: number;
+  /**
+   * Optional logger for background pg.Pool errors (idle-pool socket failures,
+   * e.g., postgres restart in k8s). Defaults to a stdout JSON logger tagged
+   * `reqId=database-postgres-bg`. Without a listener attached, an unhandled
+   * 'error' from the pool would crash the process.
+   */
+  logger?: Logger;
 }
 
 export interface DatabaseGetInstanceOutput {
@@ -55,10 +62,21 @@ export function createDatabasePostgresPlugin(config: DatabasePostgresConfig): Pl
     // anything can close; pg cleans up its own sockets via Node teardown.
     init({ bus }) {
       validateConnectionString(config.connectionString);
+      const bgLogger =
+        config.logger ?? createLogger({ reqId: 'database-postgres-bg' });
 
       const pool = new pg.Pool({
         connectionString: config.connectionString,
         max: config.poolMax ?? 10,
+      });
+      // pg.Pool emits 'error' for idle-pool socket failures (e.g., postgres
+      // restart). Without a listener Node treats it as unhandled and crashes
+      // the process — exactly the failure mode this pool sits idle waiting
+      // for between requests.
+      pool.on('error', (err) => {
+        bgLogger.error('database_postgres_pool_error', {
+          err: err instanceof Error ? err : new Error(String(err)),
+        });
       });
       kysely = new Kysely<unknown>({
         dialect: new PostgresDialect({ pool }),
