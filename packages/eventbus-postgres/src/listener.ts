@@ -59,7 +59,20 @@ export class Listener {
     const client = new pg.Client({ connectionString: this.opts.connectionString });
     client.on('error', (err) => this.onClientError(err));
     client.on('notification', (msg) => this.onNotification(msg));
-    await client.connect();
+    try {
+      await client.connect();
+    } catch (err) {
+      // pg@8 does NOT emit 'error' for connect() failures (e.g. ECONNREFUSED) —
+      // the promise just rejects. Without re-scheduling here, the backoff chain
+      // stalls after the first failed attempt. We log + chain the next attempt
+      // explicitly so reconnect keeps trying until the server returns or
+      // shutdown() is called.
+      this.logger?.warn?.('eventbus_postgres_listener_connect_failed', {
+        err: err instanceof Error ? err : new Error(String(err)),
+      });
+      this.scheduleReconnect();
+      throw err;
+    }
     this.client = client;
     this.backoffStep = 0;
     // Re-LISTEN for every channel that still has subscribers.
