@@ -21,9 +21,11 @@ import {
   type WorkspaceReadOutput,
   type WorkspaceVersion,
 } from '@ax/core';
-import type { WorkspaceGitConfig } from './plugin.js';
+export interface WorkspaceGitCoreConfig {
+  repoRoot: string;
+}
 
-const PLUGIN_NAME = '@ax/workspace-git';
+const PLUGIN_NAME = '@ax/workspace-git-core';
 const MAIN_REF = 'refs/heads/main';
 
 // Bot identity. INTENTIONALLY hard-coded — the agent never gets to choose
@@ -336,7 +338,7 @@ function isNotFoundError(err: unknown): boolean {
 
 export function registerWorkspaceGitHooks(
   bus: HookBus,
-  config: WorkspaceGitConfig,
+  config: WorkspaceGitCoreConfig,
 ): void {
   const gitdir = join(config.repoRoot, 'repo.git');
   const mutex = new Mutex();
