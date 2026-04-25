@@ -185,6 +185,18 @@ describe('claude-sdk runner — per-turn workspace diff (Task 7c)', () => {
     setEnv();
     fakeClient = buildFakeClient();
     fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+        };
+      }
       if (action === 'tool.list') return { tools: [] };
       if (action === 'workspace.commit-notify') {
         return { accepted: true, version: 'v1', delta: null };
@@ -333,6 +345,18 @@ describe('claude-sdk runner — per-turn workspace diff (Task 7c)', () => {
     fakeClient = buildFakeClient();
     let nextVersion = 1;
     fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+        };
+      }
       if (action === 'tool.list') return { tools: [] };
       if (action === 'workspace.commit-notify') {
         return { accepted: true, version: `v${nextVersion++}`, delta: null };

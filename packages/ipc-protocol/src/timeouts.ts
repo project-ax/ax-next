@@ -15,6 +15,10 @@ export const IPC_TIMEOUTS_MS = Object.freeze({
   'tool.list': 5_000,
   'workspace.commit-notify': 30_000,
   'session.next-message': 30_000,
+  // Runner-boot config fetch. Synchronous, small payload (a few KiB at
+  // most). 5 s is generous; if the host can't answer this fast something
+  // bigger is wrong and the runner should fail-fast rather than retry.
+  'session.get-config': 5_000,
 });
 
 /** The closed set of sandbox→host RPC action names. */

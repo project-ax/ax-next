@@ -14,6 +14,7 @@ import {
 } from '@ax/agent-runner-core';
 import type {
   ChatMessage,
+  SessionGetConfigResponse,
   ToolListResponse,
   WorkspaceCommitNotifyResponse,
 } from '@ax/ipc-protocol';
@@ -67,6 +68,31 @@ export async function main(): Promise<number> {
     token: env.authToken,
   });
 
+  // Week 9.5: fetch the frozen agent config the orchestrator wrote when it
+  // resolved this session's agent. We do this BEFORE tool.list so we can
+  // filter the catalog defensively against `allowedTools` even if the
+  // host's tool-dispatcher (Task 7) hasn't filtered yet.
+  //
+  // The bearer token in env.authToken is the SAME token the host used to
+  // mint this session — the IPC server resolves it to ctx.sessionId, and
+  // the session backend reads its own row keyed by that. There's no
+  // sessionId on the wire; the runner cannot ask for someone else's
+  // config.
+  let agentConfig: SessionGetConfigResponse['agentConfig'];
+  try {
+    const cfg = (await client.call(
+      'session.get-config',
+      {},
+    )) as SessionGetConfigResponse;
+    agentConfig = cfg.agentConfig;
+  } catch (err) {
+    process.stderr.write(
+      `runner: session.get-config failed: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+    await client.close();
+    return 2;
+  }
+
   let tools;
   try {
     tools = ((await client.call('tool.list', {})) as ToolListResponse).tools;
@@ -76,6 +102,17 @@ export async function main(): Promise<number> {
     );
     await client.close();
     return 2;
+  }
+
+  // Defensive client-side filter against agentConfig.allowedTools when it
+  // is non-empty. An empty allow-list means "no per-agent restriction"
+  // (orchestrator default); a non-empty list overrides what the host
+  // returned. This is belt-and-suspenders against the dispatcher filter
+  // (Task 7) — if either the host or runner mis-orders a refactor, the
+  // tool catalog the SDK sees is still bounded.
+  if (agentConfig.allowedTools.length > 0) {
+    const allow = new Set(agentConfig.allowedTools);
+    tools = tools.filter((t) => allow.has(t.name));
   }
 
   const hostMcpServer = createHostMcpServer({ client, tools });
@@ -154,7 +191,16 @@ export async function main(): Promise<number> {
         // read ~/.claude, project settings, or CLAUDE.md. Config for this
         // sandbox arrives entirely through host-mediated IPC.
         settingSources: [],
-        systemPrompt: { type: 'preset', preset: 'claude_code' },
+        // Week 9.5: use the frozen agentConfig.systemPrompt the host wrote
+        // at session-creation time. An empty string falls back to the SDK
+        // preset (the dev-agents-stub seeds a default; production agents
+        // require non-empty by validation). systemPrompt is USER-AUTHORED
+        // and intended for the LLM — not interpolated into shell, paths,
+        // or HTML.
+        systemPrompt:
+          agentConfig.systemPrompt.length > 0
+            ? agentConfig.systemPrompt
+            : { type: 'preset', preset: 'claude_code' },
       },
     });
 

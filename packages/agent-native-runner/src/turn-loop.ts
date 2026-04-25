@@ -75,6 +75,17 @@ export interface TurnLoopDeps {
    * keep compiling; runner main.ts always supplies one.
    */
   diffs?: DiffAccumulator;
+  /**
+   * Frozen agent system prompt fetched from `session.get-config` (Week
+   * 9.5). When non-empty, prepended to the chat history as a single
+   * role:'system' message — llm-anthropic extracts those into the
+   * Anthropic API's top-level `system` field, so this propagates as a
+   * real system instruction rather than a downgraded user turn.
+   *
+   * Optional so existing tests that don't care about agent config keep
+   * compiling.
+   */
+  systemPrompt?: string;
   /** Test seam for commitRef generation. */
   commitRefGen?: () => string;
 }
@@ -89,15 +100,28 @@ export async function runTurnLoop(deps: TurnLoopDeps): Promise<TurnLoopOutcome> 
   const maxTurns = deps.maxTurns ?? DEFAULT_MAX_TURNS;
   const commitRefGen = deps.commitRefGen ?? (() => randomUUID());
   const history: ChatMessage[] = [];
+  // Seed the system prompt as a role:'system' message at the top of
+  // history. llm-anthropic's plugin extracts these into the API's
+  // top-level `system` field; mapping role:'system' to user would
+  // silently downgrade the instruction (see llm-anthropic plugin.ts).
+  if (deps.systemPrompt !== undefined && deps.systemPrompt.length > 0) {
+    history.push({ role: 'system', content: deps.systemPrompt });
+  }
   // Track parent version across turns so the host's optimistic-concurrency
   // check sees a coherent lineage. `null` until the first accepted commit.
   let parentVersion: string | null = null;
+
+  // user-facing messages are everything except the seeded system prompt.
+  // Functions consuming the outcome want a transcript, not the prompt the
+  // host wrote at the top of history.
+  const userFacingHistory = (): ChatMessage[] =>
+    history.filter((m) => m.role !== 'system');
 
   try {
     for (;;) {
       const entry = await deps.inbox.next();
       if (entry.type === 'cancel') {
-        return { kind: 'complete', messages: history };
+        return { kind: 'complete', messages: userFacingHistory() };
       }
       // The server's wire schema guarantees `payload` is present on
       // 'user-message' entries, but the InboxLoopEntry type marks it
@@ -162,7 +186,7 @@ export async function runTurnLoop(deps: TurnLoopDeps): Promise<TurnLoopOutcome> 
     }
   } catch (err) {
     const reason = err instanceof Error ? err.name : 'unknown';
-    return { kind: 'terminated', messages: history, reason, error: err };
+    return { kind: 'terminated', messages: userFacingHistory(), reason, error: err };
   }
 }
 

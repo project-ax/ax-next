@@ -210,6 +210,43 @@ export type WorkspaceCommitNotifyResponse = z.infer<
 >;
 
 // ---------------------------------------------------------------------------
+// session.get-config
+//
+// Runner → host RPC fetched at boot. Authentication is the bearer token
+// the runner already holds (set in its env by sandbox:open-session); the
+// host's IPC server resolves the token to a sessionId and stamps that on
+// ctx.sessionId before dispatch — this action's request body is therefore
+// EMPTY by design. A non-empty body would mean the runner could ask for
+// SOMEONE ELSE'S config; closing that door at the schema layer makes the
+// invariant load-bearing.
+//
+// The response carries the FROZEN agent config snapshot (per Invariant
+// I10 — switching agents = new session, not mutate). systemPrompt is
+// USER-AUTHORED and intended to flow into the LLM's prompt; the runner
+// must NOT interpolate it into shell commands, file paths, or HTML. We
+// brand the field at the consumer side rather than here so subscriber
+// hooks downstream of the runner don't need a wire-level brand.
+// ---------------------------------------------------------------------------
+
+export const SessionGetConfigRequestSchema = z.object({}).strict();
+export type SessionGetConfigRequest = z.infer<typeof SessionGetConfigRequestSchema>;
+
+export const AgentConfigSchema = z.object({
+  systemPrompt: z.string(),
+  allowedTools: z.array(z.string()),
+  mcpConfigIds: z.array(z.string()),
+  model: z.string(),
+});
+export type AgentConfig = z.infer<typeof AgentConfigSchema>;
+
+export const SessionGetConfigResponseSchema = z.object({
+  userId: z.string(),
+  agentId: z.string(),
+  agentConfig: AgentConfigSchema,
+});
+export type SessionGetConfigResponse = z.infer<typeof SessionGetConfigResponseSchema>;
+
+// ---------------------------------------------------------------------------
 // session.next-message
 //
 // The request is an HTTP GET with a `?cursor=<n>` query-string parameter;

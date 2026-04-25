@@ -189,6 +189,18 @@ describe('main()', () => {
     setEnv(COMPLETE_ENV);
     fakeClient = buildFakeClient();
     fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+        };
+      }
       if (action === 'tool.list') return { tools: [] };
       if (action === 'workspace.commit-notify') {
         return { accepted: true, version: 'v1', delta: null };
@@ -223,7 +235,9 @@ describe('main()', () => {
 
     expect(rc).toBe(0);
 
-    expect(fakeClient.call).toHaveBeenCalledTimes(1);
+    // Two calls at boot: session.get-config + tool.list (Week 9.5).
+    expect(fakeClient.call).toHaveBeenCalledTimes(2);
+    expect(fakeClient.call).toHaveBeenCalledWith('session.get-config', {});
     expect(fakeClient.call).toHaveBeenCalledWith('tool.list', {});
     // Empty turns (no file changes accumulated) skip commit-notify; the
     // event.turn-end below is the heartbeat the host keys off (Task 7c).
@@ -316,6 +330,18 @@ describe('main()', () => {
     setEnv(COMPLETE_ENV);
     fakeClient = buildFakeClient();
     fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+        };
+      }
       if (action === 'tool.list') return { tools: [] };
       throw new Error(`unexpected call: ${action}`);
     });

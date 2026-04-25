@@ -327,6 +327,63 @@ describe('runTurnLoop', () => {
     expect(llmCalls).toHaveLength(3);
   });
 
+  // ---------------------------------------------------------------------
+  // Week 9.5 — systemPrompt seeding (the runner gets it from
+  // session.get-config and forwards it via deps.systemPrompt).
+  // ---------------------------------------------------------------------
+
+  it('systemPrompt is prepended to llm.call messages but excluded from outcome', async () => {
+    const { client, calls } = makeFakeClient({
+      'llm.call': [llmNoTools('hi back')],
+    });
+    const inbox = makeFakeInbox([userMsg('greet me'), cancel]);
+    const dispatcher = createLocalDispatcher();
+
+    const outcome = await runTurnLoop({
+      client,
+      inbox,
+      dispatcher,
+      tools,
+      systemPrompt: 'You are a poet.',
+    });
+
+    // The first llm.call sees the system prompt at the top of messages —
+    // llm-anthropic extracts role:'system' into the API's `system` field.
+    const llmCall = calls.find((c) => c.action === 'llm.call');
+    expect(llmCall).toBeDefined();
+    const messages = (llmCall!.payload as { messages: ChatMessage[] }).messages;
+    expect(messages[0]).toEqual({ role: 'system', content: 'You are a poet.' });
+    expect(messages[1]).toEqual({ role: 'user', content: 'greet me' });
+    // The user-facing outcome filters out the system message: callers
+    // want a transcript, not the prompt the host wrote.
+    if (outcome.kind !== 'complete') throw new Error('expected complete');
+    expect(outcome.messages).toEqual([
+      { role: 'user', content: 'greet me' },
+      { role: 'assistant', content: 'hi back' },
+    ]);
+  });
+
+  it('empty systemPrompt is not seeded as a message', async () => {
+    const { client, calls } = makeFakeClient({
+      'llm.call': [llmNoTools('hello')],
+    });
+    const inbox = makeFakeInbox([userMsg('hi'), cancel]);
+    const dispatcher = createLocalDispatcher();
+
+    await runTurnLoop({
+      client,
+      inbox,
+      dispatcher,
+      tools,
+      systemPrompt: '',
+    });
+
+    const llmCall = calls.find((c) => c.action === 'llm.call');
+    const messages = (llmCall!.payload as { messages: ChatMessage[] }).messages;
+    // Only the user message — no role:'system' entry.
+    expect(messages).toEqual([{ role: 'user', content: 'hi' }]);
+  });
+
   it('SessionInvalidError from llm.call: outcome is terminated with history so far', async () => {
     const dispatcher = createLocalDispatcher();
     const { client } = makeFakeClient({
