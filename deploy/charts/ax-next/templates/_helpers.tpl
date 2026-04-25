@@ -88,5 +88,6 @@ it onto every runner pod's AX_RUNNER_ENDPOINT env var so the runner knows
 where to phone home.
 */}}
 {{- define "ax-next.hostIpcUrl" -}}
-{{- printf "http://%s-host.%s.svc.cluster.local:%d" (include "ax-next.fullname" .) (include "ax-next.hostNamespace" .) (int .Values.host.ipcServicePort) -}}
+{{- $port := .Values.host.ipcServicePort | default 80 -}}
+{{- printf "http://%s-host.%s.svc.cluster.local:%d" (include "ax-next.fullname" .) (include "ax-next.hostNamespace" .) (int $port) -}}
 {{- end }}

@@ -143,6 +143,12 @@ export function buildPodSpec(
       namespace: config.namespace,
       labels: {
         'app.kubernetes.io/component': 'ax-next-runner',
+        // `ax.io/plane: execution` is the selector both NetworkPolicies
+        // key off — runner egress restrict + host ingress allow. Without
+        // it, runner pods bypass the egress allowlist AND can't reach
+        // the host under enforced policy. See
+        // deploy/charts/ax-next/templates/networkpolicies/.
+        'ax.io/plane': 'execution',
         // sessionId is a label so a future operator using `kubectl get pod
         // -l ax.io/session-id=...` can find a pod by session. Labels have
         // a 63-char limit; ChatContext.sessionId is freeform but is

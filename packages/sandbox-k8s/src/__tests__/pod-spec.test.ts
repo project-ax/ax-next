@@ -121,5 +121,9 @@ describe('buildPodSpec', () => {
     expect(spec.metadata.labels['app.kubernetes.io/component']).toBe(
       'ax-next-runner',
     );
+    // ax.io/plane: execution is the selector both NetworkPolicies key
+    // off (host ingress allow + runner egress restrict). Without it the
+    // entire k8s network perimeter is a no-op for runner pods.
+    expect(spec.metadata.labels['ax.io/plane']).toBe('execution');
   });
 });
