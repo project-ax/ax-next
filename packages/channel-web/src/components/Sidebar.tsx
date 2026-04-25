@@ -1,15 +1,19 @@
 /**
  * Sidebar — left rail shell.
  *
- * Structure-only for Task 11. Real handlers and dynamic content come in
- * later tasks (agent menu in Task 12, session list in Task 13, collapse
- * toggle in Task 15, user menu in Task 21).
+ * Structure-only for the parts that haven't been earned yet. Live wiring
+ * so far: agent chip + menu (Task 12). Coming next: session list (13),
+ * collapse toggle (15), user menu (21).
  *
  * Class names match `design_handoff_tide/Tide Sessions.html` so the
  * CSS rules in `index.css` (also copied verbatim from that file) carry
  * over without visual drift.
  */
+import { AgentChip, useHydrateAgents } from './AgentChip';
+
 export function Sidebar() {
+  // Fetch /api/agents once on mount so the chip + menu can render names.
+  useHydrateAgents();
   return (
     <aside className="sidebar" data-testid="sidebar" id="sidebar">
       <div className="sidebar-head">
@@ -18,20 +22,7 @@ export function Sidebar() {
         </div>
         {/* sidebar-collapse toggle button placeholder — Task 15 wires it */}
       </div>
-      <button
-        className="agent-chip"
-        aria-haspopup="true"
-        aria-expanded="false"
-        type="button"
-      >
-        <span className="agent-chip-avatar" aria-hidden="true">
-          <span className="dot" />
-        </span>
-        <span className="agent-chip-name">tide</span>
-        <span className="agent-chip-caret" aria-hidden="true">
-          ▾
-        </span>
-      </button>
+      <AgentChip />
       <button className="new-session-btn" type="button">
         <span className="plus" aria-hidden="true">
           +

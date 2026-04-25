@@ -321,3 +321,103 @@ body.sidebar-collapsed .sessions-scroll { visibility: hidden; pointer-events: no
 body.sidebar-collapsed .user-meta,
 body.sidebar-collapsed .user-caret { display: none; }
 body.sidebar-collapsed .user-row { justify-content: center; padding: 7px; }
+
+/* =============================================================
+   AGENT MENU — popover under the agent chip.
+   Adapted from `design_handoff_tide/Tide Sessions.html`. The design's
+   row class names were `.agent-row*`; we use `.agent-menu-row*` so all
+   menu rules sit under one obvious namespace.
+   ============================================================= */
+
+.agent-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 70;
+  background: var(--bg);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px -8px rgba(0,0,0,0.18), 0 2px 6px rgba(0,0,0,0.04);
+  padding: 6px;
+  min-width: 260px;
+  animation: agentMenuPopIn 140ms cubic-bezier(.2,.7,.2,1);
+}
+@keyframes agentMenuPopIn {
+  from { opacity: 0; transform: translateY(-4px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.agent-menu-label {
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-ghost);
+  padding: 8px 10px 4px;
+}
+.agent-menu-rows { display: flex; flex-direction: column; gap: 1px; }
+.agent-menu-row {
+  all: unset;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  transition: background 100ms ease;
+}
+.agent-menu-row:hover { background: var(--bg-deep); }
+.agent-menu-row[aria-selected="true"] { background: var(--bg-deep); }
+.agent-menu-row-avatar {
+  width: 22px; height: 22px;
+  border-radius: 6px;
+  background: var(--bg-deep);
+  border: 1px solid var(--rule);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.agent-menu-row-avatar .dot {
+  width: 5px; height: 5px; border-radius: 50%;
+  background: var(--accent);
+}
+.agent-menu-row-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+}
+.agent-menu-row-name {
+  font-family: var(--serif);
+  font-size: 14px;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+  line-height: 1.1;
+}
+.agent-menu-row-desc {
+  font-size: 11px;
+  color: var(--ink-mute);
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-menu-row-check {
+  width: 14px; height: 14px;
+  color: var(--accent);
+  flex-shrink: 0;
+  font-size: 12px;
+  line-height: 1;
+}
+.agent-menu-foot {
+  padding: 4px 0 2px;
+  margin-top: 4px;
+  border-top: 1px solid var(--rule);
+}
+.agent-menu-note {
+  padding: 8px 10px 4px;
+  font-size: 10.5px;
+  color: var(--ink-ghost);
+  letter-spacing: 0.04em;
+  text-align: center;
+}

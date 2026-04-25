@@ -17,8 +17,9 @@ describe('Sidebar', () => {
   });
 
   it('agent-chip and user-row are buttons with aria-haspopup', () => {
-    render(<Sidebar />);
-    const chip = screen.getByRole('button', { name: /tide/i });
-    expect(chip.getAttribute('aria-haspopup')).toBe('true');
+    const { container } = render(<Sidebar />);
+    const chip = container.querySelector('button.agent-chip');
+    expect(chip).toBeTruthy();
+    expect(chip?.getAttribute('aria-haspopup')).toBe('true');
   });
 });
