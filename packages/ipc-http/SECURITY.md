@@ -107,9 +107,13 @@ This is a documented choice, not an oversight. NetworkPolicy + bearer auth is th
 
 The threat we're explicit about: if NetworkPolicy is disabled or unsupported (some kind clusters' default CNI doesn't enforce policies), an attacker reachable on the cluster network could attempt requests against the listener. Bearer auth still blocks the call without a stolen token, and tokens don't leak from the host (they're held in the session store and minted per session). But "NetworkPolicy is the perimeter" is a real prerequisite — operators running this without policy enforcement should know it.
 
-### No kernel-shutdown lifecycle
+### In-flight requests not actively drained
 
-The listener is bound at `init()` and lives until the process exits. SIGTERM closes the TCP socket abruptly — in-flight requests get a TCP RST, not a clean 503. The plugin exposes `closeListener()` as a seam for the kernel-shutdown work in follow-up #3 of `2026-04-25-week-7-9-followups.md`; once that lands, the kernel will call it on SIGTERM and drain in-flight requests cleanly. Until then, abrupt shutdown is the failure mode.
+The plugin's `Plugin.shutdown` slot calls `server.close()`, which stops accepting new connections and waits for in-flight requests to finish on their own. We do **not** call `server.closeAllConnections()` after a grace period, so a runner holding a long-poll past the per-plugin shutdown timeout (10 s) gets a TCP RST when the timeout fires.
+
+For typical traffic this is fine — every endpoint except `/session.next-message` returns within ms. The long-poll cap is 30 s, which **matches** Kubernetes' default `terminationGracePeriodSeconds` (also 30 s). That's the binding constraint at the cluster level: a long-poll started right before SIGTERM lands won't finish within the kubelet's grace, and the pod gets a SIGKILL when the grace expires. Operators who want long-polls to drain cleanly during rolling deploys must explicitly raise `terminationGracePeriodSeconds`.
+
+The 10 s per-plugin shutdown timeout is the tighter cap inside the pod — it fires first, sending a TCP RST to any long-poll still mid-flight, before the kubelet's 30 s grace expires. We picked "abrupt past the per-plugin timeout" so a misbehaving long-poll can't hold the process hostage. If a future host endpoint legitimately needs a longer grace, `server.closeAllConnections()` after a deadline is the next move — but the kubelet's `terminationGracePeriodSeconds` would also have to grow to match.
 
 ### No `crypto.timingSafeEqual` on token compare
 
@@ -137,7 +141,7 @@ The auth boundary is the allow-list. A token is only mintable via `session:creat
 ## What we don't know yet
 
 - Whether 4 MiB is the right `MAX_FRAME` cap when image-bytes flow through tool calls. We picked it to match the unix listener; a future image-input feature may need a higher cap on a specific endpoint or a streaming alternative. Today, image-bytes-over-IPC isn't a code path.
-- How `closeListener()` will compose with in-flight request draining when the kernel-shutdown lifecycle lands. Node's `server.close()` stops accepting new connections and waits for existing ones; we may need to also call `server.closeAllConnections()` after a grace period if a runner is holding a long-poll. Decision deferred to follow-up #3.
+- Whether the per-plugin 10 s shutdown timeout is the right cap for the long-poll case. The kernel-shutdown lifecycle landed; the listener now closes via `Plugin.shutdown` on SIGTERM. A runner holding a long-poll past 10 s gets a TCP RST instead of a clean 503. Operators with long-running long-polls (none today; cap is 30 s) may want either a longer per-plugin timeout or an explicit `server.closeAllConnections()` after a grace period.
 - Whether the boot-time `process.stderr.write` for the bound address is the right shape once the chart's structured logging lands. It's currently one printf-style line for grep-ability in `kubectl logs`; a future structured-log pass may want to reformat.
 
 ## Security contact

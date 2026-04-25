@@ -13,7 +13,13 @@ import {
   PostgreSqlContainer,
   type StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
-import { HookBus, bootstrap, makeChatContext, type Plugin } from '@ax/core';
+import {
+  HookBus,
+  bootstrap,
+  makeChatContext,
+  type KernelHandle,
+  type Plugin,
+} from '@ax/core';
 import type {
   WorkspaceApplyInput,
   WorkspaceApplyOutput,
@@ -25,17 +31,14 @@ import {
   createSandboxK8sPlugin,
   type K8sCoreApi,
 } from '@ax/sandbox-k8s';
-import type { IpcHttpPlugin } from '@ax/ipc-http';
 import type {
   EventbusEmitInput,
-  EventbusPostgresPlugin,
   EventbusSubscribeInput,
   EventbusSubscription,
 } from '@ax/eventbus-postgres';
 import type {
   SessionCreateInput,
   SessionCreateOutput,
-  SessionPostgresPlugin,
   SessionResolveTokenInput,
   SessionResolveTokenOutput,
 } from '@ax/session-postgres';
@@ -80,11 +83,7 @@ let connectionString: string;
 let bus: HookBus;
 let workspaceRoot: string;
 let kysely: Kysely<unknown>;
-const pluginInstances: {
-  eventbus?: EventbusPostgresPlugin;
-  session?: SessionPostgresPlugin;
-  ipcHttp?: IpcHttpPlugin;
-} = {};
+let kernelHandle: KernelHandle;
 
 // Minimal K8sCoreApi stub. Every method throws if called — and that's the
 // point. The acceptance test never calls `sandbox:open-session`, so the
@@ -169,22 +168,11 @@ beforeAll(async () => {
   );
   filtered.push(llmMockPlugin());
 
-  // Capture eventbus + session plugin handles before bootstrap so afterAll
-  // can call shutdown() on them. The kernel doesn't have a shutdown
-  // lifecycle yet (TODO: kernel-shutdown), so per-plugin cleanup is the
-  // tests' job.
-  for (const p of filtered) {
-    if (p.manifest.name === '@ax/eventbus-postgres') {
-      pluginInstances.eventbus = p as EventbusPostgresPlugin;
-    } else if (p.manifest.name === '@ax/session-postgres') {
-      pluginInstances.session = p as SessionPostgresPlugin;
-    } else if (p.manifest.name === '@ax/ipc-http') {
-      pluginInstances.ipcHttp = p as IpcHttpPlugin;
-    }
-  }
-
   bus = new HookBus();
-  await bootstrap({ bus, plugins: filtered, config: {} });
+  // The kernel handle drives all per-plugin shutdowns in reverse-topological
+  // order on `kernelHandle.shutdown()` — pg pools, LISTEN clients, and the
+  // ipc-http listener all close cleanly before the testcontainer stops.
+  kernelHandle = await bootstrap({ bus, plugins: filtered, config: {} });
 
   // Capture the singleton kysely so afterAll can drain its pool before the
   // container goes away.
@@ -202,12 +190,13 @@ beforeAll(async () => {
 }, 120_000);
 
 afterAll(async () => {
-  // Shut down the LISTEN clients and pools BEFORE stopping the container,
+  // Drain plugins via the kernel handle BEFORE stopping the container,
   // otherwise the abrupt server shutdown surfaces as unhandled
   // `terminating connection due to administrator command` from pg-protocol.
-  await pluginInstances.ipcHttp?.closeListener().catch(() => {});
-  await pluginInstances.session?.shutdown().catch(() => {});
-  await pluginInstances.eventbus?.shutdown().catch(() => {});
+  // The handle's reverse-topological order closes ipc-http's listener,
+  // session-postgres's LISTEN client, and the postgres pools in the right
+  // sequence — same teardown the production SIGTERM path runs.
+  await kernelHandle?.shutdown();
   await kysely?.destroy().catch(() => {});
   if (container) await container.stop();
   if (workspaceRoot) {

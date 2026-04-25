@@ -18,8 +18,10 @@ beforeAll(async () => {
 afterEach(async () => {
   // Drain pools BEFORE the container stops, otherwise the abrupt server
   // shutdown bubbles up as an unhandled `terminating connection due to
-  // administrator command` from pg-protocol. There's no plugin shutdown
-  // lifecycle yet (TODO: kernel-shutdown), so tests own the cleanup.
+  // administrator command` from pg-protocol. The plugin's Plugin.shutdown
+  // would also destroy these via the kernel handle, but these tests
+  // pulled the Kysely directly off the bus rather than tracking the
+  // harness — so we destroy the Kysely instances we grabbed.
   while (opened.length > 0) {
     const k = opened.pop()!;
     await k.destroy().catch(() => {});

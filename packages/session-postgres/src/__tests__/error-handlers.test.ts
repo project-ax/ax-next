@@ -2,10 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import pg from 'pg';
 import { createTestHarness } from '@ax/test-harness';
-import {
-  createSessionPostgresPlugin,
-  type SessionPostgresPlugin,
-} from '../plugin.js';
+import { createSessionPostgresPlugin } from '../plugin.js';
 
 // ---------------------------------------------------------------------------
 // Regression test for Fix 3 (production hardening):
@@ -24,7 +21,7 @@ import {
 
 let container: StartedPostgreSqlContainer;
 let connectionString: string;
-const opened: SessionPostgresPlugin[] = [];
+const harnesses: Awaited<ReturnType<typeof createTestHarness>>[] = [];
 
 beforeAll(async () => {
   container = await new PostgreSqlContainer('postgres:16-alpine').start();
@@ -32,9 +29,9 @@ beforeAll(async () => {
 });
 
 afterEach(async () => {
-  while (opened.length > 0) {
-    const p = opened.pop()!;
-    await p.shutdown().catch(() => {});
+  while (harnesses.length > 0) {
+    const h = harnesses.pop()!;
+    await h.close({ onError: () => {} });
   }
   const cleanupClient = new pg.Client({ connectionString });
   await cleanupClient.connect();
@@ -76,7 +73,7 @@ describe('@ax/session-postgres background error handlers', () => {
     const { records, logger } = makeRecordingLogger();
     const plugin = createSessionPostgresPlugin({ connectionString, logger });
     const h = await createTestHarness({ plugins: [plugin] });
-    opened.push(plugin);
+    harnesses.push(h);
     void h;
 
     // Capture process-level unhandled events — if the plugin missed an

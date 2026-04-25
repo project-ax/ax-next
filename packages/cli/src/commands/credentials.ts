@@ -55,8 +55,9 @@ export async function runCredentialsCommand(opts: RunCredentialsOptions): Promis
   if (value.endsWith('\n')) value = value.slice(0, -1);
 
   const bus = new HookBus();
+  let handle;
   try {
-    await bootstrap({
+    handle = await bootstrap({
       bus,
       plugins: [
         createStorageSqlitePlugin({ databasePath: opts.sqlitePath ?? DEFAULT_SQLITE_PATH }),
@@ -64,24 +65,40 @@ export async function runCredentialsCommand(opts: RunCredentialsOptions): Promis
       ],
       config: {},
     });
-    await bus.call(
-      'credentials:set',
-      makeChatContext({ sessionId: 'cli', agentId: 'cli', userId: 'cli' }),
-      { id, value },
-    );
   } catch (e) {
+    // bootstrap errors (e.g. credentials plugin init when AX_CREDENTIALS_KEY
+    // is missing) come through here. No handle yet — nothing to shut down.
     if (e instanceof PluginError) {
-      // PluginError messages are curated by @ax/credentials specifically to
-      // avoid echoing plaintext. Still — only surface `.message`, never `.cause`.
       err(`error: ${e.message}`);
       return 1;
     }
-    // Unexpected failure. We don't stringify `e` because it might (somehow) have
-    // captured the secret value in a message. Be boring on purpose.
     err('error: unexpected failure');
     return 1;
   }
 
-  out(`credential '${id}' stored`);
-  return 0;
+  try {
+    try {
+      await bus.call(
+        'credentials:set',
+        makeChatContext({ sessionId: 'cli', agentId: 'cli', userId: 'cli' }),
+        { id, value },
+      );
+    } catch (e) {
+      if (e instanceof PluginError) {
+        // PluginError messages are curated by @ax/credentials specifically to
+        // avoid echoing plaintext. Still — only surface `.message`, never `.cause`.
+        err(`error: ${e.message}`);
+        return 1;
+      }
+      // Unexpected failure. We don't stringify `e` because it might (somehow) have
+      // captured the secret value in a message. Be boring on purpose.
+      err('error: unexpected failure');
+      return 1;
+    }
+
+    out(`credential '${id}' stored`);
+    return 0;
+  } finally {
+    await handle.shutdown();
+  }
 }

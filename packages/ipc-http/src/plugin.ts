@@ -11,9 +11,8 @@ const PLUGIN_NAME = '@ax/ipc-http';
 //
 // Registers NO service hooks. The k8s sandbox provider does not call
 // ipc:start/ipc:stop — listener lifecycle is process-scoped, not session-
-// scoped. (A future kernel-shutdown lifecycle will close the listener
-// cleanly on SIGTERM; until then, it dies with the process. The
-// closeListener() handle below is the test/future-kernel seam.)
+// scoped. The kernel-shutdown lifecycle calls Plugin.shutdown() on SIGTERM
+// to close the listener cleanly.
 //
 // `calls` declares the hooks the dispatcher transitively invokes — the same
 // set @ax/ipc-server lists, since both plugins share @ax/ipc-core's
@@ -30,16 +29,9 @@ export interface CreateIpcHttpPluginOptions {
   port: number;
 }
 
-export interface IpcHttpPlugin extends Plugin {
-  /** Test-only handle for explicit teardown. Production lifecycle is
-   *  process-scoped; the planned kernel-shutdown lifecycle will call this
-   *  from the kernel side on SIGTERM. */
-  closeListener(): Promise<void>;
-}
-
 export function createIpcHttpPlugin(
   opts: CreateIpcHttpPluginOptions,
-): IpcHttpPlugin {
+): Plugin {
   let listener: HttpListener | null = null;
 
   return {
@@ -68,7 +60,7 @@ export function createIpcHttpPlugin(
         `[ax/ipc-http] listening on http://${listener.host}:${listener.port}\n`,
       );
     },
-    async closeListener() {
+    async shutdown() {
       if (listener !== null) {
         const l = listener;
         listener = null;

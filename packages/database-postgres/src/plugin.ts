@@ -57,9 +57,6 @@ export function createDatabasePostgresPlugin(config: DatabasePostgresConfig): Pl
       calls: [],
       subscribes: [],
     },
-    // TODO(kernel-shutdown): destroy the pool on shutdown when the kernel
-    // gains a plugin shutdown lifecycle. Today the process exits before
-    // anything can close; pg cleans up its own sockets via Node teardown.
     init({ bus }) {
       validateConnectionString(config.connectionString);
       const bgLogger =
@@ -87,6 +84,14 @@ export function createDatabasePostgresPlugin(config: DatabasePostgresConfig): Pl
         PLUGIN_NAME,
         async () => ({ db: kysely! }),
       );
+    },
+    async shutdown() {
+      if (kysely !== undefined) {
+        await kysely.destroy().catch(() => {
+          // best-effort; PostgresDialect closes pg.Pool internally.
+        });
+        kysely = undefined;
+      }
     },
   };
 }
