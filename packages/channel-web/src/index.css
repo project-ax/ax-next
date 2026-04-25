@@ -516,3 +516,103 @@ body.sidebar-collapsed .user-row { justify-content: center; padding: 7px; }
   background: var(--bg);
   color: var(--ink);
 }
+
+/* Inline rename: while .session-row-title is contenteditable, give it a
+   subtle visual cue. We keep the same height and font metrics so the
+   row doesn't reflow. */
+.session-row-title[contenteditable] {
+  outline: none;
+  cursor: text;
+  background: var(--bg-deep);
+  border-radius: 3px;
+  padding: 0 3px;
+  margin: 0 -3px;
+}
+
+/* Per-row floating menu (rename / delete) — opened by the ⋯ button. */
+.session-row-menu {
+  position: absolute;
+  top: 28px;
+  right: 8px;
+  z-index: 30;
+  background: var(--bg);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 4px;
+  min-width: 130px;
+  box-shadow: var(--shadow-md);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.session-row-menu-item {
+  all: unset;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  font-size: 12.5px;
+  color: var(--ink);
+  border-radius: 3px;
+  transition: background 100ms ease, color 100ms ease;
+}
+.session-row-menu-item:hover {
+  background: var(--bg-deep);
+}
+.session-row-menu-item.danger {
+  color: var(--danger);
+}
+.session-row-menu-item.danger:hover {
+  background: color-mix(in oklch, var(--danger) 14%, transparent);
+}
+
+/* Inline delete-confirm — replaces row contents in place at 34px height
+   so the list doesn't reflow on confirm/cancel. */
+.session-row.confirming-delete {
+  background: color-mix(in oklch, var(--danger) 10%, transparent);
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  cursor: default;
+  /* height: 34px is inherited from .session-row above. */
+}
+.session-row.confirming-delete::before {
+  /* Suppress the .active accent bar if the row was active when confirm
+     opened. */
+  display: none;
+}
+.session-row-confirm-text {
+  flex: 1;
+  font-size: 12px;
+  color: var(--ink);
+  line-height: 1.35;
+  letter-spacing: -0.005em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.session-row-confirm-cancel,
+.session-row-confirm-delete {
+  all: unset;
+  cursor: pointer;
+  font-size: 11.5px;
+  line-height: 1;
+  padding: 3px 7px;
+  border-radius: 3px;
+  transition: background 100ms ease, color 100ms ease;
+}
+.session-row-confirm-cancel {
+  color: var(--ink-soft);
+}
+.session-row-confirm-cancel:hover {
+  color: var(--ink);
+}
+.session-row-confirm-delete {
+  color: var(--danger);
+  font-weight: 500;
+}
+.session-row-confirm-delete:hover {
+  background: var(--danger);
+  color: white;
+}
