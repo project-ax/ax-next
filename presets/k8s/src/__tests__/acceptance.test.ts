@@ -119,7 +119,7 @@ beforeAll(async () => {
     database: { connectionString },
     eventbus: { connectionString },
     session: { connectionString },
-    workspace: { repoRoot: workspaceRoot },
+    workspace: { backend: 'local', repoRoot: workspaceRoot },
     sandbox: { namespace: 'ax-acceptance' },
     // Use port 0 so the @ax/ipc-http listener binds to a free OS-assigned
     // port — the acceptance test never invokes the listener, but the

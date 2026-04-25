@@ -13,6 +13,7 @@
     { "path": "../../packages/eventbus-postgres" },
     { "path": "../../packages/session-postgres" },
     { "path": "../../packages/workspace-git" },
+    { "path": "../../packages/workspace-git-http" },
     { "path": "../../packages/sandbox-k8s" },
     { "path": "../../packages/llm-anthropic" },
     { "path": "../../packages/llm-proxy-anthropic-format" },

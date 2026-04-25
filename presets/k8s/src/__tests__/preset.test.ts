@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { createK8sPlugins, type K8sPresetConfig } from '../index.js';
+import {
+  createK8sPlugins,
+  workspaceConfigFromEnv,
+  type K8sPresetConfig,
+} from '../index.js';
 
 // ---------------------------------------------------------------------------
 // Wiring smoke test for @ax/preset-k8s.
@@ -37,7 +41,7 @@ const stubConfig: K8sPresetConfig = {
   database: { connectionString: 'postgres://stub:5432/stub' },
   eventbus: { connectionString: 'postgres://stub:5432/stub' },
   session: { connectionString: 'postgres://stub:5432/stub' },
-  workspace: { repoRoot: '/tmp/preset-k8s-stub' },
+  workspace: { backend: 'local', repoRoot: '/tmp/preset-k8s-stub' },
   sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
   ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
   anthropic: { model: 'claude-sonnet-4-6' },
@@ -126,5 +130,149 @@ describe('@ax/preset-k8s wiring', () => {
     ]) {
       expect(names.has(forbidden)).toBe(false);
     }
+  });
+});
+
+describe('@ax/preset-k8s workspace backend selection', () => {
+  // Catches the wiring gap that motivated Task 19. Before this slice, the
+  // preset always pushed @ax/workspace-git regardless of config; the http
+  // backend was unreachable from production. These tests pin the
+  // discriminated-union → plugin-name mapping.
+  it("backend: 'local' registers @ax/workspace-git", () => {
+    const plugins = createK8sPlugins({
+      ...stubConfig,
+      workspace: { backend: 'local', repoRoot: '/tmp/preset-k8s-stub' },
+    });
+    const names = new Set(plugins.map((p) => p.manifest.name));
+    expect(names.has('@ax/workspace-git')).toBe(true);
+    expect(names.has('@ax/workspace-git-http')).toBe(false);
+  });
+
+  it("backend: 'http' registers @ax/workspace-git-http", () => {
+    const plugins = createK8sPlugins({
+      ...stubConfig,
+      workspace: {
+        backend: 'http',
+        baseUrl: 'http://git-server.ax-next.svc.cluster.local:7780',
+        token: 'stub-token',
+      },
+    });
+    const names = new Set(plugins.map((p) => p.manifest.name));
+    expect(names.has('@ax/workspace-git-http')).toBe(true);
+    expect(names.has('@ax/workspace-git')).toBe(false);
+  });
+
+  it("both backends register the same workspace:* service hooks", () => {
+    // Invariant I1 reflex check: regardless of backend the kernel must see
+    // the same four service hooks. If a future refactor accidentally drops
+    // one from either plugin, this fails before bootstrap does.
+    const localPlugins = createK8sPlugins({
+      ...stubConfig,
+      workspace: { backend: 'local', repoRoot: '/tmp/preset-k8s-stub' },
+    });
+    const httpPlugins = createK8sPlugins({
+      ...stubConfig,
+      workspace: {
+        backend: 'http',
+        baseUrl: 'http://git-server:7780',
+        token: 't',
+      },
+    });
+    const wsHooksFor = (plugins: ReturnType<typeof createK8sPlugins>) =>
+      plugins
+        .flatMap((p) => p.manifest.registers)
+        .filter((h) => h.startsWith('workspace:'))
+        .sort();
+    expect(wsHooksFor(localPlugins)).toEqual([
+      'workspace:apply',
+      'workspace:diff',
+      'workspace:list',
+      'workspace:read',
+    ]);
+    expect(wsHooksFor(httpPlugins)).toEqual([
+      'workspace:apply',
+      'workspace:diff',
+      'workspace:list',
+      'workspace:read',
+    ]);
+  });
+});
+
+describe('workspaceConfigFromEnv', () => {
+  // The chart writes AX_WORKSPACE_* onto the host pod; the entrypoint reads
+  // them via this helper. These tests pin the env → config translation so a
+  // typo in either place is a unit-test failure, not a runtime "no workspace
+  // plugin" surprise in production.
+  it('defaults to local when AX_WORKSPACE_BACKEND is unset', () => {
+    expect(
+      workspaceConfigFromEnv({ AX_WORKSPACE_ROOT: '/var/lib/ax-next/ws' }),
+    ).toEqual({ backend: 'local', repoRoot: '/var/lib/ax-next/ws' });
+  });
+
+  it('reads local config from AX_WORKSPACE_ROOT', () => {
+    expect(
+      workspaceConfigFromEnv({
+        AX_WORKSPACE_BACKEND: 'local',
+        AX_WORKSPACE_ROOT: '/var/lib/ax-next/ws',
+      }),
+    ).toEqual({ backend: 'local', repoRoot: '/var/lib/ax-next/ws' });
+  });
+
+  it('throws when local backend is missing AX_WORKSPACE_ROOT', () => {
+    expect(() =>
+      workspaceConfigFromEnv({ AX_WORKSPACE_BACKEND: 'local' }),
+    ).toThrowError(/AX_WORKSPACE_ROOT/);
+  });
+
+  it('reads http config from AX_WORKSPACE_GIT_HTTP_{URL,TOKEN}', () => {
+    expect(
+      workspaceConfigFromEnv({
+        AX_WORKSPACE_BACKEND: 'http',
+        AX_WORKSPACE_GIT_HTTP_URL: 'http://git-server:7780',
+        AX_WORKSPACE_GIT_HTTP_TOKEN: 'shh',
+      }),
+    ).toEqual({
+      backend: 'http',
+      baseUrl: 'http://git-server:7780',
+      token: 'shh',
+    });
+  });
+
+  it('throws when http backend is missing AX_WORKSPACE_GIT_HTTP_URL', () => {
+    expect(() =>
+      workspaceConfigFromEnv({
+        AX_WORKSPACE_BACKEND: 'http',
+        AX_WORKSPACE_GIT_HTTP_TOKEN: 'shh',
+      }),
+    ).toThrowError(/AX_WORKSPACE_GIT_HTTP_URL/);
+  });
+
+  it('throws when http backend is missing AX_WORKSPACE_GIT_HTTP_TOKEN', () => {
+    expect(() =>
+      workspaceConfigFromEnv({
+        AX_WORKSPACE_BACKEND: 'http',
+        AX_WORKSPACE_GIT_HTTP_URL: 'http://git-server:7780',
+      }),
+    ).toThrowError(/AX_WORKSPACE_GIT_HTTP_TOKEN/);
+  });
+
+  it('treats empty-string env values as missing (not as valid)', () => {
+    // K8s downward-API and missing-secret edges sometimes inject "" rather
+    // than unsetting the var. We don't want an empty URL/token to silently
+    // pass — it would 401 or DNS-fail at first request and confuse the
+    // operator.
+    expect(() =>
+      workspaceConfigFromEnv({
+        AX_WORKSPACE_BACKEND: 'http',
+        AX_WORKSPACE_GIT_HTTP_URL: '',
+        AX_WORKSPACE_GIT_HTTP_TOKEN: 'shh',
+      }),
+    ).toThrowError(/AX_WORKSPACE_GIT_HTTP_URL/);
+  });
+
+  it('throws on unknown backend value', () => {
+    expect(() =>
+      workspaceConfigFromEnv({ AX_WORKSPACE_BACKEND: 'sftp' }),
+    ).toThrowError(/sftp/);
   });
 });

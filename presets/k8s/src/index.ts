@@ -5,6 +5,7 @@ import { createStoragePostgresPlugin } from '@ax/storage-postgres';
 import { createEventbusPostgresPlugin } from '@ax/eventbus-postgres';
 import { createSessionPostgresPlugin } from '@ax/session-postgres';
 import { createWorkspaceGitPlugin } from '@ax/workspace-git';
+import { createWorkspaceGitHttpPlugin } from '@ax/workspace-git-http';
 import { createSandboxK8sPlugin } from '@ax/sandbox-k8s';
 import { createLlmAnthropicPlugin } from '@ax/llm-anthropic';
 import { createLlmProxyAnthropicFormatPlugin } from '@ax/llm-proxy-anthropic-format';
@@ -62,6 +63,15 @@ function defaultRunnerBinary(): string {
 
 const DEFAULT_CHAT_TIMEOUT_MS = 10 * 60_000;
 
+/**
+ * Discriminated union for the workspace backend. `local` keeps the
+ * single-replica on-PVC bare repo path; `http` forwards every workspace op to
+ * the shared git-server pod so multiple host replicas can share state.
+ */
+export type K8sWorkspaceConfig =
+  | { backend: 'local'; repoRoot: string }
+  | { backend: 'http'; baseUrl: string; token: string };
+
 export interface K8sPresetConfig {
   /**
    * Postgres pool config used by @ax/database-postgres + @ax/storage-postgres.
@@ -89,12 +99,24 @@ export interface K8sPresetConfig {
     poolMax?: number;
   };
   /**
-   * Absolute path to the directory hosting `<repoRoot>/repo.git`. The
-   * workspace-git plugin idempotently `git init`s it on first use.
+   * Workspace backend selection. Two flavors:
+   *
+   *   - `local`: `@ax/workspace-git` writes a bare repo on the host pod's PVC.
+   *     Single-replica deploys only — two hosts mounting the same RWO PVC
+   *     would race. `repoRoot` is the directory hosting `<repoRoot>/repo.git`;
+   *     the plugin idempotently `git init`s it on first use.
+   *
+   *   - `http`: `@ax/workspace-git-http` forwards every workspace op to the
+   *     dedicated git-server pod over HTTP. Multi-replica capable. `baseUrl`
+   *     points at the git-server's cluster Service; `token` is the shared
+   *     bearer token (via Helm-managed Secret).
+   *
+   * The Helm chart drives this via `workspace.backend: local|http` and the
+   * env vars `AX_WORKSPACE_BACKEND` / `AX_WORKSPACE_ROOT` /
+   * `AX_WORKSPACE_GIT_HTTP_URL` / `AX_WORKSPACE_GIT_HTTP_TOKEN`. The host
+   * entrypoint reads those and constructs this config.
    */
-  workspace: {
-    repoRoot: string;
-  };
+  workspace: K8sWorkspaceConfig;
   /**
    * Pod template + readiness/limits config for sandbox-k8s. All fields
    * optional; defaults live in @ax/sandbox-k8s/src/config.ts.
@@ -196,11 +218,24 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   );
 
   // ----- 3. workspace ----------------------------------------------------
-  plugins.push(
-    createWorkspaceGitPlugin({
-      repoRoot: config.workspace.repoRoot,
-    }),
-  );
+  // Discriminated on `backend`. The shape difference is intentional: `local`
+  // wants a filesystem path, `http` wants a URL + bearer token. Both register
+  // the same four `workspace:*` service hooks (Invariant I1 — the contract is
+  // the same regardless of backend).
+  if (config.workspace.backend === 'http') {
+    plugins.push(
+      createWorkspaceGitHttpPlugin({
+        baseUrl: config.workspace.baseUrl,
+        token: config.workspace.token,
+      }),
+    );
+  } else {
+    plugins.push(
+      createWorkspaceGitPlugin({
+        repoRoot: config.workspace.repoRoot,
+      }),
+    );
+  }
 
   // ----- 4. audit log ----------------------------------------------------
   // Subscribes to chat:end and writes a record via storage:set. Pushed
@@ -287,4 +322,69 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   plugins.push(createLlmAnthropicPlugin(anthropicCfg));
 
   return plugins;
+}
+
+// ---------------------------------------------------------------------------
+// Env → workspace-config helper.
+//
+// The Helm chart writes these env vars onto the host pod (see
+// deploy/charts/ax-next/templates/host/deployment.yaml). The host entrypoint
+// reads them via this helper to build the discriminated `workspace` config
+// before calling `createK8sPlugins`.
+//
+//   AX_WORKSPACE_BACKEND        local | http   (default: local)
+//   AX_WORKSPACE_ROOT           required when backend === 'local'
+//   AX_WORKSPACE_GIT_HTTP_URL   required when backend === 'http'
+//   AX_WORKSPACE_GIT_HTTP_TOKEN required when backend === 'http'
+//
+// We throw loudly on missing/unknown values rather than silently defaulting
+// — a misconfigured workspace backend is a deploy-time bug, not a runtime
+// surprise we want to paper over.
+// ---------------------------------------------------------------------------
+
+/**
+ * Read the `AX_WORKSPACE_*` env vars and return a `K8sWorkspaceConfig`.
+ *
+ * Defaults to `local` when `AX_WORKSPACE_BACKEND` is unset (matches the
+ * chart's default). Throws when the chosen backend's required vars are
+ * missing or when the backend value is unknown.
+ *
+ * @param env - the env map to read from. Defaults to `process.env`. Pass an
+ *   explicit object to keep tests deterministic (don't rely on the real
+ *   `process.env` leaking between cases).
+ */
+export function workspaceConfigFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): K8sWorkspaceConfig {
+  const backend = env.AX_WORKSPACE_BACKEND ?? 'local';
+
+  if (backend === 'local') {
+    const repoRoot = env.AX_WORKSPACE_ROOT;
+    if (repoRoot === undefined || repoRoot === '') {
+      throw new Error(
+        'AX_WORKSPACE_BACKEND=local requires AX_WORKSPACE_ROOT to be set',
+      );
+    }
+    return { backend: 'local', repoRoot };
+  }
+
+  if (backend === 'http') {
+    const baseUrl = env.AX_WORKSPACE_GIT_HTTP_URL;
+    const token = env.AX_WORKSPACE_GIT_HTTP_TOKEN;
+    if (baseUrl === undefined || baseUrl === '') {
+      throw new Error(
+        'AX_WORKSPACE_BACKEND=http requires AX_WORKSPACE_GIT_HTTP_URL to be set',
+      );
+    }
+    if (token === undefined || token === '') {
+      throw new Error(
+        'AX_WORKSPACE_BACKEND=http requires AX_WORKSPACE_GIT_HTTP_TOKEN to be set',
+      );
+    }
+    return { backend: 'http', baseUrl, token };
+  }
+
+  throw new Error(
+    `unknown AX_WORKSPACE_BACKEND=${backend}; expected 'local' or 'http'`,
+  );
 }

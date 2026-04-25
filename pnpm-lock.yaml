@@ -970,6 +970,9 @@ importers:
       '@ax/workspace-git':
         specifier: workspace:*
         version: link:../../packages/workspace-git
+      '@ax/workspace-git-http':
+        specifier: workspace:*
+        version: link:../../packages/workspace-git-http
     devDependencies:
       '@ax/llm-mock':
         specifier: workspace:*
