@@ -181,6 +181,9 @@ importers:
       '@ax/mcp-client':
         specifier: workspace:*
         version: link:../mcp-client
+      '@ax/preset-k8s':
+        specifier: workspace:*
+        version: link:../../presets/k8s
       '@ax/sandbox-subprocess':
         specifier: workspace:*
         version: link:../sandbox-subprocess
