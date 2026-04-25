@@ -300,6 +300,9 @@ describe('@ax/preset-k8s acceptance (postgres + workspace-git end-to-end)', () =
     expect(resolved).toEqual({
       sessionId: 'acceptance-session-1',
       workspaceRoot: '/tmp/ws-stub',
+      // Pre-9.5 (no owner on session:create) — userId/agentId surface as null.
+      userId: null,
+      agentId: null,
     });
   });
 

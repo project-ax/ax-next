@@ -3,10 +3,13 @@ import { PluginError } from '@ax/core';
 import { createTestHarness } from '@ax/test-harness';
 import { createSessionInmemoryPlugin } from '../plugin.js';
 import type {
+  AgentConfig,
   SessionClaimWorkInput,
   SessionClaimWorkOutput,
   SessionCreateInput,
   SessionCreateOutput,
+  SessionGetConfigInput,
+  SessionGetConfigOutput,
   SessionQueueWorkInput,
   SessionQueueWorkOutput,
   SessionResolveTokenInput,
@@ -15,11 +18,23 @@ import type {
   SessionTerminateOutput,
 } from '../types.js';
 
+const OWNER: { userId: string; agentId: string; agentConfig: AgentConfig } = {
+  userId: 'u-1',
+  agentId: 'a-1',
+  agentConfig: {
+    systemPrompt: 'be helpful',
+    allowedTools: ['file.read'],
+    mcpConfigIds: [],
+    model: 'claude-sonnet-4-7',
+  },
+};
+
 describe('@ax/session-inmemory plugin', () => {
-  it('registers all five service hooks on the bus', async () => {
+  it('registers all six service hooks on the bus', async () => {
     const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
     expect(h.bus.hasService('session:create')).toBe(true);
     expect(h.bus.hasService('session:resolve-token')).toBe(true);
+    expect(h.bus.hasService('session:get-config')).toBe(true);
     expect(h.bus.hasService('session:queue-work')).toBe(true);
     expect(h.bus.hasService('session:claim-work')).toBe(true);
     expect(h.bus.hasService('session:terminate')).toBe(true);
@@ -73,7 +88,12 @@ describe('@ax/session-inmemory plugin', () => {
       ctx,
       { token },
     );
-    expect(before).toEqual({ sessionId: 's-term', workspaceRoot: '/tmp/ws' });
+    expect(before).toEqual({
+      sessionId: 's-term',
+      workspaceRoot: '/tmp/ws',
+      userId: null,
+      agentId: null,
+    });
 
     const termResult = await h.bus.call<SessionTerminateInput, SessionTerminateOutput>(
       'session:terminate',
@@ -166,6 +186,109 @@ describe('@ax/session-inmemory plugin', () => {
       payload: { role: 'user', content: 'hi' },
       cursor: 1,
     });
+  });
+
+  // ---------------------------------------------------------------------
+  // Week 9.5 — owner field on session:create + session:get-config
+  // ---------------------------------------------------------------------
+
+  it('session:create with owner round-trips userId/agentId via resolve-token', async () => {
+    const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
+    const ctx = h.ctx();
+    const { token } = await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+      'session:create',
+      ctx,
+      { sessionId: 's-own', workspaceRoot: '/tmp/ws', owner: OWNER },
+    );
+    const resolved = await h.bus.call<
+      SessionResolveTokenInput,
+      SessionResolveTokenOutput
+    >('session:resolve-token', ctx, { token });
+    expect(resolved).toEqual({
+      sessionId: 's-own',
+      workspaceRoot: '/tmp/ws',
+      userId: 'u-1',
+      agentId: 'a-1',
+    });
+  });
+
+  it('session:get-config returns the owner+agentConfig when ctx.sessionId is owned', async () => {
+    const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
+    await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+      'session:create',
+      h.ctx(),
+      { sessionId: 's-cfg', workspaceRoot: '/tmp/ws', owner: OWNER },
+    );
+    const ctxForGet = h.ctx({ sessionId: 's-cfg' });
+    const result = await h.bus.call<SessionGetConfigInput, SessionGetConfigOutput>(
+      'session:get-config',
+      ctxForGet,
+      {},
+    );
+    expect(result).toEqual({
+      userId: 'u-1',
+      agentId: 'a-1',
+      agentConfig: OWNER.agentConfig,
+    });
+  });
+
+  it('session:get-config rejects with owner-missing when the session has no owner (pre-9.5 record)', async () => {
+    const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
+    await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+      'session:create',
+      h.ctx(),
+      { sessionId: 's-legacy', workspaceRoot: '/tmp/ws' },
+    );
+    let caught: unknown;
+    try {
+      await h.bus.call<SessionGetConfigInput, SessionGetConfigOutput>(
+        'session:get-config',
+        h.ctx({ sessionId: 's-legacy' }),
+        {},
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('owner-missing');
+  });
+
+  it('session:get-config rejects with unknown-session when ctx.sessionId is unknown', async () => {
+    const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
+    let caught: unknown;
+    try {
+      await h.bus.call<SessionGetConfigInput, SessionGetConfigOutput>(
+        'session:get-config',
+        h.ctx({ sessionId: 'never-existed' }),
+        {},
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('unknown-session');
+  });
+
+  it('session:create rejects a half-set owner (must include userId AND agentId AND agentConfig)', async () => {
+    const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
+    let caught: unknown;
+    try {
+      await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+        'session:create',
+        h.ctx(),
+        {
+          sessionId: 's-half',
+          workspaceRoot: '/tmp/ws',
+          // Missing agentId on purpose — should fail loudly. I10: a session
+          // cannot be "kind of" owned.
+          owner: { userId: 'u-1', agentConfig: OWNER.agentConfig } as never,
+        },
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('invalid-payload');
   });
 
   it('queue-work rejects a user-message with a role outside user|assistant|system', async () => {
