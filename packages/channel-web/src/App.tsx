@@ -1,16 +1,70 @@
-import { useEffect } from 'react';
-import { useAgentStore } from './lib/agent-store';
-import { sessionStoreActions } from './lib/session-store';
+/**
+ * App — auth-gated root component.
+ *
+ * Boot flow:
+ *   1. `loading` — fetch `/api/auth/get-session` on mount.
+ *   2. `unauthenticated` — render `<LoginPage />` (single Google CTA).
+ *   3. `authenticated` — render `<AppContent />` with the assistant-ui
+ *      runtime, sidebar, session header, and thread.
+ *
+ * Global keyboard shortcuts (⌘\, ⌘N) live inside `<AppContent>` so they
+ * only bind once the user is signed in. Unauthenticated state can't
+ * accidentally trigger a session create against an unknown user.
+ *
+ * Per-test-file note: components in `components/` render in isolation and
+ * bypass the auth gate. Only `App.tsx` is gated; downstream tests don't
+ * need to mock `/api/auth/*`.
+ */
+import { useEffect, useState } from 'react';
+import { AssistantRuntimeProvider } from '@assistant-ui/react';
+import { useAxChatRuntime } from './lib/runtime';
+import { getSession, type AuthUser } from './lib/auth';
 import {
   hydrateSidebarCollapsed,
   setSidebarCollapsed,
 } from './lib/sidebar-collapse';
+import { useAgentStore } from './lib/agent-store';
+import { sessionStoreActions } from './lib/session-store';
+import { LoginPage } from './components/LoginPage';
+import { Sidebar } from './components/Sidebar';
+import { SessionHeader } from './components/SessionHeader';
+import { Thread } from './components/Thread';
+
+type AuthState = 'loading' | 'authenticated' | 'unauthenticated';
 
 export const App = () => {
-  // Subscribe so the ⌘N handler picks up agent changes without remounting
-  // the listener on every keystroke. The component re-renders, the listener
-  // is re-bound, and the closed-over snapshot stays current.
+  const [authState, setAuthState] = useState<AuthState>('loading');
+  const [user, setUser] = useState<AuthUser | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const session = await getSession();
+      if (cancelled) return;
+      if (session?.user) {
+        setUser(session.user);
+        setAuthState('authenticated');
+      } else {
+        setAuthState('unauthenticated');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (authState === 'loading') {
+    return <div className="app-loading">connecting…</div>;
+  }
+  if (authState === 'unauthenticated') {
+    return <LoginPage />;
+  }
+  return <AppContent user={user!} />;
+};
+
+const AppContent = ({ user }: { user: AuthUser }) => {
   const { agents, selectedAgentId, pendingAgentId } = useAgentStore();
+  const runtime = useAxChatRuntime(undefined, undefined, user.id, undefined);
 
   useEffect(() => {
     // Apply persisted sidebar state before first paint of any subscriber.
@@ -31,14 +85,26 @@ export const App = () => {
           pendingAgentId ?? selectedAgentId ?? agents[0]?.id ?? null;
         if (!activeAgentId) return;
         e.preventDefault();
-        void sessionStoreActions.createAndActivate(activeAgentId).catch((err) => {
-          console.warn('[app] ⌘N create failed', err);
-        });
+        void sessionStoreActions
+          .createAndActivate(activeAgentId)
+          .catch((err) => {
+            console.warn('[app] ⌘N create failed', err);
+          });
       }
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [agents, selectedAgentId, pendingAgentId]);
 
-  return <div>boot</div>;
+  return (
+    <AssistantRuntimeProvider runtime={runtime}>
+      <div className="app-layout">
+        <Sidebar />
+        <main className="pane">
+          <SessionHeader />
+          <Thread />
+        </main>
+      </div>
+    </AssistantRuntimeProvider>
+  );
 };

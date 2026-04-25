@@ -1053,3 +1053,107 @@ body.sidebar-collapsed .composer { left: 56px; }
 .msg-edit-send:hover {
   filter: brightness(1.05);
 }
+
+/* =============================================================
+   APP SHELL — root layout for the authenticated state, plus the
+   short-lived loading state shown while `/api/auth/get-session`
+   is in flight.
+   ============================================================= */
+
+.app-layout {
+  display: flex;
+  min-height: 100vh;
+}
+
+.pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  min-width: 0;
+}
+
+.app-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  color: var(--ink-mute);
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+
+/* =============================================================
+   LOGIN PAGE — unauthenticated landing. Centered card, brand
+   wordmark, single Google CTA. Matches the Tide aesthetic: warm
+   surface-raised panel, soft shadow, no chrome, no marketing.
+   ============================================================= */
+
+.login-page {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 24px;
+  background: var(--bg);
+}
+
+.login-card {
+  width: 100%;
+  max-width: 360px;
+  background: var(--surface-raised);
+  border: 1px solid var(--rule);
+  border-radius: 14px;
+  box-shadow: var(--shadow-md);
+  padding: 36px 32px 28px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  text-align: center;
+}
+
+.login-brand {
+  font-family: var(--serif);
+  font-size: 28px;
+  font-weight: 500;
+  letter-spacing: -0.015em;
+  color: var(--ink);
+  line-height: 1;
+}
+
+.login-blurb {
+  font-size: 13px;
+  color: var(--ink-mute);
+  letter-spacing: -0.005em;
+  line-height: 1.4;
+  margin: 0 0 6px;
+}
+
+.login-cta {
+  all: unset;
+  cursor: pointer;
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--accent);
+  color: var(--bg);
+  font-family: var(--sans);
+  font-size: 13.5px;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  padding: 10px 14px;
+  border-radius: 8px;
+  text-align: center;
+  transition: transform 140ms ease, filter 140ms ease, box-shadow 140ms ease;
+  box-shadow: var(--shadow-sm);
+}
+.login-cta:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.05);
+  box-shadow: var(--shadow-md);
+}
+.login-cta:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 50%, transparent);
+  outline-offset: 2px;
+}
