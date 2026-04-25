@@ -18,7 +18,7 @@ import {
   createWorkspaceGitServer,
   type WorkspaceGitServer,
 } from '../server/index.js';
-import { createTestHarness } from '@ax/test-harness';
+import { createTestHarness, type TestHarness } from '@ax/test-harness';
 import { createWorkspaceGitHttpPlugin } from '../plugin.js';
 import {
   PluginError,
@@ -31,7 +31,16 @@ import {
 
 describe('multi-replica concurrent applies', () => {
   let server: WorkspaceGitServer | null = null;
+  let harnesses: TestHarness[] = [];
+
   afterEach(async () => {
+    // Tear down harnesses BEFORE the server so any in-flight host-side
+    // requests get a chance to settle against a still-listening server.
+    // close() drains each plugin's optional shutdown() — host-side
+    // workspace-git-http doesn't currently implement one, so this is
+    // a no-op today, but the pattern is correct for when it does.
+    await Promise.all(harnesses.map((h) => h.close()));
+    harnesses = [];
     if (server) await server.close();
     server = null;
   });
@@ -48,7 +57,7 @@ describe('multi-replica concurrent applies', () => {
     // Three independent host replicas — separate buses + harnesses + plugins.
     // They share the same baseUrl + token (they're "replicas" of the same
     // logical host, talking to the same git-server pod).
-    const harnesses = await Promise.all(
+    harnesses = await Promise.all(
       [0, 1, 2].map(async () =>
         createTestHarness({
           plugins: [createWorkspaceGitHttpPlugin({ baseUrl, token: 'secret' })],
