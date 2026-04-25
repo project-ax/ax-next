@@ -22,6 +22,12 @@ export interface HttpRequest {
    * route the request.
    */
   readonly query: Record<string, string>;
+  /**
+   * Path parameters captured by `:name` segments in the registered route
+   * pattern. Always present; empty object for exact-match routes. Values
+   * are URI-decoded before being handed to the handler.
+   */
+  readonly params: Record<string, string>;
   readonly headers: Record<string, string>;
   readonly body: Buffer;
   readonly cookies: Record<string, string>;

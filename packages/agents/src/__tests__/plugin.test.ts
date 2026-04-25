@@ -27,10 +27,26 @@ const harnesses: TestHarness[] = [];
 async function makeHarness(extras: {
   withTeams?: 'always-member' | 'never-member' | null;
 } = {}): Promise<TestHarness> {
+  // The agents plugin declares `calls: ['database:get-instance',
+  // 'http:register-route', 'auth:require-user']`. The bus tests below don't
+  // exercise the HTTP surface — admin-routes.test.ts does that against a
+  // real http-server. Stub the two HTTP-side calls so verifyCalls passes
+  // and the plugin's init can register its admin routes against the no-op
+  // mock without booting a TCP listener.
   const services: Record<
     string,
     (ctx: unknown, input: unknown) => Promise<unknown>
-  > = {};
+  > = {
+    'http:register-route': async () => ({ unregister: () => {} }),
+    'auth:require-user': async () => {
+      // Tests that drive the bus directly never hit /admin/agents — this
+      // mock is never exercised. Throw so a future test that DID call
+      // through this stub catches the omission early.
+      throw new Error(
+        'auth:require-user mock not configured for plugin.test.ts',
+      );
+    },
+  };
   if (extras.withTeams === 'always-member') {
     services['teams:is-member'] = async () => ({ member: true });
   } else if (extras.withTeams === 'never-member') {
@@ -99,10 +115,10 @@ describe('@ax/agents plugin manifest + lifecycle', () => {
         'agents:update',
         'agents:delete',
       ],
-      // Only database:get-instance is hard. teams:is-member is graceful
-      // (handled inside checkAccess via try/catch) and intentionally NOT
-      // declared in calls.
-      calls: ['database:get-instance'],
+      // database:get-instance + http:register-route + auth:require-user are
+      // hard. teams:is-member is graceful (handled inside checkAccess via
+      // try/catch) and intentionally NOT declared in calls.
+      calls: ['database:get-instance', 'http:register-route', 'auth:require-user'],
       subscribes: [],
     });
   });

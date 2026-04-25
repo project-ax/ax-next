@@ -7,6 +7,7 @@ import {
 } from '@ax/core';
 import type { Kysely } from 'kysely';
 import { checkAccess } from './acl.js';
+import { registerAdminAgentRoutes } from './admin-routes.js';
 import { runAgentsMigration, type AgentsDatabase } from './migrations.js';
 import {
   createAgentStore,
@@ -53,8 +54,12 @@ const PLUGIN_NAME = '@ax/agents';
 
 export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
   let db: Kysely<AgentsDatabase> | undefined;
-  let store: AgentStore | undefined;
+  // store ref is kept for shutdown symmetry only; the actual closure
+  // capture is `localStore` inside init(). Prefixed with `_` so lint
+  // doesn't flag it; re-init reassigns it via init().
+  let _store: AgentStore | undefined;
   const allowedModels = resolveAllowedModels(config.allowedModels);
+  const unregisterRoutes: Array<() => void> = [];
 
   return {
     manifest: {
@@ -67,7 +72,12 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
         'agents:update',
         'agents:delete',
       ],
-      calls: ['database:get-instance'],
+      // database:get-instance is hard. http:register-route + auth:require-user
+      // are hard NOW because we mount admin routes; the plugin won't boot
+      // without @ax/http-server + @ax/auth. teams:is-member stays graceful
+      // (handled inside checkAccess via try/catch) and intentionally NOT
+      // declared.
+      calls: ['database:get-instance', 'http:register-route', 'auth:require-user'],
       subscribes: [],
     },
 
@@ -86,7 +96,7 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
       db = shared as Kysely<AgentsDatabase>;
       await runAgentsMigration(db);
       const localStore = createAgentStore(db);
-      store = localStore;
+      _store = localStore;
 
       bus.registerService<ResolveInput, ResolveOutput>(
         'agents:resolve',
@@ -119,14 +129,33 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
         PLUGIN_NAME,
         async (ctx, input) => deleteAgent(localStore, bus, ctx, input),
       );
+
+      // Mount /admin/agents[/:id]. Routes are registered LAST so the bus
+      // calls inside their handlers reach our own services, which were
+      // registered above. The unregister callbacks are tracked so a
+      // re-init in tests doesn't trip duplicate-route on the http-server.
+      const unregisters = await registerAdminAgentRoutes(bus, initCtx);
+      unregisterRoutes.push(...unregisters);
     },
 
     async shutdown() {
+      // Drop admin routes first so a subsequent re-init can re-register
+      // without colliding. unregister is idempotent (http-server's
+      // contract); we still wrap in try/catch so a transport error
+      // doesn't abort the rest of the shutdown.
+      while (unregisterRoutes.length > 0) {
+        const fn = unregisterRoutes.pop();
+        try {
+          fn?.();
+        } catch {
+          // best-effort
+        }
+      }
       // The shared db handle is owned by @ax/database-postgres; don't close
       // it here. Just drop our references so a re-init doesn't read a
       // stale store.
       db = undefined;
-      store = undefined;
+      _store = undefined;
     },
   };
 }

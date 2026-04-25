@@ -331,8 +331,8 @@ async function handle(
     return finish(status, { error: reqResult.reason });
   }
 
-  const handler = router.match(method, path);
-  if (handler === undefined) {
+  const matched = router.match(method, path);
+  if (matched === undefined) {
     const otherMethods = router.methodsFor(path);
     if (otherMethods.size > 0) {
       const allow = [...otherMethods].sort().join(', ');
@@ -341,6 +341,7 @@ async function handle(
     }
     return finish(404, { error: 'not-found' });
   }
+  const handler = matched.handler;
 
   let body: Buffer;
   try {
@@ -362,6 +363,7 @@ async function handle(
     method,
     path,
     query,
+    params: matched.params,
     headers,
     body,
     cookies,
