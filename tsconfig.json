@@ -40,6 +40,7 @@
     { "path": "packages/channel-web" },
     { "path": "packages/http-server" },
     { "path": "packages/auth" },
+    { "path": "packages/agents" },
     { "path": "presets/k8s" }
   ]
 }
