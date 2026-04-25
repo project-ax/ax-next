@@ -168,6 +168,84 @@ describe('Inline rename', () => {
     });
   });
 
+  it('Empty title on Enter restores the original DOM text without PATCH', async () => {
+    seedOneSession('s-1', 'old title');
+    const { container } = render(<SessionList />);
+    await waitFor(() => screen.getByText('old title'));
+
+    const titleEl = container.querySelector(
+      '.session-row-title',
+    ) as HTMLElement;
+
+    act(() => {
+      fireEvent.doubleClick(titleEl);
+    });
+
+    // User typed an empty string (or whitespace) and hit Enter.
+    titleEl.textContent = '   ';
+    act(() => {
+      fireEvent.keyDown(titleEl, { key: 'Enter' });
+    });
+
+    // No PATCH should have been issued — the empty title is rejected client-side.
+    const patchCall = fetchMock.mock.calls.find(
+      (c) => (c[1] as RequestInit | undefined)?.method === 'PATCH',
+    );
+    expect(patchCall).toBeUndefined();
+
+    // Title text in the DOM is the original. Without the fix the user's
+    // typed whitespace would persist because React skips reconciling the
+    // text node when the prop hasn't changed.
+    await waitFor(() => {
+      const t = container.querySelector('.session-row-title') as HTMLElement;
+      expect(t.getAttribute('contenteditable')).toBeNull();
+      expect(t.textContent).toBe('old title');
+    });
+  });
+
+  it('Failed PATCH (non-2xx) restores the original DOM text', async () => {
+    seedOneSession('s-1', 'old title');
+    const { container } = render(<SessionList />);
+    await waitFor(() => screen.getByText('old title'));
+
+    const titleEl = container.querySelector(
+      '.session-row-title',
+    ) as HTMLElement;
+
+    act(() => {
+      fireEvent.doubleClick(titleEl);
+    });
+
+    // Server rejects the rename (e.g., 400 / 500).
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 500, json: async () => ({}) });
+    // After bumpVersion(), the list re-fetch returns the original title.
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        sessions: [
+          {
+            id: 's-1',
+            title: 'old title',
+            agent_id: 'tide',
+            updated_at: Date.now(),
+            created_at: Date.now(),
+            user_id: 'u2',
+          },
+        ],
+      }),
+    });
+
+    titleEl.textContent = 'new title that fails';
+    act(() => {
+      fireEvent.keyDown(titleEl, { key: 'Enter' });
+    });
+
+    await waitFor(() => {
+      const t = container.querySelector('.session-row-title') as HTMLElement;
+      expect(t.textContent).toBe('old title');
+    });
+  });
+
   it('Blur commits same as Enter', async () => {
     seedOneSession('s-1', 'old title');
     const { container } = render(<SessionList />);

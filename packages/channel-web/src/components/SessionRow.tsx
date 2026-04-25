@@ -85,11 +85,14 @@ export function SessionRow({
     setRowState('idle');
   }, []);
 
-  // When entering rename mode, focus the title and select all text.
+  // When entering rename mode, seed the textContent imperatively (we don't
+  // render `{title}` while renaming so a parent re-render can't clobber the
+  // user's in-progress edits), focus the title, and select all text.
   useEffect(() => {
     if (rowState !== 'renaming') return;
     const el = titleRef.current;
     if (!el) return;
+    el.textContent = title;
     el.focus();
     try {
       const range = document.createRange();
@@ -100,6 +103,9 @@ export function SessionRow({
     } catch {
       // jsdom may not implement Range fully; ignore.
     }
+    // Deliberately exclude `title` from deps — re-seeding on a parent-driven
+    // title prop change would erase mid-edit text.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rowState]);
 
   const commitRename = useCallback(async () => {
@@ -108,16 +114,32 @@ export function SessionRow({
     const el = titleRef.current;
     const next = (el?.textContent ?? '').trim();
     exitRename();
-    if (!next || next === title) return;
+    // Empty or unchanged → restore the original title in the DOM. React
+    // will skip reconciling the text node because the `title` prop hasn't
+    // changed, so without an imperative restore the user's typed text
+    // would persist visually.
+    if (!next || next === title) {
+      if (el) el.textContent = title;
+      return;
+    }
+    let ok = false;
     try {
-      await fetch(`/api/chat/sessions/${id}`, {
+      const res = await fetch(`/api/chat/sessions/${id}`, {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify({ title: next }),
       });
+      ok = res.ok;
+      if (!ok) {
+        console.warn('[session-row] rename PATCH failed', res.status);
+      }
     } catch (err) {
       console.warn('[session-row] rename PATCH failed', err);
+    }
+    if (!ok && el) {
+      // Server rejected — undo the visual change so the DOM matches truth.
+      el.textContent = title;
     }
     sessionStoreActions.bumpVersion();
   }, [exitRename, id, title]);
@@ -280,7 +302,10 @@ export function SessionRow({
         }}
         {...titleEditableProps}
       >
-        {title}
+        {/* Don't render `{title}` while renaming — the imperative effect
+            seeds it on entry, and React reconciling the prop would
+            clobber any in-progress edit on a parent re-render. */}
+        {rowState === 'renaming' ? null : title}
       </span>
       <span
         ref={moreRef}

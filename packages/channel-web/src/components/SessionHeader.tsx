@@ -46,10 +46,14 @@ export function SessionHeader() {
   const renameCommittedRef = useRef(false);
 
   // Focus + select-all on entering rename mode. Same pattern as SessionRow.
+  // Also seeds the textContent imperatively because we don't render `{title}`
+  // while renaming (see render below) — this keeps parent re-renders from
+  // clobbering the user's in-progress edits.
   useEffect(() => {
     if (!isRenaming) return;
     const el = titleRef.current;
     if (!el) return;
+    el.textContent = title;
     el.focus();
     try {
       const range = document.createRange();
@@ -60,6 +64,9 @@ export function SessionHeader() {
     } catch {
       // jsdom may not implement Range fully; ignore.
     }
+    // We deliberately exclude `title` from the dep array — re-seeding on
+    // a parent-driven title prop change would erase mid-edit text.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isRenaming]);
 
   const exitRename = useCallback(() => {
@@ -73,16 +80,34 @@ export function SessionHeader() {
     const next = (el?.textContent ?? '').trim();
     exitRename();
     if (!active) return;
-    if (!next || next === active.title) return;
+    if (!next || next === active.title) {
+      // Empty / unchanged → restore the visible text. Once we exit rename
+      // mode the div renders `{title}` again; setting it imperatively here
+      // is belt-and-suspenders for the rare `el && next.trim() === ''`
+      // path before the re-render lands.
+      if (el) el.textContent = active.title;
+      return;
+    }
+    let ok = false;
     try {
-      await fetch(`/api/chat/sessions/${active.id}`, {
+      const res = await fetch(`/api/chat/sessions/${active.id}`, {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify({ title: next }),
       });
+      ok = res.ok;
+      if (!ok) {
+        console.warn('[session-header] rename PATCH failed', res.status);
+      }
     } catch (err) {
       console.warn('[session-header] rename PATCH failed', err);
+    }
+    if (!ok && el) {
+      // Server rejected — undo the visual change. bumpVersion() below also
+      // re-fetches authoritative data, but we restore eagerly so the user
+      // doesn't see their not-actually-saved text linger.
+      el.textContent = active.title;
     }
     sessionStoreActions.bumpVersion();
   }, [active, exitRename]);
@@ -148,7 +173,11 @@ export function SessionHeader() {
           }}
           {...titleEditableProps}
         >
-          {title}
+          {/* While renaming we leave the div's text alone — the imperative
+              effect seeds it on entry, and React reconciling `{title}`
+              would clobber any in-progress edit if the parent re-renders
+              (e.g., a session-store update). */}
+          {!isRenaming ? title : null}
         </div>
         <div className="header-actions">
           <button

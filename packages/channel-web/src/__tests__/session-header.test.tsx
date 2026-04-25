@@ -78,4 +78,45 @@ describe('SessionHeader', () => {
     render(<SessionHeader />);
     expect(screen.getByLabelText(/new session/i)).toBeTruthy();
   });
+
+  it('parent re-render during rename does not clobber typed text', async () => {
+    fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({}) });
+    render(<SessionHeader />);
+    const title = screen.getByTestId('session-header-title');
+    fireEvent.doubleClick(title);
+
+    // User types into the contentEditable buffer.
+    title.textContent = 'partially typed';
+
+    // A parent re-render fires (e.g., session-store update from a
+    // bumpVersion() on another row, or a /api/agents poll). Without the
+    // fix, React reconciles `{title}` back into the text node and erases
+    // the user's edit.
+    sessionStoreActions.setSessions([
+      {
+        id: 's-1',
+        title: 'first thread',
+        agent_id: 'tide',
+        updated_at: 2,
+        created_at: 1,
+        user_id: 'u2',
+      },
+    ]);
+
+    // The typed text should still be there.
+    expect(title.textContent).toBe('partially typed');
+
+    // Confirm Enter still commits the typed text.
+    fireEvent.keyDown(title, { key: 'Enter' });
+    await waitFor(() => {
+      const patch = fetchMock.mock.calls.find(
+        ([, opts]) => (opts as RequestInit | undefined)?.method === 'PATCH',
+      );
+      expect(patch).toBeTruthy();
+      const body = JSON.parse((patch![1] as RequestInit).body as string) as {
+        title: string;
+      };
+      expect(body.title).toBe('partially typed');
+    });
+  });
 });
