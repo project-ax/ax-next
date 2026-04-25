@@ -6,7 +6,12 @@ disk. Single-replica only this slice — multi-replica needs a shared
 storage backend (Week 10+ git-server pod). The PVC is intentionally
 left orphaned by helm uninstall (resource-policy: keep) so a reinstall
 picks the same data up.
+
+Only rendered when workspace.backend == "local". In "http" mode the
+host pod talks to the git-server pod over HTTP and owns no local repo
+storage of its own — that PVC lives on the git-server side.
 */}}
+{{- if eq .Values.workspace.backend "local" }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -25,3 +30,4 @@ spec:
   {{- if .Values.workspace.storageClassName }}
   storageClassName: {{ .Values.workspace.storageClassName }}
   {{- end }}
+{{- end }}
