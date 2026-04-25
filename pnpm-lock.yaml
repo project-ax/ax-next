@@ -341,6 +341,9 @@ importers:
         specifier: workspace:*
         version: link:../ipc-protocol
     devDependencies:
+      '@ax/ipc-server':
+        specifier: workspace:*
+        version: link:../ipc-server
       '@ax/session-inmemory':
         specifier: workspace:*
         version: link:../session-inmemory
@@ -381,6 +384,9 @@ importers:
       '@ax/core':
         specifier: workspace:*
         version: link:../core
+      '@ax/ipc-core':
+        specifier: workspace:*
+        version: link:../ipc-core
       '@ax/ipc-protocol':
         specifier: workspace:*
         version: link:../ipc-protocol

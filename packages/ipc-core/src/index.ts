@@ -1,3 +1,26 @@
-// Populated by the next task in the slice — moved from @ax/ipc-server.
-// Kept as an empty export so the package builds cleanly in the meantime.
-export {};
+export {
+  dispatch,
+} from './dispatcher.js';
+export {
+  authenticate,
+  type AuthResult,
+} from './auth.js';
+export {
+  readJsonBody,
+  BadJsonError,
+  TooLargeError,
+  type ReadBodyResult,
+} from './body.js';
+export {
+  writeJsonError,
+  writeJsonOk,
+} from './response.js';
+export {
+  validationError,
+  notFound,
+  hookRejected,
+  mapPluginError,
+  internalError,
+  logInternalError,
+  type IpcErrorCode,
+} from './errors.js';

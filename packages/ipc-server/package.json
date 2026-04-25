@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@ax/core": "workspace:*",
+    "@ax/ipc-core": "workspace:*",
     "@ax/ipc-protocol": "workspace:*"
   },
   "devDependencies": {

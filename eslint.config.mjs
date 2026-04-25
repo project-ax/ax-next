@@ -15,8 +15,15 @@
 //                          dispatcher). It is NOT a hook-bus plugin; it's
 //                          the one-way bridge from sandbox code back to
 //                          the host-side listener.
+//   @ax/ipc-core         — kernel-adjacent shared library: transport-agnostic
+//                          IPC dispatcher, auth middleware, body reader,
+//                          response/error helpers, and per-action handlers.
+//                          Built on by transport-specific listener packages
+//                          (@ax/ipc-server for unix sockets, @ax/ipc-http
+//                          for TCP). It is NOT a hook-bus plugin — no init,
+//                          no manifest — just a library of pure functions.
 //
-// These last two are shared-import expansions of the kernel-only allowlist
+// These last three are shared-import expansions of the kernel-only allowlist
 // and form the documented one-way boundary between host-side plugins and
 // sandbox-side code.
 //
@@ -69,9 +76,10 @@ export default tseslint.config(
                 '!@ax/test-harness',
                 '!@ax/ipc-protocol',
                 '!@ax/agent-runner-core',
+                '!@ax/ipc-core',
               ],
               message:
-                'Cross-plugin imports are forbidden. Plugins communicate through the hook bus only. See CLAUDE.md invariant 2. The only @ax/* imports allowed in plugin code are @ax/core, @ax/test-harness, @ax/ipc-protocol (wire schemas), and @ax/agent-runner-core (sandbox-side library).',
+                'Cross-plugin imports are forbidden. Plugins communicate through the hook bus only. See CLAUDE.md invariant 2. The only @ax/* imports allowed in plugin code are @ax/core, @ax/test-harness, @ax/ipc-protocol (wire schemas), @ax/agent-runner-core (sandbox-side library), and @ax/ipc-core (transport-agnostic IPC library).',
             },
           ],
         },
