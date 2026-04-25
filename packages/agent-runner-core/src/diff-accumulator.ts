@@ -26,6 +26,18 @@ export type AccumulatedFileChange =
 export interface DiffAccumulator {
   /** Record a put or delete. Last-write-wins per path within the turn. */
   record(change: AccumulatedFileChange): void;
+  /**
+   * Read the currently-accumulated changes WITHOUT clearing them. The
+   * caller may not mutate the returned array's references back into the
+   * accumulator (defensive — we return a fresh array each call).
+   *
+   * This is the safe path for IPC: snapshot the diff, ship the wire
+   * payload, drain only after the host confirmed receipt. On a thrown
+   * IPC error, the accumulator is intact and the next turn retries the
+   * same changes plus whatever new ones land — protecting against
+   * silent data loss on transient network/timeout failures.
+   */
+  snapshot(): AccumulatedFileChange[];
   /** Drain everything accumulated so far and reset to empty. */
   drain(): AccumulatedFileChange[];
   /** True if no changes have been recorded since the last drain. */
@@ -37,6 +49,9 @@ export function createDiffAccumulator(): DiffAccumulator {
   return {
     record(change) {
       map.set(change.path, change);
+    },
+    snapshot() {
+      return Array.from(map.values());
     },
     drain() {
       const out = Array.from(map.values());

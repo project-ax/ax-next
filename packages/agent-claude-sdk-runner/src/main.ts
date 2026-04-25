@@ -171,29 +171,38 @@ export async function main(): Promise<number> {
           history.push({ role: 'assistant', content: text });
         }
       } else if (msg.type === 'result') {
-        // Turn boundary. Drain the per-turn diff accumulator and ship a
-        // single `workspace.commit-notify` when there are changes. We
+        // Turn boundary. Snapshot the per-turn diff accumulator and ship
+        // a single `workspace.commit-notify` when there are changes. We
         // skip empty turns deliberately: a host with no workspace plugin
         // registered would log an internal error on each empty notify,
         // and `event.turn-end` already carries the heartbeat signal.
-        // Failures here MUST NOT terminate the chat — the next turn
-        // retries against whatever parent version we last knew.
+        // Failures here MUST NOT terminate the chat.
+        //
+        // Snapshot-then-drain-on-receipt: on thrown errors the
+        // accumulator stays intact so the next turn retries the same
+        // changes plus whatever new ones land — no silent data loss on
+        // transient network/timeout failures. On host `accepted: false`
+        // we drain anyway: re-sending against the same stale parent
+        // fails forever, and the proper "refresh parent on mismatch"
+        // flow needs a wire change out of scope here. Same trade-off
+        // the native runner makes; both paths share `DiffAccumulator`.
         if (!diffs.isEmpty()) {
-          const drained = diffs.drain();
+          const snapshot = diffs.snapshot();
           try {
             const resp = (await client.call('workspace.commit-notify', {
               parentVersion,
               commitRef: randomUUID(),
               message: 'turn',
-              changes: toWireChanges(drained),
+              changes: toWireChanges(snapshot),
             })) as WorkspaceCommitNotifyResponse;
             if (resp.accepted) {
+              diffs.drain();
               parentVersion = resp.version as unknown as string;
+            } else {
+              diffs.drain();
             }
-            // accepted:false is logged on the host; the runner just keeps
-            // its previous parent and tries again next turn.
           } catch {
-            /* swallow — workspace commits are recoverable */
+            /* preserve accumulator; next turn retries */
           }
         }
 

@@ -338,5 +338,14 @@ describe('runTurnLoop: per-turn workspace diff aggregation (Task 7c)', () => {
       (c) => c.action === 'workspace.commit-notify',
     );
     expect(notifies).toHaveLength(2);
+
+    // Regression: snapshot-then-drain-on-success preserves the diff
+    // through a thrown IPC. Turn 1's commit-notify threw — its `a.txt`
+    // change must NOT be lost. Turn 2's notify should carry BOTH paths.
+    const turn2Changes = (
+      notifies[1]?.payload as { changes: Array<{ path: string }> }
+    ).changes;
+    const turn2Paths = turn2Changes.map((c) => c.path).sort();
+    expect(turn2Paths).toEqual(['a.txt', 'b.txt']);
   });
 });

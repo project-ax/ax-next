@@ -50,6 +50,68 @@ describe('createDiffAccumulator (Task 7c)', () => {
       expect(Buffer.from(drained[0].content).toString('utf8')).toBe('final');
     }
   });
+
+  it('snapshot returns the changes WITHOUT clearing the accumulator', () => {
+    const acc = createDiffAccumulator();
+    acc.record({
+      path: 'a',
+      kind: 'put',
+      content: Buffer.from('AAA', 'utf8'),
+    });
+    acc.record({ path: 'b', kind: 'delete' });
+
+    const first = acc.snapshot();
+    expect(first).toHaveLength(2);
+    expect(acc.isEmpty()).toBe(false);
+
+    // Calling snapshot again returns the same state.
+    const second = acc.snapshot();
+    expect(second).toHaveLength(2);
+    expect(acc.isEmpty()).toBe(false);
+
+    // Drain after the snapshot — only now does the accumulator clear.
+    const drained = acc.drain();
+    expect(drained).toHaveLength(2);
+    expect(acc.isEmpty()).toBe(true);
+  });
+
+  it('snapshot returns a fresh array each call (caller can mutate without poisoning)', () => {
+    const acc = createDiffAccumulator();
+    acc.record({
+      path: 'x',
+      kind: 'put',
+      content: Buffer.from('1', 'utf8'),
+    });
+    const first = acc.snapshot();
+    first.push({ path: 'phantom', kind: 'delete' });
+    const second = acc.snapshot();
+    expect(second).toHaveLength(1);
+    expect(second[0]?.path).toBe('x');
+  });
+
+  it('records made between snapshot and drain are preserved by drain', () => {
+    // The snapshot-then-drain pattern in the runners: take a snapshot,
+    // ship it over IPC, drain on success. If new changes land between
+    // snapshot and drain (theoretically possible if records arrive out
+    // of band), drain captures the full current state — including the
+    // post-snapshot ones. That's correct: we don't want to lose the new
+    // ones, even though they weren't in the snapshot we just shipped.
+    const acc = createDiffAccumulator();
+    acc.record({
+      path: 'a',
+      kind: 'put',
+      content: Buffer.from('one', 'utf8'),
+    });
+    const snap = acc.snapshot();
+    expect(snap).toHaveLength(1);
+    acc.record({
+      path: 'b',
+      kind: 'put',
+      content: Buffer.from('two', 'utf8'),
+    });
+    const drained = acc.drain();
+    expect(drained).toHaveLength(2);
+  });
 });
 
 describe('toWireChanges', () => {

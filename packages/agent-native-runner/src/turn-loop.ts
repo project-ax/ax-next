@@ -117,25 +117,37 @@ export async function runTurnLoop(deps: TurnLoopDeps): Promise<TurnLoopOutcome> 
       // beyond a "turn ended" heartbeat — and `event.turn-end` already
       // covers that. Failures here MUST NOT terminate the runner; the
       // next turn retries against whatever version we last knew.
+      //
+      // Snapshot-then-drain-on-success: we don't drain BEFORE the IPC
+      // settles. On a thrown error (network / timeout) the accumulator
+      // stays intact and the next turn retries with the same changes
+      // plus whatever new ones land — no silent data loss on transient
+      // failures. On `accepted: false` (host-side veto: parent-mismatch
+      // or pre-apply rejection) we drain — re-sending the same diff
+      // against the same stale parent will fail again forever, and the
+      // proper "refresh parent on mismatch" recovery flow needs a wire
+      // change that's out of scope here. Documented gap.
       if (deps.diffs !== undefined && !deps.diffs.isEmpty()) {
-        const drained = deps.diffs.drain();
+        const snapshot = deps.diffs.snapshot();
         try {
           const resp = (await deps.client.call('workspace.commit-notify', {
             parentVersion,
             commitRef: commitRefGen(),
             message: 'turn',
-            changes: toWireChanges(drained),
+            changes: toWireChanges(snapshot),
           })) as WorkspaceCommitNotifyResponse;
           if (resp.accepted) {
+            // Host received it; safe to drain.
+            deps.diffs.drain();
             parentVersion = resp.version as unknown as string;
+          } else {
+            // Host actively rejected. Drain to avoid unbounded growth on
+            // permanent rejection — re-sending wouldn't help today.
+            deps.diffs.drain();
           }
-          // accepted:false (parent-mismatch / pre-apply rejection) leaves
-          // parentVersion unchanged — next turn will retry against the
-          // same parent the host saw.
         } catch {
-          // Connection-level failures after retry exhaustion: drop the
-          // diff and keep going. Workspace commits are recoverable on the
-          // next turn; a hung runner is not.
+          // Connection-level failure or timeout. PRESERVE the diff so
+          // the next turn retries. The accumulator is unchanged.
         }
       }
 
