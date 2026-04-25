@@ -57,7 +57,19 @@ const useChatThreadRuntime = (transport: AxChatTransport, user = 'guest'): Assis
             headers: { 'Content-Type': mimeType },
             body: attachment.file,
           });
-          const { fileId } = await resp.json();
+          // Surface upload failures instead of returning an attachment with
+          // `image: undefined` / `data: undefined`. The composer's send path
+          // catches this and surfaces it to the user; persisting a message
+          // that references a non-existent file would silently corrupt the
+          // thread.
+          if (!resp.ok) {
+            throw new Error(`upload failed: ${resp.status} ${resp.statusText}`);
+          }
+          const body = (await resp.json().catch(() => ({}))) as { fileId?: string };
+          const { fileId } = body;
+          if (!fileId) {
+            throw new Error('upload returned no fileId');
+          }
           return {
             id: attachment.id,
             type: attachment.type,
