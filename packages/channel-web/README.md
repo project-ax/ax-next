@@ -66,4 +66,4 @@ See `docs/plans/2026-04-25-chat-ui-pulled-forward.md` for the full handoff conte
 
 ## Manual smoke (12 steps)
 
-See [`MANUAL_ACCEPTANCE.md`](./MANUAL_ACCEPTANCE.md). Until that file exists (Task 29 lands it), the smoke runbook is in the plan doc.
+See [`MANUAL_ACCEPTANCE.md`](./MANUAL_ACCEPTANCE.md) for the full runbook — login, send a message, admin flows, theme, collapse, edit-retry, agent switch.
