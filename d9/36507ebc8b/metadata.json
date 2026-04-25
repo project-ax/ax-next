@@ -1,0 +1,23 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "d936507ebc8b",
+  "strategy": "manual-commit",
+  "branch": "feat/kernel-shutdown-lifecycle",
+  "checkpoints_count": 0,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/d9/36507ebc8b/0/metadata.json",
+      "transcript": "/d9/36507ebc8b/0/full.jsonl",
+      "content_hash": "/d9/36507ebc8b/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 2,
+    "cache_creation_tokens": 8034,
+    "cache_read_tokens": 394903,
+    "output_tokens": 5385,
+    "api_call_count": 2
+  }
+}
