@@ -47,7 +47,18 @@ export async function runServer(
   const token = requireEnv(env, 'AX_GIT_SERVER_TOKEN');
   const host = env.AX_GIT_SERVER_HOST ?? DEFAULT_HOST;
   const portRaw = env.AX_GIT_SERVER_PORT;
-  const port = portRaw !== undefined && portRaw.length > 0 ? Number(portRaw) : DEFAULT_PORT;
+  let port = DEFAULT_PORT;
+  if (portRaw !== undefined && portRaw.length > 0) {
+    const parsed = Number(portRaw);
+    // Reject NaN and non-integers at the boundary instead of letting them
+    // surface as a confusing listener error. Allow 0 (OS-assigned).
+    if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed < 0 || parsed > 65535) {
+      throw new Error(
+        `AX_GIT_SERVER_PORT must be an integer in 0..65535, got ${JSON.stringify(portRaw)}`,
+      );
+    }
+    port = parsed;
+  }
 
   const server: WorkspaceGitServer = await createWorkspaceGitServer({
     repoRoot,
@@ -69,30 +80,40 @@ if (
   process.argv[1] !== undefined &&
   import.meta.url === pathToFileURL(process.argv[1]).href
 ) {
+  // Register signal handlers BEFORE runServer resolves. If kubelet sends
+  // SIGTERM during a slow boot (image-pull races, readiness probe gives up,
+  // node drain), Node's default SIGTERM handler terminates immediately and
+  // skips any partial cleanup. Registering handlers up-front + gating on
+  // a `handle` reference closes that window: a SIGTERM during boot still
+  // terminates promptly, but SIGTERM after boot drains in-flight commits.
+  let handle: RunServerHandle | null = null;
+  let shuttingDown = false;
+  const shutdown = async (sig: NodeJS.Signals): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    process.stderr.write(
+      `[ax/workspace-git-http/server] ${sig} — closing listener\n`,
+    );
+    if (handle === null) {
+      // SIGTERM landed mid-boot; nothing to drain.
+      process.exit(0);
+    }
+    try {
+      await handle.close();
+      process.exit(0);
+    } catch (err) {
+      process.stderr.write(
+        `[ax/workspace-git-http/server] shutdown error: ${(err as Error).message}\n`,
+      );
+      process.exit(1);
+    }
+  };
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  process.on('SIGINT', () => void shutdown('SIGINT'));
+
   void runServer(process.env)
-    .then((handle) => {
-      // Clean shutdown: close the listener BEFORE process.exit so any
-      // in-flight workspace.apply finishes its git write. Without this we
-      // could leave dangling git objects if SIGTERM lands mid-commit.
-      let shuttingDown = false;
-      const shutdown = async (sig: NodeJS.Signals): Promise<void> => {
-        if (shuttingDown) return;
-        shuttingDown = true;
-        process.stderr.write(
-          `[ax/workspace-git-http/server] ${sig} — closing listener\n`,
-        );
-        try {
-          await handle.close();
-          process.exit(0);
-        } catch (err) {
-          process.stderr.write(
-            `[ax/workspace-git-http/server] shutdown error: ${(err as Error).message}\n`,
-          );
-          process.exit(1);
-        }
-      };
-      process.on('SIGTERM', () => void shutdown('SIGTERM'));
-      process.on('SIGINT', () => void shutdown('SIGINT'));
+    .then((h) => {
+      handle = h;
     })
     .catch((err) => {
       process.stderr.write(

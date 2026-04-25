@@ -143,6 +143,38 @@ export async function runServeCommand(opts: RunServeOptions): Promise<number> {
     err('serve: AX_SERVE_TOKEN is unset — /chat is open to anything that can reach this port');
   }
 
+  // Production-only: register signal handlers BEFORE the heavy boot work
+  // (preset bootstrap + listen). If kubelet sends SIGTERM during a slow
+  // boot (postgres pool warm-up, k8s API client init, image-pull races),
+  // Node's default SIGTERM handler terminates immediately and skips any
+  // partial cleanup. Registering handlers up-front + gating on a
+  // `closeListener` reference keeps SIGTERM-during-boot fast and SIGTERM-
+  // after-boot graceful. Tests pass `onListening`, which we treat as a
+  // signal that the test owns teardown.
+  let closeListener: (() => Promise<void>) | null = null;
+  const isTest = opts.onListening !== undefined;
+  if (!isTest) {
+    let shuttingDown = false;
+    const shutdown = async (sig: NodeJS.Signals): Promise<void> => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      err(`[ax/serve] ${sig} — closing listener`);
+      if (closeListener === null) {
+        // Signal landed mid-boot; nothing to drain.
+        process.exit(0);
+      }
+      try {
+        await closeListener();
+        process.exit(0);
+      } catch (e) {
+        err(`[ax/serve] shutdown error: ${e instanceof Error ? e.message : String(e)}`);
+        process.exit(1);
+      }
+    };
+    process.on('SIGTERM', () => void shutdown('SIGTERM'));
+    process.on('SIGINT', () => void shutdown('SIGINT'));
+  }
+
   // Build the plugin list. Production: env → K8sPresetConfig → createK8sPlugins.
   // Tests: caller-provided.
   let plugins: Plugin[];
@@ -201,31 +233,15 @@ export async function runServeCommand(opts: RunServeOptions): Promise<number> {
 
   if (opts.onListening !== undefined) {
     opts.onListening({ host: parsed.host, port: boundPort, close });
-    // Tests own teardown; do not install signal handlers (would interfere
-    // with vitest).
+    // Tests own teardown; signal handlers were not installed.
     return 0;
   }
 
-  // Production: wait for SIGTERM/SIGINT.
-  let shuttingDown = false;
-  const shutdown = async (sig: NodeJS.Signals): Promise<void> => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    err(`[ax/serve] ${sig} — closing listener`);
-    try {
-      await close();
-      process.exit(0);
-    } catch (e) {
-      err(`[ax/serve] shutdown error: ${e instanceof Error ? e.message : String(e)}`);
-      process.exit(1);
-    }
-  };
-  process.on('SIGTERM', () => void shutdown('SIGTERM'));
-  process.on('SIGINT', () => void shutdown('SIGINT'));
-
-  // Block forever — the signal handlers above own exit.
+  // Production: hand the close handle to the pre-installed signal
+  // handlers, then block forever.
+  closeListener = close;
   return new Promise<number>(() => {
-    // never resolves
+    // never resolves; signal handlers above own exit
   });
 }
 
@@ -316,7 +332,7 @@ async function handleChat(
   if (typeof message !== 'string' || message.length === 0) {
     return writeJson(res, 400, { error: { code: 'VALIDATION', message: 'message must be a non-empty string' } });
   }
-  let sessionId = (body as { sessionId?: unknown }).sessionId;
+  const sessionId = (body as { sessionId?: unknown }).sessionId;
   if (sessionId !== undefined && (typeof sessionId !== 'string' || sessionId.length === 0)) {
     return writeJson(res, 400, { error: { code: 'VALIDATION', message: 'sessionId must be a non-empty string when provided' } });
   }
