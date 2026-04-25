@@ -1,0 +1,121 @@
+<task-notification>
+<task-id>a9acad4c04eb02d81</task-id>
+<tool-use-id>toolu_01N2bdQyuN58bMsnWQuy2eKN</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-vpulim-dev-ai-ax-next/a584774d-4b3e-4aaa-a3a6-bac108b2d81b/tasks/a9acad4c04eb02d81.output</output-file>
+<status>completed</status>
+<summary>Agent "Implement Task 1: eventbus-inprocess" completed</summary>
+<result>Both fixes applied in a new commit.
+
+## Report
+
+### Fixes
+
+**Issue 1 — over-engineering:** Deleted `assertChannel` and `assertJsonSafe` helpers and the `CHANNEL_RE` constant. Removed their call sites in both `eventbus:emit` and `eventbus:subscribe`. The in-process impl now accepts any string channel and any payload — matching I1's direction (abstract contract is the permissive upper bound; the postgres peer will enforce its wire-protocol constraints there).
+
+**Issue 2 — sequential fan-out:** Replaced `Promise.allSettled(snapshot.map((e) =&gt; e.handler(payload)))` with a `for...of` loop over `snapshot` that `await`s each handler inside a `try/catch`. Registration-order side-effects are now preserved (handler N+1 does not start until handler N resolves). The `catch` branch still calls `ctx.logger.error('eventbus_subscriber_failed', ...)` so throwing-subscriber isolation is preserved.
+
+**Issue 3:** No change (reviewer confirmed keep as-is).
+
+### Verification
+
+- `pnpm --filter @ax/eventbus-inprocess test` -&gt; `Test Files 1 passed (1) | Tests 3 passed (3)`.
+- `pnpm build` clean (no output, exit 0).
+- `npx eslint packages/eventbus-inprocess/src/` clean (exit 0).
+
+### Net diff
+
+`packages/eventbus-inprocess/src/plugin.ts`: -56 / +19 lines (deleted both assertion helpers + simplified docstring + loop swap).
+
+### Commit SHA
+
+`c1b2b07` on branch `feat/week-7-9-k8s-deployment` (stacked on the original `08f5e6f`).</result>
+<usage><total_tokens>66530</total_tokens><tool_uses>7</tool_uses><duration_ms>52864</duration_ms></usage>
+</task-notification>
+
+---
+
+why were these items deffered?
+
+---
+
+what are you talke about:
+
+---
+
+what are you talke about: "@ax/workspace-git-http (multi-replica workspace)"
+
+---
+
+how do we make sure we have all the instructions somewhere to implement the deferred features?
+
+---
+
+create docs/plans/2026-04-25-week-7-9-followups.md
+
+---
+
+address PR comment
+
+---
+
+address PR comments and this failing test:
+
+pnpm audit --audit-level moderate
+┌─────────────────────┬────────────────────────────────────────────────────────┐
+│ moderate            │ uuid: Missing buffer bounds check in v3/v5/v6 when buf │
+│                     │ is provided                                            │
+├─────────────────────┼────────────────────────────────────────────────────────┤
+│ Package             │ uuid                                                   │
+├─────────────────────┼────────────────────────────────────────────────────────┤
+│ Vulnerable versions │ <14.0.0                                                │
+├─────────────────────┼────────────────────────────────────────────────────────┤
+│ Patched versions    │ >=14.0.0                                               │
+├─────────────────────┼────────────────────────────────────────────────────────┤
+│ Paths               │ packages__database-postgres>@testcontainers/           │
+│                     │ postgresql>testcontainers>dockerode>uuid               │
+├─────────────────────┼────────────────────────────────────────────────────────┤
+│ More info           │ https://github.com/advisories/GHSA-w5hq-g745-h8pq      │
+└─────────────────────┴────────────────────────────────────────────────────────┘
+1 vulnerabilities found
+Severity: 1 moderate
+
+---
+
+<task-notification>
+<task-id>a0db3d680da81aa2a</task-id>
+<tool-use-id>toolu_01LYDvM2uSHhWHWYEVxd2NAx</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-vpulim-dev-ai-ax-next/a584774d-4b3e-4aaa-a3a6-bac108b2d81b/tasks/a0db3d680da81aa2a.output</output-file>
+<status>completed</status>
+<summary>Agent "Fix Helm chart issues" completed</summary>
+<result>## Report
+
+### Files modified
+
+- `/Users/vpulim/dev/ai/ax-next/.worktrees/week-7-9/deploy/charts/ax-next/templates/_helpers.tpl` — truncate-after-concat for `componentLabels` and `selectorLabels`.
+- `/Users/vpulim/dev/ai/ax-next/.worktrees/week-7-9/deploy/charts/ax-next/templates/hook-secret.yaml` — `lookup`-based guard preserving the existing `credentials-key`; nervous-crab block comment explaining why; refs `packages/credentials/SECURITY.md`.
+- `/Users/vpulim/dev/ai/ax-next/.worktrees/week-7-9/deploy/charts/ax-next/values.yaml` — removed duplicated `postgres.embedded.auth.{database,username}`; added comments naming `postgresql.auth.*` as the single source of truth.
+- `/Users/vpulim/dev/ai/ax-next/.worktrees/week-7-9/deploy/charts/ax-next/kind-dev-values.yaml` — dropped orphaned duplicate `postgres.embedded.auth.*`.
+- `/Users/vpulim/dev/ai/ax-next/.worktrees/week-7-9/deploy/README.md` — new "Credentials key rotation" section describing the install/upgrade discipline, the chart guard's limits under offline-render GitOps tools, and a forward link to a future built-in rotation command.
+
+### Verification
+
+- `helm lint deploy/charts/ax-next` — clean (`1 chart(s) linted, 0 chart(s) failed`); the `[INFO] Missing required value` lines are the chart's intentional `required` placeholders firing during the no-values lint pass, same as before this PR.
+- `helm template ... -f kind-dev-values.yaml` — renders 667 lines, no errors.
+- `helm template ...` (defaults + test creds) — renders 762 lines, no errors.
+- Long-release-name truncation: rendered with a 53-char (Helm's max release name length) `max-length-name-aaaa…` release name; longest `app.kubernetes.io/name` value is exactly 63 chars (`max-length-name-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-ax-next-h`), zero values exceed 63.
+- `kubeconform` not available in this environment; skipped (already noted as a follow-up in `deploy/README.md`).
+
+### Commits
+
+- `42a9de9` fix(deploy): truncate component label values to k8s 63-char limit
+- `2ac91ac` fix(deploy): guard credentials key against accidental rotation on upgrade
+- `514aaf8` fix(deploy): collapse duplicate postgres auth keys to single source of truth
+
+### Deviations / notes
+
+- **Scope creep, intentional.** Fix 3 spec only mentioned `values.yaml`, but `kind-dev-values.yaml` carried the same orphaned duplicate. Removed it there too — keeping the values files consistent across the chart. Folded into the same commit as the main `values.yaml` change.
+- **`packages/` files left untouched** as instructed (concurrent subagent territory).
+- **Lint INFO output:** `helm lint` prints `[INFO] Missing required value: …` lines because `required` fires during the value-less lint pass. Pre-existing behavior, unrelated to these fixes; chart still passes (`0 chart(s) failed`).
+- **Rotation guard limitation called out honestly** in the README — the `lookup` workaround does not fire under offline-render GitOps tools (Argo CD `helm template`, Flux's `HelmRelease`). We tell operators this directly rather than over-promise.</result>
+<usage><total_tokens>49402</total_tokens><tool_uses>34</tool_uses><duration_ms>209015</duration_ms></usage>
+</task-notification>
