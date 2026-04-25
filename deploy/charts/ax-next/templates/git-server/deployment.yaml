@@ -41,6 +41,18 @@ spec:
     spec:
       serviceAccountName: {{ include "ax-next.gitServerComponentName" . }}
       terminationGracePeriodSeconds: {{ .Values.gitServer.terminationGracePeriodSeconds | default 30 }}
+      # Pod-level securityContext. fsGroup is the load-bearing piece — without
+      # it, kubelet doesn't chgrp the freshly-provisioned PVC mount, and the
+      # UID 1000 process inside the container can't write to it (EACCES on
+      # the first ref/object write). Most production CSI drivers (EBS,
+      # GCE PD, Longhorn, Ceph RBD) leave the volume root:root by default;
+      # local-path provisioners hide the bug. fsGroup matches runAsUser so
+      # the chgrp is a no-op for ownership but still grants group-write.
+      securityContext:
+        runAsUser: 1000
+        runAsNonRoot: true
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- range . }}

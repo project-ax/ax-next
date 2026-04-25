@@ -113,12 +113,13 @@ ServiceAccount, and the PVC name prefix.
 
 {{/*
 Cluster-internal URL the host plugin uses to reach the git-server.
-http://<svc>.<ns>.svc:<port>. Mirrors hostIpcUrl's shape. Task 16 stamps
-this onto the host pod's AX_WORKSPACE_HTTP_URL env var when
-workspace.backend == "http".
+http://<svc>.<ns>.svc.cluster.local:<port>. Mirrors hostIpcUrl's
+fully-qualified shape so a future cluster-DNS suffix change moves both in
+lockstep. The host deployment stamps this onto AX_WORKSPACE_GIT_HTTP_URL
+when workspace.backend == "http".
 */}}
 {{- define "ax-next.gitServerServiceUrl" -}}
-{{- printf "http://%s.%s.svc:%d" (include "ax-next.gitServerComponentName" .) (include "ax-next.hostNamespace" .) (int .Values.gitServer.service.port) -}}
+{{- printf "http://%s.%s.svc.cluster.local:%d" (include "ax-next.gitServerComponentName" .) (include "ax-next.hostNamespace" .) (int .Values.gitServer.service.port) -}}
 {{- end -}}
 
 {{/*

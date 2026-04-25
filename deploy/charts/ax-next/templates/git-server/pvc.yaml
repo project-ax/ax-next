@@ -22,7 +22,11 @@ spec:
     - {{ .Values.gitServer.accessMode | default "ReadWriteOnce" }}
   resources:
     requests:
-      storage: {{ .Values.gitServer.storage }}
+      # Fail loudly at template-render time if storage is unset. An empty
+      # string here renders an invalid PVC that fails at apply with a
+      # less-than-obvious error — and given losing this PVC destroys every
+      # session's workspace history, it's worth catching early.
+      storage: {{ required "gitServer.storage is required when gitServer.enabled=true" .Values.gitServer.storage }}
   {{- if .Values.gitServer.storageClassName }}
   storageClassName: {{ .Values.gitServer.storageClassName }}
   {{- end }}
