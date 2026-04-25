@@ -29,10 +29,11 @@ import { LoginPage } from './components/LoginPage';
 import { Sidebar } from './components/Sidebar';
 import { SessionHeader } from './components/SessionHeader';
 import { Thread } from './components/Thread';
+import { AdminPanel } from './components/admin/AdminPanel';
 import { UserProvider } from './lib/user-context';
+import type { AdminView } from './lib/admin';
 
 type AuthState = 'loading' | 'authenticated' | 'unauthenticated';
-type AdminView = 'agents' | 'mcp-servers' | 'teams' | null;
 
 export const App = () => {
   const [authState, setAuthState] = useState<AuthState>('loading');
@@ -67,10 +68,9 @@ export const App = () => {
 const AppContent = ({ user }: { user: AuthUser }) => {
   const { agents, selectedAgentId, pendingAgentId } = useAgentStore();
   const runtime = useAxChatRuntime(undefined, undefined, user.id, undefined);
-  // `adminView` is set by the user menu's Admin entries. The AdminPanel
-  // consumer mounts in Task 22; until then this state has no reader, which
-  // is fine — the menu still toggles cleanly.
-  const [, setAdminView] = useState<AdminView>(null);
+  // `adminView` is set by the user menu's Admin entries. AdminPanel
+  // renders below when non-null.
+  const [adminView, setAdminView] = useState<AdminView>(null);
 
   useEffect(() => {
     // Apply persisted sidebar state before first paint of any subscriber.
@@ -111,7 +111,7 @@ const AppContent = ({ user }: { user: AuthUser }) => {
             <SessionHeader />
             <Thread />
           </main>
-          {/* AdminPanel mounts in Task 22 */}
+          <AdminPanel view={adminView} onClose={() => setAdminView(null)} />
         </div>
       </AssistantRuntimeProvider>
     </UserProvider>

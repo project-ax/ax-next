@@ -17,8 +17,7 @@ import { AgentChip, useHydrateAgents } from './AgentChip';
 import { NewSessionButton } from './NewSessionButton';
 import { SessionList } from './SessionList';
 import { UserMenu } from './UserMenu';
-
-type AdminView = 'agents' | 'mcp-servers' | 'teams' | null;
+import type { AdminView } from '../lib/admin';
 
 export function Sidebar({
   onOpenAdmin,

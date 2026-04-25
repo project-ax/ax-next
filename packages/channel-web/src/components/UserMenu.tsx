@@ -18,8 +18,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useUser } from '../lib/user-context';
 import { signOut } from '../lib/auth';
-
-type AdminView = 'agents' | 'mcp-servers' | 'teams' | null;
+import type { AdminView } from '../lib/admin';
 
 export function UserMenu({
   onOpenAdmin,
