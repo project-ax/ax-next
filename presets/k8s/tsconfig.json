@@ -1,0 +1,30 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "include": ["src/**/*"],
+  "exclude": ["src/__tests__/**", "dist", "node_modules"],
+  "references": [
+    { "path": "../../packages/core" },
+    { "path": "../../packages/database-postgres" },
+    { "path": "../../packages/storage-postgres" },
+    { "path": "../../packages/eventbus-postgres" },
+    { "path": "../../packages/session-postgres" },
+    { "path": "../../packages/workspace-git" },
+    { "path": "../../packages/sandbox-k8s" },
+    { "path": "../../packages/llm-anthropic" },
+    { "path": "../../packages/llm-proxy-anthropic-format" },
+    { "path": "../../packages/agent-claude-sdk-runner" },
+    { "path": "../../packages/agent-runner-core" },
+    { "path": "../../packages/chat-orchestrator" },
+    { "path": "../../packages/tool-bash" },
+    { "path": "../../packages/tool-file-io" },
+    { "path": "../../packages/tool-dispatcher" },
+    { "path": "../../packages/audit-log" },
+    { "path": "../../packages/mcp-client" },
+    { "path": "../../packages/credentials" },
+    { "path": "../../packages/ipc-server" }
+  ]
+}

@@ -31,6 +31,7 @@
     { "path": "packages/database-postgres" },
     { "path": "packages/storage-postgres" },
     { "path": "packages/eventbus-postgres" },
-    { "path": "packages/session-postgres" }
+    { "path": "packages/session-postgres" },
+    { "path": "presets/k8s" }
   ]
 }
