@@ -12,10 +12,11 @@ export interface TestHarness {
   ctx(overrides?: Partial<Parameters<typeof makeChatContext>[0]>): ChatContext;
   /**
    * Drain plugin resources held by this harness. Calls each plugin's
-   * optional `shutdown()` in reverse load order (mirrors what a future
-   * kernel-shutdown lifecycle will do for SIGTERM). Per-plugin failures
-   * are logged but never block other shutdowns. Per-plugin timeout
-   * defaults to 10 s; pass `{ timeoutMs }` to override.
+   * optional `shutdown()` in reverse load order (mirrors what the
+   * kernel-shutdown lifecycle does for SIGTERM via `KernelHandle.
+   * shutdown()`). Per-plugin failures are logged but never block other
+   * shutdowns. Per-plugin timeout defaults to 10 s; pass `{ timeoutMs }`
+   * to override.
    *
    * Idempotent: calling `close()` twice on the same harness no-ops the
    * second call. Plugins without `shutdown` are skipped silently.
@@ -73,8 +74,9 @@ export async function createTestHarness(
   // Track the plugin list so close() can shut down in reverse order. We
   // capture the input order, NOT bootstrap's resolved topological order,
   // because bootstrap doesn't surface its order. Reverse-of-input is good
-  // enough for tests; the production kernel-shutdown lifecycle (followups
-  // doc #3) will use the canonical reverse-topological order.
+  // enough for tests (callers usually push in topological order anyway);
+  // the production `KernelHandle.shutdown()` uses canonical reverse-
+  // topological order, lifted into @ax/core's bootstrap.
   const plugins = opts.plugins ?? [];
   if (plugins.length > 0) {
     await bootstrap({ bus, plugins, config: {} });

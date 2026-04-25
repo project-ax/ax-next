@@ -180,7 +180,7 @@ Inherited from `@ax/workspace-git-core`. Failed applies leave dangling blobs and
 ## What we don't know yet
 
 - Whether dual-token acceptance is worth the complexity. The cleaner answer is "rotate during a maintenance window, accept the brief outage." The bigger the deployment gets, the less acceptable that becomes.
-- How `closeListener()` will compose with in-flight `workspace:apply` draining when the kernel-shutdown lifecycle lands. Today the SIGTERM handler in `main.ts` calls `server.close()` and waits for in-flight requests, which Node implements as "stop accepting new connections, wait for current ones to finish." If a future host long-poll holds a connection open past the grace period, we may need `server.closeAllConnections()` after a deadline.
+- Whether the git-server pod's SIGTERM grace period is long enough for in-flight `workspace:apply` draining. The host plugin (this package's `createWorkspaceGitHttpPlugin`) is just an HTTP client and has nothing long-lived to clean up — verified during the kernel-shutdown slice. The git-server pod runs as its own process with its own SIGTERM handler in `src/server/main.ts` that calls `server.close()` and waits for in-flight requests. If a future apply takes longer than the kubelet grace period (default 30 s), we may need `server.closeAllConnections()` after a deadline.
 - Whether the per-repo mutex inside `@ax/workspace-git-core` will hold up under the load the multi-replica deployment will throw at it. Today's test exercises 4 concurrent applies; production may see hundreds.
 
 ## Security contact
