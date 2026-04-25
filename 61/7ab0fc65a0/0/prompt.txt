@@ -1,0 +1,2 @@
+the layout doesn't follow the template in @../../design_handoff_tide/ 
+use playwright mcp to compare it to the current chat ui implementation until it matches the template

@@ -1,0 +1,65 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "617ab0fc65a0",
+  "session_id": "4f5df340-d48c-4136-a040-b34713ea850c",
+  "strategy": "manual-commit",
+  "created_at": "2026-04-25T18:27:47.5617Z",
+  "branch": "main",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "presets/k8s/src/__tests__/acceptance.test.ts"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-sonnet-4-6",
+  "turn_id": "fcaea66108e4",
+  "token_usage": {
+    "input_tokens": 9,
+    "cache_creation_tokens": 25848,
+    "cache_read_tokens": 118054,
+    "output_tokens": 1375,
+    "api_call_count": 5
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-04-25T18:27:47.554659Z",
+    "agent_lines": 0,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 18,
+    "human_removed": 35,
+    "total_committed": 0,
+    "total_lines_changed": 53,
+    "agent_percentage": 0,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 12377,
+      "user_lines_removed": 30,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claude/settings.local.json": 7,
+        ".playwright-mcp/page-2026-04-25T17-19-38-512Z.yml": 4,
+        ".playwright-mcp/page-2026-04-25T17-19-50-615Z.yml": 4,
+        ".playwright-mcp/page-2026-04-25T17-25-14-202Z.yml": 4,
+        ".playwright-mcp/page-2026-04-25T17-25-21-175Z.yml": 34,
+        ".playwright-mcp/page-2026-04-25T17-25-34-065Z.yml": 34,
+        "README.md": 196,
+        "ax.config.ts": 5,
+        "design_handoff_tide/README.md": 347,
+        "design_handoff_tide/Tide Minimal.html": 2734,
+        "design_handoff_tide/Tide Sessions.html": 4248,
+        "design_handoff_tide/Tide.html": 4702,
+        "design_handoff_tide/ax-logo.svg": 12,
+        "packages/channel-web/vite.config.ts": 2,
+        "presets/k8s/src/__tests__/acceptance.test.ts": 12,
+        "test-bwrap.yaml": 32
+      },
+      "user_removed_per_file": {
+        "packages/channel-web/vite.config.ts": 6,
+        "presets/k8s/src/__tests__/acceptance.test.ts": 24
+      }
+    }
+  ]
+}
