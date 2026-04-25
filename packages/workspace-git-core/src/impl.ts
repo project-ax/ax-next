@@ -21,9 +21,16 @@ import {
   type WorkspaceReadOutput,
   type WorkspaceVersion,
 } from '@ax/core';
-import type { WorkspaceGitConfig } from './plugin.js';
+/**
+ * Config for `registerWorkspaceGitHooks`. `repoRoot` is the absolute path to
+ * the bare git repo's parent directory; `<repoRoot>/repo.git` is materialized
+ * lazily on first use.
+ */
+export interface WorkspaceGitCoreConfig {
+  repoRoot: string;
+}
 
-const PLUGIN_NAME = '@ax/workspace-git';
+const PLUGIN_NAME = '@ax/workspace-git-core';
 const MAIN_REF = 'refs/heads/main';
 
 // Bot identity. INTENTIONALLY hard-coded — the agent never gets to choose
@@ -336,7 +343,7 @@ function isNotFoundError(err: unknown): boolean {
 
 export function registerWorkspaceGitHooks(
   bus: HookBus,
-  config: WorkspaceGitConfig,
+  config: WorkspaceGitCoreConfig,
 ): void {
   const gitdir = join(config.repoRoot, 'repo.git');
   const mutex = new Mutex();

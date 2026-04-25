@@ -23,6 +23,7 @@
     { "path": "../tool-dispatcher" },
     { "path": "../tool-bash" },
     { "path": "../tool-file-io" },
-    { "path": "../mcp-client" }
+    { "path": "../mcp-client" },
+    { "path": "../../presets/k8s" }
   ]
 }

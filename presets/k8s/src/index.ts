@@ -5,6 +5,7 @@ import { createStoragePostgresPlugin } from '@ax/storage-postgres';
 import { createEventbusPostgresPlugin } from '@ax/eventbus-postgres';
 import { createSessionPostgresPlugin } from '@ax/session-postgres';
 import { createWorkspaceGitPlugin } from '@ax/workspace-git';
+import { createWorkspaceGitHttpPlugin } from '@ax/workspace-git-http';
 import { createSandboxK8sPlugin } from '@ax/sandbox-k8s';
 import { createLlmAnthropicPlugin } from '@ax/llm-anthropic';
 import { createLlmProxyAnthropicFormatPlugin } from '@ax/llm-proxy-anthropic-format';
@@ -62,6 +63,15 @@ function defaultRunnerBinary(): string {
 
 const DEFAULT_CHAT_TIMEOUT_MS = 10 * 60_000;
 
+/**
+ * Discriminated union for the workspace backend. `local` keeps the
+ * single-replica on-PVC bare repo path; `http` forwards every workspace op to
+ * the shared git-server pod so multiple host replicas can share state.
+ */
+export type K8sWorkspaceConfig =
+  | { backend: 'local'; repoRoot: string }
+  | { backend: 'http'; baseUrl: string; token: string };
+
 export interface K8sPresetConfig {
   /**
    * Postgres pool config used by @ax/database-postgres + @ax/storage-postgres.
@@ -89,12 +99,24 @@ export interface K8sPresetConfig {
     poolMax?: number;
   };
   /**
-   * Absolute path to the directory hosting `<repoRoot>/repo.git`. The
-   * workspace-git plugin idempotently `git init`s it on first use.
+   * Workspace backend selection. Two flavors:
+   *
+   *   - `local`: `@ax/workspace-git` writes a bare repo on the host pod's PVC.
+   *     Single-replica deploys only — two hosts mounting the same RWO PVC
+   *     would race. `repoRoot` is the directory hosting `<repoRoot>/repo.git`;
+   *     the plugin idempotently `git init`s it on first use.
+   *
+   *   - `http`: `@ax/workspace-git-http` forwards every workspace op to the
+   *     dedicated git-server pod over HTTP. Multi-replica capable. `baseUrl`
+   *     points at the git-server's cluster Service; `token` is the shared
+   *     bearer token (via Helm-managed Secret).
+   *
+   * The Helm chart drives this via `workspace.backend: local|http` and the
+   * env vars `AX_WORKSPACE_BACKEND` / `AX_WORKSPACE_ROOT` /
+   * `AX_WORKSPACE_GIT_HTTP_URL` / `AX_WORKSPACE_GIT_HTTP_TOKEN`. The host
+   * entrypoint reads those and constructs this config.
    */
-  workspace: {
-    repoRoot: string;
-  };
+  workspace: K8sWorkspaceConfig;
   /**
    * Pod template + readiness/limits config for sandbox-k8s. All fields
    * optional; defaults live in @ax/sandbox-k8s/src/config.ts.
@@ -196,11 +218,24 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   );
 
   // ----- 3. workspace ----------------------------------------------------
-  plugins.push(
-    createWorkspaceGitPlugin({
-      repoRoot: config.workspace.repoRoot,
-    }),
-  );
+  // Discriminated on `backend`. The shape difference is intentional: `local`
+  // wants a filesystem path, `http` wants a URL + bearer token. Both register
+  // the same four `workspace:*` service hooks (Invariant I1 — the contract is
+  // the same regardless of backend).
+  if (config.workspace.backend === 'http') {
+    plugins.push(
+      createWorkspaceGitHttpPlugin({
+        baseUrl: config.workspace.baseUrl,
+        token: config.workspace.token,
+      }),
+    );
+  } else {
+    plugins.push(
+      createWorkspaceGitPlugin({
+        repoRoot: config.workspace.repoRoot,
+      }),
+    );
+  }
 
   // ----- 4. audit log ----------------------------------------------------
   // Subscribes to chat:end and writes a record via storage:set. Pushed
@@ -287,4 +322,179 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   plugins.push(createLlmAnthropicPlugin(anthropicCfg));
 
   return plugins;
+}
+
+// ---------------------------------------------------------------------------
+// Env → workspace-config helper.
+//
+// The Helm chart writes these env vars onto the host pod (see
+// deploy/charts/ax-next/templates/host/deployment.yaml). The host entrypoint
+// reads them via this helper to build the discriminated `workspace` config
+// before calling `createK8sPlugins`.
+//
+//   AX_WORKSPACE_BACKEND        local | http   (default: local)
+//   AX_WORKSPACE_ROOT           required when backend === 'local'
+//   AX_WORKSPACE_GIT_HTTP_URL   required when backend === 'http'
+//   AX_WORKSPACE_GIT_HTTP_TOKEN required when backend === 'http'
+//
+// We throw loudly on missing/unknown values rather than silently defaulting
+// — a misconfigured workspace backend is a deploy-time bug, not a runtime
+// surprise we want to paper over.
+// ---------------------------------------------------------------------------
+
+/**
+ * Read the `AX_WORKSPACE_*` env vars and return a `K8sWorkspaceConfig`.
+ *
+ * Defaults to `local` when `AX_WORKSPACE_BACKEND` is unset (matches the
+ * chart's default). Throws when the chosen backend's required vars are
+ * missing or when the backend value is unknown.
+ *
+ * @param env - the env map to read from. Defaults to `process.env`. Pass an
+ *   explicit object to keep tests deterministic (don't rely on the real
+ *   `process.env` leaking between cases).
+ */
+export function workspaceConfigFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): K8sWorkspaceConfig {
+  // Treat empty string as unset. Helm templates frequently render
+  // `value: "{{ .Values.workspace.backend }}"` with an empty value when
+  // the user hasn't overridden it; we want that case to default to local
+  // rather than fall through to the unknown-backend branch.
+  const rawBackend = env.AX_WORKSPACE_BACKEND;
+  const backend = rawBackend === undefined || rawBackend === '' ? 'local' : rawBackend;
+
+  if (backend === 'local') {
+    const repoRoot = env.AX_WORKSPACE_ROOT;
+    if (repoRoot === undefined || repoRoot === '') {
+      throw new Error(
+        'AX_WORKSPACE_BACKEND=local requires AX_WORKSPACE_ROOT to be set',
+      );
+    }
+    return { backend: 'local', repoRoot };
+  }
+
+  if (backend === 'http') {
+    const baseUrl = env.AX_WORKSPACE_GIT_HTTP_URL;
+    const token = env.AX_WORKSPACE_GIT_HTTP_TOKEN;
+    if (baseUrl === undefined || baseUrl === '') {
+      throw new Error(
+        'AX_WORKSPACE_BACKEND=http requires AX_WORKSPACE_GIT_HTTP_URL to be set',
+      );
+    }
+    if (token === undefined || token === '') {
+      throw new Error(
+        'AX_WORKSPACE_BACKEND=http requires AX_WORKSPACE_GIT_HTTP_TOKEN to be set',
+      );
+    }
+    return { backend: 'http', baseUrl, token };
+  }
+
+  throw new Error(
+    `unknown AX_WORKSPACE_BACKEND=${backend}; expected 'local' or 'http'`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Full env loader. Builds a `K8sPresetConfig` from the env vars the Helm chart
+// stamps onto the host pod. Mirrors `workspaceConfigFromEnv`'s posture: throw
+// loudly on missing required values rather than silently default.
+//
+// Required env (per the chart):
+//   - DATABASE_URL                — postgres DSN (database/eventbus/session)
+//   - AX_K8S_HOST_IPC_URL          — cluster URL runners use to reach @ax/ipc-http
+//   - AX_WORKSPACE_BACKEND + the per-backend vars (delegated to workspaceConfigFromEnv)
+//
+// Optional env:
+//   - K8S_NAMESPACE / K8S_POD_IMAGE / K8S_RUNTIME_CLASS / K8S_IMAGE_PULL_SECRETS
+//                                  — sandbox-k8s overrides
+//   - BIND_HOST / PORT             — @ax/ipc-http listen address (defaults
+//                                    '0.0.0.0' / 8080)
+//   - AX_LLM_MODEL / AX_LLM_MAX_TOKENS — anthropic config
+//   - AX_RUNNER_BINARY             — chat orchestrator override (tests)
+//   - AX_CHAT_TIMEOUT_MS           — chat orchestrator override
+//
+// `ANTHROPIC_API_KEY` and `AX_CREDENTIALS_KEY` are read by the respective
+// plugins themselves at init() time — they don't appear in K8sPresetConfig.
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a full `K8sPresetConfig` from the env vars the Helm chart sets on the
+ * host pod. Throws on missing required values.
+ *
+ * @param env - the env map to read from. Defaults to `process.env`. Pass an
+ *   explicit object to keep tests deterministic.
+ */
+export function loadK8sConfigFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): K8sPresetConfig {
+  const databaseUrl = env.DATABASE_URL;
+  if (databaseUrl === undefined || databaseUrl === '') {
+    throw new Error('DATABASE_URL is required');
+  }
+  const hostIpcUrl = env.AX_K8S_HOST_IPC_URL;
+  if (hostIpcUrl === undefined || hostIpcUrl === '') {
+    throw new Error('AX_K8S_HOST_IPC_URL is required');
+  }
+
+  const sandbox: NonNullable<K8sPresetConfig['sandbox']> = {};
+  if (env.K8S_NAMESPACE !== undefined && env.K8S_NAMESPACE !== '') {
+    sandbox.namespace = env.K8S_NAMESPACE;
+  }
+  if (env.K8S_POD_IMAGE !== undefined && env.K8S_POD_IMAGE !== '') {
+    sandbox.image = env.K8S_POD_IMAGE;
+  }
+  if (env.K8S_RUNTIME_CLASS !== undefined && env.K8S_RUNTIME_CLASS !== '') {
+    sandbox.runtimeClassName = env.K8S_RUNTIME_CLASS;
+  }
+  if (env.K8S_IMAGE_PULL_SECRETS !== undefined && env.K8S_IMAGE_PULL_SECRETS !== '') {
+    sandbox.imagePullSecrets = env.K8S_IMAGE_PULL_SECRETS.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
+  }
+
+  const ipc: K8sPresetConfig['ipc'] = { hostIpcUrl };
+  if (env.BIND_HOST !== undefined && env.BIND_HOST !== '') {
+    ipc.host = env.BIND_HOST;
+  }
+  if (env.PORT !== undefined && env.PORT !== '') {
+    const portNum = Number(env.PORT);
+    if (!Number.isFinite(portNum) || portNum <= 0 || portNum > 65535) {
+      throw new Error(`invalid PORT=${env.PORT}; expected a positive integer`);
+    }
+    ipc.port = portNum;
+  }
+
+  const anthropic: NonNullable<K8sPresetConfig['anthropic']> = {};
+  if (env.AX_LLM_MODEL !== undefined && env.AX_LLM_MODEL !== '') {
+    anthropic.model = env.AX_LLM_MODEL;
+  }
+  if (env.AX_LLM_MAX_TOKENS !== undefined && env.AX_LLM_MAX_TOKENS !== '') {
+    const n = Number(env.AX_LLM_MAX_TOKENS);
+    if (!Number.isFinite(n) || n <= 0) {
+      throw new Error(`invalid AX_LLM_MAX_TOKENS=${env.AX_LLM_MAX_TOKENS}; expected a positive integer`);
+    }
+    anthropic.maxTokens = n;
+  }
+
+  const chat: NonNullable<K8sPresetConfig['chat']> = {};
+  if (env.AX_RUNNER_BINARY !== undefined && env.AX_RUNNER_BINARY !== '') {
+    chat.runnerBinary = env.AX_RUNNER_BINARY;
+  }
+  if (env.AX_CHAT_TIMEOUT_MS !== undefined && env.AX_CHAT_TIMEOUT_MS !== '') {
+    const n = Number(env.AX_CHAT_TIMEOUT_MS);
+    if (!Number.isFinite(n) || n <= 0) {
+      throw new Error(`invalid AX_CHAT_TIMEOUT_MS=${env.AX_CHAT_TIMEOUT_MS}; expected a positive integer`);
+    }
+    chat.chatTimeoutMs = n;
+  }
+
+  const config: K8sPresetConfig = {
+    database: { connectionString: databaseUrl },
+    eventbus: { connectionString: databaseUrl },
+    session: { connectionString: databaseUrl },
+    workspace: workspaceConfigFromEnv(env),
+    ipc,
+  };
+  if (Object.keys(sandbox).length > 0) config.sandbox = sandbox;
+  if (Object.keys(anthropic).length > 0) config.anthropic = anthropic;
+  if (Object.keys(chat).length > 0) config.chat = chat;
+  return config;
 }

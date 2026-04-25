@@ -24,6 +24,7 @@
     "@ax/eventbus-postgres": "workspace:*",
     "@ax/session-postgres": "workspace:*",
     "@ax/workspace-git": "workspace:*",
+    "@ax/workspace-git-http": "workspace:*",
     "@ax/sandbox-k8s": "workspace:*",
     "@ax/llm-anthropic": "workspace:*",
     "@ax/llm-proxy-anthropic-format": "workspace:*",

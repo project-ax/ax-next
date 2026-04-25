@@ -1,5 +1,5 @@
 import type { Plugin } from '@ax/core';
-import { registerWorkspaceGitHooks } from './impl.js';
+import { registerWorkspaceGitHooks } from '@ax/workspace-git-core';
 
 const PLUGIN_NAME = '@ax/workspace-git';
 
@@ -14,12 +14,11 @@ export interface WorkspaceGitConfig {
 }
 
 /**
- * Workspace plugin backed by a bare `isomorphic-git` repository on disk.
- *
- * Linear-history-only by construction: every `workspace:apply` is a CAS on
- * `refs/heads/main`. There are no branches, no merges, no rebase. The
- * `WorkspaceVersion` opaque string happens to be a 40-hex commit SHA today,
- * but subscribers MUST treat it as opaque (Invariant 1).
+ * Single-replica workspace plugin backed by a bare `isomorphic-git`
+ * repository on disk. Thin wrapper over `@ax/workspace-git-core` — registers
+ * the four `workspace:*` service hooks against a local repoRoot. Use this
+ * for the local CLI / single-pod deployments. Multi-replica deployments
+ * use `@ax/workspace-git-http` instead.
  */
 export function createWorkspaceGitPlugin(config: WorkspaceGitConfig): Plugin {
   return {
@@ -36,7 +35,7 @@ export function createWorkspaceGitPlugin(config: WorkspaceGitConfig): Plugin {
       subscribes: [],
     },
     init({ bus }) {
-      registerWorkspaceGitHooks(bus, config);
+      registerWorkspaceGitHooks(bus, { repoRoot: config.repoRoot });
     },
   };
 }

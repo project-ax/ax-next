@@ -1,0 +1,116 @@
+{{- if .Values.gitServer.enabled }}
+{{/*
+git-server Deployment.
+
+Owns the bare git repo on a PVC. Every host replica talks to it for
+workspace ops over HTTP, with the bearer token from the auth Secret. The
+git-server itself serializes writes inside @ax/workspace-git-core's mutex,
+so this pod is — and MUST stay — the unique writer.
+
+That's why `replicas: 1` is hardcoded, not a Helm value: scaling out would
+re-introduce the multi-writer race we built this whole pod to remove. If
+that ever changes (consensus-backed bare repo, etc.) it's a new design,
+not a knob flip.
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ax-next.gitServerComponentName" . }}
+  namespace: {{ include "ax-next.hostNamespace" . }}
+  labels:
+    {{- include "ax-next.componentLabels" (dict "component" "git-server" "context" $) | nindent 4 }}
+    ax.io/plane: storage
+spec:
+  # ALWAYS 1 — adding more replicas would re-introduce the multi-writer
+  # race we're solving with this pod. The mutex inside the core relies on
+  # being the unique writer. NEVER make this configurable.
+  replicas: 1
+  strategy:
+    type: Recreate    # PVC is RWO; only one pod can mount at a time anyway.
+  selector:
+    matchLabels:
+      {{- include "ax-next.selectorLabels" (dict "component" "git-server" "context" $) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ax-next.selectorLabels" (dict "component" "git-server" "context" $) | nindent 8 }}
+        ax.io/plane: storage
+      annotations:
+        # Roll the pod when the bearer token rotates.
+        checksum/auth: {{ include (print $.Template.BasePath "/git-server-auth-secret.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "ax-next.gitServerComponentName" . }}
+      terminationGracePeriodSeconds: {{ .Values.gitServer.terminationGracePeriodSeconds | default 30 }}
+      # Pod-level securityContext. fsGroup is the load-bearing piece — without
+      # it, kubelet doesn't chgrp the freshly-provisioned PVC mount, and the
+      # UID 1000 process inside the container can't write to it (EACCES on
+      # the first ref/object write). Most production CSI drivers (EBS,
+      # GCE PD, Longhorn, Ceph RBD) leave the volume root:root by default;
+      # local-path provisioners hide the bug. fsGroup matches runAsUser so
+      # the chgrp is a no-op for ownership but still grants group-write.
+      securityContext:
+        runAsUser: 1000
+        runAsNonRoot: true
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- range . }}
+        - name: {{ . }}
+        {{- end }}
+      {{- end }}
+      containers:
+        - name: git-server
+          image: {{ include "ax-next.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy | default "IfNotPresent" }}
+          command: {{ .Values.gitServer.command | toJson }}
+          ports:
+            - name: git
+              containerPort: {{ .Values.gitServer.port }}
+              protocol: TCP
+          env:
+            - name: AX_GIT_SERVER_HOST
+              value: "0.0.0.0"
+            - name: AX_GIT_SERVER_PORT
+              value: {{ .Values.gitServer.port | quote }}
+            - name: AX_GIT_SERVER_REPO_ROOT
+              value: {{ .Values.gitServer.mountPath | quote }}
+            - name: AX_GIT_SERVER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ax-next.gitServerAuthSecretName" . }}
+                  key: token
+          resources:
+            {{- toYaml .Values.gitServer.resources | nindent 12 }}
+          {{- with .Values.gitServer.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.gitServer.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          # Pod hardening: non-root, no caps, read-only rootfs. The bare
+          # repo lives on the mounted PVC; everything else is immutable
+          # except a small /tmp emptyDir that git uses for pack temp files.
+          securityContext:
+            runAsUser: 1000
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: repo
+              mountPath: {{ .Values.gitServer.mountPath }}
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: repo
+          persistentVolumeClaim:
+            claimName: {{ include "ax-next.gitServerComponentName" . }}-repo
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+{{- end }}

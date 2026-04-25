@@ -1,0 +1,23 @@
+{{- if .Values.gitServer.enabled }}
+{{/*
+ClusterIP Service fronting the git-server pod. Host replicas reach it via
+the URL produced by `ax-next.gitServerServiceUrl`. Not exposed beyond the
+cluster — see the NetworkPolicy (Task 17) for ingress restrictions.
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ax-next.gitServerComponentName" . }}
+  namespace: {{ include "ax-next.hostNamespace" . }}
+  labels:
+    {{- include "ax-next.componentLabels" (dict "component" "git-server" "context" $) | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "ax-next.selectorLabels" (dict "component" "git-server" "context" $) | nindent 4 }}
+  ports:
+    - name: git
+      port: {{ .Values.gitServer.service.port }}
+      targetPort: git
+      protocol: TCP
+{{- end }}

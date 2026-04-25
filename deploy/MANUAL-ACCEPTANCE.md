@@ -132,13 +132,12 @@ Same procedure as kind, but:
   # expect: {"ok":true}
   ```
 
-  The end-to-end "chat returns a response" criterion requires a
-  user-facing entry point on the host pod (separate follow-up — the host
-  pod's CLI `serve` subcommand isn't shipped yet) and a pre-built
-  runner image (`Dockerfile.agent`, follow-up #4 in the Week 7-9
-  followups doc). With those in place, kubectl-exec into the host pod
-  and run a one-shot CLI chat; the runner pod gets created, connects
-  back over HTTP, and returns.
+  The end-to-end "chat returns a response" criterion requires the `serve`
+  subcommand (now shipped — see "multi-replica chat" scenario below) and
+  a pre-built runner image (`Dockerfile.agent`, follow-up #4 in the
+  Week 7-9 followups doc). With the runner image in place, port-forward
+  into the host's Service and POST to `/chat`; the runner pod gets
+  created, connects back over HTTP, and returns.
 
 - **`Dockerfile.agent` is not in this PR.** Pre-build any image bundling the
   two runner binaries; the chart only consumes it.
@@ -152,6 +151,140 @@ Same procedure as kind, but:
   values disable NPs (`networkPolicies.enabled=false`). Real-cluster deploys
   must run on a CNI that enforces NPs (Calico, Cilium, etc.) — verify before
   enabling in prod.
+
+## Scenario: multi-replica chat (workspace.backend=http)
+
+This scenario proves that two host replicas can serve concurrent chat
+requests against a shared workspace, and that the resulting git history
+is linear with both sessions' writes visible. It exists to validate the
+`workspace-git-http` slice — the dedicated git-server pod that owns the
+bare repo, with each host replica forwarding workspace ops over HTTP so
+we never have two writers racing on the same `.git`.
+
+The `serve` CLI subcommand boots the k8s preset (postgres trio + workspace
++ sandbox-k8s + chat orchestrator + ipc-http + tools + LLM) and exposes a
+small HTTP front door:
+
+- `GET /health` — readiness/liveness probe (no auth).
+- `POST /chat` — runs one chat turn, returns the outcome JSON.
+  Auth: optional bearer token via `AX_SERVE_TOKEN`. If unset, `/chat` is
+  open to anything that can route to the port — the chart's NetworkPolicy
+  + ingress-off default still bound reach to in-cluster + port-forward,
+  but for prod we recommend setting the token.
+
+### Prerequisites
+
+- A kind cluster (or any k8s cluster you trust) with `kubectl` configured.
+- The agent image built and pushed to a registry the cluster can reach
+  (the image must include the cli's `dist/main.js`; see follow-up #4 for
+  the `Dockerfile.agent`).
+- An Anthropic API key.
+
+### Steps
+
+1. Install (or upgrade) the chart with the multi-replica + http backend
+   knobs flipped on:
+
+   ```bash
+   helm upgrade --install ax-next deploy/charts/ax-next \
+     --namespace ax-next --create-namespace \
+     --set replicas=2 \
+     --set workspace.backend=http \
+     --set gitServer.enabled=true \
+     --set image.repository=<your-registry>/ax-next/agent \
+     --set image.tag=<your-tag> \
+     --set credentials.key="$(openssl rand -base64 32)" \
+     --set anthropic.apiKey="$ANTHROPIC_API_KEY"
+   ```
+
+2. Wait for both host pods, the git-server pod, and postgres to be Ready:
+
+   ```bash
+   kubectl -n ax-next get pods -w
+   ```
+
+   Expected: 2 host pods (`ax-next-host-...`), 1 git-server pod
+   (`ax-next-git-server-...`), and the postgres pod, all `1/1 Running`.
+
+3. Port-forward into the host's Service from the local shell:
+
+   ```bash
+   kubectl -n ax-next port-forward svc/ax-next-host 8080:80 &
+   ```
+
+4. Fire two concurrent chat requests against the host Service. The
+   `serve` subcommand accepts `POST /chat` with a JSON body of
+   `{"message": "<text>", "sessionId": "<optional>"}` — when `sessionId`
+   is omitted, a fresh `serve-<uuid>` is minted server-side, so each
+   request is independent:
+
+   ```bash
+   curl -X POST http://localhost:8080/chat -H 'Content-Type: application/json' \
+     -d '{"message":"hello from session A"}' &
+   curl -X POST http://localhost:8080/chat -H 'Content-Type: application/json' \
+     -d '{"message":"hello from session B"}' &
+   wait
+   ```
+
+   Expected: both requests return HTTP 200 with a `{sessionId, outcome}`
+   JSON body. Because `replicas: 2`, the Service load-balances the
+   requests across both host pods — so we're genuinely exercising two
+   writers landing through the single git-server.
+
+   If `AX_SERVE_TOKEN` is set on the host pod, add
+   `-H "Authorization: Bearer $AX_SERVE_TOKEN"` to each curl.
+
+5. Verify both writes landed in the git-server's PVC. Two probes,
+   either is fine:
+
+   ```bash
+   # Probe A: count commits directly from the git-server pod.
+   kubectl -n ax-next exec deploy/ax-next-git-server -- node -e \
+     "const git = require('isomorphic-git'); const fs = require('fs'); \
+      git.log({fs, gitdir: '/var/lib/ax-next/repo/repo.git', ref: 'refs/heads/main'}) \
+        .then(commits => console.log(commits.length))"
+   ```
+
+   Expected: at least 2 commits past whatever seed commit the chart's
+   first boot may have created.
+
+   ```bash
+   # Probe B: ask the git-server's HTTP API directly.
+   kubectl -n ax-next port-forward svc/ax-next-git-server 7780:7780 &
+   curl -X POST http://localhost:7780/workspace.list \
+     -H "Authorization: Bearer $(kubectl -n ax-next get secret ax-next-git-server-auth \
+        -o jsonpath='{.data.token}' | base64 -d)" \
+     -H 'Content-Type: application/json' \
+     -d '{}' | jq .paths
+   ```
+
+   Expected: a list of paths reflecting both sessions' workspace state.
+
+### Acceptance criteria
+
+- [ ] Both concurrent `curl` calls return HTTP 200.
+- [ ] The git-server pod's `main` ref shows ≥ 2 new commits after the
+      requests complete.
+- [ ] No host pod restarts during the run (`kubectl get pods -n ax-next`
+      shows `RESTARTS = 0` for the host pods).
+- [ ] No `level >= warn` lines in either host pod's logs other than the
+      expected gVisor-disabled warning on kind.
+
+### Cleanup
+
+```bash
+helm uninstall ax-next -n ax-next
+```
+
+The git-server PVC and its auth Secret persist on purpose — they carry
+`helm.sh/resource-policy: keep` so an accidental `helm uninstall`
+doesn't take the workspace history with it. Delete them by hand if a
+clean slate is wanted:
+
+```bash
+kubectl -n ax-next delete pvc ax-next-git-server-repo
+kubectl -n ax-next delete secret ax-next-git-server-auth
+```
 
 ## When this passes, do
 1. Update the PR description's acceptance section with the date + cluster

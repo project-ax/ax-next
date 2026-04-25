@@ -19,14 +19,11 @@
   },
   "dependencies": {
     "@ax/core": "workspace:*",
-    "isomorphic-git": "1.37.5",
-    "picomatch": "4.0.4",
-    "zod": "^3.23.8"
+    "@ax/workspace-git-core": "workspace:*"
   },
   "devDependencies": {
     "@ax/test-harness": "workspace:*",
     "@types/node": "^25.6.0",
-    "@types/picomatch": "^4.0.2",
     "typescript": "^6.0.3",
     "vitest": "^4.1.4"
   }

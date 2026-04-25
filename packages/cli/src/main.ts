@@ -26,6 +26,7 @@ import { AxConfigSchema, type AxConfig, type AxConfigInput } from './config/sche
 import { loadAxConfig } from './config/load.js';
 import { runCredentialsCommand } from './commands/credentials.js';
 import { runMcpCommand } from './commands/mcp.js';
+import { runServeCommand } from './commands/serve.js';
 
 // `@ax/cli` is the ONE package permitted to import sibling plugins directly
 // (eslint.config.mjs no-restricted-imports allowlist); this is also the one
@@ -271,6 +272,17 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       stdin: process.stdin,
       sqlitePath,
     })
+      .then((code) => process.exit(code))
+      .catch((e) => {
+        process.stderr.write(`fatal: ${e instanceof Error ? e.message : String(e)}\n`);
+        process.exit(2);
+      });
+  } else if (argv[0] === 'serve') {
+    // Long-running k8s-mode entrypoint. The chart's host pod runs this.
+    // Local-dev users running `node dist/cli/index.js serve` will boot the
+    // full k8s preset — they need DATABASE_URL + AX_K8S_HOST_IPC_URL +
+    // AX_WORKSPACE_BACKEND set, otherwise we exit 2 with a clear message.
+    runServeCommand({ argv: argv.slice(1) })
       .then((code) => process.exit(code))
       .catch((e) => {
         process.stderr.write(`fatal: ${e instanceof Error ? e.message : String(e)}\n`);

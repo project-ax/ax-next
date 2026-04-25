@@ -101,3 +101,31 @@ where to phone home.
 {{- $port := .Values.host.ipcServicePort | default 80 -}}
 {{- printf "http://%s.%s.svc.cluster.local:%d" (include "ax-next.hostComponentName" .) (include "ax-next.hostNamespace" .) (int $port) -}}
 {{- end }}
+
+{{/*
+git-server component name. <release>-<chart>-git-server, truncated to 63
+chars (DNS label limit). Source of truth for the Deployment, Service,
+ServiceAccount, and the PVC name prefix.
+*/}}
+{{- define "ax-next.gitServerComponentName" -}}
+{{- printf "%s-git-server" (include "ax-next.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{/*
+Cluster-internal URL the host plugin uses to reach the git-server.
+http://<svc>.<ns>.svc.cluster.local:<port>. Mirrors hostIpcUrl's
+fully-qualified shape so a future cluster-DNS suffix change moves both in
+lockstep. The host deployment stamps this onto AX_WORKSPACE_GIT_HTTP_URL
+when workspace.backend == "http".
+*/}}
+{{- define "ax-next.gitServerServiceUrl" -}}
+{{- printf "http://%s.%s.svc.cluster.local:%d" (include "ax-next.gitServerComponentName" .) (include "ax-next.hostNamespace" .) (int .Values.gitServer.service.port) -}}
+{{- end -}}
+
+{{/*
+Name of the Secret holding the git-server's bearer token.
+<release>-<chart>-git-server-auth.
+*/}}
+{{- define "ax-next.gitServerAuthSecretName" -}}
+{{- printf "%s-git-server-auth" (include "ax-next.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
