@@ -816,15 +816,9 @@ importers:
       '@ax/core':
         specifier: workspace:*
         version: link:../core
-      isomorphic-git:
-        specifier: 1.37.5
-        version: 1.37.5
-      picomatch:
-        specifier: 4.0.4
-        version: 4.0.4
-      zod:
-        specifier: ^3.23.8
-        version: 3.25.76
+      '@ax/workspace-git-core':
+        specifier: workspace:*
+        version: link:../workspace-git-core
     devDependencies:
       '@ax/test-harness':
         specifier: workspace:*
@@ -832,9 +826,6 @@ importers:
       '@types/node':
         specifier: ^25.6.0
         version: 25.6.0
-      '@types/picomatch':
-        specifier: ^4.0.2
-        version: 4.0.3
       typescript:
         specifier: ^6.0.3
         version: 6.0.3

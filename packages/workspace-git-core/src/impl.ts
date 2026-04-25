@@ -21,6 +21,11 @@ import {
   type WorkspaceReadOutput,
   type WorkspaceVersion,
 } from '@ax/core';
+/**
+ * Config for `registerWorkspaceGitHooks`. `repoRoot` is the absolute path to
+ * the bare git repo's parent directory; `<repoRoot>/repo.git` is materialized
+ * lazily on first use.
+ */
 export interface WorkspaceGitCoreConfig {
   repoRoot: string;
 }

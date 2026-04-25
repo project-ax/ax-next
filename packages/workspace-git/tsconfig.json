@@ -6,5 +6,8 @@
   },
   "include": ["src/**/*"],
   "exclude": ["src/__tests__/**", "dist", "node_modules"],
-  "references": [{ "path": "../core" }]
+  "references": [
+    { "path": "../core" },
+    { "path": "../workspace-git-core" }
+  ]
 }
