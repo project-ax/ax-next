@@ -1,0 +1,25 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "c423ea00eee5",
+  "session_id": "da5cbc7b-5382-44b2-a9ed-f9d776ee6ca4",
+  "strategy": "manual-commit",
+  "created_at": "2026-04-25T16:22:14.085409Z",
+  "branch": "feat/kernel-shutdown-lifecycle",
+  "checkpoints_count": 0,
+  "files_touched": [],
+  "agent": "Claude Code",
+  "model": "claude-opus-4-7[1m]",
+  "turn_id": "610e56ee5987",
+  "checkpoint_transcript_start": 252,
+  "transcript_lines_at_start": 252,
+  "token_usage": {
+    "input_tokens": 2,
+    "cache_creation_tokens": 4544,
+    "cache_read_tokens": 368517,
+    "output_tokens": 3242,
+    "api_call_count": 2
+  },
+  "session_metrics": {
+    "turn_count": 1
+  }
+}
