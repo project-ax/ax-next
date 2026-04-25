@@ -73,3 +73,7 @@ the bottom of the scrollbar handle fades away when it gets to the bottom of the 
 ---
 
 after the copy icon is clicked and it changes to a checkmark the icons don't hide again automatically
+
+---
+
+commit all fixes
