@@ -1,10 +1,22 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { Sidebar } from '../components/Sidebar';
+import { UserProvider } from '../lib/user-context';
+
+const testUser = {
+  id: 'u1',
+  email: 'alice@local',
+  name: 'Alice',
+  role: 'user' as const,
+};
 
 describe('Sidebar', () => {
   it('renders the Tide structure with all required class hooks', () => {
-    const { container } = render(<Sidebar />);
+    const { container } = render(
+      <UserProvider value={testUser}>
+        <Sidebar />
+      </UserProvider>,
+    );
     const sidebar = screen.getByTestId('sidebar');
     expect(sidebar.tagName).toBe('ASIDE');
     expect(sidebar.className).toContain('sidebar');
@@ -17,7 +29,11 @@ describe('Sidebar', () => {
   });
 
   it('agent-chip and user-row are buttons with aria-haspopup', () => {
-    const { container } = render(<Sidebar />);
+    const { container } = render(
+      <UserProvider value={testUser}>
+        <Sidebar />
+      </UserProvider>,
+    );
     const chip = container.querySelector('button.agent-chip');
     expect(chip).toBeTruthy();
     expect(chip?.getAttribute('aria-haspopup')).toBe('true');

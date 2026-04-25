@@ -3,8 +3,7 @@
  *
  * Structure-only for the parts that haven't been earned yet. Live wiring
  * so far: agent chip + menu (Task 12), session list + new-session button
- * (Task 13), inline rename + delete (Task 14). Coming next: user menu
- * (21).
+ * (Task 13), inline rename + delete (Task 14), user menu (Task 21).
  *
  * The collapse toggle used to live in `.sidebar-head`; Task 16 moved it
  * to the session header per the Tide design — the toggle belongs at the
@@ -17,8 +16,13 @@
 import { AgentChip, useHydrateAgents } from './AgentChip';
 import { NewSessionButton } from './NewSessionButton';
 import { SessionList } from './SessionList';
+import { UserMenu } from './UserMenu';
 
-export function Sidebar() {
+type AdminView = 'agents' | 'mcp-servers' | 'teams' | null;
+
+export function Sidebar({
+  onOpenAdmin,
+}: { onOpenAdmin?: ((view: AdminView) => void) | undefined } = {}) {
   // Fetch /api/agents once on mount so the chip + menu can render names.
   useHydrateAgents();
   return (
@@ -33,25 +37,7 @@ export function Sidebar() {
       <div className="sessions-scroll" role="navigation" aria-label="sessions">
         <SessionList />
       </div>
-      <div className="user-row-wrap">
-        <button
-          className="user-row"
-          aria-haspopup="true"
-          aria-expanded="false"
-          type="button"
-        >
-          <span className="user-avatar" aria-hidden="true">
-            A
-          </span>
-          <span className="user-meta">
-            <span className="user-name">Alice</span>
-          </span>
-          <span className="user-caret" aria-hidden="true">
-            ▾
-          </span>
-        </button>
-        {/* user-menu popover placeholder — Task 21 wires it */}
-      </div>
+      <UserMenu onOpenAdmin={onOpenAdmin} />
     </aside>
   );
 }
