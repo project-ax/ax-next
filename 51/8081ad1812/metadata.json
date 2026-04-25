@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "518081ad1812",
+  "strategy": "manual-commit",
+  "branch": "feat/kernel-shutdown-lifecycle",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "packages/ipc-http/SECURITY.md",
+    "packages/sandbox-k8s/src/plugin.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/51/8081ad1812/0/metadata.json",
+      "transcript": "/51/8081ad1812/0/full.jsonl",
+      "content_hash": "/51/8081ad1812/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 6,
+    "cache_creation_tokens": 6191,
+    "cache_read_tokens": 1972618,
+    "output_tokens": 3378,
+    "api_call_count": 6
+  }
+}
