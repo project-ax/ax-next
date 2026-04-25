@@ -1,0 +1,37 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "5eeee165b7f5",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 10,
+  "files_touched": [
+    "packages/channel-web/src/__tests__/session-header.test.tsx",
+    "packages/channel-web/src/__tests__/sidebar.test.tsx",
+    "packages/channel-web/src/components/AgentChip.tsx",
+    "packages/channel-web/src/components/AgentMenu.tsx",
+    "packages/channel-web/src/components/Composer.tsx",
+    "packages/channel-web/src/components/NewSessionButton.tsx",
+    "packages/channel-web/src/components/SessionHeader.tsx",
+    "packages/channel-web/src/components/SessionRow.tsx",
+    "packages/channel-web/src/components/Sidebar.tsx",
+    "packages/channel-web/src/components/Thread.tsx",
+    "packages/channel-web/src/components/UserMenu.tsx",
+    "packages/channel-web/src/index.css",
+    "packages/channel-web/vite.config.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/5e/eee165b7f5/0/metadata.json",
+      "transcript": "/5e/eee165b7f5/0/full.jsonl",
+      "content_hash": "/5e/eee165b7f5/0/content_hash.txt",
+      "prompt": "/5e/eee165b7f5/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 3452,
+    "cache_creation_tokens": 643974,
+    "cache_read_tokens": 103548490,
+    "output_tokens": 192011,
+    "api_call_count": 374
+  }
+}

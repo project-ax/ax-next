@@ -1,0 +1,75 @@
+the layout doesn't follow the template in @../../design_handoff_tide/ 
+use playwright mcp to compare it to the current chat ui implementation until it matches the template
+
+---
+
+still some differences:
+- the "+" in front of new session is wrong size
+- the drop down caret in both the agent selection menu and the user menu is different
+- font sizes and padding in sidebar is slightly off
+- the rename/delete menu behind the three dots in sidebar session menu is different (no icon and lowercase)
+- the composer dimensions and padding is different and there is no hover state and menu behind the "+" button (it should use the assistant-ui action menu)
+- hover state elements are missing for the composer
+- the copy/edit/retry actions on message hover should be Lucide icons
+
+---
+
+- The hover icons for messages are bigger than in the template, and the template also includes the current time in front of the icons: [Image #1]
+- You only need to click on the chat title once to edit the name
+- The user hover menu has icons for each item and there is no logo: [Image #2]
+- Each agent in the agent menu has a unique colored dot that matches the color dot in the sidebar so you know which agent created each session: [Image #3]
+- Clicking anywhere outside of the agent dropdown menu should close it again
+
+---
+
+- use the same SVGs as in the template for the edit/copy/retry icons so they are an exact match
+- when you hover over a message, the icons that are displayed cause all the messages below to move down by a few pixels which is visually jarring. have the spacing between message be fixed (like in the template) regardles of whether hover icons are showing
+
+---
+
+- use the same SVGs as in the template for the edit/copy/retry icons so they are an exact match
+- when you hover over a message, the icons that are displayed cause all the messages below to move down by a few pixels which is visually jarring. have the spacing between message be fixed (like in the template) regardles of whether hover icons are showing
+- the "command-," shortcut for settings in the user menu should be right justified
+
+---
+
+actually i take that back. dont use custom SVGs for the icons. just make sure their size matches whats in the template
+
+---
+
+- when i git the retry button, the message move up while re-streaming text. it shouldn't do that... it should remain at its current vertical position
+- when i click on the copy button, it should turn into a check mark (like in the template)
+
+---
+
+- when i click the retry button, the message move up while re-streaming text. it shouldn't do that... it should remain at its current vertical position
+- when i click on the copy button, it should turn into a check mark (like in the template)
+- when i click the edit button, it should edit the message in place (like in the template) without showing cancel/update buttons
+
+---
+
+match the behavior to the template for a couple small things:
+- after the copy button is pressed and turns into a check mark, it reverts back to the copy button after a second or so
+- when edited short user message, the width of the edit box should match the width of the initial user message but should expand horizontally until the max width of user messages is hit and then it should expand vertically (this is how its done in the template)
+
+---
+
+- the chat are doesn't auto-scroll when new user messages are entered. match the behavior of the template here
+- overlfowing session titles in the sidebar should fade out like in the template
+
+---
+
+- the chat area doesn't auto-scroll vertically when new user messages are entered. match the behavior of the template here
+- overlfowing session titles in the sidebar should fade out like in the template
+
+---
+
+in the template, when the chat area scrolls, the scrollbar appear flush with the right side of the browser, but in our chat UI the scrollbar appears right next to the right of the messages
+
+---
+
+the bottom of the scrollbar handle fades away when it gets to the bottom of the screen. that sholdn't happen. only the chat messages should fade as they go underneath the composer
+
+---
+
+after the copy icon is clicked and it changes to a checkmark the icons don't hide again automatically
