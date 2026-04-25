@@ -6,8 +6,8 @@ export const defaultSeeds: Record<string, unknown[]> = {
   agents: [
     {
       id: 'tide',
-      owner_id: 'u1',
-      owner_type: 'user',
+      owner_id: 't1',
+      owner_type: 'team',
       name: 'tide',
       tag: 'work',
       desc: 'your default work agent',
