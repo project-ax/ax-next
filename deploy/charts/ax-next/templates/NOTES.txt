@@ -16,7 +16,7 @@ Ingress: https://{{ .Values.ingress.host }}
 {{- else }}
 
 To reach the host pod, port-forward:
-  kubectl -n {{ include "ax-next.hostNamespace" . }} port-forward svc/{{ include "ax-next.fullname" . }}-host 8080:80
+  kubectl -n {{ include "ax-next.hostNamespace" . }} port-forward svc/{{ include "ax-next.hostComponentName" . }} 8080:80
 {{- end }}
 
 A few things worth double-checking on the way out:

@@ -23,7 +23,7 @@ import { createK8sPlugins, type K8sPresetConfig } from '../index.js';
 // Real end-to-end exercise lives in Task 20's CI acceptance test (postgres
 // testcontainer + mocked k8s).
 //
-// Dynamic-hook caveat: a few plugins (mcp-client, ipc-server, tool-
+// Dynamic-hook caveat: a few plugins (mcp-client, ipc-http, tool-
 // dispatcher) register hooks dynamically at runtime — `tool:execute:${name}`
 // service hooks aren't enumerable until MCP servers connect or tool
 // descriptors get registered. That's why those hooks are NOT in any
@@ -39,6 +39,7 @@ const stubConfig: K8sPresetConfig = {
   session: { connectionString: 'postgres://stub:5432/stub' },
   workspace: { repoRoot: '/tmp/preset-k8s-stub' },
   sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
+  ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
   anthropic: { model: 'claude-sonnet-4-6' },
   // Override the runner binary so resolution doesn't depend on whether
   // @ax/agent-claude-sdk-runner has been built. The chat-orchestrator
@@ -93,7 +94,7 @@ describe('@ax/preset-k8s wiring', () => {
         '@ax/credentials',
         '@ax/database-postgres',
         '@ax/eventbus-postgres',
-        '@ax/ipc-server',
+        '@ax/ipc-http',
         '@ax/llm-anthropic',
         '@ax/llm-proxy-anthropic-format',
         '@ax/mcp-client',

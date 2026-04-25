@@ -9,7 +9,10 @@ import {
   ToolListResponseSchema,
   ToolPreCallResponseSchema,
   WorkspaceCommitNotifyResponseSchema,
+  parseRunnerEndpoint,
+  RunnerEndpointError,
   type IpcActionName,
+  type TransportTarget,
 } from '@ax/ipc-protocol';
 import {
   HostUnavailableError,
@@ -25,15 +28,11 @@ import {
 // Supported schemes today:
 //   - `unix:///abs/path/ipc.sock` — the in-host subprocess sandbox provider.
 //                                   Connects via http.request({ socketPath }).
-//   - `http://host:port`          — RESERVED for the k8s pod sandbox
-//                                   provider (Task 14). NOT IMPLEMENTED YET:
-//                                   passing one will throw at construction
-//                                   time. The pod's HTTP server side is the
-//                                   missing half of this story; once it
-//                                   exists, the unix:// branch and the http://
-//                                   branch share the same retry/backoff/cap
-//                                   logic — only the http.request options
-//                                   differ.
+//   - `http://host:port`          — the k8s pod sandbox provider. Connects
+//                                   via http.request({ host, port }).
+//                                   `host:port` points at the host's IPC
+//                                   listener (cluster Service DNS), NOT the
+//                                   runner pod itself.
 //
 // Three methods:
 //
@@ -57,8 +56,8 @@ import {
 //
 // Response-body cap: we drain into a Buffer capped at MAX_RESPONSE_BYTES.
 // @ax/core has a MAX_FRAME of 4 MiB, but this package must not import the
-// kernel (sandbox-side), so we redeclare the same ceiling here. Task 14
-// may unify if that boundary shifts.
+// kernel (sandbox-side), so we redeclare the same ceiling here. We may
+// unify if that boundary shifts.
 // ---------------------------------------------------------------------------
 
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
@@ -79,7 +78,7 @@ export interface IpcClientOptions {
   /**
    * Opaque URI the runner uses to reach the host. Schemes:
    *   - `unix:///abs/path` — connects to a Unix domain socket at the path.
-   *   - `http://host:port` — TCP HTTP. NOT IMPLEMENTED YET (Task 14).
+   *   - `http://host:port` — TCP HTTP to the host's IPC listener.
    *
    * The runner doesn't pick the scheme — the sandbox provider does, and
    * sets AX_RUNNER_ENDPOINT in the runner's env. See @ax/sandbox-subprocess
@@ -95,54 +94,6 @@ export interface IpcClientOptions {
   maxRetries?: number;
   /** Testable seam. */
   now?: () => number;
-}
-
-/**
- * Parsed transport-target derived from `runnerEndpoint`. The two shapes
- * line up with the two argument forms of `http.request()`.
- */
-type TransportTarget =
-  | { kind: 'unix'; socketPath: string }
-  | { kind: 'http'; host: string; port: number };
-
-function parseRunnerEndpoint(uri: string): TransportTarget {
-  let url: URL;
-  try {
-    url = new URL(uri);
-  } catch (cause) {
-    throw new HostUnavailableError(
-      `invalid runnerEndpoint URI: ${uri}`,
-      cause as Error,
-    );
-  }
-  switch (url.protocol) {
-    case 'unix:': {
-      // unix:///abs/path → url.pathname = '/abs/path'. We require an absolute
-      // path; relative would mean "unix:relative/path" (no slashes), which we
-      // reject as an obvious wiring bug.
-      const socketPath = url.pathname;
-      if (socketPath.length === 0 || !socketPath.startsWith('/')) {
-        throw new HostUnavailableError(
-          `unix:// runnerEndpoint must include an absolute path (got ${uri})`,
-        );
-      }
-      return { kind: 'unix', socketPath };
-    }
-    case 'http:': {
-      // http transport is reserved for @ax/sandbox-k8s. The pod's HTTP server
-      // half doesn't exist yet — surface a clear error rather than try to
-      // connect to a non-existent listener and then mislead the operator with
-      // "ECONNREFUSED" later.
-      throw new HostUnavailableError(
-        'http:// runnerEndpoint is not implemented yet (Task 14 deliverable). ' +
-          'Use unix:// for the subprocess sandbox.',
-      );
-    }
-    default:
-      throw new HostUnavailableError(
-        `unsupported runnerEndpoint scheme: ${url.protocol}`,
-      );
-  }
 }
 
 export interface IpcClient {
@@ -229,29 +180,25 @@ function requestOnce(
       fn();
     };
 
-    // Defensive: parseRunnerEndpoint rejects http:// at construction time
-    // today; if a future caller adds a new scheme we want a loud,
-    // localized error rather than a confusing connect failure deep in
-    // node:http.
-    if (opts.target.kind !== 'unix') {
-      settle(() =>
-        reject(
-          new HostUnavailableError(
-            `transport ${opts.target.kind} not implemented`,
-          ),
-        ),
-      );
-      return;
-    }
-
+    const requestOptions: http.RequestOptions =
+      opts.target.kind === 'unix'
+        ? {
+            socketPath: opts.target.socketPath,
+            path: opts.pathWithQuery,
+            method: opts.method,
+            headers,
+            signal: controller.signal,
+          }
+        : {
+            host: opts.target.host,
+            port: opts.target.port,
+            path: opts.pathWithQuery,
+            method: opts.method,
+            headers,
+            signal: controller.signal,
+          };
     const req = http.request(
-      {
-        socketPath: opts.target.socketPath,
-        path: opts.pathWithQuery,
-        method: opts.method,
-        headers,
-        signal: controller.signal,
-      },
+      requestOptions,
       (res) => {
         const chunks: Buffer[] = [];
         let total = 0;
@@ -339,10 +286,18 @@ export function createIpcClient(opts: IpcClientOptions): IpcClient {
   const maxRetries = opts.maxRetries ?? 5;
   const backoff = opts.retryBackoff ?? defaultBackoff;
   // Resolve the transport target ONCE at construction. parseRunnerEndpoint
-  // throws HostUnavailableError on an invalid URI / http:// scheme — that
-  // surfaces immediately at runner-startup, not on the first IPC call,
-  // which is the right time to fail loud.
-  const target = parseRunnerEndpoint(opts.runnerEndpoint);
+  // (in @ax/ipc-protocol) throws RunnerEndpointError on an invalid URI;
+  // we re-wrap as HostUnavailableError so the runner-side public surface
+  // stays unchanged.
+  let target: TransportTarget;
+  try {
+    target = parseRunnerEndpoint(opts.runnerEndpoint);
+  } catch (err) {
+    if (err instanceof RunnerEndpointError) {
+      throw new HostUnavailableError(err.message, err.cause);
+    }
+    throw err;
+  }
 
   const timeoutFor = (action: IpcActionName): number => {
     if (opts.timeouts?.[action] !== undefined) return opts.timeouts[action]!;

@@ -2,7 +2,7 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: {{ include "ax-next.fullname" . }}-host
+  name: {{ include "ax-next.hostComponentName" . }}
   namespace: {{ include "ax-next.hostNamespace" . }}
   labels:
     {{- include "ax-next.componentLabels" (dict "component" "host" "context" $) | nindent 4 }}
@@ -30,7 +30,7 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: {{ include "ax-next.fullname" . }}-host
+                name: {{ include "ax-next.hostComponentName" . }}
                 port:
                   name: http
 {{- end }}

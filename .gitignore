@@ -14,4 +14,7 @@ npm-debug.log*
 .vscode/
 .idea/
 
+.worktrees/
+worktrees/
+
 docs/plans/

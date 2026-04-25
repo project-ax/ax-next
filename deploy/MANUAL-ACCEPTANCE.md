@@ -30,8 +30,11 @@ docker build -t ax-next/agent:dev -f deploy/Dockerfile.agent .
 kind create cluster --name ax-next-dev
 kind load docker-image ax-next/agent:dev --name ax-next-dev
 
-# 3. Install the chart
+# 3. Install the chart (into the ax-next namespace — every probe below
+#    assumes that, including the new HTTP runner-IPC checks under "Known
+#    gotchas").
 helm install ax-next deploy/charts/ax-next \
+  --namespace ax-next --create-namespace \
   -f deploy/charts/ax-next/kind-dev-values.yaml \
   --set image.repository=ax-next/agent \
   --set image.tag=dev \
@@ -40,10 +43,11 @@ helm install ax-next deploy/charts/ax-next \
 
 # 4. Wait for the host pod to be Ready (postgres init job runs first; the
 #    host Deployment waits on it).
-kubectl wait --for=condition=Ready pod -l app.kubernetes.io/component=ax-next-host --timeout=180s
+kubectl wait -n ax-next --for=condition=Ready pod \
+  -l app.kubernetes.io/component=ax-next-host --timeout=180s
 
 # 5. Port-forward the host service
-kubectl port-forward svc/ax-next-host 8080:80 &
+kubectl port-forward -n ax-next svc/ax-next-host 8080:80 &
 
 # 6. Send a chat from the local CLI pointing at the cluster
 ax-next chat --endpoint http://localhost:8080 "list the files in /workspace"
@@ -58,44 +62,44 @@ Any failure here blocks merge.
       whose output is the actual file listing of the runner pod's workspace
       (which is empty by default — `ls /workspace` returns no entries, the
       assistant should say so coherently).
-- [ ] `kubectl get pods -l app.kubernetes.io/component=ax-next-runner` shows
-      a runner pod was created and (after the chat ends) terminated within
-      ~60s of the chat finishing.
+- [ ] `kubectl get pods -n ax-next-runners -l app.kubernetes.io/component=ax-next-runner`
+      shows a runner pod was created and (after the chat ends) terminated
+      within ~60s of the chat finishing.
 - [ ] No stuck runner pods: 60s after the chat ends, the runner-namespace pod
       count is back to zero.
 
 ### State persistence
 - [ ] A row landed in `session_postgres_v1_sessions`:
       ```bash
-      kubectl exec deploy/ax-next-host -- \
+      kubectl exec -n ax-next deploy/ax-next-host -- \
         psql -U ax-next -d ax-next \
         -c "SELECT count(*) FROM session_postgres_v1_sessions;"
       ```
       Returns `count > 0`.
 - [ ] A row landed in storage (audit log + chat-event log both write here):
       ```bash
-      kubectl exec deploy/ax-next-host -- \
+      kubectl exec -n ax-next deploy/ax-next-host -- \
         psql -U ax-next -d ax-next \
         -c "SELECT count(*) FROM storage_postgres_v1_kv;"
       ```
       Returns `count > 0`.
 - [ ] A workspace version was minted:
       ```bash
-      kubectl exec deploy/ax-next-host -- \
+      kubectl exec -n ax-next deploy/ax-next-host -- \
         ls /workspace-data/repo.git/refs/heads/main
       ```
       File exists.
 
 ### Logs / hygiene
-- [ ] No `level >= warn` lines in `kubectl logs deploy/ax-next-host` other
-      than the expected gVisor-disabled warning if you're on a kind cluster
-      without gVisor (the kind values.yaml turns gVisor off — that warning
-      is OK; nothing else should be).
+- [ ] No `level >= warn` lines in `kubectl logs -n ax-next deploy/ax-next-host`
+      other than the expected gVisor-disabled warning if you're on a kind
+      cluster without gVisor (the kind values.yaml turns gVisor off — that
+      warning is OK; nothing else should be).
 
 ### Cleanup
-- [ ] `helm uninstall ax-next` completes successfully.
-- [ ] 60s after uninstall: `kubectl get pods` in both the host namespace and
-      the runner namespace shows zero `ax-next-*` pods.
+- [ ] `helm uninstall ax-next -n ax-next` completes successfully.
+- [ ] 60s after uninstall: `kubectl get pods -n ax-next` and
+      `kubectl get pods -n ax-next-runners` both show zero `ax-next-*` pods.
 
 ## Real-cluster acceptance
 
@@ -110,15 +114,31 @@ Same procedure as kind, but:
 
 ## Known gotchas
 
-- **HTTP runner-IPC is not yet implemented** (Task 14b deferred). The host's
-  IPC client throws `HostUnavailableError("not implemented yet")` on the
-  `http://` scheme. **In this slice, the kind acceptance test cannot actually
-  drive the runner end-to-end yet.** It can verify the chart installs
-  cleanly, the host comes up, postgres is reachable, and the runner pod is
-  created — but the chat itself will fail at the IPC handshake. This is the
-  honest state. The HTTP IPC follow-up unblocks the full chat path; until
-  then, the kind acceptance is "everything except the chat completes." Mark
-  the chat checkbox as N/A for this slice; re-enable when HTTP IPC ships.
+- **HTTP runner-IPC.** After install, verify the host pod is binding the
+  IPC listener:
+
+  ```bash
+  kubectl logs -n ax-next deploy/ax-next-host | grep ipc-http
+  # expect: [ax/ipc-http] listening on http://0.0.0.0:8080
+  ```
+
+  Then verify a runner pod can reach it from inside the cluster. The
+  simplest probe: launch a one-shot debug pod in the runner namespace:
+
+  ```bash
+  kubectl run debug --rm -it -n ax-next-runners \
+    --image curlimages/curl --restart=Never -- \
+    curl -sS http://ax-next-host.ax-next.svc.cluster.local/healthz
+  # expect: {"ok":true}
+  ```
+
+  The end-to-end "chat returns a response" criterion requires a
+  user-facing entry point on the host pod (separate follow-up — the host
+  pod's CLI `serve` subcommand isn't shipped yet) and a pre-built
+  runner image (`Dockerfile.agent`, follow-up #4 in the Week 7-9
+  followups doc). With those in place, kubectl-exec into the host pod
+  and run a one-shot CLI chat; the runner pod gets created, connects
+  back over HTTP, and returns.
 
 - **`Dockerfile.agent` is not in this PR.** Pre-build any image bundling the
   two runner binaries; the chart only consumes it.

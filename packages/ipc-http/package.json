@@ -1,5 +1,5 @@
 {
-  "name": "@ax/ipc-server",
+  "name": "@ax/ipc-http",
   "version": "0.0.0",
   "private": true,
   "type": "module",

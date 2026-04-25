@@ -25,6 +25,6 @@
     { "path": "../../packages/audit-log" },
     { "path": "../../packages/mcp-client" },
     { "path": "../../packages/credentials" },
-    { "path": "../../packages/ipc-server" }
+    { "path": "../../packages/ipc-http" }
   ]
 }

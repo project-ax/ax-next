@@ -10,7 +10,7 @@ import type { ResolvedSandboxK8sConfig } from './config.js';
 import type { K8sCoreApi } from './k8s-api.js';
 import { killPod } from './kill.js';
 import { watchPodExit, waitForPodReady, type ExitInfo } from './lifecycle.js';
-import { buildPodSpec, RUNNER_PORT } from './pod-spec.js';
+import { buildPodSpec } from './pod-spec.js';
 
 // ---------------------------------------------------------------------------
 // sandbox:open-session — k8s impl.
@@ -19,12 +19,14 @@ import { buildPodSpec, RUNNER_PORT } from './pod-spec.js';
 //   1. Validate input.
 //   2. Mint pod name + per-pod child logger (reqId, podName, synthetic pid).
 //   3. Call session:create to mint sessionId + token.
-//   4. Build pod spec with sessionId/token/requestId/runnerBinary in env.
+//   4. Build pod spec with sessionId/token/requestId/runnerBinary in env
+//      plus AX_RUNNER_ENDPOINT = config.hostIpcUrl (the cluster Service
+//      URL pointing at the host pod's @ax/ipc-http listener).
 //   5. createNamespacedPod.
-//   6. Wait for Ready → resolve podIP.
-//   7. Construct runnerEndpoint = `http://<podIP>:7777`.
-//   8. Wire `exited` from a long-lived watchPodExit poll.
-//   9. Cleanup-on-exit: terminate session + delete pod (idempotent).
+//   6. Wait for Ready (we still need the pod IP for liveness, just not
+//      for runnerEndpoint construction).
+//   7. Wire `exited` from a long-lived watchPodExit poll.
+//   8. Cleanup-on-exit: terminate session + delete pod (idempotent).
 //
 // Failures roll back: any exception after step 3 calls session:terminate
 // before re-throwing, so a partial init doesn't leave a token alive with
@@ -49,7 +51,8 @@ export interface OpenSessionHandle {
 }
 
 export interface OpenSessionResult {
-  /** Opaque URI: `http://<podIP>:${RUNNER_PORT}`. */
+  /** Opaque URI: the cluster Service URL of the host's IPC listener
+   *  (`config.hostIpcUrl`). The runner pod connects out to this URL. */
   runnerEndpoint: string;
   handle: OpenSessionHandle;
 }
@@ -124,46 +127,16 @@ export function createOpenSession(deps: OpenSessionDeps) {
       throw err;
     }
 
-    // 3. Build pod spec. The runnerEndpoint env value is a placeholder —
-    //    we resolve the real value after pod IP comes back, then mutate
-    //    the env entry in-place before createNamespacedPod fires.
-    //
-    //    Why this is safe: nothing else holds the spec yet. The mutation
-    //    happens between buildPodSpec and the k8s API call, in the same
-    //    function, in the same tick.
-    //
-    //    Why we don't wait-then-patch: the runner reads env at startup;
-    //    a kubectl-style patch would race the runner. Putting the value
-    //    in the spec at create time avoids that race entirely.
-    //
-    //    The flow:
-    //      a. buildPodSpec emits AX_RUNNER_ENDPOINT='pending://await-pod-ready'
-    //      b. createNamespacedPod fires.
-    //      c. waitForPodReady returns the pod IP.
-    //      d. We can't actually rewrite spec post-create (k8s rejects).
-    //         So instead we issue a strategic merge patch that only
-    //         updates the env array. Or — simpler — we set
-    //         AX_RUNNER_ENDPOINT BEFORE create, but at create-time we
-    //         don't know the IP. Resolution: pod self-discovers via the
-    //         downward API.
-    //
-    //    Actually: k8s exposes `status.podIP` to the container via the
-    //    downward API. We add a fieldRef-sourced env var POD_IP, and the
-    //    runner builds AX_RUNNER_ENDPOINT itself from POD_IP + the
-    //    well-known port. That sidesteps the patch race entirely.
-    //
-    //    For NOW: the runner-side code does NOT yet read POD_IP — Task
-    //    14b shipped the URI-rename without an http:// transport. The
-    //    pod env we set still says 'pending://await-pod-ready'; the
-    //    runnerEndpoint we RETURN to the orchestrator IS http://podIP:
-    //    7777. Tests assert on the returned value (the orchestrator's
-    //    contract). End-to-end http:// transport lands in a follow-up
-    //    when the pod-side HTTP server exists.
+    // 3. Build pod spec. runnerEndpoint is fixed at preset-config time
+    //    (config.hostIpcUrl) and stamped onto AX_RUNNER_ENDPOINT — the
+    //    runner reads it at startup and connects out to the host's
+    //    @ax/ipc-http listener.
     const podSpec = buildPodSpec(podName, {
       sessionId: created.sessionId,
       workspaceRoot: input.workspaceRoot,
       runnerBinary: input.runnerBinary,
       authToken: created.token,
+      runnerEndpoint: deps.config.hostIpcUrl,
       // ctx.requestId may be undefined in synthetic tests; pass through.
       requestId: ctx.reqId,
     }, deps.config);
@@ -200,10 +173,12 @@ export function createOpenSession(deps: OpenSessionDeps) {
     }
 
     // 4. Wait for Ready. A failure here means the pod never reached a
-    //    state where IPC could connect; roll back.
-    let podIP: string;
+    //    state where IPC could connect; roll back. We still resolve the
+    //    pod IP here for the readiness signal (the API mock returns it),
+    //    but it does NOT determine runnerEndpoint anymore — that's the
+    //    host's @ax/ipc-http URL, fixed at preset-config time.
     try {
-      const ready = await waitForPodReady({
+      await waitForPodReady({
         api: deps.api,
         podName,
         namespace: deps.config.namespace,
@@ -211,7 +186,6 @@ export function createOpenSession(deps: OpenSessionDeps) {
         timeoutMs: deps.config.readinessTimeoutMs,
         podLog,
       });
-      podIP = ready.podIP;
     } catch (err) {
       // Cleanup: kill the pod (idempotent — it may already be Failed)
       // and tear down the session.
@@ -231,7 +205,7 @@ export function createOpenSession(deps: OpenSessionDeps) {
       throw err;
     }
 
-    const runnerEndpoint = `http://${podIP}:${RUNNER_PORT}`;
+    const runnerEndpoint = deps.config.hostIpcUrl;
 
     // 5. exited promise — long-lived poll until the pod reaches a
     //    terminal phase. We do NOT await; the caller listens.

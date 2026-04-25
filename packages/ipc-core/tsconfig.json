@@ -8,7 +8,6 @@
   "exclude": ["src/**/__tests__/**", "dist", "node_modules"],
   "references": [
     { "path": "../core" },
-    { "path": "../ipc-core" },
     { "path": "../ipc-protocol" }
   ]
 }

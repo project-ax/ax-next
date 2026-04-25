@@ -41,7 +41,6 @@ interface MockBundle {
     sessionQueueWork: number;
     sessionTerminate: number;
     sandboxOpen: number;
-    ipcStop: number;
     killCalls: number;
   };
   lastQueuedMessage(): ChatMessage | undefined;
@@ -58,7 +57,6 @@ function buildMocks(opts: {
     sessionQueueWork: 0,
     sessionTerminate: 0,
     sandboxOpen: 0,
-    ipcStop: 0,
     killCalls: 0,
   };
   let lastQueued: ChatMessage | undefined;
@@ -77,10 +75,6 @@ function buildMocks(opts: {
       }),
     'session:terminate': async () => {
       calls.sessionTerminate += 1;
-      return {};
-    },
-    'ipc:stop': async () => {
-      calls.ipcStop += 1;
       return {};
     },
     'sandbox:open-session': async (ctx, input: unknown) => {

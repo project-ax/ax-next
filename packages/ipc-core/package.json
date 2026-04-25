@@ -1,5 +1,5 @@
 {
-  "name": "@ax/ipc-server",
+  "name": "@ax/ipc-core",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -19,10 +19,10 @@
   },
   "dependencies": {
     "@ax/core": "workspace:*",
-    "@ax/ipc-core": "workspace:*",
     "@ax/ipc-protocol": "workspace:*"
   },
   "devDependencies": {
+    "@ax/ipc-server": "workspace:*",
     "@ax/session-inmemory": "workspace:*",
     "@ax/test-harness": "workspace:*",
     "@types/node": "^25.6.0",

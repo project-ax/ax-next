@@ -79,3 +79,25 @@ Container image string for the host/runner pod.
 {{- $tag := .Values.image.tag | default .Chart.AppVersion -}}
 {{- printf "%s:%s" $repo $tag -}}
 {{- end }}
+
+{{/*
+Host-component name. ax-next.fullname truncates to 63 chars; appending
+"-host" can push the label past the DNS limit for long release names.
+This helper produces the truncated, DNS-safe host name and is the source
+of truth for every host-side resource (Service, Deployment, etc).
+*/}}
+{{- define "ax-next.hostComponentName" -}}
+{{- printf "%s-host" (include "ax-next.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{/*
+Cluster-internal URL the runner pods use to reach the host's IPC listener
+(@ax/ipc-http). Computed from the host Service's name + namespace + port.
+@ax/sandbox-k8s reads this via the preset's hostIpcUrl config and stamps
+it onto every runner pod's AX_RUNNER_ENDPOINT env var so the runner knows
+where to phone home.
+*/}}
+{{- define "ax-next.hostIpcUrl" -}}
+{{- $port := .Values.host.ipcServicePort | default 80 -}}
+{{- printf "http://%s.%s.svc.cluster.local:%d" (include "ax-next.hostComponentName" .) (include "ax-next.hostNamespace" .) (int $port) -}}
+{{- end }}

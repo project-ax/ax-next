@@ -24,7 +24,11 @@ import type {
   SessionQueueWorkInput,
   SessionQueueWorkOutput,
 } from '@ax/session-inmemory';
-import { createListener, type Listener } from '../listener.js';
+// The dispatcher test exercises a real unix-socket listener end-to-end —
+// the listener lives in @ax/ipc-server (transport-specific), not in
+// @ax/ipc-core. Tests are exempt from cross-plugin import lint rules
+// (eslint.config.mjs allowlists `packages/*/src/__tests__/**`).
+import { createListener, type Listener } from '@ax/ipc-server';
 
 // ---------------------------------------------------------------------------
 // Dispatcher tests

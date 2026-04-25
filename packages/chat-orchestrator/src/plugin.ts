@@ -30,14 +30,14 @@ export function createChatOrchestratorPlugin(
       // peers. `session:create` is NOT listed — sandbox:open-session mints
       // the session itself; a double-create throws duplicate-session. The
       // orchestrator intentionally delegates session minting to the sandbox
-      // plugin. `ipc:stop` is not called directly here — sandbox-subprocess
-      // stops its own listener on child-close — but we keep it in `calls`
-      // as a safety declaration in case a future shutdown path adds it.
+      // plugin. `ipc:stop` is NOT listed either: sandbox-subprocess stops
+      // its own per-session listener on child-close (no host-side caller
+      // needed), and the k8s preset uses @ax/ipc-http which has a
+      // process-scoped listener with no per-session start/stop hooks.
       calls: [
         'session:queue-work',
         'session:terminate',
         'sandbox:open-session',
-        'ipc:stop',
       ],
       // We listen to `chat:end` to capture the outcome emitted by the
       // runner (via the IPC server's /event.chat-end handler). The

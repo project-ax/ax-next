@@ -1,12 +1,24 @@
 // ---------------------------------------------------------------------------
 // Config + defaults.
 //
-// Every field is optional in the user-facing shape; defaults live here in
+// Every field is optional in the user-facing shape EXCEPT `hostIpcUrl`,
+// which is required — there's no useful default; the right value comes
+// from the chart's host Service URL. Defaults for the rest live here in
 // one place. Resolving early lets every other module take a fully-populated
 // `ResolvedSandboxK8sConfig` and not deal with `??` everywhere.
 // ---------------------------------------------------------------------------
 
+import { PluginError } from '@ax/core';
+
 export interface SandboxK8sConfig {
+  /**
+   * Cluster-internal URL the runner pods use to reach the host's IPC
+   * listener (e.g. `http://ax-next-host.ax-next.svc.cluster.local:80`).
+   * Required — there is no useful default. The preset reads this from
+   * the chart's `host.ipcUrl` (or `AX_K8S_HOST_IPC_URL` env) and threads
+   * it through to every runner pod via `AX_RUNNER_ENDPOINT`.
+   */
+  hostIpcUrl?: string;
   /** Namespace to create pods in. Default: 'ax-next'. */
   namespace?: string;
   /** Container image bundling both runners. Default: 'ax-next/agent:latest'. */
@@ -50,6 +62,7 @@ export interface SandboxK8sConfig {
 }
 
 export interface ResolvedSandboxK8sConfig {
+  hostIpcUrl: string;
   namespace: string;
   image: string;
   runtimeClassName: string;
@@ -66,7 +79,16 @@ export interface ResolvedSandboxK8sConfig {
 export function resolveConfig(
   raw: SandboxK8sConfig = {},
 ): ResolvedSandboxK8sConfig {
+  if (typeof raw.hostIpcUrl !== 'string' || raw.hostIpcUrl.length === 0) {
+    throw new PluginError({
+      code: 'invalid-config',
+      plugin: '@ax/sandbox-k8s',
+      message:
+        'k8s preset requires hostIpcUrl — set host.ipcUrl in your Helm values, or pass it via env (AX_K8S_HOST_IPC_URL)',
+    });
+  }
   const resolved: ResolvedSandboxK8sConfig = {
+    hostIpcUrl: raw.hostIpcUrl,
     namespace: raw.namespace ?? 'ax-next',
     image: raw.image ?? 'ax-next/agent:latest',
     runtimeClassName: raw.runtimeClassName ?? 'gvisor',

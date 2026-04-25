@@ -1,9 +1,7 @@
 import * as http from 'node:http';
 import { promises as fs } from 'node:fs';
 import { makeChatContext, type HookBus } from '@ax/core';
-import { authenticate } from './auth.js';
-import { dispatch } from './dispatcher.js';
-import { writeJsonError } from './response.js';
+import { authenticate, dispatch, writeJsonError } from '@ax/ipc-core';
 
 // ---------------------------------------------------------------------------
 // Listener
