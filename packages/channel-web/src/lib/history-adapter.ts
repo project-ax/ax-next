@@ -26,19 +26,35 @@ function contentToParts(content: string | ContentBlock[]): Array<Record<string, 
       return { type: 'text' as const, text: block.text ?? '' };
     }
     if (block.type === 'image_data') {
+      // Guard against malformed blocks. Without `mimeType` and `data`
+      // the URI becomes `data:undefined;base64,undefined`, which the
+      // assistant-ui renderer treats as a broken image and the user
+      // sees a silent failure.
+      if (!block.mimeType || !block.data) {
+        return { type: 'text' as const, text: '[malformed image]' };
+      }
       return { type: 'image' as const, image: `data:${block.mimeType};base64,${block.data}` };
     }
     if (block.type === 'image') {
       // Persisted image ref — resolve via /api/files endpoint
-      const fileId = block.fileId as string;
+      const fileId = block.fileId as string | undefined;
+      if (!fileId) {
+        return { type: 'text' as const, text: '[malformed image ref]' };
+      }
       return { type: 'image' as const, image: `/api/files/${fileId}` };
     }
     if (block.type === 'file_data') {
+      if (!block.mimeType || !block.data) {
+        return { type: 'text' as const, text: '[malformed file]' };
+      }
       return { type: 'file' as const, data: `data:${block.mimeType};base64,${block.data}`, mimeType: block.mimeType, filename: block.filename };
     }
     if (block.type === 'file') {
       // Persisted file ref
-      const fileId = block.fileId as string;
+      const fileId = block.fileId as string | undefined;
+      if (!fileId) {
+        return { type: 'text' as const, text: '[malformed file ref]' };
+      }
       return { type: 'file' as const, data: `/api/files/${fileId}`, mimeType: block.mimeType, filename: block.filename };
     }
     // tool_use, tool_result, etc. — pass through as text fallback

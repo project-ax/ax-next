@@ -54,4 +54,51 @@ describe('createAxHistoryAdapter', () => {
     const adapter = createAxHistoryAdapter(() => 'sess-x');
     await expect(adapter.withFormat!(makeFormatAdapter()).load()).rejects.toThrow();
   });
+
+  it('image_data block with missing mimeType/data falls back to a placeholder', async () => {
+    // Without the guard, the adapter would emit
+    // `data:undefined;base64,undefined`, which the renderer treats as
+    // a broken image with no error visible to the user.
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        messages: [
+          {
+            role: 'user',
+            content: [{ type: 'image_data' /* mimeType + data missing */ }],
+            created_at: 1,
+          },
+        ],
+      }),
+    });
+    const adapter = createAxHistoryAdapter(() => 'sess-x');
+    const result = await adapter.withFormat!(makeFormatAdapter()).load();
+    expect(result.messages).toHaveLength(1);
+    const decoded = result.messages[0]!.message;
+    const parts = (decoded.content as { parts: Array<Record<string, unknown>> }).parts;
+    expect(parts).toHaveLength(1);
+    // Falls back to a text placeholder rather than an undefined-laced
+    // data: URI.
+    expect(parts[0]).toEqual({ type: 'text', text: '[malformed image]' });
+  });
+
+  it('file_data block with missing fields falls back to a placeholder', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        messages: [
+          {
+            role: 'user',
+            content: [{ type: 'file_data', filename: 'oops.txt' /* mimeType + data missing */ }],
+            created_at: 1,
+          },
+        ],
+      }),
+    });
+    const adapter = createAxHistoryAdapter(() => 'sess-x');
+    const result = await adapter.withFormat!(makeFormatAdapter()).load();
+    const decoded = result.messages[0]!.message;
+    const parts = (decoded.content as { parts: Array<Record<string, unknown>> }).parts;
+    expect(parts[0]).toEqual({ type: 'text', text: '[malformed file]' });
+  });
 });
