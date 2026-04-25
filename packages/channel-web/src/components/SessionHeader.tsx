@@ -25,6 +25,7 @@ import { useAgentStore } from '../lib/agent-store';
 import { searchStoreActions, useSearchStore } from '../lib/search-store';
 import { sessionStoreActions, useSessionStore } from '../lib/session-store';
 import { SidebarCollapseToggle } from './SidebarCollapseToggle';
+import { SidebarMobileToggle } from './SidebarMobileToggle';
 
 export function SessionHeader() {
   const { sessions, activeSessionId } = useSessionStore();
@@ -122,8 +123,9 @@ export function SessionHeader() {
       <div className="header-inner">
         <div className="header-left">
           {/* Agent chip lives in the sidebar per Tide design — header-left
-              is intentionally empty for now. Kept as a slot so future
-              breadcrumbs / pane controls have a home. */}
+              hosts the mobile-only sidebar toggle (hamburger). The toggle
+              hides itself on desktop via CSS, so this slot is empty there. */}
+          <SidebarMobileToggle />
         </div>
         <div
           ref={titleRef}

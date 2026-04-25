@@ -22,6 +22,8 @@ import { getSession, type AuthUser } from './lib/auth';
 import {
   hydrateSidebarCollapsed,
   setSidebarCollapsed,
+  setSidebarOpen,
+  useSidebarOpen,
 } from './lib/sidebar-collapse';
 import { hydrateTheme } from './lib/theme';
 import { useAgentStore } from './lib/agent-store';
@@ -72,6 +74,9 @@ const AppContent = ({ user }: { user: AuthUser }) => {
   // `adminView` is set by the user menu's Admin entries. AdminPanel
   // renders below when non-null.
   const [adminView, setAdminView] = useState<AdminView>(null);
+  // Mobile slide-over open state (Task 27). Used to render the scrim
+  // that closes the sidebar on tap. Desktop CSS hides the scrim.
+  const sidebarOpen = useSidebarOpen();
 
   useEffect(() => {
     // Apply persisted sidebar + theme state before first paint of any subscriber.
@@ -109,6 +114,13 @@ const AppContent = ({ user }: { user: AuthUser }) => {
       <AssistantRuntimeProvider runtime={runtime}>
         <div className="app-layout">
           <Sidebar onOpenAdmin={setAdminView} />
+          {sidebarOpen && (
+            <div
+              className="sidebar-scrim"
+              onClick={() => setSidebarOpen(false)}
+              aria-hidden="true"
+            />
+          )}
           <main className="pane">
             <SessionHeader />
             <Thread />

@@ -83,7 +83,8 @@ body {
 /* =============================================================
    SIDEBAR — copied verbatim from design_handoff_tide/Tide Sessions.html
    so visual diff against the design source is zero. Mobile slide-over
-   rules (@media max-width: 720px) are deferred to Task 27.
+   rules live at the bottom of this file under the
+   `@media (max-width: 720px)` block (Task 27).
    ============================================================= */
 
 .sidebar {
@@ -251,6 +252,32 @@ body.sidebar-collapsed .sessions-scroll { visibility: hidden; pointer-events: no
 .sidebar-collapse:hover { color: var(--ink); background: var(--bg-deep); }
 .sidebar-collapse:focus-visible { color: var(--ink); background: var(--bg-deep); }
 .sidebar-collapse svg { width: 16px; height: 16px; }
+
+/* SIDEBAR MOBILE TOGGLE — mobile only (hamburger). Hidden by default;
+   the @media (max-width: 720px) block at the bottom of this file flips
+   it to inline-flex. Lives in the session header's left slot. */
+.sidebar-toggle {
+  all: unset;
+  cursor: pointer;
+  display: none;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  color: var(--ink-mute);
+  flex-shrink: 0;
+  transition: color 120ms ease, background 120ms ease;
+}
+.sidebar-toggle:hover,
+.sidebar-toggle:focus-visible { color: var(--ink); background: var(--bg-deep); }
+.sidebar-toggle svg { width: 16px; height: 16px; }
+
+/* SIDEBAR SCRIM — mobile-only overlay rendered when body.sidebar-open.
+   Tapping it closes the sidebar. We render the element from React (in
+   App.tsx) rather than via ::after so the click lands on a real DOM
+   node with its own handler. */
+.sidebar-scrim { display: none; }
 
 /* USER ROW at bottom — popover (.user-menu) styles arrive in Task 21 */
 .user-row-wrap {
@@ -860,9 +887,6 @@ body.sidebar-collapsed .user-menu {
   z-index: 20;
 }
 body.sidebar-collapsed .composer { left: 56px; }
-@media (max-width: 720px) {
-  .composer { left: 0; }
-}
 
 .composer-inner {
   width: 100%;
@@ -1638,4 +1662,47 @@ body.searching .attach-btn { display: none; }
   border: 1px solid var(--rule);
   border-radius: 3px;
   padding: 1px 5px;
+}
+
+/* =============================================================
+   MOBILE — slide-over sidebar (Task 27).
+   At <= 720px, the sidebar lifts off the page flow and slides in over
+   the chat. Width override (280px !important) wins over the desktop
+   collapsed-rail width (56px) so even if the user collapsed on
+   desktop and then resized to mobile, the slide-over is full-width.
+   The composer goes edge-to-edge. The hamburger toggle replaces the
+   collapse toggle. The scrim catches taps to close.
+   ============================================================= */
+
+@media (max-width: 720px) {
+  .sidebar {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 280px !important;
+    transform: translateX(-100%);
+    transition: transform 200ms cubic-bezier(.2,.7,.2,1);
+    z-index: 50;
+    box-shadow: 0 0 40px rgba(0, 0, 0, 0.08);
+  }
+  body.sidebar-open .sidebar { transform: translateX(0); }
+  /* Desktop collapse is irrelevant on mobile — keep the rail at full
+     slide-over width and rely on `sidebar-open` to show/hide. */
+  body.sidebar-collapsed .sidebar { transform: translateX(-100%); }
+  body.sidebar-open.sidebar-collapsed .sidebar { transform: translateX(0); }
+
+  .sidebar-toggle { display: inline-flex; }
+  .sidebar-collapse { display: none; }
+
+  .composer { left: 0; }
+  body.sidebar-collapsed .composer { left: 0; }
+
+  .sidebar-scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.4);
+    z-index: 40;
+  }
 }
