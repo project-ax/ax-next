@@ -23,6 +23,7 @@
   },
   "dependencies": {
     "@ax/core": "workspace:*",
+    "@ax/ipc-core": "workspace:*",
     "@ax/workspace-protocol": "workspace:*",
     "@ax/workspace-git-core": "workspace:*",
     "zod": "^3.23.8"

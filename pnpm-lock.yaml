@@ -866,6 +866,9 @@ importers:
       '@ax/core':
         specifier: workspace:*
         version: link:../core
+      '@ax/ipc-core':
+        specifier: workspace:*
+        version: link:../ipc-core
       '@ax/workspace-git-core':
         specifier: workspace:*
         version: link:../workspace-git-core

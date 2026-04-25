@@ -8,6 +8,7 @@
   "exclude": ["src/**/__tests__/**", "dist", "node_modules"],
   "references": [
     { "path": "../core" },
+    { "path": "../ipc-core" },
     { "path": "../workspace-protocol" },
     { "path": "../workspace-git-core" }
   ]
