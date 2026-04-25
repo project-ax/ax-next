@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   createK8sPlugins,
+  loadK8sConfigFromEnv,
   workspaceConfigFromEnv,
   type K8sPresetConfig,
 } from '../index.js';
@@ -274,5 +275,128 @@ describe('workspaceConfigFromEnv', () => {
     expect(() =>
       workspaceConfigFromEnv({ AX_WORKSPACE_BACKEND: 'sftp' }),
     ).toThrowError(/sftp/);
+  });
+});
+
+describe('loadK8sConfigFromEnv', () => {
+  // Required minimum env: DATABASE_URL, AX_K8S_HOST_IPC_URL, plus the
+  // workspace vars (delegated to workspaceConfigFromEnv).
+  const minRequired = (extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv => ({
+    DATABASE_URL: 'postgres://u:p@db:5432/ax_next',
+    AX_K8S_HOST_IPC_URL: 'http://ax-next-host.ax-next.svc:80',
+    AX_WORKSPACE_BACKEND: 'http',
+    AX_WORKSPACE_GIT_HTTP_URL: 'http://git-server:7780',
+    AX_WORKSPACE_GIT_HTTP_TOKEN: 't',
+    ...extra,
+  });
+
+  it('builds a config from the minimum required env', () => {
+    const cfg = loadK8sConfigFromEnv(minRequired());
+    expect(cfg.database.connectionString).toBe('postgres://u:p@db:5432/ax_next');
+    expect(cfg.eventbus.connectionString).toBe('postgres://u:p@db:5432/ax_next');
+    expect(cfg.session.connectionString).toBe('postgres://u:p@db:5432/ax_next');
+    expect(cfg.workspace).toEqual({
+      backend: 'http',
+      baseUrl: 'http://git-server:7780',
+      token: 't',
+    });
+    expect(cfg.ipc.hostIpcUrl).toBe('http://ax-next-host.ax-next.svc:80');
+    expect(cfg.ipc.host).toBeUndefined();
+    expect(cfg.ipc.port).toBeUndefined();
+    expect(cfg.sandbox).toBeUndefined();
+    expect(cfg.anthropic).toBeUndefined();
+    expect(cfg.chat).toBeUndefined();
+  });
+
+  it('throws when DATABASE_URL is missing', () => {
+    const env = minRequired();
+    delete env.DATABASE_URL;
+    expect(() => loadK8sConfigFromEnv(env)).toThrowError(/DATABASE_URL/);
+  });
+
+  it('throws when AX_K8S_HOST_IPC_URL is missing', () => {
+    const env = minRequired();
+    delete env.AX_K8S_HOST_IPC_URL;
+    expect(() => loadK8sConfigFromEnv(env)).toThrowError(/AX_K8S_HOST_IPC_URL/);
+  });
+
+  it('treats empty-string DATABASE_URL as missing', () => {
+    expect(() =>
+      loadK8sConfigFromEnv(minRequired({ DATABASE_URL: '' })),
+    ).toThrowError(/DATABASE_URL/);
+  });
+
+  it('reads sandbox overrides from K8S_* env', () => {
+    const cfg = loadK8sConfigFromEnv(
+      minRequired({
+        K8S_NAMESPACE: 'ax-next-runners',
+        K8S_POD_IMAGE: 'ax-next/agent:1.0.0',
+        K8S_RUNTIME_CLASS: 'gvisor',
+        K8S_IMAGE_PULL_SECRETS: 'a, b ,c',
+      }),
+    );
+    expect(cfg.sandbox).toEqual({
+      namespace: 'ax-next-runners',
+      image: 'ax-next/agent:1.0.0',
+      runtimeClassName: 'gvisor',
+      imagePullSecrets: ['a', 'b', 'c'],
+    });
+  });
+
+  it('reads BIND_HOST and PORT into ipc.host/port', () => {
+    const cfg = loadK8sConfigFromEnv(
+      minRequired({ BIND_HOST: '127.0.0.1', PORT: '9090' }),
+    );
+    expect(cfg.ipc.host).toBe('127.0.0.1');
+    expect(cfg.ipc.port).toBe(9090);
+  });
+
+  it('rejects an invalid PORT', () => {
+    expect(() =>
+      loadK8sConfigFromEnv(minRequired({ PORT: 'not-a-number' })),
+    ).toThrowError(/PORT/);
+    expect(() =>
+      loadK8sConfigFromEnv(minRequired({ PORT: '0' })),
+    ).toThrowError(/PORT/);
+    expect(() =>
+      loadK8sConfigFromEnv(minRequired({ PORT: '99999' })),
+    ).toThrowError(/PORT/);
+  });
+
+  it('reads anthropic + chat overrides', () => {
+    const cfg = loadK8sConfigFromEnv(
+      minRequired({
+        AX_LLM_MODEL: 'claude-sonnet-4-6',
+        AX_LLM_MAX_TOKENS: '4096',
+        AX_RUNNER_BINARY: '/opt/ax-next/runner.js',
+        AX_CHAT_TIMEOUT_MS: '60000',
+      }),
+    );
+    expect(cfg.anthropic).toEqual({
+      model: 'claude-sonnet-4-6',
+      maxTokens: 4096,
+    });
+    expect(cfg.chat).toEqual({
+      runnerBinary: '/opt/ax-next/runner.js',
+      chatTimeoutMs: 60000,
+    });
+  });
+
+  it('rejects an invalid AX_LLM_MAX_TOKENS', () => {
+    expect(() =>
+      loadK8sConfigFromEnv(minRequired({ AX_LLM_MAX_TOKENS: 'lots' })),
+    ).toThrowError(/AX_LLM_MAX_TOKENS/);
+  });
+
+  it('rejects an invalid AX_CHAT_TIMEOUT_MS', () => {
+    expect(() =>
+      loadK8sConfigFromEnv(minRequired({ AX_CHAT_TIMEOUT_MS: '-1' })),
+    ).toThrowError(/AX_CHAT_TIMEOUT_MS/);
+  });
+
+  it('propagates workspace errors from workspaceConfigFromEnv', () => {
+    const env = minRequired();
+    delete env.AX_WORKSPACE_GIT_HTTP_TOKEN;
+    expect(() => loadK8sConfigFromEnv(env)).toThrowError(/AX_WORKSPACE_GIT_HTTP_TOKEN/);
   });
 });

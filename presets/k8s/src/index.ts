@@ -388,3 +388,108 @@ export function workspaceConfigFromEnv(
     `unknown AX_WORKSPACE_BACKEND=${backend}; expected 'local' or 'http'`,
   );
 }
+
+// ---------------------------------------------------------------------------
+// Full env loader. Builds a `K8sPresetConfig` from the env vars the Helm chart
+// stamps onto the host pod. Mirrors `workspaceConfigFromEnv`'s posture: throw
+// loudly on missing required values rather than silently default.
+//
+// Required env (per the chart):
+//   - DATABASE_URL                — postgres DSN (database/eventbus/session)
+//   - AX_K8S_HOST_IPC_URL          — cluster URL runners use to reach @ax/ipc-http
+//   - AX_WORKSPACE_BACKEND + the per-backend vars (delegated to workspaceConfigFromEnv)
+//
+// Optional env:
+//   - K8S_NAMESPACE / K8S_POD_IMAGE / K8S_RUNTIME_CLASS / K8S_IMAGE_PULL_SECRETS
+//                                  — sandbox-k8s overrides
+//   - BIND_HOST / PORT             — @ax/ipc-http listen address (defaults
+//                                    '0.0.0.0' / 8080)
+//   - AX_LLM_MODEL / AX_LLM_MAX_TOKENS — anthropic config
+//   - AX_RUNNER_BINARY             — chat orchestrator override (tests)
+//   - AX_CHAT_TIMEOUT_MS           — chat orchestrator override
+//
+// `ANTHROPIC_API_KEY` and `AX_CREDENTIALS_KEY` are read by the respective
+// plugins themselves at init() time — they don't appear in K8sPresetConfig.
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a full `K8sPresetConfig` from the env vars the Helm chart sets on the
+ * host pod. Throws on missing required values.
+ *
+ * @param env - the env map to read from. Defaults to `process.env`. Pass an
+ *   explicit object to keep tests deterministic.
+ */
+export function loadK8sConfigFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): K8sPresetConfig {
+  const databaseUrl = env.DATABASE_URL;
+  if (databaseUrl === undefined || databaseUrl === '') {
+    throw new Error('DATABASE_URL is required');
+  }
+  const hostIpcUrl = env.AX_K8S_HOST_IPC_URL;
+  if (hostIpcUrl === undefined || hostIpcUrl === '') {
+    throw new Error('AX_K8S_HOST_IPC_URL is required');
+  }
+
+  const sandbox: NonNullable<K8sPresetConfig['sandbox']> = {};
+  if (env.K8S_NAMESPACE !== undefined && env.K8S_NAMESPACE !== '') {
+    sandbox.namespace = env.K8S_NAMESPACE;
+  }
+  if (env.K8S_POD_IMAGE !== undefined && env.K8S_POD_IMAGE !== '') {
+    sandbox.image = env.K8S_POD_IMAGE;
+  }
+  if (env.K8S_RUNTIME_CLASS !== undefined && env.K8S_RUNTIME_CLASS !== '') {
+    sandbox.runtimeClassName = env.K8S_RUNTIME_CLASS;
+  }
+  if (env.K8S_IMAGE_PULL_SECRETS !== undefined && env.K8S_IMAGE_PULL_SECRETS !== '') {
+    sandbox.imagePullSecrets = env.K8S_IMAGE_PULL_SECRETS.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
+  }
+
+  const ipc: K8sPresetConfig['ipc'] = { hostIpcUrl };
+  if (env.BIND_HOST !== undefined && env.BIND_HOST !== '') {
+    ipc.host = env.BIND_HOST;
+  }
+  if (env.PORT !== undefined && env.PORT !== '') {
+    const portNum = Number(env.PORT);
+    if (!Number.isFinite(portNum) || portNum <= 0 || portNum > 65535) {
+      throw new Error(`invalid PORT=${env.PORT}; expected a positive integer`);
+    }
+    ipc.port = portNum;
+  }
+
+  const anthropic: NonNullable<K8sPresetConfig['anthropic']> = {};
+  if (env.AX_LLM_MODEL !== undefined && env.AX_LLM_MODEL !== '') {
+    anthropic.model = env.AX_LLM_MODEL;
+  }
+  if (env.AX_LLM_MAX_TOKENS !== undefined && env.AX_LLM_MAX_TOKENS !== '') {
+    const n = Number(env.AX_LLM_MAX_TOKENS);
+    if (!Number.isFinite(n) || n <= 0) {
+      throw new Error(`invalid AX_LLM_MAX_TOKENS=${env.AX_LLM_MAX_TOKENS}; expected a positive integer`);
+    }
+    anthropic.maxTokens = n;
+  }
+
+  const chat: NonNullable<K8sPresetConfig['chat']> = {};
+  if (env.AX_RUNNER_BINARY !== undefined && env.AX_RUNNER_BINARY !== '') {
+    chat.runnerBinary = env.AX_RUNNER_BINARY;
+  }
+  if (env.AX_CHAT_TIMEOUT_MS !== undefined && env.AX_CHAT_TIMEOUT_MS !== '') {
+    const n = Number(env.AX_CHAT_TIMEOUT_MS);
+    if (!Number.isFinite(n) || n <= 0) {
+      throw new Error(`invalid AX_CHAT_TIMEOUT_MS=${env.AX_CHAT_TIMEOUT_MS}; expected a positive integer`);
+    }
+    chat.chatTimeoutMs = n;
+  }
+
+  const config: K8sPresetConfig = {
+    database: { connectionString: databaseUrl },
+    eventbus: { connectionString: databaseUrl },
+    session: { connectionString: databaseUrl },
+    workspace: workspaceConfigFromEnv(env),
+    ipc,
+  };
+  if (Object.keys(sandbox).length > 0) config.sandbox = sandbox;
+  if (Object.keys(anthropic).length > 0) config.anthropic = anthropic;
+  if (Object.keys(chat).length > 0) config.chat = chat;
+  return config;
+}
