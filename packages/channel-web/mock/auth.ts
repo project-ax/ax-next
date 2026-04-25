@@ -57,6 +57,43 @@ export function requireSession(req: IncomingMessage, store: Store): User | null 
   return user ?? null;
 }
 
+// Admin gate: returns the user on success, or { status: 401 | 403 } on failure.
+// 401 = no session at all; 403 = session but not admin role. The distinction
+// matters because the UI surfaces them differently (sign-in prompt vs forbidden).
+export function requireAdmin(
+  req: IncomingMessage,
+  store: Store,
+): User | { status: 401 | 403 } {
+  const user = requireSession(req, store);
+  if (!user) return { status: 401 };
+  if (user.role !== 'admin') return { status: 403 };
+  return user;
+}
+
+// ACL helper: an agent is usable if the caller owns it (personal) or is a
+// member of the team that owns it. Lives here (the auth/ACL home) so both
+// chat.ts and the user-scoped /api/agents endpoint share a single source.
+interface AclAgent {
+  id: string;
+  owner_id: string;
+  owner_type: 'user' | 'team';
+}
+
+interface AclTeam {
+  id: string;
+  name: string;
+  members: string[];
+}
+
+export function canUseAgent(user: User, agent: AclAgent, store: Store): boolean {
+  if (agent.owner_type === 'user') return agent.owner_id === user.id;
+  if (agent.owner_type === 'team') {
+    const team = store.collection<AclTeam>('teams').get(agent.owner_id);
+    return !!team && team.members.includes(user.id);
+  }
+  return false;
+}
+
 export function authMiddleware(
   store: Store,
 ): (req: IncomingMessage, res: ServerResponse) => Promise<boolean> {

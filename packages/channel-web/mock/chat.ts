@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { randomBytes } from 'node:crypto';
 import type { Store } from './store';
-import { requireSession, type User } from './auth';
+import { canUseAgent, requireSession } from './auth';
 
 export interface Session {
   id: string;
@@ -31,12 +31,6 @@ interface Agent {
   id: string;
   owner_id: string;
   owner_type: 'user' | 'team';
-}
-
-interface Team {
-  id: string;
-  name: string;
-  members: string[];
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
@@ -74,15 +68,6 @@ function newSessionId(): string {
   const ts = Date.now().toString(36);
   const rand = randomBytes(4).toString('base64url').slice(0, 6);
   return `sess-${ts}-${rand}`;
-}
-
-function canUseAgent(user: User, agent: Agent, store: Store): boolean {
-  if (agent.owner_type === 'user') return agent.owner_id === user.id;
-  if (agent.owner_type === 'team') {
-    const team = store.collection<Team>('teams').get(agent.owner_id);
-    return !!team && team.members.includes(user.id);
-  }
-  return false;
 }
 
 export function chatMiddleware(
