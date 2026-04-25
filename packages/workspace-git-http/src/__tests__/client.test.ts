@@ -66,7 +66,9 @@ describe('workspace-git-http client', () => {
   });
 
   it('respects per-action timeout override', async () => {
-    const c = await freshClient();
+    // freshClient() is called for its side effect of populating the outer
+    // `server` (used by `fast` below). The returned client is unused here.
+    await freshClient();
     const fast = createWorkspaceGitHttpClient({
       baseUrl: `http://127.0.0.1:${server!.port}`,
       token: 'secret',
