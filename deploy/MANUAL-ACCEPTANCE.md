@@ -132,13 +132,12 @@ Same procedure as kind, but:
   # expect: {"ok":true}
   ```
 
-  The end-to-end "chat returns a response" criterion requires a
-  user-facing entry point on the host pod (separate follow-up — the host
-  pod's CLI `serve` subcommand isn't shipped yet) and a pre-built
-  runner image (`Dockerfile.agent`, follow-up #4 in the Week 7-9
-  followups doc). With those in place, kubectl-exec into the host pod
-  and run a one-shot CLI chat; the runner pod gets created, connects
-  back over HTTP, and returns.
+  The end-to-end "chat returns a response" criterion requires the `serve`
+  subcommand (now shipped — see "multi-replica chat" scenario below) and
+  a pre-built runner image (`Dockerfile.agent`, follow-up #4 in the
+  Week 7-9 followups doc). With the runner image in place, port-forward
+  into the host's Service and POST to `/chat`; the runner pod gets
+  created, connects back over HTTP, and returns.
 
 - **`Dockerfile.agent` is not in this PR.** Pre-build any image bundling the
   two runner binaries; the chart only consumes it.
@@ -162,20 +161,23 @@ is linear with both sessions' writes visible. It exists to validate the
 bare repo, with each host replica forwarding workspace ops over HTTP so
 we never have two writers racing on the same `.git`.
 
-**Known gap before we start.** The chart's host Deployment uses
-`["node", "dist/cli/index.js", "serve", "--port", "8080"]` as its
-entrypoint command. That `serve` subcommand does not exist in
-`packages/cli/src/main.ts` as of this slice. The host pod can't actually
-boot until a separate slice adds it. We're documenting the scenario now
-so it's ready to run the moment `serve` lands — but if we try it today,
-the host pods will crashloop. That's expected, and not a bug in this
-slice.
+The `serve` CLI subcommand boots the k8s preset (postgres trio + workspace
++ sandbox-k8s + chat orchestrator + ipc-http + tools + LLM) and exposes a
+small HTTP front door:
+
+- `GET /health` — readiness/liveness probe (no auth).
+- `POST /chat` — runs one chat turn, returns the outcome JSON.
+  Auth: optional bearer token via `AX_SERVE_TOKEN`. If unset, `/chat` is
+  open to anything that can route to the port — the chart's NetworkPolicy
+  + ingress-off default still bound reach to in-cluster + port-forward,
+  but for prod we recommend setting the token.
 
 ### Prerequisites
 
 - A kind cluster (or any k8s cluster you trust) with `kubectl` configured.
-- The agent image built and pushed to a registry the cluster can reach.
-- The `serve` CLI subcommand present in that image (see the gap above).
+- The agent image built and pushed to a registry the cluster can reach
+  (the image must include the cli's `dist/main.js`; see follow-up #4 for
+  the `Dockerfile.agent`).
 - An Anthropic API key.
 
 ### Steps
@@ -211,21 +213,26 @@ slice.
    ```
 
 4. Fire two concurrent chat requests against the host Service. The
-   request shape below is a placeholder — substitute whatever the `serve`
-   subcommand actually accepts once it lands:
+   `serve` subcommand accepts `POST /chat` with a JSON body of
+   `{"message": "<text>", "sessionId": "<optional>"}` — when `sessionId`
+   is omitted, a fresh `serve-<uuid>` is minted server-side, so each
+   request is independent:
 
    ```bash
    curl -X POST http://localhost:8080/chat -H 'Content-Type: application/json' \
-     -d '{"sessionId":"sess-a","message":"hello"}' &
+     -d '{"message":"hello from session A"}' &
    curl -X POST http://localhost:8080/chat -H 'Content-Type: application/json' \
-     -d '{"sessionId":"sess-b","message":"hello"}' &
+     -d '{"message":"hello from session B"}' &
    wait
    ```
 
-   Expected: both requests return HTTP 200 with a chat response. Because
-   `replicas: 2`, the Service load-balances them across both host pods —
-   so we're genuinely exercising two writers landing through the single
-   git-server.
+   Expected: both requests return HTTP 200 with a `{sessionId, outcome}`
+   JSON body. Because `replicas: 2`, the Service load-balances the
+   requests across both host pods — so we're genuinely exercising two
+   writers landing through the single git-server.
+
+   If `AX_SERVE_TOKEN` is set on the host pod, add
+   `-H "Authorization: Bearer $AX_SERVE_TOKEN"` to each curl.
 
 5. Verify both writes landed in the git-server's PVC. Two probes,
    either is fine:

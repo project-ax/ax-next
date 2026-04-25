@@ -4,6 +4,7 @@
 '@ax/workspace-protocol': minor
 '@ax/workspace-git': patch
 '@ax/preset-k8s': minor
+'@ax/cli': minor
 ---
 
 Multi-replica workspace via `@ax/workspace-git-http`.
@@ -32,7 +33,16 @@ and converge to a linear history.
 - **`@ax/preset-k8s`** — `workspace` config is now a discriminated union
   (`{backend: 'local', repoRoot}` or `{backend: 'http', baseUrl, token}`). The
   preset registers the matching plugin. New `workspaceConfigFromEnv()` helper
-  reads `AX_WORKSPACE_BACKEND` + the http-mode env vars.
+  reads `AX_WORKSPACE_BACKEND` + the http-mode env vars. New
+  `loadK8sConfigFromEnv()` builds the full preset config from chart-stamped
+  env (`DATABASE_URL`, `AX_K8S_HOST_IPC_URL`, `K8S_*`, `BIND_HOST`/`PORT`,
+  `AX_LLM_*`, `AX_RUNNER_BINARY`, `AX_CHAT_TIMEOUT_MS`).
+- **`@ax/cli`** — new `serve` subcommand. Boots the k8s preset and exposes a
+  small HTTP front door: `GET /health` (no auth, k8s probe), `POST /chat`
+  (optional bearer auth via `AX_SERVE_TOKEN`; runs one chat turn, returns
+  `{sessionId, outcome}` JSON). Production lifecycle is SIGTERM-driven.
+  This unblocks the chart's host pod (`command: ["node", "dist/cli/index.js",
+  "serve", "--port", "8080"]`).
 
 Helm chart adds `gitServer.enabled` + `workspace.backend: local|http` and ships
 a new git-server Deployment / Service / PVC / ServiceAccount / NetworkPolicy /
@@ -42,6 +52,5 @@ The auth Secret and PVC carry `helm.sh/resource-policy: keep` so an accidental
 `helm uninstall` doesn't rotate the token under a running host pod or destroy
 workspace history.
 
-Manual-acceptance scenario added in `deploy/MANUAL-ACCEPTANCE.md`. Note: that
-scenario depends on a `serve` CLI subcommand that doesn't exist in the cli
-yet — a separate slice will land it.
+Manual-acceptance scenario added in `deploy/MANUAL-ACCEPTANCE.md` for
+multi-replica chat — fully runnable now that `serve` ships.
