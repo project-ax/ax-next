@@ -111,7 +111,9 @@ The threat we're explicit about: if NetworkPolicy is disabled or unsupported (so
 
 The plugin's `Plugin.shutdown` slot calls `server.close()`, which stops accepting new connections and waits for in-flight requests to finish on their own. We do **not** call `server.closeAllConnections()` after a grace period, so a runner holding a long-poll past the per-plugin shutdown timeout (10 s) gets a TCP RST when the timeout fires.
 
-For typical traffic this is fine — every endpoint except `/session.next-message` returns within ms, and the long-poll cap is 30 s (well under most operators' SIGTERM grace). For the long-poll case it's a tradeoff: a clean shutdown that waits up to 30 s vs. an abrupt one. We picked "abrupt past the timeout" so a misbehaving long-poll can't hold the process hostage. If a future host endpoint legitimately needs a longer grace, `server.closeAllConnections()` after a deadline is the next move.
+For typical traffic this is fine — every endpoint except `/session.next-message` returns within ms. The long-poll cap is 30 s, which **matches** Kubernetes' default `terminationGracePeriodSeconds` (also 30 s). That's the binding constraint at the cluster level: a long-poll started right before SIGTERM lands won't finish within the kubelet's grace, and the pod gets a SIGKILL when the grace expires. Operators who want long-polls to drain cleanly during rolling deploys must explicitly raise `terminationGracePeriodSeconds`.
+
+The 10 s per-plugin shutdown timeout is the tighter cap inside the pod — it fires first, sending a TCP RST to any long-poll still mid-flight, before the kubelet's 30 s grace expires. We picked "abrupt past the per-plugin timeout" so a misbehaving long-poll can't hold the process hostage. If a future host endpoint legitimately needs a longer grace, `server.closeAllConnections()` after a deadline is the next move — but the kubelet's `terminationGracePeriodSeconds` would also have to grow to match.
 
 ### No `crypto.timingSafeEqual` on token compare
 
