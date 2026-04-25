@@ -1,0 +1,72 @@
+# Local kind-cluster overrides.
+#
+# Usage:
+#   helm install ax-next deploy/charts/ax-next \
+#     -f deploy/charts/ax-next/kind-dev-values.yaml \
+#     --set credentials.key=$(openssl rand -base64 32) \
+#     --set anthropic.apiKey=$ANTHROPIC_API_KEY
+#
+# kind clusters:
+#   - usually don't have gVisor — runtimeClassName forced to ""
+#   - usually don't have a CNI that enforces NetworkPolicy — set enabled=false
+#     so it's clear we're NOT enforcing rather than silently no-op'ing
+#   - have small node disk — workspace storage cut to 1Gi
+#
+# Code changes are picked up after `kind load docker-image ax-next/agent:dev`
+# + `kubectl rollout restart deployment/<release>-host`.
+
+replicas: 1
+
+image:
+  repository: ax-next/agent
+  tag: dev
+  pullPolicy: IfNotPresent
+
+namespace:
+  runner: ax-next-runners
+
+host:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  env:
+    - name: LOG_LEVEL
+      value: "debug"
+
+workspace:
+  storage: 1Gi
+  storageClassName: ""
+
+sandbox:
+  # kind doesn't ship gVisor. The plugin will WARN at boot.
+  runtimeClassName: ""
+
+postgres:
+  external:
+    enabled: false
+  embedded:
+    enabled: true
+    auth:
+      database: ax_next
+      username: ax_next
+
+postgresql:
+  primary:
+    persistence:
+      size: 1Gi
+  auth:
+    database: ax_next
+    username: ax_next
+
+# kind doesn't enforce NetworkPolicies (no Calico/Cilium installed by
+# default). We set false so the chart skips rendering them — silently
+# rendered no-op policies are confusing in `kubectl describe` output.
+networkPolicies:
+  enabled: false
+
+ingress:
+  enabled: false

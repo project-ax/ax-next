@@ -1,0 +1,27 @@
+{{/*
+PersistentVolumeClaim for the workspace-git repo dir.
+
+`@ax/workspace-git` writes session workspace versions to a directory on
+disk. Single-replica only this slice — multi-replica needs a shared
+storage backend (Week 10+ git-server pod). The PVC is intentionally
+left orphaned by helm uninstall (resource-policy: keep) so a reinstall
+picks the same data up.
+*/}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "ax-next.fullname" . }}-workspace
+  namespace: {{ include "ax-next.hostNamespace" . }}
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    {{- include "ax-next.componentLabels" (dict "component" "host" "context" $) | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.workspace.accessMode | default "ReadWriteOnce" }}
+  resources:
+    requests:
+      storage: {{ .Values.workspace.storage | default "10Gi" }}
+  {{- if .Values.workspace.storageClassName }}
+  storageClassName: {{ .Values.workspace.storageClassName }}
+  {{- end }}

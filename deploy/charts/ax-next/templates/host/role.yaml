@@ -1,0 +1,35 @@
+# Role for the host pod's ServiceAccount.
+#
+# This Role lives in .Values.namespace.runner — the namespace where runner
+# pods are created. We deliberately do NOT use ClusterRole; the host has no
+# cluster-scoped reach.
+#
+# Verb set is minimal:
+#   - create / delete : start and stop runner pods.
+#   - get / list / watch : observe pod state for readiness + exit detection.
+#
+# Verbs we DELIBERATELY DO NOT GRANT:
+#   - pods/exec, pods/attach, pods/portforward — host never enters a runner
+#     pod. All host↔runner traffic flows over HTTP via the runner's TCP
+#     endpoint (see @ax/sandbox-k8s — runnerEndpoint).
+#   - pods/log — no debugging via API. Operators tail logs with kubectl
+#     directly when needed; the host doesn't need it for steady-state.
+#   - patch / update — pods are immutable from the host's view. New session
+#     = new pod.
+#   - secrets, configmaps — host gets its own secrets via its pod env;
+#     runner pods get their config via env passed at create time.
+#   - any cluster-scoped resource — Role, not ClusterRole.
+#
+# If a future feature needs additional verbs, add them here with a comment
+# explaining why. Don't loosen this without an updated SECURITY.md walk.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "ax-next.fullname" . }}-runner-manager
+  namespace: {{ include "ax-next.runnerNamespace" . }}
+  labels:
+    {{- include "ax-next.componentLabels" (dict "component" "host" "context" $) | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "delete", "get", "list", "watch"]

@@ -1,0 +1,131 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ax-next.fullname" . }}-host
+  namespace: {{ include "ax-next.hostNamespace" . }}
+  labels:
+    {{- include "ax-next.componentLabels" (dict "component" "host" "context" $) | nindent 4 }}
+    ax.io/plane: ingress
+spec:
+  # Single-replica only this slice. Multi-replica + HPA arrives in a
+  # follow-up PR once session-affinity routing is wired through.
+  replicas: {{ .Values.replicas | default 1 }}
+  strategy:
+    type: Recreate   # PVC is RWO; we can't have two pods mounting at once.
+  selector:
+    matchLabels:
+      {{- include "ax-next.selectorLabels" (dict "component" "host" "context" $) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ax-next.selectorLabels" (dict "component" "host" "context" $) | nindent 8 }}
+        ax.io/plane: ingress
+      annotations:
+        # Roll the pod when ax-next config changes.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap-ax-config.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/hook-secret.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "ax-next.fullname" . }}-host
+      terminationGracePeriodSeconds: {{ .Values.host.terminationGracePeriodSeconds | default 30 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- range . }}
+        - name: {{ . }}
+        {{- end }}
+      {{- end }}
+      containers:
+        - name: host
+          image: {{ include "ax-next.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy | default "IfNotPresent" }}
+          command: {{ .Values.host.command | toJson }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.host.ports.http }}
+              protocol: TCP
+          env:
+            - name: AX_CONFIG_PATH
+              value: "/etc/ax-next/ax.config.yaml"
+            - name: BIND_HOST
+              value: "0.0.0.0"
+            - name: PORT
+              value: {{ .Values.host.ports.http | quote }}
+
+            # Sandbox plugin reads these to size + place runner pods.
+            - name: K8S_RUNTIME_CLASS
+              value: {{ .Values.sandbox.runtimeClassName | quote }}
+            - name: K8S_NAMESPACE
+              value: {{ include "ax-next.runnerNamespace" . | quote }}
+            - name: K8S_POD_IMAGE
+              value: {{ include "ax-next.image" . | quote }}
+            - name: K8S_IMAGE_PULL_POLICY
+              value: {{ .Values.image.pullPolicy | default "IfNotPresent" | quote }}
+            {{- if .Values.imagePullSecrets }}
+            - name: K8S_IMAGE_PULL_SECRETS
+              value: {{ join "," .Values.imagePullSecrets | quote }}
+            {{- end }}
+
+            # Workspace dir lives on the host pod's PVC.
+            - name: AX_WORKSPACE_ROOT
+              value: {{ .Values.workspace.mountPath | quote }}
+
+            # Credentials key — encrypts secrets at rest. Required.
+            - name: AX_CREDENTIALS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ax-next.fullname" . }}-secrets
+                  key: credentials-key
+
+            # Anthropic API key — required (see plan note: openrouter is
+            # deferred to MVP follow-up).
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ax-next.fullname" . }}-secrets
+                  key: anthropic-api-key
+
+            # Database URL — sourced from external secret OR built from
+            # the embedded subchart's secret.
+            {{- if .Values.postgres.external.enabled }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.postgres.external.existingSecret | required "postgres.external.existingSecret is required when postgres.external.enabled=true" }}
+                  key: {{ .Values.postgres.external.secretKey | default "url" }}
+            {{- else }}
+            {{- $pgUser := .Values.postgresql.auth.username | default "ax_next" }}
+            {{- $pgDb := .Values.postgresql.auth.database | default "ax_next" }}
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-postgresql
+                  key: password
+            - name: DATABASE_URL
+              value: "postgresql://{{ $pgUser }}:$(PGPASSWORD)@{{ .Release.Name }}-postgresql:5432/{{ $pgDb }}"
+            {{- end }}
+
+            {{- with .Values.host.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.host.resources | nindent 12 }}
+          {{- with .Values.host.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.host.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: ax-config
+              mountPath: /etc/ax-next
+              readOnly: true
+            - name: workspace
+              mountPath: {{ .Values.workspace.mountPath }}
+      volumes:
+        - name: ax-config
+          configMap:
+            name: {{ include "ax-next.fullname" . }}-config
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: {{ include "ax-next.fullname" . }}-workspace

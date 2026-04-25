@@ -1,0 +1,35 @@
+ax-next has been deployed.
+
+Release:   {{ .Release.Name }}
+Namespace: {{ include "ax-next.hostNamespace" . }}
+Runner ns: {{ include "ax-next.runnerNamespace" . }}
+
+Components:
+  - Host pod:      {{ .Values.replicas | default 1 }} replica(s)
+  - PostgreSQL:    {{ if .Values.postgres.external.enabled }}external{{ else }}in-cluster (subchart){{ end }}
+  - NetworkPolicy: {{ if .Values.networkPolicies.enabled }}enforced{{ else }}DISABLED — host/runner traffic is unrestricted{{ end }}
+  - gVisor:        {{ if .Values.sandbox.runtimeClassName }}runtimeClassName={{ .Values.sandbox.runtimeClassName }}{{ else }}NOT SET — runner pods use the host kernel{{ end }}
+
+{{- if .Values.ingress.enabled }}
+
+Ingress: https://{{ .Values.ingress.host }}
+{{- else }}
+
+To reach the host pod, port-forward:
+  kubectl -n {{ include "ax-next.hostNamespace" . }} port-forward svc/{{ include "ax-next.fullname" . }}-host 8080:80
+{{- end }}
+
+A few things worth double-checking on the way out:
+
+  1. The runner namespace ({{ include "ax-next.runnerNamespace" . }}) must exist
+     and the host pod's RBAC binding scopes there. The chart does NOT create
+     it — `kubectl create ns {{ include "ax-next.runnerNamespace" . }}` if you
+     haven't already.
+
+  2. If gVisor is missing on this cluster, runner pod creates will fail with
+     `runtimeClassName not found`. See deploy/charts/ax-next/SECURITY.md.
+
+  3. If NetworkPolicies are disabled, runner pods can reach anything on the
+     cluster. That's the kind-dev default — not a production stance.
+
+For the full security walk: deploy/charts/ax-next/SECURITY.md.

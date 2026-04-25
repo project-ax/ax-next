@@ -1,0 +1,60 @@
+{{- if and (not .Values.postgres.external.enabled) .Values.postgres.embedded.enabled }}
+{{- $pgUser := .Values.postgresql.auth.username | default "ax_next" }}
+{{- $pgDb := .Values.postgresql.auth.database | default "ax_next" }}
+{{/*
+Schema bootstrap for the embedded postgres subchart.
+
+Waits for the subchart pod to accept connections, then enables the
+`vector` extension (used by future memory plugins; harmless if absent
+on the image). The migrations themselves are run by the host pod on
+boot — see @ax/database-postgres / @ax/storage-postgres / etc — so this
+job is intentionally minimal.
+
+External mode skips this job entirely; operators are expected to have
+already run their own bootstrap against the cloud DB.
+*/}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "ax-next.fullname" . }}-pg-init
+  namespace: {{ include "ax-next.hostNamespace" . }}
+  labels:
+    {{- include "ax-next.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "1"
+    "helm.sh/hook-delete-policy": hook-succeeded,before-hook-creation
+spec:
+  backoffLimit: 10
+  template:
+    metadata:
+      labels:
+        {{- include "ax-next.labels" . | nindent 8 }}
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: pg-init
+          image: docker.io/bitnami/postgresql:16
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -e
+              PG_HOST="{{ .Release.Name }}-postgresql"
+              PG_PORT="5432"
+              until PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$PG_HOST" -p "$PG_PORT" -U postgres -c "SELECT 1" >/dev/null 2>&1; do
+                echo "Waiting for PostgreSQL..."
+                sleep 2
+              done
+              echo "PostgreSQL is ready."
+              PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$PG_HOST" -p "$PG_PORT" -U postgres -d "{{ $pgDb }}" \
+                -c "CREATE EXTENSION IF NOT EXISTS vector;" \
+                && echo "pgvector extension enabled." \
+                || echo "pgvector not available in this image (non-fatal — memory plugins requiring vector will fail later if needed)."
+              echo "PostgreSQL initialization complete."
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-postgresql
+                  key: postgres-password
+{{- end }}

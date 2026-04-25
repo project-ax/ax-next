@@ -1,0 +1,15 @@
+apiVersion: v2
+name: ax-next
+description: AX v2 — AI agent platform with sandboxed k8s execution
+type: application
+version: 0.0.1
+appVersion: "0.0.1"
+
+dependencies:
+  # Bitnami PostgreSQL chart. Pinned exact — version chosen to match the
+  # cut documented in deploy/charts/ax-next/SECURITY.md. Bumping this needs
+  # a re-walk of the supply-chain section of that doc.
+  - name: postgresql
+    version: "16.7.27"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: postgres.embedded.enabled
