@@ -219,7 +219,8 @@ describe('createListener', () => {
   it('rejects POST with a 5 MiB body (Content-Length) with 413', async () => {
     // Body-size fail-fast happens inside the dispatcher's body reader —
     // route at a real protocol path so we reach it. Any known-action path
-    // works; /workspace.commit-notify is a stub and needs no services.
+    // works; /workspace.commit-notify rejects on body shape before reaching
+    // the workspace bus, so we don't need a registered workspace plugin.
     const h = await makeHarness();
     harnesses.push(h);
     // Claim 5 MiB via Content-Length, send the empty body — fail-fast path.

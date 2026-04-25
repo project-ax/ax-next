@@ -35,8 +35,8 @@ import type {
 // Invariants:
 //   I1 — Hook payloads are backend-agnostic. Input is `{ message, maxTurns? }`,
 //        output is ChatOutcome — no transport / storage vocabulary (no
-//        socketPath, sessionId leakage, etc.). sessionId exists on ChatContext
-//        already, which is the kernel-level primitive.
+//        runnerEndpoint, sessionId leakage, etc.). sessionId exists on
+//        ChatContext already, which is the kernel-level primitive.
 //   I5 — Capabilities explicit. The orchestrator only calls the exact hooks
 //        in its manifest (session:queue-work / session:terminate /
 //        sandbox:open-session / ipc:stop). It does NOT spawn, it does NOT
@@ -97,7 +97,11 @@ interface OpenSessionHandle {
   exited: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
 }
 interface OpenSessionResult {
-  socketPath: string;
+  // Opaque URI describing how the runner reaches the host. The orchestrator
+  // never dereferences this — it's the runner's problem to parse the scheme
+  // and dispatch transport. See @ax/sandbox-subprocess's open-session.ts
+  // for the contract.
+  runnerEndpoint: string;
   handle: OpenSessionHandle;
 }
 

@@ -9,4 +9,8 @@ export {
   type WriteFileResult,
 } from './exec.js';
 export { safePath } from './safe-path.js';
-export { registerWithDispatcher, type RegisterOptions } from './register.js';
+export {
+  registerWithDispatcher,
+  type ObservedFileChange,
+  type RegisterOptions,
+} from './register.js';

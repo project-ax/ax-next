@@ -12,7 +12,7 @@
 // child (it will render as null here).
 // ---------------------------------------------------------------------------
 const env = {
-  AX_IPC_SOCKET: process.env.AX_IPC_SOCKET ?? null,
+  AX_RUNNER_ENDPOINT: process.env.AX_RUNNER_ENDPOINT ?? null,
   AX_SESSION_ID: process.env.AX_SESSION_ID ?? null,
   AX_AUTH_TOKEN: process.env.AX_AUTH_TOKEN ?? null,
   AX_WORKSPACE_ROOT: process.env.AX_WORKSPACE_ROOT ?? null,

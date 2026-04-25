@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { pathToFileURL } from 'node:url';
 import {
+  createDiffAccumulator,
   createIpcClient,
   createInboxLoop,
   createLocalDispatcher,
@@ -14,9 +15,10 @@ import { runTurnLoop, type TurnLoopOutcome } from './turn-loop.js';
 // ---------------------------------------------------------------------------
 // Runner entry binary.
 //
-// Spawned as a child process by @ax/sandbox-subprocess inside an isolated
-// sandbox. Communicates back to the host exclusively over the unix socket
-// whose path is in AX_IPC_SOCKET, authenticated with AX_AUTH_TOKEN.
+// Spawned as a child process by a `sandbox:open-session` impl inside an
+// isolated sandbox. Communicates back to the host over the URI in
+// AX_RUNNER_ENDPOINT (unix:// today, http:// once Task 14 lands), authed
+// with AX_AUTH_TOKEN.
 //
 // The runner holds NO LLM credentials (invariant I5). Every LLM call goes
 // via `llm.call` IPC back to the host. That way an attacker who compromises
@@ -37,13 +39,20 @@ import { runTurnLoop, type TurnLoopOutcome } from './turn-loop.js';
 export async function main(): Promise<number> {
   const env = readRunnerEnv();
   const client = createIpcClient({
-    socketPath: env.ipcSocket,
+    runnerEndpoint: env.runnerEndpoint,
     token: env.authToken,
   });
 
   const dispatcher = createLocalDispatcher();
+  // Per-turn diff accumulator. The file-io tool registers an observer that
+  // pushes every successful write/delete in here; the turn loop drains it
+  // at turn boundary into one `workspace.commit-notify` request (Task 7c).
+  const diffs = createDiffAccumulator();
   registerBash(dispatcher, { workspaceRoot: env.workspaceRoot });
-  registerFileIo(dispatcher, { workspaceRoot: env.workspaceRoot });
+  registerFileIo(dispatcher, {
+    workspaceRoot: env.workspaceRoot,
+    onFileChange: (change) => diffs.record(change),
+  });
 
   // Fetch the tool catalog once. Tools are session-lifetime-immutable; a
   // plugin added mid-session wouldn't reach this runner anyway (the host
@@ -52,7 +61,7 @@ export async function main(): Promise<number> {
 
   const inbox = createInboxLoop({ client });
 
-  const outcome = await runTurnLoop({ client, inbox, dispatcher, tools });
+  const outcome = await runTurnLoop({ client, inbox, dispatcher, tools, diffs });
 
   // Emit the final chat-end event. We AWAIT this one (unlike the mid-loop
   // turn-end / tool-post-call events) because it's the signal the host

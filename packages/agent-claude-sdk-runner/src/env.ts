@@ -8,13 +8,16 @@
 // claude-agent-sdk would try to reach api.anthropic.com directly, defeating
 // the whole host-mediated LLM-call story.
 //
+// AX_RUNNER_ENDPOINT is an opaque URI (I1). The IPC client parses the
+// scheme; see @ax/agent-runner-core/ipc-client.ts.
+//
 // Empty-string values are treated as missing: an env var set to '' is
 // almost always a wiring bug, not an intentional value. Failing loud here
 // beats a confusing downstream error.
 // ---------------------------------------------------------------------------
 
 export interface RunnerEnv {
-  ipcSocket: string;
+  runnerEndpoint: string;
   sessionId: string;
   authToken: string;
   workspaceRoot: string;
@@ -35,7 +38,7 @@ export function readRunnerEnv(env: NodeJS.ProcessEnv = process.env): RunnerEnv {
     return v;
   };
   return {
-    ipcSocket: need('AX_IPC_SOCKET'),
+    runnerEndpoint: need('AX_RUNNER_ENDPOINT'),
     sessionId: need('AX_SESSION_ID'),
     authToken: need('AX_AUTH_TOKEN'),
     workspaceRoot: need('AX_WORKSPACE_ROOT'),

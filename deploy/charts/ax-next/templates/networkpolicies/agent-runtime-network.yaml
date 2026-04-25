@@ -1,0 +1,65 @@
+{{- if .Values.networkPolicies.enabled }}
+{{/*
+Allows the host pod to do its job:
+  - INGRESS from runner pods (so they can connect to the host's IPC port)
+    and from inside the host namespace (cluster traffic / ingress).
+  - EGRESS to:
+      - postgres (port 5432, in-cluster or external)
+      - k8s API (443/6443, scoped via the host SA's Role to runner CRUD)
+      - DNS (53)
+      - HTTPS (443) — Anthropic API + future channel integrations
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ax-next.fullname" . }}-host-network
+  namespace: {{ include "ax-next.hostNamespace" . }}
+  labels:
+    {{- include "ax-next.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "ax-next.selectorLabels" (dict "component" "host" "context" $) | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Runner pods → host (cross-namespace).
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ include "ax-next.runnerNamespace" . }}
+          podSelector:
+            matchLabels:
+              ax.io/plane: execution
+      ports:
+        - port: {{ .Values.host.ports.http }}
+          protocol: TCP
+    # Anyone in the host's own namespace (ingress controller, port-forward).
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ include "ax-next.hostNamespace" . }}
+      ports:
+        - port: {{ .Values.host.ports.http }}
+          protocol: TCP
+  egress:
+    # PostgreSQL.
+    - ports:
+        - port: 5432
+          protocol: TCP
+    # k8s API server. Both 443 (ClusterIP `kubernetes` service) and 6443
+    # (the actual apiserver port — Calico CNI rules don't always match
+    # the DNAT'd 443→6443 hop).
+    - ports:
+        - port: 443
+          protocol: TCP
+        - port: 6443
+          protocol: TCP
+    # DNS.
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+{{- end }}

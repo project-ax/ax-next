@@ -11,7 +11,11 @@ import type {
   ToolCall,
   ToolDescriptor,
 } from '@ax/ipc-protocol';
-import { createTestHarness, type TestHarness } from '@ax/test-harness';
+import {
+  createMockWorkspacePlugin,
+  createTestHarness,
+  type TestHarness,
+} from '@ax/test-harness';
 import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
 import type {
   SessionCreateInput,
@@ -52,12 +56,18 @@ interface SetupOptions {
     plugin?: string;
     handler: (ctx: unknown, payload: unknown) => Promise<unknown>;
   }>;
+  /** Extra plugins to bootstrap alongside the in-memory session plugin. */
+  plugins?: Parameters<typeof createTestHarness>[0] extends infer O
+    ? O extends { plugins?: infer P }
+      ? P
+      : never
+    : never;
 }
 
 async function setup(opts: SetupOptions = {}): Promise<Setup> {
   const sessionId = opts.sessionId ?? 's-dispatch';
   const harness = await createTestHarness({
-    plugins: [createSessionInmemoryPlugin()],
+    plugins: [createSessionInmemoryPlugin(), ...(opts.plugins ?? [])],
     // Inject mock services BEFORE plugins bootstrap; the test-harness
     // `services` param registers them first and plugins run after.
     services: opts.services,
@@ -402,13 +412,15 @@ describe('dispatcher', () => {
   // /workspace.commit-notify
   // -------------------------------------------------------------------------
 
-  it('POST /workspace.commit-notify — stub always accepts', async () => {
-    const s = await setup({});
+  it('POST /workspace.commit-notify — happy path through real bus + MockWorkspace', async () => {
+    const s = await setup({ plugins: [createMockWorkspacePlugin()] });
     setups.push(s);
+    const helloB64 = Buffer.from('hello world', 'utf8').toString('base64');
     const req = {
       parentVersion: null,
       commitRef: 'ref-1',
       message: 'initial',
+      changes: [{ path: 'a.txt', kind: 'put', content: helloB64 }],
     };
     const res = await doRequest(
       s.socketPath,
@@ -418,11 +430,16 @@ describe('dispatcher', () => {
       JSON.stringify(req),
     );
     expect(res.status).toBe(200);
-    expect(JSON.parse(res.body)).toEqual({
-      accepted: true,
-      version: 'stub',
-      delta: null,
-    });
+    const parsed = JSON.parse(res.body) as {
+      accepted: true;
+      version: string;
+      delta: null;
+    };
+    expect(parsed.accepted).toBe(true);
+    // Wire response NEVER carries the delta payload (Invariant I5).
+    expect(parsed.delta).toBeNull();
+    expect(typeof parsed.version).toBe('string');
+    expect(parsed.version.length).toBeGreaterThan(0);
   });
 
   // -------------------------------------------------------------------------

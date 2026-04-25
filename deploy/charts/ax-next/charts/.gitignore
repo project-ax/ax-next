@@ -1,0 +1,4 @@
+# Helm subchart tarballs are pulled by `helm dependency update` based on
+# Chart.lock — checking the digest into Chart.lock is the supply-chain pin,
+# not the tarball itself.
+*.tgz

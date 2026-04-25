@@ -6,9 +6,11 @@
     { "path": "packages/test-harness" },
     { "path": "packages/llm-mock" },
     { "path": "packages/storage-sqlite" },
+    { "path": "packages/eventbus-inprocess" },
     { "path": "packages/audit-log" },
     { "path": "packages/cli" },
     { "path": "packages/sandbox-subprocess" },
+    { "path": "packages/sandbox-k8s" },
     { "path": "packages/ipc-protocol" },
     { "path": "packages/ipc-server" },
     { "path": "packages/session-inmemory" },
@@ -24,6 +26,12 @@
     { "path": "packages/llm-proxy-anthropic-format" },
     { "path": "packages/chat-orchestrator" },
     { "path": "./packages/credentials" },
-    { "path": "packages/mcp-client" }
+    { "path": "packages/mcp-client" },
+    { "path": "packages/workspace-git" },
+    { "path": "packages/database-postgres" },
+    { "path": "packages/storage-postgres" },
+    { "path": "packages/eventbus-postgres" },
+    { "path": "packages/session-postgres" },
+    { "path": "presets/k8s" }
   ]
 }

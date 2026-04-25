@@ -18,11 +18,24 @@
 // ---------------------------------------------------------------------------
 
 import type { HookCallback } from '@anthropic-ai/claude-agent-sdk';
-import type { IpcClient } from '@ax/agent-runner-core';
+import type { DiffAccumulator, IpcClient } from '@ax/agent-runner-core';
 import { classifySdkToolName } from './tool-names.js';
+import { observePostToolUse, type ObserveOptions } from './workspace-diff.js';
 
 export interface CreatePostToolUseHookOptions {
   client: IpcClient;
+  /**
+   * Per-turn diff accumulator (Task 7c). When set, the hook reads the
+   * resulting file bytes for known file-mutating SDK tools (`Write`,
+   * `Edit`, `MultiEdit`) and records them. The runner drains the
+   * accumulator on `result` (turn end) and ships one `workspace.commit-
+   * notify`. Optional so existing tests that don't care about workspace
+   * commits keep working.
+   */
+  diffs?: DiffAccumulator;
+  workspaceRoot?: string;
+  /** Test seam forwarded to observePostToolUse for stubbing fs. */
+  observeFs?: ObserveOptions['fs'];
 }
 
 export function createPostToolUseHook(
@@ -39,6 +52,27 @@ export function createPostToolUseHook(
     const klass = classifySdkToolName(input.tool_name);
     if (klass.kind === 'disabled') {
       return {};
+    }
+
+    // Workspace-diff observation. We AWAIT this (unlike the fire-and-forget
+    // event below) so the accumulator is populated before the SDK emits the
+    // next message. The runner needs the diff settled before it sees the
+    // turn-end `result` and flushes commit-notify. Errors are swallowed
+    // inside `observePostToolUse` — best-effort; never blocks the turn.
+    if (
+      opts.diffs !== undefined &&
+      opts.workspaceRoot !== undefined &&
+      typeof input.tool_name === 'string'
+    ) {
+      try {
+        await observePostToolUse(input.tool_name, input.tool_input, {
+          workspaceRoot: opts.workspaceRoot,
+          diffs: opts.diffs,
+          ...(opts.observeFs !== undefined ? { fs: opts.observeFs } : {}),
+        });
+      } catch {
+        /* observer failure must not break the turn */
+      }
     }
 
     // Fire-and-forget. Failures here must not stall the runner's turn loop;

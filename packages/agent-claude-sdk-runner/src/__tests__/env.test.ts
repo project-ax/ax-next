@@ -4,7 +4,7 @@ import { MissingEnvError, readRunnerEnv } from '../env.js';
 // Canonical "all five vars present" fixture — tests that need one var
 // missing spread this and then delete/override the target var.
 const COMPLETE = {
-  AX_IPC_SOCKET: '/tmp/ax.sock',
+  AX_RUNNER_ENDPOINT: 'unix:///tmp/ax.sock',
   AX_SESSION_ID: 'sess-1',
   AX_AUTH_TOKEN: 'tok-123',
   AX_WORKSPACE_ROOT: '/tmp/workspace',
@@ -15,7 +15,7 @@ describe('readRunnerEnv', () => {
   it('returns the parsed shape when all five env vars are present', () => {
     const out = readRunnerEnv(COMPLETE);
     expect(out).toEqual({
-      ipcSocket: '/tmp/ax.sock',
+      runnerEndpoint: 'unix:///tmp/ax.sock',
       sessionId: 'sess-1',
       authToken: 'tok-123',
       workspaceRoot: '/tmp/workspace',
@@ -24,7 +24,7 @@ describe('readRunnerEnv', () => {
   });
 
   for (const name of [
-    'AX_IPC_SOCKET',
+    'AX_RUNNER_ENDPOINT',
     'AX_SESSION_ID',
     'AX_AUTH_TOKEN',
     'AX_WORKSPACE_ROOT',

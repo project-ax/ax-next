@@ -1,0 +1,60 @@
+{{- if .Values.networkPolicies.enabled }}
+{{/*
+Restricts runner pod traffic.
+
+Runner pods (label `ax.io/plane: execution`) are tightly fenced:
+
+INGRESS:
+  Empty list — `policyTypes: ["Ingress"]` with no `ingress:` rules
+  blocks all inbound traffic. Nothing inside or outside the cluster
+  can connect TO a runner pod.
+
+  (The host pod doesn't need to connect into runner pods; runner pods
+  initiate the IPC connection out to the host. So denying all ingress
+  is the right call for this slice.)
+
+EGRESS:
+  - host pod's HTTP port (for IPC + LLM proxy + workspace ops).
+  - kube-dns (UDP/TCP 53) so pod DNS resolves.
+  - Nothing else. No egress to the broader cluster, the k8s apiserver,
+    or the internet. Tools that need network reach (npm install, curl)
+    will fail until the web-proxy lands in Week 10+.
+
+This NetworkPolicy lives in the runner namespace
+(.Values.namespace.runner) so it applies to pods the host creates there.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ax-next.fullname" . }}-sandbox-restrict
+  namespace: {{ include "ax-next.runnerNamespace" . }}
+  labels:
+    {{- include "ax-next.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      ax.io/plane: execution
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []
+  egress:
+    # Host pod IPC port. Cross-namespace because the host runs in
+    # Release.Namespace and runners run in .Values.namespace.runner.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ include "ax-next.hostNamespace" . }}
+          podSelector:
+            matchLabels:
+              {{- include "ax-next.selectorLabels" (dict "component" "host" "context" $) | nindent 14 }}
+      ports:
+        - port: {{ .Values.host.ports.http }}
+          protocol: TCP
+    # DNS (cluster DNS lives in kube-system).
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+{{- end }}

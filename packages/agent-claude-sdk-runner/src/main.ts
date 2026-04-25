@@ -1,12 +1,22 @@
 #!/usr/bin/env node
+import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import {
   query,
   type SDKAssistantMessage,
   type SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
-import { createInboxLoop, createIpcClient } from '@ax/agent-runner-core';
-import type { ChatMessage, ToolListResponse } from '@ax/ipc-protocol';
+import {
+  createDiffAccumulator,
+  createInboxLoop,
+  createIpcClient,
+  toWireChanges,
+} from '@ax/agent-runner-core';
+import type {
+  ChatMessage,
+  ToolListResponse,
+  WorkspaceCommitNotifyResponse,
+} from '@ax/ipc-protocol';
 import { createCanUseTool } from './can-use-tool.js';
 import { readRunnerEnv } from './env.js';
 import { createHostMcpServer } from './host-mcp-server.js';
@@ -17,9 +27,10 @@ import { DISABLED_BUILTINS, MCP_HOST_SERVER_NAME } from './tool-names.js';
 // ---------------------------------------------------------------------------
 // Runner entry binary (claude-sdk variant).
 //
-// Spawned as a child process by @ax/sandbox-subprocess inside an isolated
-// sandbox. Communicates back to the host exclusively over the unix socket
-// whose path is in AX_IPC_SOCKET, authenticated with AX_AUTH_TOKEN.
+// Spawned as a child process by a `sandbox:open-session` impl inside an
+// isolated sandbox. Communicates back to the host over the URI in
+// AX_RUNNER_ENDPOINT (unix:// today, http:// once Task 14 lands), authed
+// with AX_AUTH_TOKEN.
 //
 // The runner holds NO LLM credentials (invariant I5). The vendored
 // @anthropic-ai/claude-agent-sdk is redirected at our sandbox-internal LLM
@@ -52,7 +63,7 @@ export async function main(): Promise<number> {
   }
 
   const client = createIpcClient({
-    socketPath: env.ipcSocket,
+    runnerEndpoint: env.runnerEndpoint,
     token: env.authToken,
   });
 
@@ -69,6 +80,13 @@ export async function main(): Promise<number> {
 
   const hostMcpServer = createHostMcpServer({ client, tools });
   const inbox = createInboxLoop({ client });
+  // Per-turn diff accumulator (Task 7c). PostToolUse populates; the
+  // `result` SDK message drains and ships a single `workspace.commit-
+  // notify`. Workspace commits are turn-end, NOT per-tool-call.
+  const diffs = createDiffAccumulator();
+  // Tracks the last accepted workspace version so the host's optimistic-
+  // concurrency check sees a coherent lineage across turns.
+  let parentVersion: string | null = null;
   // Host-side bookkeeping for the final event.chat-end outcome. The SDK
   // maintains its OWN transcript internally; this array is only the shape
   // the host cares about (user/assistant text round-tripped through
@@ -119,7 +137,17 @@ export async function main(): Promise<number> {
         canUseTool: createCanUseTool({ client }),
         hooks: {
           PreToolUse: [{ hooks: [createPreToolUseHook({ client })] }],
-          PostToolUse: [{ hooks: [createPostToolUseHook({ client })] }],
+          PostToolUse: [
+            {
+              hooks: [
+                createPostToolUseHook({
+                  client,
+                  diffs,
+                  workspaceRoot: env.workspaceRoot,
+                }),
+              ],
+            },
+          ],
         },
         mcpServers: { [MCP_HOST_SERVER_NAME]: hostMcpServer },
         // Empty settingSources = SDK isolation mode: the runner does NOT
@@ -143,6 +171,41 @@ export async function main(): Promise<number> {
           history.push({ role: 'assistant', content: text });
         }
       } else if (msg.type === 'result') {
+        // Turn boundary. Snapshot the per-turn diff accumulator and ship
+        // a single `workspace.commit-notify` when there are changes. We
+        // skip empty turns deliberately: a host with no workspace plugin
+        // registered would log an internal error on each empty notify,
+        // and `event.turn-end` already carries the heartbeat signal.
+        // Failures here MUST NOT terminate the chat.
+        //
+        // Snapshot-then-drain-on-receipt: on thrown errors the
+        // accumulator stays intact so the next turn retries the same
+        // changes plus whatever new ones land — no silent data loss on
+        // transient network/timeout failures. On host `accepted: false`
+        // we drain anyway: re-sending against the same stale parent
+        // fails forever, and the proper "refresh parent on mismatch"
+        // flow needs a wire change out of scope here. Same trade-off
+        // the native runner makes; both paths share `DiffAccumulator`.
+        if (!diffs.isEmpty()) {
+          const snapshot = diffs.snapshot();
+          try {
+            const resp = (await client.call('workspace.commit-notify', {
+              parentVersion,
+              commitRef: randomUUID(),
+              message: 'turn',
+              changes: toWireChanges(snapshot),
+            })) as WorkspaceCommitNotifyResponse;
+            if (resp.accepted) {
+              diffs.drain();
+              parentVersion = resp.version as unknown as string;
+            } else {
+              diffs.drain();
+            }
+          } catch {
+            /* preserve accumulator; next turn retries */
+          }
+        }
+
         // One turn of assistant output finished. The SDK now awaits the
         // next yield from userMessages() — i.e. the next inbox pull.
         await client

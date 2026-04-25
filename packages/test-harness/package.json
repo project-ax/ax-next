@@ -20,11 +20,13 @@
   "dependencies": {
     "@ax/core": "workspace:*",
     "@modelcontextprotocol/sdk": "1.29.0",
+    "picomatch": "^4.0.4",
     "zod": "^3.23.8"
   },
   "devDependencies": {
     "@ax/tool-dispatcher": "workspace:*",
     "@types/node": "^25.6.0",
+    "@types/picomatch": "^4.0.2",
     "typescript": "^6.0.3",
     "vitest": "^4.1.4"
   }

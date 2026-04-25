@@ -1,4 +1,10 @@
 import { z } from 'zod';
+import { asWorkspaceVersion, type WorkspaceVersion } from '@ax/core';
+
+// Re-export so existing consumers importing from `@ax/ipc-protocol` keep
+// working transparently — canonical declaration lives in `@ax/core` so
+// nothing is tempted to reach into a workspace backend for the shared type.
+export { asWorkspaceVersion, type WorkspaceVersion };
 
 // ---------------------------------------------------------------------------
 // Shared shapes
@@ -45,28 +51,6 @@ export const ToolDescriptorSchema = z.object({
   executesIn: z.enum(['sandbox', 'host']),
 });
 export type ToolDescriptor = z.infer<typeof ToolDescriptorSchema>;
-
-/**
- * Opaque handle for a workspace commit as observed by the host.
- * At runtime this is just a string; the brand is documentation.
- *
- * Opaque token. Pass to workspace hooks; never parse.
- *
- * Construct via {@link asWorkspaceVersion} at the host-side boundary
- * (where a backend plugin mints the concrete value). The wire schema
- * applies the brand automatically via transform so parsed responses
- * carry it without callers casting.
- */
-export type WorkspaceVersion = string & { readonly __brand: 'WorkspaceVersion' };
-
-/**
- * Host-side helper: narrow a raw string from a workspace backend into a
- * `WorkspaceVersion`. Only callers that mint version tokens (workspace
- * plugins) should use this — everyone else receives branded values
- * through the wire schemas.
- */
-export const asWorkspaceVersion = (v: string): WorkspaceVersion =>
-  v as WorkspaceVersion;
 
 // ---------------------------------------------------------------------------
 // llm.call
@@ -162,12 +146,43 @@ export type ToolListResponse = z.infer<typeof ToolListResponseSchema>;
 // - `commitRef` is the generic handle — not "blobId", not "objectId"
 // - `delta` is null for now; schema leaves room for a future wire shape
 //   without forcing one backend's diff format into the protocol.
+//
+// `changes` is the runner's per-turn diff against `parentVersion`. The wire
+// is JSON, so binary file content is base64-encoded in transit and the Zod
+// transform decodes to `Uint8Array` so the parsed shape matches `@ax/core`'s
+// `FileChange` directly. Encoding is the runner's responsibility (see Task
+// 7c). `commitRef` is an opaque runner-side identifier; the host doesn't
+// dispatch on it — the `changes` array IS the source of truth.
 // ---------------------------------------------------------------------------
+
+/**
+ * Wire mirror of `@ax/core.FileChange`. The canonical type lives in
+ * `@ax/core`; this schema parses the JSON-on-the-wire encoding (base64 for
+ * `put.content`) and transforms it to bytes so the parsed value is
+ * shape-compatible with the kernel type.
+ */
+export const FileChangeSchema = z.discriminatedUnion('kind', [
+  z.object({
+    path: z.string(),
+    kind: z.literal('put'),
+    // Bytes ride the wire as base64 strings (JSON can't carry Uint8Array).
+    // Transform to bytes so consumers see `@ax/core.FileChange`-shaped data.
+    content: z.string().transform((b64) => new Uint8Array(Buffer.from(b64, 'base64'))),
+  }),
+  z.object({
+    path: z.string(),
+    kind: z.literal('delete'),
+  }),
+]);
+export type WireFileChange = z.infer<typeof FileChangeSchema>;
 
 export const WorkspaceCommitNotifyRequestSchema = z.object({
   parentVersion: z.string().nullable(),
   commitRef: z.string(),
   message: z.string(),
+  // Backwards-compat default: pre-Task-7c runners that don't yet send
+  // `changes` continue to round-trip as an empty diff (no-op apply).
+  changes: z.array(FileChangeSchema).default([]),
 });
 export type WorkspaceCommitNotifyRequest = z.infer<
   typeof WorkspaceCommitNotifyRequestSchema

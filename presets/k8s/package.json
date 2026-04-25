@@ -1,0 +1,50 @@
+{
+  "name": "@ax/preset-k8s",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc --build",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@ax/core": "workspace:*",
+    "@ax/database-postgres": "workspace:*",
+    "@ax/storage-postgres": "workspace:*",
+    "@ax/eventbus-postgres": "workspace:*",
+    "@ax/session-postgres": "workspace:*",
+    "@ax/workspace-git": "workspace:*",
+    "@ax/sandbox-k8s": "workspace:*",
+    "@ax/llm-anthropic": "workspace:*",
+    "@ax/llm-proxy-anthropic-format": "workspace:*",
+    "@ax/agent-claude-sdk-runner": "workspace:*",
+    "@ax/agent-runner-core": "workspace:*",
+    "@ax/chat-orchestrator": "workspace:*",
+    "@ax/tool-bash": "workspace:*",
+    "@ax/tool-file-io": "workspace:*",
+    "@ax/tool-dispatcher": "workspace:*",
+    "@ax/audit-log": "workspace:*",
+    "@ax/mcp-client": "workspace:*",
+    "@ax/credentials": "workspace:*",
+    "@ax/ipc-server": "workspace:*"
+  },
+  "devDependencies": {
+    "@ax/llm-mock": "workspace:*",
+    "@ax/test-harness": "workspace:*",
+    "@testcontainers/postgresql": "11.14.0",
+    "@types/node": "^25.6.0",
+    "kysely": "0.28.16",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.4"
+  }
+}

@@ -1,0 +1,18 @@
+{{/*
+ax-next runtime config, mounted at /etc/ax-next/ax.config.yaml inside
+the host pod. Loaded by the CLI via AX_CONFIG_PATH (set on the
+deployment).
+
+Whatever sits under .Values.config flows through verbatim — keeps the
+chart out of the business of knowing each plugin's config schema.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ax-next.fullname" . }}-config
+  namespace: {{ include "ax-next.hostNamespace" . }}
+  labels:
+    {{- include "ax-next.labels" . | nindent 4 }}
+data:
+  ax.config.yaml: |
+{{- toYaml .Values.config | nindent 4 }}

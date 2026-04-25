@@ -1,0 +1,155 @@
+# ax-next Helm chart — defaults.
+#
+# This is the v2 deploy story for k8s mode. Single-replica host (HPA arrives
+# in a follow-up PR), runner pods spawned in `namespace.runner` per session,
+# tight RBAC + NetworkPolicies. We pin everything we can; placeholders are
+# explicitly empty so `helm install` fails loudly rather than booting with a
+# bad default.
+
+nameOverride: ""
+fullnameOverride: ""
+
+# ─── Image ────────────────────────────────────────────────────────
+# The host pod and the runner pod share the same image (bundled-runner
+# binaries pattern). The runner image string is what the host plugin
+# passes to k8s when creating runner pods.
+image:
+  repository: ax-next/agent
+  tag: ""             # empty → Chart.appVersion
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# ─── Replicas ─────────────────────────────────────────────────────
+# Single replica only this slice; HPA + multi-replica session affinity
+# arrive in a follow-up PR.
+replicas: 1
+
+# ─── Namespace for runner pods ────────────────────────────────────
+# Runner pods are created in this namespace by `@ax/sandbox-k8s`.
+# This namespace is NOT created by the chart today — operators create
+# it ahead of install. The host pod's RBAC binding is scoped to it.
+namespace:
+  runner: ax-next-runners
+
+# ─── Host pod ────────────────────────────────────────────────────
+host:
+  ports:
+    http: 8080
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 1
+      memory: 1Gi
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 10
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 10
+    periodSeconds: 30
+  terminationGracePeriodSeconds: 30
+  command: ["node", "dist/cli/index.js", "serve", "--port", "8080"]
+  env: []
+
+# ─── Workspace persistence ───────────────────────────────────────
+# Single-replica only this slice. The host's `@ax/workspace-git` writes
+# to a PVC mounted inside the host pod. Multi-replica + shared git server
+# is a future PR (Week 10+).
+workspace:
+  storage: 10Gi
+  storageClassName: ""   # empty → cluster default
+  accessMode: ReadWriteOnce
+  mountPath: /var/lib/ax-next/workspaces
+
+# ─── Runner pod runtime ──────────────────────────────────────────
+# `runtimeClassName` defaults to gvisor — the sandbox-k8s plugin's
+# threat model assumes it. Override to "" for clusters without gVisor
+# (you'll get a loud warning at host pod boot from the plugin).
+sandbox:
+  runtimeClassName: gvisor
+
+# ─── PostgreSQL ──────────────────────────────────────────────────
+# Two modes:
+#   - external: false (default for kind-dev) → use the embedded subchart
+#     (Bitnami postgresql). Subchart values flow through `postgresql:`.
+#   - external: true → operator provides DATABASE_URL via an existing
+#     Secret. Set `postgres.external.existingSecret` to its name.
+#
+# Single source of truth for embedded auth: `postgresql.auth.*` below.
+# The Bitnami subchart owns those keys, so we don't duplicate them
+# under `postgres.embedded.auth.*`. The host pod's DSN-building template
+# and the init job both read from `postgresql.auth.*` so subchart and
+# host stay in lockstep when an operator overrides them.
+postgres:
+  external:
+    enabled: false
+    existingSecret: ""
+    secretKey: url
+  embedded:
+    enabled: true
+    # Auth lives under `postgresql.auth.*` (Bitnami subchart) — see below.
+
+# Subchart values — passed through to bitnami/postgresql when embedded
+# is enabled. Keep this intentionally minimal; operators who want the
+# full surface should fork the chart or use external mode.
+#
+# `postgresql.auth.{database,username}` is the single source of truth
+# for the embedded postgres credentials. The host pod's DATABASE_URL and
+# the schema-init job both read these values, so overriding them here
+# flows through to both sides automatically.
+postgresql:
+  auth:
+    database: ax_next
+    username: ax_next
+    # postgresPassword + password are auto-generated; we read them from
+    # the subchart's Secret (`<release>-postgresql`) in the init job.
+  primary:
+    persistence:
+      size: 10Gi
+
+# ─── Credentials & API keys ──────────────────────────────────────
+# `AX_CREDENTIALS_KEY` is required at install — encrypts secrets at
+# rest. Operators provide via:
+#   --set credentials.key=$(openssl rand -base64 32)
+# (See packages/credentials/SECURITY.md for the format details.)
+credentials:
+  key: ""
+
+anthropic:
+  apiKey: ""
+
+# ─── Network policies ────────────────────────────────────────────
+# `enabled: true` is the safe default. Disabling is supported only for
+# kind-dev (where Calico/Cilium are not installed and policies are
+# silently no-ops anyway).
+networkPolicies:
+  enabled: true
+
+# ─── Ingress ─────────────────────────────────────────────────────
+# Off by default — production deploys typically front the host with a
+# cloud LB or a service mesh. Enable per-cluster.
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  host: ""
+  tls: false
+  tlsSecretName: ""
+
+# ─── ax-next runtime config ──────────────────────────────────────
+# This block is rendered into a ConfigMap and mounted at /etc/ax-next/.
+# It tells the CLI which providers to use; the corresponding plugins
+# are loaded by the @ax/preset-k8s preset.
+config:
+  preset: k8s
+  models:
+    default: ["claude-sonnet-4-5"]
+  history:
+    maxTurns: 50
