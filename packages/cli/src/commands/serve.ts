@@ -21,6 +21,7 @@ import * as http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import {
   HookBus,
+  type KernelHandle,
   PluginError,
   bootstrap,
   makeChatContext,
@@ -152,19 +153,22 @@ export async function runServeCommand(opts: RunServeOptions): Promise<number> {
   // after-boot graceful. Tests pass `onListening`, which we treat as a
   // signal that the test owns teardown.
   let closeListener: (() => Promise<void>) | null = null;
+  let kernelHandle: KernelHandle | null = null;
   const isTest = opts.onListening !== undefined;
   if (!isTest) {
     let shuttingDown = false;
     const shutdown = async (sig: NodeJS.Signals): Promise<void> => {
-      if (shuttingDown) return;
+      if (shuttingDown) {
+        // Second signal mid-shutdown: force-exit with the conventional
+        // SIGINT=130 / SIGTERM=143 codes. A misbehaving plugin shouldn't
+        // hold the process hostage past the operator's second Ctrl-C.
+        process.exit(sig === 'SIGINT' ? 130 : 143);
+      }
       shuttingDown = true;
       err(`[ax/serve] ${sig} — closing listener`);
-      if (closeListener === null) {
-        // Signal landed mid-boot; nothing to drain.
-        process.exit(0);
-      }
       try {
-        await closeListener();
+        if (closeListener !== null) await closeListener();
+        if (kernelHandle !== null) await kernelHandle.shutdown();
         process.exit(0);
       } catch (e) {
         err(`[ax/serve] shutdown error: ${e instanceof Error ? e.message : String(e)}`);
@@ -192,7 +196,7 @@ export async function runServeCommand(opts: RunServeOptions): Promise<number> {
   }
 
   const bus = new HookBus();
-  await bootstrap({ bus, plugins, config: {} });
+  kernelHandle = await bootstrap({ bus, plugins, config: {} });
 
   const server = http.createServer((req, res) => {
     void handle(req, res, bus, serveToken).catch((e) => {
