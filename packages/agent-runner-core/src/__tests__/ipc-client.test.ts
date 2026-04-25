@@ -258,16 +258,19 @@ describe('createIpcClient', () => {
     expect(result).toEqual({ type: 'timeout', cursor: 0 });
   });
 
-  it('rejects http:// runnerEndpoint at construction (transport not yet implemented)', () => {
-    // The k8s sandbox provider returns http:// URIs (Task 14/15). Until the
-    // pod's HTTP server lands, the client refuses to construct so the
-    // operator gets a clear error instead of a confusing connect failure.
-    expect(() =>
-      createIpcClient({
-        runnerEndpoint: 'http://10.42.0.5:7777',
-        token: 'tok-abc',
-      }),
-    ).toThrow(HostUnavailableError);
+  it('parses http:// runnerEndpoint at construction; defensive guard rejects on call', async () => {
+    // http:// is parsed at construction (lifted to @ax/ipc-protocol). The
+    // wire path is not yet wired through requestOnce — a defensive guard
+    // there throws HostUnavailableError if anything actually tries to use
+    // the http target. Task 4 removes the guard after http support lands.
+    const client = createIpcClient({
+      runnerEndpoint: 'http://10.42.0.5:7777',
+      token: 'tok-abc',
+      maxRetries: 0,
+    });
+    await expect(
+      client.call('llm.call', { prompt: 'hi' }),
+    ).rejects.toBeInstanceOf(HostUnavailableError);
   });
 
   it('rejects unsupported runnerEndpoint scheme', () => {
