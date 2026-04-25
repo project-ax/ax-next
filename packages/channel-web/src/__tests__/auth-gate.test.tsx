@@ -44,4 +44,15 @@ describe('Auth gate', () => {
     render(<App />);
     expect(screen.getByText(/connecting/i)).toBeTruthy();
   });
+
+  it('shows LoginPage when /api/auth/get-session rejects (offline)', async () => {
+    // Network failure — fetch rejects rather than returning a non-2xx.
+    // Without the try/catch in App, the promise rejection would leave
+    // authState stuck on 'loading' and the UI on "connecting…" forever.
+    fetchMock.mockRejectedValueOnce(new Error('offline'));
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByText(/Sign in with Google/i)).toBeTruthy();
+    });
+  });
 });

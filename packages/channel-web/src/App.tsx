@@ -45,13 +45,19 @@ export const App = () => {
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const session = await getSession();
-      if (cancelled) return;
-      if (session?.user) {
-        setUser(session.user);
-        setAuthState('authenticated');
-      } else {
-        setAuthState('unauthenticated');
+      try {
+        const session = await getSession();
+        if (cancelled) return;
+        if (session?.user) {
+          setUser(session.user);
+          setAuthState('authenticated');
+        } else {
+          setAuthState('unauthenticated');
+        }
+      } catch {
+        // Network/DNS/offline — treat as unauthenticated so the user
+        // sees the sign-in CTA instead of "connecting…" forever.
+        if (!cancelled) setAuthState('unauthenticated');
       }
     })();
     return () => {
