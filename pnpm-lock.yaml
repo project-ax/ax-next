@@ -872,6 +872,9 @@ importers:
       '@ax/workspace-protocol':
         specifier: workspace:*
         version: link:../workspace-protocol
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
     devDependencies:
       '@ax/test-harness':
         specifier: workspace:*
