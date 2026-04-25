@@ -141,6 +141,15 @@ export async function createHttpListener(
     });
   });
 
+  // After listen succeeds, keep a permanent error listener so a stray
+  // server-level error doesn't surface as an uncaught EventEmitter error
+  // and crash the process. Same logging shape as the per-request handler.
+  server.on('error', (err) => {
+    process.stderr.write(
+      `ipc-http: server error: ${(err as Error).message}\n`,
+    );
+  });
+
   // Read back the actual bound port (relevant when caller passed 0).
   const addr = server.address();
   const boundPort =
