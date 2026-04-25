@@ -266,4 +266,57 @@ describe('bootstrap shutdown', () => {
     // Both rollback shutdowns ran; b's failure went to onShutdownError.
     expect(errors.map((e) => e.plugin)).toEqual(['b']);
   });
+
+  it('verifyCalls failure rolls back already-initialized plugins', async () => {
+    // Both plugins init successfully — but the consumer declares calls:['x:do']
+    // with no producer, so verifyCalls throws missing-service AFTER init. The
+    // initialized plugins must still get shut down so we don't leak resources
+    // (the same gap the in-loop rollback at lines 83-94 protects against).
+    const order: string[] = [];
+    const a = makePlugin({ name: 'a' });
+    (a as Plugin).shutdown = () => { order.push('a-down'); };
+    const consumer = makePlugin({ name: 'consumer', calls: ['x:do'] });
+    (consumer as Plugin).shutdown = () => { order.push('consumer-down'); };
+
+    await expect(
+      bootstrap({
+        bus: new HookBus(),
+        plugins: [a, consumer],
+        config: {},
+      }),
+    ).rejects.toMatchObject({
+      name: 'PluginError',
+      code: 'missing-service',
+      plugin: 'consumer',
+    });
+    // Both plugins initialized, then verifyCalls threw. Reverse order: consumer, a.
+    expect(order).toEqual(['consumer-down', 'a-down']);
+  });
+
+  it('a throwing onShutdownError sink does not abort the shutdown loop', async () => {
+    // I2 says "per-plugin failures never block peer plugins." A misbehaving
+    // host-supplied sink (e.g., a structured logger that asserts on schema)
+    // throwing inside onShutdownError must NOT prevent the next plugin's
+    // shutdown from running.
+    const order: string[] = [];
+    const a = makePlugin({ name: 'a' });
+    (a as Plugin).shutdown = () => { order.push('a'); };
+    const b = makePlugin({ name: 'b' });
+    (b as Plugin).shutdown = () => { throw new Error('boom'); };
+    const c = makePlugin({ name: 'c' });
+    (c as Plugin).shutdown = () => { order.push('c'); };
+
+    const handle = await bootstrap({
+      bus: new HookBus(),
+      plugins: [a, b, c],
+      config: {},
+      onShutdownError: () => {
+        throw new Error('sink itself broken');
+      },
+    });
+    // Should resolve, not reject — sink failure is swallowed.
+    await handle.shutdown();
+    // c (ok), b (throws — sink throws — swallowed), a (ok) all run.
+    expect(order).toEqual(['c', 'a']);
+  });
 });

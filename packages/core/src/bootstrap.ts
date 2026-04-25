@@ -94,7 +94,16 @@ export async function bootstrap(opts: BootstrapOptions): Promise<KernelHandle> {
     }
   }
 
-  verifyCalls(plugins, bus);
+  // verifyCalls runs AFTER every plugin has initialized, so a missing-service
+  // failure here would otherwise leak the same resources the in-loop rollback
+  // protects (pg pools, LISTEN clients, HTTP listeners). Roll back through
+  // the kernel's own shutdown path so the symmetry holds.
+  try {
+    verifyCalls(plugins, bus);
+  } catch (err) {
+    await runShutdownLoop(initialized, shutdownTimeoutMs, onShutdownError);
+    throw err;
+  }
 
   // Idempotent handle: cache the first shutdown's promise so SIGINT-then-
   // SIGTERM (common during deploys) doesn't re-run plugin shutdowns.
@@ -134,7 +143,16 @@ async function runShutdownLoop(
         `plugin '${p.manifest.name}' shutdown exceeded ${timeoutMs}ms`,
       );
     } catch (err) {
-      onError(p.manifest.name, err);
+      // Guard the sink itself: a structured logger that asserts on schema, a
+      // metric library that throws on bad labels, or any other host-supplied
+      // sink that misbehaves must NOT abort the loop. Per-plugin failures
+      // never block peer plugins (I2) — that includes failures inside the
+      // failure-reporting path.
+      try {
+        onError(p.manifest.name, err);
+      } catch {
+        // Sink itself failed; swallow so peer plugins still shut down.
+      }
     }
   }
 }
