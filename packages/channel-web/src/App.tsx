@@ -23,6 +23,7 @@ import {
   hydrateSidebarCollapsed,
   setSidebarCollapsed,
 } from './lib/sidebar-collapse';
+import { hydrateTheme } from './lib/theme';
 import { useAgentStore } from './lib/agent-store';
 import { sessionStoreActions } from './lib/session-store';
 import { LoginPage } from './components/LoginPage';
@@ -73,8 +74,9 @@ const AppContent = ({ user }: { user: AuthUser }) => {
   const [adminView, setAdminView] = useState<AdminView>(null);
 
   useEffect(() => {
-    // Apply persisted sidebar state before first paint of any subscriber.
+    // Apply persisted sidebar + theme state before first paint of any subscriber.
     hydrateSidebarCollapsed();
+    hydrateTheme();
 
     // Global keyboard shortcuts:
     //  - ⌘\ (or Ctrl+\) toggles the sidebar.

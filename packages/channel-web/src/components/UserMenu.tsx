@@ -3,8 +3,8 @@
  *
  * Click the user row → opens a popover with: Account, Preferences,
  * role-gated Admin entries (Agents / MCP Servers / Teams), theme
- * tri-toggle (Task 25 wires the behavior), and Sign out. Footer carries
- * the AX logo.
+ * tri-toggle (auto / light / dark, persisted to `localStorage['tide-theme']`),
+ * and Sign out. Footer carries the AX logo.
  *
  * SECURITY NOTE — UI affordance only. Hiding the Admin entries from
  * non-admins is a UX nicety, not a security boundary. The real access
@@ -19,11 +19,15 @@ import { useEffect, useRef, useState } from 'react';
 import { useUser } from '../lib/user-context';
 import { signOut } from '../lib/auth';
 import type { AdminView } from '../lib/admin';
+import { useTheme, setTheme } from '../lib/theme';
+
+const THEMES = ['auto', 'light', 'dark'] as const;
 
 export function UserMenu({
   onOpenAdmin,
 }: { onOpenAdmin?: ((view: AdminView) => void) | undefined } = {}) {
   const user = useUser();
+  const theme = useTheme();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -123,35 +127,23 @@ export function UserMenu({
               </button>
             </>
           )}
-          {/* Theme tri-toggle: stub markup; Task 25 wires the behavior. */}
           <div className="user-menu-divider" />
           <div className="user-menu-row" data-action="theme">
             <span className="user-menu-row-label">Theme</span>
             <div className="theme-seg" role="radiogroup" aria-label="Theme">
-              <button
-                type="button"
-                data-value="auto"
-                aria-checked="true"
-                role="radio"
-              >
-                auto
-              </button>
-              <button
-                type="button"
-                data-value="light"
-                aria-checked="false"
-                role="radio"
-              >
-                light
-              </button>
-              <button
-                type="button"
-                data-value="dark"
-                aria-checked="false"
-                role="radio"
-              >
-                dark
-              </button>
+              {THEMES.map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  data-value={value}
+                  role="radio"
+                  aria-checked={theme === value}
+                  data-active={theme === value || undefined}
+                  onClick={() => setTheme(value)}
+                >
+                  {value}
+                </button>
+              ))}
             </div>
           </div>
           <div className="user-menu-divider" />
