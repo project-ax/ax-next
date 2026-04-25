@@ -12,6 +12,7 @@
 import { AgentChip, useHydrateAgents } from './AgentChip';
 import { NewSessionButton } from './NewSessionButton';
 import { SessionList } from './SessionList';
+import { SidebarCollapseToggle } from './SidebarCollapseToggle';
 
 export function Sidebar() {
   // Fetch /api/agents once on mount so the chip + menu can render names.
@@ -22,7 +23,8 @@ export function Sidebar() {
         <div className="brand">
           <span className="brand-word">tide</span>
         </div>
-        {/* sidebar-collapse toggle button placeholder — Task 15 wires it */}
+        {/* Toggle lives here for now; Task 16 may move it to the session header. */}
+        <SidebarCollapseToggle />
       </div>
       <AgentChip />
       <NewSessionButton />
