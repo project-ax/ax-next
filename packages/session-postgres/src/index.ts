@@ -1,7 +1,6 @@
 export {
   createSessionPostgresPlugin,
   type SessionPostgresConfig,
-  type SessionPostgresPlugin,
   type SessionCreateInput,
   type SessionCreateOutput,
   type SessionResolveTokenInput,

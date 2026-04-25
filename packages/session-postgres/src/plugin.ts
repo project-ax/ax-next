@@ -89,16 +89,6 @@ export interface SessionTerminateInput {
 }
 export type SessionTerminateOutput = Record<string, never>;
 
-/**
- * Same shape as a Plugin, but with a `shutdown()` escape hatch tests
- * use to drain the LISTEN client before stopping the testcontainer.
- * Production callers should NOT depend on this — when the kernel gains
- * a shutdown lifecycle, it'll move there.
- */
-export interface SessionPostgresPlugin extends Plugin {
-  shutdown(): Promise<void>;
-}
-
 function requireString(
   value: unknown,
   field: string,
@@ -197,7 +187,7 @@ function validateConnectionString(connectionString: unknown): void {
 
 export function createSessionPostgresPlugin(
   config: SessionPostgresConfig,
-): SessionPostgresPlugin {
+): Plugin {
   validateConnectionString(config.connectionString);
 
   let pool: pg.Pool | undefined;
@@ -254,10 +244,11 @@ export function createSessionPostgresPlugin(
         });
       });
 
-      // Wrap the awaits: if the migration or the LISTEN client connect throws,
-      // close the partial allocations before re-throwing so we don't leak a
-      // pool / socket. The kernel doesn't yet call shutdown() on init failure
-      // (TODO: kernel-shutdown), so init owns the cleanup itself.
+      // Mid-init failure: the kernel rolls back plugins 0..N-1 (the ones
+      // that already initialized), but does NOT call our shutdown — our
+      // init didn't complete, partial state may not be safe to close.
+      // So we still own the cleanup of partial allocations between the
+      // migrate / connect awaits.
       try {
         await runSessionMigration(kysely);
         await listenClient.connect();

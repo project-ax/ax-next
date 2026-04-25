@@ -8,7 +8,6 @@ import {
   type SessionClaimWorkOutput,
   type SessionCreateInput,
   type SessionCreateOutput,
-  type SessionPostgresPlugin,
   type SessionQueueWorkInput,
   type SessionQueueWorkOutput,
   type SessionResolveTokenInput,
@@ -19,12 +18,12 @@ import {
 
 let container: StartedPostgreSqlContainer;
 let connectionString: string;
-const opened: SessionPostgresPlugin[] = [];
+const harnesses: Awaited<ReturnType<typeof createTestHarness>>[] = [];
 
 async function makeHarness() {
   const plugin = createSessionPostgresPlugin({ connectionString });
   const h = await createTestHarness({ plugins: [plugin] });
-  opened.push(plugin);
+  harnesses.push(h);
   return h;
 }
 
@@ -36,10 +35,12 @@ beforeAll(async () => {
 afterEach(async () => {
   // Drain plugins (LISTEN client + pool) before clearing tables and
   // moving on. Without this the next test sees rows leftover from this
-  // one's INSERTs.
-  while (opened.length > 0) {
-    const p = opened.pop()!;
-    await p.shutdown().catch(() => {});
+  // one's INSERTs. The harness drives Plugin.shutdown for us; onError is
+  // a no-op sink because tests deliberately exercise teardown edge cases
+  // and we don't want stderr noise.
+  while (harnesses.length > 0) {
+    const h = harnesses.pop()!;
+    await h.close({ onError: () => {} });
   }
   // Clean state between tests by dropping the per-plugin tables. The
   // next test's plugin re-creates them via runSessionMigration.
