@@ -123,3 +123,53 @@ CI doesn't run `kubeconform` today; flagged as a follow-up.
 - `AX_CREDENTIALS_KEY` is required and never has a default. If you lose it,
   the secrets it encrypted become unrecoverable. Treat it like a database
   password.
+
+## Credentials key rotation — please read before `helm upgrade`
+
+This is the bit that bites people, so we want to be loud about it.
+
+`AX_CREDENTIALS_KEY` encrypts every credential we store at rest. If we change
+the key, every credential encrypted with the OLD key is immediately
+unrecoverable. There is no recovery path. We've designed the chart to make
+accidental rotation hard, but we still need help from the operator side.
+
+**The rule:** stash the key somewhere durable on day one (a sealed-secret, an
+external secrets manager, your own vault — whatever you trust), and pass the
+SAME value to every `helm upgrade`. Re-running `openssl rand -base64 32` on
+every upgrade silently bricks all stored credentials.
+
+```bash
+# DO THIS once, at install time, and save the output somewhere safe:
+export AX_CREDENTIALS_KEY=$(openssl rand -base64 32)
+helm install ax-next deploy/charts/ax-next \
+  --set credentials.key="$AX_CREDENTIALS_KEY" \
+  --set anthropic.apiKey=$ANTHROPIC_API_KEY \
+  ...
+
+# DO THIS for every upgrade — same key, every time:
+helm upgrade ax-next deploy/charts/ax-next \
+  --set credentials.key="$AX_CREDENTIALS_KEY" \
+  --set anthropic.apiKey=$ANTHROPIC_API_KEY \
+  ...
+```
+
+The chart's `hook-secret.yaml` template has a belt-and-suspenders guard: if
+the Secret already exists with a `credentials-key`, we keep that value and
+ignore whatever `--set credentials.key=...` was passed. So passing a fresh
+random value on `helm upgrade` is a no-op rather than a disaster. But:
+
+- This guard only fires when the existing Secret is reachable from the cluster
+  Helm is talking to. GitOps tools that render manifests offline (Argo CD with
+  `helm template`, Flux's `HelmRelease`, plain `helm template | kubectl apply`)
+  do NOT see the existing Secret and WILL overwrite the key on the next sync.
+- If you delete the Secret (e.g., manually, or via `helm uninstall` without
+  `--keep` — note that `resource-policy: keep` already protects it on
+  uninstall), the guard can't help. The key is gone.
+
+If you genuinely need to rotate the key, do it deliberately: re-encrypt every
+credential with the new key first, then update the Secret. We do not have a
+built-in command for this yet (flagged as a follow-up). Until we do, treat
+rotation as a manual operation under careful supervision.
+
+See [`packages/credentials/SECURITY.md`](../packages/credentials/SECURITY.md)
+for the threat model around the key itself.
