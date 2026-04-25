@@ -28,15 +28,11 @@ import {
 // Supported schemes today:
 //   - `unix:///abs/path/ipc.sock` — the in-host subprocess sandbox provider.
 //                                   Connects via http.request({ socketPath }).
-//   - `http://host:port`          — RESERVED for the k8s pod sandbox
-//                                   provider (Task 14). NOT IMPLEMENTED YET:
-//                                   passing one will throw at construction
-//                                   time. The pod's HTTP server side is the
-//                                   missing half of this story; once it
-//                                   exists, the unix:// branch and the http://
-//                                   branch share the same retry/backoff/cap
-//                                   logic — only the http.request options
-//                                   differ.
+//   - `http://host:port`          — the k8s pod sandbox provider. Connects
+//                                   via http.request({ host, port }).
+//                                   `host:port` points at the host's IPC
+//                                   listener (cluster Service DNS), NOT the
+//                                   runner pod itself.
 //
 // Three methods:
 //
@@ -82,7 +78,7 @@ export interface IpcClientOptions {
   /**
    * Opaque URI the runner uses to reach the host. Schemes:
    *   - `unix:///abs/path` — connects to a Unix domain socket at the path.
-   *   - `http://host:port` — TCP HTTP. NOT IMPLEMENTED YET (Task 14).
+   *   - `http://host:port` — TCP HTTP to the host's IPC listener.
    *
    * The runner doesn't pick the scheme — the sandbox provider does, and
    * sets AX_RUNNER_ENDPOINT in the runner's env. See @ax/sandbox-subprocess
@@ -184,29 +180,25 @@ function requestOnce(
       fn();
     };
 
-    // Defensive: parseRunnerEndpoint rejects http:// at construction time
-    // today; if a future caller adds a new scheme we want a loud,
-    // localized error rather than a confusing connect failure deep in
-    // node:http.
-    if (opts.target.kind !== 'unix') {
-      settle(() =>
-        reject(
-          new HostUnavailableError(
-            `transport ${opts.target.kind} not implemented`,
-          ),
-        ),
-      );
-      return;
-    }
-
+    const requestOptions: http.RequestOptions =
+      opts.target.kind === 'unix'
+        ? {
+            socketPath: opts.target.socketPath,
+            path: opts.pathWithQuery,
+            method: opts.method,
+            headers,
+            signal: controller.signal,
+          }
+        : {
+            host: opts.target.host,
+            port: opts.target.port,
+            path: opts.pathWithQuery,
+            method: opts.method,
+            headers,
+            signal: controller.signal,
+          };
     const req = http.request(
-      {
-        socketPath: opts.target.socketPath,
-        path: opts.pathWithQuery,
-        method: opts.method,
-        headers,
-        signal: controller.signal,
-      },
+      requestOptions,
       (res) => {
         const chunks: Buffer[] = [];
         let total = 0;

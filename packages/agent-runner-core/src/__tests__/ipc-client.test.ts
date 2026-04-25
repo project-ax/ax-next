@@ -258,19 +258,30 @@ describe('createIpcClient', () => {
     expect(result).toEqual({ type: 'timeout', cursor: 0 });
   });
 
-  it('parses http:// runnerEndpoint at construction; defensive guard rejects on call', async () => {
-    // http:// is parsed at construction (lifted to @ax/ipc-protocol). The
-    // wire path is not yet wired through requestOnce — a defensive guard
-    // there throws HostUnavailableError if anything actually tries to use
-    // the http target. Task 4 removes the guard after http support lands.
+  it('http: target reaches the wire (no defensive "not implemented" guard)', async () => {
+    // Bind a free port on 127.0.0.1, then immediately close it. The client
+    // gets a real ECONNREFUSED — proves the request reached node:http and
+    // wasn't blocked by the defensive guard.
+    const probe = http.createServer();
+    await new Promise<void>((resolve) =>
+      probe.listen(0, '127.0.0.1', () => resolve()),
+    );
+    const addr = probe.address();
+    const port = typeof addr === 'object' && addr !== null ? addr.port : 0;
+    await new Promise<void>((resolve) => probe.close(() => resolve()));
+
     const client = createIpcClient({
-      runnerEndpoint: 'http://10.42.0.5:7777',
+      runnerEndpoint: `http://127.0.0.1:${port}`,
       token: 'tok-abc',
       maxRetries: 0,
     });
-    await expect(
-      client.call('llm.call', { prompt: 'hi' }),
-    ).rejects.toBeInstanceOf(HostUnavailableError);
+
+    await expect(client.call('tool.list', {})).rejects.toBeInstanceOf(
+      HostUnavailableError,
+    );
+    await expect(client.call('tool.list', {})).rejects.not.toThrow(
+      /not implemented/,
+    );
   });
 
   it('rejects unsupported runnerEndpoint scheme', () => {
