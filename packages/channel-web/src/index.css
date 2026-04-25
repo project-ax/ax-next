@@ -865,3 +865,191 @@ body.sidebar-collapsed .composer { left: 56px; }
   font-size: 10px;
   color: var(--ink-mute);
 }
+
+/* =============================================================
+   THREAD + TIMELINE — adapted from `design_handoff_tide/Tide
+   Sessions.html` (`.timeline`, `.msg`, `.msg-body`, `.msg-actions`,
+   `.intro`). Tide uses no avatars and no meta column — role is
+   conveyed by alignment + a subtle wash on the user side. Bottom
+   padding (220px) is load-bearing: it clears the fixed-bottom
+   composer so the last message is fully visible above it.
+   ============================================================= */
+
+.thread-root {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.timeline {
+  flex: 1;
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 24px 24px 220px;
+  overflow-y: auto;
+}
+
+/* Welcome empty state — replaces Tide's `.intro` namespace with
+   `.thread-welcome*` so the file's intro tokens (used by Tide's
+   marketing demo) don't accidentally clash. */
+.thread-welcome {
+  text-align: center;
+  color: var(--ink-mute);
+  padding: 64px 0 40px;
+  font-size: 13.5px;
+}
+.thread-welcome-big {
+  font-family: var(--serif);
+  font-size: 22px;
+  color: var(--ink);
+  margin-bottom: 6px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+.thread-welcome-sub {
+  color: var(--ink-mute);
+}
+
+/* ---- Message: no avatar, no meta column. Just text. ---- */
+.msg {
+  margin-bottom: 22px;
+  position: relative;
+  max-width: 100%;
+}
+
+.msg-body {
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--ink);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+.msg-body p { margin-bottom: 0.6em; }
+.msg-body p:last-child { margin-bottom: 0; }
+
+/* User: right-aligned with a warm wash. The wash is `--you-wash`
+   (a barely-visible warm tint) — not a bubble in the chat-app sense,
+   more like a highlighted run of text. */
+.msg.you {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+.msg.you .msg-body {
+  background: var(--you-wash);
+  color: var(--you-ink);
+  padding: 7px 12px;
+  border-radius: 6px;
+  max-width: 78%;
+}
+.msg.you .msg-actions {
+  justify-content: flex-end;
+}
+
+/* Agent: serif (well, the channel-web token aliases `--serif` to
+   `--sans` for now), inline prose, capped at ~56ch for readability. */
+.msg.agent .msg-body {
+  font-family: var(--serif);
+  font-size: 15px;
+  line-height: 1.55;
+  letter-spacing: -0.008em;
+  max-width: 56ch;
+}
+
+/* Action bar — autohides until message hover or focus. Keep button
+   sizes small + monochrome; the actions are quiet by design. */
+.msg-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--ink-ghost);
+  opacity: 0;
+  transition: opacity 140ms ease;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  font-family: var(--mono);
+}
+.msg:hover .msg-actions,
+.msg-actions:focus-within { opacity: 1; }
+.msg-action {
+  all: unset;
+  cursor: pointer;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 4px;
+  color: var(--ink-mute);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 120ms ease, background 120ms ease;
+  font-family: inherit;
+  font-size: inherit;
+  letter-spacing: inherit;
+}
+.msg-action:hover { color: var(--ink); background: var(--bg-deep); }
+
+/* Inline edit composer — replaces a user message body in place when
+   the user clicks "edit". Lives at full row width with right-aligned
+   action buttons (cancel + update). */
+.msg-edit {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  margin-bottom: 22px;
+  background: var(--surface-raised);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  box-shadow: var(--shadow-sm);
+}
+.msg-edit-input {
+  resize: none;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.55;
+  min-height: 60px;
+  padding: 12px 14px;
+  box-sizing: border-box;
+}
+.msg-edit-input::placeholder { color: var(--ink-mute); }
+.msg-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--rule);
+}
+.msg-edit-cancel,
+.msg-edit-send {
+  all: unset;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: var(--mono);
+  letter-spacing: 0.02em;
+  padding: 5px 10px;
+  border-radius: 4px;
+  transition: background 120ms ease, color 120ms ease;
+}
+.msg-edit-cancel {
+  color: var(--ink-mute);
+}
+.msg-edit-cancel:hover {
+  color: var(--ink);
+  background: var(--bg-deep);
+}
+.msg-edit-send {
+  color: var(--bg);
+  background: var(--accent);
+}
+.msg-edit-send:hover {
+  filter: brightness(1.05);
+}
