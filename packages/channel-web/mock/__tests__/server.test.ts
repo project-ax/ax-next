@@ -2,10 +2,10 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createServer } from 'node:http';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { createMockHandler } from '../server';
 
-async function start(handler: (req: any, res: any) => Promise<boolean>): Promise<{ url: string; close: () => Promise<void> }> {
+async function start(handler: (req: IncomingMessage, res: ServerResponse) => Promise<boolean>): Promise<{ url: string; close: () => Promise<void> }> {
   const server = createServer(async (req, res) => {
     const handled = await handler(req, res);
     if (!handled) { res.statusCode = 404; res.end(); }

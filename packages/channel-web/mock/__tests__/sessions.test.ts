@@ -70,7 +70,7 @@ describe('mock sessions', () => {
 
   it("rejects creating a session with another user's personal agent (403)", async () => {
     // Add a personal agent owned by Alice
-    store.collection<{ id: string; owner_id: string; owner_type: 'user' | 'team' }>('agents').upsert({ id: 'alice-agent', owner_id: 'u2', owner_type: 'user' } as any);
+    store.collection<{ id: string; owner_id: string; owner_type: 'user' | 'team' }>('agents').upsert({ id: 'alice-agent', owner_id: 'u2', owner_type: 'user' });
     const { url, close } = await startServer(store);
     try {
       const res = await fetch(`${url}/api/chat/sessions`, {
@@ -99,7 +99,7 @@ describe('mock sessions', () => {
 
   it('deletes a session and its messages (204)', async () => {
     store.collection<{ id: string; user_id: string; agent_id: string; title: string; created_at: number; updated_at: number }>('sessions').upsert({ id: 'sess-alice', user_id: 'u2', agent_id: 'tide', title: 't', created_at: 1, updated_at: 1 });
-    store.collection<{ id: string; session_id: string }>('messages').upsert({ id: 'm1', session_id: 'sess-alice' } as any);
+    store.collection<{ id: string; session_id: string }>('messages').upsert({ id: 'm1', session_id: 'sess-alice' });
     const { url, close } = await startServer(store);
     try {
       const res = await fetch(`${url}/api/chat/sessions/sess-alice`, {

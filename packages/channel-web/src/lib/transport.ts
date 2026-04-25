@@ -46,6 +46,27 @@ interface AxChatTransportOptions {
   onDiagnostic?: (d: Diagnostic) => void;
 }
 
+/** Outgoing wire-message part — what we POST to /api/chat/completions. */
+type WireMessagePart =
+  | { type: 'text'; text: string }
+  | { type: 'image'; fileId: string; mimeType?: string | undefined }
+  | { type: 'file'; fileId: string; mimeType?: string | undefined; filename?: string | undefined };
+
+/** Minimal OpenAI streaming-chunk shape we care about. */
+interface OpenAiStreamChunk {
+  choices?: Array<{
+    delta?: {
+      content?: string;
+      tool_calls?: Array<{
+        id?: string;
+        index?: number;
+        function?: { name?: string; arguments?: string };
+      }>;
+    };
+    finish_reason?: string | null;
+  }>;
+}
+
 /**
  * Extract plain-text content from a UIMessage's parts array.
  */
@@ -77,7 +98,7 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
           // Strip assistant-ui's "__LOCALID_" prefix for cleaner session IDs
           user: options.id ? `${user}/${options.id.replace(/^__LOCALID_/, '')}` : user,
           messages: options.messages.map((m) => {
-            const parts: any[] = [];
+            const parts: WireMessagePart[] = [];
             const text = extractText(m);
             if (text) parts.push({ type: 'text', text });
             // Include file attachments from message parts (AI SDK FileUIPart)
@@ -94,7 +115,7 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
               }
             }
             // Send as array when there are non-text parts (file/image attachments)
-            const hasAttachments = parts.some((p: any) => p.type !== 'text');
+            const hasAttachments = parts.some((p) => p.type !== 'text');
             return {
               role: m.role,
               content: hasAttachments ? parts : text,
@@ -218,9 +239,9 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
               }
               pendingEventName = null;
 
-              let parsed: any;
+              let parsed: OpenAiStreamChunk;
               try {
-                parsed = JSON.parse(trimmed.slice(6));
+                parsed = JSON.parse(trimmed.slice(6)) as OpenAiStreamChunk;
               } catch {
                 continue;
               }

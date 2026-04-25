@@ -76,7 +76,6 @@ export function useHydrateAgents(): void {
           agentStoreActions.setAgents(body.agents as Parameters<typeof agentStoreActions.setAgents>[0]);
         }
       } catch (err) {
-        // eslint-disable-next-line no-console
         console.warn('[agent-chip] hydrate failed', err);
       }
     })();

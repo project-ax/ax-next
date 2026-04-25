@@ -1,6 +1,12 @@
 import { createAssistantStream } from 'assistant-stream';
 import type { RemoteThreadListAdapter } from '@assistant-ui/react';
 
+/** Server shape for /api/chat/sessions list rows. */
+interface SessionRow {
+  id: string;
+  title?: string | null;
+}
+
 /**
  * AX-backed RemoteThreadListAdapter.
  * Fetches and manages threads through /api/chat/sessions endpoints.
@@ -13,9 +19,9 @@ export const axThreadListAdapter: RemoteThreadListAdapter = {
       return { threads: [] };
     }
 
-    const { sessions } = await response.json();
+    const { sessions } = (await response.json()) as { sessions: SessionRow[] };
     return {
-      threads: sessions.map((s: any) => ({
+      threads: sessions.map((s) => ({
         status: 'regular' as const,
         remoteId: s.id,
         title: s.title ?? undefined,
@@ -49,10 +55,10 @@ export const axThreadListAdapter: RemoteThreadListAdapter = {
       try {
         const res = await fetch('/api/chat/sessions');
         if (res.ok) {
-          const { sessions } = await res.json();
+          const { sessions } = (await res.json()) as { sessions: SessionRow[] };
           // Match by exact ID or suffix — the server prefixes session IDs
           // (e.g., "http:dm:{agentId}:{userId}:{threadId}")
-          const session = sessions.find((s: any) =>
+          const session = sessions.find((s) =>
             s.id === remoteId || s.id.endsWith(`:${remoteId}`),
           );
           if (session?.title) {

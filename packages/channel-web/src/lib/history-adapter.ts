@@ -30,7 +30,7 @@ function contentToParts(content: string | ContentBlock[]): Array<Record<string, 
     }
     if (block.type === 'image') {
       // Persisted image ref — resolve via /api/files endpoint
-      const fileId = (block as any).fileId as string;
+      const fileId = block.fileId as string;
       return { type: 'image' as const, image: `/api/files/${fileId}` };
     }
     if (block.type === 'file_data') {
@@ -38,7 +38,7 @@ function contentToParts(content: string | ContentBlock[]): Array<Record<string, 
     }
     if (block.type === 'file') {
       // Persisted file ref
-      const fileId = (block as any).fileId as string;
+      const fileId = block.fileId as string;
       return { type: 'file' as const, data: `/api/files/${fileId}`, mimeType: block.mimeType, filename: block.filename };
     }
     // tool_use, tool_result, etc. — pass through as text fallback
@@ -80,6 +80,9 @@ export const createAxHistoryAdapter = (
         const { messages: serverMessages } = await response.json();
 
         // Convert server messages to UIMessage format via the formatAdapter.decode()
+        // The exact `TStorageFormat` is not known to us — we trust the server
+        // shape matches what the adapter's decode() expects.
+        type StorageContent = Parameters<typeof formatAdapter.decode>[0]['content'];
         const items = (serverMessages as HistoryMessage[]).map((m, index) => {
           const id = `${remoteId}-${index}`;
           const parentId = index > 0 ? `${remoteId}-${index - 1}` : null;
@@ -93,7 +96,7 @@ export const createAxHistoryAdapter = (
               role: m.role,
               parts: contentToParts(m.content),
               createdAt: m.created_at ? new Date(m.created_at * 1000) : new Date(),
-            } as any,
+            } as unknown as StorageContent,
           });
         });
 

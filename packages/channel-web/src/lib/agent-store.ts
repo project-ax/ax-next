@@ -97,7 +97,6 @@ export const agentStoreActions = {
         });
       } catch (err) {
         // Mock backend is best-effort in dev; surface but don't crash.
-        // eslint-disable-next-line no-console
         console.warn('[agent-store] retag failed', err);
       }
       set({ selectedAgentId: id, pendingAgentId: null });
