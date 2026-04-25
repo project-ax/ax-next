@@ -110,15 +110,31 @@ Same procedure as kind, but:
 
 ## Known gotchas
 
-- **HTTP runner-IPC is not yet implemented** (Task 14b deferred). The host's
-  IPC client throws `HostUnavailableError("not implemented yet")` on the
-  `http://` scheme. **In this slice, the kind acceptance test cannot actually
-  drive the runner end-to-end yet.** It can verify the chart installs
-  cleanly, the host comes up, postgres is reachable, and the runner pod is
-  created — but the chat itself will fail at the IPC handshake. This is the
-  honest state. The HTTP IPC follow-up unblocks the full chat path; until
-  then, the kind acceptance is "everything except the chat completes." Mark
-  the chat checkbox as N/A for this slice; re-enable when HTTP IPC ships.
+- **HTTP runner-IPC.** After install, verify the host pod is binding the
+  IPC listener:
+
+  ```bash
+  kubectl logs -n ax-next deploy/ax-next-host | grep ipc-http
+  # expect: [ax/ipc-http] listening on http://0.0.0.0:8080
+  ```
+
+  Then verify a runner pod can reach it from inside the cluster. The
+  simplest probe: launch a one-shot debug pod in the runner namespace:
+
+  ```bash
+  kubectl run debug --rm -it -n ax-next-runners \
+    --image curlimages/curl --restart=Never -- \
+    curl -sS http://ax-next-host.ax-next.svc.cluster.local/healthz
+  # expect: {"ok":true}
+  ```
+
+  The end-to-end "chat returns a response" criterion requires a
+  user-facing entry point on the host pod (separate follow-up — the host
+  pod's CLI `serve` subcommand isn't shipped yet) and a pre-built
+  runner image (`Dockerfile.agent`, follow-up #4 in the Week 7-9
+  followups doc). With those in place, kubectl-exec into the host pod
+  and run a one-shot CLI chat; the runner pod gets created, connects
+  back over HTTP, and returns.
 
 - **`Dockerfile.agent` is not in this PR.** Pre-build any image bundling the
   two runner binaries; the chart only consumes it.
