@@ -72,6 +72,26 @@ export function parseRunnerEndpoint(uri: string): TransportTarget {
           `http:// runnerEndpoint must include a host (got ${uri})`,
         );
       }
+      // Reject userinfo / query / fragment up front: they're authority-only
+      // shapes elsewhere in the protocol, and silently consuming them
+      // produces confusing downstream errors (e.g. userinfo's `:` trips the
+      // explicit-port parser below and emits a bogus "port out of range").
+      // Each of these is a wiring bug in deployment config — fail loud.
+      if (url.username !== '' || url.password !== '') {
+        throw new RunnerEndpointError(
+          `http:// runnerEndpoint must not include userinfo (got ${uri})`,
+        );
+      }
+      if (url.search !== '') {
+        throw new RunnerEndpointError(
+          `http:// runnerEndpoint must not include a query (got ${uri})`,
+        );
+      }
+      if (url.hash !== '') {
+        throw new RunnerEndpointError(
+          `http:// runnerEndpoint must not include a fragment (got ${uri})`,
+        );
+      }
       // Authority sits between `://` and the next `/`, `?`, or `#`. Looking
       // for `:` after the last `]` (IPv6 literal closer) inside that span
       // tells us whether a port was written explicitly.

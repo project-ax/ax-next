@@ -46,6 +46,21 @@ describe('parseRunnerEndpoint', () => {
       .toThrow(RunnerEndpointError);
   });
 
+  it('rejects http:// with userinfo (silently consuming it produces confusing port errors downstream)', () => {
+    expect(() => parseRunnerEndpoint('http://user:pass@host:8080'))
+      .toThrow(/userinfo/);
+  });
+
+  it('rejects http:// with a query component', () => {
+    expect(() => parseRunnerEndpoint('http://host:8080?foo=bar'))
+      .toThrow(/query/);
+  });
+
+  it('rejects http:// with a fragment component', () => {
+    expect(() => parseRunnerEndpoint('http://host:8080#frag'))
+      .toThrow(/fragment/);
+  });
+
   it('rejects unsupported schemes', () => {
     expect(() => parseRunnerEndpoint('vsock://1:2')).toThrow(RunnerEndpointError);
   });
