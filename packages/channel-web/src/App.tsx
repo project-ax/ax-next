@@ -90,8 +90,13 @@ const AppContent = ({ user }: { user: AuthUser }) => {
     hydrateTheme();
 
     // Global keyboard shortcuts:
-    //  - ⌘\ (or Ctrl+\) toggles the sidebar.
-    //  - ⌘N (or Ctrl+N) creates a new session for the active agent.
+    //  - ⌘\ (or Ctrl+\) toggles the sidebar. (Ctrl+\ has no browser
+    //    conflict so we honor it cross-platform.)
+    //  - ⌘N creates a new session for the active agent. We deliberately
+    //    don't bind Ctrl+N: most browsers refuse to let preventDefault
+    //    cancel "open new window" on that combo, so binding it just
+    //    creates a confusing race where sometimes the shortcut wins and
+    //    sometimes a new window opens.
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === '\\') {
         e.preventDefault();
@@ -99,7 +104,7 @@ const AppContent = ({ user }: { user: AuthUser }) => {
         setSidebarCollapsed(!collapsed);
         return;
       }
-      if ((e.metaKey || e.ctrlKey) && (e.key === 'n' || e.key === 'N')) {
+      if (e.metaKey && (e.key === 'n' || e.key === 'N')) {
         const activeAgentId =
           pendingAgentId ?? selectedAgentId ?? agents[0]?.id ?? null;
         if (!activeAgentId) return;
