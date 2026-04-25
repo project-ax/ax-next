@@ -66,7 +66,6 @@ export function SessionHeader() {
     }
     // We deliberately exclude `title` from the dep array — re-seeding on
     // a parent-driven title prop change would erase mid-edit text.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isRenaming]);
 
   const exitRename = useCallback(() => {

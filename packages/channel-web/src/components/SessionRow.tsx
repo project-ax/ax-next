@@ -105,7 +105,6 @@ export function SessionRow({
     }
     // Deliberately exclude `title` from deps — re-seeding on a parent-driven
     // title prop change would erase mid-edit text.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rowState]);
 
   const commitRename = useCallback(async () => {
