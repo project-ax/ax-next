@@ -50,7 +50,18 @@ export interface OpenSessionHandle {
 }
 
 export interface OpenSessionResult {
-  socketPath: string;
+  /**
+   * Opaque URI describing how the runner reaches the host. The provider
+   * picks the scheme:
+   *   - `unix:///abs/path/ipc.sock` for the in-host subprocess sandbox.
+   *   - `http://podip:7777`        for the k8s pod sandbox (Task 14/15).
+   *
+   * The orchestrator and the runner's IPC client treat this as opaque —
+   * they switch on `new URL(runnerEndpoint).protocol` to dispatch
+   * transport. I1: no transport-specific field name leaks across the
+   * `sandbox:open-session` boundary.
+   */
+  runnerEndpoint: string;
   handle: OpenSessionHandle;
 }
 
@@ -193,8 +204,14 @@ export async function openSessionImpl(
   //      (a) our five session-scoped injects, and
   //      (b) the allowlist from the parent process.
   //    Allowlist merges LAST so PATH/HOME/etc. from the host always win.
+  //
+  //    AX_RUNNER_ENDPOINT carries the opaque URI the runner uses to reach
+  //    the host. For this provider it's always `unix://<socketPath>`. The
+  //    k8s provider (Task 14) injects `http://podip:7777`. The runner
+  //    parses the URI; transport selection is its problem, not ours.
+  const runnerEndpoint = `unix://${socketPath}`;
   const sessionEnv: Record<string, string> = {
-    AX_IPC_SOCKET: socketPath,
+    AX_RUNNER_ENDPOINT: runnerEndpoint,
     AX_SESSION_ID: created.sessionId,
     AX_AUTH_TOKEN: created.token,
     AX_WORKSPACE_ROOT: input.workspaceRoot,
@@ -246,8 +263,8 @@ export async function openSessionImpl(
 
   // 10. Cleanup on child close: terminate the session (revokes the token),
   //     stop the proxy, stop the listener, and remove the tempdir. All four
-  //     are best-effort — failures log at warn (no token, no socketPath in
-  //     info+). We don't propagate errors from here; the caller already
+  //     are best-effort — failures log at warn (no token, no endpoint URI
+  //     in info+). We don't propagate errors from here; the caller already
   //     has `exited`.
   child.once('close', () => {
     void (async () => {
@@ -336,5 +353,5 @@ export async function openSessionImpl(
   };
 
   const handle: OpenSessionHandle = { kill, exited, child };
-  return { socketPath, handle };
+  return { runnerEndpoint, handle };
 }

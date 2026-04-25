@@ -106,7 +106,7 @@ describe('createIpcClient', () => {
       );
     });
     const client = createIpcClient({
-      socketPath: server.socketPath,
+      runnerEndpoint: `unix://${server.socketPath}`,
       token: 'tok-abc',
     });
     const result = await client.call('llm.call', {
@@ -134,7 +134,7 @@ describe('createIpcClient', () => {
       );
     });
     const client = createIpcClient({
-      socketPath: server.socketPath,
+      runnerEndpoint: `unix://${server.socketPath}`,
       token: 'tok-abc',
       maxRetries: 0,
     });
@@ -153,7 +153,7 @@ describe('createIpcClient', () => {
       );
     });
     const client = createIpcClient({
-      socketPath: server.socketPath,
+      runnerEndpoint: `unix://${server.socketPath}`,
       token: 'tok-abc',
       maxRetries: 0,
     });
@@ -178,7 +178,7 @@ describe('createIpcClient', () => {
       );
     });
     const client = createIpcClient({
-      socketPath: server.socketPath,
+      runnerEndpoint: `unix://${server.socketPath}`,
       token: 'tok-abc',
       maxRetries: 2,
       retryBackoff: () => 5,
@@ -202,7 +202,7 @@ describe('createIpcClient', () => {
     const deadSocketPath = path.join(tempDir, 'nope.sock');
     try {
       const client = createIpcClient({
-        socketPath: deadSocketPath,
+        runnerEndpoint: `unix://${deadSocketPath}`,
         token: 'tok-abc',
         maxRetries: 2,
         retryBackoff: () => 5,
@@ -223,7 +223,7 @@ describe('createIpcClient', () => {
       // hang intentionally
     });
     const client = createIpcClient({
-      socketPath: server.socketPath,
+      runnerEndpoint: `unix://${server.socketPath}`,
       token: 'tok-abc',
       maxRetries: 0,
       timeouts: { 'tool.list': 100 },
@@ -249,13 +249,43 @@ describe('createIpcClient', () => {
       res.end(JSON.stringify({ type: 'timeout', cursor: 0 }));
     });
     const client = createIpcClient({
-      socketPath: server.socketPath,
+      runnerEndpoint: `unix://${server.socketPath}`,
       token: 'tok-abc',
     });
     const result = await client.callGet('session.next-message', { cursor: '0' });
     expect(seenMethod).toBe('GET');
     expect(seenUrl).toBe('/session.next-message?cursor=0');
     expect(result).toEqual({ type: 'timeout', cursor: 0 });
+  });
+
+  it('rejects http:// runnerEndpoint at construction (transport not yet implemented)', () => {
+    // The k8s sandbox provider returns http:// URIs (Task 14/15). Until the
+    // pod's HTTP server lands, the client refuses to construct so the
+    // operator gets a clear error instead of a confusing connect failure.
+    expect(() =>
+      createIpcClient({
+        runnerEndpoint: 'http://10.42.0.5:7777',
+        token: 'tok-abc',
+      }),
+    ).toThrow(HostUnavailableError);
+  });
+
+  it('rejects unsupported runnerEndpoint scheme', () => {
+    expect(() =>
+      createIpcClient({
+        runnerEndpoint: 'ftp://nope/file',
+        token: 'tok-abc',
+      }),
+    ).toThrow(HostUnavailableError);
+  });
+
+  it('rejects malformed runnerEndpoint URI', () => {
+    expect(() =>
+      createIpcClient({
+        runnerEndpoint: 'not a valid uri',
+        token: 'tok-abc',
+      }),
+    ).toThrow(HostUnavailableError);
   });
 
   it('event(): resolves on 202 even with empty body', async () => {
@@ -268,7 +298,7 @@ describe('createIpcClient', () => {
       res.end();
     });
     const client = createIpcClient({
-      socketPath: server.socketPath,
+      runnerEndpoint: `unix://${server.socketPath}`,
       token: 'tok-abc',
     });
     await expect(

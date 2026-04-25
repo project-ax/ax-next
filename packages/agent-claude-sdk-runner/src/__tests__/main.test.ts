@@ -76,7 +76,7 @@ vi.mock('@ax/agent-runner-core', async (importOriginal) => {
 });
 
 const COMPLETE_ENV = {
-  AX_IPC_SOCKET: '/tmp/ax.sock',
+  AX_RUNNER_ENDPOINT: 'unix:///tmp/ax.sock',
   AX_SESSION_ID: 'sess-1',
   AX_AUTH_TOKEN: 'tok-123',
   AX_WORKSPACE_ROOT: '/tmp/workspace',

@@ -26,6 +26,16 @@ import type { OpenSessionResult } from '../open-session.js';
 // keeps the workspaceRoot clean for other tests running in parallel.
 // ---------------------------------------------------------------------------
 
+// The contract returns `runnerEndpoint` as a URI. For this provider it is
+// always `unix://<absolute-path>`. Tests still want the underlying socket
+// path to assert on tempdir mode, file existence, etc.
+function endpointToSocketPath(uri: string): string {
+  if (!uri.startsWith('unix://')) {
+    throw new Error(`expected unix:// scheme, got ${uri}`);
+  }
+  return uri.slice('unix://'.length);
+}
+
 const ECHO_STUB = fileURLToPath(new URL('./fixtures/echo-stub.mjs', import.meta.url));
 const EXIT_STUB = fileURLToPath(new URL('./fixtures/exit-stub.mjs', import.meta.url));
 
@@ -85,8 +95,8 @@ describe('sandbox:open-session', () => {
       ctx,
       { sessionId: 'happy-1', workspaceRoot: ws, runnerBinary: ECHO_STUB },
     );
-    expect(result.socketPath).toMatch(/ax-ipc-/);
-    expect(result.socketPath.endsWith('/ipc.sock')).toBe(true);
+    expect(result.runnerEndpoint).toMatch(/^unix:\/\/.*ax-ipc-/);
+    expect(result.runnerEndpoint.endsWith('/ipc.sock')).toBe(true);
 
     // exited unresolved after 100ms — child is holding itself open.
     const race = await Promise.race([
@@ -105,7 +115,7 @@ describe('sandbox:open-session', () => {
     await new Promise((r) => setTimeout(r, 50));
 
     // Socket dir was removed.
-    const socketDir = path.dirname(result.socketPath);
+    const socketDir = path.dirname(endpointToSocketPath(result.runnerEndpoint));
     await expect(fs.stat(socketDir)).rejects.toMatchObject({ code: 'ENOENT' });
 
     await fs.rm(ws, { recursive: true, force: true });
@@ -122,7 +132,8 @@ describe('sandbox:open-session', () => {
     );
     const line = await readFirstStdoutLine(result);
     const parsed = JSON.parse(line) as Record<string, string | null>;
-    expect(parsed.AX_IPC_SOCKET).toBe(result.socketPath);
+    expect(parsed.AX_RUNNER_ENDPOINT).toBe(result.runnerEndpoint);
+    expect(parsed.AX_RUNNER_ENDPOINT).toMatch(/^unix:\/\//);
     expect(parsed.AX_SESSION_ID).toBe('env-1');
     expect(parsed.AX_WORKSPACE_ROOT).toBe(ws);
     expect(typeof parsed.AX_AUTH_TOKEN).toBe('string');
@@ -266,8 +277,9 @@ describe('sandbox:open-session', () => {
       ctx,
       { sessionId: 'stop-1', workspaceRoot: ws, runnerBinary: ECHO_STUB },
     );
+    const socketPath = endpointToSocketPath(result.runnerEndpoint);
     // Socket file is there before kill.
-    await expect(fs.stat(result.socketPath)).resolves.toBeDefined();
+    await expect(fs.stat(socketPath)).resolves.toBeDefined();
 
     await result.handle.kill();
     await result.handle.exited;
@@ -278,7 +290,7 @@ describe('sandbox:open-session', () => {
     let stillThere = true;
     for (let i = 0; i < 20; i++) {
       try {
-        await fs.stat(result.socketPath);
+        await fs.stat(socketPath);
         stillThere = true;
       } catch {
         stillThere = false;
@@ -299,7 +311,7 @@ describe('sandbox:open-session', () => {
       ctx,
       { sessionId: 'cleanup-1', workspaceRoot: ws, runnerBinary: ECHO_STUB },
     );
-    const socketDir = path.dirname(result.socketPath);
+    const socketDir = path.dirname(endpointToSocketPath(result.runnerEndpoint));
 
     await result.handle.kill();
     await result.handle.exited;
@@ -328,7 +340,7 @@ describe('sandbox:open-session', () => {
       ctx,
       { sessionId: 'i10', workspaceRoot: ws, runnerBinary: ECHO_STUB },
     );
-    const socketDir = path.dirname(result.socketPath);
+    const socketDir = path.dirname(endpointToSocketPath(result.runnerEndpoint));
     const stat = await fs.stat(socketDir);
     expect(stat.mode & 0o777).toBe(0o700);
     await result.handle.kill();

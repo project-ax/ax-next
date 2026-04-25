@@ -89,7 +89,7 @@ function buildMocks(opts: {
         // Delegate to override but still wrap the returned handle so we can
         // count kill() calls even when the test provides its own handle.
         const result = (await opts.openSession(ctx, input)) as {
-          socketPath: string;
+          runnerEndpoint: string;
           handle: {
             kill: () => Promise<void>;
             exited: Promise<unknown>;
@@ -97,7 +97,7 @@ function buildMocks(opts: {
         };
         const originalKill = result.handle.kill;
         return {
-          socketPath: result.socketPath,
+          runnerEndpoint: result.runnerEndpoint,
           handle: {
             ...result.handle,
             kill: async () => {
@@ -108,7 +108,7 @@ function buildMocks(opts: {
         };
       }
       return {
-        socketPath: '/tmp/mock.sock',
+        runnerEndpoint: 'unix:///tmp/mock.sock',
         handle: {
           kill: async () => {
             calls.killCalls += 1;
@@ -194,7 +194,7 @@ describe('chat-orchestrator', () => {
           );
         });
         return {
-          socketPath: '/tmp/fake.sock',
+          runnerEndpoint: 'unix:///tmp/fake.sock',
           handle: {
             kill: async () => undefined,
             exited: new Promise(() => undefined),
@@ -314,7 +314,7 @@ describe('chat-orchestrator', () => {
     const mocks = buildMocks({
       openSession: async () => {
         return {
-          socketPath: '/tmp/short.sock',
+          runnerEndpoint: 'unix:///tmp/short.sock',
           handle: {
             kill: async () => undefined,
             // Resolves quickly, without any chat:end fire beforehand.
@@ -391,7 +391,7 @@ describe('chat-orchestrator', () => {
         name: 'sandbox-exit',
         setup: (s) => {
           s['sandbox:open-session'] = async () => ({
-            socketPath: '/tmp/x.sock',
+            runnerEndpoint: 'unix:///tmp/x.sock',
             handle: {
               kill: async () => undefined,
               exited: Promise.resolve({ code: 0, signal: null }),
@@ -463,7 +463,7 @@ describe('chat-orchestrator', () => {
           );
         });
         return {
-          socketPath: `/tmp/${sessionId}.sock`,
+          runnerEndpoint: `unix:///tmp/${sessionId}.sock`,
           handle: {
             kill: async () => undefined,
             exited: new Promise(() => undefined),

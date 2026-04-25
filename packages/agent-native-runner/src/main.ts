@@ -15,9 +15,10 @@ import { runTurnLoop, type TurnLoopOutcome } from './turn-loop.js';
 // ---------------------------------------------------------------------------
 // Runner entry binary.
 //
-// Spawned as a child process by @ax/sandbox-subprocess inside an isolated
-// sandbox. Communicates back to the host exclusively over the unix socket
-// whose path is in AX_IPC_SOCKET, authenticated with AX_AUTH_TOKEN.
+// Spawned as a child process by a `sandbox:open-session` impl inside an
+// isolated sandbox. Communicates back to the host over the URI in
+// AX_RUNNER_ENDPOINT (unix:// today, http:// once Task 14 lands), authed
+// with AX_AUTH_TOKEN.
 //
 // The runner holds NO LLM credentials (invariant I5). Every LLM call goes
 // via `llm.call` IPC back to the host. That way an attacker who compromises
@@ -38,7 +39,7 @@ import { runTurnLoop, type TurnLoopOutcome } from './turn-loop.js';
 export async function main(): Promise<number> {
   const env = readRunnerEnv();
   const client = createIpcClient({
-    socketPath: env.ipcSocket,
+    runnerEndpoint: env.runnerEndpoint,
     token: env.authToken,
   });
 
