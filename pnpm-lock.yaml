@@ -840,12 +840,21 @@ importers:
         specifier: workspace:*
         version: link:../../packages/workspace-git
     devDependencies:
+      '@ax/llm-mock':
+        specifier: workspace:*
+        version: link:../../packages/llm-mock
       '@ax/test-harness':
         specifier: workspace:*
         version: link:../../packages/test-harness
+      '@testcontainers/postgresql':
+        specifier: 11.14.0
+        version: 11.14.0
       '@types/node':
         specifier: ^25.6.0
         version: 25.6.0
+      kysely:
+        specifier: 0.28.16
+        version: 0.28.16
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
