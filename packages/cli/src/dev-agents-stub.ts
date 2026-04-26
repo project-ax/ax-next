@@ -70,7 +70,7 @@ export function createDevAgentsStubPlugin(
   const systemPrompt = cfg.systemPrompt ?? 'You are a helpful assistant.';
   const allowedTools = [...(cfg.allowedTools ?? [])];
   const mcpConfigIds = [...(cfg.mcpConfigIds ?? [])];
-  const model = cfg.model ?? 'claude-sonnet-4-7';
+  const model = cfg.model ?? 'claude-sonnet-4-6';
 
   return {
     manifest: {

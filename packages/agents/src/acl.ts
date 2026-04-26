@@ -1,4 +1,4 @@
-import type { ChatContext, HookBus } from '@ax/core';
+import { PluginError, type ChatContext, type HookBus } from '@ax/core';
 import type { Agent } from './types.js';
 
 /**
@@ -84,17 +84,20 @@ export async function checkAccess(
       { teamId: agent.ownerId, userId },
     );
   } catch (err) {
-    // Most common failure shape: PluginError 'no-service' from the bus
-    // when @ax/teams isn't loaded. Any other shape (impl threw) falls
-    // here too — treat as deny so a degraded teams plugin can't grant
-    // access by accident.
+    // Only "no plugin loaded" (PluginError code 'no-service') degrades to
+    // deny — anything else (handler threw, transient DB outage, validation
+    // failed) propagates so a real outage doesn't masquerade as a routine
+    // authz denial.
+    if (!(err instanceof PluginError) || err.code !== 'no-service') {
+      throw err;
+    }
     if (!warnState.warned) {
       warnState.warned = true;
       ctx.logger.warn('agents_acl_team_check_unavailable', {
         plugin: PLUGIN_NAME,
         hook: 'teams:is-member',
         agentId: agent.id,
-        reason: err instanceof Error ? err.message : String(err),
+        reason: err.message,
       });
     }
     return { allowed: false, reason: 'forbidden' };

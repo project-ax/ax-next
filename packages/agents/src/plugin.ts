@@ -349,10 +349,14 @@ async function isTeamMember(
       { member: boolean }
     >('teams:is-member', ctx, { teamId, userId });
     return result.member === true;
-  } catch {
-    // No teams plugin → deny. Logged once at warn level by checkAccess
-    // on the read path; for write paths we stay quiet (the explicit
-    // 'forbidden' error tells the caller what happened).
-    return false;
+  } catch (err) {
+    // Only "no plugin loaded" gracefully degrades to deny. Anything else
+    // (handler threw, validation failed, transient DB outage) MUST
+    // propagate so it surfaces as a 5xx instead of being indistinguishable
+    // from a legitimate authz denial.
+    if (err instanceof PluginError && err.code === 'no-service') {
+      return false;
+    }
+    throw err;
   }
 }

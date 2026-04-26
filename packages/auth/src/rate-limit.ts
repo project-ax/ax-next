@@ -29,6 +29,12 @@ export interface RateLimitConfig {
    */
   matchPath: (path: string) => boolean;
   /**
+   * Cap on distinct buckets retained in memory. Older idle buckets are
+   * evicted on insert when this is exceeded. Defaults to 10_000 — covers
+   * a small pool of attackers cycling proxies without unbounded growth.
+   */
+  maxBuckets?: number;
+  /**
    * Test seam — defaults to Date.now. Lets unit tests advance time without
    * sleeping.
    */
@@ -58,9 +64,20 @@ export interface RateLimiter {
 }
 
 export function createRateLimiter(config: RateLimitConfig): RateLimiter {
+  // Map iteration order is insertion order, so re-inserting on access
+  // gives us LRU-on-access for free. The first key returned by an iterator
+  // is the oldest insert that hasn't been touched since.
   const buckets = new Map<string, Bucket>();
   const now = config.now ?? (() => Date.now());
   const trustProxy = config.trustProxy ?? (() => process.env.AX_TRUST_PROXY === '1');
+  // 10_000 is enough to absorb realistic burst from a small attacker pool
+  // (think NAT'd household, mid-sized office) without unbounded growth.
+  // An attacker rotating x-forwarded-for to defeat the limiter just gets
+  // their oldest bucket evicted — they don't get extra tokens.
+  const maxBuckets = config.maxBuckets ?? 10_000;
+  // Stale-bucket TTL: full-tokens AND idle for 2 windows means the bucket
+  // is no longer usefully tracking anyone.
+  const staleAfterMs = config.windowMs * 2;
 
   const refill = (b: Bucket, t: number): void => {
     const elapsed = t - b.refilledAt;
@@ -73,18 +90,47 @@ export function createRateLimiter(config: RateLimitConfig): RateLimiter {
     }
   };
 
+  // Evict oldest entries down to maxBuckets. Map iteration is insertion-
+  // order, so the first keys are the least-recently-(re)inserted.
+  const evictOverflow = (): void => {
+    while (buckets.size > maxBuckets) {
+      const oldest = buckets.keys().next();
+      if (oldest.done === true) return;
+      buckets.delete(oldest.value);
+    }
+  };
+
+  // Cheap opportunistic sweep: drop fully-refilled idle buckets on access.
+  // Bounded scan — at most 16 entries per check — so a hot path stays O(1).
+  const sweepStale = (t: number): void => {
+    let scanned = 0;
+    for (const [key, b] of buckets) {
+      if (scanned >= 16) break;
+      scanned++;
+      if (b.tokens >= config.tokensPerWindow && t - b.refilledAt > staleAfterMs) {
+        buckets.delete(key);
+      }
+    }
+  };
+
   return {
     check(headers, path) {
       if (!config.matchPath(path)) return null;
 
       const key = deriveKey(headers, trustProxy());
       const t = now();
+      sweepStale(t);
       let b = buckets.get(key);
       if (b === undefined) {
         b = { tokens: config.tokensPerWindow, refilledAt: t };
         buckets.set(key, b);
+        evictOverflow();
       } else {
         refill(b, t);
+        // Re-insert to bump LRU position. delete + set is the cheapest
+        // way to move a key to the tail of insertion order.
+        buckets.delete(key);
+        buckets.set(key, b);
       }
 
       if (b.tokens <= 0) {

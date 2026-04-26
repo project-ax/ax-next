@@ -76,6 +76,13 @@ export function createAuthPlugin(config: AuthConfig = { providers: {} }): Plugin
   const hasGoogle = config.providers?.google !== undefined;
   const hasBootstrap = config.devBootstrap !== undefined;
 
+  // Captured at init for shutdown's unsubscribe call. Without this, the
+  // rate-limit subscriber's closure (over the per-init rateLimiter
+  // instance) would survive into a re-init and execute alongside the
+  // fresh subscriber on every request.
+  let busRef: HookBus | undefined;
+  const RATE_LIMIT_SUBSCRIBER_KEY = `${PLUGIN_NAME}/rate-limit`;
+
   return {
     manifest: {
       name: PLUGIN_NAME,
@@ -97,6 +104,7 @@ export function createAuthPlugin(config: AuthConfig = { providers: {} }): Plugin
     },
 
     async init({ bus }) {
+      busRef = bus;
       if (!hasGoogle && !hasBootstrap) {
         throw new PluginError({
           code: 'no-auth-providers',
@@ -147,7 +155,7 @@ export function createAuthPlugin(config: AuthConfig = { providers: {} }): Plugin
         windowMs: RATE_LIMIT_WINDOW_MS,
         matchPath: (p) => p.startsWith('/auth/'),
       });
-      bus.subscribe('http:request', `${PLUGIN_NAME}/rate-limit`, async (
+      bus.subscribe('http:request', RATE_LIMIT_SUBSCRIBER_KEY, async (
         _ctx,
         payload: { method: string; path: string; headers: Record<string, string> },
       ) => {
@@ -263,6 +271,10 @@ export function createAuthPlugin(config: AuthConfig = { providers: {} }): Plugin
           // best-effort
         }
       }
+      // Drop the rate-limit subscriber so a re-init doesn't leave the old
+      // closure (and its stale rateLimiter) firing alongside the new one.
+      busRef?.unsubscribe('http:request', RATE_LIMIT_SUBSCRIBER_KEY);
+      busRef = undefined;
       handshakes.clear();
       db = undefined;
       store = undefined;

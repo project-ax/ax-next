@@ -57,7 +57,7 @@ const DEFAULT_AGENT_BODY = {
   systemPrompt: 'You are a helpful assistant.',
   allowedTools: ['bash'],
   mcpConfigIds: [],
-  model: 'claude-sonnet-4-5',
+  model: 'claude-sonnet-4-6',
   visibility: 'personal' as const,
 };
 
