@@ -120,6 +120,9 @@ importers:
       '@ax/http-server':
         specifier: workspace:*
         version: link:../http-server
+      '@ax/teams':
+        specifier: workspace:*
+        version: link:../teams
       '@ax/test-harness':
         specifier: workspace:*
         version: link:../test-harness
