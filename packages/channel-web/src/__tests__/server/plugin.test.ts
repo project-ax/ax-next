@@ -60,14 +60,17 @@ function conversationsMockPlugin(args: {
       registers: [
         'conversations:get-by-req-id',
         // The channel-web plugin's manifest now also declares calls
-        // for these (Task 9 — POST /api/chat/messages). The
-        // bootstrap-time verifyCalls walk will fail unless someone
-        // registers them; we no-op since this test suite doesn't
-        // exercise the chat-flow producer (that's covered in
+        // for these (Task 9 — POST /api/chat/messages, and Tasks
+        // 10-12 — list/get/delete). The bootstrap-time verifyCalls
+        // walk will fail unless someone registers them; we no-op since
+        // this test suite doesn't exercise the chat-flow producer or
+        // the read+delete surface (those are covered in
         // routes-chat.test.ts).
         'conversations:create',
         'conversations:get',
         'conversations:append-turn',
+        'conversations:list',
+        'conversations:delete',
       ],
       calls: [],
       subscribes: [],
@@ -114,6 +117,20 @@ function conversationsMockPlugin(args: {
           });
         },
       );
+      bus.registerService('conversations:list', 'mock-conversations', async () => {
+        throw new PluginError({
+          code: 'not-implemented',
+          plugin: 'mock-conversations',
+          message: 'conversations:list stub (not exercised by this suite)',
+        });
+      });
+      bus.registerService('conversations:delete', 'mock-conversations', async () => {
+        throw new PluginError({
+          code: 'not-implemented',
+          plugin: 'mock-conversations',
+          message: 'conversations:delete stub (not exercised by this suite)',
+        });
+      });
     },
   };
 }
@@ -145,7 +162,7 @@ function agentsMockPlugin(args: { allow: boolean }): Plugin {
     manifest: {
       name: 'mock-agents',
       version: '0.0.0',
-      registers: ['agents:resolve'],
+      registers: ['agents:resolve', 'agents:list-for-user'],
       calls: [],
       subscribes: [],
     },
@@ -159,6 +176,12 @@ function agentsMockPlugin(args: { allow: boolean }): Plugin {
           });
         }
         return { agent: { id: 'agt_test', visibility: 'personal' } };
+      });
+      // Channel-web's manifest declares this as a hard call (Task 13);
+      // this suite doesn't exercise GET /api/chat/agents, so a no-op
+      // registration satisfies the bootstrap verifyCalls walk.
+      bus.registerService('agents:list-for-user', 'mock-agents', async () => {
+        return { agents: [] };
       });
     },
   };
@@ -333,9 +356,12 @@ describe('@ax/channel-web server plugin (integration)', () => {
         'http:register-route',
         'auth:require-user',
         'agents:resolve',
+        'agents:list-for-user',
         'conversations:get-by-req-id',
         'conversations:create',
         'conversations:get',
+        'conversations:list',
+        'conversations:delete',
         'conversations:append-turn',
         'chat:run',
       ],

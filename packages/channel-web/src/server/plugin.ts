@@ -31,12 +31,12 @@ const PLUGIN_NAME = '@ax/channel-web';
 // logical replication path; the SSE handler stays the same.
 //
 // Manifest:
-//   - registers: nothing yet (the API surface is HTTP routes, not bus
-//     hooks). Tasks 9-13 may add small service hooks if a runner needs
-//     them; until then, this plugin is a pure consumer.
+//   - registers: nothing (the API surface is HTTP routes, not bus hooks).
 //   - calls: http:register-route, auth:require-user, agents:resolve,
-//     conversations:get-by-req-id. All hard — the SSE route can't
-//     function without any of them.
+//     agents:list-for-user, conversations:get-by-req-id,
+//     conversations:create / :get / :list / :delete / :append-turn,
+//     chat:run. All hard — the chat-flow surface can't function without
+//     any of them.
 //   - subscribes: chat:stream-chunk (fills the buffer + per-connection
 //     filter), chat:turn-end (host-side eviction so the buffer doesn't
 //     grow unbounded for streams nobody listens to).
@@ -61,9 +61,12 @@ export function createChannelWebServerPlugin(
         'http:register-route',
         'auth:require-user',
         'agents:resolve',
+        'agents:list-for-user',
         'conversations:get-by-req-id',
         'conversations:create',
         'conversations:get',
+        'conversations:list',
+        'conversations:delete',
         'conversations:append-turn',
         'chat:run',
       ],
@@ -124,9 +127,10 @@ export function createChannelWebServerPlugin(
       });
       unregisterRoutes.push(routeResult.unregister);
 
-      // Task 9: POST /api/chat/messages — chat-flow producer. Auth +
-      // agents:resolve + conversations get-or-create + chat:run dispatch.
-      // CSRF gated automatically by @ax/http-server's subscriber.
+      // Tasks 9-13 — chat-flow REST surface (POST messages, GET/DELETE
+      // conversations, GET conversations/:id, GET agents). CSRF gated
+      // automatically by @ax/http-server's subscriber on state-changing
+      // methods. See routes-chat.ts for per-endpoint details.
       const chatRouteUnregisters = await registerChatRoutes(bus, initCtx);
       for (const u of chatRouteUnregisters) unregisterRoutes.push(u);
     },

@@ -17,6 +17,8 @@ import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createHttpServerPlugin, type HttpServerPlugin } from '@ax/http-server';
 import { createConversationsPlugin } from '@ax/conversations';
 import type {
+  AppendTurnInput as ConvAppendTurnInput,
+  AppendTurnOutput as ConvAppendTurnOutput,
   CreateInput as ConvCreateInput,
   CreateOutput as ConvCreateOutput,
 } from '@ax/conversations';
@@ -83,12 +85,17 @@ function agentsMockPlugin(args: {
   allowedFor: Set<string>;
   /** Agents whose resolve raises 'not-found'. */
   notFound?: Set<string>;
+  /** Per-user list of agents the agents:list-for-user mock returns. */
+  listFor?: Record<
+    string,
+    Array<{ id: string; displayName: string; visibility: 'personal' | 'team' }>
+  >;
 }): Plugin {
   return {
     manifest: {
       name: 'mock-agents',
       version: '0.0.0',
-      registers: ['agents:resolve'],
+      registers: ['agents:resolve', 'agents:list-for-user'],
       calls: [],
       subscribes: [],
     },
@@ -116,6 +123,15 @@ function agentsMockPlugin(args: {
             });
           }
           return { agent: { id: agentId, visibility: 'personal' } };
+        },
+      );
+      bus.registerService(
+        'agents:list-for-user',
+        'mock-agents',
+        async (_ctx, input: unknown) => {
+          const { userId } = input as { userId: string };
+          const agents = args.listFor?.[userId] ?? [];
+          return { agents };
         },
       );
     },
@@ -172,6 +188,11 @@ interface BootArgs {
   user: { id: string; isAdmin: boolean } | null;
   allowedFor: Set<string>;
   notFound?: Set<string>;
+  /** Per-user agents:list-for-user mock data. */
+  listFor?: Record<
+    string,
+    Array<{ id: string; displayName: string; visibility: 'personal' | 'team' }>
+  >;
   /** Override allowedOrigins on the http-server. */
   allowedOrigins?: readonly string[];
 }
@@ -200,6 +221,7 @@ async function boot(args: BootArgs): Promise<BootResult> {
       agentsMockPlugin({
         allowedFor: args.allowedFor,
         ...(args.notFound !== undefined ? { notFound: args.notFound } : {}),
+        ...(args.listFor !== undefined ? { listFor: args.listFor } : {}),
       }),
       createConversationsPlugin(),
       chatRunMockPlugin(chatRunCaptures),
@@ -612,5 +634,570 @@ describe('@ax/channel-web POST /api/chat/messages', () => {
 
     expect(r.status).toBe(400);
     expect(await r.json()).toEqual({ error: 'invalid-payload' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Helpers shared across the read+delete describes.
+// ---------------------------------------------------------------------------
+
+async function appendTurn(
+  harness: TestHarness,
+  conversationId: string,
+  userId: string,
+  role: 'user' | 'assistant' | 'tool',
+  contentBlocks: unknown[],
+): Promise<void> {
+  await harness.bus.call<ConvAppendTurnInput, ConvAppendTurnOutput>(
+    'conversations:append-turn',
+    harness.ctx({ userId }),
+    {
+      conversationId,
+      userId,
+      role,
+      contentBlocks: contentBlocks as ConvAppendTurnInput['contentBlocks'],
+    },
+  );
+}
+
+async function softDeleteConversation(
+  conversationId: string,
+): Promise<void> {
+  const client = new (await import('pg')).default.Client({ connectionString });
+  await client.connect();
+  try {
+    await client.query(
+      'UPDATE conversations_v1_conversations SET deleted_at = NOW() WHERE conversation_id = $1',
+      [conversationId],
+    );
+  } finally {
+    await client.end().catch(() => {});
+  }
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/chat/conversations — list user's conversations (Task 10).
+// ---------------------------------------------------------------------------
+
+describe('@ax/channel-web GET /api/chat/conversations', () => {
+  it('returns 401 when unauthenticated', async () => {
+    const booted = await boot({
+      user: null,
+      allowedFor: new Set(),
+    });
+    harnesses.push(booted.harness);
+
+    const r = await fetch(
+      `http://127.0.0.1:${booted.port}/api/chat/conversations`,
+    );
+    expect(r.status).toBe(401);
+    expect(await r.json()).toEqual({ error: 'unauthenticated' });
+  });
+
+  it('cross-tenant: returns ONLY the requesting user\'s conversations', async () => {
+    // Boot as userA, create two conversations. Then re-boot as userB,
+    // create one conversation. List as userB — only the one row.
+    const userA = { id: 'userA', isAdmin: false };
+    const userB = { id: 'userB', isAdmin: false };
+
+    const bootA = await boot({
+      user: userA,
+      allowedFor: new Set(['userA', 'userB']),
+    });
+    harnesses.push(bootA.harness);
+    await bootA.harness.bus.call<ConvCreateInput, ConvCreateOutput>(
+      'conversations:create',
+      bootA.harness.ctx({ userId: userA.id }),
+      { userId: userA.id, agentId: 'agt_test' },
+    );
+    await bootA.harness.bus.call<ConvCreateInput, ConvCreateOutput>(
+      'conversations:create',
+      bootA.harness.ctx({ userId: userA.id }),
+      { userId: userA.id, agentId: 'agt_test' },
+    );
+    await bootA.harness.close({ onError: () => {} });
+    harnesses.pop();
+
+    const bootB = await boot({
+      user: userB,
+      allowedFor: new Set(['userA', 'userB']),
+    });
+    harnesses.push(bootB.harness);
+    const userBConv = await bootB.harness.bus.call<
+      ConvCreateInput,
+      ConvCreateOutput
+    >(
+      'conversations:create',
+      bootB.harness.ctx({ userId: userB.id }),
+      { userId: userB.id, agentId: 'agt_test' },
+    );
+
+    const r = await fetch(
+      `http://127.0.0.1:${bootB.port}/api/chat/conversations`,
+    );
+    expect(r.status).toBe(200);
+    const list = (await r.json()) as Array<{
+      conversationId: string;
+      userId: string;
+    }>;
+    expect(list).toHaveLength(1);
+    expect(list[0]!.conversationId).toBe(userBConv.conversationId);
+    expect(list[0]!.userId).toBe(userB.id);
+  });
+
+  it('?agentId= filter narrows the result', async () => {
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+    });
+    harnesses.push(booted.harness);
+
+    await booted.harness.bus.call<ConvCreateInput, ConvCreateOutput>(
+      'conversations:create',
+      booted.harness.ctx({ userId: 'userA' }),
+      { userId: 'userA', agentId: 'agt_alpha' },
+    );
+    const beta = await booted.harness.bus.call<
+      ConvCreateInput,
+      ConvCreateOutput
+    >(
+      'conversations:create',
+      booted.harness.ctx({ userId: 'userA' }),
+      { userId: 'userA', agentId: 'agt_beta' },
+    );
+
+    const r = await fetch(
+      `http://127.0.0.1:${booted.port}/api/chat/conversations?agentId=agt_beta`,
+    );
+    expect(r.status).toBe(200);
+    const list = (await r.json()) as Array<{
+      conversationId: string;
+      agentId: string;
+    }>;
+    expect(list).toHaveLength(1);
+    expect(list[0]!.conversationId).toBe(beta.conversationId);
+    expect(list[0]!.agentId).toBe('agt_beta');
+  });
+
+  it('soft-deleted conversations are excluded (J5)', async () => {
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+    });
+    harnesses.push(booted.harness);
+
+    const live = await booted.harness.bus.call<
+      ConvCreateInput,
+      ConvCreateOutput
+    >(
+      'conversations:create',
+      booted.harness.ctx({ userId: 'userA' }),
+      { userId: 'userA', agentId: 'agt_test' },
+    );
+    const tombstoned = await booted.harness.bus.call<
+      ConvCreateInput,
+      ConvCreateOutput
+    >(
+      'conversations:create',
+      booted.harness.ctx({ userId: 'userA' }),
+      { userId: 'userA', agentId: 'agt_test' },
+    );
+    await softDeleteConversation(tombstoned.conversationId);
+
+    const r = await fetch(
+      `http://127.0.0.1:${booted.port}/api/chat/conversations`,
+    );
+    expect(r.status).toBe(200);
+    const list = (await r.json()) as Array<{ conversationId: string }>;
+    expect(list).toHaveLength(1);
+    expect(list[0]!.conversationId).toBe(live.conversationId);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/chat/conversations/:id — load with turns (Task 11).
+// ---------------------------------------------------------------------------
+
+describe('@ax/channel-web GET /api/chat/conversations/:id', () => {
+  it('returns 401 when unauthenticated', async () => {
+    const booted = await boot({ user: null, allowedFor: new Set() });
+    harnesses.push(booted.harness);
+
+    const r = await fetch(
+      `http://127.0.0.1:${booted.port}/api/chat/conversations/cnv_anything`,
+    );
+    expect(r.status).toBe(401);
+    expect(await r.json()).toEqual({ error: 'unauthenticated' });
+  });
+
+  it('foreign-user → 404 (no existence leak)', async () => {
+    const userA = { id: 'userA', isAdmin: false };
+    const userB = { id: 'userB', isAdmin: false };
+
+    const bootA = await boot({
+      user: userA,
+      allowedFor: new Set(['userA', 'userB']),
+    });
+    harnesses.push(bootA.harness);
+    const created = await bootA.harness.bus.call<
+      ConvCreateInput,
+      ConvCreateOutput
+    >(
+      'conversations:create',
+      bootA.harness.ctx({ userId: userA.id }),
+      { userId: userA.id, agentId: 'agt_test' },
+    );
+    await bootA.harness.close({ onError: () => {} });
+    harnesses.pop();
+
+    const bootB = await boot({
+      user: userB,
+      allowedFor: new Set(['userA', 'userB']),
+    });
+    harnesses.push(bootB.harness);
+
+    const r = await fetch(
+      `http://127.0.0.1:${bootB.port}/api/chat/conversations/${created.conversationId}`,
+    );
+    expect(r.status).toBe(404);
+    expect(await r.json()).toEqual({ error: 'conversation-not-found' });
+  });
+
+  it('soft-deleted → 404', async () => {
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+    });
+    harnesses.push(booted.harness);
+
+    const created = await booted.harness.bus.call<
+      ConvCreateInput,
+      ConvCreateOutput
+    >(
+      'conversations:create',
+      booted.harness.ctx({ userId: 'userA' }),
+      { userId: 'userA', agentId: 'agt_test' },
+    );
+    await softDeleteConversation(created.conversationId);
+
+    const r = await fetch(
+      `http://127.0.0.1:${booted.port}/api/chat/conversations/${created.conversationId}`,
+    );
+    expect(r.status).toBe(404);
+    expect(await r.json()).toEqual({ error: 'conversation-not-found' });
+  });
+
+  it('happy path: turns in order, thinking blocks hidden by default', async () => {
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+    });
+    harnesses.push(booted.harness);
+
+    const created = await booted.harness.bus.call<
+      ConvCreateInput,
+      ConvCreateOutput
+    >(
+      'conversations:create',
+      booted.harness.ctx({ userId: 'userA' }),
+      { userId: 'userA', agentId: 'agt_test' },
+    );
+
+    await appendTurn(booted.harness, created.conversationId, 'userA', 'user', [
+      { type: 'text', text: 'hi' },
+    ]);
+    await appendTurn(
+      booted.harness,
+      created.conversationId,
+      'userA',
+      'assistant',
+      [
+        { type: 'thinking', thinking: 'pondering...', signature: 'sig123' },
+        { type: 'redacted_thinking', data: 'opaque-bytes' },
+        { type: 'text', text: 'hello!' },
+      ],
+    );
+
+    const r = await fetch(
+      `http://127.0.0.1:${booted.port}/api/chat/conversations/${created.conversationId}`,
+    );
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as {
+      conversation: { conversationId: string };
+      turns: Array<{
+        turnIndex: number;
+        role: string;
+        contentBlocks: Array<{ type: string }>;
+      }>;
+    };
+    expect(body.conversation.conversationId).toBe(created.conversationId);
+    expect(body.turns).toHaveLength(2);
+    expect(body.turns[0]!.turnIndex).toBe(0);
+    expect(body.turns[0]!.role).toBe('user');
+    expect(body.turns[1]!.turnIndex).toBe(1);
+    expect(body.turns[1]!.role).toBe('assistant');
+    // thinking + redacted_thinking filtered out by default.
+    const types = body.turns[1]!.contentBlocks.map((b) => b.type);
+    expect(types).toEqual(['text']);
+  });
+
+  it('?includeThinking=true returns thinking blocks', async () => {
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+    });
+    harnesses.push(booted.harness);
+
+    const created = await booted.harness.bus.call<
+      ConvCreateInput,
+      ConvCreateOutput
+    >(
+      'conversations:create',
+      booted.harness.ctx({ userId: 'userA' }),
+      { userId: 'userA', agentId: 'agt_test' },
+    );
+    await appendTurn(
+      booted.harness,
+      created.conversationId,
+      'userA',
+      'assistant',
+      [
+        { type: 'thinking', thinking: 'pondering...', signature: 'sig123' },
+        { type: 'redacted_thinking', data: 'opaque-bytes' },
+        { type: 'text', text: 'hello!' },
+      ],
+    );
+
+    const r = await fetch(
+      `http://127.0.0.1:${booted.port}/api/chat/conversations/${created.conversationId}?includeThinking=true`,
+    );
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as {
+      turns: Array<{ contentBlocks: Array<{ type: string }> }>;
+    };
+    const types = body.turns[0]!.contentBlocks.map((b) => b.type);
+    expect(types).toEqual(['thinking', 'redacted_thinking', 'text']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DELETE /api/chat/conversations/:id — soft delete (Task 12).
+// ---------------------------------------------------------------------------
+
+describe('@ax/channel-web DELETE /api/chat/conversations/:id', () => {
+  it('returns 401 when unauthenticated', async () => {
+    const booted = await boot({ user: null, allowedFor: new Set() });
+    harnesses.push(booted.harness);
+
+    const r = await fetch(
+      `http://127.0.0.1:${booted.port}/api/chat/conversations/cnv_anything`,
+      { method: 'DELETE', headers: HEADERS_OK },
+    );
+    expect(r.status).toBe(401);
+    expect(await r.json()).toEqual({ error: 'unauthenticated' });
+  });
+
+  it('foreign-user: 204 idempotent (no existence leak) AND row preserved', async () => {
+    // The conversations:delete plugin collapses foreign-user → not-found
+    // (J5 — never confirms a row exists for somebody who doesn't own it).
+    // The handler maps not-found → 204 (idempotent — same response shape
+    // as already-deleted, so an attacker can't distinguish either case).
+    // Critically the foreign user's DELETE MUST NOT actually tombstone
+    // the owner's row — we assert that explicitly via direct SQL.
+    const userA = { id: 'userA', isAdmin: false };
+    const userB = { id: 'userB', isAdmin: false };
+
+    const bootA = await boot({
+      user: userA,
+      allowedFor: new Set(['userA', 'userB']),
+    });
+    harnesses.push(bootA.harness);
+    const created = await bootA.harness.bus.call<
+      ConvCreateInput,
+      ConvCreateOutput
+    >(
+      'conversations:create',
+      bootA.harness.ctx({ userId: userA.id }),
+      { userId: userA.id, agentId: 'agt_test' },
+    );
+    await bootA.harness.close({ onError: () => {} });
+    harnesses.pop();
+
+    const bootB = await boot({
+      user: userB,
+      allowedFor: new Set(['userA', 'userB']),
+    });
+    harnesses.push(bootB.harness);
+
+    const r = await fetch(
+      `http://127.0.0.1:${bootB.port}/api/chat/conversations/${created.conversationId}`,
+      { method: 'DELETE', headers: HEADERS_OK },
+    );
+    // 204 idempotent — same response shape as already-deleted, so the
+    // wire-layer behavior gives no signal a foreign attacker can use.
+    expect(r.status).toBe(204);
+
+    // userA's row still alive — userB's foreign DELETE didn't tombstone it.
+    const client = new (await import('pg')).default.Client({
+      connectionString,
+    });
+    await client.connect();
+    try {
+      const out = await client.query(
+        'SELECT deleted_at FROM conversations_v1_conversations WHERE conversation_id = $1',
+        [created.conversationId],
+      );
+      expect(out.rows[0]!.deleted_at).toBeNull();
+    } finally {
+      await client.end().catch(() => {});
+    }
+  });
+
+  it('happy path: 204, then GET → 404', async () => {
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+    });
+    harnesses.push(booted.harness);
+
+    const created = await booted.harness.bus.call<
+      ConvCreateInput,
+      ConvCreateOutput
+    >(
+      'conversations:create',
+      booted.harness.ctx({ userId: 'userA' }),
+      { userId: 'userA', agentId: 'agt_test' },
+    );
+
+    const del = await fetch(
+      `http://127.0.0.1:${booted.port}/api/chat/conversations/${created.conversationId}`,
+      { method: 'DELETE', headers: HEADERS_OK },
+    );
+    expect(del.status).toBe(204);
+
+    const get = await fetch(
+      `http://127.0.0.1:${booted.port}/api/chat/conversations/${created.conversationId}`,
+    );
+    expect(get.status).toBe(404);
+    expect(await get.json()).toEqual({ error: 'conversation-not-found' });
+  });
+
+  it('idempotent on already-deleted: 204', async () => {
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+    });
+    harnesses.push(booted.harness);
+
+    const created = await booted.harness.bus.call<
+      ConvCreateInput,
+      ConvCreateOutput
+    >(
+      'conversations:create',
+      booted.harness.ctx({ userId: 'userA' }),
+      { userId: 'userA', agentId: 'agt_test' },
+    );
+    await softDeleteConversation(created.conversationId);
+
+    const del = await fetch(
+      `http://127.0.0.1:${booted.port}/api/chat/conversations/${created.conversationId}`,
+      { method: 'DELETE', headers: HEADERS_OK },
+    );
+    expect(del.status).toBe(204);
+  });
+
+  it('CSRF foreign Origin → 403', async () => {
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+    });
+    harnesses.push(booted.harness);
+
+    const created = await booted.harness.bus.call<
+      ConvCreateInput,
+      ConvCreateOutput
+    >(
+      'conversations:create',
+      booted.harness.ctx({ userId: 'userA' }),
+      { userId: 'userA', agentId: 'agt_test' },
+    );
+
+    const r = await fetch(
+      `http://127.0.0.1:${booted.port}/api/chat/conversations/${created.conversationId}`,
+      {
+        method: 'DELETE',
+        headers: {
+          'content-type': 'application/json',
+          origin: 'https://evil.example',
+        },
+      },
+    );
+    expect(r.status).toBe(403);
+    const body = (await r.json()) as { error: string };
+    expect(body.error.startsWith('csrf-failed:')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/chat/agents — list user's agents (Task 13).
+// ---------------------------------------------------------------------------
+
+describe('@ax/channel-web GET /api/chat/agents', () => {
+  it('returns 401 when unauthenticated', async () => {
+    const booted = await boot({ user: null, allowedFor: new Set() });
+    harnesses.push(booted.harness);
+
+    const r = await fetch(`http://127.0.0.1:${booted.port}/api/chat/agents`);
+    expect(r.status).toBe(401);
+    expect(await r.json()).toEqual({ error: 'unauthenticated' });
+  });
+
+  it('lists user\'s agents only with display-relevant fields', async () => {
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+      listFor: {
+        userA: [
+          {
+            id: 'agt_alpha',
+            displayName: 'Alpha Agent',
+            visibility: 'personal',
+          },
+          {
+            id: 'agt_beta',
+            displayName: 'Beta Agent',
+            visibility: 'team',
+          },
+        ],
+        userB: [
+          {
+            id: 'agt_other',
+            displayName: 'Should Not Appear',
+            visibility: 'personal',
+          },
+        ],
+      },
+    });
+    harnesses.push(booted.harness);
+
+    const r = await fetch(`http://127.0.0.1:${booted.port}/api/chat/agents`);
+    expect(r.status).toBe(200);
+    const list = (await r.json()) as Array<{
+      agentId: string;
+      displayName: string;
+      visibility: string;
+    }>;
+    expect(list).toEqual([
+      {
+        agentId: 'agt_alpha',
+        displayName: 'Alpha Agent',
+        visibility: 'personal',
+      },
+      {
+        agentId: 'agt_beta',
+        displayName: 'Beta Agent',
+        visibility: 'team',
+      },
+    ]);
   });
 });

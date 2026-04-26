@@ -91,11 +91,16 @@ function agentsMockPlugin(args: { allowedFor: Set<string> }): Plugin {
   // agents:resolve(agentId, userId). The mock allows resolution only when
   // the userId is in `allowedFor`; otherwise it throws 'forbidden'. This
   // gives us cross-tenant rejection without a second user owning anything.
+  //
+  // Also registers `agents:list-for-user` as a no-op (returns empty list).
+  // The channel-web plugin's manifest declares it as a hard call (Task 13
+  // — GET /api/chat/agents); this suite doesn't exercise that endpoint,
+  // but the bootstrap verifyCalls walk requires the registration.
   return {
     manifest: {
       name: 'mock-agents',
       version: '0.0.0',
-      registers: ['agents:resolve'],
+      registers: ['agents:resolve', 'agents:list-for-user'],
       calls: [],
       subscribes: [],
     },
@@ -115,6 +120,9 @@ function agentsMockPlugin(args: { allowedFor: Set<string> }): Plugin {
           return { agent: { id: agentId, visibility: 'personal' } };
         },
       );
+      bus.registerService('agents:list-for-user', 'mock-agents', async () => {
+        return { agents: [] };
+      });
     },
   };
 }
