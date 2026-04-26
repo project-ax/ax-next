@@ -198,6 +198,30 @@ export function createAuthPlugin(config: AuthConfig = { providers: {} }): Plugin
         }),
       );
 
+      // /admin/sign-out is a thin alias for /auth/sign-out — same handler,
+      // same idempotent semantics. Keeps every `/admin/*` route consistent
+      // for the bootstrap CLI and Week 10-12 UI without duplicating logic.
+      unregisterRoutes.push(
+        await registerRoute(bus, initCtx, {
+          method: 'POST',
+          path: '/admin/sign-out',
+          handler: async (req, res) =>
+            handlers.signOut(asRouteReq(req), asRouteRes(res)),
+        }),
+      );
+
+      // /admin/me — minimum identity probe for the calling session. 401
+      // if no cookie, 200 `{user}` otherwise. The store call is cheap and
+      // the route is the auth gate (no auth:require-user round-trip).
+      unregisterRoutes.push(
+        await registerRoute(bus, initCtx, {
+          method: 'GET',
+          path: '/admin/me',
+          handler: async (req, res) =>
+            handlers.me(asRouteReq(req), asRouteRes(res)),
+        }),
+      );
+
       unregisterRoutes.push(
         await registerRoute(bus, initCtx, {
           method: 'POST',

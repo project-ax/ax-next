@@ -168,7 +168,33 @@ export function createAuthRouteHandlers(deps: RouteHandlerDeps) {
       }
     },
 
-    /** POST /auth/sign-out (CSRF enforced by @ax/http-server's built-in subscriber) */
+    /**
+     * GET /admin/me — returns `{ user: User }` for the calling session, or
+     * 401 if no/forged/expired cookie. Mirrors the auth:require-user shape
+     * but goes direct to the store; the route is the auth gate, not a
+     * subscriber. Idempotent + safe to call repeatedly.
+     */
+    async me(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const sessionId = req.signedCookie(deps.sessionCookieName);
+      if (sessionId === null) {
+        res.status(401).json({ error: 'unauthenticated' });
+        return;
+      }
+      const user = await deps.store.resolveSessionUser(sessionId);
+      if (user === null) {
+        // Session unknown / expired / reaped. Same shape as no-cookie so
+        // the client gets one error path to handle.
+        res.status(401).json({ error: 'unauthenticated' });
+        return;
+      }
+      res.status(200).json({ user });
+    },
+
+    /**
+     * POST /auth/sign-out — and POST /admin/sign-out (same handler, both
+     * paths registered in plugin.ts to keep all `/admin/*` namespacing
+     * consistent). CSRF enforced by @ax/http-server's built-in subscriber.
+     */
     async signOut(req: RouteRequest, res: RouteResponse): Promise<void> {
       const sessionId = req.signedCookie(deps.sessionCookieName);
       // Idempotent: an absent / forged cookie still returns 200 (we don't
