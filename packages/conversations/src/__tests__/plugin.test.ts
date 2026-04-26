@@ -26,37 +26,4 @@ describe('@ax/conversations plugin manifest', () => {
       subscribes: ['chat:turn-end'],
     });
   });
-
-  it('init runs without booting external resources (Task 2 wires the hooks)', async () => {
-    // The scaffold init is a no-op. Calling it directly with a stub bus
-    // proves the plugin is constructable without postgres/agents loaded
-    // — the harness boot path will exercise the real wiring once Task 2
-    // lands and `database:get-instance` becomes a hard call.
-    const plugin = createConversationsPlugin();
-    const calls: string[] = [];
-    const stubBus = {
-      // Empty stand-in; the scaffold's init never touches it. We track
-      // any call so that a regression (e.g. somebody adding a hook impl
-      // here without updating the test) trips immediately.
-      registerService: () => {
-        calls.push('registerService');
-      },
-      subscribe: () => {
-        calls.push('subscribe');
-      },
-      call: async () => {
-        calls.push('call');
-        return undefined;
-      },
-      fire: async () => {
-        calls.push('fire');
-        return { errors: [] };
-      },
-    };
-    await plugin.init({
-      bus: stubBus as never,
-      config: {},
-    });
-    expect(calls).toEqual([]);
-  });
 });

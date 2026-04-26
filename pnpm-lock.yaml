@@ -377,19 +377,7 @@ importers:
       '@ax/core':
         specifier: workspace:*
         version: link:../core
-      kysely:
-        specifier: 0.28.16
-        version: 0.28.16
-      zod:
-        specifier: ^3.23.8
-        version: 3.25.76
     devDependencies:
-      '@ax/database-postgres':
-        specifier: workspace:*
-        version: link:../database-postgres
-      '@ax/test-harness':
-        specifier: workspace:*
-        version: link:../test-harness
       '@types/node':
         specifier: ^25.6.0
         version: 25.6.0
