@@ -15,7 +15,7 @@ import {
 import { createTestHarness, type TestHarness } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createHttpServerPlugin, type HttpServerPlugin } from '@ax/http-server';
-import { createAuthPlugin } from '@ax/auth';
+import { createAuthPlugin } from '@ax/auth-oidc';
 import { createAgentsPlugin } from '../plugin.js';
 import { ADMIN_BODY_MAX_BYTES } from '../admin-routes.js';
 import type { AgentInput } from '../types.js';

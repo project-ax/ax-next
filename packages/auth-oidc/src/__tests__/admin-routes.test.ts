@@ -128,7 +128,7 @@ async function signInAsAdmin(port: number): Promise<{
   return { cookieHeader, signedCookieValue };
 }
 
-describe('@ax/auth /admin/me + /admin/sign-out', () => {
+describe('@ax/auth-oidc /admin/me + /admin/sign-out', () => {
   let stack: BootedStack;
 
   afterEach(async () => {

@@ -22,7 +22,7 @@
     "kysely": "0.28.16"
   },
   "devDependencies": {
-    "@ax/auth": "workspace:*",
+    "@ax/auth-oidc": "workspace:*",
     "@ax/database-postgres": "workspace:*",
     "@ax/http-server": "workspace:*",
     "@ax/test-harness": "workspace:*",

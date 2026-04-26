@@ -39,7 +39,7 @@
     { "path": "packages/session-postgres" },
     { "path": "packages/channel-web" },
     { "path": "packages/http-server" },
-    { "path": "packages/auth" },
+    { "path": "packages/auth-oidc" },
     { "path": "packages/agents" },
     { "path": "packages/teams" },
     { "path": "presets/k8s" }

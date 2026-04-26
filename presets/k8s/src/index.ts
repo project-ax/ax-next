@@ -19,7 +19,7 @@ import { createCredentialsPlugin } from '@ax/credentials';
 import { createIpcHttpPlugin } from '@ax/ipc-http';
 import { createAgentsPlugin } from '@ax/agents';
 import { createHttpServerPlugin } from '@ax/http-server';
-import { createAuthPlugin, type AuthConfig } from '@ax/auth';
+import { createAuthPlugin, type AuthConfig } from '@ax/auth-oidc';
 import { createTeamsPlugin } from '@ax/teams';
 
 // ---------------------------------------------------------------------------

@@ -40,7 +40,7 @@
     "@ax/ipc-http": "workspace:*",
     "@ax/agents": "workspace:*",
     "@ax/http-server": "workspace:*",
-    "@ax/auth": "workspace:*",
+    "@ax/auth-oidc": "workspace:*",
     "@ax/teams": "workspace:*"
   },
   "devDependencies": {
