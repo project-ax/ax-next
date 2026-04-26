@@ -251,6 +251,7 @@ describe('main()', () => {
             mcpConfigIds: [],
             model: 'claude-sonnet-4-7',
           },
+          conversationId: null,
         };
       }
       if (action === 'tool.list') return { tools: [] };
@@ -398,6 +399,7 @@ describe('main()', () => {
             mcpConfigIds: [],
             model: 'claude-sonnet-4-7',
           },
+          conversationId: null,
         };
       }
       if (action === 'tool.list') return { tools: [] };
@@ -472,6 +474,7 @@ describe('main()', () => {
             mcpConfigIds: [],
             model: 'claude-sonnet-4-7',
           },
+          conversationId: null,
         };
       }
       if (action === 'tool.list') return { tools: [] };
@@ -559,6 +562,7 @@ describe('main()', () => {
             mcpConfigIds: [],
             model: 'claude-sonnet-4-7',
           },
+          conversationId: null,
         };
       }
       if (action === 'tool.list') return { tools: [] };
@@ -661,6 +665,7 @@ describe('main()', () => {
             mcpConfigIds: [],
             model: 'claude-sonnet-4-7',
           },
+          conversationId: null,
         };
       }
       if (action === 'tool.list') return { tools: [] };
@@ -714,6 +719,7 @@ describe('main()', () => {
             mcpConfigIds: [],
             model: 'claude-sonnet-4-7',
           },
+          conversationId: null,
         };
       }
       if (action === 'tool.list') return { tools: [] };
@@ -821,6 +827,7 @@ describe('main()', () => {
             mcpConfigIds: [],
             model: 'claude-sonnet-4-7',
           },
+          conversationId: null,
         };
       }
       if (action === 'tool.list') return { tools: [] };
@@ -866,6 +873,7 @@ describe('main()', () => {
             mcpConfigIds: [],
             model: 'claude-sonnet-4-7',
           },
+          conversationId: null,
         };
       }
       if (action === 'tool.list') return { tools: [] };
@@ -907,5 +915,238 @@ describe('main()', () => {
     expect(round.message).toBe('simulated SDK failure');
 
     expect(fakeClient.close).toHaveBeenCalledTimes(1);
+  });
+
+  // ---------------------------------------------------------------------
+  // Task 15 (Week 10–12): replay-at-boot.
+  //
+  // The runner pulls the persisted transcript at boot and yields prior
+  // user / tool turns into the SDK's prompt iterator BEFORE pulling the
+  // first live inbox message. Assistant turns are NOT re-yielded — the
+  // prompt iterator only takes user-shaped messages, and the model
+  // regenerates from the user-side context.
+  // ---------------------------------------------------------------------
+
+  it('Task 15 replay: fetches history when conversationId is non-null and yields prior user/tool turns BEFORE the live inbox', async () => {
+    setEnv(COMPLETE_ENV);
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string, payload: unknown) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          conversationId: 'cnv_resume',
+        };
+      }
+      if (action === 'tool.list') return { tools: [] };
+      if (action === 'conversation.fetch-history') {
+        // Pin the request shape: conversationId from session.get-config.
+        expect(payload).toEqual({ conversationId: 'cnv_resume' });
+        return {
+          turns: [
+            {
+              role: 'user',
+              contentBlocks: [
+                { type: 'text', text: 'first question' },
+              ],
+            },
+            {
+              role: 'assistant',
+              contentBlocks: [
+                { type: 'text', text: 'first answer (will not re-yield)' },
+                { type: 'tool_use', id: 'tu_1', name: 'Bash', input: { cmd: 'ls' } },
+              ],
+            },
+            {
+              role: 'tool',
+              contentBlocks: [
+                {
+                  type: 'tool_result',
+                  tool_use_id: 'tu_1',
+                  content: 'ok',
+                  is_error: false,
+                },
+              ],
+            },
+            {
+              role: 'user',
+              contentBlocks: [{ type: 'text', text: 'second question' }],
+            },
+          ],
+        };
+      }
+      throw new Error(`unexpected call: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([userEntry('live message'), cancelEntry]);
+
+    // Capture the order in which the SDK saw user-shaped messages so we
+    // can assert: replay turns FIRST (in order), live inbox LAST.
+    const sdkSawMessages: Array<{
+      role: string;
+      content: unknown;
+    }> = [];
+
+    queryMock.mockImplementation(
+      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+        return (async function* () {
+          for await (const m of prompt) {
+            sdkSawMessages.push({
+              role: m.message.role,
+              content: m.message.content,
+            });
+          }
+          yield resultSuccess();
+        })();
+      },
+    );
+
+    const { main } = await import('../main.js');
+    const rc = await main();
+    expect(rc).toBe(0);
+
+    // The runner made exactly one conversation.fetch-history call.
+    const fetchCalls = fakeClient.call.mock.calls.filter(
+      (c) => c[0] === 'conversation.fetch-history',
+    );
+    expect(fetchCalls).toHaveLength(1);
+    expect(fetchCalls[0]?.[1]).toEqual({ conversationId: 'cnv_resume' });
+
+    // The SDK saw replay user/tool turns FIRST, then the live inbox.
+    // Assistant turns from the persisted transcript are NOT re-yielded.
+    expect(sdkSawMessages).toHaveLength(4);
+    // Replay user turn #1 — text-only, collapsed back to a string.
+    expect(sdkSawMessages[0]).toEqual({
+      role: 'user',
+      content: 'first question',
+    });
+    // Replay tool turn — yielded as content-block array (tool_result).
+    expect(sdkSawMessages[1]?.role).toBe('user');
+    expect(Array.isArray(sdkSawMessages[1]?.content)).toBe(true);
+    expect(
+      (sdkSawMessages[1]?.content as Array<{ type: string }>)[0]?.type,
+    ).toBe('tool_result');
+    // Replay user turn #2.
+    expect(sdkSawMessages[2]).toEqual({
+      role: 'user',
+      content: 'second question',
+    });
+    // Live inbox message LAST.
+    expect(sdkSawMessages[3]).toEqual({
+      role: 'user',
+      content: 'live message',
+    });
+  });
+
+  it('Task 15: skips fetch when conversationId is null', async () => {
+    setEnv(COMPLETE_ENV);
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          conversationId: null,
+        };
+      }
+      if (action === 'tool.list') return { tools: [] };
+      if (action === 'conversation.fetch-history') {
+        throw new Error('runner must NOT fetch history when conversationId is null');
+      }
+      throw new Error(`unexpected call: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([userEntry('hello'), cancelEntry]);
+    queryMock.mockImplementation(
+      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+        return (async function* () {
+          for await (const _m of prompt) {
+            void _m;
+          }
+          yield resultSuccess();
+        })();
+      },
+    );
+
+    const { main } = await import('../main.js');
+    const rc = await main();
+    expect(rc).toBe(0);
+
+    // No fetch-history call at all.
+    expect(
+      fakeClient.call.mock.calls.filter(
+        (c) => c[0] === 'conversation.fetch-history',
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('Task 15: fetch-history failure is non-fatal — runner continues with empty replay', async () => {
+    setEnv(COMPLETE_ENV);
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          conversationId: 'cnv_resume',
+        };
+      }
+      if (action === 'tool.list') return { tools: [] };
+      if (action === 'conversation.fetch-history') {
+        throw new Error('storage hiccup');
+      }
+      throw new Error(`unexpected call: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([userEntry('live message'), cancelEntry]);
+
+    const sdkSawMessages: Array<{ role: string; content: unknown }> = [];
+    queryMock.mockImplementation(
+      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+        return (async function* () {
+          for await (const m of prompt) {
+            sdkSawMessages.push({
+              role: m.message.role,
+              content: m.message.content,
+            });
+          }
+          yield resultSuccess();
+        })();
+      },
+    );
+
+    const stderrSpy = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation(() => true);
+    try {
+      const { main } = await import('../main.js');
+      const rc = await main();
+      // Non-fatal: chat completes (rc 0), no terminated outcome.
+      expect(rc).toBe(0);
+      // We logged the failure to stderr.
+      const stderrText = stderrSpy.mock.calls.map((c) => String(c[0])).join('');
+      expect(stderrText).toContain('conversation.fetch-history failed');
+    } finally {
+      stderrSpy.mockRestore();
+    }
+    // SDK only saw the live inbox message — replay was empty.
+    expect(sdkSawMessages).toEqual([
+      { role: 'user', content: 'live message' },
+    ]);
   });
 });

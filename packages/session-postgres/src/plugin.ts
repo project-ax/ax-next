@@ -71,11 +71,18 @@ export interface SessionCreateInput {
    * orchestrator path; pre-9.5 callers MAY omit it, in which case the
    * v2 row is not written and `session:get-config` will reject with
    * `owner-missing`.
+   *
+   * Week 10–12 Task 15: optional `conversationId` ties this session to a
+   * persisted conversation row; the runner reads it back via
+   * `session:get-config` and uses non-null as the trigger to call
+   * `conversation.fetch-history`. Null/undefined for non-conversation
+   * sessions.
    */
   owner?: {
     userId: string;
     agentId: string;
     agentConfig: AgentConfig;
+    conversationId?: string | null;
   };
 }
 export interface SessionCreateOutput {
@@ -98,6 +105,12 @@ export interface SessionGetConfigOutput {
   userId: string;
   agentId: string;
   agentConfig: AgentConfig;
+  /**
+   * Conversation this session is bound to (Week 10–12 Task 15). Null for
+   * non-conversation sessions; the runner uses non-null as the trigger
+   * to call `conversation.fetch-history` at boot.
+   */
+  conversationId: string | null;
 }
 export interface SessionQueueWorkInput {
   sessionId: string;
@@ -159,7 +172,14 @@ const VALID_ROLES = new Set(['user', 'assistant', 'system']);
 function validateOwner(
   raw: unknown,
   hookName: string,
-): { userId: string; agentId: string; agentConfig: AgentConfig } | undefined {
+):
+  | {
+      userId: string;
+      agentId: string;
+      agentConfig: AgentConfig;
+      conversationId: string | null;
+    }
+  | undefined {
   if (raw === undefined) return undefined;
   if (typeof raw !== 'object' || raw === null) {
     throw new PluginError({
@@ -172,6 +192,7 @@ function validateOwner(
   const userId = (raw as { userId?: unknown }).userId;
   const agentId = (raw as { agentId?: unknown }).agentId;
   const agentConfig = (raw as { agentConfig?: unknown }).agentConfig;
+  const conversationIdRaw = (raw as { conversationId?: unknown }).conversationId;
   requireString(userId, 'owner.userId', hookName);
   requireString(agentId, 'owner.agentId', hookName);
   if (typeof agentConfig !== 'object' || agentConfig === null) {
@@ -201,6 +222,30 @@ function validateOwner(
       message: `'owner.agentConfig.mcpConfigIds' must be a string[]`,
     });
   }
+  // conversationId — optional. Accept `string|null|undefined`. Reject
+  // empty strings so a wiring bug fails loud rather than silently
+  // storing an unbound session.
+  let conversationId: string | null;
+  if (conversationIdRaw === undefined || conversationIdRaw === null) {
+    conversationId = null;
+  } else if (typeof conversationIdRaw === 'string' && conversationIdRaw.length > 0) {
+    if (conversationIdRaw.length > 256) {
+      throw new PluginError({
+        code: 'invalid-payload',
+        plugin: PLUGIN_NAME,
+        hookName,
+        message: `'owner.conversationId' must be ≤ 256 chars`,
+      });
+    }
+    conversationId = conversationIdRaw;
+  } else {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `'owner.conversationId' must be a non-empty string or null/undefined`,
+    });
+  }
   return {
     userId,
     agentId,
@@ -210,6 +255,7 @@ function validateOwner(
       mcpConfigIds: cfg.mcpConfigIds as string[],
       model: cfg.model as string,
     },
+    conversationId,
   };
 }
 
@@ -456,6 +502,11 @@ export function createSessionPostgresPlugin(
             userId: record.userId,
             agentId: record.agentId,
             agentConfig: record.agentConfig,
+            // conversationId may be null for sessions created before
+            // Task 15 (the column was added then) or for non-conversation
+            // sessions (canary, admin probes). Either way, the runner
+            // treats null as "no history to replay".
+            conversationId: record.conversationId,
           };
         },
       );

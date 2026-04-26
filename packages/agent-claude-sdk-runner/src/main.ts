@@ -15,6 +15,8 @@ import {
 import type {
   ChatMessage,
   ContentBlock,
+  ConversationFetchHistoryResponse,
+  ConversationFetchHistoryTurn,
   ImageBlock,
   SessionGetConfigResponse,
   TextBlock,
@@ -82,18 +84,65 @@ export async function main(): Promise<number> {
   // sessionId on the wire; the runner cannot ask for someone else's
   // config.
   let agentConfig: SessionGetConfigResponse['agentConfig'];
+  let conversationId: string | null = null;
   try {
     const cfg = (await client.call(
       'session.get-config',
       {},
     )) as SessionGetConfigResponse;
     agentConfig = cfg.agentConfig;
+    // Task 15 (Week 10–12): the host populates conversationId at session-
+    // creation time when the runner is for an existing conversation. The
+    // runner uses a truthy value as the trigger to fetch transcript
+    // history and replay it into the SDK's prompt iterator (J3 + J6
+    // resume). We normalize `undefined` (older host that hasn't shipped
+    // the field) and `null` (non-conversation session) into the same
+    // skip-replay branch via a strict equality check on the string type
+    // — anything else takes the fetch path.
+    conversationId = typeof cfg.conversationId === 'string' ? cfg.conversationId : null;
   } catch (err) {
     process.stderr.write(
       `runner: session.get-config failed: ${err instanceof Error ? err.message : String(err)}\n`,
     );
     await client.close();
     return 2;
+  }
+
+  // Task 15 (Week 10–12): replay-at-boot. Fetch the persisted transcript
+  // BEFORE constructing the SDK iterator so the model sees prior turns
+  // before any live inbox message.
+  //
+  // Failure semantics: NON-FATAL. A storage hiccup or ACL drift here
+  // shouldn't kill the chat — we'd rather hand the user a fresh
+  // conversation than crash on resume. We log to stderr and continue
+  // with an empty history.
+  //
+  // What we replay (and what we DON'T):
+  //   - User turns and tool turns (tool_result blocks): yielded as
+  //     SDKUserMessage. The SDK accepts a user message whose content is
+  //     either a string or an Anthropic-compatible content-block array;
+  //     we use the array form so tool_result blocks round-trip.
+  //   - Assistant turns: NOT re-yielded. The SDK's prompt iterator only
+  //     accepts user-shaped messages; injecting prior assistant text
+  //     would require either the SDK's `resume(sessionId)` (we don't
+  //     track its internal session id across runner restarts) or a
+  //     `setMessages` API that doesn't exist today. The model regenerates
+  //     from the user-side context. This re-spends LLM tokens but is
+  //     simple and correct — the model has full context for a coherent
+  //     continuation. (Future optimization: pursue resume(sessionId).)
+  let replayTurns: ConversationFetchHistoryTurn[] = [];
+  if (conversationId !== null) {
+    try {
+      const resp = (await client.call('conversation.fetch-history', {
+        conversationId,
+      })) as ConversationFetchHistoryResponse;
+      replayTurns = resp.turns;
+    } catch (err) {
+      process.stderr.write(
+        `runner: conversation.fetch-history failed: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+      replayTurns = [];
+    }
   }
 
   let tools;
@@ -130,8 +179,10 @@ export async function main(): Promise<number> {
   // Host-side bookkeeping for the final event.chat-end outcome. The SDK
   // maintains its OWN transcript internally; this array is only the shape
   // the host cares about (user/assistant text round-tripped through
-  // ChatMessage).
-  const history: ChatMessage[] = [];
+  // ChatMessage). NOT the same as `replayTurns` above — replayTurns is
+  // the persisted history we pull at boot to seed the SDK; chatEndHistory
+  // is the within-process trace the host gets at chat:end.
+  const chatEndHistory: ChatMessage[] = [];
 
   // Per-turn content-block accumulators. Drained at the SDK `result`
   // boundary into event.turn-end so @ax/conversations can persist the
@@ -163,7 +214,45 @@ export async function main(): Promise<number> {
   // Inbox → SDK user-message generator. Closing via `return` on cancel
   // tells the SDK no more user messages are coming, which lets the outer
   // `for await (msg of queryIter)` drain naturally and exit.
+  //
+  // Task 15 (Week 10–12): replay-at-boot. We yield prior user-side turns
+  // (role=user with text content; role=tool with tool_result content
+  // blocks) BEFORE pulling from the live inbox. The SDK's MessageParam
+  // accepts content as either a string or an Anthropic content-block
+  // array — for tool turns we MUST use the array form so tool_result
+  // blocks survive into the LLM's prompt. Assistant turns are not
+  // re-yielded (the prompt iterator only takes user-shaped messages;
+  // see the comment block above the conversation.fetch-history call).
   async function* userMessages(): AsyncGenerator<SDKUserMessage> {
+    // ----- replay -----
+    for (const turn of replayTurns) {
+      if (turn.role === 'assistant') continue; // model regenerates; see above
+      // For user turns: collapse plain-text contentBlocks back into a
+      // string for the SDK (matches the live-inbox shape so the model
+      // doesn't see a mid-conversation format change). Multi-block user
+      // turns (e.g. with images) yield the full block array.
+      let content: SDKUserMessage['message']['content'];
+      if (turn.role === 'user') {
+        const allText = turn.contentBlocks.every(
+          (b): b is TextBlock => b.type === 'text',
+        );
+        content = allText
+          ? turn.contentBlocks
+              .map((b) => (b as TextBlock).text)
+              .join('\n')
+          : (turn.contentBlocks as unknown as SDKUserMessage['message']['content']);
+      } else {
+        // role === 'tool' — yield tool_result blocks as a user message
+        // (Anthropic-compatible: tool results travel inside user turns).
+        content = turn.contentBlocks as unknown as SDKUserMessage['message']['content'];
+      }
+      yield {
+        type: 'user',
+        parent_tool_use_id: null,
+        message: { role: 'user', content },
+      };
+    }
+    // ----- live inbox -----
     for (;;) {
       const entry = await inbox.next();
       if (entry.type === 'cancel') return;
@@ -174,7 +263,7 @@ export async function main(): Promise<number> {
       if (typeof entry.reqId === 'string' && entry.reqId.length > 0) {
         currentReqId = entry.reqId;
       }
-      history.push({ role: 'user', content: entry.payload.content });
+      chatEndHistory.push({ role: 'user', content: entry.payload.content });
       yield {
         type: 'user',
         parent_tool_use_id: null,
@@ -250,7 +339,7 @@ export async function main(): Promise<number> {
           .flatMap((block) => (block.type === 'text' ? [block.text] : []))
           .join('\n');
         if (text.length > 0) {
-          history.push({ role: 'assistant', content: text });
+          chatEndHistory.push({ role: 'assistant', content: text });
         }
         // Accumulate full ContentBlock[] for the per-turn transcript that
         // ships to @ax/conversations via event.turn-end. Every block kind
@@ -504,7 +593,7 @@ export async function main(): Promise<number> {
   // the diagnostic).
   const outcome =
     exitCode === 0
-      ? { kind: 'complete' as const, messages: history }
+      ? { kind: 'complete' as const, messages: chatEndHistory }
       : {
           kind: 'terminated' as const,
           reason: terminatedReason ?? 'unknown',

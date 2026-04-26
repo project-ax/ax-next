@@ -243,7 +243,47 @@ describe('@ax/session-inmemory plugin', () => {
       userId: 'u-1',
       agentId: 'a-1',
       agentConfig: OWNER.agentConfig,
+      conversationId: null,
     });
+  });
+
+  it('session:get-config returns conversationId when owner carries one (Task 15)', async () => {
+    const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
+    await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+      'session:create',
+      h.ctx(),
+      {
+        sessionId: 's-conv',
+        workspaceRoot: '/tmp/ws',
+        owner: { ...OWNER, conversationId: 'cnv_test_1' },
+      },
+    );
+    const result = await h.bus.call<SessionGetConfigInput, SessionGetConfigOutput>(
+      'session:get-config',
+      h.ctx({ sessionId: 's-conv' }),
+      {},
+    );
+    expect(result.conversationId).toBe('cnv_test_1');
+  });
+
+  it('session:create rejects an empty-string owner.conversationId', async () => {
+    const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
+    let caught: unknown;
+    try {
+      await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+        'session:create',
+        h.ctx(),
+        {
+          sessionId: 's-bad-cid',
+          workspaceRoot: '/tmp/ws',
+          owner: { ...OWNER, conversationId: '' as unknown as string | null },
+        },
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('invalid-payload');
   });
 
   it('session:get-config rejects with owner-missing when the session has no owner (pre-9.5 record)', async () => {

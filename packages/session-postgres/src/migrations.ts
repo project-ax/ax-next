@@ -94,6 +94,25 @@ export async function runSessionMigration<DB>(db: Kysely<DB>): Promise<void> {
     CREATE INDEX IF NOT EXISTS session_postgres_v2_session_agent_agent_id_idx
       ON session_postgres_v2_session_agent (agent_id)
   `.execute(db);
+
+  // ----- Week 10–12 Task 15: conversation_id on the v2 row ----------------
+  //
+  // Forward-only additive ALTER. The orchestrator (Task 16) populates this
+  // when minting a session for an existing conversation; the runner reads
+  // it back via `session:get-config` and uses it as the trigger to call
+  // `conversation.fetch-history` at boot. Existing v2 rows pre-Task-15
+  // simply have a NULL — the runner treats null as "no history to
+  // replay".
+  //
+  // Why a column on v2 instead of bumping to v3? The session ↔ agent
+  // immutability contract (I10) says this row is INSERT-once-per-session;
+  // conversationId joins the same write. There's no UPDATE path that
+  // changes it, so adding a nullable column doesn't violate I10 — it
+  // widens the insert without changing the immutability promise.
+  await sql`
+    ALTER TABLE session_postgres_v2_session_agent
+      ADD COLUMN IF NOT EXISTS conversation_id TEXT
+  `.execute(db);
 }
 
 export interface SessionRow {
@@ -129,6 +148,11 @@ export interface SessionAgentRow {
   user_id: string;
   agent_id: string;
   agent_config_json: unknown;
+  /**
+   * Optional conversation binding (Week 10–12 Task 15). Null for
+   * non-conversation sessions (canary, admin, pre-Task-15 records).
+   */
+  conversation_id: string | null;
   created_at: Date;
 }
 

@@ -66,7 +66,28 @@ describe('session.get-config handler', () => {
       userId: 'u-1',
       agentId: 'a-1',
       agentConfig: OWNER.agentConfig,
+      // Task 15 (Week 10–12): conversationId is on the wire shape now,
+      // null for non-conversation sessions like this one.
+      conversationId: null,
     });
+  });
+
+  it('returns conversationId when the session was created with one (Task 15)', async () => {
+    const { bus, ctx } = await makeEnv();
+    await bus.call<SessionCreateInput, SessionCreateOutput>(
+      'session:create',
+      ctx('init'),
+      {
+        sessionId: 's-conv',
+        workspaceRoot: '/tmp/ws',
+        owner: { ...OWNER, conversationId: 'cnv_test_1' },
+      },
+    );
+    const result = await sessionGetConfigHandler({}, ctx('s-conv'), bus);
+    expect(result.status).toBe(200);
+    expect((result.body as { conversationId: string }).conversationId).toBe(
+      'cnv_test_1',
+    );
   });
 
   it('rejects a non-empty body as 400 VALIDATION (no sessionId smuggling)', async () => {

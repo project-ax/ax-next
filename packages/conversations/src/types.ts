@@ -187,6 +187,31 @@ export interface UnbindSessionInput {
 }
 export type UnbindSessionOutput = void;
 
+/**
+ * Fetch the persisted turn history for a conversation, formatted for
+ * runner replay (Week 10–12 Task 15, Invariant J3 + J6 resume).
+ *
+ * The output strips `turnId` / `turnIndex` / `createdAt` from the full
+ * `Turn` shape — replay into the SDK's prompt iterator only needs role
+ * + content blocks, and a smaller payload keeps the wire surface tight.
+ *
+ * ACL: same `(user_id, agent_id)` gate as `conversations:get` (J1). A
+ * caller that doesn't own the row gets `PluginError({ code: 'not-found' })`
+ * — the same not-found-instead-of-forbidden posture as elsewhere, so a
+ * tenant-id guess leaks no signal.
+ */
+export interface FetchHistoryInput {
+  conversationId: string;
+  userId: string;
+}
+export interface FetchHistoryTurn {
+  role: TurnRole;
+  contentBlocks: ContentBlock[];
+}
+export interface FetchHistoryOutput {
+  turns: FetchHistoryTurn[];
+}
+
 // ---------------------------------------------------------------------------
 // Plugin config
 // ---------------------------------------------------------------------------

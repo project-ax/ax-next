@@ -25,6 +25,8 @@ describe('@ax/conversations plugin manifest', () => {
         // Task 14 (Week 10–12): active_session_id lifecycle (J6).
         'conversations:bind-session',
         'conversations:unbind-session',
+        // Task 15 (Week 10–12): runner replays history at boot (J3 + J6).
+        'conversations:fetch-history',
       ],
       // database:get-instance is hard — we run our own migration on init.
       // agents:resolve is hard — every hook gates through it (Invariant J1).

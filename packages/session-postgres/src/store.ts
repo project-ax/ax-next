@@ -53,6 +53,11 @@ export interface SessionOwner {
   userId: string;
   agentId: string;
   agentConfig: AgentConfig;
+  /**
+   * Conversation binding (Week 10–12 Task 15). Optional — canary / admin
+   * sessions have no conversation.
+   */
+  conversationId?: string | null;
 }
 
 export interface SessionRecord {
@@ -62,6 +67,7 @@ export interface SessionRecord {
   readonly userId: string | null;
   readonly agentId: string | null;
   readonly agentConfig: AgentConfig | null;
+  readonly conversationId: string | null;
   readonly terminated: boolean;
 }
 
@@ -81,13 +87,18 @@ export interface SessionStore {
   resolveToken(token: string): Promise<ResolveTokenResult | null>;
   get(sessionId: string): Promise<SessionRecord | null>;
   /**
-   * Read just the {userId, agentId, agentConfig} for a session — what the
-   * runner needs at boot. Returns null when the session is unknown,
-   * terminated, or has no owner row (pre-9.5 record).
+   * Read just the {userId, agentId, agentConfig, conversationId} for a
+   * session — what the runner needs at boot. Returns null when the
+   * session is unknown, terminated, or has no owner row (pre-9.5 record).
    */
   getConfig(
     sessionId: string,
-  ): Promise<{ userId: string; agentId: string; agentConfig: AgentConfig } | null>;
+  ): Promise<{
+    userId: string;
+    agentId: string;
+    agentConfig: AgentConfig;
+    conversationId: string | null;
+  } | null>;
   terminate(sessionId: string): Promise<void>;
 }
 
@@ -135,6 +146,7 @@ export function createSessionStore(db: Kysely<SessionDatabase>): SessionStore {
                 // declared shape; we passed `unknown` in the row type so
                 // the value rides as opaque JSON.
                 agent_config_json: owner.agentConfig as never,
+                conversation_id: owner.conversationId ?? null,
               } as never)
               .execute();
           }
@@ -145,6 +157,7 @@ export function createSessionStore(db: Kysely<SessionDatabase>): SessionStore {
             userId: owner?.userId ?? null,
             agentId: owner?.agentId ?? null,
             agentConfig: owner?.agentConfig ?? null,
+            conversationId: owner?.conversationId ?? null,
             terminated: v1Row.terminated,
           };
         });
@@ -208,6 +221,7 @@ export function createSessionStore(db: Kysely<SessionDatabase>): SessionStore {
           'a.user_id',
           'a.agent_id',
           'a.agent_config_json',
+          'a.conversation_id',
         ])
         .where('s.session_id', '=', sessionId)
         .executeTakeFirst();
@@ -219,6 +233,7 @@ export function createSessionStore(db: Kysely<SessionDatabase>): SessionStore {
         userId: row.user_id ?? null,
         agentId: row.agent_id ?? null,
         agentConfig: (row.agent_config_json as AgentConfig | null) ?? null,
+        conversationId: row.conversation_id ?? null,
         terminated: row.terminated,
       };
     },
@@ -238,6 +253,7 @@ export function createSessionStore(db: Kysely<SessionDatabase>): SessionStore {
           'a.user_id',
           'a.agent_id',
           'a.agent_config_json',
+          'a.conversation_id',
         ])
         .where('s.session_id', '=', sessionId)
         .executeTakeFirst();
@@ -246,6 +262,7 @@ export function createSessionStore(db: Kysely<SessionDatabase>): SessionStore {
         userId: row.user_id,
         agentId: row.agent_id,
         agentConfig: row.agent_config_json as AgentConfig,
+        conversationId: row.conversation_id ?? null,
       };
     },
 

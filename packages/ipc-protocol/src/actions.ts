@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { asWorkspaceVersion, type WorkspaceVersion } from '@ax/core';
+import { ContentBlockSchema } from './content-blocks.js';
 
 // Re-export so existing consumers importing from `@ax/ipc-protocol` keep
 // working transparently — canonical declaration lives in `@ax/core` so
@@ -243,8 +244,69 @@ export const SessionGetConfigResponseSchema = z.object({
   userId: z.string(),
   agentId: z.string(),
   agentConfig: AgentConfigSchema,
+  /**
+   * Conversation this session is bound to, when one exists. Nullable
+   * because not every session is conversation-scoped (canary acceptance
+   * tests, ephemeral admin probes, pre-Task-15 sessions). The runner uses
+   * this to decide whether to call `conversation.fetch-history` at boot.
+   *
+   * The host populates this from the session row (Task 15 added a
+   * `conversation_id` column to the session backend; the orchestrator
+   * sets it at session-creation time). NEVER `undefined` — explicit null
+   * keeps the wire shape stable across the schema bump (an absent field
+   * would force every consumer to branch on three states).
+   */
+  conversationId: z.string().nullable(),
 });
 export type SessionGetConfigResponse = z.infer<typeof SessionGetConfigResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// conversation.fetch-history
+//
+// Runner → host RPC fetched at boot AFTER `session.get-config` returns a
+// non-null conversationId. Returns the persisted turn-by-turn transcript
+// so the runner can replay user-side history into the SDK's prompt
+// iterator before processing live inbox messages (J3 + J6 resume).
+//
+// Authz on the host: the bus-side `conversations:fetch-history` hook calls
+// `conversations:get(conversationId, ctx.userId)` — that gate already
+// enforces user ownership AND `agents:resolve`, so a runner that forges a
+// foreign conversationId still can't read it. The runner authenticates
+// IPC via its session bearer token; the IPC server resolves the token
+// to ctx.userId, and that userId is what reaches `conversations:get`.
+//
+// Field-name conventions (I1):
+//   - `turns` is generic. Each entry is `{ role, contentBlocks }` — same
+//     shape Anthropic / OpenAI / Gemini wrappers translate into. No
+//     storage-backend vocabulary leaks.
+//   - We deliberately do NOT include turnId / createdAt / turnIndex on
+//     the wire shape. The runner replays into the SDK; ordering is
+//     implicit in the array order, and identity is the LLM's concern,
+//     not ours. A future audit/debug consumer that wants those fields
+//     should call `conversations:get` directly (host-side hook).
+// ---------------------------------------------------------------------------
+
+export const ConversationFetchHistoryRequestSchema = z.object({
+  conversationId: z.string().min(1).max(256),
+}).strict();
+export type ConversationFetchHistoryRequest = z.infer<
+  typeof ConversationFetchHistoryRequestSchema
+>;
+
+export const ConversationFetchHistoryTurnSchema = z.object({
+  role: z.enum(['user', 'assistant', 'tool']),
+  contentBlocks: z.array(ContentBlockSchema),
+});
+export type ConversationFetchHistoryTurn = z.infer<
+  typeof ConversationFetchHistoryTurnSchema
+>;
+
+export const ConversationFetchHistoryResponseSchema = z.object({
+  turns: z.array(ConversationFetchHistoryTurnSchema),
+});
+export type ConversationFetchHistoryResponse = z.infer<
+  typeof ConversationFetchHistoryResponseSchema
+>;
 
 // ---------------------------------------------------------------------------
 // session.next-message

@@ -28,6 +28,8 @@ import type {
   CreateOutput,
   DeleteInput,
   DeleteOutput,
+  FetchHistoryInput,
+  FetchHistoryOutput,
   GetByReqIdInput,
   GetByReqIdOutput,
   GetInput,
@@ -81,6 +83,8 @@ export function createConversationsPlugin(
         // Task 14 (Week 10–12): active_session_id lifecycle (J6).
         'conversations:bind-session',
         'conversations:unbind-session',
+        // Task 15 (Week 10–12): runner replays history at boot (J3 + J6).
+        'conversations:fetch-history',
       ],
       calls: ['agents:resolve', 'database:get-instance'],
       // Task 14 (Week 10–12): subscribe to session:terminate so a sandbox
@@ -158,6 +162,22 @@ export function createConversationsPlugin(
         'conversations:unbind-session',
         PLUGIN_NAME,
         async (ctx, input) => unbindSession(localStore, ctx, input),
+      );
+
+      // Task 15 (Week 10–12): runner replay (J3 + J6 resume).
+      //
+      // Returns the persisted transcript for a conversation in turn-index
+      // order, formatted as `{ role, contentBlocks }` for the runner's
+      // SDK prompt iterator. Reuses the same ACL gate as
+      // `conversations:get` — the row must belong to ctx.userId AND
+      // `agents:resolve` must succeed for the frozen agentId. A foreign
+      // conversationId rejects with `not-found` (same not-found-instead-
+      // of-forbidden posture as elsewhere — guessing a tenant id leaks
+      // no signal).
+      bus.registerService<FetchHistoryInput, FetchHistoryOutput>(
+        'conversations:fetch-history',
+        PLUGIN_NAME,
+        async (ctx, input) => fetchHistory(localStore, bus, ctx, input),
       );
 
       // chat:turn-end auto-append (Task 3 of Week 10–12).
@@ -600,6 +620,60 @@ async function unbindSession(
       message: `conversation '${conversationId}' not found`,
     });
   }
+}
+
+async function fetchHistory(
+  store: ConversationStore,
+  bus: HookBus,
+  ctx: ChatContext,
+  input: FetchHistoryInput,
+): Promise<FetchHistoryOutput> {
+  const hookName = 'conversations:fetch-history';
+  // Defensive bounds at the boundary. The same posture every other
+  // hook applies — empty / oversized values must not sneak past.
+  if (
+    typeof input.conversationId !== 'string' ||
+    input.conversationId.length === 0 ||
+    input.conversationId.length > 256
+  ) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `'conversationId' must be a non-empty string (≤ 256 chars)`,
+    });
+  }
+  if (typeof input.userId !== 'string' || input.userId.length === 0) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `'userId' must be a non-empty string`,
+    });
+  }
+  // ACL gate — same shape as conversations:get. Filter by user_id first
+  // so a foreign row presents as 'not-found' (no existence-leak via the
+  // agents:resolve denial path).
+  const conv = await store.getByIdNotDeleted(input.conversationId);
+  if (conv === null || conv.userId !== input.userId) {
+    throw new PluginError({
+      code: 'not-found',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `conversation '${input.conversationId}' not found`,
+    });
+  }
+  await assertAgentReachable(
+    bus,
+    ctx,
+    conv.agentId,
+    input.userId,
+    hookName,
+  );
+  const turns = await store.listTurns(input.conversationId);
+  return {
+    turns: turns.map((t) => ({ role: t.role, contentBlocks: t.contentBlocks })),
+  };
 }
 
 async function deleteConversation(

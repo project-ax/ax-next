@@ -36,6 +36,13 @@ export interface SessionOwner {
   userId: string;
   agentId: string;
   agentConfig: AgentConfig;
+  /**
+   * Conversation this session is bound to (Task 15 of Week 10–12).
+   * Optional — canary / admin sessions have no conversation. Stored as
+   * `null` in the record when absent so `session:get-config` can
+   * always answer with a typed scalar.
+   */
+  conversationId?: string | null;
 }
 
 export interface SessionRecord {
@@ -45,6 +52,7 @@ export interface SessionRecord {
   readonly userId: string | null;
   readonly agentId: string | null;
   readonly agentConfig: AgentConfig | null;
+  readonly conversationId: string | null;
   terminated: boolean;
 }
 
@@ -92,6 +100,9 @@ export function createSessionStore(): SessionStore {
         userId: owner?.userId ?? null,
         agentId: owner?.agentId ?? null,
         agentConfig: owner?.agentConfig ?? null,
+        // Normalize `undefined` → null so the record always carries an
+        // explicit nullable. Avoids `?? null` rituals at every read site.
+        conversationId: owner?.conversationId ?? null,
         terminated: false,
       };
       bySessionId.set(sessionId, record);

@@ -19,6 +19,7 @@ import { toolListHandler } from './handlers/tool-list.js';
 import { workspaceCommitNotifyHandler } from './handlers/workspace-commit-notify.js';
 import { sessionNextMessageHandler } from './handlers/session-next-message.js';
 import { sessionGetConfigHandler } from './handlers/session-get-config.js';
+import { conversationFetchHistoryHandler } from './handlers/conversation-fetch-history.js';
 import {
   validateEventToolPostCall,
   fireEventToolPostCall,
@@ -69,6 +70,10 @@ ACTIONS.set('/tool.execute-host', { method: 'POST', handler: toolExecuteHostHand
 ACTIONS.set('/tool.list', { method: 'POST', handler: toolListHandler });
 ACTIONS.set('/workspace.commit-notify', { method: 'POST', handler: workspaceCommitNotifyHandler });
 ACTIONS.set('/session.get-config', { method: 'POST', handler: sessionGetConfigHandler });
+ACTIONS.set('/conversation.fetch-history', {
+  method: 'POST',
+  handler: conversationFetchHistoryHandler,
+});
 
 type EventSpec = {
   method: 'POST';

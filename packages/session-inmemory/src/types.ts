@@ -75,11 +75,17 @@ export interface SessionCreateInput {
    * and `session:get-config` will reject. The orchestrator is the only
    * production caller that mints sessions and it always sets this
    * field, so the optionality is purely for back-compat.
+   *
+   * Week 10–12 Task 15: `conversationId` ties this session to a persisted
+   * conversation row so the runner can pull history at boot. Optional —
+   * canary acceptance probes and ephemeral admin sessions don't have a
+   * conversation, and the runner skips replay when null.
    */
   owner?: {
     userId: string;
     agentId: string;
     agentConfig: AgentConfig;
+    conversationId?: string | null;
   };
 }
 
@@ -123,6 +129,12 @@ export interface SessionGetConfigOutput {
   userId: string;
   agentId: string;
   agentConfig: AgentConfig;
+  /**
+   * Conversation this session is bound to (Task 15 of Week 10–12). Null
+   * for non-conversation sessions; the runner uses non-null as the
+   * trigger to call `conversation.fetch-history` at boot.
+   */
+  conversationId: string | null;
 }
 
 export interface SessionQueueWorkInput {
