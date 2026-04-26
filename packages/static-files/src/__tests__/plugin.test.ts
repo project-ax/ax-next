@@ -146,6 +146,37 @@ describe('@ax/static-files', () => {
     expect(r.status).toBe(404);
   });
 
+  it('treats percent-encoded traversal sequences as literal filenames', async () => {
+    // The router passes the splat through verbatim (no decodeURIComponent),
+    // and `path.resolve` then sees `%2e%2e` / `%2f` as ordinary filename
+    // characters rather than `..` / `/`. So these requests resolve to
+    // non-existent files inside dir — never escape it. Pin both 404 and
+    // 200 (SPA fallback) as acceptable: with no fallback, these are 404;
+    // with `spaFallback: true`, they fall back to index.html (200), which
+    // is still safe — the secret outside the root is never reachable.
+    writeFileSync(join(dir, 'index.html'), 'safe');
+    const port = await boot({ dir, spaFallback: true });
+
+    // %2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd  (url-encoded ../../../etc/passwd)
+    const encodedTraversal = await fetch(
+      `http://127.0.0.1:${port}/%2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd`,
+    );
+    expect([200, 404]).toContain(encodedTraversal.status);
+    if (encodedTraversal.status === 200) {
+      // SPA fallback served index.html, NOT /etc/passwd.
+      expect(await encodedTraversal.text()).toBe('safe');
+    }
+
+    // Plain encoded slashes should also not collapse into separators.
+    const encodedSlash = await fetch(
+      `http://127.0.0.1:${port}/foo%2fbar%2fbaz`,
+    );
+    expect([200, 404]).toContain(encodedSlash.status);
+    if (encodedSlash.status === 200) {
+      expect(await encodedSlash.text()).toBe('safe');
+    }
+  });
+
   it('rejects symlink targets outside dir (or returns a non-leak status)', async () => {
     writeFileSync(join(dir, 'index.html'), 'safe');
     const outside = mkdtempSync(join(tmpdir(), 'ax-outside-'));

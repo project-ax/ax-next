@@ -284,12 +284,17 @@ function matchPattern(
     // Slashes are preserved in the captured value — this is path data,
     // not a single id. Empty splat is allowed (request matches the
     // pattern's prefix with no remainder).
-    const rest = requestSegments.slice(fixedLen).join('/');
-    // We don't decodeURIComponent the splat — the static-files plugin
-    // wants per-segment decoding, and joining decoded segments would
-    // mangle paths containing '/'. Pass through verbatim; consumers
-    // decode if needed.
-    params['*'] = rest;
+    //
+    // The splat is passed through VERBATIM — no decodeURIComponent on
+    // either the whole string or per-segment. Consumers that want
+    // logical segment values must split on '/' and decode themselves.
+    // The current consumer (@ax/static-files) deliberately leaves the
+    // value encoded and feeds it to `path.resolve`, which treats
+    // sequences like `%2e%2e` as literal filename characters — encoded
+    // traversal attempts therefore resolve to non-existent files
+    // rather than escaping the root. (Decoding here would make `%2f`
+    // collapse into a path separator, which would defeat that.)
+    params['*'] = requestSegments.slice(fixedLen).join('/');
   }
   return params;
 }

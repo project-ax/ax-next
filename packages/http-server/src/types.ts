@@ -59,9 +59,10 @@ export interface HttpResponse {
   text(s: string): void;
   json(v: unknown): void;
   /**
-   * Send raw bytes (file contents, binary blobs). `contentType` is set
-   * on the Content-Type header; if a prior `header('content-type', …)`
-   * call ran, the explicit value wins. Single-shot like the rest.
+   * Send raw bytes (file contents, binary blobs). `contentType` is
+   * applied to the Content-Type header ONLY when no prior
+   * `header('content-type', …)` call has already set it — an explicit
+   * earlier `header()` always wins. Single-shot like the rest.
    */
   body(buf: Buffer, contentType?: string): void;
   end(): void;

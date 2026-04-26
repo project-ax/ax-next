@@ -416,6 +416,21 @@ describe('@ax/http-server', () => {
     expect(got.toString('hex')).toBe('89504e470d0a1a0a');
   });
 
+  it('res.body() does NOT override an earlier explicit header(content-type)', async () => {
+    // Pin the documented precedence: a prior `header('content-type', …)`
+    // call wins; the `contentType` arg to body() is only applied when no
+    // earlier header set it.
+    await registerRoute('GET', '/typed', async (_req, res) => {
+      res
+        .header('content-type', 'application/x-custom')
+        .body(Buffer.from([0x01, 0x02, 0x03]), 'application/octet-stream');
+    });
+    const r = await fetch(`http://127.0.0.1:${port}/typed`);
+    expect(r.status).toBe(200);
+    expect(r.headers.get('content-type')).toBe('application/x-custom');
+    expect(r.headers.get('content-length')).toBe('3');
+  });
+
   it('routes /* splat patterns capture remaining path into params["*"]', async () => {
     let captured = '';
     await registerRoute('GET', '/*', async (req, res) => {
