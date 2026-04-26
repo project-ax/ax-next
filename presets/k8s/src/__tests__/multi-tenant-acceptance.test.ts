@@ -74,8 +74,7 @@ import { createK8sPlugins, type K8sPresetConfig } from '../index.js';
 
 const COOKIE_KEY = randomBytes(32);
 const DEV_TOKEN = 'multi-tenant-acceptance-bootstrap-token';
-const CREDENTIALS_KEY_HEX =
-  '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+const CREDENTIALS_KEY_HEX = '42'.repeat(32);
 
 // MCP-style tool descriptors registered by `mcpFixturePlugin` BEFORE the
 // catalog seals. Names match the format mcp-client would have produced for
