@@ -152,6 +152,41 @@ export interface GetByReqIdInput {
 }
 export type GetByReqIdOutput = Conversation;
 
+/**
+ * Bind a sandbox session + in-flight reqId to a conversation row. Sets
+ * BOTH `active_session_id` AND `active_req_id` atomically (J6: one
+ * sandbox session per conversation at a time).
+ *
+ * Caller is the chat-orchestrator (Task 16) which has already validated
+ * the user via `agents:resolve` at `chat:run` entry. This hook does NOT
+ * call `agents:resolve`, but it DOES scope the row by `(conversation_id,
+ * user_id)` derived from `ctx.userId` — a misbehaving caller cannot bind
+ * a cross-tenant row.
+ *
+ * On a row not matching `(conversation_id, ctx.userId)` (and not
+ * tombstoned), throws `PluginError({ code: 'not-found' })`.
+ */
+export interface BindSessionInput {
+  conversationId: string;
+  sessionId: string;
+  reqId: string;
+}
+export type BindSessionOutput = void;
+
+/**
+ * Clear `active_session_id` AND `active_req_id` on the conversation row.
+ * Same `(conversation_id, ctx.userId)` scoping as `bind-session`. Throws
+ * `PluginError({ code: 'not-found' })` on a row mismatch.
+ *
+ * The host-internal `session:terminate` subscriber takes a different
+ * path (`store.clearBySessionId`) since it must clear ALL conversations
+ * bound to a sessionId regardless of owner.
+ */
+export interface UnbindSessionInput {
+  conversationId: string;
+}
+export type UnbindSessionOutput = void;
+
 // ---------------------------------------------------------------------------
 // Plugin config
 // ---------------------------------------------------------------------------

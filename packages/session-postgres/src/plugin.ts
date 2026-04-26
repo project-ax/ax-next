@@ -509,10 +509,16 @@ export function createSessionPostgresPlugin(
       );
 
       // ----- session:terminate -----
+      //
+      // After the service work is done, we ALSO `bus.fire('session:terminate',
+      // ...)` so subscribers (e.g. @ax/conversations clearing
+      // active_session_id, J6) observe the teardown without coupling through
+      // a service-call dependency. Fire-and-forget — subscriber failures are
+      // logged by HookBus and don't bubble back to the caller.
       bus.registerService<SessionTerminateInput, SessionTerminateOutput>(
         'session:terminate',
         PLUGIN_NAME,
-        async (_ctx, input) => {
+        async (ctx, input) => {
           const hookName = 'session:terminate';
           const sessionId = (input as { sessionId?: unknown })?.sessionId;
           requireString(sessionId, 'sessionId', hookName);
@@ -521,6 +527,9 @@ export function createSessionPostgresPlugin(
           // Wake any in-flight claims for this session; they'll see
           // terminated and resolve as `timeout` with echo cursor.
           await inbox!.terminate(sessionId);
+          // Broadcast to subscribers. Same hookName is used for both service
+          // and subscriber lanes; the bus keeps them separate.
+          await bus.fire('session:terminate', ctx, { sessionId });
           return {};
         },
       );

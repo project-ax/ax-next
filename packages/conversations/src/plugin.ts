@@ -21,6 +21,8 @@ import {
 import type {
   AppendTurnInput,
   AppendTurnOutput,
+  BindSessionInput,
+  BindSessionOutput,
   ConversationsConfig,
   CreateInput,
   CreateOutput,
@@ -32,6 +34,8 @@ import type {
   GetOutput,
   ListInput,
   ListOutput,
+  UnbindSessionInput,
+  UnbindSessionOutput,
 } from './types.js';
 
 const PLUGIN_NAME = '@ax/conversations';
@@ -74,9 +78,14 @@ export function createConversationsPlugin(
         'conversations:list',
         'conversations:delete',
         'conversations:get-by-req-id',
+        // Task 14 (Week 10–12): active_session_id lifecycle (J6).
+        'conversations:bind-session',
+        'conversations:unbind-session',
       ],
       calls: ['agents:resolve', 'database:get-instance'],
-      subscribes: ['chat:turn-end'],
+      // Task 14 (Week 10–12): subscribe to session:terminate so a sandbox
+      // teardown clears active_session_id on every bound conversation row.
+      subscribes: ['chat:turn-end', 'session:terminate'],
     },
 
     async init({ bus }) {
@@ -131,6 +140,26 @@ export function createConversationsPlugin(
         async (_ctx, input) => getByReqId(localStore, input),
       );
 
+      // Task 14 (Week 10–12): active_session_id lifecycle (J6).
+      //
+      // bind-session sets BOTH active_session_id AND active_req_id atomically
+      // on `(conversationId, ctx.userId)`. unbind-session clears both. Both
+      // hooks scope by ctx.userId — a misbehaving caller can't bind/unbind a
+      // cross-tenant row. Neither hook calls `agents:resolve`: the
+      // chat-orchestrator (Task 16) has already gated the user at chat:run
+      // entry; re-running the gate here would only add latency.
+      bus.registerService<BindSessionInput, BindSessionOutput>(
+        'conversations:bind-session',
+        PLUGIN_NAME,
+        async (ctx, input) => bindSession(localStore, ctx, input),
+      );
+
+      bus.registerService<UnbindSessionInput, UnbindSessionOutput>(
+        'conversations:unbind-session',
+        PLUGIN_NAME,
+        async (ctx, input) => unbindSession(localStore, ctx, input),
+      );
+
       // chat:turn-end auto-append (Task 3 of Week 10–12).
       //
       // The runner emits event.turn-end with `contentBlocks` + `role` after
@@ -151,9 +180,30 @@ export function createConversationsPlugin(
         PLUGIN_NAME,
         async (ctx, payload) => {
           await handleTurnEnd(bus, ctx, payload);
+          // Task 14 (J6): once the turn ends, clear active_req_id while
+          // KEEPING active_session_id. The sandbox stays alive for the next
+          // user message; only the in-flight reqId is dead. Compare-and-
+          // clear on reqId so a stale callback can't clobber a newer
+          // in-flight reqId.
+          await handleTurnEndClearReqId(localStore, ctx, payload);
           // Return undefined: pass-through (don't mutate the payload, don't
           // reject). HookBus treats undefined as "no change" so other
           // subscribers see the same payload we did.
+          return undefined;
+        },
+      );
+
+      // Task 14 (J6): session:terminate observation. Same hookName is used
+      // by both the session-backend service hook AND this subscriber lane;
+      // HookBus keeps them separate. We clear ALL conversations bound to
+      // this sessionId — the typical case is one row, but a defensive
+      // multi-row clear is correct (host-internal, no userId scope).
+      // Subscriber MUST NOT throw — fire-and-forget.
+      bus.subscribe<SessionTerminatePayload>(
+        'session:terminate',
+        PLUGIN_NAME,
+        async (ctx, payload) => {
+          await handleSessionTerminate(localStore, ctx, payload);
           return undefined;
         },
       );
@@ -180,6 +230,14 @@ interface TurnEndPayload {
   reason?: string;
   contentBlocks?: ContentBlock[];
   role?: 'user' | 'assistant' | 'tool';
+}
+
+// session:terminate fire payload — host-internal observation. The session
+// backend (session-postgres / session-inmemory) fires this AFTER the
+// service work completes. We only care about sessionId; any other fields
+// are forward-compat and we ignore them.
+interface SessionTerminatePayload {
+  sessionId?: string;
 }
 
 async function handleTurnEnd(
@@ -222,6 +280,55 @@ async function handleTurnEnd(
       conversationId,
       role,
       ...(payload.reqId !== undefined ? { reqId: payload.reqId } : {}),
+      err: err instanceof Error ? err : new Error(String(err)),
+    });
+  }
+}
+
+// Task 14 (J6): turn-end → clear active_req_id (compare-and-clear on
+// reqId) while leaving active_session_id alone. We need ctx.conversationId
+// AND payload.reqId — without both, we can't safely target the row.
+//
+// Compare-and-clear uses an `AND active_req_id = ?` predicate so a stale
+// turn-end (reqId=r1 arriving after a fresh r2 has been bound) is a no-op.
+// Subscriber MUST NOT throw — failures are logged.
+async function handleTurnEndClearReqId(
+  store: ConversationStore,
+  ctx: ChatContext,
+  payload: TurnEndPayload,
+): Promise<void> {
+  const conversationId = ctx.conversationId;
+  if (conversationId === undefined) return;
+  const reqId = payload.reqId;
+  if (typeof reqId !== 'string' || reqId.length === 0) return;
+  try {
+    await store.clearActiveReqId(conversationId, reqId);
+  } catch (err) {
+    ctx.logger.warn('conversations_clear_active_req_id_failed', {
+      conversationId,
+      reqId,
+      err: err instanceof Error ? err : new Error(String(err)),
+    });
+  }
+}
+
+// Task 14 (J6): session:terminate observation. Host-fired event with no
+// userId scope — we clear ALL conversations bound to the terminated
+// sessionId. By J6 this is typically a single row, but defensive multi-
+// row clear is correct: if the session is gone, no row may keep an
+// active_req_id pointing at it.
+async function handleSessionTerminate(
+  store: ConversationStore,
+  ctx: ChatContext,
+  payload: SessionTerminatePayload,
+): Promise<void> {
+  const sessionId = payload.sessionId;
+  if (typeof sessionId !== 'string' || sessionId.length === 0) return;
+  try {
+    await store.clearBySessionId(sessionId);
+  } catch (err) {
+    ctx.logger.warn('conversations_clear_by_session_failed', {
+      sessionId,
       err: err instanceof Error ? err : new Error(String(err)),
     });
   }
@@ -420,6 +527,79 @@ async function getByReqId(
     });
   }
   return conv;
+}
+
+// Bound conversationId / sessionId / reqId at the boundary. These come from
+// the chat-orchestrator (host-internal), but the same defensive shape check
+// we apply to every other hook input applies here — empty / oversized values
+// mustn't sneak past.
+function requireBoundedString(
+  value: unknown,
+  field: string,
+  hookName: string,
+): string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 256) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `'${field}' must be a non-empty string (≤ 256 chars)`,
+    });
+  }
+  return value;
+}
+
+async function bindSession(
+  store: ConversationStore,
+  ctx: ChatContext,
+  input: BindSessionInput,
+): Promise<BindSessionOutput> {
+  const hookName = 'conversations:bind-session';
+  const conversationId = requireBoundedString(
+    input.conversationId,
+    'conversationId',
+    hookName,
+  );
+  const sessionId = requireBoundedString(input.sessionId, 'sessionId', hookName);
+  const reqId = requireBoundedString(input.reqId, 'reqId', hookName);
+  const userId = requireBoundedString(ctx.userId, 'ctx.userId', hookName);
+  const updated = await store.setActiveSession({
+    conversationId,
+    userId,
+    sessionId,
+    reqId,
+  });
+  if (!updated) {
+    throw new PluginError({
+      code: 'not-found',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `conversation '${conversationId}' not found`,
+    });
+  }
+}
+
+async function unbindSession(
+  store: ConversationStore,
+  ctx: ChatContext,
+  input: UnbindSessionInput,
+): Promise<UnbindSessionOutput> {
+  const hookName = 'conversations:unbind-session';
+  const conversationId = requireBoundedString(
+    input.conversationId,
+    'conversationId',
+    hookName,
+  );
+  const userId = requireBoundedString(ctx.userId, 'ctx.userId', hookName);
+  const updated = await store.clearActiveSession({ conversationId, userId });
+  if (!updated) {
+    throw new PluginError({
+      code: 'not-found',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `conversation '${conversationId}' not found`,
+    });
+  }
 }
 
 async function deleteConversation(

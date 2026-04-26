@@ -23,6 +23,8 @@ export {
 export type {
   AppendTurnInput,
   AppendTurnOutput,
+  BindSessionInput,
+  BindSessionOutput,
   ContentBlock,
   Conversation,
   ConversationsConfig,
@@ -30,11 +32,15 @@ export type {
   CreateOutput,
   DeleteInput,
   DeleteOutput,
+  GetByReqIdInput,
+  GetByReqIdOutput,
   GetInput,
   GetOutput,
   ListInput,
   ListOutput,
   Turn,
   TurnRole,
+  UnbindSessionInput,
+  UnbindSessionOutput,
 } from './types.js';
 export { ContentBlockSchema } from './types.js';

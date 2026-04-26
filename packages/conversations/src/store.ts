@@ -177,6 +177,54 @@ export interface ConversationStore {
   appendTurn(args: ConversationStoreAppendTurnArgs): Promise<Turn>;
   /** Soft delete — sets deleted_at on the matching row. Idempotent: returns false on missing/already-deleted. */
   softDelete(conversationId: string): Promise<boolean>;
+  /**
+   * Set `active_session_id` + `active_req_id` atomically on the row
+   * matching `(conversationId, userId)`. Returns true if a non-tombstoned
+   * row was updated, false otherwise (including foreign-user rows). The
+   * plugin-level handler turns false into PluginError('not-found') (J6).
+   */
+  setActiveSession(args: {
+    conversationId: string;
+    userId: string;
+    sessionId: string;
+    reqId: string;
+  }): Promise<boolean>;
+  /**
+   * Clear `active_session_id` + `active_req_id` on the row matching
+   * `(conversationId, userId)`. Returns true if a non-tombstoned row was
+   * updated, false otherwise.
+   */
+  clearActiveSession(args: {
+    conversationId: string;
+    userId: string;
+  }): Promise<boolean>;
+  /**
+   * Compare-and-clear `active_req_id` on the row matching `conversationId`
+   * IFF the current `active_req_id` equals `expectedReqId`. Used by the
+   * `chat:turn-end` subscriber so a stale callback (turn-end for r1
+   * arrives after a fresh r2 has been bound) does NOT clobber the
+   * newer in-flight reqId. `active_session_id` is left untouched (J6:
+   * the sandbox stays alive for the next user message).
+   *
+   * Returns true if a row was updated, false otherwise (mismatched
+   * reqId, tombstoned, or already null).
+   */
+  clearActiveReqId(
+    conversationId: string,
+    expectedReqId: string,
+  ): Promise<boolean>;
+  /**
+   * Host-internal: clear `active_session_id` + `active_req_id` on EVERY
+   * conversation bound to `sessionId`. Triggered by the `session:terminate`
+   * subscriber — there's no userId scope because the host is observing
+   * a sandbox teardown, not acting on behalf of a tenant. By J6 / I4 the
+   * "many conversations bound to one sessionId" case shouldn't normally
+   * happen, but a defensive multi-row clear is correct: if the session is
+   * gone, no conversation may keep an active_req_id pointing at it.
+   *
+   * Returns the number of rows updated (0+).
+   */
+  clearBySessionId(sessionId: string): Promise<number>;
 }
 
 export function createConversationStore(
@@ -314,6 +362,74 @@ export function createConversationStore(
         .where('deleted_at', 'is', null)
         .executeTakeFirst();
       return Number(result.numUpdatedRows ?? 0n) > 0;
+    },
+
+    async setActiveSession({ conversationId, userId, sessionId, reqId }) {
+      // Filter by user_id alongside conversation_id so a foreign caller
+      // can never bind a row they don't own. Non-existence + foreign-user
+      // both look identical from the caller's perspective: numUpdatedRows
+      // === 0 → 'not-found' at the plugin layer.
+      const result = await db
+        .updateTable('conversations_v1_conversations')
+        .set({
+          active_session_id: sessionId,
+          active_req_id: reqId,
+          updated_at: new Date(),
+        })
+        .where('conversation_id', '=', conversationId)
+        .where('user_id', '=', userId)
+        .where('deleted_at', 'is', null)
+        .executeTakeFirst();
+      return Number(result.numUpdatedRows ?? 0n) > 0;
+    },
+
+    async clearActiveSession({ conversationId, userId }) {
+      const result = await db
+        .updateTable('conversations_v1_conversations')
+        .set({
+          active_session_id: null,
+          active_req_id: null,
+          updated_at: new Date(),
+        })
+        .where('conversation_id', '=', conversationId)
+        .where('user_id', '=', userId)
+        .where('deleted_at', 'is', null)
+        .executeTakeFirst();
+      return Number(result.numUpdatedRows ?? 0n) > 0;
+    },
+
+    async clearActiveReqId(conversationId, expectedReqId) {
+      // Compare-and-clear on `active_req_id`. If a fresh reqId has already
+      // been bound (e.g. a second user message arrived between this turn-
+      // end being fired and the subscriber running), the WHERE will miss
+      // and the newer in-flight reqId is preserved. This is essential for
+      // J6's "no stale clobber" property.
+      const result = await db
+        .updateTable('conversations_v1_conversations')
+        .set({ active_req_id: null, updated_at: new Date() })
+        .where('conversation_id', '=', conversationId)
+        .where('active_req_id', '=', expectedReqId)
+        .where('deleted_at', 'is', null)
+        .executeTakeFirst();
+      return Number(result.numUpdatedRows ?? 0n) > 0;
+    },
+
+    async clearBySessionId(sessionId) {
+      // No user_id filter — host-internal observation of a sandbox
+      // teardown. We clear active_session_id AND active_req_id together
+      // because if the session is gone, an in-flight reqId pointing at
+      // it is dead too.
+      const result = await db
+        .updateTable('conversations_v1_conversations')
+        .set({
+          active_session_id: null,
+          active_req_id: null,
+          updated_at: new Date(),
+        })
+        .where('active_session_id', '=', sessionId)
+        .where('deleted_at', 'is', null)
+        .executeTakeFirst();
+      return Number(result.numUpdatedRows ?? 0n);
     },
   };
 }
