@@ -1,0 +1,99 @@
+<task-notification>
+<task-id>ab407ead97c9cc501</task-id>
+<tool-use-id>toolu_01MYoBmfLA2kivccsSFWukLy</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-vpulim-dev-ai-ax-next/aafc5d1c-5ce3-4bf1-a411-b76da61e70f3/tasks/ab407ead97c9cc501.output</output-file>
+<status>completed</status>
+<summary>Agent "Implement Task 1: @ax/http-server scaffold" completed</summary>
+<result>Done.
+
+**New commit SHA:** `d7b2225`
+**Test count after fix:** 22 passed (1 file)
+**`pnpm build` from root:** clean (no errors)
+
+Changes made:
+- `packages/http-server/src/types.ts` — `HttpResponseSentEvent` is now exactly `{status: number, durationMs: number}`.
+- `packages/http-server/src/plugin.ts` — both fire sites (early-exit `finish()` helper and post-handler tail) drop `method` and `path` from the payload.
+- `packages/http-server/src/__tests__/plugin.test.ts` line 250 — replaced `payload.path` assertion with `typeof durationMs === 'number'` per the brief; the 204 status assertion stays.
+
+Per the system reminders just now: noted the deferred-tools list (none needed for this fix), the context7 MCP guidance (not applicable — no library docs needed), and re-read CLAUDE.md (the trim aligns with I1 / I5 — minimal payload, no leakage of HTTP-vocab through observation hooks beyond what observers strictly need).</result>
+<usage><total_tokens>141580</total_tokens><tool_uses>13</tool_uses><duration_ms>60452</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>ab407ead97c9cc501</task-id>
+<tool-use-id>toolu_01QSoAar4y1DJvF4dFdV2k9o</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-vpulim-dev-ai-ax-next/aafc5d1c-5ce3-4bf1-a411-b76da61e70f3/tasks/ab407ead97c9cc501.output</output-file>
+<status>completed</status>
+<summary>Agent "Implement Task 1: @ax/http-server scaffold" completed</summary>
+<result>Done. All four fixes applied:
+
+**New commit SHA:** `a57b3f4`
+**Test count:** 23 passed (added the N6 handler-did-not-respond case alongside the comment cleanup)
+**`pnpm build` from root:** clean. `pnpm lint`: clean.
+
+Summary of what changed:
+
+- **Fix 1** — pinned `HEADERS_TIMEOUT_MS = 30_000`, `REQUEST_TIMEOUT_MS = 60_000`, `KEEP_ALIVE_TIMEOUT_MS = 5_000` at module scope in `plugin.ts`, applied to `srv` before `listen()` with a one-line WHY about slowloris.
+- **Fix 2** — pinned the veto-only contract in the `HttpRequestEvent` docstring (`payload mutation is NOT honored`); added a one-line WHY at the call site in `plugin.ts` and a contract comment on the rejection test in `plugin.test.ts:206-208`.
+- **Fix 3** — stripped narrative blocks: file-level header in `plugin.ts`, `HttpServerPlugin`/`boundPort` docstring, all four `// ----` section dividers in `plugin.ts`, the multi-paragraph type docstrings in `types.ts`, and the YAGNI block at the top of `router.ts`. Kept the three load-bearing WHY comments the brief named (drain via resume, don't destroy mid-stream, first-cookie-wins). Compressed remaining block-of-bullets docstrings to two-sentence form. Removed in-code TODO-style explanations of `// 1. Method gate` etc. — the code reads cleanly without them.
+- **Fix 4** — `json()` now serializes `JSON.stringify(v)` BEFORE flipping `finished = true`, so a circular-ref / BigInt throw aborts the call without leaving the writer in a half-finished state.
+- **N6 (bonus)** — added "handler that never finishes the response → 500 handler-did-not-respond" test (23rd case).
+
+Skipped: Important #3 (logger), Important #4 (aborted-observer), N1/N2/N4/N5/N7/N8 (cosmetic). N9 not done — `HttpMethod` would have to be derived from the `Set` via `as const` or vice versa, and either direction adds a line of indirection that doesn't shrink the surface, so left it.
+
+Same boundary-review block in the commit message; same logical task; one clean commit.</result>
+<usage><total_tokens>170078</total_tokens><tool_uses>15</tool_uses><duration_ms>167377</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a976fcb058fe3dac1</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-vpulim-dev-ai-ax-next/aafc5d1c-5ce3-4bf1-a411-b76da61e70f3/tasks/a976fcb058fe3dac1.output</output-file>
+<status>completed</status>
+<summary>Agent "Implement Task 2: CSRF + cookies" completed</summary>
+<result>All four fixes applied and amended.
+
+## Report
+
+**New SHA:** `55f792572171775a3ac2b8468999004a2ad68579`
+
+**Test count:** 90 tests in `@ax/http-server` (was 79 → +11):
+- +1 for the HMAC length short-circuit case (Fix 2)
+- +10 for header-injection regressions on cookie name / path / domain (CR/LF and `;`) plus a pin that `signCookieValue` is safe by virtue of base64url encoding (Fix 3)
+
+**Changes amended in:**
+- `packages/http-server/src/csrf.ts` — dropped `csrf-failed:no-bypass-header` from `CsrfReason` union (Fix 1)
+- `packages/http-server/src/cookies.ts` — added `validateCookiePath` (`/^\/[A-Za-z0-9._~/\-%]*$/`) and `validateCookieDomain` (`/^[A-Za-z0-9.\-]+$/`); both wired into `buildSetCookieHeader` and `buildClearCookieHeader` before the verbatim header concatenation (Fix 4)
+- `packages/http-server/src/__tests__/cookies.test.ts` — new test covering the `sigPart.length !== HMAC_B64URL_LEN` short-circuit (Fix 2); new `cookies — header injection defenses` describe block with 10 tests covering CR/LF and `;` smuggling through name/path/domain plus a positive case pinning that base64url encoding handles a malicious plaintext (Fix 3)
+
+`pnpm build` from root: clean. No other packages affected.</result>
+<usage><total_tokens>141124</total_tokens><tool_uses>16</tool_uses><duration_ms>114693</duration_ms></usage>
+</task-notification>
+
+---
+
+continue executing Week 9.5 plan
+
+---
+
+check final CI status on PR #16
+
+---
+
+check final CI status on PR #16
+
+---
+
+check final CI status on PR #16
+
+---
+
+address PR comments
+
+---
+
+verify CI is green on the latest push to PR #16 and report
