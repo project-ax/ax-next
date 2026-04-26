@@ -127,7 +127,7 @@ describe('store + migrations round-trip', () => {
     expect(created.activeSessionId).toBeNull();
     expect(created.activeReqId).toBeNull();
 
-    const round = await store.getById(created.conversationId);
+    const round = await store.getByIdNotDeleted(created.conversationId);
     expect(round).not.toBeNull();
     expect(round!.conversationId).toBe(created.conversationId);
   });
@@ -196,10 +196,6 @@ describe('store + migrations round-trip', () => {
 
     // getByIdNotDeleted hides the tombstone too.
     expect(await store.getByIdNotDeleted(b.conversationId)).toBeNull();
-    // getById does NOT — useful for audit / undelete paths later.
-    const raw = await store.getById(b.conversationId);
-    expect(raw).not.toBeNull();
-    expect(raw!.title).toBe('Tombstone');
   });
 
   it('scopedConversations filters by user_id', async () => {

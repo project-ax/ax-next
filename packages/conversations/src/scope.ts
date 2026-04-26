@@ -17,11 +17,11 @@ import type { ConversationDatabase } from './migrations.js';
  * `.orderBy`, `.limit`, `.where('agent_id', '=', …)` etc. without
  * dragging unscoped query builders past the helper.
  *
- * Per-conversation reads (`getById`) are allowed to query directly in
- * `store.ts` because they're inside the file the lint rule trusts AND
- * because the plugin's hook handler ALWAYS calls `agents:resolve` first
- * with the row's `agent_id` (i.e. ACL is gated on the agent, not just
- * user_id).
+ * Per-conversation reads (`getByIdNotDeleted`) are allowed to query
+ * directly in `store.ts` because they're inside the file the lint rule
+ * trusts AND because the plugin's hook handler ALWAYS calls
+ * `agents:resolve` first with the row's `agent_id` (i.e. ACL is gated
+ * on the agent, not just user_id).
  */
 export interface ConversationScope {
   userId: string;

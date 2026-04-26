@@ -145,9 +145,7 @@ export interface ConversationStoreAppendTurnArgs {
 }
 
 export interface ConversationStore {
-  /** Single-row lookup. Returns the conversation regardless of soft-delete state — callers filter. */
-  getById(conversationId: string): Promise<Conversation | null>;
-  /** Same as getById but skips tombstones; used in hook handlers after agents:resolve. */
+  /** Single-row lookup; skips tombstones. Used in hook handlers after agents:resolve. */
   getByIdNotDeleted(conversationId: string): Promise<Conversation | null>;
   /** Multi-row reads always go through scopedConversations(). */
   listForUser(userId: string, agentId?: string): Promise<Conversation[]>;
@@ -163,15 +161,6 @@ export function createConversationStore(
   db: Kysely<ConversationDatabase>,
 ): ConversationStore {
   return {
-    async getById(conversationId) {
-      const row = await db
-        .selectFrom('conversations_v1_conversations')
-        .selectAll('conversations_v1_conversations')
-        .where('conversation_id', '=', conversationId)
-        .executeTakeFirst();
-      return row === undefined ? null : rowToConversation(row);
-    },
-
     async getByIdNotDeleted(conversationId) {
       const row = await db
         .selectFrom('conversations_v1_conversations')
@@ -225,78 +214,56 @@ export function createConversationStore(
     async appendTurn({ conversationId, role, contentBlocks }) {
       // Compute turn_index inside a transaction with row-level locking on
       // the conversation row. Concurrent inserts on the same conversation
-      // serialize through SELECT ... FOR UPDATE; a fallback retry on the
-      // UNIQUE(conversation_id, turn_index) constraint handles edge
-      // cases where postgres advisory lock contention loses a race
-      // (theoretically can't happen with FOR UPDATE, but defensively
-      // we still retry once on 23505).
-      const MAX_ATTEMPTS = 3;
-      let lastErr: unknown;
-      for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-        try {
-          return await db.transaction().execute(async (trx) => {
-            // Lock the conversation row to serialize appendTurn calls
-            // for this conversation. Reading + write happen inside the
-            // same tx so isolation is consistent.
-            await trx
-              .selectFrom('conversations_v1_conversations')
-              .select('conversation_id')
-              .where('conversation_id', '=', conversationId)
-              .forUpdate()
-              .executeTakeFirstOrThrow();
+      // serialize through SELECT ... FOR UPDATE, so the UNIQUE(
+      // conversation_id, turn_index) constraint can never trip — the
+      // index lookup, mint, and insert all happen under the lock.
+      return await db.transaction().execute(async (trx) => {
+        // Lock the conversation row to serialize appendTurn calls for
+        // this conversation. Reading + write happen inside the same tx
+        // so isolation is consistent.
+        await trx
+          .selectFrom('conversations_v1_conversations')
+          .select('conversation_id')
+          .where('conversation_id', '=', conversationId)
+          .forUpdate()
+          .executeTakeFirstOrThrow();
 
-            const lastRow = await trx
-              .selectFrom('conversations_v1_turns')
-              .select('turn_index')
-              .where('conversation_id', '=', conversationId)
-              .orderBy('turn_index', 'desc')
-              .limit(1)
-              .executeTakeFirst();
-            const nextIndex = lastRow === undefined ? 0 : lastRow.turn_index + 1;
+        const lastRow = await trx
+          .selectFrom('conversations_v1_turns')
+          .select('turn_index')
+          .where('conversation_id', '=', conversationId)
+          .orderBy('turn_index', 'desc')
+          .limit(1)
+          .executeTakeFirst();
+        const nextIndex = lastRow === undefined ? 0 : lastRow.turn_index + 1;
 
-            const id = mintTurnId();
-            const now = new Date();
-            const row = await trx
-              .insertInto('conversations_v1_turns')
-              .values({
-                turn_id: id,
-                conversation_id: conversationId,
-                turn_index: nextIndex,
-                role,
-                // Kysely's pg dialect serializes JSONB on the way down;
-                // pass the array directly via JSON.stringify (matches
-                // @ax/agents store pattern for allowed_tools).
-                content_blocks: JSON.stringify(contentBlocks) as unknown,
-                created_at: now,
-              } as never)
-              .returningAll()
-              .executeTakeFirstOrThrow();
+        const id = mintTurnId();
+        const now = new Date();
+        const row = await trx
+          .insertInto('conversations_v1_turns')
+          .values({
+            turn_id: id,
+            conversation_id: conversationId,
+            turn_index: nextIndex,
+            role,
+            // Kysely's pg dialect serializes JSONB on the way down; pass
+            // the array directly via JSON.stringify (matches @ax/agents
+            // store pattern for allowed_tools).
+            content_blocks: JSON.stringify(contentBlocks) as unknown,
+            created_at: now,
+          } as never)
+          .returningAll()
+          .executeTakeFirstOrThrow();
 
-            // Touch updated_at on the parent row so list orderings stay
-            // sensible. Stays inside the same tx.
-            await trx
-              .updateTable('conversations_v1_conversations')
-              .set({ updated_at: now })
-              .where('conversation_id', '=', conversationId)
-              .execute();
+        // Touch updated_at on the parent row so list orderings stay
+        // sensible. Stays inside the same tx.
+        await trx
+          .updateTable('conversations_v1_conversations')
+          .set({ updated_at: now })
+          .where('conversation_id', '=', conversationId)
+          .execute();
 
-            return rowToTurn(row as TurnsRow);
-          });
-        } catch (err) {
-          // Postgres unique-violation — race we couldn't avoid. Retry.
-          const code = (err as { code?: string } | null)?.code;
-          if (code === '23505') {
-            lastErr = err;
-            continue;
-          }
-          throw err;
-        }
-      }
-      throw new PluginError({
-        code: 'append-turn-conflict',
-        plugin: PLUGIN_NAME,
-        message: `appendTurn for '${conversationId}' lost ${MAX_ATTEMPTS} retries on turn_index unique violation`,
-        cause: lastErr,
+        return rowToTurn(row as TurnsRow);
       });
     },
 
