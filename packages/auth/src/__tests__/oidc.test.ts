@@ -78,62 +78,6 @@ async function dropTables(): Promise<void> {
   }
 }
 
-async function bootStack(): Promise<BootedStack> {
-  await dropTables();
-  // Fake IdP first — so its baseUrl can feed the auth config's issuer.
-  const idp = await startFakeIdp({
-    clientId: 'fake-client-id',
-    subject: SUBJECT,
-    email: 'a@example.com',
-    name: 'Test User',
-  });
-
-  // Boot the kernel/harness with three plugins. http-server FIRST because
-  // auth.init calls http:register-route during its init.
-  process.env.AX_HTTP_ALLOW_NO_ORIGINS = '1';
-  const http = createHttpServerPlugin({
-    host: '127.0.0.1',
-    port: 0,
-    cookieKey: COOKIE_KEY,
-    allowedOrigins: [],
-  });
-  const harness = await createTestHarness({
-    plugins: [
-      createDatabasePostgresPlugin({ connectionString }),
-      http,
-      // redirectUri is computed AFTER http binds — so we boot http first
-      // (its init resolves the port), then construct auth via a closure
-      // hack? No — http.boundPort() works once http.init has resolved,
-      // but bootstrap walks plugins in order. createTestHarness's loop
-      // awaits each plugin.init in sequence; by the time we get to auth
-      // (last), http.boundPort() is live. We capture port via a getter.
-      createAuthPlugin({
-        providers: {
-          google: {
-            clientId: 'fake-client-id',
-            clientSecret: 'fake-secret',
-            issuer: idp.baseUrl,
-            // host:port computed at config time using a port allocated
-            // out-of-band would race; we instead use the well-known
-            // fact that http.boundPort() is available post-init. But
-            // the auth plugin captures redirectUri at construction.
-            // Workaround: pre-allocate via a getter; tests below use a
-            // literal redirectUri matching http's port set after boot,
-            // wired by patching post-construction. Simpler:
-            // http-server's port is selected by the OS at listen time;
-            // we pre-bind a dedicated http listener for tests below.
-            // For this fixture we rebuild the auth plugin with the
-            // resolved port — see `bootStack` below.
-            redirectUri: 'http://127.0.0.1:0/auth/callback/google',
-          },
-        },
-      }),
-    ],
-  });
-
-  return { harness, http, port: http.boundPort(), idp };
-}
-
 // The redirect_uri must EXACTLY match what we register at the IdP. Since
 // the http listener picks a random port, we pre-bind, then re-create the
 // auth plugin with the resolved port. Wrapping the boot logic this way

@@ -67,7 +67,6 @@ export async function startFakeIdp(opts: FakeIdpOptions): Promise<StartedFakeIdp
   const server = http.createServer((req, res) => {
     void handle(req, res).catch((err) => {
       // Defensive — fake IdP must not blow up the test runner.
-      // eslint-disable-next-line no-console
       console.error('[fake-idp] handler error', err);
       try {
         res.statusCode = 500;

@@ -395,7 +395,7 @@ beforeAll(async () => {
   // bootstrap (kernel topo-sorts on calls/registers); we keep the original
   // order otherwise so a reader's mental model of "preset = list" stays
   // intact.
-  let plugins: Plugin[] = built
+  const plugins: Plugin[] = built
     .filter((p) => p.manifest.name !== '@ax/llm-anthropic')
     .filter((p) => p.manifest.name !== '@ax/sandbox-k8s');
   plugins.push(llmMockPlugin());

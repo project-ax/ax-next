@@ -28,7 +28,7 @@ describe('rate-limit / deriveKey', () => {
 
 describe('rate-limit / createRateLimiter', () => {
   it('allows up to N requests per window then rejects', () => {
-    let now = 0;
+    const now = 0;
     const lim = createRateLimiter({
       tokensPerWindow: 3,
       windowMs: 1000,
