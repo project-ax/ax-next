@@ -4,10 +4,18 @@ import type { Kysely } from 'kysely';
 import type { AuthDatabase } from './migrations.js';
 import type { User } from './types.js';
 
-const PLUGIN_NAME = '@ax/auth';
+const PLUGIN_NAME = '@ax/auth-oidc';
 
 // ---------------------------------------------------------------------------
 // User + session persistence.
+//
+// All `auth_v1_*` queries are scoped to this file. Other plugins MUST
+// route through service hooks (`auth:require-user` etc.); the
+// `local/no-bare-tenant-tables` ESLint rule (eslint-rules/) flags any
+// `db.selectFrom('auth_v1_*')` outside `store.ts` / `scope.ts` /
+// `__tests__/`. That rule is the lock-in that keeps the alternate-impl
+// boundary clean — a future `@ax/auth-better-auth` owns its own tables
+// and the swap doesn't touch consumers.
 //
 // `auth_v1_users` rows map IdP-issued (provider, subject) pairs to our
 // internal user_id. `auth_v1_sessions` rows hold the http login session;

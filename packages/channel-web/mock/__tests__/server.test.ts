@@ -21,16 +21,18 @@ describe('mock server router', () => {
   beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'mock-server-')); });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-  it('routes /api/auth/get-session, /api/agents, and /api/admin/agents through the right handlers', async () => {
+  it('routes /admin/me, /api/agents, and /api/admin/agents through the right handlers', async () => {
     const handler = createMockHandler(dir);
     const { url, close } = await start(handler);
     try {
       // Anonymous → 401
-      let res = await fetch(`${url}/api/auth/get-session`);
+      let res = await fetch(`${url}/admin/me`);
       expect(res.status).toBe(401);
 
-      // Sign in as Alice via callback shortcut
-      res = await fetch(`${url}/api/auth/callback?user=u2`, { redirect: 'manual' });
+      // Sign in as Alice via the mock callback shortcut
+      res = await fetch(`${url}/auth/mock/google-callback?user=u2`, {
+        redirect: 'manual',
+      });
       expect(res.status).toBe(302);
       const cookie = res.headers.get('set-cookie')!.split(';')[0]!;
 

@@ -543,6 +543,14 @@ class ResponseWriter {
         this.finished = true;
         this.flush('application/json; charset=utf-8', body);
       },
+      body: (buf: Buffer, contentType?: string) => {
+        if (this.finished) throw new Error('response already finished');
+        if (!Buffer.isBuffer(buf)) {
+          throw new TypeError('body() requires a Buffer');
+        }
+        this.finished = true;
+        this.flushBytes(contentType ?? 'application/octet-stream', buf);
+      },
       end: () => {
         if (this.finished) throw new Error('response already finished');
         this.finished = true;
@@ -577,6 +585,17 @@ class ResponseWriter {
     if (!this.headers.has('content-type')) {
       this.headers.set('content-type', contentType);
     }
+    this.writeHead();
+    this.res.end(body);
+  }
+
+  private flushBytes(contentType: string, body: Buffer): void {
+    if (!this.headers.has('content-type')) {
+      this.headers.set('content-type', contentType);
+    }
+    // Pin a numeric Content-Length so HTTP/1.1 pipelining works without
+    // chunked-transfer overhead. Buffer.length is the byte length.
+    this.headers.set('content-length', body.length.toString());
     this.writeHead();
     this.res.end(body);
   }

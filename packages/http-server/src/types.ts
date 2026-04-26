@@ -58,6 +58,13 @@ export interface HttpResponse {
   header(name: string, value: string): HttpResponse;
   text(s: string): void;
   json(v: unknown): void;
+  /**
+   * Send raw bytes (file contents, binary blobs). `contentType` is
+   * applied to the Content-Type header ONLY when no prior
+   * `header('content-type', …)` call has already set it — an explicit
+   * earlier `header()` always wins. Single-shot like the rest.
+   */
+  body(buf: Buffer, contentType?: string): void;
   end(): void;
   redirect(url: string, status?: number): void;
   setSignedCookie(name: string, value: string, opts?: SignedCookieOptions): void;

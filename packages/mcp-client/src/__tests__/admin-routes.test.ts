@@ -16,7 +16,7 @@ import { HookBus, bootstrap, makeChatContext, type Plugin } from '@ax/core';
 import { createTestHarness, type TestHarness } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createHttpServerPlugin, type HttpServerPlugin } from '@ax/http-server';
-import { createAuthPlugin } from '@ax/auth';
+import { createAuthPlugin } from '@ax/auth-oidc';
 import { createCredentialsPlugin } from '@ax/credentials';
 import { createToolDispatcherPlugin } from '@ax/tool-dispatcher';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';

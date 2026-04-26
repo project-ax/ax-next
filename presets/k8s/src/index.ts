@@ -19,8 +19,9 @@ import { createCredentialsPlugin } from '@ax/credentials';
 import { createIpcHttpPlugin } from '@ax/ipc-http';
 import { createAgentsPlugin } from '@ax/agents';
 import { createHttpServerPlugin } from '@ax/http-server';
-import { createAuthPlugin, type AuthConfig } from '@ax/auth';
+import { createAuthPlugin, type AuthConfig } from '@ax/auth-oidc';
 import { createTeamsPlugin } from '@ax/teams';
+import { createStaticFilesPlugin } from '@ax/static-files';
 
 // ---------------------------------------------------------------------------
 // @ax/preset-k8s — production assembly: postgres trio + workspace-git +
@@ -256,6 +257,26 @@ export interface K8sPresetConfig {
     /** Session cookie lifetime. Default 7 days (in @ax/auth). */
     sessionLifetimeSeconds?: number;
   };
+  /**
+   * Optional static-file serving (production single-binary mode). When
+   * set, mounts `@ax/static-files` after the API routes so it serves
+   * channel-web's bundle on otherwise-unmatched paths. SPA fallback
+   * defaults to `true` (returns `index.html` for unknown paths so
+   * client-side routing works). Leave unset for dev — Vite handles
+   * static + proxy in dev.
+   */
+  staticFiles?: {
+    /** Absolute path to the directory to serve (e.g., channel-web/dist). */
+    dir: string;
+    /** URL pattern, defaults to `/*`. */
+    mountPath?: string;
+    /**
+     * SPA fallback (default `true` = serve `index.html` on miss).
+     * Pass a string to use a different fallback file; pass `false`
+     * to return 404 on miss.
+     */
+    spaFallback?: boolean | string;
+  };
 }
 
 /**
@@ -371,6 +392,24 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // http:register-route + auth:require-user when this flag is set, which
   // is exactly what the kernel's topo-sort needs to see.
   plugins.push(createTeamsPlugin({ mountAdminRoutes: true }));
+
+  // static-files (optional): serves channel-web's bundle from the same
+  // listener so cookies and CSRF stay same-origin in production. The
+  // plugin registers a `/*` catchall LAST so every API route registered
+  // earlier wins. When `staticFiles` is unset, no catchall is mounted
+  // and unknown paths return 404 — the dev workflow uses Vite's proxy
+  // instead. SPA fallback defaults on so client-side routing works.
+  if (config.staticFiles !== undefined) {
+    plugins.push(
+      createStaticFilesPlugin({
+        dir: config.staticFiles.dir,
+        ...(config.staticFiles.mountPath !== undefined
+          ? { mountPath: config.staticFiles.mountPath }
+          : {}),
+        spaFallback: config.staticFiles.spaFallback ?? true,
+      }),
+    );
+  }
 
   // ----- 6. chat plane ---------------------------------------------------
   // sandbox-k8s registers `sandbox:open-session`. No subprocess fallback

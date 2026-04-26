@@ -5,7 +5,7 @@ import { runAdminCommand } from '../commands/admin.js';
 // ---------------------------------------------------------------------------
 // Tests for `ax-next admin bootstrap`. We don't stand up a real kernel here —
 // the dev-bootstrap server-side path already has its own integration tests
-// in @ax/auth (postgres testcontainer). The CLI's job is:
+// in @ax/auth-oidc (postgres testcontainer). The CLI's job is:
 //   1. Validate args + env (AX_DEV_BOOTSTRAP_TOKEN required, etc.).
 //   2. POST /auth/dev-bootstrap with the right shape + CSRF header.
 //   3. Extract the session cookie from Set-Cookie, print to STDERR not STDOUT.

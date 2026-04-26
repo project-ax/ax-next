@@ -29,7 +29,8 @@
     { "path": "../../packages/ipc-http" },
     { "path": "../../packages/agents" },
     { "path": "../../packages/http-server" },
-    { "path": "../../packages/auth" },
-    { "path": "../../packages/teams" }
+    { "path": "../../packages/auth-oidc" },
+    { "path": "../../packages/teams" },
+    { "path": "../../packages/static-files" }
   ]
 }

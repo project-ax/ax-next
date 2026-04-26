@@ -1,5 +1,27 @@
 /**
- * @ax/auth public hook payload types.
+ * @ax/auth-oidc public hook payload types.
+ *
+ * BOUNDARY CONTRACT — these types are the auth alternate-impl boundary
+ * (mirrors the `@ax/sandbox-k8s` / `@ax/sandbox-subprocess` pattern).
+ * A future `@ax/auth-better-auth`, `@ax/auth-saml`, or `@ax/auth-local`
+ * MUST register the same hook surface with the same shapes. Consumers
+ * (`@ax/agents`, the chat orchestrator, the CLI bootstrap, channel-web)
+ * resolve users only through the bus — they MUST NOT duplicate the
+ * `User` type or speak directly to `auth_v1_*` tables.
+ *
+ * Lock-ins keeping the swap cheap:
+ *   1. `User` lives here only. Consumers reference this type, never copy
+ *      it. Drift = boundary violation. If a consumer needs a subset
+ *      (`{userId, isAdmin}` for an actor payload), that's fine — subsets
+ *      don't break alternate impls.
+ *   2. Tenant tables (`auth_v1_*`) are scoped to this package's
+ *      `store.ts`. The `local/no-bare-tenant-tables` ESLint rule
+ *      enforces it; alternate impls own their own tables.
+ *   3. IdP-callback error sanitization is part of the contract, not the
+ *      impl: an alternate auth plugin MUST log only `error.code`,
+ *      NEVER `error.message` (raw IdP errors carry user-controlled
+ *      `state` and other request echoes). See `oidc.ts`'s
+ *      `auth_callback_failed` log line for the established shape.
  *
  * NOTE on `HttpRequestLike`: this plugin MUST NOT import from
  * `@ax/http-server` (Invariant I2 — no cross-plugin imports). To accept a
@@ -19,6 +41,12 @@ export interface HttpRequestLike {
   signedCookie(name: string): string | null;
 }
 
+/**
+ * Authenticated user as seen by every consumer (chat path, admin
+ * endpoints, CLI). This is the boundary type — DO NOT redefine in
+ * consumers. If a future field lands (e.g., `mfaEnrolled`), add it here
+ * and let TypeScript surface every consumer that needs to handle it.
+ */
 export interface User {
   id: string;
   email: string | null;

@@ -128,7 +128,7 @@ async function signInAsAdmin(port: number): Promise<{
   return { cookieHeader, signedCookieValue };
 }
 
-describe('@ax/auth /admin/me + /admin/sign-out', () => {
+describe('@ax/auth-oidc /admin/me + /admin/sign-out', () => {
   let stack: BootedStack;
 
   afterEach(async () => {
@@ -176,11 +176,20 @@ describe('@ax/auth /admin/me + /admin/sign-out', () => {
   it('GET /admin/me with a tampered cookie → 401', async () => {
     stack = await bootStack();
     const { signedCookieValue } = await signInAsAdmin(stack.port);
-    // Flip the last char of the signature. base64url alphabet has plenty
-    // of options; we pick 'A' or 'B' to be safe regardless of original.
-    const last = signedCookieValue.slice(-1);
-    const swapped = last === 'A' ? 'B' : 'A';
-    const tampered = signedCookieValue.slice(0, -1) + swapped;
+    // Flip the FIRST char of the HMAC segment (right after the dot),
+    // NOT the last char. A 32-byte HMAC base64url-encodes to 43 chars
+    // where the trailing char carries 4 bits of real data plus 2
+    // padding bits; Node's lenient decoder ignores those padding bits,
+    // so flipping the last char between e.g. 'A'↔'B' (and 15 other
+    // 4-element groups like {E,F,G,H}…) would slip past the HMAC check
+    // ~6% of the time depending on the random session key. Non-final
+    // chars have no such ambiguity.
+    const dot = signedCookieValue.lastIndexOf('.');
+    const firstSigChar = signedCookieValue[dot + 1]!;
+    const tampered =
+      signedCookieValue.slice(0, dot + 1) +
+      (firstSigChar === 'A' ? 'B' : 'A') +
+      signedCookieValue.slice(dot + 2);
     const r = await fetch(`http://127.0.0.1:${stack.port}/admin/me`, {
       headers: { cookie: `ax_auth_session=${tampered}` },
     });

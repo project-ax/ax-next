@@ -15,28 +15,6 @@ const SET_COOKIE = (id: string) =>
   `${COOKIE_NAME}=${id}; Path=/; SameSite=Lax`;
 const CLEAR_COOKIE = `${COOKIE_NAME}=; Path=/; Max-Age=0`;
 
-/**
- * Force `callbackURL` to be a path-relative URL or fall back to `/`.
- *
- * Open-redirect mitigation: a raw `callbackURL` sent through to the
- * `Location:` header would let an attacker craft a sign-in link that
- * lands the user on `https://evil.example` after auth, with the
- * domain's session cookie freshly set. Mock-only today, but the pattern
- * propagates — keep it tight here so the real backend inherits the
- * same guard when this code is rewritten.
- *
- * Allowed: `/`, `/foo`, `/foo?bar=baz`. Rejected (mapped to `/`):
- * absolute URLs, scheme-relative URLs (`//evil.example`), anything
- * not starting with a single `/`, and `null`/`undefined`.
- */
-function sanitizeCallbackURL(raw: string | null | undefined): string {
-  if (typeof raw !== 'string') return '/';
-  if (!raw.startsWith('/')) return '/';
-  // Reject scheme-relative URLs like `//evil.example/path`.
-  if (raw.startsWith('//')) return '/';
-  return raw;
-}
-
 function readCookie(req: IncomingMessage, name: string): string | undefined {
   const header = req.headers.cookie ?? '';
   for (const part of header.split(/;\s*/)) {
@@ -44,19 +22,6 @@ function readCookie(req: IncomingMessage, name: string): string | undefined {
     if (k === name) return v;
   }
   return undefined;
-}
-
-async function readJsonBody(req: IncomingMessage): Promise<unknown> {
-  let raw = '';
-  for await (const chunk of req) {
-    raw += typeof chunk === 'string' ? chunk : (chunk as Buffer).toString('utf8');
-  }
-  if (!raw) return {};
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return {};
-  }
 }
 
 function send(res: ServerResponse, status: number, body?: unknown, headers: Record<string, string> = {}): void {
@@ -116,41 +81,73 @@ export function canUseAgent(user: User, agent: AclAgent, store: Store): boolean 
   return false;
 }
 
+/**
+ * Translate the mock store's UI-shaped User to the BackendUser wire
+ * shape `@ax/auth-oidc` returns from /admin/me. Mirrors `lib/auth.ts`'s
+ * inverse mapping so the UI's wire client and this mock agree on the
+ * boundary contract.
+ */
+interface BackendUser {
+  id: string;
+  email: string | null;
+  displayName: string | null;
+  isAdmin: boolean;
+}
+
+function toBackendUser(u: User): BackendUser {
+  return {
+    id: u.id,
+    email: u.email,
+    displayName: u.name,
+    isAdmin: u.role === 'admin',
+  };
+}
+
 export function authMiddleware(
   store: Store,
 ): (req: IncomingMessage, res: ServerResponse) => Promise<boolean> {
   return async (req, res) => {
     const url = req.url ?? '';
-    if (!url.startsWith('/api/auth/')) return false;
-
-    // Strip query for routing comparisons.
-    const [path, query = ''] = url.split('?', 2);
+    const [pathRaw, query = ''] = url.split('?', 2);
+    const path = pathRaw ?? '';
     const method = req.method ?? 'GET';
 
-    if (path === '/api/auth/get-session' && method === 'GET') {
+    // Mock the @ax/auth-oidc wire surface (NOT the v1 better-auth shape):
+    //   GET  /auth/sign-in/google
+    //   GET  /auth/callback/google
+    //   GET  /admin/me
+    //   POST /admin/sign-out
+    // Plus a mock-only `/auth/mock/google-callback` that stands in for
+    // Google's redirect — Vite dev never reaches the real Google.
+
+    // ---- Session readback --------------------------------------------------
+    if (path === '/admin/me' && method === 'GET') {
       const user = requireSession(req, store);
       if (!user) {
-        send(res, 401, {});
+        send(res, 401, { error: 'unauthenticated' });
         return true;
       }
-      send(res, 200, { user });
+      send(res, 200, { user: toBackendUser(user) });
       return true;
     }
 
-    if (path === '/api/auth/sign-in/social' && method === 'POST') {
-      const body = (await readJsonBody(req)) as { callbackURL?: string };
-      const callbackURL = sanitizeCallbackURL(body.callbackURL);
-      // Default mock user: u2 (Alice, regular user). Tests targeting admin
-      // (u1) hit /api/auth/callback?user=u1 directly.
-      const callback = `/api/auth/callback?user=u2&callbackURL=${encodeURIComponent(callbackURL)}`;
-      send(res, 200, { url: callback });
+    // ---- Sign-in (sync redirect, mirrors the real backend) -----------------
+    if (path === '/auth/sign-in/google' && method === 'GET') {
+      // Real backend hands off to Google; the mock skips ahead to the
+      // post-callback step. Default to user u2 (Alice, regular user);
+      // override via ?user=<id> for admin testing.
+      const params = new URLSearchParams(query);
+      const userId = params.get('user') ?? 'u2';
+      send(res, 302, undefined, {
+        Location: `/auth/mock/google-callback?user=${encodeURIComponent(userId)}`,
+      });
       return true;
     }
 
-    if (path === '/api/auth/callback' && method === 'GET') {
+    // ---- Mock callback: sets cookie, redirects to / -----------------------
+    if (path === '/auth/mock/google-callback' && method === 'GET') {
       const params = new URLSearchParams(query);
       const userId = params.get('user') ?? '';
-      const callbackURL = sanitizeCallbackURL(params.get('callbackURL'));
       const user = store.collection<User>('users').get(userId);
       if (!user) {
         send(res, 400, { error: 'unknown user' });
@@ -158,16 +155,39 @@ export function authMiddleware(
       }
       send(res, 302, undefined, {
         'Set-Cookie': SET_COOKIE(user.id),
-        Location: callbackURL,
+        Location: '/',
       });
       return true;
     }
 
-    if (path === '/api/auth/sign-out' && method === 'POST') {
+    // ---- Sign-out (POST, idempotent, CSRF inherited from real backend) ----
+    if (path === '/admin/sign-out' && method === 'POST') {
+      // Real backend would reject without `Origin` allow-list match OR
+      // `X-Requested-With: ax-admin`. Mock honours the same rule for
+      // posture parity — the UI sends X-Requested-With.
+      const xrw = req.headers['x-requested-with'];
+      if (xrw !== 'ax-admin') {
+        send(res, 403, { error: 'csrf-failed' });
+        return true;
+      }
       send(res, 204, undefined, { 'Set-Cookie': CLEAR_COOKIE });
+      return true;
+    }
+
+    // ---- Backwards-compat: keep /api/auth/* alive during migration --------
+    // Tests / external scripts that still poke the v1 paths get a 410 so
+    // the failure is loud and trivially greppable. Drop this block once
+    // all callers are off the old wire.
+    if (path.startsWith('/api/auth/')) {
+      send(res, 410, {
+        error: 'gone',
+        message:
+          '/api/auth/* moved to /auth/* + /admin/me — see packages/channel-web/src/lib/auth.ts',
+      });
       return true;
     }
 
     return false;
   };
 }
+

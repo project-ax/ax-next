@@ -9,7 +9,7 @@ beforeEach(() => {
 });
 
 describe('Auth gate', () => {
-  it('shows LoginPage when /api/auth/get-session returns 401', async () => {
+  it('shows LoginPage when /admin/me returns 401', async () => {
     fetchMock.mockResolvedValueOnce({ ok: false, status: 401, json: async () => ({}) });
     render(<App />);
     await waitFor(() => {
@@ -17,12 +17,13 @@ describe('Auth gate', () => {
     });
   });
 
-  it('shows AppContent (sidebar) when /api/auth/get-session returns a user', async () => {
+  it('shows AppContent (sidebar) when /admin/me returns a user', async () => {
     fetchMock.mockResolvedValueOnce({
       ok: true,
       status: 200,
+      // BackendUser shape (from @ax/auth-oidc); lib/auth.ts maps to AuthUser.
       json: async () => ({
-        user: { id: 'u2', email: 'alice@local', name: 'Alice', role: 'user' },
+        user: { id: 'u2', email: 'alice@local', displayName: 'Alice', isAdmin: false },
       }),
     });
     // App fetches /api/agents on Sidebar mount too — handle subsequent calls
@@ -45,7 +46,7 @@ describe('Auth gate', () => {
     expect(screen.getByText(/connecting/i)).toBeTruthy();
   });
 
-  it('shows LoginPage when /api/auth/get-session rejects (offline)', async () => {
+  it('shows LoginPage when /admin/me rejects (offline)', async () => {
     // Network failure — fetch rejects rather than returning a non-2xx.
     // Without the try/catch in App, the promise rejection would leave
     // authState stuck on 'loading' and the UI on "connecting…" forever.

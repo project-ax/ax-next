@@ -111,9 +111,9 @@ importers:
         specifier: ^3.23.8
         version: 3.25.76
     devDependencies:
-      '@ax/auth':
+      '@ax/auth-oidc':
         specifier: workspace:*
-        version: link:../auth
+        version: link:../auth-oidc
       '@ax/database-postgres':
         specifier: workspace:*
         version: link:../database-postgres
@@ -164,7 +164,7 @@ importers:
         specifier: ^4.1.4
         version: 4.1.5(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(jsdom@26.1.0)(vite@8.0.10(@types/node@25.6.0)(yaml@2.8.3))
 
-  packages/auth:
+  packages/auth-oidc:
     dependencies:
       '@ax/core':
         specifier: workspace:*
@@ -676,9 +676,9 @@ importers:
         specifier: ^3.23.8
         version: 3.25.76
     devDependencies:
-      '@ax/auth':
+      '@ax/auth-oidc':
         specifier: workspace:*
-        version: link:../auth
+        version: link:../auth-oidc
       '@ax/credentials':
         specifier: workspace:*
         version: link:../credentials
@@ -822,6 +822,28 @@ importers:
         specifier: ^4.1.4
         version: 4.1.5(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(jsdom@26.1.0)(vite@8.0.10(@types/node@25.6.0)(yaml@2.8.3))
 
+  packages/static-files:
+    dependencies:
+      '@ax/core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@ax/http-server':
+        specifier: workspace:*
+        version: link:../http-server
+      '@ax/test-harness':
+        specifier: workspace:*
+        version: link:../test-harness
+      '@types/node':
+        specifier: ^25.6.0
+        version: 25.6.0
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^4.1.4
+        version: 4.1.5(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(jsdom@26.1.0)(vite@8.0.10(@types/node@25.6.0)(yaml@2.8.3))
+
   packages/storage-postgres:
     dependencies:
       '@ax/core':
@@ -887,9 +909,9 @@ importers:
         specifier: 0.28.16
         version: 0.28.16
     devDependencies:
-      '@ax/auth':
+      '@ax/auth-oidc':
         specifier: workspace:*
-        version: link:../auth
+        version: link:../auth-oidc
       '@ax/database-postgres':
         specifier: workspace:*
         version: link:../database-postgres
@@ -1152,9 +1174,9 @@ importers:
       '@ax/audit-log':
         specifier: workspace:*
         version: link:../../packages/audit-log
-      '@ax/auth':
+      '@ax/auth-oidc':
         specifier: workspace:*
-        version: link:../../packages/auth
+        version: link:../../packages/auth-oidc
       '@ax/chat-orchestrator':
         specifier: workspace:*
         version: link:../../packages/chat-orchestrator
@@ -1191,6 +1213,9 @@ importers:
       '@ax/session-postgres':
         specifier: workspace:*
         version: link:../../packages/session-postgres
+      '@ax/static-files':
+        specifier: workspace:*
+        version: link:../../packages/static-files
       '@ax/storage-postgres':
         specifier: workspace:*
         version: link:../../packages/storage-postgres
