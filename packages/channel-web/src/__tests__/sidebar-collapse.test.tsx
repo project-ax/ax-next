@@ -46,7 +46,8 @@ describe('Sidebar collapse', () => {
       ok: true,
       status: 200,
       json: async () => ({
-        user: { id: 'u1', email: 'alice@local', name: 'Alice', role: 'user' },
+        // BackendUser shape (from @ax/auth-oidc); lib/auth.ts maps to AuthUser.
+        user: { id: 'u1', email: 'alice@local', displayName: 'Alice', isAdmin: false },
       }),
     });
     fetchMock.mockResolvedValue({ ok: true, json: async () => ({ agents: [] }) });
