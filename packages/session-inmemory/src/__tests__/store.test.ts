@@ -36,12 +36,34 @@ describe('@ax/session-inmemory store', () => {
     expect(b.token).toMatch(TOKEN_RE);
   });
 
-  it('resolveToken() returns the session for a valid token', () => {
+  it('resolveToken() returns the session for a valid token (userId/agentId null when no owner)', () => {
     const store = createSessionStore();
     const rec = store.create('s-1', '/tmp/ws');
     expect(store.resolveToken(rec.token)).toEqual({
       sessionId: 's-1',
       workspaceRoot: '/tmp/ws',
+      userId: null,
+      agentId: null,
+    });
+  });
+
+  it('resolveToken() returns userId/agentId when create() carried an owner', () => {
+    const store = createSessionStore();
+    const rec = store.create('s-own', '/tmp/ws', {
+      userId: 'u-1',
+      agentId: 'a-1',
+      agentConfig: {
+        systemPrompt: 'be helpful',
+        allowedTools: [],
+        mcpConfigIds: [],
+        model: 'claude-sonnet-4-7',
+      },
+    });
+    expect(store.resolveToken(rec.token)).toEqual({
+      sessionId: 's-own',
+      workspaceRoot: '/tmp/ws',
+      userId: 'u-1',
+      agentId: 'a-1',
     });
   });
 

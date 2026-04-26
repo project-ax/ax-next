@@ -54,6 +54,8 @@
 
 import tseslint from 'typescript-eslint';
 
+import noBareTenantTables from './eslint-rules/no-bare-tenant-tables.js';
+
 export default tseslint.config(
   {
     ignores: [
@@ -97,6 +99,24 @@ export default tseslint.config(
           ],
         },
       ],
+    },
+  },
+
+  // Local plugin: tenant-table query guard (invariant I7).
+  // Forbids `db.selectFrom('agents_v1_*' | 'auth_v1_*' | 'teams_v1_*')`
+  // outside `store.ts` / `scope.ts` / `__tests__/`. The rule's allow-list
+  // is path-based and lives inside the rule itself; no per-file overrides
+  // here. See `eslint-rules/no-bare-tenant-tables.js`.
+  {
+    plugins: {
+      local: {
+        rules: {
+          'no-bare-tenant-tables': noBareTenantTables,
+        },
+      },
+    },
+    rules: {
+      'local/no-bare-tenant-tables': 'error',
     },
   },
 

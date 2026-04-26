@@ -397,7 +397,7 @@ describe('timeouts', () => {
     expect(Object.isFrozen(IPC_TIMEOUTS_MS)).toBe(true);
   });
 
-  it('IPC_TIMEOUTS_MS has the six expected keys', () => {
+  it('IPC_TIMEOUTS_MS has the seven expected keys', () => {
     const expected = [
       'llm.call',
       'tool.pre-call',
@@ -405,6 +405,7 @@ describe('timeouts', () => {
       'tool.list',
       'workspace.commit-notify',
       'session.next-message',
+      'session.get-config',
     ].sort();
     expect(Object.keys(IPC_TIMEOUTS_MS).sort()).toEqual(expected);
   });

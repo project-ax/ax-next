@@ -193,4 +193,36 @@ describe('HookBus — subscriber hooks', () => {
     expect(first).toEqual({ rejected: false, payload: { n: 2 } });
     expect(second).toEqual({ rejected: false, payload: { n: 2 } });
   });
+
+  it('unsubscribe removes a plugin\'s subscriber and returns the count', async () => {
+    const bus = new HookBus();
+    const calls: string[] = [];
+    bus.subscribe('h', 'plugin-a', async (_ctx, p) => { calls.push('a'); return p; });
+    bus.subscribe('h', 'plugin-b', async (_ctx, p) => { calls.push('b'); return p; });
+
+    const removed = bus.unsubscribe('h', 'plugin-a');
+    expect(removed).toBe(1);
+
+    await bus.fire('h', silentCtx(), {});
+    expect(calls).toEqual(['b']);
+  });
+
+  it('unsubscribe of a never-registered plugin returns 0', () => {
+    const bus = new HookBus();
+    bus.subscribe('h', 'plugin-a', async (_ctx, p) => p);
+    expect(bus.unsubscribe('h', 'plugin-z')).toBe(0);
+    expect(bus.unsubscribe('other-hook', 'plugin-a')).toBe(0);
+  });
+
+  it('unsubscribe removes ALL handlers a plugin registered on the same hook', async () => {
+    const bus = new HookBus();
+    let counter = 0;
+    bus.subscribe('h', 'shared', async (_ctx, p) => { counter += 1; return p; });
+    bus.subscribe('h', 'shared', async (_ctx, p) => { counter += 10; return p; });
+
+    expect(bus.unsubscribe('h', 'shared')).toBe(2);
+
+    await bus.fire('h', silentCtx(), {});
+    expect(counter).toBe(0);
+  });
 });

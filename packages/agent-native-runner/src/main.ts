@@ -6,7 +6,11 @@ import {
   createInboxLoop,
   createLocalDispatcher,
 } from '@ax/agent-runner-core';
-import type { ChatMessage, ToolListResponse } from '@ax/ipc-protocol';
+import type {
+  ChatMessage,
+  SessionGetConfigResponse,
+  ToolListResponse,
+} from '@ax/ipc-protocol';
 import { registerWithDispatcher as registerBash } from '@ax/tool-bash-impl';
 import { registerWithDispatcher as registerFileIo } from '@ax/tool-file-io-impl';
 import { readRunnerEnv } from './env.js';
@@ -54,14 +58,43 @@ export async function main(): Promise<number> {
     onFileChange: (change) => diffs.record(change),
   });
 
+  // Week 9.5: fetch the frozen agent config the orchestrator wrote when it
+  // resolved this session's agent. The config is session-lifetime-frozen
+  // (Invariant I10). We use systemPrompt to seed the initial chat history;
+  // we use allowedTools to filter the tool catalog defensively (the
+  // host's tool-dispatcher will filter per Task 7, but a defense-in-depth
+  // filter here keeps the runner honest).
+  const cfg = (await client.call(
+    'session.get-config',
+    {},
+  )) as SessionGetConfigResponse;
+  const agentConfig = cfg.agentConfig;
+
   // Fetch the tool catalog once. Tools are session-lifetime-immutable; a
   // plugin added mid-session wouldn't reach this runner anyway (the host
   // would have to reload and respawn).
-  const { tools } = (await client.call('tool.list', {})) as ToolListResponse;
+  let { tools } = (await client.call('tool.list', {})) as ToolListResponse;
+
+  // Defensive client-side filter against agentConfig.allowedTools when it
+  // is non-empty. Empty list = "no per-agent restriction"; non-empty list
+  // overrides what the host returned. Belt-and-suspenders against the
+  // dispatcher filter (Task 7) — if either side regresses, the catalog
+  // the LLM sees stays bounded.
+  if (agentConfig.allowedTools.length > 0) {
+    const allow = new Set(agentConfig.allowedTools);
+    tools = tools.filter((t) => allow.has(t.name));
+  }
 
   const inbox = createInboxLoop({ client });
 
-  const outcome = await runTurnLoop({ client, inbox, dispatcher, tools, diffs });
+  const outcome = await runTurnLoop({
+    client,
+    inbox,
+    dispatcher,
+    tools,
+    diffs,
+    systemPrompt: agentConfig.systemPrompt,
+  });
 
   // Emit the final chat-end event. We AWAIT this one (unlike the mid-loop
   // turn-end / tool-post-call events) because it's the signal the host

@@ -72,6 +72,25 @@ export class HookBus {
     this.subscribers.set(hookName, list);
   }
 
+  /**
+   * Remove every subscriber registered by `plugin` on `hookName`. Returns
+   * the count removed (0 if none matched). Plugins call this in `shutdown`
+   * so a re-init of the same kernel doesn't leave stale closures running.
+   */
+  unsubscribe(hookName: string, plugin: string): number {
+    const list = this.subscribers.get(hookName);
+    if (list === undefined) return 0;
+    const before = list.length;
+    const filtered = list.filter((s) => s.plugin !== plugin);
+    if (filtered.length === before) return 0;
+    if (filtered.length === 0) {
+      this.subscribers.delete(hookName);
+    } else {
+      this.subscribers.set(hookName, filtered);
+    }
+    return before - filtered.length;
+  }
+
   async fire<P>(hookName: string, ctx: ChatContext, payload: P): Promise<FireResult<P>> {
     const list = this.subscribers.get(hookName) ?? [];
     let current: P = payload;

@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { PluginError } from '@ax/core';
+import type { AgentConfig } from './types.js';
 
 const PLUGIN_NAME = '@ax/session-inmemory';
 
@@ -22,18 +23,45 @@ export const UNKNOWN_SESSION = 'unknown-session';
 //
 // Token minting: 32 bytes of crypto.randomBytes, base64url-encoded, no
 // padding — 43 chars exactly, matches /^[A-Za-z0-9_-]{43}$/. Never JWT (I9).
+//
+// Week 9.5 extension: session records also carry the {userId, agentId,
+// agentConfig} that the orchestrator resolved before opening the sandbox.
+// Frozen at create-time per Invariant I10 — switching agents = new session.
+// Pre-9.5 callers that don't pass an owner object set userId/agentId to
+// `null` and agentConfig to `null`; resolveToken / get echo those nulls
+// so downstream consumers can branch on legacy vs. owned sessions.
 // ---------------------------------------------------------------------------
+
+export interface SessionOwner {
+  userId: string;
+  agentId: string;
+  agentConfig: AgentConfig;
+}
 
 export interface SessionRecord {
   readonly sessionId: string;
   readonly workspaceRoot: string;
   readonly token: string;
+  readonly userId: string | null;
+  readonly agentId: string | null;
+  readonly agentConfig: AgentConfig | null;
   terminated: boolean;
 }
 
+export interface ResolveTokenResult {
+  sessionId: string;
+  workspaceRoot: string;
+  userId: string | null;
+  agentId: string | null;
+}
+
 export interface SessionStore {
-  create(sessionId: string, workspaceRoot: string): SessionRecord;
-  resolveToken(token: string): { sessionId: string; workspaceRoot: string } | null;
+  create(
+    sessionId: string,
+    workspaceRoot: string,
+    owner?: SessionOwner,
+  ): SessionRecord;
+  resolveToken(token: string): ResolveTokenResult | null;
   get(sessionId: string): SessionRecord | null;
   terminate(sessionId: string): void;
 }
@@ -47,7 +75,7 @@ export function createSessionStore(): SessionStore {
   const byToken = new Map<string, string>();
 
   return {
-    create(sessionId, workspaceRoot) {
+    create(sessionId, workspaceRoot, owner) {
       if (bySessionId.has(sessionId)) {
         throw new PluginError({
           code: DUPLICATE_SESSION,
@@ -61,6 +89,9 @@ export function createSessionStore(): SessionStore {
         sessionId,
         workspaceRoot,
         token,
+        userId: owner?.userId ?? null,
+        agentId: owner?.agentId ?? null,
+        agentConfig: owner?.agentConfig ?? null,
         terminated: false,
       };
       bySessionId.set(sessionId, record);
@@ -76,6 +107,8 @@ export function createSessionStore(): SessionStore {
       return {
         sessionId: record.sessionId,
         workspaceRoot: record.workspaceRoot,
+        userId: record.userId,
+        agentId: record.agentId,
       };
     },
 

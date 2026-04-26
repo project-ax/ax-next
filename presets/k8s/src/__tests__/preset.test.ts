@@ -51,6 +51,20 @@ const stubConfig: K8sPresetConfig = {
   // plugin doesn't validate this string at factory time — only at first
   // sandbox:open-session call — so any non-empty string is fine here.
   chat: { runnerBinary: '/tmp/stub-runner.js' },
+  http: {
+    host: '127.0.0.1',
+    // Static-analysis only: createK8sPlugins doesn't actually call .listen()
+    // here, so port 0 is fine — but the assembled plugin's manifest is what
+    // these tests scan, not its bound port.
+    port: 0,
+    // 32-byte hex-encoded zero key — only the length matters for the
+    // factory; nothing tries to verify a signature in these tests.
+    cookieKey: '0'.repeat(64),
+    allowedOrigins: [],
+  },
+  auth: {
+    devBootstrap: { token: 'stub-bootstrap-token' },
+  },
 };
 
 describe('@ax/preset-k8s wiring', () => {
@@ -94,11 +108,14 @@ describe('@ax/preset-k8s wiring', () => {
     const names = plugins.map((p) => p.manifest.name).sort();
     expect(names).toEqual(
       [
+        '@ax/agents',
         '@ax/audit-log',
+        '@ax/auth',
         '@ax/chat-orchestrator',
         '@ax/credentials',
         '@ax/database-postgres',
         '@ax/eventbus-postgres',
+        '@ax/http-server',
         '@ax/ipc-http',
         '@ax/llm-anthropic',
         '@ax/llm-proxy-anthropic-format',
@@ -106,6 +123,7 @@ describe('@ax/preset-k8s wiring', () => {
         '@ax/sandbox-k8s',
         '@ax/session-postgres',
         '@ax/storage-postgres',
+        '@ax/teams',
         '@ax/tool-bash',
         '@ax/tool-dispatcher',
         '@ax/tool-file-io',
@@ -279,14 +297,21 @@ describe('workspaceConfigFromEnv', () => {
 });
 
 describe('loadK8sConfigFromEnv', () => {
-  // Required minimum env: DATABASE_URL, AX_K8S_HOST_IPC_URL, plus the
-  // workspace vars (delegated to workspaceConfigFromEnv).
+  // Required minimum env: DATABASE_URL, AX_K8S_HOST_IPC_URL, the workspace
+  // vars (delegated to workspaceConfigFromEnv), the public-facing http
+  // listener vars, and at least one auth provider.
+  const HEX_KEY = '0'.repeat(64);
   const minRequired = (extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv => ({
     DATABASE_URL: 'postgres://u:p@db:5432/ax_next',
     AX_K8S_HOST_IPC_URL: 'http://ax-next-host.ax-next.svc:80',
     AX_WORKSPACE_BACKEND: 'http',
     AX_WORKSPACE_GIT_HTTP_URL: 'http://git-server:7780',
     AX_WORKSPACE_GIT_HTTP_TOKEN: 't',
+    AX_HTTP_HOST: '0.0.0.0',
+    AX_HTTP_PORT: '8080',
+    AX_HTTP_COOKIE_KEY: HEX_KEY,
+    AX_HTTP_ALLOWED_ORIGINS: 'https://admin.ax-next.example',
+    AX_DEV_BOOTSTRAP_TOKEN: 'bootstrap-secret',
     ...extra,
   });
 
@@ -303,6 +328,15 @@ describe('loadK8sConfigFromEnv', () => {
     expect(cfg.ipc.hostIpcUrl).toBe('http://ax-next-host.ax-next.svc:80');
     expect(cfg.ipc.host).toBeUndefined();
     expect(cfg.ipc.port).toBeUndefined();
+    expect(cfg.http).toEqual({
+      host: '0.0.0.0',
+      port: 8080,
+      cookieKey: HEX_KEY,
+      allowedOrigins: ['https://admin.ax-next.example'],
+    });
+    expect(cfg.auth).toEqual({
+      devBootstrap: { token: 'bootstrap-secret' },
+    });
     expect(cfg.sandbox).toBeUndefined();
     expect(cfg.anthropic).toBeUndefined();
     expect(cfg.chat).toBeUndefined();
@@ -398,5 +432,89 @@ describe('loadK8sConfigFromEnv', () => {
     const env = minRequired();
     delete env.AX_WORKSPACE_GIT_HTTP_TOKEN;
     expect(() => loadK8sConfigFromEnv(env)).toThrowError(/AX_WORKSPACE_GIT_HTTP_TOKEN/);
+  });
+
+  it('throws when AX_HTTP_HOST is missing', () => {
+    const env = minRequired();
+    delete env.AX_HTTP_HOST;
+    expect(() => loadK8sConfigFromEnv(env)).toThrowError(/AX_HTTP_HOST/);
+  });
+
+  it('throws when AX_HTTP_PORT is missing', () => {
+    const env = minRequired();
+    delete env.AX_HTTP_PORT;
+    expect(() => loadK8sConfigFromEnv(env)).toThrowError(/AX_HTTP_PORT/);
+  });
+
+  it('throws when AX_HTTP_PORT is non-numeric', () => {
+    expect(() =>
+      loadK8sConfigFromEnv(minRequired({ AX_HTTP_PORT: 'http' })),
+    ).toThrowError(/AX_HTTP_PORT/);
+  });
+
+  it('throws when AX_HTTP_COOKIE_KEY is missing', () => {
+    const env = minRequired();
+    delete env.AX_HTTP_COOKIE_KEY;
+    expect(() => loadK8sConfigFromEnv(env)).toThrowError(/AX_HTTP_COOKIE_KEY/);
+  });
+
+  it('treats empty AX_HTTP_ALLOWED_ORIGINS as no allow-list', () => {
+    const cfg = loadK8sConfigFromEnv(minRequired({ AX_HTTP_ALLOWED_ORIGINS: '' }));
+    expect(cfg.http.allowedOrigins).toEqual([]);
+  });
+
+  it('parses comma-separated AX_HTTP_ALLOWED_ORIGINS, trimming whitespace', () => {
+    const cfg = loadK8sConfigFromEnv(
+      minRequired({ AX_HTTP_ALLOWED_ORIGINS: ' a , b ,c' }),
+    );
+    expect(cfg.http.allowedOrigins).toEqual(['a', 'b', 'c']);
+  });
+
+  it('throws when no auth provider env is configured', () => {
+    const env = minRequired();
+    delete env.AX_DEV_BOOTSTRAP_TOKEN;
+    expect(() => loadK8sConfigFromEnv(env)).toThrowError(
+      /AX_AUTH_GOOGLE_.*AX_DEV_BOOTSTRAP_TOKEN/,
+    );
+  });
+
+  it('reads google OIDC config when all four AX_AUTH_GOOGLE_* are set', () => {
+    const cfg = loadK8sConfigFromEnv(
+      minRequired({
+        AX_AUTH_GOOGLE_CLIENT_ID: 'gid',
+        AX_AUTH_GOOGLE_CLIENT_SECRET: 'gsec',
+        AX_AUTH_GOOGLE_REDIRECT_URI: 'https://h/callback',
+        AX_AUTH_GOOGLE_ISSUER: 'https://accounts.google.com',
+      }),
+    );
+    expect(cfg.auth.google).toEqual({
+      clientId: 'gid',
+      clientSecret: 'gsec',
+      redirectUri: 'https://h/callback',
+      issuer: 'https://accounts.google.com',
+    });
+  });
+
+  it('rejects partial google OIDC config', () => {
+    // Setting only CLIENT_ID without the other three is a deploy-time bug
+    // that the loader catches before the auth plugin's network discovery.
+    expect(() =>
+      loadK8sConfigFromEnv(minRequired({ AX_AUTH_GOOGLE_CLIENT_ID: 'gid' })),
+    ).toThrowError(/AX_AUTH_GOOGLE_CLIENT_SECRET/);
+  });
+
+  it('reads AX_AUTH_SESSION_LIFETIME_SECONDS', () => {
+    const cfg = loadK8sConfigFromEnv(
+      minRequired({ AX_AUTH_SESSION_LIFETIME_SECONDS: '3600' }),
+    );
+    expect(cfg.auth.sessionLifetimeSeconds).toBe(3600);
+  });
+
+  it('rejects invalid AX_AUTH_SESSION_LIFETIME_SECONDS', () => {
+    expect(() =>
+      loadK8sConfigFromEnv(
+        minRequired({ AX_AUTH_SESSION_LIFETIME_SECONDS: '-1' }),
+      ),
+    ).toThrowError(/AX_AUTH_SESSION_LIFETIME_SECONDS/);
   });
 });

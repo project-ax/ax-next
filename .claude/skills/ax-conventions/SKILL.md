@@ -260,6 +260,12 @@ Core guarantees: every `registers` entry is wired before any `init()` fires. Plu
 
 Core dry-runs declared dependencies from manifests. If `A.calls = ['B:foo']` and `B.calls = ['A:bar']`, boot fails with a clear error naming both plugins. Subscribers don't count — only service calls form cycles.
 
+### Tenant-scoped queries via a `scope.ts` helper
+
+Multi-tenant plugins (`@ax/agents`, `@ax/teams`, `@ax/auth`) own tables prefixed `<plugin>_v1_*`. Every multi-row read MUST go through a `scopedX(db, scope)` helper that bakes the `WHERE owner_id = …` (or membership join) filter in. Stores keep single-row by-id reads but pair them with an inline ACL check.
+
+The `local/no-bare-tenant-tables` ESLint rule (`eslint-rules/no-bare-tenant-tables.js`) bans `db.selectFrom('<tenant>_v1_*')` outside `**/store.ts`, `**/scope.ts`, and `**/__tests__/`. If a query needs to live elsewhere, the right answer is to hoist it into the store, not silence the rule.
+
 ---
 
 ## Failure modes to design for

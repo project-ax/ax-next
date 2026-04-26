@@ -13,7 +13,8 @@
   "scripts": {
     "build": "tsc --build",
     "build:clean": "tsc --build --clean",
-    "test": "pnpm -r run test",
+    "test": "pnpm -r run test && pnpm test:eslint-rules",
+    "test:eslint-rules": "vitest run --root eslint-rules",
     "lint": "eslint .",
     "typecheck": "tsc --build",
     "changeset": "changeset",

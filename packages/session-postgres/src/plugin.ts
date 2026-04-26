@@ -8,7 +8,13 @@ import {
   type InboxEntry,
 } from './inbox.js';
 import { runSessionMigration, type SessionDatabase } from './migrations.js';
-import { createSessionStore, UNKNOWN_SESSION, type SessionStore } from './store.js';
+import {
+  createSessionStore,
+  OWNER_MISSING,
+  UNKNOWN_SESSION,
+  type AgentConfig,
+  type SessionStore,
+} from './store.js';
 
 // ---------------------------------------------------------------------------
 // @ax/session-postgres
@@ -60,6 +66,17 @@ export interface SessionPostgresConfig {
 export interface SessionCreateInput {
   sessionId: string;
   workspaceRoot: string;
+  /**
+   * Owner triple. Required for sessions minted via the Week-9.5
+   * orchestrator path; pre-9.5 callers MAY omit it, in which case the
+   * v2 row is not written and `session:get-config` will reject with
+   * `owner-missing`.
+   */
+  owner?: {
+    userId: string;
+    agentId: string;
+    agentConfig: AgentConfig;
+  };
 }
 export interface SessionCreateOutput {
   sessionId: string;
@@ -69,8 +86,19 @@ export interface SessionResolveTokenInput {
   token: string;
 }
 export type SessionResolveTokenOutput =
-  | { sessionId: string; workspaceRoot: string }
+  | {
+      sessionId: string;
+      workspaceRoot: string;
+      userId: string | null;
+      agentId: string | null;
+    }
   | null;
+export type SessionGetConfigInput = Record<string, never>;
+export interface SessionGetConfigOutput {
+  userId: string;
+  agentId: string;
+  agentConfig: AgentConfig;
+}
 export interface SessionQueueWorkInput {
   sessionId: string;
   entry: InboxEntry;
@@ -120,6 +148,70 @@ function requireNonNegativeInt(
 }
 
 const VALID_ROLES = new Set(['user', 'assistant', 'system']);
+
+// ---------------------------------------------------------------------------
+// validateOwner — runs at session:create time on the optional `owner`
+// field. We require the full triple (no half-set owners) because a
+// session that's "kind of" owned is exactly the bug I10 is meant to
+// prevent. Mirrors @ax/session-inmemory's validateOwner so the two
+// backends reject identical inputs identically.
+// ---------------------------------------------------------------------------
+function validateOwner(
+  raw: unknown,
+  hookName: string,
+): { userId: string; agentId: string; agentConfig: AgentConfig } | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== 'object' || raw === null) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `'owner' must be an object when present`,
+    });
+  }
+  const userId = (raw as { userId?: unknown }).userId;
+  const agentId = (raw as { agentId?: unknown }).agentId;
+  const agentConfig = (raw as { agentConfig?: unknown }).agentConfig;
+  requireString(userId, 'owner.userId', hookName);
+  requireString(agentId, 'owner.agentId', hookName);
+  if (typeof agentConfig !== 'object' || agentConfig === null) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `'owner.agentConfig' must be an object`,
+    });
+  }
+  const cfg = agentConfig as Record<string, unknown>;
+  requireString(cfg.systemPrompt, 'owner.agentConfig.systemPrompt', hookName);
+  requireString(cfg.model, 'owner.agentConfig.model', hookName);
+  if (!Array.isArray(cfg.allowedTools) || !cfg.allowedTools.every((t) => typeof t === 'string')) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `'owner.agentConfig.allowedTools' must be a string[]`,
+    });
+  }
+  if (!Array.isArray(cfg.mcpConfigIds) || !cfg.mcpConfigIds.every((t) => typeof t === 'string')) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `'owner.agentConfig.mcpConfigIds' must be a string[]`,
+    });
+  }
+  return {
+    userId,
+    agentId,
+    agentConfig: {
+      systemPrompt: cfg.systemPrompt as string,
+      allowedTools: cfg.allowedTools as string[],
+      mcpConfigIds: cfg.mcpConfigIds as string[],
+      model: cfg.model as string,
+    },
+  };
+}
 
 function requireInboxEntry(
   value: unknown,
@@ -203,6 +295,7 @@ export function createSessionPostgresPlugin(
       registers: [
         'session:create',
         'session:resolve-token',
+        'session:get-config',
         'session:queue-work',
         'session:claim-work',
         'session:terminate',
@@ -287,9 +380,11 @@ export function createSessionPostgresPlugin(
           const hookName = 'session:create';
           const sessionId = (input as { sessionId?: unknown })?.sessionId;
           const workspaceRoot = (input as { workspaceRoot?: unknown })?.workspaceRoot;
+          const owner = (input as { owner?: unknown })?.owner;
           requireString(sessionId, 'sessionId', hookName);
           requireString(workspaceRoot, 'workspaceRoot', hookName);
-          const record = await store!.create(sessionId, workspaceRoot);
+          const validated = validateOwner(owner, hookName);
+          const record = await store!.create(sessionId, workspaceRoot, validated);
           return { sessionId: record.sessionId, token: record.token };
         },
       );
@@ -303,6 +398,53 @@ export function createSessionPostgresPlugin(
           const token = (input as { token?: unknown })?.token;
           requireString(token, 'token', hookName);
           return store!.resolveToken(token);
+        },
+      );
+
+      // ----- session:get-config -----
+      //
+      // The runner calls this at boot via IPC. The IPC server's
+      // authenticate() resolved the runner's bearer token to a sessionId
+      // and stamped that onto ctx.sessionId — we read it here. There is
+      // intentionally NO sessionId in the input; closing that door means
+      // a runner can't ask for someone else's config. Sessions without
+      // a v2 row return `owner-missing`; sessions that are unknown or
+      // terminated return `unknown-session`.
+      bus.registerService<SessionGetConfigInput, SessionGetConfigOutput>(
+        'session:get-config',
+        PLUGIN_NAME,
+        async (ctx) => {
+          const hookName = 'session:get-config';
+          requireString(ctx.sessionId, 'ctx.sessionId', hookName);
+          const record = await store!.get(ctx.sessionId);
+          if (record === null || record.terminated) {
+            throw new PluginError({
+              code: UNKNOWN_SESSION,
+              plugin: PLUGIN_NAME,
+              hookName,
+              message: `session '${ctx.sessionId}' does not exist or has been terminated`,
+            });
+          }
+          if (
+            record.userId === null ||
+            record.agentId === null ||
+            record.agentConfig === null
+          ) {
+            // Pre-9.5 session (no v2 row) OR a session minted by a
+            // non-orchestrator caller. Either way, the runner has no
+            // system prompt — refuse explicitly.
+            throw new PluginError({
+              code: OWNER_MISSING,
+              plugin: PLUGIN_NAME,
+              hookName,
+              message: `session '${ctx.sessionId}' has no owner — minted before Week 9.5 or by a non-orchestrator caller`,
+            });
+          }
+          return {
+            userId: record.userId,
+            agentId: record.agentId,
+            agentConfig: record.agentConfig,
+          };
         },
       );
 

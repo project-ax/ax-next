@@ -22,11 +22,13 @@ import { createToolDispatcherPlugin } from '@ax/tool-dispatcher';
 import { createToolBashPlugin } from '@ax/tool-bash';
 import { createToolFileIoPlugin } from '@ax/tool-file-io';
 import { createMcpClientPlugin } from '@ax/mcp-client';
+import { createDevAgentsStubPlugin } from './dev-agents-stub.js';
 import { AxConfigSchema, type AxConfig, type AxConfigInput } from './config/schema.js';
 import { loadAxConfig } from './config/load.js';
 import { runCredentialsCommand } from './commands/credentials.js';
 import { runMcpCommand } from './commands/mcp.js';
 import { runServeCommand } from './commands/serve.js';
+import { runAdminCommand } from './commands/admin.js';
 
 // `@ax/cli` is the ONE package permitted to import sibling plugins directly
 // (eslint.config.mjs no-restricted-imports allowlist); this is also the one
@@ -164,6 +166,16 @@ export async function main(opts: MainOptions): Promise<number> {
     }),
   );
 
+  // Week 9.5: chat-orchestrator hard-depends on `agents:resolve`. The CLI
+  // is the single-tenant dev loop — there's no admin endpoint, no team
+  // ACL, no postgres-backed agent rows. We register a permissive stub
+  // that returns the same agent for every (agentId, userId) pair so the
+  // orchestrator's resolve gate is satisfied without standing up the
+  // multi-tenant preset. Production presets register the real @ax/agents
+  // plugin instead; the kernel's "exactly one impl per service hook" rule
+  // catches accidental dual-loading. See dev-agents-stub.ts.
+  plugins.push(createDevAgentsStubPlugin());
+
   // Tool dispatcher is the single entry point for `tool:execute`, fanning
   // out to whatever tool plugins register descriptors. Always present when
   // we might have tools. (After Task 7, bash/file-io here are descriptor-
@@ -276,6 +288,17 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       stdin: process.stdin,
       sqlitePath,
     })
+      .then((code) => process.exit(code))
+      .catch((e) => {
+        process.stderr.write(`fatal: ${e instanceof Error ? e.message : String(e)}\n`);
+        process.exit(2);
+      });
+  } else if (argv[0] === 'admin') {
+    // One-shot admin tooling. Today: `bootstrap` (first-admin against
+    // /auth/dev-bootstrap). Like credentials/mcp this intercepts BEFORE
+    // the chat path so we don't bootstrap the LLM/sandbox/orchestrator
+    // plugin set for what's a thin HTTP client.
+    runAdminCommand({ argv: argv.slice(1) })
       .then((code) => process.exit(code))
       .catch((e) => {
         process.stderr.write(`fatal: ${e instanceof Error ? e.message : String(e)}\n`);

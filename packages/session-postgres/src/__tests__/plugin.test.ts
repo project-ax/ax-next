@@ -8,6 +8,8 @@ import {
   type SessionClaimWorkOutput,
   type SessionCreateInput,
   type SessionCreateOutput,
+  type SessionGetConfigInput,
+  type SessionGetConfigOutput,
   type SessionQueueWorkInput,
   type SessionQueueWorkOutput,
   type SessionResolveTokenInput,
@@ -15,6 +17,18 @@ import {
   type SessionTerminateInput,
   type SessionTerminateOutput,
 } from '../plugin.js';
+import type { AgentConfig } from '../store.js';
+
+const OWNER: { userId: string; agentId: string; agentConfig: AgentConfig } = {
+  userId: 'u-1',
+  agentId: 'a-1',
+  agentConfig: {
+    systemPrompt: 'be helpful',
+    allowedTools: ['file.read'],
+    mcpConfigIds: [],
+    model: 'claude-sonnet-4-7',
+  },
+};
 
 let container: StartedPostgreSqlContainer;
 let connectionString: string;
@@ -50,6 +64,7 @@ afterEach(async () => {
   const cleanupClient = new pg.default.Client({ connectionString });
   await cleanupClient.connect();
   try {
+    await cleanupClient.query('DROP TABLE IF EXISTS session_postgres_v2_session_agent');
     await cleanupClient.query('DROP TABLE IF EXISTS session_postgres_v1_inbox');
     await cleanupClient.query('DROP TABLE IF EXISTS session_postgres_v1_sessions');
   } finally {
@@ -64,10 +79,11 @@ afterAll(async () => {
 const TOKEN_RE = /^[A-Za-z0-9_-]{43}$/;
 
 describe('@ax/session-postgres plugin', () => {
-  it('registers all five service hooks on the bus', async () => {
+  it('registers all six service hooks on the bus', async () => {
     const h = await makeHarness();
     expect(h.bus.hasService('session:create')).toBe(true);
     expect(h.bus.hasService('session:resolve-token')).toBe(true);
+    expect(h.bus.hasService('session:get-config')).toBe(true);
     expect(h.bus.hasService('session:queue-work')).toBe(true);
     expect(h.bus.hasService('session:claim-work')).toBe(true);
     expect(h.bus.hasService('session:terminate')).toBe(true);
@@ -111,7 +127,12 @@ describe('@ax/session-postgres plugin', () => {
       ctx,
       { token },
     );
-    expect(ok).toEqual({ sessionId: 's-rt', workspaceRoot: '/tmp/ws' });
+    expect(ok).toEqual({
+      sessionId: 's-rt',
+      workspaceRoot: '/tmp/ws',
+      userId: null,
+      agentId: null,
+    });
 
     const miss = await h.bus.call<SessionResolveTokenInput, SessionResolveTokenOutput>(
       'session:resolve-token',
@@ -134,7 +155,12 @@ describe('@ax/session-postgres plugin', () => {
       ctx,
       { token },
     );
-    expect(before).toEqual({ sessionId: 's-term', workspaceRoot: '/tmp/ws' });
+    expect(before).toEqual({
+      sessionId: 's-term',
+      workspaceRoot: '/tmp/ws',
+      userId: null,
+      agentId: null,
+    });
 
     await h.bus.call<SessionTerminateInput, SessionTerminateOutput>(
       'session:terminate',
@@ -384,6 +410,140 @@ describe('@ax/session-postgres plugin', () => {
       payload: { role: 'user', content: 'from-B' },
       cursor: 1,
     });
+  });
+
+  // ---------------------------------------------------------------------
+  // Week 9.5 — owner field on session:create + session:get-config
+  // ---------------------------------------------------------------------
+
+  it('session:create with owner round-trips userId/agentId via resolve-token', async () => {
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    const { token } = await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+      'session:create',
+      ctx,
+      { sessionId: 's-own', workspaceRoot: '/tmp/ws', owner: OWNER },
+    );
+    const resolved = await h.bus.call<SessionResolveTokenInput, SessionResolveTokenOutput>(
+      'session:resolve-token',
+      ctx,
+      { token },
+    );
+    expect(resolved).toEqual({
+      sessionId: 's-own',
+      workspaceRoot: '/tmp/ws',
+      userId: 'u-1',
+      agentId: 'a-1',
+    });
+  });
+
+  it('session:get-config returns the full owner+agentConfig when ctx.sessionId is owned', async () => {
+    const h = await makeHarness();
+    await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+      'session:create',
+      h.ctx(),
+      { sessionId: 's-cfg', workspaceRoot: '/tmp/ws', owner: OWNER },
+    );
+    const result = await h.bus.call<SessionGetConfigInput, SessionGetConfigOutput>(
+      'session:get-config',
+      h.ctx({ sessionId: 's-cfg' }),
+      {},
+    );
+    expect(result).toEqual({
+      userId: 'u-1',
+      agentId: 'a-1',
+      agentConfig: OWNER.agentConfig,
+    });
+  });
+
+  it('session:get-config rejects with owner-missing when the session has no v2 row (pre-9.5)', async () => {
+    const h = await makeHarness();
+    await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+      'session:create',
+      h.ctx(),
+      { sessionId: 's-legacy', workspaceRoot: '/tmp/ws' },
+    );
+    let caught: unknown;
+    try {
+      await h.bus.call<SessionGetConfigInput, SessionGetConfigOutput>(
+        'session:get-config',
+        h.ctx({ sessionId: 's-legacy' }),
+        {},
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('owner-missing');
+  });
+
+  it('session:get-config rejects with unknown-session when ctx.sessionId is unknown', async () => {
+    const h = await makeHarness();
+    let caught: unknown;
+    try {
+      await h.bus.call<SessionGetConfigInput, SessionGetConfigOutput>(
+        'session:get-config',
+        h.ctx({ sessionId: 'never-existed' }),
+        {},
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('unknown-session');
+  });
+
+  it('session:create with a half-set owner is rejected as invalid-payload', async () => {
+    const h = await makeHarness();
+    let caught: unknown;
+    try {
+      await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+        'session:create',
+        h.ctx(),
+        {
+          sessionId: 's-half',
+          workspaceRoot: '/tmp/ws',
+          owner: { userId: 'u-1', agentConfig: OWNER.agentConfig } as never,
+        },
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('invalid-payload');
+  });
+
+  it('session:create with owner is atomic — duplicate sessionId leaves no v2 row', async () => {
+    const h = await makeHarness();
+    await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+      'session:create',
+      h.ctx(),
+      { sessionId: 's-atomic', workspaceRoot: '/tmp/ws', owner: OWNER },
+    );
+    let caught: unknown;
+    try {
+      await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+        'session:create',
+        h.ctx(),
+        {
+          sessionId: 's-atomic',
+          workspaceRoot: '/tmp/ws',
+          owner: { ...OWNER, agentId: 'a-different' },
+        },
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('duplicate-session');
+    // The v2 row must still match the FIRST insert — the failed second
+    // insert was a transaction that rolled back.
+    const cfg = await h.bus.call<SessionGetConfigInput, SessionGetConfigOutput>(
+      'session:get-config',
+      h.ctx({ sessionId: 's-atomic' }),
+      {},
+    );
+    expect(cfg.agentId).toBe('a-1');
   });
 
   it('queue-work rejects a user-message with a role outside user|assistant|system', async () => {

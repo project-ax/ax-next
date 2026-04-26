@@ -37,14 +37,20 @@
     "@ax/audit-log": "workspace:*",
     "@ax/mcp-client": "workspace:*",
     "@ax/credentials": "workspace:*",
-    "@ax/ipc-http": "workspace:*"
+    "@ax/ipc-http": "workspace:*",
+    "@ax/agents": "workspace:*",
+    "@ax/http-server": "workspace:*",
+    "@ax/auth": "workspace:*",
+    "@ax/teams": "workspace:*"
   },
   "devDependencies": {
     "@ax/llm-mock": "workspace:*",
     "@ax/test-harness": "workspace:*",
     "@testcontainers/postgresql": "11.14.0",
     "@types/node": "^25.6.0",
+    "@types/pg": "8.20.0",
     "kysely": "0.28.16",
+    "pg": "8.20.0",
     "typescript": "^6.0.3",
     "vitest": "^4.1.4"
   }

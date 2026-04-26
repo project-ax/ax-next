@@ -21,7 +21,16 @@ import type { IpcErrorEnvelope } from '@ax/ipc-protocol';
 // ---------------------------------------------------------------------------
 
 export type AuthResult =
-  | { ok: true; sessionId: string; workspaceRoot: string }
+  | {
+      ok: true;
+      sessionId: string;
+      workspaceRoot: string;
+      // Week 9.5: legacy (pre-9.5) sessions resolve with userId/agentId
+      // null. Newer sessions carry the IDs and downstream handlers can
+      // act on them (e.g. tool-dispatcher's per-agent filter).
+      userId: string | null;
+      agentId: string | null;
+    }
   | { ok: false; status: number; body: IpcErrorEnvelope };
 
 const BEARER_PREFIX = 'bearer ';
@@ -31,7 +40,12 @@ interface SessionResolveTokenInput {
 }
 
 type SessionResolveTokenOutput =
-  | { sessionId: string; workspaceRoot: string }
+  | {
+      sessionId: string;
+      workspaceRoot: string;
+      userId: string | null;
+      agentId: string | null;
+    }
   | null;
 
 export async function authenticate(
@@ -87,5 +101,7 @@ export async function authenticate(
     ok: true,
     sessionId: resolved.sessionId,
     workspaceRoot: resolved.workspaceRoot,
+    userId: resolved.userId ?? null,
+    agentId: resolved.agentId ?? null,
   };
 }

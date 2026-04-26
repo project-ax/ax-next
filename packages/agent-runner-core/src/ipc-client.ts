@@ -4,6 +4,7 @@ import {
   IPC_TIMEOUTS_MS,
   IpcErrorEnvelopeSchema,
   LlmCallResponseSchema,
+  SessionGetConfigResponseSchema,
   SessionNextMessageResponseSchema,
   ToolExecuteHostResponseSchema,
   ToolListResponseSchema,
@@ -72,6 +73,7 @@ const RESPONSE_SCHEMAS: Record<IpcActionName, z.ZodTypeAny> = {
   'tool.list': ToolListResponseSchema,
   'workspace.commit-notify': WorkspaceCommitNotifyResponseSchema,
   'session.next-message': SessionNextMessageResponseSchema,
+  'session.get-config': SessionGetConfigResponseSchema,
 };
 
 export interface IpcClientOptions {

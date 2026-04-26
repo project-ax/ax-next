@@ -114,10 +114,19 @@ export async function createListener(opts: CreateListenerOptions): Promise<Liste
     // Per-request ChatContext with a fresh reqId and the REAL workspaceRoot
     // from the auth result. The dispatcher reads the body under MAX_FRAME
     // (I11) and routes to the per-action handler.
+    //
+    // Week 9.5: stamp the resolved userId/agentId onto ctx so downstream
+    // handlers (notably tool-dispatcher's per-agent filter and the
+    // session:get-config handler) can read them. Pre-9.5 sessions resolve
+    // with nulls — we substitute placeholder strings to preserve the
+    // ChatContext invariant that agentId/userId are non-empty strings.
+    // The session:get-config handler treats the placeholders as a
+    // distinct case from "real owner" and rejects with `owner-missing`
+    // (the session store's `get` returns null for these fields).
     const ctx = makeChatContext({
       sessionId: auth.sessionId,
-      agentId: 'ipc-server',
-      userId: 'ipc-server',
+      agentId: auth.agentId ?? 'ipc-server',
+      userId: auth.userId ?? 'ipc-server',
       workspace: { rootPath: auth.workspaceRoot },
     });
     await dispatch(req, res, ctx, opts.bus);

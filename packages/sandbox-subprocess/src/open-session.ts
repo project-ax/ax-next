@@ -30,10 +30,28 @@ const PLUGIN_NAME = '@ax/sandbox-subprocess';
 const HOOK_NAME = 'sandbox:open-session';
 const SIGKILL_DELAY_MS = 5_000;
 
+// Owner triple — the orchestrator resolves an agent before opening the
+// sandbox and forwards the {userId, agentId, agentConfig} so we can pass
+// it through to `session:create` atomically. Optional for back-compat
+// with non-orchestrator paths (tests, ad-hoc CLI tools).
+export const AgentConfigSchema = z.object({
+  systemPrompt: z.string(),
+  allowedTools: z.array(z.string()),
+  mcpConfigIds: z.array(z.string()),
+  model: z.string(),
+});
+
 export const OpenSessionInputSchema = z.object({
   sessionId: z.string().min(1),
   workspaceRoot: z.string().regex(/^\//, 'workspaceRoot must be absolute'),
   runnerBinary: z.string().regex(/^\//, 'runnerBinary must be absolute'),
+  owner: z
+    .object({
+      userId: z.string().min(1),
+      agentId: z.string().min(1),
+      agentConfig: AgentConfigSchema,
+    })
+    .optional(),
 });
 
 export type OpenSessionInput = z.input<typeof OpenSessionInputSchema>;
@@ -72,6 +90,16 @@ export interface OpenSessionResult {
 interface SessionCreateInput {
   sessionId: string;
   workspaceRoot: string;
+  owner?: {
+    userId: string;
+    agentId: string;
+    agentConfig: {
+      systemPrompt: string;
+      allowedTools: string[];
+      mcpConfigIds: string[];
+      model: string;
+    };
+  };
 }
 interface SessionCreateOutput {
   sessionId: string;
@@ -142,12 +170,23 @@ export async function openSessionImpl(
   // 4. Mint session + token. The token flows to the runner as env — it is
   //    never returned from this hook (I9). We do NOT log the token here; if
   //    we need to correlate failures, we log `sessionId` instead.
+  //
+  //    Owner triple is forwarded into the session backend so the v2 row
+  //    can be written atomically with v1 (Task 6b). The runner reads it
+  //    back via session:get-config (Task 6d).
   let created: SessionCreateOutput;
   try {
+    const sessionCreateInput: SessionCreateInput = {
+      sessionId: input.sessionId,
+      workspaceRoot: input.workspaceRoot,
+    };
+    if (input.owner !== undefined) {
+      sessionCreateInput.owner = input.owner;
+    }
     created = await bus.call<SessionCreateInput, SessionCreateOutput>(
       'session:create',
       ctx,
-      { sessionId: input.sessionId, workspaceRoot: input.workspaceRoot },
+      sessionCreateInput,
     );
   } catch (err) {
     // Clean up tempdir so a session:create failure doesn't leak dirs.

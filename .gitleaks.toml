@@ -1,0 +1,31 @@
+# gitleaks config — extends defaults with path allowlists for test fixtures.
+#
+# We extend (not replace) the default config so all upstream rules still apply.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Test fixtures: deterministic 32-byte keys used in unit/integration tests."
+
+# Allowlist by file path: every test under __tests__/, any *.test.ts, and
+# files named *test-fixture.ts.
+#
+# Note: gitleaks uses RE2, which does NOT support backreferences. Stick to
+# path-based allowlists; value-pattern matches go through `regexes` only with
+# RE2-compatible expressions (no `\1` style backrefs, no lookarounds).
+paths = [
+  '''.*__tests__/.*''',
+  '''.*\.test\.ts$''',
+  '''.*test-fixture\.ts$''',
+]
+
+# Conservative value-shape allowlist (RE2-compatible): all-zero / all-f hex
+# and the sequential 0123456789abcdef pattern. The repeated-byte case
+# ('42'.repeat(32) etc.) needs backreferences to match cleanly, so we lean on
+# the path allowlist instead — those patterns only ever live in test files.
+regexes = [
+  '''(0123456789abcdef){4}''',
+  '''0{64}''',
+  '''f{64}''',
+]

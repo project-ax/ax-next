@@ -108,6 +108,10 @@ beforeAll(async () => {
   // because the testcontainer postgres lives only for this run.
   process.env.AX_CREDENTIALS_KEY =
     '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+  // Silence the http-server warn about empty allow-lists. We don't issue
+  // any state-changing requests so CSRF never trips; the warn would just
+  // clutter the test output.
+  process.env.AX_HTTP_ALLOW_NO_ORIGINS = '1';
 
   container = await new PostgreSqlContainer('postgres:16-alpine').start();
   connectionString = container.getConnectionUri();
@@ -134,6 +138,30 @@ beforeAll(async () => {
     // it only when `sandbox:open-session` is invoked — which the acceptance
     // test never does.
     chat: { runnerBinary: '/tmp/stub-runner.js' },
+    // The public-facing http listener (Week 9.5) — same port-0 + loopback
+    // posture as ipc-http above. We never make a request against it; auth
+    // and the admin endpoints register their routes through the same
+    // http:register-route hook regardless.
+    http: {
+      host: '127.0.0.1',
+      port: 0,
+      // 32-byte all-zero hex key. Adequate for an in-memory test where no
+      // real cookie is ever signed; the plugin only validates the length.
+      cookieKey: '0'.repeat(64),
+      // Empty allow-list is fine here — we never send a state-changing
+      // request, so CSRF never trips. Pre-emptively suppress the loud
+      // warn that http-server emits for empty allow-lists outside this
+      // file's scope; setting AX_HTTP_ALLOW_NO_ORIGINS in beforeAll is
+      // simpler than threading the option through.
+      allowedOrigins: [],
+    },
+    auth: {
+      // Dev-bootstrap is the cheaper of the two providers for tests: no
+      // OIDC discovery, no network round-trip. The token isn't exercised
+      // by this file (no /auth/dev-bootstrap POST is made); having it set
+      // just satisfies the auth plugin's "at least one provider" gate.
+      devBootstrap: { token: 'acceptance-bootstrap-token' },
+    },
   };
 
   // Build the production plugin set, then patch two slots:
@@ -300,6 +328,9 @@ describe('@ax/preset-k8s acceptance (postgres + workspace-git end-to-end)', () =
     expect(resolved).toEqual({
       sessionId: 'acceptance-session-1',
       workspaceRoot: '/tmp/ws-stub',
+      // Pre-9.5 (no owner on session:create) — userId/agentId surface as null.
+      userId: null,
+      agentId: null,
     });
   });
 

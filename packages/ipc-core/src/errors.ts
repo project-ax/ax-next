@@ -47,6 +47,18 @@ export function mapPluginError(err: PluginError): HandlerErr {
   switch (err.code) {
     case 'invalid-payload':
       return validationError('invalid payload');
+    // Session backend codes (Week 9.5). Unknown / terminated sessions
+    // map to 401 because the bearer token the runner is authenticating
+    // with no longer resolves to a usable session — the runner should
+    // exit, not retry. `owner-missing` (legacy pre-9.5 row reaching
+    // session:get-config) is a configuration mismatch, not a transient
+    // failure; map to 401 too so the runner fails fast.
+    case 'unknown-session':
+    case 'owner-missing':
+      return {
+        status: 401,
+        body: { error: { code: 'SESSION_INVALID', message: 'session has no usable config' } },
+      };
     case 'no-service':
     case 'duplicate-service':
     case 'missing-service':
