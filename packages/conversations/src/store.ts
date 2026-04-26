@@ -177,16 +177,6 @@ export interface ConversationStore {
   appendTurn(args: ConversationStoreAppendTurnArgs): Promise<Turn>;
   /** Soft delete — sets deleted_at on the matching row. Idempotent: returns false on missing/already-deleted. */
   softDelete(conversationId: string): Promise<boolean>;
-  /**
-   * Test seam — set `active_req_id` on a conversation. Task 14 ships the
-   * production `bind-session` hook that owns this column; until then,
-   * tests for Task 7 use this helper to fixture a known reqId. NOT
-   * exposed via the bus.
-   */
-  setActiveReqIdForTest(
-    conversationId: string,
-    reqId: string | null,
-  ): Promise<void>;
 }
 
 export function createConversationStore(
@@ -324,14 +314,6 @@ export function createConversationStore(
         .where('deleted_at', 'is', null)
         .executeTakeFirst();
       return Number(result.numUpdatedRows ?? 0n) > 0;
-    },
-
-    async setActiveReqIdForTest(conversationId, reqId) {
-      await db
-        .updateTable('conversations_v1_conversations')
-        .set({ active_req_id: reqId, updated_at: new Date() })
-        .where('conversation_id', '=', conversationId)
-        .execute();
     },
   };
 }
