@@ -160,6 +160,15 @@ export interface ConversationStoreAppendTurnArgs {
 export interface ConversationStore {
   /** Single-row lookup; skips tombstones. Used in hook handlers after agents:resolve. */
   getByIdNotDeleted(conversationId: string): Promise<Conversation | null>;
+  /**
+   * Lookup a non-tombstoned conversation by `(user_id, active_req_id)`.
+   * Returns null if no row matches OR the row is tombstoned. Used by the
+   * `conversations:get-by-req-id` hook (Week 10–12 Task 7, Invariant J9).
+   */
+  getByReqIdForUser(
+    userId: string,
+    reqId: string,
+  ): Promise<Conversation | null>;
   /** Multi-row reads always go through scopedConversations(). */
   listForUser(userId: string, agentId?: string): Promise<Conversation[]>;
   /** Read all turns for a conversation in turn_index order. */
@@ -168,6 +177,16 @@ export interface ConversationStore {
   appendTurn(args: ConversationStoreAppendTurnArgs): Promise<Turn>;
   /** Soft delete — sets deleted_at on the matching row. Idempotent: returns false on missing/already-deleted. */
   softDelete(conversationId: string): Promise<boolean>;
+  /**
+   * Test seam — set `active_req_id` on a conversation. Task 14 ships the
+   * production `bind-session` hook that owns this column; until then,
+   * tests for Task 7 use this helper to fixture a known reqId. NOT
+   * exposed via the bus.
+   */
+  setActiveReqIdForTest(
+    conversationId: string,
+    reqId: string | null,
+  ): Promise<void>;
 }
 
 export function createConversationStore(
@@ -179,6 +198,23 @@ export function createConversationStore(
         .selectFrom('conversations_v1_conversations')
         .selectAll('conversations_v1_conversations')
         .where('conversation_id', '=', conversationId)
+        .where('deleted_at', 'is', null)
+        .executeTakeFirst();
+      return row === undefined ? null : rowToConversation(row);
+    },
+
+    async getByReqIdForUser(userId, reqId) {
+      // Filter by user_id FIRST so a foreign reqId can't trigger a row
+      // existence oracle: every miss is identical to "no such row" from
+      // the caller's perspective. The conversations_v1_conversations_owner
+      // index covers (user_id, agent_id) — adding active_req_id to the
+      // WHERE clause is still cheap because user_id alone narrows to a
+      // single user's rowset.
+      const row = await db
+        .selectFrom('conversations_v1_conversations')
+        .selectAll('conversations_v1_conversations')
+        .where('user_id', '=', userId)
+        .where('active_req_id', '=', reqId)
         .where('deleted_at', 'is', null)
         .executeTakeFirst();
       return row === undefined ? null : rowToConversation(row);
@@ -288,6 +324,14 @@ export function createConversationStore(
         .where('deleted_at', 'is', null)
         .executeTakeFirst();
       return Number(result.numUpdatedRows ?? 0n) > 0;
+    },
+
+    async setActiveReqIdForTest(conversationId, reqId) {
+      await db
+        .updateTable('conversations_v1_conversations')
+        .set({ active_req_id: reqId, updated_at: new Date() })
+        .where('conversation_id', '=', conversationId)
+        .execute();
     },
   };
 }

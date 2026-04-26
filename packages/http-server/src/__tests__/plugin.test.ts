@@ -479,4 +479,52 @@ describe('@ax/http-server', () => {
     r = await fetch(`http://127.0.0.1:${port}/elsewhere`);
     expect(r.status).toBe(404);
   });
+
+  it('res.stream() flushes headers, allows multiple writes, closes on demand', async () => {
+    await registerRoute('GET', '/sse', async (_req, res) => {
+      const s = res.status(200).stream();
+      s.write('data: chunk-1\n\n');
+      s.write('data: chunk-2\n\n');
+      // Defer the close so we can prove headers flushed before close.
+      setTimeout(() => {
+        s.write('data: chunk-3\n\n');
+        s.close();
+      }, 5);
+    });
+    const r = await fetch(`http://127.0.0.1:${port}/sse`);
+    expect(r.status).toBe(200);
+    expect(r.headers.get('content-type')).toMatch(/text\/event-stream/);
+    expect(r.headers.get('cache-control')).toMatch(/no-cache/);
+    const body = await r.text();
+    expect(body).toBe(
+      'data: chunk-1\n\ndata: chunk-2\n\ndata: chunk-3\n\n',
+    );
+  });
+
+  it('res.stream() onClose fires when client disconnects', async () => {
+    let firedResolve!: () => void;
+    const fired = new Promise<void>((resolve) => {
+      firedResolve = resolve;
+    });
+    await registerRoute('GET', '/sse-close', async (_req, res) => {
+      const s = res.status(200).stream();
+      s.write(': hello\n\n');
+      s.onClose(() => {
+        firedResolve();
+      });
+    });
+    const ac = new AbortController();
+    const r = await fetch(`http://127.0.0.1:${port}/sse-close`, {
+      signal: ac.signal,
+    });
+    const reader = r.body!.getReader();
+    await reader.read();
+    ac.abort();
+    try {
+      await reader.cancel();
+    } catch {
+      // already aborted
+    }
+    await fired;
+  });
 });

@@ -26,6 +26,8 @@ import type {
   CreateOutput,
   DeleteInput,
   DeleteOutput,
+  GetByReqIdInput,
+  GetByReqIdOutput,
   GetInput,
   GetOutput,
   ListInput,
@@ -71,6 +73,7 @@ export function createConversationsPlugin(
         'conversations:get',
         'conversations:list',
         'conversations:delete',
+        'conversations:get-by-req-id',
       ],
       calls: ['agents:resolve', 'database:get-instance'],
       subscribes: ['chat:turn-end'],
@@ -120,6 +123,12 @@ export function createConversationsPlugin(
         'conversations:delete',
         PLUGIN_NAME,
         async (ctx, input) => deleteConversation(localStore, bus, ctx, input),
+      );
+
+      bus.registerService<GetByReqIdInput, GetByReqIdOutput>(
+        'conversations:get-by-req-id',
+        PLUGIN_NAME,
+        async (_ctx, input) => getByReqId(localStore, input),
       );
 
       // chat:turn-end auto-append (Task 3 of Week 10–12).
@@ -370,6 +379,47 @@ async function listConversations(
   }
   const rows = await store.listForUser(input.userId, input.agentId);
   return rows;
+}
+
+async function getByReqId(
+  store: ConversationStore,
+  input: GetByReqIdInput,
+): Promise<GetByReqIdOutput> {
+  // Bound the inputs at the boundary. `reqId` is route-data — a tampered
+  // empty string would otherwise collapse to "any conversation with a
+  // null active_req_id," which is wrong. We don't bound to the
+  // `req-XXXXXX` shape because the producer (chat-orchestrator) hasn't
+  // locked it yet — Task 14 may widen the scheme.
+  if (
+    typeof input.reqId !== 'string' ||
+    input.reqId.length === 0 ||
+    input.reqId.length > 256
+  ) {
+    throw new PluginError({
+      code: 'not-found',
+      plugin: PLUGIN_NAME,
+      hookName: 'conversations:get-by-req-id',
+      message: 'reqId not found',
+    });
+  }
+  if (typeof input.userId !== 'string' || input.userId.length === 0) {
+    throw new PluginError({
+      code: 'not-found',
+      plugin: PLUGIN_NAME,
+      hookName: 'conversations:get-by-req-id',
+      message: 'reqId not found',
+    });
+  }
+  const conv = await store.getByReqIdForUser(input.userId, input.reqId);
+  if (conv === null) {
+    throw new PluginError({
+      code: 'not-found',
+      plugin: PLUGIN_NAME,
+      hookName: 'conversations:get-by-req-id',
+      message: 'reqId not found',
+    });
+  }
+  return conv;
 }
 
 async function deleteConversation(

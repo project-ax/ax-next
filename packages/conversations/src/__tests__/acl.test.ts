@@ -13,6 +13,8 @@ import type {
   CreateInput,
   CreateOutput,
   DeleteInput,
+  GetByReqIdInput,
+  GetByReqIdOutput,
   GetInput,
   GetOutput,
   ListInput,
@@ -44,6 +46,25 @@ interface MockResolvePolicy {
 let container: StartedPostgreSqlContainer;
 let connectionString: string;
 const harnesses: TestHarness[] = [];
+
+async function setReqIdViaStore(
+  _h: TestHarness,
+  conversationId: string,
+  reqId: string | null,
+): Promise<void> {
+  // Task 14 will own active_req_id via `conversations:bind-session`;
+  // until then, raw SQL through pg.Client is the simplest fixture.
+  const client = new (await import('pg')).default.Client({ connectionString });
+  await client.connect();
+  try {
+    await client.query(
+      'UPDATE conversations_v1_conversations SET active_req_id = $1, updated_at = NOW() WHERE conversation_id = $2',
+      [reqId, conversationId],
+    );
+  } finally {
+    await client.end().catch(() => {});
+  }
+}
 
 async function makeHarness(policy: MockResolvePolicy): Promise<{
   h: TestHarness;
@@ -315,6 +336,123 @@ describe('@ax/conversations ACL gate', () => {
       caught = err;
     }
     expect((caught as PluginError).code).toBe('not-found');
+  });
+
+  describe('conversations:get-by-req-id', () => {
+    it('returns the row when (userA, reqId) matches', async () => {
+      const { h, calls } = await makeHarness({ decide: () => 'allow' });
+
+      const created = await h.bus.call<CreateInput, CreateOutput>(
+        'conversations:create',
+        h.ctx({ userId: 'userA' }),
+        { userId: 'userA', agentId: 'agt_a' },
+      );
+
+      // Fixture an active_req_id directly via the store. Task 14 ships
+      // the production writer (`conversations:bind-session`); for Task 7
+      // we just READ the column.
+      await setReqIdViaStore(h, created.conversationId, 'req-deadbeef');
+
+      // Reset call log so we can assert this hook does NOT call agents:resolve.
+      calls.length = 0;
+      const got = await h.bus.call<GetByReqIdInput, GetByReqIdOutput>(
+        'conversations:get-by-req-id',
+        h.ctx({ userId: 'userA' }),
+        { userId: 'userA', reqId: 'req-deadbeef' },
+      );
+      expect(got.conversationId).toBe(created.conversationId);
+      expect(got.activeReqId).toBe('req-deadbeef');
+      // Per the type doc — the route layer is responsible for chaining
+      // agents:resolve. The hook itself doesn't gate.
+      expect(calls).toHaveLength(0);
+    });
+
+    it("returns not-found when userB asks for userA's reqId (J9)", async () => {
+      const { h } = await makeHarness({ decide: () => 'allow' });
+
+      const created = await h.bus.call<CreateInput, CreateOutput>(
+        'conversations:create',
+        h.ctx({ userId: 'userA' }),
+        { userId: 'userA', agentId: 'agt_a' },
+      );
+      await setReqIdViaStore(h, created.conversationId, 'req-secret');
+
+      let caught: unknown;
+      try {
+        await h.bus.call<GetByReqIdInput, GetByReqIdOutput>(
+          'conversations:get-by-req-id',
+          h.ctx({ userId: 'userB' }),
+          { userId: 'userB', reqId: 'req-secret' },
+        );
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(PluginError);
+      expect((caught as PluginError).code).toBe('not-found');
+    });
+
+    it('returns not-found when reqId does not exist (foreign-guess case)', async () => {
+      const { h } = await makeHarness({ decide: () => 'allow' });
+
+      let caught: unknown;
+      try {
+        await h.bus.call<GetByReqIdInput, GetByReqIdOutput>(
+          'conversations:get-by-req-id',
+          h.ctx({ userId: 'userA' }),
+          { userId: 'userA', reqId: 'req-nonexistent' },
+        );
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(PluginError);
+      expect((caught as PluginError).code).toBe('not-found');
+    });
+
+    it('skips tombstoned (soft-deleted) rows', async () => {
+      const { h } = await makeHarness({ decide: () => 'allow' });
+
+      const created = await h.bus.call<CreateInput, CreateOutput>(
+        'conversations:create',
+        h.ctx({ userId: 'userA' }),
+        { userId: 'userA', agentId: 'agt_a' },
+      );
+      await setReqIdViaStore(h, created.conversationId, 'req-zombie');
+      await h.bus.call<DeleteInput, void>(
+        'conversations:delete',
+        h.ctx({ userId: 'userA' }),
+        { conversationId: created.conversationId, userId: 'userA' },
+      );
+
+      let caught: unknown;
+      try {
+        await h.bus.call<GetByReqIdInput, GetByReqIdOutput>(
+          'conversations:get-by-req-id',
+          h.ctx({ userId: 'userA' }),
+          { userId: 'userA', reqId: 'req-zombie' },
+        );
+      } catch (err) {
+        caught = err;
+      }
+      expect((caught as PluginError).code).toBe('not-found');
+    });
+
+    it('rejects empty / oversize reqId as not-found (boundary)', async () => {
+      const { h } = await makeHarness({ decide: () => 'allow' });
+
+      for (const bad of ['', 'x'.repeat(257)]) {
+        let caught: unknown;
+        try {
+          await h.bus.call<GetByReqIdInput, GetByReqIdOutput>(
+            'conversations:get-by-req-id',
+            h.ctx({ userId: 'userA' }),
+            { userId: 'userA', reqId: bad },
+          );
+        } catch (err) {
+          caught = err;
+        }
+        expect((caught as PluginError).code).toBe('not-found');
+      }
+    });
   });
 
   it('soft-deleted conversation is unreachable via get AND list', async () => {

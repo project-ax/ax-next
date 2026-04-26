@@ -125,6 +125,33 @@ export interface DeleteInput {
 /** Soft delete (Invariant J5). No payload — caller sees void on success. */
 export type DeleteOutput = void;
 
+/**
+ * Lookup a conversation by its in-flight `active_req_id`. Used by
+ * channel-web's SSE handler (Week 10–12 Task 7, Invariant J9) so a
+ * browser-supplied `:reqId` URL param can be authorized — callers MUST
+ * own the row (filtered by `user_id`), and tombstones (`deleted_at IS
+ * NULL`) are excluded.
+ *
+ * Throws `PluginError({ code: 'not-found' })` when no matching row
+ * exists. The route layer maps that to 404 (NOT 403) — guessing a
+ * foreign reqId leaks no signal beyond "no such stream."
+ *
+ * NOTE: this hook does NOT call `agents:resolve` (J1 gate). The caller
+ * is expected to chain a follow-up `agents:resolve(agentId, userId)`
+ * with the returned `agentId`. Two reasons:
+ *
+ *   1. The user already passes the `user_id` filter, so existence-leak
+ *      is already prevented at this hook's boundary.
+ *   2. Some callers (audit, debug probes) want the lookup without
+ *      forcing the gate; making it explicit at the call site keeps
+ *      the policy decision visible.
+ */
+export interface GetByReqIdInput {
+  reqId: string;
+  userId: string;
+}
+export type GetByReqIdOutput = Conversation;
+
 // ---------------------------------------------------------------------------
 // Plugin config
 // ---------------------------------------------------------------------------

@@ -7,7 +7,7 @@ import { createConversationsPlugin } from '../plugin.js';
 // ---------------------------------------------------------------------------
 
 describe('@ax/conversations plugin manifest', () => {
-  it('declares the five conversations:* registers, agents:resolve + database:get-instance calls, and chat:turn-end subscription', () => {
+  it('declares the six conversations:* registers, agents:resolve + database:get-instance calls, and chat:turn-end subscription', () => {
     const plugin = createConversationsPlugin();
     expect(plugin.manifest).toEqual({
       name: '@ax/conversations',
@@ -18,6 +18,10 @@ describe('@ax/conversations plugin manifest', () => {
         'conversations:get',
         'conversations:list',
         'conversations:delete',
+        // Task 7 (Week 10–12): browser SSE consumer authorizes a route
+        // param `:reqId` against this row before subscribing to the
+        // chunk feed.
+        'conversations:get-by-req-id',
       ],
       // database:get-instance is hard — we run our own migration on init.
       // agents:resolve is hard — every hook gates through it (Invariant J1).

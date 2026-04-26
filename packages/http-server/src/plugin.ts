@@ -29,6 +29,8 @@ import {
   type HttpRequestEvent,
   type HttpResponse,
   type HttpResponseSentEvent,
+  type StreamingResponse,
+  type StreamingResponseOptions,
 } from './types.js';
 
 const PLUGIN_NAME = '@ax/http-server';
@@ -392,7 +394,17 @@ async function handle(
           err instanceof Error ? err.message : String(err)
         }\n`,
       );
-      if (!writer.finished) {
+      if (writer.streaming) {
+        // Stream is mid-flight — best-effort end the underlying socket.
+        // We can't write a 500 body into an already-flushed SSE response,
+        // but we can stop holding the connection open.
+        try {
+          res.end();
+        } catch {
+          // socket already gone
+        }
+        finalStatus = writer.statusCode;
+      } else if (!writer.finished) {
         if (!res.headersSent) {
           res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
           res.end(JSON.stringify({ error: 'internal' }));
@@ -403,6 +415,22 @@ async function handle(
         finalStatus = 500;
       }
     }
+  }
+
+  if (writer.streaming) {
+    // Streaming response: the handler returns immediately after opening
+    // the stream and registering subscriptions. The actual end-of-life
+    // happens when the writer's close() runs OR when the client
+    // disconnects. fireResponseSent fires on socket close so durationMs
+    // reflects the full streaming lifetime (not the handler's setup
+    // window).
+    res.once('close', () => {
+      void fireResponseSent(bus, ctx, {
+        status: finalStatus,
+        durationMs: Date.now() - startedAt,
+      });
+    });
+    return;
   }
 
   if (!writer.finished) {
@@ -495,6 +523,14 @@ function readBodyCapped(req: http.IncomingMessage, maxBytes: number): Promise<Bu
 
 class ResponseWriter {
   finished = false;
+  /**
+   * True once `stream()` opened a streaming response — set BEFORE the
+   * underlying ServerResponse closes. The kernel's "handler-did-not-
+   * respond" fallback uses this together with `finished` so a handler
+   * that opens a stream and then returns (the SSE pattern: register
+   * subscriptions, await close async) doesn't trip the 500 fallback.
+   */
+  streaming = false;
   statusCode = 200;
   private headers = new Map<string, string>();
   // Set-Cookie is a multi-value header; flatten to array so multiple
@@ -503,6 +539,7 @@ class ResponseWriter {
   private res: http.ServerResponse;
   private cookieKey: Buffer;
   private cookieEnv: CookieEnv;
+  private streamCloseCallbacks: Array<() => void> = [];
 
   readonly adapter: HttpResponse;
 
@@ -567,6 +604,10 @@ class ResponseWriter {
         this.finished = true;
         this.flushEmpty();
       },
+      stream: (opts?: StreamingResponseOptions) => {
+        if (this.finished) throw new Error('response already finished');
+        return this.openStream(opts);
+      },
       setSignedCookie: (name: string, value: string, opts?: SignedCookieOptions) => {
         if (this.finished) throw new Error('response already finished');
         const wire = signCookieValue(this.cookieKey, value);
@@ -577,6 +618,108 @@ class ResponseWriter {
         if (this.finished) throw new Error('response already finished');
         const header = buildClearCookieHeader(name, opts ?? {}, this.cookieEnv);
         this.setCookies.push(header);
+      },
+    };
+  }
+
+  /**
+   * Open a streaming response. Flushes the current status + headers
+   * immediately and returns a writer the caller can pump chunks into.
+   * The handler may return BEFORE close — the http-server's "handler
+   * didn't respond" fallback honors `streaming` so a stream-then-await-
+   * subscriber pattern doesn't trip the 500 path.
+   */
+  openStream(opts?: StreamingResponseOptions): StreamingResponse {
+    this.finished = true;
+    this.streaming = true;
+    let closed = false;
+
+    const fireOnClose = (): void => {
+      if (this.streamCloseCallbacks.length === 0) return;
+      const handlers = this.streamCloseCallbacks.slice();
+      this.streamCloseCallbacks.length = 0;
+      for (const h of handlers) {
+        try {
+          h();
+        } catch {
+          // Subscriber-MUST-NOT-throw posture: a buggy onClose handler
+          // can't tear down the rest of the cleanup chain.
+        }
+      }
+    };
+
+    const onSocketClose = (): void => {
+      if (closed) return;
+      closed = true;
+      fireOnClose();
+    };
+
+    // The 'close' event on http.ServerResponse fires on premature client
+    // disconnect AND on a clean res.end(). Either way we fire onClose
+    // exactly once.
+    this.res.once('close', onSocketClose);
+
+    const contentType = opts?.contentType ?? 'text/event-stream; charset=utf-8';
+    if (!this.headers.has('content-type')) {
+      this.headers.set('content-type', contentType);
+    }
+    // Disable proxy buffering so chunks reach the browser immediately.
+    // 'X-Accel-Buffering: no' is the nginx convention; harmless elsewhere.
+    if (!this.headers.has('x-accel-buffering')) {
+      this.headers.set('x-accel-buffering', 'no');
+    }
+    if (!this.headers.has('cache-control')) {
+      this.headers.set('cache-control', 'no-cache, no-transform');
+    }
+    this.writeHead();
+    // Force the first flush so a slow first chunk doesn't sit in
+    // node's outbound buffer behind the headers.
+    if (typeof (this.res as { flushHeaders?: () => void }).flushHeaders === 'function') {
+      try {
+        (this.res as { flushHeaders: () => void }).flushHeaders();
+      } catch {
+        // already sent — best-effort
+      }
+    }
+
+    return {
+      write: (chunk: string | Buffer) => {
+        if (closed) return;
+        try {
+          this.res.write(chunk);
+        } catch {
+          // Socket gone — treat as close.
+          onSocketClose();
+        }
+      },
+      close: () => {
+        if (closed) return;
+        closed = true;
+        try {
+          this.res.end();
+        } catch {
+          // already ended
+        }
+        // The 'close' event will also fire from res.end(); fireOnClose
+        // is idempotent (we drained the array above) so duplicate calls
+        // are safe.
+        fireOnClose();
+      },
+      onClose: (handler: () => void) => {
+        if (closed) {
+          // Schedule on the next microtask so the registration site
+          // doesn't see the handler fire synchronously inside its own
+          // call frame.
+          queueMicrotask(() => {
+            try {
+              handler();
+            } catch {
+              // see fireOnClose
+            }
+          });
+          return;
+        }
+        this.streamCloseCallbacks.push(handler);
       },
     };
   }
