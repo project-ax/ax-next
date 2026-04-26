@@ -30,6 +30,7 @@
     { "path": "../../packages/agents" },
     { "path": "../../packages/http-server" },
     { "path": "../../packages/auth-oidc" },
-    { "path": "../../packages/teams" }
+    { "path": "../../packages/teams" },
+    { "path": "../../packages/static-files" }
   ]
 }
