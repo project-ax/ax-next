@@ -42,6 +42,7 @@
     { "path": "packages/auth-oidc" },
     { "path": "packages/agents" },
     { "path": "packages/teams" },
+    { "path": "packages/conversations" },
     { "path": "presets/k8s" }
   ]
 }
