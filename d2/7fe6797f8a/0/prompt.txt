@@ -1,0 +1,24 @@
+FAIL  src/__tests__/cookies-adapter.test.ts > http-server signed-cookie adapter > req.signedCookie returns null on tampered cookie
+packages/http-server test: AssertionError: expected { session: 'orig' } to deeply equal { session: null }
+packages/http-server test: - Expected
+packages/http-server test: + Received
+packages/http-server test:   {
+packages/http-server test: -   "session": null,
+packages/http-server test: +   "session": "orig",
+packages/http-server test:   }
+packages/http-server test:  ❯ src/__tests__/cookies-adapter.test.ts:95:28
+packages/http-server test:      93|       headers: { cookie: `ax_sess=${flipped}` },
+packages/http-server test:      94|     });
+packages/http-server test:      95|     expect(await r.json()).toEqual({ session: null });
+packages/http-server test:        |                            ^
+packages/http-server test:      96|   });
+packages/http-server test:      97|
+packages/http-server test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+packages/http-server test:  Test Files  1 failed | 3 passed (4)
+packages/http-server test:       Tests  1 failed | 97 passed (98)
+packages/http-server test:    Start at  17:51:16
+packages/http-server test:    Duration  7.57s (transform 956ms, setup 0ms, import 1.63s, tests 6.90s, environment 1ms)
+packages/http-server test: ::error file=/home/runner/work/ax-next/ax-next/packages/http-server/src/__tests__/cookies-adapter.test.ts,title=src/__tests__/cookies-adapter.test.ts > http-server signed-cookie adapter > req.signedCookie returns null on tampered cookie,line=95,column=28::AssertionError: expected { session: 'orig' } to deeply equal { session: null }%0A%0A- Expected%0A+ Received%0A%0A  {%0A-   "session": null,%0A+   "session": "orig",%0A  }%0A%0A ❯ src/__tests__/cookies-adapter.test.ts:95:28%0A%0A
+packages/http-server test: Failed
+/home/runner/work/ax-next/ax-next/packages/http-server:
+ ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @ax/http-server@0.0.0 test: `vitest run`

@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "d27fe6797f8a",
+  "strategy": "manual-commit",
+  "branch": "week-9.5-multi-tenant",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "packages/auth-oidc/src/__tests__/admin-routes.test.ts",
+    "packages/http-server/src/__tests__/cookies-adapter.test.ts",
+    "packages/http-server/src/__tests__/cookies.test.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/d2/7fe6797f8a/0/metadata.json",
+      "transcript": "/d2/7fe6797f8a/0/full.jsonl",
+      "content_hash": "/d2/7fe6797f8a/0/content_hash.txt",
+      "prompt": "/d2/7fe6797f8a/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 26,
+    "cache_creation_tokens": 116028,
+    "cache_read_tokens": 1854291,
+    "output_tokens": 25938,
+    "api_call_count": 16
+  }
+}
