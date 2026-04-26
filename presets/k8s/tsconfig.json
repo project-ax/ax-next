@@ -27,6 +27,9 @@
     { "path": "../../packages/mcp-client" },
     { "path": "../../packages/credentials" },
     { "path": "../../packages/ipc-http" },
-    { "path": "../../packages/agents" }
+    { "path": "../../packages/agents" },
+    { "path": "../../packages/http-server" },
+    { "path": "../../packages/auth" },
+    { "path": "../../packages/teams" }
   ]
 }

@@ -1,5 +1,5 @@
 import { createRequire } from 'node:module';
-import type { Plugin } from '@ax/core';
+import { PluginError, type Plugin } from '@ax/core';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createStoragePostgresPlugin } from '@ax/storage-postgres';
 import { createEventbusPostgresPlugin } from '@ax/eventbus-postgres';
@@ -18,6 +18,9 @@ import { createMcpClientPlugin } from '@ax/mcp-client';
 import { createCredentialsPlugin } from '@ax/credentials';
 import { createIpcHttpPlugin } from '@ax/ipc-http';
 import { createAgentsPlugin } from '@ax/agents';
+import { createHttpServerPlugin } from '@ax/http-server';
+import { createAuthPlugin, type AuthConfig } from '@ax/auth';
+import { createTeamsPlugin } from '@ax/teams';
 
 // ---------------------------------------------------------------------------
 // @ax/preset-k8s — production assembly: postgres trio + workspace-git +
@@ -47,9 +50,11 @@ import { createAgentsPlugin } from '@ax/agents';
 //   2. eventbus / session (cross-process coordination)
 //   3. workspace (versioned content)
 //   4. audit-log (subscribes to chat:end; calls storage:set)
-//   5. sandbox / ipc-http / llm-proxy / chat-orchestrator (control plane)
-//   6. tool-dispatcher → tool descriptors → mcp-client (catalog assembly)
-//   7. llm-anthropic (last; everything else is in place when init runs)
+//   5. http-server / auth / teams (control plane access — Week 9.5)
+//   6. sandbox / ipc-http / llm-proxy / chat-orchestrator (chat plane)
+//   7. tool-dispatcher → tool descriptors → mcp-client (catalog assembly)
+//   8. agents (admin endpoints + agents:resolve gate)
+//   9. llm-anthropic (last; everything else is in place when init runs)
 // ---------------------------------------------------------------------------
 
 const requireFromPreset = createRequire(import.meta.url);
@@ -63,6 +68,37 @@ function defaultRunnerBinary(): string {
 }
 
 const DEFAULT_CHAT_TIMEOUT_MS = 10 * 60_000;
+
+const COOKIE_KEY_BYTES = 32;
+
+/**
+ * Parse the http cookie signing key from the preset config's string form
+ * (64 hex chars OR 44 base64 chars → 32 raw bytes). Mirrors the parser
+ * inside @ax/http-server (which we can't import — Invariant I2 — even
+ * though the preset itself is on the cross-plugin allowlist, copying the
+ * three-line check keeps the contract here legible).
+ */
+function parseCookieKeyString(raw: string): Buffer {
+  if (typeof raw !== 'string' || raw.length === 0) {
+    throw new PluginError({
+      code: 'invalid-cookie-key',
+      plugin: '@ax/preset-k8s',
+      message:
+        'http.cookieKey is required (32 bytes; 64 hex chars or 44 base64 chars)',
+    });
+  }
+  if (/^[0-9a-fA-F]{64}$/.test(raw)) {
+    return Buffer.from(raw, 'hex');
+  }
+  const b64 = Buffer.from(raw, 'base64');
+  if (b64.length === COOKIE_KEY_BYTES) return b64;
+  throw new PluginError({
+    code: 'invalid-cookie-key',
+    plugin: '@ax/preset-k8s',
+    message:
+      'http.cookieKey must be 32 bytes (64 hex chars or 44 base64 chars)',
+  });
+}
 
 /**
  * Discriminated union for the workspace backend. `local` keeps the
@@ -171,6 +207,55 @@ export interface K8sPresetConfig {
     chatTimeoutMs?: number;
     oneShot?: boolean;
   };
+  /**
+   * @ax/http-server config. The host listener that serves /admin/*, /auth/*,
+   * /admin/me, /admin/sign-out, and (Week 10-12) the admin UI. Distinct from
+   * the @ax/ipc-http listener above — that one is the runner-pod ↔ host
+   * back-channel and never faces public traffic.
+   *
+   * `cookieKey` accepts either 64 hex chars or 44 base64 chars (32-byte key).
+   * It's parsed by the preset and handed to the plugin as a Buffer. We
+   * deliberately keep the string form on the preset config so the type is
+   * JSON-serializable for the chart's ConfigMap path.
+   *
+   * `allowedOrigins` is the exact-match CSRF allow-list for state-changing
+   * methods. The admin UI's origin (Week 10-12) lands here; for now the
+   * chart provides whatever the operator sets via env.
+   */
+  http: {
+    /** Bind address. Default '0.0.0.0' for in-cluster; '127.0.0.1' for tests. */
+    host: string;
+    /** Bind port. Pass 0 for OS-assigned (tests). */
+    port: number;
+    /** 32-byte signing key as 64 hex chars or 44 base64 chars. */
+    cookieKey: string;
+    /** Exact-match CSRF allow-list. Empty allows only X-Requested-With callers. */
+    allowedOrigins: string[];
+  };
+  /**
+   * @ax/auth config. At least one of `google` (OIDC) or `devBootstrap`
+   * MUST be set; the plugin throws `no-auth-providers` otherwise.
+   *
+   * Production deploys typically set `google` only. Dev / canary / kind
+   * deploys set `devBootstrap` only. Both can coexist for staging-like
+   * environments — the auth plugin won't refuse it.
+   */
+  auth: {
+    google?: {
+      clientId: string;
+      clientSecret: string;
+      issuer: string;
+      redirectUri: string;
+    };
+    /**
+     * If present, mints a single shared `is_admin` user from the pre-shared
+     * token via `POST /auth/dev-bootstrap`. Refused outright when
+     * `NODE_ENV=production` (the auth plugin throws at init).
+     */
+    devBootstrap?: { token: string };
+    /** Session cookie lifetime. Default 7 days (in @ax/auth). */
+    sessionLifetimeSeconds?: number;
+  };
 }
 
 /**
@@ -244,7 +329,50 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // first chat:end fires.
   plugins.push(auditLogPlugin());
 
-  // ----- 5. control plane ------------------------------------------------
+  // ----- 5. control-plane access (Week 9.5) -----------------------------
+  // http-server provides the public-facing listener. auth registers the
+  // /auth/* + /admin/{me,sign-out} routes and the auth:require-user gate
+  // every admin endpoint depends on. teams owns /admin/teams* and the
+  // teams:* hooks the agents-plugin's team-visibility ACL calls.
+  //
+  // Boot order: the kernel topologically sorts on `manifest.calls`
+  // (http:register-route → @ax/http-server, auth:require-user → @ax/auth),
+  // so even if we shuffled the array the kernel would init http-server
+  // before auth before agents/teams. We push in the conceptual order to
+  // keep the intent legible to readers.
+  plugins.push(
+    createHttpServerPlugin({
+      host: config.http.host,
+      port: config.http.port,
+      cookieKey: parseCookieKeyString(config.http.cookieKey),
+      allowedOrigins: config.http.allowedOrigins,
+    }),
+  );
+
+  const authConfig: AuthConfig = { providers: {} };
+  if (config.auth.google !== undefined) {
+    authConfig.providers.google = {
+      clientId: config.auth.google.clientId,
+      clientSecret: config.auth.google.clientSecret,
+      issuer: config.auth.google.issuer,
+      redirectUri: config.auth.google.redirectUri,
+    };
+  }
+  if (config.auth.devBootstrap !== undefined) {
+    authConfig.devBootstrap = { token: config.auth.devBootstrap.token };
+  }
+  if (config.auth.sessionLifetimeSeconds !== undefined) {
+    authConfig.sessionLifetimeSeconds = config.auth.sessionLifetimeSeconds;
+  }
+  plugins.push(createAuthPlugin(authConfig));
+
+  // teams: mountAdminRoutes:true so /admin/teams* lands alongside the rest
+  // of the admin surface. The plugin's manifest expands `calls` to include
+  // http:register-route + auth:require-user when this flag is set, which
+  // is exactly what the kernel's topo-sort needs to see.
+  plugins.push(createTeamsPlugin({ mountAdminRoutes: true }));
+
+  // ----- 6. chat plane ---------------------------------------------------
   // sandbox-k8s registers `sandbox:open-session`. No subprocess fallback
   // here — this preset is k8s-only.
   const sandboxOpts = {
@@ -293,13 +421,6 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   );
   plugins.push(createLlmProxyAnthropicFormatPlugin());
 
-  // Agents plugin — registers `agents:resolve` (the ACL gate the
-  // orchestrator hard-depends on as of Week 9.5). Goes before the
-  // orchestrator so manifest resolution is tidy; the kernel's topological
-  // sort would handle either order. Reuses the shared postgres pool via
-  // `database:get-instance` (no second pool).
-  plugins.push(createAgentsPlugin());
-
   const orchestratorCfg: Parameters<typeof createChatOrchestratorPlugin>[0] = {
     runnerBinary: config.chat?.runnerBinary ?? defaultRunnerBinary(),
     chatTimeoutMs: config.chat?.chatTimeoutMs ?? DEFAULT_CHAT_TIMEOUT_MS,
@@ -309,16 +430,30 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   }
   plugins.push(createChatOrchestratorPlugin(orchestratorCfg));
 
-  // ----- 6. tool catalog -------------------------------------------------
+  // ----- 7. tool catalog -------------------------------------------------
   // Dispatcher first — it registers `tool:register` / `tool:list`. The
   // descriptor-only tool plugins (bash, file-io) call `tool:register` from
   // their init. mcp-client also calls `tool:register` from init.
+  //
+  // mcp-client gets `mountAdminRoutes: true` so /admin/mcp-servers* lands
+  // alongside the rest of the admin surface. The flag expands the plugin's
+  // manifest `calls` to include http:register-route + auth:require-user;
+  // the kernel's topo-sort picks up the new edges automatically.
   plugins.push(createToolDispatcherPlugin());
   plugins.push(createToolBashPlugin());
   plugins.push(createToolFileIoPlugin());
-  plugins.push(createMcpClientPlugin());
+  plugins.push(createMcpClientPlugin({ mountAdminRoutes: true }));
 
-  // ----- 7. LLM ----------------------------------------------------------
+  // ----- 8. agents -------------------------------------------------------
+  // Registers `agents:resolve` (the ACL gate the chat-orchestrator hard-
+  // depends on as of Week 9.5) AND mounts /admin/agents* routes. The
+  // plugin's manifest `calls` already declares http:register-route +
+  // auth:require-user as hard deps — the kernel's topo-sort blocks init
+  // until both upstream plugins have registered. Reuses the shared
+  // postgres pool via `database:get-instance` (no second pool).
+  plugins.push(createAgentsPlugin());
+
+  // ----- 9. LLM ----------------------------------------------------------
   // Throws at init if ANTHROPIC_API_KEY is missing.
   const anthropicCfg: Parameters<typeof createLlmAnthropicPlugin>[0] = {};
   if (config.anthropic?.model !== undefined) {
@@ -411,6 +546,12 @@ export function workspaceConfigFromEnv(
 //   - DATABASE_URL                — postgres DSN (database/eventbus/session)
 //   - AX_K8S_HOST_IPC_URL          — cluster URL runners use to reach @ax/ipc-http
 //   - AX_WORKSPACE_BACKEND + the per-backend vars (delegated to workspaceConfigFromEnv)
+//   - AX_HTTP_HOST / AX_HTTP_PORT  — public-facing http listener
+//   - AX_HTTP_COOKIE_KEY           — 32-byte signing key (hex / base64)
+//   - AX_HTTP_ALLOWED_ORIGINS      — CSRF allow-list (comma-separated)
+//   - At least one of:
+//       AX_AUTH_GOOGLE_{CLIENT_ID,CLIENT_SECRET,REDIRECT_URI,ISSUER}
+//       AX_DEV_BOOTSTRAP_TOKEN
 //
 // Optional env:
 //   - K8S_NAMESPACE / K8S_POD_IMAGE / K8S_RUNTIME_CLASS / K8S_IMAGE_PULL_SECRETS
@@ -420,6 +561,7 @@ export function workspaceConfigFromEnv(
 //   - AX_LLM_MODEL / AX_LLM_MAX_TOKENS — anthropic config
 //   - AX_RUNNER_BINARY             — chat orchestrator override (tests)
 //   - AX_CHAT_TIMEOUT_MS           — chat orchestrator override
+//   - AX_AUTH_SESSION_LIFETIME_SECONDS — auth session cookie lifetime
 //
 // `ANTHROPIC_API_KEY` and `AX_CREDENTIALS_KEY` are read by the respective
 // plugins themselves at init() time — they don't appear in K8sPresetConfig.
@@ -494,12 +636,107 @@ export function loadK8sConfigFromEnv(
     chat.chatTimeoutMs = n;
   }
 
+  // ---- http listener (public-facing /admin + /auth surface) -----------
+  const httpHost = env.AX_HTTP_HOST;
+  if (httpHost === undefined || httpHost === '') {
+    throw new Error('AX_HTTP_HOST is required');
+  }
+  const httpPortRaw = env.AX_HTTP_PORT;
+  if (httpPortRaw === undefined || httpPortRaw === '') {
+    throw new Error('AX_HTTP_PORT is required');
+  }
+  const httpPort = Number(httpPortRaw);
+  // Allow 0 (OS-assigned) — tests rely on it. Reject negatives, non-finite,
+  // and >65535. (The k8s chart never sets 0; the ax-next test suite does.)
+  if (!Number.isFinite(httpPort) || !Number.isInteger(httpPort) || httpPort < 0 || httpPort > 65535) {
+    throw new Error(`invalid AX_HTTP_PORT=${httpPortRaw}; expected 0..65535`);
+  }
+  const cookieKey = env.AX_HTTP_COOKIE_KEY;
+  if (cookieKey === undefined || cookieKey === '') {
+    throw new Error('AX_HTTP_COOKIE_KEY is required (32 bytes; 64 hex chars or 44 base64 chars)');
+  }
+  const allowedOriginsRaw = env.AX_HTTP_ALLOWED_ORIGINS;
+  // Treat unset OR empty as "no allow-list" — http-server then prints its
+  // loud warn unless AX_HTTP_ALLOW_NO_ORIGINS=1 silences it. We don't try
+  // to be opinionated here; the chart is where the operator-visible warning
+  // really belongs.
+  const allowedOrigins =
+    allowedOriginsRaw === undefined || allowedOriginsRaw === ''
+      ? []
+      : allowedOriginsRaw
+          .split(',')
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0);
+
+  // ---- auth providers --------------------------------------------------
+  // At least one of `google` or `devBootstrap` must be present; the auth
+  // plugin throws `no-auth-providers` at init otherwise. We re-validate
+  // here so the operator gets a startup error pointing at the env vars
+  // they actually set, not at the auth plugin's internal config name.
+  const auth: K8sPresetConfig['auth'] = {};
+  const gClientId = env.AX_AUTH_GOOGLE_CLIENT_ID;
+  const gClientSecret = env.AX_AUTH_GOOGLE_CLIENT_SECRET;
+  const gRedirectUri = env.AX_AUTH_GOOGLE_REDIRECT_URI;
+  const gIssuer = env.AX_AUTH_GOOGLE_ISSUER;
+  const anyGoogle =
+    (gClientId !== undefined && gClientId !== '') ||
+    (gClientSecret !== undefined && gClientSecret !== '') ||
+    (gRedirectUri !== undefined && gRedirectUri !== '') ||
+    (gIssuer !== undefined && gIssuer !== '');
+  if (anyGoogle) {
+    // Partial google config is a deploy-time bug; fail loudly. The auth
+    // plugin would also catch this (Issuer.discover throws on a bogus
+    // issuer URL), but a clear startup error beats a network-shaped
+    // failure deep inside init.
+    if (gClientId === undefined || gClientId === '') {
+      throw new Error('AX_AUTH_GOOGLE_CLIENT_ID is required when any AX_AUTH_GOOGLE_* var is set');
+    }
+    if (gClientSecret === undefined || gClientSecret === '') {
+      throw new Error('AX_AUTH_GOOGLE_CLIENT_SECRET is required when any AX_AUTH_GOOGLE_* var is set');
+    }
+    if (gRedirectUri === undefined || gRedirectUri === '') {
+      throw new Error('AX_AUTH_GOOGLE_REDIRECT_URI is required when any AX_AUTH_GOOGLE_* var is set');
+    }
+    if (gIssuer === undefined || gIssuer === '') {
+      throw new Error('AX_AUTH_GOOGLE_ISSUER is required when any AX_AUTH_GOOGLE_* var is set');
+    }
+    auth.google = {
+      clientId: gClientId,
+      clientSecret: gClientSecret,
+      redirectUri: gRedirectUri,
+      issuer: gIssuer,
+    };
+  }
+  const devToken = env.AX_DEV_BOOTSTRAP_TOKEN;
+  if (devToken !== undefined && devToken !== '') {
+    auth.devBootstrap = { token: devToken };
+  }
+  if (auth.google === undefined && auth.devBootstrap === undefined) {
+    throw new Error(
+      'auth requires at least one of AX_AUTH_GOOGLE_* (clientId/clientSecret/redirectUri/issuer) or AX_DEV_BOOTSTRAP_TOKEN',
+    );
+  }
+  if (env.AX_AUTH_SESSION_LIFETIME_SECONDS !== undefined && env.AX_AUTH_SESSION_LIFETIME_SECONDS !== '') {
+    const n = Number(env.AX_AUTH_SESSION_LIFETIME_SECONDS);
+    if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
+      throw new Error(`invalid AX_AUTH_SESSION_LIFETIME_SECONDS=${env.AX_AUTH_SESSION_LIFETIME_SECONDS}; expected a positive integer`);
+    }
+    auth.sessionLifetimeSeconds = n;
+  }
+
   const config: K8sPresetConfig = {
     database: { connectionString: databaseUrl },
     eventbus: { connectionString: databaseUrl },
     session: { connectionString: databaseUrl },
     workspace: workspaceConfigFromEnv(env),
     ipc,
+    http: {
+      host: httpHost,
+      port: httpPort,
+      cookieKey,
+      allowedOrigins,
+    },
+    auth,
   };
   if (Object.keys(sandbox).length > 0) config.sandbox = sandbox;
   if (Object.keys(anthropic).length > 0) config.anthropic = anthropic;

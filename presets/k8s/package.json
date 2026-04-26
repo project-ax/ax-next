@@ -38,7 +38,10 @@
     "@ax/mcp-client": "workspace:*",
     "@ax/credentials": "workspace:*",
     "@ax/ipc-http": "workspace:*",
-    "@ax/agents": "workspace:*"
+    "@ax/agents": "workspace:*",
+    "@ax/http-server": "workspace:*",
+    "@ax/auth": "workspace:*",
+    "@ax/teams": "workspace:*"
   },
   "devDependencies": {
     "@ax/llm-mock": "workspace:*",

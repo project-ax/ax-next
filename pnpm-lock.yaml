@@ -1152,6 +1152,9 @@ importers:
       '@ax/audit-log':
         specifier: workspace:*
         version: link:../../packages/audit-log
+      '@ax/auth':
+        specifier: workspace:*
+        version: link:../../packages/auth
       '@ax/chat-orchestrator':
         specifier: workspace:*
         version: link:../../packages/chat-orchestrator
@@ -1167,6 +1170,9 @@ importers:
       '@ax/eventbus-postgres':
         specifier: workspace:*
         version: link:../../packages/eventbus-postgres
+      '@ax/http-server':
+        specifier: workspace:*
+        version: link:../../packages/http-server
       '@ax/ipc-http':
         specifier: workspace:*
         version: link:../../packages/ipc-http
@@ -1188,6 +1194,9 @@ importers:
       '@ax/storage-postgres':
         specifier: workspace:*
         version: link:../../packages/storage-postgres
+      '@ax/teams':
+        specifier: workspace:*
+        version: link:../../packages/teams
       '@ax/tool-bash':
         specifier: workspace:*
         version: link:../../packages/tool-bash
