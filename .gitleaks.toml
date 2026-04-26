@@ -1,0 +1,30 @@
+# gitleaks config — extends defaults with allowlists for known test fixtures.
+#
+# We extend (not replace) the default config so all upstream rules still apply.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Test fixtures: deterministic 32-byte keys used in unit/integration tests."
+
+# Allowlist by file path: every test under __tests__/ and any acceptance test.
+paths = [
+  '''.*__tests__/.*''',
+  '''.*\.test\.ts$''',
+  '''.*test-fixture\.ts$''',
+]
+
+# Allowlist by exact regex match — covers the obvious deterministic patterns
+# (repeated-byte hex, all-zero hex, sequential hex, sequential ascii) that show
+# up in test fixtures. We never use these for real secrets; they're just
+# 32-byte buffers a test needs.
+regexes = [
+  # repeated single-byte hex (e.g. '42'.repeat(32))
+  '''([0-9a-f]{2})\1{31}''',
+  # sequential 0123456789abcdef pattern
+  '''(0123456789abcdef){4}''',
+  # all-zero / all-f
+  '''0{64}''',
+  '''f{64}''',
+]
