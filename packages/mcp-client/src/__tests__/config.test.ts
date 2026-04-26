@@ -45,12 +45,17 @@ async function makeBus(): Promise<HookBus> {
   return bus;
 }
 
+// `ownerId` (Week 9.5 — Task 10) defaults to `null` (admin-global / legacy)
+// when the input doesn't supply it. Tests that round-trip through parseConfig
+// or saveConfig/loadConfigs see the normalized value back, so we declare
+// ownerId here too.
 const validStdio: McpServerConfig = {
   id: 'fs',
   enabled: true,
   transport: 'stdio',
   command: 'mcp-server-filesystem',
   args: ['/tmp'],
+  ownerId: null,
 };
 
 const validHttp: McpServerConfig = {
@@ -58,6 +63,7 @@ const validHttp: McpServerConfig = {
   enabled: true,
   transport: 'streamable-http',
   url: 'https://api.github.com/mcp',
+  ownerId: null,
 };
 
 const validSse: McpServerConfig = {
@@ -65,6 +71,7 @@ const validSse: McpServerConfig = {
   enabled: true,
   transport: 'sse',
   url: 'https://example.com/sse',
+  ownerId: null,
 };
 
 describe('McpServerConfigSchema', () => {

@@ -42,12 +42,14 @@ import {
   type Plugin,
   type ToolCall,
 } from '@ax/core';
+import { registerAdminMcpRoutes } from './admin-routes.js';
 import { loadConfigs, type McpServerConfig } from './config.js';
 import { McpConnection } from './connection.js';
 import { namespaceTools } from './tool-names.js';
 import {
   createTransport,
   type BusLike,
+  type CreateTransportOptions,
   type McpClientTransport,
 } from './transports.js';
 
@@ -71,6 +73,26 @@ export interface CreateMcpClientPluginOptions {
     bus: BusLike;
     ctx: ChatContext;
   }) => Promise<McpClientTransport>;
+  /**
+   * If true, mount the /admin/mcp-servers routes. Default: false. The
+   * agents plugin always mounts admin routes; this plugin gates on the
+   * flag because @ax/mcp-client is also loaded in CLI / sandbox-side
+   * contexts (no @ax/http-server, no @ax/auth) and we don't want those
+   * boots to fail. The multi-tenant preset sets it.
+   */
+  mountAdminRoutes?: boolean;
+  /**
+   * Test seam for the /test endpoint. Lets a test inject a fake
+   * transport (in-memory pair) so the test endpoint exercises connect
+   * + listTools without an actual outbound network call.
+   */
+  testTransportFactory?: (
+    opts: CreateTransportOptions,
+  ) => Promise<McpClientTransport>;
+  /**
+   * Test seam to shorten the /test timeout. Defaults to 30 s in production.
+   */
+  testTimeoutMs?: number;
 }
 
 /**
@@ -79,6 +101,19 @@ export interface CreateMcpClientPluginOptions {
  * since all three produce hooks this plugin calls during init.
  */
 export function createMcpClientPlugin(opts: CreateMcpClientPluginOptions = {}): Plugin {
+  const mountAdminRoutes = opts.mountAdminRoutes === true;
+  const unregisterRoutes: Array<() => void> = [];
+  // calls list is built once at construction so the manifest is stable
+  // and matches what init actually uses.
+  const calls: string[] = [
+    'tool:register',
+    'storage:get',
+    'storage:set',
+    'credentials:get',
+  ];
+  if (mountAdminRoutes) {
+    calls.push('http:register-route', 'auth:require-user');
+  }
   return {
     manifest: {
       // `registers: []` is deliberate — see file banner. The per-tool
@@ -87,7 +122,7 @@ export function createMcpClientPlugin(opts: CreateMcpClientPluginOptions = {}): 
       name: PLUGIN_NAME,
       version: '0.0.0',
       registers: [],
-      calls: ['tool:register', 'storage:get', 'storage:set', 'credentials:get'],
+      calls,
       subscribes: [],
     },
     async init({ bus }) {
@@ -180,6 +215,29 @@ export function createMcpClientPlugin(opts: CreateMcpClientPluginOptions = {}): 
         }
       }
 
+      // Mount /admin/mcp-servers[/:id][/test] last — the bus calls inside
+      // their handlers reach storage / credentials / auth, which are
+      // already registered (auth comes from the auth plugin via the
+      // manifest's `calls` edge). When mountAdminRoutes is false we
+      // skip this entirely so single-process / sandbox contexts that
+      // don't load @ax/http-server still boot.
+      if (mountAdminRoutes) {
+        const opts2: {
+          testTransportFactory?: (
+            o: CreateTransportOptions,
+          ) => Promise<McpClientTransport>;
+          testTimeoutMs?: number;
+        } = {};
+        if (opts.testTransportFactory !== undefined) {
+          opts2.testTransportFactory = opts.testTransportFactory;
+        }
+        if (opts.testTimeoutMs !== undefined) {
+          opts2.testTimeoutMs = opts.testTimeoutMs;
+        }
+        const unregisters = await registerAdminMcpRoutes(bus, initCtx, opts2);
+        unregisterRoutes.push(...unregisters);
+      }
+
       // Dynamic tool:execute:${name} registration. See file banner for why
       // this lives in init instead of manifest.registers.
       for (const [namespacedName, entry] of handlerByName) {
@@ -212,6 +270,20 @@ export function createMcpClientPlugin(opts: CreateMcpClientPluginOptions = {}): 
             };
           },
         );
+      }
+    },
+    async shutdown() {
+      // Drop admin routes so a re-init in tests doesn't trip duplicate-
+      // route. The http-server's unregister is idempotent; we still
+      // wrap in try/catch so a transport-level error doesn't abort the
+      // rest of the shutdown loop.
+      while (unregisterRoutes.length > 0) {
+        const fn = unregisterRoutes.pop();
+        try {
+          fn?.();
+        } catch {
+          // best-effort
+        }
       }
     },
   };

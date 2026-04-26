@@ -46,6 +46,17 @@ const UrlSchema = z.string().refine((v) => /^https?:\/\//.test(v), {
   message: 'url must use http:// or https://',
 });
 
+// `ownerId` (Week 9.5 — Task 10) tags each config with the user that created
+// it. `null` is the legacy / admin-global value: rows persisted before this
+// field existed read back as `null`, and so do configs explicitly intended as
+// global. The admin API uses this to scope reads / writes; pre-9.5 callers
+// (the bootstrap flow, the CLI) leave it null and get global semantics.
+//
+// We allow .optional() at the schema level so older rows parse cleanly (the
+// raw blob lacks the field); `loadConfigs` normalizes `undefined → null`
+// before handing the value back. New writes always set the field explicitly.
+const OwnerIdSchema = z.string().min(1).max(128).nullable().optional();
+
 const StdioConfig = z
   .object({
     id: IdSchema,
@@ -55,6 +66,7 @@ const StdioConfig = z
     args: z.array(z.string()),
     env: z.record(z.string(), z.string()).optional(),
     credentialRefs: z.record(z.string(), z.string()).optional(),
+    ownerId: OwnerIdSchema,
   })
   .strict();
 
@@ -63,6 +75,7 @@ const HttpBase = {
   enabled: z.boolean(),
   url: UrlSchema,
   headerCredentialRefs: z.record(z.string(), z.string()).optional(),
+  ownerId: OwnerIdSchema,
 };
 
 const StreamableHttpConfig = z
@@ -82,15 +95,34 @@ export const McpServerConfigSchema = z.discriminatedUnion('transport', [
 export type McpServerConfig = z.infer<typeof McpServerConfigSchema>;
 
 /**
+ * Storage-key prefix exposed for cross-package callers (the admin route
+ * handler reads/writes individual rows and needs to know the key shape).
+ * Internal callers should still use `storageKeyForId`.
+ */
+export function storageKeyForId(id: string): string {
+  return storageKey(id);
+}
+
+/** Regex exposed for input-validation parity in admin-routes. */
+export const MCP_ID_REGEX = ID_RE;
+
+/**
  * Parse an unknown value into a validated McpServerConfig.
  *
  * Runs the inline-secret scan BEFORE the Zod parse, so a `password` field
  * buried in a config produces a targeted "use credentialRefs instead" error
  * rather than a generic "unrecognized key" strict-mode failure.
+ *
+ * Normalizes `ownerId === undefined` to `null` so legacy rows (written before
+ * Week 9.5) and admin-global configs are indistinguishable downstream.
  */
 export function parseConfig(input: unknown): McpServerConfig {
   rejectInlineSecrets(input);
-  return McpServerConfigSchema.parse(input);
+  const parsed = McpServerConfigSchema.parse(input);
+  if (parsed.ownerId === undefined) {
+    return { ...parsed, ownerId: null } as McpServerConfig;
+  }
+  return parsed;
 }
 
 // Storage I/O layer ---------------------------------------------------------
@@ -195,6 +227,41 @@ export async function loadConfigs(bus: BusLike, ctx: ChatContext): Promise<McpSe
     }
   }
   return results;
+}
+
+/**
+ * Read a single config by id. Returns `null` for missing rows OR tombstones
+ * (empty buffer — see `deleteConfig`). The admin route handlers use this
+ * directly so they can authorize the row before mutating it.
+ */
+export async function loadConfigById(
+  bus: BusLike,
+  ctx: ChatContext,
+  id: string,
+): Promise<McpServerConfig | null> {
+  if (typeof id !== 'string' || !ID_RE.test(id)) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: `id must match ${ID_RE.source}`,
+    });
+  }
+  const got = await bus.call<{ key: string }, { value: Uint8Array | undefined }>(
+    'storage:get',
+    ctx,
+    { key: storageKey(id) },
+  );
+  if (got.value === undefined || got.value.length === 0) return null;
+  try {
+    return parseConfig(JSON.parse(dec.decode(got.value)));
+  } catch (err) {
+    throw new PluginError({
+      code: 'corrupt-config',
+      plugin: PLUGIN_NAME,
+      message: `mcp-server '${id}' is not a valid config`,
+      cause: err,
+    });
+  }
 }
 
 export async function deleteConfig(bus: BusLike, ctx: ChatContext, id: string): Promise<void> {

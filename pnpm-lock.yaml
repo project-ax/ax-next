@@ -673,15 +673,36 @@ importers:
         specifier: ^3.23.8
         version: 3.25.76
     devDependencies:
+      '@ax/auth':
+        specifier: workspace:*
+        version: link:../auth
       '@ax/credentials':
         specifier: workspace:*
         version: link:../credentials
+      '@ax/database-postgres':
+        specifier: workspace:*
+        version: link:../database-postgres
+      '@ax/http-server':
+        specifier: workspace:*
+        version: link:../http-server
+      '@ax/test-harness':
+        specifier: workspace:*
+        version: link:../test-harness
       '@ax/tool-dispatcher':
         specifier: workspace:*
         version: link:../tool-dispatcher
+      '@testcontainers/postgresql':
+        specifier: 11.14.0
+        version: 11.14.0
       '@types/node':
         specifier: ^25.6.0
         version: 25.6.0
+      '@types/pg':
+        specifier: 8.20.0
+        version: 8.20.0
+      pg:
+        specifier: 8.20.0
+        version: 8.20.0
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
