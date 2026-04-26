@@ -41,6 +41,15 @@ tester.run('no-bare-tenant-tables', rule, {
       code: "db.selectFrom('auth_v1_users').execute()",
       filename: '/pkg/auth/src/__tests__/migrations.test.ts',
     },
+    // The conversations_v1_ prefix is exempt inside its plugin's store.ts
+    // — same shape as agents_v1_ above. Asserts the prefix is wired into
+    // TENANT_TABLE_PREFIXES; a regression that drops it would still
+    // flag this case as valid (no error fires) AND would surface in the
+    // matching invalid case below.
+    {
+      code: "db.selectFrom('conversations_v1_conversations').execute()",
+      filename: '/foo/packages/conversations/src/store.ts',
+    },
 
     // Non-`selectFrom` calls are out of scope (insertInto / updateTable
     // are write paths handled by the plugin's CRUD methods).
@@ -66,6 +75,24 @@ tester.run('no-bare-tenant-tables', rule, {
       code: "db.selectFrom('teams_v1_memberships').execute()",
       errors: [
         { messageId: 'bareQuery', data: { table: 'teams_v1_memberships' } },
+      ],
+    },
+    // conversations_v1_* — both tables in the plugin's schema. Without
+    // these cases, dropping the prefix from TENANT_TABLE_PREFIXES would
+    // leave every other test green.
+    {
+      code: "db.selectFrom('conversations_v1_conversations').execute()",
+      errors: [
+        {
+          messageId: 'bareQuery',
+          data: { table: 'conversations_v1_conversations' },
+        },
+      ],
+    },
+    {
+      code: "db.selectFrom('conversations_v1_turns').execute()",
+      errors: [
+        { messageId: 'bareQuery', data: { table: 'conversations_v1_turns' } },
       ],
     },
     // Aliased reference still gets flagged.
