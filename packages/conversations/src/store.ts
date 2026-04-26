@@ -1,0 +1,314 @@
+import { randomBytes } from 'node:crypto';
+import { PluginError } from '@ax/core';
+import type { Kysely } from 'kysely';
+import type {
+  ConversationDatabase,
+  ConversationsRow,
+  TurnsRow,
+} from './migrations.js';
+import { scopedConversations } from './scope.js';
+import { ContentBlockShim } from './types.js';
+import type {
+  Conversation,
+  Turn,
+  TurnRole,
+} from './types.js';
+
+const PLUGIN_NAME = '@ax/conversations';
+
+// ---------------------------------------------------------------------------
+// Validation helpers — caller-supplied strings are bounded BEFORE INSERT.
+// The DB has a CHECK on role; everything else is enforced here because
+// length limits don't translate cleanly to SQL.
+// ---------------------------------------------------------------------------
+
+const TITLE_MAX = 256;
+const VALID_ROLES: ReadonlySet<TurnRole> = new Set([
+  'user',
+  'assistant',
+  'tool',
+]);
+
+function invalid(message: string): PluginError {
+  return new PluginError({
+    code: 'invalid-payload',
+    plugin: PLUGIN_NAME,
+    message,
+  });
+}
+
+export function validateTitle(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'string') {
+    throw invalid('title must be a string or null');
+  }
+  if (value.length === 0 || value.length > TITLE_MAX) {
+    throw invalid(`title must be 1-${TITLE_MAX} chars`);
+  }
+  return value;
+}
+
+export function validateRole(value: unknown): TurnRole {
+  if (typeof value !== 'string' || !VALID_ROLES.has(value as TurnRole)) {
+    throw invalid("role must be 'user', 'assistant', or 'tool'");
+  }
+  return value as TurnRole;
+}
+
+export function validateContentBlocks(value: unknown): unknown[] {
+  // Shim — see types.ts. Task 4 swaps in the canonical schema.
+  const parsed = ContentBlockShim.safeParse(value);
+  if (!parsed.success) {
+    throw invalid(
+      `contentBlocks must be an array of objects: ${parsed.error.message}`,
+    );
+  }
+  return parsed.data;
+}
+
+// ---------------------------------------------------------------------------
+// ID minting — `crypto.randomBytes`-derived prefixed ids, mirroring the
+// `agt_` / `usr_` posture in @ax/agents and @ax/auth-oidc.
+// ---------------------------------------------------------------------------
+
+export function mintConversationId(): string {
+  return `cnv_${randomBytes(16).toString('base64url')}`;
+}
+
+export function mintTurnId(): string {
+  return `trn_${randomBytes(16).toString('base64url')}`;
+}
+
+// ---------------------------------------------------------------------------
+// Row → domain mapping. Defensive — JSONB columns return parsed JS values
+// from `pg`'s default casts; we narrow them before exposing.
+// ---------------------------------------------------------------------------
+
+function rowToConversation(row: ConversationsRow): Conversation {
+  return {
+    conversationId: row.conversation_id,
+    userId: row.user_id,
+    agentId: row.agent_id,
+    title: row.title,
+    activeSessionId: row.active_session_id,
+    activeReqId: row.active_req_id,
+    createdAt: row.created_at.toISOString(),
+    updatedAt: row.updated_at.toISOString(),
+  };
+}
+
+function rowToTurn(row: TurnsRow): Turn {
+  if (!Array.isArray(row.content_blocks)) {
+    throw new PluginError({
+      code: 'corrupt-row',
+      plugin: PLUGIN_NAME,
+      message: `conversations_v1_turns.${row.turn_id} has invalid content_blocks JSONB`,
+    });
+  }
+  if (
+    row.role !== 'user' &&
+    row.role !== 'assistant' &&
+    row.role !== 'tool'
+  ) {
+    throw new PluginError({
+      code: 'corrupt-row',
+      plugin: PLUGIN_NAME,
+      message: `conversations_v1_turns.${row.turn_id} has invalid role`,
+    });
+  }
+  return {
+    turnId: row.turn_id,
+    turnIndex: row.turn_index,
+    role: row.role,
+    contentBlocks: row.content_blocks as unknown[],
+    createdAt: row.created_at.toISOString(),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Store API. The plugin's hook handlers call into this; the lint rule
+// `local/no-bare-tenant-tables` enforces that bare `selectFrom` against
+// `conversations_v1_*` only happens inside this file (or scope.ts /
+// tests).
+// ---------------------------------------------------------------------------
+
+export interface ConversationStoreCreateArgs {
+  userId: string;
+  agentId: string;
+  title: string | null;
+}
+
+export interface ConversationStoreAppendTurnArgs {
+  conversationId: string;
+  role: TurnRole;
+  contentBlocks: unknown[];
+}
+
+export interface ConversationStore {
+  /** Single-row lookup. Returns the conversation regardless of soft-delete state — callers filter. */
+  getById(conversationId: string): Promise<Conversation | null>;
+  /** Same as getById but skips tombstones; used in hook handlers after agents:resolve. */
+  getByIdNotDeleted(conversationId: string): Promise<Conversation | null>;
+  /** Multi-row reads always go through scopedConversations(). */
+  listForUser(userId: string, agentId?: string): Promise<Conversation[]>;
+  /** Read all turns for a conversation in turn_index order. */
+  listTurns(conversationId: string): Promise<Turn[]>;
+  create(args: ConversationStoreCreateArgs): Promise<Conversation>;
+  appendTurn(args: ConversationStoreAppendTurnArgs): Promise<Turn>;
+  /** Soft delete — sets deleted_at on the matching row. Idempotent: returns false on missing/already-deleted. */
+  softDelete(conversationId: string): Promise<boolean>;
+}
+
+export function createConversationStore(
+  db: Kysely<ConversationDatabase>,
+): ConversationStore {
+  return {
+    async getById(conversationId) {
+      const row = await db
+        .selectFrom('conversations_v1_conversations')
+        .selectAll('conversations_v1_conversations')
+        .where('conversation_id', '=', conversationId)
+        .executeTakeFirst();
+      return row === undefined ? null : rowToConversation(row);
+    },
+
+    async getByIdNotDeleted(conversationId) {
+      const row = await db
+        .selectFrom('conversations_v1_conversations')
+        .selectAll('conversations_v1_conversations')
+        .where('conversation_id', '=', conversationId)
+        .where('deleted_at', 'is', null)
+        .executeTakeFirst();
+      return row === undefined ? null : rowToConversation(row);
+    },
+
+    async listForUser(userId, agentId) {
+      let q = scopedConversations(db, { userId }).orderBy('created_at', 'desc');
+      if (agentId !== undefined) {
+        q = q.where('agent_id', '=', agentId);
+      }
+      const rows = await q.execute();
+      return rows.map(rowToConversation);
+    },
+
+    async listTurns(conversationId) {
+      const rows = await db
+        .selectFrom('conversations_v1_turns')
+        .selectAll('conversations_v1_turns')
+        .where('conversation_id', '=', conversationId)
+        .orderBy('turn_index', 'asc')
+        .execute();
+      return rows.map(rowToTurn);
+    },
+
+    async create({ userId, agentId, title }) {
+      const id = mintConversationId();
+      const now = new Date();
+      const row = await db
+        .insertInto('conversations_v1_conversations')
+        .values({
+          conversation_id: id,
+          user_id: userId,
+          agent_id: agentId,
+          title,
+          active_session_id: null,
+          active_req_id: null,
+          deleted_at: null,
+          created_at: now,
+          updated_at: now,
+        })
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      return rowToConversation(row as ConversationsRow);
+    },
+
+    async appendTurn({ conversationId, role, contentBlocks }) {
+      // Compute turn_index inside a transaction with row-level locking on
+      // the conversation row. Concurrent inserts on the same conversation
+      // serialize through SELECT ... FOR UPDATE; a fallback retry on the
+      // UNIQUE(conversation_id, turn_index) constraint handles edge
+      // cases where postgres advisory lock contention loses a race
+      // (theoretically can't happen with FOR UPDATE, but defensively
+      // we still retry once on 23505).
+      const MAX_ATTEMPTS = 3;
+      let lastErr: unknown;
+      for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+        try {
+          return await db.transaction().execute(async (trx) => {
+            // Lock the conversation row to serialize appendTurn calls
+            // for this conversation. Reading + write happen inside the
+            // same tx so isolation is consistent.
+            await trx
+              .selectFrom('conversations_v1_conversations')
+              .select('conversation_id')
+              .where('conversation_id', '=', conversationId)
+              .forUpdate()
+              .executeTakeFirstOrThrow();
+
+            const lastRow = await trx
+              .selectFrom('conversations_v1_turns')
+              .select('turn_index')
+              .where('conversation_id', '=', conversationId)
+              .orderBy('turn_index', 'desc')
+              .limit(1)
+              .executeTakeFirst();
+            const nextIndex = lastRow === undefined ? 0 : lastRow.turn_index + 1;
+
+            const id = mintTurnId();
+            const now = new Date();
+            const row = await trx
+              .insertInto('conversations_v1_turns')
+              .values({
+                turn_id: id,
+                conversation_id: conversationId,
+                turn_index: nextIndex,
+                role,
+                // Kysely's pg dialect serializes JSONB on the way down;
+                // pass the array directly via JSON.stringify (matches
+                // @ax/agents store pattern for allowed_tools).
+                content_blocks: JSON.stringify(contentBlocks) as unknown,
+                created_at: now,
+              } as never)
+              .returningAll()
+              .executeTakeFirstOrThrow();
+
+            // Touch updated_at on the parent row so list orderings stay
+            // sensible. Stays inside the same tx.
+            await trx
+              .updateTable('conversations_v1_conversations')
+              .set({ updated_at: now })
+              .where('conversation_id', '=', conversationId)
+              .execute();
+
+            return rowToTurn(row as TurnsRow);
+          });
+        } catch (err) {
+          // Postgres unique-violation — race we couldn't avoid. Retry.
+          const code = (err as { code?: string } | null)?.code;
+          if (code === '23505') {
+            lastErr = err;
+            continue;
+          }
+          throw err;
+        }
+      }
+      throw new PluginError({
+        code: 'append-turn-conflict',
+        plugin: PLUGIN_NAME,
+        message: `appendTurn for '${conversationId}' lost ${MAX_ATTEMPTS} retries on turn_index unique violation`,
+        cause: lastErr,
+      });
+    },
+
+    async softDelete(conversationId) {
+      const result = await db
+        .updateTable('conversations_v1_conversations')
+        .set({ deleted_at: new Date(), updated_at: new Date() })
+        .where('conversation_id', '=', conversationId)
+        .where('deleted_at', 'is', null)
+        .executeTakeFirst();
+      return Number(result.numUpdatedRows ?? 0n) > 0;
+    },
+  };
+}
+

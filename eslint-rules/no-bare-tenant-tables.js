@@ -18,7 +18,12 @@
 //
 // Plugin/rule wiring lives in `eslint.config.mjs`.
 
-const TENANT_TABLE_PREFIXES = ['agents_v1_', 'auth_v1_', 'teams_v1_'];
+const TENANT_TABLE_PREFIXES = [
+  'agents_v1_',
+  'auth_v1_',
+  'conversations_v1_',
+  'teams_v1_',
+];
 
 function isTenantTable(name) {
   if (typeof name !== 'string') return false;

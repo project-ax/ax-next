@@ -2,15 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { createConversationsPlugin } from '../plugin.js';
 
 // ---------------------------------------------------------------------------
-// Task 1 (scaffold) only ships the manifest. We assert the manifest
-// shape directly — no bootstrap, no live postgres — to mirror the
-// `@ax/agents` pattern (`packages/agents/src/__tests__/plugin.test.ts`,
-// "manifest matches the documented surface"). Hook-level tests land
-// alongside Task 2's implementations.
+// Manifest assertion. Hook-level integration tests live in store.test.ts
+// (testcontainers postgres) and acl.test.ts (mocked agents:resolve gate).
 // ---------------------------------------------------------------------------
 
 describe('@ax/conversations plugin manifest', () => {
-  it('declares the five conversations:* registers, agents:resolve call, and chat:turn-end subscription', () => {
+  it('declares the five conversations:* registers, agents:resolve + database:get-instance calls, and chat:turn-end subscription', () => {
     const plugin = createConversationsPlugin();
     expect(plugin.manifest).toEqual({
       name: '@ax/conversations',
@@ -22,7 +19,10 @@ describe('@ax/conversations plugin manifest', () => {
         'conversations:list',
         'conversations:delete',
       ],
-      calls: ['agents:resolve'],
+      // database:get-instance is hard — we run our own migration on init.
+      // agents:resolve is hard — every hook gates through it (Invariant J1).
+      calls: ['agents:resolve', 'database:get-instance'],
+      // chat:turn-end subscriber wires in Task 3 (auto-append).
       subscribes: ['chat:turn-end'],
     });
   });
