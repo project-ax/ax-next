@@ -22,7 +22,9 @@
     "kysely": "0.28.16"
   },
   "devDependencies": {
+    "@ax/auth": "workspace:*",
     "@ax/database-postgres": "workspace:*",
+    "@ax/http-server": "workspace:*",
     "@ax/test-harness": "workspace:*",
     "@testcontainers/postgresql": "11.14.0",
     "@types/node": "^25.6.0",

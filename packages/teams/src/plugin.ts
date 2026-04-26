@@ -5,6 +5,7 @@ import {
 } from '@ax/core';
 import type { Kysely } from 'kysely';
 import { requireAdmin } from './acl.js';
+import { registerAdminTeamRoutes } from './admin-routes.js';
 import { runTeamsMigration, type TeamsDatabase } from './migrations.js';
 import {
   createTeamStore,
@@ -30,6 +31,17 @@ import type {
 
 const PLUGIN_NAME = '@ax/teams';
 
+export interface CreateTeamsPluginOptions {
+  /**
+   * If true, mount the /admin/teams* routes. Default: false. The teams
+   * plugin must function in single-process / sandbox-side contexts that
+   * don't load @ax/http-server or @ax/auth — gating on this flag keeps
+   * those boots clean. The multi-tenant preset (Task 16) sets it. Mirrors
+   * @ax/mcp-client's `mountAdminRoutes` opt from Task 10.
+   */
+  mountAdminRoutes?: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // @ax/teams plugin
 //
@@ -38,8 +50,11 @@ const PLUGIN_NAME = '@ax/teams';
 // (used by @ax/agents' team-agent ACL) and intentionally NOT auth-gated.
 //
 // Manifest decisions:
-//   - `calls: ['database:get-instance']` is the ONLY hard dep. We do NOT
-//     register HTTP routes here — Task 13 owns the admin endpoints.
+//   - `calls: ['database:get-instance']` is the only HARD dep. When the
+//     `mountAdminRoutes` opt is set we additionally call `http:register-route`
+//     and `auth:require-user`; both are added to the manifest's `calls`
+//     list at construction so the bus's topological sort (and the lint
+//     rule that pins `calls` ⊇ actually-called) stays accurate.
 //   - We don't call `teams:is-member` ourselves (we own it); we don't
 //     subscribe to anything.
 //
@@ -50,11 +65,20 @@ const PLUGIN_NAME = '@ax/teams';
 // to avoid a TOCTOU race; we run them inside a transaction.
 // ---------------------------------------------------------------------------
 
-export function createTeamsPlugin(): Plugin {
+export function createTeamsPlugin(
+  opts: CreateTeamsPluginOptions = {},
+): Plugin {
+  const mountAdminRoutes = opts.mountAdminRoutes === true;
+  const unregisterRoutes: Array<() => void> = [];
   let db: Kysely<TeamsDatabase> | undefined;
   // store ref kept for shutdown symmetry only; the actual closure is
   // `localStore` inside init(). Prefixed with `_` so lint doesn't flag it.
   let _store: TeamStore | undefined;
+
+  const calls: string[] = ['database:get-instance'];
+  if (mountAdminRoutes) {
+    calls.push('http:register-route', 'auth:require-user');
+  }
 
   return {
     manifest: {
@@ -68,7 +92,7 @@ export function createTeamsPlugin(): Plugin {
         'teams:remove-member',
         'teams:list-members',
       ],
-      calls: ['database:get-instance'],
+      calls,
       subscribes: [],
     },
 
@@ -124,9 +148,29 @@ export function createTeamsPlugin(): Plugin {
         PLUGIN_NAME,
         async (_ctx, input) => listMembers(localStore, input),
       );
+
+      // Mount /admin/teams* last — http:register-route and auth:require-user
+      // come from sibling plugins which must be init'd first; the kernel's
+      // topological sort over `manifest.calls` already enforces that.
+      if (mountAdminRoutes) {
+        const unregisters = await registerAdminTeamRoutes(bus, initCtx);
+        unregisterRoutes.push(...unregisters);
+      }
     },
 
     async shutdown() {
+      // Drop admin routes so a re-init in tests doesn't trip duplicate-
+      // route. Each unregister is idempotent (http-server's contract).
+      // Best-effort: don't let a transport-level error abort the rest of
+      // the shutdown loop.
+      while (unregisterRoutes.length > 0) {
+        const fn = unregisterRoutes.pop();
+        try {
+          fn?.();
+        } catch {
+          // best-effort
+        }
+      }
       // The shared db handle is owned by @ax/database-postgres; don't
       // close it here. Just drop our references so a re-init doesn't
       // read a stale store.

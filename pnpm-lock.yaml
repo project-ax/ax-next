@@ -884,9 +884,15 @@ importers:
         specifier: 0.28.16
         version: 0.28.16
     devDependencies:
+      '@ax/auth':
+        specifier: workspace:*
+        version: link:../auth
       '@ax/database-postgres':
         specifier: workspace:*
         version: link:../database-postgres
+      '@ax/http-server':
+        specifier: workspace:*
+        version: link:../http-server
       '@ax/test-harness':
         specifier: workspace:*
         version: link:../test-harness

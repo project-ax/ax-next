@@ -1,4 +1,12 @@
-export { createTeamsPlugin } from './plugin.js';
+export { createTeamsPlugin, type CreateTeamsPluginOptions } from './plugin.js';
+export {
+  ADMIN_BODY_MAX_BYTES,
+  createAdminTeamRouteHandlers,
+  registerAdminTeamRoutes,
+  type AdminRouteDeps,
+  type RouteRequest,
+  type RouteResponse,
+} from './admin-routes.js';
 export {
   runTeamsMigration,
   type MembershipRow,
