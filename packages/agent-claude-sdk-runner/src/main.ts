@@ -15,7 +15,9 @@ import {
 import type {
   ChatMessage,
   ContentBlock,
+  ImageBlock,
   SessionGetConfigResponse,
+  TextBlock,
   ToolListResponse,
   WorkspaceCommitNotifyResponse,
 } from '@ax/ipc-protocol';
@@ -233,10 +235,15 @@ export async function main(): Promise<number> {
           history.push({ role: 'assistant', content: text });
         }
         // Accumulate full ContentBlock[] for the per-turn transcript that
-        // ships to @ax/conversations via event.turn-end. Block shapes that
-        // don't survive replay (raw `text`, `thinking`, `tool_use`) are
-        // mapped explicitly; anything else is dropped defensively so a
-        // future SDK addition doesn't bypass our schema.
+        // ships to @ax/conversations via event.turn-end. Every block kind
+        // ContentBlockSchema knows about is mapped explicitly:
+        //   - text / thinking / redacted_thinking / tool_use
+        //
+        // Replay (Task 15) requires Anthropic-compatibility (J3): a
+        // missing redacted_thinking block leaves a hole the model can
+        // detect on a follow-up turn, so we MUST preserve it verbatim.
+        // Unknown block kinds are dropped defensively so a future SDK
+        // addition can't bypass the canonical schema.
         for (const block of assistant.message.content) {
           if (block.type === 'text') {
             turnContentBlocks.push({ type: 'text', text: block.text });
@@ -247,6 +254,11 @@ export async function main(): Promise<number> {
               ...(typeof block.signature === 'string'
                 ? { signature: block.signature }
                 : {}),
+            });
+          } else if (block.type === 'redacted_thinking') {
+            turnContentBlocks.push({
+              type: 'redacted_thinking',
+              data: (block as { data: string }).data,
             });
           } else if (block.type === 'tool_use') {
             turnContentBlocks.push({
@@ -279,27 +291,38 @@ export async function main(): Promise<number> {
                 is_error?: boolean;
               };
               if (typeof tr.tool_use_id === 'string') {
-                // ToolResultBlock.content is string | (TextBlock |
-                // ImageBlock)[]. We narrow array content to the
-                // text/image subset; anything else collapses to empty
-                // string so the row passes ContentBlockSchema validation.
-                let normalizedContent: string | Array<{
-                  type: 'text';
-                  text: string;
-                }> = '';
+                // Narrow array content to the text/image subset per
+                // ToolResultBlockSchema (`string | (TextBlock |
+                // ImageBlock)[]`). Image entries MUST round-trip — a
+                // tool that returns image content (screenshot tool, Read
+                // on a binary, etc.) loses context on replay otherwise.
+                // Other entry types are dropped defensively so a future
+                // SDK shape doesn't silently bypass the canonical schema.
+                let normalizedContent: string | Array<TextBlock | ImageBlock> =
+                  '';
                 if (typeof tr.content === 'string') {
                   normalizedContent = tr.content;
                 } else if (Array.isArray(tr.content)) {
-                  const textOnly: Array<{ type: 'text'; text: string }> = [];
+                  const narrowed: Array<TextBlock | ImageBlock> = [];
                   for (const item of tr.content as Array<{
                     type?: string;
                     text?: unknown;
+                    source?: unknown;
                   }>) {
                     if (item.type === 'text' && typeof item.text === 'string') {
-                      textOnly.push({ type: 'text', text: item.text });
+                      narrowed.push({ type: 'text', text: item.text });
+                    } else if (
+                      item.type === 'image' &&
+                      item.source !== undefined
+                    ) {
+                      // The SDK's image-block shape matches ImageBlock
+                      // already; the .source discriminated-union is
+                      // validated at the storage boundary by
+                      // ContentBlockSchema, so no further narrowing here.
+                      narrowed.push(item as unknown as ImageBlock);
                     }
                   }
-                  normalizedContent = textOnly;
+                  normalizedContent = narrowed;
                 }
                 const normalized: ContentBlock = {
                   type: 'tool_result',

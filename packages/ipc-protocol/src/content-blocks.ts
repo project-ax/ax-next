@@ -40,6 +40,19 @@ export const ThinkingBlockSchema = z.object({
 });
 export type ThinkingBlock = z.infer<typeof ThinkingBlockSchema>;
 
+/**
+ * Redacted thinking block. Anthropic emits this whenever extended-thinking
+ * output is flagged and the cleartext is suppressed; only the opaque `data`
+ * blob round-trips. Replay (Task 15) MUST preserve it verbatim — dropping
+ * the block breaks Anthropic-compatibility (J3) and leaves a hole in the
+ * transcript the model can detect on a follow-up turn.
+ */
+export const RedactedThinkingBlockSchema = z.object({
+  type: z.literal('redacted_thinking'),
+  data: z.string(),
+});
+export type RedactedThinkingBlock = z.infer<typeof RedactedThinkingBlockSchema>;
+
 export const ToolUseBlockSchema = z.object({
   type: z.literal('tool_use'),
   /** tool_use_id — round-trips with tool_result.tool_use_id. */
@@ -82,6 +95,7 @@ export type ToolResultBlock = z.infer<typeof ToolResultBlockSchema>;
 export const ContentBlockSchema = z.discriminatedUnion('type', [
   TextBlockSchema,
   ThinkingBlockSchema,
+  RedactedThinkingBlockSchema,
   ToolUseBlockSchema,
   ToolResultBlockSchema,
   ImageBlockSchema,

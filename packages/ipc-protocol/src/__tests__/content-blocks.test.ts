@@ -25,6 +25,15 @@ describe('ContentBlock schema', () => {
     ).toMatchObject({ type: 'thinking', signature: 's' });
   });
 
+  it('parses a redacted_thinking block', () => {
+    // Anthropic emits this when extended-thinking is flagged and the
+    // cleartext is suppressed. Replay (Task 15) MUST preserve the opaque
+    // `data` blob verbatim or the model detects a transcript gap.
+    expect(
+      ContentBlockSchema.parse({ type: 'redacted_thinking', data: 'opaque-blob' }),
+    ).toMatchObject({ type: 'redacted_thinking', data: 'opaque-blob' });
+  });
+
   it('parses a tool_use block', () => {
     expect(
       ContentBlockSchema.parse({

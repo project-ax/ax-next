@@ -408,6 +408,11 @@ describe('main()', () => {
           await it.next();
           yield assistantBlocks([
             { type: 'thinking', thinking: 'plan', signature: 'sig-1' },
+            // Redacted-thinking blocks fire when extended-thinking is
+            // flagged. Replay (Task 15) MUST preserve the opaque blob
+            // (J3: Anthropic compatibility) — dropping it leaves a hole
+            // the model detects on a follow-up turn.
+            { type: 'redacted_thinking', data: 'opaque-blob-1' },
             { type: 'text', text: 'sure thing' },
             {
               type: 'tool_use',
@@ -437,6 +442,7 @@ describe('main()', () => {
       role: 'assistant',
       contentBlocks: [
         { type: 'thinking', thinking: 'plan', signature: 'sig-1' },
+        { type: 'redacted_thinking', data: 'opaque-blob-1' },
         { type: 'text', text: 'sure thing' },
         {
           type: 'tool_use',
@@ -526,6 +532,113 @@ describe('main()', () => {
           input: { command: 'pwd' },
         },
         { type: 'text', text: 'done' },
+      ],
+    });
+  });
+
+  it('tool_result with mixed text+image content: both blocks survive into the role=tool turn-end', async () => {
+    // ToolResultBlock.content is `string | (TextBlock | ImageBlock)[]`.
+    // A tool that returns image content (screenshot tool, Read on a
+    // binary, etc.) loses context on replay if the runner filters
+    // images out of the array — this test pins the round-trip so that
+    // regression can't happen silently.
+    setEnv(COMPLETE_ENV);
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+        };
+      }
+      if (action === 'tool.list') return { tools: [] };
+      throw new Error(`unexpected call: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([userEntry('shoot it'), cancelEntry]);
+
+    queryMock.mockImplementation(
+      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+        return (async function* () {
+          const it = prompt[Symbol.asyncIterator]();
+          await it.next();
+          yield assistantBlocks([
+            {
+              type: 'tool_use',
+              id: 'tu_77',
+              name: 'Screenshot',
+              input: {},
+            },
+          ]);
+          yield {
+            type: 'user',
+            parent_tool_use_id: null,
+            session_id: 'sess-1',
+            message: {
+              role: 'user',
+              content: [
+                {
+                  type: 'tool_result',
+                  tool_use_id: 'tu_77',
+                  content: [
+                    { type: 'text', text: 'captured' },
+                    {
+                      type: 'image',
+                      source: {
+                        type: 'base64',
+                        media_type: 'image/png',
+                        data: 'AAA=',
+                      },
+                    },
+                    // Unknown content-array entry types are still
+                    // dropped defensively.
+                    { type: 'mystery', payload: 'wat' },
+                  ],
+                  is_error: false,
+                },
+              ],
+            },
+          } as unknown as SDKMessage;
+          yield assistantBlocks([{ type: 'text', text: 'shot' }]);
+          yield resultSuccess();
+          await it.next();
+        })();
+      },
+    );
+
+    const { main } = await import('../main.js');
+    const rc = await main();
+    expect(rc).toBe(0);
+
+    const turnEnds = fakeClient.event.mock.calls.filter(
+      (c) => c[0] === 'event.turn-end',
+    );
+    expect(turnEnds).toHaveLength(2);
+    expect(turnEnds[0]?.[1]).toEqual({
+      reason: 'user-message-wait',
+      role: 'tool',
+      contentBlocks: [
+        {
+          type: 'tool_result',
+          tool_use_id: 'tu_77',
+          content: [
+            { type: 'text', text: 'captured' },
+            {
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: 'image/png',
+                data: 'AAA=',
+              },
+            },
+          ],
+          is_error: false,
+        },
       ],
     });
   });
