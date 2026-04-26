@@ -41,6 +41,7 @@
     "@ax/agents": "workspace:*",
     "@ax/http-server": "workspace:*",
     "@ax/auth-oidc": "workspace:*",
+    "@ax/static-files": "workspace:*",
     "@ax/teams": "workspace:*"
   },
   "devDependencies": {

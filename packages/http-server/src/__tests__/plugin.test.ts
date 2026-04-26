@@ -398,4 +398,70 @@ describe('@ax/http-server', () => {
     // rejects (ECONNREFUSED) — assert that it does NOT resolve with 200.
     await expect(fetch(`http://127.0.0.1:${port}/up`)).rejects.toBeDefined();
   });
+
+  it('res.body(buf) sends raw bytes with the given content-type', async () => {
+    await registerRoute('GET', '/png', async (_req, res) => {
+      // Tiny 1x1 PNG (89 50 4E 47 ...). Just enough to verify bytes
+      // round-trip without any string encoding interference.
+      const png = Buffer.from([
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+      ]);
+      res.body(png, 'image/png');
+    });
+    const r = await fetch(`http://127.0.0.1:${port}/png`);
+    expect(r.status).toBe(200);
+    expect(r.headers.get('content-type')).toBe('image/png');
+    expect(r.headers.get('content-length')).toBe('8');
+    const got = Buffer.from(await r.arrayBuffer());
+    expect(got.toString('hex')).toBe('89504e470d0a1a0a');
+  });
+
+  it('routes /* splat patterns capture remaining path into params["*"]', async () => {
+    let captured = '';
+    await registerRoute('GET', '/*', async (req, res) => {
+      captured = req.params['*'] ?? '';
+      res.status(200).text(captured);
+    });
+    let r = await fetch(`http://127.0.0.1:${port}/foo/bar/baz`);
+    expect(r.status).toBe(200);
+    expect(await r.text()).toBe('foo/bar/baz');
+    r = await fetch(`http://127.0.0.1:${port}/`);
+    expect(r.status).toBe(200);
+    expect(await r.text()).toBe('');
+    expect(captured).toBe('');
+  });
+
+  it('exact + param routes take precedence over /* splat', async () => {
+    await registerRoute('GET', '/admin/agents', async (_req, res) => {
+      res.status(200).text('exact');
+    });
+    await registerRoute('GET', '/admin/agents/:id', async (req, res) => {
+      res.status(200).text(`agent:${req.params.id}`);
+    });
+    await registerRoute('GET', '/*', async (req, res) => {
+      res.status(200).text(`splat:${req.params['*']}`);
+    });
+    let r = await fetch(`http://127.0.0.1:${port}/admin/agents`);
+    expect(await r.text()).toBe('exact');
+    r = await fetch(`http://127.0.0.1:${port}/admin/agents/abc123`);
+    expect(await r.text()).toBe('agent:abc123');
+    r = await fetch(`http://127.0.0.1:${port}/anything/else`);
+    expect(await r.text()).toBe('splat:anything/else');
+  });
+
+  it('rejects /* in non-final position', async () => {
+    await expect(
+      registerRoute('GET', '/foo/*/bar', async () => {}),
+    ).rejects.toBeDefined();
+  });
+
+  it('mid-path /static/* prefix splat matches only the prefix', async () => {
+    await registerRoute('GET', '/static/*', async (req, res) => {
+      res.status(200).text(`static:${req.params['*']}`);
+    });
+    let r = await fetch(`http://127.0.0.1:${port}/static/css/main.css`);
+    expect(await r.text()).toBe('static:css/main.css');
+    r = await fetch(`http://127.0.0.1:${port}/elsewhere`);
+    expect(r.status).toBe(404);
+  });
 });

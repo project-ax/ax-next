@@ -142,7 +142,18 @@ export class Router {
     const patterns = this.patternsByMethod.get(method);
     if (patterns === undefined) return undefined;
     const requestSegments = splitPathSegments(path);
+    // Try non-splat patterns first (more specific). Splats are
+    // catchalls — they should only fire when nothing more specific
+    // matched. Within each tier, registration order is the tiebreaker.
     for (const entry of patterns) {
+      if (isSplatPattern(entry)) continue;
+      const params = matchPattern(entry.segments, requestSegments);
+      if (params !== null) {
+        return { handler: entry.handler, params };
+      }
+    }
+    for (const entry of patterns) {
+      if (!isSplatPattern(entry)) continue;
       const params = matchPattern(entry.segments, requestSegments);
       if (params !== null) {
         return { handler: entry.handler, params };
@@ -179,12 +190,34 @@ export class Router {
 function compilePathPattern(
   path: string,
 ): PatternRouteEntry['segments'] | null {
-  if (!path.includes(':')) return null;
+  // A path is a pattern if it contains ':param' segments OR a '*' splat
+  // segment. Plain literal paths return null and become exact-match
+  // routes. Detect '*' as a whole segment (not as a substring) so a
+  // literal path containing '*' in another character class still routes
+  // through the (more permissive) pattern path and gets rejected
+  // there if malformed.
+  const hasSplat = path === '/*' || path.endsWith('/*') || path.includes('/*/');
+  if (!path.includes(':') && !hasSplat) {
+    return null;
+  }
   const segments = splitPathSegments(path);
-  const compiled: Array<{ literal: string; paramName: string | null }> = [];
+  const compiled: Array<{
+    literal: string;
+    paramName: string | null;
+    isSplat?: boolean;
+  }> = [];
   const seenNames = new Set<string>();
-  for (const segment of segments) {
-    if (segment.startsWith(':')) {
+  for (let i = 0; i < segments.length; i += 1) {
+    const segment = segments[i]!;
+    const isLast = i === segments.length - 1;
+    if (segment === '*') {
+      if (!isLast) {
+        throw new Error(
+          `route pattern '${path}' has '*' splat in non-final position`,
+        );
+      }
+      compiled.push({ literal: '', paramName: '*', isSplat: true });
+    } else if (segment.startsWith(':')) {
       const paramName = segment.slice(1);
       if (paramName.length === 0) {
         throw new Error(`route pattern '${path}' has empty :param name`);
@@ -208,6 +241,11 @@ function compilePathPattern(
   return compiled;
 }
 
+function isSplatPattern(entry: PatternRouteEntry): boolean {
+  const last = entry.segments[entry.segments.length - 1];
+  return last !== undefined && (last as { isSplat?: boolean }).isSplat === true;
+}
+
 function splitPathSegments(path: string): string[] {
   // Strip the leading '/'; otherwise '/foo/bar' splits to ['', 'foo', 'bar'].
   // An empty path or '/' yields a single empty segment we filter out.
@@ -218,9 +256,18 @@ function matchPattern(
   pattern: PatternRouteEntry['segments'],
   requestSegments: readonly string[],
 ): Record<string, string> | null {
-  if (pattern.length !== requestSegments.length) return null;
+  const lastSeg = pattern[pattern.length - 1];
+  const hasSplat = lastSeg !== undefined && (lastSeg as { isSplat?: boolean }).isSplat === true;
+  if (hasSplat) {
+    // Splat captures all remaining segments — request must have at least
+    // (pattern.length - 1) literal/param prefix segments.
+    if (requestSegments.length < pattern.length - 1) return null;
+  } else if (pattern.length !== requestSegments.length) {
+    return null;
+  }
+  const fixedLen = hasSplat ? pattern.length - 1 : pattern.length;
   const params: Record<string, string> = {};
-  for (let i = 0; i < pattern.length; i += 1) {
+  for (let i = 0; i < fixedLen; i += 1) {
     const seg = pattern[i]!;
     const got = requestSegments[i]!;
     if (seg.paramName !== null) {
@@ -231,6 +278,18 @@ function matchPattern(
     } else if (seg.literal !== got) {
       return null;
     }
+  }
+  if (hasSplat) {
+    // Capture everything after the literal/param prefix as the splat.
+    // Slashes are preserved in the captured value — this is path data,
+    // not a single id. Empty splat is allowed (request matches the
+    // pattern's prefix with no remainder).
+    const rest = requestSegments.slice(fixedLen).join('/');
+    // We don't decodeURIComponent the splat — the static-files plugin
+    // wants per-segment decoding, and joining decoded segments would
+    // mangle paths containing '/'. Pass through verbatim; consumers
+    // decode if needed.
+    params['*'] = rest;
   }
   return params;
 }
