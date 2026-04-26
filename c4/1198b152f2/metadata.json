@@ -5,7 +5,11 @@
   "branch": "week-9.5-multi-tenant",
   "checkpoints_count": 5,
   "files_touched": [
-    "packages/http-server/src/types.ts"
+    "packages/cli/src/__tests__/admin-bootstrap.test.ts",
+    "packages/http-server/src/__tests__/plugin.test.ts",
+    "packages/http-server/src/router.ts",
+    "packages/http-server/src/types.ts",
+    "packages/static-files/src/__tests__/plugin.test.ts"
   ],
   "sessions": [
     {
@@ -13,13 +17,19 @@
       "transcript": "/c4/1198b152f2/0/full.jsonl",
       "content_hash": "/c4/1198b152f2/0/content_hash.txt",
       "prompt": "/c4/1198b152f2/0/prompt.txt"
+    },
+    {
+      "metadata": "/c4/1198b152f2/1/metadata.json",
+      "transcript": "/c4/1198b152f2/1/full.jsonl",
+      "content_hash": "/c4/1198b152f2/1/content_hash.txt",
+      "prompt": "/c4/1198b152f2/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 2027,
-    "cache_creation_tokens": 1858901,
-    "cache_read_tokens": 127946964,
-    "output_tokens": 296498,
-    "api_call_count": 338
+    "input_tokens": 2064,
+    "cache_creation_tokens": 1975546,
+    "cache_read_tokens": 129698295,
+    "output_tokens": 310446,
+    "api_call_count": 365
   }
 }
