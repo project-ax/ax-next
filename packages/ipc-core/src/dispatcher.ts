@@ -31,7 +31,10 @@ import {
   validateEventChatEnd,
   fireEventChatEnd,
 } from './handlers/event-chat-end.js';
-import { streamChunkNotWired } from './handlers/event-stream-chunk.js';
+import {
+  validateEventStreamChunk,
+  fireEventStreamChunk,
+} from './handlers/event-stream-chunk.js';
 
 // ---------------------------------------------------------------------------
 // Dispatcher
@@ -90,6 +93,11 @@ EVENTS.set('/event.chat-end', {
   method: 'POST',
   validate: validateEventChatEnd,
   fire: fireEventChatEnd,
+});
+EVENTS.set('/event.stream-chunk', {
+  method: 'POST',
+  validate: validateEventStreamChunk,
+  fire: fireEventStreamChunk,
 });
 
 function isErr(r: HandlerResult): r is HandlerErr {
@@ -171,25 +179,6 @@ export async function dispatch(
         writeJsonError(res, fallback.status, fallback.body.error.code, fallback.body.error.message);
       }
     }
-    return;
-  }
-
-  // ----- event.stream-chunk — 6.5a: always 501 -----
-  if (pathname === '/event.stream-chunk') {
-    if (method !== 'POST') {
-      writeJsonError(res, 405, 'VALIDATION', 'method not allowed');
-      return;
-    }
-    // Still consume the body so the client isn't stuck holding a half-open
-    // socket on a loud-error response path. Discard parse errors silently —
-    // the 501 is the only response we emit.
-    try {
-      await readJsonBody(req, MAX_FRAME);
-    } catch {
-      // fallthrough
-    }
-    const err = streamChunkNotWired();
-    writeJsonError(res, err.status, err.body.error.code, err.body.error.message);
     return;
   }
 
