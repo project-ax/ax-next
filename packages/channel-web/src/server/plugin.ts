@@ -5,6 +5,7 @@ import {
   type Plugin,
 } from '@ax/core';
 import { createChunkBuffer, type ChunkBuffer } from './chunk-buffer.js';
+import { registerChatRoutes } from './routes-chat.js';
 import {
   createBufferFillSubscriber,
   createSseHandler,
@@ -61,6 +62,10 @@ export function createChannelWebServerPlugin(
         'auth:require-user',
         'agents:resolve',
         'conversations:get-by-req-id',
+        'conversations:create',
+        'conversations:get',
+        'conversations:append-turn',
+        'chat:run',
       ],
       subscribes: ['chat:stream-chunk', 'chat:turn-end'],
     },
@@ -118,6 +123,12 @@ export function createChannelWebServerPlugin(
         ) => Promise<void>,
       });
       unregisterRoutes.push(routeResult.unregister);
+
+      // Task 9: POST /api/chat/messages — chat-flow producer. Auth +
+      // agents:resolve + conversations get-or-create + chat:run dispatch.
+      // CSRF gated automatically by @ax/http-server's subscriber.
+      const chatRouteUnregisters = await registerChatRoutes(bus, initCtx);
+      for (const u of chatRouteUnregisters) unregisterRoutes.push(u);
     },
 
     async shutdown() {

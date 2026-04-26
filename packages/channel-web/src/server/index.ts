@@ -18,3 +18,10 @@ export {
   type ChunkBufferOptions,
 } from './chunk-buffer.js';
 export type { SseFrame, StreamChunk, StreamChunkKind } from './types.js';
+// Re-export wire schemas/types for the chat-flow producer endpoint
+// (POST /api/chat/messages). Internal handler factories stay private.
+export {
+  PostMessageRequest,
+  PostMessageResponse,
+  POST_MESSAGE_MAX_CONTENT_BLOCKS,
+} from '../wire/chat.js';

@@ -63,6 +63,29 @@ function authMockPlugin(args: {
   };
 }
 
+/**
+ * Stub for `chat:run`. The channel-web plugin's manifest declares it as a
+ * hard call (Task 9 — POST /api/chat/messages); this suite doesn't
+ * exercise the chat-flow producer endpoint, so a no-op registration is
+ * enough to satisfy the bootstrap verifyCalls walk.
+ */
+function chatRunMockPlugin(): Plugin {
+  return {
+    manifest: {
+      name: 'mock-chat-run',
+      version: '0.0.0',
+      registers: ['chat:run'],
+      calls: [],
+      subscribes: [],
+    },
+    init({ bus }) {
+      bus.registerService('chat:run', 'mock-chat-run', async () => {
+        return { kind: 'complete', messages: [] };
+      });
+    },
+  };
+}
+
 function agentsMockPlugin(args: { allowedFor: Set<string> }): Plugin {
   // The conversations plugin AND the SSE handler both call
   // agents:resolve(agentId, userId). The mock allows resolution only when
@@ -133,6 +156,7 @@ async function boot(args: BootArgs): Promise<{
       authMockPlugin({ user: args.user }),
       agentsMockPlugin({ allowedFor: args.allowedFor }),
       createConversationsPlugin(),
+      chatRunMockPlugin(),
       createChannelWebServerPlugin({}),
     ],
   });

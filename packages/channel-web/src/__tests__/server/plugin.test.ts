@@ -57,7 +57,18 @@ function conversationsMockPlugin(args: {
     manifest: {
       name: 'mock-conversations',
       version: '0.0.0',
-      registers: ['conversations:get-by-req-id'],
+      registers: [
+        'conversations:get-by-req-id',
+        // The channel-web plugin's manifest now also declares calls
+        // for these (Task 9 — POST /api/chat/messages). The
+        // bootstrap-time verifyCalls walk will fail unless someone
+        // registers them; we no-op since this test suite doesn't
+        // exercise the chat-flow producer (that's covered in
+        // routes-chat.test.ts).
+        'conversations:create',
+        'conversations:get',
+        'conversations:append-turn',
+      ],
       calls: [],
       subscribes: [],
     },
@@ -78,6 +89,53 @@ function conversationsMockPlugin(args: {
           return row;
         },
       );
+      bus.registerService('conversations:create', 'mock-conversations', async () => {
+        throw new PluginError({
+          code: 'not-implemented',
+          plugin: 'mock-conversations',
+          message: 'conversations:create stub (not exercised by this suite)',
+        });
+      });
+      bus.registerService('conversations:get', 'mock-conversations', async () => {
+        throw new PluginError({
+          code: 'not-implemented',
+          plugin: 'mock-conversations',
+          message: 'conversations:get stub (not exercised by this suite)',
+        });
+      });
+      bus.registerService(
+        'conversations:append-turn',
+        'mock-conversations',
+        async () => {
+          throw new PluginError({
+            code: 'not-implemented',
+            plugin: 'mock-conversations',
+            message: 'conversations:append-turn stub (not exercised by this suite)',
+          });
+        },
+      );
+    },
+  };
+}
+
+/**
+ * Stub for `chat:run`. The plugin manifest declares it as a hard call;
+ * this suite doesn't drive the chat-flow producer endpoint, so a no-op
+ * registration satisfies the bootstrap verifyCalls walk.
+ */
+function chatRunMockPlugin(): Plugin {
+  return {
+    manifest: {
+      name: 'mock-chat-run',
+      version: '0.0.0',
+      registers: ['chat:run'],
+      calls: [],
+      subscribes: [],
+    },
+    init({ bus }) {
+      bus.registerService('chat:run', 'mock-chat-run', async () => {
+        return { kind: 'complete', messages: [] };
+      });
     },
   };
 }
@@ -152,6 +210,7 @@ async function boot(args: BootArgs = {}): Promise<{
       authMockPlugin({ user }),
       conversationsMockPlugin({ byReqId }),
       agentsMockPlugin({ allow: args.agentsAllow ?? true }),
+      chatRunMockPlugin(),
       createChannelWebServerPlugin({}),
     ],
   });
@@ -275,6 +334,10 @@ describe('@ax/channel-web server plugin (integration)', () => {
         'auth:require-user',
         'agents:resolve',
         'conversations:get-by-req-id',
+        'conversations:create',
+        'conversations:get',
+        'conversations:append-turn',
+        'chat:run',
       ],
       subscribes: ['chat:stream-chunk', 'chat:turn-end'],
     });
