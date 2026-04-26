@@ -14,6 +14,7 @@ import {
 } from '@ax/agent-runner-core';
 import type {
   ChatMessage,
+  ContentBlock,
   SessionGetConfigResponse,
   ToolListResponse,
   WorkspaceCommitNotifyResponse,
@@ -130,6 +131,21 @@ export async function main(): Promise<number> {
   // ChatMessage).
   const history: ChatMessage[] = [];
 
+  // Per-turn content-block accumulators. Drained at the SDK `result`
+  // boundary into event.turn-end so @ax/conversations can persist the
+  // turn (Task 3 of Week 10–12). We track assistant and tool turns
+  // separately because they emit as distinct chat:turn-end events:
+  //   - assistant: text + thinking + tool_use blocks observed in
+  //     `assistant` SDK messages within the current turn.
+  //   - tool: tool_result blocks observed in `user` SDK messages whose
+  //     content is the SDK echoing the tool-result back into the
+  //     transcript. Replay (Task 15) needs these to reconstruct the
+  //     conversation; the user-side text the human typed already
+  //     reaches the conversation table via POST /api/chat/messages
+  //     (Task 9), so we deliberately skip plain-text user blocks here.
+  let turnContentBlocks: ContentBlock[] = [];
+  let turnToolResultBlocks: ContentBlock[] = [];
+
   // Inbox → SDK user-message generator. Closing via `return` on cancel
   // tells the SDK no more user messages are coming, which lets the outer
   // `for await (msg of queryIter)` drain naturally and exit.
@@ -216,6 +232,88 @@ export async function main(): Promise<number> {
         if (text.length > 0) {
           history.push({ role: 'assistant', content: text });
         }
+        // Accumulate full ContentBlock[] for the per-turn transcript that
+        // ships to @ax/conversations via event.turn-end. Block shapes that
+        // don't survive replay (raw `text`, `thinking`, `tool_use`) are
+        // mapped explicitly; anything else is dropped defensively so a
+        // future SDK addition doesn't bypass our schema.
+        for (const block of assistant.message.content) {
+          if (block.type === 'text') {
+            turnContentBlocks.push({ type: 'text', text: block.text });
+          } else if (block.type === 'thinking') {
+            turnContentBlocks.push({
+              type: 'thinking',
+              thinking: block.thinking,
+              ...(typeof block.signature === 'string'
+                ? { signature: block.signature }
+                : {}),
+            });
+          } else if (block.type === 'tool_use') {
+            turnContentBlocks.push({
+              type: 'tool_use',
+              id: block.id,
+              name: block.name,
+              input: (block.input ?? {}) as Record<string, unknown>,
+            });
+          }
+        }
+      } else if (msg.type === 'user') {
+        // The SDK echoes tool_result blocks back as `user` messages once
+        // a tool finishes (the model issued a tool_use; the runner ran
+        // the tool; the SDK threads the result into the transcript as a
+        // user turn so the next assistant turn can see it). Replay
+        // depends on these landing in the conversation row. Plain-text
+        // user content is NOT collected: the human's typed message
+        // arrives via POST /api/chat/messages (Task 9), and tool_result
+        // blocks are the only thing the runner is the authoritative
+        // source for here.
+        const userMsg = msg as { message?: { content?: unknown } };
+        const content = userMsg.message?.content;
+        if (Array.isArray(content)) {
+          for (const block of content as Array<{ type?: string }>) {
+            if (block.type === 'tool_result') {
+              const tr = block as {
+                type: 'tool_result';
+                tool_use_id?: string;
+                content?: unknown;
+                is_error?: boolean;
+              };
+              if (typeof tr.tool_use_id === 'string') {
+                // ToolResultBlock.content is string | (TextBlock |
+                // ImageBlock)[]. We narrow array content to the
+                // text/image subset; anything else collapses to empty
+                // string so the row passes ContentBlockSchema validation.
+                let normalizedContent: string | Array<{
+                  type: 'text';
+                  text: string;
+                }> = '';
+                if (typeof tr.content === 'string') {
+                  normalizedContent = tr.content;
+                } else if (Array.isArray(tr.content)) {
+                  const textOnly: Array<{ type: 'text'; text: string }> = [];
+                  for (const item of tr.content as Array<{
+                    type?: string;
+                    text?: unknown;
+                  }>) {
+                    if (item.type === 'text' && typeof item.text === 'string') {
+                      textOnly.push({ type: 'text', text: item.text });
+                    }
+                  }
+                  normalizedContent = textOnly;
+                }
+                const normalized: ContentBlock = {
+                  type: 'tool_result',
+                  tool_use_id: tr.tool_use_id,
+                  content: normalizedContent,
+                  ...(typeof tr.is_error === 'boolean'
+                    ? { is_error: tr.is_error }
+                    : {}),
+                };
+                turnToolResultBlocks.push(normalized);
+              }
+            }
+          }
+        }
       } else if (msg.type === 'result') {
         // Turn boundary. Snapshot the per-turn diff accumulator and ship
         // a single `workspace.commit-notify` when there are changes. We
@@ -254,14 +352,49 @@ export async function main(): Promise<number> {
 
         // One turn of assistant output finished. The SDK now awaits the
         // next yield from userMessages() — i.e. the next inbox pull.
+        //
+        // We may emit up to TWO chat:turn-end events at this boundary:
+        //   1. role='tool' if the runner observed any tool_result blocks
+        //      during this turn (the SDK echoed them back as user msgs).
+        //      Emitted FIRST because they chronologically precede the
+        //      assistant's wrap-up text in the transcript.
+        //   2. role='assistant' for the assistant turn itself. Emitted
+        //      unconditionally as a heartbeat — contentBlocks is only
+        //      attached when non-empty so empty turns stay heartbeats.
+        //
+        // Failures here MUST NOT terminate the chat (host may be tearing
+        // down). Each call swallows independently.
+        if (turnToolResultBlocks.length > 0) {
+          const toolBlocks = turnToolResultBlocks;
+          turnToolResultBlocks = [];
+          await client
+            .event('event.turn-end', {
+              reason: 'user-message-wait',
+              role: 'tool',
+              contentBlocks: toolBlocks,
+            })
+            .catch(() => {
+              /* host may be tearing down; non-fatal */
+            });
+        }
+
+        const assistantBlocks = turnContentBlocks;
+        turnContentBlocks = [];
         await client
-          .event('event.turn-end', { reason: 'user-message-wait' })
+          .event('event.turn-end', {
+            reason: 'user-message-wait',
+            role: 'assistant',
+            ...(assistantBlocks.length > 0
+              ? { contentBlocks: assistantBlocks }
+              : {}),
+          })
           .catch(() => {
             /* host may be tearing down; non-fatal */
           });
       }
-      // system / user / partial / progress / etc. are SDK bookkeeping —
-      // the host doesn't need to see them.
+      // system / partial / progress / etc. are SDK bookkeeping —
+      // the host doesn't need to see them. (`user` messages ARE handled
+      // above, but only to extract tool_result blocks for replay.)
     }
   } catch (err) {
     exitCode = 1;

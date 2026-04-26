@@ -5,6 +5,7 @@ import {
   type HookBus,
   type Plugin,
 } from '@ax/core';
+import type { ContentBlock } from '@ax/ipc-protocol';
 import type { Kysely } from 'kysely';
 import {
   runConversationsMigration,
@@ -120,6 +121,33 @@ export function createConversationsPlugin(
         PLUGIN_NAME,
         async (ctx, input) => deleteConversation(localStore, bus, ctx, input),
       );
+
+      // chat:turn-end auto-append (Task 3 of Week 10–12).
+      //
+      // The runner emits event.turn-end with `contentBlocks` + `role` after
+      // every turn; the IPC handler validates against EventTurnEndSchema
+      // and fires this subscriber. We append to ctx.conversationId via the
+      // existing :append-turn service hook so the same agents:resolve gate
+      // (Invariant J1) runs on the auto-append as on any explicit one.
+      //
+      // Contract:
+      //   - No-op when ctx.conversationId is unset (Task 16 wires it; until
+      //     then, canary chats run without a conversation).
+      //   - No-op when payload.contentBlocks is missing/empty (heartbeat
+      //     turn-ends MUST stay heartbeats — never write empty rows).
+      //   - Failures from :append-turn are caught and logged; chat flow
+      //     MUST NOT abort if storage hiccups (subscriber-must-not-throw).
+      bus.subscribe<TurnEndPayload>(
+        'chat:turn-end',
+        PLUGIN_NAME,
+        async (ctx, payload) => {
+          await handleTurnEnd(bus, ctx, payload);
+          // Return undefined: pass-through (don't mutate the payload, don't
+          // reject). HookBus treats undefined as "no change" so other
+          // subscribers see the same payload we did.
+          return undefined;
+        },
+      );
     },
 
     async shutdown() {
@@ -130,6 +158,64 @@ export function createConversationsPlugin(
       _store = undefined;
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// chat:turn-end subscriber payload. Mirrors the optional fields on
+// EventTurnEndSchema (locked in Task 4): the runner attaches contentBlocks
+// + role for turns we want to persist; older / non-conversation runners
+// can still fire turn-ends without them and we just skip.
+// ---------------------------------------------------------------------------
+interface TurnEndPayload {
+  reqId?: string;
+  reason?: string;
+  contentBlocks?: ContentBlock[];
+  role?: 'user' | 'assistant' | 'tool';
+}
+
+async function handleTurnEnd(
+  bus: HookBus,
+  ctx: ChatContext,
+  payload: TurnEndPayload,
+): Promise<void> {
+  // No conversation context → nothing to persist (canary acceptance
+  // tests, ephemeral admin probes). Task 16 wires the orchestrator to
+  // populate conversationId on chat:run; until then this is the common
+  // path.
+  const conversationId = ctx.conversationId;
+  if (conversationId === undefined) return;
+
+  // Heartbeat turn-end (no content). The runner emits these every turn
+  // so the host knows the SDK is awaiting input — we deliberately don't
+  // write empty rows.
+  const blocks = payload.contentBlocks;
+  if (blocks === undefined || blocks.length === 0) return;
+
+  const role = payload.role ?? 'assistant';
+
+  try {
+    await bus.call<AppendTurnInput, AppendTurnOutput>(
+      'conversations:append-turn',
+      ctx,
+      {
+        conversationId,
+        userId: ctx.userId,
+        role,
+        contentBlocks: blocks,
+      },
+    );
+  } catch (err) {
+    // Subscriber MUST NOT throw — a storage hiccup, ACL change, or
+    // validation reject in :append-turn would otherwise tear down the
+    // chat. Log at warn so the operator can spot it without breaking
+    // the live conversation.
+    ctx.logger.warn('conversations_auto_append_failed', {
+      conversationId,
+      role,
+      ...(payload.reqId !== undefined ? { reqId: payload.reqId } : {}),
+      err: err instanceof Error ? err : new Error(String(err)),
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------

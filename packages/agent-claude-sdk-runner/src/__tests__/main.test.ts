@@ -143,6 +143,54 @@ function assistantText(text: string): SDKMessage {
   } as unknown as SDKMessage;
 }
 
+function assistantBlocks(content: unknown[]): SDKMessage {
+  return {
+    type: 'assistant',
+    uuid: 'msg-uuid',
+    session_id: 'sess-1',
+    parent_tool_use_id: null,
+    message: {
+      id: 'm-1',
+      type: 'message',
+      role: 'assistant',
+      model: 'claude',
+      stop_reason: null,
+      stop_sequence: null,
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+        server_tool_use: { web_search_requests: 0 },
+      },
+      content,
+    },
+  } as unknown as SDKMessage;
+}
+
+function userToolResult(
+  toolUseId: string,
+  text: string,
+  isError = false,
+): SDKMessage {
+  return {
+    type: 'user',
+    parent_tool_use_id: null,
+    session_id: 'sess-1',
+    message: {
+      role: 'user',
+      content: [
+        {
+          type: 'tool_result',
+          tool_use_id: toolUseId,
+          content: text,
+          is_error: isError,
+        },
+      ],
+    },
+  } as unknown as SDKMessage;
+}
+
 function resultSuccess(): SDKMessage {
   return {
     type: 'result',
@@ -249,8 +297,14 @@ describe('main()', () => {
     const turnEnds = fakeClient.event.mock.calls.filter(
       (c) => c[0] === 'event.turn-end',
     );
+    // One assistant turn-end carrying the text contentBlock so
+    // @ax/conversations can persist it (Task 3 of Week 10–12).
     expect(turnEnds).toHaveLength(1);
-    expect(turnEnds[0]?.[1]).toEqual({ reason: 'user-message-wait' });
+    expect(turnEnds[0]?.[1]).toEqual({
+      reason: 'user-message-wait',
+      role: 'assistant',
+      contentBlocks: [{ type: 'text', text: 'hello world' }],
+    });
 
     const chatEnds = fakeClient.event.mock.calls.filter(
       (c) => c[0] === 'event.chat-end',
@@ -324,6 +378,203 @@ describe('main()', () => {
     } finally {
       stderrSpy.mockRestore();
     }
+  });
+
+  it('multi-block assistant turn: text + thinking + tool_use all flow into event.turn-end contentBlocks in order', async () => {
+    setEnv(COMPLETE_ENV);
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+        };
+      }
+      if (action === 'tool.list') return { tools: [] };
+      throw new Error(`unexpected call: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([userEntry('go'), cancelEntry]);
+
+    queryMock.mockImplementation(
+      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+        return (async function* () {
+          const it = prompt[Symbol.asyncIterator]();
+          await it.next();
+          yield assistantBlocks([
+            { type: 'thinking', thinking: 'plan', signature: 'sig-1' },
+            { type: 'text', text: 'sure thing' },
+            {
+              type: 'tool_use',
+              id: 'tu_1',
+              name: 'Bash',
+              input: { command: 'ls' },
+            },
+            // Unknown block types are dropped defensively.
+            { type: 'unknown_kind', whatever: true },
+          ]);
+          yield resultSuccess();
+          await it.next();
+        })();
+      },
+    );
+
+    const { main } = await import('../main.js');
+    const rc = await main();
+    expect(rc).toBe(0);
+
+    const turnEnds = fakeClient.event.mock.calls.filter(
+      (c) => c[0] === 'event.turn-end',
+    );
+    expect(turnEnds).toHaveLength(1);
+    expect(turnEnds[0]?.[1]).toEqual({
+      reason: 'user-message-wait',
+      role: 'assistant',
+      contentBlocks: [
+        { type: 'thinking', thinking: 'plan', signature: 'sig-1' },
+        { type: 'text', text: 'sure thing' },
+        {
+          type: 'tool_use',
+          id: 'tu_1',
+          name: 'Bash',
+          input: { command: 'ls' },
+        },
+      ],
+    });
+  });
+
+  it('tool_result via SDK user message → emits a separate role=tool turn-end before the assistant turn-end', async () => {
+    setEnv(COMPLETE_ENV);
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+        };
+      }
+      if (action === 'tool.list') return { tools: [] };
+      throw new Error(`unexpected call: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([userEntry('do work'), cancelEntry]);
+
+    queryMock.mockImplementation(
+      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+        return (async function* () {
+          const it = prompt[Symbol.asyncIterator]();
+          await it.next();
+          // Assistant fires a tool_use, runner runs it, SDK echoes the
+          // result back as a user message.
+          yield assistantBlocks([
+            {
+              type: 'tool_use',
+              id: 'tu_42',
+              name: 'Bash',
+              input: { command: 'pwd' },
+            },
+          ]);
+          yield userToolResult('tu_42', '/tmp/work');
+          yield assistantBlocks([{ type: 'text', text: 'done' }]);
+          yield resultSuccess();
+          await it.next();
+        })();
+      },
+    );
+
+    const { main } = await import('../main.js');
+    const rc = await main();
+    expect(rc).toBe(0);
+
+    const turnEnds = fakeClient.event.mock.calls.filter(
+      (c) => c[0] === 'event.turn-end',
+    );
+    // Two turn-ends at this single SDK `result` boundary: tool first
+    // (chronologically came before the assistant wrap-up), assistant
+    // second.
+    expect(turnEnds).toHaveLength(2);
+    expect(turnEnds[0]?.[1]).toEqual({
+      reason: 'user-message-wait',
+      role: 'tool',
+      contentBlocks: [
+        {
+          type: 'tool_result',
+          tool_use_id: 'tu_42',
+          content: '/tmp/work',
+          is_error: false,
+        },
+      ],
+    });
+    expect(turnEnds[1]?.[1]).toEqual({
+      reason: 'user-message-wait',
+      role: 'assistant',
+      contentBlocks: [
+        {
+          type: 'tool_use',
+          id: 'tu_42',
+          name: 'Bash',
+          input: { command: 'pwd' },
+        },
+        { type: 'text', text: 'done' },
+      ],
+    });
+  });
+
+  it('empty assistant turn: turn-end fires as a heartbeat with no contentBlocks attached', async () => {
+    setEnv(COMPLETE_ENV);
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+        };
+      }
+      if (action === 'tool.list') return { tools: [] };
+      throw new Error(`unexpected call: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([userEntry('ping'), cancelEntry]);
+
+    queryMock.mockImplementation(
+      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+        return (async function* () {
+          const it = prompt[Symbol.asyncIterator]();
+          await it.next();
+          // No assistant message at all — straight to result.
+          yield resultSuccess();
+          await it.next();
+        })();
+      },
+    );
+
+    const { main } = await import('../main.js');
+    const rc = await main();
+    expect(rc).toBe(0);
+
+    const turnEnds = fakeClient.event.mock.calls.filter(
+      (c) => c[0] === 'event.turn-end',
+    );
+    expect(turnEnds).toHaveLength(1);
+    expect(turnEnds[0]?.[1]).toEqual({
+      reason: 'user-message-wait',
+      role: 'assistant',
+    });
   });
 
   it('terminated path: SDK throws mid-stream → exit 1, chat-end outcome.kind=terminated', async () => {
