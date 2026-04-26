@@ -241,7 +241,7 @@ export function createAuthRouteHandlers(deps: RouteHandlerDeps) {
         typeof body.email === 'string' && body.email.length > 0
           ? body.email
           : null;
-      const { user } = await deps.store.upsertBootstrapAdmin({
+      const { user, created } = await deps.store.upsertBootstrapAdmin({
         displayName,
         email,
       });
@@ -258,7 +258,12 @@ export function createAuthRouteHandlers(deps: RouteHandlerDeps) {
         userId: user.id,
         provider: 'dev-bootstrap',
       });
-      res.status(200).json({ user });
+      // `isNew` mirrors the store's `created` flag — the CLI uses it to
+      // distinguish first-run from idempotent re-run so it can print
+      // `bootstrap_already_done`. Backend-agnostic name (no row/insert
+      // vocabulary) so an alternate auth-store impl can keep the same
+      // wire shape.
+      res.status(200).json({ user, isNew: created });
     },
   };
 }

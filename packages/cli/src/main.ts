@@ -28,6 +28,7 @@ import { loadAxConfig } from './config/load.js';
 import { runCredentialsCommand } from './commands/credentials.js';
 import { runMcpCommand } from './commands/mcp.js';
 import { runServeCommand } from './commands/serve.js';
+import { runAdminCommand } from './commands/admin.js';
 
 // `@ax/cli` is the ONE package permitted to import sibling plugins directly
 // (eslint.config.mjs no-restricted-imports allowlist); this is also the one
@@ -287,6 +288,17 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       stdin: process.stdin,
       sqlitePath,
     })
+      .then((code) => process.exit(code))
+      .catch((e) => {
+        process.stderr.write(`fatal: ${e instanceof Error ? e.message : String(e)}\n`);
+        process.exit(2);
+      });
+  } else if (argv[0] === 'admin') {
+    // One-shot admin tooling. Today: `bootstrap` (first-admin against
+    // /auth/dev-bootstrap). Like credentials/mcp this intercepts BEFORE
+    // the chat path so we don't bootstrap the LLM/sandbox/orchestrator
+    // plugin set for what's a thin HTTP client.
+    runAdminCommand({ argv: argv.slice(1) })
       .then((code) => process.exit(code))
       .catch((e) => {
         process.stderr.write(`fatal: ${e instanceof Error ? e.message : String(e)}\n`);

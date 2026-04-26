@@ -127,9 +127,14 @@ describe('/auth/dev-bootstrap', () => {
       }),
     });
     expect(r.status).toBe(200);
-    const body = (await r.json()) as { user: { id: string; isAdmin: boolean; email: string | null } };
+    const body = (await r.json()) as {
+      user: { id: string; isAdmin: boolean; email: string | null };
+      isNew: boolean;
+    };
     expect(body.user.isAdmin).toBe(true);
     expect(body.user.email).toBe('admin@example.com');
+    // First call: bootstrap created a fresh user.
+    expect(body.isNew).toBe(true);
     // Cookie set.
     const setCookie =
       r.headers.getSetCookie?.() ?? [r.headers.get('set-cookie') ?? ''];
@@ -212,7 +217,8 @@ describe('/auth/dev-bootstrap', () => {
       body: JSON.stringify({ token: TOKEN, displayName: 'Admin1' }),
     });
     expect(a.status).toBe(200);
-    const ja = (await a.json()) as { user: { id: string } };
+    const ja = (await a.json()) as { user: { id: string }; isNew: boolean };
+    expect(ja.isNew).toBe(true);
     const b = await fetch(`http://127.0.0.1:${stack.port}/auth/dev-bootstrap`, {
       method: 'POST',
       headers: {
@@ -222,8 +228,11 @@ describe('/auth/dev-bootstrap', () => {
       body: JSON.stringify({ token: TOKEN, displayName: 'IgnoredOnSecondCall' }),
     });
     expect(b.status).toBe(200);
-    const jb = (await b.json()) as { user: { id: string } };
+    const jb = (await b.json()) as { user: { id: string }; isNew: boolean };
     expect(jb.user.id).toBe(ja.user.id);
+    // Second call: existing user reused — CLI uses this to print
+    // bootstrap_already_done.
+    expect(jb.isNew).toBe(false);
 
     // DB still has exactly one user; two sessions.
     const k = new Kysely<AuthDatabase>({
