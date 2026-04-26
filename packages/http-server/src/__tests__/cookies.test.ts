@@ -26,7 +26,19 @@ describe('cookies — sign/verify', () => {
 
   it('returns null when the HMAC segment was tampered', () => {
     const wire = signCookieValue(KEY, 'hello');
-    const flipped = wire.slice(0, -1) + (wire.endsWith('A') ? 'B' : 'A');
+    // Flip the FIRST char of the HMAC, not the last. A 32-byte HMAC
+    // base64url-encodes to 43 chars where the trailing char carries 4
+    // bits of real data plus 2 padding bits; Node's lenient decoder
+    // ignores those, so flipping the last char between e.g. 'A'↔'B'
+    // (and 15 other 4-element groups) decodes to identical bytes ~6%
+    // of the time depending on the random KEY. Non-final chars have
+    // no such ambiguity.
+    const dot = wire.lastIndexOf('.');
+    const firstSigChar = wire[dot + 1]!;
+    const flipped =
+      wire.slice(0, dot + 1) +
+      (firstSigChar === 'A' ? 'B' : 'A') +
+      wire.slice(dot + 2);
     expect(verifyCookieValue(KEY, flipped)).toBeNull();
   });
 

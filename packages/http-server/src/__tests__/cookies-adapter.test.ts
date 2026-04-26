@@ -86,8 +86,22 @@ describe('http-server signed-cookie adapter', () => {
     });
 
     const wire = signCookieValue(COOKIE_KEY, 'orig');
-    // Flip one base64url char in the HMAC.
-    const flipped = wire.slice(0, -1) + (wire.endsWith('A') ? 'B' : 'A');
+    // Flip one base64url char in the HMAC. We deliberately tamper with the
+    // FIRST char of the signature (right after the dot), NOT the last char:
+    // a 32-byte HMAC encodes to 43 base64url chars, and the trailing char
+    // carries only 4 bits of real data with 2 padding bits at the bottom.
+    // Node's lenient base64url decoder ignores those padding bits, so the
+    // four chars {A,B,C,D} (and 15 other 4-element groups) decode to
+    // identical bytes. Flipping the LAST char between A↔B would slip past
+    // verification ~6% of the time depending on the random COOKIE_KEY —
+    // the test was previously flaky for exactly this reason. Flipping a
+    // non-final char has no such ambiguity.
+    const dot = wire.lastIndexOf('.');
+    const firstSigChar = wire[dot + 1]!;
+    const flipped =
+      wire.slice(0, dot + 1) +
+      (firstSigChar === 'A' ? 'B' : 'A') +
+      wire.slice(dot + 2);
 
     const r = await fetch(`http://127.0.0.1:${port}/me`, {
       headers: { cookie: `ax_sess=${flipped}` },
