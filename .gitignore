@@ -3,6 +3,11 @@ dist/
 *.tsbuildinfo
 coverage/
 
+# CLI runtime sqlite (created on first run; not source)
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
 .DS_Store
 *.log
 npm-debug.log*
