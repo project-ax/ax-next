@@ -1225,9 +1225,15 @@ importers:
       '@types/node':
         specifier: ^25.6.0
         version: 25.6.0
+      '@types/pg':
+        specifier: 8.20.0
+        version: 8.20.0
       kysely:
         specifier: 0.28.16
         version: 0.28.16
+      pg:
+        specifier: 8.20.0
+        version: 8.20.0
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
