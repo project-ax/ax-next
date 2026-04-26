@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@ax/core": "workspace:*",
+    "@ax/ipc-protocol": "workspace:*",
     "kysely": "0.28.16",
     "zod": "^3.23.8"
   },

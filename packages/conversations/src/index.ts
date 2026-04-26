@@ -37,4 +37,4 @@ export type {
   Turn,
   TurnRole,
 } from './types.js';
-export { ContentBlockShim } from './types.js';
+export { ContentBlockSchema } from './types.js';

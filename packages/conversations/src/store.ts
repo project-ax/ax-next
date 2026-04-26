@@ -1,5 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { PluginError } from '@ax/core';
+import { ContentBlockSchema, type ContentBlock } from '@ax/ipc-protocol';
+import { z } from 'zod';
 import type { Kysely } from 'kysely';
 import type {
   ConversationDatabase,
@@ -7,12 +9,16 @@ import type {
   TurnsRow,
 } from './migrations.js';
 import { scopedConversations } from './scope.js';
-import { ContentBlockShim } from './types.js';
 import type {
   Conversation,
   Turn,
   TurnRole,
 } from './types.js';
+
+// Array-of-blocks parser — used at every store ingress AND egress (we don't
+// trust the JSONB column blindly; the same canonical schema validates on
+// both sides of the DB boundary).
+const ContentBlockArraySchema = z.array(ContentBlockSchema);
 
 const PLUGIN_NAME = '@ax/conversations';
 
@@ -55,12 +61,14 @@ export function validateRole(value: unknown): TurnRole {
   return value as TurnRole;
 }
 
-export function validateContentBlocks(value: unknown): unknown[] {
-  // Shim — see types.ts. Task 4 swaps in the canonical schema.
-  const parsed = ContentBlockShim.safeParse(value);
+export function validateContentBlocks(value: unknown): ContentBlock[] {
+  // Canonical Anthropic-compatible schema lives in @ax/ipc-protocol; this
+  // is the single source of truth for both the IPC wire and our JSONB
+  // column (Invariant I4).
+  const parsed = ContentBlockArraySchema.safeParse(value);
   if (!parsed.success) {
     throw invalid(
-      `contentBlocks must be an array of objects: ${parsed.error.message}`,
+      `contentBlocks must be an array of ContentBlock objects: ${parsed.error.message}`,
     );
   }
   return parsed.data;
@@ -98,11 +106,16 @@ function rowToConversation(row: ConversationsRow): Conversation {
 }
 
 function rowToTurn(row: TurnsRow): Turn {
-  if (!Array.isArray(row.content_blocks)) {
+  // We don't trust the DB blindly — JSONB columns can drift across schema
+  // changes, replication hiccups, manual SQL, or future migrations. The
+  // canonical ContentBlockSchema validates on read AND write so the type
+  // promise we make to consumers stays honest.
+  const parsedBlocks = ContentBlockArraySchema.safeParse(row.content_blocks);
+  if (!parsedBlocks.success) {
     throw new PluginError({
       code: 'corrupt-row',
       plugin: PLUGIN_NAME,
-      message: `conversations_v1_turns.${row.turn_id} has invalid content_blocks JSONB`,
+      message: `conversations_v1_turns.${row.turn_id} has invalid content_blocks JSONB: ${parsedBlocks.error.message}`,
     });
   }
   if (
@@ -120,7 +133,7 @@ function rowToTurn(row: TurnsRow): Turn {
     turnId: row.turn_id,
     turnIndex: row.turn_index,
     role: row.role,
-    contentBlocks: row.content_blocks as unknown[],
+    contentBlocks: parsedBlocks.data,
     createdAt: row.created_at.toISOString(),
   };
 }
@@ -141,7 +154,7 @@ export interface ConversationStoreCreateArgs {
 export interface ConversationStoreAppendTurnArgs {
   conversationId: string;
   role: TurnRole;
-  contentBlocks: unknown[];
+  contentBlocks: ContentBlock[];
 }
 
 export interface ConversationStore {

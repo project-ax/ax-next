@@ -1,4 +1,5 @@
-import { z } from 'zod';
+import type { ContentBlock } from '@ax/ipc-protocol';
+import { ContentBlockSchema } from '@ax/ipc-protocol';
 
 /**
  * @ax/conversations public types.
@@ -14,19 +15,15 @@ import { z } from 'zod';
  */
 
 // ---------------------------------------------------------------------------
-// ContentBlock shim
+// ContentBlock — single source of truth lives in @ax/ipc-protocol (I4).
 //
-// TODO(Task 4): replace shim with @ax/ipc-protocol ContentBlockSchema.
-//
-// Task 4 of the Week 10–12 plan locks the canonical Anthropic-compatible
-// ContentBlock zod schema in @ax/ipc-protocol. Task 2 (this file) runs
-// BEFORE Task 4 in plan ordering, so to avoid a cyclic dependency we
-// define a permissive local shim. The runtime will provide the real
-// shape; we just want a sanity check that the JSONB column holds an
-// array of objects.
+// Both the IPC wire (event.turn-end) and our JSONB column carry the same
+// shape, so the canonical zod schema lives in the one place both plugins
+// already share. We re-export here so existing `@ax/conversations`
+// consumers don't have to reach across packages for the type.
 // ---------------------------------------------------------------------------
-export const ContentBlockShim = z.array(z.record(z.string(), z.unknown()));
-export type ContentBlock = z.infer<typeof ContentBlockShim>[number];
+export { ContentBlockSchema };
+export type { ContentBlock };
 
 // ---------------------------------------------------------------------------
 // Domain types — exposed on hook payloads.
@@ -38,8 +35,13 @@ export interface Turn {
   turnId: string;
   turnIndex: number;
   role: TurnRole;
-  /** Content blocks. Shim until Task 4 (see above). */
-  contentBlocks: unknown[];
+  /**
+   * Content blocks. Strongly typed at the package boundary; the store still
+   * runtime-parses against `ContentBlockSchema` on read AND write so we
+   * don't trust the DB blindly (Invariant I5 — capabilities-minimized,
+   * untrusted-content-stays-untrusted).
+   */
+  contentBlocks: ContentBlock[];
   /** ISO-8601 string. */
   createdAt: string;
 }
@@ -85,7 +87,7 @@ export interface AppendTurnInput {
    */
   userId: string;
   role: TurnRole;
-  contentBlocks: unknown[];
+  contentBlocks: ContentBlock[];
 }
 export type AppendTurnOutput = Turn;
 

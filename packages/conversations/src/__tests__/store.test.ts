@@ -91,19 +91,36 @@ describe('validation', () => {
   });
 
   it('rejects non-array contentBlocks', () => {
-    expect(() => validateContentBlocks('hi')).toThrow(/array of objects/);
+    expect(() => validateContentBlocks('hi')).toThrow(
+      /array of ContentBlock objects/,
+    );
   });
 
   it('rejects array with non-object element', () => {
     expect(() => validateContentBlocks(['plain string'])).toThrow(
-      /array of objects/,
+      /array of ContentBlock objects/,
     );
   });
 
-  it('accepts array of objects', () => {
+  it('rejects unknown discriminant', () => {
+    expect(() =>
+      validateContentBlocks([{ type: 'banana' }]),
+    ).toThrow(/array of ContentBlock objects/);
+  });
+
+  it('rejects a thinking block missing the thinking field', () => {
+    // Canonical schema requires `thinking: string`. The pre-Task-4 shim
+    // accepted any object — this test pins the regression so future shim
+    // reintroductions show up loudly in CI.
+    expect(() =>
+      validateContentBlocks([{ type: 'thinking', text: 'hmm' }]),
+    ).toThrow(/array of ContentBlock objects/);
+  });
+
+  it('accepts a valid array of canonical content blocks', () => {
     const out = validateContentBlocks([
       { type: 'text', text: 'hi' },
-      { type: 'thinking', text: 'hmm' },
+      { type: 'thinking', thinking: 'hmm' },
     ]);
     expect(out).toHaveLength(2);
   });
