@@ -168,6 +168,20 @@ function requireInboxEntry(
         message: `'entry.payload.role' must be 'user' | 'assistant' | 'system'`,
       });
     }
+    // J9: every server-delivered user message MUST carry the host-minted
+    // reqId so the runner can stamp event.stream-chunk emissions with it.
+    // This is a trust-boundary check — the IPC server feeds wire payloads
+    // through here, and a missing reqId would silently break stream
+    // routing back to the originating client.
+    const reqId = (value as { reqId?: unknown }).reqId;
+    if (typeof reqId !== 'string' || reqId.length === 0) {
+      throw new PluginError({
+        code: 'invalid-payload',
+        plugin: PLUGIN_NAME,
+        hookName,
+        message: `'entry.reqId' must be a non-empty string for user-message entries`,
+      });
+    }
     return;
   }
   if (type === 'cancel') return;

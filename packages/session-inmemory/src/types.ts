@@ -42,12 +42,18 @@ export interface AgentConfig {
 //   - `timeout`: returned `cursor` echoes the input cursor (no advancement).
 // ---------------------------------------------------------------------------
 
+// `reqId` on `user-message` is the host-minted request id (J9). Producers
+// that enqueue a user message (today: chat-orchestrator; later: the chat
+// HTTP API in Task 9) MUST attach the reqId of the originating host
+// request. The runner reads it back through `session:claim-work` and
+// stamps it onto every `event.stream-chunk` so the host can route the
+// chunk back to the waiting client (Task 5/7). REQUIRED — never optional.
 export type InboxEntry =
-  | { type: 'user-message'; payload: ChatMessage }
+  | { type: 'user-message'; payload: ChatMessage; reqId: string }
   | { type: 'cancel' };
 
 export type ClaimResult =
-  | { type: 'user-message'; payload: ChatMessage; cursor: number }
+  | { type: 'user-message'; payload: ChatMessage; reqId: string; cursor: number }
   | { type: 'cancel'; cursor: number }
   | { type: 'timeout'; cursor: number };
 

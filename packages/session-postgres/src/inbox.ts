@@ -32,12 +32,23 @@ import type { SessionDatabase } from './migrations.js';
 //    the terminated flag and resolves as `timeout`.
 // ---------------------------------------------------------------------------
 
+// `reqId` on `user-message` is the host-minted request id (J9). Producers
+// that enqueue a user message (today: chat-orchestrator; later: the chat
+// HTTP API in Task 9) MUST attach the reqId of the originating host
+// request. The runner reads it back through `session:claim-work` and
+// stamps it onto every `event.stream-chunk` so the host can route the
+// chunk back to the waiting client (Task 5/7). REQUIRED — never optional.
+//
+// Persistence: stored alongside the ChatMessage in the JSONB `payload`
+// column rather than a dedicated SQL column, so this slice doesn't need
+// a forward-only migration. The wrapping shape is opaque at the SQL
+// layer; the inbox layer is the single producer + consumer.
 export type InboxEntry =
-  | { type: 'user-message'; payload: ChatMessage }
+  | { type: 'user-message'; payload: ChatMessage; reqId: string }
   | { type: 'cancel' };
 
 export type ClaimResult =
-  | { type: 'user-message'; payload: ChatMessage; cursor: number }
+  | { type: 'user-message'; payload: ChatMessage; reqId: string; cursor: number }
   | { type: 'cancel'; cursor: number }
   | { type: 'timeout'; cursor: number };
 
@@ -215,9 +226,13 @@ export function createInbox(opts: InboxOptions): Inbox {
               session_id: sessionId,
               cursor: next as unknown as string, // BIGINT column; pg accepts number
               type: entry.type,
+              // For user-message we wrap `{ message, reqId }` so the JSONB
+              // column carries both without a schema migration. cancel
+              // entries store null. The wrapping is internal — `claim`
+              // unwraps before returning to the caller. (See `fetchEntry`.)
               payload:
                 entry.type === 'user-message'
-                  ? (entry.payload as unknown as never)
+                  ? ({ message: entry.payload, reqId: entry.reqId } as unknown as never)
                   : null,
             } as never)
             .execute();
@@ -339,7 +354,32 @@ async function fetchEntry(
     .executeTakeFirst();
   if (row === undefined) return null;
   if (row.type === 'user-message') {
-    return { type: 'user-message', payload: row.payload as ChatMessage };
+    // The JSONB payload wraps the ChatMessage and the host-minted reqId;
+    // see the `queue` insert above. Be defensive about row shape — pg's
+    // JSONB returns whatever bytes were stored, and a malformed row from
+    // an old runner would surface here as a missing reqId.
+    const wrapped = row.payload as
+      | { message?: unknown; reqId?: unknown }
+      | null
+      | undefined;
+    if (
+      wrapped === null ||
+      wrapped === undefined ||
+      typeof wrapped !== 'object' ||
+      typeof (wrapped as { reqId?: unknown }).reqId !== 'string' ||
+      typeof (wrapped as { message?: unknown }).message !== 'object' ||
+      (wrapped as { message?: unknown }).message === null
+    ) {
+      // Treat malformed rows as "no entry" — claim will fall through to
+      // its waiter / timeout path. Better than throwing inside a
+      // long-poll path and rejecting downstream consumers.
+      return null;
+    }
+    return {
+      type: 'user-message',
+      payload: wrapped.message as ChatMessage,
+      reqId: wrapped.reqId as string,
+    };
   }
   if (row.type === 'cancel') {
     return { type: 'cancel' };
@@ -349,7 +389,12 @@ async function fetchEntry(
 
 function deliver(entry: InboxEntry, cursor: number): ClaimResult {
   if (entry.type === 'user-message') {
-    return { type: 'user-message', payload: entry.payload, cursor: cursor + 1 };
+    return {
+      type: 'user-message',
+      payload: entry.payload,
+      reqId: entry.reqId,
+      cursor: cursor + 1,
+    };
   }
   return { type: 'cancel', cursor: cursor + 1 };
 }

@@ -115,6 +115,7 @@ function buildFakeInbox(entries: InboxLoopEntry[]): FakeInbox {
 const userEntry = (content: string): InboxLoopEntry => ({
   type: 'user-message',
   payload: { role: 'user', content },
+  reqId: 'r-test',
 });
 const cancelEntry: InboxLoopEntry = { type: 'cancel' };
 

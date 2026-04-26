@@ -460,7 +460,11 @@ describe('dispatcher', () => {
       ctx,
       {
         sessionId: 's-claim',
-        entry: { type: 'user-message', payload: { role: 'user', content: 'hi' } },
+        entry: {
+          type: 'user-message',
+          payload: { role: 'user', content: 'hi' },
+          reqId: 'r-claim',
+        },
       },
     );
     const res = await doRequest(
@@ -474,6 +478,7 @@ describe('dispatcher', () => {
     expect(parsed.type).toBe('user-message');
     if (parsed.type === 'user-message') {
       expect(parsed.payload).toEqual({ role: 'user', content: 'hi' });
+      expect(parsed.reqId).toBe('r-claim');
       expect(parsed.cursor).toBe(1);
     }
   });

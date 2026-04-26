@@ -216,9 +216,13 @@ function resultSuccess(): SDKMessage {
   } as unknown as SDKMessage;
 }
 
-const userEntry = (content: string): InboxLoopEntry => ({
+const userEntry = (
+  content: string,
+  reqId: string = 'req-test',
+): InboxLoopEntry => ({
   type: 'user-message',
   payload: { role: 'user', content },
+  reqId,
 });
 const cancelEntry: InboxLoopEntry = { type: 'cancel' };
 
@@ -688,6 +692,164 @@ describe('main()', () => {
       reason: 'user-message-wait',
       role: 'assistant',
     });
+  });
+
+  it('emits event.stream-chunk per text + thinking block with reqId; skips redacted_thinking and tool_use', async () => {
+    // Task 6: per-block streaming. The runner caches the host-minted
+    // reqId from the inbox payload (J9) and stamps it onto every
+    // event.stream-chunk it emits during the assistant branch. text and
+    // thinking blocks stream; redacted_thinking and tool_use do NOT
+    // (no human-readable text). Empty-text blocks are skipped to avoid
+    // noise on the wire.
+    setEnv(COMPLETE_ENV);
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+        };
+      }
+      if (action === 'tool.list') return { tools: [] };
+      throw new Error(`unexpected call: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([userEntry('go', 'r42'), cancelEntry]);
+
+    queryMock.mockImplementation(
+      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+        return (async function* () {
+          const it = prompt[Symbol.asyncIterator]();
+          await it.next();
+          // Two assistant messages within the same turn:
+          //   #1 — thinking + text "hello" + redacted_thinking + tool_use
+          //   #2 — text "world"
+          // Empty text in #2 would be skipped if present; we omit one
+          // here to keep this test focused on the streaming contract.
+          yield assistantBlocks([
+            { type: 'thinking', thinking: 'pondering', signature: 'sig-1' },
+            { type: 'text', text: 'hello' },
+            { type: 'redacted_thinking', data: 'opaque' },
+            {
+              type: 'tool_use',
+              id: 'tu_1',
+              name: 'Bash',
+              input: { command: 'ls' },
+            },
+            // Empty-text block — must NOT emit a chunk.
+            { type: 'text', text: '' },
+          ]);
+          yield assistantBlocks([{ type: 'text', text: 'world' }]);
+          yield resultSuccess();
+          await it.next();
+        })();
+      },
+    );
+
+    const { main } = await import('../main.js');
+    const rc = await main();
+    expect(rc).toBe(0);
+
+    const streamChunks = fakeClient.event.mock.calls.filter(
+      (c) => c[0] === 'event.stream-chunk',
+    );
+    // Three chunks: thinking, text "hello", text "world". The empty-text
+    // block, the redacted_thinking block, and the tool_use block do not
+    // contribute.
+    expect(streamChunks).toHaveLength(3);
+    expect(streamChunks[0]?.[1]).toEqual({
+      reqId: 'r42',
+      text: 'pondering',
+      kind: 'thinking',
+    });
+    expect(streamChunks[1]?.[1]).toEqual({
+      reqId: 'r42',
+      text: 'hello',
+      kind: 'text',
+    });
+    expect(streamChunks[2]?.[1]).toEqual({
+      reqId: 'r42',
+      text: 'world',
+      kind: 'text',
+    });
+
+    // The turn-end transcript still flows independently (Task 3) — the
+    // stream chunks are observation-only (I4) and do NOT replace the
+    // canonical contentBlocks transcript.
+    const turnEnds = fakeClient.event.mock.calls.filter(
+      (c) => c[0] === 'event.turn-end',
+    );
+    expect(turnEnds).toHaveLength(1);
+    expect(turnEnds[0]?.[1]).toEqual({
+      reason: 'user-message-wait',
+      role: 'assistant',
+      contentBlocks: [
+        { type: 'thinking', thinking: 'pondering', signature: 'sig-1' },
+        { type: 'text', text: 'hello' },
+        { type: 'redacted_thinking', data: 'opaque' },
+        {
+          type: 'tool_use',
+          id: 'tu_1',
+          name: 'Bash',
+          input: { command: 'ls' },
+        },
+        { type: 'text', text: '' },
+        { type: 'text', text: 'world' },
+      ],
+    });
+  });
+
+  it('stream-chunk emit failure does not terminate the runner', async () => {
+    // The runner swallows event.stream-chunk failures (the host may be
+    // tearing down). The chat must complete cleanly even if every chunk
+    // emit rejects.
+    setEnv(COMPLETE_ENV);
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+        };
+      }
+      if (action === 'tool.list') return { tools: [] };
+      throw new Error(`unexpected call: ${action}`);
+    });
+    // Reject only event.stream-chunk; let other events resolve normally.
+    fakeClient.event.mockImplementation(async (name: string) => {
+      if (name === 'event.stream-chunk') {
+        throw new Error('host gone');
+      }
+      return undefined;
+    });
+    fakeInbox = buildFakeInbox([userEntry('go', 'r-bad'), cancelEntry]);
+
+    queryMock.mockImplementation(
+      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+        return (async function* () {
+          const it = prompt[Symbol.asyncIterator]();
+          await it.next();
+          yield assistantText('hello');
+          yield resultSuccess();
+          await it.next();
+        })();
+      },
+    );
+
+    const { main } = await import('../main.js');
+    const rc = await main();
+    expect(rc).toBe(0);
   });
 
   it('terminated path: SDK throws mid-stream → exit 1, chat-end outcome.kind=terminated', async () => {

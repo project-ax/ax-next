@@ -234,13 +234,27 @@ describe('session.next-message response', () => {
     const parsed = SessionNextMessageResponseSchema.parse({
       type: 'user-message',
       payload: { role: 'user', content: 'hello' },
+      reqId: 'req-1',
       cursor: 3,
     });
     expect(parsed.type).toBe('user-message');
     if (parsed.type === 'user-message') {
       expect(parsed.payload.content).toBe('hello');
+      expect(parsed.reqId).toBe('req-1');
       expect(parsed.cursor).toBe(3);
     }
+  });
+
+  it('rejects a user-message variant missing reqId', () => {
+    // J9: every server-delivered user message MUST carry the host-minted
+    // reqId so the runner can stamp event.stream-chunk emissions with it.
+    // Allowing reqId to be missing would silently break stream routing.
+    const r = SessionNextMessageResponseSchema.safeParse({
+      type: 'user-message',
+      payload: { role: 'user', content: 'hello' },
+      cursor: 3,
+    });
+    expect(r.success).toBe(false);
   });
 
   it('round-trips a cancel variant', () => {

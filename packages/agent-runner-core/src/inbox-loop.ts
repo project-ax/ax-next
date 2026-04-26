@@ -27,6 +27,14 @@ export interface InboxLoopOptions {
 export interface InboxLoopEntry {
   type: 'user-message' | 'cancel';
   payload?: ChatMessage;
+  /**
+   * Host-minted request id (J9). Present iff `type === 'user-message'`.
+   * The runner caches it locally and stamps it onto every
+   * `event.stream-chunk` it emits while processing this user message —
+   * the host's chat:stream-chunk subscriber routes chunks back to the
+   * waiting client by this id.
+   */
+  reqId?: string;
 }
 
 export interface InboxLoop {
@@ -46,7 +54,7 @@ export interface InboxLoop {
 // SessionNextMessageResponseSchema. We re-declare the type inline rather
 // than pulling the schema type because `client.callGet` returns `unknown`.
 type WireResponse =
-  | { type: 'user-message'; payload: ChatMessage; cursor: number }
+  | { type: 'user-message'; payload: ChatMessage; reqId: string; cursor: number }
   | { type: 'cancel'; cursor: number }
   | { type: 'timeout'; cursor: number };
 
@@ -71,7 +79,11 @@ export function createInboxLoop(opts: InboxLoopOptions): InboxLoop {
       }
       if (raw.type === 'user-message') {
         cursor = raw.cursor;
-        return { type: 'user-message', payload: raw.payload };
+        return {
+          type: 'user-message',
+          payload: raw.payload,
+          reqId: raw.reqId,
+        };
       }
       if (raw.type === 'cancel') {
         cursor = raw.cursor;

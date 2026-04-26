@@ -57,7 +57,11 @@ describe('@ax/session-inmemory plugin', () => {
       ctx,
       {
         sessionId: 's-rt',
-        entry: { type: 'user-message', payload: { role: 'user', content: 'hello' } },
+        entry: {
+          type: 'user-message',
+          payload: { role: 'user', content: 'hello' },
+          reqId: 'r-1',
+        },
       },
     );
     expect(queued.cursor).toBe(0);
@@ -70,6 +74,7 @@ describe('@ax/session-inmemory plugin', () => {
     expect(claimed).toEqual({
       type: 'user-message',
       payload: { role: 'user', content: 'hello' },
+      reqId: 'r-1',
       cursor: 1,
     });
   });
@@ -120,7 +125,11 @@ describe('@ax/session-inmemory plugin', () => {
         ctx,
         {
           sessionId: 'never-created',
-          entry: { type: 'user-message', payload: { role: 'user', content: 'x' } },
+          entry: {
+            type: 'user-message',
+            payload: { role: 'user', content: 'x' },
+            reqId: 'r-x',
+          },
         },
       );
     } catch (err) {
@@ -172,7 +181,11 @@ describe('@ax/session-inmemory plugin', () => {
       ctx,
       {
         sessionId: 's-reuse',
-        entry: { type: 'user-message', payload: { role: 'user', content: 'hi' } },
+        entry: {
+          type: 'user-message',
+          payload: { role: 'user', content: 'hi' },
+          reqId: 'r-reuse',
+        },
       },
     );
 
@@ -184,6 +197,7 @@ describe('@ax/session-inmemory plugin', () => {
     expect(claimed).toEqual({
       type: 'user-message',
       payload: { role: 'user', content: 'hi' },
+      reqId: 'r-reuse',
       cursor: 1,
     });
   });
@@ -310,7 +324,39 @@ describe('@ax/session-inmemory plugin', () => {
           entry: {
             type: 'user-message',
             payload: { role: 'admin' as 'user', content: 'hi' },
+            reqId: 'r-bad-role',
           },
+        },
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('invalid-payload');
+  });
+
+  it('queue-work rejects a user-message with a missing reqId (J9)', async () => {
+    // J9: every server-delivered user message MUST carry the host-minted
+    // reqId so the runner can stamp event.stream-chunk emissions with it.
+    const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
+    const ctx = h.ctx();
+    await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+      'session:create',
+      ctx,
+      { sessionId: 's-noreq', workspaceRoot: '/tmp/ws' },
+    );
+    let caught: unknown;
+    try {
+      await h.bus.call<SessionQueueWorkInput, SessionQueueWorkOutput>(
+        'session:queue-work',
+        ctx,
+        {
+          sessionId: 's-noreq',
+          // Intentionally missing reqId — the validator must reject this.
+          entry: {
+            type: 'user-message',
+            payload: { role: 'user', content: 'hi' },
+          } as unknown as SessionQueueWorkInput['entry'],
         },
       );
     } catch (err) {

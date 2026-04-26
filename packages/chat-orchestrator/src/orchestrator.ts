@@ -74,7 +74,14 @@ export interface ChatRunInput {
 // error at call time.
 interface SessionQueueWorkInput {
   sessionId: string;
-  entry: { type: 'user-message'; payload: ChatMessage };
+  // `reqId` on user-message entries is REQUIRED (J9): the runner stamps
+  // it onto every `event.stream-chunk` so the host-side stream router
+  // (Task 5/7) can deliver chunks back to the originating request. We
+  // forward `ctx.reqId` from the chat:run call (which is itself the
+  // host-handled request).
+  entry:
+    | { type: 'user-message'; payload: ChatMessage; reqId: string }
+    | { type: 'cancel' };
 }
 interface SessionQueueWorkOutput {
   cursor: number;
@@ -349,7 +356,15 @@ export function createOrchestrator(
         ctx,
         {
           sessionId,
-          entry: { type: 'user-message', payload: input.message },
+          entry: {
+            type: 'user-message',
+            payload: input.message,
+            // J9: forward the host-minted reqId so the runner can stamp
+            // every `event.stream-chunk` it emits while processing this
+            // user message. ctx.reqId is created by the kernel at
+            // chat:run dispatch time.
+            reqId: ctx.reqId,
+          },
         },
       );
     } catch (err) {

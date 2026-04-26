@@ -263,10 +263,20 @@ export type SessionGetConfigResponse = z.infer<typeof SessionGetConfigResponseSc
 // loop stores this value verbatim and passes it back on the next GET.
 // ---------------------------------------------------------------------------
 
+// `reqId` on `user-message` is the server-minted request identifier (J9)
+// that the host stamped onto the message when it called
+// `session:queue-work`. The runner caches it locally and uses it to label
+// every `event.stream-chunk` it emits while processing this user message,
+// so the host's chat:stream-chunk subscriber can route chunks back to the
+// correct waiting client (Task 5/7). REQUIRED — every user message that
+// reaches a runner originated from a host request, and that request had a
+// reqId before it entered the inbox; allowing it to be missing would let a
+// stream chunk emit with no correlation handle, which the host can't route.
 export const SessionNextMessageResponseSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('user-message'),
     payload: ChatMessageSchema,
+    reqId: z.string(),
     cursor: z.number().int().nonnegative(),
   }),
   z.object({

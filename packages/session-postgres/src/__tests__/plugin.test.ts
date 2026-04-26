@@ -189,7 +189,11 @@ describe('@ax/session-postgres plugin', () => {
       ctx,
       {
         sessionId: 's-q',
-        entry: { type: 'user-message', payload: { role: 'user', content: 'a' } },
+        entry: {
+          type: 'user-message',
+          payload: { role: 'user', content: 'a' },
+          reqId: 'r-a',
+        },
       },
     );
     expect(q0.cursor).toBe(0);
@@ -199,7 +203,11 @@ describe('@ax/session-postgres plugin', () => {
       ctx,
       {
         sessionId: 's-q',
-        entry: { type: 'user-message', payload: { role: 'user', content: 'b' } },
+        entry: {
+          type: 'user-message',
+          payload: { role: 'user', content: 'b' },
+          reqId: 'r-b',
+        },
       },
     );
     expect(q1.cursor).toBe(1);
@@ -212,6 +220,7 @@ describe('@ax/session-postgres plugin', () => {
     expect(c0).toEqual({
       type: 'user-message',
       payload: { role: 'user', content: 'a' },
+      reqId: 'r-a',
       cursor: 1,
     });
     const c1 = await h.bus.call<SessionClaimWorkInput, SessionClaimWorkOutput>(
@@ -222,6 +231,7 @@ describe('@ax/session-postgres plugin', () => {
     expect(c1).toEqual({
       type: 'user-message',
       payload: { role: 'user', content: 'b' },
+      reqId: 'r-b',
       cursor: 2,
     });
   });
@@ -236,7 +246,11 @@ describe('@ax/session-postgres plugin', () => {
         ctx,
         {
           sessionId: 'never-created',
-          entry: { type: 'user-message', payload: { role: 'user', content: 'x' } },
+          entry: {
+            type: 'user-message',
+            payload: { role: 'user', content: 'x' },
+            reqId: 'r-x',
+          },
         },
       );
     } catch (err) {
@@ -302,7 +316,11 @@ describe('@ax/session-postgres plugin', () => {
       ctx,
       {
         sessionId: 's-wake',
-        entry: { type: 'user-message', payload: { role: 'user', content: 'hi' } },
+        entry: {
+          type: 'user-message',
+          payload: { role: 'user', content: 'hi' },
+          reqId: 'r-wake',
+        },
       },
     );
     const start = Date.now();
@@ -312,6 +330,7 @@ describe('@ax/session-postgres plugin', () => {
     expect(result).toEqual({
       type: 'user-message',
       payload: { role: 'user', content: 'hi' },
+      reqId: 'r-wake',
       cursor: 1,
     });
   });
@@ -397,7 +416,11 @@ describe('@ax/session-postgres plugin', () => {
       ctxB,
       {
         sessionId: 's-cross',
-        entry: { type: 'user-message', payload: { role: 'user', content: 'from-B' } },
+        entry: {
+          type: 'user-message',
+          payload: { role: 'user', content: 'from-B' },
+          reqId: 'r-cross',
+        },
       },
     );
 
@@ -408,6 +431,7 @@ describe('@ax/session-postgres plugin', () => {
     expect(result).toEqual({
       type: 'user-message',
       payload: { role: 'user', content: 'from-B' },
+      reqId: 'r-cross',
       cursor: 1,
     });
   });
@@ -564,7 +588,40 @@ describe('@ax/session-postgres plugin', () => {
           entry: {
             type: 'user-message',
             payload: { role: 'admin' as 'user', content: 'hi' },
+            reqId: 'r-bad-role',
           },
+        },
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('invalid-payload');
+  });
+
+  it('queue-work rejects a user-message with a missing reqId (J9)', async () => {
+    // J9: every server-delivered user message MUST carry the host-minted
+    // reqId. Validator runs at queue-work; the row must never make it
+    // into the inbox table without a reqId.
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+      'session:create',
+      ctx,
+      { sessionId: 's-noreq-pg', workspaceRoot: '/tmp/ws' },
+    );
+    let caught: unknown;
+    try {
+      await h.bus.call<SessionQueueWorkInput, SessionQueueWorkOutput>(
+        'session:queue-work',
+        ctx,
+        {
+          sessionId: 's-noreq-pg',
+          // Intentionally missing reqId — the validator must reject this.
+          entry: {
+            type: 'user-message',
+            payload: { role: 'user', content: 'hi' },
+          } as unknown as SessionQueueWorkInput['entry'],
         },
       );
     } catch (err) {

@@ -148,6 +148,18 @@ export async function main(): Promise<number> {
   let turnContentBlocks: ContentBlock[] = [];
   let turnToolResultBlocks: ContentBlock[] = [];
 
+  // Most-recent host-minted reqId from the inbox (J9). Set when a user
+  // message arrives; read by `event.stream-chunk` emissions during the
+  // assistant branch below. Lifetime is "from the inbox pull until the
+  // next inbox pull" — chunks for the SAME reqId may continue across
+  // multiple SDK `result` boundaries (the SDK may break a long response
+  // into multiple turns), so we DO NOT clear this on turn-end. A chunk
+  // that would emit before any user message has been pulled is impossible
+  // by SDK construction (no input → no output), but we defend anyway:
+  // an unset reqId causes the chunk to be skipped (no `event.stream-chunk`
+  // with a missing reqId — the host's router can't route it).
+  let currentReqId: string | undefined;
+
   // Inbox → SDK user-message generator. Closing via `return` on cancel
   // tells the SDK no more user messages are coming, which lets the outer
   // `for await (msg of queryIter)` drain naturally and exit.
@@ -156,6 +168,12 @@ export async function main(): Promise<number> {
       const entry = await inbox.next();
       if (entry.type === 'cancel') return;
       if (entry.payload === undefined) continue;
+      // Capture the host-minted reqId so subsequent stream-chunk
+      // emissions correlate back to the originating request. Both fields
+      // are set on `user-message` entries by the InboxLoop layer.
+      if (typeof entry.reqId === 'string' && entry.reqId.length > 0) {
+        currentReqId = entry.reqId;
+      }
       history.push({ role: 'user', content: entry.payload.content });
       yield {
         type: 'user',
@@ -247,6 +265,27 @@ export async function main(): Promise<number> {
         for (const block of assistant.message.content) {
           if (block.type === 'text') {
             turnContentBlocks.push({ type: 'text', text: block.text });
+            // Per-block streaming (Task 6 / J9). The SDK delivers text
+            // blocks as the model produces them; we forward each as a
+            // `event.stream-chunk` so the host's chat:stream-chunk
+            // subscriber (Task 5) can fan out to waiting clients (Task
+            // 7). Empty-text blocks are skipped — emitting `{ text: '' }`
+            // chunks is noise. Failure is non-fatal: the host may be
+            // tearing down, and the canonical transcript still flows
+            // via event.turn-end / event.chat-end. Untrusted (J2):
+            // `block.text` is model output and reaches the host
+            // verbatim — host-side renderers sanitize.
+            if (currentReqId !== undefined && block.text.length > 0) {
+              await client
+                .event('event.stream-chunk', {
+                  reqId: currentReqId,
+                  text: block.text,
+                  kind: 'text',
+                })
+                .catch(() => {
+                  /* host may be tearing down; non-fatal */
+                });
+            }
           } else if (block.type === 'thinking') {
             turnContentBlocks.push({
               type: 'thinking',
@@ -255,12 +294,35 @@ export async function main(): Promise<number> {
                 ? { signature: block.signature }
                 : {}),
             });
+            // Same per-block streaming for thinking. The host's UI
+            // toggles thinking visibility (Task 21 / J4), but the
+            // chunk still travels with `kind: 'thinking'` so a
+            // subscriber can route it to the right pane.
+            if (currentReqId !== undefined && block.thinking.length > 0) {
+              await client
+                .event('event.stream-chunk', {
+                  reqId: currentReqId,
+                  text: block.thinking,
+                  kind: 'thinking',
+                })
+                .catch(() => {
+                  /* host may be tearing down; non-fatal */
+                });
+            }
           } else if (block.type === 'redacted_thinking') {
+            // Redacted-thinking blocks have no human-readable text — the
+            // model returned an opaque blob. We persist it (J3 — the
+            // SDK detects holes on follow-up turns) but DO NOT emit a
+            // stream chunk: there's nothing to render, and `kind`
+            // wouldn't accept it anyway.
             turnContentBlocks.push({
               type: 'redacted_thinking',
               data: (block as { data: string }).data,
             });
           } else if (block.type === 'tool_use') {
+            // Tool-use blocks are observed via event.tool-post-call
+            // (when the tool actually runs) and persisted at turn-end.
+            // They are not streamed text and have no `kind` mapping.
             turnContentBlocks.push({
               type: 'tool_use',
               id: block.id,

@@ -111,23 +111,27 @@ describe('inbox ensureListen TOCTOU', () => {
     await inbox.queue(sessionId, {
       type: 'user-message',
       payload: { role: 'user', content: 'a' },
+      reqId: 'r-a',
     });
     // Small gap so A's wake + UNLISTEN actually fires before B's notify.
     await new Promise((r) => setTimeout(r, 100));
     await inbox.queue(sessionId, {
       type: 'user-message',
       payload: { role: 'user', content: 'b' },
+      reqId: 'r-b',
     });
 
     const [a, b] = await Promise.all([claimAP, claimBP]);
     expect(a).toEqual({
       type: 'user-message',
       payload: { role: 'user', content: 'a' },
+      reqId: 'r-a',
       cursor: 1,
     });
     expect(b).toEqual({
       type: 'user-message',
       payload: { role: 'user', content: 'b' },
+      reqId: 'r-b',
       cursor: 2,
     });
 
