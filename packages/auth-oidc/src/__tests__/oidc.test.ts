@@ -131,7 +131,7 @@ async function bootStackResolved(): Promise<BootedStack> {
   return { harness, http, port, idp };
 }
 
-describe('@ax/auth OIDC handshake', () => {
+describe('@ax/auth-oidc OIDC handshake', () => {
   let stack: BootedStack;
 
   beforeEach(async () => {

@@ -32,14 +32,14 @@ import type {
   RequireUserOutput,
 } from './types.js';
 
-const PLUGIN_NAME = '@ax/auth';
+const PLUGIN_NAME = '@ax/auth-oidc';
 const DEFAULT_SESSION_COOKIE_NAME = 'ax_auth_session';
 const DEFAULT_SESSION_LIFETIME_SECS = 7 * 24 * 60 * 60; // 7 days
 const RATE_LIMIT_TOKENS_PER_MIN = 30;
 const RATE_LIMIT_WINDOW_MS = 60_000;
 
 // ---------------------------------------------------------------------------
-// @ax/auth plugin — Task 4 lights up Task 3's scaffolding.
+// @ax/auth-oidc plugin — Task 4 lights up Task 3's scaffolding.
 //
 // What's new vs. Task 3:
 //   - Real impls for auth:require-user, auth:get-user, auth:create-bootstrap-user

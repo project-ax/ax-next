@@ -110,7 +110,7 @@ describe('@ax/preset-k8s wiring', () => {
       [
         '@ax/agents',
         '@ax/audit-log',
-        '@ax/auth',
+        '@ax/auth-oidc',
         '@ax/chat-orchestrator',
         '@ax/credentials',
         '@ax/database-postgres',

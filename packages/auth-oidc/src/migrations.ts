@@ -1,7 +1,7 @@
 import { sql, type Kysely } from 'kysely';
 
 /**
- * Per-plugin migration. @ax/auth owns tables under the `auth_v1_` prefix —
+ * Per-plugin migration. @ax/auth-oidc owns tables under the `auth_v1_` prefix —
  * never reach into them from another plugin (Invariant I4 — one source of
  * truth per concept). The `v1` is the schema version; future shape changes
  * are forward-only via a `v2` side-table, not in-place ALTERs.

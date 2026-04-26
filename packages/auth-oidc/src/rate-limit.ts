@@ -136,7 +136,7 @@ export function createRateLimiter(config: RateLimitConfig): RateLimiter {
       if (b.tokens <= 0) {
         return reject({
           reason: 'rate-limited',
-          source: '@ax/auth/rate-limit',
+          source: '@ax/auth-oidc/rate-limit',
         });
       }
       b.tokens -= 1;

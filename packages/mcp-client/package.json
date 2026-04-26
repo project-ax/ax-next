@@ -23,7 +23,7 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
-    "@ax/auth": "workspace:*",
+    "@ax/auth-oidc": "workspace:*",
     "@ax/credentials": "workspace:*",
     "@ax/database-postgres": "workspace:*",
     "@ax/http-server": "workspace:*",

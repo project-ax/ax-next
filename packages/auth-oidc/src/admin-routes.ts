@@ -74,7 +74,7 @@ export interface RouteHandlerDeps {
   devBootstrapToken: string | null;
 }
 
-const PLUGIN_NAME = '@ax/auth';
+const PLUGIN_NAME = '@ax/auth-oidc';
 
 /**
  * Build the four /auth/* handlers. Returned as a record so `plugin.init`
