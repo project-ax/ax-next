@@ -285,14 +285,25 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
       // Fire-and-forget. A failure inside chat:run still emits a
       // chat:end via the orchestrator (audit-log invariant); the SSE
       // stream surfaces the terminated outcome to the client.
+      //
+      // Log via runChatCtx.logger (NOT initCtx.logger): the per-request
+      // ctx carries this dispatch's reqId, and the kernel logger writes
+      // its bound reqId onto every entry. Logging via initCtx.logger
+      // would correlate the failure to the plugin-boot reqId — useless
+      // for tracing a specific dispatch. `reqId` is also a reserved log
+      // field (createLogger strips it from `extra` and overwrites with
+      // the logger's bound value), so we don't repeat it in the bindings;
+      // conversationId is not reserved and is kept for cross-correlation.
       void bus
         .call<ChatRunInput, unknown>('chat:run', runChatCtx, { message })
         .catch((err: unknown) => {
-          initCtx.logger.warn('chat_run_dispatch_failed', {
+          runChatCtx.logger.warn('chat_run_dispatch_failed', {
             plugin: PLUGIN_NAME,
-            reqId,
             conversationId,
-            err: err instanceof Error ? err : new Error(String(err)),
+            err:
+              err instanceof Error
+                ? { name: err.name, message: err.message }
+                : String(err),
           });
         });
 
