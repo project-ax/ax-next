@@ -130,6 +130,19 @@ export interface SessionTerminateInput {
 }
 export type SessionTerminateOutput = Record<string, never>;
 
+// ---------------------------------------------------------------------------
+// session:is-alive — host-internal liveness probe (Week 10–12 Task 16, J6).
+// True iff the row exists AND `terminated = false`. Nonexistent sessionIds
+// return `{ alive: false }` rather than throwing — see session-inmemory's
+// twin handler for rationale.
+// ---------------------------------------------------------------------------
+export interface SessionIsAliveInput {
+  sessionId: string;
+}
+export interface SessionIsAliveOutput {
+  alive: boolean;
+}
+
 function requireString(
   value: unknown,
   field: string,
@@ -357,6 +370,10 @@ export function createSessionPostgresPlugin(
         'session:queue-work',
         'session:claim-work',
         'session:terminate',
+        // Week 10–12 Task 16 (J6): host-internal liveness probe used by the
+        // chat-orchestrator to decide between routing to an existing
+        // sandbox session vs. opening a fresh one.
+        'session:is-alive',
       ],
       // We deliberately do NOT call `database:get-instance` — see header
       // comment. session-postgres opens its own pool + listen client
@@ -582,6 +599,25 @@ export function createSessionPostgresPlugin(
           // and subscriber lanes; the bus keeps them separate.
           await bus.fire('session:terminate', ctx, { sessionId });
           return {};
+        },
+      );
+
+      // ----- session:is-alive -----
+      //
+      // Liveness probe (Week 10–12 Task 16, J6). True iff the v1 row exists
+      // AND has `terminated = false`. Nonexistent sessionIds return
+      // `{ alive: false }` (the caller's reaction to "stale pointer" and
+      // "never existed" is identical: open a fresh sandbox). Empty /
+      // non-string sessionIds remain a hard `invalid-payload`.
+      bus.registerService<SessionIsAliveInput, SessionIsAliveOutput>(
+        'session:is-alive',
+        PLUGIN_NAME,
+        async (_ctx, input) => {
+          const hookName = 'session:is-alive';
+          const sessionId = (input as { sessionId?: unknown })?.sessionId;
+          requireString(sessionId, 'sessionId', hookName);
+          const record = await store!.get(sessionId);
+          return { alive: record !== null && !record.terminated };
         },
       );
     },

@@ -79,7 +79,7 @@ afterAll(async () => {
 const TOKEN_RE = /^[A-Za-z0-9_-]{43}$/;
 
 describe('@ax/session-postgres plugin', () => {
-  it('registers all six service hooks on the bus', async () => {
+  it('registers all seven service hooks on the bus', async () => {
     const h = await makeHarness();
     expect(h.bus.hasService('session:create')).toBe(true);
     expect(h.bus.hasService('session:resolve-token')).toBe(true);
@@ -87,6 +87,60 @@ describe('@ax/session-postgres plugin', () => {
     expect(h.bus.hasService('session:queue-work')).toBe(true);
     expect(h.bus.hasService('session:claim-work')).toBe(true);
     expect(h.bus.hasService('session:terminate')).toBe(true);
+    // Week 10–12 Task 16 (J6).
+    expect(h.bus.hasService('session:is-alive')).toBe(true);
+  });
+
+  it('session:is-alive: true for live, false for terminated, false for never-existed', async () => {
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+      'session:create',
+      ctx,
+      { sessionId: 's-alive', workspaceRoot: '/tmp/ws' },
+    );
+
+    // Live.
+    const live = await h.bus.call<
+      { sessionId: string },
+      { alive: boolean }
+    >('session:is-alive', ctx, { sessionId: 's-alive' });
+    expect(live).toEqual({ alive: true });
+
+    // Never existed.
+    const missing = await h.bus.call<
+      { sessionId: string },
+      { alive: boolean }
+    >('session:is-alive', ctx, { sessionId: 'never-existed' });
+    expect(missing).toEqual({ alive: false });
+
+    // Terminated.
+    await h.bus.call<SessionTerminateInput, SessionTerminateOutput>(
+      'session:terminate',
+      ctx,
+      { sessionId: 's-alive' },
+    );
+    const dead = await h.bus.call<
+      { sessionId: string },
+      { alive: boolean }
+    >('session:is-alive', ctx, { sessionId: 's-alive' });
+    expect(dead).toEqual({ alive: false });
+  });
+
+  it('session:is-alive rejects empty sessionId with invalid-payload', async () => {
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    let caught: unknown;
+    try {
+      await h.bus.call<
+        { sessionId: string },
+        { alive: boolean }
+      >('session:is-alive', ctx, { sessionId: '' });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('invalid-payload');
   });
 
   it('session:create mints a base64url token; duplicate sessionId throws PluginError', async () => {

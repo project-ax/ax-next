@@ -9,6 +9,8 @@ export type {
   SessionCreateOutput,
   SessionGetConfigInput,
   SessionGetConfigOutput,
+  SessionIsAliveInput,
+  SessionIsAliveOutput,
   SessionQueueWorkInput,
   SessionQueueWorkOutput,
   SessionResolveTokenInput,

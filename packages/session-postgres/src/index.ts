@@ -11,5 +11,7 @@ export {
   type SessionClaimWorkOutput,
   type SessionTerminateInput,
   type SessionTerminateOutput,
+  type SessionIsAliveInput,
+  type SessionIsAliveOutput,
 } from './plugin.js';
 export type { ClaimResult, InboxEntry } from './inbox.js';

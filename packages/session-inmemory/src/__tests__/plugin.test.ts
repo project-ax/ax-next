@@ -30,7 +30,7 @@ const OWNER: { userId: string; agentId: string; agentConfig: AgentConfig } = {
 };
 
 describe('@ax/session-inmemory plugin', () => {
-  it('registers all six service hooks on the bus', async () => {
+  it('registers all seven service hooks on the bus', async () => {
     const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
     expect(h.bus.hasService('session:create')).toBe(true);
     expect(h.bus.hasService('session:resolve-token')).toBe(true);
@@ -38,6 +38,8 @@ describe('@ax/session-inmemory plugin', () => {
     expect(h.bus.hasService('session:queue-work')).toBe(true);
     expect(h.bus.hasService('session:claim-work')).toBe(true);
     expect(h.bus.hasService('session:terminate')).toBe(true);
+    // Week 10–12 Task 16 (J6).
+    expect(h.bus.hasService('session:is-alive')).toBe(true);
   });
 
   it('end-to-end: create -> queue-work -> claim-work round-trips a user-message', async () => {
@@ -398,6 +400,72 @@ describe('@ax/session-inmemory plugin', () => {
             payload: { role: 'user', content: 'hi' },
           } as unknown as SessionQueueWorkInput['entry'],
         },
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('invalid-payload');
+  });
+
+  // -------------------------------------------------------------------------
+  // session:is-alive (Week 10–12 Task 16, J6)
+  // -------------------------------------------------------------------------
+
+  it('is-alive returns true for a freshly created session', async () => {
+    const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
+    const ctx = h.ctx();
+    await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+      'session:create',
+      ctx,
+      { sessionId: 's-live', workspaceRoot: '/tmp/ws' },
+    );
+    const result = await h.bus.call<
+      { sessionId: string },
+      { alive: boolean }
+    >('session:is-alive', ctx, { sessionId: 's-live' });
+    expect(result).toEqual({ alive: true });
+  });
+
+  it('is-alive returns false for a terminated session', async () => {
+    const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
+    const ctx = h.ctx();
+    await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+      'session:create',
+      ctx,
+      { sessionId: 's-dead', workspaceRoot: '/tmp/ws' },
+    );
+    await h.bus.call<SessionTerminateInput, SessionTerminateOutput>(
+      'session:terminate',
+      ctx,
+      { sessionId: 's-dead' },
+    );
+    const result = await h.bus.call<
+      { sessionId: string },
+      { alive: boolean }
+    >('session:is-alive', ctx, { sessionId: 's-dead' });
+    expect(result).toEqual({ alive: false });
+  });
+
+  it('is-alive returns false for a never-created sessionId (no throw)', async () => {
+    const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
+    const ctx = h.ctx();
+    const result = await h.bus.call<
+      { sessionId: string },
+      { alive: boolean }
+    >('session:is-alive', ctx, { sessionId: 'never-existed' });
+    expect(result).toEqual({ alive: false });
+  });
+
+  it('is-alive rejects empty sessionId with invalid-payload', async () => {
+    const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
+    const ctx = h.ctx();
+    let caught: unknown;
+    try {
+      await h.bus.call<{ sessionId: string }, { alive: boolean }>(
+        'session:is-alive',
+        ctx,
+        { sessionId: '' },
       );
     } catch (err) {
       caught = err;

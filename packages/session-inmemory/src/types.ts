@@ -162,3 +162,21 @@ export interface SessionTerminateInput {
 // than bare `{}`) is the TS idiom for "no properties allowed"; the bus's return
 // shape stays explicit so a future widening is an intentional type change.
 export type SessionTerminateOutput = Record<string, never>;
+
+// ---------------------------------------------------------------------------
+// session:is-alive — host-internal liveness probe (Week 10–12 Task 16, J6).
+//
+// The chat-orchestrator calls this to decide whether a conversation's
+// `active_session_id` still points at a live sandbox (route the user
+// message into its inbox) or a torn-down one (open a fresh sandbox). True
+// IFF the session row exists AND has not been terminated. A nonexistent
+// sessionId returns `false` rather than throwing — the caller's response
+// to "you tried to write to a dead session" and "you tried to write to a
+// session that was never minted" is the same: open a fresh one.
+// ---------------------------------------------------------------------------
+export interface SessionIsAliveInput {
+  sessionId: string;
+}
+export interface SessionIsAliveOutput {
+  alive: boolean;
+}

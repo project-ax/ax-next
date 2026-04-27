@@ -322,15 +322,15 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
       // regardless because we never read from the body to source reqId).
       const reqId = makeReqId();
 
-      // 7) Dispatch chat:run async. The orchestrator opens its own
-      // session and drives the runner; this handler returns 202 so the
-      // browser races to GET /api/chat/stream/:reqId. We do NOT await
-      // chat:run — that would block until the entire chat completes.
-      //
-      // The runChatCtx mints a fresh sessionId — chat-orchestrator
-      // currently opens a new sandbox session per chat:run. Task 16
-      // changes that (route-by-conversationId reuses the existing
-      // session); for Task 9 we mirror the existing pattern.
+      // 7) Dispatch chat:run async. The orchestrator decides whether to
+      // open a new session or route the message into an existing live one
+      // (J6 — Task 16). When `conversationId`'s row already has an alive
+      // `active_session_id`, the orchestrator enqueues into THAT inbox
+      // and skips sandbox:open-session; the freshly-minted sessionId we
+      // pass below is unused on that path. This handler returns 202 so
+      // the browser races to GET /api/chat/stream/:reqId. We do NOT
+      // await chat:run — that would block until the entire chat
+      // completes.
       //
       // Workspace: the orchestrator currently consumes ctx.workspace.rootPath
       // and ignores agent.workspaceRef. We pass through whatever default

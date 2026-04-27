@@ -6,7 +6,12 @@ import { PluginError, type ChatContext, type ChatMessage, type ChatOutcome, type
 // Registers the host-side `chat:run` service hook. One chat:run call =
 //
 //   1. fire chat:start (veto-capable)
-//   2. sandbox:open-session — bind IPC listener, spawn runner subprocess.
+//   2. agents:resolve (Week 9.5 ACL gate)
+//   3. Decide: route to existing live sandbox, or open fresh? (Task 16, J6)
+//        - `ctx.conversationId` set AND its `active_session_id` is alive
+//          → route into THAT session's inbox, skip sandbox:open-session.
+//        - otherwise → open a fresh sandbox.
+//   4. (fresh path) sandbox:open-session — bind IPC listener, spawn runner.
 //        The sandbox plugin internally calls `session:create` to mint the
 //        session + bearer token (the token flows only into the runner's
 //        env, never back to us — I9). We do NOT call session:create here;
@@ -14,9 +19,12 @@ import { PluginError, type ChatContext, type ChatMessage, type ChatOutcome, type
 //        would throw `duplicate-session`. The orchestrator's contract with
 //        the sandbox plugin is: "you own session minting, I own the chat
 //        lifecycle above it."
-//   3. session:queue-work — enqueue the initial user message
-//   4. await chat:end event (runner-driven, via IPC server)
-//   5. cleanup — kill handle if still alive
+//   5. conversations:bind-session (when ctx.conversationId set) — write
+//        active_session_id + active_req_id atomically. The SSE handler
+//        (Task 7) keys off active_req_id to find the in-flight stream.
+//   6. session:queue-work — enqueue the initial user message
+//   7. await chat:end event (runner-driven, via IPC server)
+//   8. cleanup — kill handle if still alive (only on the fresh path)
 //
 // The IPC server (Task 4) fires `chat:end` when the runner POSTs
 // /event.chat-end. The orchestrator's own subscriber captures the outcome
@@ -122,6 +130,40 @@ interface AgentConfig {
   allowedTools: string[];
   mcpConfigIds: string[];
   model: string;
+}
+
+// conversations:* shapes — Week 10–12 Tasks 14 + 16. Duplicated here per I2
+// (no cross-plugin imports). The orchestrator reads `activeSessionId` to
+// decide whether to route the message into an existing sandbox session or
+// open a fresh one, and binds the conversation row on either path.
+interface ConversationsGetInput {
+  conversationId: string;
+  userId: string;
+}
+interface ConversationsGetOutput {
+  conversation: {
+    conversationId: string;
+    userId: string;
+    agentId: string;
+    activeSessionId: string | null;
+    activeReqId: string | null;
+  };
+}
+interface ConversationsBindSessionInput {
+  conversationId: string;
+  sessionId: string;
+  reqId: string;
+}
+type ConversationsBindSessionOutput = void;
+
+// session:is-alive — Task 16 (J6). Host-internal liveness probe registered
+// by both session backends. True iff the row exists and `terminated = false`;
+// nonexistent sessionIds return `{ alive: false }` (no throw).
+interface SessionIsAliveInput {
+  sessionId: string;
+}
+interface SessionIsAliveOutput {
+  alive: boolean;
 }
 
 interface OpenSessionInput {
@@ -280,7 +322,172 @@ export function createOrchestrator(
       model: agent.model,
     };
 
-    // 4. Register the waiter BEFORE opening the sandbox — the runner may
+    // 4. Decide: route to existing sandbox session, or open a fresh one?
+    //
+    //    Task 16 (J6 — one sandbox per conversation at a time). When
+    //    `ctx.conversationId` is set AND the row's `activeSessionId` points
+    //    at a session that's still alive, we enqueue the new user message
+    //    into THAT session's inbox. The runner is already attached and
+    //    will pick it up via its long-poll `tool.inbox-pull` — no new
+    //    sandbox spawn needed.
+    //
+    //    Why the orchestrator does this (not the channel layer): every
+    //    chat:run already passes through the agents:resolve gate and the
+    //    chat:start veto here. Gating routing decisions in the same place
+    //    keeps the conversation-binding policy in ONE plugin (I4 — one
+    //    source of truth: the conversation row's active_session_id IS
+    //    "which sandbox is in flight").
+    let routedSessionId: string | null = null;
+    // Gate on the peer hooks being actually registered. CLI canary and
+    // mcp-client e2e drive the orchestrator without @ax/conversations
+    // loaded; in those presets we skip routing entirely. See
+    // plugin.ts manifest comment for the full rationale.
+    const conversationsLoaded =
+      bus.hasService('conversations:get') &&
+      bus.hasService('conversations:bind-session') &&
+      bus.hasService('session:is-alive');
+    if (ctx.conversationId !== undefined && conversationsLoaded) {
+      // Look up the conversation row. If it's gone or foreign, fall through
+      // to the fresh-sandbox path; the channel-web layer's get-or-create
+      // already runs at request entry, so a not-found here is unusual but
+      // not load-bearing for the orchestrator's logic.
+      try {
+        const conv = await bus.call<
+          ConversationsGetInput,
+          ConversationsGetOutput
+        >('conversations:get', ctx, {
+          conversationId: ctx.conversationId,
+          userId: ctx.userId,
+        });
+        const candidate = conv.conversation.activeSessionId;
+        if (candidate !== null && candidate.length > 0) {
+          const aliveResult = await bus.call<
+            SessionIsAliveInput,
+            SessionIsAliveOutput
+          >('session:is-alive', ctx, { sessionId: candidate });
+          if (aliveResult.alive) {
+            routedSessionId = candidate;
+          }
+          // else: stale pointer (sandbox torn down without clearing the
+          // row, or session:terminate subscriber not yet observed). Fall
+          // through to fresh-sandbox spawn.
+        }
+      } catch (err) {
+        // not-found → fall through to fresh spawn. Anything else, log
+        // and fall through too — J6 routing is best-effort; if the
+        // lookup itself blows up we'd rather degrade by opening a fresh
+        // sandbox than abort the chat.
+        ctx.logger.warn('conversation_route_lookup_failed', {
+          conversationId: ctx.conversationId,
+          err: err instanceof Error ? err : new Error(String(err)),
+        });
+      }
+    }
+
+    if (routedSessionId !== null) {
+      // ----- Route into existing live sandbox session -----
+      //
+      // J6: the runner is already running. We only need to:
+      //   1. Bind reqId on the conversation row (active_session_id stays
+      //      the same, active_req_id updates so the SSE handler at Task 7
+      //      can locate the in-flight stream by reqId).
+      //   2. Register a waiter on the live sessionId.
+      //   3. Enqueue the user message into the existing inbox.
+      //   4. Wait for the runner to emit chat:turn-end (and chat:end on
+      //      one-shot teardown).
+      //
+      // We do NOT call sandbox:open-session, do NOT call session:create,
+      // and do NOT register a NEW handle.exited watcher — the existing
+      // sandbox's lifecycle is owned by whoever opened it originally.
+      const sessionId = routedSessionId;
+
+      // (1) Bind reqId on the conversation row. ctx.conversationId is
+      //     known non-undefined here because we entered this branch.
+      try {
+        await bus.call<
+          ConversationsBindSessionInput,
+          ConversationsBindSessionOutput
+        >('conversations:bind-session', ctx, {
+          conversationId: ctx.conversationId!,
+          sessionId,
+          reqId: ctx.reqId,
+        });
+      } catch (err) {
+        // bind-session failures shouldn't be fatal — the row may have
+        // been deleted between the lookup and now (rare race). Log and
+        // proceed: the chat still completes; just the SSE-by-reqId
+        // lookup may miss. Audit-log subscribers see chat:end normally.
+        ctx.logger.warn('conversation_bind_failed_routed', {
+          conversationId: ctx.conversationId,
+          sessionId,
+          err: err instanceof Error ? err : new Error(String(err)),
+        });
+      }
+
+      // (2) Register the waiter BEFORE enqueueing — the runner may emit
+      //     chat:turn-end almost immediately on a fast model.
+      const deferred = newDeferred<ChatOutcome>();
+      waitersBySessionId.set(sessionId, deferred);
+
+      // (3) Enqueue the user message.
+      try {
+        await bus.call<SessionQueueWorkInput, SessionQueueWorkOutput>(
+          'session:queue-work',
+          ctx,
+          {
+            sessionId,
+            entry: {
+              type: 'user-message',
+              payload: input.message,
+              reqId: ctx.reqId,
+            },
+          },
+        );
+      } catch (err) {
+        waitersBySessionId.delete(sessionId);
+        const outcome: ChatOutcome = {
+          kind: 'terminated',
+          reason: 'queue-work-failed',
+          error: err,
+        };
+        await bus.fire('chat:end', ctx, { outcome });
+        return outcome;
+      }
+
+      // (4) Wait for the runner. We do NOT watch `exited` here: the sandbox
+      //     handle isn't ours. If the sandbox dies mid-turn, session:terminate
+      //     fires, the conversations subscriber clears active_session_id, and
+      //     the next chat:run on this conversation routes to fresh. The
+      //     in-flight chat will time out via the bounded chatTimeoutMs path.
+      let resolvedByChatEndSubscriber = true;
+      const timeoutHandle = setTimeout(() => {
+        deferred.reject(new ChatTimeoutError(chatTimeoutMs));
+      }, chatTimeoutMs);
+      timeoutHandle.unref?.();
+
+      let outcome: ChatOutcome;
+      try {
+        outcome = await deferred.promise;
+      } catch (err) {
+        resolvedByChatEndSubscriber = false;
+        outcome = {
+          kind: 'terminated',
+          reason: err instanceof ChatTimeoutError ? 'chat-run-timeout' : 'chat-run-error',
+          error: err,
+        };
+      } finally {
+        clearTimeout(timeoutHandle);
+        waitersBySessionId.delete(sessionId);
+      }
+
+      if (!resolvedByChatEndSubscriber) {
+        await bus.fire('chat:end', ctx, { outcome });
+      }
+      // No handle.kill() — we did not open this sandbox.
+      return outcome;
+    }
+
+    // 5. Register the waiter BEFORE opening the sandbox — the runner may
     //    emit chat:end before open-session resolves in pathological cases
     //    (extremely fast runner, racey test harness). Map it now so the
     //    subscriber can't miss the fire. The sessionId is `ctx.sessionId`
@@ -292,7 +499,7 @@ export function createOrchestrator(
     const deferred = newDeferred<ChatOutcome>();
     waitersBySessionId.set(sessionId, deferred);
 
-    // 5. Open the sandbox. sandbox:open-session internally calls
+    // 6. Open the sandbox. sandbox:open-session internally calls
     //    session:create (minting the session + token AND writing the v2
     //    owner row from the `owner` field below), starts the IPC
     //    listener, and spawns the runner subprocess. The token never
@@ -346,7 +553,34 @@ export function createOrchestrator(
       return outcome;
     }
 
-    // 4. Enqueue the initial user message. If this fails, the sandbox is
+    // 7. Bind the conversation row to this fresh session (J6). Same
+    //    reqId/sessionId pair the SSE handler (Task 7) keys off. We bind
+    //    BEFORE enqueue so the SSE GET that races us has a chance of
+    //    finding the row. Failures here are best-effort — chat:run still
+    //    completes; only SSE-by-reqId lookup loses fidelity.
+    //
+    //    Only attempted when @ax/conversations is loaded (channel-web
+    //    preset) — see the routing-decision comment above.
+    if (ctx.conversationId !== undefined && conversationsLoaded) {
+      try {
+        await bus.call<
+          ConversationsBindSessionInput,
+          ConversationsBindSessionOutput
+        >('conversations:bind-session', ctx, {
+          conversationId: ctx.conversationId,
+          sessionId,
+          reqId: ctx.reqId,
+        });
+      } catch (err) {
+        ctx.logger.warn('conversation_bind_failed_fresh', {
+          conversationId: ctx.conversationId,
+          sessionId,
+          err: err instanceof Error ? err : new Error(String(err)),
+        });
+      }
+    }
+
+    // 8. Enqueue the initial user message. If this fails, the sandbox is
     //    running but has nothing to work on — kill it and synthesize
     //    chat:end. session:terminate is fired by sandbox-subprocess's
     //    child-close handler, so we don't double-fire it here.

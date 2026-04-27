@@ -10,6 +10,8 @@ import type {
   SessionCreateOutput,
   SessionGetConfigInput,
   SessionGetConfigOutput,
+  SessionIsAliveInput,
+  SessionIsAliveOutput,
   SessionQueueWorkInput,
   SessionQueueWorkOutput,
   SessionResolveTokenInput,
@@ -241,6 +243,10 @@ export function createSessionInmemoryPlugin(): Plugin {
         'session:queue-work',
         'session:claim-work',
         'session:terminate',
+        // Week 10–12 Task 16 (J6): host-internal liveness probe used by the
+        // chat-orchestrator to decide between routing to an existing
+        // sandbox session vs. opening a fresh one.
+        'session:is-alive',
       ],
       calls: [],
       subscribes: [],
@@ -397,6 +403,27 @@ export function createSessionInmemoryPlugin(): Plugin {
           // SAME sessionId so subscribers see the teardown event.
           await bus.fire('session:terminate', ctx, { sessionId });
           return {};
+        },
+      );
+
+      // ----- session:is-alive -----
+      //
+      // Liveness probe (Week 10–12 Task 16, J6). True iff the row exists
+      // AND has not been terminated. Nonexistent sessionIds return
+      // `{ alive: false }` rather than throwing — the caller's reaction to
+      // "stale pointer" and "never existed" is identical (open a fresh
+      // sandbox). Empty / non-string sessionIds remain a hard
+      // `invalid-payload` because that's a bug in the caller, not a
+      // routine missing row.
+      bus.registerService<SessionIsAliveInput, SessionIsAliveOutput>(
+        'session:is-alive',
+        PLUGIN_NAME,
+        async (_ctx, input) => {
+          const hookName = 'session:is-alive';
+          const sessionId = (input as { sessionId?: unknown })?.sessionId;
+          requireString(sessionId, 'sessionId', hookName);
+          const record = store.get(sessionId);
+          return { alive: record !== null && !record.terminated };
         },
       );
     },
