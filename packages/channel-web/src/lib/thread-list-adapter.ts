@@ -1,30 +1,48 @@
 import { createAssistantStream } from 'assistant-stream';
 import type { RemoteThreadListAdapter } from '@assistant-ui/react';
 
-/** Server shape for /api/chat/sessions list rows. */
-interface SessionRow {
-  id: string;
-  title?: string | null;
+/**
+ * Server shape for /api/chat/conversations list rows. Mirrors
+ * `src/wire/chat.ts` `ListConversationsResponse`. Re-declared here as
+ * a plain interface to avoid pulling zod into the React bundle.
+ */
+interface ConversationRow {
+  conversationId: string;
+  userId: string;
+  agentId: string;
+  title: string | null;
+  activeSessionId: string | null;
+  activeReqId: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 /**
- * AX-backed RemoteThreadListAdapter.
- * Fetches and manages threads through /api/chat/sessions endpoints.
+ * AX-backed RemoteThreadListAdapter (Task 19).
+ *
+ * Fetches conversations from `GET /api/chat/conversations` (Task 10).
+ * Each conversation maps 1:1 to an assistant-ui thread; we use the
+ * conversationId as the `remoteId` so subsequent reads through the
+ * history adapter can address the same row.
  */
 export const axThreadListAdapter: RemoteThreadListAdapter = {
   async list() {
-    const response = await fetch('/api/chat/sessions');
+    const response = await fetch('/api/chat/conversations', {
+      credentials: 'include',
+    });
     if (!response.ok) {
-      console.error('[AxAdapter] Failed to fetch sessions:', response.status);
+      console.error('[axThreadListAdapter] list failed:', response.status);
       return { threads: [] };
     }
 
-    const { sessions } = (await response.json()) as { sessions: SessionRow[] };
+    const rows = (await response.json()) as ConversationRow[];
+    if (!Array.isArray(rows)) return { threads: [] };
+
     return {
-      threads: sessions.map((s) => ({
+      threads: rows.map((c) => ({
         status: 'regular' as const,
-        remoteId: s.id,
-        title: s.title ?? undefined,
+        remoteId: c.conversationId,
+        title: c.title ?? undefined,
         externalId: undefined,
       })),
     };
@@ -40,33 +58,38 @@ export const axThreadListAdapter: RemoteThreadListAdapter = {
   },
 
   async initialize(threadId: string) {
-    // Don't pre-create the session — the AX server auto-creates it
-    // during the first completion via chatSessions.ensureExists().
-    // The server derives sessionId from the user field: "http:dm:{agentId}:{userId}:{threadId}".
+    // Don't pre-create the conversation — the chat-flow POST handler
+    // (Task 9) creates it on the first user message via
+    // conversations:create. The remoteId stays a synthetic local id
+    // until the server returns the real conversationId on first send.
     return { remoteId: threadId, externalId: undefined };
   },
 
   async generateTitle(remoteId: string) {
-    // The server auto-generates the title during processCompletion.
-    // Fetch the session to get the real title (may need a short delay for async generation).
+    // The server auto-generates the title during the first turn; we
+    // poll the conversations list briefly to surface it. After 3 tries
+    // we fall back to "New Chat" so the row never hangs in a loading
+    // state.
     let title = 'New Chat';
     for (let attempt = 0; attempt < 3; attempt++) {
       await new Promise((r) => setTimeout(r, 1000));
       try {
-        const res = await fetch('/api/chat/sessions');
+        const res = await fetch('/api/chat/conversations', {
+          credentials: 'include',
+        });
         if (res.ok) {
-          const { sessions } = (await res.json()) as { sessions: SessionRow[] };
-          // Match by exact ID or suffix — the server prefixes session IDs
-          // (e.g., "http:dm:{agentId}:{userId}:{threadId}")
-          const session = sessions.find((s) =>
-            s.id === remoteId || s.id.endsWith(`:${remoteId}`),
-          );
-          if (session?.title) {
-            title = session.title;
+          const rows = (await res.json()) as ConversationRow[];
+          const match = Array.isArray(rows)
+            ? rows.find((c) => c.conversationId === remoteId)
+            : undefined;
+          if (match?.title) {
+            title = match.title;
             break;
           }
         }
-      } catch { /* retry */ }
+      } catch {
+        /* retry */
+      }
     }
     return createAssistantStream((controller) => {
       controller.appendText(title);
@@ -74,7 +97,10 @@ export const axThreadListAdapter: RemoteThreadListAdapter = {
     });
   },
 
-  // Stubs for future rename/archive/delete
+  // Stubs for future rename/archive — DELETE is wired through the
+  // SessionRow component (clicking the trash icon issues DELETE
+  // /api/chat/conversations/:id directly) so we keep this a no-op
+  // until the runtime starts driving deletes through the adapter.
   async rename() {},
   async archive() {},
   async unarchive() {},

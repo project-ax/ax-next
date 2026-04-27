@@ -1,4 +1,4 @@
-import { useMemo, useRef } from 'react';
+import { useMemo, useRef, useState, useCallback } from 'react';
 import {
   type AssistantRuntime,
   useRemoteThreadListRuntime,
@@ -10,7 +10,9 @@ import { useChat } from '@ai-sdk/react';
 import { generateId } from 'ai';
 import { axThreadListAdapter } from './thread-list-adapter';
 import { createAxHistoryAdapter } from './history-adapter';
-import { AxChatTransport, type StatusEvent, type Diagnostic } from './transport';
+import { AxChatTransport } from './transport';
+import { agentStoreActions, useAgentStore } from './agent-store';
+import { useThinkingStore } from './thinking-store';
 
 /**
  * Thread-specific runtime using AI SDK.
@@ -20,10 +22,17 @@ import { AxChatTransport, type StatusEvent, type Diagnostic } from './transport'
 const useChatThreadRuntime = (transport: AxChatTransport, user = 'guest'): AssistantRuntime => {
   const id = useAuiState(({ threadListItem }) => threadListItem.id);
   const aui = useAui();
+  // Re-fetch with ?includeThinking=true when the toggle flips on, so the
+  // history adapter pulls thinking blocks the next time a thread loads.
+  const { visible: thinkingVisible } = useThinkingStore();
 
   const history = useMemo(
-    () => createAxHistoryAdapter(() => aui.threadListItem().getState().remoteId),
-    [aui],
+    () =>
+      createAxHistoryAdapter(
+        () => aui.threadListItem().getState().remoteId,
+        { includeThinking: thinkingVisible },
+      ),
+    [aui, thinkingVisible],
   );
 
   const chat = useChat({ id, transport });
@@ -57,11 +66,6 @@ const useChatThreadRuntime = (transport: AxChatTransport, user = 'guest'): Assis
             headers: { 'Content-Type': mimeType },
             body: attachment.file,
           });
-          // Surface upload failures instead of returning an attachment with
-          // `image: undefined` / `data: undefined`. The composer's send path
-          // catches this and surfaces it to the user; persisting a message
-          // that references a non-existent file would silently corrupt the
-          // thread.
           if (!resp.ok) {
             throw new Error(`upload failed: ${resp.status} ${resp.statusText}`);
           }
@@ -89,30 +93,62 @@ const useChatThreadRuntime = (transport: AxChatTransport, user = 'guest'): Assis
 
 /**
  * Custom hook that creates a chat runtime with AX-backed thread persistence.
+ *
+ * The transport's `getAgentId` resolver reads the live agent-store snapshot
+ * so the next user message goes to whichever agent the chip currently shows
+ * (pendingAgentId wins, falling back to selectedAgentId, then the first
+ * agent in the list — same priority as AgentChip).
+ *
+ * `getConversationId` / `setConversationId` keep the chat-flow's
+ * conversationId aligned with the transport's notion of "the current
+ * conversation". For MVP this is component-local state; a future
+ * router-driven URL `?c=...` lookup hooks in here without changing the
+ * transport.
  */
 export const useAxChatRuntime = (
-  onStatus?: (event: StatusEvent) => void,
-  onRunStart?: () => void,
   user?: string,
-  onDiagnostic?: (d: Diagnostic) => void,
 ): AssistantRuntime => {
-  const statusRef = useRef(onStatus);
-  statusRef.current = onStatus;
-  const runStartRef = useRef(onRunStart);
-  runStartRef.current = onRunStart;
-  const diagnosticRef = useRef(onDiagnostic);
-  diagnosticRef.current = onDiagnostic;
+  const { selectedAgentId, pendingAgentId, agents } = useAgentStore();
+  const agentRef = useRef({ selectedAgentId, pendingAgentId, agents });
+  agentRef.current = { selectedAgentId, pendingAgentId, agents };
+
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const conversationRef = useRef(conversationId);
+  conversationRef.current = conversationId;
+
+  const handleSetConversationId = useCallback((id: string) => {
+    conversationRef.current = id;
+    setConversationId(id);
+  }, []);
 
   const transport = useMemo(
     () =>
       new AxChatTransport({
         ...(user !== undefined ? { user } : {}),
-        onStatus: (event) => statusRef.current?.(event),
-        onRunStart: () => runStartRef.current?.(),
-        onDiagnostic: (d) => diagnosticRef.current?.(d),
+        getConversationId: () => conversationRef.current,
+        setConversationId: handleSetConversationId,
+        getAgentId: () => {
+          const { pendingAgentId: p, selectedAgentId: s, agents: a } =
+            agentRef.current;
+          return p ?? s ?? a[0]?.id ?? null;
+        },
       }),
-    [user],
+    // The transport closes over refs — reconstructing on every selection
+    // change would force the AI SDK's internal stream-controller to
+    // recreate. Constructing once is correct because the resolvers are
+    // refs, not values.
+    [user, handleSetConversationId],
   );
+
+  // Clear local conversation memory when the user explicitly switches
+  // agents — a different agent means a different conversation. The
+  // chat-flow POST will treat conversationId === null as "create new".
+  // (We don't watch this with useEffect because the agent-store change
+  // already triggers a re-render; the next user message reads through
+  // getAgentId and the transport's post-conversation memory is the
+  // localConversationId fallback inside AxChatTransport.)
+  void agentStoreActions; // referenced from store mutations elsewhere
+  void conversationId;
 
   return useRemoteThreadListRuntime({
     runtimeHook: () => useChatThreadRuntime(transport, user ?? 'guest'),

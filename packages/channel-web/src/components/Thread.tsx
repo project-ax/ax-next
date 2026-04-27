@@ -39,9 +39,10 @@ import {
   ThreadPrimitive,
   useMessage,
 } from '@assistant-ui/react';
-import { Check, Copy, Pencil, RotateCcw } from 'lucide-react';
+import { Brain, Check, Copy, Pencil, RotateCcw } from 'lucide-react';
 import type { FC } from 'react';
 import { useSearchStore } from '../lib/search-store';
+import { thinkingStoreActions, useThinkingStore } from '../lib/thinking-store';
 import { MarkdownText } from './MarkdownText';
 import { Composer } from './Composer';
 import { SearchBar } from './SearchBar';
@@ -139,6 +140,42 @@ const UserMessage: FC = () => (
   </MessagePrimitive.Root>
 );
 
+/**
+ * ThinkingToggle — small per-message-action-bar button that flips the
+ * global "show thinking" flag (Task 21 / J4).
+ *
+ * Default state is OFF. When ON:
+ *   - The history adapter is reconstructed with `includeThinking: true`
+ *     in `runtime.tsx`, so a thread reload pulls historical thinking
+ *     blocks from `GET /api/chat/conversations/:id?includeThinking=true`.
+ *   - The body-level `thinking-visible` class flips on; CSS shows
+ *     thinking-tagged text parts that were hidden by default.
+ *
+ * The button intentionally lives on every assistant message even when
+ * the message has no thinking content — the UI doesn't know up front
+ * which messages have hidden thinking, and showing the affordance
+ * uniformly is cheaper than reading-into-parts. It's a per-message
+ * action surface; the *state* it controls is global by design (see
+ * `lib/thinking-store.ts` for the rationale).
+ */
+const ThinkingToggle: FC = () => {
+  const { visible } = useThinkingStore();
+  const label = visible ? 'Hide thinking' : 'Show thinking';
+  return (
+    <button
+      type="button"
+      className={`msg-action${visible ? ' msg-action-active' : ''}`}
+      data-testid="thinking-toggle"
+      aria-pressed={visible ? 'true' : 'false'}
+      aria-label={label}
+      title={label}
+      onClick={() => thinkingStoreActions.toggle()}
+    >
+      <Brain size={13} aria-hidden="true" />
+    </button>
+  );
+};
+
 const AssistantMessage: FC = () => (
   <MessagePrimitive.Root asChild>
     <div className="msg agent" data-role="assistant">
@@ -158,6 +195,7 @@ const AssistantMessage: FC = () => (
             <RotateCcw size={13} aria-hidden="true" />
           </button>
         </ActionBarPrimitive.Reload>
+        <ThinkingToggle />
       </ActionBarPrimitive.Root>
     </div>
   </MessagePrimitive.Root>

@@ -81,15 +81,30 @@ export const agentStoreActions = {
    * @param opts  caller-supplied snapshot of the active session — passed
    *              in (not read off `state`) so the caller controls whether
    *              an in-flight session counts as "active" for this pick.
+   *
+   * NOTE: the legacy "empty-session retag via PATCH" branch is gone in
+   * the AX wire (Invariant I10 — session-agent immutability). Picking a
+   * different agent on an existing conversation now always defers to
+   * "next user message starts a new conversation under the new agent".
+   * The empty-session PATCH path is kept as a vestigial fetch only when
+   * the caller explicitly opts in via `opts.legacyRetag === true`,
+   * which only the legacy mock backend honors.
    */
   pickAgent: async (
     id: string,
-    opts: { activeSessionId: string | null; hasMessages: boolean },
+    opts: {
+      activeSessionId: string | null;
+      hasMessages: boolean;
+      legacyRetag?: boolean;
+    },
   ): Promise<void> => {
-    if (opts.activeSessionId && !opts.hasMessages) {
-      // Empty session — retag in place. Don't commit `selectedAgentId`
-      // unless the server accepted the PATCH; otherwise the chip would
-      // show an agent the session is not actually tagged with.
+    if (
+      opts.legacyRetag === true &&
+      opts.activeSessionId &&
+      !opts.hasMessages
+    ) {
+      // Legacy mock-backend path. Kept for the existing mock-driven
+      // tests; the AX wire collapses this to the deferred-switch branch.
       let ok = false;
       try {
         const res = await fetch(`/api/chat/sessions/${encodeURIComponent(opts.activeSessionId)}`, {
@@ -103,12 +118,18 @@ export const agentStoreActions = {
           console.warn('[agent-store] retag PATCH failed', res.status);
         }
       } catch (err) {
-        // Mock backend is best-effort in dev; surface but don't crash.
         console.warn('[agent-store] retag failed', err);
       }
       if (ok) {
         set({ selectedAgentId: id, pendingAgentId: null });
       }
+      return;
+    }
+    if (opts.activeSessionId && !opts.hasMessages) {
+      // Empty conversation: agent immutability means we can't retag.
+      // Just record the pick — the next message creates a new
+      // conversation under the new agent.
+      set({ selectedAgentId: id, pendingAgentId: null });
       return;
     }
     if (opts.hasMessages) {

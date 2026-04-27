@@ -26,7 +26,10 @@ const fetchMock = vi.fn();
 beforeEach(() => {
   fetchMock.mockReset();
   // Default: agents fetch returns empty list; PATCH succeeds.
-  fetchMock.mockResolvedValue({ ok: true, json: async () => ({ agents: [] }) });
+  // Default catch-all: empty agent list (matches both legacy
+  // `/api/agents` shape AND the new `/api/chat/agents` shape — the
+  // latter is a flat array, the former wraps it in `{ agents }`).
+  fetchMock.mockResolvedValue({ ok: true, json: async () => [] });
   globalThis.fetch = fetchMock as unknown as typeof fetch;
   sessionStoreActions.setSessions([
     {

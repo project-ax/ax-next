@@ -79,23 +79,53 @@ export function AgentChip() {
 }
 
 /**
- * Hook that hydrates the agent list from `/api/agents` once on mount.
- * Split from the chip so a parent (Sidebar) can mount it exactly once
- * without coupling hydration to the chip's render tree.
+ * Hook that hydrates the agent list from `/api/chat/agents` (Task 18) on
+ * mount. Split from the chip so a parent (Sidebar) can mount it exactly
+ * once without coupling hydration to the chip's render tree.
+ *
+ * The chat-flow `GET /api/chat/agents` returns a display-relevant subset
+ * `{ agentId, displayName, visibility }`. The internal Agent shape used
+ * by the chip + menu carries presentation-only fields (color, desc, tag)
+ * the wire deliberately drops (Invariant I5 — capabilities minimized).
+ * We synthesize stable defaults here: a deterministic color per agentId,
+ * an empty desc, and `''` for tag. The chip's name + active highlighting
+ * is the only thing the user actually reads in MVP.
  */
 export function useHydrateAgents(): void {
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch('/api/agents', { credentials: 'include' });
+        const res = await fetch('/api/chat/agents', {
+          credentials: 'include',
+        });
         if (!res.ok) return;
-        const body = (await res.json()) as { agents?: unknown };
+        const body = (await res.json()) as unknown;
         if (cancelled) return;
-        if (Array.isArray(body.agents)) {
-          // Trust the mock-server shape; runtime type-coercion happens server-side.
-          agentStoreActions.setAgents(body.agents as Parameters<typeof agentStoreActions.setAgents>[0]);
-        }
+        if (!Array.isArray(body)) return;
+        const wireAgents = body as Array<{
+          agentId: string;
+          displayName: string;
+          visibility: 'personal' | 'team';
+        }>;
+        // Map wire → internal Agent shape. Fields the wire drops (color,
+        // desc, tag, model, etc.) are filled with neutral defaults.
+        const mapped = wireAgents.map((a) => ({
+          id: a.agentId,
+          owner_id: '',
+          owner_type: a.visibility === 'team' ? ('team' as const) : ('user' as const),
+          name: a.displayName,
+          tag: '',
+          desc: '',
+          color: agentColorFor(a.agentId),
+          system_prompt: '',
+          allowed_tools: [],
+          mcp_config_ids: [],
+          model: '',
+          created_at: 0,
+          updated_at: 0,
+        }));
+        agentStoreActions.setAgents(mapped);
       } catch (err) {
         console.warn('[agent-chip] hydrate failed', err);
       }
@@ -104,4 +134,18 @@ export function useHydrateAgents(): void {
       cancelled = true;
     };
   }, []);
+}
+
+/**
+ * Deterministic color from a small palette so the same agentId always
+ * gets the same chip dot — keeps the sidebar visually stable across
+ * reloads even though the wire doesn't carry color.
+ */
+function agentColorFor(agentId: string): string {
+  const palette = ['#7aa6c9', '#b08968', '#9c89b8', '#90a955', '#d4a373', '#9b5de5'];
+  let hash = 0;
+  for (let i = 0; i < agentId.length; i++) {
+    hash = (hash * 31 + agentId.charCodeAt(i)) >>> 0;
+  }
+  return palette[hash % palette.length] ?? '#888';
 }

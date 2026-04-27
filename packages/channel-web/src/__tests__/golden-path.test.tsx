@@ -36,13 +36,21 @@ beforeEach(() => {
         { status: 200, headers: { 'content-type': 'application/json' } },
       );
     }
-    if (url.includes('/api/agents')) {
-      return new Response(JSON.stringify({ agents: [] }), {
+    if (url.includes('/api/chat/agents')) {
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    if (url.includes('/api/chat/conversations')) {
+      return new Response(JSON.stringify([]), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       });
     }
     if (url.includes('/api/chat/sessions')) {
+      // Legacy mock endpoint still hit by SessionHeader rename (out of
+      // scope for Tasks 17-21). Return an empty list.
       return new Response(JSON.stringify({ sessions: [] }), {
         status: 200,
         headers: { 'content-type': 'application/json' },

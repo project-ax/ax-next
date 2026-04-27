@@ -168,8 +168,11 @@ export function SessionRow({
     deleteFiredRef.current = true;
     setRowState('idle');
     try {
-      await fetch(`/api/chat/sessions/${id}`, {
+      await fetch(`/api/chat/conversations/${encodeURIComponent(id)}`, {
         method: 'DELETE',
+        // CSRF: same posture as the chat-flow POST. The host's CSRF
+        // subscriber accepts X-Requested-With OR same-Origin.
+        headers: { 'x-requested-with': 'ax-chat' },
         credentials: 'include',
       });
     } catch (err) {

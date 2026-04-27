@@ -76,7 +76,7 @@ export const App = () => {
 
 const AppContent = ({ user }: { user: AuthUser }) => {
   const { agents, selectedAgentId, pendingAgentId } = useAgentStore();
-  const runtime = useAxChatRuntime(undefined, undefined, user.id, undefined);
+  const runtime = useAxChatRuntime(user.id);
   // `adminView` is set by the user menu's Admin entries. AdminPanel
   // renders below when non-null.
   const [adminView, setAdminView] = useState<AdminView>(null);

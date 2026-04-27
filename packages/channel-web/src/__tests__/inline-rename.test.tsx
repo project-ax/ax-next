@@ -46,20 +46,22 @@ const seedAgents = () =>
   ]);
 
 const seedOneSession = (id = 's-1', title = 'old title') => {
+  // The list endpoint is /api/chat/conversations and returns a flat
+  // array of camelCase Conversation rows.
   fetchMock.mockResolvedValueOnce({
     ok: true,
-    json: async () => ({
-      sessions: [
-        {
-          id,
-          title,
-          agent_id: 'tide',
-          updated_at: Date.now(),
-          created_at: Date.now(),
-          user_id: 'u2',
-        },
-      ],
-    }),
+    json: async () => [
+      {
+        conversationId: id,
+        userId: 'u2',
+        agentId: 'tide',
+        title,
+        activeSessionId: null,
+        activeReqId: null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+    ],
   });
 };
 
@@ -90,21 +92,21 @@ describe('Inline rename', () => {
 
     // Type the new title, press Enter.
     fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({}) });
-    // Subsequent sessions re-fetch (after bumpVersion) -- supply a stub.
+    // Subsequent re-fetch (after bumpVersion) -- supply a stub.
     fetchMock.mockResolvedValueOnce({
       ok: true,
-      json: async () => ({
-        sessions: [
-          {
-            id: 's-1',
-            title: 'new title',
-            agent_id: 'tide',
-            updated_at: Date.now(),
-            created_at: Date.now(),
-            user_id: 'u2',
-          },
-        ],
-      }),
+      json: async () => [
+        {
+          conversationId: 's-1',
+          userId: 'u2',
+          agentId: 'tide',
+          title: 'new title',
+          activeSessionId: null,
+          activeReqId: null,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+      ],
     });
 
     titleEl.textContent = 'new title';
