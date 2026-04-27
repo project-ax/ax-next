@@ -69,6 +69,8 @@ export function SessionHeader() {
     }
     let ok = false;
     try {
+      // TODO(week-10-12 follow-up): backend has no PATCH endpoint for conversations
+      // yet — rename is silently no-op against real AX backend. Tracking in PR notes.
       const res = await fetch(`/api/chat/sessions/${active.id}`, {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },

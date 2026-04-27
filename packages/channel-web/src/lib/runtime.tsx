@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, useCallback } from 'react';
+import { useMemo, useRef, useCallback } from 'react';
 import {
   type AssistantRuntime,
   useRemoteThreadListRuntime,
@@ -11,7 +11,7 @@ import { generateId } from 'ai';
 import { axThreadListAdapter } from './thread-list-adapter';
 import { createAxHistoryAdapter } from './history-adapter';
 import { AxChatTransport } from './transport';
-import { agentStoreActions, useAgentStore } from './agent-store';
+import { useAgentStore } from './agent-store';
 import { useThinkingStore } from './thinking-store';
 
 /**
@@ -112,13 +112,13 @@ export const useAxChatRuntime = (
   const agentRef = useRef({ selectedAgentId, pendingAgentId, agents });
   agentRef.current = { selectedAgentId, pendingAgentId, agents };
 
-  const [conversationId, setConversationId] = useState<string | null>(null);
-  const conversationRef = useRef(conversationId);
-  conversationRef.current = conversationId;
+  // Conversation id is transport-local only — no consumer in this hook
+  // reads it after the server returns it. A ref (not useState) is enough
+  // and avoids forcing a re-render that would tear down the chat.
+  const conversationRef = useRef<string | null>(null);
 
   const handleSetConversationId = useCallback((id: string) => {
     conversationRef.current = id;
-    setConversationId(id);
   }, []);
 
   const transport = useMemo(
@@ -140,15 +140,10 @@ export const useAxChatRuntime = (
     [user, handleSetConversationId],
   );
 
-  // Clear local conversation memory when the user explicitly switches
-  // agents — a different agent means a different conversation. The
-  // chat-flow POST will treat conversationId === null as "create new".
-  // (We don't watch this with useEffect because the agent-store change
-  // already triggers a re-render; the next user message reads through
-  // getAgentId and the transport's post-conversation memory is the
-  // localConversationId fallback inside AxChatTransport.)
-  void agentStoreActions; // referenced from store mutations elsewhere
-  void conversationId;
+  // Agent-switch → new conversation is handled server-side: a different agentId in
+  // the next POST creates a new conversation row. The transport's localConversationId
+  // stays stale until the server returns a new one; we don't read it across agents
+  // on the same turn so the gap is benign.
 
   return useRemoteThreadListRuntime({
     runtimeHook: () => useChatThreadRuntime(transport, user ?? 'guest'),
