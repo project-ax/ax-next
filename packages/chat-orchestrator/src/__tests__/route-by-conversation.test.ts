@@ -176,10 +176,16 @@ function ctxWith(opts: {
 // Fires chat:end on the bus immediately so the orchestrator's deferred
 // resolves. Used in scenarios where we want the chat:run to return
 // quickly without exercising the timeout path.
+//
+// The waiter map is keyed by ctx.reqId (server-minted, unique per
+// chat:run), so the chat:end fire MUST carry the originating chat:run's
+// reqId — otherwise onChatEnd's lookup misses and the deferred only
+// resolves on timeout.
 function arrangeImmediateEnd(
   bus: HookBus,
   expected: ChatOutcome,
   forSessionId: string,
+  forReqId: string,
 ): void {
   setImmediate(() => {
     void bus.fire(
@@ -188,7 +194,8 @@ function arrangeImmediateEnd(
         sessionId: forSessionId,
         agentId: 'a',
         userId: 'u',
-        logger: createLogger({ reqId: 'r', writer: () => undefined }),
+        reqId: forReqId,
+        logger: createLogger({ reqId: forReqId, writer: () => undefined }),
       }),
       { outcome: expected },
     );
@@ -209,11 +216,11 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
     });
 
     const expected: ChatOutcome = { kind: 'complete', messages: [] };
-    arrangeImmediateEnd(h.bus, expected, 'fresh-session');
+    arrangeImmediateEnd(h.bus, expected, 'fresh-session', 'req-1');
 
     const outcome = await h.bus.call<unknown, ChatOutcome>(
       'chat:run',
-      ctxWith({ sessionId: 'fresh-session' }),
+      ctxWith({ sessionId: 'fresh-session', reqId: 'req-1' }),
       { message: { role: 'user', content: 'hi' } },
     );
     expect(outcome).toEqual(expected);
@@ -242,7 +249,7 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
     });
 
     const expected: ChatOutcome = { kind: 'complete', messages: [] };
-    arrangeImmediateEnd(h.bus, expected, 's-fresh');
+    arrangeImmediateEnd(h.bus, expected, 's-fresh', 'req-A');
 
     const outcome = await h.bus.call<unknown, ChatOutcome>(
       'chat:run',
@@ -287,7 +294,7 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
       messages: [{ role: 'assistant', content: 'reuse-reply' }],
     };
     // The runner (already alive) emits chat:end on its existing sessionId.
-    arrangeImmediateEnd(h.bus, expected, 's-existing');
+    arrangeImmediateEnd(h.bus, expected, 's-existing', 'req-B');
 
     const outcome = await h.bus.call<unknown, ChatOutcome>(
       'chat:run',
@@ -337,7 +344,7 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
     });
 
     const expected: ChatOutcome = { kind: 'complete', messages: [] };
-    arrangeImmediateEnd(h.bus, expected, 's-fresh-2');
+    arrangeImmediateEnd(h.bus, expected, 's-fresh-2', 'req-C');
 
     const outcome = await h.bus.call<unknown, ChatOutcome>(
       'chat:run',
@@ -381,7 +388,7 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
     });
 
     const expected: ChatOutcome = { kind: 'complete', messages: [] };
-    arrangeImmediateEnd(h.bus, expected, 's-r');
+    arrangeImmediateEnd(h.bus, expected, 's-r', 'req-NEW');
 
     await h.bus.call<unknown, ChatOutcome>(
       'chat:run',
@@ -420,7 +427,7 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
     });
 
     const expected: ChatOutcome = { kind: 'complete', messages: [] };
-    arrangeImmediateEnd(h.bus, expected, 's-flaky');
+    arrangeImmediateEnd(h.bus, expected, 's-flaky', 'req-X');
 
     const outcome = await h.bus.call<unknown, ChatOutcome>(
       'chat:run',
@@ -496,7 +503,7 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
     });
 
     const expected: ChatOutcome = { kind: 'complete', messages: [] };
-    arrangeImmediateEnd(h.bus, expected, 's-fallback');
+    arrangeImmediateEnd(h.bus, expected, 's-fallback', 'req-fb');
 
     const outcome = await h.bus.call<unknown, ChatOutcome>(
       'chat:run',
@@ -514,5 +521,91 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
     expect(mocks.trace.bindSession).toEqual([
       { conversationId: 'conv-broken', sessionId: 's-fallback', reqId: 'req-fb' },
     ]);
+  });
+
+  it('two concurrent chat:run on same conversation each receive their own outcome (waiter map keyed by reqId, not sessionId)', async () => {
+    // Regression: when two chat:runs hit the same conversation while a
+    // sandbox is alive, both routed branches register waiters on the
+    // SAME sessionId. A sessionId-keyed map would let the second
+    // chat:run overwrite the first — first request times out, second
+    // resolves with the wrong outcome. Re-keying by ctx.reqId fixes it.
+    const mocks = buildMocks({
+      conversations: { 'conv-cc': { activeSessionId: 's-cc' } },
+      liveSessions: new Set(['s-cc']),
+    });
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinary: '/irrelevant',
+          chatTimeoutMs: 1_000,
+        }),
+      ],
+    });
+
+    const outcomeR1: ChatOutcome = {
+      kind: 'complete',
+      messages: [{ role: 'assistant', content: 'reply-r1' }],
+    };
+    const outcomeR2: ChatOutcome = {
+      kind: 'complete',
+      messages: [{ role: 'assistant', content: 'reply-r2' }],
+    };
+
+    // Fire chat:end for r1 first, then r2 — each carrying its own reqId.
+    setImmediate(() => {
+      void h.bus.fire(
+        'chat:end',
+        makeChatContext({
+          sessionId: 's-cc',
+          agentId: 'a',
+          userId: 'u',
+          reqId: 'r1',
+          logger: createLogger({ reqId: 'r1', writer: () => undefined }),
+        }),
+        { outcome: outcomeR1 },
+      );
+      void h.bus.fire(
+        'chat:end',
+        makeChatContext({
+          sessionId: 's-cc',
+          agentId: 'a',
+          userId: 'u',
+          reqId: 'r2',
+          logger: createLogger({ reqId: 'r2', writer: () => undefined }),
+        }),
+        { outcome: outcomeR2 },
+      );
+    });
+
+    const [resA, resB] = await Promise.all([
+      h.bus.call<unknown, ChatOutcome>(
+        'chat:run',
+        ctxWith({
+          sessionId: 'unused-A',
+          conversationId: 'conv-cc',
+          reqId: 'r1',
+        }),
+        { message: { role: 'user', content: 'msg-1' } },
+      ),
+      h.bus.call<unknown, ChatOutcome>(
+        'chat:run',
+        ctxWith({
+          sessionId: 'unused-B',
+          conversationId: 'conv-cc',
+          reqId: 'r2',
+        }),
+        { message: { role: 'user', content: 'msg-2' } },
+      ),
+    ]);
+
+    // Each chat:run resolved with its OWN outcome — no cross-contamination.
+    expect(resA).toEqual(outcomeR1);
+    expect(resB).toEqual(outcomeR2);
+    // Both routed to the SAME existing sandbox (no fresh open).
+    expect(mocks.trace.sandboxOpen).toBe(0);
+    expect(mocks.trace.queueWork).toHaveLength(2);
+    expect(mocks.trace.queueWork[0]!.sessionId).toBe('s-cc');
+    expect(mocks.trace.queueWork[1]!.sessionId).toBe('s-cc');
   });
 });

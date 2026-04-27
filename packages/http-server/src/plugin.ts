@@ -384,7 +384,21 @@ async function handle(
     finalStatus = writer.statusCode;
   } catch (err) {
     if (isRejection(err)) {
-      if (!writer.finished) {
+      if (writer.streaming) {
+        // Stream was already opened before the rejection threw (e.g.
+        // a subscriber rejection landing AFTER res.stream() fired).
+        // We can't switch back to a JSON 400 — headers are flushed —
+        // so end the socket and let the client see EOF. Without this,
+        // writer.finished is `true` (openStream set it) so the
+        // !writer.finished branch below would no-op and the stream
+        // would dangle until the client gave up.
+        try {
+          res.end();
+        } catch {
+          // socket already gone
+        }
+        finalStatus = writer.statusCode;
+      } else if (!writer.finished) {
         writer.adapter.status(400).json({ error: err.reason });
         finalStatus = 400;
       }
@@ -424,6 +438,21 @@ async function handle(
     // disconnects. fireResponseSent fires on socket close so durationMs
     // reflects the full streaming lifetime (not the handler's setup
     // window).
+    //
+    // Race: if the client disconnected (or the handler closed its own
+    // stream) DURING `await handler(...)`, the `close` event has
+    // already fired by the time we reach this `res.once('close', ...)`
+    // call. EventEmitter.once only catches FUTURE events, so without
+    // this synchronous-fire fallback, http:response-sent would be lost
+    // on every fast-disconnect path. writableEnded covers normal close;
+    // destroyed covers abrupt socket teardown.
+    if (res.writableEnded || res.destroyed) {
+      void fireResponseSent(bus, ctx, {
+        status: finalStatus,
+        durationMs: Date.now() - startedAt,
+      });
+      return;
+    }
     res.once('close', () => {
       void fireResponseSent(bus, ctx, {
         status: finalStatus,

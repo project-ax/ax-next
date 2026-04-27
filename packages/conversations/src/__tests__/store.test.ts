@@ -278,6 +278,37 @@ describe('store + migrations round-trip', () => {
     expect(turns.map((t) => t.turnIndex)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
   });
 
+  it('appendTurn refuses to write to a tombstoned conversation (TOCTOU close)', async () => {
+    // Regression: the appendTurn locking SELECT must filter
+    // `deleted_at IS NULL` so a softDelete that lands between the
+    // plugin's pre-check and the FOR UPDATE acquisition cannot let
+    // turns slip into a tombstoned conversation.
+    const db = makeKysely();
+    await runConversationsMigration(db);
+    const store = createConversationStore(db);
+
+    const conv = await store.create({
+      userId: 'u1',
+      agentId: 'agt_x',
+      title: null,
+    });
+    expect(await store.softDelete(conv.conversationId)).toBe(true);
+
+    // store.appendTurn is the lower layer — it throws NoResultError when
+    // the locking SELECT returns no rows. The plugin layer translates
+    // that to PluginError('not-found'); here we just assert the throw.
+    await expect(
+      store.appendTurn({
+        conversationId: conv.conversationId,
+        role: 'user',
+        contentBlocks: [{ type: 'text', text: 'should-not-land' }],
+      }),
+    ).rejects.toThrow();
+
+    // No turn was written.
+    expect(await store.listTurns(conv.conversationId)).toEqual([]);
+  });
+
   it('listTurns returns empty for an unknown conversation', async () => {
     const db = makeKysely();
     await runConversationsMigration(db);

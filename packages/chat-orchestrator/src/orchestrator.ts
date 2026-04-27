@@ -255,7 +255,45 @@ export function createOrchestrator(
   onChatEnd(ctx: ChatContext, payload: { outcome: ChatOutcome }): void;
   onTurnEnd(ctx: ChatContext): void;
 } {
-  const waitersBySessionId = new Map<string, Deferred<ChatOutcome>>();
+  // Waiters are tracked by ctx.reqId (server-minted, J9, unique per
+  // chat:run). On the J6 routed path, two concurrent chat:runs for the
+  // same conversation share a sessionId — keying by sessionId would let
+  // the second chat:run overwrite the first's waiter (causing the first
+  // to time out and the second to resolve with the wrong outcome).
+  //
+  // Resolution paths:
+  //   - chat:end fired by the orchestrator itself (error paths) carries
+  //     the chat:run ctx → ctx.reqId matches directly.
+  //   - chat:end fired by the IPC server (runner POSTs /event.chat-end)
+  //     stamps a fresh per-request ctx.reqId, so the reqId lookup
+  //     misses. We fall back via `reqIdsBySession`: when only one
+  //     waiter exists for a given sessionId, resolve THAT waiter; when
+  //     multiple exist (the routed-collision case), the reqId-keyed
+  //     entry from the orchestrator self-fire wins. The fresh-spawn
+  //     path always has exactly one waiter per sessionId.
+  const waitersByReqId = new Map<string, Deferred<ChatOutcome>>();
+  const reqIdsBySession = new Map<string, Set<string>>();
+  function registerWaiter(
+    sessionId: string,
+    reqId: string,
+    deferred: Deferred<ChatOutcome>,
+  ): void {
+    waitersByReqId.set(reqId, deferred);
+    let set = reqIdsBySession.get(sessionId);
+    if (set === undefined) {
+      set = new Set();
+      reqIdsBySession.set(sessionId, set);
+    }
+    set.add(reqId);
+  }
+  function unregisterWaiter(sessionId: string, reqId: string): void {
+    waitersByReqId.delete(reqId);
+    const set = reqIdsBySession.get(sessionId);
+    if (set !== undefined) {
+      set.delete(reqId);
+      if (set.size === 0) reqIdsBySession.delete(sessionId);
+    }
+  }
   const chatTimeoutMs = config.chatTimeoutMs ?? DEFAULT_CHAT_TIMEOUT_MS;
   const oneShot = config.oneShot ?? true;
   // Sessions that have already been cancelled — prevents a second
@@ -425,9 +463,11 @@ export function createOrchestrator(
       }
 
       // (2) Register the waiter BEFORE enqueueing — the runner may emit
-      //     chat:turn-end almost immediately on a fast model.
+      //     chat:turn-end almost immediately on a fast model. Keyed by
+      //     ctx.reqId (J9, unique per chat:run) — see waitersByReqId
+      //     declaration for the rationale.
       const deferred = newDeferred<ChatOutcome>();
-      waitersBySessionId.set(sessionId, deferred);
+      registerWaiter(sessionId, ctx.reqId, deferred);
 
       // (3) Enqueue the user message.
       try {
@@ -444,7 +484,7 @@ export function createOrchestrator(
           },
         );
       } catch (err) {
-        waitersBySessionId.delete(sessionId);
+        unregisterWaiter(sessionId, ctx.reqId);
         const outcome: ChatOutcome = {
           kind: 'terminated',
           reason: 'queue-work-failed',
@@ -477,7 +517,7 @@ export function createOrchestrator(
         };
       } finally {
         clearTimeout(timeoutHandle);
-        waitersBySessionId.delete(sessionId);
+        unregisterWaiter(sessionId, ctx.reqId);
       }
 
       if (!resolvedByChatEndSubscriber) {
@@ -497,7 +537,7 @@ export function createOrchestrator(
     //    builds ctx.sessionId from that token lookup. Stable join key.
     const sessionId = ctx.sessionId;
     const deferred = newDeferred<ChatOutcome>();
-    waitersBySessionId.set(sessionId, deferred);
+    registerWaiter(sessionId, ctx.reqId, deferred);
 
     // 6. Open the sandbox. sandbox:open-session internally calls
     //    session:create (minting the session + token AND writing the v2
@@ -532,7 +572,7 @@ export function createOrchestrator(
       );
       handle = opened.handle;
     } catch (err) {
-      waitersBySessionId.delete(sessionId);
+      unregisterWaiter(sessionId, ctx.reqId);
       // Best-effort: terminate the session if sandbox-subprocess managed to
       // create it before the spawn failed. The sandbox plugin ALREADY tears
       // down in most failure modes, but belt-and-suspender for the case
@@ -602,7 +642,7 @@ export function createOrchestrator(
         },
       );
     } catch (err) {
-      waitersBySessionId.delete(sessionId);
+      unregisterWaiter(sessionId, ctx.reqId);
       try {
         await handle.kill();
       } catch {
@@ -667,7 +707,7 @@ export function createOrchestrator(
       };
     } finally {
       clearTimeout(timeoutHandle);
-      waitersBySessionId.delete(sessionId);
+      unregisterWaiter(sessionId, ctx.reqId);
     }
 
     // 6. If the chat:end subscriber path didn't win, the runner never
@@ -691,7 +731,28 @@ export function createOrchestrator(
   }
 
   function onChatEnd(ctx: ChatContext, payload: { outcome: ChatOutcome }): void {
-    const deferred = waitersBySessionId.get(ctx.sessionId);
+    // Two firing paths:
+    //   1. Orchestrator self-fire (error paths) — ctx is the chat:run
+    //      ctx, so ctx.reqId matches a waitersByReqId entry directly.
+    //   2. IPC server fires from the runner's POST /event.chat-end —
+    //      ctx.reqId is a fresh per-request id (the IPC server stamps
+    //      it), so the reqId lookup misses. We then fall back via the
+    //      sessionId index. The fresh-spawn path always has exactly
+    //      one waiter per sessionId; on the (rare) routed-collision
+    //      case (two concurrent chat:runs into the same alive
+    //      sandbox), there can be multiple — we resolve the OLDEST
+    //      reqId in insertion order (Set preserves it). That matches
+    //      the runner's actual emit order: it processes inbox FIFO,
+    //      so chat-end after the first user message corresponds to
+    //      the first waiter.
+    let deferred = waitersByReqId.get(ctx.reqId);
+    if (deferred === undefined) {
+      const reqIds = reqIdsBySession.get(ctx.sessionId);
+      if (reqIds !== undefined && reqIds.size > 0) {
+        const firstReqId = reqIds.values().next().value as string;
+        deferred = waitersByReqId.get(firstReqId);
+      }
+    }
     if (deferred !== undefined && !deferred.settled) {
       deferred.resolve(payload.outcome);
     }
@@ -711,10 +772,14 @@ export function createOrchestrator(
     // Guards:
     //   - oneShot must be true (multi-message hosts opt out).
     //   - sessionId must be an in-flight chat:run (skip unrelated turn-ends).
-    //   - don't double-queue (a runner that fires turn-end twice must not
-    //     queue two cancels).
+    //     Waiter map is keyed by ctx.reqId, but the IPC server stamps a
+    //     fresh ctx.reqId per request, so we check via the sessionId index.
+    //     Cancel target is ctx.sessionId (the session we want to terminate).
+    //   - don't double-queue per session (a runner that fires turn-end
+    //     twice must not queue two cancels for the same session).
     if (!oneShot) return;
-    if (!waitersBySessionId.has(ctx.sessionId)) return;
+    const liveReqIds = reqIdsBySession.get(ctx.sessionId);
+    if (liveReqIds === undefined || liveReqIds.size === 0) return;
     if (cancelledSessions.has(ctx.sessionId)) return;
     cancelledSessions.add(ctx.sessionId);
     // Fire-and-forget. If this fails (e.g. session already terminated), the
@@ -724,7 +789,7 @@ export function createOrchestrator(
       .call<SessionQueueWorkInput, SessionQueueWorkOutput>(
         'session:queue-work',
         ctx,
-        { sessionId: ctx.sessionId, entry: { type: 'cancel' as const } } as unknown as SessionQueueWorkInput,
+        { sessionId: ctx.sessionId, entry: { type: 'cancel' } },
       )
       .catch((err) => {
         ctx.logger.warn('one_shot_cancel_queue_failed', {

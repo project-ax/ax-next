@@ -215,42 +215,49 @@ export async function main(): Promise<number> {
   // tells the SDK no more user messages are coming, which lets the outer
   // `for await (msg of queryIter)` drain naturally and exit.
   //
-  // Task 15 (Week 10–12): replay-at-boot. We yield prior user-side turns
-  // (role=user with text content; role=tool with tool_result content
-  // blocks) BEFORE pulling from the live inbox. The SDK's MessageParam
-  // accepts content as either a string or an Anthropic content-block
-  // array — for tool turns we MUST use the array form so tool_result
-  // blocks survive into the LLM's prompt. Assistant turns are not
-  // re-yielded (the prompt iterator only takes user-shaped messages;
-  // see the comment block above the conversation.fetch-history call).
+  // Task 15 (Week 10–12): replay-at-boot. We yield prior user turns
+  // (role=user with text content) BEFORE pulling from the live inbox.
+  // Assistant AND tool turns are skipped — the model regenerates the
+  // tool flow from the user-side context. We can't re-yield tool turns
+  // standalone: Anthropic's API rejects (400 invalid_request_error) any
+  // tool_result block that isn't paired with a tool_use in the
+  // immediately preceding assistant message, and we don't have the
+  // assistant turn (since the prompt iterator only accepts user-shaped
+  // messages). Without the SDK's resume() API, replaying tool turns is
+  // not safely possible. The conversation row still stores the tool
+  // turn (Task 3's auto-append); on replay the SDK only sees user text
+  // turns and the model regenerates tool flows from there.
   async function* userMessages(): AsyncGenerator<SDKUserMessage> {
     // ----- replay -----
     for (const turn of replayTurns) {
-      if (turn.role === 'assistant') continue; // model regenerates; see above
-      // For user turns: collapse plain-text contentBlocks back into a
-      // string for the SDK (matches the live-inbox shape so the model
-      // doesn't see a mid-conversation format change). Multi-block user
-      // turns (e.g. with images) yield the full block array.
-      let content: SDKUserMessage['message']['content'];
       if (turn.role === 'user') {
+        // Collapse plain-text contentBlocks back into a string for the
+        // SDK (matches the live-inbox shape so the model doesn't see a
+        // mid-conversation format change). Multi-block user turns
+        // (e.g. with images) yield the full block array.
         const allText = turn.contentBlocks.every(
           (b): b is TextBlock => b.type === 'text',
         );
-        content = allText
+        const content: SDKUserMessage['message']['content'] = allText
           ? turn.contentBlocks
               .map((b) => (b as TextBlock).text)
               .join('\n')
           : (turn.contentBlocks as unknown as SDKUserMessage['message']['content']);
+        yield {
+          type: 'user',
+          parent_tool_use_id: null,
+          message: { role: 'user', content },
+        };
       } else {
-        // role === 'tool' — yield tool_result blocks as a user message
-        // (Anthropic-compatible: tool results travel inside user turns).
-        content = turn.contentBlocks as unknown as SDKUserMessage['message']['content'];
+        // assistant + tool turns are NOT re-yielded; the model
+        // regenerates from the user-side context. Tool turns
+        // specifically can't be yielded standalone (Anthropic 400:
+        // tool_result without paired tool_use in the immediately
+        // preceding assistant message).
+        process.stderr.write(
+          `runner: skipping replay of role=${turn.role} turn (model will regenerate from user-side context)\n`,
+        );
       }
-      yield {
-        type: 'user',
-        parent_tool_use_id: null,
-        message: { role: 'user', content },
-      };
     }
     // ----- live inbox -----
     for (;;) {

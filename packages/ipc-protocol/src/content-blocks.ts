@@ -74,7 +74,7 @@ export const ImageBlockSchema = z.object({
     }),
     z.object({
       type: z.literal('url'),
-      url: z.string(),
+      url: z.string().url(),
     }),
   ]),
 });

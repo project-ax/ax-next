@@ -204,8 +204,11 @@ describe('chat-orchestrator', () => {
     // the bus. We fire directly here — no real IPC loop needed.
     let busRef: HookBus | null = null;
     const mocks = buildMocks({
-      openSession: async (_ctx, input: unknown) => {
+      openSession: async (ctx, input: unknown) => {
         const sessionId = (input as { sessionId: string }).sessionId;
+        // Forward the originating reqId so onChatEnd's lookup matches
+        // (waiter map is keyed by ctx.reqId — see orchestrator.ts).
+        const originatingReqId = ctx.reqId;
         setImmediate(() => {
           void busRef!.fire(
             'chat:end',
@@ -213,7 +216,8 @@ describe('chat-orchestrator', () => {
               sessionId,
               agentId: 'agent',
               userId: 'user',
-              logger: createLogger({ reqId: 'runner', writer: () => undefined }),
+              reqId: originatingReqId,
+              logger: createLogger({ reqId: originatingReqId, writer: () => undefined }),
             }),
             { outcome: expectedOutcome },
           );
@@ -552,10 +556,11 @@ describe('chat-orchestrator', () => {
     });
     let busRef: HookBus | null = null;
     // Replace open-session with a happy-path version that fires chat:end.
-    mocks.services['sandbox:open-session'] = async (_ctx, input: unknown) => {
+    mocks.services['sandbox:open-session'] = async (ctx, input: unknown) => {
       mocks.calls.sandboxOpen += 1;
       mocks.calls.lastSandboxInput = input;
       const sessionId = (input as { sessionId: string }).sessionId;
+      const originatingReqId = ctx.reqId;
       setImmediate(() => {
         void busRef!.fire(
           'chat:end',
@@ -563,7 +568,8 @@ describe('chat-orchestrator', () => {
             sessionId,
             agentId: 'a-resolved',
             userId: 'test-user',
-            logger: createLogger({ reqId: 'r', writer: () => undefined }),
+            reqId: originatingReqId,
+            logger: createLogger({ reqId: originatingReqId, writer: () => undefined }),
           }),
           { outcome: { kind: 'complete', messages: [] } },
         );
@@ -653,8 +659,9 @@ describe('chat-orchestrator', () => {
     let busRef: HookBus | null = null;
 
     const mocks = buildMocks({
-      openSession: async (_ctx, input: unknown) => {
+      openSession: async (ctx, input: unknown) => {
         const sessionId = (input as { sessionId: string }).sessionId;
+        const originatingReqId = ctx.reqId;
         // Each "runner" emits a distinct complete outcome echoing its sessionId
         // so we can verify the orchestrator routed the right outcome back to
         // the right caller.
@@ -665,7 +672,8 @@ describe('chat-orchestrator', () => {
               sessionId,
               agentId: 'a',
               userId: 'u',
-              logger: createLogger({ reqId: 'r', writer: () => undefined }),
+              reqId: originatingReqId,
+              logger: createLogger({ reqId: originatingReqId, writer: () => undefined }),
             }),
             {
               outcome: {

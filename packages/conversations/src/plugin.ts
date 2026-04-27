@@ -6,7 +6,7 @@ import {
   type Plugin,
 } from '@ax/core';
 import type { ContentBlock } from '@ax/ipc-protocol';
-import type { Kysely } from 'kysely';
+import { NoResultError, type Kysely } from 'kysely';
 import {
   runConversationsMigration,
   type ConversationDatabase,
@@ -453,11 +453,28 @@ async function appendTurn(
     input.userId,
     'conversations:append-turn',
   );
-  return store.appendTurn({
-    conversationId: input.conversationId,
-    role,
-    contentBlocks: blocks,
-  });
+  // The store's locking SELECT filters `deleted_at IS NULL` so a
+  // softDelete that lands between getByIdNotDeleted above and the
+  // FOR UPDATE acquisition surfaces as NoResultError. Translate
+  // that to PluginError('not-found') for a uniform contract — same
+  // shape as setActiveSession returning falsey on a missing row.
+  try {
+    return await store.appendTurn({
+      conversationId: input.conversationId,
+      role,
+      contentBlocks: blocks,
+    });
+  } catch (err) {
+    if (err instanceof NoResultError) {
+      throw new PluginError({
+        code: 'not-found',
+        plugin: PLUGIN_NAME,
+        hookName: 'conversations:append-turn',
+        message: `conversation '${input.conversationId}' not found`,
+      });
+    }
+    throw err;
+  }
 }
 
 async function getConversation(

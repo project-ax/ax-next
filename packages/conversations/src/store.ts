@@ -308,10 +308,18 @@ export function createConversationStore(
         // Lock the conversation row to serialize appendTurn calls for
         // this conversation. Reading + write happen inside the same tx
         // so isolation is consistent.
+        //
+        // The `deleted_at IS NULL` filter closes a TOCTOU window: a
+        // concurrent softDelete landing between the plugin's pre-check
+        // (`getByIdNotDeleted`) and the FOR UPDATE acquisition would
+        // otherwise let turns slip into a tombstoned conversation.
+        // executeTakeFirstOrThrow → NoResultError surfaces as a
+        // PluginError('not-found') in the plugin layer.
         await trx
           .selectFrom('conversations_v1_conversations')
           .select('conversation_id')
           .where('conversation_id', '=', conversationId)
+          .where('deleted_at', 'is', null)
           .forUpdate()
           .executeTakeFirstOrThrow();
 

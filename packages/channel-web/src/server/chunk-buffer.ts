@@ -3,10 +3,12 @@ import type { StreamChunk } from './types.js';
 // ---------------------------------------------------------------------------
 // Per-reqId chunk ring buffer for SSE reconnect tail.
 //
-// Single-replica only (Invariant J8). Tasks 13+ may swap this for a
-// distributed buffer (redis stream, postgres logical replication, etc.);
-// the chunk-buffer interface is the boundary the SSE handler talks to and
-// stays the same shape.
+// Single-replica only (Invariant J7 — the per-reqId chunk ring buffer
+// itself; J8 is the Origin/CSRF allow-list, distinct concern). See the
+// PR notes' "Known regressions" section for the multi-replica gap.
+// Tasks 13+ may swap this for a distributed buffer (redis stream,
+// postgres logical replication, etc.); the chunk-buffer interface is
+// the boundary the SSE handler talks to and stays the same shape.
 //
 // Capacity / TTL constants are deliberately conservative:
 //

@@ -36,7 +36,8 @@ import type { ActionHandler } from './types.js';
 //      one bound to its session. We don't pre-validate against that
 //      here because the gate above already enforces ownership; a
 //      defensive double-check would only buy us a slightly tidier
-//      error code (404 instead of 404).
+//      error code (403 instead of 404). We deliberately keep 404 to
+//      avoid leaking existence of conversations the caller can't see.
 //
 // PluginError mapping mirrors session-get-config.ts:
 //   - `not-found` → 404 NOT_FOUND  (mapPluginError defaults)

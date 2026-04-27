@@ -927,7 +927,7 @@ describe('main()', () => {
   // regenerates from the user-side context.
   // ---------------------------------------------------------------------
 
-  it('Task 15 replay: fetches history when conversationId is non-null and yields prior user/tool turns BEFORE the live inbox', async () => {
+  it('Task 15 replay: fetches history when conversationId is non-null and yields prior user turns BEFORE the live inbox (assistant + tool turns are skipped — Anthropic API requires tool_result paired with preceding tool_use)', async () => {
     setEnv(COMPLETE_ENV);
     fakeClient = buildFakeClient();
     fakeClient.call.mockImplementation(async (action: string, payload: unknown) => {
@@ -1017,27 +1017,26 @@ describe('main()', () => {
     expect(fetchCalls).toHaveLength(1);
     expect(fetchCalls[0]?.[1]).toEqual({ conversationId: 'cnv_resume' });
 
-    // The SDK saw replay user/tool turns FIRST, then the live inbox.
-    // Assistant turns from the persisted transcript are NOT re-yielded.
-    expect(sdkSawMessages).toHaveLength(4);
+    // The SDK saw replay USER turns FIRST, then the live inbox.
+    // Assistant AND tool turns from the persisted transcript are NOT
+    // re-yielded (Anthropic's API rejects tool_result blocks that
+    // aren't paired with a preceding assistant tool_use; without the
+    // SDK's resume() API, replaying tool turns is unsafe). The model
+    // regenerates the tool flow from the user-side context.
+    expect(sdkSawMessages).toHaveLength(3);
     // Replay user turn #1 — text-only, collapsed back to a string.
     expect(sdkSawMessages[0]).toEqual({
       role: 'user',
       content: 'first question',
     });
-    // Replay tool turn — yielded as content-block array (tool_result).
-    expect(sdkSawMessages[1]?.role).toBe('user');
-    expect(Array.isArray(sdkSawMessages[1]?.content)).toBe(true);
-    expect(
-      (sdkSawMessages[1]?.content as Array<{ type: string }>)[0]?.type,
-    ).toBe('tool_result');
-    // Replay user turn #2.
-    expect(sdkSawMessages[2]).toEqual({
+    // Replay user turn #2 — assistant + tool turns from the spec are
+    // skipped, so user turn #2 is the second message the SDK sees.
+    expect(sdkSawMessages[1]).toEqual({
       role: 'user',
       content: 'second question',
     });
     // Live inbox message LAST.
-    expect(sdkSawMessages[3]).toEqual({
+    expect(sdkSawMessages[2]).toEqual({
       role: 'user',
       content: 'live message',
     });

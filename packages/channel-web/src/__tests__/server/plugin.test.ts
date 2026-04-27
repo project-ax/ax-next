@@ -327,11 +327,9 @@ describe('@ax/channel-web server plugin (integration)', () => {
     })();
 
     let received = '';
-    let done = false;
-    while (!done) {
+    while (true) {
       const result = await reader.read();
       if (result.done) {
-        done = true;
         break;
       }
       received += decoder.decode(result.value, { stream: true });

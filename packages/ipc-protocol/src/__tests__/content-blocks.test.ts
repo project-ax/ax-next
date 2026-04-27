@@ -94,6 +94,18 @@ describe('ContentBlock schema', () => {
     ).toMatchObject({ type: 'image' });
   });
 
+  it('rejects an image block with a malformed url', () => {
+    // The url variant uses z.string().url() so a non-URL string is
+    // refused at the protocol boundary — keeps clearly-broken values
+    // from reaching downstream handlers.
+    expect(() =>
+      ContentBlockSchema.parse({
+        type: 'image',
+        source: { type: 'url', url: 'not-a-url' },
+      }),
+    ).toThrow();
+  });
+
   it('rejects an unknown discriminant', () => {
     expect(() => ContentBlockSchema.parse({ type: 'banana' })).toThrow();
   });
