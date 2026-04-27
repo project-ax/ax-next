@@ -123,11 +123,25 @@ export async function createListener(opts: CreateListenerOptions): Promise<Liste
     // The session:get-config handler treats the placeholders as a
     // distinct case from "real owner" and rejects with `owner-missing`
     // (the session store's `get` returns null for these fields).
+    //
+    // Week 10–12 final review: also stamp the resolved conversationId so
+    // runner-fired `chat:turn-end` events flow with the conversation
+    // binding intact. Subscribers (auto-append, clearActiveReqId, SSE
+    // done-frame) read ctx.conversationId; without this propagation they
+    // silently no-op and the browser only learns the stream finished via
+    // socket-close. ChatContext.conversationId is OPTIONAL — null on the
+    // auth result becomes undefined on ctx (canary / admin sessions).
     const ctx = makeChatContext({
       sessionId: auth.sessionId,
       agentId: auth.agentId ?? 'ipc-server',
       userId: auth.userId ?? 'ipc-server',
       workspace: { rootPath: auth.workspaceRoot },
+      // exactOptionalPropertyTypes: only set the field when we have a value;
+      // a literal `undefined` would tighten the type incompatibly. The
+      // canary path leaves conversationId off entirely.
+      ...(auth.conversationId !== null
+        ? { conversationId: auth.conversationId }
+        : {}),
     });
     await dispatch(req, res, ctx, opts.bus);
   };

@@ -76,6 +76,14 @@ export interface ResolveTokenResult {
   workspaceRoot: string;
   userId: string | null;
   agentId: string | null;
+  /**
+   * Conversation this session is bound to (Task 15). Null for canary /
+   * admin sessions OR for any session minted before Task 15. Carried on
+   * the resolve-token result so the IPC server can stamp it onto every
+   * per-request ChatContext — without it, `chat:turn-end` subscribers
+   * (auto-append, clearActiveReqId, SSE done-frame) silently no-op.
+   */
+  conversationId: string | null;
 }
 
 export interface SessionStore {
@@ -193,6 +201,7 @@ export function createSessionStore(db: Kysely<SessionDatabase>): SessionStore {
           's.terminated',
           'a.user_id',
           'a.agent_id',
+          'a.conversation_id',
         ])
         .where('s.token', '=', token)
         .executeTakeFirst();
@@ -202,6 +211,7 @@ export function createSessionStore(db: Kysely<SessionDatabase>): SessionStore {
         workspaceRoot: row.workspace_root,
         userId: row.user_id ?? null,
         agentId: row.agent_id ?? null,
+        conversationId: row.conversation_id ?? null,
       };
     },
 

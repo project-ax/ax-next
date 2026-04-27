@@ -61,6 +61,14 @@ export interface ResolveTokenResult {
   workspaceRoot: string;
   userId: string | null;
   agentId: string | null;
+  /**
+   * Conversation this session is bound to (Task 15). Null for canary /
+   * admin sessions OR for any session minted before Task 15. Carried on
+   * the resolve-token result so the IPC server can stamp it onto every
+   * per-request ChatContext — without it, `chat:turn-end` subscribers
+   * (auto-append, clearActiveReqId, SSE done-frame) silently no-op.
+   */
+  conversationId: string | null;
 }
 
 export interface SessionStore {
@@ -120,6 +128,7 @@ export function createSessionStore(): SessionStore {
         workspaceRoot: record.workspaceRoot,
         userId: record.userId,
         agentId: record.agentId,
+        conversationId: record.conversationId,
       };
     },
 

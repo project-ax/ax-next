@@ -103,6 +103,12 @@ export interface SessionResolveTokenInput {
  * owner (Week 9.5+). Pre-9.5 sessions store nulls. Callers branch on the
  * null case — typically rejecting with an `owner-missing` error in the
  * security-sensitive path (e.g. Task 7's per-agent tool filter).
+ *
+ * Week 10–12 final review: `conversationId` rides on the resolve result so
+ * the IPC server can stamp it onto every per-request ChatContext. Without
+ * it, runner-fired `chat:turn-end` events lose their conversation binding
+ * and three subscribers silently no-op (auto-append, clearActiveReqId,
+ * SSE done-frame). Null for canary / admin sessions.
  */
 export type SessionResolveTokenOutput =
   | {
@@ -110,6 +116,7 @@ export type SessionResolveTokenOutput =
       workspaceRoot: string;
       userId: string | null;
       agentId: string | null;
+      conversationId: string | null;
     }
   | null;
 

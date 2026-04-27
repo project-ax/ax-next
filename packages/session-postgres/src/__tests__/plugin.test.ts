@@ -186,6 +186,7 @@ describe('@ax/session-postgres plugin', () => {
       workspaceRoot: '/tmp/ws',
       userId: null,
       agentId: null,
+      conversationId: null,
     });
 
     const miss = await h.bus.call<SessionResolveTokenInput, SessionResolveTokenOutput>(
@@ -214,6 +215,7 @@ describe('@ax/session-postgres plugin', () => {
       workspaceRoot: '/tmp/ws',
       userId: null,
       agentId: null,
+      conversationId: null,
     });
 
     await h.bus.call<SessionTerminateInput, SessionTerminateOutput>(
@@ -512,6 +514,36 @@ describe('@ax/session-postgres plugin', () => {
       workspaceRoot: '/tmp/ws',
       userId: 'u-1',
       agentId: 'a-1',
+      conversationId: null,
+    });
+  });
+
+  it('session:resolve-token carries conversationId when owner carries one (Week 10–12 final review)', async () => {
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    const { token } = await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+      'session:create',
+      ctx,
+      {
+        sessionId: 's-conv-resolve',
+        workspaceRoot: '/tmp/ws',
+        owner: { ...OWNER, conversationId: 'cnv_resolve_pg_1' },
+      },
+    );
+    const resolved = await h.bus.call<SessionResolveTokenInput, SessionResolveTokenOutput>(
+      'session:resolve-token',
+      ctx,
+      { token },
+    );
+    // Bug regression: a missing conversationId here meant chat:turn-end
+    // events didn't carry the binding past the IPC boundary, silently
+    // breaking auto-append + clearActiveReqId + SSE done-frame.
+    expect(resolved).toEqual({
+      sessionId: 's-conv-resolve',
+      workspaceRoot: '/tmp/ws',
+      userId: 'u-1',
+      agentId: 'a-1',
+      conversationId: 'cnv_resolve_pg_1',
     });
   });
 

@@ -216,8 +216,13 @@ describe('@ax/conversations chat:turn-end auto-append', () => {
       { userId: 'userA', agentId: 'agt_a' },
     );
 
-    // Note: ctx WITHOUT conversationId — what every chat:run looks like
-    // until Task 16 lands the orchestrator change.
+    // Note: ctx WITHOUT conversationId — the canary acceptance test path
+    // (a session minted without an owner.conversationId). For the chat-
+    // flow path, the IPC server stamps conversationId onto ctx from the
+    // session row's `conversation_id` column (see ipc-server's listener
+    // and session-{inmemory,postgres} resolveToken). A regression test
+    // for that propagation lives in
+    // packages/ipc-server/src/__tests__/conversation-id-propagation.test.ts.
     const ctx = h.ctx({ userId: 'userA', agentId: 'agt_a' });
 
     await h.bus.fire('chat:turn-end', ctx, {

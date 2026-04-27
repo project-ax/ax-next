@@ -331,6 +331,10 @@ describe('@ax/preset-k8s acceptance (postgres + workspace-git end-to-end)', () =
       // Pre-9.5 (no owner on session:create) — userId/agentId surface as null.
       userId: null,
       agentId: null,
+      // Week 10–12 final review: resolve-token also carries the
+      // session's conversationId so the IPC server can stamp it onto
+      // ctx (chat:turn-end propagation). Null for owner-less sessions.
+      conversationId: null,
     });
   });
 

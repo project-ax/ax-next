@@ -44,6 +44,7 @@ describe('@ax/session-inmemory store', () => {
       workspaceRoot: '/tmp/ws',
       userId: null,
       agentId: null,
+      conversationId: null,
     });
   });
 
@@ -64,6 +65,29 @@ describe('@ax/session-inmemory store', () => {
       workspaceRoot: '/tmp/ws',
       userId: 'u-1',
       agentId: 'a-1',
+      conversationId: null,
+    });
+  });
+
+  it('resolveToken() carries conversationId when create() carried one (Week 10–12 final review)', () => {
+    const store = createSessionStore();
+    const rec = store.create('s-conv', '/tmp/ws', {
+      userId: 'u-1',
+      agentId: 'a-1',
+      agentConfig: {
+        systemPrompt: 'be helpful',
+        allowedTools: [],
+        mcpConfigIds: [],
+        model: 'claude-sonnet-4-7',
+      },
+      conversationId: 'cnv_test_1',
+    });
+    expect(store.resolveToken(rec.token)).toEqual({
+      sessionId: 's-conv',
+      workspaceRoot: '/tmp/ws',
+      userId: 'u-1',
+      agentId: 'a-1',
+      conversationId: 'cnv_test_1',
     });
   });
 
