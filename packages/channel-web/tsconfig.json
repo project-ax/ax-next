@@ -10,5 +10,13 @@
     "types": ["node"]
   },
   "include": ["src", "mock"],
-  "exclude": ["dist", "node_modules"]
+  "exclude": ["dist", "node_modules"],
+  "references": [
+    { "path": "../core" },
+    { "path": "../http-server" },
+    { "path": "../auth-oidc" },
+    { "path": "../agents" },
+    { "path": "../conversations" },
+    { "path": "../ipc-protocol" }
+  ]
 }
