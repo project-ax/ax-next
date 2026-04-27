@@ -143,6 +143,54 @@ function assistantText(text: string): SDKMessage {
   } as unknown as SDKMessage;
 }
 
+function assistantBlocks(content: unknown[]): SDKMessage {
+  return {
+    type: 'assistant',
+    uuid: 'msg-uuid',
+    session_id: 'sess-1',
+    parent_tool_use_id: null,
+    message: {
+      id: 'm-1',
+      type: 'message',
+      role: 'assistant',
+      model: 'claude',
+      stop_reason: null,
+      stop_sequence: null,
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+        server_tool_use: { web_search_requests: 0 },
+      },
+      content,
+    },
+  } as unknown as SDKMessage;
+}
+
+function userToolResult(
+  toolUseId: string,
+  text: string,
+  isError = false,
+): SDKMessage {
+  return {
+    type: 'user',
+    parent_tool_use_id: null,
+    session_id: 'sess-1',
+    message: {
+      role: 'user',
+      content: [
+        {
+          type: 'tool_result',
+          tool_use_id: toolUseId,
+          content: text,
+          is_error: isError,
+        },
+      ],
+    },
+  } as unknown as SDKMessage;
+}
+
 function resultSuccess(): SDKMessage {
   return {
     type: 'result',
@@ -168,9 +216,13 @@ function resultSuccess(): SDKMessage {
   } as unknown as SDKMessage;
 }
 
-const userEntry = (content: string): InboxLoopEntry => ({
+const userEntry = (
+  content: string,
+  reqId: string = 'req-test',
+): InboxLoopEntry => ({
   type: 'user-message',
   payload: { role: 'user', content },
+  reqId,
 });
 const cancelEntry: InboxLoopEntry = { type: 'cancel' };
 
@@ -199,6 +251,7 @@ describe('main()', () => {
             mcpConfigIds: [],
             model: 'claude-sonnet-4-7',
           },
+          conversationId: null,
         };
       }
       if (action === 'tool.list') return { tools: [] };
@@ -249,8 +302,14 @@ describe('main()', () => {
     const turnEnds = fakeClient.event.mock.calls.filter(
       (c) => c[0] === 'event.turn-end',
     );
+    // One assistant turn-end carrying the text contentBlock so
+    // @ax/conversations can persist it (Task 3 of Week 10–12).
     expect(turnEnds).toHaveLength(1);
-    expect(turnEnds[0]?.[1]).toEqual({ reason: 'user-message-wait' });
+    expect(turnEnds[0]?.[1]).toEqual({
+      reason: 'user-message-wait',
+      role: 'assistant',
+      contentBlocks: [{ type: 'text', text: 'hello world' }],
+    });
 
     const chatEnds = fakeClient.event.mock.calls.filter(
       (c) => c[0] === 'event.chat-end',
@@ -326,6 +385,480 @@ describe('main()', () => {
     }
   });
 
+  it('multi-block assistant turn: text + thinking + tool_use all flow into event.turn-end contentBlocks in order', async () => {
+    setEnv(COMPLETE_ENV);
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          conversationId: null,
+        };
+      }
+      if (action === 'tool.list') return { tools: [] };
+      throw new Error(`unexpected call: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([userEntry('go'), cancelEntry]);
+
+    queryMock.mockImplementation(
+      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+        return (async function* () {
+          const it = prompt[Symbol.asyncIterator]();
+          await it.next();
+          yield assistantBlocks([
+            { type: 'thinking', thinking: 'plan', signature: 'sig-1' },
+            // Redacted-thinking blocks fire when extended-thinking is
+            // flagged. Replay (Task 15) MUST preserve the opaque blob
+            // (J3: Anthropic compatibility) — dropping it leaves a hole
+            // the model detects on a follow-up turn.
+            { type: 'redacted_thinking', data: 'opaque-blob-1' },
+            { type: 'text', text: 'sure thing' },
+            {
+              type: 'tool_use',
+              id: 'tu_1',
+              name: 'Bash',
+              input: { command: 'ls' },
+            },
+            // Unknown block types are dropped defensively.
+            { type: 'unknown_kind', whatever: true },
+          ]);
+          yield resultSuccess();
+          await it.next();
+        })();
+      },
+    );
+
+    const { main } = await import('../main.js');
+    const rc = await main();
+    expect(rc).toBe(0);
+
+    const turnEnds = fakeClient.event.mock.calls.filter(
+      (c) => c[0] === 'event.turn-end',
+    );
+    expect(turnEnds).toHaveLength(1);
+    expect(turnEnds[0]?.[1]).toEqual({
+      reason: 'user-message-wait',
+      role: 'assistant',
+      contentBlocks: [
+        { type: 'thinking', thinking: 'plan', signature: 'sig-1' },
+        { type: 'redacted_thinking', data: 'opaque-blob-1' },
+        { type: 'text', text: 'sure thing' },
+        {
+          type: 'tool_use',
+          id: 'tu_1',
+          name: 'Bash',
+          input: { command: 'ls' },
+        },
+      ],
+    });
+  });
+
+  it('tool_result via SDK user message → emits a separate role=tool turn-end before the assistant turn-end', async () => {
+    setEnv(COMPLETE_ENV);
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          conversationId: null,
+        };
+      }
+      if (action === 'tool.list') return { tools: [] };
+      throw new Error(`unexpected call: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([userEntry('do work'), cancelEntry]);
+
+    queryMock.mockImplementation(
+      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+        return (async function* () {
+          const it = prompt[Symbol.asyncIterator]();
+          await it.next();
+          // Assistant fires a tool_use, runner runs it, SDK echoes the
+          // result back as a user message.
+          yield assistantBlocks([
+            {
+              type: 'tool_use',
+              id: 'tu_42',
+              name: 'Bash',
+              input: { command: 'pwd' },
+            },
+          ]);
+          yield userToolResult('tu_42', '/tmp/work');
+          yield assistantBlocks([{ type: 'text', text: 'done' }]);
+          yield resultSuccess();
+          await it.next();
+        })();
+      },
+    );
+
+    const { main } = await import('../main.js');
+    const rc = await main();
+    expect(rc).toBe(0);
+
+    const turnEnds = fakeClient.event.mock.calls.filter(
+      (c) => c[0] === 'event.turn-end',
+    );
+    // Two turn-ends at this single SDK `result` boundary: tool first
+    // (chronologically came before the assistant wrap-up), assistant
+    // second.
+    expect(turnEnds).toHaveLength(2);
+    expect(turnEnds[0]?.[1]).toEqual({
+      reason: 'user-message-wait',
+      role: 'tool',
+      contentBlocks: [
+        {
+          type: 'tool_result',
+          tool_use_id: 'tu_42',
+          content: '/tmp/work',
+          is_error: false,
+        },
+      ],
+    });
+    expect(turnEnds[1]?.[1]).toEqual({
+      reason: 'user-message-wait',
+      role: 'assistant',
+      contentBlocks: [
+        {
+          type: 'tool_use',
+          id: 'tu_42',
+          name: 'Bash',
+          input: { command: 'pwd' },
+        },
+        { type: 'text', text: 'done' },
+      ],
+    });
+  });
+
+  it('tool_result with mixed text+image content: both blocks survive into the role=tool turn-end', async () => {
+    // ToolResultBlock.content is `string | (TextBlock | ImageBlock)[]`.
+    // A tool that returns image content (screenshot tool, Read on a
+    // binary, etc.) loses context on replay if the runner filters
+    // images out of the array — this test pins the round-trip so that
+    // regression can't happen silently.
+    setEnv(COMPLETE_ENV);
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          conversationId: null,
+        };
+      }
+      if (action === 'tool.list') return { tools: [] };
+      throw new Error(`unexpected call: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([userEntry('shoot it'), cancelEntry]);
+
+    queryMock.mockImplementation(
+      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+        return (async function* () {
+          const it = prompt[Symbol.asyncIterator]();
+          await it.next();
+          yield assistantBlocks([
+            {
+              type: 'tool_use',
+              id: 'tu_77',
+              name: 'Screenshot',
+              input: {},
+            },
+          ]);
+          yield {
+            type: 'user',
+            parent_tool_use_id: null,
+            session_id: 'sess-1',
+            message: {
+              role: 'user',
+              content: [
+                {
+                  type: 'tool_result',
+                  tool_use_id: 'tu_77',
+                  content: [
+                    { type: 'text', text: 'captured' },
+                    {
+                      type: 'image',
+                      source: {
+                        type: 'base64',
+                        media_type: 'image/png',
+                        data: 'AAA=',
+                      },
+                    },
+                    // Unknown content-array entry types are still
+                    // dropped defensively.
+                    { type: 'mystery', payload: 'wat' },
+                  ],
+                  is_error: false,
+                },
+              ],
+            },
+          } as unknown as SDKMessage;
+          yield assistantBlocks([{ type: 'text', text: 'shot' }]);
+          yield resultSuccess();
+          await it.next();
+        })();
+      },
+    );
+
+    const { main } = await import('../main.js');
+    const rc = await main();
+    expect(rc).toBe(0);
+
+    const turnEnds = fakeClient.event.mock.calls.filter(
+      (c) => c[0] === 'event.turn-end',
+    );
+    expect(turnEnds).toHaveLength(2);
+    expect(turnEnds[0]?.[1]).toEqual({
+      reason: 'user-message-wait',
+      role: 'tool',
+      contentBlocks: [
+        {
+          type: 'tool_result',
+          tool_use_id: 'tu_77',
+          content: [
+            { type: 'text', text: 'captured' },
+            {
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: 'image/png',
+                data: 'AAA=',
+              },
+            },
+          ],
+          is_error: false,
+        },
+      ],
+    });
+  });
+
+  it('empty assistant turn: turn-end fires as a heartbeat with no contentBlocks attached', async () => {
+    setEnv(COMPLETE_ENV);
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          conversationId: null,
+        };
+      }
+      if (action === 'tool.list') return { tools: [] };
+      throw new Error(`unexpected call: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([userEntry('ping'), cancelEntry]);
+
+    queryMock.mockImplementation(
+      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+        return (async function* () {
+          const it = prompt[Symbol.asyncIterator]();
+          await it.next();
+          // No assistant message at all — straight to result.
+          yield resultSuccess();
+          await it.next();
+        })();
+      },
+    );
+
+    const { main } = await import('../main.js');
+    const rc = await main();
+    expect(rc).toBe(0);
+
+    const turnEnds = fakeClient.event.mock.calls.filter(
+      (c) => c[0] === 'event.turn-end',
+    );
+    expect(turnEnds).toHaveLength(1);
+    expect(turnEnds[0]?.[1]).toEqual({
+      reason: 'user-message-wait',
+      role: 'assistant',
+    });
+  });
+
+  it('emits event.stream-chunk per text + thinking block with reqId; skips redacted_thinking and tool_use', async () => {
+    // Task 6: per-block streaming. The runner caches the host-minted
+    // reqId from the inbox payload (J9) and stamps it onto every
+    // event.stream-chunk it emits during the assistant branch. text and
+    // thinking blocks stream; redacted_thinking and tool_use do NOT
+    // (no human-readable text). Empty-text blocks are skipped to avoid
+    // noise on the wire.
+    setEnv(COMPLETE_ENV);
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          conversationId: null,
+        };
+      }
+      if (action === 'tool.list') return { tools: [] };
+      throw new Error(`unexpected call: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([userEntry('go', 'r42'), cancelEntry]);
+
+    queryMock.mockImplementation(
+      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+        return (async function* () {
+          const it = prompt[Symbol.asyncIterator]();
+          await it.next();
+          // Two assistant messages within the same turn:
+          //   #1 — thinking + text "hello" + redacted_thinking + tool_use
+          //   #2 — text "world"
+          // Empty text in #2 would be skipped if present; we omit one
+          // here to keep this test focused on the streaming contract.
+          yield assistantBlocks([
+            { type: 'thinking', thinking: 'pondering', signature: 'sig-1' },
+            { type: 'text', text: 'hello' },
+            { type: 'redacted_thinking', data: 'opaque' },
+            {
+              type: 'tool_use',
+              id: 'tu_1',
+              name: 'Bash',
+              input: { command: 'ls' },
+            },
+            // Empty-text block — must NOT emit a chunk.
+            { type: 'text', text: '' },
+          ]);
+          yield assistantBlocks([{ type: 'text', text: 'world' }]);
+          yield resultSuccess();
+          await it.next();
+        })();
+      },
+    );
+
+    const { main } = await import('../main.js');
+    const rc = await main();
+    expect(rc).toBe(0);
+
+    const streamChunks = fakeClient.event.mock.calls.filter(
+      (c) => c[0] === 'event.stream-chunk',
+    );
+    // Three chunks: thinking, text "hello", text "world". The empty-text
+    // block, the redacted_thinking block, and the tool_use block do not
+    // contribute.
+    expect(streamChunks).toHaveLength(3);
+    expect(streamChunks[0]?.[1]).toEqual({
+      reqId: 'r42',
+      text: 'pondering',
+      kind: 'thinking',
+    });
+    expect(streamChunks[1]?.[1]).toEqual({
+      reqId: 'r42',
+      text: 'hello',
+      kind: 'text',
+    });
+    expect(streamChunks[2]?.[1]).toEqual({
+      reqId: 'r42',
+      text: 'world',
+      kind: 'text',
+    });
+
+    // The turn-end transcript still flows independently (Task 3) — the
+    // stream chunks are observation-only (I4) and do NOT replace the
+    // canonical contentBlocks transcript.
+    const turnEnds = fakeClient.event.mock.calls.filter(
+      (c) => c[0] === 'event.turn-end',
+    );
+    expect(turnEnds).toHaveLength(1);
+    expect(turnEnds[0]?.[1]).toEqual({
+      reason: 'user-message-wait',
+      role: 'assistant',
+      contentBlocks: [
+        { type: 'thinking', thinking: 'pondering', signature: 'sig-1' },
+        { type: 'text', text: 'hello' },
+        { type: 'redacted_thinking', data: 'opaque' },
+        {
+          type: 'tool_use',
+          id: 'tu_1',
+          name: 'Bash',
+          input: { command: 'ls' },
+        },
+        { type: 'text', text: '' },
+        { type: 'text', text: 'world' },
+      ],
+    });
+  });
+
+  it('stream-chunk emit failure does not terminate the runner', async () => {
+    // The runner swallows event.stream-chunk failures (the host may be
+    // tearing down). The chat must complete cleanly even if every chunk
+    // emit rejects.
+    setEnv(COMPLETE_ENV);
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          conversationId: null,
+        };
+      }
+      if (action === 'tool.list') return { tools: [] };
+      throw new Error(`unexpected call: ${action}`);
+    });
+    // Reject only event.stream-chunk; let other events resolve normally.
+    fakeClient.event.mockImplementation(async (name: string) => {
+      if (name === 'event.stream-chunk') {
+        throw new Error('host gone');
+      }
+      return undefined;
+    });
+    fakeInbox = buildFakeInbox([userEntry('go', 'r-bad'), cancelEntry]);
+
+    queryMock.mockImplementation(
+      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+        return (async function* () {
+          const it = prompt[Symbol.asyncIterator]();
+          await it.next();
+          yield assistantText('hello');
+          yield resultSuccess();
+          await it.next();
+        })();
+      },
+    );
+
+    const { main } = await import('../main.js');
+    const rc = await main();
+    expect(rc).toBe(0);
+  });
+
   it('terminated path: SDK throws mid-stream → exit 1, chat-end outcome.kind=terminated', async () => {
     setEnv(COMPLETE_ENV);
     fakeClient = buildFakeClient();
@@ -340,6 +873,7 @@ describe('main()', () => {
             mcpConfigIds: [],
             model: 'claude-sonnet-4-7',
           },
+          conversationId: null,
         };
       }
       if (action === 'tool.list') return { tools: [] };
@@ -381,5 +915,237 @@ describe('main()', () => {
     expect(round.message).toBe('simulated SDK failure');
 
     expect(fakeClient.close).toHaveBeenCalledTimes(1);
+  });
+
+  // ---------------------------------------------------------------------
+  // Task 15 (Week 10–12): replay-at-boot.
+  //
+  // The runner pulls the persisted transcript at boot and yields prior
+  // user / tool turns into the SDK's prompt iterator BEFORE pulling the
+  // first live inbox message. Assistant turns are NOT re-yielded — the
+  // prompt iterator only takes user-shaped messages, and the model
+  // regenerates from the user-side context.
+  // ---------------------------------------------------------------------
+
+  it('Task 15 replay: fetches history when conversationId is non-null and yields prior user turns BEFORE the live inbox (assistant + tool turns are skipped — Anthropic API requires tool_result paired with preceding tool_use)', async () => {
+    setEnv(COMPLETE_ENV);
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string, payload: unknown) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          conversationId: 'cnv_resume',
+        };
+      }
+      if (action === 'tool.list') return { tools: [] };
+      if (action === 'conversation.fetch-history') {
+        // Pin the request shape: conversationId from session.get-config.
+        expect(payload).toEqual({ conversationId: 'cnv_resume' });
+        return {
+          turns: [
+            {
+              role: 'user',
+              contentBlocks: [
+                { type: 'text', text: 'first question' },
+              ],
+            },
+            {
+              role: 'assistant',
+              contentBlocks: [
+                { type: 'text', text: 'first answer (will not re-yield)' },
+                { type: 'tool_use', id: 'tu_1', name: 'Bash', input: { cmd: 'ls' } },
+              ],
+            },
+            {
+              role: 'tool',
+              contentBlocks: [
+                {
+                  type: 'tool_result',
+                  tool_use_id: 'tu_1',
+                  content: 'ok',
+                  is_error: false,
+                },
+              ],
+            },
+            {
+              role: 'user',
+              contentBlocks: [{ type: 'text', text: 'second question' }],
+            },
+          ],
+        };
+      }
+      throw new Error(`unexpected call: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([userEntry('live message'), cancelEntry]);
+
+    // Capture the order in which the SDK saw user-shaped messages so we
+    // can assert: replay turns FIRST (in order), live inbox LAST.
+    const sdkSawMessages: Array<{
+      role: string;
+      content: unknown;
+    }> = [];
+
+    queryMock.mockImplementation(
+      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+        return (async function* () {
+          for await (const m of prompt) {
+            sdkSawMessages.push({
+              role: m.message.role,
+              content: m.message.content,
+            });
+          }
+          yield resultSuccess();
+        })();
+      },
+    );
+
+    const { main } = await import('../main.js');
+    const rc = await main();
+    expect(rc).toBe(0);
+
+    // The runner made exactly one conversation.fetch-history call.
+    const fetchCalls = fakeClient.call.mock.calls.filter(
+      (c) => c[0] === 'conversation.fetch-history',
+    );
+    expect(fetchCalls).toHaveLength(1);
+    expect(fetchCalls[0]?.[1]).toEqual({ conversationId: 'cnv_resume' });
+
+    // The SDK saw replay USER turns FIRST, then the live inbox.
+    // Assistant AND tool turns from the persisted transcript are NOT
+    // re-yielded (Anthropic's API rejects tool_result blocks that
+    // aren't paired with a preceding assistant tool_use; without the
+    // SDK's resume() API, replaying tool turns is unsafe). The model
+    // regenerates the tool flow from the user-side context.
+    expect(sdkSawMessages).toHaveLength(3);
+    // Replay user turn #1 — text-only, collapsed back to a string.
+    expect(sdkSawMessages[0]).toEqual({
+      role: 'user',
+      content: 'first question',
+    });
+    // Replay user turn #2 — assistant + tool turns from the spec are
+    // skipped, so user turn #2 is the second message the SDK sees.
+    expect(sdkSawMessages[1]).toEqual({
+      role: 'user',
+      content: 'second question',
+    });
+    // Live inbox message LAST.
+    expect(sdkSawMessages[2]).toEqual({
+      role: 'user',
+      content: 'live message',
+    });
+  });
+
+  it('Task 15: skips fetch when conversationId is null', async () => {
+    setEnv(COMPLETE_ENV);
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          conversationId: null,
+        };
+      }
+      if (action === 'tool.list') return { tools: [] };
+      if (action === 'conversation.fetch-history') {
+        throw new Error('runner must NOT fetch history when conversationId is null');
+      }
+      throw new Error(`unexpected call: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([userEntry('hello'), cancelEntry]);
+    queryMock.mockImplementation(
+      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+        return (async function* () {
+          for await (const _m of prompt) {
+            void _m;
+          }
+          yield resultSuccess();
+        })();
+      },
+    );
+
+    const { main } = await import('../main.js');
+    const rc = await main();
+    expect(rc).toBe(0);
+
+    // No fetch-history call at all.
+    expect(
+      fakeClient.call.mock.calls.filter(
+        (c) => c[0] === 'conversation.fetch-history',
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('Task 15: fetch-history failure is non-fatal — runner continues with empty replay', async () => {
+    setEnv(COMPLETE_ENV);
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          conversationId: 'cnv_resume',
+        };
+      }
+      if (action === 'tool.list') return { tools: [] };
+      if (action === 'conversation.fetch-history') {
+        throw new Error('storage hiccup');
+      }
+      throw new Error(`unexpected call: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([userEntry('live message'), cancelEntry]);
+
+    const sdkSawMessages: Array<{ role: string; content: unknown }> = [];
+    queryMock.mockImplementation(
+      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+        return (async function* () {
+          for await (const m of prompt) {
+            sdkSawMessages.push({
+              role: m.message.role,
+              content: m.message.content,
+            });
+          }
+          yield resultSuccess();
+        })();
+      },
+    );
+
+    const stderrSpy = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation(() => true);
+    try {
+      const { main } = await import('../main.js');
+      const rc = await main();
+      // Non-fatal: chat completes (rc 0), no terminated outcome.
+      expect(rc).toBe(0);
+      // We logged the failure to stderr.
+      const stderrText = stderrSpy.mock.calls.map((c) => String(c[0])).join('');
+      expect(stderrText).toContain('conversation.fetch-history failed');
+    } finally {
+      stderrSpy.mockRestore();
+    }
+    // SDK only saw the live inbox message — replay was empty.
+    expect(sdkSawMessages).toEqual([
+      { role: 'user', content: 'live message' },
+    ]);
   });
 });

@@ -11,6 +11,8 @@ export {
   type HttpRequestEvent,
   type HttpResponseSentEvent,
   type ClearCookieOptions,
+  type StreamingResponse,
+  type StreamingResponseOptions,
 } from './types.js';
 export type { SignedCookieOptions } from './cookies.js';
 // signCookieValue / verifyCookieValue are exposed for cross-package tests

@@ -64,6 +64,12 @@ See `docs/plans/2026-04-25-chat-ui-pulled-forward.md` for the full handoff conte
 - Team management UI (read-only list; full CRUD ships with Week 9.5).
 - Real auth / real persistence / real LLM streaming.
 
+## Security posture (MVP)
+
+This is the part we want to be loud about: **MVP ships pre-canary**. The `@ax/scanner-canary` plugin — the thing that vetoes outbound messages containing secrets and redacts LLM output — isn't wired in yet. It's tracked for Week 13+.
+
+In the meantime, the admin panel renders a persistent banner saying so. We trust ourselves with our internal data, but we wouldn't ship this to outside users without canary in place — and neither should you. If you're standing up a deployment, please respect the banner.
+
 ## Manual smoke (12 steps)
 
 See [`MANUAL_ACCEPTANCE.md`](./MANUAL_ACCEPTANCE.md) for the full runbook — login, send a message, admin flows, theme, collapse, edit-retry, agent switch.

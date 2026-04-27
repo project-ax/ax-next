@@ -10,6 +10,8 @@ import type {
   SessionCreateOutput,
   SessionGetConfigInput,
   SessionGetConfigOutput,
+  SessionIsAliveInput,
+  SessionIsAliveOutput,
   SessionQueueWorkInput,
   SessionQueueWorkOutput,
   SessionResolveTokenInput,
@@ -58,7 +60,14 @@ function requireString(
 function validateOwner(
   raw: unknown,
   hookName: string,
-): { userId: string; agentId: string; agentConfig: AgentConfig } | undefined {
+):
+  | {
+      userId: string;
+      agentId: string;
+      agentConfig: AgentConfig;
+      conversationId: string | null;
+    }
+  | undefined {
   if (raw === undefined) return undefined;
   if (typeof raw !== 'object' || raw === null) {
     throw new PluginError({
@@ -71,6 +80,7 @@ function validateOwner(
   const userId = (raw as { userId?: unknown }).userId;
   const agentId = (raw as { agentId?: unknown }).agentId;
   const agentConfig = (raw as { agentConfig?: unknown }).agentConfig;
+  const conversationIdRaw = (raw as { conversationId?: unknown }).conversationId;
   requireString(userId, 'owner.userId', hookName);
   requireString(agentId, 'owner.agentId', hookName);
   if (typeof agentConfig !== 'object' || agentConfig === null) {
@@ -100,6 +110,30 @@ function validateOwner(
       message: `'owner.agentConfig.mcpConfigIds' must be a string[]`,
     });
   }
+  // conversationId — optional, accepts string|null|undefined. Reject
+  // empty strings so a wiring bug fails loud rather than silently
+  // storing an unbound row.
+  let conversationId: string | null;
+  if (conversationIdRaw === undefined || conversationIdRaw === null) {
+    conversationId = null;
+  } else if (typeof conversationIdRaw === 'string' && conversationIdRaw.length > 0) {
+    if (conversationIdRaw.length > 256) {
+      throw new PluginError({
+        code: 'invalid-payload',
+        plugin: PLUGIN_NAME,
+        hookName,
+        message: `'owner.conversationId' must be ≤ 256 chars`,
+      });
+    }
+    conversationId = conversationIdRaw;
+  } else {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `'owner.conversationId' must be a non-empty string or null/undefined`,
+    });
+  }
   return {
     userId,
     agentId,
@@ -109,6 +143,7 @@ function validateOwner(
       mcpConfigIds: cfg.mcpConfigIds as string[],
       model: cfg.model as string,
     },
+    conversationId,
   };
 }
 
@@ -168,6 +203,20 @@ function requireInboxEntry(
         message: `'entry.payload.role' must be 'user' | 'assistant' | 'system'`,
       });
     }
+    // J9: every server-delivered user message MUST carry the host-minted
+    // reqId so the runner can stamp event.stream-chunk emissions with it.
+    // This is a trust-boundary check — the IPC server feeds wire payloads
+    // through here, and a missing reqId would silently break stream
+    // routing back to the originating client.
+    const reqId = (value as { reqId?: unknown }).reqId;
+    if (typeof reqId !== 'string' || reqId.length === 0) {
+      throw new PluginError({
+        code: 'invalid-payload',
+        plugin: PLUGIN_NAME,
+        hookName,
+        message: `'entry.reqId' must be a non-empty string for user-message entries`,
+      });
+    }
     return;
   }
   if (type === 'cancel') return;
@@ -194,6 +243,10 @@ export function createSessionInmemoryPlugin(): Plugin {
         'session:queue-work',
         'session:claim-work',
         'session:terminate',
+        // Week 10–12 Task 16 (J6): host-internal liveness probe used by the
+        // chat-orchestrator to decide between routing to an existing
+        // sandbox session vs. opening a fresh one.
+        'session:is-alive',
       ],
       calls: [],
       subscribes: [],
@@ -270,6 +323,7 @@ export function createSessionInmemoryPlugin(): Plugin {
             userId: record.userId,
             agentId: record.agentId,
             agentConfig: record.agentConfig,
+            conversationId: record.conversationId,
           };
         },
       );
@@ -326,10 +380,16 @@ export function createSessionInmemoryPlugin(): Plugin {
       );
 
       // ----- session:terminate -----
+      //
+      // After the service work is done, we ALSO `bus.fire('session:terminate',
+      // ...)` so subscribers (e.g. @ax/conversations clearing
+      // active_session_id, J6) observe the teardown without coupling through
+      // a service-call dependency. Fire-and-forget — subscriber failures are
+      // logged by HookBus and don't bubble back to the caller.
       bus.registerService<SessionTerminateInput, SessionTerminateOutput>(
         'session:terminate',
         PLUGIN_NAME,
-        async (_ctx, input) => {
+        async (ctx, input) => {
           const hookName = 'session:terminate';
           const sessionId = (input as { sessionId?: unknown })?.sessionId;
           requireString(sessionId, 'sessionId', hookName);
@@ -338,7 +398,32 @@ export function createSessionInmemoryPlugin(): Plugin {
           // Wake any in-flight claims for this session; they'll see terminated
           // and resolve as `timeout` with echo cursor.
           inbox.terminate(sessionId);
+          // Broadcast to subscribers. Same hookName is used for both service
+          // and subscriber lanes; the bus keeps them separate. We pass the
+          // SAME sessionId so subscribers see the teardown event.
+          await bus.fire('session:terminate', ctx, { sessionId });
           return {};
+        },
+      );
+
+      // ----- session:is-alive -----
+      //
+      // Liveness probe (Week 10–12 Task 16, J6). True iff the row exists
+      // AND has not been terminated. Nonexistent sessionIds return
+      // `{ alive: false }` rather than throwing — the caller's reaction to
+      // "stale pointer" and "never existed" is identical (open a fresh
+      // sandbox). Empty / non-string sessionIds remain a hard
+      // `invalid-payload` because that's a bug in the caller, not a
+      // routine missing row.
+      bus.registerService<SessionIsAliveInput, SessionIsAliveOutput>(
+        'session:is-alive',
+        PLUGIN_NAME,
+        async (_ctx, input) => {
+          const hookName = 'session:is-alive';
+          const sessionId = (input as { sessionId?: unknown })?.sessionId;
+          requireString(sessionId, 'sessionId', hookName);
+          const record = store.get(sessionId);
+          return { alive: record !== null && !record.terminated };
         },
       );
     },

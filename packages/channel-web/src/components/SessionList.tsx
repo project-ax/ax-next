@@ -19,9 +19,11 @@
 import { useEffect } from 'react';
 import { useAgentStore } from '../lib/agent-store';
 import {
+  conversationToSessionRow,
   sessionStoreActions,
   useSessionStore,
   type SessionRow as SessionRowData,
+  type WireConversation,
 } from '../lib/session-store';
 import { SessionRow } from './SessionRow';
 
@@ -60,17 +62,21 @@ export function SessionList() {
   const { sessions, activeSessionId, version } = useSessionStore();
   const { agents } = useAgentStore();
 
-  // Re-fetch on mount and on version bumps. The mock server returns
-  // sessions newest-first already; we sort again defensively below.
+  // Re-fetch on mount and on version bumps. The chat-flow API returns
+  // a flat array of Conversation rows; we map to the internal SessionRow
+  // shape and sort newest-first defensively below.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch('/api/chat/sessions', { credentials: 'include' });
+        const res = await fetch('/api/chat/conversations', {
+          credentials: 'include',
+        });
         if (!res.ok) return;
-        const body = (await res.json()) as { sessions?: SessionRowData[] };
+        const body = (await res.json()) as unknown;
         if (cancelled) return;
-        const rows = Array.isArray(body.sessions) ? body.sessions : [];
+        const wire = Array.isArray(body) ? (body as WireConversation[]) : [];
+        const rows: SessionRowData[] = wire.map(conversationToSessionRow);
         sessionStoreActions.setSessions(rows);
       } catch (err) {
         console.warn('[session-list] fetch failed', err);

@@ -76,10 +76,9 @@ describe('AgentChip + AgentMenu', () => {
     expect(checks).toHaveLength(1);
   });
 
-  it('empty session: picking a different agent retags via PATCH (no new session)', async () => {
+  it('empty conversation: picking a different agent records the pick without a network call (I10 — agent immutability)', async () => {
     agentStoreActions.setSelectedAgent('tide');
     agentStoreActions.setActiveSession('sess-1', false);
-    fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({}) });
     const { container } = render(<AgentChip />);
     fireEvent.click(screen.getByRole('button', { name: /tide/i }));
     const mercyRow = Array.from(
@@ -87,12 +86,13 @@ describe('AgentChip + AgentMenu', () => {
     ).find((b) => /mercy/i.test(b.textContent ?? ''));
     expect(mercyRow).toBeTruthy();
     fireEvent.click(mercyRow!);
+    // The AX wire forbids retagging an existing conversation's agent;
+    // the chip just records the pick locally — the next user message
+    // creates a fresh conversation under the new agent.
     await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith(
-        '/api/chat/sessions/sess-1',
-        expect.objectContaining({ method: 'PATCH' }),
-      );
+      expect(screen.getByRole('button', { name: /mercy/i })).toBeTruthy();
     });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('non-empty session: picking a different agent sets pending (no new session yet)', () => {

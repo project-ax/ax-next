@@ -1,7 +1,9 @@
 import pg from 'pg';
 import type { Kysely } from 'kysely';
-import type { ChatMessage } from '@ax/core';
+import { PluginError, type ChatMessage } from '@ax/core';
 import type { SessionDatabase } from './migrations.js';
+
+const PLUGIN_NAME = '@ax/session-postgres';
 
 // ---------------------------------------------------------------------------
 // Per-session long-poll inbox (postgres-backed)
@@ -32,12 +34,32 @@ import type { SessionDatabase } from './migrations.js';
 //    the terminated flag and resolves as `timeout`.
 // ---------------------------------------------------------------------------
 
+// `reqId` on `user-message` is the host-minted request id (J9). Producers
+// that enqueue a user message (today: chat-orchestrator; later: the chat
+// HTTP API in Task 9) MUST attach the reqId of the originating host
+// request. The runner reads it back through `session:claim-work` and
+// stamps it onto every `event.stream-chunk` so the host can route the
+// chunk back to the waiting client (Task 5/7). REQUIRED — never optional.
+//
+// Persistence: stored alongside the ChatMessage in the JSONB `payload`
+// column rather than a dedicated SQL column, so this slice doesn't need
+// a forward-only migration. The wrapping shape is opaque at the SQL
+// layer; the inbox layer is the single producer + consumer. A row whose
+// JSONB doesn't match the `{ message, reqId }` shape (e.g. a pre-Task-6
+// row left in flight across a deploy) is treated as CORRUPTION: the
+// shape check throws `corrupt-inbox-row` rather than returning null.
+// Silent-skip would leave the user's message in the DB but unreachable
+// at this cursor, and the long-poll claim loop would re-poll forever —
+// a hang the operator can't diagnose. Loud beats silent: the runner
+// gets a terminal INTERNAL error, exits 1, the orchestrator records a
+// terminated chat-end, and the corrupt row shows up in audit/log so an
+// operator can surgically delete it.
 export type InboxEntry =
-  | { type: 'user-message'; payload: ChatMessage }
+  | { type: 'user-message'; payload: ChatMessage; reqId: string }
   | { type: 'cancel' };
 
 export type ClaimResult =
-  | { type: 'user-message'; payload: ChatMessage; cursor: number }
+  | { type: 'user-message'; payload: ChatMessage; reqId: string; cursor: number }
   | { type: 'cancel'; cursor: number }
   | { type: 'timeout'; cursor: number };
 
@@ -71,6 +93,14 @@ interface PerSessionWaiter {
   /** Real sessionId (NOT the sanitized channel suffix) — used for SQL lookups. */
   sessionId: string;
   resolve: (r: ClaimResult) => void;
+  /**
+   * Rejects the underlying claim promise. Used only on terminal errors
+   * the waiter cannot recover from — today, a `corrupt-inbox-row` thrown
+   * by `fetchEntry` during a LISTEN-driven re-check. A swallow here
+   * would put us back in the original silent-hang scenario; we want the
+   * runner to exit and the orchestrator to record terminated chat-end.
+   */
+  reject: (err: unknown) => void;
   cursor: number;
   timer: ReturnType<typeof setTimeout>;
   /** Removes the LISTEN binding when this waiter is the last one on the channel. */
@@ -115,8 +145,18 @@ export function createInbox(opts: InboxOptions): Inbox {
   });
 
   async function wakeWaiter(w: PerSessionWaiter): Promise<void> {
-    // Re-check SQL: did the awaited entry land?
-    const row = await fetchEntry(db, w.sessionId, w.cursor);
+    // Re-check SQL: did the awaited entry land? `fetchEntry` may THROW on
+    // a corrupt-inbox-row — propagate that to the awaiting claim promise
+    // so the corruption surfaces as a terminal error (the runner exits 1
+    // and the orchestrator records terminated chat-end). A silent
+    // swallow here would put us right back in the original hang scenario.
+    let row: InboxEntry | null;
+    try {
+      row = await fetchEntry(db, w.sessionId, w.cursor);
+    } catch (err) {
+      rejectWaiter(w, err);
+      return;
+    }
     if (row !== null) {
       finishWaiter(w, deliver(row, w.cursor));
       return;
@@ -141,6 +181,20 @@ export function createInbox(opts: InboxOptions): Inbox {
     w.resolve(result);
     // Best-effort UNLISTEN cleanup; failures don't affect the resolved
     // claim. We let unlistenIfLast handle the ref-count.
+    void w.unlistenIfLast();
+  }
+
+  function rejectWaiter(w: PerSessionWaiter, err: unknown): void {
+    // Mirror of finishWaiter for the terminal-error path. Same membership
+    // check guarantees we settle the promise exactly once across the
+    // resolve/reject pair.
+    const channel = channelFor(w.sessionId);
+    const set = waitersByChannel.get(channel);
+    if (set === undefined || !set.has(w)) return; // already finished
+    clearTimeout(w.timer);
+    set.delete(w);
+    if (set.size === 0) waitersByChannel.delete(channel);
+    w.reject(err);
     void w.unlistenIfLast();
   }
 
@@ -215,9 +269,13 @@ export function createInbox(opts: InboxOptions): Inbox {
               session_id: sessionId,
               cursor: next as unknown as string, // BIGINT column; pg accepts number
               type: entry.type,
+              // For user-message we wrap `{ message, reqId }` so the JSONB
+              // column carries both without a schema migration. cancel
+              // entries store null. The wrapping is internal — `claim`
+              // unwraps before returning to the caller. (See `fetchEntry`.)
               payload:
                 entry.type === 'user-message'
-                  ? (entry.payload as unknown as never)
+                  ? ({ message: entry.payload, reqId: entry.reqId } as unknown as never)
                   : null,
             } as never)
             .execute();
@@ -263,12 +321,12 @@ export function createInbox(opts: InboxOptions): Inbox {
       const channel = channelFor(sessionId);
       const unlistenIfLast = await ensureListen(sessionId);
 
-      return new Promise<ClaimResult>((resolve) => {
+      return new Promise<ClaimResult>((resolve, reject) => {
         // Single source of truth for "did this waiter already resolve" lives
-        // in the waiter's set membership: finishWaiter checks `set.has(w)`
-        // before resolving. The waiter's `resolve` is the underlying Promise
-        // callback — it MUST be called exactly once, and finishWaiter is
-        // the only path that calls it.
+        // in the waiter's set membership: finishWaiter / rejectWaiter both
+        // check `set.has(w)` before settling. The waiter's promise
+        // callbacks MUST be called exactly once between them, and those
+        // two functions are the only paths that touch them.
         const timer: ReturnType<typeof setTimeout> = setTimeout(() => {
           finishWaiter(waiter, { type: 'timeout', cursor });
         }, timeoutMs);
@@ -276,6 +334,7 @@ export function createInbox(opts: InboxOptions): Inbox {
         const waiter: PerSessionWaiter = {
           sessionId,
           resolve,
+          reject,
           cursor,
           timer,
           unlistenIfLast,
@@ -332,14 +391,56 @@ async function fetchEntry(
 ): Promise<InboxEntry | null> {
   const row = await db
     .selectFrom('session_postgres_v1_inbox')
-    .select(['type', 'payload'])
+    // Select `id` too: a corrupt row needs to be greppable by its
+    // BIGSERIAL id so an operator can surgically DELETE it.
+    .select(['id', 'type', 'payload'])
     // BIGINT comparison; passing a JS number is fine within Number.MAX_SAFE_INTEGER.
     .where('session_id', '=', sessionId)
     .where('cursor', '=', cursor as unknown as string)
     .executeTakeFirst();
   if (row === undefined) return null;
   if (row.type === 'user-message') {
-    return { type: 'user-message', payload: row.payload as ChatMessage };
+    // The JSONB payload wraps the ChatMessage and the host-minted reqId;
+    // see the `queue` insert above. A row whose JSONB doesn't match the
+    // expected shape is CORRUPTION (most likely a pre-Task-6 row left
+    // in flight across a deploy, or a manual DB write). We THROW rather
+    // than return null because a silent skip would leave the row in the
+    // DB but unreachable at this cursor — the long-poll loop on the
+    // claim side would re-poll forever, hanging the runner with no
+    // diagnostic. Throwing surfaces it as a terminal INTERNAL error: the
+    // runner exits 1, the orchestrator records terminated chat-end, the
+    // audit/log captures the row id, and the operator can DELETE the
+    // bad row instead of debugging a mysterious hang.
+    const wrapped = row.payload as
+      | { message?: unknown; reqId?: unknown }
+      | null
+      | undefined;
+    if (
+      wrapped === null ||
+      wrapped === undefined ||
+      typeof wrapped !== 'object' ||
+      typeof (wrapped as { reqId?: unknown }).reqId !== 'string' ||
+      typeof (wrapped as { message?: unknown }).message !== 'object' ||
+      (wrapped as { message?: unknown }).message === null
+    ) {
+      throw new PluginError({
+        code: 'corrupt-inbox-row',
+        plugin: PLUGIN_NAME,
+        hookName: 'session:claim-work',
+        message:
+          `inbox row id=${String(row.id)} (session='${sessionId}', cursor=${cursor}) ` +
+          `has malformed JSONB payload: expected { message, reqId } shape. ` +
+          `Likely a pre-Task-6 row left in flight across a deploy, or a manual DB ` +
+          `write. Surface for operator triage rather than silent skip — silent skip ` +
+          `would hang the runner forever at this cursor. Recovery: delete the row ` +
+          `(DELETE FROM session_postgres_v1_inbox WHERE id = ${String(row.id)}).`,
+      });
+    }
+    return {
+      type: 'user-message',
+      payload: wrapped.message as ChatMessage,
+      reqId: wrapped.reqId as string,
+    };
   }
   if (row.type === 'cancel') {
     return { type: 'cancel' };
@@ -349,7 +450,12 @@ async function fetchEntry(
 
 function deliver(entry: InboxEntry, cursor: number): ClaimResult {
   if (entry.type === 'user-message') {
-    return { type: 'user-message', payload: entry.payload, cursor: cursor + 1 };
+    return {
+      type: 'user-message',
+      payload: entry.payload,
+      reqId: entry.reqId,
+      cursor: cursor + 1,
+    };
   }
   return { type: 'cancel', cursor: cursor + 1 };
 }

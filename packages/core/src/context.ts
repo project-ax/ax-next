@@ -89,6 +89,14 @@ export interface ChatContext {
   readonly sessionId: string;
   readonly agentId: string;
   readonly userId: string;
+  /**
+   * Conversation this chat belongs to, when one exists. Optional because
+   * not every chat-flow runs inside a persistent conversation (canary
+   * acceptance tests, ephemeral admin probes). Set by chat-orchestrator in
+   * Task 16 of Week 10–12; consumed today by the @ax/conversations
+   * `chat:turn-end` subscriber, which gracefully no-ops when unset.
+   */
+  readonly conversationId?: string;
   readonly logger: Logger;
   readonly state: Map<string, unknown>;
   readonly workspace: WorkspaceContext;
@@ -99,6 +107,8 @@ export interface MakeChatContextOptions {
   sessionId: string;
   agentId: string;
   userId: string;
+  /** Optional. See `ChatContext.conversationId`. */
+  conversationId?: string;
   logger?: Logger;
   // Optional for dev ergonomics — defaults to process.cwd(). Real callers
   // (CLI boot, runner) should supply an explicit workspace.
@@ -114,6 +124,9 @@ export function makeChatContext(opts: MakeChatContextOptions): ChatContext {
     sessionId: opts.sessionId,
     agentId: opts.agentId,
     userId: opts.userId,
+    ...(opts.conversationId !== undefined
+      ? { conversationId: opts.conversationId }
+      : {}),
     logger,
     state: new Map(),
     workspace,

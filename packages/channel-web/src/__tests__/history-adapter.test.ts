@@ -24,22 +24,47 @@ beforeEach(() => {
 });
 
 describe('createAxHistoryAdapter', () => {
-  it('load returns empty when no remoteId', async () => {
+  it('load returns empty when no conversationId', async () => {
     const adapter = createAxHistoryAdapter(() => undefined);
     const result = await adapter.load();
     expect(result.messages).toHaveLength(0);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('withFormat.load fetches /api/chat/sessions/:id/history and converts text content', async () => {
+  it('withFormat.load fetches /api/chat/conversations/:id and decodes turns', async () => {
     fetchMock.mockResolvedValueOnce({
       ok: true,
-      json: async () => ({ messages: [{ role: 'user', content: 'hello', created_at: 1 }, { role: 'assistant', content: 'hi back', created_at: 2 }] }),
+      json: async () => ({
+        conversation: { conversationId: 'conv-1', title: 't' },
+        turns: [
+          { turnId: 't0', turnIndex: 0, role: 'user', contentBlocks: [{ type: 'text', text: 'hello' }], createdAt: '2026-04-01T00:00:00Z' },
+          { turnId: 't1', turnIndex: 1, role: 'assistant', contentBlocks: [{ type: 'text', text: 'hi back' }], createdAt: '2026-04-01T00:00:01Z' },
+        ],
+      }),
     });
-    const adapter = createAxHistoryAdapter(() => 'sess-1');
+    const adapter = createAxHistoryAdapter(() => 'conv-1');
     const result = await adapter.withFormat!(makeFormatAdapter()).load();
-    expect(fetchMock).toHaveBeenCalledWith('/api/chat/sessions/sess-1/history');
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/chat/conversations/conv-1',
+      expect.objectContaining({ credentials: 'include' }),
+    );
     expect(result.messages).toHaveLength(2);
+  });
+
+  it('withFormat.load passes ?includeThinking=true when option enabled', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        conversation: { conversationId: 'conv-1', title: null },
+        turns: [],
+      }),
+    });
+    const adapter = createAxHistoryAdapter(() => 'conv-1', { includeThinking: true });
+    await adapter.withFormat!(makeFormatAdapter()).load();
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/chat/conversations/conv-1?includeThinking=true',
+      expect.objectContaining({ credentials: 'include' }),
+    );
   });
 
   it('withFormat.load returns empty on 404', async () => {
@@ -55,50 +80,83 @@ describe('createAxHistoryAdapter', () => {
     await expect(adapter.withFormat!(makeFormatAdapter()).load()).rejects.toThrow();
   });
 
-  it('image_data block with missing mimeType/data falls back to a placeholder', async () => {
-    // Without the guard, the adapter would emit
-    // `data:undefined;base64,undefined`, which the renderer treats as
-    // a broken image with no error visible to the user.
+  it('thinking blocks are tagged with providerMetadata so the renderer can hide them', async () => {
     fetchMock.mockResolvedValueOnce({
       ok: true,
       json: async () => ({
-        messages: [
+        conversation: { conversationId: 'conv-1', title: null },
+        turns: [
           {
-            role: 'user',
-            content: [{ type: 'image_data' /* mimeType + data missing */ }],
-            created_at: 1,
+            turnId: 't0',
+            turnIndex: 0,
+            role: 'assistant',
+            contentBlocks: [
+              { type: 'thinking', thinking: 'reasoning step' },
+              { type: 'text', text: 'final answer' },
+            ],
+            createdAt: '2026-04-01T00:00:00Z',
           },
         ],
       }),
     });
-    const adapter = createAxHistoryAdapter(() => 'sess-x');
+    const adapter = createAxHistoryAdapter(() => 'conv-1', { includeThinking: true });
     const result = await adapter.withFormat!(makeFormatAdapter()).load();
-    expect(result.messages).toHaveLength(1);
     const decoded = result.messages[0]!.message;
     const parts = (decoded.content as { parts: Array<Record<string, unknown>> }).parts;
-    expect(parts).toHaveLength(1);
-    // Falls back to a text placeholder rather than an undefined-laced
-    // data: URI.
-    expect(parts[0]).toEqual({ type: 'text', text: '[malformed image]' });
+    expect(parts).toHaveLength(2);
+    expect(parts[0]).toMatchObject({
+      type: 'text',
+      text: 'reasoning step',
+      providerMetadata: { ax: { thinking: true } },
+    });
+    expect(parts[1]).toMatchObject({ type: 'text', text: 'final answer' });
+    expect(parts[1]?.['providerMetadata']).toBeUndefined();
   });
 
-  it('file_data block with missing fields falls back to a placeholder', async () => {
+  it('image block (base64) decodes to a data: URL', async () => {
     fetchMock.mockResolvedValueOnce({
       ok: true,
       json: async () => ({
-        messages: [
+        conversation: { conversationId: 'conv-1', title: null },
+        turns: [
           {
+            turnId: 't0',
+            turnIndex: 0,
             role: 'user',
-            content: [{ type: 'file_data', filename: 'oops.txt' /* mimeType + data missing */ }],
-            created_at: 1,
+            contentBlocks: [
+              {
+                type: 'image',
+                source: { type: 'base64', media_type: 'image/png', data: 'AAAA' },
+              },
+            ],
+            createdAt: '2026-04-01T00:00:00Z',
           },
         ],
       }),
     });
-    const adapter = createAxHistoryAdapter(() => 'sess-x');
+    const adapter = createAxHistoryAdapter(() => 'conv-1');
     const result = await adapter.withFormat!(makeFormatAdapter()).load();
     const decoded = result.messages[0]!.message;
     const parts = (decoded.content as { parts: Array<Record<string, unknown>> }).parts;
-    expect(parts[0]).toEqual({ type: 'text', text: '[malformed file]' });
+    expect(parts[0]).toMatchObject({
+      type: 'image',
+      image: 'data:image/png;base64,AAAA',
+    });
+  });
+
+  it('an empty contentBlocks array still produces a single empty text part', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        conversation: { conversationId: 'conv-1', title: null },
+        turns: [
+          { turnId: 't0', turnIndex: 0, role: 'assistant', contentBlocks: [], createdAt: '2026-04-01T00:00:00Z' },
+        ],
+      }),
+    });
+    const adapter = createAxHistoryAdapter(() => 'conv-1');
+    const result = await adapter.withFormat!(makeFormatAdapter()).load();
+    const parts = (result.messages[0]!.message.content as { parts: unknown[] }).parts;
+    expect(parts).toHaveLength(1);
   });
 });

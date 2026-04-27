@@ -460,7 +460,11 @@ describe('dispatcher', () => {
       ctx,
       {
         sessionId: 's-claim',
-        entry: { type: 'user-message', payload: { role: 'user', content: 'hi' } },
+        entry: {
+          type: 'user-message',
+          payload: { role: 'user', content: 'hi' },
+          reqId: 'r-claim',
+        },
       },
     );
     const res = await doRequest(
@@ -474,6 +478,7 @@ describe('dispatcher', () => {
     expect(parsed.type).toBe('user-message');
     if (parsed.type === 'user-message') {
       expect(parsed.payload).toEqual({ role: 'user', content: 'hi' });
+      expect(parsed.reqId).toBe('r-claim');
       expect(parsed.cursor).toBe(1);
     }
   });
@@ -687,7 +692,72 @@ describe('dispatcher', () => {
   // /event.stream-chunk
   // -------------------------------------------------------------------------
 
-  it('POST /event.stream-chunk → 501 (6.5b feature)', async () => {
+  it('POST /event.stream-chunk — fires chat:stream-chunk subscriber (kind=text)', async () => {
+    let received: unknown = null;
+    let resolved: (v: unknown) => void;
+    const firePromise = new Promise<unknown>((resolve) => {
+      resolved = resolve;
+    });
+    const s = await setup({
+      subscribers: [
+        {
+          hook: 'chat:stream-chunk',
+          handler: async (_ctx, payload) => {
+            received = payload;
+            resolved(payload);
+            return undefined;
+          },
+        },
+      ],
+    });
+    setups.push(s);
+    const body = { reqId: 'r1', text: 'hello', kind: 'text' as const };
+    const res = await doRequest(
+      s.socketPath,
+      'POST',
+      '/event.stream-chunk',
+      s.token,
+      JSON.stringify(body),
+    );
+    expect(res.status).toBe(202);
+    await firePromise;
+    // Pass-through: subscribers see the EventStreamChunkSchema shape exactly.
+    expect(received).toEqual(body);
+  });
+
+  it('POST /event.stream-chunk — fires chat:stream-chunk subscriber (kind=thinking)', async () => {
+    let received: unknown = null;
+    let resolved: (v: unknown) => void;
+    const firePromise = new Promise<unknown>((resolve) => {
+      resolved = resolve;
+    });
+    const s = await setup({
+      subscribers: [
+        {
+          hook: 'chat:stream-chunk',
+          handler: async (_ctx, payload) => {
+            received = payload;
+            resolved(payload);
+            return undefined;
+          },
+        },
+      ],
+    });
+    setups.push(s);
+    const body = { reqId: 'r2', text: 'pondering...', kind: 'thinking' as const };
+    const res = await doRequest(
+      s.socketPath,
+      'POST',
+      '/event.stream-chunk',
+      s.token,
+      JSON.stringify(body),
+    );
+    expect(res.status).toBe(202);
+    await firePromise;
+    expect(received).toEqual(body);
+  });
+
+  it('POST /event.stream-chunk — malformed body (missing kind) → 400 VALIDATION', async () => {
     const s = await setup({});
     setups.push(s);
     const res = await doRequest(
@@ -695,12 +765,11 @@ describe('dispatcher', () => {
       'POST',
       '/event.stream-chunk',
       s.token,
-      JSON.stringify({ reqId: 'r1', text: 'hi', kind: 'text' }),
+      JSON.stringify({ reqId: 'r1', text: 'hello' }),
     );
-    expect(res.status).toBe(501);
+    expect(res.status).toBe(400);
     const parsed = JSON.parse(res.body);
-    expect(parsed.error.code).toBe('INTERNAL');
-    expect(parsed.error.message).toMatch(/6\.5b/);
+    expect(parsed.error.code).toBe('VALIDATION');
   });
 
   // -------------------------------------------------------------------------

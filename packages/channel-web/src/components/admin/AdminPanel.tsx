@@ -7,6 +7,10 @@
  * The overlay click-outside closes the panel; the × button does the same.
  * Escape-to-close and focus-trap polish are deferred (the panel is admin-
  * only, low-traffic, and the design-handoff doesn't lean on them).
+ *
+ * Top-of-panel banner: per the Week 10–12 plan (scope decision 7), MVP
+ * ships without `@ax/scanner-canary`. Operators see this banner every
+ * time they open admin until canary lands in Week 13+.
  */
 import type { AdminView } from '../../lib/admin';
 import { AgentForm } from './AgentForm';
@@ -47,6 +51,18 @@ export function AdminPanel({
           </button>
         </div>
         <div className="admin-panel-body">
+          <div className="admin-canary-banner" role="status">
+            <span aria-hidden="true" className="admin-canary-banner-icon">
+              ⚠
+            </span>
+            <span>
+              Heads up: the canary scanner isn't wired in yet. Until it
+              is, this deployment has no automated secret-leak veto and
+              no LLM-output redaction. We trust ourselves with our
+              internal data, but we wouldn't ship this to outside users
+              yet — and neither should you. Tracked for Week 13+.
+            </span>
+          </div>
           {view === 'agents' && <AgentForm />}
           {view === 'mcp-servers' && <McpServerForm />}
           {view === 'teams' && <TeamList />}

@@ -42,12 +42,18 @@ export interface AgentConfig {
 //   - `timeout`: returned `cursor` echoes the input cursor (no advancement).
 // ---------------------------------------------------------------------------
 
+// `reqId` on `user-message` is the host-minted request id (J9). Producers
+// that enqueue a user message (today: chat-orchestrator; later: the chat
+// HTTP API in Task 9) MUST attach the reqId of the originating host
+// request. The runner reads it back through `session:claim-work` and
+// stamps it onto every `event.stream-chunk` so the host can route the
+// chunk back to the waiting client (Task 5/7). REQUIRED — never optional.
 export type InboxEntry =
-  | { type: 'user-message'; payload: ChatMessage }
+  | { type: 'user-message'; payload: ChatMessage; reqId: string }
   | { type: 'cancel' };
 
 export type ClaimResult =
-  | { type: 'user-message'; payload: ChatMessage; cursor: number }
+  | { type: 'user-message'; payload: ChatMessage; reqId: string; cursor: number }
   | { type: 'cancel'; cursor: number }
   | { type: 'timeout'; cursor: number };
 
@@ -69,11 +75,17 @@ export interface SessionCreateInput {
    * and `session:get-config` will reject. The orchestrator is the only
    * production caller that mints sessions and it always sets this
    * field, so the optionality is purely for back-compat.
+   *
+   * Week 10–12 Task 15: `conversationId` ties this session to a persisted
+   * conversation row so the runner can pull history at boot. Optional —
+   * canary acceptance probes and ephemeral admin sessions don't have a
+   * conversation, and the runner skips replay when null.
    */
   owner?: {
     userId: string;
     agentId: string;
     agentConfig: AgentConfig;
+    conversationId?: string | null;
   };
 }
 
@@ -91,6 +103,12 @@ export interface SessionResolveTokenInput {
  * owner (Week 9.5+). Pre-9.5 sessions store nulls. Callers branch on the
  * null case — typically rejecting with an `owner-missing` error in the
  * security-sensitive path (e.g. Task 7's per-agent tool filter).
+ *
+ * Week 10–12 final review: `conversationId` rides on the resolve result so
+ * the IPC server can stamp it onto every per-request ChatContext. Without
+ * it, runner-fired `chat:turn-end` events lose their conversation binding
+ * and three subscribers silently no-op (auto-append, clearActiveReqId,
+ * SSE done-frame). Null for canary / admin sessions.
  */
 export type SessionResolveTokenOutput =
   | {
@@ -98,6 +116,7 @@ export type SessionResolveTokenOutput =
       workspaceRoot: string;
       userId: string | null;
       agentId: string | null;
+      conversationId: string | null;
     }
   | null;
 
@@ -117,6 +136,12 @@ export interface SessionGetConfigOutput {
   userId: string;
   agentId: string;
   agentConfig: AgentConfig;
+  /**
+   * Conversation this session is bound to (Task 15 of Week 10–12). Null
+   * for non-conversation sessions; the runner uses non-null as the
+   * trigger to call `conversation.fetch-history` at boot.
+   */
+  conversationId: string | null;
 }
 
 export interface SessionQueueWorkInput {
@@ -144,3 +169,21 @@ export interface SessionTerminateInput {
 // than bare `{}`) is the TS idiom for "no properties allowed"; the bus's return
 // shape stays explicit so a future widening is an intentional type change.
 export type SessionTerminateOutput = Record<string, never>;
+
+// ---------------------------------------------------------------------------
+// session:is-alive — host-internal liveness probe (Week 10–12 Task 16, J6).
+//
+// The chat-orchestrator calls this to decide whether a conversation's
+// `active_session_id` still points at a live sandbox (route the user
+// message into its inbox) or a torn-down one (open a fresh sandbox). True
+// IFF the session row exists AND has not been terminated. A nonexistent
+// sessionId returns `false` rather than throwing — the caller's response
+// to "you tried to write to a dead session" and "you tried to write to a
+// session that was never minted" is the same: open a fresh one.
+// ---------------------------------------------------------------------------
+export interface SessionIsAliveInput {
+  sessionId: string;
+}
+export interface SessionIsAliveOutput {
+  alive: boolean;
+}

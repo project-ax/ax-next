@@ -45,6 +45,25 @@ export function createChatOrchestratorPlugin(
         'sandbox:open-session',
         'agents:resolve',
       ],
+      // ----- conditionally-called peers (NOT in `calls`) -----
+      //
+      // Week 10–12 Task 16 (J6) introduces `conversations:get`,
+      // `conversations:bind-session`, and `session:is-alive`. The
+      // orchestrator dispatches these ONLY when `ctx.conversationId` is
+      // set — i.e. on the channel-web path that ALSO loads
+      // @ax/conversations + a session backend with the new hook. Plugins
+      // outside that path (CLI canary, mcp-client e2e harness) drive the
+      // orchestrator without a conversation context, so they don't need
+      // the peers loaded.
+      //
+      // We gate each call with `bus.hasService(...)` at runtime to keep
+      // the orchestrator usable in those non-channel-web presets. Failing
+      // closed (no routing, no bind) is the correct degraded behavior —
+      // a missing conversations plugin can't keep state about active
+      // sessions anyway.
+      //
+      // Same pattern as the existing `ipc:stop` non-declaration: when a
+      // hook is conditionally consumed, we don't declare it.
       // We listen to `chat:end` to capture the outcome emitted by the
       // runner (via the IPC server's /event.chat-end handler). The
       // subscriber is a pass-through: resolves the waiting deferred,

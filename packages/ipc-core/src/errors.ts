@@ -59,6 +59,22 @@ export function mapPluginError(err: PluginError): HandlerErr {
         status: 401,
         body: { error: { code: 'SESSION_INVALID', message: 'session has no usable config' } },
       };
+    // Task 15 (Week 10–12): conversations:fetch-history surfaces these
+    // codes from its ACL gate (`not-found` for cross-tenant or unknown
+    // rows, `forbidden` for `agents:resolve` denial). Channel-web maps
+    // the SAME bus errors as 404 / 403 over HTTP; we mirror that here
+    // so the runner sees the same outcome regardless of caller. We use
+    // HOOK_REJECTED with HTTP 403 (the IPC error-code enum doesn't have
+    // a FORBIDDEN constant — minting one would widen the wire surface
+    // and isn't load-bearing for the runner, which only branches on
+    // status to decide retry-vs-fatal).
+    case 'not-found':
+      return notFound('not found');
+    case 'forbidden':
+      return {
+        status: 403,
+        body: { error: { code: 'HOOK_REJECTED', message: 'forbidden' } },
+      };
     case 'no-service':
     case 'duplicate-service':
     case 'missing-service':

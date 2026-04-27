@@ -48,20 +48,22 @@ const seedAgents = () =>
   ]);
 
 const seedOneSession = (id = 's-1', title = 'old title') => {
+  // The list endpoint is /api/chat/conversations (Task 19) and returns
+  // a flat array of camelCase Conversation rows.
   fetchMock.mockResolvedValueOnce({
     ok: true,
-    json: async () => ({
-      sessions: [
-        {
-          id,
-          title,
-          agent_id: 'tide',
-          updated_at: Date.now(),
-          created_at: Date.now(),
-          user_id: 'u2',
-        },
-      ],
-    }),
+    json: async () => [
+      {
+        conversationId: id,
+        userId: 'u2',
+        agentId: 'tide',
+        title,
+        activeSessionId: null,
+        activeReqId: null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+    ],
   });
 };
 
@@ -124,8 +126,8 @@ describe('Inline delete confirm', () => {
     fetchMock.mockResolvedValueOnce({ ok: true, status: 204 }); // DELETE
     fetchMock.mockResolvedValueOnce({
       ok: true,
-      json: async () => ({ sessions: [] }),
-    }); // GET re-fetch
+      json: async () => [],
+    }); // GET /api/chat/conversations re-fetch
 
     const confirmDelete = container.querySelector(
       '.session-row-confirm-delete',
@@ -139,19 +141,19 @@ describe('Inline delete confirm', () => {
       const deleteCall = fetchMock.mock.calls.find(
         (c) =>
           typeof c[0] === 'string' &&
-          c[0] === '/api/chat/sessions/s-1' &&
+          c[0] === '/api/chat/conversations/s-1' &&
           (c[1] as RequestInit | undefined)?.method === 'DELETE',
       );
       expect(deleteCall).toBeTruthy();
     });
 
-    // After DELETE, the list re-fetches (a second GET on /api/chat/sessions
-    // is queued by the version bump).
+    // After DELETE, the list re-fetches (a second GET on
+    // /api/chat/conversations is queued by the version bump).
     await waitFor(() => {
       const getCalls = fetchMock.mock.calls.filter(
         (c) =>
           typeof c[0] === 'string' &&
-          c[0] === '/api/chat/sessions' &&
+          c[0] === '/api/chat/conversations' &&
           (!(c[1] as RequestInit | undefined)?.method ||
             (c[1] as RequestInit | undefined)?.method === 'GET'),
       );

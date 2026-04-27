@@ -51,7 +51,12 @@ export function createInbox(): Inbox {
     // This matches the IPC protocol's SessionNextMessageResponseSchema — the
     // server echoes the cursor the client should use on the NEXT request.
     if (entry.type === 'user-message') {
-      return { type: 'user-message', payload: entry.payload, cursor: cursor + 1 };
+      return {
+        type: 'user-message',
+        payload: entry.payload,
+        reqId: entry.reqId,
+        cursor: cursor + 1,
+      };
     }
     return { type: 'cancel', cursor: cursor + 1 };
   };

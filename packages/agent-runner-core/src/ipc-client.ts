@@ -1,6 +1,7 @@
 import * as http from 'node:http';
 import { z } from 'zod';
 import {
+  ConversationFetchHistoryResponseSchema,
   IPC_TIMEOUTS_MS,
   IpcErrorEnvelopeSchema,
   LlmCallResponseSchema,
@@ -74,6 +75,7 @@ const RESPONSE_SCHEMAS: Record<IpcActionName, z.ZodTypeAny> = {
   'workspace.commit-notify': WorkspaceCommitNotifyResponseSchema,
   'session.next-message': SessionNextMessageResponseSchema,
   'session.get-config': SessionGetConfigResponseSchema,
+  'conversation.fetch-history': ConversationFetchHistoryResponseSchema,
 };
 
 export interface IpcClientOptions {

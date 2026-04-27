@@ -3,6 +3,12 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "exports": {
+    "./server": {
+      "types": "./dist/src/server/index.d.ts",
+      "default": "./dist/src/server/index.js"
+    }
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc --build && vite build",
@@ -15,19 +21,32 @@
     "@assistant-ui/react": "^0.12.19",
     "@assistant-ui/react-ai-sdk": "^1.3.14",
     "@assistant-ui/react-markdown": "^0.12.6",
+    "@ax/agents": "workspace:*",
+    "@ax/auth-oidc": "workspace:*",
+    "@ax/conversations": "workspace:*",
+    "@ax/core": "workspace:*",
+    "@ax/http-server": "workspace:*",
+    "@ax/ipc-protocol": "workspace:*",
     "ai": "^6.0.134",
     "assistant-stream": "^0.3.6",
     "lucide-react": "^0.474.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "remark-gfm": "^4.0.1"
+    "remark-gfm": "^4.0.1",
+    "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@ax/database-postgres": "workspace:*",
+    "@ax/test-harness": "workspace:*",
+    "@testcontainers/postgresql": "11.14.0",
     "@testing-library/react": "^16.0.0",
+    "@types/node": "^25.6.0",
+    "@types/pg": "8.20.0",
     "@types/react": "^19.0.8",
     "@types/react-dom": "^19.0.3",
     "@vitejs/plugin-react": "^4.3.4",
     "jsdom": "^26.0.0",
+    "pg": "8.20.0",
     "typescript": "^6.0.3",
     "vite": "^6.4.2",
     "vitest": "^4.1.4"

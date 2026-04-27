@@ -2,9 +2,13 @@ import { describe, it, expect } from 'vitest';
 import type { ChatMessage } from '@ax/core';
 import { createInbox } from '../inbox.js';
 
-const userMsg = (content: string): { type: 'user-message'; payload: ChatMessage } => ({
+const userMsg = (
+  content: string,
+  reqId = 'r-test',
+): { type: 'user-message'; payload: ChatMessage; reqId: string } => ({
   type: 'user-message',
   payload: { role: 'user', content },
+  reqId,
 });
 
 describe('@ax/session-inmemory inbox', () => {
@@ -16,6 +20,7 @@ describe('@ax/session-inmemory inbox', () => {
     expect(result).toEqual({
       type: 'user-message',
       payload: { role: 'user', content: 'hi' },
+      reqId: 'r-test',
       cursor: 1,
     });
   });
@@ -43,6 +48,7 @@ describe('@ax/session-inmemory inbox', () => {
     expect(result).toEqual({
       type: 'user-message',
       payload: { role: 'user', content: 'wake me' },
+      reqId: 'r-test',
       cursor: 1,
     });
   });
@@ -63,6 +69,7 @@ describe('@ax/session-inmemory inbox', () => {
     expect(result).toEqual({
       type: 'user-message',
       payload: { role: 'user', content: 'b' },
+      reqId: 'r-test',
       cursor: 2,
     });
   });
@@ -98,6 +105,7 @@ describe('@ax/session-inmemory inbox', () => {
     expect(result).toEqual({
       type: 'user-message',
       payload: { role: 'user', content: 'hello' },
+      reqId: 'r-test',
       cursor: 1,
     });
   });

@@ -79,7 +79,7 @@ afterAll(async () => {
 const TOKEN_RE = /^[A-Za-z0-9_-]{43}$/;
 
 describe('@ax/session-postgres plugin', () => {
-  it('registers all six service hooks on the bus', async () => {
+  it('registers all seven service hooks on the bus', async () => {
     const h = await makeHarness();
     expect(h.bus.hasService('session:create')).toBe(true);
     expect(h.bus.hasService('session:resolve-token')).toBe(true);
@@ -87,6 +87,60 @@ describe('@ax/session-postgres plugin', () => {
     expect(h.bus.hasService('session:queue-work')).toBe(true);
     expect(h.bus.hasService('session:claim-work')).toBe(true);
     expect(h.bus.hasService('session:terminate')).toBe(true);
+    // Week 10–12 Task 16 (J6).
+    expect(h.bus.hasService('session:is-alive')).toBe(true);
+  });
+
+  it('session:is-alive: true for live, false for terminated, false for never-existed', async () => {
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+      'session:create',
+      ctx,
+      { sessionId: 's-alive', workspaceRoot: '/tmp/ws' },
+    );
+
+    // Live.
+    const live = await h.bus.call<
+      { sessionId: string },
+      { alive: boolean }
+    >('session:is-alive', ctx, { sessionId: 's-alive' });
+    expect(live).toEqual({ alive: true });
+
+    // Never existed.
+    const missing = await h.bus.call<
+      { sessionId: string },
+      { alive: boolean }
+    >('session:is-alive', ctx, { sessionId: 'never-existed' });
+    expect(missing).toEqual({ alive: false });
+
+    // Terminated.
+    await h.bus.call<SessionTerminateInput, SessionTerminateOutput>(
+      'session:terminate',
+      ctx,
+      { sessionId: 's-alive' },
+    );
+    const dead = await h.bus.call<
+      { sessionId: string },
+      { alive: boolean }
+    >('session:is-alive', ctx, { sessionId: 's-alive' });
+    expect(dead).toEqual({ alive: false });
+  });
+
+  it('session:is-alive rejects empty sessionId with invalid-payload', async () => {
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    let caught: unknown;
+    try {
+      await h.bus.call<
+        { sessionId: string },
+        { alive: boolean }
+      >('session:is-alive', ctx, { sessionId: '' });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('invalid-payload');
   });
 
   it('session:create mints a base64url token; duplicate sessionId throws PluginError', async () => {
@@ -132,6 +186,7 @@ describe('@ax/session-postgres plugin', () => {
       workspaceRoot: '/tmp/ws',
       userId: null,
       agentId: null,
+      conversationId: null,
     });
 
     const miss = await h.bus.call<SessionResolveTokenInput, SessionResolveTokenOutput>(
@@ -160,6 +215,7 @@ describe('@ax/session-postgres plugin', () => {
       workspaceRoot: '/tmp/ws',
       userId: null,
       agentId: null,
+      conversationId: null,
     });
 
     await h.bus.call<SessionTerminateInput, SessionTerminateOutput>(
@@ -189,7 +245,11 @@ describe('@ax/session-postgres plugin', () => {
       ctx,
       {
         sessionId: 's-q',
-        entry: { type: 'user-message', payload: { role: 'user', content: 'a' } },
+        entry: {
+          type: 'user-message',
+          payload: { role: 'user', content: 'a' },
+          reqId: 'r-a',
+        },
       },
     );
     expect(q0.cursor).toBe(0);
@@ -199,7 +259,11 @@ describe('@ax/session-postgres plugin', () => {
       ctx,
       {
         sessionId: 's-q',
-        entry: { type: 'user-message', payload: { role: 'user', content: 'b' } },
+        entry: {
+          type: 'user-message',
+          payload: { role: 'user', content: 'b' },
+          reqId: 'r-b',
+        },
       },
     );
     expect(q1.cursor).toBe(1);
@@ -212,6 +276,7 @@ describe('@ax/session-postgres plugin', () => {
     expect(c0).toEqual({
       type: 'user-message',
       payload: { role: 'user', content: 'a' },
+      reqId: 'r-a',
       cursor: 1,
     });
     const c1 = await h.bus.call<SessionClaimWorkInput, SessionClaimWorkOutput>(
@@ -222,6 +287,7 @@ describe('@ax/session-postgres plugin', () => {
     expect(c1).toEqual({
       type: 'user-message',
       payload: { role: 'user', content: 'b' },
+      reqId: 'r-b',
       cursor: 2,
     });
   });
@@ -236,7 +302,11 @@ describe('@ax/session-postgres plugin', () => {
         ctx,
         {
           sessionId: 'never-created',
-          entry: { type: 'user-message', payload: { role: 'user', content: 'x' } },
+          entry: {
+            type: 'user-message',
+            payload: { role: 'user', content: 'x' },
+            reqId: 'r-x',
+          },
         },
       );
     } catch (err) {
@@ -302,7 +372,11 @@ describe('@ax/session-postgres plugin', () => {
       ctx,
       {
         sessionId: 's-wake',
-        entry: { type: 'user-message', payload: { role: 'user', content: 'hi' } },
+        entry: {
+          type: 'user-message',
+          payload: { role: 'user', content: 'hi' },
+          reqId: 'r-wake',
+        },
       },
     );
     const start = Date.now();
@@ -312,6 +386,7 @@ describe('@ax/session-postgres plugin', () => {
     expect(result).toEqual({
       type: 'user-message',
       payload: { role: 'user', content: 'hi' },
+      reqId: 'r-wake',
       cursor: 1,
     });
   });
@@ -397,7 +472,11 @@ describe('@ax/session-postgres plugin', () => {
       ctxB,
       {
         sessionId: 's-cross',
-        entry: { type: 'user-message', payload: { role: 'user', content: 'from-B' } },
+        entry: {
+          type: 'user-message',
+          payload: { role: 'user', content: 'from-B' },
+          reqId: 'r-cross',
+        },
       },
     );
 
@@ -408,6 +487,7 @@ describe('@ax/session-postgres plugin', () => {
     expect(result).toEqual({
       type: 'user-message',
       payload: { role: 'user', content: 'from-B' },
+      reqId: 'r-cross',
       cursor: 1,
     });
   });
@@ -434,6 +514,36 @@ describe('@ax/session-postgres plugin', () => {
       workspaceRoot: '/tmp/ws',
       userId: 'u-1',
       agentId: 'a-1',
+      conversationId: null,
+    });
+  });
+
+  it('session:resolve-token carries conversationId when owner carries one (Week 10–12 final review)', async () => {
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    const { token } = await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+      'session:create',
+      ctx,
+      {
+        sessionId: 's-conv-resolve',
+        workspaceRoot: '/tmp/ws',
+        owner: { ...OWNER, conversationId: 'cnv_resolve_pg_1' },
+      },
+    );
+    const resolved = await h.bus.call<SessionResolveTokenInput, SessionResolveTokenOutput>(
+      'session:resolve-token',
+      ctx,
+      { token },
+    );
+    // Bug regression: a missing conversationId here meant chat:turn-end
+    // events didn't carry the binding past the IPC boundary, silently
+    // breaking auto-append + clearActiveReqId + SSE done-frame.
+    expect(resolved).toEqual({
+      sessionId: 's-conv-resolve',
+      workspaceRoot: '/tmp/ws',
+      userId: 'u-1',
+      agentId: 'a-1',
+      conversationId: 'cnv_resolve_pg_1',
     });
   });
 
@@ -453,7 +563,47 @@ describe('@ax/session-postgres plugin', () => {
       userId: 'u-1',
       agentId: 'a-1',
       agentConfig: OWNER.agentConfig,
+      conversationId: null,
     });
+  });
+
+  it('session:get-config returns conversationId when owner carries one (Task 15)', async () => {
+    const h = await makeHarness();
+    await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+      'session:create',
+      h.ctx(),
+      {
+        sessionId: 's-conv',
+        workspaceRoot: '/tmp/ws',
+        owner: { ...OWNER, conversationId: 'cnv_test_1' },
+      },
+    );
+    const result = await h.bus.call<SessionGetConfigInput, SessionGetConfigOutput>(
+      'session:get-config',
+      h.ctx({ sessionId: 's-conv' }),
+      {},
+    );
+    expect(result.conversationId).toBe('cnv_test_1');
+  });
+
+  it('session:create rejects an empty-string owner.conversationId', async () => {
+    const h = await makeHarness();
+    let caught: unknown;
+    try {
+      await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+        'session:create',
+        h.ctx(),
+        {
+          sessionId: 's-bad-cid',
+          workspaceRoot: '/tmp/ws',
+          owner: { ...OWNER, conversationId: '' as unknown as string | null },
+        },
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('invalid-payload');
   });
 
   it('session:get-config rejects with owner-missing when the session has no v2 row (pre-9.5)', async () => {
@@ -564,7 +714,40 @@ describe('@ax/session-postgres plugin', () => {
           entry: {
             type: 'user-message',
             payload: { role: 'admin' as 'user', content: 'hi' },
+            reqId: 'r-bad-role',
           },
+        },
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('invalid-payload');
+  });
+
+  it('queue-work rejects a user-message with a missing reqId (J9)', async () => {
+    // J9: every server-delivered user message MUST carry the host-minted
+    // reqId. Validator runs at queue-work; the row must never make it
+    // into the inbox table without a reqId.
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+      'session:create',
+      ctx,
+      { sessionId: 's-noreq-pg', workspaceRoot: '/tmp/ws' },
+    );
+    let caught: unknown;
+    try {
+      await h.bus.call<SessionQueueWorkInput, SessionQueueWorkOutput>(
+        'session:queue-work',
+        ctx,
+        {
+          sessionId: 's-noreq-pg',
+          // Intentionally missing reqId — the validator must reject this.
+          entry: {
+            type: 'user-message',
+            payload: { role: 'user', content: 'hi' },
+          } as unknown as SessionQueueWorkInput['entry'],
         },
       );
     } catch (err) {

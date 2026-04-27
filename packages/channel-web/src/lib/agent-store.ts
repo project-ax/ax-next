@@ -8,16 +8,16 @@
  *
  * The deferred-switch logic (the only non-trivial bit) lives in `pickAgent`:
  *
- *   - Empty active session → PATCH the existing session with the new
- *     agent_id. No new row, no pending flag.
- *
  *   - Active session has messages → set `pendingAgentId` only. The chat
  *     view goes blank, the previous session stays in the sidebar, no
- *     network call. The next user message creates a session under the
- *     pending agent, then `clearPending` runs.
+ *     network call. The next user message creates a NEW conversation
+ *     under the pending agent (server-side, on POST /api/chat/messages
+ *     with `conversationId: null`), then `clearPending` runs.
  *
- *   - No active session at all (cold start) → just record the explicit
- *     pick; nothing to retag, nothing to defer.
+ *   - Otherwise → just record the explicit pick. Agent immutability
+ *     (Invariant I10) means we never retag an existing conversation;
+ *     a fresh conversation row is born on the next POST that carries
+ *     a different agentId.
  *
  * `setActiveSession` always clears `pendingAgentId` because navigating
  * away from the slot where the deferred switch was queued means the
@@ -75,7 +75,17 @@ export const agentStoreActions = {
   },
 
   /**
-   * Pick an agent from the menu. See module doc for the three branches.
+   * Pick an agent from the menu. Three branches:
+   *
+   *   - Active conversation has messages → defer (set `pendingAgentId`
+   *     only). The chip reflects the new agent immediately; the next
+   *     user message creates a fresh conversation under it server-side.
+   *
+   *   - Empty active conversation OR no active conversation → just
+   *     record the pick. Agent immutability (Invariant I10) means we
+   *     never retag an existing conversation; the AX wire creates a new
+   *     conversation row whenever the next POST carries a different
+   *     agentId for a `null` conversationId.
    *
    * @param id    the agent the user clicked
    * @param opts  caller-supplied snapshot of the active session — passed
@@ -86,31 +96,6 @@ export const agentStoreActions = {
     id: string,
     opts: { activeSessionId: string | null; hasMessages: boolean },
   ): Promise<void> => {
-    if (opts.activeSessionId && !opts.hasMessages) {
-      // Empty session — retag in place. Don't commit `selectedAgentId`
-      // unless the server accepted the PATCH; otherwise the chip would
-      // show an agent the session is not actually tagged with.
-      let ok = false;
-      try {
-        const res = await fetch(`/api/chat/sessions/${encodeURIComponent(opts.activeSessionId)}`, {
-          method: 'PATCH',
-          headers: { 'content-type': 'application/json' },
-          credentials: 'include',
-          body: JSON.stringify({ agentId: id }),
-        });
-        ok = res.ok;
-        if (!ok) {
-          console.warn('[agent-store] retag PATCH failed', res.status);
-        }
-      } catch (err) {
-        // Mock backend is best-effort in dev; surface but don't crash.
-        console.warn('[agent-store] retag failed', err);
-      }
-      if (ok) {
-        set({ selectedAgentId: id, pendingAgentId: null });
-      }
-      return;
-    }
     if (opts.hasMessages) {
       // Defer — chip + thread go blank but no new session yet.
       // Note: we do NOT update `selectedAgentId` here. The chip displays

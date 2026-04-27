@@ -1514,6 +1514,44 @@ body.searching .attach-btn { display: none; }
   padding: 16px 20px;
 }
 
+/* Canary-deferred banner — pinned to the top of the admin body. Amber
+   on a soft amber wash so it reads as a warning without screaming. The
+   colors are inline because we don't have warning tokens yet (and we
+   only need them in this one spot). */
+.admin-canary-banner {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  margin-bottom: 14px;
+  border: 1px solid #d4a23a;
+  border-radius: 8px;
+  background: #fbf3dc;
+  color: #5a4310;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.admin-canary-banner-icon {
+  flex: 0 0 auto;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .admin-canary-banner {
+    background: #2c2410;
+    border-color: #6b5320;
+    color: #e8d8a4;
+  }
+}
+
+:root[data-theme="dark"] .admin-canary-banner {
+  background: #2c2410;
+  border-color: #6b5320;
+  color: #e8d8a4;
+}
+
 .admin-form-wrap {
   display: flex;
   flex-direction: column;

@@ -1,5 +1,18 @@
+/**
+ * Transport tests — AX-native chat-flow shape (Task 17).
+ *
+ * The transport is a two-phase exchange:
+ *   1. POST /api/chat/messages with { conversationId | null, agentId,
+ *      contentBlocks } — the server mints reqId.
+ *   2. GET /api/chat/stream/:reqId — SSE stream of `data: {reqId, text,
+ *      kind}` chunks plus a final `data: {reqId, done: true}`.
+ *
+ * Tests inject a mock fetch (per-call queue) so we can assert URL +
+ * method shape, then drive `processResponseStream` directly when we
+ * only care about chunk parsing.
+ */
 import { describe, test, expect, vi } from 'vitest';
-import { AxChatTransport, type Diagnostic, type StatusEvent } from '../lib/transport';
+import { AxChatTransport } from '../lib/transport';
 
 /**
  * Build a ReadableStream<Uint8Array> from a string body. Mirrors how fetch
@@ -51,30 +64,30 @@ const asProcess = (t: AxChatTransport): StreamFn =>
   (t as unknown as { processResponseStream: StreamFn }).processResponseStream.bind(t);
 
 describe('AxChatTransport construction', () => {
-  test('constructs with default api /api/chat/completions', () => {
-    const transport = new AxChatTransport();
-    // The base HttpChatTransport stores `api` as a private/protected member; we
-    // don't assert on it directly. Instead, smoke-test that constructing with
-    // defaults does not throw and yields a usable instance.
+  test('constructs with default api /api/chat/messages', () => {
+    const transport = new AxChatTransport({ getAgentId: () => 'agent-1' });
     expect(transport).toBeInstanceOf(AxChatTransport);
   });
 
   test('accepts an explicit api override', () => {
-    const transport = new AxChatTransport({ api: '/api/chat/completions' });
+    const transport = new AxChatTransport({
+      api: '/custom/messages',
+      streamApi: '/custom/stream',
+      getAgentId: () => 'agent-1',
+    });
     expect(transport).toBeInstanceOf(AxChatTransport);
   });
 });
 
-describe('AxChatTransport text stream parsing', () => {
-  test('parses a basic OpenAI text stream into text-start, text-delta(s), text-end, finish', async () => {
-    const transport = new AxChatTransport();
+describe('AxChatTransport SSE chunk parsing', () => {
+  test('parses text frames into text-start, text-delta(s), text-end, finish', async () => {
+    const transport = new AxChatTransport({ getAgentId: () => 'a' });
     const body =
-      `data: {"choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}\n\n` +
-      `data: {"choices":[{"delta":{"content":", world"},"finish_reason":null}]}\n\n` +
-      `data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n` +
-      `data: [DONE]\n\n`;
+      `data: {"reqId":"r1","text":"Hello","kind":"text"}\n\n` +
+      `data: {"reqId":"r1","text":", world","kind":"text"}\n\n` +
+      `data: {"reqId":"r1","done":true}\n\n`;
 
-    const chunks = await drain(asProcess(transport)(sseStream(body))) as Array<{ type: string; delta?: string; finishReason?: string }>;
+    const chunks = await drain(asProcess(transport)(sseStream(body))) as Array<{ type: string; delta?: string; finishReason?: string; id?: string }>;
     const types = chunks.map((c) => c.type);
     expect(types).toContain('text-start');
     expect(types).toContain('text-delta');
@@ -84,202 +97,249 @@ describe('AxChatTransport text stream parsing', () => {
     expect(deltas).toEqual(['Hello', ', world']);
     const finish = chunks.find((c) => c.type === 'finish') as { finishReason: string };
     expect(finish.finishReason).toBe('stop');
+    // All text chunks share one part id.
+    const textIds = new Set(
+      chunks.filter((c) => c.type === 'text-delta').map((c) => c.id),
+    );
+    expect(textIds.size).toBe(1);
+    expect([...textIds][0]).toMatch(/^text-/);
   });
 
-  test('handles a [DONE] terminator that arrives before an explicit finish_reason', async () => {
-    const transport = new AxChatTransport();
+  test('done frame closes any open part and emits finish', async () => {
+    const transport = new AxChatTransport({ getAgentId: () => 'a' });
     const body =
-      `data: {"choices":[{"delta":{"content":"hi"},"finish_reason":null}]}\n\n` +
-      `data: [DONE]\n\n`;
+      `data: {"reqId":"r1","text":"hi","kind":"text"}\n\n` +
+      `data: {"reqId":"r1","done":true}\n\n`;
 
     const chunks = await drain(asProcess(transport)(sseStream(body))) as Array<{ type: string }>;
     const types = chunks.map((c) => c.type);
-    // [DONE] should still close the open text part and emit finish.
     expect(types).toContain('text-end');
     expect(types[types.length - 1]).toBe('finish');
   });
-});
 
-describe('AxChatTransport status event forwarding', () => {
-  test('forwards `event: status` payloads to onStatus callback', async () => {
-    const onStatus = vi.fn((_: StatusEvent) => {});
-    const transport = new AxChatTransport({ onStatus });
-    const status: StatusEvent = { operation: 'session', phase: 'starting', message: 'Spinning up' };
+  test('thinking chunks are emitted with a separate id and providerMetadata', async () => {
+    const transport = new AxChatTransport({ getAgentId: () => 'a' });
     const body =
-      `event: status\ndata: ${JSON.stringify(status)}\n\n` +
-      `data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n` +
-      `data: [DONE]\n\n`;
+      `data: {"reqId":"r1","text":"...thinking","kind":"thinking"}\n\n` +
+      `data: {"reqId":"r1","text":"answer","kind":"text"}\n\n` +
+      `data: {"reqId":"r1","done":true}\n\n`;
 
-    await drain(asProcess(transport)(sseStream(body)));
+    const chunks = await drain(asProcess(transport)(sseStream(body))) as Array<{
+      type: string;
+      delta?: string;
+      id?: string;
+      providerMetadata?: Record<string, unknown>;
+    }>;
+    const thinkingDelta = chunks.find(
+      (c) => c.type === 'text-delta' && c.id?.startsWith('thinking-'),
+    );
+    expect(thinkingDelta).toBeTruthy();
+    expect(thinkingDelta?.delta).toBe('...thinking');
+    expect(thinkingDelta?.providerMetadata?.['ax']).toEqual({ thinking: true });
 
-    // First call must be the explicit status event we sent. (A synthesized
-    // clear-status fires only on real content; this stream has none.)
-    expect(onStatus).toHaveBeenCalled();
-    expect(onStatus.mock.calls[0]?.[0]).toEqual(status);
-  });
-});
+    const textDelta = chunks.find(
+      (c) => c.type === 'text-delta' && c.id?.startsWith('text-'),
+    );
+    expect(textDelta).toBeTruthy();
+    expect(textDelta?.delta).toBe('answer');
 
-describe('AxChatTransport diagnostic event forwarding', () => {
-  test('forwards `event: diagnostic` payloads to onDiagnostic callback', async () => {
-    const onDiagnostic = vi.fn();
-    const transport = new AxChatTransport({ onDiagnostic });
-    const diagnostic: Diagnostic = {
-      severity: 'warn',
-      kind: 'catalog_populate_openapi_source_failed',
-      message: 'Skill "petstore" failed to load OpenAPI spec',
-      context: { skill: 'petstore', source: 'https://example.com/spec.json' },
-      timestamp: '2026-04-21T18:30:00.000Z',
-    };
-    const body =
-      `event: diagnostic\ndata: ${JSON.stringify(diagnostic)}\n\n` +
-      `data: {"choices":[{"delta":{"content":"hi"},"finish_reason":null}]}\n\n` +
-      `data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n` +
-      `data: [DONE]\n\n`;
-
-    await drain(asProcess(transport)(sseStream(body)));
-
-    expect(onDiagnostic).toHaveBeenCalledTimes(1);
-    expect(onDiagnostic).toHaveBeenCalledWith(diagnostic);
-  });
-
-  test('malformed diagnostic JSON is skipped without crashing the stream', async () => {
-    const onDiagnostic = vi.fn();
-    const onStatus = vi.fn((_: StatusEvent) => {});
-    const transport = new AxChatTransport({ onDiagnostic, onStatus });
-    const body =
-      `event: diagnostic\ndata: {not valid json\n\n` +
-      `event: status\ndata: {"operation":"test","phase":"go","message":"ok"}\n\n` +
-      `data: {"choices":[{"delta":{"content":"hi"},"finish_reason":null}]}\n\n` +
-      `data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n` +
-      `data: [DONE]\n\n`;
-
-    const chunks = await drain(asProcess(transport)(sseStream(body))) as Array<{ type: string; delta?: string }>;
-
-    expect(onDiagnostic).not.toHaveBeenCalled();
-    // Stream kept flowing — subsequent status event was parsed.
-    expect(onStatus.mock.calls.some(([ev]) => ev?.operation === 'test' && ev?.message === 'ok')).toBe(true);
-    const textDeltas = chunks.filter((c) => c.type === 'text-delta');
-    expect(textDeltas.some((c) => c.delta === 'hi')).toBe(true);
+    // Thinking part is closed when text begins.
+    const thinkingEnd = chunks.find(
+      (c) => c.type === 'text-end' && c.id === thinkingDelta?.id,
+    );
+    expect(thinkingEnd).toBeTruthy();
   });
 
   test('survives SSE frames split across decoder chunks', async () => {
-    const onDiagnostic = vi.fn();
-    const transport = new AxChatTransport({ onDiagnostic });
-    const diagnostic: Diagnostic = { severity: 'warn', kind: 'catalog_populate_server_failed', message: 'chunk-split', timestamp: '2026-04-21T18:30:03.000Z' };
+    const transport = new AxChatTransport({ getAgentId: () => 'a' });
     const body =
-      `event: diagnostic\ndata: ${JSON.stringify(diagnostic)}\n\n` +
-      `data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n` +
-      `data: [DONE]\n\n`;
+      `data: {"reqId":"r1","text":"chunk-split","kind":"text"}\n\n` +
+      `data: {"reqId":"r1","done":true}\n\n`;
 
-    // chunkSize=7 forces frames to span multiple transform() calls
-    await drain(asProcess(transport)(sseStream(body, { chunkSize: 7 })));
+    const chunks = await drain(asProcess(transport)(sseStream(body, { chunkSize: 7 }))) as Array<{
+      type: string;
+      delta?: string;
+    }>;
+    const deltas = chunks.filter((c) => c.type === 'text-delta').map((c) => c.delta);
+    expect(deltas.join('')).toBe('chunk-split');
+  });
 
-    expect(onDiagnostic).toHaveBeenCalledTimes(1);
-    expect(onDiagnostic).toHaveBeenCalledWith(diagnostic);
+  test('malformed JSON frames are skipped without breaking the stream', async () => {
+    const transport = new AxChatTransport({ getAgentId: () => 'a' });
+    const body =
+      `data: {not json\n\n` +
+      `data: {"reqId":"r1","text":"after","kind":"text"}\n\n` +
+      `data: {"reqId":"r1","done":true}\n\n`;
+    const chunks = await drain(asProcess(transport)(sseStream(body))) as Array<{ type: string; delta?: string }>;
+    const deltas = chunks.filter((c) => c.type === 'text-delta').map((c) => c.delta);
+    expect(deltas).toEqual(['after']);
+  });
+
+  test('flush emits finish if stream closes without an explicit done frame', async () => {
+    const transport = new AxChatTransport({ getAgentId: () => 'a' });
+    const body = `data: {"reqId":"r1","text":"stub","kind":"text"}\n\n`;
+    const chunks = await drain(asProcess(transport)(sseStream(body))) as Array<{ type: string; finishReason?: string }>;
+    const finish = chunks.find((c) => c.type === 'finish') as { finishReason: string } | undefined;
+    expect(finish).toBeTruthy();
+    expect(finish?.finishReason).toBe('stop');
   });
 });
 
-describe('AxChatTransport tool_calls handling', () => {
-  test('emits tool-input-available with parsed JSON args from a tool_calls delta', async () => {
-    const transport = new AxChatTransport();
-    const toolCall = {
-      id: 'call_abc',
-      index: 0,
-      function: { name: 'lookup_user', arguments: '{"id":"u-1","verbose":true}' },
-    };
-    const body =
-      `data: {"choices":[{"delta":{"tool_calls":[${JSON.stringify(toolCall)}]},"finish_reason":null}]}\n\n` +
-      `data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n` +
-      `data: {"choices":[{"delta":{"content":"done"},"finish_reason":null}]}\n\n` +
-      `data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n` +
-      `data: [DONE]\n\n`;
-
-    const chunks = await drain(asProcess(transport)(sseStream(body))) as Array<{ type: string; toolCallId?: string; toolName?: string; input?: unknown; output?: unknown }>;
-    const toolInputs = chunks.filter((c) => c.type === 'tool-input-available');
-    expect(toolInputs).toHaveLength(1);
-    expect(toolInputs[0]).toMatchObject({
-      type: 'tool-input-available',
-      toolCallId: 'call_abc',
-      toolName: 'lookup_user',
-      input: { id: 'u-1', verbose: true },
+describe('AxChatTransport sendMessages two-phase exchange', () => {
+  /**
+   * Build a fetch mock that returns:
+   *  - the POST /api/chat/messages 202 response with reqId
+   *  - the GET /api/chat/stream/<reqId> SSE response
+   * in that order. Asserts the order matches the transport's flow.
+   */
+  function makeFetchMock(opts: {
+    postResponse?: { conversationId: string; reqId: string };
+    sseBody?: string;
+    postStatus?: number;
+    sseStatus?: number;
+  } = {}) {
+    const postResponse = opts.postResponse ?? { conversationId: 'conv-1', reqId: 'req-1' };
+    const sseBody =
+      opts.sseBody ??
+      `data: {"reqId":"req-1","text":"ok","kind":"text"}\n\n` +
+        `data: {"reqId":"req-1","done":true}\n\n`;
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchFn = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = typeof url === 'string' ? url : url instanceof URL ? url.toString() : '';
+      calls.push({ url: u, ...(init !== undefined ? { init } : {}) });
+      if (u.includes('/api/chat/messages')) {
+        return new Response(JSON.stringify(postResponse), {
+          status: opts.postStatus ?? 202,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (u.includes('/api/chat/stream/')) {
+        return new Response(sseStream(sseBody), {
+          status: opts.sseStatus ?? 200,
+          headers: { 'content-type': 'text/event-stream' },
+        });
+      }
+      throw new Error(`unexpected fetch ${u}`);
     });
-    // After tool runs and content arrives, the pending tool gets marked done.
-    const toolOutputs = chunks.filter((c) => c.type === 'tool-output-available');
-    expect(toolOutputs).toHaveLength(1);
-    expect(toolOutputs[0]).toMatchObject({ type: 'tool-output-available', toolCallId: 'call_abc' });
+    return { fetchFn: fetchFn as unknown as typeof fetch, calls };
+  }
+
+  test('POSTs to /api/chat/messages then opens SSE on returned reqId', async () => {
+    const { fetchFn, calls } = makeFetchMock();
+    const transport = new AxChatTransport({
+      fetch: fetchFn,
+      getAgentId: () => 'agent-1',
+    });
+    const stream = await transport.sendMessages({
+      messages: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }],
+    } as unknown as Parameters<typeof transport.sendMessages>[0]);
+    await drain(stream);
+
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.url).toContain('/api/chat/messages');
+    expect(calls[0]?.init?.method).toBe('POST');
+    expect(calls[1]?.url).toContain('/api/chat/stream/req-1');
+    const postBody = JSON.parse(String(calls[0]?.init?.body));
+    expect(postBody).toMatchObject({
+      conversationId: null,
+      agentId: 'agent-1',
+      contentBlocks: [{ type: 'text', text: 'hi' }],
+    });
   });
 
-  test('uses synthetic id when tool_call has no id', async () => {
-    const transport = new AxChatTransport();
-    const toolCall = {
-      index: 2,
-      function: { name: 'noop', arguments: '{}' },
-    };
-    const body =
-      `data: {"choices":[{"delta":{"tool_calls":[${JSON.stringify(toolCall)}]},"finish_reason":null}]}\n\n` +
-      `data: [DONE]\n\n`;
+  test('preserves conversationId across messages within a thread', async () => {
+    const { fetchFn, calls } = makeFetchMock();
+    const transport = new AxChatTransport({
+      fetch: fetchFn,
+      getAgentId: () => 'agent-1',
+    });
+    // First send → server mints conversationId.
+    let stream = await transport.sendMessages({
+      messages: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'one' }] }],
+    } as unknown as Parameters<typeof transport.sendMessages>[0]);
+    await drain(stream);
+    // Second send → transport should re-use the captured conversationId.
+    stream = await transport.sendMessages({
+      messages: [{ id: 'm2', role: 'user', parts: [{ type: 'text', text: 'two' }] }],
+    } as unknown as Parameters<typeof transport.sendMessages>[0]);
+    await drain(stream);
 
-    const chunks = await drain(asProcess(transport)(sseStream(body))) as Array<{ type: string; toolCallId?: string }>;
-    const toolInput = chunks.find((c) => c.type === 'tool-input-available');
-    expect(toolInput?.toolCallId).toBe('call_2');
-  });
-});
-
-describe('AxChatTransport content_block events', () => {
-  test('image content_block emits an inline /api/files/<id> markdown link', async () => {
-    const transport = new AxChatTransport();
-    const block = { type: 'image', fileId: 'img-1' };
-    const body =
-      `event: content_block\ndata: ${JSON.stringify(block)}\n\n` +
-      `data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n` +
-      `data: [DONE]\n\n`;
-
-    const chunks = await drain(asProcess(transport)(sseStream(body))) as Array<{ type: string; delta?: string }>;
-    const deltas = chunks.filter((c) => c.type === 'text-delta').map((c) => c.delta ?? '');
-    const joined = deltas.join('');
-    expect(joined).toContain('![Generated image](/api/files/img-1)');
-    expect(joined).not.toContain('/v1/files/');
+    expect(calls).toHaveLength(4);
+    const secondPostBody = JSON.parse(String(calls[2]?.init?.body));
+    expect(secondPostBody.conversationId).toBe('conv-1');
   });
 
-  test('file content_block emits an inline /api/files/<id> markdown link with filename', async () => {
-    const transport = new AxChatTransport();
-    const block = { type: 'file', fileId: 'doc-1', filename: 'report.pdf' };
-    const body =
-      `event: content_block\ndata: ${JSON.stringify(block)}\n\n` +
-      `data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n` +
-      `data: [DONE]\n\n`;
+  test('uses caller-provided getConversationId resolver', async () => {
+    const { fetchFn, calls } = makeFetchMock();
+    const transport = new AxChatTransport({
+      fetch: fetchFn,
+      getAgentId: () => 'agent-1',
+      getConversationId: () => 'pre-existing-conv',
+    });
+    const stream = await transport.sendMessages({
+      messages: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }],
+    } as unknown as Parameters<typeof transport.sendMessages>[0]);
+    await drain(stream);
 
-    const chunks = await drain(asProcess(transport)(sseStream(body))) as Array<{ type: string; delta?: string }>;
-    const deltas = chunks.filter((c) => c.type === 'text-delta').map((c) => c.delta ?? '');
-    const joined = deltas.join('');
-    expect(joined).toContain('[report.pdf](/api/files/doc-1)');
-    expect(joined).not.toContain('/v1/files/');
-  });
-});
-
-describe('AxChatTransport user-field default', () => {
-  test('defaults user to "guest" when none provided', async () => {
-    const transport = new AxChatTransport();
-    // Reach into the (private) prepareSendMessagesRequest the constructor wired up.
-    // It lives on the underlying HttpChatTransport — accessing via `any` keeps the
-    // test focused on observable wire behavior rather than base-class internals.
-    const prepare = (transport as unknown as { prepareSendMessagesRequest: (opts: { id?: string; messages: unknown[] }) => Promise<{ body: { user: string } }> }).prepareSendMessagesRequest;
-    expect(typeof prepare).toBe('function');
-    const out = await prepare({ messages: [] });
-    expect(out.body.user).toBe('guest');
+    const postBody = JSON.parse(String(calls[0]?.init?.body));
+    expect(postBody.conversationId).toBe('pre-existing-conv');
   });
 
-  test('uses provided user verbatim when no thread id', async () => {
-    const transport = new AxChatTransport({ user: 'vinay' });
-    const prepare = (transport as unknown as { prepareSendMessagesRequest: (opts: { id?: string; messages: unknown[] }) => Promise<{ body: { user: string } }> }).prepareSendMessagesRequest;
-    const out = await prepare({ messages: [] });
-    expect(out.body.user).toBe('vinay');
+  test('writes server conversationId back via setConversationId callback', async () => {
+    const { fetchFn } = makeFetchMock({
+      postResponse: { conversationId: 'srv-conv', reqId: 'r1' },
+    });
+    const setConv = vi.fn();
+    const transport = new AxChatTransport({
+      fetch: fetchFn,
+      getAgentId: () => 'agent-1',
+      setConversationId: setConv,
+    });
+    const stream = await transport.sendMessages({
+      messages: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }],
+    } as unknown as Parameters<typeof transport.sendMessages>[0]);
+    await drain(stream);
+    expect(setConv).toHaveBeenCalledWith('srv-conv');
   });
 
-  test('combines user + thread id and strips assistant-ui __LOCALID_ prefix', async () => {
-    const transport = new AxChatTransport({ user: 'vinay' });
-    const prepare = (transport as unknown as { prepareSendMessagesRequest: (opts: { id?: string; messages: unknown[] }) => Promise<{ body: { user: string } }> }).prepareSendMessagesRequest;
-    const out = await prepare({ id: '__LOCALID_t1', messages: [] });
-    expect(out.body.user).toBe('vinay/t1');
+  test('throws when agentId resolver returns empty', async () => {
+    const { fetchFn } = makeFetchMock();
+    const transport = new AxChatTransport({
+      fetch: fetchFn,
+      getAgentId: () => null,
+    });
+    await expect(
+      transport.sendMessages({
+        messages: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }],
+      } as unknown as Parameters<typeof transport.sendMessages>[0]),
+    ).rejects.toThrow(/agentId is required/);
+  });
+
+  test('throws on POST failure', async () => {
+    const { fetchFn } = makeFetchMock({ postStatus: 500 });
+    const transport = new AxChatTransport({
+      fetch: fetchFn,
+      getAgentId: () => 'agent-1',
+    });
+    await expect(
+      transport.sendMessages({
+        messages: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }],
+      } as unknown as Parameters<typeof transport.sendMessages>[0]),
+    ).rejects.toThrow(/chat-flow POST failed/);
+  });
+
+  test('returns empty finish stream when no user message is present', async () => {
+    const { fetchFn, calls } = makeFetchMock();
+    const transport = new AxChatTransport({
+      fetch: fetchFn,
+      getAgentId: () => 'agent-1',
+    });
+    const stream = await transport.sendMessages({
+      messages: [],
+    } as unknown as Parameters<typeof transport.sendMessages>[0]);
+    const chunks = await drain(stream) as Array<{ type: string }>;
+    expect(chunks.map((c) => c.type)).toEqual(['finish']);
+    // No fetches issued.
+    expect(calls).toHaveLength(0);
   });
 });

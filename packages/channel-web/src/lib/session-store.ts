@@ -1,35 +1,28 @@
 /**
- * Session store — process-local singleton for session list + active id.
+ * Session store — process-local singleton for the conversation list +
+ * active conversation pointer (Task 19 retargeted this from the legacy
+ * `/api/chat/sessions` mock to the new `/api/chat/conversations` wire).
  *
- * Why a parallel store (not folded into agent-store)? Two concerns that
- * happen to share the "active session" pointer otherwise tangle: the
- * agent chip's deferred-switch logic cares about *which* session is
- * active and whether it has messages; the sidebar list cares about the
- * full row collection plus a version counter that bumps on external
- * mutations (new session, rename, delete). Splitting keeps the bus
- * surface for each clean — there is exactly one reason to import
- * `agent-store.ts` (chip / agent-pick) and exactly one reason to import
- * `session-store.ts` (list / new-session / row mutations).
- *
- * `setActiveSession` mirrors the id + hasMessages pair into the
- * agent-store too, because the chip's deferred-switch decision needs
- * both. Both stores agreeing on `activeSessionId` is fine — the
- * "one source of truth per concept" invariant is about *persistent*
- * state, not about a local UI mirror that's always re-derived from
- * the same caller. Calling `agentStoreActions.setActiveSession` here
- * is the bridge so callers don't have to remember to update both.
+ * The internal field name `sessions` (and the `SessionRow` interface) is
+ * kept for backward-compat with sidebar component code; the data here is
+ * the chat-flow `Conversation` row from `/api/chat/conversations`. We
+ * map snake_case → camelCase on fetch so the rest of the UI stays on the
+ * same shape it had with the mock.
  *
  * `version` is a monotonic counter bumped by `bumpVersion()` whenever
- * external state (a fresh POST, a rename, a delete) means the next
- * mount/effect should re-fetch `/api/chat/sessions`. Listeners that
- * watch the list re-run on bumps.
+ * external state (a fresh POST, a delete) means the next mount/effect
+ * should re-fetch the list. Listeners that watch the list re-run on
+ * bumps.
  */
 import { useSyncExternalStore } from 'react';
 import { agentStoreActions } from './agent-store';
 
+/** UI-facing row shape — derived from a server `Conversation` record. */
 export interface SessionRow {
+  /** conversationId from the wire — but kept named `id` for sidebar code. */
   id: string;
   title: string;
+  /** agentId from the wire — kept named `agent_id` for sidebar code. */
   agent_id: string;
   updated_at: number;
   created_at: number;
@@ -68,21 +61,42 @@ const set = (next: Partial<SessionStoreState>): void => {
 export const useSessionStore = (): SessionStoreState =>
   useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 
+/**
+ * Map a wire `Conversation` row (camelCase) to the internal SessionRow
+ * shape (snake_case). Exported for the SessionList component which
+ * does the fetch + setSessions.
+ */
+export interface WireConversation {
+  conversationId: string;
+  userId: string;
+  agentId: string;
+  title: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const conversationToSessionRow = (
+  c: WireConversation,
+): SessionRow => ({
+  id: c.conversationId,
+  title: c.title ?? 'New Chat',
+  agent_id: c.agentId,
+  user_id: c.userId,
+  created_at: Date.parse(c.createdAt),
+  updated_at: Date.parse(c.updatedAt),
+});
+
 export const sessionStoreActions = {
   setSessions: (rows: SessionRow[]): void => {
     set({ sessions: rows });
   },
 
   /**
-   * Mark a session active. Mirrors into agent-store so the chip's
+   * Mark a conversation active. Mirrors into agent-store so the chip's
    * deferred-switch logic stays in sync.
    *
-   * `hasMessages` is hard to compute from the client (the mock store
-   * isn't reachable from the browser), so callers pass it explicitly.
-   * Defaults to `true` because that's the *more conservative* branch:
-   * picking a different agent on a non-empty session defers, which is
-   * always safe; the empty-session retag path is a perf optimization.
-   * If we got it wrong, the worst outcome is a stray defer.
+   * `hasMessages` is hard to compute from the client without a fetch;
+   * defaults to `true` because that's the more conservative branch.
    */
   setActiveSession: (id: string | null, hasMessages = true): void => {
     set({ activeSessionId: id });
@@ -95,22 +109,30 @@ export const sessionStoreActions = {
   },
 
   /**
-   * POST /api/chat/sessions, then re-fetch the list, then activate the
-   * new id. Returns the new session id.
+   * Mint a new local conversation row. With the AX wire, the server
+   * mints the conversationId on first POST /api/chat/messages — so a
+   * "new chat" click doesn't issue a network call here. We just clear
+   * the active id; the next user message creates the row server-side
+   * and our fetcher (the version-watcher in SessionList) will pick it
+   * up on the next bump.
    */
-  createAndActivate: async (agentId: string): Promise<string> => {
-    const res = await fetch('/api/chat/sessions', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify({ agentId }),
-    });
-    if (!res.ok) throw new Error(`session-create failed: ${res.status}`);
-    const body = (await res.json()) as { id?: string };
-    if (!body.id) throw new Error('session-create returned no id');
-    // Fresh session: no messages yet, so retag-on-agent-switch is safe.
-    sessionStoreActions.setActiveSession(body.id, false);
+  newLocalConversation: (): void => {
+    set({ activeSessionId: null });
+    agentStoreActions.setActiveSession(null, false);
     sessionStoreActions.bumpVersion();
-    return body.id;
+  },
+
+  /**
+   * Legacy alias retained so callers ported from the mock-store wiring
+   * (e.g. NewSessionButton) can still call createAndActivate. Today this
+   * is just an alias for `newLocalConversation` — the server creates
+   * the row on first message, not on a fresh-thread click.
+   *
+   * The agentId argument is informational; it's read off the agent-store
+   * at send time.
+   */
+  createAndActivate: async (_agentId: string): Promise<string | null> => {
+    sessionStoreActions.newLocalConversation();
+    return null;
   },
 };

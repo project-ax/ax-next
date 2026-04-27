@@ -479,4 +479,93 @@ describe('@ax/http-server', () => {
     r = await fetch(`http://127.0.0.1:${port}/elsewhere`);
     expect(r.status).toBe(404);
   });
+
+  it('res.stream() flushes headers, allows multiple writes, closes on demand', async () => {
+    await registerRoute('GET', '/sse', async (_req, res) => {
+      const s = res.status(200).stream();
+      s.write('data: chunk-1\n\n');
+      s.write('data: chunk-2\n\n');
+      // Defer the close so we can prove headers flushed before close.
+      setTimeout(() => {
+        s.write('data: chunk-3\n\n');
+        s.close();
+      }, 5);
+    });
+    const r = await fetch(`http://127.0.0.1:${port}/sse`);
+    expect(r.status).toBe(200);
+    expect(r.headers.get('content-type')).toMatch(/text\/event-stream/);
+    expect(r.headers.get('cache-control')).toMatch(/no-cache/);
+    const body = await r.text();
+    expect(body).toBe(
+      'data: chunk-1\n\ndata: chunk-2\n\ndata: chunk-3\n\n',
+    );
+  });
+
+  it('res.stream() onClose fires when client disconnects', async () => {
+    let firedResolve!: () => void;
+    const fired = new Promise<void>((resolve) => {
+      firedResolve = resolve;
+    });
+    await registerRoute('GET', '/sse-close', async (_req, res) => {
+      const s = res.status(200).stream();
+      s.write(': hello\n\n');
+      s.onClose(() => {
+        firedResolve();
+      });
+    });
+    const ac = new AbortController();
+    const r = await fetch(`http://127.0.0.1:${port}/sse-close`, {
+      signal: ac.signal,
+    });
+    const reader = r.body!.getReader();
+    await reader.read();
+    ac.abort();
+    try {
+      await reader.cancel();
+    } catch {
+      // already aborted
+    }
+    await fired;
+  });
+
+  it('http:response-sent fires for streaming responses where the client disconnects DURING handler await', async () => {
+    // Regression: when a streaming handler does additional async work
+    // between `res.stream()` and its own return, AND the client
+    // disconnects in that window, the request runner used to register
+    // `res.once('close', ...)` AFTER the close event already fired —
+    // so http:response-sent was silently dropped. Now we check
+    // writableEnded/destroyed synchronously after the handler returns
+    // and fire immediately if the socket already closed.
+    const observed: Array<{ status: number }> = [];
+    harness.bus.subscribe('http:response-sent', 'mid-await-close', async (_ctx, payload) => {
+      observed.push(payload as { status: number });
+      return undefined;
+    });
+    await registerRoute('GET', '/sse-mid-close', async (_req, res) => {
+      const s = res.status(200).stream();
+      s.write(': hello\n\n');
+      // Simulate post-stream-open async work that outlasts the client.
+      // The client aborts during this await; res.once('close', ...) at
+      // the runner level isn't registered until after the await resolves.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      // Don't call s.close() — let the test exercise the socket-already-
+      // closed code path.
+    });
+    const ac = new AbortController();
+    const r = await fetch(`http://127.0.0.1:${port}/sse-mid-close`, {
+      signal: ac.signal,
+    });
+    const reader = r.body!.getReader();
+    await reader.read();
+    ac.abort();
+    try {
+      await reader.cancel();
+    } catch {
+      // already aborted
+    }
+    // Give the runner time to run its post-handler logic.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(observed.length).toBe(1);
+    expect(observed[0]!.status).toBe(200);
+  });
 });

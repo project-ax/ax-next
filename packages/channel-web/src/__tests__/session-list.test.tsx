@@ -54,34 +54,38 @@ describe('SessionList', () => {
     const lastWeek = now - 8 * 24 * 60 * 60 * 1000;
     fetchMock.mockResolvedValueOnce({
       ok: true,
-      json: async () => ({
-        sessions: [
-          {
-            id: 's-today',
-            title: 'today session',
-            agent_id: 'tide',
-            updated_at: oneHourAgo,
-            created_at: oneHourAgo,
-            user_id: 'u2',
-          },
-          {
-            id: 's-yesterday',
-            title: 'yesterday session',
-            agent_id: 'tide',
-            updated_at: yesterdayMidday.getTime(),
-            created_at: yesterdayMidday.getTime(),
-            user_id: 'u2',
-          },
-          {
-            id: 's-earlier',
-            title: 'earlier session',
-            agent_id: 'tide',
-            updated_at: lastWeek,
-            created_at: lastWeek,
-            user_id: 'u2',
-          },
-        ],
-      }),
+      json: async () => [
+        {
+          conversationId: 's-today',
+          userId: 'u2',
+          agentId: 'tide',
+          title: 'today session',
+          activeSessionId: null,
+          activeReqId: null,
+          createdAt: new Date(oneHourAgo).toISOString(),
+          updatedAt: new Date(oneHourAgo).toISOString(),
+        },
+        {
+          conversationId: 's-yesterday',
+          userId: 'u2',
+          agentId: 'tide',
+          title: 'yesterday session',
+          activeSessionId: null,
+          activeReqId: null,
+          createdAt: new Date(yesterdayMidday.getTime()).toISOString(),
+          updatedAt: new Date(yesterdayMidday.getTime()).toISOString(),
+        },
+        {
+          conversationId: 's-earlier',
+          userId: 'u2',
+          agentId: 'tide',
+          title: 'earlier session',
+          activeSessionId: null,
+          activeReqId: null,
+          createdAt: new Date(lastWeek).toISOString(),
+          updatedAt: new Date(lastWeek).toISOString(),
+        },
+      ],
     });
     render(<SessionList />);
     await waitFor(() => {
@@ -99,26 +103,28 @@ describe('SessionList', () => {
     const now = Date.now();
     fetchMock.mockResolvedValueOnce({
       ok: true,
-      json: async () => ({
-        sessions: [
-          {
-            id: 's-1',
-            title: 'one',
-            agent_id: 'tide',
-            updated_at: now,
-            created_at: now,
-            user_id: 'u2',
-          },
-          {
-            id: 's-2',
-            title: 'two',
-            agent_id: 'tide',
-            updated_at: now - 1000,
-            created_at: now - 1000,
-            user_id: 'u2',
-          },
-        ],
-      }),
+      json: async () => [
+        {
+          conversationId: 's-1',
+          userId: 'u2',
+          agentId: 'tide',
+          title: 'one',
+          activeSessionId: null,
+          activeReqId: null,
+          createdAt: new Date(now).toISOString(),
+          updatedAt: new Date(now).toISOString(),
+        },
+        {
+          conversationId: 's-2',
+          userId: 'u2',
+          agentId: 'tide',
+          title: 'two',
+          activeSessionId: null,
+          activeReqId: null,
+          createdAt: new Date(now - 1000).toISOString(),
+          updatedAt: new Date(now - 1000).toISOString(),
+        },
+      ],
     });
     const { container } = render(<SessionList />);
     await waitFor(() => screen.getByText('one'));
@@ -136,18 +142,18 @@ describe('SessionList', () => {
   it('row dot uses the agent color', async () => {
     fetchMock.mockResolvedValueOnce({
       ok: true,
-      json: async () => ({
-        sessions: [
-          {
-            id: 's-1',
-            title: 'one',
-            agent_id: 'tide',
-            updated_at: Date.now(),
-            created_at: 0,
-            user_id: 'u2',
-          },
-        ],
-      }),
+      json: async () => [
+        {
+          conversationId: 's-1',
+          userId: 'u2',
+          agentId: 'tide',
+          title: 'one',
+          activeSessionId: null,
+          activeReqId: null,
+          createdAt: new Date(0).toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+      ],
     });
     const { container } = render(<SessionList />);
     await waitFor(() => screen.getByText('one'));

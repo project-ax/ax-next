@@ -11,6 +11,9 @@ import {
   WorkspaceCommitNotifyRequestSchema,
   WorkspaceCommitNotifyResponseSchema,
   SessionNextMessageResponseSchema,
+  SessionGetConfigResponseSchema,
+  ConversationFetchHistoryRequestSchema,
+  ConversationFetchHistoryResponseSchema,
   ToolDescriptorSchema,
   ToolCallSchema,
   ChatMessageSchema,
@@ -234,13 +237,27 @@ describe('session.next-message response', () => {
     const parsed = SessionNextMessageResponseSchema.parse({
       type: 'user-message',
       payload: { role: 'user', content: 'hello' },
+      reqId: 'req-1',
       cursor: 3,
     });
     expect(parsed.type).toBe('user-message');
     if (parsed.type === 'user-message') {
       expect(parsed.payload.content).toBe('hello');
+      expect(parsed.reqId).toBe('req-1');
       expect(parsed.cursor).toBe(3);
     }
+  });
+
+  it('rejects a user-message variant missing reqId', () => {
+    // J9: every server-delivered user message MUST carry the host-minted
+    // reqId so the runner can stamp event.stream-chunk emissions with it.
+    // Allowing reqId to be missing would silently break stream routing.
+    const r = SessionNextMessageResponseSchema.safeParse({
+      type: 'user-message',
+      payload: { role: 'user', content: 'hello' },
+      cursor: 3,
+    });
+    expect(r.success).toBe(false);
   });
 
   it('round-trips a cancel variant', () => {
@@ -353,6 +370,125 @@ describe('events', () => {
   });
 });
 
+describe('session.get-config', () => {
+  const baseConfig = {
+    systemPrompt: 'be helpful',
+    allowedTools: ['file.read'],
+    mcpConfigIds: [],
+    model: 'claude-sonnet-4-7',
+  };
+
+  it('accepts a response with conversationId set', () => {
+    const parsed = SessionGetConfigResponseSchema.parse({
+      userId: 'u-1',
+      agentId: 'a-1',
+      agentConfig: baseConfig,
+      conversationId: 'cnv_abc',
+    });
+    expect(parsed.conversationId).toBe('cnv_abc');
+  });
+
+  it('accepts a response with conversationId null (non-conversation session)', () => {
+    const parsed = SessionGetConfigResponseSchema.parse({
+      userId: 'u-1',
+      agentId: 'a-1',
+      agentConfig: baseConfig,
+      conversationId: null,
+    });
+    expect(parsed.conversationId).toBeNull();
+  });
+
+  it('rejects a response missing conversationId (must be explicit null)', () => {
+    const r = SessionGetConfigResponseSchema.safeParse({
+      userId: 'u-1',
+      agentId: 'a-1',
+      agentConfig: baseConfig,
+    });
+    expect(r.success).toBe(false);
+  });
+});
+
+describe('conversation.fetch-history', () => {
+  it('request requires a non-empty conversationId', () => {
+    expect(
+      ConversationFetchHistoryRequestSchema.safeParse({ conversationId: '' })
+        .success,
+    ).toBe(false);
+    const ok = ConversationFetchHistoryRequestSchema.parse({
+      conversationId: 'cnv_abc',
+    });
+    expect(ok.conversationId).toBe('cnv_abc');
+  });
+
+  it('request rejects unknown fields (strict)', () => {
+    const r = ConversationFetchHistoryRequestSchema.safeParse({
+      conversationId: 'cnv_abc',
+      sneaky: 'no',
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it('request rejects an oversized conversationId (>256 chars)', () => {
+    const r = ConversationFetchHistoryRequestSchema.safeParse({
+      conversationId: 'c'.repeat(257),
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it('response round-trips an empty turn list', () => {
+    const parsed = ConversationFetchHistoryResponseSchema.parse({ turns: [] });
+    expect(parsed.turns).toEqual([]);
+  });
+
+  it('response round-trips user/assistant/tool turns with content blocks', () => {
+    const parsed = ConversationFetchHistoryResponseSchema.parse({
+      turns: [
+        {
+          role: 'user',
+          contentBlocks: [{ type: 'text', text: 'hello' }],
+        },
+        {
+          role: 'assistant',
+          contentBlocks: [
+            { type: 'thinking', thinking: 'plan', signature: 'sig' },
+            { type: 'text', text: 'hi back' },
+          ],
+        },
+        {
+          role: 'tool',
+          contentBlocks: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'tu_1',
+              content: 'ok',
+              is_error: false,
+            },
+          ],
+        },
+      ],
+    });
+    expect(parsed.turns).toHaveLength(3);
+    expect(parsed.turns[0]?.role).toBe('user');
+    expect(parsed.turns[2]?.contentBlocks[0]?.type).toBe('tool_result');
+  });
+
+  it('response rejects an unknown role', () => {
+    const r = ConversationFetchHistoryResponseSchema.safeParse({
+      turns: [
+        { role: 'system', contentBlocks: [{ type: 'text', text: 'x' }] },
+      ],
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it('response rejects malformed content blocks (canonical schema)', () => {
+    const r = ConversationFetchHistoryResponseSchema.safeParse({
+      turns: [{ role: 'user', contentBlocks: [{ type: 'mystery' }] }],
+    });
+    expect(r.success).toBe(false);
+  });
+});
+
 describe('errors', () => {
   it('enum covers exactly the six codes', () => {
     const expected = [
@@ -397,7 +533,7 @@ describe('timeouts', () => {
     expect(Object.isFrozen(IPC_TIMEOUTS_MS)).toBe(true);
   });
 
-  it('IPC_TIMEOUTS_MS has the seven expected keys', () => {
+  it('IPC_TIMEOUTS_MS has the eight expected keys', () => {
     const expected = [
       'llm.call',
       'tool.pre-call',
@@ -406,6 +542,7 @@ describe('timeouts', () => {
       'workspace.commit-notify',
       'session.next-message',
       'session.get-config',
+      'conversation.fetch-history',
     ].sort();
     expect(Object.keys(IPC_TIMEOUTS_MS).sort()).toEqual(expected);
   });
@@ -419,8 +556,10 @@ describe('timeouts', () => {
       'tool.list',
       'workspace.commit-notify',
       'session.next-message',
+      'session.get-config',
+      'conversation.fetch-history',
     ];
-    expect(names).toHaveLength(6);
+    expect(names).toHaveLength(8);
   });
 });
 

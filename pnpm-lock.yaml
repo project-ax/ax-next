@@ -211,19 +211,37 @@ importers:
     dependencies:
       '@ai-sdk/react':
         specifier: ^3.0.136
-        version: 3.0.170(react@19.2.5)(zod@4.3.6)
+        version: 3.0.170(react@19.2.5)(zod@3.25.76)
       '@assistant-ui/react':
         specifier: ^0.12.19
         version: 0.12.26(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(use-sync-external-store@1.6.0(react@19.2.5))
       '@assistant-ui/react-ai-sdk':
         specifier: ^1.3.14
-        version: 1.3.20(@assistant-ui/tap@0.5.9(@types/react@19.2.14)(react@19.2.5))(@types/react@19.2.14)(react@19.2.5)(zod@4.3.6)(zustand@5.0.12(@types/react@19.2.14)(react@19.2.5)(use-sync-external-store@1.6.0(react@19.2.5)))
+        version: 1.3.20(@assistant-ui/tap@0.5.9(@types/react@19.2.14)(react@19.2.5))(@types/react@19.2.14)(react@19.2.5)(zod@3.25.76)(zustand@5.0.12(@types/react@19.2.14)(react@19.2.5)(use-sync-external-store@1.6.0(react@19.2.5)))
       '@assistant-ui/react-markdown':
         specifier: ^0.12.6
         version: 0.12.11(@assistant-ui/react@0.12.26(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(use-sync-external-store@1.6.0(react@19.2.5)))(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
+      '@ax/agents':
+        specifier: workspace:*
+        version: link:../agents
+      '@ax/auth-oidc':
+        specifier: workspace:*
+        version: link:../auth-oidc
+      '@ax/conversations':
+        specifier: workspace:*
+        version: link:../conversations
+      '@ax/core':
+        specifier: workspace:*
+        version: link:../core
+      '@ax/http-server':
+        specifier: workspace:*
+        version: link:../http-server
+      '@ax/ipc-protocol':
+        specifier: workspace:*
+        version: link:../ipc-protocol
       ai:
         specifier: ^6.0.134
-        version: 6.0.168(zod@4.3.6)
+        version: 6.0.168(zod@3.25.76)
       assistant-stream:
         specifier: ^0.3.6
         version: 0.3.12
@@ -239,10 +257,28 @@ importers:
       remark-gfm:
         specifier: ^4.0.1
         version: 4.0.1
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
     devDependencies:
+      '@ax/database-postgres':
+        specifier: workspace:*
+        version: link:../database-postgres
+      '@ax/test-harness':
+        specifier: workspace:*
+        version: link:../test-harness
+      '@testcontainers/postgresql':
+        specifier: 11.14.0
+        version: 11.14.0
       '@testing-library/react':
         specifier: ^16.0.0
         version: 16.3.2(@testing-library/dom@10.4.1)(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
+      '@types/node':
+        specifier: ^25.6.0
+        version: 25.6.0
+      '@types/pg':
+        specifier: 8.20.0
+        version: 8.20.0
       '@types/react':
         specifier: ^19.0.8
         version: 19.2.14
@@ -255,6 +291,9 @@ importers:
       jsdom:
         specifier: ^26.0.0
         version: 26.1.0
+      pg:
+        specifier: 8.20.0
+        version: 8.20.0
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
@@ -365,6 +404,46 @@ importers:
       better-sqlite3:
         specifier: ^11.3.0
         version: 11.10.0
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^4.1.4
+        version: 4.1.5(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(jsdom@26.1.0)(vite@8.0.10(@types/node@25.6.0)(yaml@2.8.3))
+
+  packages/conversations:
+    dependencies:
+      '@ax/core':
+        specifier: workspace:*
+        version: link:../core
+      '@ax/ipc-protocol':
+        specifier: workspace:*
+        version: link:../ipc-protocol
+      kysely:
+        specifier: 0.28.16
+        version: 0.28.16
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
+    devDependencies:
+      '@ax/database-postgres':
+        specifier: workspace:*
+        version: link:../database-postgres
+      '@ax/test-harness':
+        specifier: workspace:*
+        version: link:../test-harness
+      '@testcontainers/postgresql':
+        specifier: 11.14.0
+        version: 11.14.0
+      '@types/node':
+        specifier: ^25.6.0
+        version: 25.6.0
+      '@types/pg':
+        specifier: 8.20.0
+        version: 8.20.0
+      pg:
+        specifier: 8.20.0
+        version: 8.20.0
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
@@ -5664,28 +5743,28 @@ packages:
 
 snapshots:
 
-  '@ai-sdk/gateway@3.0.104(zod@4.3.6)':
+  '@ai-sdk/gateway@3.0.104(zod@3.25.76)':
     dependencies:
       '@ai-sdk/provider': 3.0.8
-      '@ai-sdk/provider-utils': 4.0.23(zod@4.3.6)
+      '@ai-sdk/provider-utils': 4.0.23(zod@3.25.76)
       '@vercel/oidc': 3.2.0
-      zod: 4.3.6
+      zod: 3.25.76
 
-  '@ai-sdk/provider-utils@4.0.23(zod@4.3.6)':
+  '@ai-sdk/provider-utils@4.0.23(zod@3.25.76)':
     dependencies:
       '@ai-sdk/provider': 3.0.8
       '@standard-schema/spec': 1.1.0
       eventsource-parser: 3.0.8
-      zod: 4.3.6
+      zod: 3.25.76
 
   '@ai-sdk/provider@3.0.8':
     dependencies:
       json-schema: 0.4.0
 
-  '@ai-sdk/react@3.0.170(react@19.2.5)(zod@4.3.6)':
+  '@ai-sdk/react@3.0.170(react@19.2.5)(zod@3.25.76)':
     dependencies:
-      '@ai-sdk/provider-utils': 4.0.23(zod@4.3.6)
-      ai: 6.0.168(zod@4.3.6)
+      '@ai-sdk/provider-utils': 4.0.23(zod@3.25.76)
+      ai: 6.0.168(zod@3.25.76)
       react: 19.2.5
       swr: 2.4.1(react@19.2.5)
       throttleit: 2.1.0
@@ -5766,12 +5845,12 @@ snapshots:
       react: 19.2.5
       zustand: 5.0.12(@types/react@19.2.14)(react@19.2.5)(use-sync-external-store@1.6.0(react@19.2.5))
 
-  '@assistant-ui/react-ai-sdk@1.3.20(@assistant-ui/tap@0.5.9(@types/react@19.2.14)(react@19.2.5))(@types/react@19.2.14)(react@19.2.5)(zod@4.3.6)(zustand@5.0.12(@types/react@19.2.14)(react@19.2.5)(use-sync-external-store@1.6.0(react@19.2.5)))':
+  '@assistant-ui/react-ai-sdk@1.3.20(@assistant-ui/tap@0.5.9(@types/react@19.2.14)(react@19.2.5))(@types/react@19.2.14)(react@19.2.5)(zod@3.25.76)(zustand@5.0.12(@types/react@19.2.14)(react@19.2.5)(use-sync-external-store@1.6.0(react@19.2.5)))':
     dependencies:
-      '@ai-sdk/react': 3.0.170(react@19.2.5)(zod@4.3.6)
+      '@ai-sdk/react': 3.0.170(react@19.2.5)(zod@3.25.76)
       '@assistant-ui/core': 0.1.15(@assistant-ui/store@0.2.8(@assistant-ui/tap@0.5.9(@types/react@19.2.14)(react@19.2.5))(@types/react@19.2.14)(react@19.2.5))(@assistant-ui/tap@0.5.9(@types/react@19.2.14)(react@19.2.5))(@types/react@19.2.14)(assistant-cloud@0.1.27)(react@19.2.5)(zustand@5.0.12(@types/react@19.2.14)(react@19.2.5)(use-sync-external-store@1.6.0(react@19.2.5)))
       '@assistant-ui/store': 0.2.8(@assistant-ui/tap@0.5.9(@types/react@19.2.14)(react@19.2.5))(@types/react@19.2.14)(react@19.2.5)
-      ai: 6.0.168(zod@4.3.6)
+      ai: 6.0.168(zod@3.25.76)
       assistant-cloud: 0.1.27
       react: 19.2.5
     optionalDependencies:
@@ -7694,13 +7773,13 @@ snapshots:
 
   agent-base@7.1.4: {}
 
-  ai@6.0.168(zod@4.3.6):
+  ai@6.0.168(zod@3.25.76):
     dependencies:
-      '@ai-sdk/gateway': 3.0.104(zod@4.3.6)
+      '@ai-sdk/gateway': 3.0.104(zod@3.25.76)
       '@ai-sdk/provider': 3.0.8
-      '@ai-sdk/provider-utils': 4.0.23(zod@4.3.6)
+      '@ai-sdk/provider-utils': 4.0.23(zod@3.25.76)
       '@opentelemetry/api': 1.9.0
-      zod: 4.3.6
+      zod: 3.25.76
 
   ajv-formats@3.0.1(ajv@8.20.0):
     optionalDependencies:

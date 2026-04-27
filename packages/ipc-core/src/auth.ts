@@ -30,6 +30,13 @@ export type AuthResult =
       // act on them (e.g. tool-dispatcher's per-agent filter).
       userId: string | null;
       agentId: string | null;
+      // Week 10–12 final review: carry the resolved session's
+      // conversationId so the listener can stamp it onto the per-request
+      // ChatContext. Without this, runner-fired chat:turn-end events lose
+      // the conversation binding and three subscribers silently no-op
+      // (auto-append, clearActiveReqId, SSE done-frame). Null for canary
+      // / admin / pre-Task-15 sessions.
+      conversationId: string | null;
     }
   | { ok: false; status: number; body: IpcErrorEnvelope };
 
@@ -45,6 +52,7 @@ type SessionResolveTokenOutput =
       workspaceRoot: string;
       userId: string | null;
       agentId: string | null;
+      conversationId?: string | null;
     }
   | null;
 
@@ -103,5 +111,6 @@ export async function authenticate(
     workspaceRoot: resolved.workspaceRoot,
     userId: resolved.userId ?? null,
     agentId: resolved.agentId ?? null,
+    conversationId: resolved.conversationId ?? null,
   };
 }

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { ChatMessageSchema, ToolCallSchema } from './actions.js';
+import { ContentBlockSchema } from './content-blocks.js';
 
 // ---------------------------------------------------------------------------
 // Sandbox → host events (fire-and-forget)
@@ -39,6 +40,12 @@ export type EventToolPostCall = z.infer<typeof EventToolPostCallSchema>;
  * End of one agent turn. `reason` distinguishes "waiting on the user" from
  * "fully done" from "terminated abnormally" — the orchestrator branches on
  * this to decide whether to keep the session alive.
+ *
+ * `contentBlocks` and `role` are reserved for Task 3 of the Week 10–12 plan
+ * (runner emits the assistant turn so @ax/conversations can persist it via
+ * the chat:turn-end → conversations:append-turn subscriber). Both are
+ * optional in the schema until the producer ships — Task 4 only LOCKS the
+ * shape so the producer/consumer can land without further protocol churn.
  */
 export const EventTurnEndSchema = z.object({
   reqId: z.string().optional(),
@@ -49,6 +56,10 @@ export const EventTurnEndSchema = z.object({
       outputTokens: z.number().int().nonnegative().optional(),
     })
     .optional(),
+  /** The turn's content blocks, in emission order. Optional until Task 3. */
+  contentBlocks: z.array(ContentBlockSchema).optional(),
+  /** The role the runner emitted this turn under. Optional until Task 3. */
+  role: z.enum(['user', 'assistant', 'tool']).optional(),
 });
 export type EventTurnEnd = z.infer<typeof EventTurnEndSchema>;
 

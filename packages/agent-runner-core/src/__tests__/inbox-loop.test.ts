@@ -46,7 +46,7 @@ function makeMockClient(responses: unknown[]): {
 describe('createInboxLoop', () => {
   it('first next() issues callGet with ?cursor=0 by default', async () => {
     const { client, calls } = makeMockClient([
-      { type: 'user-message', payload: { role: 'user', content: 'hi' }, cursor: 1 },
+      { type: 'user-message', payload: { role: 'user', content: 'hi' }, reqId: 'r-1', cursor: 1 },
     ]);
     const loop = createInboxLoop({ client });
     await loop.next();
@@ -57,21 +57,21 @@ describe('createInboxLoop', () => {
     });
   });
 
-  it('on user-message: returns payload and advances cursor', async () => {
+  it('on user-message: returns payload + reqId and advances cursor', async () => {
     const msg = { role: 'user' as const, content: 'hello' };
     const { client } = makeMockClient([
-      { type: 'user-message', payload: msg, cursor: 7 },
+      { type: 'user-message', payload: msg, reqId: 'req-7', cursor: 7 },
     ]);
     const loop = createInboxLoop({ client });
     const entry = await loop.next();
-    expect(entry).toEqual({ type: 'user-message', payload: msg });
+    expect(entry).toEqual({ type: 'user-message', payload: msg, reqId: 'req-7' });
     expect(loop.cursor).toBe(7);
   });
 
   it('on timeout: loops back to callGet without returning', async () => {
     const { client, calls } = makeMockClient([
       { type: 'timeout', cursor: 0 },
-      { type: 'user-message', payload: { role: 'user', content: 'x' }, cursor: 1 },
+      { type: 'user-message', payload: { role: 'user', content: 'x' }, reqId: 'r-x', cursor: 1 },
     ]);
     const loop = createInboxLoop({ client });
     const entry = await loop.next();
@@ -88,7 +88,7 @@ describe('createInboxLoop', () => {
       { type: 'timeout', cursor: 0 },
       { type: 'timeout', cursor: 0 },
       { type: 'timeout', cursor: 0 },
-      { type: 'user-message', payload: { role: 'user', content: 'finally' }, cursor: 1 },
+      { type: 'user-message', payload: { role: 'user', content: 'finally' }, reqId: 'r-finally', cursor: 1 },
     ]);
     const loop = createInboxLoop({ client });
     const entry = await loop.next();
@@ -96,6 +96,7 @@ describe('createInboxLoop', () => {
     expect(entry).toEqual({
       type: 'user-message',
       payload: { role: 'user', content: 'finally' },
+      reqId: 'r-finally',
     });
     expect(loop.cursor).toBe(1);
   });

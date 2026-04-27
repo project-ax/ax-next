@@ -1,22 +1,46 @@
+import type { ChatContext, HookBus } from '@ax/core';
+import { EventStreamChunkSchema, type EventStreamChunk } from '@ax/ipc-protocol';
+import { validationError } from '../errors.js';
 import type { HandlerErr } from './types.js';
 
 // ---------------------------------------------------------------------------
 // POST /event.stream-chunk
 //
-// 6.5a has SCHEMA ONLY for stream-chunk — the runtime plumbing (streaming
-// incremental tokens from the runner to the host) lands in 6.5b. A caller
-// posting here today has mistaken 6.5a for 6.5b; fail loudly so the bug
-// surfaces in development, not in silent-data-loss production territory.
+// Fire-and-forget. Fires `chat:stream-chunk` subscribers with the parsed
+// event payload. The handler MUST NOT reshape — subscribers see the exact
+// EventStreamChunkSchema shape `{ reqId, text, kind }`. Subscribers filter
+// by `reqId` themselves (a single host serves multiple in-flight chats and
+// the SSE consumer in Task 7 needs to pick out its own stream).
+//
+// `text` is UNTRUSTED model output: subscribers are responsible for treating
+// it as such (no interpolation into HTML/SQL/shell). The handler does not
+// inspect or sanitize the text.
 // ---------------------------------------------------------------------------
 
-export function streamChunkNotWired(): HandlerErr {
-  return {
-    status: 501,
-    body: {
-      error: {
-        code: 'INTERNAL',
-        message: 'event.stream-chunk is a 6.5b feature',
-      },
-    },
-  };
+export function validateEventStreamChunk(rawPayload: unknown):
+  | { ok: true; payload: EventStreamChunk }
+  | HandlerErr {
+  const parsed = EventStreamChunkSchema.safeParse(rawPayload);
+  if (!parsed.success) {
+    return validationError(`event.stream-chunk: ${parsed.error.message}`);
+  }
+  return { ok: true, payload: parsed.data };
+}
+
+export async function fireEventStreamChunk(
+  ctx: ChatContext,
+  bus: HookBus,
+  payload: unknown,
+): Promise<void> {
+  const result = await bus.fire('chat:stream-chunk', ctx, payload);
+  if (result.rejected) {
+    // Observation-only: a subscriber rejecting a stream chunk does not
+    // unwind the chunk (the runner already sent it). Log at info — a
+    // policy/cache subscriber returning reject is a normal flow signal,
+    // not an error.
+    ctx.logger.info('observation_only_hook_rejection_ignored', {
+      hook: 'chat:stream-chunk',
+      reason: result.reason,
+    });
+  }
 }
