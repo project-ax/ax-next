@@ -1,0 +1,31 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "8b587ee1b443",
+  "strategy": "manual-commit",
+  "branch": "phase-2-runner-proxy-wiring",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "packages/agent-claude-sdk-runner/package.json",
+    "packages/agent-claude-sdk-runner/src/__tests__/env.test.ts",
+    "packages/agent-claude-sdk-runner/src/__tests__/proxy-startup.test.ts",
+    "packages/agent-claude-sdk-runner/src/env.ts",
+    "packages/agent-claude-sdk-runner/src/main.ts",
+    "packages/agent-claude-sdk-runner/src/proxy-startup.ts",
+    "packages/agent-claude-sdk-runner/tsconfig.json"
+  ],
+  "sessions": [
+    {
+      "metadata": "/8b/587ee1b443/0/metadata.json",
+      "transcript": "/8b/587ee1b443/0/full.jsonl",
+      "content_hash": "/8b/587ee1b443/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 22,
+    "cache_creation_tokens": 28019,
+    "cache_read_tokens": 4948165,
+    "output_tokens": 20373,
+    "api_call_count": 22
+  }
+}
