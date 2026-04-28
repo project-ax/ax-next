@@ -340,22 +340,26 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
         clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
         activeSockets.add(targetSocket);
 
-        // Pipe bidirectionally — neither side's bytes are inspected here.
-        targetSocket.pipe(clientSocket);
-        clientSocket.pipe(targetSocket);
-
-        // Flush any bytes the client sent before the upstream opened.
-        if (head.length > 0) {
-          targetSocket.write(head);
-        }
-
-        // Byte counters for the audit entry.
+        // Byte counters wired BEFORE pipe() — pipe() subscribes its own
+        // 'data' listener; setting ours first removes the ordering brittleness.
         targetSocket.on('data', (chunk: Buffer) => {
           responseBytes += chunk.length;
         });
         clientSocket.on('data', (chunk: Buffer) => {
           requestBytes += chunk.length;
         });
+
+        // Flush any bytes the client sent before the upstream opened — MUST
+        // happen before pipe() wires clientSocket → targetSocket, otherwise
+        // a racing client chunk could land on the upstream ahead of `head`
+        // and corrupt the TLS ClientHello.
+        if (head.length > 0) {
+          targetSocket.write(head);
+        }
+
+        // Pipe bidirectionally — neither side's bytes are inspected here.
+        targetSocket.pipe(clientSocket);
+        clientSocket.pipe(targetSocket);
       });
 
       // Cleanup once — first close/error wins, downstream events become no-ops.
