@@ -380,6 +380,13 @@ export function createOrchestrator(
   // cancel entry.
   const cancelledSessions = new Set<string>();
 
+  // Phase 3 / I10 — sessions whose agent has at least one non-`api-key`
+  // credential get `proxy:rotate-session` fired between turns. api-key-only
+  // sessions stay in coarse mode (no rotation, identical to Phase 2).
+  // Membership is added after a successful proxy:open-session and removed in
+  // the runChat finally that fires proxy:close-session.
+  const sessionsNeedingRotation = new Set<string>();
+
   async function runChat(
     ctx: AgentContext,
     input: ChatRunInput,
@@ -661,6 +668,20 @@ export function createOrchestrator(
           opened.caCertPem,
           opened.envMap,
         );
+        // I10 — flag the session for per-turn rotation when ANY required
+        // credential has a non-`api-key` kind. The credentials facade's
+        // resolve sub-service handles the actual refresh; rotate-session
+        // re-resolves through the facade and updates the placeholder map.
+        // I11 — the placeholder envMap stays stable across rotations; only
+        // the registry's placeholder→real-value mapping updates. We don't
+        // propagate the new envMap into the running runner.
+        const reqs = agent.requiredCredentials ?? {};
+        const hasRefreshableKind = Object.values(reqs).some(
+          (c) => c.kind !== 'api-key',
+        );
+        if (hasRefreshableKind && bus.hasService('proxy:rotate-session')) {
+          sessionsNeedingRotation.add(ctx.sessionId);
+        }
       } catch (err) {
         // proxy:open-session failed (or endpointToProxyConfig threw). If
         // the open succeeded but translation failed, proxyOpened is true
@@ -922,6 +943,9 @@ export function createOrchestrator(
             });
           });
       }
+      // I10 — drop rotation flag regardless of close outcome. A late
+      // turn-end after this point is a no-op (set lookup misses).
+      sessionsNeedingRotation.delete(ctx.sessionId);
     }
   }
 
@@ -959,6 +983,31 @@ export function createOrchestrator(
   }
 
   function onTurnEnd(ctx: AgentContext): void {
+    // I10 — rotate proxy credentials BEFORE the one-shot cancel, so that any
+    // tool-call follow-ups inside the same turn (model→tool→model) pick up
+    // the refreshed token. api-key-only sessions skip rotation: their kind
+    // never refreshes, and Phase 2's coarse mode is the desired behavior.
+    //
+    // The rotation is fire-and-forget: a failing rotate (network blip,
+    // refresh-failed) shouldn't kill the chat. The credentials facade's
+    // resolve sub-service is what decides whether to refresh; if refresh
+    // fails the next request through the proxy will fail with 401 and the
+    // user sees a clear error path (I9).
+    if (sessionsNeedingRotation.has(ctx.sessionId)) {
+      void bus
+        .call<{ sessionId: string }, { envMap: Record<string, string> }>(
+          'proxy:rotate-session',
+          ctx,
+          { sessionId: ctx.sessionId },
+        )
+        .catch((err: unknown) => {
+          ctx.logger.warn('proxy_rotate_session_failed', {
+            sessionId: ctx.sessionId,
+            err: err instanceof Error ? err : new Error(String(err)),
+          });
+        });
+    }
+
     // One-shot mode: the runner just finished processing the single user
     // message and is now waiting on inbox.next() for another. We don't have
     // one, so queue a cancel — the runner's inbox loop will receive it,
