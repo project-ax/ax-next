@@ -64,6 +64,75 @@ describe('@ax/audit-log', () => {
     expect(p.manifest.registers).toEqual([]);
     expect(p.manifest.calls).toContain('storage:set');
     expect(p.manifest.subscribes).toContain('chat:end');
+    expect(p.manifest.subscribes).toContain('event.http-egress');
+  });
+
+  it('subscribes to event.http-egress and persists one row per egress', async () => {
+    const writes: Array<{ key: string; value: Uint8Array }> = [];
+    const h = await createTestHarness({
+      services: {
+        ...MockServices.basics(),
+        'storage:set': async (_ctx, input) => {
+          writes.push(input as { key: string; value: Uint8Array });
+        },
+      },
+      plugins: [auditLogPlugin()],
+    });
+    const ctx = h.ctx();
+    await h.bus.fire('event.http-egress', ctx, {
+      sessionId: 's1',
+      userId: 'u1',
+      method: 'CONNECT',
+      host: 'api.anthropic.com',
+      path: '/',
+      status: 200,
+      requestBytes: 0,
+      responseBytes: 0,
+      durationMs: 12,
+      credentialInjected: true,
+      classification: 'llm',
+      timestamp: 1700000000000,
+    });
+    expect(writes).toHaveLength(1);
+    expect(writes[0]!.key).toBe('egress:s1:1700000000000');
+    const decoded = JSON.parse(new TextDecoder().decode(writes[0]!.value));
+    expect(decoded).toMatchObject({
+      sessionId: 's1',
+      host: 'api.anthropic.com',
+      classification: 'llm',
+      credentialInjected: true,
+    });
+  });
+
+  it('keys allowlist-miss events under "unscoped" when sessionId is empty', async () => {
+    const writes: Array<{ key: string; value: Uint8Array }> = [];
+    const h = await createTestHarness({
+      services: {
+        ...MockServices.basics(),
+        'storage:set': async (_ctx, input) => {
+          writes.push(input as { key: string; value: Uint8Array });
+        },
+      },
+      plugins: [auditLogPlugin()],
+    });
+    const ctx = h.ctx();
+    await h.bus.fire('event.http-egress', ctx, {
+      sessionId: '',
+      userId: '',
+      method: 'CONNECT',
+      host: 'evil.example.com',
+      path: '/',
+      status: 403,
+      requestBytes: 0,
+      responseBytes: 0,
+      durationMs: 1,
+      credentialInjected: false,
+      classification: 'other',
+      blockedReason: 'allowlist',
+      timestamp: 1700000001000,
+    });
+    expect(writes).toHaveLength(1);
+    expect(writes[0]!.key).toBe('egress:unscoped:1700000001000');
   });
 
   it('bootstrap fails with missing-service if storage:set is not registered', async () => {
