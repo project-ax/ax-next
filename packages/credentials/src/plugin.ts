@@ -107,6 +107,92 @@ export function createCredentialsPlugin(): Plugin {
       }
       const key = parseKeyFromEnv(raw);
 
+      // Wrap a per-kind payload + metadata in an envelope, then encrypt.
+      // The envelope lets credentials:get dispatch to the right resolve
+      // sub-service without an extra storage column for `kind` (Phase 3
+      // open question §1: stay schema-light for MVP).
+      function wrapEnvelope(
+        kind: string,
+        payload: Uint8Array,
+        expiresAt: number | undefined,
+        metadata: Record<string, unknown> | undefined,
+      ): Uint8Array {
+        const env: {
+          kind: string;
+          payloadB64: string;
+          expiresAt?: number;
+          metadata?: Record<string, unknown>;
+        } = {
+          kind,
+          payloadB64: Buffer.from(payload).toString('base64'),
+        };
+        if (expiresAt !== undefined) env.expiresAt = expiresAt;
+        if (metadata !== undefined) env.metadata = metadata;
+        return encryptWithKey(key, JSON.stringify(env));
+      }
+
+      function unwrapEnvelope(blob: Uint8Array): {
+        kind: string;
+        payload: Uint8Array;
+        expiresAt?: number;
+        metadata?: Record<string, unknown>;
+        isTombstone: boolean;
+      } {
+        // decryptWithKey throws PluginError without echoing plaintext.
+        const plaintext = decryptWithKey(key, blob);
+        // Empty plaintext = tombstone (see credentials:delete). Caller
+        // reports not-found; this branch never references plaintext.
+        if (plaintext === '') {
+          return {
+            kind: '',
+            payload: new Uint8Array(),
+            isTombstone: true,
+          };
+        }
+        let env: unknown;
+        try {
+          env = JSON.parse(plaintext);
+        } catch {
+          throw new PluginError({
+            code: 'invalid-envelope',
+            plugin: PLUGIN_NAME,
+            message: 'credential envelope JSON parse failed',
+          });
+        }
+        if (
+          typeof env !== 'object' ||
+          env === null ||
+          typeof (env as { kind: unknown }).kind !== 'string' ||
+          typeof (env as { payloadB64: unknown }).payloadB64 !== 'string'
+        ) {
+          throw new PluginError({
+            code: 'invalid-envelope',
+            plugin: PLUGIN_NAME,
+            message: 'credential envelope missing kind or payloadB64',
+          });
+        }
+        const e = env as {
+          kind: string;
+          payloadB64: string;
+          expiresAt?: number;
+          metadata?: Record<string, unknown>;
+        };
+        const out: {
+          kind: string;
+          payload: Uint8Array;
+          expiresAt?: number;
+          metadata?: Record<string, unknown>;
+          isTombstone: boolean;
+        } = {
+          kind: e.kind,
+          payload: new Uint8Array(Buffer.from(e.payloadB64, 'base64')),
+          isTombstone: false,
+        };
+        if (e.expiresAt !== undefined) out.expiresAt = e.expiresAt;
+        if (e.metadata !== undefined) out.metadata = e.metadata;
+        return out;
+      }
+
       bus.registerService<CredentialsSetInput, CredentialsSetOutput>(
         'credentials:set',
         PLUGIN_NAME,
@@ -121,15 +207,8 @@ export function createCredentialsPlugin(): Plugin {
               message: `credential payload must be a Uint8Array`,
             });
           }
-          // Task 3 will wrap an envelope here. For now: stash payload as-is
-          // (still encrypted) so behavior matches Phase 1b until the dispatcher
-          // lands. This is the intentional mid-cut state called out by I12.
-          const plaintext = Buffer.from(input.payload).toString('utf8');
-          const blob = encryptWithKey(key, plaintext);
+          const blob = wrapEnvelope(kind, input.payload, input.expiresAt, input.metadata);
           await bus.call('credentials:store-blob:put', ctx, { userId, ref, blob });
-          void kind;
-          void input.expiresAt;
-          void input.metadata;
         },
       );
 
@@ -150,20 +229,43 @@ export function createCredentialsPlugin(): Plugin {
               message: `no credential for ref='${ref}'`,
             });
           }
-          // decryptWithKey throws PluginError without echoing plaintext.
-          const value = decryptWithKey(key, got.blob);
-          // Empty plaintext = tombstone (see credentials:delete). Treat as
-          // not-found. The facade still owns this convention because the
-          // store-blob layer is bytes-only — a future store-blob:delete
-          // will let us drop this check.
-          if (value === '') {
+          const env = unwrapEnvelope(got.blob);
+          if (env.isTombstone) {
             throw new PluginError({
               code: 'credential-not-found',
               plugin: PLUGIN_NAME,
               message: `no credential for ref='${ref}'`,
             });
           }
-          return value;
+
+          const subService = `credentials:resolve:${env.kind}`;
+          if (bus.hasService(subService)) {
+            const out = await bus.call<CredentialsResolveInput, CredentialsResolveOutput>(
+              subService,
+              ctx,
+              { payload: env.payload, userId, ref },
+            );
+            if (out.refreshed !== undefined) {
+              // Re-store under the same kind. Sub-service may bump expiresAt
+              // or metadata as part of the refresh — propagate both.
+              const refreshArgs: CredentialsSetInput = {
+                ref,
+                userId,
+                kind: env.kind,
+                payload: out.refreshed.payload,
+              };
+              if (out.refreshed.expiresAt !== undefined) {
+                refreshArgs.expiresAt = out.refreshed.expiresAt;
+              }
+              const md = out.refreshed.metadata ?? env.metadata;
+              if (md !== undefined) refreshArgs.metadata = md;
+              await bus.call('credentials:set', ctx, refreshArgs);
+            }
+            return out.value;
+          }
+          // No sub-service registered — payload is the value (UTF-8 bytes).
+          // This is the api-key path: payload bytes ARE the secret string.
+          return new TextDecoder().decode(env.payload);
         },
       );
 

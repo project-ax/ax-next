@@ -194,6 +194,148 @@ describe('@ax/credentials plugin', () => {
     ).rejects.toThrow(/AX_CREDENTIALS_KEY/);
   });
 
+  it('credentials:get dispatches to credentials:resolve:<kind> when sub-service is registered', async () => {
+    const bus = new HookBus();
+    let captured:
+      | { payload: Uint8Array; userId: string; ref: string }
+      | undefined;
+    const fakeResolverPlugin = {
+      manifest: {
+        name: 'fake-resolver',
+        version: '0.0.0',
+        registers: ['credentials:resolve:fake-oauth'],
+        calls: [],
+        subscribes: [],
+      },
+      async init({ bus }: { bus: HookBus }) {
+        bus.registerService(
+          'credentials:resolve:fake-oauth',
+          'fake-resolver',
+          async (_ctx, input: { payload: Uint8Array; userId: string; ref: string }) => {
+            captured = input;
+            return { value: 'token-from-resolver' };
+          },
+        );
+      },
+    };
+    await bootstrap({
+      bus,
+      plugins: [
+        memStoragePlugin(),
+        createCredentialsStoreDbPlugin(),
+        createCredentialsPlugin(),
+        fakeResolverPlugin,
+      ],
+      config: {},
+    });
+    await bus.call('credentials:set', ctx(), {
+      ref: 'oauth1',
+      userId: 'u',
+      kind: 'fake-oauth',
+      payload: bytes('refresh-token-blob'),
+    });
+    const out = await bus.call<{ ref: string; userId: string }, string>(
+      'credentials:get',
+      ctx(),
+      { ref: 'oauth1', userId: 'u' },
+    );
+    expect(out).toBe('token-from-resolver');
+    expect(captured?.userId).toBe('u');
+    expect(captured?.ref).toBe('oauth1');
+    expect(new TextDecoder().decode(captured?.payload)).toBe('refresh-token-blob');
+  });
+
+  it('credentials:get re-stores when sub-service returns refreshed blob', async () => {
+    const bus = new HookBus();
+    let firstCall = true;
+    const fakeResolverPlugin = {
+      manifest: {
+        name: 'fake-resolver',
+        version: '0.0.0',
+        registers: ['credentials:resolve:fake-oauth'],
+        calls: [],
+        subscribes: [],
+      },
+      async init({ bus }: { bus: HookBus }) {
+        bus.registerService(
+          'credentials:resolve:fake-oauth',
+          'fake-resolver',
+          async (
+            _ctx,
+            input: { payload: Uint8Array; userId: string; ref: string },
+          ): Promise<{
+            value: string;
+            refreshed?: { payload: Uint8Array; expiresAt?: number };
+          }> => {
+            if (firstCall) {
+              firstCall = false;
+              return {
+                value: 'token-A',
+                refreshed: {
+                  payload: bytes('refresh-token-v2'),
+                  expiresAt: 12345,
+                },
+              };
+            }
+            // Second call should see the refreshed payload, not the original.
+            expect(new TextDecoder().decode(input.payload)).toBe('refresh-token-v2');
+            return { value: 'token-B' };
+          },
+        );
+      },
+    };
+    await bootstrap({
+      bus,
+      plugins: [
+        memStoragePlugin(),
+        createCredentialsStoreDbPlugin(),
+        createCredentialsPlugin(),
+        fakeResolverPlugin,
+      ],
+      config: {},
+    });
+    await bus.call('credentials:set', ctx(), {
+      ref: 'oauth1',
+      userId: 'u',
+      kind: 'fake-oauth',
+      payload: bytes('refresh-token-v1'),
+    });
+    const first = await bus.call<{ ref: string; userId: string }, string>(
+      'credentials:get',
+      ctx(),
+      { ref: 'oauth1', userId: 'u' },
+    );
+    expect(first).toBe('token-A');
+    const second = await bus.call<{ ref: string; userId: string }, string>(
+      'credentials:get',
+      ctx(),
+      { ref: 'oauth1', userId: 'u' },
+    );
+    expect(second).toBe('token-B');
+  });
+
+  it('credentials:get for api-key kind decodes payload as UTF-8 (no sub-service)', async () => {
+    const bus = new HookBus();
+    await bootstrap({
+      bus,
+      plugins: [memStoragePlugin(), createCredentialsStoreDbPlugin(), createCredentialsPlugin()],
+      config: {},
+    });
+    await bus.call('credentials:set', ctx(), {
+      ref: 'k1',
+      userId: 'u',
+      kind: 'api-key',
+      payload: bytes('sk-real'),
+    });
+    expect(
+      await bus.call<{ ref: string; userId: string }, string>(
+        'credentials:get',
+        ctx(),
+        { ref: 'k1', userId: 'u' },
+      ),
+    ).toBe('sk-real');
+  });
+
   it('error messages never contain the decrypted value', async () => {
     const bus = new HookBus();
     await bootstrap({
