@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "5f22e8ce38e1",
+  "strategy": "manual-commit",
+  "branch": "phase-3-oauth-slice",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "packages/credentials/src/__tests__/plugin.test.ts",
+    "packages/credentials/src/plugin.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/5f/22e8ce38e1/0/metadata.json",
+      "transcript": "/5f/22e8ce38e1/0/full.jsonl",
+      "content_hash": "/5f/22e8ce38e1/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 12,
+    "cache_creation_tokens": 11198,
+    "cache_read_tokens": 2646133,
+    "output_tokens": 8639,
+    "api_call_count": 12
+  }
+}
