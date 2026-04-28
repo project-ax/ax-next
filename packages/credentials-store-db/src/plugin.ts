@@ -26,34 +26,48 @@ import { PluginError, type Plugin } from '@ax/core';
 
 const PLUGIN_NAME = '@ax/credentials-store-db';
 const KEY_PREFIX = 'credential:';
-const ID_RE = /^[a-z0-9][a-z0-9_.-]{0,127}$/;
+const REF_RE = /^[a-z0-9][a-z0-9_.-]{0,127}$/;
+const USER_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}$/;
 
 export interface StoreBlobPutInput {
-  id: string;
+  userId: string;
+  ref: string;
   blob: Uint8Array;
 }
 
 export interface StoreBlobGetInput {
-  id: string;
+  userId: string;
+  ref: string;
 }
 
 export interface StoreBlobGetOutput {
   blob: Uint8Array | undefined;
 }
 
-function storageKey(id: string): string {
-  return `${KEY_PREFIX}${id}`;
+function storageKey(userId: string, ref: string): string {
+  return `${KEY_PREFIX}${userId}:${ref}`;
 }
 
-function validateId(id: unknown): string {
-  if (typeof id !== 'string' || !ID_RE.test(id)) {
+function validateRef(ref: unknown): string {
+  if (typeof ref !== 'string' || !REF_RE.test(ref)) {
     throw new PluginError({
       code: 'invalid-payload',
       plugin: PLUGIN_NAME,
-      message: `credential id must match ${ID_RE.source}`,
+      message: `credential ref must match ${REF_RE.source}`,
     });
   }
-  return id;
+  return ref;
+}
+
+function validateUserId(userId: unknown): string {
+  if (typeof userId !== 'string' || !USER_ID_RE.test(userId)) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: `userId must match ${USER_ID_RE.source}`,
+    });
+  }
+  return userId;
 }
 
 export function createCredentialsStoreDbPlugin(): Plugin {
@@ -70,7 +84,8 @@ export function createCredentialsStoreDbPlugin(): Plugin {
         'credentials:store-blob:put',
         PLUGIN_NAME,
         async (ctx, input) => {
-          const id = validateId(input.id);
+          const userId = validateUserId(input.userId);
+          const ref = validateRef(input.ref);
           if (!(input.blob instanceof Uint8Array)) {
             throw new PluginError({
               code: 'invalid-payload',
@@ -79,7 +94,7 @@ export function createCredentialsStoreDbPlugin(): Plugin {
             });
           }
           await bus.call('storage:set', ctx, {
-            key: storageKey(id),
+            key: storageKey(userId, ref),
             value: input.blob,
           });
         },
@@ -89,11 +104,12 @@ export function createCredentialsStoreDbPlugin(): Plugin {
         'credentials:store-blob:get',
         PLUGIN_NAME,
         async (ctx, input) => {
-          const id = validateId(input.id);
+          const userId = validateUserId(input.userId);
+          const ref = validateRef(input.ref);
           const got = await bus.call<{ key: string }, { value: Uint8Array | undefined }>(
             'storage:get',
             ctx,
-            { key: storageKey(id) },
+            { key: storageKey(userId, ref) },
           );
           return { blob: got.value };
         },
