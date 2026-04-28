@@ -39,17 +39,28 @@ export function openBrowser(url: string): void {
     });
   }
   const final = parsed.toString();
+  // spawn() reports missing binaries via an asynchronous 'error' event,
+  // not a synchronous throw. Without an attached listener, a headless
+  // host (no `open` / `xdg-open` / `cmd` available) crashes the process
+  // AFTER this function returns — bypassing the caller's try/catch and
+  // the printed-URL fallback. Swallow it explicitly: the user already
+  // sees the URL on stdout and can paste it manually.
+  let child;
   if (process.platform === 'darwin') {
-    spawn('open', [final], { detached: true, stdio: 'ignore' }).unref();
+    child = spawn('open', [final], { detached: true, stdio: 'ignore' });
   } else if (process.platform === 'win32') {
     // The empty string after 'start' is the title arg — required by start's
     // syntax to disambiguate when the URL itself starts with quotes. cmd's
     // /c is a fixed flag, not user input.
-    spawn('cmd', ['/c', 'start', '', final], {
+    child = spawn('cmd', ['/c', 'start', '', final], {
       detached: true,
       stdio: 'ignore',
-    }).unref();
+    });
   } else {
-    spawn('xdg-open', [final], { detached: true, stdio: 'ignore' }).unref();
+    child = spawn('xdg-open', [final], { detached: true, stdio: 'ignore' });
   }
+  child.on('error', () => {
+    // best-effort — caller already printed the URL to stdout
+  });
+  child.unref();
 }
