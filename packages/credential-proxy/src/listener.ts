@@ -338,7 +338,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
       const response = await fetch(upstreamUrl.toString(), {
         method,
         headers,
-        body: body.length > 0 ? body : undefined,
+        ...(body.length > 0 ? { body } : {}),
         redirect: 'manual',
       });
 

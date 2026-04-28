@@ -39,7 +39,8 @@ export class BlockedIPError extends Error {
 export function isPrivateIPv4(ip: string): boolean {
   const parts = ip.split('.').map(Number);
   if (parts.length !== 4 || parts.some((p) => Number.isNaN(p))) return false;
-  const [a, b] = parts;
+  const a = parts[0]!;
+  const b = parts[1]!;
   return (
     a === 127 ||                              // 127.0.0.0/8
     a === 10 ||                               // 10.0.0.0/8
