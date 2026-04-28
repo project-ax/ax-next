@@ -1343,6 +1343,9 @@ importers:
       '@ax/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@ax/credential-proxy':
+        specifier: workspace:*
+        version: link:../../packages/credential-proxy
       '@ax/credentials':
         specifier: workspace:*
         version: link:../../packages/credentials

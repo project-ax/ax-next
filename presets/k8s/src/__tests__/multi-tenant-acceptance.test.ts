@@ -388,6 +388,13 @@ beforeAll(async () => {
     auth: {
       devBootstrap: { token: DEV_TOKEN },
     },
+    // Phase 2 — credential-proxy socket + CA dir per-test tmpdir overrides
+    // (production defaults bind to /var/run/ax/proxy.sock + ~/.ax/proxy-ca,
+    // both of which are wrong for unprivileged test users).
+    credentialProxy: {
+      socketPath: join(workspaceRoot, 'proxy.sock'),
+      caDir: join(workspaceRoot, 'proxy-ca'),
+    },
   };
 
   const built = createK8sPlugins(presetConfig);

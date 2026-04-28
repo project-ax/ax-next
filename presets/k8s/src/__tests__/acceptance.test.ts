@@ -162,6 +162,14 @@ beforeAll(async () => {
       // just satisfies the auth plugin's "at least one provider" gate.
       devBootstrap: { token: 'acceptance-bootstrap-token' },
     },
+    // Phase 2 — credential-proxy socket path + CA dir. Production default
+    // is /var/run/ax/proxy.sock + ~/.ax/proxy-ca; unprivileged test users
+    // can't bind to /var/run/ax, and we don't want to leave a CA in the
+    // user's home. Both go in a per-test tmpdir.
+    credentialProxy: {
+      socketPath: join(workspaceRoot, 'proxy.sock'),
+      caDir: join(workspaceRoot, 'proxy-ca'),
+    },
   };
 
   // Build the production plugin set, then patch two slots:

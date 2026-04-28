@@ -36,6 +36,7 @@
     "@ax/tool-dispatcher": "workspace:*",
     "@ax/audit-log": "workspace:*",
     "@ax/mcp-client": "workspace:*",
+    "@ax/credential-proxy": "workspace:*",
     "@ax/credentials": "workspace:*",
     "@ax/credentials-store-db": "workspace:*",
     "@ax/ipc-http": "workspace:*",
