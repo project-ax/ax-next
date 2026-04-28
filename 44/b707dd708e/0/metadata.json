@@ -1,0 +1,41 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "44b707dd708e",
+  "session_id": "81dbfcb7-1a67-4f97-a636-7d5a9c07534a",
+  "strategy": "manual-commit",
+  "created_at": "2026-04-28T16:55:39.422218Z",
+  "branch": "phase-2-runner-proxy-wiring",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "presets/k8s/package.json",
+    "presets/k8s/tsconfig.json",
+    "presets/k8s/src/index.ts",
+    "presets/k8s/src/__tests__/preset.test.ts",
+    "presets/k8s/src/__tests__/acceptance.test.ts",
+    "presets/k8s/src/__tests__/multi-tenant-acceptance.test.ts"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "f399578ddf30",
+  "checkpoint_transcript_start": 430,
+  "transcript_lines_at_start": 430,
+  "token_usage": {
+    "input_tokens": 44,
+    "cache_creation_tokens": 33283,
+    "cache_read_tokens": 12840953,
+    "output_tokens": 15207,
+    "api_call_count": 44
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-04-28T16:55:39.388571Z",
+    "agent_lines": 60,
+    "agent_removed": 0,
+    "human_added": 3,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 63,
+    "total_lines_changed": 63,
+    "agent_percentage": 95.23809523809523,
+    "metric_version": 2
+  }
+}

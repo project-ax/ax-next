@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "44b707dd708e",
+  "strategy": "manual-commit",
+  "branch": "phase-2-runner-proxy-wiring",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "presets/k8s/package.json",
+    "presets/k8s/src/__tests__/acceptance.test.ts",
+    "presets/k8s/src/__tests__/multi-tenant-acceptance.test.ts",
+    "presets/k8s/src/__tests__/preset.test.ts",
+    "presets/k8s/src/index.ts",
+    "presets/k8s/tsconfig.json"
+  ],
+  "sessions": [
+    {
+      "metadata": "/44/b707dd708e/0/metadata.json",
+      "transcript": "/44/b707dd708e/0/full.jsonl",
+      "content_hash": "/44/b707dd708e/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 44,
+    "cache_creation_tokens": 33283,
+    "cache_read_tokens": 12840953,
+    "output_tokens": 15207,
+    "api_call_count": 44
+  }
+}
