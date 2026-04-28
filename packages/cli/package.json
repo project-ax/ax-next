@@ -30,6 +30,7 @@
     "@ax/credential-proxy": "workspace:*",
     "@ax/credentials": "workspace:*",
     "@ax/credentials-store-db": "workspace:*",
+    "@ax/credentials-anthropic-oauth": "workspace:*",
     "@ax/sandbox-subprocess": "workspace:*",
     "@ax/session-inmemory": "workspace:*",
     "@ax/ipc-server": "workspace:*",
