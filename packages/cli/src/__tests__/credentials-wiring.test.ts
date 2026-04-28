@@ -6,6 +6,7 @@ import { HookBus, bootstrap, type Plugin } from '@ax/core';
 import { createStorageSqlitePlugin } from '@ax/storage-sqlite';
 import { createCredentialsStoreDbPlugin } from '@ax/credentials-store-db';
 import { createCredentialsPlugin } from '@ax/credentials';
+import { createCredentialProxyPlugin } from '@ax/credential-proxy';
 
 // This test asserts that `@ax/credentials` is available on the chat-path bus.
 // It mirrors the storage-then-credentials push ordering in main.ts but stops
@@ -83,5 +84,39 @@ describe('credentials wiring on the chat-path bus', () => {
     });
 
     expect(observedHasCredentialsGet).toBe(true);
+  });
+
+  it('loads @ax/credential-proxy and registers proxy:open-session / :close-session', async () => {
+    // Phase 2 — the chat-orchestrator gates on bus.hasService('proxy:open-
+    // session'); if this assertion fails, the orchestrator silently falls
+    // back to the legacy llm-proxy path (which lets the IPC bearer be sent
+    // upstream as ANTHROPIC_API_KEY). That regression is the bug to catch
+    // here, before it's a security-shaped runtime surprise.
+    const bus = new HookBus();
+    const tmpCaDir = mkdtempSync(join(tmpdir(), 'ax-proxy-ca-'));
+    try {
+      const handle = await bootstrap({
+        bus,
+        plugins: [
+          createStorageSqlitePlugin({ databasePath: join(tmp, 'db.sqlite') }),
+          createCredentialsStoreDbPlugin(),
+          createCredentialsPlugin(),
+          createCredentialProxyPlugin({
+            listen: { kind: 'tcp', host: '127.0.0.1', port: 0 },
+            caDir: tmpCaDir,
+          }),
+        ],
+        config: {},
+      });
+      try {
+        expect(bus.hasService('proxy:open-session')).toBe(true);
+        expect(bus.hasService('proxy:close-session')).toBe(true);
+        expect(bus.hasService('proxy:rotate-session')).toBe(true);
+      } finally {
+        await handle.shutdown();
+      }
+    } finally {
+      rmSync(tmpCaDir, { recursive: true, force: true });
+    }
   });
 });

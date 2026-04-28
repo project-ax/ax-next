@@ -25,6 +25,7 @@
     { "path": "../../packages/tool-dispatcher" },
     { "path": "../../packages/audit-log" },
     { "path": "../../packages/mcp-client" },
+    { "path": "../../packages/credential-proxy" },
     { "path": "../../packages/credentials" },
     { "path": "../../packages/credentials-store-db" },
     { "path": "../../packages/ipc-http" },

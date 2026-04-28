@@ -17,6 +17,25 @@ const env = {
   AX_AUTH_TOKEN: process.env.AX_AUTH_TOKEN ?? null,
   AX_WORKSPACE_ROOT: process.env.AX_WORKSPACE_ROOT ?? null,
   AX_LLM_PROXY_URL: process.env.AX_LLM_PROXY_URL ?? null,
+  // Phase 2 — credential-proxy env (set only when proxyConfig was passed
+  // to sandbox:open-session; absent on the legacy llm-proxy path).
+  AX_PROXY_ENDPOINT: process.env.AX_PROXY_ENDPOINT ?? null,
+  AX_PROXY_UNIX_SOCKET: process.env.AX_PROXY_UNIX_SOCKET ?? null,
+  HTTPS_PROXY: process.env.HTTPS_PROXY ?? null,
+  HTTP_PROXY: process.env.HTTP_PROXY ?? null,
+  NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS ?? null,
+  SSL_CERT_FILE: process.env.SSL_CERT_FILE ?? null,
+  // Test assertion only needs to know the placeholder is `ax-cred:<hex>`
+  // shape (Phase 2 substitution) vs. unset. Echo a presence-only marker
+  // so a real key — set in process.env by an over-eager test runner or
+  // a developer's local secrets — never lands in captured test logs.
+  ANTHROPIC_API_KEY: (() => {
+    const v = process.env.ANTHROPIC_API_KEY;
+    if (typeof v !== 'string' || v.length === 0) return null;
+    return v.startsWith('ax-cred:') ? v : '[redacted]';
+  })(),
+  // Allowlisted parent vars echoed for the spread-precedence test.
+  HOME: process.env.HOME ?? null,
   FOO: process.env.FOO ?? null,
 };
 process.stdout.write(JSON.stringify(env) + '\n');

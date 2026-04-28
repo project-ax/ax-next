@@ -112,6 +112,7 @@ describe('@ax/preset-k8s wiring', () => {
         '@ax/audit-log',
         '@ax/auth-oidc',
         '@ax/chat-orchestrator',
+        '@ax/credential-proxy',
         '@ax/credentials',
         '@ax/credentials-store-db',
         '@ax/database-postgres',

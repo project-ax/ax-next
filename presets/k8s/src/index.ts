@@ -15,6 +15,7 @@ import { createToolBashPlugin } from '@ax/tool-bash';
 import { createToolFileIoPlugin } from '@ax/tool-file-io';
 import { auditLogPlugin } from '@ax/audit-log';
 import { createMcpClientPlugin } from '@ax/mcp-client';
+import { createCredentialProxyPlugin } from '@ax/credential-proxy';
 import { createCredentialsPlugin } from '@ax/credentials';
 import { createCredentialsStoreDbPlugin } from '@ax/credentials-store-db';
 import { createIpcHttpPlugin } from '@ax/ipc-http';
@@ -259,6 +260,21 @@ export interface K8sPresetConfig {
     sessionLifetimeSeconds?: number;
   };
   /**
+   * Phase 2 — credential-proxy socket override. Defaults to
+   * `/var/run/ax/proxy.sock` (matches the helm chart's emptyDir mount
+   * point on host pods). Tests pass a per-test tmpdir so unprivileged
+   * users can bind. Production deploys leave this unset.
+   *
+   * `caDir` overrides where the MITM CA private key + cert PEM live;
+   * defaults to `~/.ax/proxy-ca` inside the credential-proxy plugin.
+   * Tests override to keep cruft out of the user's home; production
+   * leaves this unset (or sets a chart-mounted persistent path).
+   */
+  credentialProxy?: {
+    socketPath?: string;
+    caDir?: string;
+  };
+  /**
    * Optional static-file serving (production single-binary mode). When
    * set, mounts `@ax/static-files` after the API routes so it serves
    * channel-web's bundle on otherwise-unmatched paths. SPA fallback
@@ -312,6 +328,29 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // AX_CREDENTIALS_KEY isn't in env.
   plugins.push(createCredentialsStoreDbPlugin());
   plugins.push(createCredentialsPlugin());
+
+  // Phase 2 — credential-proxy on a Unix socket. The host pod mounts an
+  // emptyDir at /var/run/ax (helm template); the proxy listens on
+  // <mount>/proxy.sock. Sandbox pods get the SAME emptyDir mounted via
+  // the pod template, so they can dial the socket directly. The runner-
+  // side @ax/credential-proxy-bridge converts that to a loopback TCP
+  // port inside the sandbox before HTTP(S)_PROXY-aware libraries reach
+  // it. (Off-the-shelf libraries can't dial a Unix socket directly.)
+  //
+  // Real Anthropic credentials are seeded by the admin via the standard
+  // credentials store (POST /admin/credentials, Phase 9.5); the proxy
+  // resolves them at proxy:open-session time and substitutes the
+  // ax-cred:<hex> placeholder into outbound headers mid-flight.
+  const credentialProxyCfg: Parameters<typeof createCredentialProxyPlugin>[0] = {
+    listen: {
+      kind: 'unix',
+      path: config.credentialProxy?.socketPath ?? '/var/run/ax/proxy.sock',
+    },
+  };
+  if (config.credentialProxy?.caDir !== undefined) {
+    credentialProxyCfg.caDir = config.credentialProxy.caDir;
+  }
+  plugins.push(createCredentialProxyPlugin(credentialProxyCfg));
 
   // ----- 2. cross-process coordination ----------------------------------
   // Eventbus and session each own a dedicated LISTEN client.
@@ -785,5 +824,8 @@ export function loadK8sConfigFromEnv(
   if (Object.keys(sandbox).length > 0) config.sandbox = sandbox;
   if (Object.keys(anthropic).length > 0) config.anthropic = anthropic;
   if (Object.keys(chat).length > 0) config.chat = chat;
+  if (env.AX_PROXY_SOCKET_PATH !== undefined && env.AX_PROXY_SOCKET_PATH !== '') {
+    config.credentialProxy = { socketPath: env.AX_PROXY_SOCKET_PATH };
+  }
   return config;
 }

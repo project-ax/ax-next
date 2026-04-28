@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -385,6 +385,262 @@ describe('sandbox:open-session', () => {
       await new Promise((r) => setTimeout(r, 25));
     }
     expect(bound).toBe(true);
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
+  // ---------------------------------------------------------------------
+  // Phase 2 — proxyConfig env injection
+  //
+  // When the orchestrator passes a proxyConfig blob, we write the CA cert
+  // PEM to the per-session tempdir and inject HTTPS_PROXY / HTTP_PROXY /
+  // NODE_EXTRA_CA_CERTS / SSL_CERT_FILE / AX_PROXY_* / envMap into the
+  // child env. CA private keys never enter the sandbox (I1) — the
+  // certificate is a public key only.
+  // ---------------------------------------------------------------------
+
+  it('writes CA cert + injects HTTPS_PROXY / NODE_EXTRA_CA_CERTS when proxyConfig.endpoint is set', async () => {
+    const ws = await mkWorkspace();
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    const result = await h.bus.call<unknown, OpenSessionResult>(
+      'sandbox:open-session',
+      ctx,
+      {
+        sessionId: 'proxy-tcp-1',
+        workspaceRoot: ws,
+        runnerBinary: ECHO_STUB,
+        proxyConfig: {
+          endpoint: 'http://127.0.0.1:54321',
+          caCertPem: '-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n',
+          envMap: { ANTHROPIC_API_KEY: 'ax-cred:0123' },
+        },
+      },
+    );
+    const line = await readFirstStdoutLine(result);
+    const parsed = JSON.parse(line) as Record<string, string | null>;
+    expect(parsed.HTTPS_PROXY).toBe('http://127.0.0.1:54321');
+    expect(parsed.HTTP_PROXY).toBe('http://127.0.0.1:54321');
+    expect(parsed.AX_PROXY_ENDPOINT).toBe('http://127.0.0.1:54321');
+    expect(parsed.AX_PROXY_UNIX_SOCKET).toBeNull();
+    expect(parsed.ANTHROPIC_API_KEY).toBe('ax-cred:0123');
+    // Phase 2: when proxyConfig is set, the legacy in-sandbox llm-proxy is
+    // NOT started — the runner reaches the credential-proxy directly via
+    // HTTPS_PROXY. AX_LLM_PROXY_URL must be unset so a future runner that
+    // accidentally reads both vars doesn't pick the wrong path.
+    expect(parsed.AX_LLM_PROXY_URL).toBeNull();
+    // CA file path lands inside the per-session tempdir (same one the IPC
+    // socket uses — 0700 mode, host uid only).
+    const caPath = parsed.NODE_EXTRA_CA_CERTS;
+    expect(caPath).toMatch(/\/ax-ipc-.*\/ax-mitm-ca\.pem$/);
+    expect(parsed.SSL_CERT_FILE).toBe(caPath);
+    // CA file actually exists on disk and contains the PEM.
+    const onDisk = await fs.readFile(caPath as string, 'utf8');
+    expect(onDisk).toContain('-----BEGIN CERTIFICATE-----');
+    expect(onDisk).toContain('FAKE');
+
+    await result.handle.kill();
+    await result.handle.exited;
+    await new Promise((r) => setTimeout(r, 50));
+    // Tempdir cleanup sweeps the CA file too — no separate handler.
+    await expect(fs.stat(caPath as string)).rejects.toMatchObject({ code: 'ENOENT' });
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
+  it('passes through proxyConfig.unixSocketPath as AX_PROXY_UNIX_SOCKET (no HTTPS_PROXY rewrite)', async () => {
+    // Subprocess sandbox passes the path through as-is; the runner-side
+    // bridge owns the unix-socket → local-TCP-port translation. We verify
+    // here that this plugin does NOT pre-set HTTPS_PROXY when only the
+    // unix socket is given.
+    const ws = await mkWorkspace();
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    const result = await h.bus.call<unknown, OpenSessionResult>(
+      'sandbox:open-session',
+      ctx,
+      {
+        sessionId: 'proxy-unix-1',
+        workspaceRoot: ws,
+        runnerBinary: ECHO_STUB,
+        proxyConfig: {
+          unixSocketPath: '/var/run/ax/proxy.sock',
+          caCertPem: '-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n',
+          envMap: {},
+        },
+      },
+    );
+    const line = await readFirstStdoutLine(result);
+    const parsed = JSON.parse(line) as Record<string, string | null>;
+    expect(parsed.AX_PROXY_UNIX_SOCKET).toBe('/var/run/ax/proxy.sock');
+    expect(parsed.AX_PROXY_ENDPOINT).toBeNull();
+    expect(parsed.HTTPS_PROXY).toBeNull();
+    expect(parsed.HTTP_PROXY).toBeNull();
+    // CA still lands.
+    expect(parsed.NODE_EXTRA_CA_CERTS).toMatch(/ax-mitm-ca\.pem$/);
+
+    await result.handle.kill();
+    await result.handle.exited;
+    await new Promise((r) => setTimeout(r, 50));
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
+  it('does not inject any proxy env when proxyConfig is undefined', async () => {
+    const ws = await mkWorkspace();
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    const result = await h.bus.call<unknown, OpenSessionResult>(
+      'sandbox:open-session',
+      ctx,
+      { sessionId: 'no-proxy', workspaceRoot: ws, runnerBinary: ECHO_STUB },
+    );
+    const line = await readFirstStdoutLine(result);
+    const parsed = JSON.parse(line) as Record<string, string | null>;
+    expect(parsed.HTTPS_PROXY).toBeNull();
+    expect(parsed.HTTP_PROXY).toBeNull();
+    expect(parsed.AX_PROXY_ENDPOINT).toBeNull();
+    expect(parsed.AX_PROXY_UNIX_SOCKET).toBeNull();
+    expect(parsed.NODE_EXTRA_CA_CERTS).toBeNull();
+    expect(parsed.SSL_CERT_FILE).toBeNull();
+    expect(parsed.ANTHROPIC_API_KEY).toBeNull();
+    await result.handle.kill();
+    await result.handle.exited;
+    await new Promise((r) => setTimeout(r, 50));
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
+  it('proxyConfig.envMap wins over a same-named allowlisted parent env (defense-in-depth)', async () => {
+    // Today the allowlist (PATH/HOME/LANG/LC_ALL/TZ/NODE_OPTIONS) doesn't
+    // overlap with the proxy keys envMap carries (ANTHROPIC_API_KEY,
+    // HTTPS_PROXY, etc.). But if a future expansion ever did — e.g. an
+    // operator adds ANTHROPIC_API_KEY to the allowlist — the session-
+    // scoped placeholder MUST still win. A parent ANTHROPIC_API_KEY
+    // leaking into the sandbox would re-introduce a real credential into
+    // a process that's only supposed to see ax-cred:<hex> placeholders
+    // (I1).
+    //
+    // We simulate the overlap by aiming envMap at HOME — already in the
+    // allowlist — and proving the child sees the envMap value, not the
+    // parent's. The spread order is the only thing under test.
+    const ws = await mkWorkspace();
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    const priorHome = process.env.HOME;
+    process.env.HOME = '/parent/home/should/lose';
+    try {
+      const result = await h.bus.call<unknown, OpenSessionResult>(
+        'sandbox:open-session',
+        ctx,
+        {
+          sessionId: 'envmap-precedence-1',
+          workspaceRoot: ws,
+          runnerBinary: ECHO_STUB,
+          proxyConfig: {
+            endpoint: 'http://127.0.0.1:54321',
+            caCertPem: '-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n',
+            envMap: { HOME: '/session/home/wins' },
+          },
+        },
+      );
+      const line = await readFirstStdoutLine(result);
+      const parsed = JSON.parse(line) as Record<string, string | null>;
+      expect(parsed.HOME).toBe('/session/home/wins');
+      await result.handle.kill();
+      await result.handle.exited;
+      await new Promise((r) => setTimeout(r, 50));
+    } finally {
+      if (priorHome === undefined) delete process.env.HOME;
+      else process.env.HOME = priorHome;
+    }
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
+  it('rolls back ipc + session + tempdir when CA write fails (proxyConfig path)', async () => {
+    // CA write happens AFTER session:create + ipc:start. If it throws, the
+    // function used to exit without rollback, leaking a live token + a
+    // bound ipc listener. We force fs.writeFile to throw and assert the
+    // listener slot is free again (rebinding the same sessionId via
+    // ipc:start would throw 'already-running' otherwise — same shape as
+    // the llm-proxy:start rollback test below).
+    const ws = await mkWorkspace();
+    const h = await makeHarness();
+    const ctx = h.ctx();
+
+    // Spy on fs.promises.writeFile and force the FIRST CA write to throw.
+    // We restore right after `bus.call` to avoid affecting the rest of
+    // the suite.
+    const realWriteFile = fs.writeFile;
+    const spy = vi
+      .spyOn(fs, 'writeFile')
+      .mockImplementationOnce(async (filePath: unknown) => {
+        // Only throw for the MITM CA path; let other writes pass through.
+        if (typeof filePath === 'string' && filePath.endsWith('ax-mitm-ca.pem')) {
+          throw new Error('disk full');
+        }
+        return realWriteFile.call(fs, filePath as string, '');
+      });
+
+    let caught: unknown;
+    try {
+      await h.bus.call<unknown, OpenSessionResult>(
+        'sandbox:open-session',
+        ctx,
+        {
+          sessionId: 'ca-rb-1',
+          workspaceRoot: ws,
+          runnerBinary: ECHO_STUB,
+          proxyConfig: {
+            endpoint: 'http://127.0.0.1:54321',
+            caCertPem: '-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n',
+            envMap: {},
+          },
+        },
+      );
+    } catch (err) {
+      caught = err;
+    } finally {
+      spy.mockRestore();
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('ca-write-failed');
+    expect((caught as PluginError).message).toContain('failed to write MITM CA cert');
+
+    // Rollback evidence: ipc:start now succeeds again on the same sessionId,
+    // which it wouldn't if the prior listener slot were still held.
+    const rebindDir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? '/tmp', 'ax-ipc-ca-rb-'));
+    const rebindSock = path.join(rebindDir, 'ipc.sock');
+    await expect(
+      h.bus.call('ipc:start', ctx, { socketPath: rebindSock, sessionId: 'ca-rb-1' }),
+    ).resolves.toMatchObject({ running: true });
+    await h.bus.call('ipc:stop', ctx, { sessionId: 'ca-rb-1' });
+    await fs.rm(rebindDir, { recursive: true, force: true });
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
+  it('rejects proxyConfig with both endpoint AND unixSocketPath set', async () => {
+    const ws = await mkWorkspace();
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    let caught: unknown;
+    try {
+      await h.bus.call(
+        'sandbox:open-session',
+        ctx,
+        {
+          sessionId: 'proxy-bad',
+          workspaceRoot: ws,
+          runnerBinary: ECHO_STUB,
+          proxyConfig: {
+            endpoint: 'http://127.0.0.1:54321',
+            unixSocketPath: '/var/run/ax/proxy.sock',
+            caCertPem: 'x',
+            envMap: {},
+          },
+        },
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('invalid-payload');
     await fs.rm(ws, { recursive: true, force: true });
   });
 

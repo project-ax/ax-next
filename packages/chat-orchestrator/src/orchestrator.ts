@@ -117,9 +117,49 @@ interface AgentRecord {
   mcpConfigIds: string[];
   model: string;
   workspaceRef: string | null;
+  /**
+   * Phase 2 — egress allowlist. Hostnames the per-session proxy permits the
+   * runner to reach (exact match). Empty/undefined means "no egress" (the
+   * proxy denies every CONNECT/HTTP request that doesn't appear in the
+   * list). The dev-agents-stub seeds `['api.anthropic.com']` so the SDK
+   * runner can call Anthropic; production agents grow per-row allowlists
+   * in Phase 9.5+.
+   */
+  allowedHosts?: string[];
+  /**
+   * Phase 2 — per-session credential refs. The orchestrator passes these
+   * to `proxy:open-session`, which resolves each ref via `credentials:get`
+   * and registers a `ax-cred:<hex>` placeholder in the listener's
+   * substitution registry. The runner only ever sees the placeholder
+   * inside its env map (I1: real credentials never enter the sandbox).
+   */
+  requiredCredentials?: Record<string, { ref: string; kind: string }>;
 }
 interface AgentsResolveOutput {
   agent: AgentRecord;
+}
+
+// proxy:* shapes — duplicated structurally per I2. The orchestrator does
+// NOT import from @ax/credential-proxy; calls flow through bus.call.
+interface ProxyOpenSessionInput {
+  sessionId: string;
+  userId: string;
+  agentId: string;
+  /** Hostnames this session may reach (exact match). */
+  allowlist: string[];
+  /** envName → { ref to credentials store, kind hint for downstream policy }. */
+  credentials: Record<string, { ref: string; kind: string }>;
+}
+interface ProxyOpenSessionOutput {
+  /** `unix:///path/to/sock` OR `tcp://127.0.0.1:<port>` — translated below. */
+  proxyEndpoint: string;
+  /** Root CA cert PEM the sandbox must trust. */
+  caCertPem: string;
+  /** envName → opaque placeholder token (`ax-cred:<32-hex>`). */
+  envMap: Record<string, string>;
+}
+interface ProxyCloseSessionInput {
+  sessionId: string;
 }
 
 // AgentConfig sent through sandbox:open-session and persisted on the
@@ -166,6 +206,38 @@ interface SessionIsAliveOutput {
   alive: boolean;
 }
 
+/**
+ * Proxy-session blob threaded from the orchestrator into the sandbox plugin.
+ * The orchestrator opens a `proxy:open-session` BEFORE `sandbox:open-session`
+ * (when @ax/credential-proxy is loaded) and packs the resolved endpoint, CA
+ * cert PEM, and per-session credential placeholder envMap into this shape.
+ *
+ * Field naming is deliberately backend-agnostic (I3): `endpoint` and
+ * `unixSocketPath` are mutually exclusive — the subprocess sandbox uses the
+ * TCP loopback form (`endpoint`); the k8s sandbox passes through the Unix
+ * socket path so the runner-side bridge can convert it to a local TCP port
+ * inside the sandbox. `caCertPem` is the PEM bytes; the sandbox plugin owns
+ * "where on disk to write this." The orchestrator never knows or cares.
+ */
+export interface ProxyConfig {
+  /** TCP endpoint (subprocess sandbox), e.g. 'http://127.0.0.1:54321'. */
+  endpoint?: string;
+  /** Unix socket path (k8s sandbox), e.g. '/var/run/ax/proxy.sock'. */
+  unixSocketPath?: string;
+  /**
+   * MITM CA certificate PEM bytes. Sandbox runtime writes this to disk
+   * inside the sandbox and points NODE_EXTRA_CA_CERTS / SSL_CERT_FILE at
+   * the path. The orchestrator never knows the path.
+   */
+  caCertPem: string;
+  /**
+   * Env injected by `proxy:open-session`. Maps env-var names (e.g.
+   * `ANTHROPIC_API_KEY`) to `ax-cred:<hex>` placeholders the proxy
+   * recognizes. Sandbox-subprocess merges these into the runner env.
+   */
+  envMap: Record<string, string>;
+}
+
 interface OpenSessionInput {
   sessionId: string;
   workspaceRoot: string;
@@ -182,6 +254,13 @@ interface OpenSessionInput {
     agentId: string;
     agentConfig: AgentConfig;
   };
+  /**
+   * Per-session proxy blob. Populated only when @ax/credential-proxy is
+   * loaded; otherwise undefined and the runner reaches the legacy
+   * in-sandbox llm-proxy via AX_LLM_PROXY_URL. Phase 5/6 deletes that
+   * fallback.
+   */
+  proxyConfig?: ProxyConfig;
 }
 interface OpenSessionHandle {
   kill(): Promise<void>;
@@ -527,6 +606,96 @@ export function createOrchestrator(
       return outcome;
     }
 
+    // 4.5 — proxy:open-session (Phase 2). Fresh-spawn path only: a routed
+    //       agent:invoke reuses an existing live sandbox whose proxy
+    //       session was opened by the orchestrator that originally
+    //       spawned it. Soft dep: when @ax/credential-proxy isn't loaded
+    //       (CLI canary pre-Task-5, mcp-client e2e harness), proxyConfig
+    //       stays undefined and the runner falls back to the legacy
+    //       in-sandbox llm-proxy via AX_LLM_PROXY_URL. Phase 5/6 deletes
+    //       the fallback.
+    //
+    //       I7 — `proxy:close-session` always fires once per `proxy:open-
+    //       session`. We track that with `proxyOpened`; the finally below
+    //       fires close exactly once when the flag is set, regardless of
+    //       which exit path won.
+    //
+    //       Both hooks must be registered before we enable proxy mode. A
+    //       skewed preset that wired only one would otherwise either open
+    //       sessions it can never close (open-only) or never reach the
+    //       proxy at all (close-only) — neither is recoverable at runtime.
+    //       Fail loud at agent:invoke time with a structured outcome so
+    //       audit-log surfaces the misconfiguration.
+    const proxyOpenLoaded = bus.hasService('proxy:open-session');
+    const proxyCloseLoaded = bus.hasService('proxy:close-session');
+    if (proxyOpenLoaded !== proxyCloseLoaded) {
+      const outcome: AgentOutcome = {
+        kind: 'terminated',
+        reason: 'proxy-hooks-misconfigured',
+      };
+      await bus.fire('chat:end', ctx, { outcome });
+      return outcome;
+    }
+    const proxyLoaded = proxyOpenLoaded && proxyCloseLoaded;
+    let proxyConfig: ProxyConfig | undefined;
+    let proxyOpened = false;
+    if (proxyLoaded) {
+      try {
+        const opened = await bus.call<ProxyOpenSessionInput, ProxyOpenSessionOutput>(
+          'proxy:open-session',
+          ctx,
+          {
+            sessionId: ctx.sessionId,
+            userId: ctx.userId,
+            agentId: agent.id,
+            allowlist: agent.allowedHosts ?? [],
+            credentials: agent.requiredCredentials ?? {},
+          },
+        );
+        // Mark opened BEFORE endpointToProxyConfig — that helper throws on
+        // unrecognized scheme, and we still owe the proxy a close in that
+        // case (the session was minted before the throw).
+        proxyOpened = true;
+        proxyConfig = endpointToProxyConfig(
+          opened.proxyEndpoint,
+          opened.caCertPem,
+          opened.envMap,
+        );
+      } catch (err) {
+        // proxy:open-session failed (or endpointToProxyConfig threw). If
+        // the open succeeded but translation failed, proxyOpened is true
+        // and we need to close before returning. Otherwise nothing to
+        // close — the open never settled. We do NOT proceed without the
+        // proxy when it's loaded — that would force real credentials
+        // into the sandbox env, breaking I1.
+        if (proxyOpened) {
+          await bus
+            .call<ProxyCloseSessionInput, Record<string, never>>(
+              'proxy:close-session',
+              ctx,
+              { sessionId: ctx.sessionId },
+            )
+            .catch((closeErr: unknown) => {
+              ctx.logger.warn('proxy_close_session_failed', {
+                sessionId: ctx.sessionId,
+                err:
+                  closeErr instanceof Error
+                    ? closeErr
+                    : new Error(String(closeErr)),
+              });
+            });
+        }
+        const outcome: AgentOutcome = {
+          kind: 'terminated',
+          reason: 'proxy-open-failed',
+          error: err,
+        };
+        await bus.fire('chat:end', ctx, { outcome });
+        return outcome;
+      }
+    }
+
+    try {
     // 5. Register the waiter BEFORE opening the sandbox — the runner may
     //    emit chat:end before open-session resolves in pathological cases
     //    (extremely fast runner, racey test harness). Map it now so the
@@ -556,19 +725,24 @@ export function createOrchestrator(
     //    workspaceRef is silently dropped.
     let handle: OpenSessionHandle;
     try {
+      const sandboxInput: OpenSessionInput = {
+        sessionId,
+        workspaceRoot: ctx.workspace.rootPath,
+        runnerBinary: config.runnerBinary,
+        owner: {
+          userId: ctx.userId,
+          agentId: agent.id,
+          agentConfig,
+        },
+      };
+      // exactOptionalPropertyTypes: only spread proxyConfig in when set.
+      if (proxyConfig !== undefined) {
+        sandboxInput.proxyConfig = proxyConfig;
+      }
       const opened = await bus.call<OpenSessionInput, OpenSessionResult>(
         'sandbox:open-session',
         ctx,
-        {
-          sessionId,
-          workspaceRoot: ctx.workspace.rootPath,
-          runnerBinary: config.runnerBinary,
-          owner: {
-            userId: ctx.userId,
-            agentId: agent.id,
-            agentConfig,
-          },
-        },
+        sandboxInput,
       );
       handle = opened.handle;
     } catch (err) {
@@ -728,6 +902,27 @@ export function createOrchestrator(
     }
 
     return outcome;
+    } finally {
+      // I7 — proxy:close-session fires exactly once per fresh-spawn path
+      // that successfully opened a proxy session. Any failure inside the
+      // try (sandbox-open-failed / queue-work-failed / chat-run-timeout /
+      // sandbox-exit / chat:end happy path) flows through this finally.
+      // Best-effort: a failing close shouldn't mask the chat outcome.
+      if (proxyOpened) {
+        await bus
+          .call<ProxyCloseSessionInput, Record<string, never>>(
+            'proxy:close-session',
+            ctx,
+            { sessionId: ctx.sessionId },
+          )
+          .catch((err: unknown) => {
+            ctx.logger.warn('proxy_close_session_failed', {
+              sessionId: ctx.sessionId,
+              err: err instanceof Error ? err : new Error(String(err)),
+            });
+          });
+      }
+    }
   }
 
   function onChatEnd(ctx: AgentContext, payload: { outcome: AgentOutcome }): void {
@@ -809,4 +1004,38 @@ class ChatTimeoutError extends Error {
     super(`agent:invoke timed out after ${ms}ms`);
     this.name = 'ChatTimeoutError';
   }
+}
+
+/**
+ * Translate `@ax/credential-proxy`'s `proxyEndpoint` (either `unix:///path/to/sock`
+ * or `tcp://host:port`) into the boundary-agnostic `ProxyConfig` shape that
+ * threads into `sandbox:open-session`. Subprocess sandbox uses the TCP
+ * loopback URL as `endpoint`; k8s sandbox passes through the Unix socket
+ * path so the runner-side bridge can convert it to a local TCP port inside
+ * the sandbox (where the runner has no other network reach).
+ */
+function endpointToProxyConfig(
+  rawEndpoint: string,
+  caCertPem: string,
+  envMap: Record<string, string>,
+): ProxyConfig {
+  if (rawEndpoint.startsWith('unix://')) {
+    return {
+      unixSocketPath: rawEndpoint.slice('unix://'.length),
+      caCertPem,
+      envMap,
+    };
+  }
+  if (rawEndpoint.startsWith('tcp://')) {
+    return {
+      endpoint: 'http://' + rawEndpoint.slice('tcp://'.length),
+      caCertPem,
+      envMap,
+    };
+  }
+  throw new PluginError({
+    code: 'invalid-proxy-endpoint',
+    plugin: PLUGIN_NAME,
+    message: `unrecognized proxy endpoint scheme: ${rawEndpoint}`,
+  });
 }

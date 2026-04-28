@@ -92,6 +92,7 @@ describe('real-llm e2e (library mode, stubbed client)', () => {
       stdout: (line) => lines.push(line),
       stderr: (line) => errLines.push(line),
       anthropicClientFactory: clientFactory,
+      skipCredentialProxy: true,
     });
 
     expect(errLines).toEqual([]);
@@ -198,6 +199,7 @@ describe('real-llm e2e (library mode, stubbed client)', () => {
       stdout: (line) => lines.push(line),
       stderr: (line) => errLines.push(line),
       anthropicClientFactory: (_key) => ({ messages: { create: createSpy } }),
+      skipCredentialProxy: true,
     });
 
     expect(errLines).toEqual([]);

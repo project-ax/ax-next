@@ -41,6 +41,34 @@ export const AgentConfigSchema = z.object({
   model: z.string(),
 });
 
+/**
+ * Proxy-session blob the orchestrator threads through `sandbox:open-session`
+ * (Phase 2). When set, this plugin writes the CA cert to a per-session
+ * tmpfile, injects HTTPS_PROXY / HTTP_PROXY / NODE_EXTRA_CA_CERTS / etc.
+ * into the runner env, and merges `envMap` last so the per-session
+ * credential placeholders win.
+ *
+ * Shape duplicated from `@ax/chat-orchestrator`'s `ProxyConfig` (I2 — no
+ * cross-plugin imports). `endpoint` and `unixSocketPath` are mutually
+ * exclusive: TCP loopback for subprocess sandbox, Unix socket path for
+ * k8s. Field names are backend-agnostic (I3).
+ */
+export const ProxyConfigSchema = z
+  .object({
+    endpoint: z.string().min(1).optional(),
+    unixSocketPath: z.string().min(1).optional(),
+    caCertPem: z.string().min(1),
+    envMap: z.record(z.string()),
+  })
+  .refine(
+    (v) =>
+      (v.endpoint !== undefined) !== (v.unixSocketPath !== undefined),
+    {
+      message:
+        'proxyConfig must set exactly one of endpoint or unixSocketPath',
+    },
+  );
+
 export const OpenSessionInputSchema = z.object({
   sessionId: z.string().min(1),
   workspaceRoot: z.string().regex(/^\//, 'workspaceRoot must be absolute'),
@@ -52,6 +80,7 @@ export const OpenSessionInputSchema = z.object({
       agentConfig: AgentConfigSchema,
     })
     .optional(),
+  proxyConfig: ProxyConfigSchema.optional(),
 });
 
 export type OpenSessionInput = z.input<typeof OpenSessionInputSchema>;
@@ -213,34 +242,48 @@ export async function openSessionImpl(
     throw err;
   }
 
-  // 6. Start the LLM proxy BEFORE spawning the runner so the runner's first
-  //    `query()` call can't race the proxy bind. A failure here rolls back
-  //    the ipc listener and session we minted above.
-  let proxy: LlmProxyStartOutput;
-  try {
-    proxy = await bus.call<LlmProxyStartInput, LlmProxyStartOutput>(
-      'llm-proxy:start',
-      ctx,
-      { sessionId: created.sessionId },
-    );
-  } catch (err) {
-    await bus
-      .call<IpcStopInput, Record<string, never>>('ipc:stop', ctx, {
-        sessionId: created.sessionId,
-      })
-      .catch(() => undefined);
-    await bus
-      .call<SessionTerminateInput, Record<string, never>>('session:terminate', ctx, {
-        sessionId: created.sessionId,
-      })
-      .catch(() => undefined);
-    await fs.rm(socketDir, { recursive: true, force: true }).catch(() => undefined);
-    throw err;
+  // 6. Start the legacy LLM proxy BEFORE spawning the runner — only when
+  //    Phase 2's `proxyConfig` is NOT set. With `proxyConfig`, the runner
+  //    is on the credential-proxy direct-egress path and never reads
+  //    AX_LLM_PROXY_URL; starting llm-proxy here would just allocate an
+  //    unused TCP listener (CLAUDE.md half-wired-code policy). Phase 5/6
+  //    deletes the legacy path entirely.
+  //
+  //    A failure here rolls back the ipc listener and session we minted
+  //    above. We track `legacyProxyStarted` so subsequent rollbacks +
+  //    the close-handler stop the listener exactly once.
+  const useLegacyProxy = input.proxyConfig === undefined;
+  let proxy: LlmProxyStartOutput | undefined;
+  let legacyProxyStarted = false;
+  if (useLegacyProxy) {
+    try {
+      proxy = await bus.call<LlmProxyStartInput, LlmProxyStartOutput>(
+        'llm-proxy:start',
+        ctx,
+        { sessionId: created.sessionId },
+      );
+      legacyProxyStarted = true;
+    } catch (err) {
+      await bus
+        .call<IpcStopInput, Record<string, never>>('ipc:stop', ctx, {
+          sessionId: created.sessionId,
+        })
+        .catch(() => undefined);
+      await bus
+        .call<SessionTerminateInput, Record<string, never>>(
+          'session:terminate',
+          ctx,
+          { sessionId: created.sessionId },
+        )
+        .catch(() => undefined);
+      await fs.rm(socketDir, { recursive: true, force: true }).catch(() => undefined);
+      throw err;
+    }
   }
 
   // 7. Build child env. I5: caller-side env NEVER flows in — this hook's
   //    input doesn't accept env, so the only sources are
-  //      (a) our five session-scoped injects, and
+  //      (a) our session-scoped injects, and
   //      (b) the allowlist from the parent process.
   //    Allowlist merges LAST so PATH/HOME/etc. from the host always win.
   //
@@ -254,9 +297,85 @@ export async function openSessionImpl(
     AX_SESSION_ID: created.sessionId,
     AX_AUTH_TOKEN: created.token,
     AX_WORKSPACE_ROOT: input.workspaceRoot,
-    AX_LLM_PROXY_URL: proxy.url,
   };
-  const env = { ...sessionEnv, ...allowlistFromParent() };
+  if (proxy !== undefined) {
+    sessionEnv.AX_LLM_PROXY_URL = proxy.url;
+  }
+
+  // Phase 2 — credential-proxy env. When the orchestrator handed us a
+  // `proxyConfig`, write the MITM CA PEM to the per-session tempdir (the
+  // same one we built for the IPC socket — its 0700 mode keeps it host-uid-
+  // only) and inject the matching env vars. The CA cleanup piggybacks on
+  // the existing tempdir cleanup in the close handler — no new code.
+  //
+  // I1: the CA cert is a public key, safe inside the sandbox; the CA
+  // PRIVATE key is held only by the host-side credential-proxy plugin.
+  // I3: AX_PROXY_ENDPOINT (TCP) and AX_PROXY_UNIX_SOCKET (Unix socket)
+  //     are the only proxy-related env vars the runner reads; the SDK's
+  //     standard HTTPS_PROXY / NODE_EXTRA_CA_CERTS / SSL_CERT_FILE are
+  //     populated for off-the-shelf libraries that won't know about the
+  //     ax-prefixed ones.
+  if (input.proxyConfig !== undefined) {
+    const caPath = path.join(socketDir, 'ax-mitm-ca.pem');
+    try {
+      await fs.writeFile(caPath, input.proxyConfig.caCertPem, { mode: 0o600 });
+    } catch (err) {
+      // Same rollback shape as the spawn-failed branch below: tear down
+      // the session, stop the listener, drop the tempdir. legacyProxyStarted
+      // is always false on this branch (CA-write only runs when proxyConfig
+      // is set, and proxyConfig forces useLegacyProxy=false), but we keep
+      // the guard for symmetry with the spawn-failed catch — readers
+      // shouldn't have to trace the implication chain.
+      if (legacyProxyStarted) {
+        await bus
+          .call('llm-proxy:stop', ctx, { sessionId: created.sessionId })
+          .catch(() => undefined);
+      }
+      await bus
+        .call('ipc:stop', ctx, { sessionId: created.sessionId })
+        .catch(() => undefined);
+      await bus
+        .call('session:terminate', ctx, { sessionId: created.sessionId })
+        .catch(() => undefined);
+      await fs.rm(socketDir, { recursive: true, force: true }).catch(() => undefined);
+      throw new PluginError({
+        code: 'ca-write-failed',
+        plugin: PLUGIN_NAME,
+        hookName: HOOK_NAME,
+        message: `failed to write MITM CA cert to ${caPath}`,
+        cause: err,
+      });
+    }
+    sessionEnv.NODE_EXTRA_CA_CERTS = caPath;
+    sessionEnv.SSL_CERT_FILE = caPath;
+    if (input.proxyConfig.endpoint !== undefined) {
+      sessionEnv.HTTPS_PROXY = input.proxyConfig.endpoint;
+      sessionEnv.HTTP_PROXY = input.proxyConfig.endpoint;
+      sessionEnv.AX_PROXY_ENDPOINT = input.proxyConfig.endpoint;
+    }
+    if (input.proxyConfig.unixSocketPath !== undefined) {
+      // Subprocess sandbox passes through; the runner-side bridge converts
+      // this to a local TCP port and rewrites HTTP(S)_PROXY in-process
+      // (see @ax/agent-claude-sdk-runner Phase 2 startup).
+      sessionEnv.AX_PROXY_UNIX_SOCKET = input.proxyConfig.unixSocketPath;
+    }
+    // Merge envMap LAST so per-session credential placeholders win over
+    // anything we set above. (They shouldn't collide with HTTPS_PROXY etc.,
+    // but be explicit so a future field collision doesn't silently do the
+    // wrong thing.)
+    Object.assign(sessionEnv, input.proxyConfig.envMap);
+  }
+
+  // Allowlist FIRST, sessionEnv LAST: the parent's PATH/HOME/TZ etc. are
+  // load-bearing for the runner (resolving `node`, finding home dirs), but
+  // any session-scoped key MUST win over a same-named parent var. Today
+  // the allowlist (PATH/HOME/LANG/LC_ALL/TZ/NODE_OPTIONS) doesn't overlap
+  // with sessionEnv, but if a future expansion ever did — e.g. an operator
+  // adds ANTHROPIC_API_KEY or HTTPS_PROXY to the allowlist — the session-
+  // scoped placeholder MUST take precedence. A parent ANTHROPIC_API_KEY
+  // leaking into the sandbox would re-introduce a real credential into a
+  // process that's only supposed to see ax-cred:<hex> placeholders (I1).
+  const env = { ...allowlistFromParent(), ...sessionEnv };
 
   // 8. Spawn. argv[0] is the literal 'node', which trivially matches the
   //    existing ARGV0 regex — no extra validation here. shell:false, fixed
@@ -273,9 +392,11 @@ export async function openSessionImpl(
   } catch (cause) {
     // Synchronous spawn errors are rare (usually an async 'error' event) —
     // but handle them cleanly. Clean up the session + listener + proxy + tempdir.
-    await bus
-      .call('llm-proxy:stop', ctx, { sessionId: created.sessionId })
-      .catch(() => undefined);
+    if (legacyProxyStarted) {
+      await bus
+        .call('llm-proxy:stop', ctx, { sessionId: created.sessionId })
+        .catch(() => undefined);
+    }
     await bus
       .call('ipc:stop', ctx, { sessionId: created.sessionId })
       .catch(() => undefined);
@@ -319,15 +440,19 @@ export async function openSessionImpl(
           err: err instanceof Error ? err.message : String(err),
         });
       }
-      try {
-        await bus.call<LlmProxyStopInput, Record<string, never>>('llm-proxy:stop', ctx, {
-          sessionId: created.sessionId,
-        });
-      } catch (err) {
-        ctx.logger.warn('llm_proxy_stop_failed', {
-          sessionId: created.sessionId,
-          err: err instanceof Error ? err.message : String(err),
-        });
+      if (legacyProxyStarted) {
+        try {
+          await bus.call<LlmProxyStopInput, Record<string, never>>(
+            'llm-proxy:stop',
+            ctx,
+            { sessionId: created.sessionId },
+          );
+        } catch (err) {
+          ctx.logger.warn('llm_proxy_stop_failed', {
+            sessionId: created.sessionId,
+            err: err instanceof Error ? err.message : String(err),
+          });
+        }
       }
       try {
         await bus.call<IpcStopInput, Record<string, never>>('ipc:stop', ctx, {

@@ -28,6 +28,7 @@ import { readRunnerEnv } from './env.js';
 import { createHostMcpServer } from './host-mcp-server.js';
 import { createPostToolUseHook } from './post-tool-use.js';
 import { createPreToolUseHook } from './pre-tool-use.js';
+import { setupProxy } from './proxy-startup.js';
 import { DISABLED_BUILTINS, MCP_HOST_SERVER_NAME } from './tool-names.js';
 
 // ---------------------------------------------------------------------------
@@ -64,6 +65,22 @@ export async function main(): Promise<number> {
   } catch (err) {
     process.stderr.write(
       `runner: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+    return 2;
+  }
+
+  // Phase 2 — start the credential-proxy bridge if AX_PROXY_UNIX_SOCKET is
+  // set (k8s sandbox); rewrite process.env.HTTP(S)_PROXY in-process so the
+  // SDK's outbound fetch sees the loopback bridge. Direct mode
+  // (AX_PROXY_ENDPOINT) is a no-op here — sandbox-subprocess already set
+  // HTTPS_PROXY in the child env. Legacy mode (AX_LLM_PROXY_URL) keeps
+  // the old ANTHROPIC_BASE_URL pattern; Phase 5/6 deletes it.
+  let proxyStartup: Awaited<ReturnType<typeof setupProxy>>;
+  try {
+    proxyStartup = await setupProxy(env);
+  } catch (err) {
+    process.stderr.write(
+      `runner: proxy setup failed: ${err instanceof Error ? err.message : String(err)}\n`,
     );
     return 2;
   }
@@ -289,13 +306,15 @@ export async function main(): Promise<number> {
     const queryIter = query({
       prompt: userMessages(),
       options: {
-        // Route the SDK's Anthropic calls through our in-sandbox proxy so
-        // the real API key stays host-side. The auth token here is the
-        // sandbox's IPC bearer — the proxy validates it before forwarding.
-        env: {
-          ANTHROPIC_BASE_URL: env.llmProxyUrl,
-          ANTHROPIC_API_KEY: env.authToken,
-        },
+        // Phase 2: env shape depends on the proxy mode setupProxy() picked.
+        //   - credential-proxy direct/bridge: ANTHROPIC_API_KEY is the
+        //     `ax-cred:<hex>` placeholder (substituted by the proxy
+        //     mid-flight); no ANTHROPIC_BASE_URL — SDK calls
+        //     api.anthropic.com directly through HTTPS_PROXY.
+        //   - legacy in-sandbox llm-proxy: ANTHROPIC_BASE_URL points at
+        //     the proxy, ANTHROPIC_API_KEY is the IPC bearer (validated
+        //     by the proxy). Phase 5/6 deletes that branch.
+        env: proxyStartup.anthropicEnv,
         cwd: env.workspaceRoot,
         disallowedTools: [...DISABLED_BUILTINS],
         // canUseTool stays as a belt-and-suspenders allow-path. The real
@@ -612,6 +631,17 @@ export async function main(): Promise<number> {
   await client.close().catch(() => {
     /* close is best-effort; a clean chat shouldn't exit non-zero on teardown */
   });
+  // Phase 2: stop the credential-proxy bridge (k8s mode) so its TCP port
+  // and active sockets are released before the runner exits. Best-effort:
+  // any failure here shouldn't change the exit code — the chat already
+  // emitted its outcome.
+  if (proxyStartup.stop !== undefined) {
+    try {
+      proxyStartup.stop();
+    } catch {
+      /* swallow */
+    }
+  }
   return exitCode;
 }
 

@@ -38,6 +38,9 @@ importers:
       '@ax/agent-runner-core':
         specifier: workspace:*
         version: link:../agent-runner-core
+      '@ax/credential-proxy-bridge':
+        specifier: workspace:*
+        version: link:../credential-proxy-bridge
       '@ax/ipc-protocol':
         specifier: workspace:*
         version: link:../ipc-protocol
@@ -349,6 +352,9 @@ importers:
       '@ax/core':
         specifier: workspace:*
         version: link:../core
+      '@ax/credential-proxy':
+        specifier: workspace:*
+        version: link:../credential-proxy
       '@ax/credentials':
         specifier: workspace:*
         version: link:../credentials
@@ -1337,6 +1343,9 @@ importers:
       '@ax/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@ax/credential-proxy':
+        specifier: workspace:*
+        version: link:../../packages/credential-proxy
       '@ax/credentials':
         specifier: workspace:*
         version: link:../../packages/credentials

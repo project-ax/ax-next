@@ -58,6 +58,20 @@ export interface DevAgentsStubConfig {
    * dev defaults; pass the same value the LLM plugin was configured with.
    */
   model?: string;
+  /**
+   * Phase 2 — egress allowlist for the per-session credential-proxy.
+   * Defaults to ['api.anthropic.com'] so the SDK runner can reach
+   * Anthropic. Dev users opting into more (third-party MCP servers,
+   * canary tools) extend this list explicitly.
+   */
+  allowedHosts?: readonly string[];
+  /**
+   * Phase 2 — credential refs the proxy resolves at session open.
+   * Defaults to a single ANTHROPIC_API_KEY entry pointing at the
+   * `anthropic-api` credential id; users seed it with
+   * `ax-next credentials set anthropic-api` before the canary works.
+   */
+  requiredCredentials?: Readonly<Record<string, { ref: string; kind: string }>>;
 }
 
 export function createDevAgentsStubPlugin(
@@ -71,6 +85,14 @@ export function createDevAgentsStubPlugin(
   const allowedTools = [...(cfg.allowedTools ?? [])];
   const mcpConfigIds = [...(cfg.mcpConfigIds ?? [])];
   const model = cfg.model ?? 'claude-sonnet-4-6';
+  // Phase 2 defaults — every CLI canary needs to reach api.anthropic.com
+  // and inject ANTHROPIC_API_KEY from the local credentials store.
+  const allowedHosts = [...(cfg.allowedHosts ?? ['api.anthropic.com'])];
+  const requiredCredentials: Record<string, { ref: string; kind: string }> = {
+    ...(cfg.requiredCredentials ?? {
+      ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' },
+    }),
+  };
 
   return {
     manifest: {
@@ -99,6 +121,8 @@ export function createDevAgentsStubPlugin(
               mcpConfigIds,
               model,
               workspaceRef: null,
+              allowedHosts: [...allowedHosts],
+              requiredCredentials: { ...requiredCredentials },
               createdAt: new Date(),
               updatedAt: new Date(),
             },

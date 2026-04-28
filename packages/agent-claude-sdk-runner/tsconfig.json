@@ -8,6 +8,7 @@
   "exclude": ["src/**/__tests__/**", "dist", "node_modules"],
   "references": [
     { "path": "../agent-runner-core" },
+    { "path": "../credential-proxy-bridge" },
     { "path": "../ipc-protocol" }
   ]
 }

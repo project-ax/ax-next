@@ -13,6 +13,7 @@ import { createLlmAnthropicPlugin } from '@ax/llm-anthropic';
 import { createStorageSqlitePlugin } from '@ax/storage-sqlite';
 import { createCredentialsStoreDbPlugin } from '@ax/credentials-store-db';
 import { createCredentialsPlugin } from '@ax/credentials';
+import { createCredentialProxyPlugin } from '@ax/credential-proxy';
 import { auditLogPlugin } from '@ax/audit-log';
 import { createSandboxSubprocessPlugin } from '@ax/sandbox-subprocess';
 import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
@@ -111,6 +112,15 @@ export interface MainOptions {
    * register the default". Not reachable from file-based config.
    */
   skipDefaultLlm?: boolean;
+  /**
+   * Test-seam ONLY. When true, the Phase 2 credential-proxy is NOT loaded
+   * even on the `cfg.llm === 'anthropic'` branch. Lets library-mode tests
+   * with stubbed Anthropic clients exercise the chat-orchestrator without
+   * having to seed an `anthropic-api` credential — the stub never reaches
+   * the wire, so the proxy adds no value in those tests. Not reachable
+   * from file-based config.
+   */
+  skipCredentialProxy?: boolean;
 }
 
 const DEFAULT_SQLITE_PATH = './ax-next-chat.sqlite';
@@ -145,6 +155,25 @@ export async function main(opts: MainOptions): Promise<number> {
   // keeps the intent obvious to readers. Init requires AX_CREDENTIALS_KEY in env.
   plugins.push(createCredentialsStoreDbPlugin());
   plugins.push(createCredentialsPlugin());
+
+  // Phase 2 — credential-proxy. Loaded ONLY when llm = anthropic. The
+  // proxy substitutes a real Anthropic key into outbound api.anthropic.com
+  // calls; mock-LLM mode never reaches the wire (the runner's
+  // ANTHROPIC_BASE_URL points at the in-sandbox llm-proxy, which routes
+  // back to the host's mocked `llm:call`). Loading the proxy in mock mode
+  // would force the SDK runner onto the direct-egress path and turn every
+  // canary into a real network call against an untrusted upstream — bad.
+  //
+  // Subprocess sandbox uses TCP loopback (port 0 = OS-assigned); the
+  // runner-side bridge is NOT used on this path because the runner
+  // reaches the proxy directly via HTTPS_PROXY in its child env.
+  if (cfg.llm === 'anthropic' && opts.skipCredentialProxy !== true) {
+    plugins.push(
+      createCredentialProxyPlugin({
+        listen: { kind: 'tcp', host: '127.0.0.1', port: 0 },
+      }),
+    );
+  }
 
   // Audit log is part of the canary loop.
   plugins.push(auditLogPlugin());
