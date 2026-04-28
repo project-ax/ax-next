@@ -29,6 +29,7 @@
     { "path": "packages/chat-orchestrator" },
     { "path": "./packages/credentials" },
     { "path": "packages/credentials-store-db" },
+    { "path": "packages/credentials-anthropic-oauth" },
     { "path": "packages/mcp-client" },
     { "path": "packages/workspace-git" },
     { "path": "packages/workspace-git-core" },
