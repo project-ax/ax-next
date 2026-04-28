@@ -656,16 +656,331 @@ describe('chat-orchestrator', () => {
   });
 
   // ---------------------------------------------------------------------
-  // Phase 2 — proxyConfig boundary
+  // Phase 2 — proxy:open-session / proxy:close-session lifecycle
   //
-  // Task 1 only adds the type field. The actual `proxy:open-session` call +
-  // proxyConfig population lands in Task 2; until then this is `it.todo` so
-  // we don't false-pass an empty assertion. The Task 2 patch flips this to
-  // `it(...)` and asserts capture parity.
+  // The orchestrator opens a per-session credential-proxy session BEFORE
+  // sandbox:open-session (when the proxy plugin is loaded; soft dep via
+  // bus.hasService) and closes it in finally. Tests cover:
+  //   1. Forwarding parity: proxyConfig threads through to sandbox:open-
+  //      session unchanged.
+  //   2. Happy-path close: proxy:close-session fires after chat:end.
+  //   3. Throw safety: proxy:close-session fires even when sandbox:open-
+  //      session throws (the half-open window must not leak proxy
+  //      sessions).
+  // Three structurally-similar setups are factored out below.
   // ---------------------------------------------------------------------
-  it.todo(
-    'forwards proxyConfig from agent:invoke into sandbox:open-session (wired in Task 2)',
-  );
+
+  interface ProxyHookState {
+    openCalls: number;
+    closeCalls: number;
+    lastOpenInput: unknown;
+  }
+  function buildProxyHooks(opts: {
+    openOutput?: {
+      proxyEndpoint: string;
+      caCertPem: string;
+      envMap: Record<string, string>;
+    };
+    openThrows?: Error;
+  } = {}): { state: ProxyHookState; services: Record<string, ServiceHandler> } {
+    const state: ProxyHookState = {
+      openCalls: 0,
+      closeCalls: 0,
+      lastOpenInput: undefined,
+    };
+    const services: Record<string, ServiceHandler> = {
+      'proxy:open-session': async (_ctx, input) => {
+        state.openCalls += 1;
+        state.lastOpenInput = input;
+        if (opts.openThrows !== undefined) throw opts.openThrows;
+        return (
+          opts.openOutput ?? {
+            proxyEndpoint: 'tcp://127.0.0.1:54321',
+            caCertPem: 'TEST-CA-PEM',
+            envMap: { ANTHROPIC_API_KEY: 'ax-cred:0123' },
+          }
+        );
+      },
+      'proxy:close-session': async () => {
+        state.closeCalls += 1;
+        return {};
+      },
+    };
+    return { state, services };
+  }
+
+  it('forwards proxyConfig from agent:invoke into sandbox:open-session', async () => {
+    const proxy = buildProxyHooks();
+    let busRef: HookBus | null = null;
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: {
+            ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' },
+          },
+        },
+      }),
+      openSession: async (ctx, input: unknown) => {
+        const sessionId = (input as { sessionId: string }).sessionId;
+        const originatingReqId = ctx.reqId;
+        setImmediate(() => {
+          void busRef!.fire(
+            'chat:end',
+            makeAgentContext({
+              sessionId,
+              agentId: 'a',
+              userId: 'u',
+              reqId: originatingReqId,
+              logger: createLogger({ reqId: originatingReqId, writer: () => undefined }),
+            }),
+            { outcome: { kind: 'complete', messages: [] } },
+          );
+        });
+        return {
+          runnerEndpoint: 'unix:///tmp/x.sock',
+          handle: {
+            kill: async () => undefined,
+            exited: new Promise(() => undefined),
+          },
+        };
+      },
+    });
+    Object.assign(mocks.services, proxy.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinary: '/irrelevant',
+          chatTimeoutMs: 5_000,
+        }),
+      ],
+    });
+    busRef = h.bus;
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('proxy-forward-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+    expect(proxy.state.openCalls).toBe(1);
+
+    // proxy:open-session payload carries the agent's allowlist + creds.
+    const openIn = proxy.state.lastOpenInput as {
+      sessionId: string;
+      userId: string;
+      agentId: string;
+      allowlist: string[];
+      credentials: Record<string, { ref: string; kind: string }>;
+    };
+    expect(openIn.sessionId).toBe('proxy-forward-session');
+    expect(openIn.userId).toBe('test-user');
+    expect(openIn.allowlist).toEqual(['api.anthropic.com']);
+    expect(openIn.credentials).toEqual({
+      ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' },
+    });
+
+    // sandbox:open-session received the translated proxyConfig (tcp:// →
+    // http:// loopback URL; PEM bytes verbatim; envMap forwarded as-is).
+    const sb = mocks.calls.lastSandboxInput as { proxyConfig?: unknown };
+    expect(sb.proxyConfig).toEqual({
+      endpoint: 'http://127.0.0.1:54321',
+      caCertPem: 'TEST-CA-PEM',
+      envMap: { ANTHROPIC_API_KEY: 'ax-cred:0123' },
+    });
+  });
+
+  it('translates a unix:// proxyEndpoint into proxyConfig.unixSocketPath', async () => {
+    const proxy = buildProxyHooks({
+      openOutput: {
+        proxyEndpoint: 'unix:///var/run/ax/proxy.sock',
+        caCertPem: 'CA',
+        envMap: {},
+      },
+    });
+    let busRef: HookBus | null = null;
+    const mocks = buildMocks({
+      openSession: async (ctx, input: unknown) => {
+        const sessionId = (input as { sessionId: string }).sessionId;
+        const originatingReqId = ctx.reqId;
+        setImmediate(() => {
+          void busRef!.fire(
+            'chat:end',
+            makeAgentContext({
+              sessionId,
+              agentId: 'a',
+              userId: 'u',
+              reqId: originatingReqId,
+              logger: createLogger({ reqId: originatingReqId, writer: () => undefined }),
+            }),
+            { outcome: { kind: 'complete', messages: [] } },
+          );
+        });
+        return {
+          runnerEndpoint: 'unix:///tmp/x.sock',
+          handle: {
+            kill: async () => undefined,
+            exited: new Promise(() => undefined),
+          },
+        };
+      },
+    });
+    Object.assign(mocks.services, proxy.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinary: '/irrelevant',
+          chatTimeoutMs: 5_000,
+        }),
+      ],
+    });
+    busRef = h.bus;
+    await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('proxy-unix-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    const sb = mocks.calls.lastSandboxInput as { proxyConfig?: unknown };
+    expect(sb.proxyConfig).toEqual({
+      unixSocketPath: '/var/run/ax/proxy.sock',
+      caCertPem: 'CA',
+      envMap: {},
+    });
+  });
+
+  it('calls proxy:close-session in finally on the happy path', async () => {
+    const proxy = buildProxyHooks();
+    let busRef: HookBus | null = null;
+    const mocks = buildMocks({
+      openSession: async (ctx, input: unknown) => {
+        const sessionId = (input as { sessionId: string }).sessionId;
+        const originatingReqId = ctx.reqId;
+        setImmediate(() => {
+          void busRef!.fire(
+            'chat:end',
+            makeAgentContext({
+              sessionId,
+              agentId: 'a',
+              userId: 'u',
+              reqId: originatingReqId,
+              logger: createLogger({ reqId: originatingReqId, writer: () => undefined }),
+            }),
+            { outcome: { kind: 'complete', messages: [] } },
+          );
+        });
+        return {
+          runnerEndpoint: 'unix:///tmp/x.sock',
+          handle: {
+            kill: async () => undefined,
+            exited: new Promise(() => undefined),
+          },
+        };
+      },
+    });
+    Object.assign(mocks.services, proxy.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinary: '/irrelevant',
+          chatTimeoutMs: 5_000,
+        }),
+      ],
+    });
+    busRef = h.bus;
+
+    await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('proxy-happy-close'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(proxy.state.closeCalls).toBe(1);
+  });
+
+  it('calls proxy:close-session in finally even when sandbox:open-session throws', async () => {
+    const proxy = buildProxyHooks();
+    const mocks = buildMocks({
+      openSession: async () => {
+        throw new Error('spawn failure');
+      },
+    });
+    Object.assign(mocks.services, proxy.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinary: '/irrelevant',
+          chatTimeoutMs: 1_000,
+        }),
+      ],
+    });
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('proxy-throw-close'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('terminated');
+    // proxy was opened (sandbox throws AFTER proxy:open-session resolves)
+    // so the finally MUST close it — otherwise the proxy session leaks.
+    expect(proxy.state.openCalls).toBe(1);
+    expect(proxy.state.closeCalls).toBe(1);
+  });
+
+  it('skips the proxy lifecycle when proxy:open-session is not registered', async () => {
+    // Default mocks (no proxy hooks) — bus.hasService('proxy:open-session')
+    // returns false. The orchestrator must NOT throw and the sandbox call
+    // sees no proxyConfig.
+    let busRef: HookBus | null = null;
+    const mocks = buildMocks({
+      openSession: async (ctx, input: unknown) => {
+        const sessionId = (input as { sessionId: string }).sessionId;
+        const originatingReqId = ctx.reqId;
+        setImmediate(() => {
+          void busRef!.fire(
+            'chat:end',
+            makeAgentContext({
+              sessionId,
+              agentId: 'a',
+              userId: 'u',
+              reqId: originatingReqId,
+              logger: createLogger({ reqId: originatingReqId, writer: () => undefined }),
+            }),
+            { outcome: { kind: 'complete', messages: [] } },
+          );
+        });
+        return {
+          runnerEndpoint: 'unix:///tmp/x.sock',
+          handle: {
+            kill: async () => undefined,
+            exited: new Promise(() => undefined),
+          },
+        };
+      },
+    });
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinary: '/irrelevant',
+          chatTimeoutMs: 5_000,
+        }),
+      ],
+    });
+    busRef = h.bus;
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('proxy-not-loaded'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+    const sb = mocks.calls.lastSandboxInput as { proxyConfig?: unknown };
+    expect(sb.proxyConfig).toBeUndefined();
+  });
 
   it('multiple concurrent agent:invokes with different sessionIds do not cross-contaminate', async () => {
     let busRef: HookBus | null = null;
