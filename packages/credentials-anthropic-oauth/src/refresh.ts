@@ -23,6 +23,67 @@ import {
 
 const PLUGIN_NAME = '@ax/credentials-anthropic-oauth';
 
+// Bound the OAuth token endpoint round-trip. 15s comfortably exceeds
+// healthy latency (low-hundreds-of-ms) but stops the CLI from hanging
+// indefinitely when Anthropic stalls. AbortController fires the abort;
+// fetch rejects; we normalize to a structured PluginError.
+const OAUTH_FETCH_TIMEOUT_MS = 15_000;
+
+/**
+ * POST a JSON body to the Anthropic token endpoint with a bounded timeout.
+ * Normalizes ALL failure modes (transport, abort, parse) into a structured
+ * PluginError with the supplied error code. Caller decides between
+ * 'oauth-refresh-failed' and 'oauth-exchange-failed'.
+ */
+export async function postTokenEndpoint(
+  body: Record<string, string>,
+  errorCode: 'oauth-refresh-failed' | 'oauth-exchange-failed',
+): Promise<{ access_token?: string; refresh_token?: string; expires_in?: number }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), OAUTH_FETCH_TIMEOUT_MS);
+  let res: Response;
+  try {
+    res = await fetch(ANTHROPIC_TOKEN_ENDPOINT, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } catch {
+    // Transport / abort failures merge into the same error code. We do NOT
+    // include the underlying error's message — fetch errors occasionally
+    // echo URL fragments, and we don't want a refresh_token tail (or the
+    // body's client_id) leaking into logs through cause chains.
+    throw new PluginError({
+      code: errorCode,
+      plugin: PLUGIN_NAME,
+      message: `Anthropic token endpoint was unreachable (timeout=${OAUTH_FETCH_TIMEOUT_MS}ms)`,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!res.ok) {
+    throw new PluginError({
+      code: errorCode,
+      plugin: PLUGIN_NAME,
+      message: `Anthropic token endpoint returned ${res.status}`,
+    });
+  }
+  try {
+    return (await res.json()) as {
+      access_token?: string;
+      refresh_token?: string;
+      expires_in?: number;
+    };
+  } catch {
+    throw new PluginError({
+      code: errorCode,
+      plugin: PLUGIN_NAME,
+      message: 'Anthropic token endpoint returned invalid JSON',
+    });
+  }
+}
+
 export interface OauthBlob {
   accessToken: string;
   refreshToken: string;
@@ -95,35 +156,23 @@ export async function resolveAnthropicOauth(input: {
   };
 }
 
-/** POST grant_type=refresh_token. Throws PluginError(oauth-refresh-failed) on non-2xx. */
+/**
+ * POST grant_type=refresh_token. All failures (transport, timeout, non-2xx,
+ * malformed JSON, unexpected shape) surface as PluginError('oauth-refresh-failed').
+ */
 export async function refreshAnthropicTokens(refreshToken: string): Promise<{
   access_token: string;
   refresh_token?: string;
   expires_in: number;
 }> {
-  const res = await fetch(ANTHROPIC_TOKEN_ENDPOINT, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
+  const data = await postTokenEndpoint(
+    {
       grant_type: 'refresh_token',
       client_id: ANTHROPIC_OAUTH_CLIENT_ID,
       refresh_token: refreshToken,
-    }),
-  });
-  if (!res.ok) {
-    // Body might contain the refresh-token tail in some error responses;
-    // we deliberately do NOT echo it. Status code only.
-    throw new PluginError({
-      code: 'oauth-refresh-failed',
-      plugin: PLUGIN_NAME,
-      message: `Anthropic token endpoint returned ${res.status} on refresh`,
-    });
-  }
-  const data = (await res.json()) as {
-    access_token?: string;
-    refresh_token?: string;
-    expires_in?: number;
-  };
+    },
+    'oauth-refresh-failed',
+  );
   if (typeof data.access_token !== 'string' || typeof data.expires_in !== 'number') {
     throw new PluginError({
       code: 'oauth-refresh-failed',

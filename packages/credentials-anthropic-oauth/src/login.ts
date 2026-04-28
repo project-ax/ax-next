@@ -15,10 +15,9 @@ import {
   ANTHROPIC_OAUTH_CLIENT_ID,
   ANTHROPIC_OAUTH_REDIRECT_URI,
   ANTHROPIC_OAUTH_SCOPES,
-  ANTHROPIC_TOKEN_ENDPOINT,
 } from './constants.js';
 import { generateCodeChallenge, generateCodeVerifier, generateState } from './pkce.js';
-import { encodeOauthBlob, makeBlobFromTokens } from './refresh.js';
+import { encodeOauthBlob, makeBlobFromTokens, postTokenEndpoint } from './refresh.js';
 
 const PLUGIN_NAME = '@ax/credentials-anthropic-oauth';
 
@@ -80,10 +79,12 @@ export interface ExchangeOutput {
 
 export async function exchangeAnthropicOauth(input: ExchangeInput): Promise<ExchangeOutput> {
   const redirectUri = input.redirectUri ?? ANTHROPIC_OAUTH_REDIRECT_URI;
-  const res = await fetch(ANTHROPIC_TOKEN_ENDPOINT, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
+  // postTokenEndpoint normalizes transport / timeout / non-2xx / parse
+  // failures into PluginError('oauth-exchange-failed'). Only the unexpected-
+  // shape case below is exchange-specific (refresh_token is optional for
+  // refresh; required for the initial authorization-code exchange).
+  const data = await postTokenEndpoint(
+    {
       grant_type: 'authorization_code',
       client_id: ANTHROPIC_OAUTH_CLIENT_ID,
       code: input.code,
@@ -92,20 +93,9 @@ export async function exchangeAnthropicOauth(input: ExchangeInput): Promise<Exch
       state: input.state,
       redirect_uri: redirectUri,
       code_verifier: input.codeVerifier,
-    }),
-  });
-  if (!res.ok) {
-    throw new PluginError({
-      code: 'oauth-exchange-failed',
-      plugin: PLUGIN_NAME,
-      message: `Anthropic token endpoint returned ${res.status} on exchange`,
-    });
-  }
-  const data = (await res.json()) as {
-    access_token?: string;
-    refresh_token?: string;
-    expires_in?: number;
-  };
+    },
+    'oauth-exchange-failed',
+  );
   if (
     typeof data.access_token !== 'string' ||
     typeof data.refresh_token !== 'string' ||

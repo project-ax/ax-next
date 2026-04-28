@@ -145,6 +145,32 @@ describe('@ax/credentials-anthropic-oauth plugin', () => {
     ).rejects.toMatchObject({ code: 'oauth-exchange-failed' });
   });
 
+  it('exchange: rejects with oauth-exchange-failed on transport/timeout (fetch throws)', async () => {
+    const bus = await bootBus();
+    // Simulate AbortError / network failure — fetch rejects.
+    globalThis.fetch = (async () => {
+      const e = new Error('aborted');
+      e.name = 'AbortError';
+      throw e;
+    }) as unknown as typeof globalThis.fetch;
+    await expect(
+      bus.call('credentials:exchange:anthropic-oauth', ctx(), {
+        code: 'c', codeVerifier: 'v', state: 's',
+      }),
+    ).rejects.toMatchObject({ code: 'oauth-exchange-failed' });
+  });
+
+  it('exchange: rejects with oauth-exchange-failed on malformed JSON body', async () => {
+    const bus = await bootBus();
+    globalThis.fetch = (async () =>
+      new Response('not-json{', { status: 200 })) as unknown as typeof globalThis.fetch;
+    await expect(
+      bus.call('credentials:exchange:anthropic-oauth', ctx(), {
+        code: 'c', codeVerifier: 'v', state: 's',
+      }),
+    ).rejects.toMatchObject({ code: 'oauth-exchange-failed' });
+  });
+
   it('exchange: rejects when required input fields are missing', async () => {
     const bus = await bootBus();
     await expect(
@@ -275,6 +301,45 @@ describe('@ax/credentials-anthropic-oauth plugin', () => {
         payload: blob,
         userId: 'u1',
         ref: 'r1',
+      }),
+    ).rejects.toMatchObject({ code: 'oauth-refresh-failed' });
+  });
+
+  it('resolve: throws PluginError(oauth-refresh-failed) on transport/timeout failure', async () => {
+    const bus = await bootBus();
+    globalThis.fetch = (async () => {
+      const e = new Error('aborted');
+      e.name = 'AbortError';
+      throw e;
+    }) as unknown as typeof globalThis.fetch;
+    const blob = bytes(
+      JSON.stringify({
+        accessToken: 'tok-OLD',
+        refreshToken: 'r-OLD',
+        expiresAt: Date.now() + 60_000,
+      }),
+    );
+    await expect(
+      bus.call('credentials:resolve:anthropic-oauth', ctx(), {
+        payload: blob, userId: 'u1', ref: 'r1',
+      }),
+    ).rejects.toMatchObject({ code: 'oauth-refresh-failed' });
+  });
+
+  it('resolve: throws PluginError(oauth-refresh-failed) on malformed JSON body', async () => {
+    const bus = await bootBus();
+    globalThis.fetch = (async () =>
+      new Response('not-json{', { status: 200 })) as unknown as typeof globalThis.fetch;
+    const blob = bytes(
+      JSON.stringify({
+        accessToken: 'tok-OLD',
+        refreshToken: 'r-OLD',
+        expiresAt: Date.now() + 60_000,
+      }),
+    );
+    await expect(
+      bus.call('credentials:resolve:anthropic-oauth', ctx(), {
+        payload: blob, userId: 'u1', ref: 'r1',
       }),
     ).rejects.toMatchObject({ code: 'oauth-refresh-failed' });
   });
