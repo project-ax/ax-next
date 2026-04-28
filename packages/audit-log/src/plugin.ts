@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { AgentContext, AgentOutcome, Plugin } from '@ax/core';
 
 const PLUGIN_NAME = '@ax/audit-log';
@@ -67,8 +68,14 @@ export function auditLogPlugin(): Plugin {
           // before any per-session config matched (allowlist miss with
           // no owner). Key by 'unscoped' in that case so the row still
           // lands; the caller can join on host/timestamp post-hoc.
+          //
+          // Append a UUID suffix so two egress events that fall in the
+          // same millisecond (an LLM call + an MCP call concurrently, or
+          // any high-throughput burst) don't overwrite each other.
+          // payload.timestamp gives natural sort order; the UUID just
+          // breaks ties.
           const scope = payload.sessionId.length > 0 ? payload.sessionId : 'unscoped';
-          const key = `egress:${scope}:${payload.timestamp}`;
+          const key = `egress:${scope}:${payload.timestamp}:${randomUUID()}`;
           const value = new TextEncoder().encode(JSON.stringify(payload));
           await bus.call('storage:set', ctx, { key, value });
           return undefined;
