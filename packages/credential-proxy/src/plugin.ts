@@ -8,7 +8,13 @@
  *     keeps a shared reference to that Map and mutates it directly as
  *     `proxy:open-session` / `proxy:close-session` fire — no setter
  *     methods on the listener (it already iterates `.values()`).
+ *     Pass `onAudit` so each `ProxyAuditEntry` becomes an
+ *     `event.http-egress` bus fire (Task 11).
  *  4. Register the three service hooks (open / rotate / close).
+ *
+ * `event.http-egress` payload shape lives in `HttpEgressEvent` below
+ * (mirrors the architecture spec). Subscribers can throw — HookBus.fire
+ * isolates throws + logs them; the proxy keeps running.
  *
  * Shutdown: stop the listener (this also closes any active sockets and
  * unlinks the Unix socket file when applicable).
@@ -21,12 +27,143 @@
 
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { PluginError, type AgentContext, type Plugin } from '@ax/core';
-import { startProxyListener, type ProxyListener, type SessionConfig } from './listener.js';
+import { PluginError, makeAgentContext, type AgentContext, type Plugin } from '@ax/core';
+import {
+  startProxyListener,
+  type ProxyListener,
+  type ProxyAuditEntry,
+  type SessionConfig,
+} from './listener.js';
 import { CredentialPlaceholderMap, SharedCredentialRegistry } from './registry.js';
 import { getOrCreateCA } from './ca.js';
 
 const PLUGIN_NAME = '@ax/credential-proxy';
+
+// ── event.http-egress payload shape (architecture spec) ───────────────
+
+/**
+ * Public event payload fired on every proxy request — success, block, or
+ * upstream error. Subscribers (audit-log writers, billing, anomaly
+ * detection, security observers) can key off any field, but the listener-
+ * internal `ProxyAuditEntry` shape is NOT part of the contract.
+ *
+ * Field semantics:
+ * - `host`/`path` are split from the request URL; for CONNECT (`host:port`)
+ *   `path` is `'/'`.
+ * - `credentialInjected` is `true` only when MITM substitution actually
+ *   replaced bytes (HTTP forwarding never substitutes; bypassMITM never
+ *   substitutes; MITM only sets it when a placeholder matched).
+ * - `blockedReason` is omitted on success; on a block, it's one of the
+ *   four enumerated reasons (vocabulary normalized from the listener's
+ *   internal `blocked` string).
+ * - `sessionId`/`userId` are empty strings when no session matched
+ *   (allowlist miss — the request never had an owner).
+ */
+export interface HttpEgressEvent {
+  sessionId: string;
+  userId: string;
+  method: string;
+  host: string;
+  path: string;
+  status: number;
+  requestBytes: number;
+  responseBytes: number;
+  durationMs: number;
+  credentialInjected: boolean;
+  classification: 'llm' | 'mcp' | 'other';
+  blockedReason?: 'allowlist' | 'private-ip' | 'canary' | 'tls-error';
+  timestamp: number;
+}
+
+/**
+ * Map a per-session credentials record to a coarse classification.
+ *
+ * - `'llm'`: any credential whose kind is an LLM kind. Phase 1a recognizes
+ *   `'api-key'`; future kinds matching the `anthropic-*` pattern (e.g.
+ *   `'anthropic-oauth'`) also count as LLM.
+ * - `'mcp'`: any credential whose kind starts with `'mcp-'` (Phase 3 wires
+ *   real MCP credential kinds; Phase 1a never returns this).
+ * - `'other'`: empty credentials, or only kinds outside the above sets.
+ *
+ * Precedence: `'llm'` wins over `'mcp'` if both appear (rare in practice;
+ * a session usually has one kind of traffic).
+ */
+function classifyCredentials(
+  credentials: Record<string, { ref: string; kind: string }>,
+): 'llm' | 'mcp' | 'other' {
+  let hasLlm = false;
+  let hasMcp = false;
+  for (const { kind } of Object.values(credentials)) {
+    if (kind === 'api-key' || kind.startsWith('anthropic-')) hasLlm = true;
+    else if (kind.startsWith('mcp-')) hasMcp = true;
+  }
+  if (hasLlm) return 'llm';
+  if (hasMcp) return 'mcp';
+  return 'other';
+}
+
+/**
+ * Translate the listener's internal `blocked` string vocabulary into the
+ * bus event's `blockedReason` enum. Returns `undefined` if the audit entry
+ * isn't a block (or carries an unrecognized reason — we don't fabricate).
+ *
+ * Vocabulary:
+ * - `domain_denied: …`     → `'allowlist'`  (allowlist miss)
+ * - `Blocked: …` (BlockedIPError) → `'private-ip'`
+ * - `canary_detected`      → `'canary'`
+ * - `tls_error: …`         → `'tls-error'`
+ * - anything else (`invalid_target`, `Proxy error: …`) → undefined
+ *   (these surface as a non-2xx `status` instead).
+ */
+function mapBlockedReason(
+  blocked: string | undefined,
+): HttpEgressEvent['blockedReason'] | undefined {
+  if (blocked === undefined) return undefined;
+  if (blocked.startsWith('domain_denied:')) return 'allowlist';
+  if (blocked.startsWith('Blocked:')) return 'private-ip';
+  if (blocked === 'canary_detected') return 'canary';
+  if (blocked.startsWith('tls_error:')) return 'tls-error';
+  return undefined;
+}
+
+/**
+ * Parse an audit entry's `url` into `{ host, path }` for the bus event.
+ *
+ * Two URL shapes the listener hands us:
+ * - HTTP forward: an absolute URL like `http://api.example.com/foo` (or
+ *   the raw `req.url` path, if the bridge passed a relative form). The
+ *   `URL` constructor handles both with a fallback base.
+ * - CONNECT: a `host:port` target like `api.anthropic.com:443`. There's
+ *   no path on a CONNECT — set `'/'` so subscribers always see a string.
+ *
+ * For CONNECT entries (`method === 'CONNECT'`) the URL parser would treat
+ * `api.anthropic.com:443` as a protocol-relative URL and fail; we
+ * special-case the split.
+ */
+function parseHostPath(method: string, url: string): { host: string; path: string } {
+  if (method === 'CONNECT') {
+    // CONNECT target is `host:port`. Split on the last `:` so IPv6 literals
+    // like `[::1]:443` still work — though Phase 1a's bridge only emits
+    // hostnames (no IPv6 brackets).
+    const lastColon = url.lastIndexOf(':');
+    const host = lastColon === -1 ? url : url.slice(0, lastColon);
+    return { host, path: '/' };
+  }
+  try {
+    const parsed = new URL(
+      url.startsWith('http://') || url.startsWith('https://')
+        ? url
+        : `http://placeholder${url.startsWith('/') ? url : '/' + url}`,
+    );
+    // For the placeholder fallback, host is meaningless — return empty so
+    // subscribers don't think it was a real hostname. (This branch is rare:
+    // the HTTP forwarding path always builds an absolute URL before logging.)
+    const host = parsed.hostname === 'placeholder' ? '' : parsed.hostname;
+    return { host, path: parsed.pathname + parsed.search };
+  } catch {
+    return { host: '', path: url };
+  }
+}
 
 export interface CredentialProxyConfig {
   listen: { kind: 'unix'; path: string } | { kind: 'tcp'; host?: string; port?: number };
@@ -129,13 +266,62 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
       sessions = new Map<string, SessionConfig>();
       registry = new SharedCredentialRegistry();
 
-      // 3. Start the listener (no-op `onAudit` for now — Task 11 swaps to bus.fire).
+      // 3. Start the listener with an `onAudit` that translates each
+      //    listener-internal `ProxyAuditEntry` into the public
+      //    `event.http-egress` payload and fires it on the bus.
+      //
+      //    The listener calls onAudit synchronously from inside HTTP/CONNECT
+      //    handlers; we intentionally don't await `bus.fire` here. Subscriber
+      //    failures are caught + logged inside HookBus.fire (the contract),
+      //    so a misbehaving subscriber can't break the proxy. We swallow the
+      //    returned promise rejection (which would only fire if `fire` itself
+      //    throws — currently impossible) so an unhandled rejection can't
+      //    take the process down.
+      const onAudit = (entry: ProxyAuditEntry): void => {
+        const { host, path } = parseHostPath(entry.method, entry.url);
+        const blockedReason = mapBlockedReason(entry.blocked);
+        const payload: HttpEgressEvent = {
+          sessionId: entry.sessionId ?? '',
+          userId: entry.userId ?? '',
+          method: entry.method,
+          host,
+          path,
+          status: entry.status,
+          requestBytes: entry.requestBytes,
+          responseBytes: entry.responseBytes,
+          durationMs: entry.durationMs,
+          credentialInjected: entry.credentialInjected ?? false,
+          classification: entry.classification ?? 'other',
+          timestamp: Date.now(),
+        };
+        if (blockedReason !== undefined) payload.blockedReason = blockedReason;
+
+        // Build a synthetic AgentContext for the fire — the listener's data
+        // events run far from the original request context. sessionId/userId
+        // come from the matching session (or empty strings on allowlist miss).
+        const fireCtx = makeAgentContext({
+          sessionId: payload.sessionId,
+          userId: payload.userId,
+          agentId: '',
+        });
+
+        bus.fire('event.http-egress', fireCtx, payload).catch((err: unknown) => {
+          // HookBus.fire isolates subscriber throws — this catch only fires
+          // if HookBus itself throws, which it currently doesn't. Log to the
+          // synthetic context's logger so the failure is visible without
+          // crashing the proxy.
+          fireCtx.logger.error('http_egress_fire_failed', {
+            err: err instanceof Error ? err : new Error(String(err)),
+          });
+        });
+      };
+
       listener = await startProxyListener({
         listen: config.listen,
         registry,
         sessions,
         ca,
-        onAudit: () => { /* Task 11 wires bus.fire('event.http-egress', ...) */ },
+        onAudit,
       });
       endpointString = buildEndpointString(config.listen, listener);
 
@@ -171,8 +357,15 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
 
           // Persist the session config — the listener iterates this on every
           // request to gate egress, run SSRF checks, and decide MITM-vs-bypass.
+          //
+          // Also stamp sessionId/userId/classification so the listener can
+          // attribute audit entries to the right session for the
+          // event.http-egress emission.
           const sessionConfig: SessionConfig = {
             allowlist: new Set(input.allowlist),
+            sessionId: input.sessionId,
+            userId: input.userId,
+            classification: classifyCredentials(input.credentials),
           };
           if (input.allowedIPs && input.allowedIPs.length > 0) {
             sessionConfig.allowedIPs = new Set(input.allowedIPs);

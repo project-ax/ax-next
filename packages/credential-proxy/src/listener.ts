@@ -14,8 +14,9 @@
  * - Canary-on-HTTP-body skipped — only the MITM path scans canary,
  *   since HTTP forwarding is rare for LLM/MCP traffic and never
  *   carries credential placeholders.
- * - `onAudit` kept as a no-op stub on options — Task 11 wires it to
- *   `bus.fire('event.http-egress', ...)`.
+ * - `onAudit` is the listener's only audit-emission seam. The plugin
+ *   wires one that maps each `ProxyAuditEntry` to the public
+ *   `event.http-egress` payload and fires it on the bus (Task 11).
  * - Dynamic `import('./proxy-ca.js')` for `generateDomainCert` inlined
  *   to a static import — the v1 lazy load existed only to avoid pulling
  *   node-forge into non-MITM proxy modes that no longer exist in v2.
@@ -76,9 +77,50 @@ export interface SessionConfig {
    * a canary string the model was told not to leak.
    */
   canaryToken?: string;
+  /**
+   * Stable session identifier. The plugin sets this on open-session so
+   * audit emissions can carry it through to `event.http-egress`. Optional
+   * for back-compat with tests that build SessionConfig directly without
+   * going through the plugin.
+   */
+  sessionId?: string;
+  /**
+   * The user this session was opened for. The plugin sets this on
+   * open-session; the listener attaches it to audit entries so subscribers
+   * can attribute traffic. Optional for the same back-compat reason as
+   * `sessionId`.
+   */
+  userId?: string;
+  /**
+   * Coarse traffic class derived from the session's credential kinds.
+   * Computed once at open-session time (cheap; kinds don't change for the
+   * life of a session) and stamped onto every audit entry the listener
+   * emits for this session.
+   *
+   * - `'llm'`: any credential's kind is an LLM kind (`'api-key'` today,
+   *   future `'anthropic-oauth'` etc).
+   * - `'mcp'`: Phase 3 will exercise this for `'mcp-*'` kinds.
+   * - `'other'`: everything else (no credentials, or only non-LLM/non-MCP).
+   *
+   * Optional for back-compat — listener-internal SessionConfig built by
+   * tests that don't go through the plugin won't have it set, and the
+   * plugin's onAudit callback defaults to `'other'` if missing.
+   */
+  classification?: 'llm' | 'mcp' | 'other';
 }
 
-/** Audit entry shape — placeholder until Task 11 finalizes the hook payload. */
+/**
+ * In-process audit entry the listener hands to its `onAudit` callback.
+ * Shape is intentionally listener-internal — the plugin maps it to the
+ * public `event.http-egress` payload (renaming fields, parsing the URL
+ * into host/path, translating `blocked` → `blockedReason`).
+ *
+ * The `blocked` field uses the listener's own vocabulary
+ * (`'canary_detected'`, `'tls_error: …'`, `'Blocked: …'` from
+ * BlockedIPError, `'domain_denied: <host>'`, `'invalid_target'`); the
+ * plugin translates to the bus's `'allowlist' | 'private-ip' | 'canary'
+ * | 'tls-error'` enumeration.
+ */
 export interface ProxyAuditEntry {
   action: 'proxy_request';
   method: string;
@@ -90,6 +132,17 @@ export interface ProxyAuditEntry {
   blocked?: string;
   /** True iff MITM substitution actually replaced bytes on this connection. */
   credentialInjected?: boolean;
+  /**
+   * Set when the listener could match the request to a registered session
+   * (every success case, plus canary/tls-error/private-IP blocks where the
+   * allowlist check passed). Unset when no session matched (allowlist miss
+   * — the request never had an owner to begin with).
+   */
+  sessionId?: string;
+  /** Same lifecycle as `sessionId`; copied from the matching session. */
+  userId?: string;
+  /** Same lifecycle as `sessionId`; copied from the matching session. */
+  classification?: 'llm' | 'mcp' | 'other';
 }
 
 export interface ProxyListenerOptions {
@@ -105,7 +158,11 @@ export interface ProxyListenerOptions {
    * Tests pass a CA minted in tmpdir; production uses `getOrCreateCA(dir)`.
    */
   ca: CAKeyPair;
-  /** Optional audit sink — defaults to no-op. Task 11 wires bus.fire. */
+  /**
+   * Optional audit sink — defaults to no-op. The plugin provides one that
+   * maps `ProxyAuditEntry` → `event.http-egress` and fires on the bus.
+   * Tests may pass a sync function that just collects entries.
+   */
   onAudit?: (entry: ProxyAuditEntry) => void;
   /** Optional DNS resolver override — for tests. Default: dns.promises.lookup. */
   resolver?: Resolver;
@@ -175,6 +232,25 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
     onAudit?.(entry);
   }
 
+  /**
+   * Copy the session-stamping fields (`sessionId`, `userId`, `classification`)
+   * off `session` onto an audit entry. No-op if `session` is undefined
+   * (allowlist-miss + invalid-target paths can't attribute to a session).
+   *
+   * `exactOptionalPropertyTypes` means we only set keys when defined;
+   * setting `key: undefined` is a type error.
+   */
+  function stampSession(
+    entry: ProxyAuditEntry,
+    session: SessionConfig | undefined,
+  ): ProxyAuditEntry {
+    if (!session) return entry;
+    if (session.sessionId !== undefined) entry.sessionId = session.sessionId;
+    if (session.userId !== undefined) entry.userId = session.userId;
+    if (session.classification !== undefined) entry.classification = session.classification;
+    return entry;
+  }
+
   // ── HTTP request forwarding ──
 
   async function handleHTTPRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -201,6 +277,10 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
       // Allowlist gate (I2): hostname must be in some session's allowlist.
       const allowingSession = findAllowingSession(hostname, sessions);
       if (!allowingSession) {
+        // No matching session → no sessionId/userId/classification to stamp.
+        // The audit just carries the block reason; the plugin's onAudit will
+        // emit the bus event with `blockedReason: 'allowlist'` and the
+        // session-attribution fields left empty.
         audit({
           action: 'proxy_request',
           method,
@@ -285,7 +365,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
       }
       res.end();
 
-      audit({
+      audit(stampSession({
         action: 'proxy_request',
         method,
         url,
@@ -293,7 +373,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
         requestBytes,
         responseBytes,
         durationMs: Date.now() - startTime,
-      });
+      }, allowingSession));
     } catch (err) {
       // BlockedIPError → 403 (policy block); anything else → 502 (network/DNS).
       // Reviewer M3 from Task 5: use typed instanceof, not string match.
@@ -308,7 +388,26 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
       }
       res.end(message);
 
-      audit({
+      // Re-resolve the matching session for stamping. The catch can fire
+      // either before or after `allowingSession` was set in the try block,
+      // and `allowingSession` isn't in scope here. Re-running the lookup is
+      // cheap (Map.values iteration over a tiny set) and keeps the flow
+      // straightforward.
+      const hostnameForCatch = (() => {
+        try {
+          return new URL(
+            url.startsWith('http://') || url.startsWith('https://')
+              ? url
+              : `http://${req.headers.host ?? 'unknown'}${url}`,
+          ).hostname;
+        } catch {
+          return undefined;
+        }
+      })();
+      const sessionForCatch = hostnameForCatch
+        ? findAllowingSession(hostnameForCatch, sessions)
+        : undefined;
+      const blockedEntry: ProxyAuditEntry = {
         action: 'proxy_request',
         method,
         url,
@@ -316,8 +415,9 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
         requestBytes,
         responseBytes: 0,
         durationMs: Date.now() - startTime,
-        blocked: isBlocked ? message : undefined,
-      });
+      };
+      if (isBlocked) blockedEntry.blocked = message;
+      audit(stampSession(blockedEntry, sessionForCatch));
     }
   }
 
@@ -331,8 +431,9 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
   //  - `generateDomainCert` static-imported (no longer dynamic).
   //  - `canaryToken` aggregated across sessions (per-session field, not
   //    a single global option). A chunk matches if any session's token is in it.
-  //  - `sessionId` field on audit entries dropped — Task 11 finalizes the
-  //    audit payload shape.
+  //  - `sessionId`/`userId`/`classification` are stamped via `stampSession`
+  //    from the SessionConfig that allowed the request. The plugin sets
+  //    those fields at `proxy:open-session` time (Task 11).
 
   async function handleMITMConnect(
     clientSocket: net.Socket,
@@ -342,6 +443,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
     head: Buffer,
     startTime: number,
     target: string,
+    allowingSession: SessionConfig,
   ): Promise<void> {
     const domainCert = generateDomainCert(hostname, ca);
 
@@ -381,7 +483,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
     targetTls.on('error', (err) => {
       if (!tlsFailed) {
         tlsFailed = true;
-        audit({
+        audit(stampSession({
           action: 'proxy_request',
           method: 'CONNECT',
           url: target,
@@ -390,7 +492,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
           responseBytes: 0,
           durationMs: Date.now() - startTime,
           blocked: `tls_error: ${err.message}`,
-        });
+        }, allowingSession));
       }
     });
 
@@ -412,7 +514,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
       // bytes, not on canaries).
       for (const token of canaryTokens) {
         if (chunk.includes(token)) {
-          audit({
+          audit(stampSession({
             action: 'proxy_request',
             method: 'CONNECT',
             url: target,
@@ -421,7 +523,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
             responseBytes: 0,
             durationMs: Date.now() - startTime,
             blocked: 'canary_detected',
-          });
+          }, allowingSession));
           // Send a 403 over the TLS channel before tearing down.
           clientTls.write('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n');
           clientTls.end();
@@ -466,7 +568,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
 
       // Skip the 200 audit if a TLS handshake error already logged 502.
       if (!tlsFailed) {
-        audit({
+        audit(stampSession({
           action: 'proxy_request',
           method: 'CONNECT',
           url: target,
@@ -477,7 +579,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
           // Omit `credentialInjected` when false to satisfy
           // exactOptionalPropertyTypes — only present when substitution fired.
           ...(credentialInjected ? { credentialInjected: true as const } : {}),
-        });
+        }, allowingSession));
       }
     };
 
@@ -493,8 +595,8 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
   // gates) and 497-620 (handleMITMConnect). Cuts vs. v1:
   //  - urlRewrites block dropped (out of scope for v2).
   //  - onApprove dropped — per-session allowlist is the only egress gate.
-  //  - sessionId field on audit entries dropped — Task 11 finalizes the hook
-  //    payload shape.
+  //  - sessionId/userId/classification are stamped on audit entries via
+  //    `stampSession` from the matching SessionConfig (Task 11).
   //  - bypassDomains field renamed to per-session bypassMITM, aggregated
   //    "any-bypass-wins" so cert-pinning hosts never get a minted cert.
   //
@@ -539,6 +641,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
       if (!allowingSession) {
         clientSocket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
         clientSocket.end();
+        // No matching session — same shape as the HTTP allowlist-miss case.
         audit({
           action: 'proxy_request',
           method: 'CONNECT',
@@ -568,6 +671,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
           head,
           startTime,
           target,
+          allowingSession,
         );
         return;
       }
@@ -608,7 +712,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
         targetSocket.destroy();
         clientSocket.destroy();
 
-        audit({
+        audit(stampSession({
           action: 'proxy_request',
           method: 'CONNECT',
           url: target,
@@ -616,7 +720,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
           requestBytes,
           responseBytes,
           durationMs: Date.now() - startTime,
-        });
+        }, allowingSession));
       };
 
       targetSocket.on('close', cleanup);
@@ -628,14 +732,19 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
       // Reviewer M3 from Task 5: typed instanceof, not string match.
       const isBlocked = err instanceof BlockedIPError;
       const status = isBlocked ? 403 : 502;
-      const blocked = isBlocked ? (err as BlockedIPError).message : undefined;
 
       clientSocket.write(
         `HTTP/1.1 ${status} ${isBlocked ? 'Forbidden' : 'Bad Gateway'}\r\n\r\n`,
       );
       clientSocket.end();
 
-      audit({
+      // The catch fires either before or after `allowingSession` was set
+      // in the try block; re-resolve via hostname to attribute when possible.
+      // Allowlist hits with a private-IP block (BlockedIPError) DO have a
+      // matching session — the resolveAndCheck call only runs after the
+      // allowlist gate passed.
+      const sessionForCatch = findAllowingSession(hostname, sessions);
+      const blockedEntry: ProxyAuditEntry = {
         action: 'proxy_request',
         method: 'CONNECT',
         url: target,
@@ -643,8 +752,9 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
         requestBytes: 0,
         responseBytes: 0,
         durationMs: Date.now() - startTime,
-        blocked,
-      });
+      };
+      if (isBlocked) blockedEntry.blocked = (err as BlockedIPError).message;
+      audit(stampSession(blockedEntry, sessionForCatch));
     }
   }
 
