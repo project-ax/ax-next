@@ -94,6 +94,75 @@ export async function startWebProxyBridge(unixSocketPath: string): Promise<WebPr
     }
   });
 
+  // ── CONNECT tunneling ──
+  // For HTTPS CONNECT, we open a raw socket to the Unix socket proxy
+  // and pipe bytes bidirectionally. The proxy handles the actual outbound
+  // TCP connection after receiving the CONNECT header.
+
+  server.on('connect', (req: IncomingMessage, clientSocket: net.Socket, head: Buffer) => {
+    const target = req.url ?? '';
+
+    // Open a raw connection to the Unix socket proxy
+    const proxySocket = net.connect(unixSocketPath, () => {
+      activeSockets.add(proxySocket);
+
+      // Send the CONNECT request through to the host proxy
+      proxySocket.write(`CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n\r\n`);
+
+      // Wait for the proxy's response before piping
+      let headerBuffer = '';
+      const onData = (chunk: Buffer) => {
+        headerBuffer += chunk.toString();
+        const headerEnd = headerBuffer.indexOf('\r\n\r\n');
+        if (headerEnd === -1) return; // Keep waiting for full header
+
+        proxySocket.removeListener('data', onData);
+
+        // Check if proxy established the connection
+        if (headerBuffer.startsWith('HTTP/1.1 200')) {
+          // Forward the 200 response to client
+          clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+
+          // Pipe remaining data (after headers) and future data
+          const remaining = headerBuffer.slice(headerEnd + 4);
+          if (remaining.length > 0) {
+            clientSocket.write(remaining);
+          }
+
+          // Forward any initial data from the client
+          if (head.length > 0) {
+            proxySocket.write(head);
+          }
+
+          // Bidirectional pipe
+          proxySocket.pipe(clientSocket);
+          clientSocket.pipe(proxySocket);
+        } else {
+          // Forward error response
+          clientSocket.write(headerBuffer);
+          clientSocket.end();
+          proxySocket.end();
+        }
+      };
+
+      proxySocket.on('data', onData);
+    });
+
+    activeSockets.add(clientSocket);
+
+    const cleanup = () => {
+      activeSockets.delete(proxySocket);
+      activeSockets.delete(clientSocket);
+      proxySocket.destroy();
+      clientSocket.destroy();
+    };
+
+    proxySocket.on('error', cleanup);
+    proxySocket.on('close', cleanup);
+    clientSocket.on('error', cleanup);
+    clientSocket.on('close', cleanup);
+  });
+
   // ── Start listening ──
 
   const port = await new Promise<number>((resolve) => {
