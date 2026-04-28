@@ -17,7 +17,7 @@ The credential-proxy + bridge that Phase 1a shipped get wired into the SDK runne
 | `@ax/cli` | Loads `@ax/credential-proxy` on `cfg.llm === 'anthropic'` (TCP loopback). Mock-LLM path keeps the legacy in-sandbox llm-proxy — loading the proxy in mock mode would force the SDK runner onto direct-egress and turn every canary into a real network call. |
 | `@ax/cli/dev-agents-stub` | Default agent now returns `allowedHosts: ['api.anthropic.com']` and `requiredCredentials: { ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' } }`. Users seed the credential before the canary works: `ax-next credentials set anthropic-api`. |
 | `@ax/preset-k8s` | Loads `@ax/credential-proxy` on a Unix socket (default `/var/run/ax/proxy.sock`, overridable via `K8sPresetConfig.credentialProxy.socketPath` + the `AX_PROXY_SOCKET_PATH` env var). |
-| `@ax/audit-log` | Subscribes to `event.http-egress` and persists one row per egress (key `egress:<sessionId>:<timestamp>`). |
+| `@ax/audit-log` | Subscribes to `event.http-egress` and persists one row per egress (key `egress:<sessionId>:<timestamp>:<uuid>` — UUID suffix breaks ms-resolution collisions when concurrent egress events land in the same millisecond). |
 
 End-to-end coverage: a new gated test (`packages/cli/src/__tests__/credential-proxy.e2e.test.ts`) round-trips a real Anthropic call through the credential-proxy when `AX_TEST_ANTHROPIC_KEY` is set; CI skips automatically.
 
