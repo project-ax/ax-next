@@ -166,6 +166,38 @@ interface SessionIsAliveOutput {
   alive: boolean;
 }
 
+/**
+ * Proxy-session blob threaded from the orchestrator into the sandbox plugin.
+ * The orchestrator opens a `proxy:open-session` BEFORE `sandbox:open-session`
+ * (when @ax/credential-proxy is loaded) and packs the resolved endpoint, CA
+ * cert PEM, and per-session credential placeholder envMap into this shape.
+ *
+ * Field naming is deliberately backend-agnostic (I3): `endpoint` and
+ * `unixSocketPath` are mutually exclusive — the subprocess sandbox uses the
+ * TCP loopback form (`endpoint`); the k8s sandbox passes through the Unix
+ * socket path so the runner-side bridge can convert it to a local TCP port
+ * inside the sandbox. `caCertPem` is the PEM bytes; the sandbox plugin owns
+ * "where on disk to write this." The orchestrator never knows or cares.
+ */
+export interface ProxyConfig {
+  /** TCP endpoint (subprocess sandbox), e.g. 'http://127.0.0.1:54321'. */
+  endpoint?: string;
+  /** Unix socket path (k8s sandbox), e.g. '/var/run/ax/proxy.sock'. */
+  unixSocketPath?: string;
+  /**
+   * MITM CA certificate PEM bytes. Sandbox runtime writes this to disk
+   * inside the sandbox and points NODE_EXTRA_CA_CERTS / SSL_CERT_FILE at
+   * the path. The orchestrator never knows the path.
+   */
+  caCertPem: string;
+  /**
+   * Env injected by `proxy:open-session`. Maps env-var names (e.g.
+   * `ANTHROPIC_API_KEY`) to `ax-cred:<hex>` placeholders the proxy
+   * recognizes. Sandbox-subprocess merges these into the runner env.
+   */
+  envMap: Record<string, string>;
+}
+
 interface OpenSessionInput {
   sessionId: string;
   workspaceRoot: string;
@@ -182,6 +214,13 @@ interface OpenSessionInput {
     agentId: string;
     agentConfig: AgentConfig;
   };
+  /**
+   * Per-session proxy blob. Populated only when @ax/credential-proxy is
+   * loaded; otherwise undefined and the runner reaches the legacy
+   * in-sandbox llm-proxy via AX_LLM_PROXY_URL. Phase 5/6 deletes that
+   * fallback.
+   */
+  proxyConfig?: ProxyConfig;
 }
 interface OpenSessionHandle {
   kill(): Promise<void>;

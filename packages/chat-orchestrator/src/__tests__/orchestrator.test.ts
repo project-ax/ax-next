@@ -655,6 +655,18 @@ describe('chat-orchestrator', () => {
     }
   });
 
+  // ---------------------------------------------------------------------
+  // Phase 2 — proxyConfig boundary
+  //
+  // Task 1 only adds the type field. The actual `proxy:open-session` call +
+  // proxyConfig population lands in Task 2; until then this is `it.todo` so
+  // we don't false-pass an empty assertion. The Task 2 patch flips this to
+  // `it(...)` and asserts capture parity.
+  // ---------------------------------------------------------------------
+  it.todo(
+    'forwards proxyConfig from agent:invoke into sandbox:open-session (wired in Task 2)',
+  );
+
   it('multiple concurrent agent:invokes with different sessionIds do not cross-contaminate', async () => {
     let busRef: HookBus | null = null;
 

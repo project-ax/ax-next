@@ -41,6 +41,34 @@ export const AgentConfigSchema = z.object({
   model: z.string(),
 });
 
+/**
+ * Proxy-session blob the orchestrator threads through `sandbox:open-session`
+ * (Phase 2). When set, this plugin writes the CA cert to a per-session
+ * tmpfile, injects HTTPS_PROXY / HTTP_PROXY / NODE_EXTRA_CA_CERTS / etc.
+ * into the runner env, and merges `envMap` last so the per-session
+ * credential placeholders win.
+ *
+ * Shape duplicated from `@ax/chat-orchestrator`'s `ProxyConfig` (I2 — no
+ * cross-plugin imports). `endpoint` and `unixSocketPath` are mutually
+ * exclusive: TCP loopback for subprocess sandbox, Unix socket path for
+ * k8s. Field names are backend-agnostic (I3).
+ */
+export const ProxyConfigSchema = z
+  .object({
+    endpoint: z.string().min(1).optional(),
+    unixSocketPath: z.string().min(1).optional(),
+    caCertPem: z.string().min(1),
+    envMap: z.record(z.string()),
+  })
+  .refine(
+    (v) =>
+      (v.endpoint !== undefined) !== (v.unixSocketPath !== undefined),
+    {
+      message:
+        'proxyConfig must set exactly one of endpoint or unixSocketPath',
+    },
+  );
+
 export const OpenSessionInputSchema = z.object({
   sessionId: z.string().min(1),
   workspaceRoot: z.string().regex(/^\//, 'workspaceRoot must be absolute'),
@@ -52,6 +80,7 @@ export const OpenSessionInputSchema = z.object({
       agentConfig: AgentConfigSchema,
     })
     .optional(),
+  proxyConfig: ProxyConfigSchema.optional(),
 });
 
 export type OpenSessionInput = z.input<typeof OpenSessionInputSchema>;
