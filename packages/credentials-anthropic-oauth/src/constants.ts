@@ -15,10 +15,9 @@ export const ANTHROPIC_TOKEN_ENDPOINT = 'https://console.anthropic.com/v1/oauth/
 // (~/dev/ai/ax/src/host/oauth.ts:16). It is NOT a secret; it identifies
 // the application to Anthropic's authorization server. The PKCE code
 // verifier (per-flow, in-memory only) is what binds it to a specific
-// session. See the README for why public OAuth clients ship their
-// client_id in source.
-// gitleaks:allow
-export const ANTHROPIC_OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
+// session. Public OAuth clients are designed to ship their client_id in
+// source — that's the entire point of PKCE.
+export const ANTHROPIC_OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e'; // gitleaks:allow
 export const ANTHROPIC_OAUTH_REDIRECT_URI = 'http://localhost:1455/callback';
 export const ANTHROPIC_OAUTH_REDIRECT_PORT = 1455;
 export const ANTHROPIC_OAUTH_SCOPES = 'org:create_api_key user:profile user:inference';
