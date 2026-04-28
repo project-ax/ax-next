@@ -68,10 +68,9 @@ These were called out as Phase 2 non-goals in the impl plan and remain so:
 
 ## Stats
 
-- 8 commits on the branch
+- 9 initial commits + follow-up commits addressing review
 - 7 packages touched + 1 preset
-- ~12 new tests (orchestrator: 5; sandbox-subprocess: 4; runner: 5; CLI wiring: 1; e2e: 1 gated)
-- ~190 LOC of new test code; ~280 LOC of new production code
+- New test coverage across each touched package (orchestrator: 7; sandbox-subprocess: 5; runner: 11; audit-log: 3; CLI wiring: 1; gated e2e: 1)
 - `pnpm build` clean
 - `pnpm test` clean across all touched packages
 
