@@ -212,60 +212,83 @@ export function createCredentialsPlugin(): Plugin {
         },
       );
 
+      // Per-(userId, ref) mutex. Two concurrent credentials:get calls for the
+      // same blob share one Promise, so an OAuth refresh fires at most once
+      // even when proxy:open-session and a concurrent proxy:rotate-session
+      // both ask. Different (userId, ref) pairs run in parallel. (I7.)
+      const inflight = new Map<string, Promise<string>>();
+
+      async function doResolve(
+        ctx: Parameters<Parameters<typeof bus.registerService>[2]>[0],
+        userId: string,
+        ref: string,
+      ): Promise<string> {
+        const got = await bus.call<
+          { userId: string; ref: string },
+          { blob: Uint8Array | undefined }
+        >('credentials:store-blob:get', ctx, { userId, ref });
+        if (got.blob === undefined) {
+          throw new PluginError({
+            code: 'credential-not-found',
+            plugin: PLUGIN_NAME,
+            message: `no credential for ref='${ref}'`,
+          });
+        }
+        const env = unwrapEnvelope(got.blob);
+        if (env.isTombstone) {
+          throw new PluginError({
+            code: 'credential-not-found',
+            plugin: PLUGIN_NAME,
+            message: `no credential for ref='${ref}'`,
+          });
+        }
+
+        const subService = `credentials:resolve:${env.kind}`;
+        if (bus.hasService(subService)) {
+          const out = await bus.call<CredentialsResolveInput, CredentialsResolveOutput>(
+            subService,
+            ctx,
+            { payload: env.payload, userId, ref },
+          );
+          if (out.refreshed !== undefined) {
+            // Re-store under the same kind. Sub-service may bump expiresAt
+            // or metadata as part of the refresh — propagate both.
+            const refreshArgs: CredentialsSetInput = {
+              ref,
+              userId,
+              kind: env.kind,
+              payload: out.refreshed.payload,
+            };
+            if (out.refreshed.expiresAt !== undefined) {
+              refreshArgs.expiresAt = out.refreshed.expiresAt;
+            }
+            const md = out.refreshed.metadata ?? env.metadata;
+            if (md !== undefined) refreshArgs.metadata = md;
+            await bus.call('credentials:set', ctx, refreshArgs);
+          }
+          return out.value;
+        }
+        // No sub-service registered — payload is the value (UTF-8 bytes).
+        // This is the api-key path: payload bytes ARE the secret string.
+        return new TextDecoder().decode(env.payload);
+      }
+
       bus.registerService<CredentialsGetInput, CredentialsGetOutput>(
         'credentials:get',
         PLUGIN_NAME,
         async (ctx, input) => {
           const ref = validateRef(input.ref);
           const userId = validateUserId(input.userId);
-          const got = await bus.call<
-            { userId: string; ref: string },
-            { blob: Uint8Array | undefined }
-          >('credentials:store-blob:get', ctx, { userId, ref });
-          if (got.blob === undefined) {
-            throw new PluginError({
-              code: 'credential-not-found',
-              plugin: PLUGIN_NAME,
-              message: `no credential for ref='${ref}'`,
-            });
+          const mutexKey = `${userId}:${ref}`;
+          const existing = inflight.get(mutexKey);
+          if (existing !== undefined) return existing;
+          const p = doResolve(ctx, userId, ref);
+          inflight.set(mutexKey, p);
+          try {
+            return await p;
+          } finally {
+            inflight.delete(mutexKey);
           }
-          const env = unwrapEnvelope(got.blob);
-          if (env.isTombstone) {
-            throw new PluginError({
-              code: 'credential-not-found',
-              plugin: PLUGIN_NAME,
-              message: `no credential for ref='${ref}'`,
-            });
-          }
-
-          const subService = `credentials:resolve:${env.kind}`;
-          if (bus.hasService(subService)) {
-            const out = await bus.call<CredentialsResolveInput, CredentialsResolveOutput>(
-              subService,
-              ctx,
-              { payload: env.payload, userId, ref },
-            );
-            if (out.refreshed !== undefined) {
-              // Re-store under the same kind. Sub-service may bump expiresAt
-              // or metadata as part of the refresh — propagate both.
-              const refreshArgs: CredentialsSetInput = {
-                ref,
-                userId,
-                kind: env.kind,
-                payload: out.refreshed.payload,
-              };
-              if (out.refreshed.expiresAt !== undefined) {
-                refreshArgs.expiresAt = out.refreshed.expiresAt;
-              }
-              const md = out.refreshed.metadata ?? env.metadata;
-              if (md !== undefined) refreshArgs.metadata = md;
-              await bus.call('credentials:set', ctx, refreshArgs);
-            }
-            return out.value;
-          }
-          // No sub-service registered — payload is the value (UTF-8 bytes).
-          // This is the api-key path: payload bytes ARE the secret string.
-          return new TextDecoder().decode(env.payload);
         },
       );
 

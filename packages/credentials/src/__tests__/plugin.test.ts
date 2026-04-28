@@ -314,6 +314,106 @@ describe('@ax/credentials plugin', () => {
     expect(second).toBe('token-B');
   });
 
+  it('serializes concurrent credentials:get for the same (userId, ref) — only one resolve fires (I7)', async () => {
+    const bus = new HookBus();
+    let resolveCount = 0;
+    const slowResolverPlugin = {
+      manifest: {
+        name: 'slow-resolver',
+        version: '0.0.0',
+        registers: ['credentials:resolve:slow-oauth'],
+        calls: [],
+        subscribes: [],
+      },
+      async init({ bus }: { bus: HookBus }) {
+        bus.registerService('credentials:resolve:slow-oauth', 'slow-resolver', async () => {
+          resolveCount++;
+          await new Promise((r) => setTimeout(r, 50));
+          return { value: `token-${resolveCount}` };
+        });
+      },
+    };
+    await bootstrap({
+      bus,
+      plugins: [
+        memStoragePlugin(),
+        createCredentialsStoreDbPlugin(),
+        createCredentialsPlugin(),
+        slowResolverPlugin,
+      ],
+      config: {},
+    });
+    await bus.call('credentials:set', ctx(), {
+      ref: 'r1',
+      userId: 'u',
+      kind: 'slow-oauth',
+      payload: bytes('blob'),
+    });
+    const [a, b] = await Promise.all([
+      bus.call<{ ref: string; userId: string }, string>('credentials:get', ctx(), {
+        ref: 'r1',
+        userId: 'u',
+      }),
+      bus.call<{ ref: string; userId: string }, string>('credentials:get', ctx(), {
+        ref: 'r1',
+        userId: 'u',
+      }),
+    ]);
+    expect(resolveCount).toBe(1);
+    expect(a).toBe(b);
+  });
+
+  it('different (userId, ref) pairs run resolves in parallel', async () => {
+    const bus = new HookBus();
+    const startTimes: number[] = [];
+    const slowResolverPlugin = {
+      manifest: {
+        name: 'slow-resolver',
+        version: '0.0.0',
+        registers: ['credentials:resolve:slow-oauth'],
+        calls: [],
+        subscribes: [],
+      },
+      async init({ bus }: { bus: HookBus }) {
+        bus.registerService('credentials:resolve:slow-oauth', 'slow-resolver', async () => {
+          startTimes.push(Date.now());
+          await new Promise((r) => setTimeout(r, 30));
+          return { value: 'ok' };
+        });
+      },
+    };
+    await bootstrap({
+      bus,
+      plugins: [
+        memStoragePlugin(),
+        createCredentialsStoreDbPlugin(),
+        createCredentialsPlugin(),
+        slowResolverPlugin,
+      ],
+      config: {},
+    });
+    await bus.call('credentials:set', ctx(), {
+      ref: 'r1',
+      userId: 'alice',
+      kind: 'slow-oauth',
+      payload: bytes('blob1'),
+    });
+    await bus.call('credentials:set', ctx(), {
+      ref: 'r1',
+      userId: 'bob',
+      kind: 'slow-oauth',
+      payload: bytes('blob2'),
+    });
+    await Promise.all([
+      bus.call('credentials:get', ctx(), { ref: 'r1', userId: 'alice' }),
+      bus.call('credentials:get', ctx(), { ref: 'r1', userId: 'bob' }),
+    ]);
+    expect(startTimes.length).toBe(2);
+    // Parallel: both started within a few ms of each other (<25ms gap proves
+    // they overlapped, since each resolve sleeps 30ms).
+    expect(Math.abs(startTimes[1]! - startTimes[0]!)).toBeLessThan(25);
+  });
+
   it('credentials:get for api-key kind decodes payload as UTF-8 (no sub-service)', async () => {
     const bus = new HookBus();
     await bootstrap({
