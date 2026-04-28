@@ -268,9 +268,19 @@ export function createCredentialsPlugin(): Plugin {
           }
           return out.value;
         }
-        // No sub-service registered — payload is the value (UTF-8 bytes).
-        // This is the api-key path: payload bytes ARE the secret string.
-        return new TextDecoder().decode(env.payload);
+        // No sub-service registered. Only `api-key` defaults to the
+        // payload-is-the-value UTF-8 path. Any other kind without its
+        // resolver loaded is a misconfiguration — fail closed rather
+        // than handing back the (encrypted) blob bytes as a string,
+        // which would leak unparsed envelope content into the caller.
+        if (env.kind === 'api-key') {
+          return new TextDecoder().decode(env.payload);
+        }
+        throw new PluginError({
+          code: 'unsupported-credential-kind',
+          plugin: PLUGIN_NAME,
+          message: `no resolver registered for credential kind '${env.kind}' (ref='${ref}')`,
+        });
       }
 
       bus.registerService<CredentialsGetInput, CredentialsGetOutput>(

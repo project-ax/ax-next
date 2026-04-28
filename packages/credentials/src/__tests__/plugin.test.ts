@@ -414,6 +414,27 @@ describe('@ax/credentials plugin', () => {
     expect(Math.abs(startTimes[1]! - startTimes[0]!)).toBeLessThan(25);
   });
 
+  it('credentials:get for unknown kind without resolver throws unsupported-credential-kind (fail closed)', async () => {
+    // Regression guard: an `anthropic-oauth` blob present without the OAuth
+    // plugin loaded must NOT be UTF-8-decoded into the caller. The encrypted
+    // envelope content would otherwise leak as a string. Fail closed.
+    const bus = new HookBus();
+    await bootstrap({
+      bus,
+      plugins: [memStoragePlugin(), createCredentialsStoreDbPlugin(), createCredentialsPlugin()],
+      config: {},
+    });
+    await bus.call('credentials:set', ctx(), {
+      ref: 'oauth-no-resolver',
+      userId: 'u',
+      kind: 'anthropic-oauth',
+      payload: bytes('{"accessToken":"x","refreshToken":"y","expiresAt":1}'),
+    });
+    await expect(
+      bus.call('credentials:get', ctx(), { ref: 'oauth-no-resolver', userId: 'u' }),
+    ).rejects.toMatchObject({ code: 'unsupported-credential-kind' });
+  });
+
   it('credentials:get for api-key kind decodes payload as UTF-8 (no sub-service)', async () => {
     const bus = new HookBus();
     await bootstrap({
