@@ -76,18 +76,23 @@ describe('readRunnerEnv', () => {
     }
   });
 
-  it('keeps AX_LLM_PROXY_URL alongside AX_PROXY_ENDPOINT (legacy + new can coexist during transition)', () => {
-    // The XOR is on "at least one is set" (failure mode); having BOTH set
-    // is fine. setupProxy() picks AX_PROXY_* over AX_LLM_PROXY_URL.
+  it('throws when AX_LLM_PROXY_URL is set together with AX_PROXY_ENDPOINT (legacy XOR new)', () => {
+    // The Phase 2 contract is mutually exclusive: sandbox-subprocess sets
+    // AX_LLM_PROXY_URL on the legacy path and skips it on the new path.
+    // A deploy with BOTH set is ambiguous (setupProxy would silently pick
+    // the new path and ignore the legacy URL); fail loud at boot.
     const env = { ...PROXY_TCP, AX_LLM_PROXY_URL: 'http://127.0.0.1:4000' };
-    expect(readRunnerEnv(env)).toEqual({
-      runnerEndpoint: 'unix:///tmp/ax.sock',
-      sessionId: 'sess-1',
-      authToken: 'tok-123',
-      workspaceRoot: '/tmp/workspace',
-      llmProxyUrl: 'http://127.0.0.1:4000',
-      proxyEndpoint: 'http://127.0.0.1:54321',
-    });
+    expect(() => readRunnerEnv(env)).toThrow(MissingEnvError);
+    try {
+      readRunnerEnv(env);
+    } catch (err) {
+      expect((err as MissingEnvError).message).toContain('mutually exclusive');
+    }
+  });
+
+  it('throws when AX_LLM_PROXY_URL is set together with AX_PROXY_UNIX_SOCKET (legacy XOR new)', () => {
+    const env = { ...PROXY_UNIX, AX_LLM_PROXY_URL: 'http://127.0.0.1:4000' };
+    expect(() => readRunnerEnv(env)).toThrow(MissingEnvError);
   });
 
   for (const name of [

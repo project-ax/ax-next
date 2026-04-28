@@ -78,9 +78,24 @@ export function readRunnerEnv(env: NodeJS.ProcessEnv = process.env): RunnerEnv {
     );
   }
 
-  // I9 — AX_LLM_PROXY_URL is now optional XOR: at least one of the three
-  // proxy paths must be configured. The host (sandbox-subprocess + the
-  // legacy llm-proxy plugin) sets one; if all three are missing, the
+  // The legacy `AX_LLM_PROXY_URL` path and the Phase 2 `AX_PROXY_*` path
+  // are also mutually exclusive: when sandbox-subprocess emits proxyConfig
+  // it skips llm-proxy:start entirely (and AX_LLM_PROXY_URL stays unset).
+  // A deploy that sets BOTH is ambiguous — setupProxy() would silently pick
+  // the new path and ignore the legacy URL, hiding the misconfiguration.
+  // Fail loud so the operator catches the wiring drift at boot.
+  if (
+    llmProxyUrl !== undefined &&
+    (proxyEndpoint !== undefined || proxyUnixSocket !== undefined)
+  ) {
+    throw new MissingEnvError(
+      'AX_LLM_PROXY_URL xor AX_PROXY_* (legacy and Phase 2 proxy modes are mutually exclusive)',
+    );
+  }
+
+  // I9 — at least one proxy path must be configured. The host
+  // (sandbox-subprocess + the legacy llm-proxy plugin OR the Phase 2
+  // credential-proxy) sets exactly one; if all three are missing, the
   // runner has no way to reach an LLM and we fail loud at boot rather
   // than at first SDK call.
   if (
