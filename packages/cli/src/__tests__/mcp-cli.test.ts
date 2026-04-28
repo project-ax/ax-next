@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { HookBus, bootstrap, makeAgentContext } from '@ax/core';
 import { createStorageSqlitePlugin } from '@ax/storage-sqlite';
+import { createCredentialsStoreDbPlugin } from '@ax/credentials-store-db';
 import { createCredentialsPlugin } from '@ax/credentials';
 import { loadConfigs, saveConfig, type McpServerConfig } from '@ax/mcp-client';
 import { runMcpCommand } from '../commands/mcp.js';
@@ -21,7 +22,11 @@ async function seedConfigs(sqlitePath: string, configs: McpServerConfig[]): Prom
   const bus = new HookBus();
   await bootstrap({
     bus,
-    plugins: [createStorageSqlitePlugin({ databasePath: sqlitePath }), createCredentialsPlugin()],
+    plugins: [
+      createStorageSqlitePlugin({ databasePath: sqlitePath }),
+      createCredentialsStoreDbPlugin(),
+      createCredentialsPlugin(),
+    ],
     config: {},
   });
   const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' });
@@ -34,7 +39,11 @@ async function readStoredConfigs(sqlitePath: string): Promise<McpServerConfig[]>
   const bus = new HookBus();
   await bootstrap({
     bus,
-    plugins: [createStorageSqlitePlugin({ databasePath: sqlitePath }), createCredentialsPlugin()],
+    plugins: [
+      createStorageSqlitePlugin({ databasePath: sqlitePath }),
+      createCredentialsStoreDbPlugin(),
+      createCredentialsPlugin(),
+    ],
     config: {},
   });
   return loadConfigs(bus, makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' }));

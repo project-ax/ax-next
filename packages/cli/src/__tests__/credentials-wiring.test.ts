@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { HookBus, bootstrap, type Plugin } from '@ax/core';
 import { createStorageSqlitePlugin } from '@ax/storage-sqlite';
+import { createCredentialsStoreDbPlugin } from '@ax/credentials-store-db';
 import { createCredentialsPlugin } from '@ax/credentials';
 
 // This test asserts that `@ax/credentials` is available on the chat-path bus.
@@ -36,6 +37,7 @@ describe('credentials wiring on the chat-path bus', () => {
       bus,
       plugins: [
         createStorageSqlitePlugin({ databasePath: join(tmp, 'db.sqlite') }),
+        createCredentialsStoreDbPlugin(),
         createCredentialsPlugin(),
       ],
       config: {},
@@ -73,6 +75,7 @@ describe('credentials wiring on the chat-path bus', () => {
       bus,
       plugins: [
         createStorageSqlitePlugin({ databasePath: join(tmp, 'db.sqlite') }),
+        createCredentialsStoreDbPlugin(),
         createCredentialsPlugin(),
         observerPlugin,
       ],

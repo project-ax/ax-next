@@ -16,6 +16,7 @@ import { createToolFileIoPlugin } from '@ax/tool-file-io';
 import { auditLogPlugin } from '@ax/audit-log';
 import { createMcpClientPlugin } from '@ax/mcp-client';
 import { createCredentialsPlugin } from '@ax/credentials';
+import { createCredentialsStoreDbPlugin } from '@ax/credentials-store-db';
 import { createIpcHttpPlugin } from '@ax/ipc-http';
 import { createAgentsPlugin } from '@ax/agents';
 import { createHttpServerPlugin } from '@ax/http-server';
@@ -304,8 +305,12 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   );
   plugins.push(createStoragePostgresPlugin());
 
-  // Credentials sits immediately after storage (it calls storage:get/set).
-  // Init throws if AX_CREDENTIALS_KEY isn't in env.
+  // Credentials: facade over the storage-blob seam. The default backend
+  // (@ax/credentials-store-db) wraps storage:get/storage:set with the
+  // `credential:` key prefix; the facade owns AES-256-GCM and the
+  // consumer-facing credentials:get/set/delete contract. Init throws if
+  // AX_CREDENTIALS_KEY isn't in env.
+  plugins.push(createCredentialsStoreDbPlugin());
   plugins.push(createCredentialsPlugin());
 
   // ----- 2. cross-process coordination ----------------------------------

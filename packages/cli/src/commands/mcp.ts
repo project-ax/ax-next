@@ -19,6 +19,7 @@ import {
   type AgentContext,
 } from '@ax/core';
 import { createStorageSqlitePlugin } from '@ax/storage-sqlite';
+import { createCredentialsStoreDbPlugin } from '@ax/credentials-store-db';
 import { createCredentialsPlugin } from '@ax/credentials';
 import {
   saveConfig,
@@ -68,6 +69,7 @@ async function withBus<T>(
     bus,
     plugins: [
       createStorageSqlitePlugin({ databasePath: opts.sqlitePath ?? DEFAULT_SQLITE_PATH }),
+      createCredentialsStoreDbPlugin(),
       createCredentialsPlugin(),
     ],
     config: {},

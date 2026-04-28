@@ -11,6 +11,7 @@ import {
 import { llmMockPlugin } from '@ax/llm-mock';
 import { createLlmAnthropicPlugin } from '@ax/llm-anthropic';
 import { createStorageSqlitePlugin } from '@ax/storage-sqlite';
+import { createCredentialsStoreDbPlugin } from '@ax/credentials-store-db';
 import { createCredentialsPlugin } from '@ax/credentials';
 import { auditLogPlugin } from '@ax/audit-log';
 import { createSandboxSubprocessPlugin } from '@ax/sandbox-subprocess';
@@ -135,11 +136,14 @@ export async function main(opts: MainOptions): Promise<number> {
     }),
   );
 
-  // Credentials sits immediately after storage (it calls storage:get/set) and
-  // before any plugin that resolves `credential_ref`s via credentials:get
-  // (e.g. @ax/mcp-client lands in Task 16). Bootstrap is topologically
-  // ordered by declared calls/registers, but pushing in-order keeps the
-  // intent obvious to readers. Init requires AX_CREDENTIALS_KEY in env.
+  // Credentials sits immediately after storage. Phase 1b split: the facade
+  // (@ax/credentials) calls credentials:store-blob:* on the default backend
+  // (@ax/credentials-store-db), which in turn calls storage:get / storage:set.
+  // Future vault / KMS backends register credentials:store-blob:* against a
+  // different store; the facade and its consumers don't change. Bootstrap is
+  // topologically ordered by declared calls/registers, but pushing in-order
+  // keeps the intent obvious to readers. Init requires AX_CREDENTIALS_KEY in env.
+  plugins.push(createCredentialsStoreDbPlugin());
   plugins.push(createCredentialsPlugin());
 
   // Audit log is part of the canary loop.

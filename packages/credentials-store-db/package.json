@@ -1,5 +1,5 @@
 {
-  "name": "@ax/mcp-client",
+  "name": "@ax/credentials-store-db",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -18,22 +18,11 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@ax/core": "workspace:*",
-    "@modelcontextprotocol/sdk": "1.29.0",
-    "zod": "^3.23.8"
+    "@ax/core": "workspace:*"
   },
   "devDependencies": {
-    "@ax/auth-oidc": "workspace:*",
-    "@ax/credentials": "workspace:*",
-    "@ax/credentials-store-db": "workspace:*",
-    "@ax/database-postgres": "workspace:*",
-    "@ax/http-server": "workspace:*",
-    "@ax/test-harness": "workspace:*",
-    "@ax/tool-dispatcher": "workspace:*",
-    "@testcontainers/postgresql": "11.14.0",
+    "@ax/storage-sqlite": "workspace:*",
     "@types/node": "^25.6.0",
-    "@types/pg": "8.20.0",
-    "pg": "8.20.0",
     "typescript": "^6.0.3",
     "vitest": "^4.1.4"
   }

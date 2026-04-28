@@ -117,9 +117,13 @@ describe('proxy listener — HTTPS CONNECT (bypass / raw tunnel)', () => {
     // 3. Issue CONNECT through the proxy, then upgrade the tunneled socket to TLS.
     const tunnel = await connectThroughProxy('127.0.0.1', listener.port, `127.0.0.1:${upPort}`);
 
-    const tlsSock = tlsConnect({
+    // The whole point of this test is the CONNECT bypass mode — the
+    // upstream is a self-signed test server we've spawned in this very
+    // test, and we want to read raw bytes through the proxy's tunnel,
+    // not validate the (deliberately bogus) cert chain.
+    const tlsSock = tlsConnect({ // nosemgrep: problem-based-packs.insecure-transport.js-node.bypass-tls-verification.bypass-tls-verification
       socket: tunnel,
-      rejectUnauthorized: false, // we want to see raw bytes, not validate the chain
+      rejectUnauthorized: false,
       servername: 'localhost',
     });
 

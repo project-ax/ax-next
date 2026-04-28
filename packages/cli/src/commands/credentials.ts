@@ -6,6 +6,7 @@
 // confirmation is the id. Paranoid? Sure. Also correct.
 import { HookBus, bootstrap, makeAgentContext, PluginError } from '@ax/core';
 import { createStorageSqlitePlugin } from '@ax/storage-sqlite';
+import { createCredentialsStoreDbPlugin } from '@ax/credentials-store-db';
 import { createCredentialsPlugin } from '@ax/credentials';
 
 const DEFAULT_SQLITE_PATH = './ax-next-chat.sqlite';
@@ -61,6 +62,7 @@ export async function runCredentialsCommand(opts: RunCredentialsOptions): Promis
       bus,
       plugins: [
         createStorageSqlitePlugin({ databasePath: opts.sqlitePath ?? DEFAULT_SQLITE_PATH }),
+        createCredentialsStoreDbPlugin(),
         createCredentialsPlugin(),
       ],
       config: {},

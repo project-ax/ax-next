@@ -422,7 +422,12 @@ describe('event.http-egress emission', () => {
         uri: `http://127.0.0.1:${proxyPort}`,
         proxyTunnel: false,
       });
-      const res = await fetch(`http://127.0.0.1/`, { dispatcher } as RequestInit);
+      // The whole point of this test is the proxy's private-IP block —
+      // we deliberately request `http://127.0.0.1/` (the metadata-style
+      // bare-loopback URL the proxy must reject as SSRF) and assert the
+      // 403 + `event.http-egress` shape. HTTPS would change the path
+      // under test (CONNECT vs forwarding) and hide the bug we're after.
+      const res = await fetch(`http://127.0.0.1/`, { dispatcher } as RequestInit); // nosemgrep: typescript.react.security.react-insecure-request.react-insecure-request
       expect(res.status).toBe(403);
 
       await new Promise<void>((r) => setImmediate(r));

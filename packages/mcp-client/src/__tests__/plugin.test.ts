@@ -32,6 +32,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
+import { createCredentialsStoreDbPlugin } from '@ax/credentials-store-db';
 import { createCredentialsPlugin } from '@ax/credentials';
 import { createToolDispatcherPlugin } from '@ax/tool-dispatcher';
 import { createMcpClientPlugin } from '../plugin.js';
@@ -154,7 +155,7 @@ describe('@ax/mcp-client plugin', () => {
     // Bootstrap storage + credentials first so saveConfig can write.
     await bootstrap({
       bus,
-      plugins: [storage, createCredentialsPlugin()],
+      plugins: [storage, createCredentialsStoreDbPlugin(), createCredentialsPlugin()],
       config: {},
     });
 
@@ -239,7 +240,7 @@ describe('@ax/mcp-client plugin', () => {
 
     await bootstrap({
       bus,
-      plugins: [memStoragePlugin(), createCredentialsPlugin()],
+      plugins: [memStoragePlugin(), createCredentialsStoreDbPlugin(), createCredentialsPlugin()],
       config: {},
     });
     await saveConfig(bus, ctx(), {
@@ -302,7 +303,7 @@ describe('@ax/mcp-client plugin', () => {
     // one, transportFactory throws and the assertion catches that.
     await bootstrap({
       bus,
-      plugins: [memStoragePlugin(), createCredentialsPlugin()],
+      plugins: [memStoragePlugin(), createCredentialsStoreDbPlugin(), createCredentialsPlugin()],
       config: {},
     });
     await saveConfig(bus, ctx(), {
@@ -348,7 +349,7 @@ describe('@ax/mcp-client plugin', () => {
 
     await bootstrap({
       bus,
-      plugins: [memStoragePlugin(), createCredentialsPlugin()],
+      plugins: [memStoragePlugin(), createCredentialsStoreDbPlugin(), createCredentialsPlugin()],
       config: {},
     });
     await saveConfig(bus, ctx(), {
@@ -397,7 +398,7 @@ describe('@ax/mcp-client plugin', () => {
 
     await bootstrap({
       bus,
-      plugins: [memStoragePlugin(), createCredentialsPlugin()],
+      plugins: [memStoragePlugin(), createCredentialsStoreDbPlugin(), createCredentialsPlugin()],
       config: {},
     });
     await saveConfig(bus, ctx(), {
@@ -467,7 +468,7 @@ describe('@ax/mcp-client plugin', () => {
 
     await bootstrap({
       bus,
-      plugins: [memStoragePlugin(), createCredentialsPlugin()],
+      plugins: [memStoragePlugin(), createCredentialsStoreDbPlugin(), createCredentialsPlugin()],
       config: {},
     });
     await saveConfig(bus, ctx(), {
@@ -510,7 +511,7 @@ describe('@ax/mcp-client plugin', () => {
 
     await bootstrap({
       bus,
-      plugins: [memStoragePlugin(), createCredentialsPlugin()],
+      plugins: [memStoragePlugin(), createCredentialsStoreDbPlugin(), createCredentialsPlugin()],
       config: {},
     });
     await saveConfig(bus, ctx(), {

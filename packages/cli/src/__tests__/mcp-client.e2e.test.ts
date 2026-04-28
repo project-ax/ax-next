@@ -13,6 +13,7 @@ import {
   type ToolCall,
 } from '@ax/core';
 import { createStorageSqlitePlugin } from '@ax/storage-sqlite';
+import { createCredentialsStoreDbPlugin } from '@ax/credentials-store-db';
 import { createCredentialsPlugin } from '@ax/credentials';
 import { saveConfig, type McpServerConfig } from '@ax/mcp-client';
 import { mcpServerStubPath } from '@ax/test-harness';
@@ -72,6 +73,7 @@ async function seedMcpConfig(dbPath: string, config: McpServerConfig): Promise<v
     bus,
     plugins: [
       createStorageSqlitePlugin({ databasePath: dbPath }),
+      createCredentialsStoreDbPlugin(),
       createCredentialsPlugin(),
     ],
     config: {},

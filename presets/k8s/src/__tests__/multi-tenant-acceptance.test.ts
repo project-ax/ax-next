@@ -819,12 +819,29 @@ describe('multi-tenant acceptance (Week 9.5 — preset-k8s)', () => {
   });
 
   it('B. Cookie tamper: flipping one base64url char in the HMAC segment → 401', async () => {
-    // Flip the last character. The base64url alphabet only matters in
-    // that we stay legal; both 'A' and 'B' are valid, so the swap
-    // doesn't trip the parser before the HMAC check runs.
-    const last = userASignedValue.slice(-1);
-    const swapped = last === 'A' ? 'B' : 'A';
-    const tampered = userASignedValue.slice(0, -1) + swapped;
+    // Flip a middle character of the signature, NOT the last one.
+    //
+    // Why not the last char: 32 bytes of HMAC is 256 bits but the
+    // base64url encoding takes 43 chars × 6 bits = 258 bits — the
+    // bottom 2 bits of the last char are padding/discarded. So
+    // flipping `A`(000000)↔`B`(000001) only changes those discarded
+    // bits and the decoded HMAC bytes are identical → verification
+    // succeeds → test sometimes saw 200 instead of 401 (~6% flake
+    // rate when the random HMAC's last char happens to be A/B/C/D).
+    //
+    // The signature is the last 43 chars (HMAC-SHA256 base64url); the
+    // 22nd-from-end char is well inside the signature payload bits
+    // and any bit-flip there changes a real byte in the decoded HMAC.
+    const TARGET = -22;
+    const target = userASignedValue.slice(TARGET, TARGET + 1);
+    // Pick a swap that's guaranteed to flip at least one of the top
+    // 4 bits — `A` and `Q` differ only in bit 4 (A=000000, Q=010000),
+    // both base64url-legal so we stay in alphabet.
+    const swapped = target === 'A' ? 'Q' : 'A';
+    const tampered =
+      userASignedValue.slice(0, TARGET) +
+      swapped +
+      userASignedValue.slice(TARGET + 1);
     const r = await httpRequest('GET', '/admin/me', {
       cookie: `ax_auth_session=${tampered}`,
     });
