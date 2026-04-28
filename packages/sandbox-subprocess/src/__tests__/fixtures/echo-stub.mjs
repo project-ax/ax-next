@@ -25,7 +25,15 @@ const env = {
   HTTP_PROXY: process.env.HTTP_PROXY ?? null,
   NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS ?? null,
   SSL_CERT_FILE: process.env.SSL_CERT_FILE ?? null,
-  ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ?? null,
+  // Test assertion only needs to know the placeholder is `ax-cred:<hex>`
+  // shape (Phase 2 substitution) vs. unset. Echo a presence-only marker
+  // so a real key — set in process.env by an over-eager test runner or
+  // a developer's local secrets — never lands in captured test logs.
+  ANTHROPIC_API_KEY: (() => {
+    const v = process.env.ANTHROPIC_API_KEY;
+    if (typeof v !== 'string' || v.length === 0) return null;
+    return v.startsWith('ax-cred:') ? v : '[redacted]';
+  })(),
   FOO: process.env.FOO ?? null,
 };
 process.stdout.write(JSON.stringify(env) + '\n');

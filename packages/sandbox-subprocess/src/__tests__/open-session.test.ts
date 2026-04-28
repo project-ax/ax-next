@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -423,6 +423,11 @@ describe('sandbox:open-session', () => {
     expect(parsed.AX_PROXY_ENDPOINT).toBe('http://127.0.0.1:54321');
     expect(parsed.AX_PROXY_UNIX_SOCKET).toBeNull();
     expect(parsed.ANTHROPIC_API_KEY).toBe('ax-cred:0123');
+    // Phase 2: when proxyConfig is set, the legacy in-sandbox llm-proxy is
+    // NOT started — the runner reaches the credential-proxy directly via
+    // HTTPS_PROXY. AX_LLM_PROXY_URL must be unset so a future runner that
+    // accidentally reads both vars doesn't pick the wrong path.
+    expect(parsed.AX_LLM_PROXY_URL).toBeNull();
     // CA file path lands inside the per-session tempdir (same one the IPC
     // socket uses — 0700 mode, host uid only).
     const caPath = parsed.NODE_EXTRA_CA_CERTS;
@@ -499,6 +504,68 @@ describe('sandbox:open-session', () => {
     await result.handle.kill();
     await result.handle.exited;
     await new Promise((r) => setTimeout(r, 50));
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
+  it('rolls back ipc + session + tempdir when CA write fails (proxyConfig path)', async () => {
+    // CA write happens AFTER session:create + ipc:start. If it throws, the
+    // function used to exit without rollback, leaking a live token + a
+    // bound ipc listener. We force fs.writeFile to throw and assert the
+    // listener slot is free again (rebinding the same sessionId via
+    // ipc:start would throw 'already-running' otherwise — same shape as
+    // the llm-proxy:start rollback test below).
+    const ws = await mkWorkspace();
+    const h = await makeHarness();
+    const ctx = h.ctx();
+
+    // Spy on fs.promises.writeFile and force the FIRST CA write to throw.
+    // We restore right after `bus.call` to avoid affecting the rest of
+    // the suite.
+    const realWriteFile = fs.writeFile;
+    const spy = vi
+      .spyOn(fs, 'writeFile')
+      .mockImplementationOnce(async (filePath: unknown) => {
+        // Only throw for the MITM CA path; let other writes pass through.
+        if (typeof filePath === 'string' && filePath.endsWith('ax-mitm-ca.pem')) {
+          throw new Error('disk full');
+        }
+        return realWriteFile.call(fs, filePath as string, '');
+      });
+
+    let caught: unknown;
+    try {
+      await h.bus.call<unknown, OpenSessionResult>(
+        'sandbox:open-session',
+        ctx,
+        {
+          sessionId: 'ca-rb-1',
+          workspaceRoot: ws,
+          runnerBinary: ECHO_STUB,
+          proxyConfig: {
+            endpoint: 'http://127.0.0.1:54321',
+            caCertPem: '-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n',
+            envMap: {},
+          },
+        },
+      );
+    } catch (err) {
+      caught = err;
+    } finally {
+      spy.mockRestore();
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('ca-write-failed');
+    expect((caught as PluginError).message).toContain('failed to write MITM CA cert');
+
+    // Rollback evidence: ipc:start now succeeds again on the same sessionId,
+    // which it wouldn't if the prior listener slot were still held.
+    const rebindDir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? '/tmp', 'ax-ipc-ca-rb-'));
+    const rebindSock = path.join(rebindDir, 'ipc.sock');
+    await expect(
+      h.bus.call('ipc:start', ctx, { socketPath: rebindSock, sessionId: 'ca-rb-1' }),
+    ).resolves.toMatchObject({ running: true });
+    await h.bus.call('ipc:stop', ctx, { sessionId: 'ca-rb-1' });
+    await fs.rm(rebindDir, { recursive: true, force: true });
     await fs.rm(ws, { recursive: true, force: true });
   });
 
