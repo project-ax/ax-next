@@ -1,0 +1,34 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "66a46ac5ae03",
+  "strategy": "manual-commit",
+  "branch": "phase-3-oauth-slice",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "packages/credentials-anthropic-oauth/package.json",
+    "packages/credentials-anthropic-oauth/src/__tests__/plugin.test.ts",
+    "packages/credentials-anthropic-oauth/src/constants.ts",
+    "packages/credentials-anthropic-oauth/src/index.ts",
+    "packages/credentials-anthropic-oauth/src/login.ts",
+    "packages/credentials-anthropic-oauth/src/pkce.ts",
+    "packages/credentials-anthropic-oauth/src/plugin.ts",
+    "packages/credentials-anthropic-oauth/src/refresh.ts",
+    "packages/credentials-anthropic-oauth/tsconfig.json",
+    "tsconfig.json"
+  ],
+  "sessions": [
+    {
+      "metadata": "/66/a46ac5ae03/0/metadata.json",
+      "transcript": "/66/a46ac5ae03/0/full.jsonl",
+      "content_hash": "/66/a46ac5ae03/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 33,
+    "cache_creation_tokens": 32371,
+    "cache_read_tokens": 10095712,
+    "output_tokens": 19201,
+    "api_call_count": 33
+  }
+}
