@@ -472,8 +472,10 @@ describe('@ax/mcp-client admin routes', () => {
     // value (`super-secret-value`).
     const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' });
     await stack.harness.bus.call('credentials:set', ctx, {
-      id: 'cred-foo',
-      value: 'super-secret-value',
+      ref: 'cred-foo',
+      userId: 'u',
+      kind: 'api-key',
+      payload: new TextEncoder().encode('super-secret-value'),
     });
     const cookie = await signIn(stack);
     const create = await http(stack.port, 'POST', '/admin/mcp-servers', {

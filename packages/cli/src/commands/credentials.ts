@@ -1,15 +1,19 @@
-// ax-next credentials set <id>
+// ax-next credentials set <ref>
 //
 // A stdin-only path for writing a secret. The secret value NEVER appears in
 // argv — we read it from stdin so it doesn't leak to `ps` / `/proc/<pid>/cmdline`
 // / shell history. We also don't echo it back on stdout or stderr; the only
-// confirmation is the id. Paranoid? Sure. Also correct.
+// confirmation is the ref. Paranoid? Sure. Also correct.
 import { HookBus, bootstrap, makeAgentContext, PluginError } from '@ax/core';
 import { createStorageSqlitePlugin } from '@ax/storage-sqlite';
 import { createCredentialsStoreDbPlugin } from '@ax/credentials-store-db';
 import { createCredentialsPlugin } from '@ax/credentials';
 
 const DEFAULT_SQLITE_PATH = './ax-next-chat.sqlite';
+// Single-tenant CLI default. Phase 9.5+ multi-tenant replaces this with a
+// real auth identity. The (userId, ref) storage key (Phase 3, I14) keeps
+// the door open without forcing the change today.
+const CLI_USER_ID = 'cli';
 
 export interface RunCredentialsOptions {
   /** argv slice starting at the subcommand args, e.g. ['set', 'gh-token']. */
@@ -22,8 +26,8 @@ export interface RunCredentialsOptions {
   sqlitePath?: string;
 }
 
-const USAGE = `usage: ax-next credentials set <id>
-  <id> must match [a-z0-9][a-z0-9_.-]{0,127}
+const USAGE = `usage: ax-next credentials set <ref>
+  <ref> must match [a-z0-9][a-z0-9_.-]{0,127}
   the secret is read from stdin (NOT argv) — pipe or paste then EOF
 
 env:
@@ -38,8 +42,8 @@ export async function runCredentialsCommand(opts: RunCredentialsOptions): Promis
     err(USAGE);
     return 2;
   }
-  const id = opts.argv[1];
-  if (id === undefined || id === '') {
+  const ref = opts.argv[1];
+  if (ref === undefined || ref === '') {
     err(USAGE);
     return 2;
   }
@@ -82,8 +86,13 @@ export async function runCredentialsCommand(opts: RunCredentialsOptions): Promis
     try {
       await bus.call(
         'credentials:set',
-        makeAgentContext({ sessionId: 'cli', agentId: 'cli', userId: 'cli' }),
-        { id, value },
+        makeAgentContext({ sessionId: 'cli', agentId: 'cli', userId: CLI_USER_ID }),
+        {
+          ref,
+          userId: CLI_USER_ID,
+          kind: 'api-key',
+          payload: new TextEncoder().encode(value),
+        },
       );
     } catch (e) {
       if (e instanceof PluginError) {
@@ -98,7 +107,7 @@ export async function runCredentialsCommand(opts: RunCredentialsOptions): Promis
       return 1;
     }
 
-    out(`credential '${id}' stored`);
+    out(`credential '${ref}' stored`);
     return 0;
   } finally {
     await handle.shutdown();
