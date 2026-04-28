@@ -1,0 +1,43 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "8111141df88d",
+  "session_id": "a87cf380-e837-48b1-aec6-8427e6149d88",
+  "strategy": "manual-commit",
+  "created_at": "2026-04-28T21:53:53.5072Z",
+  "branch": "phase-3-oauth-slice",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "packages/credential-proxy/src/plugin.ts",
+    "packages/credential-proxy/src/__tests__/plugin.test.ts",
+    "packages/credential-proxy/src/__tests__/acceptance.test.ts",
+    "packages/credential-proxy/src/__tests__/egress-events.test.ts",
+    "packages/credential-proxy/src/__tests__/integration-with-bridge.test.ts"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "23127939690e",
+  "checkpoint_transcript_start": 281,
+  "transcript_lines_at_start": 281,
+  "token_usage": {
+    "input_tokens": 36,
+    "cache_creation_tokens": 36385,
+    "cache_read_tokens": 8986584,
+    "output_tokens": 13522,
+    "api_call_count": 36
+  },
+  "session_metrics": {
+    "turn_count": 3
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-04-28T21:53:53.483644Z",
+    "agent_lines": 89,
+    "agent_removed": 66,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 89,
+    "total_lines_changed": 155,
+    "agent_percentage": 100,
+    "metric_version": 2
+  }
+}
