@@ -1,0 +1,43 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "6b7c722d2a93",
+  "strategy": "manual-commit",
+  "branch": "phase-1b-credentials-split",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "packages/cli/package.json",
+    "packages/cli/src/__tests__/credentials-cli.test.ts",
+    "packages/cli/src/__tests__/credentials-wiring.test.ts",
+    "packages/cli/src/__tests__/mcp-cli.test.ts",
+    "packages/cli/src/__tests__/mcp-client.e2e.test.ts",
+    "packages/cli/src/commands/credentials.ts",
+    "packages/cli/src/commands/mcp.ts",
+    "packages/cli/src/main.ts",
+    "packages/credentials/package.json",
+    "packages/credentials/src/__tests__/plugin.test.ts",
+    "packages/credentials/src/plugin.ts",
+    "packages/mcp-client/package.json",
+    "packages/mcp-client/src/__tests__/admin-routes.test.ts",
+    "packages/mcp-client/src/__tests__/plugin.test.ts",
+    "pnpm-lock.yaml",
+    "presets/k8s/package.json",
+    "presets/k8s/src/__tests__/preset.test.ts",
+    "presets/k8s/src/index.ts",
+    "presets/k8s/tsconfig.json"
+  ],
+  "sessions": [
+    {
+      "metadata": "/6b/7c722d2a93/0/metadata.json",
+      "transcript": "/6b/7c722d2a93/0/full.jsonl",
+      "content_hash": "/6b/7c722d2a93/0/content_hash.txt",
+      "prompt": "/6b/7c722d2a93/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 150,
+    "cache_creation_tokens": 458285,
+    "cache_read_tokens": 16025698,
+    "output_tokens": 65143,
+    "api_call_count": 114
+  }
+}

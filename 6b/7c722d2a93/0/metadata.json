@@ -1,0 +1,55 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "6b7c722d2a93",
+  "session_id": "8eae356e-f45a-4109-95cc-c79fe3024c92",
+  "strategy": "manual-commit",
+  "created_at": "2026-04-28T13:15:06.019779Z",
+  "branch": "phase-1b-credentials-split",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "packages/cli/package.json",
+    "packages/cli/src/__tests__/credentials-cli.test.ts",
+    "packages/cli/src/__tests__/credentials-wiring.test.ts",
+    "packages/cli/src/__tests__/mcp-cli.test.ts",
+    "packages/cli/src/__tests__/mcp-client.e2e.test.ts",
+    "packages/cli/src/commands/credentials.ts",
+    "packages/cli/src/commands/mcp.ts",
+    "packages/cli/src/main.ts",
+    "packages/credentials/package.json",
+    "packages/credentials/src/__tests__/plugin.test.ts",
+    "packages/credentials/src/plugin.ts",
+    "packages/mcp-client/package.json",
+    "packages/mcp-client/src/__tests__/admin-routes.test.ts",
+    "packages/mcp-client/src/__tests__/plugin.test.ts",
+    "pnpm-lock.yaml",
+    "presets/k8s/package.json",
+    "presets/k8s/src/__tests__/preset.test.ts",
+    "presets/k8s/src/index.ts",
+    "presets/k8s/tsconfig.json"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "2b4d41ec034a",
+  "token_usage": {
+    "input_tokens": 150,
+    "cache_creation_tokens": 458285,
+    "cache_read_tokens": 16025698,
+    "output_tokens": 65143,
+    "api_call_count": 114
+  },
+  "session_metrics": {
+    "turn_count": 2
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-04-28T13:15:05.998251Z",
+    "agent_lines": 145,
+    "agent_removed": 41,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 145,
+    "total_lines_changed": 186,
+    "agent_percentage": 100,
+    "metric_version": 2
+  }
+}
