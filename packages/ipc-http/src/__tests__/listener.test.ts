@@ -142,7 +142,12 @@ describe('createHttpListener', () => {
       path: '/llm.call',
       headers: {
         'content-type': 'application/json',
-        authorization: 'Basic dXNlcjpwYXNz',
+        // The whole point of this test is asserting the listener rejects
+        // any non-Bearer scheme with 401. The base64 payload is the
+        // canonical RFC 7617 example string ("user:pass") — not a real
+        // credential, just the correct shape for "Basic" auth so the
+        // scheme check is the only thing that fires.
+        authorization: 'Basic dXNlcjpwYXNz', // nosemgrep: javascript.lang.hardcoded.headers.hardcoded-basic-token.hardcoded-basic-token
       },
       body: '{}',
     });

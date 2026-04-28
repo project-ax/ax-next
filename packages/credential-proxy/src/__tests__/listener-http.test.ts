@@ -113,7 +113,12 @@ describe('proxy listener — HTTP forwarding', () => {
       uri: `http://127.0.0.1:${listener.port}`,
       proxyTunnel: false, // HTTP path: send absolute-URL request, not CONNECT
     });
-    const res = await fetch(`http://127.0.0.1/`, { dispatcher } as RequestInit);
+    // We're testing the proxy's private-IP block. Requesting
+    // `http://127.0.0.1/` (the metadata-style bare-loopback target) is
+    // the exact SSRF surface the listener must reject; switching to
+    // HTTPS here would change the path under test and bypass the rule
+    // that's being verified.
+    const res = await fetch(`http://127.0.0.1/`, { dispatcher } as RequestInit); // nosemgrep: typescript.react.security.react-insecure-request.react-insecure-request
     expect(res.status).toBe(403);
   });
 });
