@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bf30tsf6a</task-id>
+<summary>Monitor event: "PR #21 CI after inline gitleaks:allow fix"</summary>
+<event>CodeRabbit: SUCCESS
+gitleaks: FAILURE</event>
+If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
+</task-notification>
