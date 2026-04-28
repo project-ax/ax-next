@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "86da3544a458",
+  "strategy": "manual-commit",
+  "branch": "phase-2-runner-proxy-wiring",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "packages/audit-log/src/__tests__/plugin.test.ts",
+    "packages/audit-log/src/plugin.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/86/da3544a458/0/metadata.json",
+      "transcript": "/86/da3544a458/0/full.jsonl",
+      "content_hash": "/86/da3544a458/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 11106,
+    "cache_creation_tokens": 370527,
+    "cache_read_tokens": 33673304,
+    "output_tokens": 94370,
+    "api_call_count": 147
+  }
+}
