@@ -8,10 +8,7 @@
  *     keeps a shared reference to that Map and mutates it directly as
  *     `proxy:open-session` / `proxy:close-session` fire — no setter
  *     methods on the listener (it already iterates `.values()`).
- *  4. Register the three service hooks (rotate-session is a Task 10
- *     stub that throws — registering it now keeps the manifest honest
- *     and lets dependent plugins fail fast at boot if they wired up
- *     the wrong hook name).
+ *  4. Register the three service hooks (open / rotate / close).
  *
  * Shutdown: stop the listener (this also closes any active sockets and
  * unlinks the Unix socket file when applicable).
@@ -67,6 +64,18 @@ interface CloseSessionInput {
   sessionId: string;
 }
 
+interface RotateSessionInput {
+  sessionId: string;
+}
+
+interface RotateSessionOutput {
+  /** Fresh envName → placeholder map. Old placeholders no longer match. */
+  envMap: Record<string, string>;
+}
+
+/** envName → original credential ref (so rotate can re-resolve). */
+type SessionCredentialRefs = Record<string, { ref: string; kind: string }>;
+
 // ── Helpers ──────────────────────────────────────────────────────────
 
 function buildEndpointString(
@@ -93,6 +102,10 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
   let registry: SharedCredentialRegistry | undefined;
   let caCertPem: string | undefined;
   let endpointString: string | undefined;
+  // Per-session credential refs — populated on open, read on rotate, dropped
+  // on close. Lives on the plugin instance (not on SessionConfig) because it's
+  // private state used only for rotation; the listener never reads it.
+  const sessionCredentialRefs = new Map<string, SessionCredentialRefs>();
 
   const caDir = config.caDir ?? join(homedir(), '.ax', 'proxy-ca');
 
@@ -172,6 +185,14 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
           }
           sessions.set(input.sessionId, sessionConfig);
 
+          // Remember the credential refs so proxy:rotate-session can
+          // re-resolve. Shallow-clone to insulate against caller mutation.
+          const refsCopy: SessionCredentialRefs = {};
+          for (const [envName, { ref, kind }] of Object.entries(input.credentials)) {
+            refsCopy[envName] = { ref, kind };
+          }
+          sessionCredentialRefs.set(input.sessionId, refsCopy);
+
           return {
             proxyEndpoint: endpointString,
             caCertPem,
@@ -180,17 +201,48 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
         },
       );
 
-      // 4b. proxy:rotate-session — Task 10 implements. Stub throws so any
-      //     premature dependency fails loud rather than silently no-op-ing.
-      bus.registerService(
+      // 4b. proxy:rotate-session — re-resolve every credential ref via
+      //     credentials:get and swap a fresh CredentialPlaceholderMap into
+      //     the registry. The OLD map's placeholders die when its registry
+      //     entry is overwritten (registry.register replaces the prior map
+      //     for that sessionId), so any in-flight requests still using the
+      //     old placeholder pass through as literal `ax-cred:<old>` — the
+      //     upstream sees garbage, which is the desired fail-closed behavior.
+      bus.registerService<RotateSessionInput, RotateSessionOutput>(
         'proxy:rotate-session',
         PLUGIN_NAME,
-        async () => {
-          throw new PluginError({
-            code: 'not-implemented',
-            plugin: PLUGIN_NAME,
-            message: 'proxy:rotate-session is not yet implemented (Task 10)',
-          });
+        async (ctx: AgentContext, { sessionId }) => {
+          if (!registry) {
+            throw new PluginError({
+              code: 'not-initialized',
+              plugin: PLUGIN_NAME,
+              message: 'credential-proxy plugin handler invoked before init completed',
+            });
+          }
+          const refs = sessionCredentialRefs.get(sessionId);
+          if (!refs) {
+            throw new PluginError({
+              code: 'unknown-session',
+              plugin: PLUGIN_NAME,
+              message: `session ${sessionId} not open`,
+            });
+          }
+          // Build a fresh placeholder map. We deliberately do NOT mutate the
+          // existing one — a brand-new map guarantees that the OLD map (held
+          // only by the registry until we overwrite it) is dropped intact.
+          const map = new CredentialPlaceholderMap();
+          for (const [envName, { ref }] of Object.entries(refs)) {
+            const got = await bus.call<{ id: string }, { value: string }>(
+              'credentials:get',
+              ctx,
+              { id: ref },
+            );
+            map.register(envName, got.value);
+          }
+          // register() overwrites the existing entry for this sessionId,
+          // dropping the old map — old placeholders no longer match.
+          registry.register(sessionId, map);
+          return { envMap: map.toEnvMap() };
         },
       );
 
@@ -208,6 +260,7 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
           }
           registry.deregister(sessionId);
           sessions.delete(sessionId);
+          sessionCredentialRefs.delete(sessionId);
           return {};
         },
       );

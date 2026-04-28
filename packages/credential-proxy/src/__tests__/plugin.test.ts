@@ -27,6 +27,7 @@ import { createServer as tlsCreate, type Server as TLSServer } from 'node:tls';
 import { ProxyAgent } from 'undici';
 import {
   HookBus,
+  PluginError,
   bootstrap,
   makeAgentContext,
   type Plugin,
@@ -289,5 +290,193 @@ describe('@ax/credential-proxy plugin', () => {
     } finally {
       await upInfo.close();
     }
+  });
+
+  it('proxy:rotate-session re-resolves credentials and returns fresh envMap', async () => {
+    // Mint the CA up front so the upstream can be signed by it.
+    const { getOrCreateCA } = await import('../ca.js');
+    const ca = await getOrCreateCA(caDir);
+
+    // A multi-request capturing upstream: each request body+authorization
+    // pushed onto an array. Each request gets a fresh promise so the test
+    // can wait for the next one.
+    interface Captured {
+      authorization: string | undefined;
+      body: string;
+    }
+    const captures: Captured[] = [];
+    const waiters: Array<() => void> = [];
+    function nextRequest(): Promise<void> {
+      return new Promise<void>((resolve) => waiters.push(resolve));
+    }
+    const leaf = generateDomainCert('127.0.0.1', ca);
+    const server: TLSServer = tlsCreate({ key: leaf.key, cert: leaf.cert }, (sock) => {
+      let buf = '';
+      sock.on('data', (d) => {
+        buf += d.toString('utf8');
+        const headerEnd = buf.indexOf('\r\n\r\n');
+        if (headerEnd === -1) return;
+        const header = buf.slice(0, headerEnd);
+        const lines = header.split('\r\n');
+        let contentLength = 0;
+        let authorization: string | undefined;
+        for (const line of lines.slice(1)) {
+          const idx = line.indexOf(':');
+          if (idx === -1) continue;
+          const k = line.slice(0, idx).trim().toLowerCase();
+          const v = line.slice(idx + 1).trim();
+          if (k === 'authorization') authorization = v;
+          if (k === 'content-length') contentLength = parseInt(v, 10);
+        }
+        const bodyStart = headerEnd + 4;
+        if (buf.length - bodyStart >= contentLength) {
+          const body = buf.slice(bodyStart, bodyStart + contentLength);
+          captures.push({ authorization, body });
+          sock.write('HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK');
+          sock.end();
+          const w = waiters.shift();
+          if (w) w();
+        }
+      });
+      sock.on('error', () => { /* ignored */ });
+    });
+    const upPort = await new Promise<number>((r) =>
+      server.listen(0, '127.0.0.1', () => r((server.address() as { port: number }).port)),
+    );
+    const closeUpstream = (): Promise<void> =>
+      new Promise<void>((r) => server.close(() => r()));
+
+    try {
+      kernel = await bootstrap({
+        bus,
+        plugins: [
+          memCredentialsPlugin(),
+          createCredentialProxyPlugin({
+            listen: { kind: 'tcp', host: '127.0.0.1', port: 0 },
+            caDir,
+          }),
+        ],
+        config: {},
+      });
+
+      // Original credential value.
+      await bus.call('credentials:set', ctx(), { id: 'r1', value: 'sk-original' });
+
+      const opened = await bus.call<
+        unknown,
+        { proxyEndpoint: string; caCertPem: string; envMap: Record<string, string> }
+      >('proxy:open-session', ctx(), {
+        sessionId: 's1',
+        userId: 'u1',
+        agentId: 'a1',
+        allowlist: ['127.0.0.1'],
+        allowedIPs: ['127.0.0.1'],
+        credentials: { ANTHROPIC_API_KEY: { ref: 'r1', kind: 'api-key' } },
+      });
+
+      const portMatch = opened.proxyEndpoint.match(/^tcp:\/\/127\.0\.0\.1:(\d+)$/);
+      expect(portMatch).not.toBeNull();
+      const proxyPort = parseInt(portMatch![1]!, 10);
+      const oldPlaceholder = opened.envMap.ANTHROPIC_API_KEY!;
+      expect(oldPlaceholder).toMatch(/^ax-cred:[0-9a-f]{32}$/);
+
+      // First round-trip: substitution turns the OLD placeholder into the
+      // ORIGINAL value.
+      const dispatcher1 = new ProxyAgent({
+        uri: `http://127.0.0.1:${proxyPort}`,
+        requestTls: { ca: ca.cert },
+      });
+      const wait1 = nextRequest();
+      const res1 = await fetch(`https://127.0.0.1:${upPort}/v1/messages`, {
+        method: 'POST',
+        headers: {
+          'authorization': `Bearer ${oldPlaceholder}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ which: 'first' }),
+        dispatcher: dispatcher1,
+      } as RequestInit);
+      expect(res1.status).toBe(200);
+      await wait1;
+      expect(captures[0]?.authorization).toBe('Bearer sk-original');
+
+      // Rotate: change the backing store, then call rotate-session.
+      await bus.call('credentials:set', ctx(), { id: 'r1', value: 'sk-rotated' });
+      const rotated = await bus.call<
+        { sessionId: string },
+        { envMap: Record<string, string> }
+      >('proxy:rotate-session', ctx(), { sessionId: 's1' });
+      const newPlaceholder = rotated.envMap.ANTHROPIC_API_KEY!;
+      expect(newPlaceholder).toMatch(/^ax-cred:[0-9a-f]{32}$/);
+      expect(newPlaceholder).not.toBe(oldPlaceholder);
+
+      // Second round-trip with NEW placeholder: substitution → ROTATED value.
+      const dispatcher2 = new ProxyAgent({
+        uri: `http://127.0.0.1:${proxyPort}`,
+        requestTls: { ca: ca.cert },
+      });
+      const wait2 = nextRequest();
+      const res2 = await fetch(`https://127.0.0.1:${upPort}/v1/messages`, {
+        method: 'POST',
+        headers: {
+          'authorization': `Bearer ${newPlaceholder}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ which: 'second' }),
+        dispatcher: dispatcher2,
+      } as RequestInit);
+      expect(res2.status).toBe(200);
+      await wait2;
+      expect(captures[1]?.authorization).toBe('Bearer sk-rotated');
+
+      // Third round-trip with OLD placeholder: registry no longer has it,
+      // so substitution does NOT happen — upstream sees the literal token.
+      const dispatcher3 = new ProxyAgent({
+        uri: `http://127.0.0.1:${proxyPort}`,
+        requestTls: { ca: ca.cert },
+      });
+      const wait3 = nextRequest();
+      const res3 = await fetch(`https://127.0.0.1:${upPort}/v1/messages`, {
+        method: 'POST',
+        headers: {
+          'authorization': `Bearer ${oldPlaceholder}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ which: 'third' }),
+        dispatcher: dispatcher3,
+      } as RequestInit);
+      expect(res3.status).toBe(200);
+      await wait3;
+      expect(captures[2]?.authorization).toBe(`Bearer ${oldPlaceholder}`);
+      expect(captures[2]?.authorization).not.toContain('sk-original');
+      expect(captures[2]?.authorization).not.toContain('sk-rotated');
+    } finally {
+      await closeUpstream();
+    }
+  });
+
+  it('proxy:rotate-session throws PluginError for unknown session', async () => {
+    kernel = await bootstrap({
+      bus,
+      plugins: [
+        memCredentialsPlugin(),
+        createCredentialProxyPlugin({
+          listen: { kind: 'tcp', host: '127.0.0.1', port: 0 },
+          caDir,
+        }),
+      ],
+      config: {},
+    });
+
+    let caught: unknown;
+    try {
+      await bus.call('proxy:rotate-session', ctx(), { sessionId: 'never-opened' });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('unknown-session');
+    expect((caught as PluginError).message).toMatch(/never-opened/);
+    expect((caught as PluginError).message).toMatch(/not open/);
   });
 });
