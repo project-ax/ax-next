@@ -42,11 +42,11 @@ import { createCredentialProxyPlugin, type HttpEgressEvent } from '../plugin.js'
 
 /**
  * In-memory `credentials:get` / `credentials:set` plugin (same shape as
- * plugin.test.ts). Phase 1b reshapes the credentials hook; for now this
- * matches the current `{id} → {value}` form.
+ * plugin.test.ts). Matches the Phase 3 shape: `({ref, userId}) → string`.
  */
 function memCredentialsPlugin(): Plugin {
   const store = new Map<string, string>();
+  const k = (userId: string, ref: string): string => `${userId}:${ref}`;
   return {
     manifest: {
       name: '@test/mem-credentials',
@@ -56,20 +56,20 @@ function memCredentialsPlugin(): Plugin {
       subscribes: [],
     },
     init({ bus }) {
-      bus.registerService<{ id: string; value: string }, void>(
+      bus.registerService<{ ref: string; userId: string; value: string }, void>(
         'credentials:set',
         '@test/mem-credentials',
-        async (_ctx, { id, value }) => {
-          store.set(id, value);
+        async (_ctx, { ref, userId, value }) => {
+          store.set(k(userId, ref), value);
         },
       );
-      bus.registerService<{ id: string }, { value: string }>(
+      bus.registerService<{ ref: string; userId: string }, string>(
         'credentials:get',
         '@test/mem-credentials',
-        async (_ctx, { id }) => {
-          const value = store.get(id);
-          if (value === undefined) throw new Error(`no such credential: ${id}`);
-          return { value };
+        async (_ctx, { ref, userId }) => {
+          const value = store.get(k(userId, ref));
+          if (value === undefined) throw new Error(`no such credential: ${userId}:${ref}`);
+          return value;
         },
       );
     },
@@ -244,7 +244,7 @@ describe('event.http-egress emission', () => {
 
     try {
       kernel = await boot();
-      await bus.call('credentials:set', ctx(), { id: 'r1', value: 'sk-secret' });
+      await bus.call('credentials:set', ctx(), { ref: 'r1', userId: 'u1', value: 'sk-secret' });
 
       const opened = await bus.call<unknown, { proxyEndpoint: string }>(
         'proxy:open-session',
@@ -296,7 +296,7 @@ describe('event.http-egress emission', () => {
 
     try {
       kernel = await boot();
-      await bus.call('credentials:set', ctx(), { id: 'r1', value: 'sk-real-secret' });
+      await bus.call('credentials:set', ctx(), { ref: 'r1', userId: 'u1', value: 'sk-real-secret' });
 
       const opened = await bus.call<
         unknown,
@@ -359,7 +359,7 @@ describe('event.http-egress emission', () => {
 
     try {
       kernel = await boot();
-      await bus.call('credentials:set', ctx(), { id: 'r1', value: 'sk-secret' });
+      await bus.call('credentials:set', ctx(), { ref: 'r1', userId: 'u1', value: 'sk-secret' });
       // Open a session with an allowlist that does NOT include 127.0.0.1 —
       // requests to 127.0.0.1 hit "no allowing session" and 403.
       const opened = await bus.call<unknown, { proxyEndpoint: string }>(
@@ -401,7 +401,7 @@ describe('event.http-egress emission', () => {
   it('fires for private-IP block with blockedReason=private-ip', async () => {
     try {
       kernel = await boot();
-      await bus.call('credentials:set', ctx(), { id: 'r1', value: 'sk-secret' });
+      await bus.call('credentials:set', ctx(), { ref: 'r1', userId: 'u1', value: 'sk-secret' });
       // Allowlist contains the host but NO allowedIPs override. The DNS
       // resolution to 127.0.0.1 trips BlockedIPError → 403.
       const opened = await bus.call<unknown, { proxyEndpoint: string }>(
@@ -470,7 +470,7 @@ describe('event.http-egress emission', () => {
         config: {},
       });
 
-      await bus.call('credentials:set', ctx(), { id: 'r1', value: 'sk-secret' });
+      await bus.call('credentials:set', ctx(), { ref: 'r1', userId: 'u1', value: 'sk-secret' });
       const opened = await bus.call<unknown, { proxyEndpoint: string }>(
         'proxy:open-session',
         ctx(),

@@ -19,10 +19,10 @@
  * Shutdown: stop the listener (this also closes any active sockets and
  * unlinks the Unix socket file when applicable).
  *
- * The `credentials:get` shape used here is the CURRENT @ax/credentials
- * one — `{ id } → { value }` — NOT the design's eventual
- * `({ ref, userId }) → currentValue`. Phase 1b reshapes; the env-name →
- * placeholder mapping in this plugin doesn't change either way.
+ * The `credentials:get` shape used here is the Phase 3 reshape:
+ * `({ ref, userId }) → string`. The env-name → placeholder mapping
+ * doesn't depend on the credentials API shape — this plugin only
+ * needs to receive the resolved string per ref.
  */
 
 import { homedir } from 'node:os';
@@ -340,15 +340,15 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
             });
           }
 
-          // Resolve every credential ref via credentials:get (current shape).
+          // Resolve every credential ref via credentials:get (Phase 3 shape:
+          // `({ ref, userId }) → string`).
           const map = new CredentialPlaceholderMap();
           for (const [envName, { ref }] of Object.entries(input.credentials)) {
-            const got = await bus.call<{ id: string }, { value: string }>(
-              'credentials:get',
-              ctx,
-              { id: ref },
-            );
-            map.register(envName, got.value);
+            const value = await bus.call<
+              { ref: string; userId: string },
+              string
+            >('credentials:get', ctx, { ref, userId: input.userId });
+            map.register(envName, value);
           }
 
           // Register the placeholder map with the shared registry so the
@@ -405,7 +405,7 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
         'proxy:rotate-session',
         PLUGIN_NAME,
         async (ctx: AgentContext, { sessionId }) => {
-          if (!registry) {
+          if (!registry || !sessions) {
             throw new PluginError({
               code: 'not-initialized',
               plugin: PLUGIN_NAME,
@@ -413,24 +413,40 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
             });
           }
           const refs = sessionCredentialRefs.get(sessionId);
-          if (!refs) {
+          const sess = sessions.get(sessionId);
+          if (!refs || !sess) {
             throw new PluginError({
               code: 'unknown-session',
               plugin: PLUGIN_NAME,
               message: `session ${sessionId} not open`,
             });
           }
+          // SessionConfig.userId is optional in the listener's type, but
+          // every code path that registers a SessionConfig in this plugin
+          // sets it from the open-session input. Treat missing as a bug.
+          if (sess.userId === undefined) {
+            throw new PluginError({
+              code: 'session-missing-user',
+              plugin: PLUGIN_NAME,
+              message: `session ${sessionId} has no userId — refusing to rotate`,
+            });
+          }
           // Build a fresh placeholder map. We deliberately do NOT mutate the
           // existing one — a brand-new map guarantees that the OLD map (held
           // only by the registry until we overwrite it) is dropped intact.
+          //
+          // userId is pulled from the session config (set at open time), NOT
+          // from ctx — rotation happens for the same session whose owner is
+          // already pinned. Using ctx.userId here would let a caller from a
+          // different user-context resolve someone else's credentials.
+          const userId = sess.userId;
           const map = new CredentialPlaceholderMap();
           for (const [envName, { ref }] of Object.entries(refs)) {
-            const got = await bus.call<{ id: string }, { value: string }>(
-              'credentials:get',
-              ctx,
-              { id: ref },
-            );
-            map.register(envName, got.value);
+            const value = await bus.call<
+              { ref: string; userId: string },
+              string
+            >('credentials:get', ctx, { ref, userId });
+            map.register(envName, value);
           }
           // register() overwrites the existing entry for this sessionId,
           // dropping the old map — old placeholders no longer match.

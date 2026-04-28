@@ -37,10 +37,13 @@ import { generateDomainCert, type CAKeyPair } from '../ca.js';
 import { createCredentialProxyPlugin } from '../plugin.js';
 
 // In-memory `credentials:get` / `credentials:set` plugin. Matches the
-// current shape of @ax/credentials: `{id} → {value}` (NOT the design's
-// eventual `({ref, userId}) → currentValue`). Phase 1b reshapes.
+// Phase 3 shape of @ax/credentials: `({ref, userId}) → string`. Stub
+// stays in this file (vs. importing the real plugin) so we don't pull
+// AES-GCM crypto into the proxy plugin's tests — they only need the
+// hook surface, not the encryption.
 function memCredentialsPlugin(): Plugin {
   const store = new Map<string, string>();
+  const k = (userId: string, ref: string): string => `${userId}:${ref}`;
   return {
     manifest: {
       name: '@test/mem-credentials',
@@ -50,20 +53,20 @@ function memCredentialsPlugin(): Plugin {
       subscribes: [],
     },
     init({ bus }) {
-      bus.registerService<{ id: string; value: string }, void>(
+      bus.registerService<{ ref: string; userId: string; value: string }, void>(
         'credentials:set',
         '@test/mem-credentials',
-        async (_ctx, { id, value }) => {
-          store.set(id, value);
+        async (_ctx, { ref, userId, value }) => {
+          store.set(k(userId, ref), value);
         },
       );
-      bus.registerService<{ id: string }, { value: string }>(
+      bus.registerService<{ ref: string; userId: string }, string>(
         'credentials:get',
         '@test/mem-credentials',
-        async (_ctx, { id }) => {
-          const value = store.get(id);
-          if (value === undefined) throw new Error(`no such credential: ${id}`);
-          return { value };
+        async (_ctx, { ref, userId }) => {
+          const value = store.get(k(userId, ref));
+          if (value === undefined) throw new Error(`no such credential: ${userId}:${ref}`);
+          return value;
         },
       );
     },
@@ -163,7 +166,7 @@ describe('@ax/credential-proxy plugin', () => {
     });
 
     // Pre-populate a credential so the proxy:open-session resolution succeeds.
-    await bus.call('credentials:set', ctx(), { id: 'r1', value: 'sk-real-secret-xyz' });
+    await bus.call('credentials:set', ctx(), { ref: 'r1', userId: 'u1', value: 'sk-real-secret-xyz' });
 
     const result = await bus.call<
       {
@@ -212,7 +215,7 @@ describe('@ax/credential-proxy plugin', () => {
       });
 
       // Pre-populate two credentials so two sessions can have separate placeholders.
-      await bus.call('credentials:set', ctx(), { id: 'r1', value: 'sk-secret-one' });
+      await bus.call('credentials:set', ctx(), { ref: 'r1', userId: 'u1', value: 'sk-secret-one' });
 
       const opened = await bus.call<
         unknown,
@@ -357,7 +360,7 @@ describe('@ax/credential-proxy plugin', () => {
       });
 
       // Original credential value.
-      await bus.call('credentials:set', ctx(), { id: 'r1', value: 'sk-original' });
+      await bus.call('credentials:set', ctx(), { ref: 'r1', userId: 'u1', value: 'sk-original' });
 
       const opened = await bus.call<
         unknown,
@@ -398,7 +401,7 @@ describe('@ax/credential-proxy plugin', () => {
       expect(captures[0]?.authorization).toBe('Bearer sk-original');
 
       // Rotate: change the backing store, then call rotate-session.
-      await bus.call('credentials:set', ctx(), { id: 'r1', value: 'sk-rotated' });
+      await bus.call('credentials:set', ctx(), { ref: 'r1', userId: 'u1', value: 'sk-rotated' });
       const rotated = await bus.call<
         { sessionId: string },
         { envMap: Record<string, string> }
