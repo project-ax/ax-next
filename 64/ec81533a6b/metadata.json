@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "64ec81533a6b",
+  "strategy": "manual-commit",
+  "branch": "phase-2-runner-proxy-wiring",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "packages/sandbox-subprocess/src/__tests__/fixtures/echo-stub.mjs",
+    "packages/sandbox-subprocess/src/__tests__/open-session.test.ts",
+    "packages/sandbox-subprocess/src/open-session.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/64/ec81533a6b/0/metadata.json",
+      "transcript": "/64/ec81533a6b/0/full.jsonl",
+      "content_hash": "/64/ec81533a6b/0/content_hash.txt",
+      "prompt": "/64/ec81533a6b/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 11225,
+    "cache_creation_tokens": 1202463,
+    "cache_read_tokens": 71463433,
+    "output_tokens": 163569,
+    "api_call_count": 252
+  }
+}
