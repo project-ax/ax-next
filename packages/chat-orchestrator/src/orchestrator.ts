@@ -619,7 +619,24 @@ export function createOrchestrator(
     //       session`. We track that with `proxyOpened`; the finally below
     //       fires close exactly once when the flag is set, regardless of
     //       which exit path won.
-    const proxyLoaded = bus.hasService('proxy:open-session');
+    //
+    //       Both hooks must be registered before we enable proxy mode. A
+    //       skewed preset that wired only one would otherwise either open
+    //       sessions it can never close (open-only) or never reach the
+    //       proxy at all (close-only) — neither is recoverable at runtime.
+    //       Fail loud at agent:invoke time with a structured outcome so
+    //       audit-log surfaces the misconfiguration.
+    const proxyOpenLoaded = bus.hasService('proxy:open-session');
+    const proxyCloseLoaded = bus.hasService('proxy:close-session');
+    if (proxyOpenLoaded !== proxyCloseLoaded) {
+      const outcome: AgentOutcome = {
+        kind: 'terminated',
+        reason: 'proxy-hooks-misconfigured',
+      };
+      await bus.fire('chat:end', ctx, { outcome });
+      return outcome;
+    }
+    const proxyLoaded = proxyOpenLoaded && proxyCloseLoaded;
     let proxyConfig: ProxyConfig | undefined;
     let proxyOpened = false;
     if (proxyLoaded) {
@@ -635,17 +652,39 @@ export function createOrchestrator(
             credentials: agent.requiredCredentials ?? {},
           },
         );
+        // Mark opened BEFORE endpointToProxyConfig — that helper throws on
+        // unrecognized scheme, and we still owe the proxy a close in that
+        // case (the session was minted before the throw).
+        proxyOpened = true;
         proxyConfig = endpointToProxyConfig(
           opened.proxyEndpoint,
           opened.caCertPem,
           opened.envMap,
         );
-        proxyOpened = true;
       } catch (err) {
-        // proxy:open-session failed. We do NOT proceed without the proxy
-        // when it's loaded — that would force real credentials into the
-        // sandbox env, breaking I1. Synthesize a terminated outcome and
-        // fire chat:end so audit-log subscribers see the failure.
+        // proxy:open-session failed (or endpointToProxyConfig threw). If
+        // the open succeeded but translation failed, proxyOpened is true
+        // and we need to close before returning. Otherwise nothing to
+        // close — the open never settled. We do NOT proceed without the
+        // proxy when it's loaded — that would force real credentials
+        // into the sandbox env, breaking I1.
+        if (proxyOpened) {
+          await bus
+            .call<ProxyCloseSessionInput, Record<string, never>>(
+              'proxy:close-session',
+              ctx,
+              { sessionId: ctx.sessionId },
+            )
+            .catch((closeErr: unknown) => {
+              ctx.logger.warn('proxy_close_session_failed', {
+                sessionId: ctx.sessionId,
+                err:
+                  closeErr instanceof Error
+                    ? closeErr
+                    : new Error(String(closeErr)),
+              });
+            });
+        }
         const outcome: AgentOutcome = {
           kind: 'terminated',
           reason: 'proxy-open-failed',

@@ -930,6 +930,87 @@ describe('chat-orchestrator', () => {
     expect(proxy.state.closeCalls).toBe(1);
   });
 
+  it('closes the proxy session even when endpointToProxyConfig throws on a bad scheme', async () => {
+    // Regression: proxyOpened must flip BEFORE the scheme-translation step,
+    // so a `proxy:open-session` that returned a successful payload but the
+    // translator rejects (unknown scheme) still closes the upstream session.
+    // Otherwise the proxy leaks one session per misconfigured deploy.
+    const proxy = buildProxyHooks({
+      openOutput: {
+        // unrecognized scheme: not unix:// nor tcp:// — endpointToProxyConfig
+        // throws PluginError('invalid-proxy-endpoint').
+        proxyEndpoint: 'http://oops:54321',
+        caCertPem: 'CA',
+        envMap: {},
+      },
+    });
+    const mocks = buildMocks();
+    Object.assign(mocks.services, proxy.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinary: '/irrelevant',
+          chatTimeoutMs: 1_000,
+        }),
+      ],
+    });
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('proxy-bad-scheme'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('terminated');
+    if (outcome.kind === 'terminated') {
+      expect(outcome.reason).toBe('proxy-open-failed');
+    }
+    expect(proxy.state.openCalls).toBe(1);
+    // Critical: close MUST fire even though translation threw — otherwise
+    // the upstream proxy session leaks.
+    expect(proxy.state.closeCalls).toBe(1);
+    // Sandbox MUST NOT be opened on a proxy-open failure path.
+    expect(mocks.calls.sandboxOpen).toBe(0);
+  });
+
+  it('terminates with proxy-hooks-misconfigured when only proxy:open-session is registered', async () => {
+    // A skewed preset that wires open without close would leak sessions
+    // on every invoke. We refuse to enable proxy mode in that case and
+    // surface a clear `proxy-hooks-misconfigured` outcome so audit-log
+    // and operators see the misconfiguration immediately.
+    const mocks = buildMocks();
+    // Register ONLY proxy:open-session, NOT proxy:close-session.
+    mocks.services['proxy:open-session'] = async () => ({
+      proxyEndpoint: 'tcp://127.0.0.1:1',
+      caCertPem: '',
+      envMap: {},
+    });
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinary: '/irrelevant',
+          chatTimeoutMs: 1_000,
+        }),
+      ],
+    });
+    const endFires: AgentOutcome[] = [];
+    h.bus.subscribe('chat:end', 'obs', async (_ctx, p: unknown) => {
+      endFires.push((p as { outcome: AgentOutcome }).outcome);
+      return undefined;
+    });
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('proxy-half-wired'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('terminated');
+    if (outcome.kind === 'terminated') {
+      expect(outcome.reason).toBe('proxy-hooks-misconfigured');
+    }
+    expect(mocks.calls.sandboxOpen).toBe(0);
+    expect(endFires).toHaveLength(1);
+  });
+
   it('skips the proxy lifecycle when proxy:open-session is not registered', async () => {
     // Default mocks (no proxy hooks) — bus.hasService('proxy:open-session')
     // returns false. The orchestrator must NOT throw and the sandbox call
