@@ -10,6 +10,13 @@ describe('isPrivateIPv4', () => {
     ['172.32.0.1', false], // outside 172.16/12
     ['192.168.1.1', true],
     ['169.254.169.254', true], // AWS metadata
+    ['168.63.129.16', true],   // Azure IMDS
+    ['168.63.0.0', true],      // Azure IMDS range start
+    ['168.64.0.0', false],     // outside Azure IMDS /16
+    ['100.64.0.1', true],      // CGNAT
+    ['100.127.255.255', true], // CGNAT upper
+    ['100.128.0.0', false],    // outside CGNAT
+    ['100.63.255.255', false], // below CGNAT
     ['8.8.8.8', false],
     ['1.1.1.1', false],
   ])('%s → %s', (ip, expected) => {
@@ -23,6 +30,10 @@ describe('isPrivateIPv6', () => {
     ['fe80::1', true],
     ['fd00::1', true],
     ['2606:4700:4700::1111', false],
+    ['::ffff:127.0.0.1', true],       // IPv4-mapped IPv6 → loopback
+    ['::ffff:10.0.0.1', true],        // → 10/8
+    ['::ffff:169.254.169.254', true], // → AWS metadata
+    ['::ffff:8.8.8.8', false],        // → public IPv4
   ])('%s → %s', (ip, expected) => {
     expect(isPrivateIPv6(ip)).toBe(expected);
   });
