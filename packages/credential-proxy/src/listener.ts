@@ -3,8 +3,8 @@
  *
  * Ported from v1 ~/dev/ai/ax/src/host/web-proxy.ts (lines 158-349 +
  * server-setup at 622-655). The HTTP forwarding path lives here; the
- * CONNECT handler (raw tunnel) lands in Task 7 and the MITM TLS
- * inspection path in Task 8.
+ * CONNECT handler is the raw-tunnel (bypass) path — Task 8 will add
+ * the MITM TLS inspection path alongside it.
  *
  * Cuts from v1:
  * - `urlRewrites` block dropped — out of scope for v2.
@@ -46,6 +46,15 @@ export interface SessionConfig {
   allowlist: Set<string>;
   /** IPs exempt from the private-range block. Test-only escape hatch. */
   allowedIPs?: Set<string>;
+  /**
+   * Hostnames whose CONNECT requests should bypass MITM and pass through
+   * as a raw TLS tunnel. For Task 7 there is no MITM, so this field is
+   * unused at runtime — every CONNECT is already a raw tunnel. Task 8
+   * makes MITM the default for HTTPS, and `bypassMITM` becomes the per-
+   * session opt-out for cert-pinning hosts (e.g. some CLIs that ship a
+   * pinned trust store).
+   */
+  bypassMITM?: Set<string>;
 }
 
 /** Audit entry shape — placeholder until Task 11 finalizes the hook payload. */
@@ -256,11 +265,152 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
     }
   }
 
+  // ── HTTPS CONNECT — raw TCP tunnel (bypass mode) ──
+  //
+  // Ported from v1 ~/dev/ai/ax/src/host/web-proxy.ts:353-493 (the non-MITM
+  // path at lines 428-471 specifically). Cuts vs. v1:
+  //  - urlRewrites block dropped (out of scope for v2).
+  //  - onApprove dropped — per-session allowlist is the only egress gate.
+  //  - sessionId field on audit entries dropped — Task 11 finalizes the hook
+  //    payload shape.
+  //
+  // For Task 7, ALL CONNECTs flow through this raw-tunnel path. Task 8 will
+  // add a `shouldMitm` branch above the `net.connect` call: if the hostname
+  // is NOT in any session's `bypassMITM`, traffic is intercepted with a
+  // dynamically-minted domain cert and decrypted in-process for credential
+  // injection / canary scanning. Hosts in `bypassMITM` continue to fall
+  // through to the raw tunnel below.
+
+  async function handleCONNECT(
+    req: IncomingMessage,
+    clientSocket: net.Socket,
+    head: Buffer,
+  ): Promise<void> {
+    const startTime = Date.now();
+    const target = req.url ?? '';
+    let requestBytes = head.length;
+    let responseBytes = 0;
+
+    // Parse host:port from CONNECT target ("host:port")
+    const [hostname, portStr] = target.split(':');
+    const port = parseInt(portStr ?? '443', 10);
+
+    if (!hostname || Number.isNaN(port)) {
+      clientSocket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
+      clientSocket.end();
+      audit({
+        action: 'proxy_request',
+        method: 'CONNECT',
+        url: target,
+        status: 400,
+        requestBytes: 0,
+        responseBytes: 0,
+        durationMs: Date.now() - startTime,
+        blocked: 'invalid_target',
+      });
+      return;
+    }
+
+    try {
+      // Allowlist gate (I2): hostname must be in some session's allowlist.
+      const allowingSession = findAllowingSession(hostname, sessions);
+      if (!allowingSession) {
+        clientSocket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+        clientSocket.end();
+        audit({
+          action: 'proxy_request',
+          method: 'CONNECT',
+          url: target,
+          status: 403,
+          requestBytes: 0,
+          responseBytes: 0,
+          durationMs: Date.now() - startTime,
+          blocked: `domain_denied: ${hostname}`,
+        });
+        return;
+      }
+
+      // SSRF block (I3): resolve and verify against private CIDRs.
+      // Use the returned IP for the upstream connection — DO NOT re-resolve
+      // (DNS rebinding defense). See SECURITY note on resolveAndCheck.
+      const resolvedIP = await resolveAndCheck(hostname, allowingSession.allowedIPs, resolver);
+
+      // Open the raw TCP tunnel against the resolved IP.
+      const targetSocket = net.connect(port, resolvedIP, () => {
+        clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+        activeSockets.add(targetSocket);
+
+        // Pipe bidirectionally — neither side's bytes are inspected here.
+        targetSocket.pipe(clientSocket);
+        clientSocket.pipe(targetSocket);
+
+        // Flush any bytes the client sent before the upstream opened.
+        if (head.length > 0) {
+          targetSocket.write(head);
+        }
+
+        // Byte counters for the audit entry.
+        targetSocket.on('data', (chunk: Buffer) => {
+          responseBytes += chunk.length;
+        });
+        clientSocket.on('data', (chunk: Buffer) => {
+          requestBytes += chunk.length;
+        });
+      });
+
+      // Cleanup once — first close/error wins, downstream events become no-ops.
+      let cleaned = false;
+      const cleanup = () => {
+        if (cleaned) return;
+        cleaned = true;
+        activeSockets.delete(targetSocket);
+        targetSocket.destroy();
+        clientSocket.destroy();
+
+        audit({
+          action: 'proxy_request',
+          method: 'CONNECT',
+          url: target,
+          status: 200,
+          requestBytes,
+          responseBytes,
+          durationMs: Date.now() - startTime,
+        });
+      };
+
+      targetSocket.on('close', cleanup);
+      targetSocket.on('error', cleanup);
+      clientSocket.on('close', cleanup);
+      clientSocket.on('error', cleanup);
+    } catch (err) {
+      // BlockedIPError → 403 (policy block); anything else → 502 (network/DNS).
+      // Reviewer M3 from Task 5: typed instanceof, not string match.
+      const isBlocked = err instanceof BlockedIPError;
+      const status = isBlocked ? 403 : 502;
+      const blocked = isBlocked ? (err as BlockedIPError).message : undefined;
+
+      clientSocket.write(
+        `HTTP/1.1 ${status} ${isBlocked ? 'Forbidden' : 'Bad Gateway'}\r\n\r\n`,
+      );
+      clientSocket.end();
+
+      audit({
+        action: 'proxy_request',
+        method: 'CONNECT',
+        url: target,
+        status,
+        requestBytes: 0,
+        responseBytes: 0,
+        durationMs: Date.now() - startTime,
+        blocked,
+      });
+    }
+  }
+
   // ── Server setup ──
-  // CONNECT handler (HTTPS tunnel) is intentionally absent here — Task 7
-  // will attach `server.on('connect', handleCONNECT)` alongside the createServer.
 
   const server: Server = createServer(handleHTTPRequest);
+  server.on('connect', handleCONNECT);
 
   server.on('connection', (socket) => {
     activeSockets.add(socket);
