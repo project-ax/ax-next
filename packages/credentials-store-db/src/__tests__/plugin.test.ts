@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { HookBus, bootstrap, makeAgentContext, PluginError, type Plugin } from '@ax/core';
+import { HookBus, bootstrap, makeAgentContext, type Plugin } from '@ax/core';
 import { createStorageSqlitePlugin } from '@ax/storage-sqlite';
 import { createCredentialsStoreDbPlugin } from '../plugin.js';
 
@@ -35,14 +35,19 @@ function ctx() {
   return makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' });
 }
 
+async function bootstrapWithMemStore(): Promise<HookBus> {
+  const bus = new HookBus();
+  await bootstrap({
+    bus,
+    plugins: [memStoragePlugin(), createCredentialsStoreDbPlugin()],
+    config: {},
+  });
+  return bus;
+}
+
 describe('@ax/credentials-store-db plugin', () => {
   it('registers credentials:store-blob:put and credentials:store-blob:get', async () => {
-    const bus = new HookBus();
-    await bootstrap({
-      bus,
-      plugins: [memStoragePlugin(), createCredentialsStoreDbPlugin()],
-      config: {},
-    });
+    const bus = await bootstrapWithMemStore();
     expect(bus.hasService('credentials:store-blob:put')).toBe(true);
     expect(bus.hasService('credentials:store-blob:get')).toBe(true);
   });
@@ -57,12 +62,7 @@ describe('@ax/credentials-store-db plugin', () => {
   });
 
   it('put then get round-trips a blob', async () => {
-    const bus = new HookBus();
-    await bootstrap({
-      bus,
-      plugins: [memStoragePlugin(), createCredentialsStoreDbPlugin()],
-      config: {},
-    });
+    const bus = await bootstrapWithMemStore();
     const blob = new Uint8Array([1, 2, 3, 4, 5]);
     await bus.call('credentials:store-blob:put', ctx(), { id: 'r1', blob });
     const got = await bus.call<{ id: string }, { blob: Uint8Array | undefined }>(
@@ -75,12 +75,7 @@ describe('@ax/credentials-store-db plugin', () => {
   });
 
   it('get returns { blob: undefined } for missing id', async () => {
-    const bus = new HookBus();
-    await bootstrap({
-      bus,
-      plugins: [memStoragePlugin(), createCredentialsStoreDbPlugin()],
-      config: {},
-    });
+    const bus = await bootstrapWithMemStore();
     const got = await bus.call<{ id: string }, { blob: Uint8Array | undefined }>(
       'credentials:store-blob:get',
       ctx(),
@@ -90,12 +85,7 @@ describe('@ax/credentials-store-db plugin', () => {
   });
 
   it('put overwrites existing value at the same id', async () => {
-    const bus = new HookBus();
-    await bootstrap({
-      bus,
-      plugins: [memStoragePlugin(), createCredentialsStoreDbPlugin()],
-      config: {},
-    });
+    const bus = await bootstrapWithMemStore();
     await bus.call('credentials:store-blob:put', ctx(), {
       id: 'r1',
       blob: new Uint8Array([1, 1]),
@@ -116,12 +106,7 @@ describe('@ax/credentials-store-db plugin', () => {
     // Verify the seam through the storage:* layer directly. A vault-backed
     // sibling impl wouldn't go through storage at all, but the default
     // store-db's contract is exactly that it owns the `credential:` prefix.
-    const bus = new HookBus();
-    await bootstrap({
-      bus,
-      plugins: [memStoragePlugin(), createCredentialsStoreDbPlugin()],
-      config: {},
-    });
+    const bus = await bootstrapWithMemStore();
     const blob = new Uint8Array([42, 42, 42]);
     await bus.call('credentials:store-blob:put', ctx(), { id: 'gh-token', blob });
     const directly = await bus.call<{ key: string }, { value: Uint8Array | undefined }>(
@@ -146,27 +131,17 @@ describe('@ax/credentials-store-db plugin', () => {
   });
 
   it('rejects credentials:store-blob:put with an invalid id', async () => {
-    const bus = new HookBus();
-    await bootstrap({
-      bus,
-      plugins: [memStoragePlugin(), createCredentialsStoreDbPlugin()],
-      config: {},
-    });
+    const bus = await bootstrapWithMemStore();
     await expect(
       bus.call('credentials:store-blob:put', ctx(), {
         id: 'has space',
         blob: new Uint8Array([1]),
       }),
-    ).rejects.toBeInstanceOf(PluginError);
+    ).rejects.toMatchObject({ code: 'invalid-payload' });
   });
 
   it('rejects credentials:store-blob:put with a non-Uint8Array blob', async () => {
-    const bus = new HookBus();
-    await bootstrap({
-      bus,
-      plugins: [memStoragePlugin(), createCredentialsStoreDbPlugin()],
-      config: {},
-    });
+    const bus = await bootstrapWithMemStore();
     await expect(
       bus.call('credentials:store-blob:put', ctx(), {
         id: 'r1',
@@ -176,15 +151,10 @@ describe('@ax/credentials-store-db plugin', () => {
   });
 
   it('rejects credentials:store-blob:get with an invalid id', async () => {
-    const bus = new HookBus();
-    await bootstrap({
-      bus,
-      plugins: [memStoragePlugin(), createCredentialsStoreDbPlugin()],
-      config: {},
-    });
+    const bus = await bootstrapWithMemStore();
     await expect(
       bus.call('credentials:store-blob:get', ctx(), { id: 'has space' }),
-    ).rejects.toBeInstanceOf(PluginError);
+    ).rejects.toMatchObject({ code: 'invalid-payload' });
   });
 
   it('round-trips through @ax/storage-sqlite end-to-end', async () => {
