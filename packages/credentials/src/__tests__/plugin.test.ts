@@ -364,8 +364,20 @@ describe('@ax/credentials plugin', () => {
   });
 
   it('different (userId, ref) pairs run resolves in parallel', async () => {
+    // Barrier-based: the resolver enters, signals it's been hit, then awaits
+    // a release latch. The test holds the latch until BOTH resolves have
+    // entered — proving them genuinely concurrent without leaning on wall
+    // clocks (which would be flaky under CI load).
     const bus = new HookBus();
-    const startTimes: number[] = [];
+    let entered = 0;
+    let resolveBothEntered!: () => void;
+    const bothEntered = new Promise<void>((r) => {
+      resolveBothEntered = r;
+    });
+    let release!: () => void;
+    const releasePromise = new Promise<void>((r) => {
+      release = r;
+    });
     const slowResolverPlugin = {
       manifest: {
         name: 'slow-resolver',
@@ -376,8 +388,9 @@ describe('@ax/credentials plugin', () => {
       },
       async init({ bus }: { bus: HookBus }) {
         bus.registerService('credentials:resolve:slow-oauth', 'slow-resolver', async () => {
-          startTimes.push(Date.now());
-          await new Promise((r) => setTimeout(r, 30));
+          entered++;
+          if (entered === 2) resolveBothEntered();
+          await releasePromise;
           return { value: 'ok' };
         });
       },
@@ -404,14 +417,18 @@ describe('@ax/credentials plugin', () => {
       kind: 'slow-oauth',
       payload: bytes('blob2'),
     });
-    await Promise.all([
+    const both = Promise.all([
       bus.call('credentials:get', ctx(), { ref: 'r1', userId: 'alice' }),
       bus.call('credentials:get', ctx(), { ref: 'r1', userId: 'bob' }),
     ]);
-    expect(startTimes.length).toBe(2);
-    // Parallel: both started within a few ms of each other (<25ms gap proves
-    // they overlapped, since each resolve sleeps 30ms).
-    expect(Math.abs(startTimes[1]! - startTimes[0]!)).toBeLessThan(25);
+    // Wait until both resolves are inside the handler. If the mutex (I7)
+    // were keyed too coarsely, only one would enter and this would hang —
+    // vitest's per-test timeout surfaces the bug as a failure rather than
+    // a green test.
+    await bothEntered;
+    expect(entered).toBe(2);
+    release();
+    await both;
   });
 
   it('credentials:get for unknown kind without resolver throws unsupported-credential-kind (fail closed)', async () => {
@@ -478,10 +495,17 @@ describe('@ax/credentials plugin', () => {
     const tampered = new Uint8Array(memGet.value!);
     tampered[tampered.length - 1] ^= 0xff;
     await bus.call('storage:set', ctx(), { key: 'credential:u:x', value: tampered });
+    // Tampered ciphertext MUST reject — assert that first. A future regression
+    // that silently returns a value would otherwise slip past the redaction
+    // check (no err === no String(err) === no assertion).
+    let caught: unknown;
     try {
       await bus.call('credentials:get', ctx(), { ref: 'x', userId: 'u' });
+      throw new Error('expected credentials:get to reject for tampered ciphertext');
     } catch (err) {
-      expect(String(err)).not.toContain('UNIQUE-SECRET-9f3a');
+      caught = err;
     }
+    expect(caught).toBeDefined();
+    expect(String(caught)).not.toContain('UNIQUE-SECRET-9f3a');
   });
 });
