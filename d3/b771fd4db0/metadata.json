@@ -1,0 +1,32 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "d3b771fd4db0",
+  "strategy": "manual-commit",
+  "branch": "phase-1b-credentials-split",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "packages/credentials-store-db/SECURITY.md",
+    "packages/credentials-store-db/package.json",
+    "packages/credentials-store-db/src/__tests__/plugin.test.ts",
+    "packages/credentials-store-db/src/index.ts",
+    "packages/credentials-store-db/src/plugin.ts",
+    "packages/credentials-store-db/tsconfig.json",
+    "packages/credentials-store-db/vitest.config.ts",
+    "tsconfig.json"
+  ],
+  "sessions": [
+    {
+      "metadata": "/d3/b771fd4db0/0/metadata.json",
+      "transcript": "/d3/b771fd4db0/0/full.jsonl",
+      "content_hash": "/d3/b771fd4db0/0/content_hash.txt",
+      "prompt": "/d3/b771fd4db0/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 148,
+    "cache_creation_tokens": 456870,
+    "cache_read_tokens": 15583936,
+    "output_tokens": 64028,
+    "api_call_count": 112
+  }
+}

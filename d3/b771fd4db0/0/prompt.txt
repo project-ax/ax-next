@@ -1,0 +1,5 @@
+implement docs/plans/2026-04-27-agent-centric-simplification-design.md Phase 1b
+
+---
+
+A
