@@ -1,0 +1,23 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "7a4f5f6d12ef",
+  "strategy": "manual-commit",
+  "branch": "phase-1b-credentials-split",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/7a/4f5f6d12ef/0/metadata.json",
+      "transcript": "/7a/4f5f6d12ef/0/full.jsonl",
+      "content_hash": "/7a/4f5f6d12ef/0/content_hash.txt",
+      "prompt": "/7a/4f5f6d12ef/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 227,
+    "cache_creation_tokens": 556643,
+    "cache_read_tokens": 35758589,
+    "output_tokens": 103951,
+    "api_call_count": 186
+  }
+}
