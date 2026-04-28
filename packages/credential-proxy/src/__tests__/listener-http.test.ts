@@ -3,6 +3,37 @@ import { createServer as httpCreate, type Server } from 'node:http';
 import { ProxyAgent } from 'undici';
 import { startProxyListener, type ProxyListener } from '../listener.js';
 import { SharedCredentialRegistry } from '../registry.js';
+import type { CAKeyPair } from '../ca.js';
+import forgeModule from 'node-forge';
+
+const forge = forgeModule as typeof forgeModule;
+
+/**
+ * Mint a throwaway CA. The HTTP path doesn't terminate TLS, so this CA is
+ * never actually exercised — it's just here because `startProxyListener`
+ * requires one (MITM is the default for HTTPS).
+ */
+function mintCA(): CAKeyPair {
+  const keys = forge.pki.rsa.generateKeyPair(2048);
+  const cert = forge.pki.createCertificate();
+  cert.publicKey = keys.publicKey;
+  cert.serialNumber = '01';
+  cert.validity.notBefore = new Date();
+  cert.validity.notAfter = new Date();
+  cert.validity.notAfter.setFullYear(cert.validity.notBefore.getFullYear() + 1);
+  const attrs = [{ name: 'commonName', value: 'http-test-ca' }];
+  cert.setSubject(attrs);
+  cert.setIssuer(attrs);
+  cert.setExtensions([
+    { name: 'basicConstraints', cA: true },
+    { name: 'keyUsage', keyCertSign: true, cRLSign: true },
+  ]);
+  cert.sign(keys.privateKey, forge.md.sha256.create());
+  return {
+    key: forge.pki.privateKeyToPem(keys.privateKey),
+    cert: forge.pki.certificateToPem(cert),
+  };
+}
 
 let upstream: Server | undefined;
 let listener: ProxyListener | undefined;
@@ -26,6 +57,7 @@ describe('proxy listener — HTTP forwarding', () => {
     listener = await startProxyListener({
       listen: { kind: 'tcp', host: '127.0.0.1', port: 0 },
       registry,
+      ca: mintCA(),
       sessions: new Map([
         ['s1', { allowlist: new Set(['127.0.0.1']), allowedIPs: new Set(['127.0.0.1']) }],
       ]),
@@ -50,6 +82,7 @@ describe('proxy listener — HTTP forwarding', () => {
     listener = await startProxyListener({
       listen: { kind: 'tcp', host: '127.0.0.1', port: 0 },
       registry,
+      ca: mintCA(),
       sessions: new Map([
         [
           's1',
@@ -71,6 +104,7 @@ describe('proxy listener — HTTP forwarding', () => {
     listener = await startProxyListener({
       listen: { kind: 'tcp', host: '127.0.0.1', port: 0 },
       registry,
+      ca: mintCA(),
       sessions: new Map([
         ['s1', { allowlist: new Set(['127.0.0.1']) /* no allowedIPs */ }],
       ]),

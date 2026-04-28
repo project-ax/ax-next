@@ -101,6 +101,7 @@ describe('proxy listener — HTTPS CONNECT (bypass / raw tunnel)', () => {
     listener = await startProxyListener({
       listen: { kind: 'tcp', host: '127.0.0.1', port: 0 },
       registry,
+      ca: { key: 'unused-key', cert: 'unused-cert' }, // bypass path doesn't touch CA
       sessions: new Map([
         [
           's1',
@@ -149,6 +150,7 @@ describe('proxy listener — HTTPS CONNECT (bypass / raw tunnel)', () => {
     listener = await startProxyListener({
       listen: { kind: 'tcp', host: '127.0.0.1', port: 0 },
       registry,
+      ca: { key: 'unused-key', cert: 'unused-cert' }, // bypass path doesn't touch CA
       sessions: new Map([
         [
           's1',
@@ -170,6 +172,7 @@ describe('proxy listener — HTTPS CONNECT (bypass / raw tunnel)', () => {
     listener = await startProxyListener({
       listen: { kind: 'tcp', host: '127.0.0.1', port: 0 },
       registry,
+      ca: { key: 'unused-key', cert: 'unused-cert' }, // bypass path doesn't touch CA
       sessions: new Map([
         // 127.0.0.1 is in allowlist (passes domain gate) but no allowedIPs
         // override, so resolveAndCheck throws BlockedIPError → 403.
