@@ -2,11 +2,11 @@ import { describe, it, expect } from 'vitest';
 import {
   HookBus,
   PluginError,
-  makeChatContext,
+  makeAgentContext,
   createLogger,
   reject,
   type ChatMessage,
-  type ChatOutcome,
+  type AgentOutcome,
   type ServiceHandler,
 } from '@ax/core';
 import { createTestHarness } from '@ax/test-harness';
@@ -31,7 +31,7 @@ const TEST_AGENT = {
 // ---------------------------------------------------------------------------
 // Orchestrator tests
 //
-// We exercise chat:run end-to-end through the bus, but stub the three peer
+// We exercise agent:invoke end-to-end through the bus, but stub the three peer
 // plugins (session / sandbox / ipc) as service-hook mocks so no real runner
 // subprocess is spawned. The mock `sandbox:open-session` simulates what a
 // real runner would do: it fires `chat:end` on the bus (standing in for the
@@ -44,7 +44,7 @@ const TEST_AGENT = {
 // ---------------------------------------------------------------------------
 
 function silentCtx(sessionId = 'test-session') {
-  return makeChatContext({
+  return makeAgentContext({
     sessionId,
     agentId: 'test-agent',
     userId: 'test-user',
@@ -169,14 +169,14 @@ describe('chat-orchestrator', () => {
     h.bus.subscribe('chat:start', 'blocker', async () =>
       reject({ reason: 'blocked' }),
     );
-    const endFires: ChatOutcome[] = [];
+    const endFires: AgentOutcome[] = [];
     h.bus.subscribe('chat:end', 'obs', async (_ctx, p: unknown) => {
-      endFires.push((p as { outcome: ChatOutcome }).outcome);
+      endFires.push((p as { outcome: AgentOutcome }).outcome);
       return undefined;
     });
 
-    const outcome = await h.bus.call<unknown, ChatOutcome>(
-      'chat:run',
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
       silentCtx(),
       { message: { role: 'user', content: 'hi' } },
     );
@@ -191,7 +191,7 @@ describe('chat-orchestrator', () => {
   });
 
   it('happy path: fake sandbox fires chat:end with a complete outcome; orchestrator returns it', async () => {
-    const expectedOutcome: ChatOutcome = {
+    const expectedOutcome: AgentOutcome = {
       kind: 'complete',
       messages: [
         { role: 'user', content: 'hi' },
@@ -212,7 +212,7 @@ describe('chat-orchestrator', () => {
         setImmediate(() => {
           void busRef!.fire(
             'chat:end',
-            makeChatContext({
+            makeAgentContext({
               sessionId,
               agentId: 'agent',
               userId: 'user',
@@ -242,14 +242,14 @@ describe('chat-orchestrator', () => {
     });
     busRef = h.bus;
 
-    const endFires: ChatOutcome[] = [];
+    const endFires: AgentOutcome[] = [];
     h.bus.subscribe('chat:end', 'obs', async (_ctx, p: unknown) => {
-      endFires.push((p as { outcome: ChatOutcome }).outcome);
+      endFires.push((p as { outcome: AgentOutcome }).outcome);
       return undefined;
     });
 
-    const outcome = await h.bus.call<unknown, ChatOutcome>(
-      'chat:run',
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
       silentCtx('happy-session'),
       { message: { role: 'user', content: 'hi' } },
     );
@@ -279,14 +279,14 @@ describe('chat-orchestrator', () => {
       ],
     });
 
-    const endFires: ChatOutcome[] = [];
+    const endFires: AgentOutcome[] = [];
     h.bus.subscribe('chat:end', 'obs', async (_ctx, p: unknown) => {
-      endFires.push((p as { outcome: ChatOutcome }).outcome);
+      endFires.push((p as { outcome: AgentOutcome }).outcome);
       return undefined;
     });
 
-    const outcome = await h.bus.call<unknown, ChatOutcome>(
-      'chat:run',
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
       silentCtx('fail-open'),
       { message: { role: 'user', content: 'hi' } },
     );
@@ -319,14 +319,14 @@ describe('chat-orchestrator', () => {
       ],
     });
 
-    const endFires: ChatOutcome[] = [];
+    const endFires: AgentOutcome[] = [];
     h.bus.subscribe('chat:end', 'obs', async (_ctx, p: unknown) => {
-      endFires.push((p as { outcome: ChatOutcome }).outcome);
+      endFires.push((p as { outcome: AgentOutcome }).outcome);
       return undefined;
     });
 
-    const outcome = await h.bus.call<unknown, ChatOutcome>(
-      'chat:run',
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
       silentCtx('fail-queue'),
       { message: { role: 'user', content: 'hi' } },
     );
@@ -362,14 +362,14 @@ describe('chat-orchestrator', () => {
       ],
     });
 
-    const endFires: ChatOutcome[] = [];
+    const endFires: AgentOutcome[] = [];
     h.bus.subscribe('chat:end', 'obs', async (_ctx, p: unknown) => {
-      endFires.push((p as { outcome: ChatOutcome }).outcome);
+      endFires.push((p as { outcome: AgentOutcome }).outcome);
       return undefined;
     });
 
-    const outcome = await h.bus.call<unknown, ChatOutcome>(
-      'chat:run',
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
       silentCtx('short-lived'),
       { message: { role: 'user', content: 'hi' } },
     );
@@ -391,7 +391,7 @@ describe('chat-orchestrator', () => {
       setup: (services: Record<string, ServiceHandler>) => ServiceHandler | undefined;
       input: ChatMessage;
       startBlock?: boolean;
-      expectKind: ChatOutcome['kind'];
+      expectKind: AgentOutcome['kind'];
     }> = [
       { name: 'start-reject', setup: () => undefined, input: { role: 'user', content: 'x' }, startBlock: true, expectKind: 'terminated' },
       {
@@ -455,8 +455,8 @@ describe('chat-orchestrator', () => {
         endCount += 1;
         return undefined;
       });
-      const outcome = await h.bus.call<unknown, ChatOutcome>(
-        'chat:run',
+      const outcome = await h.bus.call<unknown, AgentOutcome>(
+        'agent:invoke',
         silentCtx(`scenario-${s.name}`),
         { message: s.input },
       );
@@ -489,13 +489,13 @@ describe('chat-orchestrator', () => {
         }),
       ],
     });
-    const endFires: ChatOutcome[] = [];
+    const endFires: AgentOutcome[] = [];
     h.bus.subscribe('chat:end', 'obs', async (_ctx, p: unknown) => {
-      endFires.push((p as { outcome: ChatOutcome }).outcome);
+      endFires.push((p as { outcome: AgentOutcome }).outcome);
       return undefined;
     });
-    const outcome = await h.bus.call<unknown, ChatOutcome>(
-      'chat:run',
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
       silentCtx('forbidden-session'),
       { message: { role: 'user', content: 'hi' } },
     );
@@ -529,8 +529,8 @@ describe('chat-orchestrator', () => {
         }),
       ],
     });
-    const outcome = await h.bus.call<unknown, ChatOutcome>(
-      'chat:run',
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
       silentCtx('nf-session'),
       { message: { role: 'user', content: 'hi' } },
     );
@@ -564,7 +564,7 @@ describe('chat-orchestrator', () => {
       setImmediate(() => {
         void busRef!.fire(
           'chat:end',
-          makeChatContext({
+          makeAgentContext({
             sessionId,
             agentId: 'a-resolved',
             userId: 'test-user',
@@ -594,8 +594,8 @@ describe('chat-orchestrator', () => {
     });
     busRef = h.bus;
 
-    const outcome = await h.bus.call<unknown, ChatOutcome>(
-      'chat:run',
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
       silentCtx('owned-session'),
       { message: { role: 'user', content: 'hi' } },
     );
@@ -644,8 +644,8 @@ describe('chat-orchestrator', () => {
         }),
       ],
     });
-    const outcome = await h.bus.call<unknown, ChatOutcome>(
-      'chat:run',
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
       silentCtx('boom-session'),
       { message: { role: 'user', content: 'hi' } },
     );
@@ -655,7 +655,7 @@ describe('chat-orchestrator', () => {
     }
   });
 
-  it('multiple concurrent chat:runs with different sessionIds do not cross-contaminate', async () => {
+  it('multiple concurrent agent:invokes with different sessionIds do not cross-contaminate', async () => {
     let busRef: HookBus | null = null;
 
     const mocks = buildMocks({
@@ -668,7 +668,7 @@ describe('chat-orchestrator', () => {
         setImmediate(() => {
           void busRef!.fire(
             'chat:end',
-            makeChatContext({
+            makeAgentContext({
               sessionId,
               agentId: 'a',
               userId: 'u',
@@ -704,10 +704,10 @@ describe('chat-orchestrator', () => {
     busRef = h.bus;
 
     const [a, b] = await Promise.all([
-      h.bus.call<unknown, ChatOutcome>('chat:run', silentCtx('session-A'), {
+      h.bus.call<unknown, AgentOutcome>('agent:invoke', silentCtx('session-A'), {
         message: { role: 'user', content: 'hi-A' },
       }),
-      h.bus.call<unknown, ChatOutcome>('chat:run', silentCtx('session-B'), {
+      h.bus.call<unknown, AgentOutcome>('agent:invoke', silentCtx('session-B'), {
         message: { role: 'user', content: 'hi-B' },
       }),
     ]);

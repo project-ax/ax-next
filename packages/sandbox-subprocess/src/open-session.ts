@@ -6,7 +6,7 @@ import type { Readable } from 'node:stream';
 import { z } from 'zod';
 import {
   PluginError,
-  type ChatContext,
+  type AgentContext,
   type HookBus,
 } from '@ax/core';
 import { allowlistFromParent } from './env.js';
@@ -130,7 +130,7 @@ interface LlmProxyStopInput {
 }
 
 export async function openSessionImpl(
-  ctx: ChatContext,
+  ctx: AgentContext,
   rawInput: unknown,
   bus: HookBus,
 ): Promise<OpenSessionResult> {

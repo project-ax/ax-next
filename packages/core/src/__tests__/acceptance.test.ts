@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   HookBus,
   bootstrap,
-  makeChatContext,
+  makeAgentContext,
   createLogger,
   PluginError,
   type Plugin,
@@ -11,10 +11,10 @@ import {
 // ---------------------------------------------------------------------------
 // Week 1-2 acceptance (revised in Week 6.5a, Task 12)
 //
-// Original Week 1-2 acceptance asserted that `chat:run` terminated cleanly
+// Original Week 1-2 acceptance asserted that `agent:invoke` terminated cleanly
 // with `llm:call:no-service` when no llm plugin was loaded — that behaviour
 // was owned by the deleted core `chat-loop.ts`. In the 6.5a topology the
-// host-side chat:run lives in `@ax/chat-orchestrator`, so asserting it here
+// host-side agent:invoke lives in `@ax/chat-orchestrator`, so asserting it here
 // would be a cross-plugin import from the kernel (I2).
 //
 // The kernel-level invariant worth keeping is: bootstrap refuses to start a
@@ -44,7 +44,7 @@ describe('Week 1-2 acceptance (revised 6.5a)', () => {
   it('bootstrap accepts a minimal kernel set (bus + ctx factory only)', async () => {
     const bus = new HookBus();
     await bootstrap({ bus, plugins: [], config: {} });
-    const ctx = makeChatContext({
+    const ctx = makeAgentContext({
       reqId: 'acceptance',
       sessionId: 's',
       agentId: 'a',

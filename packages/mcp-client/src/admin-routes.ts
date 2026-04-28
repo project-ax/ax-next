@@ -1,8 +1,8 @@
 import {
   isRejection,
-  makeChatContext,
+  makeAgentContext,
   PluginError,
-  type ChatContext,
+  type AgentContext,
   type HookBus,
 } from '@ax/core';
 import {
@@ -80,7 +80,7 @@ export interface RouteResponse {
 
 async function requireUser(
   bus: HookBus,
-  ctx: ChatContext,
+  ctx: AgentContext,
   req: RouteRequest,
   res: RouteResponse,
 ): Promise<{ id: string; isAdmin: boolean } | null> {
@@ -187,7 +187,7 @@ export type TestOutcome =
 
 export interface TestDeps {
   bus: BusLike;
-  ctx: ChatContext;
+  ctx: AgentContext;
   /** Test seam — production callers leave this undefined. */
   transportFactory?: (opts: CreateTransportOptions) => Promise<McpClientTransport>;
   /** Test seam — production callers leave this at default. */
@@ -270,7 +270,7 @@ export function createAdminMcpRouteHandlers(deps: AdminRouteDeps) {
   // Per-handler-bundle ctx mirrors the @ax/agents admin-routes pattern.
   // Every storage:get / storage:set call attributes to this synthetic
   // ctx; the real actor id flows through closure-scoped local variables.
-  const ctx = makeChatContext({
+  const ctx = makeAgentContext({
     sessionId: 'mcp-admin',
     agentId: PLUGIN_NAME,
     userId: 'admin',
@@ -564,7 +564,7 @@ function simplifyZodMessage(raw: string): string {
  */
 export async function registerAdminMcpRoutes(
   bus: HookBus,
-  initCtx: ChatContext,
+  initCtx: AgentContext,
   opts: {
     testTransportFactory?: (opts: CreateTransportOptions) => Promise<McpClientTransport>;
     testTimeoutMs?: number;

@@ -101,7 +101,7 @@ export async function main(): Promise<number> {
   // waits for before tearing the session down. If we fire-and-forget, the
   // process may exit before the event hits the wire.
   //
-  // The wire ChatOutcome (see @ax/ipc-protocol/events.ts) differs from
+  // The wire AgentOutcome (see @ax/ipc-protocol/events.ts) differs from
   // our internal TurnLoopOutcome: the terminated variant carries no
   // `messages` field on the wire. Translate here.
   await client

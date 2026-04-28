@@ -1,5 +1,5 @@
 import type * as http from 'node:http';
-import { MAX_FRAME, type ChatContext, type HookBus } from '@ax/core';
+import { MAX_FRAME, type AgentContext, type HookBus } from '@ax/core';
 import {
   internalError,
   logInternalError,
@@ -80,7 +80,7 @@ type EventSpec = {
   validate: (payload: unknown) =>
     | { ok: true; payload: unknown }
     | HandlerErr;
-  fire: (ctx: ChatContext, bus: HookBus, payload: unknown) => Promise<void>;
+  fire: (ctx: AgentContext, bus: HookBus, payload: unknown) => Promise<void>;
 };
 
 const EVENTS = new Map<string, EventSpec>();
@@ -158,7 +158,7 @@ function writeResult(res: http.ServerResponse, result: HandlerResult): void {
 export async function dispatch(
   req: http.IncomingMessage,
   res: http.ServerResponse,
-  ctx: ChatContext,
+  ctx: AgentContext,
   bus: HookBus,
 ): Promise<void> {
   // Parse path off the URL. Node gives us `req.url` as a path+query string;

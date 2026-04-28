@@ -1,4 +1,4 @@
-import { makeChatContext, type Plugin } from '@ax/core';
+import { makeAgentContext, type Plugin } from '@ax/core';
 import type { Kysely } from 'kysely';
 import { runStorageMigration, type StorageDatabase } from './migrations.js';
 
@@ -27,10 +27,10 @@ export function createStoragePostgresPlugin(): Plugin {
     async init({ bus }) {
       // bootstrap()'s topological order ensures database-postgres has
       // already registered `database:get-instance` before we run.
-      // No caller ChatContext at init-time — synthesize one with
-      // makeChatContext(). The init context is purely for log correlation;
+      // No caller AgentContext at init-time — synthesize one with
+      // makeAgentContext(). The init context is purely for log correlation;
       // the underlying handler ignores it.
-      const initCtx = makeChatContext({
+      const initCtx = makeAgentContext({
         sessionId: 'init',
         agentId: PLUGIN_NAME,
         userId: 'system',

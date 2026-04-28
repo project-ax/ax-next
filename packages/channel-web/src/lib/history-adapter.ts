@@ -125,7 +125,7 @@ export const createAxHistoryAdapter = (
     },
 
     async append() {
-      // No-op: the AX server persists turns during chat:run / chat:turn-end.
+      // No-op: the AX server persists turns during agent:invoke / chat:turn-end.
       // The append-on-client path would fork the source of truth (I4).
     },
 
@@ -171,7 +171,7 @@ export const createAxHistoryAdapter = (
         },
 
         async append() {
-          // No-op: AX server persists turns during chat:run.
+          // No-op: AX server persists turns during agent:invoke.
         },
       };
     },

@@ -1,9 +1,9 @@
-import { PluginError, type ChatContext, type ChatMessage, type ChatOutcome, type HookBus } from '@ax/core';
+import { PluginError, type AgentContext, type ChatMessage, type AgentOutcome, type HookBus } from '@ax/core';
 
 // ---------------------------------------------------------------------------
 // @ax/chat-orchestrator — per-chat control plane
 //
-// Registers the host-side `chat:run` service hook. One chat:run call =
+// Registers the host-side `agent:invoke` service hook. One agent:invoke call =
 //
 //   1. fire chat:start (veto-capable)
 //   2. agents:resolve (Week 9.5 ACL gate)
@@ -31,15 +31,15 @@ import { PluginError, type ChatContext, type ChatMessage, type ChatOutcome, type
 // and resolves the awaiting deferred. Error-ish paths (chat:start rejection,
 // sandbox-open failure, queue-work failure, chat timeout, sandbox early
 // exit) synthesize a terminated outcome and fire chat:end themselves —
-// audit-log style subscribers always see exactly one chat:end per chat:run.
+// audit-log style subscribers always see exactly one chat:end per agent:invoke.
 // Happy-path chat:end is fired by the IPC server, NOT the orchestrator;
 // double-firing would double-count in audit-log.
 //
 // Invariants:
 //   I1 — Hook payloads are backend-agnostic. Input is `{ message, maxTurns? }`,
-//        output is ChatOutcome — no transport / storage vocabulary (no
+//        output is AgentOutcome — no transport / storage vocabulary (no
 //        runnerEndpoint, sessionId leakage, etc.). sessionId exists on
-//        ChatContext already, which is the kernel-level primitive.
+//        AgentContext already, which is the kernel-level primitive.
 //   I5 — Capabilities explicit. The orchestrator only calls the exact hooks
 //        in its manifest (session:queue-work / session:terminate /
 //        sandbox:open-session). It does NOT spawn, it does NOT
@@ -85,7 +85,7 @@ interface SessionQueueWorkInput {
   // `reqId` on user-message entries is REQUIRED (J9): the runner stamps
   // it onto every `event.stream-chunk` so the host-side stream router
   // (Task 5/7) can deliver chunks back to the originating request. We
-  // forward `ctx.reqId` from the chat:run call (which is itself the
+  // forward `ctx.reqId` from the agent:invoke call (which is itself the
   // host-handled request).
   entry:
     | { type: 'user-message'; payload: ChatMessage; reqId: string }
@@ -251,19 +251,19 @@ export function createOrchestrator(
   bus: HookBus,
   config: ChatOrchestratorConfig,
 ): {
-  runChat(ctx: ChatContext, input: ChatRunInput): Promise<ChatOutcome>;
-  onChatEnd(ctx: ChatContext, payload: { outcome: ChatOutcome }): void;
-  onTurnEnd(ctx: ChatContext): void;
+  runChat(ctx: AgentContext, input: ChatRunInput): Promise<AgentOutcome>;
+  onChatEnd(ctx: AgentContext, payload: { outcome: AgentOutcome }): void;
+  onTurnEnd(ctx: AgentContext): void;
 } {
   // Waiters are tracked by ctx.reqId (server-minted, J9, unique per
-  // chat:run). On the J6 routed path, two concurrent chat:runs for the
+  // agent:invoke). On the J6 routed path, two concurrent agent:invokes for the
   // same conversation share a sessionId — keying by sessionId would let
-  // the second chat:run overwrite the first's waiter (causing the first
+  // the second agent:invoke overwrite the first's waiter (causing the first
   // to time out and the second to resolve with the wrong outcome).
   //
   // Resolution paths:
   //   - chat:end fired by the orchestrator itself (error paths) carries
-  //     the chat:run ctx → ctx.reqId matches directly.
+  //     the agent:invoke ctx → ctx.reqId matches directly.
   //   - chat:end fired by the IPC server (runner POSTs /event.chat-end)
   //     stamps a fresh per-request ctx.reqId, so the reqId lookup
   //     misses. We fall back via `reqIdsBySession`: when only one
@@ -271,12 +271,12 @@ export function createOrchestrator(
   //     multiple exist (the routed-collision case), the reqId-keyed
   //     entry from the orchestrator self-fire wins. The fresh-spawn
   //     path always has exactly one waiter per sessionId.
-  const waitersByReqId = new Map<string, Deferred<ChatOutcome>>();
+  const waitersByReqId = new Map<string, Deferred<AgentOutcome>>();
   const reqIdsBySession = new Map<string, Set<string>>();
   function registerWaiter(
     sessionId: string,
     reqId: string,
-    deferred: Deferred<ChatOutcome>,
+    deferred: Deferred<AgentOutcome>,
   ): void {
     waitersByReqId.set(reqId, deferred);
     let set = reqIdsBySession.get(sessionId);
@@ -302,15 +302,15 @@ export function createOrchestrator(
   const cancelledSessions = new Set<string>();
 
   async function runChat(
-    ctx: ChatContext,
+    ctx: AgentContext,
     input: ChatRunInput,
-  ): Promise<ChatOutcome> {
+  ): Promise<AgentOutcome> {
     // 1. chat:start — subscribers can veto.
     const startResult = await bus.fire('chat:start', ctx, {
       message: input.message,
     });
     if (startResult.rejected) {
-      const outcome: ChatOutcome = {
+      const outcome: AgentOutcome = {
         kind: 'terminated',
         reason: `chat:start:${startResult.reason}`,
       };
@@ -327,8 +327,8 @@ export function createOrchestrator(
     //
     //    A non-PluginError throw (impl bug, transport blip) gets the
     //    same shape with `reason: 'agent-resolve:internal'` rather than
-    //    leaking through — chat:run's contract is "always returns a
-    //    ChatOutcome", and we'd rather degrade visibly than 500 the
+    //    leaking through — agent:invoke's contract is "always returns a
+    //    AgentOutcome", and we'd rather degrade visibly than 500 the
     //    whole bus.call chain.
     let agent: AgentRecord;
     try {
@@ -340,7 +340,7 @@ export function createOrchestrator(
       agent = resolved.agent;
     } catch (err) {
       const code = err instanceof PluginError ? err.code : 'internal';
-      const outcome: ChatOutcome = {
+      const outcome: AgentOutcome = {
         kind: 'terminated',
         reason: `agent-resolve:${code}`,
         error: err,
@@ -370,7 +370,7 @@ export function createOrchestrator(
     //    sandbox spawn needed.
     //
     //    Why the orchestrator does this (not the channel layer): every
-    //    chat:run already passes through the agents:resolve gate and the
+    //    agent:invoke already passes through the agents:resolve gate and the
     //    chat:start veto here. Gating routing decisions in the same place
     //    keeps the conversation-binding policy in ONE plugin (I4 — one
     //    source of truth: the conversation row's active_session_id IS
@@ -464,9 +464,9 @@ export function createOrchestrator(
 
       // (2) Register the waiter BEFORE enqueueing — the runner may emit
       //     chat:turn-end almost immediately on a fast model. Keyed by
-      //     ctx.reqId (J9, unique per chat:run) — see waitersByReqId
+      //     ctx.reqId (J9, unique per agent:invoke) — see waitersByReqId
       //     declaration for the rationale.
-      const deferred = newDeferred<ChatOutcome>();
+      const deferred = newDeferred<AgentOutcome>();
       registerWaiter(sessionId, ctx.reqId, deferred);
 
       // (3) Enqueue the user message.
@@ -485,7 +485,7 @@ export function createOrchestrator(
         );
       } catch (err) {
         unregisterWaiter(sessionId, ctx.reqId);
-        const outcome: ChatOutcome = {
+        const outcome: AgentOutcome = {
           kind: 'terminated',
           reason: 'queue-work-failed',
           error: err,
@@ -497,7 +497,7 @@ export function createOrchestrator(
       // (4) Wait for the runner. We do NOT watch `exited` here: the sandbox
       //     handle isn't ours. If the sandbox dies mid-turn, session:terminate
       //     fires, the conversations subscriber clears active_session_id, and
-      //     the next chat:run on this conversation routes to fresh. The
+      //     the next agent:invoke on this conversation routes to fresh. The
       //     in-flight chat will time out via the bounded chatTimeoutMs path.
       let resolvedByChatEndSubscriber = true;
       const timeoutHandle = setTimeout(() => {
@@ -505,7 +505,7 @@ export function createOrchestrator(
       }, chatTimeoutMs);
       timeoutHandle.unref?.();
 
-      let outcome: ChatOutcome;
+      let outcome: AgentOutcome;
       try {
         outcome = await deferred.promise;
       } catch (err) {
@@ -536,7 +536,7 @@ export function createOrchestrator(
     //    in every IPC request via the token it holds, and the IPC server
     //    builds ctx.sessionId from that token lookup. Stable join key.
     const sessionId = ctx.sessionId;
-    const deferred = newDeferred<ChatOutcome>();
+    const deferred = newDeferred<AgentOutcome>();
     registerWaiter(sessionId, ctx.reqId, deferred);
 
     // 6. Open the sandbox. sandbox:open-session internally calls
@@ -584,7 +584,7 @@ export function createOrchestrator(
           { sessionId },
         )
         .catch(() => undefined);
-      const outcome: ChatOutcome = {
+      const outcome: AgentOutcome = {
         kind: 'terminated',
         reason: 'sandbox-open-failed',
         error: err,
@@ -596,7 +596,7 @@ export function createOrchestrator(
     // 7. Bind the conversation row to this fresh session (J6). Same
     //    reqId/sessionId pair the SSE handler (Task 7) keys off. We bind
     //    BEFORE enqueue so the SSE GET that races us has a chance of
-    //    finding the row. Failures here are best-effort — chat:run still
+    //    finding the row. Failures here are best-effort — agent:invoke still
     //    completes; only SSE-by-reqId lookup loses fidelity.
     //
     //    Only attempted when @ax/conversations is loaded (channel-web
@@ -636,7 +636,7 @@ export function createOrchestrator(
             // J9: forward the host-minted reqId so the runner can stamp
             // every `event.stream-chunk` it emits while processing this
             // user message. ctx.reqId is created by the kernel at
-            // chat:run dispatch time.
+            // agent:invoke dispatch time.
             reqId: ctx.reqId,
           },
         },
@@ -648,7 +648,7 @@ export function createOrchestrator(
       } catch {
         // best-effort — exited promise is what drives cleanup anyway.
       }
-      const outcome: ChatOutcome = {
+      const outcome: AgentOutcome = {
         kind: 'terminated',
         reason: 'queue-work-failed',
         error: err,
@@ -678,7 +678,7 @@ export function createOrchestrator(
 
     // Sandbox exit before chat:end is a terminated outcome. Do NOT reject
     // the deferred — resolve it with a structured outcome so the downstream
-    // code path (which expects ChatOutcome, not an error) stays uniform.
+    // code path (which expects AgentOutcome, not an error) stays uniform.
     handle.exited
       .then(() => {
         if (!deferred.settled) {
@@ -694,7 +694,7 @@ export function createOrchestrator(
         // from crashing on a pathological sandbox provider.
       });
 
-    let outcome: ChatOutcome;
+    let outcome: AgentOutcome;
     try {
       outcome = await deferred.promise;
     } catch (err) {
@@ -713,7 +713,7 @@ export function createOrchestrator(
     // 6. If the chat:end subscriber path didn't win, the runner never
     //    emitted event.chat-end and the IPC server never fired chat:end.
     //    Fire it ourselves so audit-log etc. always see exactly one
-    //    chat:end per chat:run.
+    //    chat:end per agent:invoke.
     if (!resolvedByChatEndSubscriber) {
       await bus.fire('chat:end', ctx, { outcome });
     }
@@ -730,16 +730,16 @@ export function createOrchestrator(
     return outcome;
   }
 
-  function onChatEnd(ctx: ChatContext, payload: { outcome: ChatOutcome }): void {
+  function onChatEnd(ctx: AgentContext, payload: { outcome: AgentOutcome }): void {
     // Two firing paths:
-    //   1. Orchestrator self-fire (error paths) — ctx is the chat:run
+    //   1. Orchestrator self-fire (error paths) — ctx is the agent:invoke
     //      ctx, so ctx.reqId matches a waitersByReqId entry directly.
     //   2. IPC server fires from the runner's POST /event.chat-end —
     //      ctx.reqId is a fresh per-request id (the IPC server stamps
     //      it), so the reqId lookup misses. We then fall back via the
     //      sessionId index. The fresh-spawn path always has exactly
     //      one waiter per sessionId; on the (rare) routed-collision
-    //      case (two concurrent chat:runs into the same alive
+    //      case (two concurrent agent:invokes into the same alive
     //      sandbox), there can be multiple — we resolve the OLDEST
     //      reqId in insertion order (Set preserves it). That matches
     //      the runner's actual emit order: it processes inbox FIFO,
@@ -757,13 +757,13 @@ export function createOrchestrator(
       deferred.resolve(payload.outcome);
     }
     // Cleanup: forget we cancelled this session, in case the same sessionId
-    // gets reused by a later chat:run (shouldn't happen — ctx.sessionId is
+    // gets reused by a later agent:invoke (shouldn't happen — ctx.sessionId is
     // fresh per request in practice — but the cleanup keeps the set from
     // growing unbounded in a long-lived host).
     cancelledSessions.delete(ctx.sessionId);
   }
 
-  function onTurnEnd(ctx: ChatContext): void {
+  function onTurnEnd(ctx: AgentContext): void {
     // One-shot mode: the runner just finished processing the single user
     // message and is now waiting on inbox.next() for another. We don't have
     // one, so queue a cancel — the runner's inbox loop will receive it,
@@ -771,7 +771,7 @@ export function createOrchestrator(
     //
     // Guards:
     //   - oneShot must be true (multi-message hosts opt out).
-    //   - sessionId must be an in-flight chat:run (skip unrelated turn-ends).
+    //   - sessionId must be an in-flight agent:invoke (skip unrelated turn-ends).
     //     Waiter map is keyed by ctx.reqId, but the IPC server stamps a
     //     fresh ctx.reqId per request, so we check via the sessionId index.
     //     Cancel target is ctx.sessionId (the session we want to terminate).
@@ -806,7 +806,7 @@ export function createOrchestrator(
 // apart from "something else went wrong awaiting the deferred."
 class ChatTimeoutError extends Error {
   constructor(ms: number) {
-    super(`chat:run timed out after ${ms}ms`);
+    super(`agent:invoke timed out after ${ms}ms`);
     this.name = 'ChatTimeoutError';
   }
 }

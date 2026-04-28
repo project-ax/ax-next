@@ -20,8 +20,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   HookBus,
   bootstrap,
-  makeChatContext,
-  type ChatContext,
+  makeAgentContext,
+  type AgentContext,
   type Plugin,
   type ToolCall,
   type ToolDescriptor,
@@ -40,8 +40,8 @@ import type { McpClientTransport } from '../transports.js';
 
 const TEST_KEY_HEX = '42'.repeat(32);
 
-function ctx(): ChatContext {
-  return makeChatContext({ sessionId: 's', agentId: 'a', userId: 'u' });
+function ctx(): AgentContext {
+  return makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' });
 }
 
 // Minimal in-memory storage plugin — mirrors the credentials test shape.

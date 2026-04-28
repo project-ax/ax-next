@@ -2,10 +2,10 @@ import * as http from 'node:http';
 import {
   PluginError,
   isRejection,
-  makeChatContext,
+  makeAgentContext,
   type Plugin,
   type HookBus,
-  type ChatContext,
+  type AgentContext,
 } from '@ax/core';
 import { Router } from './router.js';
 import {
@@ -85,7 +85,7 @@ export function createHttpServerPlugin(
 
   const fireRequest = async (
     bus: HookBus,
-    ctx: ChatContext,
+    ctx: AgentContext,
     payload: HttpRequestEvent,
   ): Promise<{ rejected: false; payload: HttpRequestEvent } | { rejected: true; reason: string }> => {
     const result = await bus.fire('http:request', ctx, payload);
@@ -97,7 +97,7 @@ export function createHttpServerPlugin(
 
   const fireResponseSent = async (
     bus: HookBus,
-    ctx: ChatContext,
+    ctx: AgentContext,
     payload: HttpResponseSentEvent,
   ): Promise<void> => {
     // bus.fire isolates subscriber failures; this catch is defensive against
@@ -280,14 +280,14 @@ async function handle(
   trustProxy: () => boolean,
   fireRequest: (
     bus: HookBus,
-    ctx: ChatContext,
+    ctx: AgentContext,
     payload: HttpRequestEvent,
   ) => Promise<
     { rejected: false; payload: HttpRequestEvent } | { rejected: true; reason: string }
   >,
   fireResponseSent: (
     bus: HookBus,
-    ctx: ChatContext,
+    ctx: AgentContext,
     payload: HttpResponseSentEvent,
   ) => Promise<void>,
 ): Promise<void> {
@@ -298,7 +298,7 @@ async function handle(
   const headers = lowercaseHeaders(req.headers);
   const cookieEnv: CookieEnv = { isSecureRequest: deriveSecure(req, headers, trustProxy) };
 
-  const ctx = makeChatContext({
+  const ctx = makeAgentContext({
     sessionId: 'http-server',
     agentId: 'http-server',
     userId: 'http-server',

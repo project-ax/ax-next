@@ -17,7 +17,7 @@
 // (it contains model responses which may include the key if the SDK ever
 // echoed it back in an error — unlikely but not impossible).
 
-import { HookBus, makeChatContext, createLogger, type LlmRequest, type LlmResponse } from '@ax/core';
+import { HookBus, makeAgentContext, createLogger, type LlmRequest, type LlmResponse } from '@ax/core';
 import { createLlmAnthropicPlugin } from '../src/plugin.js';
 
 async function main(): Promise<void> {
@@ -27,7 +27,7 @@ async function main(): Promise<void> {
   }
   const bus = new HookBus();
   await createLlmAnthropicPlugin({ maxTokens: 128 }).init({ bus, config: {} });
-  const ctx = makeChatContext({
+  const ctx = makeAgentContext({
     sessionId: 'smoke',
     agentId: 'smoke',
     userId: 'smoke',

@@ -12,7 +12,7 @@
 // ---------------------------------------------------------------------------
 
 import { describe, it, expect } from 'vitest';
-import { makeChatContext, PluginError, type ChatContext } from '@ax/core';
+import { makeAgentContext, PluginError, type AgentContext } from '@ax/core';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import {
@@ -24,8 +24,8 @@ import { McpConnection } from '../connection.js';
 import type { BusLike, McpClientTransport } from '../transports.js';
 import type { McpServerConfig } from '../config.js';
 
-function ctx(): ChatContext {
-  return makeChatContext({ sessionId: 's', agentId: 'a', userId: 'u' });
+function ctx(): AgentContext {
+  return makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' });
 }
 
 // A bus stub — the connection manager itself never calls credentials:get

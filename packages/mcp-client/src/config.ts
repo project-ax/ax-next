@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { PluginError, type ChatContext } from '@ax/core';
+import { PluginError, type AgentContext } from '@ax/core';
 
 const PLUGIN_NAME = '@ax/mcp-client';
 // ID is user-facing (used in tool namespacing like `mcp__<id>__<tool>`), so
@@ -127,7 +127,7 @@ export function parseConfig(input: unknown): McpServerConfig {
 
 // Storage I/O layer ---------------------------------------------------------
 
-type CallFn = <I, O>(hook: string, ctx: ChatContext, input: I) => Promise<O>;
+type CallFn = <I, O>(hook: string, ctx: AgentContext, input: I) => Promise<O>;
 interface BusLike {
   call: CallFn;
 }
@@ -139,7 +139,7 @@ function storageKey(id: string): string {
 const dec = new TextDecoder();
 const enc = new TextEncoder();
 
-async function readIndex(bus: BusLike, ctx: ChatContext): Promise<string[]> {
+async function readIndex(bus: BusLike, ctx: AgentContext): Promise<string[]> {
   const got = await bus.call<{ key: string }, { value: Uint8Array | undefined }>(
     'storage:get',
     ctx,
@@ -167,7 +167,7 @@ async function readIndex(bus: BusLike, ctx: ChatContext): Promise<string[]> {
   return parsed;
 }
 
-async function writeIndex(bus: BusLike, ctx: ChatContext, ids: string[]): Promise<void> {
+async function writeIndex(bus: BusLike, ctx: AgentContext, ids: string[]): Promise<void> {
   await bus.call('storage:set', ctx, {
     key: INDEX_KEY,
     value: enc.encode(JSON.stringify(ids)),
@@ -176,7 +176,7 @@ async function writeIndex(bus: BusLike, ctx: ChatContext, ids: string[]): Promis
 
 export async function saveConfig(
   bus: BusLike,
-  ctx: ChatContext,
+  ctx: AgentContext,
   raw: unknown,
 ): Promise<McpServerConfig> {
   const cfg = parseConfig(raw);
@@ -196,7 +196,7 @@ export async function saveConfig(
   return cfg;
 }
 
-export async function loadConfigs(bus: BusLike, ctx: ChatContext): Promise<McpServerConfig[]> {
+export async function loadConfigs(bus: BusLike, ctx: AgentContext): Promise<McpServerConfig[]> {
   const ids = await readIndex(bus, ctx);
   const results: McpServerConfig[] = [];
   for (const id of ids) {
@@ -236,7 +236,7 @@ export async function loadConfigs(bus: BusLike, ctx: ChatContext): Promise<McpSe
  */
 export async function loadConfigById(
   bus: BusLike,
-  ctx: ChatContext,
+  ctx: AgentContext,
   id: string,
 ): Promise<McpServerConfig | null> {
   if (typeof id !== 'string' || !ID_RE.test(id)) {
@@ -264,7 +264,7 @@ export async function loadConfigById(
   }
 }
 
-export async function deleteConfig(bus: BusLike, ctx: ChatContext, id: string): Promise<void> {
+export async function deleteConfig(bus: BusLike, ctx: AgentContext, id: string): Promise<void> {
   if (typeof id !== 'string' || !ID_RE.test(id)) {
     throw new PluginError({
       code: 'invalid-payload',

@@ -12,7 +12,7 @@ import {
   PostgreSqlContainer,
   type StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
-import { HookBus, bootstrap, makeChatContext, type Plugin } from '@ax/core';
+import { HookBus, bootstrap, makeAgentContext, type Plugin } from '@ax/core';
 import { createTestHarness, type TestHarness } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createHttpServerPlugin, type HttpServerPlugin } from '@ax/http-server';
@@ -443,7 +443,7 @@ describe('@ax/mcp-client admin routes', () => {
   it('GET admin-global config (ownerId=null) is visible to non-owner users', async () => {
     // Pre-seed an admin-global row directly via saveConfig — this is the
     // "legacy / global" shape (ownerId null).
-    const ctx = makeChatContext({ sessionId: 's', agentId: 'a', userId: 'u' });
+    const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' });
     await saveConfig(stack.harness.bus, ctx, {
       id: 'global-shared',
       enabled: true,
@@ -468,7 +468,7 @@ describe('@ax/mcp-client admin routes', () => {
     // config that REFERENCES it via credentialRefs; the GET response
     // body must contain the ref id (`cred-foo`) but NOT the resolved
     // value (`super-secret-value`).
-    const ctx = makeChatContext({ sessionId: 's', agentId: 'a', userId: 'u' });
+    const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' });
     await stack.harness.bus.call('credentials:set', ctx, {
       id: 'cred-foo',
       value: 'super-secret-value',
@@ -559,7 +559,7 @@ describe('@ax/mcp-client admin routes', () => {
   });
 
   it('PATCH admin-global config → 403 (read-visible but not write-allowed)', async () => {
-    const ctx = makeChatContext({ sessionId: 's', agentId: 'a', userId: 'u' });
+    const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' });
     await saveConfig(stack.harness.bus, ctx, {
       id: 'global-shared',
       enabled: true,

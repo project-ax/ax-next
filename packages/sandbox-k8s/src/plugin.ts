@@ -59,7 +59,7 @@ export function createSandboxK8sPlugin(
       // RBAC the first; running without it is supportable but is the
       // single biggest knob in this provider's threat model.
       if (config.runtimeClassName.length === 0) {
-        // We don't have a logger at init time — ChatContext is per-request
+        // We don't have a logger at init time — AgentContext is per-request
         // and `init` runs before any chat. Emit on stderr; this is
         // boot-time, single-shot, and users grepping their logs will see
         // a clear marker.

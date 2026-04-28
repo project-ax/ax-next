@@ -24,9 +24,9 @@ import {
   type KernelHandle,
   PluginError,
   bootstrap,
-  makeChatContext,
+  makeAgentContext,
   type ChatMessage,
-  type ChatOutcome,
+  type AgentOutcome,
   type Plugin,
 } from '@ax/core';
 import {
@@ -362,12 +362,12 @@ async function handleChat(
     throw e;
   }
 
-  // chat:run.
+  // agent:invoke.
   const ctx = makeServeCtx(finalSessionId, workspaceRoot);
   const chatMessage: ChatMessage = { role: 'user', content: message };
-  let outcome: ChatOutcome;
+  let outcome: AgentOutcome;
   try {
-    outcome = await bus.call('chat:run', ctx, { message: chatMessage });
+    outcome = await bus.call('agent:invoke', ctx, { message: chatMessage });
   } catch (e) {
     if (e instanceof PluginError) {
       return writeJson(res, 500, { error: { code: e.code, message: e.message } });
@@ -379,7 +379,7 @@ async function handleChat(
 }
 
 function makeServeCtx(sessionId: string, workspaceRoot: string) {
-  return makeChatContext({
+  return makeAgentContext({
     sessionId,
     agentId: 'serve',
     userId: 'serve',

@@ -84,7 +84,7 @@ export interface WorkspaceContext {
   readonly rootPath: string;
 }
 
-export interface ChatContext {
+export interface AgentContext {
   readonly reqId: string;
   readonly sessionId: string;
   readonly agentId: string;
@@ -102,12 +102,12 @@ export interface ChatContext {
   readonly workspace: WorkspaceContext;
 }
 
-export interface MakeChatContextOptions {
+export interface MakeAgentContextOptions {
   reqId?: string;
   sessionId: string;
   agentId: string;
   userId: string;
-  /** Optional. See `ChatContext.conversationId`. */
+  /** Optional. See `AgentContext.conversationId`. */
   conversationId?: string;
   logger?: Logger;
   // Optional for dev ergonomics — defaults to process.cwd(). Real callers
@@ -115,7 +115,7 @@ export interface MakeChatContextOptions {
   workspace?: WorkspaceContext;
 }
 
-export function makeChatContext(opts: MakeChatContextOptions): ChatContext {
+export function makeAgentContext(opts: MakeAgentContextOptions): AgentContext {
   const reqId = opts.reqId ?? makeReqId();
   const logger = opts.logger ?? createLogger({ reqId });
   const workspace = opts.workspace ?? { rootPath: process.cwd() };

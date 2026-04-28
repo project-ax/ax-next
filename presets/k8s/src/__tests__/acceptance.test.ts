@@ -16,7 +16,7 @@ import {
 import {
   HookBus,
   bootstrap,
-  makeChatContext,
+  makeAgentContext,
   type KernelHandle,
   type Plugin,
 } from '@ax/core';
@@ -69,7 +69,7 @@ import { createK8sPlugins, type K8sPresetConfig } from '../index.js';
 //     a chat. This file is the laptop-runnable companion.
 //   - Real Anthropic LLM behavior. We swap `@ax/llm-anthropic` for
 //     `@ax/llm-mock` so CI doesn't need an API key, and we never invoke
-//     `chat:run` (which would require a runner binary connecting back over
+//     `agent:invoke` (which would require a runner binary connecting back over
 //     IPC). The acceptance test exercises wiring, not chat orchestration.
 //
 // Runtime: ~25-40s. Almost all of that is the testcontainer cold-start +
@@ -204,7 +204,7 @@ beforeAll(async () => {
 
   // Capture the singleton kysely so afterAll can drain its pool before the
   // container goes away.
-  const initCtx = makeChatContext({
+  const initCtx = makeAgentContext({
     sessionId: 'acceptance-init',
     agentId: 'acceptance',
     userId: 'acceptance',
@@ -251,7 +251,7 @@ async function waitFor(
 }
 
 function ctx(suffix: string) {
-  return makeChatContext({
+  return makeAgentContext({
     sessionId: `acceptance-${suffix}`,
     agentId: 'acceptance',
     userId: 'acceptance',

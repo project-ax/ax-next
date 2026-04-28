@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, it, expect } from 'vitest';
-import { makeChatContext, PluginError, type ChatContext } from '@ax/core';
+import { makeAgentContext, PluginError, type AgentContext } from '@ax/core';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
@@ -49,8 +49,8 @@ function makeCredsBus(
   return { bus, calls };
 }
 
-function ctx(): ChatContext {
-  return makeChatContext({ sessionId: 's', agentId: 'a', userId: 'u' });
+function ctx(): AgentContext {
+  return makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' });
 }
 
 // We need to poke process.env to prove leakage behavior. Snapshot and restore.

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
-import { HookBus, bootstrap, makeChatContext } from '@ax/core';
+import { HookBus, bootstrap, makeAgentContext } from '@ax/core';
 import { createStorageSqlitePlugin } from '@ax/storage-sqlite';
 import { createCredentialsPlugin } from '@ax/credentials';
 import { loadConfigs, saveConfig, type McpServerConfig } from '@ax/mcp-client';
@@ -24,7 +24,7 @@ async function seedConfigs(sqlitePath: string, configs: McpServerConfig[]): Prom
     plugins: [createStorageSqlitePlugin({ databasePath: sqlitePath }), createCredentialsPlugin()],
     config: {},
   });
-  const ctx = makeChatContext({ sessionId: 's', agentId: 'a', userId: 'u' });
+  const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' });
   for (const c of configs) {
     await saveConfig(bus, ctx, c);
   }
@@ -37,7 +37,7 @@ async function readStoredConfigs(sqlitePath: string): Promise<McpServerConfig[]>
     plugins: [createStorageSqlitePlugin({ databasePath: sqlitePath }), createCredentialsPlugin()],
     config: {},
   });
-  return loadConfigs(bus, makeChatContext({ sessionId: 's', agentId: 'a', userId: 'u' }));
+  return loadConfigs(bus, makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' }));
 }
 
 beforeEach(() => {

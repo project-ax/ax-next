@@ -2,9 +2,9 @@ import { describe, it, expect } from 'vitest';
 import {
   HookBus,
   bootstrap,
-  makeChatContext,
+  makeAgentContext,
   reject,
-  type ChatContext,
+  type AgentContext,
   type Plugin,
   type WorkspaceDelta,
   type WorkspaceReadInput,
@@ -29,7 +29,7 @@ import { workspaceCommitNotifyHandler } from '../workspace-commit-notify.js';
 
 interface Env {
   bus: HookBus;
-  ctx: ChatContext;
+  ctx: AgentContext;
 }
 
 async function makeEnv(extraPlugins: Plugin[] = []): Promise<Env> {
@@ -39,7 +39,7 @@ async function makeEnv(extraPlugins: Plugin[] = []): Promise<Env> {
     plugins: [createMockWorkspacePlugin(), ...extraPlugins],
     config: {},
   });
-  const ctx = makeChatContext({
+  const ctx = makeAgentContext({
     sessionId: 'wcn-test',
     agentId: 'wcn-agent',
     userId: 'wcn-user',

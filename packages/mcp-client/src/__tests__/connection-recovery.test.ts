@@ -19,7 +19,7 @@
 // ---------------------------------------------------------------------------
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { makeChatContext, type ChatContext } from '@ax/core';
+import { makeAgentContext, type AgentContext } from '@ax/core';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import {
@@ -30,8 +30,8 @@ import { McpConnection, type SdkClientLike } from '../connection.js';
 import type { BusLike, McpClientTransport } from '../transports.js';
 import type { McpServerConfig } from '../config.js';
 
-function ctx(): ChatContext {
-  return makeChatContext({ sessionId: 's', agentId: 'a', userId: 'u' });
+function ctx(): AgentContext {
+  return makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' });
 }
 
 const unusedBus: BusLike = {

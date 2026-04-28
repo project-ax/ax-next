@@ -1,4 +1,4 @@
-import { makeChatContext, type Plugin, type ToolDescriptor } from '@ax/core';
+import { makeAgentContext, type Plugin, type ToolDescriptor } from '@ax/core';
 import { bashToolDescriptor } from './descriptor.js';
 
 const PLUGIN_NAME = '@ax/tool-bash';
@@ -23,9 +23,9 @@ export function createToolBashPlugin(): Plugin {
     async init({ bus }) {
       // init-time ctx: the tool:register service doesn't read ctx fields
       // (it's a pure registry write), but bus.call still needs a
-      // ChatContext envelope. We synthesize a minimal one so the plugin
+      // AgentContext envelope. We synthesize a minimal one so the plugin
       // stays free of imports from any other plugin (I2).
-      const ctx = makeChatContext({
+      const ctx = makeAgentContext({
         sessionId: 'init',
         agentId: PLUGIN_NAME,
         userId: 'init',

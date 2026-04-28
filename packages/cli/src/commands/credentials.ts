@@ -4,7 +4,7 @@
 // argv — we read it from stdin so it doesn't leak to `ps` / `/proc/<pid>/cmdline`
 // / shell history. We also don't echo it back on stdout or stderr; the only
 // confirmation is the id. Paranoid? Sure. Also correct.
-import { HookBus, bootstrap, makeChatContext, PluginError } from '@ax/core';
+import { HookBus, bootstrap, makeAgentContext, PluginError } from '@ax/core';
 import { createStorageSqlitePlugin } from '@ax/storage-sqlite';
 import { createCredentialsPlugin } from '@ax/credentials';
 
@@ -80,7 +80,7 @@ export async function runCredentialsCommand(opts: RunCredentialsOptions): Promis
     try {
       await bus.call(
         'credentials:set',
-        makeChatContext({ sessionId: 'cli', agentId: 'cli', userId: 'cli' }),
+        makeAgentContext({ sessionId: 'cli', agentId: 'cli', userId: 'cli' }),
         { id, value },
       );
     } catch (e) {

@@ -1,12 +1,12 @@
 import * as http from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
-import { HookBus, PluginError, makeChatContext } from '@ax/core';
-import type { ChatContext, ServiceHandler } from '@ax/core';
+import { HookBus, PluginError, makeAgentContext } from '@ax/core';
+import type { AgentContext, ServiceHandler } from '@ax/core';
 import { createLlmProxyAnthropicFormatPlugin } from '../plugin.js';
 
 async function bootPlugin(): Promise<{
   bus: HookBus;
-  ctx: ChatContext;
+  ctx: AgentContext;
   stop: () => Promise<void>;
 }> {
   const bus = new HookBus();
@@ -24,7 +24,7 @@ async function bootPlugin(): Promise<{
   const plugin = createLlmProxyAnthropicFormatPlugin();
   await plugin.init({ bus, config: {} });
 
-  const ctx = makeChatContext({
+  const ctx = makeAgentContext({
     sessionId: 'test',
     agentId: 'test',
     userId: 'test',
@@ -33,7 +33,7 @@ async function bootPlugin(): Promise<{
 
   const startedSessions: string[] = [];
   const origCall = bus.call.bind(bus);
-  bus.call = async <I, O>(hook: string, c: ChatContext, input: I): Promise<O> => {
+  bus.call = async <I, O>(hook: string, c: AgentContext, input: I): Promise<O> => {
     if (hook === 'llm-proxy:start') {
       const out = await origCall<I, O>(hook, c, input);
       startedSessions.push((input as { sessionId: string }).sessionId);

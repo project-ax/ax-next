@@ -5,8 +5,8 @@ import { join } from 'node:path';
 import {
   HookBus,
   bootstrap,
-  makeChatContext,
-  type ChatContext,
+  makeAgentContext,
+  type AgentContext,
   type LlmRequest,
   type LlmResponse,
   type Plugin,
@@ -76,7 +76,7 @@ async function seedMcpConfig(dbPath: string, config: McpServerConfig): Promise<v
     ],
     config: {},
   });
-  const ctx = makeChatContext({
+  const ctx = makeAgentContext({
     sessionId: 'seed',
     agentId: 'seed',
     userId: 'seed',
@@ -143,7 +143,7 @@ describe('mcp-client e2e (subprocess stdio round-trip)', () => {
           bus.subscribe<ToolCall>(
             'tool:pre-call',
             '@ax/test-mcp-observer',
-            async (_ctx: ChatContext, call) => {
+            async (_ctx: AgentContext, call) => {
               preCallEvents.push({ name: call.name, input: call.input });
               return undefined;
             },
@@ -151,7 +151,7 @@ describe('mcp-client e2e (subprocess stdio round-trip)', () => {
           bus.subscribe<{ toolCall: ToolCall; output: unknown }>(
             'tool:post-call',
             '@ax/test-mcp-observer',
-            async (_ctx: ChatContext, payload) => {
+            async (_ctx: AgentContext, payload) => {
               postCallEvents.push({
                 name: payload.toolCall.name,
                 output: payload.output,
@@ -288,7 +288,7 @@ describe('mcp-client e2e (subprocess stdio round-trip)', () => {
           bus.subscribe<{ toolCall: ToolCall; output: unknown }>(
             'tool:post-call',
             '@ax/test-mcp-observer',
-            async (_ctx: ChatContext, payload) => {
+            async (_ctx: AgentContext, payload) => {
               postCallEvents.push({
                 name: payload.toolCall.name,
                 output: payload.output,

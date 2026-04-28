@@ -251,7 +251,7 @@ describe('dispatcher', () => {
     // Spy on ctx.logger.error by wiring a custom stderr-less logger via the
     // harness ctx override. But we actually want to assert that the
     // sanitized message reaches the client AND the real message is logged.
-    // The listener's makeChatContext creates its own logger per-request —
+    // The listener's makeAgentContext creates its own logger per-request —
     // we observe the wire response is sanitized here.
     const thrown = new PluginError({
       code: 'unknown',
@@ -787,10 +787,10 @@ describe('dispatcher', () => {
   });
 
   // -------------------------------------------------------------------------
-  // Per-request ChatContext carries real workspaceRoot after auth
+  // Per-request AgentContext carries real workspaceRoot after auth
   // -------------------------------------------------------------------------
 
-  it('per-request ChatContext carries workspaceRoot from auth, not listener default', async () => {
+  it('per-request AgentContext carries workspaceRoot from auth, not listener default', async () => {
     // Register a handler that inspects ctx.workspace.rootPath via the mock
     // llm:call service hook; whichever workspace the auth result carried is
     // what the dispatcher should hand to handlers.

@@ -12,7 +12,7 @@ import {
   expect,
   it,
 } from 'vitest';
-import { PluginError, type ChatContext, type Plugin } from '@ax/core';
+import { PluginError, type AgentContext, type Plugin } from '@ax/core';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createHttpServerPlugin, type HttpServerPlugin } from '@ax/http-server';
 import { createConversationsPlugin } from '@ax/conversations';
@@ -29,15 +29,15 @@ import { createChannelWebServerPlugin } from '../../server/plugin';
 // POST /api/chat/messages — chat-flow producer (Task 9 of Week 10–12).
 //
 // Same testcontainers-postgres harness as stream-e2e.test.ts: real
-// @ax/conversations + http-server + channel-web; auth, agents, and chat:run
-// are mocked. The chat:run mock captures the dispatched ctx so we can
+// @ax/conversations + http-server + channel-web; auth, agents, and agent:invoke
+// are mocked. The agent:invoke mock captures the dispatched ctx so we can
 // assert it carries the server-minted reqId + the right conversationId.
 //
 // Cases:
 //   1. Anonymous → 401
 //   2. Foreign agent → 403
 //   3. Agent not-found → 404 (agent-not-found)
-//   4. New conversation happy path → 202 + conversation row + chat:run dispatch
+//   4. New conversation happy path → 202 + conversation row + agent:invoke dispatch
 //   5. Existing conversation happy path → no new conversation row, turn appended
 //   6. Mismatched agent → 400 (agent-mismatch, I10)
 //   7. Conversation not-found → 404 (conversation-not-found)
@@ -139,7 +139,7 @@ function agentsMockPlugin(args: {
 }
 
 interface ChatRunCapture {
-  ctx: ChatContext;
+  ctx: AgentContext;
   input: { message: { role: string; content: string } };
 }
 
@@ -148,20 +148,20 @@ function chatRunMockPlugin(captures: ChatRunCapture[]): Plugin {
     manifest: {
       name: 'mock-chat-run',
       version: '0.0.0',
-      registers: ['chat:run'],
+      registers: ['agent:invoke'],
       calls: [],
       subscribes: [],
     },
     init({ bus }) {
       bus.registerService(
-        'chat:run',
+        'agent:invoke',
         'mock-chat-run',
         async (ctx, input: unknown) => {
           captures.push({
             ctx,
             input: input as { message: { role: string; content: string } },
           });
-          // Mimic chat:run's contract — return a ChatOutcome shape; the
+          // Mimic agent:invoke's contract — return a AgentOutcome shape; the
           // route handler's dispatch is fire-and-forget so the value is
           // unobserved, but we keep the shape correct in case a future
           // assertion reads it.
@@ -348,7 +348,7 @@ describe('@ax/channel-web POST /api/chat/messages', () => {
     expect(await countConversations()).toBe(0);
   });
 
-  it('4. new conversation happy path: 202, row created, user turn appended, chat:run dispatched with server-minted reqId', async () => {
+  it('4. new conversation happy path: 202, row created, user turn appended, agent:invoke dispatched with server-minted reqId', async () => {
     const booted = await boot({
       user: { id: 'userA', isAdmin: false },
       allowedFor: new Set(['userA']),
@@ -380,7 +380,7 @@ describe('@ax/channel-web POST /api/chat/messages', () => {
     const turns = await listTurns(body.conversationId);
     expect(turns).toEqual([{ role: 'user', turn_index: 0 }]);
 
-    // chat:run dispatch — give the void-returning call a tick to flush.
+    // agent:invoke dispatch — give the void-returning call a tick to flush.
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(booted.chatRunCaptures).toHaveLength(1);
     const cap = booted.chatRunCaptures[0]!;
@@ -388,7 +388,7 @@ describe('@ax/channel-web POST /api/chat/messages', () => {
     expect(cap.ctx.conversationId).toBe(body.conversationId);
     expect(cap.ctx.userId).toBe('userA');
     expect(cap.ctx.agentId).toBe('agt_test');
-    // chat:run's first-turn message — extracted from the first text block.
+    // agent:invoke's first-turn message — extracted from the first text block.
     expect(cap.input.message).toEqual({ role: 'user', content: 'hello there' });
   });
 

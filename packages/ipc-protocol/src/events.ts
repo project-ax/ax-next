@@ -64,7 +64,7 @@ export const EventTurnEndSchema = z.object({
 export type EventTurnEnd = z.infer<typeof EventTurnEndSchema>;
 
 /**
- * Terminal outcome of a chat, mirroring `@ax/core/src/types.ts` `ChatOutcome`
+ * Terminal outcome of a chat, mirroring `@ax/core/src/types.ts` `AgentOutcome`
  * but declared locally to keep this package independent of the kernel.
  */
 export const ChatOutcomeSchema = z.discriminatedUnion('kind', [
@@ -78,7 +78,7 @@ export const ChatOutcomeSchema = z.discriminatedUnion('kind', [
     error: z.unknown().optional(),
   }),
 ]);
-export type ChatOutcome = z.infer<typeof ChatOutcomeSchema>;
+export type AgentOutcome = z.infer<typeof ChatOutcomeSchema>;
 
 export const EventChatEndSchema = z.object({
   outcome: ChatOutcomeSchema,

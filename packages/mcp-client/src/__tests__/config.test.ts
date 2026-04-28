@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { HookBus, bootstrap, makeChatContext, PluginError } from '@ax/core';
+import { HookBus, bootstrap, makeAgentContext, PluginError } from '@ax/core';
 import {
   parseConfig,
   saveConfig,
@@ -36,7 +36,7 @@ function memStoragePlugin() {
 }
 
 function ctx() {
-  return makeChatContext({ sessionId: 's', agentId: 'a', userId: 'u' });
+  return makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' });
 }
 
 async function makeBus(): Promise<HookBus> {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { makeReqId, createLogger, makeChatContext } from '../context.js';
+import { makeReqId, createLogger, makeAgentContext } from '../context.js';
 
 describe('makeReqId', () => {
   it('generates a unique, readable id', () => {
@@ -74,9 +74,9 @@ describe('createLogger', () => {
   });
 });
 
-describe('makeChatContext', () => {
+describe('makeAgentContext', () => {
   it('carries the expected identity fields', () => {
-    const ctx = makeChatContext({
+    const ctx = makeAgentContext({
       reqId: 'req-1',
       sessionId: 'sess-1',
       agentId: 'agent-1',
@@ -91,7 +91,7 @@ describe('makeChatContext', () => {
   });
 
   it('generates a reqId when not supplied', () => {
-    const ctx = makeChatContext({
+    const ctx = makeAgentContext({
       sessionId: 'sess-1',
       agentId: 'agent-1',
       userId: 'user-1',
@@ -100,7 +100,7 @@ describe('makeChatContext', () => {
   });
 
   it('defaults workspace.rootPath to process.cwd() when not supplied', () => {
-    const ctx = makeChatContext({
+    const ctx = makeAgentContext({
       sessionId: 'sess-1',
       agentId: 'agent-1',
       userId: 'user-1',
@@ -109,7 +109,7 @@ describe('makeChatContext', () => {
   });
 
   it('carries an explicit workspace.rootPath through', () => {
-    const ctx = makeChatContext({
+    const ctx = makeAgentContext({
       sessionId: 'sess-1',
       agentId: 'agent-1',
       userId: 'user-1',

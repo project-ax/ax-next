@@ -1,4 +1,4 @@
-import type { ChatContext, HookBus } from '@ax/core';
+import type { AgentContext, HookBus } from '@ax/core';
 import type { IpcErrorEnvelope } from '@ax/ipc-protocol';
 
 // ---------------------------------------------------------------------------
@@ -32,7 +32,7 @@ export type AuthResult =
       agentId: string | null;
       // Week 10–12 final review: carry the resolved session's
       // conversationId so the listener can stamp it onto the per-request
-      // ChatContext. Without this, runner-fired chat:turn-end events lose
+      // AgentContext. Without this, runner-fired chat:turn-end events lose
       // the conversation binding and three subscribers silently no-op
       // (auto-append, clearActiveReqId, SSE done-frame). Null for canary
       // / admin / pre-Task-15 sessions.
@@ -59,7 +59,7 @@ type SessionResolveTokenOutput =
 export async function authenticate(
   authHeader: string | undefined,
   bus: HookBus,
-  ctx: ChatContext,
+  ctx: AgentContext,
 ): Promise<AuthResult> {
   if (authHeader === undefined || authHeader.length === 0) {
     return {

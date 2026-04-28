@@ -3,7 +3,7 @@ import {
   HookBus,
   PluginError,
   bootstrap,
-  makeChatContext,
+  makeAgentContext,
   createLogger,
   type ToolDescriptor,
 } from '@ax/core';
@@ -11,7 +11,7 @@ import { createToolDispatcherPlugin } from '@ax/tool-dispatcher';
 import { createTestHostToolPlugin } from '../test-host-tool.js';
 
 const ctx = () =>
-  makeChatContext({
+  makeAgentContext({
     sessionId: 's',
     agentId: 'a',
     userId: 'u',

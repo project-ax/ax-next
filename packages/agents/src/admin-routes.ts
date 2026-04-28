@@ -1,8 +1,8 @@
 import {
   isRejection,
-  makeChatContext,
+  makeAgentContext,
   PluginError,
-  type ChatContext,
+  type AgentContext,
   type HookBus,
 } from '@ax/core';
 import { z } from 'zod';
@@ -182,7 +182,7 @@ const updateBodySchema = z
  */
 async function requireUser(
   bus: HookBus,
-  ctx: ChatContext,
+  ctx: AgentContext,
   req: RouteRequest,
   res: RouteResponse,
 ): Promise<{ id: string; isAdmin: boolean } | null> {
@@ -333,7 +333,7 @@ export function createAdminAgentRouteHandlers(deps: AdminRouteDeps) {
   // observing audit events sees `userId: 'admin'` in the ctx — the actual
   // acting-user id is in the agents:resolved subscriber payload, which is
   // what audit consumers should key off. Documented in the plan.
-  const ctx = makeChatContext({
+  const ctx = makeAgentContext({
     sessionId: 'agents-admin',
     agentId: PLUGIN_NAME,
     userId: 'admin',
@@ -479,7 +479,7 @@ export function createAdminAgentRouteHandlers(deps: AdminRouteDeps) {
  */
 export async function registerAdminAgentRoutes(
   bus: HookBus,
-  initCtx: ChatContext,
+  initCtx: AgentContext,
 ): Promise<Array<() => void>> {
   const handlers = createAdminAgentRouteHandlers({ bus });
   const routes: Array<{

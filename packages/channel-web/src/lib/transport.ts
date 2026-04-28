@@ -184,7 +184,7 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
 
     // Pull the latest user message — that's the one we POST. Earlier
     // turns are already persisted in the conversation row (Task 9 appends
-    // user turns BEFORE chat:run; Task 15's runner replays history at
+    // user turns BEFORE agent:invoke; Task 15's runner replays history at
     // boot). We don't re-send them.
     const last = messages[messages.length - 1];
     if (!last || last.role !== 'user') {

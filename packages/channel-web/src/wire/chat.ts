@@ -90,7 +90,7 @@ export type PostMessageResponse = z.infer<typeof PostMessageResponse>;
 
 /**
  * Pull the first text block's `text` out of a content-blocks array. Used
- * by the route handler to feed `chat:run`'s flat-string `message` field
+ * by the route handler to feed `agent:invoke`'s flat-string `message` field
  * for the SDK's first turn. Non-text blocks (images, tool results) are
  * preserved verbatim in the conversation row and replayed in Task 15.
  *

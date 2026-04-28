@@ -1,4 +1,4 @@
-import type { ChatContext, HookBus } from '@ax/core';
+import type { AgentContext, HookBus } from '@ax/core';
 import { EventChatEndSchema, type EventChatEnd } from '@ax/ipc-protocol';
 import { validationError } from '../errors.js';
 import type { HandlerErr } from './types.js';
@@ -8,7 +8,7 @@ import type { HandlerErr } from './types.js';
 //
 // Fire-and-forget. The `chat:end` hook is what @ax/audit-log listens to for
 // durable persistence of chat outcomes — any change to the payload shape here
-// breaks audit-log silently. The wire shape is `{ outcome: ChatOutcome }`
+// breaks audit-log silently. The wire shape is `{ outcome: AgentOutcome }`
 // and the hook fires with the same key name, matching chat-loop.ts.
 // ---------------------------------------------------------------------------
 
@@ -23,7 +23,7 @@ export function validateEventChatEnd(rawPayload: unknown):
 }
 
 export async function fireEventChatEnd(
-  ctx: ChatContext,
+  ctx: AgentContext,
   bus: HookBus,
   payload: unknown,
 ): Promise<void> {

@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import {
   type Plugin,
-  type ChatOutcome,
+  type AgentOutcome,
   type ChatMessage,
 } from '@ax/core';
 import { runServeCommand } from '../commands/serve.js';
@@ -9,7 +9,7 @@ import { runServeCommand } from '../commands/serve.js';
 // ---------------------------------------------------------------------------
 // Tests for the `serve` subcommand. Avoids the real k8s preset by injecting
 // a `pluginsFactory` that registers a tiny stub plugin with `session:create`
-// + `chat:run` — enough surface for the HTTP handler to exercise. Real
+// + `agent:invoke` — enough surface for the HTTP handler to exercise. Real
 // preset boot requires Postgres + k8s API, which we don't want to drag into
 // a unit test.
 // ---------------------------------------------------------------------------
@@ -21,13 +21,13 @@ interface ServeHandle {
 }
 
 function stubPlugin(opts: {
-  chatOutcome?: ChatOutcome | (() => ChatOutcome);
+  chatOutcome?: AgentOutcome | (() => AgentOutcome);
 } = {}): Plugin {
   return {
     manifest: {
       name: '@ax/serve-test-stub',
       version: '0.0.0',
-      registers: ['session:create', 'chat:run'],
+      registers: ['session:create', 'agent:invoke'],
       calls: [],
       subscribes: [],
     },
@@ -37,8 +37,8 @@ function stubPlugin(opts: {
         '@ax/serve-test-stub',
         async (_ctx, input) => ({ sessionId: input.sessionId, token: 'stub-token' }),
       );
-      bus.registerService<{ message: ChatMessage }, ChatOutcome>(
-        'chat:run',
+      bus.registerService<{ message: ChatMessage }, AgentOutcome>(
+        'agent:invoke',
         '@ax/serve-test-stub',
         async (_ctx, input) => {
           const o = opts.chatOutcome;
@@ -299,7 +299,7 @@ describe('serve command — HTTP surface', () => {
     expect(body.sessionId).toBe('my-session-abc');
   });
 
-  it('returns 500 with PluginError code when chat:run throws', async () => {
+  it('returns 500 with PluginError code when agent:invoke throws', async () => {
     const { PluginError } = await import('@ax/core');
     handle = await bootServe({
       plugin: stubPlugin({
@@ -307,7 +307,7 @@ describe('serve command — HTTP surface', () => {
           throw new PluginError({
             code: 'chat-busted',
             plugin: 'test',
-            hookName: 'chat:run',
+            hookName: 'agent:invoke',
             message: 'chat went sideways',
           });
         },

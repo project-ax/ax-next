@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import {
   HookBus,
-  makeChatContext,
+  makeAgentContext,
   createLogger,
   type ChatMessage,
-  type ChatOutcome,
+  type AgentOutcome,
   type ServiceHandler,
 } from '@ax/core';
 import { createTestHarness } from '@ax/test-harness';
@@ -13,7 +13,7 @@ import { createChatOrchestratorPlugin } from '../index.js';
 // ---------------------------------------------------------------------------
 // Task 16 (Week 10–12, J6) — orchestrator routes by conversationId.
 //
-// When `ctx.conversationId` has a live `active_session_id`, chat:run must
+// When `ctx.conversationId` has a live `active_session_id`, agent:invoke must
 // enqueue into THAT session's inbox via `session:queue-work` rather than
 // opening a fresh sandbox. On a fresh-session path (or stale active id),
 // the orchestrator opens a new sandbox AND binds the conversation row via
@@ -110,7 +110,7 @@ function buildMocks(opts: {
       const row = opts.conversations[i.conversationId];
       if (row === undefined) {
         // Match @ax/conversations behavior — not-found PluginError. Tests
-        // that exercise this path can subscribe to chat:run and assert the
+        // that exercise this path can subscribe to agent:invoke and assert the
         // outcome.
         const { PluginError } = await import('@ax/core');
         throw new PluginError({
@@ -163,7 +163,7 @@ function ctxWith(opts: {
   conversationId?: string;
   reqId?: string;
 }) {
-  return makeChatContext({
+  return makeAgentContext({
     sessionId: opts.sessionId ?? 'fresh-session',
     agentId: 'test-agent',
     userId: 'test-user',
@@ -174,23 +174,23 @@ function ctxWith(opts: {
 }
 
 // Fires chat:end on the bus immediately so the orchestrator's deferred
-// resolves. Used in scenarios where we want the chat:run to return
+// resolves. Used in scenarios where we want the agent:invoke to return
 // quickly without exercising the timeout path.
 //
 // The waiter map is keyed by ctx.reqId (server-minted, unique per
-// chat:run), so the chat:end fire MUST carry the originating chat:run's
+// agent:invoke), so the chat:end fire MUST carry the originating agent:invoke's
 // reqId — otherwise onChatEnd's lookup misses and the deferred only
 // resolves on timeout.
 function arrangeImmediateEnd(
   bus: HookBus,
-  expected: ChatOutcome,
+  expected: AgentOutcome,
   forSessionId: string,
   forReqId: string,
 ): void {
   setImmediate(() => {
     void bus.fire(
       'chat:end',
-      makeChatContext({
+      makeAgentContext({
         sessionId: forSessionId,
         agentId: 'a',
         userId: 'u',
@@ -215,11 +215,11 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
       ],
     });
 
-    const expected: ChatOutcome = { kind: 'complete', messages: [] };
+    const expected: AgentOutcome = { kind: 'complete', messages: [] };
     arrangeImmediateEnd(h.bus, expected, 'fresh-session', 'req-1');
 
-    const outcome = await h.bus.call<unknown, ChatOutcome>(
-      'chat:run',
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
       ctxWith({ sessionId: 'fresh-session', reqId: 'req-1' }),
       { message: { role: 'user', content: 'hi' } },
     );
@@ -248,11 +248,11 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
       ],
     });
 
-    const expected: ChatOutcome = { kind: 'complete', messages: [] };
+    const expected: AgentOutcome = { kind: 'complete', messages: [] };
     arrangeImmediateEnd(h.bus, expected, 's-fresh', 'req-A');
 
-    const outcome = await h.bus.call<unknown, ChatOutcome>(
-      'chat:run',
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
       ctxWith({
         sessionId: 's-fresh',
         conversationId: 'conv-1',
@@ -289,15 +289,15 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
       ],
     });
 
-    const expected: ChatOutcome = {
+    const expected: AgentOutcome = {
       kind: 'complete',
       messages: [{ role: 'assistant', content: 'reuse-reply' }],
     };
     // The runner (already alive) emits chat:end on its existing sessionId.
     arrangeImmediateEnd(h.bus, expected, 's-existing', 'req-B');
 
-    const outcome = await h.bus.call<unknown, ChatOutcome>(
-      'chat:run',
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
       ctxWith({
         sessionId: 'fresh-but-unused',
         conversationId: 'conv-2',
@@ -343,11 +343,11 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
       ],
     });
 
-    const expected: ChatOutcome = { kind: 'complete', messages: [] };
+    const expected: AgentOutcome = { kind: 'complete', messages: [] };
     arrangeImmediateEnd(h.bus, expected, 's-fresh-2', 'req-C');
 
-    const outcome = await h.bus.call<unknown, ChatOutcome>(
-      'chat:run',
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
       ctxWith({
         sessionId: 's-fresh-2',
         conversationId: 'conv-3',
@@ -387,11 +387,11 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
       ],
     });
 
-    const expected: ChatOutcome = { kind: 'complete', messages: [] };
+    const expected: AgentOutcome = { kind: 'complete', messages: [] };
     arrangeImmediateEnd(h.bus, expected, 's-r', 'req-NEW');
 
-    await h.bus.call<unknown, ChatOutcome>(
-      'chat:run',
+    await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
       ctxWith({
         sessionId: 'unused',
         conversationId: 'conv-r',
@@ -426,11 +426,11 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
       ],
     });
 
-    const expected: ChatOutcome = { kind: 'complete', messages: [] };
+    const expected: AgentOutcome = { kind: 'complete', messages: [] };
     arrangeImmediateEnd(h.bus, expected, 's-flaky', 'req-X');
 
-    const outcome = await h.bus.call<unknown, ChatOutcome>(
-      'chat:run',
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
       ctxWith({
         sessionId: 'unused',
         conversationId: 'conv-flaky',
@@ -467,8 +467,8 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
       return undefined;
     });
 
-    const outcome = await h.bus.call<unknown, ChatOutcome>(
-      'chat:run',
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
       ctxWith({
         sessionId: 'unused',
         conversationId: 'conv-q',
@@ -502,11 +502,11 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
       ],
     });
 
-    const expected: ChatOutcome = { kind: 'complete', messages: [] };
+    const expected: AgentOutcome = { kind: 'complete', messages: [] };
     arrangeImmediateEnd(h.bus, expected, 's-fallback', 'req-fb');
 
-    const outcome = await h.bus.call<unknown, ChatOutcome>(
-      'chat:run',
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
       ctxWith({
         sessionId: 's-fallback',
         conversationId: 'conv-broken',
@@ -523,11 +523,11 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
     ]);
   });
 
-  it('two concurrent chat:run on same conversation each receive their own outcome (waiter map keyed by reqId, not sessionId)', async () => {
-    // Regression: when two chat:runs hit the same conversation while a
+  it('two concurrent agent:invoke on same conversation each receive their own outcome (waiter map keyed by reqId, not sessionId)', async () => {
+    // Regression: when two agent:invokes hit the same conversation while a
     // sandbox is alive, both routed branches register waiters on the
     // SAME sessionId. A sessionId-keyed map would let the second
-    // chat:run overwrite the first — first request times out, second
+    // agent:invoke overwrite the first — first request times out, second
     // resolves with the wrong outcome. Re-keying by ctx.reqId fixes it.
     const mocks = buildMocks({
       conversations: { 'conv-cc': { activeSessionId: 's-cc' } },
@@ -543,11 +543,11 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
       ],
     });
 
-    const outcomeR1: ChatOutcome = {
+    const outcomeR1: AgentOutcome = {
       kind: 'complete',
       messages: [{ role: 'assistant', content: 'reply-r1' }],
     };
-    const outcomeR2: ChatOutcome = {
+    const outcomeR2: AgentOutcome = {
       kind: 'complete',
       messages: [{ role: 'assistant', content: 'reply-r2' }],
     };
@@ -556,7 +556,7 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
     setImmediate(() => {
       void h.bus.fire(
         'chat:end',
-        makeChatContext({
+        makeAgentContext({
           sessionId: 's-cc',
           agentId: 'a',
           userId: 'u',
@@ -567,7 +567,7 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
       );
       void h.bus.fire(
         'chat:end',
-        makeChatContext({
+        makeAgentContext({
           sessionId: 's-cc',
           agentId: 'a',
           userId: 'u',
@@ -579,8 +579,8 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
     });
 
     const [resA, resB] = await Promise.all([
-      h.bus.call<unknown, ChatOutcome>(
-        'chat:run',
+      h.bus.call<unknown, AgentOutcome>(
+        'agent:invoke',
         ctxWith({
           sessionId: 'unused-A',
           conversationId: 'conv-cc',
@@ -588,8 +588,8 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
         }),
         { message: { role: 'user', content: 'msg-1' } },
       ),
-      h.bus.call<unknown, ChatOutcome>(
-        'chat:run',
+      h.bus.call<unknown, AgentOutcome>(
+        'agent:invoke',
         ctxWith({
           sessionId: 'unused-B',
           conversationId: 'conv-cc',
@@ -599,7 +599,7 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
       ),
     ]);
 
-    // Each chat:run resolved with its OWN outcome — no cross-contamination.
+    // Each agent:invoke resolved with its OWN outcome — no cross-contamination.
     expect(resA).toEqual(outcomeR1);
     expect(resB).toEqual(outcomeR2);
     // Both routed to the SAME existing sandbox (no fresh open).

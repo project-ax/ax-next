@@ -102,7 +102,7 @@ export type SessionResolveTokenOutput =
        * Conversation this session is bound to (Task 15). Null for canary /
        * admin sessions or for any session minted before Task 15. Used by
        * the IPC server to stamp ctx.conversationId on every per-request
-       * ChatContext so runner-fired `chat:turn-end` subscribers see the
+       * AgentContext so runner-fired `chat:turn-end` subscribers see the
        * binding (auto-append, clearActiveReqId, SSE done-frame).
        */
       conversationId: string | null;

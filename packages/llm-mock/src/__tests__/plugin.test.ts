@@ -25,8 +25,8 @@ describe('@ax/llm-mock', () => {
     expect(p.manifest.subscribes).toEqual([]);
   });
 
-  // NOTE: the Week 1-2 "chat:run + llm-mock end-to-end" case lived here
-  // because the kernel provided chat:run. In 6.5a chat:run is the
+  // NOTE: the Week 1-2 "agent:invoke + llm-mock end-to-end" case lived here
+  // because the kernel provided agent:invoke. In 6.5a agent:invoke is the
   // @ax/chat-orchestrator plugin's service hook and drives a runner
   // subprocess — llm-mock no longer participates in a host-side loop. The
   // equivalent acceptance lands in Task 15 (subprocess topology).

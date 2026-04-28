@@ -1,6 +1,6 @@
 import * as http from 'node:http';
 import { promises as fs } from 'node:fs';
-import { makeChatContext, type HookBus } from '@ax/core';
+import { makeAgentContext, type HookBus } from '@ax/core';
 import { authenticate, dispatch, writeJsonError } from '@ax/ipc-core';
 
 // ---------------------------------------------------------------------------
@@ -89,7 +89,7 @@ export async function createListener(opts: CreateListenerOptions): Promise<Liste
     //    the real workspaceRoot after auth succeeds so downstream handlers
     //    (e.g. future tool.execute-host) see the authenticated session's
     //    workspace. The 4xx error paths below run on THIS pre-auth ctx.
-    const preAuthCtx = makeChatContext({
+    const preAuthCtx = makeAgentContext({
       sessionId: opts.sessionId,
       agentId: 'ipc-server',
       userId: 'ipc-server',
@@ -111,7 +111,7 @@ export async function createListener(opts: CreateListenerOptions): Promise<Liste
       );
     }
 
-    // Per-request ChatContext with a fresh reqId and the REAL workspaceRoot
+    // Per-request AgentContext with a fresh reqId and the REAL workspaceRoot
     // from the auth result. The dispatcher reads the body under MAX_FRAME
     // (I11) and routes to the per-action handler.
     //
@@ -119,7 +119,7 @@ export async function createListener(opts: CreateListenerOptions): Promise<Liste
     // handlers (notably tool-dispatcher's per-agent filter and the
     // session:get-config handler) can read them. Pre-9.5 sessions resolve
     // with nulls — we substitute placeholder strings to preserve the
-    // ChatContext invariant that agentId/userId are non-empty strings.
+    // AgentContext invariant that agentId/userId are non-empty strings.
     // The session:get-config handler treats the placeholders as a
     // distinct case from "real owner" and rejects with `owner-missing`
     // (the session store's `get` returns null for these fields).
@@ -129,9 +129,9 @@ export async function createListener(opts: CreateListenerOptions): Promise<Liste
     // binding intact. Subscribers (auto-append, clearActiveReqId, SSE
     // done-frame) read ctx.conversationId; without this propagation they
     // silently no-op and the browser only learns the stream finished via
-    // socket-close. ChatContext.conversationId is OPTIONAL — null on the
+    // socket-close. AgentContext.conversationId is OPTIONAL — null on the
     // auth result becomes undefined on ctx (canary / admin sessions).
-    const ctx = makeChatContext({
+    const ctx = makeAgentContext({
       sessionId: auth.sessionId,
       agentId: auth.agentId ?? 'ipc-server',
       userId: auth.userId ?? 'ipc-server',

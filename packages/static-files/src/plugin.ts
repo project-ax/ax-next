@@ -1,6 +1,6 @@
 import { promises as fs } from 'node:fs';
 import { extname, normalize, resolve, sep } from 'node:path';
-import { PluginError, makeChatContext, type Plugin } from '@ax/core';
+import { PluginError, makeAgentContext, type Plugin } from '@ax/core';
 
 const PLUGIN_NAME = '@ax/static-files';
 
@@ -129,7 +129,7 @@ export function createStaticFilesPlugin(config: StaticFilesConfig): Plugin {
         });
       }
 
-      const ctx = makeChatContext({
+      const ctx = makeAgentContext({
         sessionId: 'static-files',
         agentId: 'static-files',
         userId: 'system',

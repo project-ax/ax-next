@@ -20,7 +20,7 @@
 import {
   HookBus,
   asWorkspaceVersion,
-  makeChatContext,
+  makeAgentContext,
   type FileChange,
   type WorkspaceApplyInput,
   type WorkspaceApplyOutput,
@@ -81,7 +81,7 @@ function busFor(repoRoot: string): HookBus {
 // that read as "obviously infra, not user data" so anyone reading the commit
 // authors knows where the writes came from.
 function serverCtx(repoRoot: string) {
-  return makeChatContext({
+  return makeAgentContext({
     sessionId: 'git-server',
     agentId: 'git-server',
     userId: 'git-server',

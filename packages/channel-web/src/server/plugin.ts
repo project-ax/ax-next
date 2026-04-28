@@ -1,6 +1,6 @@
 import {
-  makeChatContext,
-  type ChatContext,
+  makeAgentContext,
+  type AgentContext,
   type HookBus,
   type Plugin,
 } from '@ax/core';
@@ -35,7 +35,7 @@ const PLUGIN_NAME = '@ax/channel-web';
 //   - calls: http:register-route, auth:require-user, agents:resolve,
 //     agents:list-for-user, conversations:get-by-req-id,
 //     conversations:create / :get / :list / :delete / :append-turn,
-//     chat:run. All hard — the chat-flow surface can't function without
+//     agent:invoke. All hard — the chat-flow surface can't function without
 //     any of them.
 //   - subscribes: chat:stream-chunk (fills the buffer + per-connection
 //     filter), chat:turn-end (host-side eviction so the buffer doesn't
@@ -68,14 +68,14 @@ export function createChannelWebServerPlugin(
         'conversations:list',
         'conversations:delete',
         'conversations:append-turn',
-        'chat:run',
+        'agent:invoke',
       ],
       subscribes: ['chat:stream-chunk', 'chat:turn-end'],
     },
 
     async init({ bus }) {
       busRef = bus;
-      const initCtx: ChatContext = makeChatContext({
+      const initCtx: AgentContext = makeAgentContext({
         sessionId: 'init',
         agentId: PLUGIN_NAME,
         userId: 'system',

@@ -1,14 +1,14 @@
-import type { ChatContext } from './context.js';
+import type { AgentContext } from './context.js';
 import { isRejection, PluginError, type Rejection } from './errors.js';
 import type { FireResult } from './types.js';
 
 export type ServiceHandler<I = unknown, O = unknown> = (
-  ctx: ChatContext,
+  ctx: AgentContext,
   input: I,
 ) => Promise<O>;
 
 export type SubscriberHandler<P = unknown> = (
-  ctx: ChatContext,
+  ctx: AgentContext,
   payload: P,
 ) => Promise<P | undefined | Rejection>;
 
@@ -42,7 +42,7 @@ export class HookBus {
     return this.services.has(hookName);
   }
 
-  async call<I, O>(hookName: string, ctx: ChatContext, input: I): Promise<O> {
+  async call<I, O>(hookName: string, ctx: AgentContext, input: I): Promise<O> {
     const registered = this.services.get(hookName);
     if (registered === undefined) {
       throw new PluginError({
@@ -91,7 +91,7 @@ export class HookBus {
     return before - filtered.length;
   }
 
-  async fire<P>(hookName: string, ctx: ChatContext, payload: P): Promise<FireResult<P>> {
+  async fire<P>(hookName: string, ctx: AgentContext, payload: P): Promise<FireResult<P>> {
     const list = this.subscribers.get(hookName) ?? [];
     let current: P = payload;
     for (const sub of list) {

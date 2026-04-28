@@ -1,6 +1,6 @@
 import * as http from 'node:http';
 import { authenticate, dispatch, writeJsonError } from '@ax/ipc-core';
-import { makeChatContext, type HookBus } from '@ax/core';
+import { makeAgentContext, type HookBus } from '@ax/core';
 
 // ---------------------------------------------------------------------------
 // HTTP listener — TCP analogue of @ax/ipc-server's unix-socket listener.
@@ -101,7 +101,7 @@ export async function createHttpListener(
     //    (e.g. tool.execute-host) see the authenticated session's workspace.
     //    The 4xx error paths below run on THIS pre-auth ctx — but only auth
     //    errors are emitted here, and `authenticate` never echoes tokens.
-    const preAuthCtx = makeChatContext({
+    const preAuthCtx = makeAgentContext({
       sessionId: 'ipc-http-pre-auth',
       agentId: 'ipc-http',
       userId: 'ipc-http',
@@ -117,10 +117,10 @@ export async function createHttpListener(
       );
     }
 
-    // Per-request ChatContext with a fresh reqId and the REAL workspaceRoot
+    // Per-request AgentContext with a fresh reqId and the REAL workspaceRoot
     // from the auth result. The dispatcher reads the body under MAX_FRAME
     // (I11) and routes to the per-action handler.
-    const ctx = makeChatContext({
+    const ctx = makeAgentContext({
       sessionId: auth.sessionId,
       agentId: 'ipc-http',
       userId: 'ipc-http',

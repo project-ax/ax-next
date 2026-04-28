@@ -29,7 +29,7 @@ import {
   SSEClientTransport,
   type SSEClientTransportOptions,
 } from '@modelcontextprotocol/sdk/client/sse.js';
-import { PluginError, type ChatContext } from '@ax/core';
+import { PluginError, type AgentContext } from '@ax/core';
 import type { McpServerConfig } from './config.js';
 
 const PLUGIN_NAME = '@ax/mcp-client';
@@ -49,13 +49,13 @@ const PLUGIN_NAME = '@ax/mcp-client';
 export const BASE_STDIO_ENV_KEYS = ['PATH', 'HOME', 'LANG', 'LC_ALL'] as const;
 
 export interface BusLike {
-  call: <I, O>(hookName: string, ctx: ChatContext, input: I) => Promise<O>;
+  call: <I, O>(hookName: string, ctx: AgentContext, input: I) => Promise<O>;
 }
 
 export interface CreateTransportOptions {
   config: McpServerConfig;
   bus: BusLike;
-  ctx: ChatContext;
+  ctx: AgentContext;
 }
 
 export type McpClientTransport =
@@ -91,7 +91,7 @@ export interface SseBuildResult {
  */
 async function resolveCredentials(
   bus: BusLike,
-  ctx: ChatContext,
+  ctx: AgentContext,
   refs: Record<string, string> | undefined,
 ): Promise<Record<string, string>> {
   const out: Record<string, string> = {};
@@ -139,7 +139,7 @@ function baseStdioEnv(): Record<string, string> {
 export async function buildStdioParams(opts: {
   config: Extract<McpServerConfig, { transport: 'stdio' }>;
   bus: BusLike;
-  ctx: ChatContext;
+  ctx: AgentContext;
 }): Promise<StdioParams> {
   const { config, bus, ctx } = opts;
   const credEnv = await resolveCredentials(bus, ctx, config.credentialRefs);
@@ -163,7 +163,7 @@ export async function buildStdioParams(opts: {
 export async function buildStreamableHttpOptions(opts: {
   config: Extract<McpServerConfig, { transport: 'streamable-http' }>;
   bus: BusLike;
-  ctx: ChatContext;
+  ctx: AgentContext;
 }): Promise<StreamableHttpBuildResult> {
   const { config, bus, ctx } = opts;
   const headers = await resolveCredentials(bus, ctx, config.headerCredentialRefs);
@@ -184,7 +184,7 @@ export async function buildStreamableHttpOptions(opts: {
 export async function buildSseOptions(opts: {
   config: Extract<McpServerConfig, { transport: 'sse' }>;
   bus: BusLike;
-  ctx: ChatContext;
+  ctx: AgentContext;
 }): Promise<SseBuildResult> {
   const { config, bus, ctx } = opts;
   const headers = await resolveCredentials(bus, ctx, config.headerCredentialRefs);

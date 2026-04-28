@@ -37,8 +37,8 @@
 
 import {
   PluginError,
-  makeChatContext,
-  type ChatContext,
+  makeAgentContext,
+  type AgentContext,
   type Plugin,
   type ToolCall,
 } from '@ax/core';
@@ -71,7 +71,7 @@ export interface CreateMcpClientPluginOptions {
   transportFactory?: (opts: {
     config: McpServerConfig;
     bus: BusLike;
-    ctx: ChatContext;
+    ctx: AgentContext;
   }) => Promise<McpClientTransport>;
   /**
    * If true, mount the /admin/mcp-servers routes. Default: false. The
@@ -128,9 +128,9 @@ export function createMcpClientPlugin(opts: CreateMcpClientPluginOptions = {}): 
     async init({ bus }) {
       // Synthesize a minimal init-time ctx: the hooks we call during init
       // (`storage:get`, `storage:set`, `credentials:get`, `tool:register`)
-      // don't read session/agent/user identity, they just need a ChatContext
+      // don't read session/agent/user identity, they just need a AgentContext
       // envelope (and a logger). Mirrors @ax/test-harness/test-host-tool.ts.
-      const initCtx = makeChatContext({
+      const initCtx = makeAgentContext({
         sessionId: 'init',
         agentId: PLUGIN_NAME,
         userId: 'init',

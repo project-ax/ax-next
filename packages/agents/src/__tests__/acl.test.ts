@@ -3,7 +3,7 @@ import {
   PostgreSqlContainer,
   type StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
-import { HookBus, PluginError, makeChatContext } from '@ax/core';
+import { HookBus, PluginError, makeAgentContext } from '@ax/core';
 import { createTestHarness, type TestHarness } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createTeamsPlugin } from '@ax/teams';
@@ -54,7 +54,7 @@ function makeTeamAgent(overrides: Partial<Agent> = {}): Agent {
 }
 
 function ctx() {
-  return makeChatContext({
+  return makeAgentContext({
     sessionId: 's',
     agentId: 'a',
     userId: 'u1',
@@ -103,7 +103,7 @@ describe('checkAccess', () => {
   it('team: NO teams:is-member registered → forbidden + warns once', async () => {
     const bus = new HookBus();
     const warned: string[] = [];
-    const c = makeChatContext({
+    const c = makeAgentContext({
       sessionId: 's',
       agentId: 'a',
       userId: 'u1',

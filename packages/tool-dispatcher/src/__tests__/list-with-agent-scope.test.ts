@@ -2,9 +2,9 @@ import { describe, it, expect } from 'vitest';
 import {
   HookBus,
   PluginError,
-  makeChatContext,
+  makeAgentContext,
   createLogger,
-  type ChatContext,
+  type AgentContext,
   type ToolDescriptor,
 } from '@ax/core';
 import { createToolDispatcherPlugin } from '../plugin.js';
@@ -22,8 +22,8 @@ import { createToolDispatcherPlugin } from '../plugin.js';
 
 const ctxFor = (
   overrides: Partial<{ sessionId: string; agentId: string; userId: string }> = {},
-): ChatContext =>
-  makeChatContext({
+): AgentContext =>
+  makeAgentContext({
     sessionId: overrides.sessionId ?? 's',
     agentId: overrides.agentId ?? 'a',
     userId: overrides.userId ?? 'u',

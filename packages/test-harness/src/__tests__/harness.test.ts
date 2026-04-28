@@ -40,9 +40,9 @@ describe('createTestHarness', () => {
     expect(v).toBe('mocked-value');
   });
 
-  it('does not register chat:run by default (orchestrator is an explicit plugin in 6.5a)', async () => {
+  it('does not register agent:invoke by default (orchestrator is an explicit plugin in 6.5a)', async () => {
     const h = await createTestHarness({});
-    expect(h.bus.hasService('chat:run')).toBe(false);
+    expect(h.bus.hasService('agent:invoke')).toBe(false);
   });
 });
 

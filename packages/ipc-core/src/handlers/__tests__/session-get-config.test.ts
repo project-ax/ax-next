@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   HookBus,
   bootstrap,
-  makeChatContext,
-  type ChatContext,
+  makeAgentContext,
+  type AgentContext,
 } from '@ax/core';
 import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
 import type {
@@ -35,7 +35,7 @@ const OWNER = {
 
 interface Env {
   bus: HookBus;
-  ctx: (sessionId: string) => ChatContext;
+  ctx: (sessionId: string) => AgentContext;
 }
 
 async function makeEnv(): Promise<Env> {
@@ -48,7 +48,7 @@ async function makeEnv(): Promise<Env> {
   return {
     bus,
     ctx: (sessionId: string) =>
-      makeChatContext({ sessionId, agentId: 'ipc-server', userId: 'ipc-server' }),
+      makeAgentContext({ sessionId, agentId: 'ipc-server', userId: 'ipc-server' }),
   };
 }
 

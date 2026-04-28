@@ -95,12 +95,12 @@ function chatRunMockPlugin(): Plugin {
     manifest: {
       name: 'mock-chat-run',
       version: '0.0.0',
-      registers: ['chat:run'],
+      registers: ['agent:invoke'],
       calls: [],
       subscribes: [],
     },
     init({ bus }) {
-      bus.registerService('chat:run', 'mock-chat-run', async () => {
+      bus.registerService('agent:invoke', 'mock-chat-run', async () => {
         return { kind: 'complete', messages: [] };
       });
     },

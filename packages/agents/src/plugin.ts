@@ -1,7 +1,7 @@
 import {
-  makeChatContext,
+  makeAgentContext,
   PluginError,
-  type ChatContext,
+  type AgentContext,
   type HookBus,
   type Plugin,
 } from '@ax/core';
@@ -82,7 +82,7 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
     },
 
     async init({ bus }) {
-      const initCtx = makeChatContext({
+      const initCtx = makeAgentContext({
         sessionId: 'init',
         agentId: PLUGIN_NAME,
         userId: 'system',
@@ -163,7 +163,7 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
 async function resolveAgent(
   store: AgentStore,
   bus: HookBus,
-  ctx: ChatContext,
+  ctx: AgentContext,
   input: ResolveInput,
 ): Promise<ResolveOutput> {
   const agent = await store.getById(input.agentId);
@@ -215,7 +215,7 @@ async function listForUser(
 async function createAgent(
   store: AgentStore,
   bus: HookBus,
-  ctx: ChatContext,
+  ctx: AgentContext,
   input: CreateInput,
   cfg: { allowedModels: readonly string[] },
 ): Promise<CreateOutput> {
@@ -258,7 +258,7 @@ async function createAgent(
 async function updateAgent(
   store: AgentStore,
   bus: HookBus,
-  ctx: ChatContext,
+  ctx: AgentContext,
   input: UpdateInput,
   cfg: { allowedModels: readonly string[] },
 ): Promise<UpdateOutput> {
@@ -282,7 +282,7 @@ async function updateAgent(
 async function deleteAgent(
   store: AgentStore,
   bus: HookBus,
-  ctx: ChatContext,
+  ctx: AgentContext,
   input: DeleteInput,
 ): Promise<DeleteOutput> {
   const existing = await store.getById(input.agentId);
@@ -307,7 +307,7 @@ async function deleteAgent(
 async function assertWriteAllowed(
   agent: Agent,
   bus: HookBus,
-  ctx: ChatContext,
+  ctx: AgentContext,
   actor: { userId: string; isAdmin: boolean },
 ): Promise<void> {
   if (actor.isAdmin) return;
@@ -339,7 +339,7 @@ async function assertWriteAllowed(
 
 async function isTeamMember(
   bus: HookBus,
-  ctx: ChatContext,
+  ctx: AgentContext,
   teamId: string,
   userId: string,
 ): Promise<boolean> {

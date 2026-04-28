@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   HookBus,
   PluginError,
-  makeChatContext,
-  type ChatContext,
+  makeAgentContext,
+  type AgentContext,
 } from '@ax/core';
 import { conversationFetchHistoryHandler } from '../conversation-fetch-history.js';
 
@@ -26,21 +26,21 @@ import { conversationFetchHistoryHandler } from '../conversation-fetch-history.j
 
 interface BusOpts {
   fetchImpl?: (
-    ctx: ChatContext,
+    ctx: AgentContext,
     input: { conversationId: string; userId: string },
   ) => Promise<unknown>;
 }
 
-function makeBus(opts: BusOpts = {}): { bus: HookBus; calls: Array<{ ctx: ChatContext; input: { conversationId: string; userId: string } }> } {
+function makeBus(opts: BusOpts = {}): { bus: HookBus; calls: Array<{ ctx: AgentContext; input: { conversationId: string; userId: string } }> } {
   const calls: Array<{
-    ctx: ChatContext;
+    ctx: AgentContext;
     input: { conversationId: string; userId: string };
   }> = [];
   const bus = new HookBus();
   bus.registerService(
     'conversations:fetch-history',
     'mock-conversations',
-    async (ctx: ChatContext, raw: unknown) => {
+    async (ctx: AgentContext, raw: unknown) => {
       const input = raw as { conversationId: string; userId: string };
       calls.push({ ctx, input });
       if (opts.fetchImpl !== undefined) {
@@ -52,8 +52,8 @@ function makeBus(opts: BusOpts = {}): { bus: HookBus; calls: Array<{ ctx: ChatCo
   return { bus, calls };
 }
 
-const ctxWith = (userId: string): ChatContext =>
-  makeChatContext({
+const ctxWith = (userId: string): AgentContext =>
+  makeAgentContext({
     sessionId: 'sess-1',
     agentId: 'agent-1',
     userId,

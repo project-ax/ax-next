@@ -65,7 +65,7 @@ export interface ResolveTokenResult {
    * Conversation this session is bound to (Task 15). Null for canary /
    * admin sessions OR for any session minted before Task 15. Carried on
    * the resolve-token result so the IPC server can stamp it onto every
-   * per-request ChatContext — without it, `chat:turn-end` subscribers
+   * per-request AgentContext — without it, `chat:turn-end` subscribers
    * (auto-append, clearActiveReqId, SSE done-frame) silently no-op.
    */
   conversationId: string | null;

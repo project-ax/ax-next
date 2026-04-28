@@ -151,7 +151,7 @@ export function buildPodSpec(
         'ax.io/plane': 'execution',
         // sessionId is a label so a future operator using `kubectl get pod
         // -l ax.io/session-id=...` can find a pod by session. Labels have
-        // a 63-char limit; ChatContext.sessionId is freeform but is
+        // a 63-char limit; AgentContext.sessionId is freeform but is
         // typically a UUID or short id — if it ever exceeds 63 chars,
         // k8s will reject the pod create with a clear validation error
         // (we don't pre-truncate; truncation would risk collisions).

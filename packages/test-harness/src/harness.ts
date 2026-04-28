@@ -1,15 +1,15 @@
 import {
   HookBus,
-  makeChatContext,
+  makeAgentContext,
   bootstrap,
-  type ChatContext,
+  type AgentContext,
   type Plugin,
   type ServiceHandler,
 } from '@ax/core';
 
 export interface TestHarness {
   bus: HookBus;
-  ctx(overrides?: Partial<Parameters<typeof makeChatContext>[0]>): ChatContext;
+  ctx(overrides?: Partial<Parameters<typeof makeAgentContext>[0]>): AgentContext;
   /**
    * Drain plugin resources held by this harness. Calls each plugin's
    * optional `shutdown()` in reverse load order (mirrors what the
@@ -53,8 +53,8 @@ const DEFAULT_SHUTDOWN_TIMEOUT_MS = 10_000;
 // real plugins booted through `bootstrap`. The returned `close()` drains
 // plugin-held resources in reverse load order — see TestHarness above.
 //
-// The Week 1-2 `withChatLoop` option is GONE — chat:run is no longer a
-// kernel primitive. Tests that want chat:run construct
+// The Week 1-2 `withChatLoop` option is GONE — agent:invoke is no longer a
+// kernel primitive. Tests that want agent:invoke construct
 // `@ax/chat-orchestrator` explicitly and pass it via `plugins:`.
 // ---------------------------------------------------------------------------
 
@@ -87,7 +87,7 @@ export async function createTestHarness(
   return {
     bus,
     ctx(overrides) {
-      return makeChatContext({
+      return makeAgentContext({
         sessionId: 'test-session',
         agentId: 'test-agent',
         userId: 'test-user',

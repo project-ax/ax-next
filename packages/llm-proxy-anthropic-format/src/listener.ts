@@ -2,9 +2,9 @@ import * as http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import {
   MAX_FRAME,
-  makeChatContext,
+  makeAgentContext,
   PluginError,
-  type ChatContext,
+  type AgentContext,
   type HookBus,
   type Logger,
 } from '@ax/core';
@@ -295,11 +295,11 @@ export async function createProxyListener(
   };
 }
 
-function buildCtx(sessionId: string, rootPath: string): ChatContext {
+function buildCtx(sessionId: string, rootPath: string): AgentContext {
   // The proxy is a wire adapter; it has no first-class agent/user identity.
   // Week 9.5 (@ax/agents) will ship a richer `session:get-context` hook that
   // fills these fields from the session record; until then, sane placeholders.
-  return makeChatContext({
+  return makeAgentContext({
     sessionId,
     agentId: 'proxy',
     userId: 'proxy',

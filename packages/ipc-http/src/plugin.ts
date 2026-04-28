@@ -55,7 +55,7 @@ export function createIpcHttpPlugin(
       });
       // Boot-time observability: print the bound address so the chart's
       // manual-acceptance step can grep for this line. The kernel doesn't
-      // have a ready logger at init() time (ChatContext is per-request).
+      // have a ready logger at init() time (AgentContext is per-request).
       process.stderr.write(
         `[ax/ipc-http] listening on http://${listener.host}:${listener.port}\n`,
       );

@@ -3,7 +3,7 @@ import { promises as fsp } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { describe, it, expect, afterEach } from 'vitest';
-import type { ChatContext } from '@ax/core';
+import type { AgentContext } from '@ax/core';
 import { createTestHarness } from '@ax/test-harness';
 import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
 import type {
@@ -18,7 +18,7 @@ import { createListener, type Listener } from '../listener.js';
 // (final review of PR #18, Week 10–12).
 //
 // Bug: when the runner emitted event.turn-end over IPC, the listener built a
-// fresh ChatContext from the auth result — but the auth result didn't carry
+// fresh AgentContext from the auth result — but the auth result didn't carry
 // `conversationId`, so the resulting `chat:turn-end` bus fire had
 // `ctx.conversationId === undefined`. That silently broke three subscribers:
 //
@@ -54,7 +54,7 @@ interface Harness {
 async function makeHarness(opts: {
   sessionId: string;
   conversationId: string | null;
-  onTurnEnd: (ctx: ChatContext, payload: unknown) => void;
+  onTurnEnd: (ctx: AgentContext, payload: unknown) => void;
 }): Promise<Harness> {
   const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
   h.bus.subscribe(
@@ -147,7 +147,7 @@ describe('@ax/ipc-server: conversationId propagation through token resolution', 
   });
 
   it('propagates session.conversationId onto ctx for chat:turn-end fires', async () => {
-    let capturedCtx: ChatContext | null = null;
+    let capturedCtx: AgentContext | null = null;
     let resolveFire: (() => void) | null = null;
     const fired = new Promise<void>((resolve) => {
       resolveFire = resolve;
@@ -179,17 +179,17 @@ describe('@ax/ipc-server: conversationId propagation through token resolution', 
     expect(capturedCtx).not.toBeNull();
     // The whole point: the per-connection ctx the bus subscriber sees must
     // carry the session's conversationId, not undefined.
-    expect((capturedCtx as ChatContext | null)?.conversationId).toBe(
+    expect((capturedCtx as AgentContext | null)?.conversationId).toBe(
       'cnv_test_prop',
     );
-    expect((capturedCtx as ChatContext | null)?.sessionId).toBe('s-conv-prop');
+    expect((capturedCtx as AgentContext | null)?.sessionId).toBe('s-conv-prop');
   });
 
   it('leaves ctx.conversationId undefined when the session has no conversation (canary)', async () => {
     // The other half of the contract — a session minted WITHOUT a
     // conversationId still works; subscribers correctly skip the
     // persistence path for canary / admin probes.
-    let capturedCtx: ChatContext | null = null;
+    let capturedCtx: AgentContext | null = null;
     let resolveFire: (() => void) | null = null;
     const fired = new Promise<void>((resolve) => {
       resolveFire = resolve;
@@ -219,6 +219,6 @@ describe('@ax/ipc-server: conversationId propagation through token resolution', 
     expect(res.status).toBe(202);
     await fired;
     expect(capturedCtx).not.toBeNull();
-    expect((capturedCtx as ChatContext | null)?.conversationId).toBeUndefined();
+    expect((capturedCtx as AgentContext | null)?.conversationId).toBeUndefined();
   });
 });

@@ -1,7 +1,7 @@
 import * as http from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
-import { HookBus, makeChatContext, PluginError } from '@ax/core';
-import type { ChatContext, ServiceHandler } from '@ax/core';
+import { HookBus, makeAgentContext, PluginError } from '@ax/core';
+import type { AgentContext, ServiceHandler } from '@ax/core';
 import type { LlmCallRequest, LlmCallResponse } from '@ax/ipc-protocol';
 import { createProxyListener, type ProxyListener } from '../listener.js';
 
@@ -23,7 +23,7 @@ interface Harness {
   listener: ProxyListener;
   sessionId: string;
   bus: HookBus;
-  ctx: ChatContext;
+  ctx: AgentContext;
   cleanup: () => Promise<void>;
 }
 
@@ -53,7 +53,7 @@ async function makeHarness(opts: HarnessOpts = {}): Promise<Harness> {
   bus.registerService('llm:call', 'mock', llmCall as ServiceHandler);
 
   const listener = await createProxyListener({ bus, sessionId });
-  const ctx = makeChatContext({
+  const ctx = makeAgentContext({
     sessionId,
     agentId: 'test',
     userId: 'test',

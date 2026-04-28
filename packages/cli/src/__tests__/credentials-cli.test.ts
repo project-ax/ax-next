@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
-import { HookBus, bootstrap, makeChatContext } from '@ax/core';
+import { HookBus, bootstrap, makeAgentContext } from '@ax/core';
 import { createStorageSqlitePlugin } from '@ax/storage-sqlite';
 import { createCredentialsPlugin } from '@ax/credentials';
 import { runCredentialsCommand } from '../commands/credentials.js';
@@ -50,7 +50,7 @@ describe('ax-next credentials set <id>', () => {
     });
     const got = await bus.call<{ id: string }, { value: string }>(
       'credentials:get',
-      makeChatContext({ sessionId: 's', agentId: 'a', userId: 'u' }),
+      makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' }),
       { id: 'gh-token' },
     );
     expect(got.value).toBe('ghp_abc123');
@@ -75,7 +75,7 @@ describe('ax-next credentials set <id>', () => {
     });
     const got = await bus.call<{ id: string }, { value: string }>(
       'credentials:get',
-      makeChatContext({ sessionId: 's', agentId: 'a', userId: 'u' }),
+      makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' }),
       { id: 'gh-token' },
     );
     expect(got.value).toBe('ghp_abc123'); // newline stripped

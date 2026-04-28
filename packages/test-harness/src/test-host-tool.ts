@@ -1,8 +1,8 @@
 import { z } from 'zod';
 import {
   PluginError,
-  makeChatContext,
-  type ChatContext,
+  makeAgentContext,
+  type AgentContext,
   type Plugin,
   type ToolDescriptor,
 } from '@ax/core';
@@ -72,9 +72,9 @@ export function createTestHostToolPlugin(): Plugin {
       );
 
       // init-time ctx: tool:register doesn't read ctx fields (pure registry
-      // write), but bus.call still needs a ChatContext envelope. Synthesize
+      // write), but bus.call still needs a AgentContext envelope. Synthesize
       // a minimal one so this plugin stays free of sibling-plugin imports.
-      const ctx: ChatContext = makeChatContext({
+      const ctx: AgentContext = makeAgentContext({
         sessionId: 'init',
         agentId: PLUGIN_NAME,
         userId: 'init',

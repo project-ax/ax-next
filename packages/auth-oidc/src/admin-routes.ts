@@ -1,4 +1,4 @@
-import type { ChatContext, HookBus } from '@ax/core';
+import type { AgentContext, HookBus } from '@ax/core';
 import { constantTimeTokenEquals, isProduction } from './dev-bootstrap.js';
 import {
   OIDC_STATE_COOKIE,
@@ -64,7 +64,7 @@ export interface RouteResponse {
 
 export interface RouteHandlerDeps {
   bus: HookBus;
-  initCtx: ChatContext;
+  initCtx: AgentContext;
   store: AuthStore;
   sessionCookieName: string;
   sessionLifetimeSeconds: number;

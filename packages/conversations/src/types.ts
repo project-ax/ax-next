@@ -158,7 +158,7 @@ export type GetByReqIdOutput = Conversation;
  * sandbox session per conversation at a time).
  *
  * Caller is the chat-orchestrator (Task 16) which has already validated
- * the user via `agents:resolve` at `chat:run` entry. This hook does NOT
+ * the user via `agents:resolve` at `agent:invoke` entry. This hook does NOT
  * call `agents:resolve`, but it DOES scope the row by `(conversation_id,
  * user_id)` derived from `ctx.userId` — a misbehaving caller cannot bind
  * a cross-tenant row.

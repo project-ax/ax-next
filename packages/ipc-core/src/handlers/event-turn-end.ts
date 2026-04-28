@@ -1,4 +1,4 @@
-import type { ChatContext, HookBus } from '@ax/core';
+import type { AgentContext, HookBus } from '@ax/core';
 import { EventTurnEndSchema, type EventTurnEnd } from '@ax/ipc-protocol';
 import { validationError } from '../errors.js';
 import type { HandlerErr } from './types.js';
@@ -25,7 +25,7 @@ export function validateEventTurnEnd(rawPayload: unknown):
 }
 
 export async function fireEventTurnEnd(
-  ctx: ChatContext,
+  ctx: AgentContext,
   bus: HookBus,
   payload: unknown,
 ): Promise<void> {

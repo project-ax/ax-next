@@ -4,8 +4,8 @@ import { pathToFileURL } from 'node:url';
 import {
   HookBus,
   bootstrap,
-  makeChatContext,
-  type ChatOutcome,
+  makeAgentContext,
+  type AgentOutcome,
   type Plugin,
 } from '@ax/core';
 import { llmMockPlugin } from '@ax/llm-mock';
@@ -36,7 +36,7 @@ import { runAdminCommand } from './commands/admin.js';
 //
 // Lazy-resolve the agent-native-runner binary inside main() rather than at
 // module load. Library-mode consumers (tests, embedders using configOverride)
-// that never invoke chat:run shouldn't fail to import @ax/cli just because
+// that never invoke agent:invoke shouldn't fail to import @ax/cli just because
 // the runner's dist/ hasn't been built yet. `createRequire` from the CLI's
 // own URL is robust against pnpm hoisting and works identically in dev + prod.
 //
@@ -77,7 +77,7 @@ export interface MainOptions {
    */
   sqlitePath?: string;
   /**
-   * Override `ChatContext.workspace.rootPath`. Defaults to `cwd`, which in
+   * Override `AgentContext.workspace.rootPath`. Defaults to `cwd`, which in
    * turn defaults to `process.cwd()`. Tool sandboxes land inside this dir.
    */
   workspaceRoot?: string;
@@ -152,7 +152,7 @@ export async function main(opts: MainOptions): Promise<number> {
   }
 
   // Session + IPC + chat orchestration. Together these replace the old
-  // in-process `registerChatLoop` — `chat:run` is now registered by
+  // in-process `registerChatLoop` — `agent:invoke` is now registered by
   // @ax/chat-orchestrator, which drives the per-chat lifecycle through
   // sandbox:open-session + session:queue-work and awaits chat:end from
   // the runner (delivered by @ax/ipc-server).
@@ -236,7 +236,7 @@ export async function main(opts: MainOptions): Promise<number> {
 
   const handle = await bootstrap({ bus, plugins, config: {} });
 
-  const ctx = makeChatContext({
+  const ctx = makeAgentContext({
     sessionId: 'cli-session',
     agentId: 'cli-agent',
     userId: 'cli-user',
@@ -244,7 +244,7 @@ export async function main(opts: MainOptions): Promise<number> {
   });
 
   try {
-    const outcome: ChatOutcome = await bus.call('chat:run', ctx, {
+    const outcome: AgentOutcome = await bus.call('agent:invoke', ctx, {
       message: { role: 'user', content: opts.message },
     });
 
@@ -317,10 +317,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       });
   } else {
     const message = argv.join(' ') || 'hi';
-    // Note: SIGINT/SIGTERM during chat:run is NOT gracefully handled here.
+    // Note: SIGINT/SIGTERM during agent:invoke is NOT gracefully handled here.
     // The CLI is one-shot — for a clean shutdown we'd need to thread cancel
-    // signals into the chat:run hook, which is its own slice. The try/finally
-    // around chat:run inside main() handles the normal completion path
+    // signals into the agent:invoke hook, which is its own slice. The try/finally
+    // around agent:invoke inside main() handles the normal completion path
     // (incl. errors that bubble up) for storage-sqlite WAL flush etc.
     main({ message, sqlitePath })
       .then((code) => process.exit(code))

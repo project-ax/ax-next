@@ -1,9 +1,9 @@
 import {
   isRejection,
-  makeChatContext,
+  makeAgentContext,
   makeReqId,
   PluginError,
-  type ChatContext,
+  type AgentContext,
   type ChatMessage,
   type HookBus,
 } from '@ax/core';
@@ -49,11 +49,11 @@ import {
 //        - else → conversations:get; on agent-mismatch → 400 (I10)
 //        - on conversations:get not-found OR forbidden → 404 (no leak)
 //   5. appends the user turn FIRST so a fresh-session replay (Task 15) sees
-//      the latest user input even if chat:run dispatch fires before the
+//      the latest user input even if agent:invoke dispatch fires before the
 //      runner's first turn loop.
 //   6. server-mints `reqId` (J9 — never client-supplied). The browser uses
 //      it to subscribe to `GET /api/chat/stream/:reqId` for streaming.
-//   7. dispatches `chat:run` ASYNC (no `await`) — the orchestrator owns the
+//   7. dispatches `agent:invoke` ASYNC (no `await`) — the orchestrator owns the
 //      lifecycle from here, the response returns 202 quickly so the client
 //      can race over to the SSE subscription before the first chunk lands.
 //
@@ -71,7 +71,7 @@ import {
 //     bus.call.
 //   - I3: full handler + tests in this PR (Task 9 of Week 10–12).
 //   - I4: the conversation row is the source of truth for the user turn —
-//     the route appends BEFORE chat:run dispatch.
+//     the route appends BEFORE agent:invoke dispatch.
 //   - I5: zod-validates body, http-server enforces 1 MiB body cap, CSRF by
 //     subscriber, auth by gate.
 // ---------------------------------------------------------------------------
@@ -193,7 +193,7 @@ interface ChatRunInput {
 
 export interface ChatRouteDeps {
   bus: HookBus;
-  initCtx: ChatContext;
+  initCtx: AgentContext;
 }
 
 export function createChatRouteHandlers(deps: ChatRouteDeps) {
@@ -302,7 +302,7 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
       }
 
       // 5) Append the user turn FIRST. A fresh-session replay (Task 15)
-      // sees the latest user input even if chat:run dispatch fires before
+      // sees the latest user input even if agent:invoke dispatch fires before
       // the runner's first turn loop. The append is awaited so a storage
       // failure surfaces as a 500 instead of a silent drop.
       await bus.call<ConversationsAppendTurnInput, unknown>(
@@ -322,22 +322,22 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
       // regardless because we never read from the body to source reqId).
       const reqId = makeReqId();
 
-      // 7) Dispatch chat:run async. The orchestrator decides whether to
+      // 7) Dispatch agent:invoke async. The orchestrator decides whether to
       // open a new session or route the message into an existing live one
       // (J6 — Task 16). When `conversationId`'s row already has an alive
       // `active_session_id`, the orchestrator enqueues into THAT inbox
       // and skips sandbox:open-session; the freshly-minted sessionId we
       // pass below is unused on that path. This handler returns 202 so
       // the browser races to GET /api/chat/stream/:reqId. We do NOT
-      // await chat:run — that would block until the entire chat
+      // await agent:invoke — that would block until the entire chat
       // completes.
       //
       // Workspace: the orchestrator currently consumes ctx.workspace.rootPath
       // and ignores agent.workspaceRef. We pass through whatever default
-      // makeChatContext provides (process.cwd) — the orchestrator's
+      // makeAgentContext provides (process.cwd) — the orchestrator's
       // resolution is not our concern, and overriding here would extend
       // the contract this PR is explicitly leaving alone for Task 16.
-      const runChatCtx = makeChatContext({
+      const runChatCtx = makeAgentContext({
         sessionId: makeReqId(),
         agentId: body.agentId,
         userId,
@@ -350,7 +350,7 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
         content: extractText(body.contentBlocks),
       };
 
-      // Fire-and-forget. A failure inside chat:run still emits a
+      // Fire-and-forget. A failure inside agent:invoke still emits a
       // chat:end via the orchestrator (audit-log invariant); the SSE
       // stream surfaces the terminated outcome to the client.
       //
@@ -363,7 +363,7 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
       // the logger's bound value), so we don't repeat it in the bindings;
       // conversationId is not reserved and is kept for cross-correlation.
       void bus
-        .call<ChatRunInput, unknown>('chat:run', runChatCtx, { message })
+        .call<ChatRunInput, unknown>('agent:invoke', runChatCtx, { message })
         .catch((err: unknown) => {
           runChatCtx.logger.warn('chat_run_dispatch_failed', {
             plugin: PLUGIN_NAME,
@@ -532,7 +532,7 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
 // ---------------------------------------------------------------------------
 async function authOr401(
   bus: HookBus,
-  initCtx: ChatContext,
+  initCtx: AgentContext,
   req: RouteRequest,
   res: RouteResponse,
 ): Promise<string | null> {
@@ -582,7 +582,7 @@ function filterThinking(
  */
 export async function registerChatRoutes(
   bus: HookBus,
-  initCtx: ChatContext,
+  initCtx: AgentContext,
 ): Promise<Array<() => void>> {
   const handlers = createChatRouteHandlers({ bus, initCtx });
   // Same duck-typed cast as sse.ts — http-server's HttpRequest /

@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { HookBus } from '../hook-bus.js';
 import { isRejection, PluginError, reject } from '../errors.js';
-import { makeChatContext, createLogger } from '../context.js';
+import { makeAgentContext, createLogger } from '../context.js';
 import type { FireResult } from '../types.js';
 
 const silentCtx = () =>
-  makeChatContext({
+  makeAgentContext({
     sessionId: 's',
     agentId: 'a',
     userId: 'u',
@@ -139,7 +139,7 @@ describe('HookBus — subscriber hooks', () => {
         return mockLogger;
       },
     };
-    const ctx = makeChatContext({
+    const ctx = makeAgentContext({
       sessionId: 's',
       agentId: 'a',
       userId: 'u',

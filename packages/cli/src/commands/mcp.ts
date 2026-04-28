@@ -14,9 +14,9 @@
 import {
   HookBus,
   bootstrap,
-  makeChatContext,
+  makeAgentContext,
   PluginError,
-  type ChatContext,
+  type AgentContext,
 } from '@ax/core';
 import { createStorageSqlitePlugin } from '@ax/storage-sqlite';
 import { createCredentialsPlugin } from '@ax/credentials';
@@ -61,7 +61,7 @@ async function readStdin(
 
 async function withBus<T>(
   opts: RunMcpOptions,
-  fn: (bus: HookBus, ctx: ChatContext) => Promise<T>,
+  fn: (bus: HookBus, ctx: AgentContext) => Promise<T>,
 ): Promise<T> {
   const bus = new HookBus();
   const handle = await bootstrap({
@@ -72,7 +72,7 @@ async function withBus<T>(
     ],
     config: {},
   });
-  const ctx = makeChatContext({ sessionId: 'cli', agentId: 'cli', userId: 'cli' });
+  const ctx = makeAgentContext({ sessionId: 'cli', agentId: 'cli', userId: 'cli' });
   try {
     return await fn(bus, ctx);
   } finally {

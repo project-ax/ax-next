@@ -32,8 +32,8 @@ const PLUGIN_NAME = '@ax/cli/dev-agents-stub';
 
 export interface DevAgentsStubConfig {
   /**
-   * Default agent id reported by the stub. ChatContext's agentId flows
-   * through `chat:run` as-is; the stub echoes it back so reqId-based logs
+   * Default agent id reported by the stub. AgentContext's agentId flows
+   * through `agent:invoke` as-is; the stub echoes it back so reqId-based logs
    * stay consistent with whatever the caller passed.
    */
   defaultAgentId?: string;

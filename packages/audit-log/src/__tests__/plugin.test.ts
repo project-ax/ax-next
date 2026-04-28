@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { createTestHarness, MockServices } from '@ax/test-harness';
-import type { ChatOutcome } from '@ax/core';
+import type { AgentOutcome } from '@ax/core';
 import { auditLogPlugin } from '../plugin.js';
 
 describe('@ax/audit-log', () => {
@@ -17,7 +17,7 @@ describe('@ax/audit-log', () => {
     });
 
     const ctx = h.ctx({ reqId: 'req-abc' });
-    const outcome: ChatOutcome = {
+    const outcome: AgentOutcome = {
       kind: 'complete',
       messages: [
         { role: 'user', content: 'hi' },
@@ -49,7 +49,7 @@ describe('@ax/audit-log', () => {
       plugins: [auditLogPlugin()],
     });
     const ctx = h.ctx();
-    const result = await h.bus.fire<{ outcome: ChatOutcome }>('chat:end', ctx, {
+    const result = await h.bus.fire<{ outcome: AgentOutcome }>('chat:end', ctx, {
       outcome: { kind: 'complete', messages: [] },
     });
     expect(result).toMatchObject({

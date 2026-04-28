@@ -1,8 +1,8 @@
 import {
   isRejection,
-  makeChatContext,
+  makeAgentContext,
   PluginError,
-  type ChatContext,
+  type AgentContext,
   type HookBus,
 } from '@ax/core';
 import type {
@@ -85,7 +85,7 @@ export interface RouteResponse {
  */
 async function requireUser(
   bus: HookBus,
-  ctx: ChatContext,
+  ctx: AgentContext,
   req: RouteRequest,
   res: RouteResponse,
 ): Promise<{ id: string; isAdmin: boolean } | null> {
@@ -208,7 +208,7 @@ export function createAdminTeamRouteHandlers(deps: AdminRouteDeps) {
   // admin-routes pattern. The synthetic userId 'admin' shows up in audit
   // logs against this ctx; the real acting-user id flows through the
   // service-hook payloads (Actor.userId).
-  const ctx = makeChatContext({
+  const ctx = makeAgentContext({
     sessionId: 'teams-admin',
     agentId: PLUGIN_NAME,
     userId: 'admin',
@@ -381,7 +381,7 @@ export function createAdminTeamRouteHandlers(deps: AdminRouteDeps) {
  */
 export async function registerAdminTeamRoutes(
   bus: HookBus,
-  initCtx: ChatContext,
+  initCtx: AgentContext,
 ): Promise<Array<() => void>> {
   const handlers = createAdminTeamRouteHandlers({ bus });
   const routes: Array<{

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { createTestHarness, type TestHarness } from '@ax/test-harness';
 import { createHttpServerPlugin } from '@ax/http-server';
-import { makeChatContext } from '@ax/core';
+import { makeAgentContext } from '@ax/core';
 import { createStaticFilesPlugin } from '../plugin.js';
 
 const COOKIE_KEY = randomBytes(32);
@@ -51,7 +51,7 @@ async function bootHarness(opts: {
           subscribes: [],
         },
         async init({ bus }: { bus: { call: (...a: unknown[]) => Promise<unknown> } }) {
-          const ctx = makeChatContext({
+          const ctx = makeAgentContext({
             sessionId: 'test-api-routes',
             agentId: 'test-api-routes',
             userId: 'system',

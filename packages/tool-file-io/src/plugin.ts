@@ -1,4 +1,4 @@
-import { makeChatContext, type Plugin, type ToolDescriptor } from '@ax/core';
+import { makeAgentContext, type Plugin, type ToolDescriptor } from '@ax/core';
 import { readFileToolDescriptor, writeFileToolDescriptor } from './descriptors.js';
 
 const PLUGIN_NAME = '@ax/tool-file-io';
@@ -23,7 +23,7 @@ export function createToolFileIoPlugin(): Plugin {
       subscribes: [],
     },
     async init({ bus }) {
-      const ctx = makeChatContext({
+      const ctx = makeAgentContext({
         sessionId: 'init',
         agentId: PLUGIN_NAME,
         userId: 'init',

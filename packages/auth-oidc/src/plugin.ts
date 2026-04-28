@@ -1,7 +1,7 @@
 import {
-  makeChatContext,
+  makeAgentContext,
   PluginError,
-  type ChatContext,
+  type AgentContext,
   type HookBus,
   type Plugin,
 } from '@ax/core';
@@ -122,7 +122,7 @@ export function createAuthPlugin(config: AuthConfig = { providers: {} }): Plugin
         });
       }
 
-      const initCtx = makeChatContext({
+      const initCtx = makeAgentContext({
         sessionId: 'init',
         agentId: PLUGIN_NAME,
         userId: 'system',
@@ -347,7 +347,7 @@ function asRouteRes(res: AnyHttpRes): RouteResponse {
 
 async function registerRoute(
   bus: HookBus,
-  initCtx: ChatContext,
+  initCtx: AgentContext,
   input: {
     method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
     path: string;

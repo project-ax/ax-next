@@ -1,4 +1,4 @@
-import type { ChatContext, HookBus } from '@ax/core';
+import type { AgentContext, HookBus } from '@ax/core';
 import type { IpcErrorCode } from '@ax/ipc-protocol';
 
 // ---------------------------------------------------------------------------
@@ -25,6 +25,6 @@ export type HandlerResult = HandlerOk | HandlerErr;
 
 export type ActionHandler = (
   payload: unknown,
-  ctx: ChatContext,
+  ctx: AgentContext,
   bus: HookBus,
 ) => Promise<HandlerResult>;

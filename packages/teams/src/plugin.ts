@@ -1,5 +1,5 @@
 import {
-  makeChatContext,
+  makeAgentContext,
   PluginError,
   type Plugin,
 } from '@ax/core';
@@ -97,7 +97,7 @@ export function createTeamsPlugin(
     },
 
     async init({ bus }) {
-      const initCtx = makeChatContext({
+      const initCtx = makeAgentContext({
         sessionId: 'init',
         agentId: PLUGIN_NAME,
         userId: 'system',

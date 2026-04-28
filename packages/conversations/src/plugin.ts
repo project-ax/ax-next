@@ -1,7 +1,7 @@
 import {
-  makeChatContext,
+  makeAgentContext,
   PluginError,
-  type ChatContext,
+  type AgentContext,
   type HookBus,
   type Plugin,
 } from '@ax/core';
@@ -93,7 +93,7 @@ export function createConversationsPlugin(
     },
 
     async init({ bus }) {
-      const initCtx = makeChatContext({
+      const initCtx = makeAgentContext({
         sessionId: 'init',
         agentId: PLUGIN_NAME,
         userId: 'system',
@@ -150,7 +150,7 @@ export function createConversationsPlugin(
       // on `(conversationId, ctx.userId)`. unbind-session clears both. Both
       // hooks scope by ctx.userId — a misbehaving caller can't bind/unbind a
       // cross-tenant row. Neither hook calls `agents:resolve`: the
-      // chat-orchestrator (Task 16) has already gated the user at chat:run
+      // chat-orchestrator (Task 16) has already gated the user at agent:invoke
       // entry; re-running the gate here would only add latency.
       bus.registerService<BindSessionInput, BindSessionOutput>(
         'conversations:bind-session',
@@ -262,12 +262,12 @@ interface SessionTerminatePayload {
 
 async function handleTurnEnd(
   bus: HookBus,
-  ctx: ChatContext,
+  ctx: AgentContext,
   payload: TurnEndPayload,
 ): Promise<void> {
   // No conversation context → nothing to persist (canary acceptance
   // tests, ephemeral admin probes). Task 16 wires the orchestrator to
-  // populate conversationId on chat:run; until then this is the common
+  // populate conversationId on agent:invoke; until then this is the common
   // path.
   const conversationId = ctx.conversationId;
   if (conversationId === undefined) return;
@@ -314,7 +314,7 @@ async function handleTurnEnd(
 // Subscriber MUST NOT throw — failures are logged.
 async function handleTurnEndClearReqId(
   store: ConversationStore,
-  ctx: ChatContext,
+  ctx: AgentContext,
   payload: TurnEndPayload,
 ): Promise<void> {
   const conversationId = ctx.conversationId;
@@ -339,7 +339,7 @@ async function handleTurnEndClearReqId(
 // active_req_id pointing at it.
 async function handleSessionTerminate(
   store: ConversationStore,
-  ctx: ChatContext,
+  ctx: AgentContext,
   payload: SessionTerminatePayload,
 ): Promise<void> {
   const sessionId = payload.sessionId;
@@ -368,7 +368,7 @@ interface ResolveInput {
 
 async function assertAgentReachable(
   bus: HookBus,
-  ctx: ChatContext,
+  ctx: AgentContext,
   agentId: string,
   userId: string,
   hookName: string,
@@ -404,7 +404,7 @@ async function assertAgentReachable(
 async function createConversation(
   store: ConversationStore,
   bus: HookBus,
-  ctx: ChatContext,
+  ctx: AgentContext,
   input: CreateInput,
 ): Promise<CreateOutput> {
   const title = validateTitle(input.title ?? null);
@@ -428,7 +428,7 @@ async function createConversation(
 async function appendTurn(
   store: ConversationStore,
   bus: HookBus,
-  ctx: ChatContext,
+  ctx: AgentContext,
   input: AppendTurnInput,
 ): Promise<AppendTurnOutput> {
   const role = validateRole(input.role);
@@ -480,7 +480,7 @@ async function appendTurn(
 async function getConversation(
   store: ConversationStore,
   bus: HookBus,
-  ctx: ChatContext,
+  ctx: AgentContext,
   input: GetInput,
 ): Promise<GetOutput> {
   const conv = await store.getByIdNotDeleted(input.conversationId);
@@ -506,7 +506,7 @@ async function getConversation(
 async function listConversations(
   store: ConversationStore,
   bus: HookBus,
-  ctx: ChatContext,
+  ctx: AgentContext,
   input: ListInput,
 ): Promise<ListOutput> {
   // J1: when agentId is supplied, gate via agents:resolve. When absent,
@@ -588,7 +588,7 @@ function requireBoundedString(
 
 async function bindSession(
   store: ConversationStore,
-  ctx: ChatContext,
+  ctx: AgentContext,
   input: BindSessionInput,
 ): Promise<BindSessionOutput> {
   const hookName = 'conversations:bind-session';
@@ -618,7 +618,7 @@ async function bindSession(
 
 async function unbindSession(
   store: ConversationStore,
-  ctx: ChatContext,
+  ctx: AgentContext,
   input: UnbindSessionInput,
 ): Promise<UnbindSessionOutput> {
   const hookName = 'conversations:unbind-session';
@@ -642,7 +642,7 @@ async function unbindSession(
 async function fetchHistory(
   store: ConversationStore,
   bus: HookBus,
-  ctx: ChatContext,
+  ctx: AgentContext,
   input: FetchHistoryInput,
 ): Promise<FetchHistoryOutput> {
   const hookName = 'conversations:fetch-history';
@@ -696,7 +696,7 @@ async function fetchHistory(
 async function deleteConversation(
   store: ConversationStore,
   bus: HookBus,
-  ctx: ChatContext,
+  ctx: AgentContext,
   input: DeleteInput,
 ): Promise<DeleteOutput> {
   const conv = await store.getByIdNotDeleted(input.conversationId);

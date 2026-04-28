@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   HookBus,
-  makeChatContext,
+  makeAgentContext,
   createLogger,
   type ToolDescriptor,
 } from '@ax/core';
@@ -13,7 +13,7 @@ import { createToolDispatcherPlugin } from '@ax/tool-dispatcher';
 import { createToolBashPlugin, bashToolDescriptor } from '../index.js';
 
 const ctx = () =>
-  makeChatContext({
+  makeAgentContext({
     sessionId: 's',
     agentId: 'a',
     userId: 'u',

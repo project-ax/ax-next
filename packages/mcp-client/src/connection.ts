@@ -44,7 +44,7 @@
 // ---------------------------------------------------------------------------
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { PluginError, type ChatContext } from '@ax/core';
+import { PluginError, type AgentContext } from '@ax/core';
 import type { McpServerConfig } from './config.js';
 import {
   createTransport,
@@ -96,7 +96,7 @@ export interface SdkClientLike {
 export interface McpConnectionOptions {
   config: McpServerConfig;
   bus: BusLike;
-  ctx: ChatContext;
+  ctx: AgentContext;
   /** Test seam: build the transport. Defaults to `createTransport`. */
   transportFactory?: (opts: CreateTransportOptions) => Promise<McpClientTransport>;
   /** Test seam: construct the SDK Client. Defaults to the real one. */

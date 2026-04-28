@@ -105,7 +105,7 @@ export interface SessionResolveTokenInput {
  * security-sensitive path (e.g. Task 7's per-agent tool filter).
  *
  * Week 10–12 final review: `conversationId` rides on the resolve result so
- * the IPC server can stamp it onto every per-request ChatContext. Without
+ * the IPC server can stamp it onto every per-request AgentContext. Without
  * it, runner-fired `chat:turn-end` events lose their conversation binding
  * and three subscribers silently no-op (auto-append, clearActiveReqId,
  * SSE done-frame). Null for canary / admin sessions.

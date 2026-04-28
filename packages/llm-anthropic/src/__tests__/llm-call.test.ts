@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   HookBus,
   PluginError,
-  makeChatContext,
+  makeAgentContext,
   createLogger,
   type LlmRequest,
   type LlmResponse,
@@ -10,7 +10,7 @@ import {
 import { createLlmAnthropicPlugin } from '../plugin.js';
 
 const ctx = () =>
-  makeChatContext({
+  makeAgentContext({
     sessionId: 's',
     agentId: 'a',
     userId: 'u',

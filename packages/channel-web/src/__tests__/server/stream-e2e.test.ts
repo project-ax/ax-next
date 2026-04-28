@@ -25,7 +25,7 @@ import { createChannelWebServerPlugin } from '../../server/plugin';
 // handler → real HTTP listener → fetch consumer.
 //
 // Tasks 9–13 will land the chat-flow HTTP endpoints (POST /api/chat/messages
-// mints a reqId and dispatches chat:run). Task 8 is sequenced BEFORE those
+// mints a reqId and dispatches agent:invoke). Task 8 is sequenced BEFORE those
 // endpoints, so this e2e SHORT-CIRCUITS the POST handler by:
 //
 //   1. Creating a real conversation through @ax/conversations (testcontainers
@@ -64,7 +64,7 @@ function authMockPlugin(args: {
 }
 
 /**
- * Stub for `chat:run`. The channel-web plugin's manifest declares it as a
+ * Stub for `agent:invoke`. The channel-web plugin's manifest declares it as a
  * hard call (Task 9 — POST /api/chat/messages); this suite doesn't
  * exercise the chat-flow producer endpoint, so a no-op registration is
  * enough to satisfy the bootstrap verifyCalls walk.
@@ -74,12 +74,12 @@ function chatRunMockPlugin(): Plugin {
     manifest: {
       name: 'mock-chat-run',
       version: '0.0.0',
-      registers: ['chat:run'],
+      registers: ['agent:invoke'],
       calls: [],
       subscribes: [],
     },
     init({ bus }) {
-      bus.registerService('chat:run', 'mock-chat-run', async () => {
+      bus.registerService('agent:invoke', 'mock-chat-run', async () => {
         return { kind: 'complete', messages: [] };
       });
     },

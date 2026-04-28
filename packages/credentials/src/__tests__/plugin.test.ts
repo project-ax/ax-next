@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { HookBus, makeChatContext, bootstrap, PluginError } from '@ax/core';
+import { HookBus, makeAgentContext, bootstrap, PluginError } from '@ax/core';
 import { createCredentialsPlugin } from '../plugin.js';
 
 // Minimal in-memory storage plugin for the test.
@@ -31,7 +31,7 @@ function memStoragePlugin() {
 const TEST_KEY_HEX = '42'.repeat(32);
 
 function ctx() {
-  return makeChatContext({ sessionId: 's', agentId: 'a', userId: 'u' });
+  return makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' });
 }
 
 describe('@ax/credentials plugin', () => {

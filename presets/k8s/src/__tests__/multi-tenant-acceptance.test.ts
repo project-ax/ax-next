@@ -16,9 +16,9 @@ import {
 import {
   HookBus,
   bootstrap,
-  makeChatContext,
-  type ChatContext,
-  type ChatOutcome,
+  makeAgentContext,
+  type AgentContext,
+  type AgentOutcome,
   type KernelHandle,
   type Plugin,
   type ToolDescriptor,
@@ -50,13 +50,13 @@ import { createK8sPlugins, type K8sPresetConfig } from '../index.js';
 //   2.  Two distinct users present: User A from #1; User B inserted directly
 //       into auth_v1_users + auth_v1_sessions, signed with the same cookie
 //       key the http-server uses (sidesteps OIDC).
-//   3.  User A POST /admin/agents → 201; chat:run with that agentId →
+//   3.  User A POST /admin/agents → 201; agent:invoke with that agentId →
 //       outcome.kind === 'complete'.
 //   4.  GET /admin/agents as User B → empty list (User A's agent invisible).
-//   5.  chat:run as User B with User A's agentId →
+//   5.  agent:invoke as User B with User A's agentId →
 //       'terminated' / 'agent-resolve:forbidden'. Sandbox NOT opened.
 //   6.  Team agent: User A creates team, adds User B, creates a team-agent.
-//       chat:run as User B with the team agent id → 'complete'.
+//       agent:invoke as User B with the team agent id → 'complete'.
 //   7.  Per-agent MCP scoping: tool:list against User A's session (with
 //       mcpConfigIds:['fs']) sees the fixture mcp.fs.* tools; tool:list
 //       against User B's session (with mcpConfigIds:[]) does not.
@@ -244,7 +244,7 @@ function mcpFixturePlugin(): Plugin {
       subscribes: [],
     },
     async init(deps): Promise<void> {
-      const initCtx = makeChatContext({
+      const initCtx = makeAgentContext({
         sessionId: 'mcp-fixture-init',
         agentId: '@ax/mcp-fixture-acc',
         userId: 'init',
@@ -484,8 +484,8 @@ function ctxFor(opts: {
   sessionId: string;
   agentId: string;
   userId: string;
-}): ChatContext {
-  return makeChatContext({
+}): AgentContext {
+  return makeAgentContext({
     sessionId: opts.sessionId,
     agentId: opts.agentId,
     userId: opts.userId,
@@ -544,7 +544,7 @@ describe('multi-tenant acceptance (Week 9.5 — preset-k8s)', () => {
     expect(meBBody.user.isAdmin).toBe(false);
   });
 
-  it('3. User A creates personal agent → 201; chat:run with that agentId completes', async () => {
+  it('3. User A creates personal agent → 201; agent:invoke with that agentId completes', async () => {
     const agent = await createPersonalAgent(userACookie, {
       displayName: 'A Chat Agent',
       // Pin to a single allowedTool so the catalog filter has something
@@ -555,12 +555,12 @@ describe('multi-tenant acceptance (Week 9.5 — preset-k8s)', () => {
     expect(agent.ownerId).toBe(userAId);
     expect(agent.visibility).toBe('personal');
 
-    // Drive chat:run end-to-end. The sandbox stub mints the session and
+    // Drive agent:invoke end-to-end. The sandbox stub mints the session and
     // fires chat:end with kind:'complete'; the orchestrator's queue-work
     // hits the real session-postgres in between.
     const sessionId = `s-acc-3-${randomBytes(4).toString('hex')}`;
-    const outcome = await bus.call<unknown, ChatOutcome>(
-      'chat:run',
+    const outcome = await bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
       ctxFor({ sessionId, agentId: agent.id, userId: userAId }),
       { message: { role: 'user', content: 'hi' } },
     );
@@ -587,7 +587,7 @@ describe('multi-tenant acceptance (Week 9.5 — preset-k8s)', () => {
     }
   });
 
-  it("5. User B chat:run with User A's agentId → terminated/agent-resolve:forbidden, sandbox NOT opened", async () => {
+  it("5. User B agent:invoke with User A's agentId → terminated/agent-resolve:forbidden, sandbox NOT opened", async () => {
     // Pull one of User A's agents back so we have a real agentId.
     const list = await httpRequest('GET', '/admin/agents', {
       cookie: userACookie,
@@ -608,8 +608,8 @@ describe('multi-tenant acceptance (Week 9.5 — preset-k8s)', () => {
     );
 
     const sessionId = `s-acc-5-${randomBytes(4).toString('hex')}`;
-    const outcome = await bus.call<unknown, ChatOutcome>(
-      'chat:run',
+    const outcome = await bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
       ctxFor({ sessionId, agentId: aAgent.id, userId: userBId }),
       { message: { role: 'user', content: 'hi' } },
     );
@@ -622,7 +622,7 @@ describe('multi-tenant acceptance (Week 9.5 — preset-k8s)', () => {
     expect(sandboxOpens).toBe(0);
   });
 
-  it('6. Team agent: User A creates team, adds User B, creates team-agent; User B chat:run on team-agent → complete', async () => {
+  it('6. Team agent: User A creates team, adds User B, creates team-agent; User B agent:invoke on team-agent → complete', async () => {
     // 6a. Create team.
     const tCreate = await httpRequest('POST', '/admin/teams', {
       cookie: userACookie,
@@ -673,10 +673,10 @@ describe('multi-tenant acceptance (Week 9.5 — preset-k8s)', () => {
     //     follow-up. We pin the chat path below and call out the list
     //     gap so a future fix knows to update both.
 
-    // 6e. User B drives chat:run against the team agent → complete.
+    // 6e. User B drives agent:invoke against the team agent → complete.
     const sessionId = `s-acc-6-${randomBytes(4).toString('hex')}`;
-    const outcome = await bus.call<unknown, ChatOutcome>(
-      'chat:run',
+    const outcome = await bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
       ctxFor({ sessionId, agentId: teamAgent.id, userId: userBId }),
       { message: { role: 'user', content: 'hi from B' } },
     );
@@ -721,7 +721,7 @@ describe('multi-tenant acceptance (Week 9.5 — preset-k8s)', () => {
     }
 
     // Mint a session for each user with the agent's frozen config. The
-    // mt-acceptance sandbox stub does this on chat:run; here we drive
+    // mt-acceptance sandbox stub does this on agent:invoke; here we drive
     // session:create directly so we can poke at tool:list with a stable
     // sessionId.
     const aSessionId = `s-acc-7a-${randomBytes(4).toString('hex')}`;

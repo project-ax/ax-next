@@ -1,4 +1,4 @@
-import { PluginError, type ChatContext, type HookBus } from '@ax/core';
+import { PluginError, type AgentContext, type HookBus } from '@ax/core';
 import {
   IPC_TIMEOUTS_MS,
   SessionNextMessageResponseSchema,
@@ -41,7 +41,7 @@ function parseCursor(raw: string | null): number | null {
 
 export async function sessionNextMessageHandler(
   url: URL,
-  ctx: ChatContext,
+  ctx: AgentContext,
   bus: HookBus,
 ): Promise<HandlerResult> {
   const rawCursor = url.searchParams.get('cursor');

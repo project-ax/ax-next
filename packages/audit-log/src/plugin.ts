@@ -1,4 +1,4 @@
-import type { ChatContext, ChatOutcome, Plugin } from '@ax/core';
+import type { AgentContext, AgentOutcome, Plugin } from '@ax/core';
 
 const PLUGIN_NAME = '@ax/audit-log';
 
@@ -12,10 +12,10 @@ export function auditLogPlugin(): Plugin {
       subscribes: ['chat:end'],
     },
     init({ bus }) {
-      bus.subscribe<{ outcome: ChatOutcome }>(
+      bus.subscribe<{ outcome: AgentOutcome }>(
         'chat:end',
         PLUGIN_NAME,
-        async (ctx: ChatContext, payload) => {
+        async (ctx: AgentContext, payload) => {
           const record = {
             reqId: ctx.reqId,
             sessionId: ctx.sessionId,

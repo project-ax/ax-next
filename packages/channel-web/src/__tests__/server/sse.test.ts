@@ -3,8 +3,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   HookBus,
   PluginError,
-  makeChatContext,
-  type ChatContext,
+  makeAgentContext,
+  type AgentContext,
 } from '@ax/core';
 import { createChunkBuffer } from '../../server/chunk-buffer';
 import {
@@ -134,7 +134,7 @@ interface BootOpts {
 
 function bootHandler(opts: BootOpts = {}) {
   const bus = new HookBus();
-  const initCtx = makeChatContext({
+  const initCtx = makeAgentContext({
     sessionId: 'init',
     agentId: '@ax/channel-web',
     userId: 'system',
@@ -204,10 +204,10 @@ function bootHandler(opts: BootOpts = {}) {
   return { bus, initCtx, buffer, handler };
 }
 
-function ctxWithConversation(ctx: ChatContext, conversationId: string): ChatContext {
-  // makeChatContext spreads conversationId only when defined; reuse to
+function ctxWithConversation(ctx: AgentContext, conversationId: string): AgentContext {
+  // makeAgentContext spreads conversationId only when defined; reuse to
   // produce a context the turn-end subscriber will match.
-  return makeChatContext({
+  return makeAgentContext({
     sessionId: ctx.sessionId,
     agentId: ctx.agentId,
     userId: ctx.userId,

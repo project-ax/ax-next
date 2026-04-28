@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import {
   PluginError,
-  type ChatContext,
+  type AgentContext,
   type HookBus,
   type Logger,
 } from '@ax/core';
@@ -114,7 +114,7 @@ export interface OpenSessionDeps {
 
 export function createOpenSession(deps: OpenSessionDeps) {
   return async function openSessionImpl(
-    ctx: ChatContext,
+    ctx: AgentContext,
     rawInput: unknown,
   ): Promise<OpenSessionResult> {
     const parsed = OpenSessionInputSchema.safeParse(rawInput);

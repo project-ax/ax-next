@@ -1,7 +1,7 @@
 import {
   isRejection,
   PluginError,
-  type ChatContext,
+  type AgentContext,
   type HookBus,
 } from '@ax/core';
 import type { ChunkBuffer } from './chunk-buffer.js';
@@ -66,7 +66,7 @@ export interface RouteResponse {
 
 export interface SseHandlerDeps {
   bus: HookBus;
-  initCtx: ChatContext;
+  initCtx: AgentContext;
   buffer: ChunkBuffer;
 }
 
@@ -293,7 +293,7 @@ export function createSseHandler(deps: SseHandlerDeps) {
  */
 export function createBufferFillSubscriber(buffer: ChunkBuffer) {
   return async function (
-    _ctx: ChatContext,
+    _ctx: AgentContext,
     payload: StreamChunk,
   ): Promise<undefined> {
     // Defensive: a malformed event from the bus shouldn't tear down the
@@ -330,7 +330,7 @@ export function createBufferFillSubscriber(buffer: ChunkBuffer) {
  */
 export function createTurnEndEvictor(buffer: ChunkBuffer) {
   return async function (
-    _ctx: ChatContext,
+    _ctx: AgentContext,
     payload: { reqId?: string },
   ): Promise<undefined> {
     if (typeof payload?.reqId === 'string' && payload.reqId.length > 0) {

@@ -46,7 +46,7 @@ export interface ToolDescriptor {
   executesIn: 'sandbox' | 'host';
 }
 
-export type ChatOutcome =
+export type AgentOutcome =
   | { kind: 'complete'; messages: ChatMessage[] }
   | { kind: 'terminated'; reason: string; error?: unknown };
 

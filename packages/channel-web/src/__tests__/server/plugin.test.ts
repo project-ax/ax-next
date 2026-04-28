@@ -136,7 +136,7 @@ function conversationsMockPlugin(args: {
 }
 
 /**
- * Stub for `chat:run`. The plugin manifest declares it as a hard call;
+ * Stub for `agent:invoke`. The plugin manifest declares it as a hard call;
  * this suite doesn't drive the chat-flow producer endpoint, so a no-op
  * registration satisfies the bootstrap verifyCalls walk.
  */
@@ -145,12 +145,12 @@ function chatRunMockPlugin(): Plugin {
     manifest: {
       name: 'mock-chat-run',
       version: '0.0.0',
-      registers: ['chat:run'],
+      registers: ['agent:invoke'],
       calls: [],
       subscribes: [],
     },
     init({ bus }) {
-      bus.registerService('chat:run', 'mock-chat-run', async () => {
+      bus.registerService('agent:invoke', 'mock-chat-run', async () => {
         return { kind: 'complete', messages: [] };
       });
     },
@@ -361,7 +361,7 @@ describe('@ax/channel-web server plugin (integration)', () => {
         'conversations:list',
         'conversations:delete',
         'conversations:append-turn',
-        'chat:run',
+        'agent:invoke',
       ],
       subscribes: ['chat:stream-chunk', 'chat:turn-end'],
     });

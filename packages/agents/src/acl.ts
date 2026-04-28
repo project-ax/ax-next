@@ -1,4 +1,4 @@
-import { PluginError, type ChatContext, type HookBus } from '@ax/core';
+import { PluginError, type AgentContext, type HookBus } from '@ax/core';
 import type { Agent } from './types.js';
 
 /**
@@ -56,7 +56,7 @@ export async function checkAccess(
   agent: Agent,
   userId: string,
   bus: HookBus,
-  ctx: ChatContext,
+  ctx: AgentContext,
   deps: AclDeps = {},
 ): Promise<AclResult> {
   // Personal — direct ownership check, no bus call.

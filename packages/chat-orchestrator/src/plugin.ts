@@ -1,4 +1,4 @@
-import type { ChatOutcome, Plugin } from '@ax/core';
+import type { AgentOutcome, Plugin } from '@ax/core';
 import {
   createOrchestrator,
   PLUGIN_NAME,
@@ -9,7 +9,7 @@ import {
 // ---------------------------------------------------------------------------
 // @ax/chat-orchestrator plugin
 //
-// Registers `chat:run` — the host-side entrypoint a CLI (or any other host)
+// Registers `agent:invoke` — the host-side entrypoint a CLI (or any other host)
 // uses to drive a single user→agent turn-sequence. Subscribes to `chat:end`
 // so the orchestrator can capture the outcome the runner emits via its
 // /event.chat-end IPC POST.
@@ -25,7 +25,7 @@ export function createChatOrchestratorPlugin(
     manifest: {
       name: PLUGIN_NAME,
       version: '0.0.0',
-      registers: ['chat:run'],
+      registers: ['agent:invoke'],
       // The orchestrator drives the per-chat lifecycle by calling these
       // peers. `session:create` is NOT listed — sandbox:open-session mints
       // the session itself; a double-create throws duplicate-session. The
@@ -73,19 +73,19 @@ export function createChatOrchestratorPlugin(
       // (the default for 6.5a) we queue a `cancel` into the runner's
       // inbox after the first user message completes — the runner is
       // persistent by design, so without this signal it would block
-      // forever on inbox.next() and the chat:run would time out.
+      // forever on inbox.next() and the agent:invoke would time out.
       subscribes: ['chat:end', 'chat:turn-end'],
     },
     init({ bus }) {
       const orch = createOrchestrator(bus, config);
 
-      bus.registerService<ChatRunInput, ChatOutcome>(
-        'chat:run',
+      bus.registerService<ChatRunInput, AgentOutcome>(
+        'agent:invoke',
         PLUGIN_NAME,
         async (ctx, input) => orch.runChat(ctx, input),
       );
 
-      bus.subscribe<{ outcome: ChatOutcome }>(
+      bus.subscribe<{ outcome: AgentOutcome }>(
         'chat:end',
         PLUGIN_NAME,
         async (ctx, payload) => {
