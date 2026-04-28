@@ -17,6 +17,7 @@ import { createTestHarness, type TestHarness } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createHttpServerPlugin, type HttpServerPlugin } from '@ax/http-server';
 import { createAuthPlugin } from '@ax/auth-oidc';
+import { createCredentialsStoreDbPlugin } from '@ax/credentials-store-db';
 import { createCredentialsPlugin } from '@ax/credentials';
 import { createToolDispatcherPlugin } from '@ax/tool-dispatcher';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -180,6 +181,7 @@ async function bootStack(opts: {
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),
       memStoragePlugin(),
+      createCredentialsStoreDbPlugin(),
       createCredentialsPlugin(),
       createToolDispatcherPlugin(),
       http,
@@ -709,6 +711,7 @@ describe('@ax/mcp-client admin routes', () => {
       plugins: [
         createDatabasePostgresPlugin({ connectionString }),
         memStoragePlugin(),
+        createCredentialsStoreDbPlugin(),
         createCredentialsPlugin(),
         createToolDispatcherPlugin(),
         http2,

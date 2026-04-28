@@ -2,12 +2,7 @@ import { PluginError, type Plugin } from '@ax/core';
 import { encryptWithKey, decryptWithKey, parseKeyFromEnv } from './crypto.js';
 
 const PLUGIN_NAME = '@ax/credentials';
-const CREDENTIAL_KEY_PREFIX = 'credential:';
 const ID_RE = /^[a-z0-9][a-z0-9_.-]{0,127}$/;
-
-function storageKey(id: string): string {
-  return `${CREDENTIAL_KEY_PREFIX}${id}`;
-}
 
 function validateId(id: unknown): string {
   if (typeof id !== 'string' || !ID_RE.test(id)) {
@@ -26,7 +21,10 @@ export function createCredentialsPlugin(): Plugin {
       name: PLUGIN_NAME,
       version: '0.0.0',
       registers: ['credentials:get', 'credentials:set', 'credentials:delete'],
-      calls: ['storage:get', 'storage:set'],
+      // Storage goes through the `credentials:store-blob:*` seam (Phase 1b).
+      // The default backend is `@ax/credentials-store-db`; vault / KMS
+      // backends slot in here without touching the facade.
+      calls: ['credentials:store-blob:get', 'credentials:store-blob:put'],
       subscribes: [],
     },
     async init({ bus }) {
@@ -54,7 +52,7 @@ export function createCredentialsPlugin(): Plugin {
             });
           }
           const blob = encryptWithKey(key, input.value);
-          await bus.call('storage:set', ctx, { key: storageKey(id), value: blob });
+          await bus.call('credentials:store-blob:put', ctx, { id, blob });
         },
       );
 
@@ -63,12 +61,12 @@ export function createCredentialsPlugin(): Plugin {
         PLUGIN_NAME,
         async (ctx, input) => {
           const id = validateId(input.id);
-          const got = await bus.call<{ key: string }, { value: Uint8Array | undefined }>(
-            'storage:get',
+          const got = await bus.call<{ id: string }, { blob: Uint8Array | undefined }>(
+            'credentials:store-blob:get',
             ctx,
-            { key: storageKey(id) },
+            { id },
           );
-          if (got.value === undefined) {
+          if (got.blob === undefined) {
             throw new PluginError({
               code: 'credential-not-found',
               plugin: PLUGIN_NAME,
@@ -76,8 +74,11 @@ export function createCredentialsPlugin(): Plugin {
             });
           }
           // decryptWithKey throws PluginError without echoing plaintext.
-          const value = decryptWithKey(key, got.value);
-          // Empty plaintext = tombstone (see credentials:delete). Treat as not-found.
+          const value = decryptWithKey(key, got.blob);
+          // Empty plaintext = tombstone (see credentials:delete). Treat as
+          // not-found. The facade still owns this convention because the
+          // store-blob layer is bytes-only — a future store-blob:delete
+          // (Phase 3) will let us drop this check.
           if (value === '') {
             throw new PluginError({
               code: 'credential-not-found',
@@ -94,11 +95,12 @@ export function createCredentialsPlugin(): Plugin {
         PLUGIN_NAME,
         async (ctx, input) => {
           const id = validateId(input.id);
-          // @ax/storage-sqlite has no storage:delete yet; write an encrypted-empty
-          // tombstone. credentials:get treats empty plaintext as not-found.
-          // Replace with real delete when storage:delete lands.
+          // The store-blob layer is bytes-only and has no `:delete` hook in
+          // Phase 1b, so we use the same encrypted-empty-string tombstone we
+          // had when this plugin called storage:set directly. credentials:get
+          // checks for empty plaintext above and reports not-found.
           const tombstone = encryptWithKey(key, '');
-          await bus.call('storage:set', ctx, { key: storageKey(id), value: tombstone });
+          await bus.call('credentials:store-blob:put', ctx, { id, blob: tombstone });
         },
       );
     },

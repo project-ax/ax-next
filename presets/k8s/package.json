@@ -37,6 +37,7 @@
     "@ax/audit-log": "workspace:*",
     "@ax/mcp-client": "workspace:*",
     "@ax/credentials": "workspace:*",
+    "@ax/credentials-store-db": "workspace:*",
     "@ax/ipc-http": "workspace:*",
     "@ax/agents": "workspace:*",
     "@ax/http-server": "workspace:*",

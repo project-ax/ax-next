@@ -352,6 +352,9 @@ importers:
       '@ax/credentials':
         specifier: workspace:*
         version: link:../credentials
+      '@ax/credentials-store-db':
+        specifier: workspace:*
+        version: link:../credentials-store-db
       '@ax/ipc-server':
         specifier: workspace:*
         version: link:../ipc-server
@@ -520,6 +523,28 @@ importers:
         specifier: workspace:*
         version: link:../core
     devDependencies:
+      '@ax/credentials-store-db':
+        specifier: workspace:*
+        version: link:../credentials-store-db
+      '@types/node':
+        specifier: ^25.6.0
+        version: 25.6.0
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^4.1.4
+        version: 4.1.5(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(jsdom@26.1.0)(vite@8.0.10(@types/node@25.6.0)(yaml@2.8.3))
+
+  packages/credentials-store-db:
+    dependencies:
+      '@ax/core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@ax/storage-sqlite':
+        specifier: workspace:*
+        version: link:../storage-sqlite
       '@types/node':
         specifier: ^25.6.0
         version: 25.6.0
@@ -808,6 +833,9 @@ importers:
       '@ax/credentials':
         specifier: workspace:*
         version: link:../credentials
+      '@ax/credentials-store-db':
+        specifier: workspace:*
+        version: link:../credentials-store-db
       '@ax/database-postgres':
         specifier: workspace:*
         version: link:../database-postgres
@@ -1312,6 +1340,9 @@ importers:
       '@ax/credentials':
         specifier: workspace:*
         version: link:../../packages/credentials
+      '@ax/credentials-store-db':
+        specifier: workspace:*
+        version: link:../../packages/credentials-store-db
       '@ax/database-postgres':
         specifier: workspace:*
         version: link:../../packages/database-postgres

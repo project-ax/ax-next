@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { HookBus, bootstrap, makeAgentContext } from '@ax/core';
 import { createStorageSqlitePlugin } from '@ax/storage-sqlite';
+import { createCredentialsStoreDbPlugin } from '@ax/credentials-store-db';
 import { createCredentialsPlugin } from '@ax/credentials';
 import { runCredentialsCommand } from '../commands/credentials.js';
 
@@ -45,7 +46,11 @@ describe('ax-next credentials set <id>', () => {
     const bus = new HookBus();
     await bootstrap({
       bus,
-      plugins: [createStorageSqlitePlugin({ databasePath: sqlitePath }), createCredentialsPlugin()],
+      plugins: [
+        createStorageSqlitePlugin({ databasePath: sqlitePath }),
+        createCredentialsStoreDbPlugin(),
+        createCredentialsPlugin(),
+      ],
       config: {},
     });
     const got = await bus.call<{ id: string }, { value: string }>(
@@ -70,7 +75,11 @@ describe('ax-next credentials set <id>', () => {
     const bus = new HookBus();
     await bootstrap({
       bus,
-      plugins: [createStorageSqlitePlugin({ databasePath: sqlitePath }), createCredentialsPlugin()],
+      plugins: [
+        createStorageSqlitePlugin({ databasePath: sqlitePath }),
+        createCredentialsStoreDbPlugin(),
+        createCredentialsPlugin(),
+      ],
       config: {},
     });
     const got = await bus.call<{ id: string }, { value: string }>(

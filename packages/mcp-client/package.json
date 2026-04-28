@@ -25,6 +25,7 @@
   "devDependencies": {
     "@ax/auth-oidc": "workspace:*",
     "@ax/credentials": "workspace:*",
+    "@ax/credentials-store-db": "workspace:*",
     "@ax/database-postgres": "workspace:*",
     "@ax/http-server": "workspace:*",
     "@ax/test-harness": "workspace:*",
