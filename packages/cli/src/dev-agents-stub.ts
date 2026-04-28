@@ -70,6 +70,20 @@ export interface DevAgentsStubConfig {
    * Defaults to a single ANTHROPIC_API_KEY entry pointing at the
    * `anthropic-api` credential id; users seed it with
    * `ax-next credentials set anthropic-api` before the canary works.
+   *
+   * Phase 3 — to drive the OAuth rotation path, override with:
+   *
+   *   requiredCredentials: {
+   *     CLAUDE_CODE_OAUTH_TOKEN: {
+   *       ref: 'anthropic-personal',
+   *       kind: 'anthropic-oauth',
+   *     },
+   *   }
+   *
+   * The orchestrator inspects `kind`; any non-`api-key` value flips the
+   * session into per-turn rotation mode (proxy:rotate-session at
+   * chat:turn-end). Seed the credential first via:
+   *   `ax-next credentials login anthropic`.
    */
   requiredCredentials?: Readonly<Record<string, { ref: string; kind: string }>>;
 }
