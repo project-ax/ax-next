@@ -38,6 +38,9 @@ importers:
       '@ax/agent-runner-core':
         specifier: workspace:*
         version: link:../agent-runner-core
+      '@ax/credential-proxy-bridge':
+        specifier: workspace:*
+        version: link:../credential-proxy-bridge
       '@ax/ipc-protocol':
         specifier: workspace:*
         version: link:../ipc-protocol
