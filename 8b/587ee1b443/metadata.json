@@ -3,7 +3,7 @@
   "checkpoint_id": "8b587ee1b443",
   "strategy": "manual-commit",
   "branch": "phase-2-runner-proxy-wiring",
-  "checkpoints_count": 0,
+  "checkpoints_count": 2,
   "files_touched": [
     "packages/agent-claude-sdk-runner/package.json",
     "packages/agent-claude-sdk-runner/src/__tests__/env.test.ts",
@@ -19,13 +19,19 @@
       "transcript": "/8b/587ee1b443/0/full.jsonl",
       "content_hash": "/8b/587ee1b443/0/content_hash.txt",
       "prompt": ""
+    },
+    {
+      "metadata": "/8b/587ee1b443/1/metadata.json",
+      "transcript": "/8b/587ee1b443/1/full.jsonl",
+      "content_hash": "/8b/587ee1b443/1/content_hash.txt",
+      "prompt": "/8b/587ee1b443/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 22,
-    "cache_creation_tokens": 28019,
-    "cache_read_tokens": 4948165,
-    "output_tokens": 20373,
-    "api_call_count": 22
+    "input_tokens": 281,
+    "cache_creation_tokens": 659353,
+    "cache_read_tokens": 53578853,
+    "output_tokens": 196213,
+    "api_call_count": 213
   }
 }

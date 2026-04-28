@@ -1,0 +1,9 @@
+Write an implementation plan for Week 6.5d (claude-sdk runner). Read
+docs/plans/2026-04-24-week-6.5-agent-sandbox-design.md; the claude-sdk-runner section
+specifies the hybrid built-in-tool policy (keep Bash/Read/Write/Edit/Glob/Grep/TodoWrite;
+disable WebFetch/WebSearch/Skill/Task), the canUseTool/PostToolUse wiring, and the
+Anthropic-format proxy requirement. Scope: @ax/agent-claude-sdk-runner,
+@ax/llm-proxy-anthropic-format. Acceptance: swap to claude-sdk via config; built-ins and MCP
+tools both fire tool:pre-call / tool:post-call subscribers. Invoke security-checklist for
+@ax/llm-proxy-anthropic-format (new HTTP surface) and for the claude-sdk dependency tree.
+Branch off 6.5c. Executable via subagent-driven-development.
