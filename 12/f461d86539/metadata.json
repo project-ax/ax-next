@@ -1,0 +1,25 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "12f461d86539",
+  "strategy": "manual-commit",
+  "branch": "phase-3-oauth-slice",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "packages/credentials-anthropic-oauth/src/__tests__/refresh.e2e.test.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/12/f461d86539/0/metadata.json",
+      "transcript": "/12/f461d86539/0/full.jsonl",
+      "content_hash": "/12/f461d86539/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 5,
+    "cache_creation_tokens": 2290,
+    "cache_read_tokens": 2036328,
+    "output_tokens": 1812,
+    "api_call_count": 5
+  }
+}
