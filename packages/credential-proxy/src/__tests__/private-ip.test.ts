@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { resolveAndCheck, isPrivateIPv4, isPrivateIPv6, type Resolver } from '../private-ip.js';
+import {
+  resolveAndCheck,
+  isPrivateIPv4,
+  isPrivateIPv6,
+  BlockedIPError,
+  type Resolver,
+} from '../private-ip.js';
 
 describe('isPrivateIPv4', () => {
   it.each([
@@ -74,5 +80,23 @@ describe('resolveAndCheck', () => {
 
   it('returns resolved IP when stub resolver returns public IP', async () => {
     expect(await resolveAndCheck('public.test', undefined, stubResolver)).toBe('8.8.8.8');
+  });
+
+  // Reviewer M3 (Task 5): callers must be able to distinguish a policy block
+  // (→ HTTP 403) from a network/DNS error (→ HTTP 502) without string-matching
+  // the message. resolveAndCheck throws BlockedIPError for the former.
+  it('throws BlockedIPError (typed) for literal private IP', async () => {
+    await expect(resolveAndCheck('127.0.0.1')).rejects.toBeInstanceOf(BlockedIPError);
+  });
+
+  it('throws BlockedIPError carrying hostname and resolved IP for hostname → private path', async () => {
+    try {
+      await resolveAndCheck('metadata.test', undefined, stubResolver);
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(BlockedIPError);
+      expect((err as BlockedIPError).hostname).toBe('metadata.test');
+      expect((err as BlockedIPError).ip).toBe('169.254.169.254');
+    }
   });
 });

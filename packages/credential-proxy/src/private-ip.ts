@@ -14,6 +14,27 @@ import { lookup as dnsLookup } from 'node:dns/promises';
 /** DNS resolver function signature — matches `dns.promises.lookup`'s 1-arg form. */
 export type Resolver = (host: string) => Promise<{ address: string; family: number }>;
 
+/**
+ * Typed error thrown by `resolveAndCheck` when the target hostname
+ * (or the IP it resolved to) sits inside one of the private CIDRs.
+ *
+ * Callers (e.g. the proxy listener) use `instanceof BlockedIPError` to
+ * distinguish a policy block (→ HTTP 403) from a network/DNS error
+ * (→ HTTP 502). Don't string-match the message; that's what this class
+ * exists to avoid.
+ */
+export class BlockedIPError extends Error {
+  constructor(
+    public readonly hostname: string,
+    public readonly ip: string,
+  ) {
+    super(
+      `Blocked: ${hostname === ip ? 'private IP' : `${hostname} resolved to private IP`} ${ip}`,
+    );
+    this.name = 'BlockedIPError';
+  }
+}
+
 /** IPv4 ranges that must never be connected to (SSRF protection). */
 export function isPrivateIPv4(ip: string): boolean {
   const parts = ip.split('.').map(Number);
@@ -69,7 +90,7 @@ export async function resolveAndCheck(
   // Literal IP — no DNS lookup needed
   if (net.isIP(hostname)) {
     if (!allowedIPs?.has(hostname) && (isPrivateIPv4(hostname) || isPrivateIPv6(hostname))) {
-      throw new Error(`Blocked: private IP ${hostname}`);
+      throw new BlockedIPError(hostname, hostname);
     }
     return hostname;
   }
@@ -78,7 +99,7 @@ export async function resolveAndCheck(
   const ip = result.address;
 
   if (!allowedIPs?.has(ip) && (isPrivateIPv4(ip) || isPrivateIPv6(ip))) {
-    throw new Error(`Blocked: ${hostname} resolved to private IP ${ip}`);
+    throw new BlockedIPError(hostname, ip);
   }
   return ip;
 }
