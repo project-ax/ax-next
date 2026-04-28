@@ -64,55 +64,58 @@ describe('@ax/credentials-store-db plugin', () => {
   it('put then get round-trips a blob', async () => {
     const bus = await bootstrapWithMemStore();
     const blob = new Uint8Array([1, 2, 3, 4, 5]);
-    await bus.call('credentials:store-blob:put', ctx(), { id: 'r1', blob });
-    const got = await bus.call<{ id: string }, { blob: Uint8Array | undefined }>(
-      'credentials:store-blob:get',
-      ctx(),
-      { id: 'r1' },
-    );
+    await bus.call('credentials:store-blob:put', ctx(), { userId: 'u', ref: 'r1', blob });
+    const got = await bus.call<
+      { userId: string; ref: string },
+      { blob: Uint8Array | undefined }
+    >('credentials:store-blob:get', ctx(), { userId: 'u', ref: 'r1' });
     expect(got.blob).toBeDefined();
     expect(Array.from(got.blob!)).toEqual([1, 2, 3, 4, 5]);
   });
 
-  it('get returns { blob: undefined } for missing id', async () => {
+  it('get returns { blob: undefined } for missing (userId, ref)', async () => {
     const bus = await bootstrapWithMemStore();
-    const got = await bus.call<{ id: string }, { blob: Uint8Array | undefined }>(
-      'credentials:store-blob:get',
-      ctx(),
-      { id: 'nope' },
-    );
+    const got = await bus.call<
+      { userId: string; ref: string },
+      { blob: Uint8Array | undefined }
+    >('credentials:store-blob:get', ctx(), { userId: 'u', ref: 'nope' });
     expect(got.blob).toBeUndefined();
   });
 
-  it('put overwrites existing value at the same id', async () => {
+  it('put overwrites existing value at the same (userId, ref)', async () => {
     const bus = await bootstrapWithMemStore();
     await bus.call('credentials:store-blob:put', ctx(), {
-      id: 'r1',
+      userId: 'u',
+      ref: 'r1',
       blob: new Uint8Array([1, 1]),
     });
     await bus.call('credentials:store-blob:put', ctx(), {
-      id: 'r1',
+      userId: 'u',
+      ref: 'r1',
       blob: new Uint8Array([9, 9, 9]),
     });
-    const got = await bus.call<{ id: string }, { blob: Uint8Array | undefined }>(
-      'credentials:store-blob:get',
-      ctx(),
-      { id: 'r1' },
-    );
+    const got = await bus.call<
+      { userId: string; ref: string },
+      { blob: Uint8Array | undefined }
+    >('credentials:store-blob:get', ctx(), { userId: 'u', ref: 'r1' });
     expect(Array.from(got.blob!)).toEqual([9, 9, 9]);
   });
 
-  it('uses the "credential:" key prefix when reading/writing storage', async () => {
+  it('uses the "credential:<userId>:" key prefix when reading/writing storage', async () => {
     // Verify the seam through the storage:* layer directly. A vault-backed
     // sibling impl wouldn't go through storage at all, but the default
     // store-db's contract is exactly that it owns the `credential:` prefix.
     const bus = await bootstrapWithMemStore();
     const blob = new Uint8Array([42, 42, 42]);
-    await bus.call('credentials:store-blob:put', ctx(), { id: 'gh-token', blob });
+    await bus.call('credentials:store-blob:put', ctx(), {
+      userId: 'u',
+      ref: 'gh-token',
+      blob,
+    });
     const directly = await bus.call<{ key: string }, { value: Uint8Array | undefined }>(
       'storage:get',
       ctx(),
-      { key: 'credential:gh-token' },
+      { key: 'credential:u:gh-token' },
     );
     expect(directly.value).toBeDefined();
     expect(Array.from(directly.value!)).toEqual([42, 42, 42]);
@@ -122,19 +125,55 @@ describe('@ax/credentials-store-db plugin', () => {
       key: 'gh-token',
       value: new Uint8Array([1]),
     });
-    const got = await bus.call<{ id: string }, { blob: Uint8Array | undefined }>(
-      'credentials:store-blob:get',
-      ctx(),
-      { id: 'gh-token' },
-    );
+    const got = await bus.call<
+      { userId: string; ref: string },
+      { blob: Uint8Array | undefined }
+    >('credentials:store-blob:get', ctx(), { userId: 'u', ref: 'gh-token' });
     expect(Array.from(got.blob!)).toEqual([42, 42, 42]);
   });
 
-  it('rejects credentials:store-blob:put with an invalid id', async () => {
+  it('different userIds do not collide on the same ref', async () => {
+    // I14: (userId, ref) is the unique key, not ref alone.
+    const bus = await bootstrapWithMemStore();
+    await bus.call('credentials:store-blob:put', ctx(), {
+      userId: 'alice',
+      ref: 'shared',
+      blob: new Uint8Array([0xa1]),
+    });
+    await bus.call('credentials:store-blob:put', ctx(), {
+      userId: 'bob',
+      ref: 'shared',
+      blob: new Uint8Array([0xb0]),
+    });
+    const a = await bus.call<
+      { userId: string; ref: string },
+      { blob: Uint8Array | undefined }
+    >('credentials:store-blob:get', ctx(), { userId: 'alice', ref: 'shared' });
+    const b = await bus.call<
+      { userId: string; ref: string },
+      { blob: Uint8Array | undefined }
+    >('credentials:store-blob:get', ctx(), { userId: 'bob', ref: 'shared' });
+    expect(Array.from(a.blob!)).toEqual([0xa1]);
+    expect(Array.from(b.blob!)).toEqual([0xb0]);
+  });
+
+  it('rejects credentials:store-blob:put with an invalid ref', async () => {
     const bus = await bootstrapWithMemStore();
     await expect(
       bus.call('credentials:store-blob:put', ctx(), {
-        id: 'has space',
+        userId: 'u',
+        ref: 'has space',
+        blob: new Uint8Array([1]),
+      }),
+    ).rejects.toMatchObject({ code: 'invalid-payload' });
+  });
+
+  it('rejects credentials:store-blob:put with an invalid userId', async () => {
+    const bus = await bootstrapWithMemStore();
+    await expect(
+      bus.call('credentials:store-blob:put', ctx(), {
+        userId: 'has space',
+        ref: 'r1',
         blob: new Uint8Array([1]),
       }),
     ).rejects.toMatchObject({ code: 'invalid-payload' });
@@ -144,16 +183,17 @@ describe('@ax/credentials-store-db plugin', () => {
     const bus = await bootstrapWithMemStore();
     await expect(
       bus.call('credentials:store-blob:put', ctx(), {
-        id: 'r1',
+        userId: 'u',
+        ref: 'r1',
         blob: 'not bytes' as unknown as Uint8Array,
       }),
     ).rejects.toMatchObject({ code: 'invalid-payload' });
   });
 
-  it('rejects credentials:store-blob:get with an invalid id', async () => {
+  it('rejects credentials:store-blob:get with an invalid ref', async () => {
     const bus = await bootstrapWithMemStore();
     await expect(
-      bus.call('credentials:store-blob:get', ctx(), { id: 'has space' }),
+      bus.call('credentials:store-blob:get', ctx(), { userId: 'u', ref: 'has space' }),
     ).rejects.toMatchObject({ code: 'invalid-payload' });
   });
 
@@ -168,12 +208,11 @@ describe('@ax/credentials-store-db plugin', () => {
       config: {},
     });
     const blob = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
-    await bus.call('credentials:store-blob:put', ctx(), { id: 'r1', blob });
-    const got = await bus.call<{ id: string }, { blob: Uint8Array | undefined }>(
-      'credentials:store-blob:get',
-      ctx(),
-      { id: 'r1' },
-    );
+    await bus.call('credentials:store-blob:put', ctx(), { userId: 'u', ref: 'r1', blob });
+    const got = await bus.call<
+      { userId: string; ref: string },
+      { blob: Uint8Array | undefined }
+    >('credentials:store-blob:get', ctx(), { userId: 'u', ref: 'r1' });
     expect(Array.from(got.blob!)).toEqual([0xde, 0xad, 0xbe, 0xef]);
   });
 });
