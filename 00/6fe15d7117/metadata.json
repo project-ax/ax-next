@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "006fe15d7117",
+  "strategy": "manual-commit",
+  "branch": "phase-2-runner-proxy-wiring",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "packages/chat-orchestrator/src/__tests__/orchestrator.test.ts",
+    "packages/chat-orchestrator/src/orchestrator.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/00/6fe15d7117/0/metadata.json",
+      "transcript": "/00/6fe15d7117/0/full.jsonl",
+      "content_hash": "/00/6fe15d7117/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 16,
+    "cache_creation_tokens": 27636,
+    "cache_read_tokens": 2857470,
+    "output_tokens": 17252,
+    "api_call_count": 16
+  }
+}
