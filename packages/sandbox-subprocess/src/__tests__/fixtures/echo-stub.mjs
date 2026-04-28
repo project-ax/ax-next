@@ -34,6 +34,8 @@ const env = {
     if (typeof v !== 'string' || v.length === 0) return null;
     return v.startsWith('ax-cred:') ? v : '[redacted]';
   })(),
+  // Allowlisted parent vars echoed for the spread-precedence test.
+  HOME: process.env.HOME ?? null,
   FOO: process.env.FOO ?? null,
 };
 process.stdout.write(JSON.stringify(env) + '\n');

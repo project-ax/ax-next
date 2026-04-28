@@ -366,7 +366,16 @@ export async function openSessionImpl(
     Object.assign(sessionEnv, input.proxyConfig.envMap);
   }
 
-  const env = { ...sessionEnv, ...allowlistFromParent() };
+  // Allowlist FIRST, sessionEnv LAST: the parent's PATH/HOME/TZ etc. are
+  // load-bearing for the runner (resolving `node`, finding home dirs), but
+  // any session-scoped key MUST win over a same-named parent var. Today
+  // the allowlist (PATH/HOME/LANG/LC_ALL/TZ/NODE_OPTIONS) doesn't overlap
+  // with sessionEnv, but if a future expansion ever did — e.g. an operator
+  // adds ANTHROPIC_API_KEY or HTTPS_PROXY to the allowlist — the session-
+  // scoped placeholder MUST take precedence. A parent ANTHROPIC_API_KEY
+  // leaking into the sandbox would re-introduce a real credential into a
+  // process that's only supposed to see ax-cred:<hex> placeholders (I1).
+  const env = { ...allowlistFromParent(), ...sessionEnv };
 
   // 8. Spawn. argv[0] is the literal 'node', which trivially matches the
   //    existing ARGV0 regex — no extra validation here. shell:false, fixed

@@ -507,6 +507,52 @@ describe('sandbox:open-session', () => {
     await fs.rm(ws, { recursive: true, force: true });
   });
 
+  it('proxyConfig.envMap wins over a same-named allowlisted parent env (defense-in-depth)', async () => {
+    // Today the allowlist (PATH/HOME/LANG/LC_ALL/TZ/NODE_OPTIONS) doesn't
+    // overlap with the proxy keys envMap carries (ANTHROPIC_API_KEY,
+    // HTTPS_PROXY, etc.). But if a future expansion ever did — e.g. an
+    // operator adds ANTHROPIC_API_KEY to the allowlist — the session-
+    // scoped placeholder MUST still win. A parent ANTHROPIC_API_KEY
+    // leaking into the sandbox would re-introduce a real credential into
+    // a process that's only supposed to see ax-cred:<hex> placeholders
+    // (I1).
+    //
+    // We simulate the overlap by aiming envMap at HOME — already in the
+    // allowlist — and proving the child sees the envMap value, not the
+    // parent's. The spread order is the only thing under test.
+    const ws = await mkWorkspace();
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    const priorHome = process.env.HOME;
+    process.env.HOME = '/parent/home/should/lose';
+    try {
+      const result = await h.bus.call<unknown, OpenSessionResult>(
+        'sandbox:open-session',
+        ctx,
+        {
+          sessionId: 'envmap-precedence-1',
+          workspaceRoot: ws,
+          runnerBinary: ECHO_STUB,
+          proxyConfig: {
+            endpoint: 'http://127.0.0.1:54321',
+            caCertPem: '-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n',
+            envMap: { HOME: '/session/home/wins' },
+          },
+        },
+      );
+      const line = await readFirstStdoutLine(result);
+      const parsed = JSON.parse(line) as Record<string, string | null>;
+      expect(parsed.HOME).toBe('/session/home/wins');
+      await result.handle.kill();
+      await result.handle.exited;
+      await new Promise((r) => setTimeout(r, 50));
+    } finally {
+      if (priorHome === undefined) delete process.env.HOME;
+      else process.env.HOME = priorHome;
+    }
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
   it('rolls back ipc + session + tempdir when CA write fails (proxyConfig path)', async () => {
     // CA write happens AFTER session:create + ipc:start. If it throws, the
     // function used to exit without rollback, leaking a live token + a
