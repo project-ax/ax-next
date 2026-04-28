@@ -36,6 +36,7 @@ describe('proxy listener — HTTP forwarding', () => {
       proxyTunnel: false, // HTTP path: send absolute-URL request, not CONNECT
     });
     const res = await fetch(`http://127.0.0.1:${upPort}/`, { dispatcher } as RequestInit);
+    expect(res.status).toBe(200);
     expect(await res.text()).toBe('OK from upstream');
   });
 
