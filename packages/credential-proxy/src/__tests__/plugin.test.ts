@@ -406,11 +406,13 @@ describe('@ax/credential-proxy plugin', () => {
         { sessionId: string },
         { envMap: Record<string, string> }
       >('proxy:rotate-session', ctx(), { sessionId: 's1' });
-      const newPlaceholder = rotated.envMap.ANTHROPIC_API_KEY!;
-      expect(newPlaceholder).toMatch(/^ax-cred:[0-9a-f]{32}$/);
-      expect(newPlaceholder).not.toBe(oldPlaceholder);
+      const placeholderAfterRotate = rotated.envMap.ANTHROPIC_API_KEY!;
+      // I11: the placeholder is STABLE across rotations. A fresh placeholder
+      // would invalidate the running sandbox's env (already read by the SDK
+      // at startup). Same placeholder now substitutes to the new value.
+      expect(placeholderAfterRotate).toBe(oldPlaceholder);
 
-      // Second round-trip with NEW placeholder: substitution → ROTATED value.
+      // Second round-trip with the SAME placeholder: substitution → ROTATED.
       const dispatcher2 = new ProxyAgent({
         uri: `http://127.0.0.1:${proxyPort}`,
         requestTls: { ca: ca.cert },
@@ -419,7 +421,7 @@ describe('@ax/credential-proxy plugin', () => {
       const res2 = await fetch(`https://127.0.0.1:${upPort}/v1/messages`, {
         method: 'POST',
         headers: {
-          'authorization': `Bearer ${newPlaceholder}`,
+          'authorization': `Bearer ${oldPlaceholder}`,
           'content-type': 'application/json',
         },
         body: JSON.stringify({ which: 'second' }),
@@ -428,28 +430,9 @@ describe('@ax/credential-proxy plugin', () => {
       expect(res2.status).toBe(200);
       await wait2;
       expect(captures[1]?.authorization).toBe('Bearer sk-rotated');
-
-      // Third round-trip with OLD placeholder: registry no longer has it,
-      // so substitution does NOT happen — upstream sees the literal token.
-      const dispatcher3 = new ProxyAgent({
-        uri: `http://127.0.0.1:${proxyPort}`,
-        requestTls: { ca: ca.cert },
-      });
-      const wait3 = nextRequest();
-      const res3 = await fetch(`https://127.0.0.1:${upPort}/v1/messages`, {
-        method: 'POST',
-        headers: {
-          'authorization': `Bearer ${oldPlaceholder}`,
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({ which: 'third' }),
-        dispatcher: dispatcher3,
-      } as RequestInit);
-      expect(res3.status).toBe(200);
-      await wait3;
-      expect(captures[2]?.authorization).toBe(`Bearer ${oldPlaceholder}`);
-      expect(captures[2]?.authorization).not.toContain('sk-original');
-      expect(captures[2]?.authorization).not.toContain('sk-rotated');
+      // The original value must NOT leak after rotation — the substitution
+      // table should now hold ONLY the rotated value behind the placeholder.
+      expect(captures[1]?.authorization).not.toContain('sk-original');
     } finally {
       await closeUpstream();
     }

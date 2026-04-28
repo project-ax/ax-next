@@ -395,12 +395,12 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
       );
 
       // 4b. proxy:rotate-session — re-resolve every credential ref via
-      //     credentials:get and swap a fresh CredentialPlaceholderMap into
-      //     the registry. The OLD map's placeholders die when its registry
-      //     entry is overwritten (registry.register replaces the prior map
-      //     for that sessionId), so any in-flight requests still using the
-      //     old placeholder pass through as literal `ax-cred:<old>` — the
-      //     upstream sees garbage, which is the desired fail-closed behavior.
+      //     credentials:get and update the EXISTING session map's values
+      //     in place. The placeholder tokens are unchanged (Phase 3 I11) —
+      //     a fresh placeholder would invalidate the running sandbox's env,
+      //     since the SDK already read it at startup and won't re-read.
+      //     Future requests substitute the refreshed value under the same
+      //     `ax-cred:<hex>` token; substitution stays seamless.
       bus.registerService<RotateSessionInput, RotateSessionOutput>(
         'proxy:rotate-session',
         PLUGIN_NAME,
@@ -414,7 +414,8 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
           }
           const refs = sessionCredentialRefs.get(sessionId);
           const sess = sessions.get(sessionId);
-          if (!refs || !sess) {
+          const existingMap = registry.get(sessionId);
+          if (!refs || !sess || !existingMap) {
             throw new PluginError({
               code: 'unknown-session',
               plugin: PLUGIN_NAME,
@@ -431,27 +432,29 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
               message: `session ${sessionId} has no userId — refusing to rotate`,
             });
           }
-          // Build a fresh placeholder map. We deliberately do NOT mutate the
-          // existing one — a brand-new map guarantees that the OLD map (held
-          // only by the registry until we overwrite it) is dropped intact.
-          //
           // userId is pulled from the session config (set at open time), NOT
           // from ctx — rotation happens for the same session whose owner is
           // already pinned. Using ctx.userId here would let a caller from a
           // different user-context resolve someone else's credentials.
           const userId = sess.userId;
-          const map = new CredentialPlaceholderMap();
           for (const [envName, { ref }] of Object.entries(refs)) {
             const value = await bus.call<
               { ref: string; userId: string },
               string
             >('credentials:get', ctx, { ref, userId });
-            map.register(envName, value);
+            const placeholder = existingMap.updateValue(envName, value);
+            if (placeholder === undefined) {
+              // Should be impossible — open-session registered every envName
+              // in `refs`. If it ever happens, surface clearly rather than
+              // silently leaving stale values in the substitution table.
+              throw new PluginError({
+                code: 'placeholder-not-registered',
+                plugin: PLUGIN_NAME,
+                message: `rotate-session: '${envName}' was never registered for session ${sessionId}`,
+              });
+            }
           }
-          // register() overwrites the existing entry for this sessionId,
-          // dropping the old map — old placeholders no longer match.
-          registry.register(sessionId, map);
-          return { envMap: map.toEnvMap() };
+          return { envMap: existingMap.toEnvMap() };
         },
       );
 

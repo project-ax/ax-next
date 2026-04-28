@@ -32,6 +32,24 @@ export class CredentialPlaceholderMap {
     return placeholder;
   }
 
+  /**
+   * Update the real value for an already-registered envName WITHOUT minting
+   * a new placeholder. The sandbox's env still carries the original
+   * `ax-cred:<hex>`; the proxy now substitutes the new value at request
+   * time. This is the contract that makes proxy:rotate-session safe for a
+   * running sandbox — a fresh placeholder would break running SDKs that
+   * have already read the env (Phase 3 I11).
+   *
+   * Returns the existing placeholder, or `undefined` if envName was never
+   * registered.
+   */
+  updateValue(envName: string, realValue: string): string | undefined {
+    const placeholder = this.nameToPlaceholder.get(envName);
+    if (placeholder === undefined) return undefined;
+    this.placeholderToReal.set(placeholder, realValue);
+    return placeholder;
+  }
+
   /** Check if a string contains any registered placeholders. */
   hasPlaceholders(input: string): boolean {
     for (const ph of this.placeholderToReal.keys()) {
@@ -88,6 +106,15 @@ export class SharedCredentialRegistry {
   /** Deregister a session's credential map. Called at session cleanup. */
   deregister(sessionId: string): void {
     this.sessions.delete(sessionId);
+  }
+
+  /**
+   * Look up a session's existing credential map. proxy:rotate-session uses
+   * this to update values on the same map (preserving placeholders) rather
+   * than minting a fresh map (which would invalidate the sandbox's env).
+   */
+  get(sessionId: string): CredentialPlaceholderMap | undefined {
+    return this.sessions.get(sessionId);
   }
 
   /** Check if any registered session has placeholders in the input. */
