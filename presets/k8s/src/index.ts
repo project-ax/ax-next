@@ -18,6 +18,7 @@ import { createMcpClientPlugin } from '@ax/mcp-client';
 import { createCredentialProxyPlugin } from '@ax/credential-proxy';
 import { createCredentialsPlugin } from '@ax/credentials';
 import { createCredentialsStoreDbPlugin } from '@ax/credentials-store-db';
+import { createCredentialsAnthropicOauthPlugin } from '@ax/credentials-anthropic-oauth';
 import { createIpcHttpPlugin } from '@ax/ipc-http';
 import { createAgentsPlugin } from '@ax/agents';
 import { createHttpServerPlugin } from '@ax/http-server';
@@ -328,6 +329,12 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // AX_CREDENTIALS_KEY isn't in env.
   plugins.push(createCredentialsStoreDbPlugin());
   plugins.push(createCredentialsPlugin());
+
+  // Phase 3 — Anthropic OAuth per-kind sub-services. Same load reasoning
+  // as the CLI preset: purely additive, only dispatches when an agent
+  // actually carries a kind: 'anthropic-oauth' credential. Web-chat OAuth
+  // routes (Phase 10–12) will register HTTP handlers from this plugin.
+  plugins.push(createCredentialsAnthropicOauthPlugin());
 
   // Phase 2 — credential-proxy on a Unix socket. The host pod mounts an
   // emptyDir at /var/run/ax (helm template); the proxy listens on

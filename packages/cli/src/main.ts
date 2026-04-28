@@ -13,6 +13,7 @@ import { createLlmAnthropicPlugin } from '@ax/llm-anthropic';
 import { createStorageSqlitePlugin } from '@ax/storage-sqlite';
 import { createCredentialsStoreDbPlugin } from '@ax/credentials-store-db';
 import { createCredentialsPlugin } from '@ax/credentials';
+import { createCredentialsAnthropicOauthPlugin } from '@ax/credentials-anthropic-oauth';
 import { createCredentialProxyPlugin } from '@ax/credential-proxy';
 import { auditLogPlugin } from '@ax/audit-log';
 import { createSandboxSubprocessPlugin } from '@ax/sandbox-subprocess';
@@ -155,6 +156,16 @@ export async function main(opts: MainOptions): Promise<number> {
   // keeps the intent obvious to readers. Init requires AX_CREDENTIALS_KEY in env.
   plugins.push(createCredentialsStoreDbPlugin());
   plugins.push(createCredentialsPlugin());
+
+  // Phase 3 — Anthropic OAuth (per-kind credentials sub-services). Loaded
+  // unconditionally because it's purely additive: it registers
+  // `credentials:resolve:anthropic-oauth` etc. without forcing any agent
+  // to use OAuth. An agent whose requiredCredentials are all `kind: 'api-key'`
+  // gets the Phase 2 fast path; only OAuth-keyed credentials dispatch into
+  // this plugin. Loading it everywhere also enables `ax-next credentials
+  // login anthropic` to work without a separate "are we using OAuth?"
+  // config flag.
+  plugins.push(createCredentialsAnthropicOauthPlugin());
 
   // Phase 2 — credential-proxy. Loaded ONLY when llm = anthropic. The
   // proxy substitutes a real Anthropic key into outbound api.anthropic.com

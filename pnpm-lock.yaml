@@ -358,6 +358,9 @@ importers:
       '@ax/credentials':
         specifier: workspace:*
         version: link:../credentials
+      '@ax/credentials-anthropic-oauth':
+        specifier: workspace:*
+        version: link:../credentials-anthropic-oauth
       '@ax/credentials-store-db':
         specifier: workspace:*
         version: link:../credentials-store-db
@@ -1365,6 +1368,9 @@ importers:
       '@ax/credentials':
         specifier: workspace:*
         version: link:../../packages/credentials
+      '@ax/credentials-anthropic-oauth':
+        specifier: workspace:*
+        version: link:../../packages/credentials-anthropic-oauth
       '@ax/credentials-store-db':
         specifier: workspace:*
         version: link:../../packages/credentials-store-db

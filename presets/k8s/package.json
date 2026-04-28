@@ -39,6 +39,7 @@
     "@ax/credential-proxy": "workspace:*",
     "@ax/credentials": "workspace:*",
     "@ax/credentials-store-db": "workspace:*",
+    "@ax/credentials-anthropic-oauth": "workspace:*",
     "@ax/ipc-http": "workspace:*",
     "@ax/agents": "workspace:*",
     "@ax/http-server": "workspace:*",
