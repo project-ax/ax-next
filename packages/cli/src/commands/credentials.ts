@@ -27,9 +27,12 @@ const DEFAULT_SQLITE_PATH = './ax-next-chat.sqlite';
 // the door open without forcing the change today.
 const CLI_USER_ID = 'cli';
 // Fixed port + redirect — Anthropic-whitelisted; do NOT use a random port.
+// Pinned to the IPv4 literal so the listener (also bound on 127.0.0.1)
+// and the browser's redirect target resolve to the same address. Using
+// `localhost` here would break on hosts where it resolves to ::1 first.
 // Matches v1's setup (~/dev/ai/ax/src/host/oauth.ts:18).
 const OAUTH_REDIRECT_PORT = 1455;
-const OAUTH_REDIRECT_URI = 'http://localhost:1455/callback';
+const OAUTH_REDIRECT_URI = 'http://127.0.0.1:1455/callback';
 const OAUTH_TIMEOUT_MS = 60_000;
 const DEFAULT_OAUTH_REF = 'anthropic-personal';
 

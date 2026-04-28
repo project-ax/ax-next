@@ -21,7 +21,13 @@ export const ANTHROPIC_TOKEN_ENDPOINT = 'https://console.anthropic.com/v1/oauth/
 // Allowlisted in .gitleaks.toml — gitleaks-action's inline `:allow`
 // directive isn't honored by the version we run.
 export const ANTHROPIC_OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
-export const ANTHROPIC_OAUTH_REDIRECT_URI = 'http://localhost:1455/callback';
+// Pinned to 127.0.0.1 (IPv4 literal), NOT 'localhost'. On macOS and some
+// linux configs, `localhost` resolves to ::1 first; if the listener binds
+// only on IPv4, the browser's IPv6 callback never lands and the login
+// flow hangs. Anthropic accepts loopback redirects per RFC 8252, so
+// `127.0.0.1` is fine to register. Listener bind site
+// (packages/cli/src/commands/credentials.ts) MUST match this exactly.
+export const ANTHROPIC_OAUTH_REDIRECT_URI = 'http://127.0.0.1:1455/callback';
 export const ANTHROPIC_OAUTH_REDIRECT_PORT = 1455;
 export const ANTHROPIC_OAUTH_SCOPES = 'org:create_api_key user:profile user:inference';
 
