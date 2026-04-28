@@ -388,6 +388,149 @@ describe('sandbox:open-session', () => {
     await fs.rm(ws, { recursive: true, force: true });
   });
 
+  // ---------------------------------------------------------------------
+  // Phase 2 — proxyConfig env injection
+  //
+  // When the orchestrator passes a proxyConfig blob, we write the CA cert
+  // PEM to the per-session tempdir and inject HTTPS_PROXY / HTTP_PROXY /
+  // NODE_EXTRA_CA_CERTS / SSL_CERT_FILE / AX_PROXY_* / envMap into the
+  // child env. CA private keys never enter the sandbox (I1) — the
+  // certificate is a public key only.
+  // ---------------------------------------------------------------------
+
+  it('writes CA cert + injects HTTPS_PROXY / NODE_EXTRA_CA_CERTS when proxyConfig.endpoint is set', async () => {
+    const ws = await mkWorkspace();
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    const result = await h.bus.call<unknown, OpenSessionResult>(
+      'sandbox:open-session',
+      ctx,
+      {
+        sessionId: 'proxy-tcp-1',
+        workspaceRoot: ws,
+        runnerBinary: ECHO_STUB,
+        proxyConfig: {
+          endpoint: 'http://127.0.0.1:54321',
+          caCertPem: '-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n',
+          envMap: { ANTHROPIC_API_KEY: 'ax-cred:0123' },
+        },
+      },
+    );
+    const line = await readFirstStdoutLine(result);
+    const parsed = JSON.parse(line) as Record<string, string | null>;
+    expect(parsed.HTTPS_PROXY).toBe('http://127.0.0.1:54321');
+    expect(parsed.HTTP_PROXY).toBe('http://127.0.0.1:54321');
+    expect(parsed.AX_PROXY_ENDPOINT).toBe('http://127.0.0.1:54321');
+    expect(parsed.AX_PROXY_UNIX_SOCKET).toBeNull();
+    expect(parsed.ANTHROPIC_API_KEY).toBe('ax-cred:0123');
+    // CA file path lands inside the per-session tempdir (same one the IPC
+    // socket uses — 0700 mode, host uid only).
+    const caPath = parsed.NODE_EXTRA_CA_CERTS;
+    expect(caPath).toMatch(/\/ax-ipc-.*\/ax-mitm-ca\.pem$/);
+    expect(parsed.SSL_CERT_FILE).toBe(caPath);
+    // CA file actually exists on disk and contains the PEM.
+    const onDisk = await fs.readFile(caPath as string, 'utf8');
+    expect(onDisk).toContain('-----BEGIN CERTIFICATE-----');
+    expect(onDisk).toContain('FAKE');
+
+    await result.handle.kill();
+    await result.handle.exited;
+    await new Promise((r) => setTimeout(r, 50));
+    // Tempdir cleanup sweeps the CA file too — no separate handler.
+    await expect(fs.stat(caPath as string)).rejects.toMatchObject({ code: 'ENOENT' });
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
+  it('passes through proxyConfig.unixSocketPath as AX_PROXY_UNIX_SOCKET (no HTTPS_PROXY rewrite)', async () => {
+    // Subprocess sandbox passes the path through as-is; the runner-side
+    // bridge owns the unix-socket → local-TCP-port translation. We verify
+    // here that this plugin does NOT pre-set HTTPS_PROXY when only the
+    // unix socket is given.
+    const ws = await mkWorkspace();
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    const result = await h.bus.call<unknown, OpenSessionResult>(
+      'sandbox:open-session',
+      ctx,
+      {
+        sessionId: 'proxy-unix-1',
+        workspaceRoot: ws,
+        runnerBinary: ECHO_STUB,
+        proxyConfig: {
+          unixSocketPath: '/var/run/ax/proxy.sock',
+          caCertPem: '-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n',
+          envMap: {},
+        },
+      },
+    );
+    const line = await readFirstStdoutLine(result);
+    const parsed = JSON.parse(line) as Record<string, string | null>;
+    expect(parsed.AX_PROXY_UNIX_SOCKET).toBe('/var/run/ax/proxy.sock');
+    expect(parsed.AX_PROXY_ENDPOINT).toBeNull();
+    expect(parsed.HTTPS_PROXY).toBeNull();
+    expect(parsed.HTTP_PROXY).toBeNull();
+    // CA still lands.
+    expect(parsed.NODE_EXTRA_CA_CERTS).toMatch(/ax-mitm-ca\.pem$/);
+
+    await result.handle.kill();
+    await result.handle.exited;
+    await new Promise((r) => setTimeout(r, 50));
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
+  it('does not inject any proxy env when proxyConfig is undefined', async () => {
+    const ws = await mkWorkspace();
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    const result = await h.bus.call<unknown, OpenSessionResult>(
+      'sandbox:open-session',
+      ctx,
+      { sessionId: 'no-proxy', workspaceRoot: ws, runnerBinary: ECHO_STUB },
+    );
+    const line = await readFirstStdoutLine(result);
+    const parsed = JSON.parse(line) as Record<string, string | null>;
+    expect(parsed.HTTPS_PROXY).toBeNull();
+    expect(parsed.HTTP_PROXY).toBeNull();
+    expect(parsed.AX_PROXY_ENDPOINT).toBeNull();
+    expect(parsed.AX_PROXY_UNIX_SOCKET).toBeNull();
+    expect(parsed.NODE_EXTRA_CA_CERTS).toBeNull();
+    expect(parsed.SSL_CERT_FILE).toBeNull();
+    expect(parsed.ANTHROPIC_API_KEY).toBeNull();
+    await result.handle.kill();
+    await result.handle.exited;
+    await new Promise((r) => setTimeout(r, 50));
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
+  it('rejects proxyConfig with both endpoint AND unixSocketPath set', async () => {
+    const ws = await mkWorkspace();
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    let caught: unknown;
+    try {
+      await h.bus.call(
+        'sandbox:open-session',
+        ctx,
+        {
+          sessionId: 'proxy-bad',
+          workspaceRoot: ws,
+          runnerBinary: ECHO_STUB,
+          proxyConfig: {
+            endpoint: 'http://127.0.0.1:54321',
+            unixSocketPath: '/var/run/ax/proxy.sock',
+            caCertPem: 'x',
+            envMap: {},
+          },
+        },
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('invalid-payload');
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
   it('rolls back ipc + session + tempdir when llm-proxy:start fails', async () => {
     const ws = await mkWorkspace();
     // Build a harness where llm-proxy:start always throws.

@@ -285,6 +285,43 @@ export async function openSessionImpl(
     AX_WORKSPACE_ROOT: input.workspaceRoot,
     AX_LLM_PROXY_URL: proxy.url,
   };
+
+  // Phase 2 — credential-proxy env. When the orchestrator handed us a
+  // `proxyConfig`, write the MITM CA PEM to the per-session tempdir (the
+  // same one we built for the IPC socket — its 0700 mode keeps it host-uid-
+  // only) and inject the matching env vars. The CA cleanup piggybacks on
+  // the existing tempdir cleanup in the close handler — no new code.
+  //
+  // I1: the CA cert is a public key, safe inside the sandbox; the CA
+  // PRIVATE key is held only by the host-side credential-proxy plugin.
+  // I3: AX_PROXY_ENDPOINT (TCP) and AX_PROXY_UNIX_SOCKET (Unix socket)
+  //     are the only proxy-related env vars the runner reads; the SDK's
+  //     standard HTTPS_PROXY / NODE_EXTRA_CA_CERTS / SSL_CERT_FILE are
+  //     populated for off-the-shelf libraries that won't know about the
+  //     ax-prefixed ones.
+  if (input.proxyConfig !== undefined) {
+    const caPath = path.join(socketDir, 'ax-mitm-ca.pem');
+    await fs.writeFile(caPath, input.proxyConfig.caCertPem, { mode: 0o600 });
+    sessionEnv.NODE_EXTRA_CA_CERTS = caPath;
+    sessionEnv.SSL_CERT_FILE = caPath;
+    if (input.proxyConfig.endpoint !== undefined) {
+      sessionEnv.HTTPS_PROXY = input.proxyConfig.endpoint;
+      sessionEnv.HTTP_PROXY = input.proxyConfig.endpoint;
+      sessionEnv.AX_PROXY_ENDPOINT = input.proxyConfig.endpoint;
+    }
+    if (input.proxyConfig.unixSocketPath !== undefined) {
+      // Subprocess sandbox passes through; the runner-side bridge converts
+      // this to a local TCP port and rewrites HTTP(S)_PROXY in-process
+      // (see @ax/agent-claude-sdk-runner Phase 2 startup).
+      sessionEnv.AX_PROXY_UNIX_SOCKET = input.proxyConfig.unixSocketPath;
+    }
+    // Merge envMap LAST so per-session credential placeholders win over
+    // anything we set above. (They shouldn't collide with HTTPS_PROXY etc.,
+    // but be explicit so a future field collision doesn't silently do the
+    // wrong thing.)
+    Object.assign(sessionEnv, input.proxyConfig.envMap);
+  }
+
   const env = { ...sessionEnv, ...allowlistFromParent() };
 
   // 8. Spawn. argv[0] is the literal 'node', which trivially matches the
