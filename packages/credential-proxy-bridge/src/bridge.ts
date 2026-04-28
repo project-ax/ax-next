@@ -25,7 +25,7 @@ export interface WebProxyBridge {
 }
 
 export async function startWebProxyBridge(unixSocketPath: string): Promise<WebProxyBridge> {
-  const { Agent } = await import('undici');
+  const { Agent, fetch: undiciFetch } = await import('undici');
   const dispatcher = new Agent({ connect: { socketPath: unixSocketPath } });
   const activeSockets = new Set<net.Socket>();
 
@@ -41,7 +41,7 @@ export async function startWebProxyBridge(unixSocketPath: string): Promise<WebPr
       const body = Buffer.concat(chunks);
 
       // Forward headers (strip hop-by-hop and encoding headers — fetch handles these)
-      const headers = new Headers();
+      const headers: Record<string, string> = {};
       for (const [key, value] of Object.entries(req.headers)) {
         if (
           !value ||
@@ -52,17 +52,20 @@ export async function startWebProxyBridge(unixSocketPath: string): Promise<WebPr
           key === 'content-length'
         )
           continue;
-        headers.set(key, Array.isArray(value) ? value.join(', ') : value);
+        headers[key] = Array.isArray(value) ? value.join(', ') : value;
       }
 
       // Forward to Unix socket proxy — use the full URL as the path
-      // (HTTP proxy protocol sends the complete URL, not just the path)
-      const response = await fetch(`http://localhost${req.url}`, {
+      // (HTTP proxy protocol sends the complete URL, not just the path).
+      // We use undici's fetch directly (not the global) so the dispatcher
+      // option is properly typed. Body is spread in conditionally so
+      // exactOptionalPropertyTypes doesn't reject `body: undefined`.
+      const response = await undiciFetch(`http://localhost${req.url}`, {
         method: req.method ?? 'GET',
         headers,
-        body: body.length > 0 ? body : undefined,
+        ...(body.length > 0 ? { body } : {}),
         dispatcher,
-      } as RequestInit);
+      });
 
       // Stream response back
       const outHeaders: Record<string, string> = {};
