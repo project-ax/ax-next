@@ -1,0 +1,36 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "f3390539f7f1",
+  "session_id": "81dbfcb7-1a67-4f97-a636-7d5a9c07534a",
+  "strategy": "manual-commit",
+  "created_at": "2026-04-28T16:59:21.568481Z",
+  "branch": "phase-2-runner-proxy-wiring",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "docs/plans/2026-04-28-phase-2-pr-notes.md"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "f399578ddf30",
+  "checkpoint_transcript_start": 597,
+  "transcript_lines_at_start": 597,
+  "token_usage": {
+    "input_tokens": 7,
+    "cache_creation_tokens": 9104,
+    "cache_read_tokens": 2266817,
+    "output_tokens": 5545,
+    "api_call_count": 7
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-04-28T16:59:21.536436Z",
+    "agent_lines": 83,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 83,
+    "total_lines_changed": 83,
+    "agent_percentage": 100,
+    "metric_version": 2
+  }
+}
