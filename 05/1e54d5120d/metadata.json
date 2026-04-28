@@ -1,0 +1,31 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "051e54d5120d",
+  "strategy": "manual-commit",
+  "branch": "phase-2-runner-proxy-wiring",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "packages/cli/package.json",
+    "packages/cli/src/__tests__/credentials-wiring.test.ts",
+    "packages/cli/src/__tests__/e2e-real-llm.test.ts",
+    "packages/cli/src/dev-agents-stub.ts",
+    "packages/cli/src/main.ts",
+    "packages/cli/tsconfig.json",
+    "pnpm-lock.yaml"
+  ],
+  "sessions": [
+    {
+      "metadata": "/05/1e54d5120d/0/metadata.json",
+      "transcript": "/05/1e54d5120d/0/full.jsonl",
+      "content_hash": "/05/1e54d5120d/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 34,
+    "cache_creation_tokens": 36333,
+    "cache_read_tokens": 8773173,
+    "output_tokens": 20264,
+    "api_call_count": 34
+  }
+}
