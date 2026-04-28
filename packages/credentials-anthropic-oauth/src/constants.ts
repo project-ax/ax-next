@@ -17,7 +17,10 @@ export const ANTHROPIC_TOKEN_ENDPOINT = 'https://console.anthropic.com/v1/oauth/
 // verifier (per-flow, in-memory only) is what binds it to a specific
 // session. Public OAuth clients are designed to ship their client_id in
 // source — that's the entire point of PKCE.
-export const ANTHROPIC_OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e'; // gitleaks:allow
+//
+// Allowlisted in .gitleaks.toml — gitleaks-action's inline `:allow`
+// directive isn't honored by the version we run.
+export const ANTHROPIC_OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
 export const ANTHROPIC_OAUTH_REDIRECT_URI = 'http://localhost:1455/callback';
 export const ANTHROPIC_OAUTH_REDIRECT_PORT = 1455;
 export const ANTHROPIC_OAUTH_SCOPES = 'org:create_api_key user:profile user:inference';

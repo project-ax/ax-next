@@ -24,8 +24,15 @@ paths = [
 # and the sequential 0123456789abcdef pattern. The repeated-byte case
 # ('42'.repeat(32) etc.) needs backreferences to match cleanly, so we lean on
 # the path allowlist instead — those patterns only ever live in test files.
+#
+# We also pin the Anthropic Claude Max OAuth public PKCE client_id —
+# explicitly NOT a secret (RFC 7636 public clients ship client_id in
+# source). See packages/credentials-anthropic-oauth/src/constants.ts for
+# why. Match the exact UUID so we catch the intended value and not any
+# generic UUID — accidental future leaks of unrelated UUIDs still trip.
 regexes = [
   '''(0123456789abcdef){4}''',
   '''0{64}''',
   '''f{64}''',
+  '''9d1c250a-e61b-44d9-88ed-5944d1962f5e''',
 ]
