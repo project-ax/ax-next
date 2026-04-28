@@ -93,6 +93,78 @@ describe('setupProxy', () => {
   // Bridge mode — AX_PROXY_UNIX_SOCKET (k8s sandbox).
   // -------------------------------------------------------------------
 
+  it('throws when both proxyEndpoint and proxyUnixSocket are set (mutually exclusive)', async () => {
+    const env: RunnerEnv = {
+      runnerEndpoint: 'unix:///tmp/x.sock',
+      sessionId: 's',
+      authToken: 'ipc-bearer',
+      workspaceRoot: '/ws',
+      proxyEndpoint: 'http://127.0.0.1:54321',
+      proxyUnixSocket: '/var/run/ax/proxy.sock',
+    };
+    await expect(setupProxy(env)).rejects.toThrow(/mutually exclusive/);
+  });
+
+  it('bridge mode: stops the bridge if downstream validation throws', async () => {
+    // Regression: setupProxy used to start the bridge, then if the
+    // ANTHROPIC_API_KEY check failed, return without calling stop().
+    // The TCP listener stayed bound on 127.0.0.1 until the runner exited.
+    // We reproduce by NOT setting ANTHROPIC_API_KEY in process.env and
+    // verifying the bridge port is released before the rejection settles.
+    const sockDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-test-bridge-cleanup-'));
+    const sockPath = path.join(sockDir, 'proxy.sock');
+    const upstream = net.createServer();
+    await new Promise<void>((resolve) => upstream.listen(sockPath, resolve));
+
+    try {
+      const env: RunnerEnv = {
+        runnerEndpoint: 'unix:///tmp/x.sock',
+        sessionId: 's',
+        authToken: 'ipc-bearer',
+        workspaceRoot: '/ws',
+        proxyUnixSocket: sockPath,
+      };
+      // ANTHROPIC_API_KEY intentionally NOT set in process.env (beforeEach
+      // already deleted it). setupProxy starts the bridge, then throws on
+      // the placeholder check.
+      await expect(setupProxy(env)).rejects.toBeInstanceOf(MissingEnvError);
+
+      // The bridge's port should be free now: rebinding it must succeed.
+      // We can't read the original port directly (setupProxy threw), so
+      // we test the contract via process.env.HTTPS_PROXY which IS set
+      // before the throw — the URL holds the bridge port.
+      const proxyUrl = process.env.HTTPS_PROXY;
+      expect(proxyUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+      const port = Number(new URL(proxyUrl as string).port);
+
+      // Polling re-bind: vitest may schedule async cleanup with a slight
+      // delay even after the rejection settles. Up to ~250ms is plenty.
+      let bound = false;
+      for (let i = 0; i < 25; i++) {
+        const reclaim = (await import('node:http')).createServer();
+        try {
+          await new Promise<void>((resolve, reject) => {
+            reclaim.once('error', reject);
+            reclaim.listen(port, '127.0.0.1', () => resolve());
+          });
+          bound = true;
+          await new Promise<void>((r) => reclaim.close(() => r()));
+          break;
+        } catch {
+          // Port still held — retry briefly.
+        }
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      expect(
+        bound,
+        'expected bridge port to be released after setupProxy threw',
+      ).toBe(true);
+    } finally {
+      await new Promise<void>((resolve) => upstream.close(() => resolve()));
+      await fs.rm(sockDir, { recursive: true, force: true });
+    }
+  });
+
   it('bridge mode: starts the bridge, rewrites process.env.HTTPS_PROXY, returns stop()', async () => {
     process.env.ANTHROPIC_API_KEY = 'ax-cred:abcd';
 

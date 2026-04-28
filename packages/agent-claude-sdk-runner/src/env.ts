@@ -68,6 +68,16 @@ export function readRunnerEnv(env: NodeJS.ProcessEnv = process.env): RunnerEnv {
   const proxyEndpoint = opt('AX_PROXY_ENDPOINT');
   const proxyUnixSocket = opt('AX_PROXY_UNIX_SOCKET');
 
+  // The two AX_PROXY_* transport vars are mutually exclusive (subprocess
+  // sandbox sets one, k8s sandbox sets the other). Accepting both would
+  // silently pick the bridge path in setupProxy() and route traffic
+  // through the wrong transport — fail loud at boot instead.
+  if (proxyEndpoint !== undefined && proxyUnixSocket !== undefined) {
+    throw new MissingEnvError(
+      'AX_PROXY_ENDPOINT xor AX_PROXY_UNIX_SOCKET (mutually exclusive — one set per session)',
+    );
+  }
+
   // I9 — AX_LLM_PROXY_URL is now optional XOR: at least one of the three
   // proxy paths must be configured. The host (sandbox-subprocess + the
   // legacy llm-proxy plugin) sets one; if all three are missing, the

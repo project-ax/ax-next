@@ -62,6 +62,20 @@ describe('readRunnerEnv', () => {
     });
   });
 
+  it('throws when both AX_PROXY_ENDPOINT and AX_PROXY_UNIX_SOCKET are set (mutually exclusive)', () => {
+    // The two transport vars represent different sandbox shapes
+    // (subprocess vs. k8s); accepting both would silently route through
+    // the bridge in setupProxy() while the operator thought they were
+    // on direct mode. Fail loud at boot.
+    const env = { ...PROXY_TCP, AX_PROXY_UNIX_SOCKET: '/var/run/ax/proxy.sock' };
+    expect(() => readRunnerEnv(env)).toThrow(MissingEnvError);
+    try {
+      readRunnerEnv(env);
+    } catch (err) {
+      expect((err as MissingEnvError).message).toContain('mutually exclusive');
+    }
+  });
+
   it('keeps AX_LLM_PROXY_URL alongside AX_PROXY_ENDPOINT (legacy + new can coexist during transition)', () => {
     // The XOR is on "at least one is set" (failure mode); having BOTH set
     // is fine. setupProxy() picks AX_PROXY_* over AX_LLM_PROXY_URL.
