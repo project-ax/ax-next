@@ -35,9 +35,6 @@ import {
 } from '@ax/core';
 import { generateDomainCert, type CAKeyPair } from '../ca.js';
 import { createCredentialProxyPlugin } from '../plugin.js';
-import forgeModule from 'node-forge';
-
-const forge = forgeModule as typeof forgeModule;
 
 // In-memory `credentials:get` / `credentials:set` plugin. Matches the
 // current shape of @ax/credentials: `{id} → {value}` (NOT the design's
