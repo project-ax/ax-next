@@ -28,6 +28,7 @@
     { "path": "packages/llm-proxy-anthropic-format" },
     { "path": "packages/chat-orchestrator" },
     { "path": "./packages/credentials" },
+    { "path": "packages/credentials-store-db" },
     { "path": "packages/mcp-client" },
     { "path": "packages/workspace-git" },
     { "path": "packages/workspace-git-core" },
