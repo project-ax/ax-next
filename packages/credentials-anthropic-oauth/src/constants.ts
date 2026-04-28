@@ -10,6 +10,14 @@
 
 export const ANTHROPIC_AUTHORIZE_ENDPOINT = 'https://claude.ai/oauth/authorize';
 export const ANTHROPIC_TOKEN_ENDPOINT = 'https://console.anthropic.com/v1/oauth/token';
+// PUBLIC PKCE client_id (RFC 7636, no client secret). This is the Claude
+// Max OAuth client Anthropic has authorized for ax — same value as v1
+// (~/dev/ai/ax/src/host/oauth.ts:16). It is NOT a secret; it identifies
+// the application to Anthropic's authorization server. The PKCE code
+// verifier (per-flow, in-memory only) is what binds it to a specific
+// session. See the README for why public OAuth clients ship their
+// client_id in source.
+// gitleaks:allow
 export const ANTHROPIC_OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
 export const ANTHROPIC_OAUTH_REDIRECT_URI = 'http://localhost:1455/callback';
 export const ANTHROPIC_OAUTH_REDIRECT_PORT = 1455;
