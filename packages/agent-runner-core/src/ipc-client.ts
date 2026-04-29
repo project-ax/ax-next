@@ -4,7 +4,6 @@ import {
   ConversationFetchHistoryResponseSchema,
   IPC_TIMEOUTS_MS,
   IpcErrorEnvelopeSchema,
-  LlmCallResponseSchema,
   SessionGetConfigResponseSchema,
   SessionNextMessageResponseSchema,
   ToolExecuteHostResponseSchema,
@@ -68,7 +67,6 @@ const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 // Event endpoints have no response body (just {accepted: true} on 202) and
 // are handled separately in `event()`.
 const RESPONSE_SCHEMAS: Record<IpcActionName, z.ZodTypeAny> = {
-  'llm.call': LlmCallResponseSchema,
   'tool.pre-call': ToolPreCallResponseSchema,
   'tool.execute-host': ToolExecuteHostResponseSchema,
   'tool.list': ToolListResponseSchema,
