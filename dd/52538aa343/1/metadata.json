@@ -1,0 +1,36 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "dd52538aa343",
+  "session_id": "fc7804fb-c802-4460-9692-695e52fb7f1d",
+  "strategy": "manual-commit",
+  "created_at": "2026-04-29T23:34:09.523438Z",
+  "branch": "feat/phase-b-conversations-metadata",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "docs/plans/2026-04-29-phase-b-pr-notes.md"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "0a0cf3b09d0c",
+  "checkpoint_transcript_start": 439,
+  "transcript_lines_at_start": 439,
+  "token_usage": {
+    "input_tokens": 0,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 0,
+    "output_tokens": 0,
+    "api_call_count": 0
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-04-29T23:34:09.498285Z",
+    "agent_lines": 115,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 115,
+    "total_lines_changed": 115,
+    "agent_percentage": 100,
+    "metric_version": 2
+  }
+}
