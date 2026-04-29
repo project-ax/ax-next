@@ -18,7 +18,8 @@
 // ---------------------------------------------------------------------------
 
 import type { HookCallback } from '@anthropic-ai/claude-agent-sdk';
-import type { DiffAccumulator, IpcClient } from '@ax/agent-runner-core';
+import type { IpcClient } from '@ax/ipc-protocol';
+import type { DiffAccumulator } from './diff-accumulator.js';
 import { classifySdkToolName } from './tool-names.js';
 import { observePostToolUse, type ObserveOptions } from './workspace-diff.js';
 

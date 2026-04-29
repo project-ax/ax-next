@@ -27,9 +27,9 @@ import {
   type McpSdkServerConfigWithInstance,
   type SdkMcpToolDefinition,
 } from '@anthropic-ai/claude-agent-sdk';
-import type { IpcClient } from '@ax/agent-runner-core';
 import {
   ToolExecuteHostResponseSchema,
+  type IpcClient,
   type ToolDescriptor,
 } from '@ax/ipc-protocol';
 import { z } from 'zod';

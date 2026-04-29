@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { IpcClient } from '../ipc-client.js';
+import type { IpcClient } from '@ax/ipc-protocol';
 import { createInboxLoop } from '../inbox-loop.js';
 
 // ---------------------------------------------------------------------------

@@ -6,22 +6,19 @@ import {
   type SDKAssistantMessage,
   type SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
+import { createDiffAccumulator, toWireChanges } from './diff-accumulator.js';
+import { createInboxLoop } from './inbox-loop.js';
 import {
-  createDiffAccumulator,
-  createInboxLoop,
   createIpcClient,
-  toWireChanges,
-} from '@ax/agent-runner-core';
-import type {
-  AgentMessage,
-  ContentBlock,
-  ConversationFetchHistoryResponse,
-  ConversationFetchHistoryTurn,
-  ImageBlock,
-  SessionGetConfigResponse,
-  TextBlock,
-  ToolListResponse,
-  WorkspaceCommitNotifyResponse,
+  type AgentMessage,
+  type ContentBlock,
+  type ConversationFetchHistoryResponse,
+  type ConversationFetchHistoryTurn,
+  type ImageBlock,
+  type SessionGetConfigResponse,
+  type TextBlock,
+  type ToolListResponse,
+  type WorkspaceCommitNotifyResponse,
 } from '@ax/ipc-protocol';
 import { createCanUseTool } from './can-use-tool.js';
 import { readRunnerEnv } from './env.js';

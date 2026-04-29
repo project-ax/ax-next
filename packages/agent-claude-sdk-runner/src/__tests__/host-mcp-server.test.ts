@@ -1,5 +1,4 @@
-import type { IpcClient } from '@ax/agent-runner-core';
-import type { ToolDescriptor } from '@ax/ipc-protocol';
+import type { IpcClient, ToolDescriptor } from '@ax/ipc-protocol';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import {

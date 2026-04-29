@@ -1,4 +1,4 @@
-import type { IpcClient } from '@ax/agent-runner-core';
+import type { IpcClient } from '@ax/ipc-protocol';
 import { describe, expect, it } from 'vitest';
 import { createCanUseTool } from '../can-use-tool.js';
 

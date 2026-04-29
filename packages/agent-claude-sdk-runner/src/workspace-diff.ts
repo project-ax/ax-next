@@ -26,7 +26,7 @@
 
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import type { DiffAccumulator } from '@ax/agent-runner-core';
+import type { DiffAccumulator } from './diff-accumulator.js';
 
 const FILE_MUTATING_TOOLS = new Set(['Write', 'Edit', 'MultiEdit']);
 

@@ -14,7 +14,7 @@ import {
   RunnerEndpointError,
   type IpcActionName,
   type TransportTarget,
-} from '@ax/ipc-protocol';
+} from './index.js';
 import {
   HostUnavailableError,
   IpcRequestError,

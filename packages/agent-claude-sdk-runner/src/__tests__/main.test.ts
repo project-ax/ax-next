@@ -1,11 +1,10 @@
 import type { SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import type { IpcClient, IpcClientOptions } from '@ax/ipc-protocol';
 import type {
-  IpcClient,
-  IpcClientOptions,
   InboxLoop,
   InboxLoopEntry,
   InboxLoopOptions,
-} from '@ax/agent-runner-core';
+} from '../inbox-loop.js';
 import {
   afterEach,
   beforeEach,
@@ -59,15 +58,21 @@ let fakeInbox: FakeInbox;
 let createIpcClientMock: Mock;
 let createInboxLoopMock: Mock;
 
-vi.mock('@ax/agent-runner-core', async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import('@ax/agent-runner-core')>();
+vi.mock('@ax/ipc-protocol', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@ax/ipc-protocol')>();
   return {
     ...actual,
     createIpcClient: (opts: IpcClientOptions): IpcClient => {
       createIpcClientMock(opts);
       return fakeClient;
     },
+  };
+});
+
+vi.mock('../inbox-loop.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../inbox-loop.js')>();
+  return {
+    ...actual,
     createInboxLoop: (opts: InboxLoopOptions): InboxLoop => {
       createInboxLoopMock(opts);
       return fakeInbox;

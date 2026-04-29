@@ -1,27 +1,2 @@
-export {
-  createIpcClient,
-  type IpcClient,
-  type IpcClientOptions,
-} from './ipc-client.js';
-export {
-  createInboxLoop,
-  type InboxLoop,
-  type InboxLoopEntry,
-  type InboxLoopOptions,
-} from './inbox-loop.js';
-export {
-  createLocalDispatcher,
-  type LocalDispatcher,
-  type LocalToolExecutor,
-} from './local-dispatcher.js';
-export {
-  HostUnavailableError,
-  IpcRequestError,
-  SessionInvalidError,
-} from './errors.js';
-export {
-  createDiffAccumulator,
-  toWireChanges,
-  type AccumulatedFileChange,
-  type DiffAccumulator,
-} from './diff-accumulator.js';
+// Package deletes in next commit; see PR description.
+export {};

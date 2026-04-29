@@ -25,7 +25,7 @@
 // ---------------------------------------------------------------------------
 
 import type { CanUseTool } from '@anthropic-ai/claude-agent-sdk';
-import type { IpcClient } from '@ax/agent-runner-core';
+import type { IpcClient } from '@ax/ipc-protocol';
 import { classifySdkToolName } from './tool-names.js';
 
 export interface CreateCanUseToolOptions {

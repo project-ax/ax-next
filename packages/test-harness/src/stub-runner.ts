@@ -5,7 +5,7 @@
  * Built to `dist/stub-runner.js` and spawned by chat-orchestrator e2e tests
  * via `child_process.spawn(process.execPath, [stubRunnerPath])` in place of
  * `@ax/agent-claude-sdk-runner`. It speaks the IPC protocol via
- * `createIpcClient` from `@ax/agent-runner-core` and replays a canned
+ * `createIpcClient` from `@ax/ipc-protocol` and replays a canned
  * `StubRunnerScript` decoded from the `AX_TEST_STUB_SCRIPT` env var.
  *
  * Why this exists: tests need a runner that exercises the real IPC wire path
@@ -17,7 +17,7 @@
  */
 import { randomBytes } from 'node:crypto';
 
-import { createIpcClient } from '@ax/agent-runner-core';
+import { createIpcClient } from '@ax/ipc-protocol';
 import type {
   AgentMessage,
   ToolCall,

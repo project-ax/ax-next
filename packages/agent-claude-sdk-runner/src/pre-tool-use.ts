@@ -20,9 +20,9 @@
 
 import { randomUUID } from 'node:crypto';
 import type { HookCallback } from '@anthropic-ai/claude-agent-sdk';
-import type { IpcClient } from '@ax/agent-runner-core';
 import {
   ToolPreCallResponseSchema,
+  type IpcClient,
   type ToolPreCallResponse,
 } from '@ax/ipc-protocol';
 import { classifySdkToolName } from './tool-names.js';
