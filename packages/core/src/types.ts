@@ -1,7 +1,7 @@
 import type { Rejection } from './errors.js';
 
 export interface AgentMessage {
-  role: 'user' | 'assistant' | 'system';
+  role: 'user' | 'assistant';
   content: string;
 }
 
@@ -15,16 +15,6 @@ export interface ToolResult {
   toolCallId: string;
   output: unknown;
   isError?: boolean;
-}
-
-export interface LlmRequest {
-  messages: AgentMessage[];
-  tools?: ToolDescriptor[];
-}
-
-export interface LlmResponse {
-  assistantMessage: AgentMessage;
-  toolCalls: ToolCall[];
 }
 
 export interface ToolDescriptor {

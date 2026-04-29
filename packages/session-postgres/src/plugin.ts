@@ -181,7 +181,12 @@ function requireNonNegativeInt(
   }
 }
 
-const VALID_ROLES = new Set(['user', 'assistant', 'system']);
+// AgentMessage.role narrowed to 'user' | 'assistant' in Phase 7 — must stay
+// in lockstep with @ax/core's AgentMessage type and @ax/ipc-protocol's
+// AgentMessageSchema. This is a trust-boundary check: the IPC server feeds
+// untrusted wire payloads through `session:queue-work`, and a divergence
+// here would create a second source of truth for what 'valid role' means.
+const VALID_ROLES = new Set(['user', 'assistant']);
 
 // ---------------------------------------------------------------------------
 // validateOwner — runs at session:create time on the optional `owner`
@@ -313,7 +318,7 @@ function requireInboxEntry(
         code: 'invalid-payload',
         plugin: PLUGIN_NAME,
         hookName,
-        message: `'entry.payload.role' must be 'user' | 'assistant' | 'system'`,
+        message: `'entry.payload.role' must be 'user' | 'assistant'`,
       });
     }
     // J9: every server-delivered user message MUST carry the host-minted

@@ -4,7 +4,13 @@ import type { AgentOutcome } from '@ax/core';
 import { auditLogPlugin } from '../plugin.js';
 
 describe('@ax/audit-log', () => {
-  it('subscribes to chat:end and writes the outcome to storage:set', async () => {
+  it('does NOT write a chat:* row when chat:end fires (Phase 7 / I24)', async () => {
+    // Phase 7 Slice A inverted the audit-log/chat:end contract: audit-log
+    // observes only `event.http-egress` now. The chat:end fire site still
+    // exists (drives the IPC reqId reconstruction and presets' own
+    // recorders), but audit-log MUST NOT write a row keyed `chat:<reqId>`
+    // any more — that row is the "did the legacy subscriber leak back in"
+    // canary.
     const writes: Array<{ key: string; value: Uint8Array }> = [];
     const h = await createTestHarness({
       services: {
@@ -26,45 +32,16 @@ describe('@ax/audit-log', () => {
     };
     await h.bus.fire('chat:end', ctx, { outcome });
 
-    expect(writes).toHaveLength(1);
-    expect(writes[0]!.key).toBe('chat:req-abc');
-    const decoded = JSON.parse(new TextDecoder().decode(writes[0]!.value));
-    expect(decoded).toMatchObject({
-      reqId: 'req-abc',
-      sessionId: 'test-session',
-      outcome: {
-        kind: 'complete',
-        messages: [
-          { role: 'user', content: 'hi' },
-          { role: 'assistant', content: 'hello' },
-        ],
-      },
-    });
-    expect(typeof decoded.timestamp).toBe('string');
+    expect(writes.filter((w) => w.key.startsWith('chat:'))).toHaveLength(0);
   });
 
-  it('returns pass-through (undefined) — does not transform chat:end payload', async () => {
-    const h = await createTestHarness({
-      services: { ...MockServices.basics(), 'storage:set': async () => undefined },
-      plugins: [auditLogPlugin()],
-    });
-    const ctx = h.ctx();
-    const result = await h.bus.fire<{ outcome: AgentOutcome }>('chat:end', ctx, {
-      outcome: { kind: 'complete', messages: [] },
-    });
-    expect(result).toMatchObject({
-      rejected: false,
-      payload: { outcome: { kind: 'complete', messages: [] } },
-    });
-  });
-
-  it('declares the right manifest', () => {
+  it('declares the right manifest (subscribes only to event.http-egress)', () => {
     const p = auditLogPlugin();
     expect(p.manifest.name).toBe('@ax/audit-log');
     expect(p.manifest.registers).toEqual([]);
     expect(p.manifest.calls).toContain('storage:set');
-    expect(p.manifest.subscribes).toContain('chat:end');
-    expect(p.manifest.subscribes).toContain('event.http-egress');
+    // I24: after Phase 7 Slice A, audit-log subscribes ONLY to http-egress.
+    expect(p.manifest.subscribes).toEqual(['event.http-egress']);
   });
 
   it('subscribes to event.http-egress and persists one row per egress', async () => {

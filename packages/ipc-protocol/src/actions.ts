@@ -18,7 +18,7 @@ export { asWorkspaceVersion, type WorkspaceVersion };
 // ---------------------------------------------------------------------------
 
 export const AgentMessageSchema = z.object({
-  role: z.enum(['user', 'assistant', 'system']),
+  role: z.enum(['user', 'assistant']),
   content: z.string(),
 });
 export type AgentMessage = z.infer<typeof AgentMessageSchema>;
@@ -52,38 +52,6 @@ export const ToolDescriptorSchema = z.object({
   executesIn: z.enum(['sandbox', 'host']),
 });
 export type ToolDescriptor = z.infer<typeof ToolDescriptorSchema>;
-
-// ---------------------------------------------------------------------------
-// llm.call
-//
-// Request/response envelopes are NOT `.strict()`: model-provider plugins
-// will grow new optional knobs (reasoning depth, stop sequences, etc.),
-// and rejecting unknown fields would make rolling adds across host and
-// sandbox painful. `.strict()` is reserved for envelopes where every key
-// must be load-bearing (see errors.ts).
-// ---------------------------------------------------------------------------
-
-export const LlmCallRequestSchema = z.object({
-  messages: z.array(AgentMessageSchema),
-  tools: z.array(ToolDescriptorSchema).optional(),
-  model: z.string().optional(),
-  maxTokens: z.number().int().positive().optional(),
-  temperature: z.number().optional(),
-});
-export type LlmCallRequest = z.infer<typeof LlmCallRequestSchema>;
-
-export const LlmCallResponseSchema = z.object({
-  assistantMessage: AgentMessageSchema,
-  toolCalls: z.array(ToolCallSchema),
-  stopReason: z.string().optional(),
-  usage: z
-    .object({
-      inputTokens: z.number().int().nonnegative().optional(),
-      outputTokens: z.number().int().nonnegative().optional(),
-    })
-    .optional(),
-});
-export type LlmCallResponse = z.infer<typeof LlmCallResponseSchema>;
 
 // ---------------------------------------------------------------------------
 // tool.pre-call

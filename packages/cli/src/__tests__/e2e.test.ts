@@ -3,7 +3,6 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import BetterSqlite3 from 'better-sqlite3';
 import { encodeScript, stubRunnerPath } from '@ax/test-harness';
 
 const repoRoot = join(__dirname, '..', '..', '..', '..');
@@ -37,9 +36,17 @@ describe('@ax/cli end-to-end', () => {
 
   // Default-config canary: spawns the CLI binary with the stub runner +
   // test-proxy plugin (env-gated) to drive a full chat through
-  // bootstrap → orchestrator → IPC → SQLite outcome write — without
+  // bootstrap → orchestrator → IPC → assistant text print — without
   // touching the wire or seeding real credentials. Rebuilt in Phase 6.6.
-  it('runs a full chat and persists the outcome to SQLite', () => {
+  //
+  // Phase 7 Slice A: dropped the SQLite chat-row assertion. audit-log
+  // no longer subscribes to chat:end (I24), so there's no `chat:<reqId>`
+  // row to read back. The "did the chat actually run" canary is now
+  // carried entirely by the stdout assertion (the CLI prints the last
+  // assistant message on success). The dbPath existence check stays —
+  // it's the cheap-but-load-bearing proof that storage-sqlite wired up
+  // and opened the file (vs. a silent init failure).
+  it('runs a full chat through the default CLI config', () => {
     workDir = mkdtempSync(join(tmpdir(), 'ax-next-e2e-'));
     const dbPath = join(workDir, 'e2e.sqlite');
 
@@ -68,30 +75,11 @@ describe('@ax/cli end-to-end', () => {
     expect(result.status).toBe(0);
     expect(result.stdout.trim()).toBe('hello');
 
+    // storage-sqlite booted (file exists). We don't assert on row contents
+    // post-Phase 7 — audit-log doesn't write a chat:* row any more, and
+    // nothing else in the default chat path persists for this canary to
+    // read back.
     expect(existsSync(dbPath)).toBe(true);
-    const db = new BetterSqlite3(dbPath, { readonly: true });
-    try {
-      const rows = db
-        .prepare('SELECT key, value FROM kv')
-        .all() as Array<{ key: string; value: Buffer }>;
-      expect(rows.length).toBeGreaterThanOrEqual(1);
-      const chatRow = rows.find((r) => r.key.startsWith('chat:'));
-      expect(chatRow).toBeDefined();
-      const decoded = JSON.parse(chatRow!.value.toString('utf8'));
-      expect(decoded).toMatchObject({
-        sessionId: 'cli-session',
-        outcome: {
-          kind: 'complete',
-          messages: expect.arrayContaining([
-            { role: 'assistant', content: 'hello' },
-          ]),
-        },
-      });
-      expect(chatRow!.key).toMatch(/^chat:.+/);
-      expect(typeof decoded.timestamp).toBe('string');
-    } finally {
-      db.close();
-    }
   });
 
   it('non-zero exit when a plugin init fails', () => {

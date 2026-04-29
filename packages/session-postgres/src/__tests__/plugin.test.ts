@@ -696,7 +696,7 @@ describe('@ax/session-postgres plugin', () => {
     expect(cfg.agentId).toBe('a-1');
   });
 
-  it('queue-work rejects a user-message with a role outside user|assistant|system', async () => {
+  it('queue-work rejects a user-message with a role outside user|assistant', async () => {
     const h = await makeHarness();
     const ctx = h.ctx();
     await h.bus.call<SessionCreateInput, SessionCreateOutput>(
@@ -715,6 +715,37 @@ describe('@ax/session-postgres plugin', () => {
             type: 'user-message',
             payload: { role: 'admin' as 'user', content: 'hi' },
             reqId: 'r-bad-role',
+          },
+        },
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('invalid-payload');
+  });
+
+  it('queue-work rejects a user-message with role=system (Phase 7 narrowing)', async () => {
+    // Trust-boundary mirror of the wire-layer narrowing: AgentMessage.role is
+    // exactly 'user' | 'assistant', so 'system' must be rejected here too.
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+      'session:create',
+      ctx,
+      { sessionId: 's-system', workspaceRoot: '/tmp/ws' },
+    );
+    let caught: unknown;
+    try {
+      await h.bus.call<SessionQueueWorkInput, SessionQueueWorkOutput>(
+        'session:queue-work',
+        ctx,
+        {
+          sessionId: 's-system',
+          entry: {
+            type: 'user-message',
+            payload: { role: 'system' as 'user', content: 'be brief' },
+            reqId: 'r-system',
           },
         },
       );

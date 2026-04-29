@@ -45,8 +45,9 @@ import { createK8sPlugins, type K8sPresetConfig } from '../index.js';
 //   * The chat-orchestrator's interaction with the preset's runnerBinary
 //     resolution path (we pass an explicit override here, but the type
 //     contract still goes through the preset's K8sPresetConfig.chat shape).
-//   * The audit-log subscription firing on chat:end and writing a row
-//     through whatever storage plugin we substituted in.
+//   * That chat:end still fires once per agent:invoke (I1). Audit-log no
+//     longer subscribes to chat:end (Phase 7 Slice A / I24); the inline
+//     chatEndRecorder is the independent witness.
 //
 // What this does NOT catch:
 //   * Postgres schema drift (out of scope; that's the testcontainer test
@@ -229,14 +230,11 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         (p) => !PLUGINS_TO_DROP.has(p.manifest.name),
       );
 
-      // The IPC server reconstructs an AgentContext from session-token auth
-      // when the runner POSTs /event.chat-end, generating a fresh reqId
-      // there (see packages/ipc-server/src/listener.ts). That means
-      // audit-log writes its `chat:<reqId>` row keyed by the IPC-side
-      // reqId, NOT the original `bus.call('agent:invoke', ctx, ...)`
-      // reqId. We tap chat:end with a recorder subscriber so the assertion
-      // can look up the row regardless of which reqId path got the chat
-      // through.
+      // chat:end recorder — independent witness that the event still fires
+      // once per agent:invoke even after Phase 7 Slice A removed audit-log's
+      // subscription. The recorder kept post-Slice-A is the I1 (chat:end
+      // fires once) canary; the audit-log row assertion was dropped because
+      // audit-log no longer writes a `chat:<reqId>` row at all (I24).
       const observedChatEndReqIds: string[] = [];
       const chatEndRecorder: Plugin = {
         manifest: {
@@ -260,9 +258,10 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
 
       const sqlitePath = path.join(tmp, 'preset-k8s-acceptance.sqlite');
       const replacements: Plugin[] = [
-        // storage:get/set — backed by sqlite so audit-log's chat:end row
-        // is independently observable (vs. an in-memory mock that keeps
-        // its writes private to the test file).
+        // storage:get/set — sqlite vs. in-memory is arbitrary post-Slice-A
+        // (no row read-back happens in this test any more). Kept on sqlite
+        // because it's what the CLI canary uses, so a single storage
+        // backend exercises both canaries.
         createStorageSqlitePlugin({ databasePath: sqlitePath }),
         // session:queue-work + session:* — in-memory variant, single-process.
         createSessionInmemoryPlugin(),
@@ -282,8 +281,9 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         // configured set is non-empty; here we boot it empty, which is the
         // no-op path) without depending on the http-server we dropped.
         createMcpClientPlugin(),
-        // Records the reqId chat:end fires with so the audit-log assertion
-        // can look up the right `chat:<reqId>` row.
+        // Records the reqId so the I1 witness assertion below can confirm
+        // chat:end fired at all. Audit-log used to consume this event;
+        // post-Slice-A it does not, so this recorder IS the chat:end canary.
         chatEndRecorder,
       ];
 
@@ -321,33 +321,13 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           .find((m) => m.role === 'assistant');
         expect(lastAssistant?.content).toContain(CANARY_TEXT);
 
-        // Audit-log row assertion — the second-half of the canary contract.
-        // audit-log subscribes to chat:end and writes via storage:set with
-        // key `chat:<reqId>` (see packages/audit-log/src/plugin.ts). We
-        // round-trip through storage:get rather than poking sqlite directly
-        // so the assertion stays storage-backend-agnostic.
-        //
-        // Use the reqId observed by the chatEndRecorder above — the IPC
-        // server's reconstructed ctx carries a different reqId than the
-        // original agent:invoke ctx, and audit-log keys by whichever ctx
-        // delivered chat:end.
-        expect(observedChatEndReqIds.length).toBeGreaterThanOrEqual(1);
-        const auditReqId = observedChatEndReqIds[observedChatEndReqIds.length - 1]!;
-        const stored = await bus.call<
-          { key: string },
-          { value: Uint8Array | undefined }
-        >('storage:get', ctx, { key: `chat:${auditReqId}` });
-        expect(stored.value).toBeDefined();
-        const decoded = JSON.parse(
-          new TextDecoder().decode(stored.value!),
-        ) as {
-          reqId: string;
-          sessionId: string;
-          outcome: AgentOutcome;
-        };
-        expect(decoded.reqId).toBe(auditReqId);
-        expect(decoded.sessionId).toBe('preset-acceptance-session');
-        expect(decoded.outcome.kind).toBe('complete');
+        // chat:end fires EXACTLY once per agent:invoke (I1). The recorder
+        // is an independent witness — audit-log no longer subscribes to
+        // chat:end (Phase 7 Slice A / I24), so this is the only assertion
+        // that proves the event flowed through end-to-end. Exact length is
+        // load-bearing: a double-fire regression would slip past
+        // `toBeGreaterThanOrEqual(1)` while still violating the invariant.
+        expect(observedChatEndReqIds).toHaveLength(1);
       } finally {
         await handle.shutdown();
       }

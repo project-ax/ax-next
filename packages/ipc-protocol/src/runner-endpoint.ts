@@ -123,7 +123,7 @@ export function parseRunnerEndpoint(uri: string): TransportTarget {
           `http:// runnerEndpoint port out of range (got ${uri})`,
         );
       }
-      // Path is reserved for the action name (`/llm.call`, etc.). The URI
+      // Path is reserved for the action name (`/tool.list`, etc.). The URI
       // itself carries authority only. The WHATWG URL parser normalises a
       // missing path to `/`, so accept that as "no path".
       if (url.pathname !== '/' && url.pathname !== '') {

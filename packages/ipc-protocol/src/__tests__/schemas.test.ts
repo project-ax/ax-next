@@ -1,7 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import {
-  LlmCallRequestSchema,
-  LlmCallResponseSchema,
   ToolPreCallRequestSchema,
   ToolPreCallResponseSchema,
   ToolExecuteHostRequestSchema,
@@ -33,55 +31,6 @@ import {
   IpcErrorEnvelopeSchema,
 } from '../errors.js';
 import { IPC_TIMEOUTS_MS, type IpcActionName } from '../timeouts.js';
-
-describe('llm.call', () => {
-  it('accepts a minimal request', () => {
-    const parsed = LlmCallRequestSchema.parse({
-      messages: [{ role: 'user', content: 'hi' }],
-    });
-    expect(parsed.messages).toHaveLength(1);
-    expect(parsed.messages[0]?.role).toBe('user');
-  });
-
-  it('rejects an unknown role', () => {
-    const result = LlmCallRequestSchema.safeParse({
-      messages: [{ role: 'bot', content: 'hi' }],
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it('round-trips a response with tool calls', () => {
-    const payload = {
-      assistantMessage: { role: 'assistant', content: 'ok' },
-      toolCalls: [{ id: 'c1', name: 'bash', input: { cmd: 'ls' } }],
-      stopReason: 'tool_use',
-      usage: { inputTokens: 10, outputTokens: 5 },
-    };
-    const parsed = LlmCallResponseSchema.parse(payload);
-    expect(parsed.assistantMessage.content).toBe('ok');
-    expect(parsed.toolCalls).toHaveLength(1);
-    expect(parsed.toolCalls[0]?.name).toBe('bash');
-    expect(parsed.usage?.inputTokens).toBe(10);
-  });
-
-  it('allows an optional tools list on request', () => {
-    const parsed = LlmCallRequestSchema.parse({
-      messages: [{ role: 'user', content: 'hi' }],
-      tools: [
-        {
-          name: 'bash',
-          description: 'run shell',
-          inputSchema: { type: 'object' },
-          executesIn: 'sandbox',
-        },
-      ],
-      model: 'claude-opus',
-      maxTokens: 1000,
-      temperature: 0.5,
-    });
-    expect(parsed.tools?.[0]?.executesIn).toBe('sandbox');
-  });
-});
 
 describe('tool.pre-call', () => {
   it('accepts an allow verdict with modifiedCall', () => {
@@ -580,6 +529,18 @@ describe('shared schemas exported', () => {
   it('AgentMessageSchema parses a valid message', () => {
     const r = AgentMessageSchema.safeParse({ role: 'user', content: 'hi' });
     expect(r.success).toBe(true);
+  });
+
+  describe('AgentMessage role narrowing (Phase 7)', () => {
+    it('accepts user and assistant roles', () => {
+      expect(AgentMessageSchema.parse({ role: 'user', content: 'hi' }).role).toBe('user');
+      expect(AgentMessageSchema.parse({ role: 'assistant', content: 'hi' }).role).toBe('assistant');
+    });
+
+    it('rejects the system role at the wire layer', () => {
+      const r = AgentMessageSchema.safeParse({ role: 'system', content: 'be brief' });
+      expect(r.success).toBe(false);
+    });
   });
 
   it('AgentOutcomeSchema parses a complete outcome', () => {
