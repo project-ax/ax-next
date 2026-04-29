@@ -19,7 +19,6 @@ import { auditLogPlugin } from '@ax/audit-log';
 import { createSandboxSubprocessPlugin } from '@ax/sandbox-subprocess';
 import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
 import { createIpcServerPlugin } from '@ax/ipc-server';
-import { createLlmProxyAnthropicFormatPlugin } from '@ax/llm-proxy-anthropic-format';
 import { createChatOrchestratorPlugin } from '@ax/chat-orchestrator';
 import { createToolDispatcherPlugin } from '@ax/tool-dispatcher';
 import { createToolBashPlugin } from '@ax/tool-bash';
@@ -201,7 +200,6 @@ export async function main(opts: MainOptions): Promise<number> {
   // the runner (delivered by @ax/ipc-server).
   plugins.push(createSessionInmemoryPlugin());
   plugins.push(createIpcServerPlugin());
-  plugins.push(createLlmProxyAnthropicFormatPlugin());
   plugins.push(
     createChatOrchestratorPlugin({
       runnerBinary: resolveRunnerBinary(cfg.runner),

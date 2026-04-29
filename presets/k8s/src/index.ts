@@ -8,7 +8,6 @@ import { createWorkspaceGitPlugin } from '@ax/workspace-git';
 import { createWorkspaceGitHttpPlugin } from '@ax/workspace-git-http';
 import { createSandboxK8sPlugin } from '@ax/sandbox-k8s';
 import { createLlmAnthropicPlugin } from '@ax/llm-anthropic';
-import { createLlmProxyAnthropicFormatPlugin } from '@ax/llm-proxy-anthropic-format';
 import { createChatOrchestratorPlugin } from '@ax/chat-orchestrator';
 import { createToolDispatcherPlugin } from '@ax/tool-dispatcher';
 import { createToolBashPlugin } from '@ax/tool-bash';
@@ -55,7 +54,7 @@ import { createStaticFilesPlugin } from '@ax/static-files';
 //   3. workspace (versioned content)
 //   4. audit-log (subscribes to chat:end; calls storage:set)
 //   5. http-server / auth / teams (control plane access — Week 9.5)
-//   6. sandbox / ipc-http / llm-proxy / chat-orchestrator (chat plane)
+//   6. sandbox / ipc-http / chat-orchestrator (chat plane)
 //   7. tool-dispatcher → tool descriptors → mcp-client (catalog assembly)
 //   8. agents (admin endpoints + agents:resolve gate)
 //   9. llm-anthropic (last; everything else is in place when init runs)
@@ -509,7 +508,6 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
       port: config.ipc.port ?? 8080,
     }),
   );
-  plugins.push(createLlmProxyAnthropicFormatPlugin());
 
   const orchestratorCfg: Parameters<typeof createChatOrchestratorPlugin>[0] = {
     runnerBinary: config.chat?.runnerBinary ?? defaultRunnerBinary(),

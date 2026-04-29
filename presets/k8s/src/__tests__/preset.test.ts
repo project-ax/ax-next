@@ -121,7 +121,6 @@ describe('@ax/preset-k8s wiring', () => {
         '@ax/http-server',
         '@ax/ipc-http',
         '@ax/llm-anthropic',
-        '@ax/llm-proxy-anthropic-format',
         '@ax/mcp-client',
         '@ax/sandbox-k8s',
         '@ax/session-postgres',
