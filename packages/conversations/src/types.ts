@@ -57,6 +57,30 @@ export interface Conversation {
   activeSessionId: string | null;
   /** Nullable; the in-flight reqId, if any (Invariant J7). */
   activeReqId: string | null;
+  /**
+   * Phase B (2026-04-29). Frozen at create-time from
+   * `ConversationsConfig.defaultRunnerType`. Mirrors I10 (immutable for
+   * the conversation's lifetime). Nullable for pre-Phase-B rows.
+   */
+  runnerType: string | null;
+  /**
+   * Phase B. The runner's native session id (e.g. SDK sessionId for
+   * `@ax/agent-claude-sdk-runner`). Bound on the first turn via
+   * `conversations:store-runner-session`. Null until then.
+   */
+  runnerSessionId: string | null;
+  /**
+   * Phase B. Frozen copy of `agent.workspaceRef` at conversation create.
+   * Mirrors I10. Nullable when the agent had no workspaceRef OR the row
+   * predates Phase B.
+   */
+  workspaceRef: string | null;
+  /**
+   * Phase B. ISO-8601 string. Bumped by the `chat:turn-end` subscriber
+   * on every non-heartbeat turn. Opaque to correctness; sidebar ordering
+   * only. Null for pre-Phase-B rows or rows that haven't seen a turn.
+   */
+  lastActivityAt: string | null;
   /** ISO-8601 string. */
   createdAt: string;
   /** ISO-8601 string. */
@@ -216,10 +240,21 @@ export interface FetchHistoryOutput {
 // Plugin config
 // ---------------------------------------------------------------------------
 
-// No config knobs in MVP — postgres + kysely come from the
-// @ax/database-postgres service via the bus. Knobs may land alongside
-// Task 14 (e.g. soft-delete retention window) but only if a second
-// backend would also want them. We keep the type so the public surface
-// is forward-compatible.
-// eslint-disable-next-line @typescript-eslint/no-empty-object-type
-export interface ConversationsConfig {}
+/**
+ * Plugin config knobs. Postgres + kysely come from the
+ * @ax/database-postgres service via the bus, not from this config.
+ */
+export interface ConversationsConfig {
+  /**
+   * Phase B (2026-04-29). The runner-plugin name to freeze onto every new
+   * conversation row's `runner_type` column. Single-runner-per-host MVP
+   * (design D5), so this is a constant the host preset declares — the
+   * conversations plugin inherits it. Same string the runner plugin
+   * itself reports; keep them in lockstep when a new runner ships. (When
+   * the future `@ax/runner-router` plugin lands, dispatch moves there
+   * and this knob becomes a default-not-required.)
+   *
+   * Validation regex `^[a-z0-9-]+$`, max 64 chars. Default `'claude-sdk'`.
+   */
+  defaultRunnerType?: string;
+}

@@ -92,7 +92,7 @@ export function mintTurnId(): string {
 // from `pg`'s default casts; we narrow them before exposing.
 // ---------------------------------------------------------------------------
 
-function rowToConversation(row: ConversationsRow): Conversation {
+export function rowToConversation(row: ConversationsRow): Conversation {
   return {
     conversationId: row.conversation_id,
     userId: row.user_id,
@@ -100,6 +100,11 @@ function rowToConversation(row: ConversationsRow): Conversation {
     title: row.title,
     activeSessionId: row.active_session_id,
     activeReqId: row.active_req_id,
+    runnerType: row.runner_type,
+    runnerSessionId: row.runner_session_id,
+    workspaceRef: row.workspace_ref,
+    lastActivityAt:
+      row.last_activity_at === null ? null : row.last_activity_at.toISOString(),
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
   };
