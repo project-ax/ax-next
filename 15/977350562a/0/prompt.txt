@@ -1,0 +1,1 @@
+implement docs/plans/2026-04-29-phase-6-legacy-plugin-deletion-impl.md using subagents. keep going until done without checkpoints
