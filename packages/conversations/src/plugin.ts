@@ -15,7 +15,9 @@ import {
   createConversationStore,
   validateContentBlocks,
   validateRole,
+  validateRunnerType,
   validateTitle,
+  validateWorkspaceRefForFreeze,
   type ConversationStore,
 } from './store.js';
 import type {
@@ -63,9 +65,34 @@ const PLUGIN_NAME = '@ax/conversations';
 //   - We DO NOT add `bind-session` / `unbind-session` hooks here — Task 14.
 // ---------------------------------------------------------------------------
 
+/**
+ * Phase B (2026-04-29). Resolved config — narrows
+ * `defaultRunnerType?: string` to a non-empty validated string. Defaults
+ * to 'claude-sdk' (the single-runner-per-host MVP, design D5).
+ */
+interface ResolvedConversationsConfig {
+  defaultRunnerType: string;
+}
+
+function resolveConfig(
+  input: ConversationsConfig,
+): ResolvedConversationsConfig {
+  const raw = input.defaultRunnerType ?? 'claude-sdk';
+  const validated = validateRunnerType(raw);
+  if (validated === null) {
+    // Validator returns null for null/undefined input; the `?? 'claude-sdk'`
+    // above means the only path here is an explicitly-null user override.
+    throw new Error(
+      "ConversationsConfig.defaultRunnerType must be a non-empty string (matches /^[a-z0-9-]+$/, ≤ 64 chars)",
+    );
+  }
+  return { defaultRunnerType: validated };
+}
+
 export function createConversationsPlugin(
-  _config: ConversationsConfig = {},
+  config: ConversationsConfig = {},
 ): Plugin {
+  const resolvedConfig = resolveConfig(config);
   let db: Kysely<ConversationDatabase> | undefined;
   let _store: ConversationStore | undefined;
 
@@ -111,7 +138,8 @@ export function createConversationsPlugin(
       bus.registerService<CreateInput, CreateOutput>(
         'conversations:create',
         PLUGIN_NAME,
-        async (ctx, input) => createConversation(localStore, bus, ctx, input),
+        async (ctx, input) =>
+          createConversation(localStore, bus, ctx, input, resolvedConfig),
       );
 
       bus.registerService<AppendTurnInput, AppendTurnOutput>(
@@ -366,18 +394,36 @@ interface ResolveInput {
   userId: string;
 }
 
+/**
+ * Narrow shape of what conversations needs from `agents:resolve`. The
+ * upstream type publishes more — we deliberately read only what we
+ * use, so a future field change in @ax/agents doesn't ripple.
+ *
+ * `workspaceRef` is read defensively: if the resolved agent omits it (a
+ * test mock returning a stub) we treat it as null. Frozen-as-of-create
+ * includes "frozen as null" — Phase C tolerates NULL on read.
+ */
+interface ResolvedAgentShape {
+  agent: {
+    id?: string;
+    workspaceRef?: string | null;
+  };
+}
+
 async function assertAgentReachable(
   bus: HookBus,
   ctx: AgentContext,
   agentId: string,
   userId: string,
   hookName: string,
-): Promise<void> {
+): Promise<ResolvedAgentShape['agent']> {
   try {
-    await bus.call<ResolveInput, unknown>('agents:resolve', ctx, {
-      agentId,
-      userId,
-    });
+    const result = await bus.call<ResolveInput, ResolvedAgentShape>(
+      'agents:resolve',
+      ctx,
+      { agentId, userId },
+    );
+    return result.agent;
   } catch (err) {
     if (err instanceof PluginError) {
       // Re-throw with our plugin name attached so audit can attribute the
@@ -406,21 +452,28 @@ async function createConversation(
   bus: HookBus,
   ctx: AgentContext,
   input: CreateInput,
+  cfg: ResolvedConversationsConfig,
 ): Promise<CreateOutput> {
   const title = validateTitle(input.title ?? null);
   // J1: ACL gate BEFORE persisting. The agent must be reachable to the
-  // creator; otherwise no conversation should ever exist for it.
-  await assertAgentReachable(
+  // creator; otherwise no conversation should ever exist for it. Phase B
+  // (I5): we capture the resolved agent here — its workspaceRef gets
+  // frozen onto the new row, mirroring I10. One bus call total; no
+  // separate agents:get round-trip.
+  const agent = await assertAgentReachable(
     bus,
     ctx,
     input.agentId,
     input.userId,
     'conversations:create',
   );
+  const workspaceRef = validateWorkspaceRefForFreeze(agent.workspaceRef);
   const conv = await store.create({
     userId: input.userId,
     agentId: input.agentId,
     title,
+    runnerType: cfg.defaultRunnerType,
+    workspaceRef,
   });
   return conv;
 }

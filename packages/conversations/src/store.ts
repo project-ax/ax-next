@@ -195,6 +195,19 @@ export interface ConversationStoreCreateArgs {
   userId: string;
   agentId: string;
   title: string | null;
+  /**
+   * Phase B (2026-04-29). Frozen runner-type for this conversation. The
+   * plugin layer reads it from `ConversationsConfig.defaultRunnerType`
+   * (which defaults to 'claude-sdk'). Optional here so existing tests
+   * that pre-date Phase B continue to compile — those rows persist as
+   * runner_type = NULL, the pre-Phase-B-row case.
+   */
+  runnerType?: string | null;
+  /**
+   * Phase B. Frozen copy of `agent.workspaceRef` at create-time. Optional
+   * for the same reason as runnerType — pre-Phase-B test rows.
+   */
+  workspaceRef?: string | null;
 }
 
 export interface ConversationStoreAppendTurnArgs {
@@ -380,7 +393,7 @@ export function createConversationStore(
       return rows.map(rowToTurn);
     },
 
-    async create({ userId, agentId, title }) {
+    async create({ userId, agentId, title, runnerType, workspaceRef }) {
       const id = mintConversationId();
       const now = new Date();
       const row = await db
@@ -392,6 +405,13 @@ export function createConversationStore(
           title,
           active_session_id: null,
           active_req_id: null,
+          // Phase B: freeze runner_type + workspace_ref onto the row.
+          // Pre-Phase-B callers (test fixtures) omit these and the row
+          // persists as NULL — opaque to the correctness path (I8/I10).
+          runner_type: runnerType ?? null,
+          runner_session_id: null,
+          workspace_ref: workspaceRef ?? null,
+          last_activity_at: null,
           deleted_at: null,
           created_at: now,
           updated_at: now,
