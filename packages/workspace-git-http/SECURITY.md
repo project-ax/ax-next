@@ -69,7 +69,7 @@ The host-side plugin's blast radius is "one outbound TCP socket can be opened to
 
 ### Handle leak — none
 
-The host-side plugin builds a `WorkspaceGitHttpClient` inside `init()` and closes over it in the four hook handlers. Sockets are opened per-request inside `requestOnce` (`client.ts:143`) and torn down at the end of each request via the AbortController + the timer. No socket, file descriptor, or capability handle crosses any hook boundary — handlers receive a `ChatContext` and a payload, and that's all.
+The host-side plugin builds a `WorkspaceGitHttpClient` inside `init()` and closes over it in the four hook handlers. Sockets are opened per-request inside `requestOnce` (`client.ts:143`) and torn down at the end of each request via the AbortController + the timer. No socket, file descriptor, or capability handle crosses any hook boundary — handlers receive an `AgentContext` and a payload, and that's all.
 
 ## Prompt injection / untrusted content
 
