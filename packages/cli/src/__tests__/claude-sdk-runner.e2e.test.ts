@@ -253,12 +253,6 @@ describe.skip('claude-sdk runner e2e', () => {
           // llm: 'mock' satisfies the schema; we're skipping the default
           // LLM plugin anyway, so the concrete value doesn't matter.
           llm: 'mock',
-          runner: 'claude-sdk',
-          // We don't need bash/file-io host impls for this flow — the
-          // claude-sdk runner's built-in `Bash` runs inside the claude
-          // grandchild, and the MCP tool routes to the test-host plugin
-          // we inject via extraPlugins.
-          tools: [],
           sandbox: 'subprocess',
           storage: 'sqlite',
         },

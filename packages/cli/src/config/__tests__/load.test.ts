@@ -20,20 +20,17 @@ describe('loadAxConfig', () => {
     expect(cfg).toEqual({
       llm: 'mock',
       sandbox: 'subprocess',
-      tools: ['bash', 'file-io'],
       storage: 'sqlite',
-      runner: 'native',
     });
   });
 
   it('merges a valid ax.config.mjs over defaults', async () => {
     writeFileSync(
       join(workDir, 'ax.config.mjs'),
-      "export default { llm: 'mock', tools: ['bash'] };\n",
+      "export default { llm: 'anthropic' };\n",
     );
     const cfg = await loadAxConfig({ cwd: workDir });
-    expect(cfg.llm).toBe('mock');
-    expect(cfg.tools).toEqual(['bash']);
+    expect(cfg.llm).toBe('anthropic');
     // Defaults still applied for unspecified fields.
     expect(cfg.sandbox).toBe('subprocess');
     expect(cfg.storage).toBe('sqlite');

@@ -150,8 +150,6 @@ describe.skipIf(skip)('credential-proxy e2e (real Anthropic API)', () => {
         message: 'reply with the single word PONG and nothing else',
         configOverride: {
           llm: 'anthropic',
-          runner: 'claude-sdk',
-          tools: [],
           sandbox: 'subprocess',
           storage: 'sqlite',
         },

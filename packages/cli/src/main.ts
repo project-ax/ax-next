@@ -21,8 +21,6 @@ import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
 import { createIpcServerPlugin } from '@ax/ipc-server';
 import { createChatOrchestratorPlugin } from '@ax/chat-orchestrator';
 import { createToolDispatcherPlugin } from '@ax/tool-dispatcher';
-import { createToolBashPlugin } from '@ax/tool-bash';
-import { createToolFileIoPlugin } from '@ax/tool-file-io';
 import { createMcpClientPlugin } from '@ax/mcp-client';
 import { createDevAgentsStubPlugin } from './dev-agents-stub.js';
 import { AxConfigSchema, type AxConfig, type AxConfigInput } from './config/schema.js';
@@ -204,16 +202,11 @@ export async function main(opts: MainOptions): Promise<number> {
   plugins.push(createDevAgentsStubPlugin());
 
   // Tool dispatcher is the single entry point for `tool:execute`, fanning
-  // out to whatever tool plugins register descriptors. Always present when
-  // we might have tools. (After Task 7, bash/file-io here are descriptor-
-  // only — actual execution runs in the sandbox via the impl packages.)
+  // out to whatever tool plugins register descriptors. Today the dispatcher's
+  // tool surface is populated entirely by MCP-registered host tools (see the
+  // `createMcpClientPlugin()` push below) — built-in bash/file-io descriptors
+  // are gone (Phase 6 Task 6 removes their host-side packages).
   plugins.push(createToolDispatcherPlugin());
-  if (cfg.tools.includes('bash')) {
-    plugins.push(createToolBashPlugin());
-  }
-  if (cfg.tools.includes('file-io')) {
-    plugins.push(createToolFileIoPlugin());
-  }
 
   // MCP-sourced tools register through the same `tool:register` surface as
   // bash/file-io. Push unconditionally: when no MCP configs are stored,
@@ -233,16 +226,11 @@ export async function main(opts: MainOptions): Promise<number> {
   // default (duplicate-service would throw at bootstrap).
   if (opts.skipDefaultLlm !== true) {
     if (cfg.llm === 'anthropic') {
-      const a = cfg.anthropic ?? {};
       const anthropicCfg: {
-        model?: string;
-        maxTokens?: number;
         clientFactory?: (apiKey: string) => {
           messages: { create(req: Record<string, unknown>): Promise<unknown> };
         };
       } = {};
-      if (a.model !== undefined) anthropicCfg.model = a.model;
-      if (a.maxTokens !== undefined) anthropicCfg.maxTokens = a.maxTokens;
       // `anthropicClientFactory` is MainOptions-only (not in AxConfig), so we
       // thread it through here for the library-mode e2e test seam.
       if (opts.anthropicClientFactory !== undefined) {
