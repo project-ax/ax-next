@@ -1,3 +1,4 @@
+import { basename } from 'node:path';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { resolveRunnerBinary } from '../main.js';
 
@@ -34,6 +35,7 @@ describe('resolveRunnerBinary', () => {
 
   it('defaults to resolved @ax/agent-claude-sdk-runner when neither override is set', () => {
     const result = resolveRunnerBinary({});
-    expect(result).toMatch(/agent-claude-sdk-runner.*main\.js$/);
+    expect(result).toContain('agent-claude-sdk-runner');
+    expect(basename(result)).toBe('main.js');
   });
 });

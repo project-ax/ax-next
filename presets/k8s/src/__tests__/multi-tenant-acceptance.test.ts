@@ -31,9 +31,14 @@ import { createK8sPlugins, type K8sPresetConfig } from '../index.js';
 //
 //   * agent A + user-A → resolves; chat completes; assistant emits 'from-A'.
 //   * agent B + user-B → resolves; chat completes; assistant emits 'from-B'.
-//   * agent A + user-B → agents:resolve throws PluginError('not-authorized');
+//   * agent A + user-B → agents:resolve throws PluginError('forbidden');
 //     orchestrator returns AgentOutcome { kind: 'terminated',
-//     reason: 'agent-resolve:not-authorized' }.
+//     reason: 'agent-resolve:forbidden' }.
+//
+// The 'forbidden' code mirrors what production @ax/agents emits (see
+// packages/agents/src/plugin.ts: code: 'forbidden' on every resolve-time
+// access denial). Diverging here would let the canary pass against a
+// reason production never produces.
 //
 // I2 note: AgentRecord shape is duplicated structurally (also done in
 // acceptance.test.ts and dev-agents-stub) — no import from chat-orchestrator.
@@ -143,7 +148,7 @@ function createDiscriminatingAgentsResolvePlugin(): Plugin {
             return { agent: AGENT_B };
           }
           throw new PluginError({
-            code: 'not-authorized',
+            code: 'forbidden',
             plugin: AGENTS_RESOLVE_PLUGIN_NAME,
             message: `user '${input.userId}' cannot access agent '${input.agentId}'`,
           });
@@ -385,8 +390,8 @@ describe('@ax/preset-k8s multi-tenant ACL gate (stub runner)', () => {
 
         // ---- Invocation 3: agent A + user-B → ACL gate rejects. ----
         // The discriminating agents:resolve mock throws
-        // PluginError('not-authorized'); orchestrator catches and returns
-        // terminated/agent-resolve:not-authorized.
+        // PluginError('forbidden') (mirroring production @ax/agents);
+        // orchestrator catches and returns terminated/agent-resolve:forbidden.
         const ctxX = makeAgentContext({
           sessionId: 'mt-session-3',
           agentId: 'agent-A',
@@ -403,8 +408,8 @@ describe('@ax/preset-k8s multi-tenant ACL gate (stub runner)', () => {
           );
         }
         // Reason format is `agent-resolve:<PluginError.code>` — we threw
-        // code 'not-authorized', so the full string is exact.
-        expect(outcomeX.reason).toMatch(/^agent-resolve:not-authorized/);
+        // code 'forbidden', so the full string is exact.
+        expect(outcomeX.reason).toMatch(/^agent-resolve:forbidden/);
 
         // ---- chat:end fired once per invocation, in order. ----
         // The recorder picks up ctx.sessionId on the receiving side; the

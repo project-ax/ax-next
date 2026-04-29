@@ -246,10 +246,13 @@ export async function main(opts: MainOptions): Promise<number> {
   // stdout stays clean for the chat outcome the binary writes via `out`.
   // Without this, debug lines like sandbox-subprocess's `runner_stderr`
   // intermix with the chat result and break callers that pipe stdout.
+  // Route through `err` (the library-mode stderr sink) so library-mode
+  // callers passing `opts.stderr` capture these logs alongside their
+  // direct `err(...)` lines, instead of bypassing into raw `process.stderr`.
   const reqId = makeReqId();
   const logger = createLogger({
     reqId,
-    writer: (line) => process.stderr.write(line + '\n'),
+    writer: err,
   });
   const ctx = makeAgentContext({
     reqId,
