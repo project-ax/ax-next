@@ -65,7 +65,7 @@ export AX_AUTH_GOOGLE_CLIENT_SECRET="<paste>"
 export AX_AUTH_GOOGLE_ISSUER="https://accounts.google.com"
 export AX_AUTH_GOOGLE_REDIRECT_URI="http://localhost:5173/auth/callback/google"
 
-# Workspace + LLM (use llm-mock if you don't want real Anthropic calls)
+# Workspace + LLM
 export AX_K8S_HOST_IPC_URL="http://127.0.0.1:7777"   # not used in this flow
 export AX_WORKSPACE_BACKEND=local
 export AX_WORKSPACE_ROOT=/tmp/ax-workspace

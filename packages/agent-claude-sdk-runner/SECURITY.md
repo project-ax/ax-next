@@ -12,7 +12,7 @@ This package is the sandbox-side runner that wraps `@anthropic-ai/claude-agent-s
 
 ## `@anthropic-ai/claude-agent-sdk` pin posture
 
-- Current specifier: `0.2.119` (exact-pinned; bump intentional). Matches the discipline in the sibling plugin `@ax/llm-anthropic`, which exact-pins `@anthropic-ai/sdk`. The SDK is pre-1.0 and shipping frequently, so we expect to bump often — but each bump is a deliberate act, not a silent pickup via caret range. Re-run `security-checklist` on every bump.
+- Current specifier: `0.2.119` (exact-pinned; bump intentional). The SDK is pre-1.0 and shipping frequently, so we expect to bump often — but each bump is a deliberate act, not a silent pickup via caret range. Re-run `security-checklist` on every bump.
 - Upgrade procedure: use `pnpm add @anthropic-ai/claude-agent-sdk@<new-exact-version>` in `packages/agent-claude-sdk-runner`, re-run the Week 6.5d acceptance test (`pnpm --filter @ax/cli test claude-sdk-runner`), and re-run `security-checklist` on the new dep tree. A new SDK can bring new built-in tool names — if any escape the sandbox's intent, extend `DISABLED_BUILTINS` in `tool-names.ts` before shipping.
 
 ## Disabled built-ins (why)
