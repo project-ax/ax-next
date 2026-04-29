@@ -40,6 +40,8 @@ import type {
   GetOutput,
   ListInput,
   ListOutput,
+  StoreRunnerSessionInput,
+  StoreRunnerSessionOutput,
   UnbindSessionInput,
   UnbindSessionOutput,
 } from './types.js';
@@ -118,6 +120,10 @@ export function createConversationsPlugin(
         // Sidebar / runner-plugin call site lands in Phase C — half-
         // wired window OPEN (closed by Phase C, see PR notes).
         'conversations:get-metadata',
+        // Phase B (2026-04-29): idempotent first-bind for the runner's
+        // native session id. Caller (Phase C) is the runner-plugin's
+        // host-side IPC handler.
+        'conversations:store-runner-session',
       ],
       calls: ['agents:resolve', 'database:get-instance'],
       // Task 14 (Week 10–12): subscribe to session:terminate so a sandbox
@@ -223,6 +229,17 @@ export function createConversationsPlugin(
         PLUGIN_NAME,
         async (ctx, input) =>
           getConversationMetadata(localStore, bus, ctx, input),
+      );
+
+      // Phase B (2026-04-29). Idempotent first-bind. Mirrors the
+      // bind-session ACL posture: ctx.userId-scoped UPDATE only, no
+      // agents:resolve round-trip (the orchestrator has already gated
+      // the user at agent:invoke entry). Half-wired window: closed by
+      // Phase C.
+      bus.registerService<StoreRunnerSessionInput, StoreRunnerSessionOutput>(
+        'conversations:store-runner-session',
+        PLUGIN_NAME,
+        async (ctx, input) => storeRunnerSession(localStore, ctx, input),
       );
 
       // chat:turn-end auto-append (Task 3 of Week 10–12).
@@ -706,6 +723,49 @@ async function bindSession(
       hookName,
       message: `conversation '${conversationId}' not found`,
     });
+  }
+}
+
+async function storeRunnerSession(
+  store: ConversationStore,
+  ctx: AgentContext,
+  input: StoreRunnerSessionInput,
+): Promise<StoreRunnerSessionOutput> {
+  const hookName = 'conversations:store-runner-session';
+  const conversationId = requireBoundedString(
+    input.conversationId,
+    'conversationId',
+    hookName,
+  );
+  const runnerSessionId = requireBoundedString(
+    input.runnerSessionId,
+    'runnerSessionId',
+    hookName,
+  );
+  const userId = requireBoundedString(ctx.userId, 'ctx.userId', hookName);
+  const result = await store.storeRunnerSession({
+    conversationId,
+    userId,
+    runnerSessionId,
+  });
+  switch (result) {
+    case 'bound':
+    case 'already-bound-same':
+      return;
+    case 'conflict':
+      throw new PluginError({
+        code: 'conflict',
+        plugin: PLUGIN_NAME,
+        hookName,
+        message: `runner_session_id already bound to a different value for conversation '${conversationId}'`,
+      });
+    case 'not-found':
+      throw new PluginError({
+        code: 'not-found',
+        plugin: PLUGIN_NAME,
+        hookName,
+        message: `conversation '${conversationId}' not found`,
+      });
   }
 }
 

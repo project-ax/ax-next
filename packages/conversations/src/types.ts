@@ -241,6 +241,32 @@ export interface GetMetadataOutput {
 }
 
 /**
+ * Phase B (2026-04-29). Bind the runner's native session id to a
+ * conversation row exactly once. Called by the runner-plugin's host-side
+ * IPC handler (Phase C) after the runner subprocess captures its
+ * native session identifier on the first turn.
+ *
+ * Idempotent for re-binds to the same value (no-op success). Throws
+ * `conflict` on a re-bind to a different value (I7) — that signals a
+ * runner-side bug (two first-turn IPCs fired) AND prevents an orphan
+ * native-session artifact on disk.
+ *
+ * ACL: `(conversation_id, ctx.userId)` UPDATE-scope only. No
+ * `agents:resolve` round-trip — the host has already gated the user at
+ * `agent:invoke` entry. A misbehaving caller cannot bind a cross-tenant
+ * row because the UPDATE filter rejects mismatched user_id with the
+ * uniform `not-found` shape.
+ *
+ * `runnerSessionId` is opaque at this layer — no field name leaks the
+ * specific runner shape (no `sdk_session_id`, no `jsonl_path`). I9.
+ */
+export interface StoreRunnerSessionInput {
+  conversationId: string;
+  runnerSessionId: string;
+}
+export type StoreRunnerSessionOutput = void;
+
+/**
  * Fetch the persisted turn history for a conversation, formatted for
  * runner replay (Week 10–12 Task 15, Invariant J3 + J6 resume).
  *

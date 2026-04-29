@@ -44,6 +44,8 @@ export type {
   GetOutput,
   ListInput,
   ListOutput,
+  StoreRunnerSessionInput,
+  StoreRunnerSessionOutput,
   Turn,
   TurnRole,
   UnbindSessionInput,

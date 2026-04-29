@@ -29,6 +29,7 @@ describe('@ax/conversations plugin manifest', () => {
         'conversations:fetch-history',
         // Phase B (2026-04-29): runner-owned-sessions metadata reads.
         'conversations:get-metadata',
+        'conversations:store-runner-session',
       ],
       // database:get-instance is hard — we run our own migration on init.
       // agents:resolve is hard — every hook gates through it (Invariant J1).
