@@ -26,7 +26,6 @@
     "@ax/workspace-git": "workspace:*",
     "@ax/workspace-git-http": "workspace:*",
     "@ax/sandbox-k8s": "workspace:*",
-    "@ax/llm-anthropic": "workspace:*",
     "@ax/agent-claude-sdk-runner": "workspace:*",
     "@ax/agent-runner-core": "workspace:*",
     "@ax/chat-orchestrator": "workspace:*",
@@ -47,7 +46,6 @@
     "@ax/teams": "workspace:*"
   },
   "devDependencies": {
-    "@ax/llm-mock": "workspace:*",
     "@ax/test-harness": "workspace:*",
     "@testcontainers/postgresql": "11.14.0",
     "@types/node": "^25.6.0",
