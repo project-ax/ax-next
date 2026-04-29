@@ -6,7 +6,7 @@ import type {
 } from '@ax/agent-runner-core';
 import { SessionInvalidError, toWireChanges } from '@ax/agent-runner-core';
 import type {
-  ChatMessage,
+  AgentMessage,
   LlmCallResponse,
   ToolCall,
   ToolDescriptor,
@@ -91,15 +91,15 @@ export interface TurnLoopDeps {
 }
 
 export type TurnLoopOutcome =
-  | { kind: 'complete'; messages: ChatMessage[] }
-  | { kind: 'terminated'; messages: ChatMessage[]; reason: string; error: unknown };
+  | { kind: 'complete'; messages: AgentMessage[] }
+  | { kind: 'terminated'; messages: AgentMessage[]; reason: string; error: unknown };
 
 const DEFAULT_MAX_TURNS = 20;
 
 export async function runTurnLoop(deps: TurnLoopDeps): Promise<TurnLoopOutcome> {
   const maxTurns = deps.maxTurns ?? DEFAULT_MAX_TURNS;
   const commitRefGen = deps.commitRefGen ?? (() => randomUUID());
-  const history: ChatMessage[] = [];
+  const history: AgentMessage[] = [];
   // Seed the system prompt as a role:'system' message at the top of
   // history. llm-anthropic's plugin extracts these into the API's
   // top-level `system` field; mapping role:'system' to user would
@@ -114,7 +114,7 @@ export async function runTurnLoop(deps: TurnLoopDeps): Promise<TurnLoopOutcome> 
   // user-facing messages are everything except the seeded system prompt.
   // Functions consuming the outcome want a transcript, not the prompt the
   // host wrote at the top of history.
-  const userFacingHistory = (): ChatMessage[] =>
+  const userFacingHistory = (): AgentMessage[] =>
     history.filter((m) => m.role !== 'system');
 
   try {
@@ -196,7 +196,7 @@ export async function runTurnLoop(deps: TurnLoopDeps): Promise<TurnLoopOutcome> 
  * errors (e.g. SessionInvalidError) so the outer loop catches them.
  */
 async function runOneUserMessage(
-  history: ChatMessage[],
+  history: AgentMessage[],
   deps: TurnLoopDeps,
   maxTurns: number,
 ): Promise<void> {
@@ -222,7 +222,7 @@ async function runOneUserMessage(
 }
 
 async function runOneToolCall(
-  history: ChatMessage[],
+  history: AgentMessage[],
   deps: TurnLoopDeps,
   toolCall: ToolCall,
 ): Promise<void> {

@@ -128,7 +128,7 @@ export interface InboxRow {
   session_id: string;
   cursor: string; // BIGINT — string for safety; we coerce in code
   type: 'user-message' | 'cancel';
-  payload: unknown; // JSONB — null for cancel, ChatMessage for user-message
+  payload: unknown; // JSONB — null for cancel, AgentMessage for user-message
   created_at: Date;
 }
 

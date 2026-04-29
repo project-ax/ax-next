@@ -1,6 +1,6 @@
 import pg from 'pg';
 import type { Kysely } from 'kysely';
-import { PluginError, type ChatMessage } from '@ax/core';
+import { PluginError, type AgentMessage } from '@ax/core';
 import type { SessionDatabase } from './migrations.js';
 
 const PLUGIN_NAME = '@ax/session-postgres';
@@ -41,7 +41,7 @@ const PLUGIN_NAME = '@ax/session-postgres';
 // stamps it onto every `event.stream-chunk` so the host can route the
 // chunk back to the waiting client (Task 5/7). REQUIRED — never optional.
 //
-// Persistence: stored alongside the ChatMessage in the JSONB `payload`
+// Persistence: stored alongside the AgentMessage in the JSONB `payload`
 // column rather than a dedicated SQL column, so this slice doesn't need
 // a forward-only migration. The wrapping shape is opaque at the SQL
 // layer; the inbox layer is the single producer + consumer. A row whose
@@ -55,11 +55,11 @@ const PLUGIN_NAME = '@ax/session-postgres';
 // terminated chat-end, and the corrupt row shows up in audit/log so an
 // operator can surgically delete it.
 export type InboxEntry =
-  | { type: 'user-message'; payload: ChatMessage; reqId: string }
+  | { type: 'user-message'; payload: AgentMessage; reqId: string }
   | { type: 'cancel' };
 
 export type ClaimResult =
-  | { type: 'user-message'; payload: ChatMessage; reqId: string; cursor: number }
+  | { type: 'user-message'; payload: AgentMessage; reqId: string; cursor: number }
   | { type: 'cancel'; cursor: number }
   | { type: 'timeout'; cursor: number };
 
@@ -400,7 +400,7 @@ async function fetchEntry(
     .executeTakeFirst();
   if (row === undefined) return null;
   if (row.type === 'user-message') {
-    // The JSONB payload wraps the ChatMessage and the host-minted reqId;
+    // The JSONB payload wraps the AgentMessage and the host-minted reqId;
     // see the `queue` insert above. A row whose JSONB doesn't match the
     // expected shape is CORRUPTION (most likely a pre-Task-6 row left
     // in flight across a deploy, or a manual DB write). We THROW rather
@@ -438,7 +438,7 @@ async function fetchEntry(
     }
     return {
       type: 'user-message',
-      payload: wrapped.message as ChatMessage,
+      payload: wrapped.message as AgentMessage,
       reqId: wrapped.reqId as string,
     };
   }

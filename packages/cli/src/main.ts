@@ -195,8 +195,7 @@ export async function main(opts: MainOptions): Promise<number> {
     plugins.push(createSandboxSubprocessPlugin());
   }
 
-  // Session + IPC + chat orchestration. Together these replace the old
-  // in-process `registerChatLoop` — `agent:invoke` is now registered by
+  // Session + IPC + chat orchestration. `agent:invoke` is registered by
   // @ax/chat-orchestrator, which drives the per-chat lifecycle through
   // sandbox:open-session + session:queue-work and awaits chat:end from
   // the runner (delivered by @ax/ipc-server).

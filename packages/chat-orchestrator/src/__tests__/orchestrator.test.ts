@@ -5,7 +5,7 @@ import {
   makeAgentContext,
   createLogger,
   reject,
-  type ChatMessage,
+  type AgentMessage,
   type AgentOutcome,
   type ServiceHandler,
 } from '@ax/core';
@@ -62,7 +62,7 @@ interface MockBundle {
     agentsResolve: number;
     lastSandboxInput: unknown;
   };
-  lastQueuedMessage(): ChatMessage | undefined;
+  lastQueuedMessage(): AgentMessage | undefined;
 }
 
 // Builds a default mock bundle. Callers can override individual services.
@@ -82,7 +82,7 @@ function buildMocks(opts: {
     agentsResolve: 0,
     lastSandboxInput: undefined as unknown,
   };
-  let lastQueued: ChatMessage | undefined;
+  let lastQueued: AgentMessage | undefined;
 
   const services: Record<string, ServiceHandler> = {
     'agents:resolve': async (ctx, input) => {
@@ -96,7 +96,7 @@ function buildMocks(opts: {
       opts.queueWork ??
       (async (_ctx, input: unknown) => {
         calls.sessionQueueWork += 1;
-        const entry = (input as { entry: { type: string; payload?: ChatMessage } })
+        const entry = (input as { entry: { type: string; payload?: AgentMessage } })
           .entry;
         if (entry.type === 'user-message') {
           lastQueued = entry.payload;
@@ -389,7 +389,7 @@ describe('chat-orchestrator', () => {
     const scenarios: Array<{
       name: string;
       setup: (services: Record<string, ServiceHandler>) => ServiceHandler | undefined;
-      input: ChatMessage;
+      input: AgentMessage;
       startBlock?: boolean;
       expectKind: AgentOutcome['kind'];
     }> = [

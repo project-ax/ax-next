@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { ChatMessageSchema, ToolCallSchema } from './actions.js';
+import { AgentMessageSchema, ToolCallSchema } from './actions.js';
 import { ContentBlockSchema } from './content-blocks.js';
 
 // ---------------------------------------------------------------------------
@@ -67,10 +67,10 @@ export type EventTurnEnd = z.infer<typeof EventTurnEndSchema>;
  * Terminal outcome of a chat, mirroring `@ax/core/src/types.ts` `AgentOutcome`
  * but declared locally to keep this package independent of the kernel.
  */
-export const ChatOutcomeSchema = z.discriminatedUnion('kind', [
+export const AgentOutcomeSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('complete'),
-    messages: z.array(ChatMessageSchema),
+    messages: z.array(AgentMessageSchema),
   }),
   z.object({
     kind: z.literal('terminated'),
@@ -78,9 +78,9 @@ export const ChatOutcomeSchema = z.discriminatedUnion('kind', [
     error: z.unknown().optional(),
   }),
 ]);
-export type AgentOutcome = z.infer<typeof ChatOutcomeSchema>;
+export type AgentOutcome = z.infer<typeof AgentOutcomeSchema>;
 
 export const EventChatEndSchema = z.object({
-  outcome: ChatOutcomeSchema,
+  outcome: AgentOutcomeSchema,
 });
 export type EventChatEnd = z.infer<typeof EventChatEndSchema>;

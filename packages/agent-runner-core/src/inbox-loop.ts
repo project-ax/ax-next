@@ -1,4 +1,4 @@
-import type { ChatMessage } from '@ax/ipc-protocol';
+import type { AgentMessage } from '@ax/ipc-protocol';
 import type { IpcClient } from './ipc-client.js';
 
 // ---------------------------------------------------------------------------
@@ -26,7 +26,7 @@ export interface InboxLoopOptions {
 
 export interface InboxLoopEntry {
   type: 'user-message' | 'cancel';
-  payload?: ChatMessage;
+  payload?: AgentMessage;
   /**
    * Host-minted request id (J9). Present iff `type === 'user-message'`.
    * The runner caches it locally and stamps it onto every
@@ -54,7 +54,7 @@ export interface InboxLoop {
 // SessionNextMessageResponseSchema. We re-declare the type inline rather
 // than pulling the schema type because `client.callGet` returns `unknown`.
 type WireResponse =
-  | { type: 'user-message'; payload: ChatMessage; reqId: string; cursor: number }
+  | { type: 'user-message'; payload: AgentMessage; reqId: string; cursor: number }
   | { type: 'cancel'; cursor: number }
   | { type: 'timeout'; cursor: number };
 

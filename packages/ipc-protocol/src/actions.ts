@@ -17,11 +17,11 @@ export { asWorkspaceVersion, type WorkspaceVersion };
 // reconcile — the boundary is intentional, not accidental.
 // ---------------------------------------------------------------------------
 
-export const ChatMessageSchema = z.object({
+export const AgentMessageSchema = z.object({
   role: z.enum(['user', 'assistant', 'system']),
   content: z.string(),
 });
-export type ChatMessage = z.infer<typeof ChatMessageSchema>;
+export type AgentMessage = z.infer<typeof AgentMessageSchema>;
 
 export const ToolCallSchema = z.object({
   id: z.string(),
@@ -64,7 +64,7 @@ export type ToolDescriptor = z.infer<typeof ToolDescriptorSchema>;
 // ---------------------------------------------------------------------------
 
 export const LlmCallRequestSchema = z.object({
-  messages: z.array(ChatMessageSchema),
+  messages: z.array(AgentMessageSchema),
   tools: z.array(ToolDescriptorSchema).optional(),
   model: z.string().optional(),
   maxTokens: z.number().int().positive().optional(),
@@ -73,7 +73,7 @@ export const LlmCallRequestSchema = z.object({
 export type LlmCallRequest = z.infer<typeof LlmCallRequestSchema>;
 
 export const LlmCallResponseSchema = z.object({
-  assistantMessage: ChatMessageSchema,
+  assistantMessage: AgentMessageSchema,
   toolCalls: z.array(ToolCallSchema),
   stopReason: z.string().optional(),
   usage: z
@@ -337,7 +337,7 @@ export type ConversationFetchHistoryResponse = z.infer<
 export const SessionNextMessageResponseSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('user-message'),
-    payload: ChatMessageSchema,
+    payload: AgentMessageSchema,
     reqId: z.string(),
     cursor: z.number().int().nonnegative(),
   }),

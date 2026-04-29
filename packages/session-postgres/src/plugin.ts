@@ -304,7 +304,7 @@ function requireInboxEntry(
         code: 'invalid-payload',
         plugin: PLUGIN_NAME,
         hookName,
-        message: `'entry.payload' must be a ChatMessage`,
+        message: `'entry.payload' must be an AgentMessage`,
       });
     }
     const role = (payload as { role?: unknown }).role;

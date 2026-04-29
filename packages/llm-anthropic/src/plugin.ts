@@ -4,7 +4,7 @@ import {
   type Plugin,
   type LlmRequest,
   type LlmResponse,
-  type ChatMessage,
+  type AgentMessage,
   type ToolCall,
 } from '@ax/core';
 
@@ -190,7 +190,7 @@ function fromAnthropicResponse(res: unknown): LlmResponse {
       }
     }
   }
-  const assistantMessage: ChatMessage = {
+  const assistantMessage: AgentMessage = {
     role: 'assistant',
     content: textParts.join('\n'),
   };

@@ -13,7 +13,7 @@ import {
   toWireChanges,
 } from '@ax/agent-runner-core';
 import type {
-  ChatMessage,
+  AgentMessage,
   ContentBlock,
   ConversationFetchHistoryResponse,
   ConversationFetchHistoryTurn,
@@ -196,10 +196,10 @@ export async function main(): Promise<number> {
   // Host-side bookkeeping for the final event.chat-end outcome. The SDK
   // maintains its OWN transcript internally; this array is only the shape
   // the host cares about (user/assistant text round-tripped through
-  // ChatMessage). NOT the same as `replayTurns` above — replayTurns is
+  // AgentMessage). NOT the same as `replayTurns` above — replayTurns is
   // the persisted history we pull at boot to seed the SDK; chatEndHistory
   // is the within-process trace the host gets at chat:end.
-  const chatEndHistory: ChatMessage[] = [];
+  const chatEndHistory: AgentMessage[] = [];
 
   // Per-turn content-block accumulators. Drained at the SDK `result`
   // boundary into event.turn-end so @ax/conversations can persist the

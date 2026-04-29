@@ -5,7 +5,7 @@ import * as path from 'node:path';
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { PluginError, reject } from '@ax/core';
 import type {
-  ChatMessage,
+  AgentMessage,
   LlmCallRequest,
   LlmCallResponse,
   ToolCall,
@@ -201,7 +201,7 @@ describe('dispatcher', () => {
             return {
               ...req,
               messages: [
-                { role: 'system', content: 'be brief' } as ChatMessage,
+                { role: 'system', content: 'be brief' } as AgentMessage,
                 ...req.messages,
               ],
             };

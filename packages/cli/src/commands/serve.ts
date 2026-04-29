@@ -25,7 +25,7 @@ import {
   PluginError,
   bootstrap,
   makeAgentContext,
-  type ChatMessage,
+  type AgentMessage,
   type AgentOutcome,
   type Plugin,
 } from '@ax/core';
@@ -364,7 +364,7 @@ async function handleChat(
 
   // agent:invoke.
   const ctx = makeServeCtx(finalSessionId, workspaceRoot);
-  const chatMessage: ChatMessage = { role: 'user', content: message };
+  const chatMessage: AgentMessage = { role: 'user', content: message };
   let outcome: AgentOutcome;
   try {
     outcome = await bus.call('agent:invoke', ctx, { message: chatMessage });

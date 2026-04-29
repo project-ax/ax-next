@@ -188,10 +188,10 @@ function requireInboxEntry(
         code: 'invalid-payload',
         plugin: PLUGIN_NAME,
         hookName,
-        message: `'entry.payload' must be a ChatMessage`,
+        message: `'entry.payload' must be an AgentMessage`,
       });
     }
-    // Enforce the ChatMessage role enum at runtime, not just at the type
+    // Enforce the AgentMessage role enum at runtime, not just at the type
     // level — this hook is a trust boundary (the IPC server will feed
     // untrusted wire payloads through here once Task 3 lands).
     const role = (payload as { role?: unknown }).role;

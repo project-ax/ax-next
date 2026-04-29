@@ -4,7 +4,7 @@ import {
   makeReqId,
   PluginError,
   type AgentContext,
-  type ChatMessage,
+  type AgentMessage,
   type HookBus,
 } from '@ax/core';
 import type { ContentBlock } from '@ax/ipc-protocol';
@@ -185,8 +185,8 @@ interface ConversationsAppendTurnInput {
   contentBlocks: PostMessageRequest['contentBlocks'];
 }
 
-interface ChatRunInput {
-  message: ChatMessage;
+interface AgentInvokeInput {
+  message: AgentMessage;
 }
 
 // --- handler factory ------------------------------------------------------
@@ -337,7 +337,7 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
       // makeAgentContext provides (process.cwd) — the orchestrator's
       // resolution is not our concern, and overriding here would extend
       // the contract this PR is explicitly leaving alone for Task 16.
-      const runChatCtx = makeAgentContext({
+      const agentInvokeCtx = makeAgentContext({
         sessionId: makeReqId(),
         agentId: body.agentId,
         userId,
@@ -345,7 +345,7 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
         reqId,
       });
 
-      const message: ChatMessage = {
+      const message: AgentMessage = {
         role: 'user',
         content: extractText(body.contentBlocks),
       };
@@ -354,7 +354,7 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
       // chat:end via the orchestrator (audit-log invariant); the SSE
       // stream surfaces the terminated outcome to the client.
       //
-      // Log via runChatCtx.logger (NOT initCtx.logger): the per-request
+      // Log via agentInvokeCtx.logger (NOT initCtx.logger): the per-request
       // ctx carries this dispatch's reqId, and the kernel logger writes
       // its bound reqId onto every entry. Logging via initCtx.logger
       // would correlate the failure to the plugin-boot reqId — useless
@@ -363,9 +363,9 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
       // the logger's bound value), so we don't repeat it in the bindings;
       // conversationId is not reserved and is kept for cross-correlation.
       void bus
-        .call<ChatRunInput, unknown>('agent:invoke', runChatCtx, { message })
+        .call<AgentInvokeInput, unknown>('agent:invoke', agentInvokeCtx, { message })
         .catch((err: unknown) => {
-          runChatCtx.logger.warn('chat_run_dispatch_failed', {
+          agentInvokeCtx.logger.warn('chat_run_dispatch_failed', {
             plugin: PLUGIN_NAME,
             conversationId,
             err:

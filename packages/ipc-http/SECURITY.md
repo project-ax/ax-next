@@ -37,7 +37,7 @@ We don't read `process.env` anywhere in this plugin. `host` and `port` come from
 
 ### Handle leak — none
 
-The per-request `ChatContext` is built from `auth.sessionId` and `auth.workspaceRoot` — both come from `session:resolve-token`'s vetted output. We do not pass raw sockets, file descriptors, or any other capability handles across hooks. The dispatcher hands handlers a `ChatContext` and a `HookBus`; that is all the reach a handler gets.
+The per-request `AgentContext` is built from `auth.sessionId` and `auth.workspaceRoot` — both come from `session:resolve-token`'s vetted output. We do not pass raw sockets, file descriptors, or any other capability handles across hooks. The dispatcher hands handlers an `AgentContext` and a `HookBus`; that is all the reach a handler gets.
 
 ### Cross-session escalation — implicit in token resolution
 
