@@ -326,6 +326,35 @@ describe('@ax/credentials-anthropic-oauth plugin', () => {
     ).rejects.toMatchObject({ code: 'oauth-refresh-failed' });
   });
 
+  it('resolve: rejects when Anthropic returns a non-string refresh_token (validate optional field)', async () => {
+    // CR follow-up — guard against persisting a malformed blob. If the
+    // endpoint returns refresh_token as a non-string, fail fast as
+    // oauth-refresh-failed instead of letting it slip into the stored
+    // payload and surface as invalid-oauth-blob on the NEXT read.
+    const bus = await bootBus();
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          access_token: 'tok-NEW',
+          refresh_token: 12345, // non-string!
+          expires_in: 3600,
+        }),
+        { status: 200 },
+      )) as unknown as typeof globalThis.fetch;
+    const blob = bytes(
+      JSON.stringify({
+        accessToken: 'tok-OLD',
+        refreshToken: 'r-OLD',
+        expiresAt: Date.now() + 60_000,
+      }),
+    );
+    await expect(
+      bus.call('credentials:resolve:anthropic-oauth', ctx(), {
+        payload: blob, userId: 'u1', ref: 'r1',
+      }),
+    ).rejects.toMatchObject({ code: 'oauth-refresh-failed' });
+  });
+
   it('resolve: throws PluginError(oauth-refresh-failed) on malformed JSON body', async () => {
     const bus = await bootBus();
     globalThis.fetch = (async () =>

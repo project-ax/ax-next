@@ -173,7 +173,17 @@ export async function refreshAnthropicTokens(refreshToken: string): Promise<{
     },
     'oauth-refresh-failed',
   );
-  if (typeof data.access_token !== 'string' || typeof data.expires_in !== 'number') {
+  // refresh_token is OPTIONAL in the response (some OAuth endpoints don't
+  // rotate it on every refresh — see makeBlobFromTokens caller path) but
+  // when present MUST be a string. Catching a non-string here surfaces the
+  // failure as oauth-refresh-failed immediately, instead of letting a
+  // malformed value get persisted into the blob and only blow up on the
+  // NEXT credentials:get as invalid-oauth-blob.
+  if (
+    typeof data.access_token !== 'string' ||
+    typeof data.expires_in !== 'number' ||
+    (data.refresh_token !== undefined && typeof data.refresh_token !== 'string')
+  ) {
     throw new PluginError({
       code: 'oauth-refresh-failed',
       plugin: PLUGIN_NAME,
