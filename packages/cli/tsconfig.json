@@ -21,6 +21,7 @@
     { "path": "../agent-claude-sdk-runner" },
     { "path": "../tool-dispatcher" },
     { "path": "../mcp-client" },
+    { "path": "../test-harness" },
     { "path": "../../presets/k8s" }
   ]
 }
