@@ -42,7 +42,6 @@ export function createIpcHttpPlugin(
       calls: [
         'session:resolve-token',
         'session:claim-work',
-        'llm:call',
         'tool:list',
       ],
       subscribes: [],

@@ -112,7 +112,7 @@ describe('createHttpListener', () => {
     harness = await makeHarness();
     const r = await requestTo(harness.port, {
       method: 'POST',
-      path: '/llm.call',
+      path: '/tool.list',
       headers: {
         'content-type': 'text/plain',
         authorization: `Bearer ${harness.token}`,
@@ -126,7 +126,7 @@ describe('createHttpListener', () => {
     harness = await makeHarness();
     const r = await requestTo(harness.port, {
       method: 'POST',
-      path: '/llm.call',
+      path: '/tool.list',
       headers: { 'content-type': 'application/json' },
       body: '{}',
     });
@@ -139,7 +139,7 @@ describe('createHttpListener', () => {
     harness = await makeHarness();
     const r = await requestTo(harness.port, {
       method: 'POST',
-      path: '/llm.call',
+      path: '/tool.list',
       headers: {
         'content-type': 'application/json',
         // The whole point of this test is asserting the listener rejects
@@ -159,7 +159,7 @@ describe('createHttpListener', () => {
     const bogus = 'not-a-real-token-xyz';
     const r = await requestTo(harness.port, {
       method: 'POST',
-      path: '/llm.call',
+      path: '/tool.list',
       headers: {
         'content-type': 'application/json',
         authorization: `Bearer ${bogus}`,
@@ -202,7 +202,7 @@ describe('createHttpListener', () => {
     // writer; the unix-socket listener test uses the same trick.)
     const r = await requestTo(harness.port, {
       method: 'POST',
-      path: '/llm.call',
+      path: '/workspace.commit-notify',
       headers: {
         'content-type': 'application/json',
         authorization: `Bearer ${harness.token}`,
@@ -217,7 +217,7 @@ describe('createHttpListener', () => {
     harness = await makeHarness();
     const r = await requestTo(harness.port, {
       method: 'POST',
-      path: '/llm.call',
+      path: '/workspace.commit-notify',
       headers: {
         'content-type': 'application/json',
         authorization: `Bearer ${harness.token}`,

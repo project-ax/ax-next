@@ -262,11 +262,9 @@ describe('createListener', () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'ax-ipc-test-'));
     const socketPath = path.join(tempDir, 'ipc.sock');
     const h = await createTestHarness({
-      // @ax/ipc-server declares calls on `llm:call` and `tool:list` — stub
-      // them to satisfy bootstrap's verifyCalls. No request path hits them
-      // in this test.
+      // @ax/ipc-server declares calls on `tool:list` — stub it to satisfy
+      // bootstrap's verifyCalls. No request path hits it in this test.
       services: {
-        'llm:call': async () => ({ assistantMessage: { role: 'assistant', content: '' }, toolCalls: [] }),
         'tool:list': async () => ({ tools: [] }),
       },
       plugins: [createSessionInmemoryPlugin(), createIpcServerPlugin()],
@@ -290,7 +288,6 @@ describe('createListener', () => {
     const secondSocketPath = path.join(tempDir, 'ipc-2.sock');
     const h = await createTestHarness({
       services: {
-        'llm:call': async () => ({ assistantMessage: { role: 'assistant', content: '' }, toolCalls: [] }),
         'tool:list': async () => ({ tools: [] }),
       },
       plugins: [createSessionInmemoryPlugin(), createIpcServerPlugin()],

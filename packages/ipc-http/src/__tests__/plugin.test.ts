@@ -18,21 +18,20 @@ import { createIpcHttpPlugin } from '../plugin.js';
 // declared `calls` entry is registered by SOME plugin. The harness only
 // auto-loads @ax/session-inmemory (covers session:resolve-token and
 // session:claim-work), so we hand-roll a tiny stub plugin to register
-// `llm:call` and `tool:list`. The stub never gets called by these tests
-// (we only hit /healthz pre-auth) — its sole job is to satisfy verifyCalls.
+// `tool:list`. The stub never gets called by these tests (we only hit
+// /healthz pre-auth) — its sole job is to satisfy verifyCalls.
 // ---------------------------------------------------------------------------
 
-const stubLlmAndTools: Plugin = {
+const stubTools: Plugin = {
   manifest: {
-    name: '@ax/test-stub-llm-tools',
+    name: '@ax/test-stub-tools',
     version: '0.0.0',
-    registers: ['llm:call', 'tool:list'],
+    registers: ['tool:list'],
     calls: [],
     subscribes: [],
   },
   init({ bus }) {
-    bus.registerService('llm:call', '@ax/test-stub-llm-tools', async () => ({}));
-    bus.registerService('tool:list', '@ax/test-stub-llm-tools', async () => ({
+    bus.registerService('tool:list', '@ax/test-stub-tools', async () => ({
       tools: [],
     }));
   },
@@ -58,7 +57,7 @@ describe('createIpcHttpPlugin', () => {
     const port = await pickFreePort();
     const plugin = createIpcHttpPlugin({ host: '127.0.0.1', port });
     const harness = await createTestHarness({
-      plugins: [createSessionInmemoryPlugin(), stubLlmAndTools, plugin],
+      plugins: [createSessionInmemoryPlugin(), stubTools, plugin],
     });
 
     try {
@@ -85,7 +84,6 @@ describe('createIpcHttpPlugin', () => {
       expect.arrayContaining([
         'session:resolve-token',
         'session:claim-work',
-        'llm:call',
         'tool:list',
       ]),
     );

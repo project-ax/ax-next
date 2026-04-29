@@ -25,7 +25,7 @@ Two layers, in order:
 
 ### Path traversal — none
 
-Request paths route through a fixed in-code map in `@ax/ipc-core/src/dispatcher.ts`: `/llm.call`, `/tool.list`, `/tool.pre-call`, `/tool.execute-host`, `/workspace.commit-notify`, `/session.next-message`, plus three event endpoints. Anything else hits the unknown-path branch and returns 404 with `unknown path: <pathname>`. There is no filesystem lookup keyed off the URL.
+Request paths route through a fixed in-code map in `@ax/ipc-core/src/dispatcher.ts`: `/tool.list`, `/tool.pre-call`, `/tool.execute-host`, `/workspace.commit-notify`, `/session.next-message`, `/session.get-config`, `/conversation.fetch-history`, plus four event endpoints. Anything else hits the unknown-path branch and returns 404 with `unknown path: <pathname>`. There is no filesystem lookup keyed off the URL.
 
 ### Process spawn — none
 
