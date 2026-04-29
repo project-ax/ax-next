@@ -11,8 +11,12 @@ import {
   TooLargeError,
 } from './body.js';
 import { writeJsonError, writeJsonOk } from './response.js';
-import type { HandlerResult, HandlerErr, HandlerOk } from './handlers/types.js';
-import { llmCallHandler } from './handlers/llm-call.js';
+import type {
+  ActionHandler,
+  HandlerResult,
+  HandlerErr,
+  HandlerOk,
+} from './handlers/types.js';
 import { toolPreCallHandler } from './handlers/tool-pre-call.js';
 import { toolExecuteHostHandler } from './handlers/tool-execute-host.js';
 import { toolListHandler } from './handlers/tool-list.js';
@@ -62,9 +66,8 @@ import {
 
 const ACTIONS = new Map<string, {
   method: 'POST';
-  handler: typeof llmCallHandler;
+  handler: ActionHandler;
 }>();
-ACTIONS.set('/llm.call', { method: 'POST', handler: llmCallHandler });
 ACTIONS.set('/tool.pre-call', { method: 'POST', handler: toolPreCallHandler });
 ACTIONS.set('/tool.execute-host', { method: 'POST', handler: toolExecuteHostHandler });
 ACTIONS.set('/tool.list', { method: 'POST', handler: toolListHandler });

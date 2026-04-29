@@ -534,9 +534,8 @@ describe('timeouts', () => {
     expect(Object.isFrozen(IPC_TIMEOUTS_MS)).toBe(true);
   });
 
-  it('IPC_TIMEOUTS_MS has the eight expected keys', () => {
+  it('IPC_TIMEOUTS_MS has the seven expected keys', () => {
     const expected = [
-      'llm.call',
       'tool.pre-call',
       'tool.execute-host',
       'tool.list',
@@ -551,7 +550,6 @@ describe('timeouts', () => {
   it('IpcActionName type is assignable from each key', () => {
     // Type-level check: compile error if the keys do not match.
     const names: IpcActionName[] = [
-      'llm.call',
       'tool.pre-call',
       'tool.execute-host',
       'tool.list',
@@ -560,7 +558,7 @@ describe('timeouts', () => {
       'session.get-config',
       'conversation.fetch-history',
     ];
-    expect(names).toHaveLength(8);
+    expect(names).toHaveLength(7);
   });
 });
 

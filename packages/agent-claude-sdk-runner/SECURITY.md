@@ -12,7 +12,7 @@ This package is the sandbox-side runner that wraps `@anthropic-ai/claude-agent-s
 
 ## `@anthropic-ai/claude-agent-sdk` pin posture
 
-- Current specifier: `0.2.119` (exact-pinned; bump intentional). Matches the discipline in the sibling plugin `@ax/llm-anthropic`, which exact-pins `@anthropic-ai/sdk`. The SDK is pre-1.0 and shipping frequently, so we expect to bump often — but each bump is a deliberate act, not a silent pickup via caret range. Re-run `security-checklist` on every bump.
+- Current specifier: `0.2.119` (exact-pinned; bump intentional). The SDK is pre-1.0 and shipping frequently, so we expect to bump often — but each bump is a deliberate act, not a silent pickup via caret range. Re-run `security-checklist` on every bump.
 - Upgrade procedure: use `pnpm add @anthropic-ai/claude-agent-sdk@<new-exact-version>` in `packages/agent-claude-sdk-runner`, re-run the Week 6.5d acceptance test (`pnpm --filter @ax/cli test claude-sdk-runner`), and re-run `security-checklist` on the new dep tree. A new SDK can bring new built-in tool names — if any escape the sandbox's intent, extend `DISABLED_BUILTINS` in `tool-names.ts` before shipping.
 
 ## Disabled built-ins (why)
@@ -35,10 +35,10 @@ This package is the sandbox-side runner that wraps `@anthropic-ai/claude-agent-s
 
 ## Boundary review
 
-- **Alternate impl this hook could have:** not a new hook — this package consumes existing hooks (`tool.pre-call`, `event.tool-post-call`, `session:claim-work`, `chat:...`). The alternate impl for "run an agent on Anthropic Claude" is `@ax/agent-native-runner`, which ships in the same monorepo and satisfies the same IPC contract without embedding the claude-code CLI.
+- **Alternate impl this hook could have:** not a new hook — this package consumes existing hooks (`tool.pre-call`, `event.tool-post-call`, `session:claim-work`, `chat:...`). An alternate "run an agent on Anthropic Claude" implementation is what the IPC contract is designed for; any future runner that satisfies the same hook surface drops in without changes elsewhere.
 - **Payload field names that might leak:** none new. IPC payload shapes come from `@ax/ipc-protocol`, which is LLM-neutral. We map claude-sdk vocabulary (`PreToolUse`, `PostToolUse`, `mcp__<server>__<tool>`) into the neutral hook shape inside this plugin; the wire bus never sees claude-sdk-specific names.
 - **Subscriber risk:** none — this plugin is mostly a consumer of hooks, not a producer of new ones. The MCP server it exposes is internal to the claude-sdk query() call and not a cross-plugin boundary.
-- **Wire surface:** the env-var contract (exactly one of `AX_PROXY_ENDPOINT` or `AX_PROXY_UNIX_SOCKET` alongside the four vars the native runner already needs) is documented in `env.ts` and carried into the child via the sandbox-provider's fixed env allowlist. No new IPC actions.
+- **Wire surface:** the env-var contract (exactly one of `AX_PROXY_ENDPOINT` or `AX_PROXY_UNIX_SOCKET` alongside `AX_RUNNER_ENDPOINT`, `AX_SESSION_ID`, `AX_AUTH_TOKEN`, and `AX_WORKSPACE_ROOT`) is documented in `env.ts` and carried into the child via the sandbox-provider's fixed env allowlist. No new IPC actions.
 
 ## What we don't know yet
 

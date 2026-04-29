@@ -77,7 +77,6 @@ export function createIpcServerPlugin(): Plugin {
       calls: [
         'session:resolve-token',
         'session:claim-work',
-        'llm:call',
         'tool:list',
       ],
       subscribes: [],

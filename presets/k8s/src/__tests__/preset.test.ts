@@ -45,7 +45,6 @@ const stubConfig: K8sPresetConfig = {
   workspace: { backend: 'local', repoRoot: '/tmp/preset-k8s-stub' },
   sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
   ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
-  anthropic: { model: 'claude-sonnet-4-6' },
   // Override the runner binary so resolution doesn't depend on whether
   // @ax/agent-claude-sdk-runner has been built. The chat-orchestrator
   // plugin doesn't validate this string at factory time — only at first
@@ -120,16 +119,12 @@ describe('@ax/preset-k8s wiring', () => {
         '@ax/eventbus-postgres',
         '@ax/http-server',
         '@ax/ipc-http',
-        '@ax/llm-anthropic',
-        '@ax/llm-proxy-anthropic-format',
         '@ax/mcp-client',
         '@ax/sandbox-k8s',
         '@ax/session-postgres',
         '@ax/storage-postgres',
         '@ax/teams',
-        '@ax/tool-bash',
         '@ax/tool-dispatcher',
-        '@ax/tool-file-io',
         '@ax/workspace-git',
       ].sort(),
     );
@@ -341,7 +336,6 @@ describe('loadK8sConfigFromEnv', () => {
       devBootstrap: { token: 'bootstrap-secret' },
     });
     expect(cfg.sandbox).toBeUndefined();
-    expect(cfg.anthropic).toBeUndefined();
     expect(cfg.chat).toBeUndefined();
   });
 
@@ -400,29 +394,17 @@ describe('loadK8sConfigFromEnv', () => {
     ).toThrowError(/PORT/);
   });
 
-  it('reads anthropic + chat overrides', () => {
+  it('reads chat overrides', () => {
     const cfg = loadK8sConfigFromEnv(
       minRequired({
-        AX_LLM_MODEL: 'claude-sonnet-4-6',
-        AX_LLM_MAX_TOKENS: '4096',
         AX_RUNNER_BINARY: '/opt/ax-next/runner.js',
         AX_CHAT_TIMEOUT_MS: '60000',
       }),
     );
-    expect(cfg.anthropic).toEqual({
-      model: 'claude-sonnet-4-6',
-      maxTokens: 4096,
-    });
     expect(cfg.chat).toEqual({
       runnerBinary: '/opt/ax-next/runner.js',
       chatTimeoutMs: 60000,
     });
-  });
-
-  it('rejects an invalid AX_LLM_MAX_TOKENS', () => {
-    expect(() =>
-      loadK8sConfigFromEnv(minRequired({ AX_LLM_MAX_TOKENS: 'lots' })),
-    ).toThrowError(/AX_LLM_MAX_TOKENS/);
   });
 
   it('rejects an invalid AX_CHAT_TIMEOUT_MS', () => {

@@ -7,12 +7,8 @@ import { createSessionPostgresPlugin } from '@ax/session-postgres';
 import { createWorkspaceGitPlugin } from '@ax/workspace-git';
 import { createWorkspaceGitHttpPlugin } from '@ax/workspace-git-http';
 import { createSandboxK8sPlugin } from '@ax/sandbox-k8s';
-import { createLlmAnthropicPlugin } from '@ax/llm-anthropic';
-import { createLlmProxyAnthropicFormatPlugin } from '@ax/llm-proxy-anthropic-format';
 import { createChatOrchestratorPlugin } from '@ax/chat-orchestrator';
 import { createToolDispatcherPlugin } from '@ax/tool-dispatcher';
-import { createToolBashPlugin } from '@ax/tool-bash';
-import { createToolFileIoPlugin } from '@ax/tool-file-io';
 import { auditLogPlugin } from '@ax/audit-log';
 import { createMcpClientPlugin } from '@ax/mcp-client';
 import { createCredentialProxyPlugin } from '@ax/credential-proxy';
@@ -55,10 +51,12 @@ import { createStaticFilesPlugin } from '@ax/static-files';
 //   3. workspace (versioned content)
 //   4. audit-log (subscribes to chat:end; calls storage:set)
 //   5. http-server / auth / teams (control plane access — Week 9.5)
-//   6. sandbox / ipc-http / llm-proxy / chat-orchestrator (chat plane)
+//   6. sandbox / ipc-http / chat-orchestrator (chat plane)
 //   7. tool-dispatcher → tool descriptors → mcp-client (catalog assembly)
 //   8. agents (admin endpoints + agents:resolve gate)
-//   9. llm-anthropic (last; everything else is in place when init runs)
+//
+// (Host-side LLM plugins were deleted in Phase 6 — the SDK runner reaches
+// Anthropic via the credential-proxy, not through a host `llm:call` hook.)
 // ---------------------------------------------------------------------------
 
 const requireFromPreset = createRequire(import.meta.url);
@@ -195,14 +193,6 @@ export interface K8sPresetConfig {
     hostIpcUrl: string;
   };
   /**
-   * Anthropic LLM config. ANTHROPIC_API_KEY must be in env at plugin init
-   * (the plugin throws otherwise — secrets stay out of the config).
-   */
-  anthropic?: {
-    model?: string;
-    maxTokens?: number;
-  };
-  /**
    * Chat orchestrator overrides. `runnerBinary` defaults to the resolved
    * @ax/agent-claude-sdk-runner; tests/embedders may override it.
    */
@@ -301,10 +291,11 @@ export interface K8sPresetConfig {
  * Build the production plugin list for k8s mode. Pass the result straight to
  * `bootstrap({ bus, plugins, config: {} })` from @ax/core.
  *
- * Note: the runner binary resolution and Anthropic API key both rely on
- * runtime environment (the binary lookup walks node_modules, the API key
- * comes from process.env). That's intentional — secrets and resolved paths
- * are not in the JSON config schema.
+ * Note: the runner binary resolution relies on runtime environment (the
+ * lookup walks node_modules). That's intentional — resolved paths are not
+ * in the JSON config schema. Anthropic credentials live in the credentials
+ * store (admin-seeded via /admin/credentials, Phase 9.5) and are resolved
+ * by the credential-proxy at proxy:open-session time, not at plugin init.
  */
 export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   const plugins: Plugin[] = [];
@@ -509,7 +500,6 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
       port: config.ipc.port ?? 8080,
     }),
   );
-  plugins.push(createLlmProxyAnthropicFormatPlugin());
 
   const orchestratorCfg: Parameters<typeof createChatOrchestratorPlugin>[0] = {
     runnerBinary: config.chat?.runnerBinary ?? defaultRunnerBinary(),
@@ -521,17 +511,17 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   plugins.push(createChatOrchestratorPlugin(orchestratorCfg));
 
   // ----- 7. tool catalog -------------------------------------------------
-  // Dispatcher first — it registers `tool:register` / `tool:list`. The
-  // descriptor-only tool plugins (bash, file-io) call `tool:register` from
-  // their init. mcp-client also calls `tool:register` from init.
+  // Dispatcher first — it registers `tool:register` / `tool:list`. The tool
+  // surface is populated entirely by MCP-registered host tools today;
+  // built-in bash/file-io descriptors are gone (Phase 6 Task 6 removed their
+  // host-side packages — the SDK runner's sandboxed Bash/Read/Write replace
+  // them).
   //
   // mcp-client gets `mountAdminRoutes: true` so /admin/mcp-servers* lands
   // alongside the rest of the admin surface. The flag expands the plugin's
   // manifest `calls` to include http:register-route + auth:require-user;
   // the kernel's topo-sort picks up the new edges automatically.
   plugins.push(createToolDispatcherPlugin());
-  plugins.push(createToolBashPlugin());
-  plugins.push(createToolFileIoPlugin());
   plugins.push(createMcpClientPlugin({ mountAdminRoutes: true }));
 
   // ----- 8. agents -------------------------------------------------------
@@ -542,17 +532,6 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // until both upstream plugins have registered. Reuses the shared
   // postgres pool via `database:get-instance` (no second pool).
   plugins.push(createAgentsPlugin());
-
-  // ----- 9. LLM ----------------------------------------------------------
-  // Throws at init if ANTHROPIC_API_KEY is missing.
-  const anthropicCfg: Parameters<typeof createLlmAnthropicPlugin>[0] = {};
-  if (config.anthropic?.model !== undefined) {
-    anthropicCfg.model = config.anthropic.model;
-  }
-  if (config.anthropic?.maxTokens !== undefined) {
-    anthropicCfg.maxTokens = config.anthropic.maxTokens;
-  }
-  plugins.push(createLlmAnthropicPlugin(anthropicCfg));
 
   return plugins;
 }
@@ -648,13 +627,12 @@ export function workspaceConfigFromEnv(
 //                                  — sandbox-k8s overrides
 //   - BIND_HOST / PORT             — @ax/ipc-http listen address (defaults
 //                                    '0.0.0.0' / 8080)
-//   - AX_LLM_MODEL / AX_LLM_MAX_TOKENS — anthropic config
 //   - AX_RUNNER_BINARY             — chat orchestrator override (tests)
 //   - AX_CHAT_TIMEOUT_MS           — chat orchestrator override
 //   - AX_AUTH_SESSION_LIFETIME_SECONDS — auth session cookie lifetime
 //
-// `ANTHROPIC_API_KEY` and `AX_CREDENTIALS_KEY` are read by the respective
-// plugins themselves at init() time — they don't appear in K8sPresetConfig.
+// `AX_CREDENTIALS_KEY` is read by @ax/credentials at init() time — it
+// doesn't appear in K8sPresetConfig.
 // ---------------------------------------------------------------------------
 
 /**
@@ -700,18 +678,6 @@ export function loadK8sConfigFromEnv(
       throw new Error(`invalid PORT=${env.PORT}; expected a positive integer`);
     }
     ipc.port = portNum;
-  }
-
-  const anthropic: NonNullable<K8sPresetConfig['anthropic']> = {};
-  if (env.AX_LLM_MODEL !== undefined && env.AX_LLM_MODEL !== '') {
-    anthropic.model = env.AX_LLM_MODEL;
-  }
-  if (env.AX_LLM_MAX_TOKENS !== undefined && env.AX_LLM_MAX_TOKENS !== '') {
-    const n = Number(env.AX_LLM_MAX_TOKENS);
-    if (!Number.isFinite(n) || n <= 0) {
-      throw new Error(`invalid AX_LLM_MAX_TOKENS=${env.AX_LLM_MAX_TOKENS}; expected a positive integer`);
-    }
-    anthropic.maxTokens = n;
   }
 
   const chat: NonNullable<K8sPresetConfig['chat']> = {};
@@ -829,7 +795,6 @@ export function loadK8sConfigFromEnv(
     auth,
   };
   if (Object.keys(sandbox).length > 0) config.sandbox = sandbox;
-  if (Object.keys(anthropic).length > 0) config.anthropic = anthropic;
   if (Object.keys(chat).length > 0) config.chat = chat;
   if (env.AX_PROXY_SOCKET_PATH !== undefined && env.AX_PROXY_SOCKET_PATH !== '') {
     config.credentialProxy = { socketPath: env.AX_PROXY_SOCKET_PATH };

@@ -73,6 +73,16 @@ function buildMocks(opts: {
   openSession?: ServiceHandler;
   queueWork?: ServiceHandler;
   agentsResolve?: ServiceHandler;
+  /**
+   * Phase 6: credential-proxy is mandatory — the orchestrator now refuses
+   * to open a sandbox if neither `proxy:open-session` nor `proxy:close-
+   * session` is registered, returning `proxy-not-loaded`. To keep tests
+   * that exercise the fresh-sandbox path working without forcing every
+   * caller to wire `buildProxyHooks()`, we register trivial proxy stubs
+   * by default. Tests that specifically want to assert the missing-proxy
+   * gate set `omitProxyStubs: true` to exclude them.
+   */
+  omitProxyStubs?: boolean;
 } = {}): MockBundle {
   const calls = {
     sessionQueueWork: 0,
@@ -146,6 +156,18 @@ function buildMocks(opts: {
       };
     },
   };
+  // Phase 6: credential-proxy mandatory. Stub both proxy hooks by default
+  // so fresh-sandbox tests reach the sandbox layer; tests that assert the
+  // gate (`proxy-not-loaded`, `proxy-hooks-misconfigured`) opt out via
+  // `omitProxyStubs: true` and register only what they need.
+  if (opts.omitProxyStubs !== true) {
+    services['proxy:open-session'] = async () => ({
+      proxyEndpoint: 'tcp://127.0.0.1:54321',
+      caCertPem: 'TEST-CA-PEM',
+      envMap: {},
+    });
+    services['proxy:close-session'] = async () => ({});
+  }
   return {
     services,
     calls,
@@ -993,7 +1015,7 @@ describe('chat-orchestrator', () => {
     // on every invoke. We refuse to enable proxy mode in that case and
     // surface a clear `proxy-hooks-misconfigured` outcome so audit-log
     // and operators see the misconfiguration immediately.
-    const mocks = buildMocks();
+    const mocks = buildMocks({ omitProxyStubs: true });
     // Register ONLY proxy:open-session, NOT proxy:close-session.
     mocks.services['proxy:open-session'] = async () => ({
       proxyEndpoint: 'tcp://127.0.0.1:1',
@@ -1027,56 +1049,97 @@ describe('chat-orchestrator', () => {
     expect(endFires).toHaveLength(1);
   });
 
-  it('skips the proxy lifecycle when proxy:open-session is not registered', async () => {
-    // Default mocks (no proxy hooks) — bus.hasService('proxy:open-session')
-    // returns false. The orchestrator must NOT throw and the sandbox call
-    // sees no proxyConfig.
-    let busRef: HookBus | null = null;
-    const mocks = buildMocks({
-      openSession: async (ctx, input: unknown) => {
-        const sessionId = (input as { sessionId: string }).sessionId;
-        const originatingReqId = ctx.reqId;
-        setImmediate(() => {
-          void busRef!.fire(
-            'chat:end',
-            makeAgentContext({
-              sessionId,
-              agentId: 'a',
-              userId: 'u',
-              reqId: originatingReqId,
-              logger: createLogger({ reqId: originatingReqId, writer: () => undefined }),
-            }),
-            { outcome: { kind: 'complete', messages: [] } },
-          );
-        });
-        return {
-          runnerEndpoint: 'unix:///tmp/x.sock',
-          handle: {
-            kill: async () => undefined,
-            exited: new Promise(() => undefined),
-          },
-        };
-      },
-    });
+  it('terminates with proxy-not-loaded when neither proxy hook is registered', async () => {
+    // Phase 6 made @ax/credential-proxy mandatory. With both proxy hooks
+    // missing, the orchestrator MUST refuse to open a sandbox at all and
+    // surface a structured `proxy-not-loaded` outcome at agent:invoke time
+    // — proceeding would force real credentials into the sandbox env (I1)
+    // and the runner would fail at boot anyway with a worse error path.
+    //
+    // I7: this exit fires BEFORE proxyOpened can be set, so proxy:close-
+    //     session must NOT be called. We register a close-only spy below
+    //     and assert it was never invoked.
+    // I18: distinct from `proxy-hooks-misconfigured` (skewed open/close).
+    const mocks = buildMocks({ omitProxyStubs: true });
+    // Register a close-only spy. open-session stays unregistered — that's
+    // the gate's trigger. If the orchestrator wrongly tried to close, the
+    // spy would catch it.
+    let proxyCloseCalls = 0;
+    mocks.services['proxy:close-session'] = async () => {
+      proxyCloseCalls += 1;
+      return {};
+    };
+    const endFires: AgentOutcome[] = [];
+
     const h = await createTestHarness({
       services: mocks.services,
       plugins: [
         createChatOrchestratorPlugin({
           runnerBinary: '/irrelevant',
-          chatTimeoutMs: 5_000,
+          chatTimeoutMs: 1_000,
         }),
       ],
     });
-    busRef = h.bus;
+    h.bus.subscribe('chat:end', 'obs', async (_ctx, p: unknown) => {
+      endFires.push((p as { outcome: AgentOutcome }).outcome);
+      return undefined;
+    });
 
     const outcome = await h.bus.call<unknown, AgentOutcome>(
       'agent:invoke',
       silentCtx('proxy-not-loaded'),
       { message: { role: 'user', content: 'hi' } },
     );
-    expect(outcome.kind).toBe('complete');
-    const sb = mocks.calls.lastSandboxInput as { proxyConfig?: unknown };
-    expect(sb.proxyConfig).toBeUndefined();
+
+    // First, the orchestrator should have hit the open/close skew gate
+    // (open missing, close present) and returned `proxy-hooks-misconfigured`
+    // — NOT `proxy-not-loaded`. Both diagnostics are valid, but the skew
+    // path is checked first. So we re-run with neither hook registered to
+    // assert the `proxy-not-loaded` path specifically.
+    expect(outcome.kind).toBe('terminated');
+    if (outcome.kind === 'terminated') {
+      expect(outcome.reason).toBe('proxy-hooks-misconfigured');
+    }
+    expect(proxyCloseCalls).toBe(0); // I7 — close never called
+    expect(mocks.calls.sandboxOpen).toBe(0);
+    expect(endFires).toHaveLength(1); // I1
+
+    // Now the actual `proxy-not-loaded` case: drop the close-only spy too.
+    delete mocks.services['proxy:close-session'];
+    proxyCloseCalls = 0;
+    endFires.length = 0;
+
+    const h2 = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinary: '/irrelevant',
+          chatTimeoutMs: 1_000,
+        }),
+      ],
+    });
+    h2.bus.subscribe('chat:end', 'obs', async (_ctx, p: unknown) => {
+      endFires.push((p as { outcome: AgentOutcome }).outcome);
+      return undefined;
+    });
+
+    const outcome2 = await h2.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('proxy-not-loaded'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome2.kind).toBe('terminated');
+    if (outcome2.kind === 'terminated') {
+      expect(outcome2.reason).toBe('proxy-not-loaded');
+      // I18: the new outcome is distinct from skew-misconfigured.
+      expect(outcome2.reason).not.toBe('proxy-hooks-misconfigured');
+    }
+    // I7: sandbox never opened, so proxyOpened never set, so nothing to close.
+    // (proxyCloseCalls is structurally zero here — no spy registered at all
+    // means a stray close call would throw NoServiceError, even stronger.)
+    expect(mocks.calls.sandboxOpen).toBe(0);
+    // I1: chat:end fires exactly once on this exit path.
+    expect(endFires).toHaveLength(1);
   });
 
   // ---------------------------------------------------------------------

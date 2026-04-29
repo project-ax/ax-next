@@ -1,25 +1,17 @@
 ---
 "@ax/agent-claude-sdk-runner": minor
-"@ax/llm-proxy-anthropic-format": minor
 "@ax/cli": minor
 "@ax/sandbox-subprocess": minor
 "@ax/test-harness": minor
-"@ax/agent-native-runner": patch
 "@ax/agent-runner-core": patch
 "@ax/audit-log": patch
 "@ax/chat-orchestrator": patch
 "@ax/core": patch
 "@ax/ipc-protocol": patch
 "@ax/ipc-server": patch
-"@ax/llm-anthropic": patch
-"@ax/llm-mock": patch
 "@ax/session-inmemory": patch
 "@ax/storage-sqlite": patch
-"@ax/tool-bash": patch
-"@ax/tool-bash-impl": patch
 "@ax/tool-dispatcher": patch
-"@ax/tool-file-io": patch
-"@ax/tool-file-io-impl": patch
 ---
 
 Week 6.5d — claude-sdk runner + Anthropic-format proxy. Swap `runner: 'claude-sdk'` in `ax.config` to route the sandbox through `@anthropic-ai/claude-agent-sdk`; LLM traffic flows via a host-side Anthropic-format proxy → `llm:call`, keeping API keys host-side and firing existing `tool:pre-call` / `tool:post-call` subscribers for both built-in and MCP host tools.

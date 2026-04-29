@@ -9,7 +9,6 @@
  * The keyset is the authoritative list of sandbox→host action names.
  */
 export const IPC_TIMEOUTS_MS = Object.freeze({
-  'llm.call': 5 * 60_000,
   'tool.pre-call': 10_000,
   'tool.execute-host': 30_000,
   'tool.list': 5_000,

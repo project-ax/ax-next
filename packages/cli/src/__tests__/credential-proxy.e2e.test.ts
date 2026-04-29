@@ -78,11 +78,10 @@ describe.skipIf(skip)('credential-proxy e2e (real Anthropic API)', () => {
     originalCredKey = process.env.AX_CREDENTIALS_KEY;
     process.env.AX_CREDENTIALS_KEY = '42'.repeat(32);
     originalAnthropicKey = process.env.ANTHROPIC_API_KEY;
-    // The llm-anthropic plugin's init requires this; the credential-proxy
-    // path doesn't actually use it (the runner reads the placeholder from
-    // process.env.ANTHROPIC_API_KEY which sandbox-subprocess inject from
-    // the proxy:open-session envMap). We set a fake here just to satisfy
-    // init().
+    // The credential-proxy path doesn't read this — the runner gets the
+    // placeholder from process.env.ANTHROPIC_API_KEY which sandbox-subprocess
+    // injects from the proxy:open-session envMap. We set a fake here to keep
+    // any leftover ambient env from the host shell out of the way.
     process.env.ANTHROPIC_API_KEY = 'sk-ant-fake-for-init';
   });
 
@@ -139,19 +138,16 @@ describe.skipIf(skip)('credential-proxy e2e (real Anthropic API)', () => {
         },
       };
 
-      // 3. Run agent:invoke. cfg.llm = 'anthropic' → CLI loads
-      //    @ax/credential-proxy → orchestrator opens proxy:open-session
-      //    → sandbox-subprocess injects HTTPS_PROXY + the placeholder
-      //    → runner calls api.anthropic.com → proxy substitutes the real
-      //    key → response flows back.
+      // 3. Run agent:invoke. The CLI always loads @ax/credential-proxy now
+      //    (Phase 6 removed the cfg.llm switch) → orchestrator opens
+      //    proxy:open-session → sandbox-subprocess injects HTTPS_PROXY +
+      //    the placeholder → runner calls api.anthropic.com → proxy
+      //    substitutes the real key → response flows back.
       const stdoutLines: string[] = [];
       const stderrLines: string[] = [];
       const rc = await main({
         message: 'reply with the single word PONG and nothing else',
         configOverride: {
-          llm: 'anthropic',
-          runner: 'claude-sdk',
-          tools: [],
           sandbox: 'subprocess',
           storage: 'sqlite',
         },

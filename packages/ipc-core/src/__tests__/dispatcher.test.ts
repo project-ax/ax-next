@@ -2,12 +2,9 @@ import * as http from 'node:http';
 import { promises as fsp } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { describe, it, expect, afterEach, vi } from 'vitest';
-import { PluginError, reject } from '@ax/core';
+import { describe, it, expect, afterEach } from 'vitest';
+import { reject } from '@ax/core';
 import type {
-  AgentMessage,
-  LlmCallRequest,
-  LlmCallResponse,
   ToolCall,
   ToolDescriptor,
 } from '@ax/ipc-protocol';
@@ -153,152 +150,6 @@ describe('dispatcher', () => {
   afterEach(async () => {
     for (const s of setups) await s.cleanup();
     setups.length = 0;
-  });
-
-  // -------------------------------------------------------------------------
-  // /llm.call
-  // -------------------------------------------------------------------------
-
-  it('POST /llm.call — happy path (mock llm:call echoes response)', async () => {
-    const canned: LlmCallResponse = {
-      assistantMessage: { role: 'assistant', content: 'hello' },
-      toolCalls: [],
-      stopReason: 'end_turn',
-    };
-    const s = await setup({
-      services: {
-        'llm:call': async () => canned,
-      },
-    });
-    setups.push(s);
-    const req: LlmCallRequest = {
-      messages: [{ role: 'user', content: 'hi' }],
-    };
-    const res = await doRequest(s.socketPath, 'POST', '/llm.call', s.token, JSON.stringify(req));
-    expect(res.status).toBe(200);
-    expect(JSON.parse(res.body)).toEqual(canned);
-  });
-
-  it('POST /llm.call — llm:pre-call subscriber modifies the request', async () => {
-    // The pre-call subscriber injects a system message; we assert the
-    // mock llm:call saw the modified request.
-    let seen: LlmCallRequest | null = null;
-    const s = await setup({
-      services: {
-        'llm:call': async (_ctx, input) => {
-          seen = input as LlmCallRequest;
-          return {
-            assistantMessage: { role: 'assistant', content: 'ok' },
-            toolCalls: [],
-          };
-        },
-      },
-      subscribers: [
-        {
-          hook: 'llm:pre-call',
-          handler: async (_ctx, payload) => {
-            const req = payload as LlmCallRequest;
-            return {
-              ...req,
-              messages: [
-                { role: 'system', content: 'be brief' } as AgentMessage,
-                ...req.messages,
-              ],
-            };
-          },
-        },
-      ],
-    });
-    setups.push(s);
-    const req: LlmCallRequest = { messages: [{ role: 'user', content: 'hi' }] };
-    const res = await doRequest(s.socketPath, 'POST', '/llm.call', s.token, JSON.stringify(req));
-    expect(res.status).toBe(200);
-    expect(seen).not.toBeNull();
-    expect(seen!.messages[0]).toEqual({ role: 'system', content: 'be brief' });
-    expect(seen!.messages[1]).toEqual({ role: 'user', content: 'hi' });
-  });
-
-  it('POST /llm.call — llm:pre-call rejection → 409 HOOK_REJECTED', async () => {
-    const s = await setup({
-      services: {
-        'llm:call': async () => ({
-          assistantMessage: { role: 'assistant', content: '' },
-          toolCalls: [],
-        }),
-      },
-      subscribers: [
-        {
-          hook: 'llm:pre-call',
-          handler: async () => reject({ reason: 'policy veto' }),
-        },
-      ],
-    });
-    setups.push(s);
-    const res = await doRequest(
-      s.socketPath,
-      'POST',
-      '/llm.call',
-      s.token,
-      JSON.stringify({ messages: [{ role: 'user', content: 'hi' }] }),
-    );
-    expect(res.status).toBe(409);
-    const parsed = JSON.parse(res.body);
-    expect(parsed.error.code).toBe('HOOK_REJECTED');
-    expect(parsed.error.message).toContain('policy veto');
-  });
-
-  it('POST /llm.call — llm:call throws PluginError → 500 INTERNAL (sanitized)', async () => {
-    // Spy on ctx.logger.error by wiring a custom stderr-less logger via the
-    // harness ctx override. But we actually want to assert that the
-    // sanitized message reaches the client AND the real message is logged.
-    // The listener's makeAgentContext creates its own logger per-request —
-    // we observe the wire response is sanitized here.
-    const thrown = new PluginError({
-      code: 'unknown',
-      plugin: 'llm-fake',
-      hookName: 'llm:call',
-      message: 'upstream exploded with secret details',
-    });
-    const s = await setup({
-      services: {
-        'llm:call': async () => {
-          throw thrown;
-        },
-      },
-    });
-    setups.push(s);
-    // Swallow listener's unhandled-error stderr writer so test output stays clean.
-    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    try {
-      // Also swallow the dispatcher's structured logger (stdout JSON).
-      const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
-      try {
-        const res = await doRequest(
-          s.socketPath,
-          'POST',
-          '/llm.call',
-          s.token,
-          JSON.stringify({ messages: [{ role: 'user', content: 'hi' }] }),
-        );
-        expect(res.status).toBe(500);
-        const parsed = JSON.parse(res.body);
-        expect(parsed.error.code).toBe('INTERNAL');
-        expect(parsed.error.message).toBe('internal server error');
-        // Wire response must NOT contain the upstream's detailed message.
-        expect(res.body).not.toContain('secret details');
-        // The logger should have recorded the detailed error at error level.
-        const loggedLines = stdoutSpy.mock.calls
-          .map((c) => String(c[0]))
-          .filter((l) => l.includes('ipc_dispatch_internal_error'));
-        expect(loggedLines.length).toBeGreaterThanOrEqual(1);
-        // The structured log contains the real message.
-        expect(loggedLines.some((l) => l.includes('secret details'))).toBe(true);
-      } finally {
-        stdoutSpy.mockRestore();
-      }
-    } finally {
-      stderrSpy.mockRestore();
-    }
   });
 
   // -------------------------------------------------------------------------
@@ -792,18 +643,15 @@ describe('dispatcher', () => {
 
   it('per-request AgentContext carries workspaceRoot from auth, not listener default', async () => {
     // Register a handler that inspects ctx.workspace.rootPath via the mock
-    // llm:call service hook; whichever workspace the auth result carried is
+    // tool:list service hook; whichever workspace the auth result carried is
     // what the dispatcher should hand to handlers.
     let seenWorkspace: string | null = null;
     const s = await setup({
       services: {
-        'llm:call': async (ctx) => {
+        'tool:list': async (ctx) => {
           // @ts-expect-error ctx is typed as unknown in the services helper
           seenWorkspace = ctx.workspace.rootPath;
-          return {
-            assistantMessage: { role: 'assistant', content: 'ok' },
-            toolCalls: [],
-          };
+          return { tools: [] };
         },
       },
     });
@@ -813,9 +661,9 @@ describe('dispatcher', () => {
     const res = await doRequest(
       s.socketPath,
       'POST',
-      '/llm.call',
+      '/tool.list',
       s.token,
-      JSON.stringify({ messages: [{ role: 'user', content: 'hi' }] }),
+      '{}',
     );
     expect(res.status).toBe(200);
     expect(seenWorkspace).toBe('/tmp/ws');

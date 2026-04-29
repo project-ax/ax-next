@@ -21,8 +21,7 @@ We're a nervous crab. Don't ship without doing this.
 ```bash
 # 1. Build the runner image
 #    Dockerfile.agent is a follow-up PR — bring your own image OR build a
-#    minimal one that bundles both runner binaries:
-#      @ax/agent-native-runner       → /opt/ax-next/agent-native-runner.js
+#    minimal one that bundles the runner binary:
 #      @ax/agent-claude-sdk-runner   → /opt/ax-next/agent-claude-sdk-runner.js
 docker build -t ax-next/agent:dev -f deploy/Dockerfile.agent .
 
@@ -140,7 +139,7 @@ Same procedure as kind, but:
   created, connects back over HTTP, and returns.
 
 - **`Dockerfile.agent` is not in this PR.** Pre-build any image bundling the
-  two runner binaries; the chart only consumes it.
+  Claude SDK runner binary; the chart only consumes it.
 
 - **The embedded postgres** uses Bitnami's chart at version `16.7.27`. Bitnami
   recently moved many images from `bitnami/*` to `bitnamilegacy/*`. If image

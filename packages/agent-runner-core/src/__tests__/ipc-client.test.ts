@@ -86,44 +86,6 @@ describe('createIpcClient', () => {
     servers.length = 0;
   });
 
-  it('call(llm.call): round-trips request and parses LlmCallResponse', async () => {
-    const server = await startFakeServer();
-    servers.push(server);
-    let seenPath: string | undefined;
-    let seenAuth: string | undefined;
-    let seenBody: string | undefined;
-    server.setHandler(async (req, res) => {
-      seenPath = req.url;
-      seenAuth = req.headers.authorization;
-      seenBody = await readBody(req);
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(
-        JSON.stringify({
-          assistantMessage: { role: 'assistant', content: 'hi back' },
-          toolCalls: [],
-          stopReason: 'end_turn',
-        }),
-      );
-    });
-    const client = createIpcClient({
-      runnerEndpoint: `unix://${server.socketPath}`,
-      token: 'tok-abc',
-    });
-    const result = await client.call('llm.call', {
-      messages: [{ role: 'user', content: 'hi' }],
-    });
-    expect(seenPath).toBe('/llm.call');
-    expect(seenAuth).toBe('Bearer tok-abc');
-    expect(seenBody).toBeDefined();
-    expect(JSON.parse(seenBody!)).toEqual({
-      messages: [{ role: 'user', content: 'hi' }],
-    });
-    expect(result).toMatchObject({
-      assistantMessage: { role: 'assistant', content: 'hi back' },
-      toolCalls: [],
-    });
-  });
-
   it('throws SessionInvalidError on 401', async () => {
     const server = await startFakeServer();
     servers.push(server);
