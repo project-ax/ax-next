@@ -10,7 +10,6 @@
 "@ax/ipc-server": patch
 "@ax/session-inmemory": patch
 "@ax/storage-sqlite": patch
-"@ax/tool-dispatcher": patch
 ---
 
 Week 6.5d — claude-sdk runner + Anthropic-format proxy. Swap `runner: 'claude-sdk'` in `ax.config` to route the sandbox through `@anthropic-ai/claude-agent-sdk`; LLM traffic flows via a host-side Anthropic-format proxy → `llm:call`, keeping API keys host-side and firing existing `tool:pre-call` / `tool:post-call` subscribers for both built-in and MCP host tools.

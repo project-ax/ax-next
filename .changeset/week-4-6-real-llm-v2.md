@@ -1,7 +1,6 @@
 ---
 "@ax/core": minor
 "@ax/sandbox-subprocess": minor
-"@ax/tool-dispatcher": minor
 "@ax/cli": minor
 ---
 

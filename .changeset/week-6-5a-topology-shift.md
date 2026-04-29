@@ -2,7 +2,6 @@
 "@ax/core": minor
 "@ax/cli": minor
 "@ax/sandbox-subprocess": minor
-"@ax/tool-dispatcher": minor
 "@ax/test-harness": patch
 "@ax/ipc-protocol": minor
 "@ax/ipc-server": minor
