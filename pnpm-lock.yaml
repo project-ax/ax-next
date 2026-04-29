@@ -358,6 +358,9 @@ importers:
       '@ax/credentials':
         specifier: workspace:*
         version: link:../credentials
+      '@ax/credentials-anthropic-oauth':
+        specifier: workspace:*
+        version: link:../credentials-anthropic-oauth
       '@ax/credentials-store-db':
         specifier: workspace:*
         version: link:../credentials-store-db
@@ -532,6 +535,22 @@ importers:
       '@ax/credentials-store-db':
         specifier: workspace:*
         version: link:../credentials-store-db
+      '@types/node':
+        specifier: ^25.6.0
+        version: 25.6.0
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^4.1.4
+        version: 4.1.5(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(jsdom@26.1.0)(vite@8.0.10(@types/node@25.6.0)(yaml@2.8.3))
+
+  packages/credentials-anthropic-oauth:
+    dependencies:
+      '@ax/core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
       '@types/node':
         specifier: ^25.6.0
         version: 25.6.0
@@ -1349,6 +1368,9 @@ importers:
       '@ax/credentials':
         specifier: workspace:*
         version: link:../../packages/credentials
+      '@ax/credentials-anthropic-oauth':
+        specifier: workspace:*
+        version: link:../../packages/credentials-anthropic-oauth
       '@ax/credentials-store-db':
         specifier: workspace:*
         version: link:../../packages/credentials-store-db

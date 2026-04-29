@@ -673,7 +673,9 @@ describe('chat-orchestrator', () => {
   interface ProxyHookState {
     openCalls: number;
     closeCalls: number;
+    rotateCalls: number;
     lastOpenInput: unknown;
+    lastRotateInput: unknown;
   }
   function buildProxyHooks(opts: {
     openOutput?: {
@@ -682,11 +684,17 @@ describe('chat-orchestrator', () => {
       envMap: Record<string, string>;
     };
     openThrows?: Error;
+    /** When true, `proxy:rotate-session` is also registered (Phase 3 I10). */
+    includeRotate?: boolean;
+    /** When set, `proxy:rotate-session` rejects with this error each time. */
+    rotateThrows?: Error;
   } = {}): { state: ProxyHookState; services: Record<string, ServiceHandler> } {
     const state: ProxyHookState = {
       openCalls: 0,
       closeCalls: 0,
+      rotateCalls: 0,
       lastOpenInput: undefined,
+      lastRotateInput: undefined,
     };
     const services: Record<string, ServiceHandler> = {
       'proxy:open-session': async (_ctx, input) => {
@@ -706,6 +714,14 @@ describe('chat-orchestrator', () => {
         return {};
       },
     };
+    if (opts.includeRotate) {
+      services['proxy:rotate-session'] = async (_ctx, input) => {
+        state.rotateCalls += 1;
+        state.lastRotateInput = input;
+        if (opts.rotateThrows !== undefined) throw opts.rotateThrows;
+        return { envMap: { ANTHROPIC_API_KEY: 'ax-cred:0123' } };
+      };
+    }
     return { state, services };
   }
 
@@ -1061,6 +1077,239 @@ describe('chat-orchestrator', () => {
     expect(outcome.kind).toBe('complete');
     const sb = mocks.calls.lastSandboxInput as { proxyConfig?: unknown };
     expect(sb.proxyConfig).toBeUndefined();
+  });
+
+  // ---------------------------------------------------------------------
+  // Phase 3 — proxy:rotate-session at turn boundaries (I10, I11)
+  //
+  // OAuth sessions need to pick up refreshed tokens between internal turns
+  // (model→tool→model→tool). The orchestrator subscribes to chat:turn-end
+  // and fires proxy:rotate-session for sessions whose agent has at least
+  // one credential with kind != 'api-key'. api-key-only sessions skip the
+  // rotation entirely (Phase 2 coarse mode is unchanged).
+  // ---------------------------------------------------------------------
+
+  function fireTurnEndAndChatEnd(
+    busRef: { current: HookBus | null },
+    sessionId: string,
+    originatingReqId: string,
+  ): void {
+    setImmediate(() => {
+      const turnCtx = makeAgentContext({
+        sessionId,
+        agentId: 'a',
+        userId: 'u',
+        reqId: originatingReqId,
+        logger: createLogger({ reqId: originatingReqId, writer: () => undefined }),
+      });
+      void busRef
+        .current!.fire('chat:turn-end', turnCtx, {})
+        .then(() =>
+          busRef.current!.fire('chat:end', turnCtx, {
+            outcome: { kind: 'complete', messages: [] },
+          }),
+        );
+    });
+  }
+
+  it('fires proxy:rotate-session at chat:turn-end for OAuth sessions (I10)', async () => {
+    const proxy = buildProxyHooks({ includeRotate: true });
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: {
+            CLAUDE_CODE_OAUTH_TOKEN: {
+              ref: 'anthropic-personal',
+              kind: 'anthropic-oauth',
+            },
+          },
+        },
+      }),
+      openSession: async (ctx, input: unknown) => {
+        const sessionId = (input as { sessionId: string }).sessionId;
+        fireTurnEndAndChatEnd(busRef, sessionId, ctx.reqId);
+        return {
+          runnerEndpoint: 'unix:///tmp/x.sock',
+          handle: {
+            kill: async () => undefined,
+            exited: new Promise(() => undefined),
+          },
+        };
+      },
+    });
+    Object.assign(mocks.services, proxy.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinary: '/irrelevant',
+          chatTimeoutMs: 5_000,
+        }),
+      ],
+    });
+    busRef.current = h.bus;
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('rotate-oauth-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+    expect(proxy.state.rotateCalls).toBe(1);
+    expect((proxy.state.lastRotateInput as { sessionId?: string }).sessionId).toBe(
+      'rotate-oauth-session',
+    );
+  });
+
+  it('does NOT fire proxy:rotate-session for api-key-only sessions', async () => {
+    const proxy = buildProxyHooks({ includeRotate: true });
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: {
+            ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' },
+          },
+        },
+      }),
+      openSession: async (ctx, input: unknown) => {
+        const sessionId = (input as { sessionId: string }).sessionId;
+        fireTurnEndAndChatEnd(busRef, sessionId, ctx.reqId);
+        return {
+          runnerEndpoint: 'unix:///tmp/x.sock',
+          handle: {
+            kill: async () => undefined,
+            exited: new Promise(() => undefined),
+          },
+        };
+      },
+    });
+    Object.assign(mocks.services, proxy.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinary: '/irrelevant',
+          chatTimeoutMs: 5_000,
+        }),
+      ],
+    });
+    busRef.current = h.bus;
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('apikey-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+    expect(proxy.state.rotateCalls).toBe(0);
+  });
+
+  it('survives proxy:rotate-session failure without aborting the chat', async () => {
+    // I10 says rotate is fire-and-forget; a failing rotate must not surface
+    // as a chat termination. The chat completes normally; the warning lives
+    // in logs (we don't capture them in this test).
+    const proxy = buildProxyHooks({
+      includeRotate: true,
+      rotateThrows: new Error('simulated rotate failure'),
+    });
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: {
+            CLAUDE_CODE_OAUTH_TOKEN: {
+              ref: 'anthropic-personal',
+              kind: 'anthropic-oauth',
+            },
+          },
+        },
+      }),
+      openSession: async (ctx, input: unknown) => {
+        const sessionId = (input as { sessionId: string }).sessionId;
+        fireTurnEndAndChatEnd(busRef, sessionId, ctx.reqId);
+        return {
+          runnerEndpoint: 'unix:///tmp/x.sock',
+          handle: {
+            kill: async () => undefined,
+            exited: new Promise(() => undefined),
+          },
+        };
+      },
+    });
+    Object.assign(mocks.services, proxy.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinary: '/irrelevant',
+          chatTimeoutMs: 5_000,
+        }),
+      ],
+    });
+    busRef.current = h.bus;
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('rotate-fails-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+    expect(proxy.state.rotateCalls).toBe(1);
+  });
+
+  it('does NOT fire proxy:rotate-session when the hook is not registered', async () => {
+    // OAuth credential present but proxy:rotate-session is not loaded —
+    // orchestrator must skip cleanly (Phase 2 coarse-mode behavior).
+    const proxy = buildProxyHooks({ includeRotate: false });
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: {
+            CLAUDE_CODE_OAUTH_TOKEN: {
+              ref: 'anthropic-personal',
+              kind: 'anthropic-oauth',
+            },
+          },
+        },
+      }),
+      openSession: async (ctx, input: unknown) => {
+        const sessionId = (input as { sessionId: string }).sessionId;
+        fireTurnEndAndChatEnd(busRef, sessionId, ctx.reqId);
+        return {
+          runnerEndpoint: 'unix:///tmp/x.sock',
+          handle: {
+            kill: async () => undefined,
+            exited: new Promise(() => undefined),
+          },
+        };
+      },
+    });
+    Object.assign(mocks.services, proxy.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinary: '/irrelevant',
+          chatTimeoutMs: 5_000,
+        }),
+      ],
+    });
+    busRef.current = h.bus;
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('no-rotate-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+    expect(proxy.state.rotateCalls).toBe(0);
   });
 
   it('multiple concurrent agent:invokes with different sessionIds do not cross-contaminate', async () => {

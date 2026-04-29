@@ -96,19 +96,22 @@ async function resolveCredentials(
 ): Promise<Record<string, string>> {
   const out: Record<string, string> = {};
   if (refs === undefined) return out;
-  for (const [name, id] of Object.entries(refs)) {
+  // Phase 3 shape: credentials:get takes ({ ref, userId }) and returns string.
+  // userId comes from the agent context — MCP servers run on behalf of the
+  // owning agent's user, never on behalf of "the system."
+  for (const [name, ref] of Object.entries(refs)) {
     try {
-      const res = await bus.call<{ id: string }, { value: string }>(
+      const value = await bus.call<{ ref: string; userId: string }, string>(
         'credentials:get',
         ctx,
-        { id },
+        { ref, userId: ctx.userId },
       );
-      out[name] = res.value;
+      out[name] = value;
     } catch (err) {
       throw new PluginError({
         code: 'credential-resolution-failed',
         plugin: PLUGIN_NAME,
-        message: `failed to resolve credential ref '${name}' (id '${id}')`,
+        message: `failed to resolve credential ref '${name}' (ref '${ref}')`,
         cause: err instanceof Error ? err : undefined,
       });
     }

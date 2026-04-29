@@ -28,6 +28,7 @@
     { "path": "../../packages/credential-proxy" },
     { "path": "../../packages/credentials" },
     { "path": "../../packages/credentials-store-db" },
+    { "path": "../../packages/credentials-anthropic-oauth" },
     { "path": "../../packages/ipc-http" },
     { "path": "../../packages/agents" },
     { "path": "../../packages/http-server" },

@@ -50,6 +50,7 @@ import { createCredentialProxyPlugin, type HttpEgressEvent } from '../plugin.js'
  */
 function memCredentialsPlugin(): Plugin {
   const store = new Map<string, string>();
+  const k = (userId: string, ref: string): string => `${userId}:${ref}`;
   return {
     manifest: {
       name: '@test/mem-credentials',
@@ -59,20 +60,20 @@ function memCredentialsPlugin(): Plugin {
       subscribes: [],
     },
     init({ bus }) {
-      bus.registerService<{ id: string; value: string }, void>(
+      bus.registerService<{ ref: string; userId: string; value: string }, void>(
         'credentials:set',
         '@test/mem-credentials',
-        async (_ctx, { id, value }) => {
-          store.set(id, value);
+        async (_ctx, { ref, userId, value }) => {
+          store.set(k(userId, ref), value);
         },
       );
-      bus.registerService<{ id: string }, { value: string }>(
+      bus.registerService<{ ref: string; userId: string }, string>(
         'credentials:get',
         '@test/mem-credentials',
-        async (_ctx, { id }) => {
-          const value = store.get(id);
-          if (value === undefined) throw new Error(`no such credential: ${id}`);
-          return { value };
+        async (_ctx, { ref, userId }) => {
+          const value = store.get(k(userId, ref));
+          if (value === undefined) throw new Error(`no such credential: ${userId}:${ref}`);
+          return value;
         },
       );
     },
@@ -231,7 +232,8 @@ describe('credential-proxy acceptance (Phase 1a Task 12)', () => {
 
       // 3. Stash the real secret in the in-memory credentials store.
       await bus.call('credentials:set', ctx(), {
-        id: 'anthropic',
+        ref: 'anthropic',
+        userId: 'acceptance-u1',
         value: 'sk-real-secret',
       });
 

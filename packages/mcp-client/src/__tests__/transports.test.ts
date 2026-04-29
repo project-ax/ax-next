@@ -15,35 +15,35 @@ import type { McpServerConfig } from '../config.js';
 
 // Build a bus stub whose only service is `credentials:get`. We don't go through
 // the real HookBus here — this lets us assert exact call counts and arguments
-// without spinning up a full plugin host.
+// without spinning up a full plugin host. Phase 3 shape: ({ ref, userId }) → string.
 function makeCredsBus(
   secrets: Record<string, string>,
   opts?: { throwFor?: string },
-): { bus: BusLike; calls: Array<{ id: string }> } {
-  const calls: Array<{ id: string }> = [];
+): { bus: BusLike; calls: Array<{ ref: string; userId: string }> } {
+  const calls: Array<{ ref: string; userId: string }> = [];
   const bus: BusLike = {
     async call(hookName, _ctx, input) {
       if (hookName !== 'credentials:get') {
         throw new Error(`unexpected hook: ${hookName}`);
       }
-      const { id } = input as { id: string };
-      calls.push({ id });
-      if (opts?.throwFor === id) {
+      const { ref, userId } = input as { ref: string; userId: string };
+      calls.push({ ref, userId });
+      if (opts?.throwFor === ref) {
         throw new PluginError({
           code: 'credential-not-found',
           plugin: '@ax/credentials',
-          message: `no credential with id '${id}'`,
+          message: `no credential for ref='${ref}'`,
         });
       }
-      const value = secrets[id];
+      const value = secrets[ref];
       if (value === undefined) {
         throw new PluginError({
           code: 'credential-not-found',
           plugin: '@ax/credentials',
-          message: `no credential with id '${id}'`,
+          message: `no credential for ref='${ref}'`,
         });
       }
-      return { value } as unknown as never;
+      return value as unknown as never;
     },
   };
   return { bus, calls };
@@ -135,7 +135,7 @@ describe('buildStdioParams', () => {
     expect(params.env).not.toHaveProperty('AX_CREDENTIALS_KEY');
     expect(params.env).not.toHaveProperty('USER');
     expect(params.env).not.toHaveProperty('SHELL');
-    expect(calls).toEqual([{ id: 'gh-id' }]);
+    expect(calls).toEqual([{ ref: 'gh-id', userId: 'u' }]);
   });
 
   it('allowlist keys not set in process.env are simply absent (no undefineds)', async () => {
@@ -214,7 +214,7 @@ describe('buildStdioParams', () => {
     });
     expect(params.env?.GH_TOKEN).toBe('aaa');
     expect(params.env?.SLACK_TOKEN).toBe('bbb');
-    expect(calls.map((c) => c.id).sort()).toEqual(['gh-id', 'slack-id']);
+    expect(calls.map((c) => c.ref).sort()).toEqual(['gh-id', 'slack-id']);
   });
 });
 
@@ -228,7 +228,7 @@ describe('buildStreamableHttpOptions', () => {
     });
     expect(url.toString()).toBe('https://api.github.com/mcp');
     expect(options.requestInit?.headers).toEqual({ Authorization: 'token-abc' });
-    expect(calls).toEqual([{ id: 'gh-id' }]);
+    expect(calls).toEqual([{ ref: 'gh-id', userId: 'u' }]);
   });
 
   it('omits requestInit when no header credentials are configured', async () => {
@@ -263,7 +263,7 @@ describe('buildSseOptions', () => {
     });
     expect(url.toString()).toBe('https://example.com/sse');
     expect(options.requestInit?.headers).toEqual({ Authorization: 'sse-token' });
-    expect(calls).toEqual([{ id: 'gh-id' }]);
+    expect(calls).toEqual([{ ref: 'gh-id', userId: 'u' }]);
   });
 
   it('omits requestInit when no header credentials are configured', async () => {

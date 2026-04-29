@@ -14,6 +14,8 @@
     { "path": "../audit-log" },
     { "path": "../credential-proxy" },
     { "path": "../credentials" },
+    { "path": "../credentials-store-db" },
+    { "path": "../credentials-anthropic-oauth" },
     { "path": "../sandbox-subprocess" },
     { "path": "../session-inmemory" },
     { "path": "../ipc-server" },

@@ -53,12 +53,12 @@ describe('ax-next credentials set <id>', () => {
       ],
       config: {},
     });
-    const got = await bus.call<{ id: string }, { value: string }>(
+    const got = await bus.call<{ ref: string; userId: string }, string>(
       'credentials:get',
       makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' }),
-      { id: 'gh-token' },
+      { ref: 'gh-token', userId: 'cli' },
     );
-    expect(got.value).toBe('ghp_abc123');
+    expect(got).toBe('ghp_abc123');
   });
 
   it('strips a single trailing newline from stdin', async () => {
@@ -82,12 +82,12 @@ describe('ax-next credentials set <id>', () => {
       ],
       config: {},
     });
-    const got = await bus.call<{ id: string }, { value: string }>(
+    const got = await bus.call<{ ref: string; userId: string }, string>(
       'credentials:get',
       makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' }),
-      { id: 'gh-token' },
+      { ref: 'gh-token', userId: 'cli' },
     );
-    expect(got.value).toBe('ghp_abc123'); // newline stripped
+    expect(got).toBe('ghp_abc123'); // newline stripped
   });
 
   it('exits 2 with usage when the verb is unknown', async () => {
