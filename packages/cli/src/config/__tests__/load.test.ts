@@ -18,7 +18,6 @@ describe('loadAxConfig', () => {
   it('returns defaults when no config file is present', async () => {
     const cfg = await loadAxConfig({ cwd: workDir });
     expect(cfg).toEqual({
-      llm: 'mock',
       sandbox: 'subprocess',
       storage: 'sqlite',
     });
@@ -27,19 +26,18 @@ describe('loadAxConfig', () => {
   it('merges a valid ax.config.mjs over defaults', async () => {
     writeFileSync(
       join(workDir, 'ax.config.mjs'),
-      "export default { llm: 'anthropic' };\n",
+      "export default { sandbox: 'subprocess' };\n",
     );
     const cfg = await loadAxConfig({ cwd: workDir });
-    expect(cfg.llm).toBe('anthropic');
-    // Defaults still applied for unspecified fields.
     expect(cfg.sandbox).toBe('subprocess');
+    // Defaults still applied for unspecified fields.
     expect(cfg.storage).toBe('sqlite');
   });
 
   it('throws with "failed validation" when config is invalid', async () => {
     writeFileSync(
       join(workDir, 'ax.config.mjs'),
-      "export default { llm: 'openai' };\n",
+      "export default { sandbox: 'docker' };\n",
     );
     await expect(loadAxConfig({ cwd: workDir })).rejects.toThrow(
       /failed validation/,
@@ -49,7 +47,7 @@ describe('loadAxConfig', () => {
   it('throws when config file has no default export', async () => {
     writeFileSync(
       join(workDir, 'ax.config.mjs'),
-      "export const notDefault = { llm: 'mock' };\n",
+      "export const notDefault = { sandbox: 'subprocess' };\n",
     );
     await expect(loadAxConfig({ cwd: workDir })).rejects.toThrow(
       /no default export/,

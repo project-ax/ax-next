@@ -82,8 +82,13 @@ interface PostCallEvent {
 
 // The runner reaches Anthropic only via the credential-proxy. This test's
 // stub-LLM topology routed `claude` → in-sandbox llm-proxy → host
-// `llm:call`, which no longer exists. Will be rewritten to use the
-// credential-proxy + a stub Anthropic backend.
+// `llm:call`, which no longer exists. Phase 6 also deleted @ax/llm-mock /
+// @ax/llm-anthropic and the `skipDefaultLlm` test seam. PR-B (Phase 6.6)
+// will rebuild this against the credential-proxy + a stub Anthropic
+// backend; until then the body is left in place for reference but the
+// suite is fully skipped.
+// TODO(Phase 6.6 / PR-B): rewrite this test against the credential-proxy
+// pointed at a stub Anthropic upstream.
 void claudeBinaryAvailable;
 describe.skip('claude-sdk runner e2e', () => {
   let tmp: string;

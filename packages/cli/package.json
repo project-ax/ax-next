@@ -23,8 +23,6 @@
   },
   "dependencies": {
     "@ax/core": "workspace:*",
-    "@ax/llm-mock": "workspace:*",
-    "@ax/llm-anthropic": "workspace:*",
     "@ax/storage-sqlite": "workspace:*",
     "@ax/audit-log": "workspace:*",
     "@ax/credential-proxy": "workspace:*",

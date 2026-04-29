@@ -11,7 +11,6 @@ import { z } from 'zod';
  */
 export const AxConfigSchema = z
   .object({
-    llm: z.enum(['anthropic', 'mock']).default('mock'),
     sandbox: z.enum(['subprocess']).default('subprocess'),
     storage: z.enum(['sqlite']).default('sqlite'),
   })

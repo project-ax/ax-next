@@ -5,27 +5,25 @@ describe('AxConfigSchema', () => {
   it('applies defaults when given an empty object', () => {
     const parsed = AxConfigSchema.parse({});
     expect(parsed).toEqual({
-      llm: 'mock',
       sandbox: 'subprocess',
       storage: 'sqlite',
     });
   });
 
-  it('rejects unknown llm providers', () => {
-    const result = AxConfigSchema.safeParse({ llm: 'openai' });
+  it('rejects unknown sandbox providers', () => {
+    const result = AxConfigSchema.safeParse({ sandbox: 'docker' });
     expect(result.success).toBe(false);
   });
 
   it('merges partial config with defaults', () => {
-    const parsed = AxConfigSchema.parse({ llm: 'anthropic' });
-    expect(parsed.llm).toBe('anthropic');
+    const parsed = AxConfigSchema.parse({ sandbox: 'subprocess' });
     expect(parsed.sandbox).toBe('subprocess');
     expect(parsed.storage).toBe('sqlite');
   });
 
   it('rejects unknown top-level keys (strict mode)', () => {
     const result = AxConfigSchema.safeParse({
-      llm: 'mock',
+      sandbox: 'subprocess',
       bogus: 'hello',
     });
     expect(result.success).toBe(false);
@@ -43,9 +41,13 @@ describe('AxConfigSchema', () => {
 
   it('rejects the now-removed anthropic field (strict mode)', () => {
     const result = AxConfigSchema.safeParse({
-      llm: 'anthropic',
       anthropic: { model: 'claude-sonnet-4-6' },
     });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects the now-removed llm field (strict mode)', () => {
+    const result = AxConfigSchema.safeParse({ llm: 'anthropic' });
     expect(result.success).toBe(false);
   });
 });
