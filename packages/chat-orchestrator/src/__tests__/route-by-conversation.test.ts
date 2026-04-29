@@ -153,6 +153,16 @@ function buildMocks(opts: {
         },
       };
     },
+    // Phase 6: credential-proxy is mandatory. Stub the proxy hooks so the
+    // orchestrator's `proxy-not-loaded` gate (Task 8) doesn't short-circuit
+    // these route-by-conversationId scenarios, which only care about the
+    // routing decision — not the proxy lifecycle.
+    'proxy:open-session': async () => ({
+      proxyEndpoint: 'tcp://127.0.0.1:54321',
+      caCertPem: 'TEST-CA-PEM',
+      envMap: {},
+    }),
+    'proxy:close-session': async () => ({}),
   };
 
   return { trace, services };

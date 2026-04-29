@@ -616,15 +616,19 @@ export function createOrchestrator(
     // 4.5 — proxy:open-session. Fresh-spawn path only: a routed
     //       agent:invoke reuses an existing live sandbox whose proxy
     //       session was opened by the orchestrator that originally
-    //       spawned it. Soft dep: when @ax/credential-proxy isn't loaded,
-    //       proxyConfig stays undefined and sandbox:open-session injects
-    //       no proxy env — the runner will fail at boot. Presets that
-    //       want a working runner load @ax/credential-proxy.
+    //       spawned it.
+    //
+    //       Phase 6 made @ax/credential-proxy mandatory. Without it,
+    //       proxyConfig would stay undefined and sandbox:open-session
+    //       would inject no proxy env — the runner would fail at boot
+    //       with MissingEnvError, which is a worse error path than a
+    //       structured outcome at agent:invoke time. Fail loud here.
     //
     //       I7 — `proxy:close-session` always fires once per `proxy:open-
     //       session`. We track that with `proxyOpened`; the finally below
     //       fires close exactly once when the flag is set, regardless of
-    //       which exit path won.
+    //       which exit path won. The `proxy-not-loaded` exit below runs
+    //       BEFORE proxyOpened can be set — nothing to close.
     //
     //       Both hooks must be registered before we enable proxy mode. A
     //       skewed preset that wired only one would otherwise either open
@@ -642,77 +646,88 @@ export function createOrchestrator(
       await bus.fire('chat:end', ctx, { outcome });
       return outcome;
     }
-    const proxyLoaded = proxyOpenLoaded && proxyCloseLoaded;
-    let proxyConfig: ProxyConfig | undefined;
+    if (!proxyOpenLoaded) {
+      // I18 — distinct from skew-misconfigured. Phase 6 made the
+      // credential-proxy mandatory; running without it would force real
+      // credentials into the sandbox env, breaking I1 (the same defense
+      // the open-session catch block carries). Terminate at agent:invoke
+      // time with a clear outcome instead of letting the runner fail at
+      // boot with MissingEnvError.
+      const outcome: AgentOutcome = {
+        kind: 'terminated',
+        reason: 'proxy-not-loaded',
+      };
+      await bus.fire('chat:end', ctx, { outcome });
+      return outcome;
+    }
+    let proxyConfig: ProxyConfig;
     let proxyOpened = false;
-    if (proxyLoaded) {
-      try {
-        const opened = await bus.call<ProxyOpenSessionInput, ProxyOpenSessionOutput>(
-          'proxy:open-session',
-          ctx,
-          {
-            sessionId: ctx.sessionId,
-            userId: ctx.userId,
-            agentId: agent.id,
-            allowlist: agent.allowedHosts ?? [],
-            credentials: agent.requiredCredentials ?? {},
-          },
-        );
-        // Mark opened BEFORE endpointToProxyConfig — that helper throws on
-        // unrecognized scheme, and we still owe the proxy a close in that
-        // case (the session was minted before the throw).
-        proxyOpened = true;
-        proxyConfig = endpointToProxyConfig(
-          opened.proxyEndpoint,
-          opened.caCertPem,
-          opened.envMap,
-        );
-        // I10 — flag the session for per-turn rotation when ANY required
-        // credential has a non-`api-key` kind. The credentials facade's
-        // resolve sub-service handles the actual refresh; rotate-session
-        // re-resolves through the facade and updates the placeholder map.
-        // I11 — the placeholder envMap stays stable across rotations; only
-        // the registry's placeholder→real-value mapping updates. We don't
-        // propagate the new envMap into the running runner.
-        const reqs = agent.requiredCredentials ?? {};
-        const hasRefreshableKind = Object.values(reqs).some(
-          (c) => c.kind !== 'api-key',
-        );
-        if (hasRefreshableKind && bus.hasService('proxy:rotate-session')) {
-          sessionsNeedingRotation.add(ctx.sessionId);
-        }
-      } catch (err) {
-        // proxy:open-session failed (or endpointToProxyConfig threw). If
-        // the open succeeded but translation failed, proxyOpened is true
-        // and we need to close before returning. Otherwise nothing to
-        // close — the open never settled. We do NOT proceed without the
-        // proxy when it's loaded — that would force real credentials
-        // into the sandbox env, breaking I1.
-        if (proxyOpened) {
-          await bus
-            .call<ProxyCloseSessionInput, Record<string, never>>(
-              'proxy:close-session',
-              ctx,
-              { sessionId: ctx.sessionId },
-            )
-            .catch((closeErr: unknown) => {
-              ctx.logger.warn('proxy_close_session_failed', {
-                sessionId: ctx.sessionId,
-                err:
-                  closeErr instanceof Error
-                    ? closeErr
-                    : new Error(String(closeErr)),
-              });
-            });
-        }
-        const outcome: AgentOutcome = {
-          kind: 'terminated',
-          reason: 'proxy-open-failed',
-          error: err,
-        };
-        await bus.fire('chat:end', ctx, { outcome });
-        return outcome;
+    try {
+      const opened = await bus.call<ProxyOpenSessionInput, ProxyOpenSessionOutput>(
+        'proxy:open-session',
+        ctx,
+        {
+          sessionId: ctx.sessionId,
+          userId: ctx.userId,
+          agentId: agent.id,
+          allowlist: agent.allowedHosts ?? [],
+          credentials: agent.requiredCredentials ?? {},
+        },
+      );
+      // Mark opened BEFORE endpointToProxyConfig — that helper throws on
+      // unrecognized scheme, and we still owe the proxy a close in that
+      // case (the session was minted before the throw).
+      proxyOpened = true;
+      proxyConfig = endpointToProxyConfig(
+        opened.proxyEndpoint,
+        opened.caCertPem,
+        opened.envMap,
+      );
+      // I10 — flag the session for per-turn rotation when ANY required
+      // credential has a non-`api-key` kind. The credentials facade's
+      // resolve sub-service handles the actual refresh; rotate-session
+      // re-resolves through the facade and updates the placeholder map.
+      // I11 — the placeholder envMap stays stable across rotations; only
+      // the registry's placeholder→real-value mapping updates. We don't
+      // propagate the new envMap into the running runner.
+      const reqs = agent.requiredCredentials ?? {};
+      const hasRefreshableKind = Object.values(reqs).some(
+        (c) => c.kind !== 'api-key',
+      );
+      if (hasRefreshableKind && bus.hasService('proxy:rotate-session')) {
+        sessionsNeedingRotation.add(ctx.sessionId);
       }
+    } catch (err) {
+      // proxy:open-session failed (or endpointToProxyConfig threw). If
+      // the open succeeded but translation failed, proxyOpened is true
+      // and we need to close before returning. Otherwise nothing to
+      // close — the open never settled. We do NOT proceed without the
+      // proxy when it's loaded — that would force real credentials
+      // into the sandbox env, breaking I1.
+      if (proxyOpened) {
+        await bus
+          .call<ProxyCloseSessionInput, Record<string, never>>(
+            'proxy:close-session',
+            ctx,
+            { sessionId: ctx.sessionId },
+          )
+          .catch((closeErr: unknown) => {
+            ctx.logger.warn('proxy_close_session_failed', {
+              sessionId: ctx.sessionId,
+              err:
+                closeErr instanceof Error
+                  ? closeErr
+                  : new Error(String(closeErr)),
+            });
+          });
+      }
+      const outcome: AgentOutcome = {
+        kind: 'terminated',
+        reason: 'proxy-open-failed',
+        error: err,
+      };
+      await bus.fire('chat:end', ctx, { outcome });
+      return outcome;
     }
 
     try {
@@ -754,11 +769,11 @@ export function createOrchestrator(
           agentId: agent.id,
           agentConfig,
         },
+        // Phase 6: credential-proxy is mandatory; proxyConfig is always set
+        // by the time we reach this point (the !proxyOpenLoaded gate above
+        // returns early with `proxy-not-loaded` otherwise).
+        proxyConfig,
       };
-      // exactOptionalPropertyTypes: only spread proxyConfig in when set.
-      if (proxyConfig !== undefined) {
-        sandboxInput.proxyConfig = proxyConfig;
-      }
       const opened = await bus.call<OpenSessionInput, OpenSessionResult>(
         'sandbox:open-session',
         ctx,
