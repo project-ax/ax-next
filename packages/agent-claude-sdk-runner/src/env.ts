@@ -1,8 +1,9 @@
 // ---------------------------------------------------------------------------
 // Runner env read + validate — claude-sdk variant.
 //
-// Mirrors @ax/agent-native-runner's env.ts in shape, plus the per-session
-// proxy fields the host injects when @ax/credential-proxy is loaded.
+// Reads the host-injected per-session proxy fields plus the runner
+// endpoint, session id, auth token, and workspace root. The proxy fields
+// are populated when @ax/credential-proxy is loaded.
 // Exactly one of AX_PROXY_ENDPOINT (subprocess sandbox, TCP) or
 // AX_PROXY_UNIX_SOCKET (k8s sandbox, Unix socket → bridge) is required —
 // they drive different transports.

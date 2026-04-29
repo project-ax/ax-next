@@ -52,8 +52,7 @@ import { DISABLED_BUILTINS, MCP_HOST_SERVER_NAME } from './tool-names.js';
 // chat turn — the SDK's internal conversation history carries across
 // turns automatically.
 //
-// Exit codes (mirror @ax/agent-native-runner so the spawning host can
-// branch identically regardless of runner flavor):
+// Exit codes (the spawning host branches on these):
 //   0 — chat completed normally (inbox returned cancel; SDK drained).
 //   1 — terminated abnormally (SDK threw, IPC errored after retries, etc.).
 //   2 — fatal during bootstrap (missing env, initial tool.list failure).
