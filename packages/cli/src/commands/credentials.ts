@@ -35,6 +35,13 @@ const OAUTH_REDIRECT_PORT = 1455;
 const OAUTH_REDIRECT_URI = 'http://127.0.0.1:1455/callback';
 const OAUTH_TIMEOUT_MS = 60_000;
 const DEFAULT_OAUTH_REF = 'anthropic-personal';
+// Mirror of @ax/credentials' validation. Duplicated here (instead of imported)
+// because credentials:set runs through the bus and only validates server-side
+// — by the time the user sees that error the OAuth flow has already minted a
+// browser auth + a real refresh token. We catch the bad ref BEFORE binding the
+// listener so a typo'd `ax-next credentials login anthropic OOPS REF` exits
+// in milliseconds, not after a round trip through Anthropic.
+const OAUTH_REF_RE = /^[a-z0-9][a-z0-9_.-]{0,127}$/;
 
 export interface RunCredentialsOptions {
   /** argv slice starting at the subcommand args, e.g. ['set', 'gh-token']. */
@@ -172,6 +179,10 @@ async function runLoginCommand(
     return 2;
   }
   const ref = opts.argv[2] ?? DEFAULT_OAUTH_REF;
+  if (!OAUTH_REF_RE.test(ref)) {
+    err(`error: credential ref must match ${OAUTH_REF_RE.source}`);
+    return 2;
+  }
 
   const bus = new HookBus();
   let handle;

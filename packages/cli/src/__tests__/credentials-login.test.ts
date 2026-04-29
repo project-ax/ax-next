@@ -187,6 +187,26 @@ describe('ax-next credentials login anthropic', () => {
     expect(stderrLines.join('\n').toLowerCase()).toContain('access_denied');
   });
 
+  it('exits 2 with a ref-shape error BEFORE binding the listener (no browser launch)', async () => {
+    // Regression guard: a typo'd ref must not cost the user a round trip
+    // through Anthropic and a redirect flow. Reject early.
+    let openBrowserCalled = false;
+    const stderrLines: string[] = [];
+    const code = await runCredentialsCommand({
+      argv: ['login', 'anthropic', 'BAD REF WITH SPACES'],
+      stdin: stdinFromString(''),
+      stdout: () => {},
+      stderr: (l) => stderrLines.push(l),
+      sqlitePath: join(tmp, 'db.sqlite'),
+      openBrowserImpl: () => {
+        openBrowserCalled = true;
+      },
+    });
+    expect(code).toBe(2);
+    expect(openBrowserCalled).toBe(false);
+    expect(stderrLines.join('\n')).toMatch(/credential ref must match/);
+  });
+
   it('exits 2 on `credentials login` without a provider', async () => {
     const stderrLines: string[] = [];
     const code = await runCredentialsCommand({
