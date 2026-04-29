@@ -321,11 +321,13 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           .find((m) => m.role === 'assistant');
         expect(lastAssistant?.content).toContain(CANARY_TEXT);
 
-        // chat:end fires once per agent:invoke (I1). The recorder is an
-        // independent witness — audit-log no longer subscribes to chat:end
-        // (Phase 7 Slice A / I24), so this is the only assertion that
-        // proves the event flowed through end-to-end.
-        expect(observedChatEndReqIds.length).toBeGreaterThanOrEqual(1);
+        // chat:end fires EXACTLY once per agent:invoke (I1). The recorder
+        // is an independent witness — audit-log no longer subscribes to
+        // chat:end (Phase 7 Slice A / I24), so this is the only assertion
+        // that proves the event flowed through end-to-end. Exact length is
+        // load-bearing: a double-fire regression would slip past
+        // `toBeGreaterThanOrEqual(1)` while still violating the invariant.
+        expect(observedChatEndReqIds).toHaveLength(1);
       } finally {
         await handle.shutdown();
       }
