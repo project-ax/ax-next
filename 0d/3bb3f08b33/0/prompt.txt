@@ -1,0 +1,1 @@
+/superpowers:executing-plans docs/plans/2026-04-29-phase-b-conversations-metadata-impl.md
