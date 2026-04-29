@@ -17,16 +17,6 @@ export interface ToolResult {
   isError?: boolean;
 }
 
-export interface LlmRequest {
-  messages: AgentMessage[];
-  tools?: ToolDescriptor[];
-}
-
-export interface LlmResponse {
-  assistantMessage: AgentMessage;
-  toolCalls: ToolCall[];
-}
-
 export interface ToolDescriptor {
   name: string;
   description?: string;
