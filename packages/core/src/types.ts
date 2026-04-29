@@ -1,7 +1,7 @@
 import type { Rejection } from './errors.js';
 
 export interface AgentMessage {
-  role: 'user' | 'assistant' | 'system';
+  role: 'user' | 'assistant';
   content: string;
 }
 

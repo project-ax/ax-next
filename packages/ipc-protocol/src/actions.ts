@@ -18,7 +18,7 @@ export { asWorkspaceVersion, type WorkspaceVersion };
 // ---------------------------------------------------------------------------
 
 export const AgentMessageSchema = z.object({
-  role: z.enum(['user', 'assistant', 'system']),
+  role: z.enum(['user', 'assistant']),
   content: z.string(),
 });
 export type AgentMessage = z.infer<typeof AgentMessageSchema>;

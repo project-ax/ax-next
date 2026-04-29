@@ -582,6 +582,18 @@ describe('shared schemas exported', () => {
     expect(r.success).toBe(true);
   });
 
+  describe('AgentMessage role narrowing (Phase 7)', () => {
+    it('accepts user and assistant roles', () => {
+      expect(AgentMessageSchema.parse({ role: 'user', content: 'hi' }).role).toBe('user');
+      expect(AgentMessageSchema.parse({ role: 'assistant', content: 'hi' }).role).toBe('assistant');
+    });
+
+    it('rejects the system role at the wire layer', () => {
+      const r = AgentMessageSchema.safeParse({ role: 'system', content: 'be brief' });
+      expect(r.success).toBe(false);
+    });
+  });
+
   it('AgentOutcomeSchema parses a complete outcome', () => {
     const r = AgentOutcomeSchema.safeParse({
       kind: 'complete',
