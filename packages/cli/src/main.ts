@@ -36,31 +36,17 @@ import { runAdminCommand } from './commands/admin.js';
 // (eslint.config.mjs no-restricted-imports allowlist); this is also the one
 // spot where we pin down the runner binary location (I8).
 //
-// Lazy-resolve the agent-native-runner binary inside main() rather than at
-// module load. Library-mode consumers (tests, embedders using configOverride)
-// that never invoke agent:invoke shouldn't fail to import @ax/cli just because
-// the runner's dist/ hasn't been built yet. `createRequire` from the CLI's
-// own URL is robust against pnpm hoisting and works identically in dev + prod.
+// Lazy-resolve the runner binary inside main() rather than at module load.
+// Library-mode consumers (tests, embedders using configOverride) that never
+// invoke agent:invoke shouldn't fail to import @ax/cli just because the
+// runner's dist/ hasn't been built yet. `createRequire` from the CLI's own
+// URL is robust against pnpm hoisting and works identically in dev + prod.
 //
 // We resolve the package's `.` export (which is `dist/main.js`) rather than
 // a subpath specifier: the runner's `exports` field only exposes `.` and
 // `./turn-loop`, so a direct `./dist/main.js` subpath is blocked by Node's
 // exports-map enforcement.
 const requireFromCli = createRequire(import.meta.url);
-export function resolveRunnerBinary(runner: AxConfig['runner']): string {
-  // Exhaustive so a future `runner` variant in schema.ts fails typecheck
-  // here instead of silently falling through to the native runner.
-  switch (runner) {
-    case 'claude-sdk':
-      return requireFromCli.resolve('@ax/agent-claude-sdk-runner');
-    case 'native':
-      return requireFromCli.resolve('@ax/agent-native-runner');
-    default: {
-      const _exhaustive: never = runner;
-      throw new Error(`unknown runner: ${String(_exhaustive)}`);
-    }
-  }
-}
 const DEFAULT_CHAT_TIMEOUT_MS = 10 * 60_000;
 
 export interface MainOptions {
@@ -202,7 +188,7 @@ export async function main(opts: MainOptions): Promise<number> {
   plugins.push(createIpcServerPlugin());
   plugins.push(
     createChatOrchestratorPlugin({
-      runnerBinary: resolveRunnerBinary(cfg.runner),
+      runnerBinary: requireFromCli.resolve('@ax/agent-claude-sdk-runner'),
       chatTimeoutMs: DEFAULT_CHAT_TIMEOUT_MS,
     }),
   );
