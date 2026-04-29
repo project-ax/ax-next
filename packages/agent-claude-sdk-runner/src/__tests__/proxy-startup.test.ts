@@ -32,29 +32,6 @@ describe('setupProxy', () => {
   });
 
   // -------------------------------------------------------------------
-  // Legacy mode — AX_LLM_PROXY_URL only.
-  // -------------------------------------------------------------------
-
-  it('legacy mode: returns ANTHROPIC_BASE_URL + ANTHROPIC_API_KEY=authToken; no bridge', async () => {
-    const env: RunnerEnv = {
-      runnerEndpoint: 'unix:///tmp/x.sock',
-      sessionId: 's',
-      authToken: 'ipc-bearer',
-      workspaceRoot: '/ws',
-      llmProxyUrl: 'http://127.0.0.1:4000',
-    };
-    const out = await setupProxy(env);
-    expect(out.anthropicEnv).toEqual({
-      ANTHROPIC_BASE_URL: 'http://127.0.0.1:4000',
-      ANTHROPIC_API_KEY: 'ipc-bearer',
-    });
-    expect(out.stop).toBeUndefined();
-    // Legacy mode does NOT mutate process.env proxies.
-    expect(process.env.HTTP_PROXY).toBeUndefined();
-    expect(process.env.HTTPS_PROXY).toBeUndefined();
-  });
-
-  // -------------------------------------------------------------------
   // Direct mode — AX_PROXY_ENDPOINT (subprocess sandbox).
   // -------------------------------------------------------------------
 

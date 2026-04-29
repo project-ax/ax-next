@@ -1,18 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { MissingEnvError, readRunnerEnv } from '../env.js';
 
-// Canonical legacy-mode fixture (AX_LLM_PROXY_URL set, no AX_PROXY_*).
-// Phase 5/6 deletes the legacy path; until then it's the default.
-const LEGACY = {
-  AX_RUNNER_ENDPOINT: 'unix:///tmp/ax.sock',
-  AX_SESSION_ID: 'sess-1',
-  AX_AUTH_TOKEN: 'tok-123',
-  AX_WORKSPACE_ROOT: '/tmp/workspace',
-  AX_LLM_PROXY_URL: 'http://127.0.0.1:4000',
-};
-
-// Canonical Phase 2 direct-mode fixture (AX_PROXY_ENDPOINT, no
-// AX_LLM_PROXY_URL).
+// Canonical Phase 2 direct-mode fixture (AX_PROXY_ENDPOINT only).
 const PROXY_TCP = {
   AX_RUNNER_ENDPOINT: 'unix:///tmp/ax.sock',
   AX_SESSION_ID: 'sess-1',
@@ -21,8 +10,7 @@ const PROXY_TCP = {
   AX_PROXY_ENDPOINT: 'http://127.0.0.1:54321',
 };
 
-// Canonical Phase 2 bridge-mode fixture (AX_PROXY_UNIX_SOCKET, no
-// AX_LLM_PROXY_URL).
+// Canonical Phase 2 bridge-mode fixture (AX_PROXY_UNIX_SOCKET only).
 const PROXY_UNIX = {
   AX_RUNNER_ENDPOINT: 'unix:///tmp/ax.sock',
   AX_SESSION_ID: 'sess-1',
@@ -32,16 +20,6 @@ const PROXY_UNIX = {
 };
 
 describe('readRunnerEnv', () => {
-  it('returns the parsed shape on the legacy AX_LLM_PROXY_URL path', () => {
-    expect(readRunnerEnv(LEGACY)).toEqual({
-      runnerEndpoint: 'unix:///tmp/ax.sock',
-      sessionId: 'sess-1',
-      authToken: 'tok-123',
-      workspaceRoot: '/tmp/workspace',
-      llmProxyUrl: 'http://127.0.0.1:4000',
-    });
-  });
-
   it('reads proxyEndpoint when only AX_PROXY_ENDPOINT is set', () => {
     expect(readRunnerEnv(PROXY_TCP)).toEqual({
       runnerEndpoint: 'unix:///tmp/ax.sock',
@@ -76,22 +54,30 @@ describe('readRunnerEnv', () => {
     }
   });
 
-  it('throws when AX_LLM_PROXY_URL is set together with AX_PROXY_ENDPOINT (legacy XOR new)', () => {
-    // The Phase 2 contract is mutually exclusive: sandbox-subprocess sets
-    // AX_LLM_PROXY_URL on the legacy path and skips it on the new path.
-    // A deploy with BOTH set is ambiguous (setupProxy would silently pick
-    // the new path and ignore the legacy URL); fail loud at boot.
-    const env = { ...PROXY_TCP, AX_LLM_PROXY_URL: 'http://127.0.0.1:4000' };
-    expect(() => readRunnerEnv(env)).toThrow(MissingEnvError);
-    try {
-      readRunnerEnv(env);
-    } catch (err) {
-      expect((err as MissingEnvError).message).toContain('mutually exclusive');
-    }
+  it('readRunnerEnv ignores AX_LLM_PROXY_URL when AX_PROXY_ENDPOINT is set', () => {
+    // Operators may have stale shell exports; the legacy var is not rejected,
+    // just unread. The runner uses AX_PROXY_ENDPOINT.
+    const env = readRunnerEnv({
+      AX_RUNNER_ENDPOINT: 'unix:///tmp/sock',
+      AX_AUTH_TOKEN: 't',
+      AX_SESSION_ID: 's',
+      AX_WORKSPACE_ROOT: '/tmp/ws',
+      AX_PROXY_ENDPOINT: 'http://127.0.0.1:8443',
+      AX_LLM_PROXY_URL: 'http://legacy.local',
+    });
+    expect((env as Record<string, unknown>).llmProxyUrl).toBeUndefined();
+    expect(env.proxyEndpoint).toBe('http://127.0.0.1:8443');
   });
 
-  it('throws when AX_LLM_PROXY_URL is set together with AX_PROXY_UNIX_SOCKET (legacy XOR new)', () => {
-    const env = { ...PROXY_UNIX, AX_LLM_PROXY_URL: 'http://127.0.0.1:4000' };
+  it('readRunnerEnv rejects when neither AX_PROXY_ENDPOINT nor AX_PROXY_UNIX_SOCKET is set', () => {
+    // AX_LLM_PROXY_URL set alone is no longer enough.
+    const env = {
+      AX_RUNNER_ENDPOINT: 'unix:///tmp/sock',
+      AX_AUTH_TOKEN: 't',
+      AX_SESSION_ID: 's',
+      AX_WORKSPACE_ROOT: '/tmp/ws',
+      AX_LLM_PROXY_URL: 'http://legacy.local',
+    };
     expect(() => readRunnerEnv(env)).toThrow(MissingEnvError);
   });
 
@@ -102,7 +88,7 @@ describe('readRunnerEnv', () => {
     'AX_WORKSPACE_ROOT',
   ] as const) {
     it(`throws MissingEnvError naming ${name} when unset`, () => {
-      const env = { ...LEGACY };
+      const env = { ...PROXY_TCP };
       delete (env as Record<string, string | undefined>)[name];
       const call = (): unknown => readRunnerEnv(env);
       expect(call).toThrow(MissingEnvError);
@@ -116,7 +102,7 @@ describe('readRunnerEnv', () => {
     });
 
     it(`throws MissingEnvError naming ${name} when empty string`, () => {
-      const env = { ...LEGACY, [name]: '' };
+      const env = { ...PROXY_TCP, [name]: '' };
       const call = (): unknown => readRunnerEnv(env);
       expect(call).toThrow(MissingEnvError);
       try {
@@ -127,26 +113,17 @@ describe('readRunnerEnv', () => {
     });
   }
 
-  it('throws when none of AX_LLM_PROXY_URL / AX_PROXY_ENDPOINT / AX_PROXY_UNIX_SOCKET is set', () => {
-    const env = { ...LEGACY };
-    delete (env as Record<string, string | undefined>).AX_LLM_PROXY_URL;
+  it('throws when neither AX_PROXY_ENDPOINT nor AX_PROXY_UNIX_SOCKET is set', () => {
+    const env = { ...PROXY_TCP };
+    delete (env as Record<string, string | undefined>).AX_PROXY_ENDPOINT;
     expect(() => readRunnerEnv(env)).toThrow(MissingEnvError);
     try {
       readRunnerEnv(env);
     } catch (err) {
-      // The message names all three so a misconfigured runner gets actionable
-      // diagnostics rather than guessing which env var to set.
-      expect((err as MissingEnvError).message).toContain('AX_LLM_PROXY_URL');
+      // The message names both transport vars so a misconfigured runner
+      // gets actionable diagnostics rather than guessing which to set.
       expect((err as MissingEnvError).message).toContain('AX_PROXY_ENDPOINT');
       expect((err as MissingEnvError).message).toContain('AX_PROXY_UNIX_SOCKET');
     }
-  });
-
-  it('treats empty AX_LLM_PROXY_URL as unset for the XOR check', () => {
-    // An empty string for the legacy var must not satisfy the XOR; otherwise
-    // a deploy that accidentally clears the var (without setting AX_PROXY_*)
-    // would silently pass the gate and fail later inside setupProxy().
-    const env = { ...LEGACY, AX_LLM_PROXY_URL: '' };
-    expect(() => readRunnerEnv(env)).toThrow(MissingEnvError);
   });
 });

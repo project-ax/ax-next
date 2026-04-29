@@ -90,7 +90,8 @@ function setEnv(): void {
     AX_SESSION_ID: 'sess-1',
     AX_AUTH_TOKEN: 'tok-123',
     AX_WORKSPACE_ROOT: workspaceRoot,
-    AX_LLM_PROXY_URL: 'http://127.0.0.1:4000',
+    AX_PROXY_ENDPOINT: 'http://127.0.0.1:8443',
+    ANTHROPIC_API_KEY: 'ax-cred:test',
   };
 }
 

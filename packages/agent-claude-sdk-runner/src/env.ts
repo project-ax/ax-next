@@ -2,11 +2,10 @@
 // Runner env read + validate — claude-sdk variant.
 //
 // Mirrors @ax/agent-native-runner's env.ts in shape, plus the per-session
-// proxy fields the host injects when @ax/credential-proxy is loaded
-// (Phase 2). Either AX_LLM_PROXY_URL (legacy in-sandbox proxy) OR one of
-// AX_PROXY_ENDPOINT / AX_PROXY_UNIX_SOCKET (Phase 2) is required — they
-// drive different code paths. Phase 5/6 deletes AX_LLM_PROXY_URL when the
-// native runner stops needing it.
+// proxy fields the host injects when @ax/credential-proxy is loaded.
+// Exactly one of AX_PROXY_ENDPOINT (subprocess sandbox, TCP) or
+// AX_PROXY_UNIX_SOCKET (k8s sandbox, Unix socket → bridge) is required —
+// they drive different transports.
 //
 // AX_RUNNER_ENDPOINT is an opaque URI (I1). The IPC client parses the
 // scheme; see @ax/agent-runner-core/ipc-client.ts.
@@ -21,13 +20,6 @@ export interface RunnerEnv {
   sessionId: string;
   authToken: string;
   workspaceRoot: string;
-  /**
-   * Legacy in-sandbox llm-proxy URL (set by @ax/llm-proxy-anthropic-format
-   * via sandbox-subprocess). Optional in Phase 2 when AX_PROXY_ENDPOINT or
-   * AX_PROXY_UNIX_SOCKET is set instead. Required (XOR with the proxy
-   * fields) until Phase 5/6 deletes the legacy path.
-   */
-  llmProxyUrl?: string;
   /**
    * Per-session credential-proxy TCP endpoint (subprocess sandbox).
    * Mutually exclusive with `proxyUnixSocket`. When present, the SDK calls
@@ -64,7 +56,6 @@ export function readRunnerEnv(env: NodeJS.ProcessEnv = process.env): RunnerEnv {
     return typeof v === 'string' && v.length > 0 ? v : undefined;
   };
 
-  const llmProxyUrl = opt('AX_LLM_PROXY_URL');
   const proxyEndpoint = opt('AX_PROXY_ENDPOINT');
   const proxyUnixSocket = opt('AX_PROXY_UNIX_SOCKET');
 
@@ -78,33 +69,13 @@ export function readRunnerEnv(env: NodeJS.ProcessEnv = process.env): RunnerEnv {
     );
   }
 
-  // The legacy `AX_LLM_PROXY_URL` path and the Phase 2 `AX_PROXY_*` path
-  // are also mutually exclusive: when sandbox-subprocess emits proxyConfig
-  // it skips llm-proxy:start entirely (and AX_LLM_PROXY_URL stays unset).
-  // A deploy that sets BOTH is ambiguous — setupProxy() would silently pick
-  // the new path and ignore the legacy URL, hiding the misconfiguration.
-  // Fail loud so the operator catches the wiring drift at boot.
-  if (
-    llmProxyUrl !== undefined &&
-    (proxyEndpoint !== undefined || proxyUnixSocket !== undefined)
-  ) {
-    throw new MissingEnvError(
-      'AX_LLM_PROXY_URL xor AX_PROXY_* (legacy and Phase 2 proxy modes are mutually exclusive)',
-    );
-  }
-
-  // I9 — at least one proxy path must be configured. The host
-  // (sandbox-subprocess + the legacy llm-proxy plugin OR the Phase 2
-  // credential-proxy) sets exactly one; if all three are missing, the
+  // I9 — exactly one proxy path must be configured. The host's
+  // credential-proxy sets one of the two; if both are missing, the
   // runner has no way to reach an LLM and we fail loud at boot rather
   // than at first SDK call.
-  if (
-    llmProxyUrl === undefined &&
-    proxyEndpoint === undefined &&
-    proxyUnixSocket === undefined
-  ) {
+  if (proxyEndpoint === undefined && proxyUnixSocket === undefined) {
     throw new MissingEnvError(
-      'AX_LLM_PROXY_URL or AX_PROXY_ENDPOINT or AX_PROXY_UNIX_SOCKET',
+      'AX_PROXY_ENDPOINT or AX_PROXY_UNIX_SOCKET',
     );
   }
 
@@ -114,7 +85,6 @@ export function readRunnerEnv(env: NodeJS.ProcessEnv = process.env): RunnerEnv {
     authToken: need('AX_AUTH_TOKEN'),
     workspaceRoot: need('AX_WORKSPACE_ROOT'),
   };
-  if (llmProxyUrl !== undefined) result.llmProxyUrl = llmProxyUrl;
   if (proxyEndpoint !== undefined) result.proxyEndpoint = proxyEndpoint;
   if (proxyUnixSocket !== undefined) result.proxyUnixSocket = proxyUnixSocket;
   return result;
