@@ -171,6 +171,14 @@ describe('@ax/cli chat pipeline e2e (stub runner)', () => {
         'pre[test-host-echo]',
         'post[test-host-echo]',
       ]);
+
+      // ID-pairing check: pre/post for the same tool share an ID, and the
+      // IDs across tools are distinct. Without this, a regression where
+      // pre/post fire for mismatched toolCallIds would still pass the
+      // (kind, name) order assertion above.
+      expect(records[0]!.toolCallId).toBe(records[1]!.toolCallId); // Bash pre = Bash post
+      expect(records[2]!.toolCallId).toBe(records[3]!.toolCallId); // test-host-echo pre = test-host-echo post
+      expect(records[0]!.toolCallId).not.toBe(records[2]!.toolCallId); // different tools have different IDs
     },
   );
 });
