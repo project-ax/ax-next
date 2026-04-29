@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "5dbe21fdda06",
+  "strategy": "manual-commit",
+  "branch": "feat/phase-b-conversations-metadata",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "packages/conversations/src/__tests__/store-phase-b.test.ts",
+    "packages/conversations/src/store.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/5d/be21fdda06/0/metadata.json",
+      "transcript": "/5d/be21fdda06/0/full.jsonl",
+      "content_hash": "/5d/be21fdda06/0/content_hash.txt",
+      "prompt": "/5d/be21fdda06/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 16,
+    "cache_creation_tokens": 18181,
+    "cache_read_tokens": 1634213,
+    "output_tokens": 15883,
+    "api_call_count": 11
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "5dbe21fdda06",
+  "session_id": "d440655e-dabd-4aab-8e39-69ee652f2970",
+  "strategy": "manual-commit",
+  "created_at": "2026-04-29T23:21:42.309964Z",
+  "branch": "feat/phase-b-conversations-metadata",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "packages/conversations/src/__tests__/store-phase-b.test.ts",
+    "packages/conversations/src/store.ts"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-opus-4-7[1m]",
+  "turn_id": "64dca4174371",
+  "checkpoint_transcript_start": 211,
+  "transcript_lines_at_start": 211,
+  "token_usage": {
+    "input_tokens": 16,
+    "cache_creation_tokens": 18181,
+    "cache_read_tokens": 1634213,
+    "output_tokens": 15883,
+    "api_call_count": 11
+  },
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-04-29T23:21:42.295413Z",
+    "agent_lines": 457,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 457,
+    "total_lines_changed": 457,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}
