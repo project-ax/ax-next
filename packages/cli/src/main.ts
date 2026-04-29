@@ -82,6 +82,29 @@ export interface MainOptions {
    * Not reachable from file-based config.
    */
   skipCredentialProxy?: boolean;
+  /**
+   * Test-only seam: override the runner binary path. When set, the chat
+   * orchestrator spawns this instead of @ax/agent-claude-sdk-runner.
+   *
+   * Also accepts the AX_TEST_RUNNER_BINARY_OVERRIDE env var so the CLI's
+   * binary entrypoint (which can't pass MainOptions through argv) can still
+   * substitute via env. Resolution order: opts > env > default.
+   */
+  runnerBinaryOverride?: string;
+}
+
+/**
+ * Resolve the runner binary path. Production resolves @ax/agent-claude-sdk-runner;
+ * tests override via opts.runnerBinaryOverride (library-mode) or via
+ * AX_TEST_RUNNER_BINARY_OVERRIDE env var (binary-mode where the CLI is spawned
+ * from a test as a subprocess and MainOptions can't be threaded through).
+ */
+export function resolveRunnerBinary(opts: Pick<MainOptions, 'runnerBinaryOverride'>): string {
+  return (
+    opts.runnerBinaryOverride ??
+    process.env.AX_TEST_RUNNER_BINARY_OVERRIDE ??
+    requireFromCli.resolve('@ax/agent-claude-sdk-runner')
+  );
 }
 
 const DEFAULT_SQLITE_PATH = './ax-next-chat.sqlite';
@@ -161,7 +184,7 @@ export async function main(opts: MainOptions): Promise<number> {
   plugins.push(createIpcServerPlugin());
   plugins.push(
     createChatOrchestratorPlugin({
-      runnerBinary: requireFromCli.resolve('@ax/agent-claude-sdk-runner'),
+      runnerBinary: resolveRunnerBinary(opts),
       chatTimeoutMs: DEFAULT_CHAT_TIMEOUT_MS,
     }),
   );
