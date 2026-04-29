@@ -261,7 +261,12 @@ export function createConversationsPlugin(
         'chat:turn-end',
         PLUGIN_NAME,
         async (ctx, payload) => {
-          await handleTurnEnd(bus, ctx, payload);
+          // Phase B (2026-04-29): persist the turn AND bump
+          // last_activity_at in the same code path. The bump rides
+          // append's success — failed appends leave last_activity_at
+          // alone (the timestamp reflects persisted activity, not
+          // optimistic).
+          await handleTurnEnd(bus, localStore, ctx, payload);
           // Task 14 (J6): once the turn ends, clear active_req_id while
           // KEEPING active_session_id. The sandbox stays alive for the next
           // user message; only the in-flight reqId is dead. Compare-and-
@@ -324,6 +329,7 @@ interface SessionTerminatePayload {
 
 async function handleTurnEnd(
   bus: HookBus,
+  store: ConversationStore,
   ctx: AgentContext,
   payload: TurnEndPayload,
 ): Promise<void> {
@@ -336,7 +342,9 @@ async function handleTurnEnd(
 
   // Heartbeat turn-end (no content). The runner emits these every turn
   // so the host knows the SDK is awaiting input — we deliberately don't
-  // write empty rows.
+  // write empty rows. Phase B: also no last_activity_at bump (I8 — the
+  // timestamp must reflect persisted user-visible activity, not the
+  // SDK's internal heartbeat cadence).
   const blocks = payload.contentBlocks;
   if (blocks === undefined || blocks.length === 0) return;
 
@@ -362,6 +370,22 @@ async function handleTurnEnd(
       conversationId,
       role,
       ...(payload.reqId !== undefined ? { reqId: payload.reqId } : {}),
+      err: err instanceof Error ? err : new Error(String(err)),
+    });
+    // Don't bump activity if the append failed — last_activity_at must
+    // only reflect persisted activity (I8).
+    return;
+  }
+
+  // Phase B (2026-04-29). Bump last_activity_at after successful append.
+  // Subscriber-must-not-throw posture preserved: log + swallow on a
+  // bump failure (the row is already persisted, the timestamp is
+  // best-effort).
+  try {
+    await store.bumpLastActivity(conversationId, new Date());
+  } catch (err) {
+    ctx.logger.warn('conversations_bump_last_activity_failed', {
+      conversationId,
       err: err instanceof Error ? err : new Error(String(err)),
     });
   }
