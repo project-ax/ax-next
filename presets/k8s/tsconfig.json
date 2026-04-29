@@ -17,7 +17,6 @@
     { "path": "../../packages/sandbox-k8s" },
     { "path": "../../packages/agent-claude-sdk-runner" },
     { "path": "../../packages/chat-orchestrator" },
-    { "path": "../../packages/tool-dispatcher" },
     { "path": "../../packages/audit-log" },
     { "path": "../../packages/mcp-client" },
     { "path": "../../packages/credential-proxy" },

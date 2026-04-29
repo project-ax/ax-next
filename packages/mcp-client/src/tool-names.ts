@@ -133,7 +133,7 @@ export function namespaceTools(
   // (same hash input `serverId:remoteName`) and a `nameMap` with only one
   // entry, breaking the file's stated invariants. Worse, the failure
   // would surface downstream as an opaque `duplicate-tool` error from
-  // `@ax/tool-dispatcher` with no hint of which server misbehaved. Per
+  // the tool-dispatcher plugin with no hint of which server misbehaved. Per
   // invariant I5, MCP server output is untrusted; refuse it here with
   // full context (server id + offending tool name).
   const seenOriginal = new Set<string>();

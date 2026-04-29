@@ -29,7 +29,6 @@
     "@ax/database-postgres": "workspace:*",
     "@ax/http-server": "workspace:*",
     "@ax/test-harness": "workspace:*",
-    "@ax/tool-dispatcher": "workspace:*",
     "@testcontainers/postgresql": "11.14.0",
     "@types/node": "^25.6.0",
     "@types/pg": "8.20.0",

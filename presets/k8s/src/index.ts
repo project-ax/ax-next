@@ -8,9 +8,8 @@ import { createWorkspaceGitPlugin } from '@ax/workspace-git';
 import { createWorkspaceGitHttpPlugin } from '@ax/workspace-git-http';
 import { createSandboxK8sPlugin } from '@ax/sandbox-k8s';
 import { createChatOrchestratorPlugin } from '@ax/chat-orchestrator';
-import { createToolDispatcherPlugin } from '@ax/tool-dispatcher';
 import { auditLogPlugin } from '@ax/audit-log';
-import { createMcpClientPlugin } from '@ax/mcp-client';
+import { createMcpClientPlugin, createToolDispatcherPlugin } from '@ax/mcp-client';
 import { createCredentialProxyPlugin } from '@ax/credential-proxy';
 import { createCredentialsPlugin } from '@ax/credentials';
 import { createCredentialsStoreDbPlugin } from '@ax/credentials-store-db';
@@ -52,7 +51,7 @@ import { createStaticFilesPlugin } from '@ax/static-files';
 //   4. audit-log (subscribes to event.http-egress; calls storage:set)
 //   5. http-server / auth / teams (control plane access — Week 9.5)
 //   6. sandbox / ipc-http / chat-orchestrator (chat plane)
-//   7. tool-dispatcher → tool descriptors → mcp-client (catalog assembly)
+//   7. mcp-client (catalog + tool descriptors + tool:register/tool:list)
 //   8. agents (admin endpoints + agents:resolve gate)
 //
 // (Host-side LLM plugins were deleted in Phase 6 — the SDK runner reaches
@@ -512,16 +511,18 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   plugins.push(createChatOrchestratorPlugin(orchestratorCfg));
 
   // ----- 7. tool catalog -------------------------------------------------
-  // Dispatcher first — it registers `tool:register` / `tool:list`. The tool
-  // surface is populated entirely by MCP-registered host tools today;
-  // built-in bash/file-io descriptors are gone (Phase 6 Task 6 removed their
-  // host-side packages — the SDK runner's sandboxed Bash/Read/Write replace
-  // them).
+  // The catalog plugin (factory still named `createToolDispatcherPlugin`)
+  // registers `tool:register` / `tool:list`. The tool surface is populated
+  // entirely by MCP-registered host tools today; built-in bash/file-io
+  // descriptors are gone (Phase 6 Task 6 removed their host-side packages
+  // — the SDK runner's sandboxed Bash/Read/Write replace them).
   //
-  // mcp-client gets `mountAdminRoutes: true` so /admin/mcp-servers* lands
-  // alongside the rest of the admin surface. The flag expands the plugin's
-  // manifest `calls` to include http:register-route + auth:require-user;
-  // the kernel's topo-sort picks up the new edges automatically.
+  // Both plugins live in @ax/mcp-client now (Slice 2 absorbed the former
+  // @ax/tool-dispatcher package). mcp-client gets `mountAdminRoutes: true`
+  // so /admin/mcp-servers* lands alongside the rest of the admin surface.
+  // The flag expands the plugin's manifest `calls` to include
+  // http:register-route + auth:require-user; the kernel's topo-sort picks
+  // up the new edges automatically.
   plugins.push(createToolDispatcherPlugin());
   plugins.push(createMcpClientPlugin({ mountAdminRoutes: true }));
 

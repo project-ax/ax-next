@@ -28,7 +28,6 @@
     "@ax/sandbox-k8s": "workspace:*",
     "@ax/agent-claude-sdk-runner": "workspace:*",
     "@ax/chat-orchestrator": "workspace:*",
-    "@ax/tool-dispatcher": "workspace:*",
     "@ax/audit-log": "workspace:*",
     "@ax/mcp-client": "workspace:*",
     "@ax/credential-proxy": "workspace:*",

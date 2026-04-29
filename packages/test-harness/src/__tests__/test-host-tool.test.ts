@@ -7,7 +7,7 @@ import {
   createLogger,
   type ToolDescriptor,
 } from '@ax/core';
-import { createToolDispatcherPlugin } from '@ax/tool-dispatcher';
+import { createToolDispatcherPlugin } from '@ax/mcp-client';
 import { createTestHostToolPlugin } from '../test-host-tool.js';
 
 const ctx = () =>

@@ -173,9 +173,10 @@ describe('namespaceTools', () => {
 
   it('throws duplicate-remote-tool when an MCP server advertises the same tool name twice', () => {
     // A spec-violating MCP server that returns two tools with identical
-    // `name` would otherwise crash @ax/tool-dispatcher's duplicate-tool
-    // check with no hint of which server was at fault. Invariant I5 says
-    // MCP output is untrusted — we reject it at the discovery boundary.
+    // `name` would otherwise crash the tool-dispatcher plugin's
+    // duplicate-tool check with no hint of which server was at fault.
+    // Invariant I5 says MCP output is untrusted — we reject it at the
+    // discovery boundary.
     const tools = [
       { name: 'read_file', inputSchema: {} as Record<string, unknown> },
       { name: 'read_file', inputSchema: {} as Record<string, unknown> },

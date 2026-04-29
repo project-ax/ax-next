@@ -26,9 +26,9 @@ const SYSTEM_PROMPT_MAX = 32 * 1024; // 32 KiB
 const ALLOWED_TOOLS_MAX = 100;
 const MCP_CONFIG_IDS_MAX = 50;
 const WORKSPACE_REF_MAX = 256;
-// Mirrors @ax/tool-dispatcher's TOOL_NAME_RE — keep in sync if the
-// dispatcher relaxes it. Tightening here would exclude dispatcher-valid
-// tool names from agent allow-lists, which is wrong.
+// Mirrors the tool-dispatcher plugin's TOOL_NAME_RE (now in @ax/mcp-client) —
+// keep in sync if the dispatcher relaxes it. Tightening here would exclude
+// dispatcher-valid tool names from agent allow-lists, which is wrong.
 const TOOL_NAME_RE = /^[a-z][a-z0-9_.-]{0,63}$/;
 // Mirrors @ax/mcp-client/config.ts ID_RE. Same rationale.
 const MCP_ID_RE = /^[a-z0-9][a-z0-9_.-]{0,63}$/;

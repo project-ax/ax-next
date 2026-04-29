@@ -6,7 +6,7 @@ import {
   createLogger,
   type ToolDescriptor,
 } from '@ax/core';
-import { createToolDispatcherPlugin } from '../plugin.js';
+import { createToolDispatcherPlugin } from '../tool-dispatcher-plugin.js';
 
 const ctx = () =>
   makeAgentContext({
