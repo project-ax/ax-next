@@ -35,6 +35,8 @@ import type {
   GetByReqIdInput,
   GetByReqIdOutput,
   GetInput,
+  GetMetadataInput,
+  GetMetadataOutput,
   GetOutput,
   ListInput,
   ListOutput,
@@ -112,6 +114,10 @@ export function createConversationsPlugin(
         'conversations:unbind-session',
         // Task 15 (Week 10–12): runner replays history at boot (J3 + J6).
         'conversations:fetch-history',
+        // Phase B (2026-04-29): runner-owned-sessions metadata reads.
+        // Sidebar / runner-plugin call site lands in Phase C — half-
+        // wired window OPEN (closed by Phase C, see PR notes).
+        'conversations:get-metadata',
       ],
       calls: ['agents:resolve', 'database:get-instance'],
       // Task 14 (Week 10–12): subscribe to session:terminate so a sandbox
@@ -206,6 +212,17 @@ export function createConversationsPlugin(
         'conversations:fetch-history',
         PLUGIN_NAME,
         async (ctx, input) => fetchHistory(localStore, bus, ctx, input),
+      );
+
+      // Phase B (2026-04-29). Metadata-only read. Same ACL posture as
+      // conversations:get — user_id pre-filter, then agents:resolve.
+      // Half-wired window: no in-process caller until Phase C wires
+      // the runner plugin's host-side surface.
+      bus.registerService<GetMetadataInput, GetMetadataOutput>(
+        'conversations:get-metadata',
+        PLUGIN_NAME,
+        async (ctx, input) =>
+          getConversationMetadata(localStore, bus, ctx, input),
       );
 
       // chat:turn-end auto-append (Task 3 of Week 10–12).
@@ -528,6 +545,29 @@ async function appendTurn(
     }
     throw err;
   }
+}
+
+async function getConversationMetadata(
+  store: ConversationStore,
+  bus: HookBus,
+  ctx: AgentContext,
+  input: GetMetadataInput,
+): Promise<GetMetadataOutput> {
+  const hookName = 'conversations:get-metadata';
+  // Same ACL posture as conversations:get — user_id pre-filter so a
+  // foreign row surfaces as 'not-found' (no existence-leak via the
+  // agents:resolve denial path).
+  const md = await store.getMetadata(input.conversationId);
+  if (md === null || md.userId !== input.userId) {
+    throw new PluginError({
+      code: 'not-found',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `conversation '${input.conversationId}' not found`,
+    });
+  }
+  await assertAgentReachable(bus, ctx, md.agentId, input.userId, hookName);
+  return md;
 }
 
 async function getConversation(

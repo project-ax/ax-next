@@ -27,6 +27,8 @@ describe('@ax/conversations plugin manifest', () => {
         'conversations:unbind-session',
         // Task 15 (Week 10–12): runner replays history at boot (J3 + J6).
         'conversations:fetch-history',
+        // Phase B (2026-04-29): runner-owned-sessions metadata reads.
+        'conversations:get-metadata',
       ],
       // database:get-instance is hard — we run our own migration on init.
       // agents:resolve is hard — every hook gates through it (Invariant J1).

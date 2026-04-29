@@ -212,6 +212,35 @@ export interface UnbindSessionInput {
 export type UnbindSessionOutput = void;
 
 /**
+ * Phase B (2026-04-29). Sidebar / runner-plugin metadata read. Returns
+ * the projection only — `runner:read-transcript` ships separately
+ * (Phase C) and returns the runner's native transcript bytes. Combining
+ * both into one hook would re-create the lossy projection problem the
+ * design solves (I6).
+ *
+ * ACL: same as `conversations:get` — `(conversation_id, user_id)`
+ * pre-filter, then `agents:resolve(agent_id, user_id)`. A foreign row
+ * looks identical to "no such row" from the caller's perspective.
+ */
+export interface GetMetadataInput {
+  conversationId: string;
+  userId: string;
+}
+export interface GetMetadataOutput {
+  conversationId: string;
+  userId: string;
+  agentId: string;
+  runnerType: string | null;
+  runnerSessionId: string | null;
+  workspaceRef: string | null;
+  title: string | null;
+  /** ISO-8601, or null if no turns yet / pre-Phase-B row. */
+  lastActivityAt: string | null;
+  /** ISO-8601. */
+  createdAt: string;
+}
+
+/**
  * Fetch the persisted turn history for a conversation, formatted for
  * runner replay (Week 10–12 Task 15, Invariant J3 + J6 resume).
  *

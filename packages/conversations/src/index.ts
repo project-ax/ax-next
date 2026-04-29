@@ -11,10 +11,14 @@ export {
   mintTurnId,
   validateContentBlocks,
   validateRole,
+  validateRunnerType,
   validateTitle,
+  validateWorkspaceRefForFreeze,
   type ConversationStore,
   type ConversationStoreCreateArgs,
   type ConversationStoreAppendTurnArgs,
+  type ConversationMetadata,
+  type StoreRunnerSessionResult,
 } from './store.js';
 export {
   scopedConversations,
@@ -35,6 +39,8 @@ export type {
   GetByReqIdInput,
   GetByReqIdOutput,
   GetInput,
+  GetMetadataInput,
+  GetMetadataOutput,
   GetOutput,
   ListInput,
   ListOutput,
