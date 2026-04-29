@@ -35,8 +35,6 @@
     "@ax/chat-orchestrator": "workspace:*",
     "@ax/agent-claude-sdk-runner": "workspace:*",
     "@ax/tool-dispatcher": "workspace:*",
-    "@ax/tool-bash": "workspace:*",
-    "@ax/tool-file-io": "workspace:*",
     "@ax/mcp-client": "workspace:*",
     "@ax/preset-k8s": "workspace:*",
     "zod": "^3.23.8"

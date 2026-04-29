@@ -354,15 +354,9 @@ importers:
       '@ax/storage-sqlite':
         specifier: workspace:*
         version: link:../storage-sqlite
-      '@ax/tool-bash':
-        specifier: workspace:*
-        version: link:../tool-bash
       '@ax/tool-dispatcher':
         specifier: workspace:*
         version: link:../tool-dispatcher
-      '@ax/tool-file-io':
-        specifier: workspace:*
-        version: link:../tool-file-io
       zod:
         specifier: ^3.23.8
         version: 3.25.76
@@ -1050,50 +1044,12 @@ importers:
         specifier: ^4.1.4
         version: 4.1.5(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(jsdom@26.1.0)(vite@8.0.10(@types/node@25.6.0)(yaml@2.8.3))
 
-  packages/tool-bash:
-    dependencies:
-      '@ax/core':
-        specifier: workspace:*
-        version: link:../core
-    devDependencies:
-      '@ax/tool-dispatcher':
-        specifier: workspace:*
-        version: link:../tool-dispatcher
-      '@types/node':
-        specifier: ^25.6.0
-        version: 25.6.0
-      typescript:
-        specifier: ^6.0.3
-        version: 6.0.3
-      vitest:
-        specifier: ^4.1.4
-        version: 4.1.5(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(jsdom@26.1.0)(vite@8.0.10(@types/node@25.6.0)(yaml@2.8.3))
-
   packages/tool-dispatcher:
     dependencies:
       '@ax/core':
         specifier: workspace:*
         version: link:../core
     devDependencies:
-      '@types/node':
-        specifier: ^25.6.0
-        version: 25.6.0
-      typescript:
-        specifier: ^6.0.3
-        version: 6.0.3
-      vitest:
-        specifier: ^4.1.4
-        version: 4.1.5(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(jsdom@26.1.0)(vite@8.0.10(@types/node@25.6.0)(yaml@2.8.3))
-
-  packages/tool-file-io:
-    dependencies:
-      '@ax/core':
-        specifier: workspace:*
-        version: link:../core
-    devDependencies:
-      '@ax/tool-dispatcher':
-        specifier: workspace:*
-        version: link:../tool-dispatcher
       '@types/node':
         specifier: ^25.6.0
         version: 25.6.0
@@ -1266,15 +1222,9 @@ importers:
       '@ax/teams':
         specifier: workspace:*
         version: link:../../packages/teams
-      '@ax/tool-bash':
-        specifier: workspace:*
-        version: link:../../packages/tool-bash
       '@ax/tool-dispatcher':
         specifier: workspace:*
         version: link:../../packages/tool-dispatcher
-      '@ax/tool-file-io':
-        specifier: workspace:*
-        version: link:../../packages/tool-file-io
       '@ax/workspace-git':
         specifier: workspace:*
         version: link:../../packages/workspace-git
