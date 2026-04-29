@@ -57,6 +57,13 @@ import { DISABLED_BUILTINS, MCP_HOST_SERVER_NAME } from './tool-names.js';
 //   0 — chat completed normally (inbox returned cancel; SDK drained).
 //   1 — terminated abnormally (SDK threw, IPC errored after retries, etc.).
 //   2 — fatal during bootstrap (missing env, initial tool.list failure).
+//
+// Boot-failure paths (return 2 before the IPC client is built, or before
+// the SDK iterator starts) exit WITHOUT firing `event.chat-end`. That's
+// fine — the orchestrator's `handle.exited` watcher synthesizes a
+// terminated outcome with reason `sandbox-exit-before-chat-end`, so
+// chat:end still fires exactly once per agent:invoke from a subscriber's
+// perspective.
 // ---------------------------------------------------------------------------
 
 export async function main(): Promise<number> {
