@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "579c211d55e7",
+  "strategy": "manual-commit",
+  "branch": "phase-6-6-test-rebuild",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "packages/cli/src/__tests__/main-options.test.ts",
+    "packages/cli/src/main.ts",
+    "packages/test-harness/src/index.ts",
+    "presets/k8s/src/__tests__/multi-tenant-acceptance.test.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/57/9c211d55e7/0/metadata.json",
+      "transcript": "/57/9c211d55e7/0/full.jsonl",
+      "content_hash": "/57/9c211d55e7/0/content_hash.txt",
+      "prompt": "/57/9c211d55e7/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 234,
+    "cache_creation_tokens": 1295999,
+    "cache_read_tokens": 34637738,
+    "output_tokens": 120809,
+    "api_call_count": 177
+  }
+}
