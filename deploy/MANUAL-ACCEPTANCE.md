@@ -21,8 +21,7 @@ We're a nervous crab. Don't ship without doing this.
 ```bash
 # 1. Build the runner image
 #    Dockerfile.agent is a follow-up PR — bring your own image OR build a
-#    minimal one that bundles both runner binaries:
-#      @ax/agent-native-runner       → /opt/ax-next/agent-native-runner.js
+#    minimal one that bundles the runner binary:
 #      @ax/agent-claude-sdk-runner   → /opt/ax-next/agent-claude-sdk-runner.js
 docker build -t ax-next/agent:dev -f deploy/Dockerfile.agent .
 

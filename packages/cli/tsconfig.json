@@ -20,7 +20,6 @@
     { "path": "../session-inmemory" },
     { "path": "../ipc-server" },
     { "path": "../chat-orchestrator" },
-    { "path": "../agent-native-runner" },
     { "path": "../agent-claude-sdk-runner" },
     { "path": "../tool-dispatcher" },
     { "path": "../tool-bash" },

@@ -4,7 +4,6 @@
 "@ax/ipc-server": patch
 "@ax/sandbox-subprocess": patch
 "@ax/agent-runner-core": patch
-"@ax/agent-native-runner": patch
 "@ax/agent-claude-sdk-runner": patch
 "@ax/chat-orchestrator": patch
 "@ax/test-harness": minor
@@ -16,7 +15,6 @@
 "@ax/workspace-git": minor
 "@ax/sandbox-k8s": minor
 "@ax/preset-k8s": minor
-"@ax/tool-file-io-impl": patch
 ---
 
 Week 7–9 — production deployment shape. Swaps the single-host plugins shipped in earlier slices for their k8s-shape equivalents behind the same hook surfaces, validating Invariant 1 (transport-/storage-agnostic hooks) by shipping a postgres / k8s / git-backed plugin set against the unchanged subscriber contract.

@@ -11,9 +11,6 @@
 "@ax/session-inmemory": minor
 "@ax/chat-orchestrator": minor
 "@ax/agent-runner-core": minor
-"@ax/agent-native-runner": minor
-"@ax/tool-bash-impl": minor
-"@ax/tool-file-io-impl": minor
 ---
 
 Week 6.5a — topology shift.

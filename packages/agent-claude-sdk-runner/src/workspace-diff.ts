@@ -31,11 +31,10 @@ import type { DiffAccumulator } from '@ax/agent-runner-core';
 const FILE_MUTATING_TOOLS = new Set(['Write', 'Edit', 'MultiEdit']);
 
 /**
- * 1 MiB ceiling matches `@ax/tool-file-io-impl/exec.ts.MAX_FILE_BYTES`.
- * We can't import it directly (cross-plugin import — invariant I2), so we
- * redeclare. The host's workspace plugin is the eventual gatekeeper; this
- * cap exists only to prevent a model that wrote a giant file via `Write`
- * from blowing memory in the runner.
+ * 1 MiB ceiling — keep aligned with the host file-IO ceiling. The host's
+ * workspace plugin is the eventual gatekeeper; this cap exists only to
+ * prevent a model that wrote a giant file via `Write` from blowing memory
+ * in the runner.
  */
 const MAX_FILE_BYTES = 1_048_576;
 
@@ -51,9 +50,9 @@ export interface ObserveOptions {
 
 /**
  * Resolve a model-supplied path to an absolute path INSIDE the workspace.
- * Returns null if the path escapes the root. Mirrors the safePath helper
- * in `@ax/tool-file-io-impl/safe-path.ts` (also redeclared, not imported,
- * to keep this package free of cross-plugin imports).
+ * Returns null if the path escapes the root. Implements the same containment
+ * rules as the host-side safePath helper, redeclared here so this package
+ * stays free of cross-plugin imports (invariant I2).
  */
 async function resolveSafe(
   workspaceRoot: string,

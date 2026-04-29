@@ -58,31 +58,6 @@ importers:
         specifier: ^4.1.4
         version: 4.1.5(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(jsdom@26.1.0)(vite@8.0.10(@types/node@25.6.0)(yaml@2.8.3))
 
-  packages/agent-native-runner:
-    dependencies:
-      '@ax/agent-runner-core':
-        specifier: workspace:*
-        version: link:../agent-runner-core
-      '@ax/ipc-protocol':
-        specifier: workspace:*
-        version: link:../ipc-protocol
-      '@ax/tool-bash-impl':
-        specifier: workspace:*
-        version: link:../tool-bash-impl
-      '@ax/tool-file-io-impl':
-        specifier: workspace:*
-        version: link:../tool-file-io-impl
-    devDependencies:
-      '@types/node':
-        specifier: ^25.6.0
-        version: 25.6.0
-      typescript:
-        specifier: ^6.0.3
-        version: 6.0.3
-      vitest:
-        specifier: ^4.1.4
-        version: 4.1.5(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(jsdom@26.1.0)(vite@8.0.10(@types/node@25.6.0)(yaml@2.8.3))
-
   packages/agent-runner-core:
     dependencies:
       '@ax/ipc-protocol':
@@ -340,9 +315,6 @@ importers:
       '@ax/agent-claude-sdk-runner':
         specifier: workspace:*
         version: link:../agent-claude-sdk-runner
-      '@ax/agent-native-runner':
-        specifier: workspace:*
-        version: link:../agent-native-runner
       '@ax/audit-log':
         specifier: workspace:*
         version: link:../audit-log
@@ -1141,25 +1113,6 @@ importers:
         specifier: ^4.1.4
         version: 4.1.5(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(jsdom@26.1.0)(vite@8.0.10(@types/node@25.6.0)(yaml@2.8.3))
 
-  packages/tool-bash-impl:
-    dependencies:
-      '@ax/agent-runner-core':
-        specifier: workspace:*
-        version: link:../agent-runner-core
-      '@ax/ipc-protocol':
-        specifier: workspace:*
-        version: link:../ipc-protocol
-    devDependencies:
-      '@types/node':
-        specifier: ^25.6.0
-        version: 25.6.0
-      typescript:
-        specifier: ^6.0.3
-        version: 6.0.3
-      vitest:
-        specifier: ^4.1.4
-        version: 4.1.5(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(jsdom@26.1.0)(vite@8.0.10(@types/node@25.6.0)(yaml@2.8.3))
-
   packages/tool-dispatcher:
     dependencies:
       '@ax/core':
@@ -1185,25 +1138,6 @@ importers:
       '@ax/tool-dispatcher':
         specifier: workspace:*
         version: link:../tool-dispatcher
-      '@types/node':
-        specifier: ^25.6.0
-        version: 25.6.0
-      typescript:
-        specifier: ^6.0.3
-        version: 6.0.3
-      vitest:
-        specifier: ^4.1.4
-        version: 4.1.5(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(jsdom@26.1.0)(vite@8.0.10(@types/node@25.6.0)(yaml@2.8.3))
-
-  packages/tool-file-io-impl:
-    dependencies:
-      '@ax/agent-runner-core':
-        specifier: workspace:*
-        version: link:../agent-runner-core
-      '@ax/ipc-protocol':
-        specifier: workspace:*
-        version: link:../ipc-protocol
-    devDependencies:
       '@types/node':
         specifier: ^25.6.0
         version: 25.6.0

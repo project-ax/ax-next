@@ -35,7 +35,6 @@
     "@ax/session-inmemory": "workspace:*",
     "@ax/ipc-server": "workspace:*",
     "@ax/chat-orchestrator": "workspace:*",
-    "@ax/agent-native-runner": "workspace:*",
     "@ax/agent-claude-sdk-runner": "workspace:*",
     "@ax/tool-dispatcher": "workspace:*",
     "@ax/tool-bash": "workspace:*",
