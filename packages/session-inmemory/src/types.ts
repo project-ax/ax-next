@@ -1,4 +1,4 @@
-import type { ChatMessage } from '@ax/core';
+import type { AgentMessage } from '@ax/core';
 
 // ---------------------------------------------------------------------------
 // AgentConfig — frozen-at-creation snapshot of a resolving agent's settings.
@@ -49,11 +49,11 @@ export interface AgentConfig {
 // stamps it onto every `event.stream-chunk` so the host can route the
 // chunk back to the waiting client (Task 5/7). REQUIRED — never optional.
 export type InboxEntry =
-  | { type: 'user-message'; payload: ChatMessage; reqId: string }
+  | { type: 'user-message'; payload: AgentMessage; reqId: string }
   | { type: 'cancel' };
 
 export type ClaimResult =
-  | { type: 'user-message'; payload: ChatMessage; reqId: string; cursor: number }
+  | { type: 'user-message'; payload: AgentMessage; reqId: string; cursor: number }
   | { type: 'cancel'; cursor: number }
   | { type: 'timeout'; cursor: number };
 

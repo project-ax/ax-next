@@ -9,7 +9,7 @@ import { runSessionMigration, type SessionDatabase } from '../migrations.js';
 // ---------------------------------------------------------------------------
 // Inbox JSONB corruption test (review-feedback follow-up).
 //
-// Pre-Task-6 rows stored a bare ChatMessage in `payload`; Task 6 wraps that
+// Pre-Task-6 rows stored a bare AgentMessage in `payload`; Task 6 wraps that
 // as `{ message, reqId }` so the runner can read the host-minted reqId
 // back at claim time. A row whose JSONB doesn't match the wrap shape (a
 // pre-Task-6 row left in flight across a deploy, or a manual DB write) is
@@ -80,7 +80,7 @@ async function makeInbox(): Promise<Setup> {
 }
 
 /**
- * Insert a row with the OLD pre-Task-6 shape — bare ChatMessage in the
+ * Insert a row with the OLD pre-Task-6 shape — bare AgentMessage in the
  * JSONB payload, no `{ message, reqId }` wrap. Bypasses `inbox.queue`
  * (which would write the new shape) so we can simulate a row left over
  * from before Task 6 landed.

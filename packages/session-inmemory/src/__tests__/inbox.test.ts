@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import type { ChatMessage } from '@ax/core';
+import type { AgentMessage } from '@ax/core';
 import { createInbox } from '../inbox.js';
 
 const userMsg = (
   content: string,
   reqId = 'r-test',
-): { type: 'user-message'; payload: ChatMessage; reqId: string } => ({
+): { type: 'user-message'; payload: AgentMessage; reqId: string } => ({
   type: 'user-message',
   payload: { role: 'user', content },
   reqId,
