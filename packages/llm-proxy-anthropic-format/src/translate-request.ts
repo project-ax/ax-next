@@ -1,4 +1,4 @@
-import type { LlmCallRequest, ChatMessage, ToolDescriptor } from '@ax/ipc-protocol';
+import type { LlmCallRequest, AgentMessage, ToolDescriptor } from '@ax/ipc-protocol';
 import {
   AnthropicRequestSchema,
   type AnthropicContentBlock,
@@ -31,10 +31,10 @@ export function translateAnthropicRequest(raw: unknown): LlmCallRequest {
   }
   const req = parsed.data;
 
-  const messages: ChatMessage[] = [];
+  const messages: AgentMessage[] = [];
   // `system` may be a plain string or an array of `{type:'text',text}` blocks
   // (the Anthropic API accepts both; the `claude` CLI uses the array form).
-  // Flatten to a single `system` ChatMessage with the text joined by newlines.
+  // Flatten to a single `system` AgentMessage with the text joined by newlines.
   const systemText = flattenSystem(req.system);
   if (systemText.length > 0) {
     messages.push({ role: 'system', content: systemText });
@@ -78,7 +78,7 @@ function flattenSystem(
     .join('\n');
 }
 
-function flattenMessage(m: AnthropicMessage): ChatMessage {
+function flattenMessage(m: AnthropicMessage): AgentMessage {
   if (typeof m.content === 'string') {
     return { role: m.role, content: m.content };
   }
