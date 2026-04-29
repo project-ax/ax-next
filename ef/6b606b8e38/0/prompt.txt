@@ -1,0 +1,49 @@
+<task-notification>
+<task-id>bpamw87tf</task-id>
+<summary>Monitor event: "PR #21 CI after CR follow-up commits"</summary>
+<event>gitleaks: SUCCESS</event>
+If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>bpamw87tf</task-id>
+<summary>Monitor event: "PR #21 CI after CR follow-up commits"</summary>
+<event>CodeRabbit: SUCCESS
+semgrep: SUCCESS</event>
+If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>bpamw87tf</task-id>
+<summary>Monitor event: "PR #21 CI after CR follow-up commits"</summary>
+<event>Analyze (javascript-typescript): SUCCESS</event>
+If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>bpamw87tf</task-id>
+<summary>Monitor event: "PR #21 CI after CR follow-up commits"</summary>
+<event>test: SUCCESS
+ALL_CHECKS_TERMINAL</event>
+If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>bpamw87tf</task-id>
+<tool-use-id>toolu_01BbzaPX7bNjdNDbwXYRkU3t</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-vpulim-dev-ai-ax-next/7cfa4ace-d0bb-43dd-96a1-dcba61b76eb8/tasks/bpamw87tf.output</output-file>
+<status>completed</status>
+<summary>Monitor "PR #21 CI after CR follow-up commits" stream ended</summary>
+</task-notification>
+
+---
+
+Address latest pr comments
