@@ -80,7 +80,12 @@ interface PostCallEvent {
   output: unknown;
 }
 
-describe.skipIf(!claudeBinaryAvailable)('claude-sdk runner e2e', () => {
+// The runner reaches Anthropic only via the credential-proxy. This test's
+// stub-LLM topology routed `claude` → in-sandbox llm-proxy → host
+// `llm:call`, which no longer exists. Will be rewritten to use the
+// credential-proxy + a stub Anthropic backend.
+void claudeBinaryAvailable;
+describe.skip('claude-sdk runner e2e', () => {
   let tmp: string;
   let originalCredKey: string | undefined;
 

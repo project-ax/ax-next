@@ -6,7 +6,6 @@ import { PluginError } from '@ax/core';
 import { createTestHarness } from '@ax/test-harness';
 import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
 import { createIpcServerPlugin } from '@ax/ipc-server';
-import { createLlmProxyAnthropicFormatPlugin } from '@ax/llm-proxy-anthropic-format';
 import { createSandboxSubprocessPlugin } from '../plugin.js';
 import type { OpenSessionResult } from '../open-session.js';
 
@@ -57,7 +56,6 @@ async function makeHarness() {
     plugins: [
       createSessionInmemoryPlugin(),
       createIpcServerPlugin(),
-      createLlmProxyAnthropicFormatPlugin(),
       createSandboxSubprocessPlugin(),
     ],
   });
@@ -138,7 +136,6 @@ describe('sandbox:open-session', () => {
     expect(parsed.AX_WORKSPACE_ROOT).toBe(ws);
     expect(typeof parsed.AX_AUTH_TOKEN).toBe('string');
     expect((parsed.AX_AUTH_TOKEN ?? '').length).toBeGreaterThan(0);
-    expect(parsed.AX_LLM_PROXY_URL).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
     // The token must NOT be echoed in the returned surface.
     expect(JSON.stringify(result)).not.toContain(parsed.AX_AUTH_TOKEN);
 
@@ -349,53 +346,19 @@ describe('sandbox:open-session', () => {
     await fs.rm(ws, { recursive: true, force: true });
   });
 
-  it('stops the llm-proxy on child close (port is released)', async () => {
-    const ws = await mkWorkspace();
-    const h = await makeHarness();
-    const ctx = h.ctx();
-    const result = await h.bus.call<unknown, OpenSessionResult>(
-      'sandbox:open-session',
-      ctx,
-      { sessionId: 'proxy-stop-1', workspaceRoot: ws, runnerBinary: ECHO_STUB },
-    );
-    const line = await readFirstStdoutLine(result);
-    const parsed = JSON.parse(line) as Record<string, string | null>;
-    const proxyUrl = parsed.AX_LLM_PROXY_URL ?? '';
-    expect(proxyUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
-    const proxyPort = Number(new URL(proxyUrl).port);
-
-    await result.handle.kill();
-    await result.handle.exited;
-
-    // Poll: re-bind on the port to prove llm-proxy:stop released it.
-    let bound = false;
-    for (let i = 0; i < 20; i++) {
-      const reclaim = (await import('node:http')).createServer();
-      try {
-        await new Promise<void>((resolve, reject) => {
-          reclaim.once('error', reject);
-          reclaim.listen(proxyPort, '127.0.0.1', () => resolve());
-        });
-        bound = true;
-        await new Promise<void>((r) => reclaim.close(() => r()));
-        break;
-      } catch {
-        // Port still held — wait and retry.
-      }
-      await new Promise((r) => setTimeout(r, 25));
-    }
-    expect(bound).toBe(true);
-    await fs.rm(ws, { recursive: true, force: true });
-  });
-
   // ---------------------------------------------------------------------
-  // Phase 2 — proxyConfig env injection
+  // proxyConfig env injection
   //
   // When the orchestrator passes a proxyConfig blob, we write the CA cert
   // PEM to the per-session tempdir and inject HTTPS_PROXY / HTTP_PROXY /
   // NODE_EXTRA_CA_CERTS / SSL_CERT_FILE / AX_PROXY_* / envMap into the
   // child env. CA private keys never enter the sandbox (I1) — the
   // certificate is a public key only.
+  //
+  // When proxyConfig is undefined, no proxy env is injected and the
+  // runner fails at boot (no AX_PROXY_*). That's the intended Phase 5
+  // behavior; presets that want a working runner load
+  // @ax/credential-proxy and the orchestrator threads proxyConfig through.
   // ---------------------------------------------------------------------
 
   it('writes CA cert + injects HTTPS_PROXY / NODE_EXTRA_CA_CERTS when proxyConfig.endpoint is set', async () => {
@@ -423,11 +386,6 @@ describe('sandbox:open-session', () => {
     expect(parsed.AX_PROXY_ENDPOINT).toBe('http://127.0.0.1:54321');
     expect(parsed.AX_PROXY_UNIX_SOCKET).toBeNull();
     expect(parsed.ANTHROPIC_API_KEY).toBe('ax-cred:0123');
-    // Phase 2: when proxyConfig is set, the legacy in-sandbox llm-proxy is
-    // NOT started — the runner reaches the credential-proxy directly via
-    // HTTPS_PROXY. AX_LLM_PROXY_URL must be unset so a future runner that
-    // accidentally reads both vars doesn't pick the wrong path.
-    expect(parsed.AX_LLM_PROXY_URL).toBeNull();
     // CA file path lands inside the per-session tempdir (same one the IPC
     // socket uses — 0700 mode, host uid only).
     const caPath = parsed.NODE_EXTRA_CA_CERTS;
@@ -558,8 +516,7 @@ describe('sandbox:open-session', () => {
     // function used to exit without rollback, leaking a live token + a
     // bound ipc listener. We force fs.writeFile to throw and assert the
     // listener slot is free again (rebinding the same sessionId via
-    // ipc:start would throw 'already-running' otherwise — same shape as
-    // the llm-proxy:start rollback test below).
+    // ipc:start would throw 'already-running' otherwise).
     const ws = await mkWorkspace();
     const h = await makeHarness();
     const ctx = h.ctx();
@@ -644,59 +601,4 @@ describe('sandbox:open-session', () => {
     await fs.rm(ws, { recursive: true, force: true });
   });
 
-  it('rolls back ipc + session + tempdir when llm-proxy:start fails', async () => {
-    const ws = await mkWorkspace();
-    // Build a harness where llm-proxy:start always throws.
-    const h = await createTestHarness({
-      services: {
-        'llm:call': async () => ({
-          assistantMessage: { role: 'assistant', content: '' },
-          toolCalls: [],
-        }),
-        'tool:list': async () => ({ tools: [] }),
-        'llm-proxy:start': async () => {
-          throw new PluginError({
-            code: 'bind-failed',
-            plugin: 'test-mock',
-            hookName: 'llm-proxy:start',
-            message: 'boom',
-          });
-        },
-        'llm-proxy:stop': async () => ({}),
-      },
-      plugins: [
-        createSessionInmemoryPlugin(),
-        createIpcServerPlugin(),
-        createSandboxSubprocessPlugin(),
-      ],
-    });
-    const ctx = h.ctx();
-
-    let caught: unknown;
-    try {
-      await h.bus.call<unknown, OpenSessionResult>(
-        'sandbox:open-session',
-        ctx,
-        { sessionId: 'rb-1', workspaceRoot: ws, runnerBinary: ECHO_STUB },
-      );
-    } catch (err) {
-      caught = err;
-    }
-    expect(caught).toBeInstanceOf(PluginError);
-    expect((caught as PluginError).message).toContain('boom');
-
-    // Rollback: ipc-server's `ipc:start` tracks listeners by sessionId with
-    // an 'already-running' guard. If rollback didn't call `ipc:stop`, a
-    // fresh `ipc:start` on the same sessionId would throw 'already-running'.
-    // Verify that the listener slot is free.
-    const rebindDir = await fs.mkdtemp(path.join(process.env.TMPDIR ?? '/tmp', 'ax-ipc-rb-'));
-    const rebindSock = path.join(rebindDir, 'ipc.sock');
-    await expect(
-      h.bus.call('ipc:start', ctx, { socketPath: rebindSock, sessionId: 'rb-1' }),
-    ).resolves.toMatchObject({ running: true });
-    await h.bus.call('ipc:stop', ctx, { sessionId: 'rb-1' });
-    await fs.rm(rebindDir, { recursive: true, force: true });
-
-    await fs.rm(ws, { recursive: true, force: true });
-  });
 });

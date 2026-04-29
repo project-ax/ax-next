@@ -70,7 +70,7 @@ Three fields cross from caller into pod env:
 
 Pod env is built from VALIDATED values plus a fixed allowlist (`AX_SESSION_ID`, `AX_AUTH_TOKEN`, `AX_WORKSPACE_ROOT`, `AX_RUNNER_BINARY`, `AX_RUNNER_ENDPOINT`, optional `AX_REQUEST_ID`, plus a caller-supplied `extraEnv` map — see `pod-spec.ts:82-96`). There is no `process.env[userInput]` lookup anywhere in this plugin; `grep -n process.env packages/sandbox-k8s/src/*.ts` confirms zero matches.
 
-`extraEnv` is for non-secret env layered on top (e.g., the future `AX_LLM_PROXY_URL`). It does NOT validate values — a host-side caller passing `extraEnv` is trusted to pass non-secret strings. We chose not to validate here because the host plugin assembling the call IS the trust boundary; if a caller wanted to put `KUBECONFIG=...` in `extraEnv`, that's their bug, and the runner pod has no way to reach the host's kubeconfig regardless.
+`extraEnv` is for non-secret env layered on top (e.g., `AX_PROXY_UNIX_SOCKET` for the credential-proxy bridge). It does NOT validate values — a host-side caller passing `extraEnv` is trusted to pass non-secret strings. We chose not to validate here because the host plugin assembling the call IS the trust boundary; if a caller wanted to put `KUBECONFIG=...` in `extraEnv`, that's their bug, and the runner pod has no way to reach the host's kubeconfig regardless.
 
 ## Prompt injection / untrusted content
 

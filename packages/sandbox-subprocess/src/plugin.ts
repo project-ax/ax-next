@@ -20,8 +20,6 @@ export function createSandboxSubprocessPlugin(): Plugin {
         'session:terminate',
         'ipc:start',
         'ipc:stop',
-        'llm-proxy:start',
-        'llm-proxy:stop',
       ],
       subscribes: [],
     },

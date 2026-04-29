@@ -256,9 +256,9 @@ interface OpenSessionInput {
   };
   /**
    * Per-session proxy blob. Populated only when @ax/credential-proxy is
-   * loaded; otherwise undefined and the runner reaches the legacy
-   * in-sandbox llm-proxy via AX_LLM_PROXY_URL. Phase 5/6 deletes that
-   * fallback.
+   * loaded; otherwise undefined and sandbox:open-session injects no
+   * proxy env, leaving the runner to fail at boot when no AX_PROXY_* is
+   * set. Presets that want a working runner load @ax/credential-proxy.
    */
   proxyConfig?: ProxyConfig;
 }
@@ -613,14 +613,13 @@ export function createOrchestrator(
       return outcome;
     }
 
-    // 4.5 — proxy:open-session (Phase 2). Fresh-spawn path only: a routed
+    // 4.5 — proxy:open-session. Fresh-spawn path only: a routed
     //       agent:invoke reuses an existing live sandbox whose proxy
     //       session was opened by the orchestrator that originally
-    //       spawned it. Soft dep: when @ax/credential-proxy isn't loaded
-    //       (CLI canary pre-Task-5, mcp-client e2e harness), proxyConfig
-    //       stays undefined and the runner falls back to the legacy
-    //       in-sandbox llm-proxy via AX_LLM_PROXY_URL. Phase 5/6 deletes
-    //       the fallback.
+    //       spawned it. Soft dep: when @ax/credential-proxy isn't loaded,
+    //       proxyConfig stays undefined and sandbox:open-session injects
+    //       no proxy env — the runner will fail at boot. Presets that
+    //       want a working runner load @ax/credential-proxy.
     //
     //       I7 — `proxy:close-session` always fires once per `proxy:open-
     //       session`. We track that with `proxyOpened`; the finally below

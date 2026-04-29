@@ -30,7 +30,8 @@ export interface BuildPodSpecInput {
    * Overrides for env vars the runner reads. The pod build always sets
    * AX_SESSION_ID, AX_AUTH_TOKEN, AX_WORKSPACE_ROOT, AX_RUNNER_ENDPOINT,
    * and AX_REQUEST_ID; callers can layer additional non-secret env on
-   * top (e.g. AX_LLM_PROXY_URL once the pod-side proxy lands).
+   * top (e.g. AX_PROXY_UNIX_SOCKET pointing at the in-pod credential-
+   * proxy socket).
    */
   extraEnv?: Record<string, string>;
 }
