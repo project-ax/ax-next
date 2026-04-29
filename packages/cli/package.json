@@ -34,7 +34,6 @@
     "@ax/sandbox-subprocess": "workspace:*",
     "@ax/session-inmemory": "workspace:*",
     "@ax/ipc-server": "workspace:*",
-    "@ax/llm-proxy-anthropic-format": "workspace:*",
     "@ax/chat-orchestrator": "workspace:*",
     "@ax/agent-native-runner": "workspace:*",
     "@ax/agent-claude-sdk-runner": "workspace:*",

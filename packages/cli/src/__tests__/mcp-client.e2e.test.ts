@@ -32,7 +32,7 @@ import { main } from '../main.js';
 //     │     └── StdioClientTransport → node <mcpServerStubPath> (real spawn)
 //     ├── @ax/sandbox-subprocess spawns
 //     │     └── @ax/agent-native-runner
-//     │           └── HTTP POST /llm.call → @ax/llm-proxy-anthropic-format
+//     │           └── IPC `llm.call` → @ax/ipc-server handler
 //     │                 └── bus.call('llm:call') → stub LLM plugin (below)
 //     └── runner sees `mcp.echo.echo` in the tool catalog, emits a tool_use,
 //         which loops back as POST /tool.execute-host → `tool:execute:mcp.echo.echo`

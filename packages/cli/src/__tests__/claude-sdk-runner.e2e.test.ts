@@ -51,8 +51,8 @@ const claudeBinaryAvailable = detectClaudeBinary();
 //             ├── in-process MCP server   — for executesIn:'host' tools
 //             └── @anthropic-ai/claude-agent-sdk spawns
 //                 └── `claude` (native grandchild)
-//                     └── HTTP POST → @ax/llm-proxy-anthropic-format
-//                         └── bus.call('llm:call') → stub LLM plugin
+//                     └── HTTPS_PROXY → @ax/credential-proxy
+//                         └── api.anthropic.com (with stub LLM in tests)
 //
 // What we verify:
 //   1. rc === 0 (chat outcome is `complete`).

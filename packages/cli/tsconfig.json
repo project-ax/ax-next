@@ -19,7 +19,6 @@
     { "path": "../sandbox-subprocess" },
     { "path": "../session-inmemory" },
     { "path": "../ipc-server" },
-    { "path": "../llm-proxy-anthropic-format" },
     { "path": "../chat-orchestrator" },
     { "path": "../agent-native-runner" },
     { "path": "../agent-claude-sdk-runner" },
