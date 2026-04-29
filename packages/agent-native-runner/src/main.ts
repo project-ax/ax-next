@@ -7,7 +7,7 @@ import {
   createLocalDispatcher,
 } from '@ax/agent-runner-core';
 import type {
-  ChatMessage,
+  AgentMessage,
   SessionGetConfigResponse,
   ToolListResponse,
 } from '@ax/ipc-protocol';
@@ -117,7 +117,7 @@ export async function main(): Promise<number> {
 function toWireOutcome(
   outcome: TurnLoopOutcome,
 ):
-  | { kind: 'complete'; messages: ChatMessage[] }
+  | { kind: 'complete'; messages: AgentMessage[] }
   | { kind: 'terminated'; reason: string; error?: unknown } {
   if (outcome.kind === 'complete') {
     return { kind: 'complete', messages: outcome.messages };

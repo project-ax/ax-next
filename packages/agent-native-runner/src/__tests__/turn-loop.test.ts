@@ -8,7 +8,7 @@ import {
   type LocalDispatcher,
 } from '@ax/agent-runner-core';
 import type {
-  ChatMessage,
+  AgentMessage,
   LlmCallResponse,
   ToolCall,
   ToolDescriptor,
@@ -162,7 +162,7 @@ describe('runTurnLoop', () => {
     if (outcome.kind !== 'complete') throw new Error('expected complete');
     // History: user, assistant(t1), tool-result, assistant(t2)
     expect(outcome.messages).toHaveLength(4);
-    const toolResult = outcome.messages[2] as ChatMessage;
+    const toolResult = outcome.messages[2] as AgentMessage;
     expect(toolResult.role).toBe('user');
     expect(toolResult.content).toBe(`[tool bash] ${JSON.stringify(bashOutput)}`);
 
@@ -195,7 +195,7 @@ describe('runTurnLoop', () => {
     const outcome = await runTurnLoop({ client, inbox, dispatcher, tools });
 
     if (outcome.kind !== 'complete') throw new Error('expected complete');
-    const toolResult = outcome.messages[2] as ChatMessage;
+    const toolResult = outcome.messages[2] as AgentMessage;
     expect(toolResult.content).toBe('[tool web_fetch] "html"');
 
     // Confirm tool.execute-host was actually called.
@@ -218,7 +218,7 @@ describe('runTurnLoop', () => {
     const outcome = await runTurnLoop({ client, inbox, dispatcher, tools });
 
     if (outcome.kind !== 'complete') throw new Error('expected complete');
-    const rejectMsg = outcome.messages[2] as ChatMessage;
+    const rejectMsg = outcome.messages[2] as AgentMessage;
     expect(rejectMsg.role).toBe('user');
     expect(rejectMsg.content).toBe("tool 'bash' rejected: policy");
     // Last message is from the second LLM turn.
@@ -283,7 +283,7 @@ describe('runTurnLoop', () => {
     const outcome = await runTurnLoop({ client, inbox, dispatcher, tools });
 
     if (outcome.kind !== 'complete') throw new Error('expected complete');
-    const errMsg = outcome.messages[2] as ChatMessage;
+    const errMsg = outcome.messages[2] as AgentMessage;
     expect(errMsg.role).toBe('user');
     // LocalDispatcher wraps with "local dispatcher: tool 'bash' failed: ..."
     expect(errMsg.content).toMatch(/^\[tool bash\] error:/);
@@ -352,7 +352,7 @@ describe('runTurnLoop', () => {
     // llm-anthropic extracts role:'system' into the API's `system` field.
     const llmCall = calls.find((c) => c.action === 'llm.call');
     expect(llmCall).toBeDefined();
-    const messages = (llmCall!.payload as { messages: ChatMessage[] }).messages;
+    const messages = (llmCall!.payload as { messages: AgentMessage[] }).messages;
     expect(messages[0]).toEqual({ role: 'system', content: 'You are a poet.' });
     expect(messages[1]).toEqual({ role: 'user', content: 'greet me' });
     // The user-facing outcome filters out the system message: callers
@@ -380,7 +380,7 @@ describe('runTurnLoop', () => {
     });
 
     const llmCall = calls.find((c) => c.action === 'llm.call');
-    const messages = (llmCall!.payload as { messages: ChatMessage[] }).messages;
+    const messages = (llmCall!.payload as { messages: AgentMessage[] }).messages;
     // Only the user message — no role:'system' entry.
     expect(messages).toEqual([{ role: 'user', content: 'hi' }]);
   });
