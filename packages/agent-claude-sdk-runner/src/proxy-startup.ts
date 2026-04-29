@@ -79,14 +79,20 @@ export async function setupProxy(env: RunnerEnv): Promise<ProxyStartup> {
     // — the credential-proxy substitutes the real value mid-flight.
     //
     // I1: the IPC bearer (env.authToken) is NEVER sent to api.anthropic.com.
+    // Defense-in-depth: enforce the exact `ax-cred:<32-hex>` shape produced
+    // by @ax/credential-proxy's registry. A non-empty check would let a
+    // regressed wiring (e.g., a real `sk-ant-...` key landing in
+    // ANTHROPIC_API_KEY) flow upstream silently. The format is asserted at
+    // both ends — generator and consumer — so a future format change has
+    // to update both, surfacing as a loud test failure rather than a
+    // silent capability leak.
     const placeholder = process.env.ANTHROPIC_API_KEY;
-    if (placeholder === undefined || placeholder.length === 0) {
-      // Should be unreachable: proxy:open-session always returns an
-      // envMap when an Anthropic credential ref is provided, and
-      // sandbox-subprocess merges it into the child env. Fail loud so a
-      // wiring bug doesn't silently pass the IPC bearer upstream.
+    if (
+      typeof placeholder !== 'string' ||
+      !/^ax-cred:[0-9a-f]{32}$/.test(placeholder)
+    ) {
       throw new MissingEnvError(
-        'ANTHROPIC_API_KEY (expected ax-cred placeholder from proxy:open-session)',
+        'ANTHROPIC_API_KEY (expected ax-cred:<32-hex> placeholder from proxy:open-session)',
       );
     }
     anthropicEnv.ANTHROPIC_API_KEY = placeholder;

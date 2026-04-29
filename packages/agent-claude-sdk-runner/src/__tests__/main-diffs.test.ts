@@ -91,7 +91,7 @@ function setEnv(): void {
     AX_AUTH_TOKEN: 'tok-123',
     AX_WORKSPACE_ROOT: workspaceRoot,
     AX_PROXY_ENDPOINT: 'http://127.0.0.1:8443',
-    ANTHROPIC_API_KEY: 'ax-cred:test',
+    ANTHROPIC_API_KEY: 'ax-cred:0123456789abcdef0123456789abcdef',
   };
 }
 

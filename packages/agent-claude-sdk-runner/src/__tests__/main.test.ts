@@ -81,7 +81,7 @@ const COMPLETE_ENV = {
   AX_AUTH_TOKEN: 'tok-123',
   AX_WORKSPACE_ROOT: '/tmp/workspace',
   AX_PROXY_ENDPOINT: 'http://127.0.0.1:8443',
-  ANTHROPIC_API_KEY: 'ax-cred:test',
+  ANTHROPIC_API_KEY: 'ax-cred:0123456789abcdef0123456789abcdef',
 } as const;
 
 const ORIGINAL_ENV = process.env;

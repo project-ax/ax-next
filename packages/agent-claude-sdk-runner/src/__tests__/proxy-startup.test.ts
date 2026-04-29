@@ -36,7 +36,7 @@ describe('setupProxy', () => {
   // -------------------------------------------------------------------
 
   it('direct mode: forwards process.env.ANTHROPIC_API_KEY (the placeholder); no ANTHROPIC_BASE_URL; no bridge', async () => {
-    process.env.ANTHROPIC_API_KEY = 'ax-cred:0123';
+    process.env.ANTHROPIC_API_KEY = 'ax-cred:0123456789abcdef0123456789abcdef';
     const env: RunnerEnv = {
       runnerEndpoint: 'unix:///tmp/x.sock',
       sessionId: 's',
@@ -45,7 +45,7 @@ describe('setupProxy', () => {
       proxyEndpoint: 'http://127.0.0.1:54321',
     };
     const out = await setupProxy(env);
-    expect(out.anthropicEnv).toEqual({ ANTHROPIC_API_KEY: 'ax-cred:0123' });
+    expect(out.anthropicEnv).toEqual({ ANTHROPIC_API_KEY: 'ax-cred:0123456789abcdef0123456789abcdef' });
     expect(out.anthropicEnv.ANTHROPIC_BASE_URL).toBeUndefined();
     expect(out.stop).toBeUndefined();
     // Direct mode: sandbox-subprocess set HTTPS_PROXY in the child env at
@@ -64,6 +64,32 @@ describe('setupProxy', () => {
       proxyEndpoint: 'http://127.0.0.1:54321',
     };
     await expect(setupProxy(env)).rejects.toBeInstanceOf(MissingEnvError);
+  });
+
+  it('direct mode: rejects ANTHROPIC_API_KEY that is not the ax-cred:<32-hex> placeholder', async () => {
+    // I1 defense: a regressed wiring that lands a real `sk-ant-...` key (or
+    // any non-placeholder string) in the runner's env must fail loud, not
+    // forward upstream. The runner enforces the exact format minted by
+    // @ax/credential-proxy's registry.
+    const env: RunnerEnv = {
+      runnerEndpoint: 'unix:///tmp/x.sock',
+      sessionId: 's',
+      authToken: 'ipc-bearer',
+      workspaceRoot: '/ws',
+      proxyEndpoint: 'http://127.0.0.1:54321',
+    };
+    const realLookingKeys = [
+      'sk-ant-real-looking-key',
+      'ax-cred:short',
+      'ax-cred:0123456789abcdef0123456789abcdeg', // non-hex 'g'
+      'ax-cred:0123456789ABCDEF0123456789ABCDEF', // uppercase
+      'ax-cred:',
+      'AX-CRED:0123456789abcdef0123456789abcdef', // wrong case prefix
+    ];
+    for (const k of realLookingKeys) {
+      process.env.ANTHROPIC_API_KEY = k;
+      await expect(setupProxy(env)).rejects.toBeInstanceOf(MissingEnvError);
+    }
   });
 
   // -------------------------------------------------------------------
@@ -143,7 +169,7 @@ describe('setupProxy', () => {
   });
 
   it('bridge mode: starts the bridge, rewrites process.env.HTTPS_PROXY, returns stop()', async () => {
-    process.env.ANTHROPIC_API_KEY = 'ax-cred:abcd';
+    process.env.ANTHROPIC_API_KEY = 'ax-cred:fedcba9876543210fedcba9876543210';
 
     // Spin up a no-op Unix socket server so the bridge has something to
     // dial. The bridge doesn't actually open a connection at start — it
@@ -173,7 +199,7 @@ describe('setupProxy', () => {
         );
         expect(process.env.HTTPS_PROXY).toBe(process.env.HTTP_PROXY);
         // anthropicEnv carries the placeholder; no ANTHROPIC_BASE_URL.
-        expect(out.anthropicEnv).toEqual({ ANTHROPIC_API_KEY: 'ax-cred:abcd' });
+        expect(out.anthropicEnv).toEqual({ ANTHROPIC_API_KEY: 'ax-cred:fedcba9876543210fedcba9876543210' });
       } finally {
         out.stop?.();
       }
