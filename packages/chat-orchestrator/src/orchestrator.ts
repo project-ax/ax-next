@@ -1,4 +1,4 @@
-import { PluginError, type AgentContext, type ChatMessage, type AgentOutcome, type HookBus } from '@ax/core';
+import { PluginError, type AgentContext, type AgentMessage, type AgentOutcome, type HookBus } from '@ax/core';
 
 // ---------------------------------------------------------------------------
 // @ax/chat-orchestrator — per-chat control plane
@@ -68,8 +68,8 @@ export interface ChatOrchestratorConfig {
   oneShot?: boolean;
 }
 
-export interface ChatRunInput {
-  message: ChatMessage;
+export interface AgentInvokeInput {
+  message: AgentMessage;
   // Forwarded to the runner's turn loop eventually. For 6.5a the runner has
   // its own default; the orchestrator currently ignores maxTurns for dispatch
   // but preserves the field name so the shape lines up with Week 4-6's
@@ -88,7 +88,7 @@ interface SessionQueueWorkInput {
   // forward `ctx.reqId` from the agent:invoke call (which is itself the
   // host-handled request).
   entry:
-    | { type: 'user-message'; payload: ChatMessage; reqId: string }
+    | { type: 'user-message'; payload: AgentMessage; reqId: string }
     | { type: 'cancel' };
 }
 interface SessionQueueWorkOutput {
@@ -330,7 +330,7 @@ export function createOrchestrator(
   bus: HookBus,
   config: ChatOrchestratorConfig,
 ): {
-  runChat(ctx: AgentContext, input: ChatRunInput): Promise<AgentOutcome>;
+  runAgentInvoke(ctx: AgentContext, input: AgentInvokeInput): Promise<AgentOutcome>;
   onChatEnd(ctx: AgentContext, payload: { outcome: AgentOutcome }): void;
   onTurnEnd(ctx: AgentContext): void;
 } {
@@ -384,12 +384,12 @@ export function createOrchestrator(
   // credential get `proxy:rotate-session` fired between turns. api-key-only
   // sessions stay in coarse mode (no rotation, identical to Phase 2).
   // Membership is added after a successful proxy:open-session and removed in
-  // the runChat finally that fires proxy:close-session.
+  // the runAgentInvoke finally that fires proxy:close-session.
   const sessionsNeedingRotation = new Set<string>();
 
-  async function runChat(
+  async function runAgentInvoke(
     ctx: AgentContext,
-    input: ChatRunInput,
+    input: AgentInvokeInput,
   ): Promise<AgentOutcome> {
     // 1. chat:start — subscribers can veto.
     const startResult = await bus.fire('chat:start', ctx, {
@@ -1043,10 +1043,10 @@ export function createOrchestrator(
       });
   }
 
-  return { runChat, onChatEnd, onTurnEnd };
+  return { runAgentInvoke, onChatEnd, onTurnEnd };
 }
 
-// A distinct error type so the runChat finally block can tell "we timed out"
+// A distinct error type so the runAgentInvoke finally block can tell "we timed out"
 // apart from "something else went wrong awaiting the deferred."
 class ChatTimeoutError extends Error {
   constructor(ms: number) {

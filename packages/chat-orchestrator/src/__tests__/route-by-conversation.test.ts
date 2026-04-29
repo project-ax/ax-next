@@ -3,7 +3,7 @@ import {
   HookBus,
   makeAgentContext,
   createLogger,
-  type ChatMessage,
+  type AgentMessage,
   type AgentOutcome,
   type ServiceHandler,
 } from '@ax/core';
@@ -50,7 +50,7 @@ const TEST_AGENT = {
 
 interface CallTrace {
   sandboxOpen: number;
-  queueWork: Array<{ sessionId: string; reqId: string; payload: ChatMessage }>;
+  queueWork: Array<{ sessionId: string; reqId: string; payload: AgentMessage }>;
   bindSession: Array<{ conversationId: string; sessionId: string; reqId: string }>;
   conversationsGet: number;
   isAlive: Array<{ sessionId: string; result: boolean }>;
@@ -86,7 +86,7 @@ function buildMocks(opts: {
     'session:queue-work': async (_ctx, input: unknown) => {
       const i = input as {
         sessionId: string;
-        entry: { type: string; payload?: ChatMessage; reqId?: string };
+        entry: { type: string; payload?: AgentMessage; reqId?: string };
       };
       if (i.entry.type === 'user-message') {
         trace.queueWork.push({

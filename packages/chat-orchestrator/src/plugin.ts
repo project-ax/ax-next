@@ -3,7 +3,7 @@ import {
   createOrchestrator,
   PLUGIN_NAME,
   type ChatOrchestratorConfig,
-  type ChatRunInput,
+  type AgentInvokeInput,
 } from './orchestrator.js';
 
 // ---------------------------------------------------------------------------
@@ -79,10 +79,10 @@ export function createChatOrchestratorPlugin(
     init({ bus }) {
       const orch = createOrchestrator(bus, config);
 
-      bus.registerService<ChatRunInput, AgentOutcome>(
+      bus.registerService<AgentInvokeInput, AgentOutcome>(
         'agent:invoke',
         PLUGIN_NAME,
-        async (ctx, input) => orch.runChat(ctx, input),
+        async (ctx, input) => orch.runAgentInvoke(ctx, input),
       );
 
       bus.subscribe<{ outcome: AgentOutcome }>(
