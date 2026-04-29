@@ -4,7 +4,9 @@ import { pathToFileURL } from 'node:url';
 import {
   HookBus,
   bootstrap,
+  createLogger,
   makeAgentContext,
+  makeReqId,
   type AgentOutcome,
   type Plugin,
 } from '@ax/core';
@@ -82,6 +84,29 @@ export interface MainOptions {
    * Not reachable from file-based config.
    */
   skipCredentialProxy?: boolean;
+  /**
+   * Test-only seam: override the runner binary path. When set, the chat
+   * orchestrator spawns this instead of @ax/agent-claude-sdk-runner.
+   *
+   * Also accepts the AX_TEST_RUNNER_BINARY_OVERRIDE env var so the CLI's
+   * binary entrypoint (which can't pass MainOptions through argv) can still
+   * substitute via env. Resolution order: opts > env > default.
+   */
+  runnerBinaryOverride?: string;
+}
+
+/**
+ * Resolve the runner binary path. Production resolves @ax/agent-claude-sdk-runner;
+ * tests override via opts.runnerBinaryOverride (library-mode) or via
+ * AX_TEST_RUNNER_BINARY_OVERRIDE env var (binary-mode where the CLI is spawned
+ * from a test as a subprocess and MainOptions can't be threaded through).
+ */
+export function resolveRunnerBinary(opts: Pick<MainOptions, 'runnerBinaryOverride'>): string {
+  return (
+    opts.runnerBinaryOverride ??
+    process.env.AX_TEST_RUNNER_BINARY_OVERRIDE ??
+    requireFromCli.resolve('@ax/agent-claude-sdk-runner')
+  );
 }
 
 const DEFAULT_SQLITE_PATH = './ax-next-chat.sqlite';
@@ -136,7 +161,23 @@ export async function main(opts: MainOptions): Promise<number> {
   // Subprocess sandbox uses TCP loopback (port 0 = OS-assigned); the
   // runner-side bridge is NOT used on this path because the runner
   // reaches the proxy directly via HTTPS_PROXY in its child env.
-  if (opts.skipCredentialProxy !== true) {
+  //
+  // Phase 6.6 test seam: AX_TEST_STUB_PROXY=1 substitutes a test-only proxy
+  // plugin (from @ax/test-harness) that satisfies the chat-orchestrator's
+  // proxy:open-session/close-session gate without seeding credentials.
+  // The dynamic import keeps production startup cost zero — the test-harness
+  // module is never resolved unless the env var is set. Tests using this
+  // path drive the runner via AX_TEST_RUNNER_BINARY_OVERRIDE (see resolveRunnerBinary).
+  if (process.env.AX_TEST_STUB_PROXY === '1') {
+    const encoded = process.env.AX_TEST_STUB_SCRIPT_BASE64;
+    if (encoded === undefined || encoded === '') {
+      throw new Error(
+        'AX_TEST_STUB_PROXY=1 requires AX_TEST_STUB_SCRIPT_BASE64 to be set',
+      );
+    }
+    const { createTestProxyPlugin, decodeScript } = await import('@ax/test-harness');
+    plugins.push(createTestProxyPlugin({ script: decodeScript(encoded) }));
+  } else if (opts.skipCredentialProxy !== true) {
     plugins.push(
       createCredentialProxyPlugin({
         listen: { kind: 'tcp', host: '127.0.0.1', port: 0 },
@@ -161,7 +202,7 @@ export async function main(opts: MainOptions): Promise<number> {
   plugins.push(createIpcServerPlugin());
   plugins.push(
     createChatOrchestratorPlugin({
-      runnerBinary: requireFromCli.resolve('@ax/agent-claude-sdk-runner'),
+      runnerBinary: resolveRunnerBinary(opts),
       chatTimeoutMs: DEFAULT_CHAT_TIMEOUT_MS,
     }),
   );
@@ -201,7 +242,21 @@ export async function main(opts: MainOptions): Promise<number> {
 
   const handle = await bootstrap({ bus, plugins, config: {} });
 
+  // CLI hygiene: structured logs (debug/info/warn/error) go to stderr, so
+  // stdout stays clean for the chat outcome the binary writes via `out`.
+  // Without this, debug lines like sandbox-subprocess's `runner_stderr`
+  // intermix with the chat result and break callers that pipe stdout.
+  // Route through `err` (the library-mode stderr sink) so library-mode
+  // callers passing `opts.stderr` capture these logs alongside their
+  // direct `err(...)` lines, instead of bypassing into raw `process.stderr`.
+  const reqId = makeReqId();
+  const logger = createLogger({
+    reqId,
+    writer: err,
+  });
   const ctx = makeAgentContext({
+    reqId,
+    logger,
     sessionId: 'cli-session',
     agentId: 'cli-agent',
     userId: 'cli-user',

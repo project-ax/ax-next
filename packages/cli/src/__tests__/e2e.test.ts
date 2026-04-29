@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import BetterSqlite3 from 'better-sqlite3';
+import { encodeScript, stubRunnerPath } from '@ax/test-harness';
 
 const repoRoot = join(__dirname, '..', '..', '..', '..');
 const cliEntry = join(__dirname, '..', '..', 'dist', 'main.js');
@@ -34,14 +35,22 @@ describe('@ax/cli end-to-end', () => {
     }
   });
 
-  // Skipped post-Phase-6: the SDK runner is now the only runtime, so the
-  // default-config canary needs a stub Anthropic backend (or real
-  // credentials) to complete a chat. PR-B (Phase 6.6) rebuilds this against
-  // a stub backend and the mcp-stdio coverage that retired with the
-  // mcp-client.e2e.test.ts file.
-  it.skip('runs a full chat and persists the outcome to SQLite', () => {
+  // Default-config canary: spawns the CLI binary with the stub runner +
+  // test-proxy plugin (env-gated) to drive a full chat through
+  // bootstrap → orchestrator → IPC → SQLite outcome write — without
+  // touching the wire or seeding real credentials. Rebuilt in Phase 6.6.
+  it('runs a full chat and persists the outcome to SQLite', () => {
     workDir = mkdtempSync(join(tmpdir(), 'ax-next-e2e-'));
     const dbPath = join(workDir, 'e2e.sqlite');
+
+    // The CLI prints the LAST message from outcome.messages on success, so
+    // the script must end with an assistant-text 'hello' followed by finish.
+    const script = encodeScript({
+      entries: [
+        { kind: 'assistant-text', content: 'hello' },
+        { kind: 'finish', reason: 'end_turn' },
+      ],
+    });
 
     const result = spawnSync('node', [cliEntry, 'hi'], {
       env: {
@@ -49,6 +58,9 @@ describe('@ax/cli end-to-end', () => {
         AX_DB: dbPath,
         // @ax/credentials is wired into the chat path; init() requires this.
         AX_CREDENTIALS_KEY: '42'.repeat(32),
+        AX_TEST_RUNNER_BINARY_OVERRIDE: stubRunnerPath,
+        AX_TEST_STUB_PROXY: '1',
+        AX_TEST_STUB_SCRIPT_BASE64: script,
       },
       encoding: 'utf8',
     });

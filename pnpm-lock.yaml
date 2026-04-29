@@ -354,6 +354,9 @@ importers:
       '@ax/storage-sqlite':
         specifier: workspace:*
         version: link:../storage-sqlite
+      '@ax/test-harness':
+        specifier: workspace:*
+        version: link:../test-harness
       '@ax/tool-dispatcher':
         specifier: workspace:*
         version: link:../tool-dispatcher
@@ -361,9 +364,6 @@ importers:
         specifier: ^3.23.8
         version: 3.25.76
     devDependencies:
-      '@ax/test-harness':
-        specifier: workspace:*
-        version: link:../test-harness
       '@types/better-sqlite3':
         specifier: ^7.6.12
         version: 7.6.13
@@ -1015,9 +1015,15 @@ importers:
 
   packages/test-harness:
     dependencies:
+      '@ax/agent-runner-core':
+        specifier: workspace:*
+        version: link:../agent-runner-core
       '@ax/core':
         specifier: workspace:*
         version: link:../core
+      '@ax/ipc-protocol':
+        specifier: workspace:*
+        version: link:../ipc-protocol
       '@modelcontextprotocol/sdk':
         specifier: 1.29.0
         version: 1.29.0(zod@3.25.76)
@@ -1232,6 +1238,18 @@ importers:
         specifier: workspace:*
         version: link:../../packages/workspace-git-http
     devDependencies:
+      '@ax/ipc-server':
+        specifier: workspace:*
+        version: link:../../packages/ipc-server
+      '@ax/sandbox-subprocess':
+        specifier: workspace:*
+        version: link:../../packages/sandbox-subprocess
+      '@ax/session-inmemory':
+        specifier: workspace:*
+        version: link:../../packages/session-inmemory
+      '@ax/storage-sqlite':
+        specifier: workspace:*
+        version: link:../../packages/storage-sqlite
       '@ax/test-harness':
         specifier: workspace:*
         version: link:../../packages/test-harness
