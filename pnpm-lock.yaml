@@ -339,12 +339,6 @@ importers:
       '@ax/ipc-server':
         specifier: workspace:*
         version: link:../ipc-server
-      '@ax/llm-anthropic':
-        specifier: workspace:*
-        version: link:../llm-anthropic
-      '@ax/llm-mock':
-        specifier: workspace:*
-        version: link:../llm-mock
       '@ax/mcp-client':
         specifier: workspace:*
         version: link:../mcp-client
@@ -736,44 +730,6 @@ importers:
       '@ax/session-inmemory':
         specifier: workspace:*
         version: link:../session-inmemory
-      '@ax/test-harness':
-        specifier: workspace:*
-        version: link:../test-harness
-      '@types/node':
-        specifier: ^25.6.0
-        version: 25.6.0
-      typescript:
-        specifier: ^6.0.3
-        version: 6.0.3
-      vitest:
-        specifier: ^4.1.4
-        version: 4.1.5(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(jsdom@26.1.0)(vite@8.0.10(@types/node@25.6.0)(yaml@2.8.3))
-
-  packages/llm-anthropic:
-    dependencies:
-      '@anthropic-ai/sdk':
-        specifier: 0.91.0
-        version: 0.91.0(zod@4.3.6)
-      '@ax/core':
-        specifier: workspace:*
-        version: link:../core
-    devDependencies:
-      '@types/node':
-        specifier: ^25.6.0
-        version: 25.6.0
-      typescript:
-        specifier: ^6.0.3
-        version: 6.0.3
-      vitest:
-        specifier: ^4.1.4
-        version: 4.1.5(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(jsdom@26.1.0)(vite@8.0.10(@types/node@25.6.0)(yaml@2.8.3))
-
-  packages/llm-mock:
-    dependencies:
-      '@ax/core':
-        specifier: workspace:*
-        version: link:../core
-    devDependencies:
       '@ax/test-harness':
         specifier: workspace:*
         version: link:../test-harness
@@ -1292,9 +1248,6 @@ importers:
       '@ax/ipc-http':
         specifier: workspace:*
         version: link:../../packages/ipc-http
-      '@ax/llm-anthropic':
-        specifier: workspace:*
-        version: link:../../packages/llm-anthropic
       '@ax/mcp-client':
         specifier: workspace:*
         version: link:../../packages/mcp-client
@@ -1329,9 +1282,6 @@ importers:
         specifier: workspace:*
         version: link:../../packages/workspace-git-http
     devDependencies:
-      '@ax/llm-mock':
-        specifier: workspace:*
-        version: link:../../packages/llm-mock
       '@ax/test-harness':
         specifier: workspace:*
         version: link:../../packages/test-harness
@@ -1429,15 +1379,6 @@ packages:
 
   '@anthropic-ai/sdk@0.81.0':
     resolution: {integrity: sha512-D4K5PvEV6wPiRtVlVsJHIUhHAmOZ6IT/I9rKlTf84gR7GyyAurPJK7z9BOf/AZqC5d1DhYQGJNKRmV+q8dGhgw==}
-    hasBin: true
-    peerDependencies:
-      zod: ^3.25.0 || ^4.0.0
-    peerDependenciesMeta:
-      zod:
-        optional: true
-
-  '@anthropic-ai/sdk@0.91.0':
-    resolution: {integrity: sha512-hybd/DOI3ujG4gZyqqcWnSekYxkdjr1JbZYqP2Lb4AmcsU6HCTHSrTOgqedPSsQAruBVucHNAoD1vTQnpPzedw==}
     hasBin: true
     peerDependencies:
       zod: ^3.25.0 || ^4.0.0
@@ -5837,12 +5778,6 @@ snapshots:
       json-schema-to-ts: 3.1.1
     optionalDependencies:
       zod: 3.25.76
-
-  '@anthropic-ai/sdk@0.91.0(zod@4.3.6)':
-    dependencies:
-      json-schema-to-ts: 3.1.1
-    optionalDependencies:
-      zod: 4.3.6
 
   '@asamuzakjp/css-color@3.2.0':
     dependencies:

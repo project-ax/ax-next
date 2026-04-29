@@ -4,7 +4,6 @@
 "@ax/tool-dispatcher": minor
 "@ax/tool-bash": minor
 "@ax/tool-file-io": minor
-"@ax/llm-anthropic": minor
 "@ax/cli": minor
 ---
 

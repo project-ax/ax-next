@@ -4,7 +4,6 @@
   "references": [
     { "path": "packages/core" },
     { "path": "packages/test-harness" },
-    { "path": "packages/llm-mock" },
     { "path": "packages/storage-sqlite" },
     { "path": "packages/eventbus-inprocess" },
     { "path": "packages/audit-log" },
@@ -19,7 +18,6 @@
     { "path": "packages/tool-dispatcher" },
     { "path": "packages/tool-bash" },
     { "path": "packages/tool-file-io" },
-    { "path": "packages/llm-anthropic" },
     { "path": "packages/agent-runner-core" },
     { "path": "packages/agent-claude-sdk-runner" },
     { "path": "packages/chat-orchestrator" },

@@ -9,8 +9,6 @@
 "@ax/core": patch
 "@ax/ipc-protocol": patch
 "@ax/ipc-server": patch
-"@ax/llm-anthropic": patch
-"@ax/llm-mock": patch
 "@ax/session-inmemory": patch
 "@ax/storage-sqlite": patch
 "@ax/tool-bash": patch
