@@ -16,9 +16,8 @@ const env = {
   AX_SESSION_ID: process.env.AX_SESSION_ID ?? null,
   AX_AUTH_TOKEN: process.env.AX_AUTH_TOKEN ?? null,
   AX_WORKSPACE_ROOT: process.env.AX_WORKSPACE_ROOT ?? null,
-  AX_LLM_PROXY_URL: process.env.AX_LLM_PROXY_URL ?? null,
-  // Phase 2 — credential-proxy env (set only when proxyConfig was passed
-  // to sandbox:open-session; absent on the legacy llm-proxy path).
+  // credential-proxy env (set only when proxyConfig was passed to
+  // sandbox:open-session).
   AX_PROXY_ENDPOINT: process.env.AX_PROXY_ENDPOINT ?? null,
   AX_PROXY_UNIX_SOCKET: process.env.AX_PROXY_UNIX_SOCKET ?? null,
   HTTPS_PROXY: process.env.HTTPS_PROXY ?? null,

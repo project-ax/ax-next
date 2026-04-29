@@ -80,7 +80,8 @@ const COMPLETE_ENV = {
   AX_SESSION_ID: 'sess-1',
   AX_AUTH_TOKEN: 'tok-123',
   AX_WORKSPACE_ROOT: '/tmp/workspace',
-  AX_LLM_PROXY_URL: 'http://127.0.0.1:4000',
+  AX_PROXY_ENDPOINT: 'http://127.0.0.1:8443',
+  ANTHROPIC_API_KEY: 'ax-cred:0123456789abcdef0123456789abcdef',
 } as const;
 
 const ORIGINAL_ENV = process.env;
@@ -334,7 +335,7 @@ describe('main()', () => {
         mcpServers: Record<string, unknown>;
         settingSources: string[];
         systemPrompt: { type: string; preset: string };
-        env: { ANTHROPIC_BASE_URL: string; ANTHROPIC_API_KEY: string };
+        env: { ANTHROPIC_BASE_URL?: string; ANTHROPIC_API_KEY: string };
       };
     };
     expect(queryArg.options.disallowedTools).toEqual(
@@ -346,18 +347,16 @@ describe('main()', () => {
       type: 'preset',
       preset: 'claude_code',
     });
-    expect(queryArg.options.env.ANTHROPIC_BASE_URL).toBe(
-      COMPLETE_ENV.AX_LLM_PROXY_URL,
-    );
+    expect(queryArg.options.env.ANTHROPIC_BASE_URL).toBeUndefined();
     expect(queryArg.options.env.ANTHROPIC_API_KEY).toBe(
-      COMPLETE_ENV.AX_AUTH_TOKEN,
+      COMPLETE_ENV.ANTHROPIC_API_KEY,
     );
 
     expect(fakeClient.close).toHaveBeenCalledTimes(1);
   });
 
-  it('bootstrap failure: missing AX_LLM_PROXY_URL → exit 2, no chat-end, no query', async () => {
-    setEnv({ ...COMPLETE_ENV, AX_LLM_PROXY_URL: undefined });
+  it('bootstrap failure: missing AX_PROXY_ENDPOINT → exit 2, no chat-end, no query', async () => {
+    setEnv({ ...COMPLETE_ENV, AX_PROXY_ENDPOINT: undefined });
     // These get set but should never be touched — main() should return
     // before constructing the client.
     fakeClient = buildFakeClient();
@@ -375,7 +374,8 @@ describe('main()', () => {
       const stderrMessages = stderrSpy.mock.calls
         .map((c) => String(c[0]))
         .join('');
-      expect(stderrMessages).toContain('AX_LLM_PROXY_URL');
+      expect(stderrMessages).toContain('AX_PROXY_ENDPOINT');
+      expect(stderrMessages).toContain('AX_PROXY_UNIX_SOCKET');
 
       expect(queryMock).not.toHaveBeenCalled();
       expect(fakeClient.event).not.toHaveBeenCalled();

@@ -40,10 +40,11 @@ import { DISABLED_BUILTINS, MCP_HOST_SERVER_NAME } from './tool-names.js';
 // with AX_AUTH_TOKEN.
 //
 // The runner holds NO LLM credentials (invariant I5). The vendored
-// @anthropic-ai/claude-agent-sdk is redirected at our sandbox-internal LLM
-// proxy via ANTHROPIC_BASE_URL; the proxy then calls host `llm.call` with
-// the host-held key. If the sandbox is compromised, ANTHROPIC_API_KEY never
-// entered this process.
+// @anthropic-ai/claude-agent-sdk calls api.anthropic.com through the
+// host-side credential-proxy (see proxy-startup.ts); the SDK's outbound
+// x-api-key carries an `ax-cred:<hex>` placeholder that the proxy
+// substitutes for the real Anthropic key mid-flight. If the sandbox is
+// compromised, the real key never entered this process.
 //
 // Shape: one persistent `query()` driven by an async generator that pulls
 // user messages from the inbox long-poll. That keeps a single SDK session
@@ -56,6 +57,13 @@ import { DISABLED_BUILTINS, MCP_HOST_SERVER_NAME } from './tool-names.js';
 //   0 — chat completed normally (inbox returned cancel; SDK drained).
 //   1 — terminated abnormally (SDK threw, IPC errored after retries, etc.).
 //   2 — fatal during bootstrap (missing env, initial tool.list failure).
+//
+// Boot-failure paths (return 2 before the IPC client is built, or before
+// the SDK iterator starts) exit WITHOUT firing `event.chat-end`. That's
+// fine — the orchestrator's `handle.exited` watcher synthesizes a
+// terminated outcome with reason `sandbox-exit-before-chat-end`, so
+// chat:end still fires exactly once per agent:invoke from a subscriber's
+// perspective.
 // ---------------------------------------------------------------------------
 
 export async function main(): Promise<number> {
@@ -69,12 +77,11 @@ export async function main(): Promise<number> {
     return 2;
   }
 
-  // Phase 2 — start the credential-proxy bridge if AX_PROXY_UNIX_SOCKET is
-  // set (k8s sandbox); rewrite process.env.HTTP(S)_PROXY in-process so the
+  // Start the credential-proxy bridge if AX_PROXY_UNIX_SOCKET is set
+  // (k8s sandbox); rewrite process.env.HTTP(S)_PROXY in-process so the
   // SDK's outbound fetch sees the loopback bridge. Direct mode
   // (AX_PROXY_ENDPOINT) is a no-op here — sandbox-subprocess already set
-  // HTTPS_PROXY in the child env. Legacy mode (AX_LLM_PROXY_URL) keeps
-  // the old ANTHROPIC_BASE_URL pattern; Phase 5/6 deletes it.
+  // HTTPS_PROXY in the child env.
   let proxyStartup: Awaited<ReturnType<typeof setupProxy>>;
   try {
     proxyStartup = await setupProxy(env);
@@ -306,14 +313,9 @@ export async function main(): Promise<number> {
     const queryIter = query({
       prompt: userMessages(),
       options: {
-        // Phase 2: env shape depends on the proxy mode setupProxy() picked.
-        //   - credential-proxy direct/bridge: ANTHROPIC_API_KEY is the
-        //     `ax-cred:<hex>` placeholder (substituted by the proxy
-        //     mid-flight); no ANTHROPIC_BASE_URL — SDK calls
-        //     api.anthropic.com directly through HTTPS_PROXY.
-        //   - legacy in-sandbox llm-proxy: ANTHROPIC_BASE_URL points at
-        //     the proxy, ANTHROPIC_API_KEY is the IPC bearer (validated
-        //     by the proxy). Phase 5/6 deletes that branch.
+        // ANTHROPIC_API_KEY is the `ax-cred:<hex>` placeholder (substituted
+        // by the credential-proxy mid-flight); no ANTHROPIC_BASE_URL — SDK
+        // calls api.anthropic.com directly through HTTPS_PROXY.
         env: proxyStartup.anthropicEnv,
         cwd: env.workspaceRoot,
         disallowedTools: [...DISABLED_BUILTINS],
@@ -631,10 +633,10 @@ export async function main(): Promise<number> {
   await client.close().catch(() => {
     /* close is best-effort; a clean chat shouldn't exit non-zero on teardown */
   });
-  // Phase 2: stop the credential-proxy bridge (k8s mode) so its TCP port
-  // and active sockets are released before the runner exits. Best-effort:
-  // any failure here shouldn't change the exit code — the chat already
-  // emitted its outcome.
+  // Stop the credential-proxy bridge (k8s mode) so its TCP port and active
+  // sockets are released before the runner exits. Best-effort: any failure
+  // here shouldn't change the exit code — the chat already emitted its
+  // outcome.
   if (proxyStartup.stop !== undefined) {
     try {
       proxyStartup.stop();
