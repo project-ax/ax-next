@@ -16,7 +16,7 @@ import {
   ConversationFetchHistoryResponseSchema,
   ToolDescriptorSchema,
   ToolCallSchema,
-  ChatMessageSchema,
+  AgentMessageSchema,
   asWorkspaceVersion,
   type WorkspaceVersion,
 } from '../actions.js';
@@ -25,6 +25,7 @@ import {
   EventToolPostCallSchema,
   EventTurnEndSchema,
   EventChatEndSchema,
+  AgentOutcomeSchema,
 } from '../events.js';
 import {
   IpcErrorCodeSchema,
@@ -564,8 +565,8 @@ describe('timeouts', () => {
 });
 
 describe('shared schemas exported', () => {
-  it('ChatMessageSchema rejects unknown role', () => {
-    const r = ChatMessageSchema.safeParse({ role: 'alien', content: 'hi' });
+  it('AgentMessageSchema rejects unknown role', () => {
+    const r = AgentMessageSchema.safeParse({ role: 'alien', content: 'hi' });
     expect(r.success).toBe(false);
   });
 
@@ -576,5 +577,18 @@ describe('shared schemas exported', () => {
       input: 'anything-goes',
     });
     expect(parsed.input).toBe('anything-goes');
+  });
+
+  it('AgentMessageSchema parses a valid message', () => {
+    const r = AgentMessageSchema.safeParse({ role: 'user', content: 'hi' });
+    expect(r.success).toBe(true);
+  });
+
+  it('AgentOutcomeSchema parses a complete outcome', () => {
+    const r = AgentOutcomeSchema.safeParse({
+      kind: 'complete',
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+    expect(r.success).toBe(true);
   });
 });
