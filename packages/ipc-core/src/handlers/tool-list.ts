@@ -17,9 +17,9 @@ import type { ActionHandler } from './types.js';
 // POST /tool.list
 //
 // Calls the `tool:list` service hook. In production this is registered by
-// @ax/tool-dispatcher (Task 7) which assembles the catalog at boot from each
-// tool plugin's `tool:register` call. In tests, the mock harness registers
-// a canned impl via `services` on createTestHarness.
+// the tool-dispatcher plugin in @ax/mcp-client, which assembles the catalog
+// at boot from each tool plugin's `tool:register` call. In tests, the mock
+// harness registers a canned impl via `services` on createTestHarness.
 //
 // Request schema is `.strict({})` — no knobs today. We still run it through
 // Zod so a future extension can't silently accept junk.

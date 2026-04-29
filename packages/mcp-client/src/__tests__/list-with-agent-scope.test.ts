@@ -7,7 +7,7 @@ import {
   type AgentContext,
   type ToolDescriptor,
 } from '@ax/core';
-import { createToolDispatcherPlugin } from '../plugin.js';
+import { createToolDispatcherPlugin } from '../tool-dispatcher-plugin.js';
 
 // ---------------------------------------------------------------------------
 // list-with-agent-scope.test — integration coverage for Task 7.

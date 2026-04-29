@@ -19,7 +19,7 @@ import { createHttpServerPlugin, type HttpServerPlugin } from '@ax/http-server';
 import { createAuthPlugin } from '@ax/auth-oidc';
 import { createCredentialsStoreDbPlugin } from '@ax/credentials-store-db';
 import { createCredentialsPlugin } from '@ax/credentials';
-import { createToolDispatcherPlugin } from '@ax/tool-dispatcher';
+import { createToolDispatcherPlugin } from '../tool-dispatcher-plugin.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import {

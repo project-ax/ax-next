@@ -34,7 +34,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { createCredentialsStoreDbPlugin } from '@ax/credentials-store-db';
 import { createCredentialsPlugin } from '@ax/credentials';
-import { createToolDispatcherPlugin } from '@ax/tool-dispatcher';
+import { createToolDispatcherPlugin } from '../tool-dispatcher-plugin.js';
 import { createMcpClientPlugin } from '../plugin.js';
 import { saveConfig } from '../config.js';
 import type { McpClientTransport } from '../transports.js';

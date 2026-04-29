@@ -72,8 +72,9 @@ export function createIpcServerPlugin(): Plugin {
       // `bus.hasService(...)` at dispatch time. They are deliberately NOT
       // listed in `calls` — we can't enumerate every tool name at manifest
       // time, and the verifyCalls startup check only enforces named hooks.
-      // This is the same "dynamic service hook" exception that
-      // @ax/tool-dispatcher uses for per-tool `tool:execute:<name>` routes.
+      // This is the same "dynamic service hook" exception that the
+      // tool-dispatcher plugin (in @ax/mcp-client) uses for per-tool
+      // `tool:execute:<name>` routes.
       calls: [
         'session:resolve-token',
         'session:claim-work',

@@ -1,1 +1,2 @@
-export { createToolDispatcherPlugin } from './plugin.js';
+// Package deletes in next commit; see PR description.
+export {};
