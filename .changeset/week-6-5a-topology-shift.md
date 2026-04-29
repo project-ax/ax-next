@@ -8,7 +8,6 @@
 "@ax/ipc-server": minor
 "@ax/session-inmemory": minor
 "@ax/chat-orchestrator": minor
-"@ax/agent-runner-core": minor
 ---
 
 Week 6.5a — topology shift.

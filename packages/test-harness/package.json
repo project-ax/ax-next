@@ -18,7 +18,6 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@ax/agent-runner-core": "workspace:*",
     "@ax/core": "workspace:*",
     "@ax/ipc-protocol": "workspace:*",
     "@modelcontextprotocol/sdk": "1.29.0",

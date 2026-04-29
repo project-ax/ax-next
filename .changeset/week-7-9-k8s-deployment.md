@@ -3,7 +3,6 @@
 "@ax/ipc-protocol": patch
 "@ax/ipc-server": patch
 "@ax/sandbox-subprocess": patch
-"@ax/agent-runner-core": patch
 "@ax/agent-claude-sdk-runner": patch
 "@ax/chat-orchestrator": patch
 "@ax/test-harness": minor

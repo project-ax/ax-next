@@ -16,7 +16,6 @@
     { "path": "../../packages/workspace-git-http" },
     { "path": "../../packages/sandbox-k8s" },
     { "path": "../../packages/agent-claude-sdk-runner" },
-    { "path": "../../packages/agent-runner-core" },
     { "path": "../../packages/chat-orchestrator" },
     { "path": "../../packages/tool-dispatcher" },
     { "path": "../../packages/audit-log" },

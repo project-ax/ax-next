@@ -14,11 +14,6 @@
 //                            workspace HTTP transport. Pure schemas + codec
 //                            helpers + per-action timeouts. Imported by
 //                            both the host plugin and the pod-side server.
-//   @ax/agent-runner-core — sandbox-side library that every runner binary
-//                           builds on (IPC client, inbox loop, local tool
-//                           dispatcher). It is NOT a hook-bus plugin; it's
-//                           the one-way bridge from sandbox code back to
-//                           the host-side listener.
 //   @ax/ipc-core          — kernel-adjacent shared library: transport-agnostic
 //                           IPC dispatcher, auth middleware, body reader,
 //                           response/error helpers, and per-action handlers.
@@ -27,7 +22,7 @@
 //                           for TCP). It is NOT a hook-bus plugin — no init,
 //                           no manifest — just a library of pure functions.
 //
-// These last four are shared-import expansions of the kernel-only allowlist
+// These last three are shared-import expansions of the kernel-only allowlist
 // and form the documented one-way boundary between host-side plugins and
 // sandbox-side code.
 //
@@ -90,11 +85,10 @@ export default tseslint.config(
                 '!@ax/test-harness',
                 '!@ax/ipc-protocol',
                 '!@ax/workspace-protocol',
-                '!@ax/agent-runner-core',
                 '!@ax/ipc-core',
               ],
               message:
-                'Cross-plugin imports are forbidden. Plugins communicate through the hook bus only. See CLAUDE.md invariant 2. The only @ax/* imports allowed in plugin code are @ax/core, @ax/test-harness, @ax/ipc-protocol + @ax/workspace-protocol (wire schemas), @ax/agent-runner-core (sandbox-side library), and @ax/ipc-core (transport-agnostic IPC library).',
+                'Cross-plugin imports are forbidden. Plugins communicate through the hook bus only. See CLAUDE.md invariant 2. The only @ax/* imports allowed in plugin code are @ax/core, @ax/test-harness, @ax/ipc-protocol + @ax/workspace-protocol (wire schemas), and @ax/ipc-core (transport-agnostic IPC library).',
             },
           ],
         },

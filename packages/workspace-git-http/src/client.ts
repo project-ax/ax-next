@@ -19,7 +19,7 @@ import { WorkspaceServerUnavailableError } from './errors.js';
 
 // ---------------------------------------------------------------------------
 // Host-side HTTP client for @ax/workspace-git-http. Sibling of
-// `packages/agent-runner-core/src/ipc-client.ts` — same retry+timeout shape,
+// `packages/ipc-protocol/src/ipc-client.ts` — same retry+timeout shape,
 // but HTTP-only (no unix transport) and a static service-token auth model
 // (no session token, no parseRunnerEndpoint).
 //
@@ -88,7 +88,7 @@ export interface CreateWorkspaceGitHttpClientOptions {
 }
 
 // Connection-level errnos that should trigger retry. Same set as
-// agent-runner-core/src/ipc-client.ts minus ENOENT (no unix sockets here).
+// ipc-protocol/src/ipc-client.ts minus ENOENT (no unix sockets here).
 const TRANSIENT_ERRNOS = new Set<string>([
   'ECONNREFUSED',
   'ECONNRESET',

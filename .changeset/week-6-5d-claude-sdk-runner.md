@@ -3,7 +3,6 @@
 "@ax/cli": minor
 "@ax/sandbox-subprocess": minor
 "@ax/test-harness": minor
-"@ax/agent-runner-core": patch
 "@ax/audit-log": patch
 "@ax/chat-orchestrator": patch
 "@ax/core": patch
