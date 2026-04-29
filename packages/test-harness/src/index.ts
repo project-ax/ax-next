@@ -27,3 +27,17 @@ export {
 export const mcpServerStubPath = fileURLToPath(
   new URL('./mcp-server-stub.js', import.meta.url),
 ).replace(/\/src\/mcp-server-stub\.js$/, '/dist/mcp-server-stub.js');
+
+/**
+ * Absolute path to the built stub agent runner. Spawned via
+ * `child_process.spawn(process.execPath, [stubRunnerPath], { env })` by the
+ * chat-orchestrator e2e tests in place of `@ax/agent-claude-sdk-runner` —
+ * lets a test drive the real IPC wire path without a live LLM.
+ *
+ * Same build-artifact contract as `mcpServerStubPath`: the export always
+ * points at `dist/stub-runner.js`, and consumers must run
+ * `pnpm --filter @ax/test-harness build` before spawning.
+ */
+export const stubRunnerPath = fileURLToPath(
+  new URL('./stub-runner.js', import.meta.url),
+).replace(/\/src\/stub-runner\.js$/, '/dist/stub-runner.js');

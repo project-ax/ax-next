@@ -18,7 +18,9 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@ax/agent-runner-core": "workspace:*",
     "@ax/core": "workspace:*",
+    "@ax/ipc-protocol": "workspace:*",
     "@modelcontextprotocol/sdk": "1.29.0",
     "picomatch": "^4.0.4",
     "zod": "^3.23.8"

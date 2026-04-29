@@ -1015,9 +1015,15 @@ importers:
 
   packages/test-harness:
     dependencies:
+      '@ax/agent-runner-core':
+        specifier: workspace:*
+        version: link:../agent-runner-core
       '@ax/core':
         specifier: workspace:*
         version: link:../core
+      '@ax/ipc-protocol':
+        specifier: workspace:*
+        version: link:../ipc-protocol
       '@modelcontextprotocol/sdk':
         specifier: 1.29.0
         version: 1.29.0(zod@3.25.76)
