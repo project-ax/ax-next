@@ -68,6 +68,36 @@ export async function runConversationsMigration<DB>(
     CREATE INDEX IF NOT EXISTS conversations_v1_turns_lookup
       ON conversations_v1_turns (conversation_id, turn_index)
   `.execute(db);
+
+  // Phase B (2026-04-29) — runner-owned-sessions metadata. Pure-additive
+  // ALTER on v1 (not a v2 side-table): all four columns are new and
+  // nullable, no data migration, no breaking change. ax-next is greenfield
+  // (confirmed 2026-04-29) so the original "v2 side-table, never an
+  // in-place ALTER" rule — which existed to protect production data — does
+  // not apply. We ALTER v1 in place forever.
+  //
+  //   runner_type:        which runner plugin owns the transcript. Frozen
+  //                       at create-time from
+  //                       ConversationsConfig.defaultRunnerType (I10).
+  //   runner_session_id:  the runner's native session id. Bound once on
+  //                       the first turn via
+  //                       conversations:store-runner-session.
+  //   workspace_ref:      frozen copy of agents.workspaceRef at create.
+  //                       TEXT NULL to match the upstream type — JSONB
+  //                       NOT NULL would force a backfill on every agent
+  //                       without a workspaceRef.
+  //   last_activity_at:   bumped by the chat:turn-end subscriber on every
+  //                       non-heartbeat turn. Sidebar ordering only —
+  //                       opaque to correctness (I8).
+  //
+  // ADD COLUMN IF NOT EXISTS keeps the migration idempotent (I11).
+  await sql`
+    ALTER TABLE conversations_v1_conversations
+      ADD COLUMN IF NOT EXISTS runner_type TEXT,
+      ADD COLUMN IF NOT EXISTS runner_session_id TEXT,
+      ADD COLUMN IF NOT EXISTS workspace_ref TEXT,
+      ADD COLUMN IF NOT EXISTS last_activity_at TIMESTAMPTZ
+  `.execute(db);
 }
 
 /**
@@ -81,6 +111,12 @@ export interface ConversationsRow {
   title: string | null;
   active_session_id: string | null;
   active_req_id: string | null;
+  // Phase B (2026-04-29) — runner-owned-sessions metadata. All nullable,
+  // populated lazily. See migration block above for semantics.
+  runner_type: string | null;
+  runner_session_id: string | null;
+  workspace_ref: string | null;
+  last_activity_at: Date | null;
   deleted_at: Date | null;
   created_at: Date;
   updated_at: Date;
