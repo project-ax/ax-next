@@ -22,7 +22,6 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@ax/agent-runner-core": "workspace:*",
     "@ax/credential-proxy-bridge": "workspace:*",
     "@ax/ipc-protocol": "workspace:*",
     "@anthropic-ai/claude-agent-sdk": "0.2.119",

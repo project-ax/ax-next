@@ -3,7 +3,6 @@
 "@ax/ipc-http": minor
 "@ax/ipc-server": patch
 "@ax/ipc-protocol": minor
-"@ax/agent-runner-core": patch
 "@ax/sandbox-k8s": patch
 "@ax/preset-k8s": minor
 "@ax/chat-orchestrator": patch

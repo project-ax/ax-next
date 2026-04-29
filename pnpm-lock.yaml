@@ -35,31 +35,9 @@ importers:
       '@anthropic-ai/claude-agent-sdk':
         specifier: 0.2.119
         version: 0.2.119(zod@3.25.76)
-      '@ax/agent-runner-core':
-        specifier: workspace:*
-        version: link:../agent-runner-core
       '@ax/credential-proxy-bridge':
         specifier: workspace:*
         version: link:../credential-proxy-bridge
-      '@ax/ipc-protocol':
-        specifier: workspace:*
-        version: link:../ipc-protocol
-      zod:
-        specifier: ^3.23.8
-        version: 3.25.76
-    devDependencies:
-      '@types/node':
-        specifier: ^25.6.0
-        version: 25.6.0
-      typescript:
-        specifier: ^6.0.3
-        version: 6.0.3
-      vitest:
-        specifier: ^4.1.4
-        version: 4.1.5(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(jsdom@26.1.0)(vite@8.0.10(@types/node@25.6.0)(yaml@2.8.3))
-
-  packages/agent-runner-core:
-    dependencies:
       '@ax/ipc-protocol':
         specifier: workspace:*
         version: link:../ipc-protocol
@@ -1009,9 +987,6 @@ importers:
 
   packages/test-harness:
     dependencies:
-      '@ax/agent-runner-core':
-        specifier: workspace:*
-        version: link:../agent-runner-core
       '@ax/core':
         specifier: workspace:*
         version: link:../core
@@ -1162,9 +1137,6 @@ importers:
       '@ax/agent-claude-sdk-runner':
         specifier: workspace:*
         version: link:../../packages/agent-claude-sdk-runner
-      '@ax/agent-runner-core':
-        specifier: workspace:*
-        version: link:../../packages/agent-runner-core
       '@ax/agents':
         specifier: workspace:*
         version: link:../../packages/agents

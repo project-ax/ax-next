@@ -13,7 +13,7 @@ const PLUGIN_NAME = '@ax/tool-dispatcher';
  *
  * The dispatcher does NOT execute tools. After 6.5a the shape is:
  *  - `executesIn: 'sandbox'` tools are dispatched inside the sandbox by
- *    `@ax/agent-runner-core`'s local dispatcher.
+ *    `@ax/agent-claude-sdk-runner`'s local dispatcher.
  *  - `executesIn: 'host'` tools (none in 6.5a) round-trip through the
  *    `tool.execute-host` IPC action and land on whichever plugin
  *    registered `tool:execute:${name}` on the host.

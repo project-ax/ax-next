@@ -9,7 +9,7 @@
 // they drive different transports.
 //
 // AX_RUNNER_ENDPOINT is an opaque URI (I1). The IPC client parses the
-// scheme; see @ax/agent-runner-core/ipc-client.ts.
+// scheme; see @ax/ipc-protocol/ipc-client.ts.
 //
 // Empty-string values are treated as missing: an env var set to '' is
 // almost always a wiring bug, not an intentional value. Failing loud here

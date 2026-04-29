@@ -1,5 +1,4 @@
-import type { AgentMessage } from '@ax/ipc-protocol';
-import type { IpcClient } from './ipc-client.js';
+import type { AgentMessage, IpcClient } from '@ax/ipc-protocol';
 
 // ---------------------------------------------------------------------------
 // Inbox long-poll loop.
