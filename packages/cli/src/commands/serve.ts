@@ -53,7 +53,6 @@ env (required):
   AX_WORKSPACE_ROOT         (when backend=local)
   AX_WORKSPACE_GIT_HTTP_URL    (when backend=http)
   AX_WORKSPACE_GIT_HTTP_TOKEN  (when backend=http)
-  ANTHROPIC_API_KEY         used by @ax/llm-anthropic at init
   AX_CREDENTIALS_KEY        used by @ax/credentials at init
 
 env (optional):
@@ -61,7 +60,6 @@ env (optional):
                             if unset, /chat is unauthenticated (loud warning)
   K8S_NAMESPACE / K8S_POD_IMAGE / K8S_RUNTIME_CLASS / K8S_IMAGE_PULL_SECRETS
   BIND_HOST / PORT          (overridden by --host / --port if both present)
-  AX_LLM_MODEL / AX_LLM_MAX_TOKENS
   AX_RUNNER_BINARY / AX_CHAT_TIMEOUT_MS`;
 
 interface ParsedArgs {
