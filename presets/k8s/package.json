@@ -44,6 +44,10 @@
     "@ax/teams": "workspace:*"
   },
   "devDependencies": {
+    "@ax/ipc-server": "workspace:*",
+    "@ax/sandbox-subprocess": "workspace:*",
+    "@ax/session-inmemory": "workspace:*",
+    "@ax/storage-sqlite": "workspace:*",
     "@ax/test-harness": "workspace:*",
     "@testcontainers/postgresql": "11.14.0",
     "@types/node": "^25.6.0",

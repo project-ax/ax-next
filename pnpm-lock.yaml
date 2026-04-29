@@ -1238,6 +1238,18 @@ importers:
         specifier: workspace:*
         version: link:../../packages/workspace-git-http
     devDependencies:
+      '@ax/ipc-server':
+        specifier: workspace:*
+        version: link:../../packages/ipc-server
+      '@ax/sandbox-subprocess':
+        specifier: workspace:*
+        version: link:../../packages/sandbox-subprocess
+      '@ax/session-inmemory':
+        specifier: workspace:*
+        version: link:../../packages/session-inmemory
+      '@ax/storage-sqlite':
+        specifier: workspace:*
+        version: link:../../packages/storage-sqlite
       '@ax/test-harness':
         specifier: workspace:*
         version: link:../../packages/test-harness
