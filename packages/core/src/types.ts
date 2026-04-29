@@ -1,10 +1,9 @@
 import type { Rejection } from './errors.js';
 
-export interface ChatMessageText {
+export interface AgentMessage {
   role: 'user' | 'assistant' | 'system';
   content: string;
 }
-export type ChatMessage = ChatMessageText;
 
 export interface ToolCall {
   id: string;
@@ -19,12 +18,12 @@ export interface ToolResult {
 }
 
 export interface LlmRequest {
-  messages: ChatMessage[];
+  messages: AgentMessage[];
   tools?: ToolDescriptor[];
 }
 
 export interface LlmResponse {
-  assistantMessage: ChatMessage;
+  assistantMessage: AgentMessage;
   toolCalls: ToolCall[];
 }
 
@@ -47,7 +46,7 @@ export interface ToolDescriptor {
 }
 
 export type AgentOutcome =
-  | { kind: 'complete'; messages: ChatMessage[] }
+  | { kind: 'complete'; messages: AgentMessage[] }
   | { kind: 'terminated'; reason: string; error?: unknown };
 
 export type FireResult<P> =
