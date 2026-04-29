@@ -5,6 +5,12 @@ export * from './mock-services.js';
 export { createMockWorkspacePlugin } from './mock-workspace.js';
 export { createTestHostToolPlugin } from './test-host-tool.js';
 export { runWorkspaceContract } from './workspace-contract.js';
+export {
+  StubRunnerScriptSchema,
+  type StubRunnerScript,
+  encodeScript,
+  decodeScript,
+} from './script-schema.js';
 
 /**
  * Absolute path to the built minimal stdio MCP server stub. Spawn via
