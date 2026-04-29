@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { AgentContext, AgentOutcome, Plugin } from '@ax/core';
+import type { AgentContext, Plugin } from '@ax/core';
 
 const PLUGIN_NAME = '@ax/audit-log';
 
@@ -31,27 +31,9 @@ export function auditLogPlugin(): Plugin {
       version: '0.0.0',
       registers: [],
       calls: ['storage:set'],
-      subscribes: ['chat:end', 'event.http-egress'],
+      subscribes: ['event.http-egress'],
     },
     init({ bus }) {
-      bus.subscribe<{ outcome: AgentOutcome }>(
-        'chat:end',
-        PLUGIN_NAME,
-        async (ctx: AgentContext, payload) => {
-          const record = {
-            reqId: ctx.reqId,
-            sessionId: ctx.sessionId,
-            agentId: ctx.agentId,
-            userId: ctx.userId,
-            outcome: payload.outcome,
-            timestamp: new Date().toISOString(),
-          };
-          const value = new TextEncoder().encode(JSON.stringify(record));
-          await bus.call('storage:set', ctx, { key: `chat:${ctx.reqId}`, value });
-          return undefined;
-        },
-      );
-
       // Phase 2 — credential-proxy fires event.http-egress per request
       // (success, block, or upstream error). Persist one row per egress
       // keyed by sessionId + timestamp so the admin's audit view can

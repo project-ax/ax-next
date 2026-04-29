@@ -49,7 +49,7 @@ import { createStaticFilesPlugin } from '@ax/static-files';
 //   1. database / storage / credentials (stateful base layer)
 //   2. eventbus / session (cross-process coordination)
 //   3. workspace (versioned content)
-//   4. audit-log (subscribes to chat:end; calls storage:set)
+//   4. audit-log (subscribes to event.http-egress; calls storage:set)
 //   5. http-server / auth / teams (control plane access — Week 9.5)
 //   6. sandbox / ipc-http / chat-orchestrator (chat plane)
 //   7. tool-dispatcher → tool descriptors → mcp-client (catalog assembly)
@@ -387,9 +387,10 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   }
 
   // ----- 4. audit log ----------------------------------------------------
-  // Subscribes to chat:end and writes a record via storage:set. Pushed
-  // before the chat-orchestrator so its subscription is in place when the
-  // first chat:end fires.
+  // Subscribes to event.http-egress and writes one row per egress via
+  // storage:set. Push order isn't load-bearing — the kernel finishes init
+  // (and therefore wires every subscriber) before any hook fires — but we
+  // keep audit-log near the storage layer because that's its only call.
   plugins.push(auditLogPlugin());
 
   // ----- 5. control-plane access (Week 9.5) -----------------------------
