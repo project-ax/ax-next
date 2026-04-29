@@ -1,0 +1,5 @@
+We don't need to migrate old tables. no need for v1 -> v2
+
+---
+
+create the plan for phase C
