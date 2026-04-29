@@ -1,6 +1,5 @@
 ---
 "@ax/agent-claude-sdk-runner": minor
-"@ax/llm-proxy-anthropic-format": minor
 "@ax/cli": minor
 "@ax/sandbox-subprocess": minor
 "@ax/test-harness": minor
