@@ -177,15 +177,16 @@ export async function main(opts: MainOptions): Promise<number> {
   plugins.push(createDevAgentsStubPlugin());
 
   // Tool dispatcher is the single entry point for `tool:execute`, fanning
-  // out to whatever tool plugins register descriptors. Today the dispatcher's
-  // tool surface is populated entirely by MCP-registered host tools (see the
-  // `createMcpClientPlugin()` push below) — built-in bash/file-io descriptors
-  // are gone (Phase 6 Task 6 removes their host-side packages).
+  // out to whatever tool plugins register descriptors. The dispatcher's
+  // tool surface is populated entirely by MCP-registered host tools (see
+  // the `createMcpClientPlugin()` push below); built-in bash/file-io
+  // descriptors are gone (Phase 6 Task 6 deleted their host-side packages
+  // — the SDK runner's sandboxed Bash/Read/Write replace them).
   plugins.push(createToolDispatcherPlugin());
 
-  // MCP-sourced tools register through the same `tool:register` surface as
-  // bash/file-io. Push unconditionally: when no MCP configs are stored,
-  // `loadConfigs` returns an empty array and init is a no-op. Ordering
+  // MCP-sourced tools register through the same `tool:register` surface
+  // the dispatcher exposes. Push unconditionally: when no MCP configs are
+  // stored, `loadConfigs` returns an empty array and init is a no-op. Ordering
   // note: must come AFTER tool-dispatcher (which registers `tool:register`)
   // and AFTER credentials + storage-sqlite (which it calls during init).
   // Bootstrap's topological sort handles this either way, but keeping the

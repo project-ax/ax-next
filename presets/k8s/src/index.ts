@@ -9,8 +9,6 @@ import { createWorkspaceGitHttpPlugin } from '@ax/workspace-git-http';
 import { createSandboxK8sPlugin } from '@ax/sandbox-k8s';
 import { createChatOrchestratorPlugin } from '@ax/chat-orchestrator';
 import { createToolDispatcherPlugin } from '@ax/tool-dispatcher';
-import { createToolBashPlugin } from '@ax/tool-bash';
-import { createToolFileIoPlugin } from '@ax/tool-file-io';
 import { auditLogPlugin } from '@ax/audit-log';
 import { createMcpClientPlugin } from '@ax/mcp-client';
 import { createCredentialProxyPlugin } from '@ax/credential-proxy';
@@ -513,17 +511,17 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   plugins.push(createChatOrchestratorPlugin(orchestratorCfg));
 
   // ----- 7. tool catalog -------------------------------------------------
-  // Dispatcher first — it registers `tool:register` / `tool:list`. The
-  // descriptor-only tool plugins (bash, file-io) call `tool:register` from
-  // their init. mcp-client also calls `tool:register` from init.
+  // Dispatcher first — it registers `tool:register` / `tool:list`. The tool
+  // surface is populated entirely by MCP-registered host tools today;
+  // built-in bash/file-io descriptors are gone (Phase 6 Task 6 removed their
+  // host-side packages — the SDK runner's sandboxed Bash/Read/Write replace
+  // them).
   //
   // mcp-client gets `mountAdminRoutes: true` so /admin/mcp-servers* lands
   // alongside the rest of the admin surface. The flag expands the plugin's
   // manifest `calls` to include http:register-route + auth:require-user;
   // the kernel's topo-sort picks up the new edges automatically.
   plugins.push(createToolDispatcherPlugin());
-  plugins.push(createToolBashPlugin());
-  plugins.push(createToolFileIoPlugin());
   plugins.push(createMcpClientPlugin({ mountAdminRoutes: true }));
 
   // ----- 8. agents -------------------------------------------------------
