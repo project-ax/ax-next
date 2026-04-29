@@ -133,7 +133,7 @@ The auth boundary is the allow-list. A token is only mintable via `session:creat
 
 ## Boundary review
 
-- **Alternate impl this hook could have:** none — this plugin doesn't register a service hook. It binds a listener at init() and routes inbound requests to existing hooks (`session:resolve-token`, `llm:call`, `tool:list`, `session:claim-work`, plus the dispatcher-resolved `tool:execute:<name>`). The transport is the contribution; the hook surface is unchanged.
+- **Alternate impl this hook could have:** none — this plugin doesn't register a service hook. It binds a listener at init() and routes inbound requests to existing hooks (`session:resolve-token`, `tool:list`, `session:claim-work`, plus the dispatcher-resolved `tool:execute:<name>`). The transport is the contribution; the hook surface is unchanged.
 - **Payload field names that might leak:** none. The wire payloads are owned by `@ax/ipc-protocol`, which both transports (unix and HTTP) share. No `socket_path`, `port`, `bearer`, `Authorization`, or other transport vocabulary appears on hook payloads — those stay at the listener boundary.
 - **Subscriber risk:** none new. Subscribers fire on the same hooks the unix listener already drives; `chat:end` / `tool:post-call` / `turn:end` payloads are identical regardless of transport.
 - **Wire surface (IPC):** this plugin IS a wire surface. The schemas live in `@ax/ipc-protocol` (one schema set, two transports), not in this package, so there's no per-listener schema drift.

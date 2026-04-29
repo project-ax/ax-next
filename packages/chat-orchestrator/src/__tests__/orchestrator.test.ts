@@ -1057,13 +1057,18 @@ describe('chat-orchestrator', () => {
     // and the runner would fail at boot anyway with a worse error path.
     //
     // I7: this exit fires BEFORE proxyOpened can be set, so proxy:close-
-    //     session must NOT be called. We assert that by registering a
-    //     close-only spy below — see below.
+    //     session must NOT be called. We register a close-only spy below
+    //     and assert it was never invoked.
     // I18: distinct from `proxy-hooks-misconfigured` (skewed open/close).
     const mocks = buildMocks({ omitProxyStubs: true });
-    // We don't register either proxy hook AND assert the harness's sandbox
-    // stub was never reached — no sandbox = no proxy lifecycle, which
-    // proves I7 (proxyOpened never set, so no close call possible).
+    // Register a close-only spy. open-session stays unregistered — that's
+    // the gate's trigger. If the orchestrator wrongly tried to close, the
+    // spy would catch it.
+    let proxyCloseCalls = 0;
+    mocks.services['proxy:close-session'] = async () => {
+      proxyCloseCalls += 1;
+      return {};
+    };
     const endFires: AgentOutcome[] = [];
 
     const h = await createTestHarness({
@@ -1085,13 +1090,53 @@ describe('chat-orchestrator', () => {
       silentCtx('proxy-not-loaded'),
       { message: { role: 'user', content: 'hi' } },
     );
+
+    // First, the orchestrator should have hit the open/close skew gate
+    // (open missing, close present) and returned `proxy-hooks-misconfigured`
+    // — NOT `proxy-not-loaded`. Both diagnostics are valid, but the skew
+    // path is checked first. So we re-run with neither hook registered to
+    // assert the `proxy-not-loaded` path specifically.
     expect(outcome.kind).toBe('terminated');
     if (outcome.kind === 'terminated') {
-      expect(outcome.reason).toBe('proxy-not-loaded');
+      expect(outcome.reason).toBe('proxy-hooks-misconfigured');
+    }
+    expect(proxyCloseCalls).toBe(0); // I7 — close never called
+    expect(mocks.calls.sandboxOpen).toBe(0);
+    expect(endFires).toHaveLength(1); // I1
+
+    // Now the actual `proxy-not-loaded` case: drop the close-only spy too.
+    delete mocks.services['proxy:close-session'];
+    proxyCloseCalls = 0;
+    endFires.length = 0;
+
+    const h2 = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinary: '/irrelevant',
+          chatTimeoutMs: 1_000,
+        }),
+      ],
+    });
+    h2.bus.subscribe('chat:end', 'obs', async (_ctx, p: unknown) => {
+      endFires.push((p as { outcome: AgentOutcome }).outcome);
+      return undefined;
+    });
+
+    const outcome2 = await h2.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('proxy-not-loaded'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome2.kind).toBe('terminated');
+    if (outcome2.kind === 'terminated') {
+      expect(outcome2.reason).toBe('proxy-not-loaded');
       // I18: the new outcome is distinct from skew-misconfigured.
-      expect(outcome.reason).not.toBe('proxy-hooks-misconfigured');
+      expect(outcome2.reason).not.toBe('proxy-hooks-misconfigured');
     }
     // I7: sandbox never opened, so proxyOpened never set, so nothing to close.
+    // (proxyCloseCalls is structurally zero here — no spy registered at all
+    // means a stray close call would throw NoServiceError, even stronger.)
     expect(mocks.calls.sandboxOpen).toBe(0);
     // I1: chat:end fires exactly once on this exit path.
     expect(endFires).toHaveLength(1);

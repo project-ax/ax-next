@@ -139,7 +139,7 @@ Same procedure as kind, but:
   created, connects back over HTTP, and returns.
 
 - **`Dockerfile.agent` is not in this PR.** Pre-build any image bundling the
-  two runner binaries; the chart only consumes it.
+  Claude SDK runner binary; the chart only consumes it.
 
 - **The embedded postgres** uses Bitnami's chart at version `16.7.27`. Bitnami
   recently moved many images from `bitnami/*` to `bitnamilegacy/*`. If image
