@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import {
   type Plugin,
   type AgentOutcome,
-  type ChatMessage,
+  type AgentMessage,
 } from '@ax/core';
 import { runServeCommand } from '../commands/serve.js';
 
@@ -37,7 +37,7 @@ function stubPlugin(opts: {
         '@ax/serve-test-stub',
         async (_ctx, input) => ({ sessionId: input.sessionId, token: 'stub-token' }),
       );
-      bus.registerService<{ message: ChatMessage }, AgentOutcome>(
+      bus.registerService<{ message: AgentMessage }, AgentOutcome>(
         'agent:invoke',
         '@ax/serve-test-stub',
         async (_ctx, input) => {
