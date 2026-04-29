@@ -4,6 +4,7 @@ export * from './harness.js';
 export * from './mock-services.js';
 export { createMockWorkspacePlugin } from './mock-workspace.js';
 export { createTestHostToolPlugin } from './test-host-tool.js';
+export { createTestProxyPlugin } from './test-proxy-plugin.js';
 export { runWorkspaceContract } from './workspace-contract.js';
 export {
   StubRunnerScriptSchema,
