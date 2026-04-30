@@ -34,7 +34,8 @@
       "better-sqlite3"
     ],
     "overrides": {
-      "uuid@<14.0.0": ">=14.0.0"
+      "uuid@<14.0.0": ">=14.0.0",
+      "@anthropic-ai/sdk@<0.91.1": ">=0.91.1"
     }
   }
 }
