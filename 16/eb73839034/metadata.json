@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "16eb73839034",
+  "strategy": "manual-commit",
+  "branch": "feat/phase-b-conversations-metadata",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "packages/conversations/src/__tests__/create-freezes.test.ts",
+    "packages/conversations/src/__tests__/get-metadata.test.ts",
+    "packages/conversations/src/__tests__/last-activity.test.ts",
+    "packages/conversations/src/__tests__/store-runner-session.test.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/16/eb73839034/0/metadata.json",
+      "transcript": "/16/eb73839034/0/full.jsonl",
+      "content_hash": "/16/eb73839034/0/content_hash.txt",
+      "prompt": "/16/eb73839034/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 20,
+    "cache_creation_tokens": 17393,
+    "cache_read_tokens": 3557718,
+    "output_tokens": 8782,
+    "api_call_count": 15
+  }
+}
