@@ -3,6 +3,7 @@ import {
   PostgreSqlContainer,
   type StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
+import pg from 'pg';
 import { createTestHarness, type TestHarness } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createConversationsPlugin } from '../plugin.js';
@@ -64,7 +65,7 @@ afterEach(async () => {
     const h = harnesses.pop()!;
     await h.close({ onError: () => {} });
   }
-  const cleanup = new (await import('pg')).default.Client({ connectionString });
+  const cleanup = new pg.Client({ connectionString });
   await cleanup.connect();
   try {
     await cleanup.query('DROP TABLE IF EXISTS conversations_v1_turns');
