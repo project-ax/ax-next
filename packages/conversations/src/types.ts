@@ -57,6 +57,30 @@ export interface Conversation {
   activeSessionId: string | null;
   /** Nullable; the in-flight reqId, if any (Invariant J7). */
   activeReqId: string | null;
+  /**
+   * Phase B (2026-04-29). Frozen at create-time from
+   * `ConversationsConfig.defaultRunnerType`. Mirrors I10 (immutable for
+   * the conversation's lifetime). Nullable for pre-Phase-B rows.
+   */
+  runnerType: string | null;
+  /**
+   * Phase B. The runner's native session id (e.g. SDK sessionId for
+   * `@ax/agent-claude-sdk-runner`). Bound on the first turn via
+   * `conversations:store-runner-session`. Null until then.
+   */
+  runnerSessionId: string | null;
+  /**
+   * Phase B. Frozen copy of `agent.workspaceRef` at conversation create.
+   * Mirrors I10. Nullable when the agent had no workspaceRef OR the row
+   * predates Phase B.
+   */
+  workspaceRef: string | null;
+  /**
+   * Phase B. ISO-8601 string. Bumped by the `chat:turn-end` subscriber
+   * on every non-heartbeat turn. Opaque to correctness; sidebar ordering
+   * only. Null for pre-Phase-B rows or rows that haven't seen a turn.
+   */
+  lastActivityAt: string | null;
   /** ISO-8601 string. */
   createdAt: string;
   /** ISO-8601 string. */
@@ -188,6 +212,61 @@ export interface UnbindSessionInput {
 export type UnbindSessionOutput = void;
 
 /**
+ * Phase B (2026-04-29). Sidebar / runner-plugin metadata read. Returns
+ * the projection only — `runner:read-transcript` ships separately
+ * (Phase C) and returns the runner's native transcript bytes. Combining
+ * both into one hook would re-create the lossy projection problem the
+ * design solves (I6).
+ *
+ * ACL: same as `conversations:get` — `(conversation_id, user_id)`
+ * pre-filter, then `agents:resolve(agent_id, user_id)`. A foreign row
+ * looks identical to "no such row" from the caller's perspective.
+ */
+export interface GetMetadataInput {
+  conversationId: string;
+  userId: string;
+}
+export interface GetMetadataOutput {
+  conversationId: string;
+  userId: string;
+  agentId: string;
+  runnerType: string | null;
+  runnerSessionId: string | null;
+  workspaceRef: string | null;
+  title: string | null;
+  /** ISO-8601, or null if no turns yet / pre-Phase-B row. */
+  lastActivityAt: string | null;
+  /** ISO-8601. */
+  createdAt: string;
+}
+
+/**
+ * Phase B (2026-04-29). Bind the runner's native session id to a
+ * conversation row exactly once. Called by the runner-plugin's host-side
+ * IPC handler (Phase C) after the runner subprocess captures its
+ * native session identifier on the first turn.
+ *
+ * Idempotent for re-binds to the same value (no-op success). Throws
+ * `conflict` on a re-bind to a different value (I7) — that signals a
+ * runner-side bug (two first-turn IPCs fired) AND prevents an orphan
+ * native-session artifact on disk.
+ *
+ * ACL: `(conversation_id, ctx.userId)` UPDATE-scope only. No
+ * `agents:resolve` round-trip — the host has already gated the user at
+ * `agent:invoke` entry. A misbehaving caller cannot bind a cross-tenant
+ * row because the UPDATE filter rejects mismatched user_id with the
+ * uniform `not-found` shape.
+ *
+ * `runnerSessionId` is opaque at this layer — no field name leaks the
+ * specific runner shape (no `sdk_session_id`, no `jsonl_path`). I9.
+ */
+export interface StoreRunnerSessionInput {
+  conversationId: string;
+  runnerSessionId: string;
+}
+export type StoreRunnerSessionOutput = void;
+
+/**
  * Fetch the persisted turn history for a conversation, formatted for
  * runner replay (Week 10–12 Task 15, Invariant J3 + J6 resume).
  *
@@ -216,10 +295,21 @@ export interface FetchHistoryOutput {
 // Plugin config
 // ---------------------------------------------------------------------------
 
-// No config knobs in MVP — postgres + kysely come from the
-// @ax/database-postgres service via the bus. Knobs may land alongside
-// Task 14 (e.g. soft-delete retention window) but only if a second
-// backend would also want them. We keep the type so the public surface
-// is forward-compatible.
-// eslint-disable-next-line @typescript-eslint/no-empty-object-type
-export interface ConversationsConfig {}
+/**
+ * Plugin config knobs. Postgres + kysely come from the
+ * @ax/database-postgres service via the bus, not from this config.
+ */
+export interface ConversationsConfig {
+  /**
+   * Phase B (2026-04-29). The runner-plugin name to freeze onto every new
+   * conversation row's `runner_type` column. Single-runner-per-host MVP
+   * (design D5), so this is a constant the host preset declares — the
+   * conversations plugin inherits it. Same string the runner plugin
+   * itself reports; keep them in lockstep when a new runner ships. (When
+   * the future `@ax/runner-router` plugin lands, dispatch moves there
+   * and this knob becomes a default-not-required.)
+   *
+   * Validation regex `^[a-z0-9-]+$`, max 64 chars. Default `'claude-sdk'`.
+   */
+  defaultRunnerType?: string;
+}

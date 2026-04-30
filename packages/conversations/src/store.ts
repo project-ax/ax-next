@@ -35,6 +35,19 @@ const VALID_ROLES: ReadonlySet<TurnRole> = new Set([
   'tool',
 ]);
 
+// Phase B (2026-04-29). The runner-plugin-name shape — short, lowercase,
+// kebab-case identifiers like 'claude-sdk'. Bounded so log output and
+// audit trails stay readable.
+const RUNNER_TYPE_MAX = 64;
+const RUNNER_TYPE_RE = /^[a-z0-9-]+$/;
+
+// Phase B. Mirrored from packages/agents/src/store.ts. Cross-plugin
+// imports are forbidden (CLAUDE.md invariant #2 / I14); duplicating the
+// two values is cheaper than a shared package. Keep them in lockstep
+// when @ax/agents tightens or relaxes its regex.
+const FROZEN_WORKSPACE_REF_MAX = 256;
+const FROZEN_WORKSPACE_REF_RE = /^[A-Za-z0-9_./-]+$/;
+
 function invalid(message: string): PluginError {
   return new PluginError({
     code: 'invalid-payload',
@@ -74,6 +87,34 @@ export function validateContentBlocks(value: unknown): ContentBlock[] {
   return parsed.data;
 }
 
+export function validateRunnerType(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'string') {
+    throw invalid('runnerType must be a string or null');
+  }
+  if (value.length === 0 || value.length > RUNNER_TYPE_MAX) {
+    throw invalid(`runnerType must be 1-${RUNNER_TYPE_MAX} chars`);
+  }
+  if (!RUNNER_TYPE_RE.test(value)) {
+    throw invalid(`runnerType must match ${RUNNER_TYPE_RE.source}`);
+  }
+  return value;
+}
+
+export function validateWorkspaceRefForFreeze(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'string') {
+    throw invalid('workspaceRef must be a string or null');
+  }
+  if (value.length === 0 || value.length > FROZEN_WORKSPACE_REF_MAX) {
+    throw invalid(`workspaceRef must be 1-${FROZEN_WORKSPACE_REF_MAX} chars`);
+  }
+  if (!FROZEN_WORKSPACE_REF_RE.test(value)) {
+    throw invalid(`workspaceRef must match ${FROZEN_WORKSPACE_REF_RE.source}`);
+  }
+  return value;
+}
+
 // ---------------------------------------------------------------------------
 // ID minting — `crypto.randomBytes`-derived prefixed ids, mirroring the
 // `agt_` / `usr_` posture in @ax/agents and @ax/auth-oidc.
@@ -92,7 +133,7 @@ export function mintTurnId(): string {
 // from `pg`'s default casts; we narrow them before exposing.
 // ---------------------------------------------------------------------------
 
-function rowToConversation(row: ConversationsRow): Conversation {
+export function rowToConversation(row: ConversationsRow): Conversation {
   return {
     conversationId: row.conversation_id,
     userId: row.user_id,
@@ -100,6 +141,11 @@ function rowToConversation(row: ConversationsRow): Conversation {
     title: row.title,
     activeSessionId: row.active_session_id,
     activeReqId: row.active_req_id,
+    runnerType: row.runner_type,
+    runnerSessionId: row.runner_session_id,
+    workspaceRef: row.workspace_ref,
+    lastActivityAt:
+      row.last_activity_at === null ? null : row.last_activity_at.toISOString(),
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
   };
@@ -149,6 +195,19 @@ export interface ConversationStoreCreateArgs {
   userId: string;
   agentId: string;
   title: string | null;
+  /**
+   * Phase B (2026-04-29). Frozen runner-type for this conversation. The
+   * plugin layer reads it from `ConversationsConfig.defaultRunnerType`
+   * (which defaults to 'claude-sdk'). Optional here so existing tests
+   * that pre-date Phase B continue to compile — those rows persist as
+   * runner_type = NULL, the pre-Phase-B-row case.
+   */
+  runnerType?: string | null;
+  /**
+   * Phase B. Frozen copy of `agent.workspaceRef` at create-time. Optional
+   * for the same reason as runnerType — pre-Phase-B test rows.
+   */
+  workspaceRef?: string | null;
 }
 
 export interface ConversationStoreAppendTurnArgs {
@@ -156,6 +215,40 @@ export interface ConversationStoreAppendTurnArgs {
   role: TurnRole;
   contentBlocks: ContentBlock[];
 }
+
+/**
+ * Phase B (2026-04-29). Metadata projection — what
+ * `conversations:get-metadata` returns. Deliberately omits turns; the
+ * runner-plugin's `runner:read-transcript` hook (Phase C) is the
+ * transcript read path. Combining them here would re-create the lossy-
+ * projection problem the design solves (I6).
+ */
+export interface ConversationMetadata {
+  conversationId: string;
+  userId: string;
+  agentId: string;
+  runnerType: string | null;
+  runnerSessionId: string | null;
+  workspaceRef: string | null;
+  title: string | null;
+  /** ISO-8601 string, or null if no turns yet / pre-Phase-B row. */
+  lastActivityAt: string | null;
+  /** ISO-8601 string. */
+  createdAt: string;
+}
+
+/**
+ * Phase B. Result of an idempotent `runner_session_id` bind:
+ *   - bound:              first bind, success.
+ *   - already-bound-same: idempotent re-bind to the same value.
+ *   - conflict:           re-bind attempt to a DIFFERENT value (I7).
+ *   - not-found:          unknown id / foreign user / tombstoned row.
+ */
+export type StoreRunnerSessionResult =
+  | 'bound'
+  | 'already-bound-same'
+  | 'conflict'
+  | 'not-found';
 
 export interface ConversationStore {
   /** Single-row lookup; skips tombstones. Used in hook handlers after agents:resolve. */
@@ -225,6 +318,29 @@ export interface ConversationStore {
    * Returns the number of rows updated (0+).
    */
   clearBySessionId(sessionId: string): Promise<number>;
+  /**
+   * Phase B (2026-04-29). Metadata-only projection for sidebar / runner
+   * plugin reads. Skips tombstones; returns null on miss. Caller is
+   * responsible for the user_id pre-filter (handled at the plugin layer).
+   */
+  getMetadata(conversationId: string): Promise<ConversationMetadata | null>;
+  /**
+   * Phase B. Bind `runner_session_id` once per conversation. Idempotent
+   * for the same value; conflict on a different value (I7). The user_id
+   * filter ensures a misbehaving caller cannot bind a cross-tenant row.
+   */
+  storeRunnerSession(args: {
+    conversationId: string;
+    userId: string;
+    runnerSessionId: string;
+  }): Promise<StoreRunnerSessionResult>;
+  /**
+   * Phase B. Bump `last_activity_at`. Subscriber-friendly; returns false
+   * on tombstoned / unknown rows. No userId scope — called only by the
+   * `chat:turn-end` subscriber, which has already been gated upstream by
+   * the orchestrator's J1 ACL check at agent:invoke entry.
+   */
+  bumpLastActivity(conversationId: string, at: Date): Promise<boolean>;
 }
 
 export function createConversationStore(
@@ -277,7 +393,7 @@ export function createConversationStore(
       return rows.map(rowToTurn);
     },
 
-    async create({ userId, agentId, title }) {
+    async create({ userId, agentId, title, runnerType, workspaceRef }) {
       const id = mintConversationId();
       const now = new Date();
       const row = await db
@@ -289,6 +405,13 @@ export function createConversationStore(
           title,
           active_session_id: null,
           active_req_id: null,
+          // Phase B: freeze runner_type + workspace_ref onto the row.
+          // Pre-Phase-B callers (test fixtures) omit these and the row
+          // persists as NULL — opaque to the correctness path (I8/I10).
+          runner_type: runnerType ?? null,
+          runner_session_id: null,
+          workspace_ref: workspaceRef ?? null,
+          last_activity_at: null,
           deleted_at: null,
           created_at: now,
           updated_at: now,
@@ -438,6 +561,77 @@ export function createConversationStore(
         .where('deleted_at', 'is', null)
         .executeTakeFirst();
       return Number(result.numUpdatedRows ?? 0n);
+    },
+
+    async getMetadata(conversationId) {
+      const row = await db
+        .selectFrom('conversations_v1_conversations')
+        .selectAll('conversations_v1_conversations')
+        .where('conversation_id', '=', conversationId)
+        .where('deleted_at', 'is', null)
+        .executeTakeFirst();
+      if (row === undefined) return null;
+      return {
+        conversationId: row.conversation_id,
+        userId: row.user_id,
+        agentId: row.agent_id,
+        runnerType: row.runner_type,
+        runnerSessionId: row.runner_session_id,
+        workspaceRef: row.workspace_ref,
+        title: row.title,
+        lastActivityAt:
+          row.last_activity_at === null
+            ? null
+            : row.last_activity_at.toISOString(),
+        createdAt: row.created_at.toISOString(),
+      };
+    },
+
+    async storeRunnerSession({ conversationId, userId, runnerSessionId }) {
+      // Compare-and-set: write iff the column is NULL. The
+      // `(conversation_id, user_id, deleted_at IS NULL, runner_session_id
+      // IS NULL)` filter guarantees we never overwrite an already-bound
+      // row AND never bind a cross-tenant / tombstoned row.
+      const result = await db
+        .updateTable('conversations_v1_conversations')
+        .set({
+          runner_session_id: runnerSessionId,
+          updated_at: new Date(),
+        })
+        .where('conversation_id', '=', conversationId)
+        .where('user_id', '=', userId)
+        .where('deleted_at', 'is', null)
+        .where('runner_session_id', 'is', null)
+        .executeTakeFirst();
+      if (Number(result.numUpdatedRows ?? 0n) > 0) {
+        return 'bound';
+      }
+      // No row updated. Either the row doesn't exist for this
+      // (id, user, alive) tuple OR runner_session_id is already set.
+      // Read current state to distinguish idempotent re-bind from conflict
+      // (I7).
+      const existing = await db
+        .selectFrom('conversations_v1_conversations')
+        .select(['runner_session_id'])
+        .where('conversation_id', '=', conversationId)
+        .where('user_id', '=', userId)
+        .where('deleted_at', 'is', null)
+        .executeTakeFirst();
+      if (existing === undefined) return 'not-found';
+      if (existing.runner_session_id === runnerSessionId) {
+        return 'already-bound-same';
+      }
+      return 'conflict';
+    },
+
+    async bumpLastActivity(conversationId, at) {
+      const result = await db
+        .updateTable('conversations_v1_conversations')
+        .set({ last_activity_at: at, updated_at: at })
+        .where('conversation_id', '=', conversationId)
+        .where('deleted_at', 'is', null)
+        .executeTakeFirst();
+      return Number(result.numUpdatedRows ?? 0n) > 0;
     },
   };
 }

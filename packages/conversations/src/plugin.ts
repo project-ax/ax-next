@@ -15,7 +15,9 @@ import {
   createConversationStore,
   validateContentBlocks,
   validateRole,
+  validateRunnerType,
   validateTitle,
+  validateWorkspaceRefForFreeze,
   type ConversationStore,
 } from './store.js';
 import type {
@@ -33,9 +35,13 @@ import type {
   GetByReqIdInput,
   GetByReqIdOutput,
   GetInput,
+  GetMetadataInput,
+  GetMetadataOutput,
   GetOutput,
   ListInput,
   ListOutput,
+  StoreRunnerSessionInput,
+  StoreRunnerSessionOutput,
   UnbindSessionInput,
   UnbindSessionOutput,
 } from './types.js';
@@ -63,9 +69,34 @@ const PLUGIN_NAME = '@ax/conversations';
 //   - We DO NOT add `bind-session` / `unbind-session` hooks here — Task 14.
 // ---------------------------------------------------------------------------
 
+/**
+ * Phase B (2026-04-29). Resolved config — narrows
+ * `defaultRunnerType?: string` to a non-empty validated string. Defaults
+ * to 'claude-sdk' (the single-runner-per-host MVP, design D5).
+ */
+interface ResolvedConversationsConfig {
+  defaultRunnerType: string;
+}
+
+function resolveConfig(
+  input: ConversationsConfig,
+): ResolvedConversationsConfig {
+  const raw = input.defaultRunnerType ?? 'claude-sdk';
+  const validated = validateRunnerType(raw);
+  if (validated === null) {
+    // Validator returns null for null/undefined input; the `?? 'claude-sdk'`
+    // above means the only path here is an explicitly-null user override.
+    throw new Error(
+      "ConversationsConfig.defaultRunnerType must be a non-empty string (matches /^[a-z0-9-]+$/, ≤ 64 chars)",
+    );
+  }
+  return { defaultRunnerType: validated };
+}
+
 export function createConversationsPlugin(
-  _config: ConversationsConfig = {},
+  config: ConversationsConfig = {},
 ): Plugin {
+  const resolvedConfig = resolveConfig(config);
   let db: Kysely<ConversationDatabase> | undefined;
   let _store: ConversationStore | undefined;
 
@@ -85,6 +116,14 @@ export function createConversationsPlugin(
         'conversations:unbind-session',
         // Task 15 (Week 10–12): runner replays history at boot (J3 + J6).
         'conversations:fetch-history',
+        // Phase B (2026-04-29): runner-owned-sessions metadata reads.
+        // Sidebar / runner-plugin call site lands in Phase C — half-
+        // wired window OPEN (closed by Phase C, see PR notes).
+        'conversations:get-metadata',
+        // Phase B (2026-04-29): idempotent first-bind for the runner's
+        // native session id. Caller (Phase C) is the runner-plugin's
+        // host-side IPC handler.
+        'conversations:store-runner-session',
       ],
       calls: ['agents:resolve', 'database:get-instance'],
       // Task 14 (Week 10–12): subscribe to session:terminate so a sandbox
@@ -111,7 +150,8 @@ export function createConversationsPlugin(
       bus.registerService<CreateInput, CreateOutput>(
         'conversations:create',
         PLUGIN_NAME,
-        async (ctx, input) => createConversation(localStore, bus, ctx, input),
+        async (ctx, input) =>
+          createConversation(localStore, bus, ctx, input, resolvedConfig),
       );
 
       bus.registerService<AppendTurnInput, AppendTurnOutput>(
@@ -180,6 +220,28 @@ export function createConversationsPlugin(
         async (ctx, input) => fetchHistory(localStore, bus, ctx, input),
       );
 
+      // Phase B (2026-04-29). Metadata-only read. Same ACL posture as
+      // conversations:get — user_id pre-filter, then agents:resolve.
+      // Half-wired window: no in-process caller until Phase C wires
+      // the runner plugin's host-side surface.
+      bus.registerService<GetMetadataInput, GetMetadataOutput>(
+        'conversations:get-metadata',
+        PLUGIN_NAME,
+        async (ctx, input) =>
+          getConversationMetadata(localStore, bus, ctx, input),
+      );
+
+      // Phase B (2026-04-29). Idempotent first-bind. Mirrors the
+      // bind-session ACL posture: ctx.userId-scoped UPDATE only, no
+      // agents:resolve round-trip (the orchestrator has already gated
+      // the user at agent:invoke entry). Half-wired window: closed by
+      // Phase C.
+      bus.registerService<StoreRunnerSessionInput, StoreRunnerSessionOutput>(
+        'conversations:store-runner-session',
+        PLUGIN_NAME,
+        async (ctx, input) => storeRunnerSession(localStore, ctx, input),
+      );
+
       // chat:turn-end auto-append (Task 3 of Week 10–12).
       //
       // The runner emits event.turn-end with `contentBlocks` + `role` after
@@ -199,7 +261,12 @@ export function createConversationsPlugin(
         'chat:turn-end',
         PLUGIN_NAME,
         async (ctx, payload) => {
-          await handleTurnEnd(bus, ctx, payload);
+          // Phase B (2026-04-29): persist the turn AND bump
+          // last_activity_at in the same code path. The bump rides
+          // append's success — failed appends leave last_activity_at
+          // alone (the timestamp reflects persisted activity, not
+          // optimistic).
+          await handleTurnEnd(bus, localStore, ctx, payload);
           // Task 14 (J6): once the turn ends, clear active_req_id while
           // KEEPING active_session_id. The sandbox stays alive for the next
           // user message; only the in-flight reqId is dead. Compare-and-
@@ -262,6 +329,7 @@ interface SessionTerminatePayload {
 
 async function handleTurnEnd(
   bus: HookBus,
+  store: ConversationStore,
   ctx: AgentContext,
   payload: TurnEndPayload,
 ): Promise<void> {
@@ -274,7 +342,9 @@ async function handleTurnEnd(
 
   // Heartbeat turn-end (no content). The runner emits these every turn
   // so the host knows the SDK is awaiting input — we deliberately don't
-  // write empty rows.
+  // write empty rows. Phase B: also no last_activity_at bump (I8 — the
+  // timestamp must reflect persisted user-visible activity, not the
+  // SDK's internal heartbeat cadence).
   const blocks = payload.contentBlocks;
   if (blocks === undefined || blocks.length === 0) return;
 
@@ -300,6 +370,22 @@ async function handleTurnEnd(
       conversationId,
       role,
       ...(payload.reqId !== undefined ? { reqId: payload.reqId } : {}),
+      err: err instanceof Error ? err : new Error(String(err)),
+    });
+    // Don't bump activity if the append failed — last_activity_at must
+    // only reflect persisted activity (I8).
+    return;
+  }
+
+  // Phase B (2026-04-29). Bump last_activity_at after successful append.
+  // Subscriber-must-not-throw posture preserved: log + swallow on a
+  // bump failure (the row is already persisted, the timestamp is
+  // best-effort).
+  try {
+    await store.bumpLastActivity(conversationId, new Date());
+  } catch (err) {
+    ctx.logger.warn('conversations_bump_last_activity_failed', {
+      conversationId,
       err: err instanceof Error ? err : new Error(String(err)),
     });
   }
@@ -366,18 +452,36 @@ interface ResolveInput {
   userId: string;
 }
 
+/**
+ * Narrow shape of what conversations needs from `agents:resolve`. The
+ * upstream type publishes more — we deliberately read only what we
+ * use, so a future field change in @ax/agents doesn't ripple.
+ *
+ * `workspaceRef` is read defensively: if the resolved agent omits it (a
+ * test mock returning a stub) we treat it as null. Frozen-as-of-create
+ * includes "frozen as null" — Phase C tolerates NULL on read.
+ */
+interface ResolvedAgentShape {
+  agent: {
+    id?: string;
+    workspaceRef?: string | null;
+  };
+}
+
 async function assertAgentReachable(
   bus: HookBus,
   ctx: AgentContext,
   agentId: string,
   userId: string,
   hookName: string,
-): Promise<void> {
+): Promise<ResolvedAgentShape['agent']> {
   try {
-    await bus.call<ResolveInput, unknown>('agents:resolve', ctx, {
-      agentId,
-      userId,
-    });
+    const result = await bus.call<ResolveInput, ResolvedAgentShape>(
+      'agents:resolve',
+      ctx,
+      { agentId, userId },
+    );
+    return result.agent;
   } catch (err) {
     if (err instanceof PluginError) {
       // Re-throw with our plugin name attached so audit can attribute the
@@ -406,21 +510,28 @@ async function createConversation(
   bus: HookBus,
   ctx: AgentContext,
   input: CreateInput,
+  cfg: ResolvedConversationsConfig,
 ): Promise<CreateOutput> {
   const title = validateTitle(input.title ?? null);
   // J1: ACL gate BEFORE persisting. The agent must be reachable to the
-  // creator; otherwise no conversation should ever exist for it.
-  await assertAgentReachable(
+  // creator; otherwise no conversation should ever exist for it. Phase B
+  // (I5): we capture the resolved agent here — its workspaceRef gets
+  // frozen onto the new row, mirroring I10. One bus call total; no
+  // separate agents:get round-trip.
+  const agent = await assertAgentReachable(
     bus,
     ctx,
     input.agentId,
     input.userId,
     'conversations:create',
   );
+  const workspaceRef = validateWorkspaceRefForFreeze(agent.workspaceRef);
   const conv = await store.create({
     userId: input.userId,
     agentId: input.agentId,
     title,
+    runnerType: cfg.defaultRunnerType,
+    workspaceRef,
   });
   return conv;
 }
@@ -475,6 +586,29 @@ async function appendTurn(
     }
     throw err;
   }
+}
+
+async function getConversationMetadata(
+  store: ConversationStore,
+  bus: HookBus,
+  ctx: AgentContext,
+  input: GetMetadataInput,
+): Promise<GetMetadataOutput> {
+  const hookName = 'conversations:get-metadata';
+  // Same ACL posture as conversations:get — user_id pre-filter so a
+  // foreign row surfaces as 'not-found' (no existence-leak via the
+  // agents:resolve denial path).
+  const md = await store.getMetadata(input.conversationId);
+  if (md === null || md.userId !== input.userId) {
+    throw new PluginError({
+      code: 'not-found',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `conversation '${input.conversationId}' not found`,
+    });
+  }
+  await assertAgentReachable(bus, ctx, md.agentId, input.userId, hookName);
+  return md;
 }
 
 async function getConversation(
@@ -613,6 +747,49 @@ async function bindSession(
       hookName,
       message: `conversation '${conversationId}' not found`,
     });
+  }
+}
+
+async function storeRunnerSession(
+  store: ConversationStore,
+  ctx: AgentContext,
+  input: StoreRunnerSessionInput,
+): Promise<StoreRunnerSessionOutput> {
+  const hookName = 'conversations:store-runner-session';
+  const conversationId = requireBoundedString(
+    input.conversationId,
+    'conversationId',
+    hookName,
+  );
+  const runnerSessionId = requireBoundedString(
+    input.runnerSessionId,
+    'runnerSessionId',
+    hookName,
+  );
+  const userId = requireBoundedString(ctx.userId, 'ctx.userId', hookName);
+  const result = await store.storeRunnerSession({
+    conversationId,
+    userId,
+    runnerSessionId,
+  });
+  switch (result) {
+    case 'bound':
+    case 'already-bound-same':
+      return;
+    case 'conflict':
+      throw new PluginError({
+        code: 'conflict',
+        plugin: PLUGIN_NAME,
+        hookName,
+        message: `runner_session_id already bound to a different value for conversation '${conversationId}'`,
+      });
+    case 'not-found':
+      throw new PluginError({
+        code: 'not-found',
+        plugin: PLUGIN_NAME,
+        hookName,
+        message: `conversation '${conversationId}' not found`,
+      });
   }
 }
 
