@@ -227,18 +227,21 @@ describeIfHelm('ax-next chart: experimental sharded git-server', () => {
     expect(envByName.AX_GIT_SERVER_SHARD_INDEX?.valueFrom?.fieldRef?.fieldPath).toBe(
       "metadata.labels['apps.kubernetes.io/pod-index']",
     );
-    expect(envByName.AX_GIT_SERVER_DRAIN_TIMEOUT_MS?.value).toBe('30000');
+    // Drain timeout = (grace - 10) * 1000 = 50_000ms at the default grace=60.
+    expect(envByName.AX_GIT_SERVER_DRAIN_TIMEOUT_MS?.value).toBe('50000');
 
     // Container hardening.
     expect(container?.securityContext?.runAsNonRoot).toBe(true);
     expect(container?.securityContext?.readOnlyRootFilesystem).toBe(true);
     expect(container?.securityContext?.capabilities?.drop).toEqual(['ALL']);
 
-    // Lifecycle preStop sends SIGTERM to PID 1.
+    // Lifecycle preStop sends SIGTERM to PID 1, then sleeps (grace - 5)s.
     const preStopCmd: string[] | undefined =
       container?.lifecycle?.preStop?.exec?.command;
     expect(preStopCmd?.length, 'preStop command set').toBeGreaterThan(0);
     expect(preStopCmd?.join(' ')).toMatch(/kill\s+-TERM\s+1/);
+    // Default grace=60 → sleep 55s.
+    expect(preStopCmd?.join(' ')).toMatch(/sleep\s+55\b/);
 
     // Pod-level grace period bumped to 60.
     expect(sts?.spec?.template?.spec?.terminationGracePeriodSeconds).toBe(60);
@@ -331,5 +334,60 @@ describeIfHelm('ax-next chart: experimental sharded git-server', () => {
     ]);
     expect(r.status, 'helm template should fail').not.toBe(0);
     expect(r.stderr).toMatch(/gitServer\.storage is required/);
+  });
+
+  it('long fullnameOverride: -experimental suffix preserved (no collision with legacy)', () => {
+    // 63-char fullname is the worst case — naive truncation drops the
+    // "-experimental" tail and aliases the new StatefulSet onto the legacy
+    // Deployment's labels. The helper must reserve space for the suffix.
+    const longName = 'x'.repeat(63);
+    const docs = helmTemplate([
+      '--set',
+      'gitServer.enabled=true',
+      '--set',
+      'gitServer.experimental.gitProtocol=true',
+      '--set',
+      'gitServer.storage=10Gi',
+      '--set',
+      `fullnameOverride=${longName}`,
+    ]);
+    // Find the experimental git-server StatefulSet specifically — there's
+    // also a postgresql StatefulSet rendered by the chart.
+    const sts = docs.find(
+      (d) =>
+        d.kind === 'StatefulSet' &&
+        (d.metadata?.name ?? '').includes('git-server'),
+    );
+    expect(sts, 'experimental git-server StatefulSet rendered').toBeDefined();
+    const name = sts?.metadata?.name ?? '';
+    expect(name.endsWith('-experimental'), `name=${name}`).toBe(true);
+    expect(name.length).toBeLessThanOrEqual(63);
+    // It must NOT equal the legacy gitServerComponentName, which is what the
+    // pre-fix truncation produced.
+    const legacy = docs.find(
+      (d) => d.kind === 'Deployment' && (d.metadata?.name ?? '').includes('git-server'),
+    );
+    if (legacy) {
+      expect(sts?.metadata?.name).not.toBe(legacy.metadata?.name);
+    }
+  });
+
+  it('terminationGracePeriodSeconds=20 → render fails with explicit message', () => {
+    // Anything below 35 leaves no room for the listener's drain budget; the
+    // chart must reject the install rather than quietly truncating it.
+    const r = helmTemplateExpectFailure([
+      '--set',
+      'gitServer.enabled=true',
+      '--set',
+      'gitServer.experimental.gitProtocol=true',
+      '--set',
+      'gitServer.storage=10Gi',
+      '--set',
+      'gitServer.terminationGracePeriodSeconds=20',
+    ]);
+    expect(r.status, 'helm template should fail').not.toBe(0);
+    expect(r.stderr).toMatch(
+      /gitServer\.terminationGracePeriodSeconds must be >= 35/,
+    );
   });
 });

@@ -16,7 +16,20 @@ shard router (rendezvous-hashed by workspaceId) decides which shard.
 Shard count is fixed at install time. Changing it later requires manual
 data migration (drain → rsync bare repos → flip traffic) — never just
 flip the value.
+
+Drain timing: preStop sleep + AX_GIT_SERVER_DRAIN_TIMEOUT_MS are derived
+from $grace below. Hardcoding them would mean an operator who sets
+terminationGracePeriodSeconds=20 silently has their drain budget
+truncated to 15s by the kubelet. We require >= 35s so:
+  - preStop sleep ($grace - 5) >= 30s, leaving the listener real time
+    to finish in-flight push/fetch ops
+  - drain timeout ($grace - 10) >= 25s, fitting comfortably inside
+    sleep so the listener exits before kubelet escalates to SIGKILL.
 */}}
+{{- $grace := int (.Values.gitServer.terminationGracePeriodSeconds | default 60) -}}
+{{- if lt $grace 35 -}}
+{{- fail "gitServer.terminationGracePeriodSeconds must be >= 35 for graceful drain" -}}
+{{- end }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -46,7 +59,7 @@ spec:
         checksum/auth: {{ include (print $.Template.BasePath "/git-server-auth-secret.yaml") . | sha256sum }}
     spec:
       serviceAccountName: {{ include "ax-next.gitServerComponentName" . }}
-      terminationGracePeriodSeconds: {{ .Values.gitServer.terminationGracePeriodSeconds | default 60 }}
+      terminationGracePeriodSeconds: {{ $grace }}
       # Pod-level securityContext. fsGroup is the load-bearing piece — without
       # it, kubelet doesn't chgrp the freshly-provisioned PVC mount, and the
       # UID 1000 process inside the container can't write to it (EACCES on
@@ -77,14 +90,14 @@ spec:
             - name: git
               containerPort: {{ .Values.gitServer.port }}
               protocol: TCP
-          # preStop: send SIGTERM to PID 1 and sleep 25s so the listener can
-          # drain in-flight push/fetch ops before kubelet escalates to SIGKILL
-          # at terminationGracePeriodSeconds. Sleep MUST stay below grace - 5
-          # to leave room for the SIGKILL margin.
+          # preStop: send SIGTERM to PID 1 and sleep ($grace - 5)s so the
+          # listener can drain in-flight push/fetch ops before kubelet escalates
+          # to SIGKILL at terminationGracePeriodSeconds. Sleep MUST stay below
+          # grace - 5 to leave room for the SIGKILL margin.
           lifecycle:
             preStop:
               exec:
-                command: ["/bin/sh", "-c", "kill -TERM 1 && sleep 25"]
+                command: ["/bin/sh", "-c", {{ printf "kill -TERM 1 && sleep %d" (sub $grace 5) | quote }}]
           env:
             - name: AX_GIT_SERVER_HOST
               value: "0.0.0.0"
@@ -104,10 +117,12 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.labels['apps.kubernetes.io/pod-index']
-            # Drain budget for the SIGTERM-aware listener — well under the
-            # chart's terminationGracePeriodSeconds so we never race kubelet.
+            # Drain budget for the SIGTERM-aware listener — derived from
+            # $grace so a smaller grace period doesn't quietly truncate the
+            # listener's drain window. ($grace - 10)s in millis fits inside
+            # the preStop sleep with margin to spare.
             - name: AX_GIT_SERVER_DRAIN_TIMEOUT_MS
-              value: "30000"
+              value: {{ mul (sub $grace 10) 1000 | quote }}
           resources:
             {{- toYaml .Values.gitServer.resources | nindent 12 }}
           {{- with .Values.gitServer.readinessProbe }}

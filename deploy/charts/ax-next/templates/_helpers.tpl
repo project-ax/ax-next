@@ -146,7 +146,16 @@ Experimental git-server (Phase 1 of workspace redesign) component name.
 label limit). DELIBERATELY distinct from ax-next.gitServerComponentName
 so the new StatefulSet/Service/NetworkPolicy can sit alongside the legacy
 Deployment/Service during the parallel-canary phase without colliding.
+
+CRUCIALLY, the suffix is reserved BEFORE the 63-char truncation. The
+naive "<fullname>-git-server-experimental | trunc 63" form would, on a
+sufficiently long release name, drop the "-experimental" part and
+collide with ax-next.gitServerComponentName — quietly aliasing the new
+StatefulSet onto the legacy Deployment's labels. Instead we truncate
+the base to 39 chars (63 - 24 for "-git-server-experimental") so the
+suffix is always preserved.
 */}}
 {{- define "ax-next.gitServerExperimentalComponentName" -}}
-{{- printf "%s-git-server-experimental" (include "ax-next.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- $base := include "ax-next.fullname" . | trunc 39 | trimSuffix "-" -}}
+{{- printf "%s-git-server-experimental" $base | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
