@@ -319,3 +319,279 @@ describe('POST /<id>.git/git-upload-pack', () => {
     expect(body.error).toBe('workspace_not_found');
   });
 });
+
+// --- Slice 3: receive-pack (push) + full e2e -------------------------------
+
+/** Build a non-bare repo with one commit at `tmp/<file>=<contents>`. */
+async function makeWorkingRepo(
+  fileName: string,
+  fileContents: string,
+): Promise<{ tmp: string; env: NodeJS.ProcessEnv }> {
+  const tmp = mkdtempSync(join(tmpdir(), 'ax-wgs-src-'));
+  const env = {
+    ...process.env,
+    GIT_AUTHOR_NAME: 'test',
+    GIT_AUTHOR_EMAIL: 't@e',
+    GIT_COMMITTER_NAME: 'test',
+    GIT_COMMITTER_EMAIL: 't@e',
+  };
+  const init = await runGit(['init', '-b', 'main', tmp], { env });
+  if (init.code !== 0) throw new Error(`init failed: ${init.stderr}`);
+  const { writeFileSync } = await import('node:fs');
+  writeFileSync(join(tmp, fileName), fileContents);
+  const add = await runGit(['-C', tmp, 'add', '.'], { env });
+  if (add.code !== 0) throw new Error(`add failed: ${add.stderr}`);
+  const commit = await runGit(['-C', tmp, 'commit', '-m', 'first'], { env });
+  if (commit.code !== 0) throw new Error(`commit failed: ${commit.stderr}`);
+  return { tmp, env };
+}
+
+describe('POST /<id>.git/git-receive-pack', () => {
+  it('e2e: push to a freshly-created repo, then clone it back, contents match', async () => {
+    const { server, url } = await boot();
+    active = server;
+    await createRepo(url, 'wstest1');
+
+    const { tmp, env } = await makeWorkingRepo('hello.txt', 'hi from push\n');
+    const remote = `${url}/wstest1.git`;
+
+    // Push to the server.
+    const push = await runGit(
+      [
+        '-c',
+        `http.extraHeader=Authorization: Bearer ${TOKEN}`,
+        '-C',
+        tmp,
+        'push',
+        remote,
+        'main:main',
+      ],
+      { env },
+    );
+    if (push.code !== 0) {
+      throw new Error(`push failed: ${push.stderr}`);
+    }
+
+    // Clone from a different tempdir, verify content.
+    const cloneDir = mkdtempSync(join(tmpdir(), 'ax-wgs-clone-'));
+    const clone = await runGit(
+      [
+        '-c',
+        `http.extraHeader=Authorization: Bearer ${TOKEN}`,
+        'clone',
+        remote,
+        cloneDir,
+      ],
+      { env },
+    );
+    if (clone.code !== 0) {
+      throw new Error(`clone failed: ${clone.stderr}`);
+    }
+    const { readFileSync } = await import('node:fs');
+    expect(readFileSync(join(cloneDir, 'hello.txt'), 'utf8')).toBe(
+      'hi from push\n',
+    );
+  });
+
+  it('rejects --force non-fast-forward push (denyNonFastForwards)', async () => {
+    const { server, url } = await boot();
+    active = server;
+    await createRepo(url, 'wstest3');
+    const remote = `${url}/wstest3.git`;
+    const auth = `http.extraHeader=Authorization: Bearer ${TOKEN}`;
+
+    // Source A: build commit A and push.
+    const a = await makeWorkingRepo('a.txt', 'A\n');
+    const pushA = await runGit(
+      ['-c', auth, '-C', a.tmp, 'push', remote, 'main:main'],
+      { env: a.env },
+    );
+    if (pushA.code !== 0) throw new Error(`pushA failed: ${pushA.stderr}`);
+
+    // Source B: independent history (different parent), force-push.
+    const b = await makeWorkingRepo('b.txt', 'B\n');
+    const pushB = await runGit(
+      ['-c', auth, '-C', b.tmp, 'push', '--force', remote, 'main:main'],
+      { env: b.env },
+    );
+    expect(pushB.code).not.toBe(0);
+    // The exact wording is "denyNonFastForwards" or "non-fast-forward"; tolerate both.
+    expect(pushB.stderr.toLowerCase()).toMatch(
+      /(deny ?non-?fast-?forwards?|non-fast-forward)/,
+    );
+  });
+
+  it('rejects branch deletion (denyDeletes)', async () => {
+    const { server, url } = await boot();
+    active = server;
+    await createRepo(url, 'wstest4');
+    const remote = `${url}/wstest4.git`;
+    const auth = `http.extraHeader=Authorization: Bearer ${TOKEN}`;
+
+    const src = await makeWorkingRepo('a.txt', 'A\n');
+    const push1 = await runGit(
+      ['-c', auth, '-C', src.tmp, 'push', remote, 'main:main'],
+      { env: src.env },
+    );
+    if (push1.code !== 0) throw new Error(`push1 failed: ${push1.stderr}`);
+
+    const del = await runGit(
+      ['-c', auth, '-C', src.tmp, 'push', remote, '--delete', 'main'],
+      { env: src.env },
+    );
+    expect(del.code).not.toBe(0);
+    // `receive.denyDeletes=true` causes git to reject with "denying ref
+    // deletion" / "deletion prohibited" — assert on either phrasing.
+    expect(del.stderr.toLowerCase()).toMatch(
+      /(deny ?deletes?|denying ref deletion|deletion prohibited)/,
+    );
+  });
+
+  it('concurrent pushes: one wins, the loser fast-forwards and retries', async () => {
+    const { server, url } = await boot();
+    active = server;
+    await createRepo(url, 'wstest5');
+    const remote = `${url}/wstest5.git`;
+    const auth = `http.extraHeader=Authorization: Bearer ${TOKEN}`;
+
+    // Seed commit A so both clients can fast-forward from a common base.
+    const seed = await makeWorkingRepo('seed.txt', 'seed\n');
+    const pushSeed = await runGit(
+      ['-c', auth, '-C', seed.tmp, 'push', remote, 'main:main'],
+      { env: seed.env },
+    );
+    if (pushSeed.code !== 0) {
+      throw new Error(`pushSeed failed: ${pushSeed.stderr}`);
+    }
+
+    // Two clones from the seed.
+    const cloneA = mkdtempSync(join(tmpdir(), 'ax-wgs-A-'));
+    const cloneB = mkdtempSync(join(tmpdir(), 'ax-wgs-B-'));
+    const env = seed.env;
+    {
+      const r = await runGit(['-c', auth, 'clone', remote, cloneA], { env });
+      if (r.code !== 0) throw new Error(`clone A failed: ${r.stderr}`);
+    }
+    {
+      const r = await runGit(['-c', auth, 'clone', remote, cloneB], { env });
+      if (r.code !== 0) throw new Error(`clone B failed: ${r.stderr}`);
+    }
+
+    // Each makes a commit on top of seed.
+    const { writeFileSync } = await import('node:fs');
+    writeFileSync(join(cloneA, 'a.txt'), 'A\n');
+    {
+      const r1 = await runGit(['-C', cloneA, 'add', '.'], { env });
+      if (r1.code !== 0) throw new Error(`add A failed: ${r1.stderr}`);
+      const r2 = await runGit(['-C', cloneA, 'commit', '-m', 'A'], { env });
+      if (r2.code !== 0) throw new Error(`commit A failed: ${r2.stderr}`);
+    }
+    writeFileSync(join(cloneB, 'b.txt'), 'B\n');
+    {
+      const r1 = await runGit(['-C', cloneB, 'add', '.'], { env });
+      if (r1.code !== 0) throw new Error(`add B failed: ${r1.stderr}`);
+      const r2 = await runGit(['-C', cloneB, 'commit', '-m', 'B'], { env });
+      if (r2.code !== 0) throw new Error(`commit B failed: ${r2.stderr}`);
+    }
+
+    // Race the two pushes against the same shard. ONE must succeed; the
+    // other must fail with non-fast-forward.
+    const [pushA, pushB] = await Promise.all([
+      runGit(['-c', auth, '-C', cloneA, 'push', remote, 'main:main'], { env }),
+      runGit(['-c', auth, '-C', cloneB, 'push', remote, 'main:main'], { env }),
+    ]);
+    const codes = [pushA.code, pushB.code];
+    const wins = codes.filter((c) => c === 0).length;
+    const losses = codes.filter((c) => c !== 0 && c !== null).length;
+    expect(wins).toBe(1);
+    expect(losses).toBe(1);
+    const loser = pushA.code === 0 ? pushB : pushA;
+    expect(loser.stderr.toLowerCase()).toMatch(
+      /(deny ?non-?fast-?forwards?|non-fast-forward|fetch first|rejected)/,
+    );
+
+    // Loser fetches, rebases on top of winner, retries.
+    const loserDir = pushA.code === 0 ? cloneB : cloneA;
+    {
+      const r = await runGit(['-c', auth, '-C', loserDir, 'fetch', 'origin'], {
+        env,
+      });
+      if (r.code !== 0) throw new Error(`fetch failed: ${r.stderr}`);
+    }
+    {
+      const r = await runGit(
+        ['-C', loserDir, 'rebase', 'origin/main'],
+        { env },
+      );
+      if (r.code !== 0) throw new Error(`rebase failed: ${r.stderr}`);
+    }
+    {
+      const r = await runGit(
+        ['-c', auth, '-C', loserDir, 'push', remote, 'main:main'],
+        { env },
+      );
+      expect(r.code).toBe(0);
+    }
+
+    // Final history is linear; both files present.
+    const finalClone = mkdtempSync(join(tmpdir(), 'ax-wgs-final-'));
+    {
+      const r = await runGit(['-c', auth, 'clone', remote, finalClone], { env });
+      if (r.code !== 0) throw new Error(`final clone failed: ${r.stderr}`);
+    }
+    const { readFileSync, existsSync } = await import('node:fs');
+    expect(existsSync(join(finalClone, 'a.txt'))).toBe(true);
+    expect(existsSync(join(finalClone, 'b.txt'))).toBe(true);
+    expect(readFileSync(join(finalClone, 'seed.txt'), 'utf8')).toBe('seed\n');
+    // Linear: log shows 3 commits in a chain.
+    const log = await runGit(
+      ['-C', finalClone, 'log', '--oneline', 'main'],
+      { env },
+    );
+    expect(log.code).toBe(0);
+    expect(log.stdout.split('\n').filter((l) => l.length > 0)).toHaveLength(3);
+  });
+
+  it('returns 415 on application/json content-type', async () => {
+    const { server, url } = await boot();
+    active = server;
+    await createRepo(url, 'wstest6');
+    const r = await fetch(`${url}/wstest6.git/git-receive-pack`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${TOKEN}`,
+      },
+      body: JSON.stringify({}),
+    });
+    expect(r.status).toBe(415);
+  });
+
+  it('returns 401 without auth', async () => {
+    const { server, url } = await boot();
+    active = server;
+    await createRepo(url, 'wstest7');
+    const r = await fetch(`${url}/wstest7.git/git-receive-pack`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-git-receive-pack-request' },
+      body: '',
+    });
+    expect(r.status).toBe(401);
+  });
+
+  it('returns 404 on nonexistent workspaceId', async () => {
+    const { server, url } = await boot();
+    active = server;
+    const r = await fetch(`${url}/never-existed.git/git-receive-pack`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/x-git-receive-pack-request',
+        authorization: `Bearer ${TOKEN}`,
+      },
+      body: '',
+    });
+    expect(r.status).toBe(404);
+    const body = await r.json();
+    expect(body.error).toBe('workspace_not_found');
+  });
+});

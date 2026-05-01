@@ -352,3 +352,12 @@ export async function handleUploadPack(
 ): Promise<void> {
   return handlePackExchange(workspaceId, 'upload-pack', req, res, opts);
 }
+
+export async function handleReceivePack(
+  workspaceId: string,
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  opts: { repoRoot: string },
+): Promise<void> {
+  return handlePackExchange(workspaceId, 'receive-pack', req, res, opts);
+}
