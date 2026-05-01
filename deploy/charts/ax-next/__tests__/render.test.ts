@@ -17,7 +17,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { loadAll } from 'js-yaml';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const chartDir = resolve(here, '..');
@@ -92,6 +92,23 @@ if (!HELM) {
 }
 
 describeIfHelm('ax-next chart: experimental sharded git-server', () => {
+  // Pull subchart tarballs (postgresql) into charts/ before any render. They
+  // ship via Chart.yaml dependency declaration and are gitignored, so a fresh
+  // checkout (CI, new clones) needs `helm dependency build` once. Idempotent;
+  // a no-op when the tarballs are already present.
+  beforeAll(() => {
+    if (!HELM) return;
+    const r = spawnSync(HELM, ['dependency', 'build', chartDir], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    if (r.status !== 0) {
+      throw new Error(
+        `helm dependency build failed (exit ${r.status}): ${r.stderr ?? ''}`,
+      );
+    }
+  });
+
   it('toggle off (default): only legacy git-server resources render', () => {
     const docs = helmTemplate(['--set', 'gitServer.enabled=true']);
 
