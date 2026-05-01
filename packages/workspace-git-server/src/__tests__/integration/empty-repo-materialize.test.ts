@@ -114,45 +114,50 @@ describe('empty-repo materialize', () => {
 
     // 4. Boot a plugin instance and apply with parent: null.
     const plug = await bootPlugin(baseUrl, workspaceId);
-    const apply = await plug.bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>(
-      'workspace:apply',
-      ctx(),
-      {
-        changes: [
-          { path: 'first.md', kind: 'put', content: enc.encode('hello') },
-        ],
-        parent: null,
-        reason: 'initial',
-      },
-    );
-    expect(typeof apply.version).toBe('string');
-    expect(apply.delta.before).toBeNull();
-    expect(apply.delta.changes).toHaveLength(1);
-    expect(apply.delta.changes[0]).toMatchObject({
-      path: 'first.md',
-      kind: 'added',
-    });
+    let plug2: BootedPlugin | null = null;
+    try {
+      const apply = await plug.bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>(
+        'workspace:apply',
+        ctx(),
+        {
+          changes: [
+            { path: 'first.md', kind: 'put', content: enc.encode('hello') },
+          ],
+          parent: null,
+          reason: 'initial',
+        },
+      );
+      expect(typeof apply.version).toBe('string');
+      expect(apply.delta.before).toBeNull();
+      expect(apply.delta.changes).toHaveLength(1);
+      expect(apply.delta.changes[0]).toMatchObject({
+        path: 'first.md',
+        kind: 'added',
+      });
 
-    // 5. GET /repos/<id> now reports the new headOid.
-    const meta2 = await lifecycle.getRepo(workspaceId);
-    expect(meta2).not.toBeNull();
-    expect(meta2!.exists).toBe(true);
-    expect(meta2!.headOid).toBe(apply.version);
+      // 5. GET /repos/<id> now reports the new headOid.
+      const meta2 = await lifecycle.getRepo(workspaceId);
+      expect(meta2).not.toBeNull();
+      expect(meta2!.exists).toBe(true);
+      expect(meta2!.headOid).toBe(apply.version);
 
-    // 6. Second plugin instance (fresh mirror) — fetches and reads.
-    const plug2 = await bootPlugin(baseUrl, workspaceId);
-    const read = await plug2.bus.call<WorkspaceReadInput, WorkspaceReadOutput>(
-      'workspace:read',
-      ctx(),
-      { path: 'first.md' },
-    );
-    expect(read.found).toBe(true);
-    if (read.found) {
-      expect(new TextDecoder().decode(read.bytes)).toBe('hello');
+      // 6. Second plugin instance (fresh mirror) — fetches and reads.
+      plug2 = await bootPlugin(baseUrl, workspaceId);
+      const read = await plug2.bus.call<WorkspaceReadInput, WorkspaceReadOutput>(
+        'workspace:read',
+        ctx(),
+        { path: 'first.md' },
+      );
+      expect(read.found).toBe(true);
+      if (read.found) {
+        expect(new TextDecoder().decode(read.bytes)).toBe('hello');
+      }
+    } finally {
+      // Run shutdowns even if any assertion above failed — leaving plugin
+      // tempdirs and watchers behind makes follow-on test failures opaque.
+      await shutdown(plug);
+      if (plug2 !== null) await shutdown(plug2);
     }
-
-    await shutdown(plug);
-    await shutdown(plug2);
   });
 });
 

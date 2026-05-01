@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import * as http from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,12 +9,15 @@ import { __setSpawnForTest } from '../repos.js';
 
 const TOKEN = 'super-secret-token';
 
+const repoRoots: string[] = [];
+
 async function boot(): Promise<{
   server: WorkspaceGitServer;
   url: string;
   repoRoot: string;
 }> {
   const repoRoot = mkdtempSync(join(tmpdir(), 'ax-wgs-'));
+  repoRoots.push(repoRoot);
   const server = await createWorkspaceGitServer({
     repoRoot,
     host: '127.0.0.1',
@@ -31,6 +34,16 @@ afterEach(async () => {
   active = null;
   __setSpawnForTest(null);
   vi.restoreAllMocks();
+  // Tear down the per-test tempdir(s). Best-effort: rmSync swallows ENOENT
+  // via force:true, but log anything else.
+  while (repoRoots.length > 0) {
+    const root = repoRoots.pop()!;
+    try {
+      rmSync(root, { recursive: true, force: true });
+    } catch {
+      // best-effort
+    }
+  }
 });
 
 describe('POST /repos', () => {

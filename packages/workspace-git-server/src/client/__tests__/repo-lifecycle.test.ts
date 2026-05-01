@@ -164,4 +164,39 @@ describe('repo-lifecycle REST client', () => {
     expect(await client.isHealthy()).toBe(true);
     expect(calls).toBe(1);
   });
+
+  it('createRepo aborts when the configured timeoutMs elapses', async () => {
+    // Stub fetch that never resolves on its own; only the AbortController
+    // can wake it up. If the client doesn't wire timeoutMs correctly, this
+    // hangs forever and the vitest timeout fires — that's the failure mode
+    // we're guarding against.
+    const hangingFetch: typeof fetch = (_url, init) =>
+      new Promise<Response>((_resolve, reject) => {
+        const signal = (init?.signal ?? null) as AbortSignal | null;
+        if (signal) {
+          signal.addEventListener('abort', () => {
+            reject(new Error('aborted'));
+          });
+        }
+      });
+    const client = createRepoLifecycleClient({
+      baseUrl: 'http://does-not-matter:0',
+      token: 'tok',
+      fetch: hangingFetch,
+      timeoutMs: 50,
+    });
+    const start = Date.now();
+    let captured: unknown;
+    try {
+      await client.createRepo('any');
+    } catch (err) {
+      captured = err;
+    }
+    const elapsed = Date.now() - start;
+    expect(captured).toBeInstanceOf(Error);
+    // Should reject roughly at the timeout — give a generous upper bound to
+    // tolerate slow CI machines, but it must NOT hang (which would push
+    // elapsed up to the vitest default timeout of 5s).
+    expect(elapsed).toBeLessThan(2_000);
+  });
 });

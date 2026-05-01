@@ -401,57 +401,62 @@ describe('git-server listener — drain', () => {
     const fake = makeFakeChild();
     __setSpawnSmartHttpForTest((() => fake.child) as never);
 
-    const repoRoot = mkdtempSync(join(tmpdir(), 'ax-wgs-drain-'));
-    // Pre-create a bare repo dir so resolveRepo() passes the existsSync gate.
-    // Using fs.mkdirSync directly avoids a real `git init` spawn (which the
-    // fake spawn would intercept).
-    const fs = await import('node:fs');
-    fs.mkdirSync(join(repoRoot, 'abc.git'), { recursive: true });
+    try {
+      const repoRoot = mkdtempSync(join(tmpdir(), 'ax-wgs-drain-'));
+      // Pre-create a bare repo dir so resolveRepo() passes the existsSync gate.
+      // Using fs.mkdirSync directly avoids a real `git init` spawn (which the
+      // fake spawn would intercept).
+      const fs = await import('node:fs');
+      fs.mkdirSync(join(repoRoot, 'abc.git'), { recursive: true });
 
-    const server = await createWorkspaceGitServer({
-      repoRoot,
-      host: '127.0.0.1',
-      port: 0,
-      token: TOKEN,
-      drainTimeoutMs: 100, // tiny, so the timeout path fires fast
-    });
+      const server = await createWorkspaceGitServer({
+        repoRoot,
+        host: '127.0.0.1',
+        port: 0,
+        token: TOKEN,
+        drainTimeoutMs: 100, // tiny, so the timeout path fires fast
+      });
 
-    const url = `http://127.0.0.1:${server.port}`;
-    // Kick off discovery — fake child's stdout never ends, so the response
-    // hangs. Don't await it.
-    const requestPromise = fetch(
-      `${url}/abc.git/info/refs?service=git-upload-pack`,
-      { headers: { authorization: `Bearer ${TOKEN}` } },
-    ).catch(() => undefined);
+      const url = `http://127.0.0.1:${server.port}`;
+      // Kick off discovery — fake child's stdout never ends, so the response
+      // hangs. Don't await it.
+      const requestPromise = fetch(
+        `${url}/abc.git/info/refs?service=git-upload-pack`,
+        { headers: { authorization: `Bearer ${TOKEN}` } },
+      ).catch(() => undefined);
 
-    // Wait until the request reached the handler (child registered).
-    await new Promise<void>((resolve) => {
-      const tick = (): void => {
-        if ((fake.child.kill as ReturnType<typeof vi.fn>).mock.calls.length === 0) {
-          // Spawn happened (the fake was called); poll for child registration
-          // — registerChild runs synchronously after spawn. A small delay is
-          // sufficient; we'll cap it via the test's overall flow.
-          setTimeout(resolve, 50);
-        } else {
-          resolve();
-        }
-      };
-      setTimeout(tick, 50);
-    });
+      // Wait until the request reached the handler (child registered).
+      await new Promise<void>((resolve) => {
+        const tick = (): void => {
+          if ((fake.child.kill as ReturnType<typeof vi.fn>).mock.calls.length === 0) {
+            // Spawn happened (the fake was called); poll for child registration
+            // — registerChild runs synchronously after spawn. A small delay is
+            // sufficient; we'll cap it via the test's overall flow.
+            setTimeout(resolve, 50);
+          } else {
+            resolve();
+          }
+        };
+        setTimeout(tick, 50);
+      });
 
-    const start = Date.now();
-    await server.close();
-    const elapsed = Date.now() - start;
-    // Should fire after ~100ms drain timeout, well under any sane upper bound.
-    expect(elapsed).toBeGreaterThanOrEqual(80);
-    expect(elapsed).toBeLessThan(2_000);
-    // Force-kill must have hit the fake.
-    expect(fake.child.kill).toHaveBeenCalledWith('SIGKILL');
+      const start = Date.now();
+      await server.close();
+      const elapsed = Date.now() - start;
+      // Should fire after ~100ms drain timeout, well under any sane upper bound.
+      expect(elapsed).toBeGreaterThanOrEqual(80);
+      expect(elapsed).toBeLessThan(2_000);
+      // Force-kill must have hit the fake.
+      expect(fake.child.kill).toHaveBeenCalledWith('SIGKILL');
 
-    // Drain the dangling fetch so vitest doesn't print an unhandled-rejection
-    // warning. We don't care about the result — the connection is torn down.
-    await requestPromise;
-    __setSpawnSmartHttpForTest(null);
+      // Drain the dangling fetch so vitest doesn't print an unhandled-rejection
+      // warning. We don't care about the result — the connection is torn down.
+      await requestPromise;
+    } finally {
+      // Always reset the spawn override; otherwise a failure mid-test leaks
+      // it into sibling drain tests below.
+      __setSpawnSmartHttpForTest(null);
+    }
   });
 
   it('close() awaits an in-flight smart-HTTP request that finishes before timeout', async () => {
@@ -461,44 +466,47 @@ describe('git-server listener — drain', () => {
     const fake = makeFakeChild();
     __setSpawnSmartHttpForTest((() => fake.child) as never);
 
-    const repoRoot = mkdtempSync(join(tmpdir(), 'ax-wgs-drain-'));
-    const fs = await import('node:fs');
-    fs.mkdirSync(join(repoRoot, 'abc.git'), { recursive: true });
+    try {
+      const repoRoot = mkdtempSync(join(tmpdir(), 'ax-wgs-drain-'));
+      const fs = await import('node:fs');
+      fs.mkdirSync(join(repoRoot, 'abc.git'), { recursive: true });
 
-    const server = await createWorkspaceGitServer({
-      repoRoot,
-      host: '127.0.0.1',
-      port: 0,
-      token: TOKEN,
-      drainTimeoutMs: 5_000,
-    });
-    const url = `http://127.0.0.1:${server.port}`;
+      const server = await createWorkspaceGitServer({
+        repoRoot,
+        host: '127.0.0.1',
+        port: 0,
+        token: TOKEN,
+        drainTimeoutMs: 5_000,
+      });
+      const url = `http://127.0.0.1:${server.port}`;
 
-    const requestPromise = fetch(
-      `${url}/abc.git/info/refs?service=git-upload-pack`,
-      { headers: { authorization: `Bearer ${TOKEN}` } },
-    );
-    // Give the request a moment to reach the handler and register the child.
-    await new Promise<void>((r) => setTimeout(r, 50));
+      const requestPromise = fetch(
+        `${url}/abc.git/info/refs?service=git-upload-pack`,
+        { headers: { authorization: `Bearer ${TOKEN}` } },
+      );
+      // Give the request a moment to reach the handler and register the child.
+      await new Promise<void>((r) => setTimeout(r, 50));
 
-    // Trigger close in parallel with finishing the child cleanly.
-    const closePromise = server.close();
+      // Trigger close in parallel with finishing the child cleanly.
+      const closePromise = server.close();
 
-    // After a brief delay (representing real work completing during drain),
-    // end the fake child's stdout cleanly. close() should resolve AFTER this.
-    setTimeout(() => {
-      fake.child.exitCode = 0;
-      fake.child.stdout.end();
-      fake.child.stderr.end();
-      fake.child.emit('close', 0, null);
-    }, 100);
+      // After a brief delay (representing real work completing during drain),
+      // end the fake child's stdout cleanly. close() should resolve AFTER this.
+      setTimeout(() => {
+        fake.child.exitCode = 0;
+        fake.child.stdout.end();
+        fake.child.stderr.end();
+        fake.child.emit('close', 0, null);
+      }, 100);
 
-    await closePromise;
-    // The fake should NOT have been SIGKILLed — it ended on its own well
-    // within drainTimeoutMs.
-    expect(fake.child.kill).not.toHaveBeenCalled();
+      await closePromise;
+      // The fake should NOT have been SIGKILLed — it ended on its own well
+      // within drainTimeoutMs.
+      expect(fake.child.kill).not.toHaveBeenCalled();
 
-    await requestPromise.catch(() => undefined);
-    __setSpawnSmartHttpForTest(null);
+      await requestPromise.catch(() => undefined);
+    } finally {
+      __setSpawnSmartHttpForTest(null);
+    }
   });
 });

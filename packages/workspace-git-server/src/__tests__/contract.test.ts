@@ -11,19 +11,28 @@
 // async plugin factory boots the server inside `init()`, which the harness
 // awaits via bootstrap().
 //
-// Server cleanup: we deliberately do NOT close the spun-up servers between
-// scenarios — same shape the sibling test uses. The test process exits
-// cleanly so the OS reclaims the sockets; the plugin's own `shutdown()`
-// hook deletes the per-plugin mirror tempdir.
+// Server cleanup: each scenario boots a server, we track it, and afterAll
+// closes them all in parallel. Without this, watch-mode reruns leak sockets
+// (per CodeRabbit Major at contract.test.ts:17).
 
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { afterAll } from 'vitest';
 import { runWorkspaceContract } from '@ax/test-harness';
-import { createWorkspaceGitServer } from '../server/index.js';
+import {
+  createWorkspaceGitServer,
+  type WorkspaceGitServer,
+} from '../server/index.js';
 import { createTestOnlyGitServerPlugin } from '../client/plugin-test-only.js';
 
 let scenarioCount = 0;
+const bootedServers: WorkspaceGitServer[] = [];
+
+afterAll(async () => {
+  await Promise.allSettled(bootedServers.map((s) => s.close()));
+  bootedServers.length = 0;
+});
 
 runWorkspaceContract('@ax/workspace-git-server', () =>
   createTestOnlyGitServerPlugin({
@@ -34,6 +43,7 @@ runWorkspaceContract('@ax/workspace-git-server', () =>
         port: 0,
         token: 'secret',
       });
+      bootedServers.push(server);
       const workspaceId = `wstest${++scenarioCount}`;
       return {
         baseUrl: `http://127.0.0.1:${server.port}`,

@@ -16,6 +16,13 @@ export interface RepoLifecycleClientOptions {
   token: string;
   /** Injectable for tests. Defaults to the global `fetch`. */
   fetch?: typeof fetch;
+  /**
+   * Per-call timeout in milliseconds. Each fetch is wrapped in an
+   * AbortController that fires after this many ms — protects callers from
+   * a server that has gone away mid-request and would otherwise hang the
+   * caller indefinitely. Default 10 s.
+   */
+  timeoutMs?: number;
 }
 
 export interface CreateRepoResponse {
@@ -43,6 +50,20 @@ export function createRepoLifecycleClient(
   const baseUrl = opts.baseUrl.replace(/\/$/, '');
   const fetchImpl = opts.fetch ?? fetch;
   const authHeader = `Bearer ${opts.token}`;
+  const timeoutMs = opts.timeoutMs ?? 10_000;
+
+  const fetchWithTimeout = async (
+    url: string,
+    init: RequestInit,
+  ): Promise<Response> => {
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), timeoutMs);
+    try {
+      return await fetchImpl(url, { ...init, signal: ac.signal });
+    } finally {
+      clearTimeout(t);
+    }
+  };
 
   const opError = (op: string, url: string, reason: string): Error =>
     // Token is intentionally NOT included. The URL + op + reason are enough
@@ -54,7 +75,7 @@ export function createRepoLifecycleClient(
       const url = `${baseUrl}/repos`;
       let res: Response;
       try {
-        res = await fetchImpl(url, {
+        res = await fetchWithTimeout(url, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -79,7 +100,7 @@ export function createRepoLifecycleClient(
       const url = `${baseUrl}/repos/${workspaceId}`;
       let res: Response;
       try {
-        res = await fetchImpl(url, {
+        res = await fetchWithTimeout(url, {
           method: 'GET',
           headers: { Authorization: authHeader },
         });
@@ -98,7 +119,7 @@ export function createRepoLifecycleClient(
       const url = `${baseUrl}/repos/${workspaceId}`;
       let res: Response;
       try {
-        res = await fetchImpl(url, {
+        res = await fetchWithTimeout(url, {
           method: 'DELETE',
           headers: { Authorization: authHeader },
         });
@@ -115,7 +136,7 @@ export function createRepoLifecycleClient(
     async isHealthy(): Promise<boolean> {
       const url = `${baseUrl}/healthz`;
       try {
-        const res = await fetchImpl(url, { method: 'GET' });
+        const res = await fetchWithTimeout(url, { method: 'GET' });
         // Drain body so the connection can be reused/freed.
         await safeText(res);
         return res.status === 200;
