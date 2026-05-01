@@ -1,3 +1,4 @@
+import type { ChildProcess } from 'node:child_process';
 import * as http from 'node:http';
 import { checkBearerToken } from './auth.js';
 // repos.ts and smart-http.ts both import back from this module for
@@ -41,6 +42,7 @@ import {
 
 const IDLE_TIMEOUT_MS = 60_000;
 const BODY_LIMIT_BYTES = 1 * 1024 * 1024; // 1 MiB
+const DEFAULT_DRAIN_TIMEOUT_MS = 30_000; // matches chart's TGP-5s default
 
 export interface WorkspaceGitServer {
   close(): Promise<void>;
@@ -57,6 +59,14 @@ export interface CreateWorkspaceGitServerOptions {
   port: number;
   /** Bearer auth token; constant-time compared. */
   token: string;
+  /**
+   * How long `close()` will wait for in-flight requests to drain before
+   * force-killing any spawned git children and slamming any remaining open
+   * connections. Default 30 s, sized to fit the chart's 60 s
+   * terminationGracePeriodSeconds with headroom. Tests pass tiny values to
+   * exercise the timeout path quickly.
+   */
+  drainTimeoutMs?: number;
 }
 
 // ---- Error envelope ------------------------------------------------------
@@ -316,12 +326,57 @@ interface DispatchContext {
   res: http.ServerResponse;
   body: unknown; // already parsed for JSON POST routes; undefined for smart-HTTP
   opts: CreateWorkspaceGitServerOptions;
+  /**
+   * Smart-HTTP handlers register their spawned `git upload-pack`/`receive-pack`
+   * child here so the listener can force-kill it during a drain timeout.
+   * Children unregister themselves on 'close' (best-effort; orphan entries get
+   * harmlessly skipped at SIGKILL time).
+   */
+  registerChild: (child: ChildProcess) => () => void;
 }
 
 export async function createWorkspaceGitServer(
   opts: CreateWorkspaceGitServerOptions,
 ): Promise<WorkspaceGitServer> {
+  const drainTimeoutMs = opts.drainTimeoutMs ?? DEFAULT_DRAIN_TIMEOUT_MS;
+
+  // Drain bookkeeping. Each in-flight request holds a Promise that resolves
+  // when its response stream ends OR the socket closes. The set of spawned
+  // git children is tracked so SIGKILL can land on any survivor when the
+  // drain timeout expires. Both are populated lazily from the request handler
+  // and the smart-HTTP `registerChild` callback below.
+  const inFlight = new Set<Promise<void>>();
+  const liveChildren = new Set<ChildProcess>();
+  let shuttingDown = false;
+
+  const trackRequest = (
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+  ): void => {
+    const done = new Promise<void>((resolve) => {
+      const onDone = (): void => resolve();
+      // Either condition ends the request lifecycle as far as drain is
+      // concerned: 'finish' = response cleanly written; 'close' = socket
+      // torn down (client abort, error, etc.).
+      res.once('finish', onDone);
+      res.once('close', onDone);
+      req.once('close', onDone);
+    });
+    inFlight.add(done);
+    void done.then(() => inFlight.delete(done));
+  };
+
+  const registerChild = (child: ChildProcess): (() => void) => {
+    liveChildren.add(child);
+    const cleanup = (): void => {
+      liveChildren.delete(child);
+    };
+    child.once('close', cleanup);
+    return cleanup;
+  };
+
   const server = http.createServer((req, res) => {
+    trackRequest(req, res);
     void handle(req, res).catch((err) => {
       try {
         if (!res.headersSent) {
@@ -405,7 +460,7 @@ export async function createWorkspaceGitServer(
     }
 
     // Dispatch.
-    await dispatch({ match, req, res, body, opts });
+    await dispatch({ match, req, res, body, opts, registerChild });
   };
 
   // Idle timeout — match the sibling so long-polls aren't killed by Node's
@@ -434,9 +489,66 @@ export async function createWorkspaceGitServer(
     typeof addr === 'object' && addr !== null ? addr.port : opts.port;
 
   const close = async (): Promise<void> => {
-    await new Promise<void>((resolve) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+
+    // 1. Stop accepting NEW connections. Node's server.close() runs its
+    //    callback only after every active connection is closed — for our
+    //    drain semantics that's "in-flight requests finished" — so we kick
+    //    it off here and race it against the drain timeout below.
+    const serverClosed = new Promise<void>((resolve) => {
       server.close(() => resolve());
     });
+
+    // 2. Wait for in-flight requests (and their children, by transitivity —
+    //    response 'finish' implies child stdout closed) up to drainTimeoutMs.
+    const drainPromise = waitForInFlight(inFlight);
+    let timedOut = false;
+    let timer: NodeJS.Timeout | null = null;
+    const timeoutPromise = new Promise<void>((resolve) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        resolve();
+      }, drainTimeoutMs);
+      // Don't keep the event loop alive solely for the drain timer.
+      timer.unref?.();
+    });
+
+    await Promise.race([drainPromise, timeoutPromise]);
+    if (timer !== null) clearTimeout(timer);
+
+    if (timedOut) {
+      // 3. Force-kill any registered git children. Their close handler
+      //    removes them from `liveChildren`, which prevents double-kill if
+      //    Node delivers SIGCHLD between snapshot and iteration.
+      for (const child of [...liveChildren]) {
+        if (child.exitCode === null && child.signalCode === null) {
+          try {
+            child.kill('SIGKILL');
+          } catch {
+            // best-effort; kernel may have already reaped the child
+          }
+        }
+      }
+      // 4. Slam any still-open HTTP connections so server.close() can resolve.
+      //    closeAllConnections lands in Node 18.2+; older runtimes get a
+      //    best-effort closeIdleConnections() instead.
+      const srv = server as http.Server & {
+        closeAllConnections?: () => void;
+        closeIdleConnections?: () => void;
+      };
+      try {
+        srv.closeAllConnections?.();
+        srv.closeIdleConnections?.();
+      } catch {
+        // best-effort
+      }
+    }
+
+    // 5. Wait for the underlying server.close() callback. After force-close
+    //    above (timeout path), this resolves promptly; on the clean path,
+    //    it resolved as soon as the last connection ended.
+    await serverClosed;
   };
 
   return {
@@ -448,6 +560,19 @@ export async function createWorkspaceGitServer(
     },
     close,
   };
+}
+
+/**
+ * Resolve once every promise currently in `inFlight` has settled. Re-checks
+ * after each pass because dispatch handlers may add new entries to the set
+ * mid-drain (e.g. a request that was already accepted but hasn't started its
+ * promise yet — race with the trackRequest call above). When the set goes
+ * empty across a full pass, drain is done.
+ */
+async function waitForInFlight(inFlight: Set<Promise<void>>): Promise<void> {
+  while (inFlight.size > 0) {
+    await Promise.allSettled([...inFlight]);
+  }
 }
 
 // Dispatch — Slice 2 wires create-repo to its handler; the rest are still
@@ -479,15 +604,17 @@ async function dispatch(ctx: DispatchContext): Promise<void> {
         ctx.match.workspaceId,
         ctx.match.service,
         ctx.res,
-        { repoRoot: ctx.opts.repoRoot },
+        { repoRoot: ctx.opts.repoRoot, registerChild: ctx.registerChild },
       );
     case 'smart-http-upload-pack':
       return handleUploadPack(ctx.match.workspaceId, ctx.req, ctx.res, {
         repoRoot: ctx.opts.repoRoot,
+        registerChild: ctx.registerChild,
       });
     case 'smart-http-receive-pack':
       return handleReceivePack(ctx.match.workspaceId, ctx.req, ctx.res, {
         repoRoot: ctx.opts.repoRoot,
+        registerChild: ctx.registerChild,
       });
     case 'unknown':
       return writeError(

@@ -44,6 +44,14 @@ export function __setSpawnForTest(fn: SpawnFn | null): void {
   _spawn = fn ?? (spawn as unknown as SpawnFn);
 }
 
+/**
+ * Optional callback the listener passes through so spawned git children can
+ * be registered in the drain bookkeeping. SIGTERM-aware close() force-kills
+ * anything still registered after the drain timeout. Optional so unit tests
+ * that import handlers directly don't need to wire it.
+ */
+export type RegisterChildFn = (child: ChildProcess) => () => void;
+
 interface ResolveOk {
   ok: true;
   repoPath: string;
@@ -121,7 +129,7 @@ export async function handleDiscovery(
   workspaceId: string,
   service: string,
   res: http.ServerResponse,
-  opts: { repoRoot: string },
+  opts: { repoRoot: string; registerChild?: RegisterChildFn },
 ): Promise<void> {
   // Defense-in-depth: the listener's match() already filters service to one of
   // the two valid values, but re-check here so this handler is safe in
@@ -158,6 +166,12 @@ export async function handleDiscovery(
     );
     return writeError(res, 500, 'internal_error', 'git spawn failed');
   }
+
+  // Drain bookkeeping: register the child with the listener so SIGKILL can
+  // land if the request outlives the drain window. The returned cleanup is
+  // wired by registerChild itself ('close' event), so we don't manually call
+  // it here.
+  opts.registerChild?.(child);
 
   child.stderr?.on('data', (chunk: Buffer) => {
     process.stderr.write(`[git ${subcmd}] ${chunk.toString('utf8')}`);
@@ -231,7 +245,7 @@ async function handlePackExchange(
   subcmd: 'upload-pack' | 'receive-pack',
   req: http.IncomingMessage,
   res: http.ServerResponse,
-  opts: { repoRoot: string },
+  opts: { repoRoot: string; registerChild?: RegisterChildFn },
 ): Promise<void> {
   const resolved = resolveRepo(workspaceId, res, opts);
   if (!resolved.ok) return;
@@ -260,6 +274,10 @@ async function handlePackExchange(
     );
     return writeError(res, 500, 'internal_error', 'git spawn failed');
   }
+
+  // Drain bookkeeping: register the child with the listener so SIGKILL can
+  // land if the request outlives the drain window.
+  opts.registerChild?.(child);
 
   child.stderr?.on('data', (chunk: Buffer) => {
     process.stderr.write(`[git ${subcmd}] ${chunk.toString('utf8')}`);
@@ -348,7 +366,7 @@ export async function handleUploadPack(
   workspaceId: string,
   req: http.IncomingMessage,
   res: http.ServerResponse,
-  opts: { repoRoot: string },
+  opts: { repoRoot: string; registerChild?: RegisterChildFn },
 ): Promise<void> {
   return handlePackExchange(workspaceId, 'upload-pack', req, res, opts);
 }
@@ -357,7 +375,7 @@ export async function handleReceivePack(
   workspaceId: string,
   req: http.IncomingMessage,
   res: http.ServerResponse,
-  opts: { repoRoot: string },
+  opts: { repoRoot: string; registerChild?: RegisterChildFn },
 ): Promise<void> {
   return handlePackExchange(workspaceId, 'receive-pack', req, res, opts);
 }

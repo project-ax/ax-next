@@ -27,10 +27,17 @@ import { createWorkspaceGitServer, type WorkspaceGitServer } from './index.js';
 //                                  there so ops can correlate pod logs with
 //                                  shard layout. Validated as a non-negative
 //                                  integer string if present.
+//   - AX_GIT_SERVER_DRAIN_TIMEOUT_MS (optional, default 30000) — how long
+//                                  close() waits for in-flight requests
+//                                  before SIGKILLing surviving git children
+//                                  and slamming open connections. Sized to
+//                                  fit under the chart's 60 s
+//                                  terminationGracePeriodSeconds.
 // ---------------------------------------------------------------------------
 
 const DEFAULT_HOST = '0.0.0.0';
 const DEFAULT_PORT = 7780;
+const DEFAULT_DRAIN_TIMEOUT_MS = 30_000;
 const LOG_PREFIX = '[ax/workspace-git-server]';
 
 function requireEnv(env: NodeJS.ProcessEnv, name: string): string {
@@ -91,11 +98,30 @@ export async function runServer(
     shardIndex = parsed;
   }
 
+  // Optional: drain timeout. Default 30 s sits comfortably under the chart's
+  // 60 s terminationGracePeriodSeconds, leaving SIGKILL headroom.
+  const drainTimeoutRaw = env.AX_GIT_SERVER_DRAIN_TIMEOUT_MS;
+  let drainTimeoutMs = DEFAULT_DRAIN_TIMEOUT_MS;
+  if (drainTimeoutRaw !== undefined && drainTimeoutRaw.length > 0) {
+    const parsed = Number(drainTimeoutRaw);
+    if (
+      !Number.isFinite(parsed) ||
+      !Number.isInteger(parsed) ||
+      parsed < 0
+    ) {
+      throw new Error(
+        `AX_GIT_SERVER_DRAIN_TIMEOUT_MS must be a non-negative integer, got ${JSON.stringify(drainTimeoutRaw)}`,
+      );
+    }
+    drainTimeoutMs = parsed;
+  }
+
   const server: WorkspaceGitServer = await createWorkspaceGitServer({
     repoRoot,
     host,
     port,
     token,
+    drainTimeoutMs,
   });
   process.stderr.write(
     `${LOG_PREFIX} listening on http://${server.host}:${server.port}` +
