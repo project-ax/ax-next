@@ -234,7 +234,9 @@ describe('git-server listener — Slice 1', () => {
     expect(body.error).toBe('invalid_json');
   });
 
-  it('POST /repos with valid body (Slice 1) → 503 not_implemented', async () => {
+  it('POST /repos with valid body (creates a repo from Slice 2 onwards)', async () => {
+    // Slice 1 stubbed this as 503; Slice 2 wired up the handler. Keep this
+    // as a smoke check that the listener route hits the create-repo branch.
     const { server, url } = await boot();
     active = server;
     const r = await fetch(`${url}/repos`, {
@@ -245,9 +247,7 @@ describe('git-server listener — Slice 1', () => {
       },
       body: JSON.stringify({ workspaceId: 'abc' }),
     });
-    expect(r.status).toBe(503);
-    const body = await r.json();
-    expect(body.error).toBe('not_implemented');
+    expect(r.status).toBe(201);
   });
 
   it('GET /repos/abc (Slice 1) → 503 not_implemented', async () => {

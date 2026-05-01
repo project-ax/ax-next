@@ -1,5 +1,9 @@
 import * as http from 'node:http';
 import { checkBearerToken } from './auth.js';
+// repos.ts imports back from this module for writeError / writeJson; keep
+// the import below the helpers' definitions to avoid TDZ on the named exports.
+// (ESM bindings are live, but the function-level call is what matters.)
+import { handleCreateRepo } from './repos.js';
 
 // ---------------------------------------------------------------------------
 // HTTP listener — TCP front for @ax/workspace-git-server.
@@ -327,7 +331,7 @@ export async function createWorkspaceGitServer(
     }
 
     // Dispatch.
-    return dispatch({ match, req, res, body, opts });
+    await dispatch({ match, req, res, body, opts });
   };
 
   // Idle timeout — match the sibling so long-polls aren't killed by Node's
@@ -372,14 +376,15 @@ export async function createWorkspaceGitServer(
   };
 }
 
-// Slice 1: every non-healthz route returns 503 not_implemented. Slices 2-4
-// replace each branch with a real handler.
-function dispatch(ctx: DispatchContext): void {
+// Dispatch — Slice 2 wires create-repo to its handler; the rest are still
+// 503 not_implemented stubs for B3 / Slices 3-4.
+async function dispatch(ctx: DispatchContext): Promise<void> {
   switch (ctx.match.kind) {
     case 'healthz':
       // already handled above; defensive return
       return writeJson(ctx.res, 200, { status: 'ok' });
     case 'create-repo':
+      return handleCreateRepo(ctx.body, ctx.res, { repoRoot: ctx.opts.repoRoot });
     case 'get-repo':
     case 'delete-repo':
     case 'smart-http-discovery':
