@@ -253,10 +253,18 @@ export async function readJsonBody(
       if (settled) return;
       total += chunk.length;
       if (total > limitBytes) {
-        // Mid-stream cap. Destroy the socket to stop further bytes; respond
-        // before that destroy lands by settling the promise immediately.
+        // Mid-stream cap. Destroying the socket here can race the 413
+        // response and tear the connection down before the client sees it.
+        // Drain instead: detach our buffering listener, attach a silent sink,
+        // and resume so the kernel keeps eating bytes while the higher-level
+        // handler writes the 413. The TooLargeError settles the promise
+        // immediately so the caller can respond without waiting for 'end'.
         settle(() => {
-          req.destroy();
+          req.removeAllListeners('data');
+          req.on('data', () => {
+            // silent drain
+          });
+          req.resume();
           reject(new TooLargeError());
         });
         return;

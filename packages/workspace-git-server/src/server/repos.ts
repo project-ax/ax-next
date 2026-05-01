@@ -1,6 +1,6 @@
 import { spawn, type SpawnOptions, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { rm } from 'node:fs/promises';
+import { mkdir, rm } from 'node:fs/promises';
 import * as http from 'node:http';
 import { z } from 'zod';
 import {
@@ -143,20 +143,32 @@ export async function handleCreateRepo(
     return writeError(res, 500, 'internal_error', 'internal server error');
   }
 
-  // 4. Already-exists check. Race window is small but real (two concurrent
-  // POSTs for the same id) — if we lose, `git init` itself will fail and we
-  // surface that as 500 with cleanup. The 409 path is the documented happy
-  // case for repeat-create.
-  if (existsSync(repoPath)) {
-    return writeError(
-      res,
-      409,
-      'workspace_already_exists',
-      'workspace already exists',
+  // 4. Atomic create. Two concurrent POSTs for the same id race here; whoever
+  // wins mkdir owns the dir. The loser sees EEXIST and gets the documented
+  // 409. Crucially, only the winner sets `createdByThisRequest`, so on a
+  // later failure path the loser's `cleanupPartial` is a no-op — we never
+  // delete a peer's freshly-initialized repo.
+  let createdByThisRequest = false;
+  try {
+    await mkdir(repoPath);
+    createdByThisRequest = true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
+      return writeError(
+        res,
+        409,
+        'workspace_already_exists',
+        'workspace already exists',
+      );
+    }
+    process.stderr.write(
+      `workspace-git-server: mkdir failed for '${workspaceId}': ${(err as Error).message}\n`,
     );
+    return writeError(res, 500, 'internal_error', 'create failed');
   }
 
-  // 5. git init --bare --initial-branch=main <repoPath>
+  // 5. git init --bare --initial-branch=main <repoPath>. Running `git init
+  // --bare` against an existing empty dir is fine — it populates it.
   let initResult: SpawnResult;
   try {
     initResult = await runGit([
@@ -169,14 +181,14 @@ export async function handleCreateRepo(
     process.stderr.write(
       `workspace-git-server: git init spawn failed: ${(err as Error).message}\n`,
     );
-    await cleanupPartial(repoPath);
+    if (createdByThisRequest) await cleanupPartial(repoPath);
     return writeError(res, 500, 'internal_error', 'git init failed');
   }
   if (initResult.code !== 0) {
     process.stderr.write(
       `workspace-git-server: git init exited ${initResult.code}: ${initResult.stderr}\n`,
     );
-    await cleanupPartial(repoPath);
+    if (createdByThisRequest) await cleanupPartial(repoPath);
     return writeError(res, 500, 'internal_error', 'git init failed');
   }
 
@@ -189,14 +201,14 @@ export async function handleCreateRepo(
       process.stderr.write(
         `workspace-git-server: git config spawn failed: ${(err as Error).message}\n`,
       );
-      await cleanupPartial(repoPath);
+      if (createdByThisRequest) await cleanupPartial(repoPath);
       return writeError(res, 500, 'internal_error', 'git config failed');
     }
     if (cfgResult.code !== 0) {
       process.stderr.write(
         `workspace-git-server: git config '${key}' exited ${cfgResult.code}: ${cfgResult.stderr}\n`,
       );
-      await cleanupPartial(repoPath);
+      if (createdByThisRequest) await cleanupPartial(repoPath);
       return writeError(res, 500, 'internal_error', 'git config failed');
     }
   }
@@ -298,8 +310,17 @@ export async function handleDeleteRepo(
     return writeError(res, 500, 'internal_error', 'internal server error');
   }
 
-  // Idempotent: 204 whether or not the path existed. force:true ignores ENOENT.
-  await rm(repoPath, { recursive: true, force: true });
+  // Idempotent: 204 whether or not the path existed. force:true ignores
+  // ENOENT, but rm can still throw on permission/IO errors — surface those
+  // as a controlled 500 instead of letting them bubble as unhandled rejections.
+  try {
+    await rm(repoPath, { recursive: true, force: true });
+  } catch (err) {
+    process.stderr.write(
+      `workspace-git-server: rm failed for '${workspaceId}': ${(err as Error).message}\n`,
+    );
+    return writeError(res, 500, 'internal_error', 'delete failed');
+  }
 
   if (res.headersSent || res.writableEnded) return;
   res.writeHead(204);

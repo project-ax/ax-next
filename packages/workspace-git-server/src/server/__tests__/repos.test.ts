@@ -206,6 +206,43 @@ describe('POST /repos', () => {
     expect(body.error).toBe('workspace_already_exists');
   });
 
+  it(
+    'concurrent POST for the same id: one 201, one 409, repo well-formed',
+    async () => {
+      // Regression: pre-fix, the loser's failure path called cleanupPartial()
+      // on the SAME repoPath the winner was just initializing — losing the
+      // race meant deleting your peer's brand-new repo. The atomic mkdir +
+      // createdByThisRequest gate makes only the winner do filesystem work
+      // on cleanup, so the loser's 409 is harmless.
+      const { server, url, repoRoot } = await boot();
+      active = server;
+      const post = (): Promise<Response> =>
+        fetch(`${url}/repos`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            authorization: `Bearer ${TOKEN}`,
+          },
+          body: JSON.stringify({ workspaceId: 'race' }),
+        });
+      const [a, b] = await Promise.all([post(), post()]);
+      const statuses = [a.status, b.status].sort();
+      expect(statuses).toEqual([201, 409]);
+
+      // The winner's repo must exist and be well-formed.
+      const repoPath = join(repoRoot, 'race.git');
+      expect(existsSync(repoPath)).toBe(true);
+      const head = readFileSync(join(repoPath, 'HEAD'), 'utf8');
+      expect(head.trim()).toBe('ref: refs/heads/main');
+      const cfg = readFileSync(join(repoPath, 'config'), 'utf8');
+      expect(cfg).toMatch(/denyDeletes\s*=\s*true/i);
+      expect(cfg).toMatch(/denyNonFastForwards\s*=\s*true/i);
+      expect(cfg).toMatch(/hooksPath\s*=\s*\/dev\/null/);
+      expect(cfg).toMatch(/\[protocol\][\s\S]*allow\s*=\s*never/i);
+      expect(cfg).toMatch(/allowAnySHA1InWant\s*=\s*false/i);
+    },
+  );
+
   it('rejects > 1 MiB body with 413 (integration-level reassert)', async () => {
     const { server, url } = await boot();
     active = server;
