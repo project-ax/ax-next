@@ -91,7 +91,7 @@ Different from the sibling's `validatePath` (which validates filepath strings wi
 
 - `validateWorkspaceId(id)` runs first on every route handler, including URL-path extraction. The URL regex for smart-HTTP routes is `^/([a-z0-9][a-z0-9_-]{0,62})\.git/...`, so the URL parser itself rejects malformed IDs before the handler runs.
 - `repoPathFor(repoRoot, id)` is the only path-construction function. It runs `path.resolve` startsWith on the result. There is no other place in the codebase that turns a `workspaceId` into a filesystem path; lint and code review enforce.
-- Acceptance test (Task 17, `__tests__/integration/argv-injection.test.ts`) walks 30+ malicious inputs across REST and smart-HTTP routes — `../`, `..\\`, `;rm`, `$(echo)`, backticks, semicolons, NUL, leading whitespace, very long strings, non-ASCII, empty, null, undefined, numbers, objects — and asserts every one returns 400 with no filesystem side effect and **no `git` spawn occurred** (verified via `vi.spyOn(child_process, 'spawn')`).
+- Acceptance test at `__tests__/integration/argv-injection.test.ts` walks 30+ malicious inputs across REST and smart-HTTP routes — `../`, `..\\`, `;rm`, `$(echo)`, backticks, semicolons, NUL, leading whitespace, very long strings, non-ASCII, empty, null, undefined, numbers, objects — and asserts every one returns 400 with no filesystem side effect and **no `git` spawn occurred** (verified via `vi.spyOn(child_process, 'spawn')`).
 
 ## Prompt injection / untrusted content
 
@@ -189,7 +189,7 @@ This is the resolution to design doc Q#7. We picked it over the "synthesize an i
 
 - `POST /repos` is purely repo-creation, no implicit history. The sibling's `bootstrap-via-temp-clone-and-push` dance from v1 is gone.
 - The host's clone-or-empty case is a 5-line check.
-- The contract is documented, tested (Task 25 acceptance test), and surfaces no edge cases we're aware of.
+- The contract is documented, tested via `__tests__/integration/empty-repo-materialize.test.ts`, and surfaces no edge cases we're aware of.
 
 If you read this and think "but what about a host that doesn't handle the empty case correctly?" — that's why Task 25 exists, and why the empty case is exercised end-to-end in CI.
 
