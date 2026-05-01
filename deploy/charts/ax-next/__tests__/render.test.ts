@@ -96,8 +96,21 @@ describeIfHelm('ax-next chart: experimental sharded git-server', () => {
   // ship via Chart.yaml dependency declaration and are gitignored, so a fresh
   // checkout (CI, new clones) needs `helm dependency build` once. Idempotent;
   // a no-op when the tarballs are already present.
+  //
+  // The bitnami repo also has to be registered locally for `dependency build`
+  // to resolve postgresql. `helm repo add ... --force-update` is idempotent.
   beforeAll(() => {
     if (!HELM) return;
+    const repoAdd = spawnSync(
+      HELM,
+      ['repo', 'add', '--force-update', 'bitnami', 'https://charts.bitnami.com/bitnami'],
+      { encoding: 'utf8', stdio: ['ignore', 'ignore', 'pipe'] },
+    );
+    if (repoAdd.status !== 0) {
+      throw new Error(
+        `helm repo add bitnami failed (exit ${repoAdd.status}): ${repoAdd.stderr ?? ''}`,
+      );
+    }
     const r = spawnSync(HELM, ['dependency', 'build', chartDir], {
       encoding: 'utf8',
       stdio: ['ignore', 'ignore', 'pipe'],
