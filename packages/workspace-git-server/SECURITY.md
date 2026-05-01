@@ -14,7 +14,7 @@ This note is the `security-checklist` walk for this slice. The implementation la
 
 - **Sandbox:** New process-spawn capability scoped to the literal command `'git'` with a fixed argv shape `[ '-c', flags..., subcommand, ...const_args, repoPath ]`. Caller never controls argv0 or flags; the only caller-derived element is `repoPath`, built from a regex-validated `workspaceId` via `path.join(repoRoot, ...)` with a defense-in-depth `path.resolve` startsWith check. Locked-down env via `PARANOID_GIT_ENV` (`GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_TERMINAL_PROMPT=0`, `HOME=/nonexistent`, `PATH=/usr/bin:/bin`) — full replacement, never `{ ...process.env, ... }`. NetworkPolicy permits only inbound from host pods on the configured port; egress: `[]`. Filesystem access bound to `<repoRoot>/`. SecurityContext: non-root UID 1000, all caps dropped, `readOnlyRootFilesystem: true`, the per-shard PVC is the only writable mount.
 - **Injection:** Storage tier handles only opaque pack bytes (piped through `git`'s stdin/stdout), regex-validated `workspaceId`s, bearer tokens compared via `crypto.timingSafeEqual`, and a tiny JSON request body schema-validated by Zod under a 1 MiB cap. Bearer token never appears in any error message (shape carried over from `workspace-git-http/server/auth.ts`). Logged `workspaceId`s are regex-restricted (no newlines, control chars, ANSI), preventing log injection. The model-output / tool-output / commit-message attack surface lives in **Phase 3** (sandbox-side commit construction) — Phase 1's storage tier never sees agent-originated strings.
-- **Supply chain:** No new npm runtime dependencies. The HTTP transport is `node:http`, hashing is `node:crypto`, and Zod is already in the workspace. New runtime dependency: **the `git` binary itself**, pinned via the new `container/git-server/Dockerfile` (Task 17) to a specific apt version on `debian-slim`. Base-image rebase cadence: monthly + on critical CVE. Recent CVEs to keep in mind: CVE-2024-32002 (RCE via crafted submodule symlink — mitigated by `protocol.allow=never` in our paranoid env), CVE-2024-32004 (clone-from-untrusted — N/A, the server only *serves* repos, it never *clones from* an untrusted source).
+- **Supply chain:** No new npm runtime dependencies. The HTTP transport is `node:http`, hashing is `node:crypto`, and Zod is already in the workspace. New runtime dependency: **the `git` binary itself**, pinned via the new `container/git-server/Dockerfile` to a specific apt version on `debian-slim`. Base-image rebase cadence: monthly + on critical CVE. Recent CVEs to keep in mind: CVE-2024-32002 (RCE during recursive `git clone` via crafted submodule symlinks — N/A, the server never *clones*; defense-in-depth `protocol.allow=never` is pinned per-repo regardless), CVE-2024-32004 (clone-from-untrusted — N/A, the server only *serves* repos, it never *clones from* an untrusted source).
 
 ## Sandbox / capability
 
@@ -31,13 +31,13 @@ Two things, in order of how-much-this-keeps-us-up-at-night:
 1. **`server.listen(port, host)`** on the git-server process. Default `0.0.0.0:7780`, configurable via `AX_GIT_SERVER_HOST` / `AX_GIT_SERVER_PORT`. Anyone who can route a TCP connection to that address and ordinal can attempt requests; inside the cluster, "anyone who can route" is whoever NetworkPolicy lets through.
 2. **`child_process.spawn('git', argv, { env: PARANOID_GIT_ENV })`** for `git init --bare`, `git -C <repo> config ...`, `git -C <repo> rev-parse refs/heads/main`, `git -c ... upload-pack --stateless-rpc`, and `git -c ... receive-pack --stateless-rpc`. That's the entire list. Every invocation:
    - Uses **argv-array form only**. The shell-form variants of `child_process` (`exec`, `execSync`, the string-command form of `spawn`) are forbidden across the package; lint enforces.
-   - Uses a **fully replaced env** — `PARANOID_GIT_ENV` is the *only* thing in the child's environment. Never `{ ...process.env, ... }`. The constant lands in `src/server/git-env.ts` (Task 6) and lists exactly:
+   - Uses a **fully replaced env** — `PARANOID_GIT_ENV` is the *only* thing in the child's environment. Never `{ ...process.env, ... }`. The constant lands in `src/server/git-env.ts` and lists exactly:
      - `GIT_CONFIG_NOSYSTEM=1` — no `/etc/gitconfig`.
      - `GIT_CONFIG_GLOBAL=/dev/null` — no `~/.gitconfig`.
      - `GIT_TERMINAL_PROMPT=0` — never block waiting for a TTY.
      - `HOME=/nonexistent` — the binary won't find anything if it tries.
      - `PATH=/usr/bin:/bin` — explicit, no inheritance.
-   - Per-repo, the bare repo's own `config` file pins additional defenses set at `POST /repos` time: `core.hooksPath=/dev/null` (no server-side hooks), `protocol.allow=never` (no remote helpers, kills the CVE-2024-32002 class), `receive.denyDeletes=true`, `receive.denyNonFastForwards=true`, `uploadpack.allowAnySHA1InWant=false`.
+   - Per-repo, the bare repo's own `config` file pins additional defenses set at `POST /repos` time: `core.hooksPath=/dev/null` (no server-side hooks), `protocol.allow=never` (no remote helpers, no sub-protocol fetches), `receive.denyDeletes=true`, `receive.denyNonFastForwards=true`, `uploadpack.allowAnySHA1InWant=false`.
 
 #### What bounds it
 
@@ -45,8 +45,8 @@ Four layers, in order:
 
 1. **NetworkPolicy** (`deploy/charts/ax-next/templates/networkpolicies/git-server-network.yaml`, modified in Task 31). Ingress is allowed only from host-pod labels in the same namespace. Runner pods MUST NOT be permitted, ever — runners don't speak the storage-tier wire and there's no legitimate reason for one to reach the git-server. Egress: `[]`. This is the perimeter.
 2. **Bearer auth via `crypto.timingSafeEqual`** against an env-loaded token (`AX_GIT_SERVER_TOKEN`, sourced from a Helm-managed Secret). Missing, malformed, or wrong token returns 401 with a fixed message — the offending value is never echoed (invariant I9, carried over from `@ax/ipc-http` and `@ax/workspace-git-http`). This is the wall behind the perimeter.
-3. **`workspaceId` regex chokepoint, server-side at every route.** Lives in `src/shared/workspace-id.ts` (Task 3). The regex is `^[a-z0-9][a-z0-9_-]{0,62}$` — lowercase only (filesystem-safe on case-insensitive volumes), no dots (we don't have to think about `..` traversal because `.` literally can't appear), 63-char cap (DNS label cap; gives us room to repurpose IDs as DNS components later). The regex runs **before any filesystem touch and before any `git` spawn**. Failure → 400 with a sanitized error that does not echo the input (no log injection through workspace IDs).
-4. **`path.resolve` startsWith defense-in-depth.** `repoPathFor(repoRoot, id)` (Task 4) does `path.join(repoRoot, '${id}.git')`, then asserts the resolved path starts with `path.resolve(repoRoot) + path.sep`. Even if a future bug regresses the regex (someone adds `.` to the character class, say), this catches escape. Belt and suspenders. We're a nervous crab.
+3. **`workspaceId` regex chokepoint, server-side at every route.** Lives in `src/shared/workspace-id.ts`. The regex is `^[a-z0-9][a-z0-9_-]{0,62}$` — lowercase only (filesystem-safe on case-insensitive volumes), no dots (we don't have to think about `..` traversal because `.` literally can't appear), 63-char cap (DNS label cap; gives us room to repurpose IDs as DNS components later). The regex runs **before any filesystem touch and before any `git` spawn**. Failure → 400 with a sanitized error that does not echo the input (no log injection through workspace IDs).
+4. **`path.resolve` startsWith defense-in-depth.** `repoPathFor(repoRoot, id)` (in `src/shared/repo-path.ts`) does `path.join(repoRoot, '${id}.git')`, then asserts the resolved path starts with `path.resolve(repoRoot) + path.sep`. Even if a future bug regresses the regex (someone adds `.` to the character class, say), this catches escape. Belt and suspenders. We're a nervous crab.
 5. **Pod SecurityContext.** Non-root UID 1000, all caps dropped, `readOnlyRootFilesystem: true`. The per-shard PVC is the only writable mount and it's the bare repos' own gitdir. `tmp` is a 256 MiB `emptyDir` for pack staging. Even if an attacker pops the process, they're a non-root user with no shell, no writable rootfs, and the PVC for one shard's workspaces under their feet.
 
 (Yes, that's five layers in a list called "four layers." Counting is hard when you're paranoid.)
@@ -89,8 +89,8 @@ This is the section that's a sharp departure from the sibling, which has no spaw
 
 Different from the sibling's `validatePath` (which validates filepath strings with traversal blacklists) because the input to this package is a **`workspaceId`** — a DNS-label-shaped opaque ID, not a filepath. Validation is much simpler, and that's the point: the strict regex is the chokepoint, applied server-side at every route, and `repoPathFor` is the only function that turns a `workspaceId` into a filesystem path.
 
-- `validateWorkspaceId(id)` (Task 3) runs first on every route handler, including URL-path extraction. The URL regex for smart-HTTP routes is `^/([a-z0-9][a-z0-9_-]{0,62})\.git/...`, so the URL parser itself rejects malformed IDs before the handler runs.
-- `repoPathFor(repoRoot, id)` (Task 4) is the only path-construction function. It runs `path.resolve` startsWith on the result. There is no other place in the codebase that turns a `workspaceId` into a filesystem path; lint and code review enforce.
+- `validateWorkspaceId(id)` runs first on every route handler, including URL-path extraction. The URL regex for smart-HTTP routes is `^/([a-z0-9][a-z0-9_-]{0,62})\.git/...`, so the URL parser itself rejects malformed IDs before the handler runs.
+- `repoPathFor(repoRoot, id)` is the only path-construction function. It runs `path.resolve` startsWith on the result. There is no other place in the codebase that turns a `workspaceId` into a filesystem path; lint and code review enforce.
 - Acceptance test (Task 17, `__tests__/integration/argv-injection.test.ts`) walks 30+ malicious inputs across REST and smart-HTTP routes — `../`, `..\\`, `;rm`, `$(echo)`, backticks, semicolons, NUL, leading whitespace, very long strings, non-ASCII, empty, null, undefined, numbers, objects — and asserts every one returns 400 with no filesystem side effect and **no `git` spawn occurred** (verified via `vi.spyOn(child_process, 'spawn')`).
 
 ## Prompt injection / untrusted content
@@ -145,10 +145,10 @@ That's it. No Express, no Koa, no Fastify, no `simple-git`, no `nodegit`, no `bo
 
 ### The `git` binary itself
 
-This is genuinely new. The image is built by `container/git-server/Dockerfile` (Task 17), which:
+This is genuinely new. The image is built by `container/git-server/Dockerfile`, which:
 
 - Bases on `debian-slim:bookworm`. Recommended over Alpine for `git` CVE patch cadence — Alpine's `git` package historically lags upstream more often than Debian-stable's security backports.
-- Installs `git` via apt with an explicit version pin (to be filled in at Task 17 when the package is selected; phrasing here is "to-be-pinned" because the version isn't picked yet).
+- Installs `git` via apt with an explicit version pin (to be filled in when the Dockerfile lands and the package version is selected; phrasing here is "to-be-pinned" because the version isn't picked yet).
 - Runs as non-root UID 1000.
 - Direct-execs `node /opt/ax-next/git-server/main.js` — no shell wrapper, so `SIGTERM` reaches Node cleanly.
 
@@ -158,7 +158,7 @@ This is genuinely new. The image is built by `container/git-server/Dockerfile` (
 
 #### Recent CVEs we care about
 
-- **CVE-2024-32002** — RCE via crafted submodule symlink. Mitigated by `protocol.allow=never` in `PARANOID_GIT_ENV`; we never fetch from external sources, and we reject sub-protocols outright.
+- **CVE-2024-32002** — RCE during recursive `git clone` via crafted submodule symlinks on case-insensitive filesystems. Not applicable to the storage tier; the server only ever runs `init --bare`, `config`, `rev-parse`, `upload-pack`, and `receive-pack`. It never `clone`s. As defense-in-depth, every bare repo we create pins `protocol.allow=never` in its own config at `POST /repos` time, so any future code path that did try to fetch from a remote would be refused before it could exercise the bug.
 - **CVE-2024-32004** — clone-from-untrusted RCE. Not applicable; the server only *serves* repos, it never *clones from* an untrusted source. The only inbound is host-driven `git push` of opaque pack bytes, which goes through `receive-pack`, not `clone`.
 
 We're not naming CVEs that don't exist. If a future CVE applies, we'll add it here.
