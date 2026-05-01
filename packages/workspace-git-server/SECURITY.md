@@ -14,7 +14,7 @@ This note is the `security-checklist` walk for this slice. The implementation la
 
 - **Sandbox:** New process-spawn capability scoped to the literal command `'git'` with a fixed argv shape `[ '-c', flags..., subcommand, ...const_args, repoPath ]`. Caller never controls argv0 or flags; the only caller-derived element is `repoPath`, built from a regex-validated `workspaceId` via `path.join(repoRoot, ...)` with a defense-in-depth `path.resolve` startsWith check. Locked-down env via `PARANOID_GIT_ENV` (`GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_TERMINAL_PROMPT=0`, `HOME=/nonexistent`, `PATH=/usr/bin:/bin`) — full replacement, never `{ ...process.env, ... }`. NetworkPolicy permits only inbound from host pods on the configured port; egress: `[]`. Filesystem access bound to `<repoRoot>/`. SecurityContext: non-root UID 1000, all caps dropped, `readOnlyRootFilesystem: true`, the per-shard PVC is the only writable mount.
 - **Injection:** Storage tier handles only opaque pack bytes (piped through `git`'s stdin/stdout), regex-validated `workspaceId`s, bearer tokens compared via `crypto.timingSafeEqual`, and a tiny JSON request body schema-validated by Zod under a 1 MiB cap. Bearer token never appears in any error message (shape carried over from `workspace-git-http/server/auth.ts`). Logged `workspaceId`s are regex-restricted (no newlines, control chars, ANSI), preventing log injection. The model-output / tool-output / commit-message attack surface lives in **Phase 3** (sandbox-side commit construction) — Phase 1's storage tier never sees agent-originated strings.
-- **Supply chain:** No new npm runtime dependencies. The HTTP transport is `node:http`, hashing is `node:crypto`, and Zod is already in the workspace. New runtime dependency: **the `git` binary itself**, pinned via the new `container/git-server/Dockerfile` to a specific apt version on `debian-slim`. Base-image rebase cadence: monthly + on critical CVE. Recent CVEs to keep in mind: CVE-2024-32002 (RCE during recursive `git clone` via crafted submodule symlinks — N/A, the server never *clones*; defense-in-depth `protocol.allow=never` is pinned per-repo regardless), CVE-2024-32004 (clone-from-untrusted — N/A, the server only *serves* repos, it never *clones from* an untrusted source).
+- **Supply chain:** No new npm runtime dependencies. The HTTP transport is `node:http`, hashing is `node:crypto`, and Zod is already in the workspace. New runtime dependency: **the `git` binary itself**, installed via apt on a `node:20-bookworm-slim` base. The package is currently UNPINNED (TODO via CI image build); once CI lands we'll lock it to a specific Debian-stable version (`git=1:2.39.x-y`). Base-image rebase cadence: monthly + on critical CVE. Recent CVEs to keep in mind: CVE-2024-32002 (RCE during recursive `git clone` via crafted submodule symlinks — N/A, the server never *clones*; defense-in-depth `protocol.allow=never` is pinned per-repo regardless), CVE-2024-32004 (clone-from-untrusted — N/A, the server only *serves* repos, it never *clones from* an untrusted source).
 
 ## Sandbox / capability
 
@@ -43,7 +43,7 @@ Two things, in order of how-much-this-keeps-us-up-at-night:
 
 Four layers, in order:
 
-1. **NetworkPolicy** (`deploy/charts/ax-next/templates/networkpolicies/git-server-network.yaml`, modified in Task 31). Ingress is allowed only from host-pod labels in the same namespace. Runner pods MUST NOT be permitted, ever — runners don't speak the storage-tier wire and there's no legitimate reason for one to reach the git-server. Egress: `[]`. This is the perimeter.
+1. **NetworkPolicy** (`deploy/charts/ax-next/templates/networkpolicies/git-server-experimental-network.yaml` — the legacy tier's NP at `git-server-network.yaml` is left in place during the parallel-canary phase). Ingress is allowed only from host-pod labels in the same namespace. Runner pods MUST NOT be permitted, ever — runners don't speak the storage-tier wire and there's no legitimate reason for one to reach the git-server. Egress: `[]`. This is the perimeter.
 2. **Bearer auth via `crypto.timingSafeEqual`** against an env-loaded token (`AX_GIT_SERVER_TOKEN`, sourced from a Helm-managed Secret). Missing, malformed, or wrong token returns 401 with a fixed message — the offending value is never echoed (invariant I9, carried over from `@ax/ipc-http` and `@ax/workspace-git-http`). This is the wall behind the perimeter.
 3. **`workspaceId` regex chokepoint, server-side at every route.** Lives in `src/shared/workspace-id.ts`. The regex is `^[a-z0-9][a-z0-9_-]{0,62}$` — lowercase only (filesystem-safe on case-insensitive volumes), no dots (we don't have to think about `..` traversal because `.` literally can't appear), 63-char cap (DNS label cap; gives us room to repurpose IDs as DNS components later). The regex runs **before any filesystem touch and before any `git` spawn**. Failure → 400 with a sanitized error that does not echo the input (no log injection through workspace IDs).
 4. **`path.resolve` startsWith defense-in-depth.** `repoPathFor(repoRoot, id)` (in `src/shared/repo-path.ts`) does `path.join(repoRoot, '${id}.git')`, then asserts the resolved path starts with `path.resolve(repoRoot) + path.sep`. Even if a future bug regresses the regex (someone adds `.` to the character class, say), this catches escape. Belt and suspenders. We're a nervous crab.
@@ -147,10 +147,10 @@ That's it. No Express, no Koa, no Fastify, no `simple-git`, no `nodegit`, no `bo
 
 This is genuinely new. The image is built by `container/git-server/Dockerfile`, which:
 
-- Bases on `debian-slim:bookworm`. Recommended over Alpine for `git` CVE patch cadence — Alpine's `git` package historically lags upstream more often than Debian-stable's security backports.
-- Installs `git` via apt with an explicit version pin (to be filled in when the Dockerfile lands and the package version is selected; phrasing here is "to-be-pinned" because the version isn't picked yet).
-- Runs as non-root UID 1000.
-- Direct-execs `node /opt/ax-next/git-server/main.js` — no shell wrapper, so `SIGTERM` reaches Node cleanly.
+- Bases on `node:20-bookworm-slim`. Debian-stable backing chosen over Alpine for `git` CVE patch cadence — Alpine's `git` package historically lags upstream more often than Debian-stable's security backports.
+- Installs `git` via `apt-get install -y --no-install-recommends git`. **Currently UNPINNED.** A TODO in the Dockerfile commits to pinning a specific Debian-stable version (`git=1:2.39.x-y`) once the chart's CI image-build pipeline lands. We're being upfront about this — pinning is the long-term posture, but the in-tree Dockerfile is still pre-CI.
+- Runs as non-root UID 1000 (the `axgit` user, `nologin` shell).
+- Direct-execs `node /opt/ax-next/git-server/dist/server/main.js` — no shell wrapper, so `SIGTERM` reaches Node cleanly.
 
 #### Base-image rebase cadence
 
@@ -165,7 +165,7 @@ We're not naming CVEs that don't exist. If a future CVE applies, we'll add it he
 
 ### Pinning
 
-Workspace deps are `workspace:*` (lockfile pins resolved versions). External deps: zero new, so there's nothing new to pin in npm. The base image is pinned by digest in the chart's `gitServerImage.tag`; the `git` package is pinned by apt version in the Dockerfile.
+Workspace deps are `workspace:*` (lockfile pins resolved versions). External deps: zero new, so there's nothing new to pin in npm. The base image will be pinned by digest in the chart's `gitServerImage.tag` once CI publishes one (currently tag-only). The `git` package is currently unpinned, with a TODO in `container/git-server/Dockerfile` that commits to pinning the apt version once the CI image-build pipeline lands.
 
 ## Known limits
 
