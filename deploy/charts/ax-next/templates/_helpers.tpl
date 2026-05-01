@@ -139,3 +139,14 @@ Name of the Secret holding the git-server's bearer token.
 {{- define "ax-next.gitServerAuthSecretName" -}}
 {{- printf "%s-git-server-auth" (include "ax-next.fullname" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
+
+{{/*
+Experimental git-server (Phase 1 of workspace redesign) component name.
+<release>-<chart>-git-server-experimental, truncated to 63 chars (DNS
+label limit). DELIBERATELY distinct from ax-next.gitServerComponentName
+so the new StatefulSet/Service/NetworkPolicy can sit alongside the legacy
+Deployment/Service during the parallel-canary phase without colliding.
+*/}}
+{{- define "ax-next.gitServerExperimentalComponentName" -}}
+{{- printf "%s-git-server-experimental" (include "ax-next.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}

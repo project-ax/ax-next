@@ -1,0 +1,162 @@
+{{- if and .Values.gitServer.enabled .Values.gitServer.experimental.gitProtocol }}
+{{/*
+Experimental sharded git-server StatefulSet (Phase 1 of workspace redesign).
+
+Renders ALONGSIDE the legacy Deployment when both `gitServer.enabled` and
+`gitServer.experimental.gitProtocol` are true. The two tiers coexist on
+purpose during the canary phase: operators flip traffic via the host's
+routing config, not by ripping out the old pod. Once promoted, the legacy
+Deployment is removed in a follow-up PR.
+
+The new tier ships the git binary in its image and speaks smart-HTTP +
+REST per @ax/workspace-git-server. Each shard ordinal owns its own PVC
+and is the unique writer for the workspaces routed to it; the host-side
+shard router (rendezvous-hashed by workspaceId) decides which shard.
+
+Shard count is fixed at install time. Changing it later requires manual
+data migration (drain → rsync bare repos → flip traffic) — never just
+flip the value.
+*/}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "ax-next.gitServerExperimentalComponentName" . }}
+  namespace: {{ include "ax-next.hostNamespace" . }}
+  labels:
+    {{- include "ax-next.componentLabels" (dict "component" "git-server-experimental" "context" $) | nindent 4 }}
+    ax.io/plane: storage
+spec:
+  serviceName: {{ include "ax-next.gitServerExperimentalComponentName" . }}-headless
+  replicas: {{ .Values.gitServer.shards }}
+  # Parallel: shards are independent storage owners; we don't need ordinal
+  # ordering to bring them up. Faster rollouts, faster recovery.
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      {{- include "ax-next.selectorLabels" (dict "component" "git-server-experimental" "context" $) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ax-next.selectorLabels" (dict "component" "git-server-experimental" "context" $) | nindent 8 }}
+        ax.io/plane: storage
+      annotations:
+        # Roll the pod when the bearer token rotates.
+        checksum/auth: {{ include (print $.Template.BasePath "/git-server-auth-secret.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "ax-next.gitServerComponentName" . }}
+      terminationGracePeriodSeconds: {{ .Values.gitServer.terminationGracePeriodSeconds | default 60 }}
+      # Pod-level securityContext. fsGroup is the load-bearing piece — without
+      # it, kubelet doesn't chgrp the freshly-provisioned PVC mount, and the
+      # UID 1000 process inside the container can't write to it (EACCES on
+      # the first ref/object write). Most production CSI drivers (EBS,
+      # GCE PD, Longhorn, Ceph RBD) leave the volume root:root by default;
+      # local-path provisioners hide the bug. fsGroup matches runAsUser so
+      # the chgrp is a no-op for ownership but still grants group-write.
+      securityContext:
+        runAsUser: 1000
+        runAsNonRoot: true
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- range . }}
+        - name: {{ . }}
+        {{- end }}
+      {{- end }}
+      containers:
+        - name: git-server
+          image: {{ include "ax-next.gitServerImage" . }}
+          imagePullPolicy: {{ .Values.gitServerImage.pullPolicy | default "IfNotPresent" }}
+          # Hardcoded entrypoint for the new image — distinct from the legacy
+          # iso-git path that .Values.gitServer.command points at. The image
+          # bundles the @ax/workspace-git-server CLI at this fixed location.
+          command: ["node", "/opt/ax-next/git-server/dist/server/main.js"]
+          ports:
+            - name: git
+              containerPort: {{ .Values.gitServer.port }}
+              protocol: TCP
+          # preStop: send SIGTERM to PID 1 and sleep 25s so the listener can
+          # drain in-flight push/fetch ops before kubelet escalates to SIGKILL
+          # at terminationGracePeriodSeconds. Sleep MUST stay below grace - 5
+          # to leave room for the SIGKILL margin.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "kill -TERM 1 && sleep 25"]
+          env:
+            - name: AX_GIT_SERVER_HOST
+              value: "0.0.0.0"
+            - name: AX_GIT_SERVER_PORT
+              value: {{ .Values.gitServer.port | quote }}
+            - name: AX_GIT_SERVER_REPO_ROOT
+              value: {{ .Values.gitServer.mountPath | quote }}
+            - name: AX_GIT_SERVER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ax-next.gitServerAuthSecretName" . }}
+                  key: token
+            # Downward-API ordinal (k8s 1.28+ pod-index label). The shard
+            # router on the host side hashes workspaceId → shard ordinal,
+            # so each pod needs to know which ordinal it is.
+            - name: AX_GIT_SERVER_SHARD_INDEX
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['apps.kubernetes.io/pod-index']
+            # Drain budget for the SIGTERM-aware listener — well under the
+            # chart's terminationGracePeriodSeconds so we never race kubelet.
+            - name: AX_GIT_SERVER_DRAIN_TIMEOUT_MS
+              value: "30000"
+          resources:
+            {{- toYaml .Values.gitServer.resources | nindent 12 }}
+          {{- with .Values.gitServer.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.gitServer.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          # Pod hardening: non-root, no caps, read-only rootfs. The bare
+          # repos live on the mounted PVC; everything else is immutable
+          # except a small /tmp emptyDir that git uses for pack temp files.
+          securityContext:
+            runAsUser: 1000
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: repo
+              mountPath: {{ .Values.gitServer.mountPath }}
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            # Bumped from 64Mi — pack staging on push needs more headroom
+            # when receive-pack writes objects to a temp dir before fsync.
+            sizeLimit: 256Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: repo
+        annotations:
+          # Don't delete the bare repos when the StatefulSet is uninstalled —
+          # they hold every session's workspace history. Operators who want
+          # a fresh start delete the PVCs by hand.
+          helm.sh/resource-policy: keep
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: {{ required "gitServer.storage is required when gitServer.enabled=true" .Values.gitServer.storage }}
+        {{- if .Values.gitServer.storageClassName }}
+        storageClassName: {{ .Values.gitServer.storageClassName }}
+        {{- else }}
+        storageClassName: ""
+        {{- end }}
+{{- end }}
