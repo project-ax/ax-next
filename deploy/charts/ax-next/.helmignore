@@ -14,3 +14,16 @@
 .idea/
 *.tmproj
 .vscode/
+
+# @ax/chart-tests package artifacts. The chart-tests package lives inside
+# this directory (because it tests THIS chart), but its install/build
+# artifacts are not part of the chart itself. Without these excludes,
+# `helm template` walks pnpm-symlinked node_modules and trips its 5 MiB
+# chart-file limit on _tsc.js (the TypeScript compiler binary).
+node_modules/
+__tests__/
+package.json
+tsconfig.json
+tsconfig.tsbuildinfo
+vitest.config.ts
+dist/
