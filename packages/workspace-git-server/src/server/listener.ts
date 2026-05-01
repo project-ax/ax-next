@@ -3,7 +3,7 @@ import { checkBearerToken } from './auth.js';
 // repos.ts imports back from this module for writeError / writeJson; keep
 // the import below the helpers' definitions to avoid TDZ on the named exports.
 // (ESM bindings are live, but the function-level call is what matters.)
-import { handleCreateRepo } from './repos.js';
+import { handleCreateRepo, handleGetRepo } from './repos.js';
 
 // ---------------------------------------------------------------------------
 // HTTP listener — TCP front for @ax/workspace-git-server.
@@ -103,11 +103,20 @@ export type RouteMatch =
   | { kind: 'smart-http-discovery'; workspaceId: string; service: string }
   | { kind: 'smart-http-upload-pack'; workspaceId: string }
   | { kind: 'smart-http-receive-pack'; workspaceId: string }
+  // "/repos/<bad-id>" — path shape recognized but the id segment fails the
+  // regex. Listener emits 400 invalid_workspace_id for these (distinguishes
+  // a malformed id from a totally-unknown path).
+  | { kind: 'invalid-repo-id'; method: 'GET' | 'DELETE' | 'PUT' | 'OTHER' }
   | { kind: 'unknown' };
 
 // URL extraction regexes — strict to defend against argv injection:
 // the workspaceId class matches WORKSPACE_ID_REGEX from src/shared/workspace-id.ts.
 const REPO_ID_RE = /^\/repos\/([a-z0-9][a-z0-9_-]{0,62})$/;
+// "Loose" /repos/X pattern — matches any non-empty path under /repos/ so the
+// listener can return 400 invalid_workspace_id instead of falling through to
+// unknown. We use a permissive prefix match; the strict REPO_ID_RE has
+// already had its shot above.
+const REPO_ID_LOOSE_RE = /^\/repos\/.+/;
 const SMART_HTTP_INFO_REFS_RE =
   /^\/([a-z0-9][a-z0-9_-]{0,62})\.git\/info\/refs$/;
 const SMART_HTTP_UPLOAD_PACK_RE =
@@ -130,6 +139,9 @@ export function matchRoute(method: string, url: string): RouteMatch {
   if (method === 'GET') {
     const m = REPO_ID_RE.exec(pathname);
     if (m !== null) return { kind: 'get-repo', workspaceId: m[1]! };
+    if (REPO_ID_LOOSE_RE.test(pathname)) {
+      return { kind: 'invalid-repo-id', method: 'GET' };
+    }
     const sm = SMART_HTTP_INFO_REFS_RE.exec(pathname);
     if (sm !== null) {
       const params = new URLSearchParams(search);
@@ -140,6 +152,16 @@ export function matchRoute(method: string, url: string): RouteMatch {
   if (method === 'DELETE') {
     const m = REPO_ID_RE.exec(pathname);
     if (m !== null) return { kind: 'delete-repo', workspaceId: m[1]! };
+    if (REPO_ID_LOOSE_RE.test(pathname)) {
+      return { kind: 'invalid-repo-id', method: 'DELETE' };
+    }
+  }
+  if (method === 'PUT' || method === 'PATCH') {
+    // Method gate already rejects PUT/PATCH (only GET/POST/DELETE allowed),
+    // but if we ever loosen that, surface a method-aware response.
+    if (REPO_ID_LOOSE_RE.test(pathname) || REPO_ID_RE.test(pathname)) {
+      return { kind: 'invalid-repo-id', method: 'PUT' };
+    }
   }
   if (method === 'POST') {
     const up = SMART_HTTP_UPLOAD_PACK_RE.exec(pathname);
@@ -386,6 +408,16 @@ async function dispatch(ctx: DispatchContext): Promise<void> {
     case 'create-repo':
       return handleCreateRepo(ctx.body, ctx.res, { repoRoot: ctx.opts.repoRoot });
     case 'get-repo':
+      return handleGetRepo(ctx.match.workspaceId, ctx.res, {
+        repoRoot: ctx.opts.repoRoot,
+      });
+    case 'invalid-repo-id':
+      return writeError(
+        ctx.res,
+        400,
+        'invalid_workspace_id',
+        'invalid workspaceId',
+      );
     case 'delete-repo':
     case 'smart-http-discovery':
     case 'smart-http-upload-pack':

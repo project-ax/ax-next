@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, readdirSync } from 'node:fs';
+import * as http from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -323,5 +324,232 @@ describe('POST /repos', () => {
         PATH: '/usr/bin:/bin',
       });
     }
+  });
+});
+
+describe('GET /repos/<id>', () => {
+  async function postCreate(
+    url: string,
+    workspaceId: string,
+  ): Promise<Response> {
+    return fetch(`${url}/repos`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${TOKEN}`,
+      },
+      body: JSON.stringify({ workspaceId }),
+    });
+  }
+
+  it('returns 404 workspace_not_found for a never-created id', async () => {
+    const { server, url } = await boot();
+    active = server;
+    const r = await fetch(`${url}/repos/nonexistent`, {
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    expect(r.status).toBe(404);
+    const body = await r.json();
+    expect(body.error).toBe('workspace_not_found');
+  });
+
+  it('returns exists:true, headOid:null on a freshly-created repo', async () => {
+    const { server, url } = await boot();
+    active = server;
+    const c = await postCreate(url, 'fresh');
+    expect(c.status).toBe(201);
+    const r = await fetch(`${url}/repos/fresh`, {
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    expect(r.status).toBe(200);
+    const body = await r.json();
+    expect(body).toEqual({
+      workspaceId: 'fresh',
+      exists: true,
+      headOid: null,
+    });
+  });
+
+  it('returns headOid as the SHA after a fixture commit lands on main', async () => {
+    const { server, url, repoRoot } = await boot();
+    active = server;
+    await postCreate(url, 'has-commit');
+
+    // Seed a commit into the bare repo using git plumbing — purely the
+    // server's tooling, no host clone.
+    const repoPath = join(repoRoot, 'has-commit.git');
+    const env = {
+      GIT_CONFIG_NOSYSTEM: '1',
+      GIT_CONFIG_GLOBAL: '/dev/null',
+      GIT_TERMINAL_PROMPT: '0',
+      HOME: '/nonexistent',
+      PATH: '/usr/bin:/bin',
+      GIT_AUTHOR_NAME: 'ax-test',
+      GIT_AUTHOR_EMAIL: 'test@example.com',
+      GIT_COMMITTER_NAME: 'ax-test',
+      GIT_COMMITTER_EMAIL: 'test@example.com',
+    };
+    const runSync = (args: string[]): { stdout: string; status: number | null } =>
+      new Promise<{ stdout: string; status: number | null }>((resolve, reject) => {
+        const child = spawn('git', args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
+        const chunks: Buffer[] = [];
+        child.stdout?.on('data', (c) => chunks.push(c as Buffer));
+        child.once('error', reject);
+        child.once('close', (status) =>
+          resolve({ stdout: Buffer.concat(chunks).toString('utf8'), status }),
+        );
+      }) as unknown as { stdout: string; status: number | null };
+
+    // hash-object: stage a blob in the bare repo's object DB
+    const blob = await new Promise<string>((resolve, reject) => {
+      const child = spawn(
+        'git',
+        ['-C', repoPath, 'hash-object', '-w', '--stdin'],
+        { env, stdio: ['pipe', 'pipe', 'pipe'] },
+      );
+      const out: Buffer[] = [];
+      child.stdout?.on('data', (c) => out.push(c as Buffer));
+      child.once('error', reject);
+      child.once('close', () =>
+        resolve(Buffer.concat(out).toString('utf8').trim()),
+      );
+      child.stdin?.end('hello\n');
+    });
+    expect(blob).toMatch(/^[0-9a-f]{40}$/);
+
+    // mktree: build a tree referencing that blob
+    const tree = await new Promise<string>((resolve, reject) => {
+      const child = spawn('git', ['-C', repoPath, 'mktree'], {
+        env,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      const out: Buffer[] = [];
+      child.stdout?.on('data', (c) => out.push(c as Buffer));
+      child.once('error', reject);
+      child.once('close', () =>
+        resolve(Buffer.concat(out).toString('utf8').trim()),
+      );
+      child.stdin?.end(`100644 blob ${blob}\thello.txt\n`);
+    });
+    expect(tree).toMatch(/^[0-9a-f]{40}$/);
+
+    // commit-tree: build a commit on that tree
+    const commit = await new Promise<string>((resolve, reject) => {
+      const child = spawn(
+        'git',
+        ['-C', repoPath, 'commit-tree', tree, '-m', 'fixture'],
+        { env, stdio: ['ignore', 'pipe', 'pipe'] },
+      );
+      const out: Buffer[] = [];
+      child.stdout?.on('data', (c) => out.push(c as Buffer));
+      child.once('error', reject);
+      child.once('close', () =>
+        resolve(Buffer.concat(out).toString('utf8').trim()),
+      );
+    });
+    expect(commit).toMatch(/^[0-9a-f]{40}$/);
+
+    // update-ref: point refs/heads/main at the commit
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(
+        'git',
+        ['-C', repoPath, 'update-ref', 'refs/heads/main', commit],
+        { env, stdio: ['ignore', 'pipe', 'pipe'] },
+      );
+      child.once('error', reject);
+      child.once('close', () => resolve());
+    });
+
+    // Now GET /repos/<id> should return the commit OID.
+    const r = await fetch(`${url}/repos/has-commit`, {
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    expect(r.status).toBe(200);
+    const body = await r.json();
+    expect(body).toEqual({
+      workspaceId: 'has-commit',
+      exists: true,
+      headOid: commit,
+    });
+    void runSync; // keep helper above happy if we ever want it
+  });
+
+  it('rejects uppercase id in URL with 400', async () => {
+    const { server, url } = await boot();
+    active = server;
+    const r = await fetch(`${url}/repos/Foo`, {
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    expect(r.status).toBe(400);
+    const body = await r.json();
+    expect(body.error).toBe('invalid_workspace_id');
+  });
+
+  it('rejects leading-dash id in URL with 400', async () => {
+    const { server, url } = await boot();
+    active = server;
+    const r = await fetch(`${url}/repos/-foo`, {
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    expect(r.status).toBe(400);
+    const body = await r.json();
+    expect(body.error).toBe('invalid_workspace_id');
+  });
+
+  it('rejects ../etc traversal in URL with 400', async () => {
+    const { server, url } = await boot();
+    active = server;
+    // fetch normalizes ../etc out of the path; build the URL manually.
+    const r = await new Promise<Response>((resolve, reject) => {
+      const u = new URL(url);
+      const req = http.request(
+        {
+          hostname: u.hostname,
+          port: Number(u.port),
+          method: 'GET',
+          path: '/repos/../etc',
+          headers: { authorization: `Bearer ${TOKEN}` },
+        },
+        async (res) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (c) => chunks.push(c as Buffer));
+          res.on('end', () => {
+            const body = Buffer.concat(chunks).toString('utf8');
+            resolve(
+              new Response(body, {
+                status: res.statusCode ?? 0,
+                headers: { 'content-type': 'application/json' },
+              }),
+            );
+          });
+        },
+      );
+      req.on('error', reject);
+      req.end();
+    });
+    expect(r.status).toBe(400);
+  });
+
+  it('returns 401 without auth', async () => {
+    const { server, url } = await boot();
+    active = server;
+    await postCreate(url, 'gated');
+    const r = await fetch(`${url}/repos/gated`);
+    expect(r.status).toBe(401);
+  });
+
+  it('PUT on /repos/<id> returns 405 unsupported_method', async () => {
+    const { server, url } = await boot();
+    active = server;
+    await postCreate(url, 'put-test');
+    const r = await fetch(`${url}/repos/put-test`, {
+      method: 'PUT',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${TOKEN}`,
+      },
+      body: JSON.stringify({}),
+    });
+    expect(r.status).toBe(405);
   });
 });

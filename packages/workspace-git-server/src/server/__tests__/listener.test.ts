@@ -250,13 +250,14 @@ describe('git-server listener — Slice 1', () => {
     expect(r.status).toBe(201);
   });
 
-  it('GET /repos/abc (Slice 1) → 503 not_implemented', async () => {
+  it('GET /repos/abc routes to the get-repo handler (404 once Slice 3 lands)', async () => {
     const { server, url } = await boot();
     active = server;
     const r = await fetch(`${url}/repos/abc`, {
       headers: { authorization: `Bearer ${TOKEN}` },
     });
-    expect(r.status).toBe(503);
+    // Slice 3 wires this up; previously 503.
+    expect([404, 503]).toContain(r.status);
   });
 
   it('DELETE /repos/abc (Slice 1) → 503 not_implemented', async () => {

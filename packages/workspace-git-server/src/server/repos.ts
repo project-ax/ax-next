@@ -207,3 +207,64 @@ export async function handleCreateRepo(
     createdAt: new Date().toISOString(),
   });
 }
+
+// ---------------------------------------------------------------------------
+// GET /repos/<id> — Slice 3
+// ---------------------------------------------------------------------------
+
+export async function handleGetRepo(
+  workspaceId: string,
+  res: http.ServerResponse,
+  opts: { repoRoot: string },
+): Promise<void> {
+  // Listener already URL-regex-validated workspaceId (only matches the same
+  // class as WORKSPACE_ID_REGEX). Defense-in-depth: re-run validateWorkspaceId
+  // to keep handler-level invariant local and obvious.
+  try {
+    validateWorkspaceId(workspaceId);
+  } catch (err) {
+    if (err instanceof InvalidWorkspaceIdError) {
+      return writeError(res, 400, 'invalid_workspace_id', 'invalid workspaceId');
+    }
+    throw err;
+  }
+
+  let repoPath: string;
+  try {
+    repoPath = repoPathFor(opts.repoRoot, workspaceId);
+  } catch (err) {
+    process.stderr.write(
+      `workspace-git-server: repoPathFor escape on '${workspaceId}': ${(err as Error).message}\n`,
+    );
+    return writeError(res, 500, 'internal_error', 'internal server error');
+  }
+
+  if (!existsSync(repoPath)) {
+    return writeError(res, 404, 'workspace_not_found', 'workspace not found');
+  }
+
+  // rev-parse refs/heads/main. Empty stdout (or non-zero exit) -> headOid:null.
+  let result: SpawnResult;
+  try {
+    result = await runGit([
+      '-C',
+      repoPath,
+      'rev-parse',
+      '--quiet',
+      '--verify',
+      'refs/heads/main',
+    ]);
+  } catch (err) {
+    process.stderr.write(
+      `workspace-git-server: git rev-parse spawn failed: ${(err as Error).message}\n`,
+    );
+    return writeError(res, 500, 'internal_error', 'git rev-parse failed');
+  }
+
+  let headOid: string | null = null;
+  const out = result.stdout.trim();
+  if (result.code === 0 && out.length > 0) {
+    headOid = out;
+  }
+  return writeJson(res, 200, { workspaceId, exists: true, headOid });
+}
