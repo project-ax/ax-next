@@ -9,7 +9,7 @@ import {
   handleDeleteRepo,
   handleGetRepo,
 } from './repos.js';
-import { handleDiscovery } from './smart-http.js';
+import { handleDiscovery, handleUploadPack } from './smart-http.js';
 
 // ---------------------------------------------------------------------------
 // HTTP listener — TCP front for @ax/workspace-git-server.
@@ -478,6 +478,9 @@ async function dispatch(ctx: DispatchContext): Promise<void> {
         { repoRoot: ctx.opts.repoRoot },
       );
     case 'smart-http-upload-pack':
+      return handleUploadPack(ctx.match.workspaceId, ctx.req, ctx.res, {
+        repoRoot: ctx.opts.repoRoot,
+      });
     case 'smart-http-receive-pack':
     case 'unknown':
       return writeError(

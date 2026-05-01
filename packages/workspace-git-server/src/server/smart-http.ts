@@ -159,23 +159,18 @@ export async function handleDiscovery(
     return writeError(res, 500, 'internal_error', 'git spawn failed');
   }
 
-  // Buffer the child's stdout/stderr until we know the spawn succeeded; if it
-  // exits non-zero before any bytes are written we want to emit a 5xx, not
-  // half a 200 response.
-  let headersWritten = false;
-  let earlyError = false;
-
-  // Track stderr for diagnostics only; never echo into the response.
   child.stderr?.on('data', (chunk: Buffer) => {
     process.stderr.write(`[git ${subcmd}] ${chunk.toString('utf8')}`);
   });
+
+  let headersWritten = false;
 
   child.on('error', (err) => {
     process.stderr.write(
       `workspace-git-server: git ${subcmd} child error: ${err.message}\n`,
     );
     if (!headersWritten && !res.headersSent) {
-      earlyError = true;
+      headersWritten = true;
       writeError(res, 500, 'internal_error', 'git process error');
     } else if (!res.writableEnded) {
       try {
@@ -186,51 +181,29 @@ export async function handleDiscovery(
     }
   });
 
-  // We commit to a 200 + preamble as soon as the child produces ANY stdout
-  // bytes. Until then, an exit with non-zero code can still emit a 5xx.
-  const onFirstData = (firstChunk: Buffer): void => {
-    if (earlyError || res.headersSent) return;
-    res.writeHead(200, {
-      'Content-Type': advertisementCt,
-      'Cache-Control': 'no-cache, no-store, must-revalidate',
-    });
-    headersWritten = true;
-    // Pkt-line preamble: "# service=<service>\n" wrapped + flush packet.
-    const msg = `# service=${service}\n`;
-    res.write(pktLineLengthPrefix(msg) + msg);
-    res.write('0000');
-    res.write(firstChunk);
-  };
-
-  child.stdout?.once('data', onFirstData);
-  child.stdout?.on('data', (chunk: Buffer) => {
-    if (!headersWritten) return; // first-data handler will write
-    if (res.writableEnded) return;
-    res.write(chunk);
+  // Commit to a 200 + write the pkt-line preamble immediately, then pipe
+  // git stdout into the response. v1 takes the same shape (http-server.js
+  // :119-130). Deferring headers until first byte introduced an
+  // ordering hazard between `once('data')` and `on('data')` that
+  // duplicated the first chunk on the wire.
+  res.writeHead(200, {
+    'Content-Type': advertisementCt,
+    'Cache-Control': 'no-cache, no-store, must-revalidate',
   });
+  headersWritten = true;
+  const msg = `# service=${service}\n`;
+  res.write(pktLineLengthPrefix(msg) + msg);
+  res.write('0000');
+
+  child.stdout!.pipe(res);
 
   child.on('close', (code) => {
-    if (earlyError) return;
-    if (!headersWritten) {
-      // Never produced any bytes. If exit is zero, write an empty-but-valid
-      // advertisement (preamble + flush, no refs after); if non-zero, 500.
-      if (code === 0) {
-        res.writeHead(200, {
-          'Content-Type': advertisementCt,
-          'Cache-Control': 'no-cache, no-store, must-revalidate',
-        });
-        const msg = `# service=${service}\n`;
-        res.write(pktLineLengthPrefix(msg) + msg);
-        res.write('0000');
-        res.end();
-      } else {
-        writeError(res, 500, 'internal_error', 'git process failed');
-      }
-      return;
+    if (code !== 0) {
+      process.stderr.write(
+        `workspace-git-server: git ${subcmd} exited ${code}\n`,
+      );
     }
-    if (!res.writableEnded) {
-      res.end();
-    }
+    // res.end() is driven by stdout pipe close.
   });
 
   // Client disconnect: kill the child so we don't leak.
@@ -243,4 +216,139 @@ export async function handleDiscovery(
       }
     }
   });
+}
+
+// ---- Pack exchange (Slice 2 + Slice 3) -----------------------------------
+
+/**
+ * Shared implementation for upload-pack and receive-pack POST routes. Pipes
+ * `req` body → git stdin, git stdout → response. The bare repo's locked-down
+ * config (set at POST /repos time) enforces server-side policy; nothing per
+ * spawn beyond `protocol.allow=never` + `safe.directory`.
+ */
+async function handlePackExchange(
+  workspaceId: string,
+  subcmd: 'upload-pack' | 'receive-pack',
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  opts: { repoRoot: string },
+): Promise<void> {
+  const resolved = resolveRepo(workspaceId, res, opts);
+  if (!resolved.ok) return;
+  const { repoPath } = resolved;
+
+  const service = `git-${subcmd}`;
+  const resultCt = `application/x-${service}-result`;
+
+  let child: ChildProcess;
+  try {
+    child = spawnGit(
+      [
+        '-c',
+        'protocol.allow=never',
+        '-c',
+        `safe.directory=${repoPath}`,
+        subcmd,
+        '--stateless-rpc',
+        repoPath,
+      ],
+      ['pipe', 'pipe', 'pipe'],
+    );
+  } catch (err) {
+    process.stderr.write(
+      `workspace-git-server: git ${subcmd} spawn failed: ${(err as Error).message}\n`,
+    );
+    return writeError(res, 500, 'internal_error', 'git spawn failed');
+  }
+
+  child.stderr?.on('data', (chunk: Buffer) => {
+    process.stderr.write(`[git ${subcmd}] ${chunk.toString('utf8')}`);
+  });
+
+  // EPIPE on git stdin: log + ignore (mirrors v1 http-server.js:107-109).
+  // Happens when git exits before reading the entire request body.
+  child.stdin?.on('error', (err) => {
+    if ((err as NodeJS.ErrnoException).code !== 'EPIPE') {
+      process.stderr.write(
+        `workspace-git-server: git ${subcmd} stdin error: ${err.message}\n`,
+      );
+    }
+  });
+
+  // Track whether we've already emitted a 5xx for an early error. After
+  // headersWritten is true, we can't change the status anymore — best we can
+  // do is end the response.
+  let headersWritten = false;
+
+  child.on('error', (err) => {
+    process.stderr.write(
+      `workspace-git-server: git ${subcmd} child error: ${err.message}\n`,
+    );
+    if (!headersWritten && !res.headersSent) {
+      headersWritten = true;
+      writeError(res, 500, 'internal_error', 'git process error');
+    } else if (!res.writableEnded) {
+      try {
+        res.end();
+      } catch {
+        /* best-effort */
+      }
+    }
+  });
+
+  req.on('error', (err) => {
+    process.stderr.write(
+      `workspace-git-server: request stream error: ${err.message}\n`,
+    );
+    try {
+      child.stdin?.destroy();
+    } catch {
+      /* best-effort */
+    }
+  });
+
+  // Commit to a 200 response immediately. Pack exchange virtually always
+  // produces output; deferring headers until first byte adds buffering
+  // complexity that interleaves badly with stream piping (and seems to be
+  // the cause of "expected ACK/NAK" wire errors). v1 takes the same shape.
+  res.writeHead(200, {
+    'Content-Type': resultCt,
+    'Cache-Control': 'no-cache',
+  });
+  headersWritten = true;
+
+  // Stream req body → git stdin, git stdout → res. pipe() handles backpressure.
+  req.pipe(child.stdin!);
+  child.stdout!.pipe(res);
+
+  child.on('close', (code) => {
+    if (code !== 0) {
+      // Already streamed 200 (pack exchange wrote bytes) or about to end with
+      // empty stream — either way, log the non-zero exit. Can't change status
+      // retroactively.
+      process.stderr.write(
+        `workspace-git-server: git ${subcmd} exited ${code}\n`,
+      );
+    }
+    // res.end() is driven by the stdout-pipe close.
+  });
+
+  res.once('close', () => {
+    if (child.exitCode === null && child.signalCode === null) {
+      try {
+        child.kill();
+      } catch {
+        /* best-effort */
+      }
+    }
+  });
+}
+
+export async function handleUploadPack(
+  workspaceId: string,
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  opts: { repoRoot: string },
+): Promise<void> {
+  return handlePackExchange(workspaceId, 'upload-pack', req, res, opts);
 }

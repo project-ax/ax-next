@@ -240,3 +240,82 @@ describe('GET /<id>.git/info/refs (smart-HTTP discovery)', () => {
     expect(r.status).toBe(401);
   });
 });
+
+// --- Slice 2: upload-pack (clone / fetch) ---------------------------------
+
+describe('POST /<id>.git/git-upload-pack', () => {
+  it('cloning a seeded repo via the server returns the file content', async () => {
+    const { server, url, repoRoot } = await boot();
+    active = server;
+    await createRepo(url, 'wsclone1');
+    await seedCommitDirect(
+      join(repoRoot, 'wsclone1.git'),
+      'hello.txt',
+      'hi from server\n',
+    );
+
+    // Clone over HTTP via the listener. http.extraHeader lets `git` send the
+    // bearer token; the listener gates on it.
+    const cloneDir = mkdtempSync(join(tmpdir(), 'ax-wgs-clone-'));
+    const clone = await runGit(
+      [
+        '-c',
+        `http.extraHeader=Authorization: Bearer ${TOKEN}`,
+        'clone',
+        `${url}/wsclone1.git`,
+        cloneDir,
+      ],
+      { env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } },
+    );
+    if (clone.code !== 0) {
+      throw new Error(`clone failed: ${clone.stderr}`);
+    }
+    const { readFileSync } = await import('node:fs');
+    expect(readFileSync(join(cloneDir, 'hello.txt'), 'utf8')).toBe(
+      'hi from server\n',
+    );
+  });
+
+  it('returns 401 without auth', async () => {
+    const { server, url } = await boot();
+    active = server;
+    await createRepo(url, 'wsclone2');
+    const r = await fetch(`${url}/wsclone2.git/git-upload-pack`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-git-upload-pack-request' },
+      body: '',
+    });
+    expect(r.status).toBe(401);
+  });
+
+  it('returns 415 on application/json content-type (smart-HTTP route requires git wire CT)', async () => {
+    const { server, url } = await boot();
+    active = server;
+    await createRepo(url, 'wsclone3');
+    const r = await fetch(`${url}/wsclone3.git/git-upload-pack`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${TOKEN}`,
+      },
+      body: JSON.stringify({}),
+    });
+    expect(r.status).toBe(415);
+  });
+
+  it('returns 404 on nonexistent workspaceId', async () => {
+    const { server, url } = await boot();
+    active = server;
+    const r = await fetch(`${url}/never-existed.git/git-upload-pack`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/x-git-upload-pack-request',
+        authorization: `Bearer ${TOKEN}`,
+      },
+      body: '',
+    });
+    expect(r.status).toBe(404);
+    const body = await r.json();
+    expect(body.error).toBe('workspace_not_found');
+  });
+});
