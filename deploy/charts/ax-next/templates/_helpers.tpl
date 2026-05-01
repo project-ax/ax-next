@@ -81,6 +81,16 @@ Container image string for the host/runner pod.
 {{- end }}
 
 {{/*
+Storage-tier image (Phase 1 of workspace redesign) — separate from
+host/runner image because the storage tier ships with the git binary.
+*/}}
+{{- define "ax-next.gitServerImage" -}}
+{{- $repo := .Values.gitServerImage.repository -}}
+{{- $tag := .Values.gitServerImage.tag | default .Chart.AppVersion -}}
+{{- printf "%s:%s" $repo $tag -}}
+{{- end }}
+
+{{/*
 Host-component name. ax-next.fullname truncates to 63 chars; appending
 "-host" can push the label past the DNS limit for long release names.
 This helper produces the truncated, DNS-safe host name and is the source
