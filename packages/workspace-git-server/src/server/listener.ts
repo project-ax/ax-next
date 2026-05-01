@@ -3,7 +3,11 @@ import { checkBearerToken } from './auth.js';
 // repos.ts imports back from this module for writeError / writeJson; keep
 // the import below the helpers' definitions to avoid TDZ on the named exports.
 // (ESM bindings are live, but the function-level call is what matters.)
-import { handleCreateRepo, handleGetRepo } from './repos.js';
+import {
+  handleCreateRepo,
+  handleDeleteRepo,
+  handleGetRepo,
+} from './repos.js';
 
 // ---------------------------------------------------------------------------
 // HTTP listener — TCP front for @ax/workspace-git-server.
@@ -411,6 +415,10 @@ async function dispatch(ctx: DispatchContext): Promise<void> {
       return handleGetRepo(ctx.match.workspaceId, ctx.res, {
         repoRoot: ctx.opts.repoRoot,
       });
+    case 'delete-repo':
+      return handleDeleteRepo(ctx.match.workspaceId, ctx.res, {
+        repoRoot: ctx.opts.repoRoot,
+      });
     case 'invalid-repo-id':
       return writeError(
         ctx.res,
@@ -418,7 +426,6 @@ async function dispatch(ctx: DispatchContext): Promise<void> {
         'invalid_workspace_id',
         'invalid workspaceId',
       );
-    case 'delete-repo':
     case 'smart-http-discovery':
     case 'smart-http-upload-pack':
     case 'smart-http-receive-pack':

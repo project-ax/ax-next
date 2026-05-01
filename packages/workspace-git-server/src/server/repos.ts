@@ -268,3 +268,40 @@ export async function handleGetRepo(
   }
   return writeJson(res, 200, { workspaceId, exists: true, headOid });
 }
+
+// ---------------------------------------------------------------------------
+// DELETE /repos/<id> — Slice 4
+// ---------------------------------------------------------------------------
+
+export async function handleDeleteRepo(
+  workspaceId: string,
+  res: http.ServerResponse,
+  opts: { repoRoot: string },
+): Promise<void> {
+  // Defense-in-depth re-validation (URL regex already enforced).
+  try {
+    validateWorkspaceId(workspaceId);
+  } catch (err) {
+    if (err instanceof InvalidWorkspaceIdError) {
+      return writeError(res, 400, 'invalid_workspace_id', 'invalid workspaceId');
+    }
+    throw err;
+  }
+
+  let repoPath: string;
+  try {
+    repoPath = repoPathFor(opts.repoRoot, workspaceId);
+  } catch (err) {
+    process.stderr.write(
+      `workspace-git-server: repoPathFor escape on '${workspaceId}': ${(err as Error).message}\n`,
+    );
+    return writeError(res, 500, 'internal_error', 'internal server error');
+  }
+
+  // Idempotent: 204 whether or not the path existed. force:true ignores ENOENT.
+  await rm(repoPath, { recursive: true, force: true });
+
+  if (res.headersSent || res.writableEnded) return;
+  res.writeHead(204);
+  res.end();
+}

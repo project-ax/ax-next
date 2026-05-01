@@ -260,14 +260,15 @@ describe('git-server listener — Slice 1', () => {
     expect([404, 503]).toContain(r.status);
   });
 
-  it('DELETE /repos/abc (Slice 1) → 503 not_implemented', async () => {
+  it('DELETE /repos/abc routes to delete-repo handler (204 once Slice 4 lands)', async () => {
     const { server, url } = await boot();
     active = server;
     const r = await fetch(`${url}/repos/abc`, {
       method: 'DELETE',
       headers: { authorization: `Bearer ${TOKEN}` },
     });
-    expect(r.status).toBe(503);
+    // Slice 4 wires this up; previously 503.
+    expect([204, 503]).toContain(r.status);
   });
 
   it('GET /abc.git/info/refs?service=git-upload-pack (Slice 1) → 503 not_implemented', async () => {

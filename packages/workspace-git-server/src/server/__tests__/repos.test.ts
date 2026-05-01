@@ -553,3 +553,80 @@ describe('GET /repos/<id>', () => {
     expect(r.status).toBe(405);
   });
 });
+
+describe('DELETE /repos/<id>', () => {
+  async function postCreate(
+    url: string,
+    workspaceId: string,
+  ): Promise<Response> {
+    return fetch(`${url}/repos`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${TOKEN}`,
+      },
+      body: JSON.stringify({ workspaceId }),
+    });
+  }
+
+  it('removes an existing repo and returns 204 with empty body', async () => {
+    const { server, url, repoRoot } = await boot();
+    active = server;
+    await postCreate(url, 'doomed');
+    expect(existsSync(join(repoRoot, 'doomed.git'))).toBe(true);
+
+    const r = await fetch(`${url}/repos/doomed`, {
+      method: 'DELETE',
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    expect(r.status).toBe(204);
+    const text = await r.text();
+    expect(text).toBe('');
+    expect(existsSync(join(repoRoot, 'doomed.git'))).toBe(false);
+  });
+
+  it('is idempotent — DELETE on nonexistent returns 204', async () => {
+    const { server, url } = await boot();
+    active = server;
+    const r = await fetch(`${url}/repos/never-existed`, {
+      method: 'DELETE',
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    expect(r.status).toBe(204);
+  });
+
+  it('DELETE then re-POST recreates the repo', async () => {
+    const { server, url, repoRoot } = await boot();
+    active = server;
+    const r1 = await postCreate(url, 'recycled');
+    expect(r1.status).toBe(201);
+    const d = await fetch(`${url}/repos/recycled`, {
+      method: 'DELETE',
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    expect(d.status).toBe(204);
+    const r2 = await postCreate(url, 'recycled');
+    expect(r2.status).toBe(201);
+    expect(existsSync(join(repoRoot, 'recycled.git'))).toBe(true);
+  });
+
+  it('rejects bad id in URL with 400', async () => {
+    const { server, url } = await boot();
+    active = server;
+    const r = await fetch(`${url}/repos/Foo`, {
+      method: 'DELETE',
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    expect(r.status).toBe(400);
+    const body = await r.json();
+    expect(body.error).toBe('invalid_workspace_id');
+  });
+
+  it('returns 401 without auth (no body leak)', async () => {
+    const { server, url } = await boot();
+    active = server;
+    await postCreate(url, 'auth-gated');
+    const r = await fetch(`${url}/repos/auth-gated`, { method: 'DELETE' });
+    expect(r.status).toBe(401);
+  });
+});
