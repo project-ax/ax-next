@@ -271,17 +271,21 @@ describe('git-server listener — Slice 1', () => {
     expect([204, 503]).toContain(r.status);
   });
 
-  it('GET /abc.git/info/refs?service=git-upload-pack (Slice 1) → 503 not_implemented', async () => {
+  it('GET /abc.git/info/refs?service=git-upload-pack routes to discovery (404 for unknown repo)', async () => {
+    // B3 Slice 1 wires discovery. With no repo created, expect 404.
     const { server, url } = await boot();
     active = server;
     const r = await fetch(
       `${url}/abc.git/info/refs?service=git-upload-pack`,
       { headers: { authorization: `Bearer ${TOKEN}` } },
     );
-    expect(r.status).toBe(503);
+    expect(r.status).toBe(404);
   });
 
-  it('POST /abc.git/git-upload-pack (Slice 1) → 503 not_implemented', async () => {
+  it('POST /abc.git/git-upload-pack with JSON content-type → 415 (smart-HTTP route requires git wire CT)', async () => {
+    // B3: smart-HTTP POST routes accept only application/x-git-*-request,
+    // never application/json. Slice 2 wires the body; Slice 1 still 503s when
+    // the CT is correct (until Slice 2 lands).
     const { server, url } = await boot();
     active = server;
     const r = await fetch(`${url}/abc.git/git-upload-pack`, {
@@ -292,10 +296,10 @@ describe('git-server listener — Slice 1', () => {
       },
       body: JSON.stringify({}),
     });
-    expect(r.status).toBe(503);
+    expect(r.status).toBe(415);
   });
 
-  it('POST /abc.git/git-receive-pack (Slice 1) → 503 not_implemented', async () => {
+  it('POST /abc.git/git-receive-pack with JSON content-type → 415 (smart-HTTP route requires git wire CT)', async () => {
     const { server, url } = await boot();
     active = server;
     const r = await fetch(`${url}/abc.git/git-receive-pack`, {
@@ -306,7 +310,7 @@ describe('git-server listener — Slice 1', () => {
       },
       body: JSON.stringify({}),
     });
-    expect(r.status).toBe(503);
+    expect(r.status).toBe(415);
   });
 
   it('GET on a totally unknown path returns 503 not_implemented (Slice 1 stub)', async () => {

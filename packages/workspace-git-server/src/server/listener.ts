@@ -1,13 +1,15 @@
 import * as http from 'node:http';
 import { checkBearerToken } from './auth.js';
-// repos.ts imports back from this module for writeError / writeJson; keep
-// the import below the helpers' definitions to avoid TDZ on the named exports.
-// (ESM bindings are live, but the function-level call is what matters.)
+// repos.ts and smart-http.ts both import back from this module for
+// writeError / writeJson; keep their imports below the helpers' definitions
+// to avoid TDZ on the named exports. (ESM bindings are live, but the
+// function-level call is what matters.)
 import {
   handleCreateRepo,
   handleDeleteRepo,
   handleGetRepo,
 } from './repos.js';
+import { handleDiscovery } from './smart-http.js';
 
 // ---------------------------------------------------------------------------
 // HTTP listener — TCP front for @ax/workspace-git-server.
@@ -269,13 +271,46 @@ export async function readJsonBody(
   });
 }
 
+// ---- Per-route gate behavior --------------------------------------------
+
+/**
+ * Allowed content-type prefixes for POST on this matched route. Smart-HTTP
+ * POST routes carry git wire content-types, never application/json. /repos
+ * POST and unknown-but-POST routes require JSON so a bogus body can't sneak
+ * past the gate.
+ */
+function allowedPostContentTypes(match: RouteMatch): readonly string[] {
+  switch (match.kind) {
+    case 'smart-http-upload-pack':
+      return ['application/x-git-upload-pack-request'];
+    case 'smart-http-receive-pack':
+      return ['application/x-git-receive-pack-request'];
+    default:
+      return ['application/json'];
+  }
+}
+
+/**
+ * Does this route consume a parsed JSON body? Smart-HTTP routes do NOT — they
+ * stream the raw request body into git stdin.
+ */
+function routeUsesJsonBody(match: RouteMatch): boolean {
+  switch (match.kind) {
+    case 'smart-http-upload-pack':
+    case 'smart-http-receive-pack':
+      return false;
+    default:
+      return true;
+  }
+}
+
 // ---- Listener ------------------------------------------------------------
 
 interface DispatchContext {
   match: RouteMatch;
   req: http.IncomingMessage;
   res: http.ServerResponse;
-  body: unknown; // already parsed for POST routes
+  body: unknown; // already parsed for JSON POST routes; undefined for smart-HTTP
   opts: CreateWorkspaceGitServerOptions;
 }
 
@@ -318,15 +353,21 @@ export async function createWorkspaceGitServer(
       return writeJson(res, 200, { status: 'ok' });
     }
 
-    // 3. content-type gate (POST only)
+    // 3. content-type gate (POST only) — route-aware. /repos requires
+    //    application/json; smart-HTTP POST routes require their own git wire
+    //    content-type. Other POSTs (unknown / invalid id) require JSON so a
+    //    bogus body can't sneak past.
     if (method === 'POST') {
       const ct = (req.headers['content-type'] ?? '').toLowerCase();
-      if (!ct.startsWith('application/json')) {
+      const allowed = allowedPostContentTypes(match);
+      if (!allowed.some((prefix) => ct.startsWith(prefix))) {
         return writeError(
           res,
           415,
           'unsupported_content_type',
-          'content-type must be application/json',
+          allowed.length === 1 && allowed[0] === 'application/json'
+            ? 'content-type must be application/json'
+            : 'unsupported content-type for this route',
         );
       }
     }
@@ -337,9 +378,12 @@ export async function createWorkspaceGitServer(
       return writeError(res, authResult.status, 'unauthorized', authResult.message);
     }
 
-    // 5. body parse (POST only)
+    // 5. body parse — JSON-only routes (POST /repos and other JSON POSTs).
+    //    Smart-HTTP routes skip the JSON parser entirely and stream the raw
+    //    request body straight into git stdin; their body size is bounded by
+    //    git itself and the pod's resource limits, NOT the 1 MiB JSON cap.
     let body: unknown = undefined;
-    if (method === 'POST') {
+    if (method === 'POST' && routeUsesJsonBody(match)) {
       try {
         body = await readJsonBody(req, BODY_LIMIT_BYTES);
       } catch (err) {
@@ -427,6 +471,12 @@ async function dispatch(ctx: DispatchContext): Promise<void> {
         'invalid workspaceId',
       );
     case 'smart-http-discovery':
+      return handleDiscovery(
+        ctx.match.workspaceId,
+        ctx.match.service,
+        ctx.res,
+        { repoRoot: ctx.opts.repoRoot },
+      );
     case 'smart-http-upload-pack':
     case 'smart-http-receive-pack':
     case 'unknown':
