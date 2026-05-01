@@ -35,8 +35,8 @@ type K8sDoc = {
   apiVersion?: string;
   kind?: string;
   metadata?: { name?: string; labels?: Record<string, string>; annotations?: Record<string, string> };
-  spec?: any;
-} & Record<string, any>;
+  spec?: Record<string, unknown>;
+} & Record<string, unknown>;
 
 /** Detect helm at module load. Returns null if absent. */
 function findHelm(): string | null {
@@ -86,7 +86,6 @@ function helmTemplateExpectFailure(extraArgs: readonly string[]): {
 const describeIfHelm = HELM ? describe : describe.skip;
 
 if (!HELM) {
-  // eslint-disable-next-line no-console
   console.warn(
     'helm CLI not available; chart-render tests skipped — run with helm in PATH for full coverage',
   );
@@ -216,8 +215,11 @@ describeIfHelm('ax-next chart: experimental sharded git-server', () => {
     // Container env contains the four storage-tier-specific keys, with the
     // shard index sourced from the downward API.
     const container = sts?.spec?.template?.spec?.containers?.[0];
-    const env: Array<{ name: string; value?: string; valueFrom?: any }> =
-      container?.env ?? [];
+    const env: Array<{
+      name: string;
+      value?: string;
+      valueFrom?: { fieldRef?: { fieldPath?: string } } | Record<string, unknown>;
+    }> = container?.env ?? [];
     const envByName = Object.fromEntries(env.map((e) => [e.name, e]));
     expect(envByName.AX_GIT_SERVER_TOKEN).toBeDefined();
     expect(envByName.AX_GIT_SERVER_REPO_ROOT?.value).toBe('/var/lib/ax-next/repo');

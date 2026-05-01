@@ -33,7 +33,6 @@ import {
   type WorkspaceListOutput,
   type WorkspaceReadInput,
   type WorkspaceReadOutput,
-  type WorkspaceVersion,
 } from '@ax/core';
 import { createRepoLifecycleClient } from './repo-lifecycle.js';
 
