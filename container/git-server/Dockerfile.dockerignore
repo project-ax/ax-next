@@ -1,0 +1,44 @@
+# Keep build context tight. pnpm-lock.yaml + each package's package.json are
+# REQUIRED for `pnpm deploy` to walk workspace:* edges, so don't exclude them.
+# Everything below is either reproducible from source or test-only.
+
+# Build outputs (rebuilt inside the builder stage)
+**/dist
+**/.turbo
+**/tsconfig.tsbuildinfo
+
+# Node modules — re-resolved in the builder stage from the lockfile
+**/node_modules
+
+# Tests + fixtures — runtime image doesn't need them. We DO keep the
+# `packages/test-harness` workspace package (it's a devDependency of
+# workspace-git-server and pnpm needs to see its package.json to resolve the
+# workspace graph, even though `pnpm deploy --prod` won't copy it into the
+# final tree).
+**/__tests__
+**/*.test.ts
+**/*.test.tsx
+
+# Local-dev / IDE noise
+.git
+.github
+.vscode
+.idea
+.DS_Store
+*.log
+
+# Top-level scratch artifacts the dev session leaves behind. None of these
+# belong in the build context for a container image.
+*.png
+*.zip
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+.playwright-mcp
+.agents
+landing
+design_handoff_tide
+
+# Container-side files that are NOT this Dockerfile's concern
+container/runner
+container/host

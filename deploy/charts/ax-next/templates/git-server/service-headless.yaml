@@ -1,0 +1,31 @@
+{{- if and .Values.gitServer.enabled .Values.gitServer.experimental.gitProtocol }}
+{{/*
+Headless Service for the experimental sharded git-server StatefulSet.
+
+`clusterIP: None` makes per-pod DNS records (`<sts>-0.<svc>.<ns>.svc...`)
+the addressing primitive — the host-side shard router resolves
+workspaceId → shard ordinal → that pod's stable DNS name. This is exactly
+what StatefulSet headless Services are for, and the reason we picked STS
+over Deployment for the storage tier in the first place.
+
+Deliberately distinct from the legacy ClusterIP Service (which fronts the
+single-replica Deployment); both render side-by-side during the canary.
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ax-next.gitServerExperimentalComponentName" . }}-headless
+  namespace: {{ include "ax-next.hostNamespace" . }}
+  labels:
+    {{- include "ax-next.componentLabels" (dict "component" "git-server-experimental" "context" $) | nindent 4 }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    {{- include "ax-next.selectorLabels" (dict "component" "git-server-experimental" "context" $) | nindent 4 }}
+  ports:
+    - name: git
+      port: {{ .Values.gitServer.service.port }}
+      targetPort: git
+      protocol: TCP
+{{- end }}

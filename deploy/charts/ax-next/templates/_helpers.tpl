@@ -81,6 +81,16 @@ Container image string for the host/runner pod.
 {{- end }}
 
 {{/*
+Storage-tier image (Phase 1 of workspace redesign) — separate from
+host/runner image because the storage tier ships with the git binary.
+*/}}
+{{- define "ax-next.gitServerImage" -}}
+{{- $repo := .Values.gitServerImage.repository -}}
+{{- $tag := .Values.gitServerImage.tag | default .Chart.AppVersion -}}
+{{- printf "%s:%s" $repo $tag -}}
+{{- end }}
+
+{{/*
 Host-component name. ax-next.fullname truncates to 63 chars; appending
 "-host" can push the label past the DNS limit for long release names.
 This helper produces the truncated, DNS-safe host name and is the source
@@ -128,4 +138,24 @@ Name of the Secret holding the git-server's bearer token.
 */}}
 {{- define "ax-next.gitServerAuthSecretName" -}}
 {{- printf "%s-git-server-auth" (include "ax-next.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{/*
+Experimental git-server (Phase 1 of workspace redesign) component name.
+<release>-<chart>-git-server-experimental, truncated to 63 chars (DNS
+label limit). DELIBERATELY distinct from ax-next.gitServerComponentName
+so the new StatefulSet/Service/NetworkPolicy can sit alongside the legacy
+Deployment/Service during the parallel-canary phase without colliding.
+
+CRUCIALLY, the suffix is reserved BEFORE the 63-char truncation. The
+naive "<fullname>-git-server-experimental | trunc 63" form would, on a
+sufficiently long release name, drop the "-experimental" part and
+collide with ax-next.gitServerComponentName — quietly aliasing the new
+StatefulSet onto the legacy Deployment's labels. Instead we truncate
+the base to 39 chars (63 - 24 for "-git-server-experimental") so the
+suffix is always preserved.
+*/}}
+{{- define "ax-next.gitServerExperimentalComponentName" -}}
+{{- $base := include "ax-next.fullname" . | trunc 39 | trimSuffix "-" -}}
+{{- printf "%s-git-server-experimental" $base | trunc 63 | trimSuffix "-" -}}
 {{- end -}}

@@ -19,6 +19,14 @@ image:
   pullPolicy: IfNotPresent
 imagePullSecrets: []
 
+# ─── Storage-tier image (Phase 1 of workspace redesign) ───
+# Separate image from host/runner because the storage tier ships with the
+# git binary; host/runner stay slim. Built from container/git-server/Dockerfile.
+gitServerImage:
+  repository: ax-next/git-server
+  tag: ""             # empty → Chart.appVersion
+  pullPolicy: IfNotPresent
+
 # ─── Replicas ─────────────────────────────────────────────────────
 # Single replica only this slice; HPA + multi-replica session affinity
 # arrive in a follow-up PR.
@@ -84,6 +92,18 @@ workspace:
 # introduce the multi-writer race we're solving here. Not a knob.
 gitServer:
   enabled: false         # set true when workspace.backend == "http"
+  experimental:
+    # Toggle for the new sharded git-server tier (Phase 1 of the workspace
+    # redesign — see docs/plans/2026-05-01-workspace-redesign-design.md).
+    # When true AND gitServer.enabled=true, the chart renders a StatefulSet
+    # + headless Service + per-shard PVCs in addition to the legacy
+    # Deployment + ClusterIP. Production canary path; default OFF.
+    gitProtocol: false
+  # Number of storage-tier shards. Each shard is its own StatefulSet ordinal
+  # with its own PVC. Pick at install time; changing it later requires
+  # manual workspace migration (drain → rsync bare repos → flip traffic).
+  # Only consulted when experimental.gitProtocol=true.
+  shards: 1
   port: 7780
   service:
     port: 7780
@@ -105,7 +125,7 @@ gitServer:
       memory: 512Mi
   # Same image as host + runners — bundled-binary pattern.
   command: ["node", "/opt/ax-next/git-server/index.js"]
-  terminationGracePeriodSeconds: 30
+  terminationGracePeriodSeconds: 60   # bumped from 30 — gives in-flight pushes more time to drain
   readinessProbe:
     httpGet:
       path: /healthz
