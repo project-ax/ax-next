@@ -153,6 +153,9 @@ describe('withRetry — maxAttempts honored', () => {
     ]);
 
     const p = withRetry(fn, { maxAttempts: 3, backoffBaseMs: 100 });
+    // Attach a no-op handler synchronously so the rejection that lands
+    // mid-drain isn't reported as unhandled.
+    p.catch(() => undefined);
     await drain();
     await expect(p).rejects.toBe(final);
     expect(calls()).toBe(4);
