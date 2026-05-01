@@ -24,6 +24,7 @@
     { "path": "packages/workspace-git" },
     { "path": "packages/workspace-git-core" },
     { "path": "packages/workspace-git-http" },
+    { "path": "packages/workspace-git-server" },
     { "path": "packages/workspace-protocol" },
     { "path": "packages/database-postgres" },
     { "path": "packages/storage-postgres" },
