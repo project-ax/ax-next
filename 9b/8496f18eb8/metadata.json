@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "9b8496f18eb8",
+  "strategy": "manual-commit",
+  "branch": "feat/phase-e-runner-owned-sessions",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "packages/agent-claude-sdk-runner/src/__tests__/main.test.ts",
+    "packages/agent-claude-sdk-runner/src/main.ts",
+    "packages/ipc-core/src/handlers/__tests__/session-get-config.test.ts",
+    "packages/ipc-core/src/handlers/session-get-config.ts",
+    "packages/ipc-protocol/src/__tests__/schemas.test.ts",
+    "packages/ipc-protocol/src/actions.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/9b/8496f18eb8/0/metadata.json",
+      "transcript": "/9b/8496f18eb8/0/full.jsonl",
+      "content_hash": "/9b/8496f18eb8/0/content_hash.txt",
+      "prompt": "/9b/8496f18eb8/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 101,
+    "cache_creation_tokens": 360709,
+    "cache_read_tokens": 3906737,
+    "output_tokens": 24303,
+    "api_call_count": 48
+  }
+}

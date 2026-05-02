@@ -1,0 +1,84 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "9b8496f18eb8",
+  "session_id": "7625cfa8-ece1-4865-b35c-bae1d71734d5",
+  "strategy": "manual-commit",
+  "created_at": "2026-05-02T23:48:22.231672Z",
+  "branch": "feat/phase-e-runner-owned-sessions",
+  "checkpoints_count": 2,
+  "files_touched": [
+    "packages/agent-claude-sdk-runner/src/__tests__/main.test.ts",
+    "packages/agent-claude-sdk-runner/src/main.ts",
+    "packages/ipc-core/src/handlers/__tests__/session-get-config.test.ts",
+    "packages/ipc-core/src/handlers/session-get-config.ts",
+    "packages/ipc-protocol/src/__tests__/schemas.test.ts",
+    "packages/ipc-protocol/src/actions.ts"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "b92e67fa7325",
+  "token_usage": {
+    "input_tokens": 101,
+    "cache_creation_tokens": 360709,
+    "cache_read_tokens": 3906737,
+    "output_tokens": 24303,
+    "api_call_count": 48
+  },
+  "session_metrics": {
+    "turn_count": 3
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-05-02T23:48:22.16031Z",
+    "agent_lines": 0,
+    "agent_removed": 49,
+    "human_added": 0,
+    "human_modified": 215,
+    "human_removed": 35,
+    "total_committed": 23,
+    "total_lines_changed": 299,
+    "agent_percentage": 16.387959866220736,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 364,
+      "user_lines_removed": 14,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        "packages/ipc-core/src/handlers/__tests__/session-get-config.test.ts": 199,
+        "packages/ipc-core/src/handlers/session-get-config.ts": 89,
+        "packages/ipc-protocol/src/__tests__/schemas.test.ts": 52,
+        "packages/ipc-protocol/src/actions.ts": 24
+      },
+      "user_removed_per_file": {
+        "packages/ipc-core/src/handlers/__tests__/session-get-config.test.ts": 6,
+        "packages/ipc-core/src/handlers/session-get-config.ts": 7,
+        "packages/ipc-protocol/src/actions.ts": 1
+      }
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 215,
+      "user_lines_removed": 236,
+      "agent_lines_added": 364,
+      "agent_lines_removed": 14,
+      "user_added_per_file": {
+        "packages/agent-claude-sdk-runner/src/__tests__/main.test.ts": 171,
+        "packages/agent-claude-sdk-runner/src/main.ts": 44
+      },
+      "user_removed_per_file": {
+        "packages/agent-claude-sdk-runner/src/__tests__/main.test.ts": 122,
+        "packages/agent-claude-sdk-runner/src/main.ts": 114
+      }
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 602,
+      "agent_lines_removed": 299
+    }
+  ]
+}
