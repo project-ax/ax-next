@@ -11,8 +11,6 @@ import {
   type AgentContext,
   type FileChange,
   type Plugin,
-  type WorkspaceApplyInput,
-  type WorkspaceApplyOutput,
   type WorkspaceDelta,
   type WorkspaceVersion,
 } from '@ax/core';
