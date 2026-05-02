@@ -17,8 +17,6 @@ import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createHttpServerPlugin, type HttpServerPlugin } from '@ax/http-server';
 import { createConversationsPlugin } from '@ax/conversations';
 import type {
-  AppendTurnInput as ConvAppendTurnInput,
-  AppendTurnOutput as ConvAppendTurnOutput,
   CreateInput as ConvCreateInput,
   CreateOutput as ConvCreateOutput,
 } from '@ax/conversations';
@@ -651,25 +649,6 @@ describe('@ax/channel-web POST /api/chat/messages', () => {
 // ---------------------------------------------------------------------------
 // Helpers shared across the read+delete describes.
 // ---------------------------------------------------------------------------
-
-async function appendTurn(
-  harness: TestHarness,
-  conversationId: string,
-  userId: string,
-  role: 'user' | 'assistant' | 'tool',
-  contentBlocks: unknown[],
-): Promise<void> {
-  await harness.bus.call<ConvAppendTurnInput, ConvAppendTurnOutput>(
-    'conversations:append-turn',
-    harness.ctx({ userId }),
-    {
-      conversationId,
-      userId,
-      role,
-      contentBlocks: contentBlocks as ConvAppendTurnInput['contentBlocks'],
-    },
-  );
-}
 
 // Phase D: seed the workspace's runner-native jsonl path with synthetic
 // SDK lines so conversations:get can return turns. Pairs with

@@ -21,8 +21,15 @@
 //                           (@ax/ipc-server for unix sockets, @ax/ipc-http
 //                           for TCP). It is NOT a hook-bus plugin — no init,
 //                           no manifest — just a library of pure functions.
+//   @ax/agent-claude-sdk-runner-host
+//                         — pure-function jsonl→Turn[] parser library used
+//                           by the conversations plugin to source transcripts
+//                           from the workspace's runner-native format. No
+//                           manifest, no hooks, no kernel dependency — same
+//                           library-not-plugin shape as the other allow-listed
+//                           packages above.
 //
-// These last three are shared-import expansions of the kernel-only allowlist
+// These last four are shared-import expansions of the kernel-only allowlist
 // and form the documented one-way boundary between host-side plugins and
 // sandbox-side code.
 //
@@ -86,9 +93,10 @@ export default tseslint.config(
                 '!@ax/ipc-protocol',
                 '!@ax/workspace-protocol',
                 '!@ax/ipc-core',
+                '!@ax/agent-claude-sdk-runner-host',
               ],
               message:
-                'Cross-plugin imports are forbidden. Plugins communicate through the hook bus only. See CLAUDE.md invariant 2. The only @ax/* imports allowed in plugin code are @ax/core, @ax/test-harness, @ax/ipc-protocol + @ax/workspace-protocol (wire schemas), and @ax/ipc-core (transport-agnostic IPC library).',
+                'Cross-plugin imports are forbidden. Plugins communicate through the hook bus only. See CLAUDE.md invariant 2. The only @ax/* imports allowed in plugin code are @ax/core, @ax/test-harness, @ax/ipc-protocol + @ax/workspace-protocol (wire schemas), @ax/ipc-core (transport-agnostic IPC library), and @ax/agent-claude-sdk-runner-host (pure-function jsonl→Turn[] parser).',
             },
           ],
         },
