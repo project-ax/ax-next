@@ -63,6 +63,28 @@ export function buildPodSpec(
   input: BuildPodSpecInput,
   config: ResolvedSandboxK8sConfig,
 ): PodSpec {
+  // Phase 3: the sandbox now spawns the in-image `git` binary to materialize
+  // /permanent at session start and to bundle per-turn diffs at turn end.
+  // These env vars are the locked-down rails — they prevent git-init from
+  // reading user-global config, refuse interactive prompts, and pin commit
+  // author/committer to `ax-runner` so the host bundler can verify
+  // provenance before applying. See SECURITY.md for the threat-model walk.
+  //
+  // PATH is intentionally NOT pinned here: the sandbox image's ENTRYPOINT
+  // composes PATH (Node + git on the locked-down image), and overriding it
+  // from the pod-spec would force operators to know the image's bin layout.
+  // The image is the trust root for binary lookup (I5).
+  const gitParanoidEnv: EnvVar[] = [
+    { name: 'GIT_CONFIG_NOSYSTEM', value: '1' },
+    { name: 'GIT_CONFIG_GLOBAL', value: '/dev/null' },
+    { name: 'GIT_TERMINAL_PROMPT', value: '0' },
+    { name: 'HOME', value: '/nonexistent' },
+    { name: 'GIT_AUTHOR_NAME', value: 'ax-runner' },
+    { name: 'GIT_AUTHOR_EMAIL', value: 'ax-runner@example.com' },
+    { name: 'GIT_COMMITTER_NAME', value: 'ax-runner' },
+    { name: 'GIT_COMMITTER_EMAIL', value: 'ax-runner@example.com' },
+  ];
+
   const env: EnvVar[] = [
     { name: 'AX_SESSION_ID', value: input.sessionId },
     { name: 'AX_AUTH_TOKEN', value: input.authToken },
@@ -72,6 +94,7 @@ export function buildPodSpec(
     ...(input.requestId !== undefined
       ? [{ name: 'AX_REQUEST_ID', value: input.requestId }]
       : []),
+    ...gitParanoidEnv,
     ...Object.entries(input.extraEnv ?? {}).map(([name, value]) => ({
       name,
       value,
@@ -126,13 +149,21 @@ export function buildPodSpec(
         securityContext: containerSecurity,
         volumeMounts: [
           { name: 'tmp', mountPath: '/tmp' },
-          { name: 'workspace', mountPath: '/workspace' },
+          // Phase 3: split the legacy /workspace mount in two. /permanent
+          // is the git working tree (materialized at session start, the
+          // source of every per-turn bundle). /ephemeral is caches and
+          // scratch the runner doesn't want to round-trip through the
+          // host. Splitting them keeps the storage tier bounded and gives
+          // the runner an explicit "this won't survive" signal.
+          { name: 'permanent', mountPath: '/permanent' },
+          { name: 'ephemeral', mountPath: '/ephemeral' },
         ],
       },
     ],
     volumes: [
       { name: 'tmp', emptyDir: {} },
-      { name: 'workspace', emptyDir: {} },
+      { name: 'permanent', emptyDir: {} },
+      { name: 'ephemeral', emptyDir: {} },
     ],
   };
 

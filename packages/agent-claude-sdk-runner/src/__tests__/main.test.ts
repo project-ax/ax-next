@@ -80,6 +80,30 @@ vi.mock('../inbox-loop.js', async (importOriginal) => {
   };
 });
 
+// Phase 3: the runner now spawns `git` for session-start materialize +
+// turn-end commit/bundle/rollback. Mocking these out keeps these unit
+// tests fast, hermetic, and free of stderr noise from git ops failing
+// against the test's fake AX_WORKSPACE_ROOT (`/tmp/workspace`).
+//
+// The REAL git-workspace ops are exercised in `git-workspace.test.ts`
+// against real tempdirs + git binary; the workspace-commit-notify
+// handler tests cover the host-side bundler. This file focuses on
+// main.ts's control-flow shape (env → boot → SDK loop → events).
+const materializeMock = vi.fn().mockResolvedValue(undefined);
+const commitTurnAndBundleMock = vi.fn().mockResolvedValue(null);
+const advanceBaselineMock = vi.fn().mockResolvedValue(undefined);
+const rollbackToBaselineMock = vi.fn().mockResolvedValue(undefined);
+vi.mock('../git-workspace.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../git-workspace.js')>();
+  return {
+    ...actual,
+    materializeWorkspace: materializeMock,
+    commitTurnAndBundle: commitTurnAndBundleMock,
+    advanceBaseline: advanceBaselineMock,
+    rollbackToBaseline: rollbackToBaselineMock,
+  };
+});
+
 const COMPLETE_ENV = {
   AX_RUNNER_ENDPOINT: 'unix:///tmp/ax.sock',
   AX_SESSION_ID: 'sess-1',
@@ -234,6 +258,14 @@ const cancelEntry: InboxLoopEntry = { type: 'cancel' };
 
 beforeEach(() => {
   queryMock.mockReset();
+  materializeMock.mockReset();
+  materializeMock.mockResolvedValue(undefined);
+  commitTurnAndBundleMock.mockReset();
+  commitTurnAndBundleMock.mockResolvedValue(null);
+  advanceBaselineMock.mockReset();
+  advanceBaselineMock.mockResolvedValue(undefined);
+  rollbackToBaselineMock.mockReset();
+  rollbackToBaselineMock.mockResolvedValue(undefined);
   createIpcClientMock = vi.fn();
   createInboxLoopMock = vi.fn();
 });
@@ -260,6 +292,7 @@ describe('main()', () => {
           conversationId: null,
         };
       }
+      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
       if (action === 'workspace.commit-notify') {
         return { accepted: true, version: 'v1', delta: null };
@@ -294,10 +327,25 @@ describe('main()', () => {
 
     expect(rc).toBe(0);
 
-    // Two calls at boot: session.get-config + tool.list (Week 9.5).
-    expect(fakeClient.call).toHaveBeenCalledTimes(2);
+    // Three calls at boot: session.get-config + workspace.materialize +
+    // tool.list. Materialize is Phase 3; the runner clones (or inits)
+    // /permanent before the SDK query opens.
+    expect(fakeClient.call).toHaveBeenCalledTimes(3);
     expect(fakeClient.call).toHaveBeenCalledWith('session.get-config', {});
+    expect(fakeClient.call).toHaveBeenCalledWith('workspace.materialize', {});
     expect(fakeClient.call).toHaveBeenCalledWith('tool.list', {});
+    // Materialize must be called BEFORE tool.list so the workspace exists
+    // by the time the SDK query opens.
+    const callOrder = fakeClient.call.mock.calls.map((c) => c[0]);
+    expect(callOrder.indexOf('workspace.materialize')).toBeLessThan(
+      callOrder.indexOf('tool.list'),
+    );
+    // Materialize was actually invoked on the workspace root.
+    expect(materializeMock).toHaveBeenCalledTimes(1);
+    expect(materializeMock).toHaveBeenCalledWith({
+      root: '/tmp/workspace',
+      bundleBase64: '',
+    });
     // Empty turns (no file changes accumulated) skip commit-notify; the
     // event.turn-end below is the heartbeat the host keys off (Task 7c).
     const commitNotifies = fakeClient.call.mock.calls.filter(
@@ -390,6 +438,312 @@ describe('main()', () => {
     }
   });
 
+  it('Phase 3 turn end: bundle ships → commit-notify → host accepts → advance baseline', async () => {
+    // The new shape: at SDK `result`, runner calls commitTurnAndBundle.
+    // If non-null, runner ships workspace.commit-notify with bundleBytes.
+    // On host accept, runner advances baseline; on veto, runner rolls
+    // back. Fully replaces the legacy diff-accumulator path.
+    setEnv(COMPLETE_ENV);
+    commitTurnAndBundleMock.mockResolvedValueOnce('FAKE_BUNDLE_B64');
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u',
+          agentId: 'a',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          conversationId: null,
+        };
+      }
+      if (action === 'workspace.materialize') return { bundleBytes: 'B64' };
+      if (action === 'tool.list') return { tools: [] };
+      if (action === 'workspace.commit-notify') {
+        return { accepted: true, version: 'v-new', delta: null };
+      }
+      throw new Error(`unexpected: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
+    queryMock.mockImplementation(
+      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+        return (async function* () {
+          const it = prompt[Symbol.asyncIterator]();
+          await it.next();
+          yield assistantText('done');
+          yield resultSuccess();
+          await it.next();
+        })();
+      },
+    );
+
+    const { main } = await import('../main.js');
+    const rc = await main();
+    expect(rc).toBe(0);
+
+    // commit-notify was sent with bundleBytes from commitTurnAndBundle.
+    const commitCalls = fakeClient.call.mock.calls.filter(
+      (c) => c[0] === 'workspace.commit-notify',
+    );
+    expect(commitCalls).toHaveLength(1);
+    expect(commitCalls[0]?.[1]).toEqual({
+      parentVersion: null,
+      reason: 'turn',
+      bundleBytes: 'FAKE_BUNDLE_B64',
+    });
+    // advanceBaseline called on accept.
+    expect(advanceBaselineMock).toHaveBeenCalledTimes(1);
+    expect(rollbackToBaselineMock).not.toHaveBeenCalled();
+  });
+
+  it('Phase 3 turn end: empty turn (commitTurnAndBundle returns null) → no commit-notify', async () => {
+    setEnv(COMPLETE_ENV);
+    // Default mock returns null — empty turn.
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u',
+          agentId: 'a',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          conversationId: null,
+        };
+      }
+      if (action === 'workspace.materialize') return { bundleBytes: 'B64' };
+      if (action === 'tool.list') return { tools: [] };
+      throw new Error(`unexpected: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
+    queryMock.mockImplementation(
+      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+        return (async function* () {
+          const it = prompt[Symbol.asyncIterator]();
+          await it.next();
+          yield assistantText('done');
+          yield resultSuccess();
+          await it.next();
+        })();
+      },
+    );
+    const { main } = await import('../main.js');
+    expect(await main()).toBe(0);
+    const commitCalls = fakeClient.call.mock.calls.filter(
+      (c) => c[0] === 'workspace.commit-notify',
+    );
+    expect(commitCalls).toHaveLength(0);
+    expect(advanceBaselineMock).not.toHaveBeenCalled();
+    expect(rollbackToBaselineMock).not.toHaveBeenCalled();
+  });
+
+  it('Phase 3 turn end: host vetoes → rollback called, baseline NOT advanced', async () => {
+    setEnv(COMPLETE_ENV);
+    commitTurnAndBundleMock.mockResolvedValueOnce('BUNDLE_VETO');
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u',
+          agentId: 'a',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          conversationId: null,
+        };
+      }
+      if (action === 'workspace.materialize') return { bundleBytes: 'B64' };
+      if (action === 'tool.list') return { tools: [] };
+      if (action === 'workspace.commit-notify') {
+        return { accepted: false, reason: 'policy violation' };
+      }
+      throw new Error(`unexpected: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
+    const stderrSpy = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation(() => true);
+    queryMock.mockImplementation(
+      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+        return (async function* () {
+          const it = prompt[Symbol.asyncIterator]();
+          await it.next();
+          yield assistantText('done');
+          yield resultSuccess();
+          await it.next();
+        })();
+      },
+    );
+    try {
+      const { main } = await import('../main.js');
+      expect(await main()).toBe(0);
+      expect(rollbackToBaselineMock).toHaveBeenCalledTimes(1);
+      expect(advanceBaselineMock).not.toHaveBeenCalled();
+      const stderrText = stderrSpy.mock.calls.map((c) => String(c[0])).join('');
+      expect(stderrText).toContain('policy violation');
+    } finally {
+      stderrSpy.mockRestore();
+    }
+  });
+
+  it('Phase 3 turn end: commit-notify IPC error → preserve working tree (no rollback, no advance)', async () => {
+    setEnv(COMPLETE_ENV);
+    commitTurnAndBundleMock.mockResolvedValueOnce('BUNDLE_NETERR');
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u',
+          agentId: 'a',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          conversationId: null,
+        };
+      }
+      if (action === 'workspace.materialize') return { bundleBytes: 'B64' };
+      if (action === 'tool.list') return { tools: [] };
+      if (action === 'workspace.commit-notify') {
+        throw new Error('connect ECONNREFUSED');
+      }
+      throw new Error(`unexpected: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
+    const stderrSpy = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation(() => true);
+    queryMock.mockImplementation(
+      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+        return (async function* () {
+          const it = prompt[Symbol.asyncIterator]();
+          await it.next();
+          yield assistantText('done');
+          yield resultSuccess();
+          await it.next();
+        })();
+      },
+    );
+    try {
+      const { main } = await import('../main.js');
+      expect(await main()).toBe(0);
+      // Network error: no rollback (preserve tree), no advance.
+      expect(advanceBaselineMock).not.toHaveBeenCalled();
+      expect(rollbackToBaselineMock).not.toHaveBeenCalled();
+    } finally {
+      stderrSpy.mockRestore();
+    }
+  });
+
+  it('bootstrap failure: workspace.materialize IPC error → exit 2, no query, materialize stderr', async () => {
+    // Phase 3: materialize failure is bootstrap-fatal. The runner cannot
+    // operate against an undefined workspace state — better to exit loud
+    // than to desync silently from the host's view of the lineage.
+    setEnv(COMPLETE_ENV);
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          conversationId: null,
+        };
+      }
+      if (action === 'workspace.materialize') {
+        throw new Error('host bundler exploded');
+      }
+      throw new Error(`unexpected call: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([]);
+
+    const stderrSpy = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation(() => true);
+
+    try {
+      const { main } = await import('../main.js');
+      const rc = await main();
+      expect(rc).toBe(2);
+
+      const stderrMessages = stderrSpy.mock.calls
+        .map((c) => String(c[0]))
+        .join('');
+      expect(stderrMessages).toContain('workspace.materialize failed');
+      expect(stderrMessages).toContain('host bundler exploded');
+
+      expect(queryMock).not.toHaveBeenCalled();
+      expect(fakeClient.close).toHaveBeenCalledTimes(1);
+    } finally {
+      stderrSpy.mockRestore();
+    }
+  });
+
+  it('bootstrap failure: materializeWorkspace throws → exit 2, no query', async () => {
+    // Distinct from the IPC-error case: the IPC succeeds (bundle bytes
+    // returned), but the runner-side `git clone` blows up. Same fatal
+    // semantics — we can't proceed against a broken /permanent.
+    setEnv(COMPLETE_ENV);
+    materializeMock.mockRejectedValueOnce(new Error('git clone failed: bad bundle'));
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          conversationId: null,
+        };
+      }
+      if (action === 'workspace.materialize') {
+        return { bundleBytes: 'malformed' };
+      }
+      throw new Error(`unexpected call: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([]);
+
+    const stderrSpy = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation(() => true);
+
+    try {
+      const { main } = await import('../main.js');
+      const rc = await main();
+      expect(rc).toBe(2);
+
+      const stderrMessages = stderrSpy.mock.calls
+        .map((c) => String(c[0]))
+        .join('');
+      expect(stderrMessages).toContain('workspace.materialize failed');
+      expect(stderrMessages).toContain('git clone failed: bad bundle');
+
+      expect(queryMock).not.toHaveBeenCalled();
+    } finally {
+      stderrSpy.mockRestore();
+    }
+  });
+
   it('multi-block assistant turn: text + thinking + tool_use all flow into event.turn-end contentBlocks in order', async () => {
     setEnv(COMPLETE_ENV);
     fakeClient = buildFakeClient();
@@ -407,6 +761,7 @@ describe('main()', () => {
           conversationId: null,
         };
       }
+      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
       throw new Error(`unexpected call: ${action}`);
     });
@@ -482,6 +837,7 @@ describe('main()', () => {
           conversationId: null,
         };
       }
+      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
       throw new Error(`unexpected call: ${action}`);
     });
@@ -570,6 +926,7 @@ describe('main()', () => {
           conversationId: null,
         };
       }
+      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
       throw new Error(`unexpected call: ${action}`);
     });
@@ -673,6 +1030,7 @@ describe('main()', () => {
           conversationId: null,
         };
       }
+      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
       throw new Error(`unexpected call: ${action}`);
     });
@@ -727,6 +1085,7 @@ describe('main()', () => {
           conversationId: null,
         };
       }
+      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
       throw new Error(`unexpected call: ${action}`);
     });
@@ -835,6 +1194,7 @@ describe('main()', () => {
           conversationId: null,
         };
       }
+      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
       throw new Error(`unexpected call: ${action}`);
     });
@@ -881,6 +1241,7 @@ describe('main()', () => {
           conversationId: null,
         };
       }
+      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
       throw new Error(`unexpected call: ${action}`);
     });
@@ -949,6 +1310,7 @@ describe('main()', () => {
           conversationId: 'cnv_resume',
         };
       }
+      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
       if (action === 'conversation.fetch-history') {
         // Pin the request shape: conversationId from session.get-config.
@@ -1064,6 +1426,7 @@ describe('main()', () => {
           conversationId: null,
         };
       }
+      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
       if (action === 'conversation.fetch-history') {
         throw new Error('runner must NOT fetch history when conversationId is null');
@@ -1111,6 +1474,7 @@ describe('main()', () => {
           conversationId: 'cnv_resume',
         };
       }
+      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
       if (action === 'conversation.fetch-history') {
         throw new Error('storage hiccup');

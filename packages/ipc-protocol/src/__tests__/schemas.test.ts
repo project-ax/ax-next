@@ -8,6 +8,8 @@ import {
   ToolListResponseSchema,
   WorkspaceCommitNotifyRequestSchema,
   WorkspaceCommitNotifyResponseSchema,
+  WorkspaceMaterializeRequestSchema,
+  WorkspaceMaterializeResponseSchema,
   SessionNextMessageResponseSchema,
   SessionGetConfigResponseSchema,
   ConversationFetchHistoryRequestSchema,
@@ -171,14 +173,96 @@ describe('workspace.commit-notify', () => {
     expect(r.success).toBe(false);
   });
 
-  it('round-trips a request payload', () => {
+  it('round-trips a request payload (Phase 3 bundleBytes shape)', () => {
     const parsed = WorkspaceCommitNotifyRequestSchema.parse({
       parentVersion: null,
-      commitRef: 'abc123',
-      message: 'initial',
+      reason: 'turn',
+      bundleBytes: '',
     });
     expect(parsed.parentVersion).toBeNull();
-    expect(parsed.commitRef).toBe('abc123');
+    expect(parsed.reason).toBe('turn');
+    expect(parsed.bundleBytes).toBe('');
+  });
+
+  it('round-trips a non-empty bundle as base64 string', () => {
+    const b64 = Buffer.from('PACK\x00\x00').toString('base64');
+    const parsed = WorkspaceCommitNotifyRequestSchema.parse({
+      parentVersion: 'v-token-1',
+      reason: 'turn',
+      bundleBytes: b64,
+    });
+    expect(parsed.parentVersion).toBe('v-token-1');
+    expect(parsed.bundleBytes).toBe(b64);
+  });
+
+  it('rejects a request missing bundleBytes', () => {
+    expect(
+      WorkspaceCommitNotifyRequestSchema.safeParse({
+        parentVersion: null,
+        reason: 'turn',
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects a request missing reason', () => {
+    expect(
+      WorkspaceCommitNotifyRequestSchema.safeParse({
+        parentVersion: null,
+        bundleBytes: '',
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects a request with non-string bundleBytes', () => {
+    expect(
+      WorkspaceCommitNotifyRequestSchema.safeParse({
+        parentVersion: null,
+        reason: 'turn',
+        bundleBytes: 42,
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe('workspace.materialize', () => {
+  it('round-trips an empty bundle (brand-new workspace)', () => {
+    // Empty string => the host has nothing to ship. The runner reads this
+    // and does `git init` on /permanent instead of `git clone`.
+    const parsed = WorkspaceMaterializeResponseSchema.parse({ bundleBytes: '' });
+    expect(parsed.bundleBytes).toBe('');
+  });
+
+  it('round-trips a non-empty bundle', () => {
+    // Bytes are opaque base64 on the wire — schema does NOT decode (the
+    // runner side decodes on its own to write the file). We just preserve
+    // the payload faithfully.
+    const b64 = Buffer.from('PACK\x00\x00').toString('base64');
+    const parsed = WorkspaceMaterializeResponseSchema.parse({ bundleBytes: b64 });
+    expect(parsed.bundleBytes).toBe(b64);
+  });
+
+  it('rejects a response missing bundleBytes', () => {
+    expect(WorkspaceMaterializeResponseSchema.safeParse({}).success).toBe(false);
+  });
+
+  it('rejects a response with non-string bundleBytes', () => {
+    expect(
+      WorkspaceMaterializeResponseSchema.safeParse({ bundleBytes: 42 }).success,
+    ).toBe(false);
+  });
+
+  it('request schema accepts an empty object', () => {
+    expect(WorkspaceMaterializeRequestSchema.parse({})).toEqual({});
+  });
+
+  it('request schema rejects extra fields (.strict)', () => {
+    // The session's bearer token already identifies the workspace; any
+    // request field would be a vector for "fetch SOMEONE ELSE'S baseline."
+    // Closing that door at the schema layer makes the invariant load-bearing.
+    expect(
+      WorkspaceMaterializeRequestSchema.safeParse({ workspaceId: 'other' })
+        .success,
+    ).toBe(false);
   });
 });
 
@@ -483,12 +567,13 @@ describe('timeouts', () => {
     expect(Object.isFrozen(IPC_TIMEOUTS_MS)).toBe(true);
   });
 
-  it('IPC_TIMEOUTS_MS has the seven expected keys', () => {
+  it('IPC_TIMEOUTS_MS has the eight expected keys (Phase 3 added workspace.materialize)', () => {
     const expected = [
       'tool.pre-call',
       'tool.execute-host',
       'tool.list',
       'workspace.commit-notify',
+      'workspace.materialize',
       'session.next-message',
       'session.get-config',
       'conversation.fetch-history',
@@ -503,11 +588,12 @@ describe('timeouts', () => {
       'tool.execute-host',
       'tool.list',
       'workspace.commit-notify',
+      'workspace.materialize',
       'session.next-message',
       'session.get-config',
       'conversation.fetch-history',
     ];
-    expect(names).toHaveLength(7);
+    expect(names).toHaveLength(8);
   });
 });
 

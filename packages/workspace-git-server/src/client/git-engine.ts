@@ -47,7 +47,7 @@
 
 import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
@@ -55,8 +55,12 @@ import {
   PluginError,
   type Bytes,
   type FileChange,
+  type WorkspaceApplyBundleInput,
+  type WorkspaceApplyBundleOutput,
   type WorkspaceApplyInput,
   type WorkspaceApplyOutput,
+  type WorkspaceExportBaselineBundleInput,
+  type WorkspaceExportBaselineBundleOutput,
   type WorkspaceChange,
   type WorkspaceDelta,
   type WorkspaceDiffInput,
@@ -79,6 +83,24 @@ const AUTHOR_ENV = {
   GIT_AUTHOR_EMAIL: 'ax-runner@example.com',
   GIT_COMMITTER_NAME: 'ax-runner',
   GIT_COMMITTER_EMAIL: 'ax-runner@example.com',
+} as const;
+
+// Phase 3 deterministic-baseline env. Used ONLY by `seedMirrorWithBaseline`
+// to reconstruct the runner's local baseline OID inside the mirror cache.
+// MUST match the env used by `buildBaselineBundle` in
+// `packages/ipc-core/src/handlers/workspace-materialize.ts` — the OIDs
+// produced on both sides have to be bit-identical for the runner's thin
+// bundle to find its prerequisite. The `WorkspaceApplyBundleInput` type
+// comment in `@ax/core/src/workspace.ts` is the contract.
+//
+// We intentionally don't import the constant from ipc-core (would
+// violate I2 — no cross-plugin imports). We duplicate it here and pin
+// the contract via the type comment.
+const BASELINE_DATE = '1970-01-01T00:00:00Z';
+const BASELINE_ENV = {
+  ...AUTHOR_ENV,
+  GIT_AUTHOR_DATE: BASELINE_DATE,
+  GIT_COMMITTER_DATE: BASELINE_DATE,
 } as const;
 
 // Same paranoid env shape as the rest of the host-side git callers
@@ -357,6 +379,290 @@ async function pushScratch(
   return { ok: false, nonFastForward, stderr: r.stderr };
 }
 
+// --- apply-bundle pipeline helpers (Phase 3) ----------------------------
+
+/**
+ * Seed an empty mirror with a deterministic empty-tree baseline
+ * commit. Used for first apply against an empty storage tier — the
+ * runner's local baseline OID matches this commit by construction
+ * (both sides build with sorted paths, fixed dates, fixed author env,
+ * --allow-empty, core.fileMode=false).
+ *
+ * Returns the new commit's OID so the caller can verify it matches
+ * the runner's prereq.
+ */
+async function seedMirrorWithEmptyBaseline(mirror: string): Promise<string> {
+  const scratch = mkdtempSync(join(tmpdir(), 'ax-ws-baseline-'));
+  try {
+    // Init on `main` (matches the materialize bundle's branch + the
+    // bundler's expected refspec).
+    const init = await runGit(['init', '-b', 'main', scratch], {
+      extraEnv: BASELINE_ENV,
+    });
+    if (init.code !== 0) {
+      throw new Error(`baseline init failed: ${init.stderr}`);
+    }
+    const cfg = await runGit(
+      ['-C', scratch, 'config', 'core.fileMode', 'false'],
+      { extraEnv: BASELINE_ENV },
+    );
+    if (cfg.code !== 0) {
+      throw new Error(`baseline config core.fileMode failed: ${cfg.stderr}`);
+    }
+    // --allow-empty produces a commit with the empty tree as its
+    // tree OID. Combined with deterministic dates + identity, this
+    // commit's OID is bit-for-bit reproducible.
+    const commit = await runGit(
+      ['-C', scratch, 'commit', '--allow-empty', '-m', 'baseline'],
+      { extraEnv: BASELINE_ENV },
+    );
+    if (commit.code !== 0) {
+      throw new Error(`baseline commit failed: ${commit.stderr}`);
+    }
+    const push = await runGit([
+      '-C',
+      scratch,
+      'push',
+      mirror,
+      'main:refs/heads/main',
+    ]);
+    if (push.code !== 0) {
+      throw new Error(`baseline push to mirror failed: ${push.stderr}`);
+    }
+    const rp = await runGit(['-C', scratch, 'rev-parse', 'HEAD']);
+    if (rp.code !== 0) {
+      throw new Error(`baseline rev-parse failed: ${rp.stderr}`);
+    }
+    return rp.stdout.trim();
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Fetch the runner's thin bundle into the mirror cache. The bundle's
+ * prerequisite (`baselineCommit`) MUST already be in the mirror — call
+ * `seedMirrorWithBaseline` first if the mirror is empty. Returns the
+ * bundle's tip OID (the new commit the runner produced).
+ *
+ * Bundles are routed under refs/bundle/* so they don't clobber
+ * refs/heads/main during the fetch. We pick the single ref the bundle
+ * introduced as the tip (the runner ships exactly one ref per turn).
+ */
+async function fetchBundleIntoMirror(
+  mirror: string,
+  bundlePath: string,
+): Promise<string> {
+  const fetch = await runGit([
+    '-C',
+    mirror,
+    'fetch',
+    '--quiet',
+    bundlePath,
+    'refs/heads/*:refs/bundle/*',
+  ]);
+  if (fetch.code !== 0) {
+    throw new Error(`bundle fetch into mirror failed: ${fetch.stderr}`);
+  }
+  // Find the bundle's tip — exactly one ref under refs/bundle/.
+  const list = await runGit([
+    '-C',
+    mirror,
+    'for-each-ref',
+    '--format=%(refname) %(objectname)',
+    'refs/bundle/',
+  ]);
+  if (list.code !== 0) {
+    throw new Error(`for-each-ref refs/bundle failed: ${list.stderr}`);
+  }
+  const lines = list.stdout
+    .split('\n')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  if (lines.length !== 1) {
+    throw new Error(
+      `bundle introduced ${lines.length} refs (expected exactly 1): ${lines.join(', ')}`,
+    );
+  }
+  const parts = lines[0]!.split(' ');
+  if (parts.length !== 2) {
+    throw new Error(`malformed for-each-ref output: ${lines[0]}`);
+  }
+  return parts[1]!;
+}
+
+/**
+ * Push the bundle's tip OID to the storage tier as refs/heads/main.
+ * Uses --force-with-lease for CAS (same as pushScratch).
+ *
+ * git push handles dependencies: if the storage tier doesn't have all
+ * the commits yet (e.g., first apply), it pushes the entire chain
+ * including baseline.
+ */
+async function pushBundleTip(
+  remoteUrl: string,
+  token: string,
+  mirror: string,
+  newTip: string,
+  parent: string | null,
+): Promise<{ ok: true } | { ok: false; nonFastForward: boolean; stderr: string }> {
+  const lease = parent === null ? '' : parent;
+  const args = [
+    ...authConfig(token),
+    '-C',
+    mirror,
+    'push',
+    `--force-with-lease=refs/heads/main:${lease}`,
+    remoteUrl,
+    `${newTip}:refs/heads/main`,
+  ];
+  const r = await runGit(args);
+  if (r.code === 0) return { ok: true };
+  const msg = r.stderr.toLowerCase();
+  const nonFastForward =
+    msg.includes('non-fast-forward') ||
+    msg.includes('non fast forward') ||
+    msg.includes('stale info') ||
+    msg.includes('rejected') ||
+    msg.includes('failed to push');
+  return { ok: false, nonFastForward, stderr: r.stderr };
+}
+
+/**
+ * Build a self-contained git bundle of an empty-tree baseline commit
+ * with deterministic OID. Used when the workspace has no commits yet
+ * (first apply against an empty storage tier) — same shape as the
+ * materialize handler's empty-workspace bundle so the runner's
+ * matching clone has the same baseline OID.
+ */
+async function buildEmptyBaselineBundle(): Promise<string> {
+  const tmp = mkdtempSync(join(tmpdir(), 'ax-ws-empty-baseline-'));
+  try {
+    const init = await runGit(['init', '-b', 'main', tmp], {
+      extraEnv: BASELINE_ENV,
+    });
+    if (init.code !== 0) {
+      throw new Error(`empty baseline init failed: ${init.stderr}`);
+    }
+    const cfg = await runGit(
+      ['-C', tmp, 'config', 'core.fileMode', 'false'],
+      { extraEnv: BASELINE_ENV },
+    );
+    if (cfg.code !== 0) {
+      throw new Error(`empty baseline config failed: ${cfg.stderr}`);
+    }
+    const commit = await runGit(
+      ['-C', tmp, 'commit', '--allow-empty', '-m', 'baseline'],
+      { extraEnv: BASELINE_ENV },
+    );
+    if (commit.code !== 0) {
+      throw new Error(`empty baseline commit failed: ${commit.stderr}`);
+    }
+    // Bundle to a tempfile (NOT stdout) — runGit's utf8-decoded
+    // stdout would mangle binary bundle bytes. The pack format
+    // contains arbitrary binary data (deltas, blob bytes); we need
+    // raw bytes from the file.
+    const bundlePath = join(tmp, 'baseline.bundle');
+    const bundle = await runGit(
+      ['-C', tmp, 'bundle', 'create', bundlePath, 'main'],
+      { extraEnv: BASELINE_ENV },
+    );
+    if (bundle.code !== 0) {
+      throw new Error(`empty baseline bundle failed: ${bundle.stderr}`);
+    }
+    const bytes = await readFile(bundlePath);
+    return bytes.toString('base64');
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Bundle the mirror's state at a specific commit OID into a self-
+ * contained git bundle. The bundle ships every commit reachable from
+ * `oid` plus the ref `refs/heads/main` pointing at it.
+ *
+ * Caller invariant: `oid` MUST equal the mirror's current
+ * refs/heads/main (which we verify before bundling — drift here means
+ * the runner's view of `parent` doesn't match what we have, which is
+ * a parent-mismatch the apply path would catch downstream anyway).
+ */
+async function exportMirrorBundle(
+  mirror: string,
+  oid: string,
+): Promise<string> {
+  // Verify the mirror's HEAD matches the requested oid. If a concurrent
+  // writer landed something between the runner's parent and now, our
+  // mirror.HEAD has advanced past `oid`; the runner's apply will
+  // correctly hit parent-mismatch. Bundling our current HEAD here
+  // (which doesn't match `oid`) would silently mask that — better to
+  // fail loud.
+  const head = await runGit([
+    '-C',
+    mirror,
+    'rev-parse',
+    '--verify',
+    'refs/heads/main',
+  ]);
+  if (head.code !== 0) {
+    throw new Error(
+      `mirror has no refs/heads/main: ${head.stderr}`,
+    );
+  }
+  const headOid = head.stdout.trim();
+  if (headOid !== oid) {
+    throw new Error(
+      `mirror head ${headOid} does not match requested version ${oid} (concurrent writer or stale version)`,
+    );
+  }
+
+  // Bundle refs/heads/main directly. Use a tempfile (not stdout) for
+  // binary safety — runGit's utf8-decoded stdout would mangle the
+  // bundle bytes.
+  const out = mkdtempSync(join(tmpdir(), 'ax-export-bundle-'));
+  try {
+    const bundlePath = join(out, 'baseline.bundle');
+    const create = await runGit([
+      '-C',
+      mirror,
+      'bundle',
+      'create',
+      bundlePath,
+      'main',
+    ]);
+    if (create.code !== 0) {
+      throw new Error(`bundle create failed: ${create.stderr}`);
+    }
+    const bytes = await readFile(bundlePath);
+    return bytes.toString('base64');
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Clear refs/bundle/* from the mirror after a successful apply. We
+ * keep the commit objects (referenced by refs/heads/main now), but
+ * drop the temporary refs that were just used as fetch targets.
+ */
+async function clearBundleRefs(mirror: string): Promise<void> {
+  const list = await runGit([
+    '-C',
+    mirror,
+    'for-each-ref',
+    '--format=%(refname)',
+    'refs/bundle/',
+  ]);
+  if (list.code !== 0) return; // best-effort
+  const refs = list.stdout
+    .split('\n')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  for (const ref of refs) {
+    await runGit(['-C', mirror, 'update-ref', '-d', ref]);
+  }
+}
+
 interface DiffEntry {
   status: 'A' | 'M' | 'D';
   path: string;
@@ -481,6 +787,14 @@ export interface GitEngineOptions {
 
 export interface GitEngine {
   apply(workspaceId: string, input: WorkspaceApplyInput): Promise<WorkspaceApplyOutput>;
+  applyBundle(
+    workspaceId: string,
+    input: WorkspaceApplyBundleInput,
+  ): Promise<WorkspaceApplyBundleOutput>;
+  exportBaselineBundle(
+    workspaceId: string,
+    input: WorkspaceExportBaselineBundleInput,
+  ): Promise<WorkspaceExportBaselineBundleOutput>;
   read(workspaceId: string, input: WorkspaceReadInput): Promise<WorkspaceReadOutput>;
   list(workspaceId: string, input: WorkspaceListInput): Promise<WorkspaceListOutput>;
   diff(workspaceId: string, input: WorkspaceDiffInput): Promise<WorkspaceDiffOutput>;
@@ -679,6 +993,266 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
     });
   };
 
+  // -------------------------------------------------------------------
+  // applyBundle (Phase 3): direct-bundle apply path.
+  //
+  // Same enqueue + parent-validate pipeline as `apply`, but instead of
+  // building a scratch tree and re-hashing FileChange[] into new
+  // commits, we fetch the runner's thin bundle directly into the mirror
+  // and push the bundle's tip to the storage tier. The runner's commit
+  // OIDs land in the bare repo verbatim (auditability win) and we save
+  // the rehash cost (efficiency win).
+  //
+  // Determinism contract: the bundle's prerequisite is the runner's
+  // local baseline OID. The mirror MUST have that OID before fetch:
+  //   - First apply (mirror empty): seed via `seedMirrorWithBaseline`,
+  //     reconstructing the deterministic baseline. The reconstructed
+  //     OID equals input.baselineCommit by determinism.
+  //   - Subsequent applies (mirror has prior turn's tip): the runner
+  //     advanced its local baseline after the prior accept, so
+  //     baselineCommit equals the prior tip equals mirror HEAD.
+  // -------------------------------------------------------------------
+  const applyBundle = async (
+    workspaceId: string,
+    input: WorkspaceApplyBundleInput,
+  ): Promise<WorkspaceApplyBundleOutput> => {
+    guardClosed();
+    return enqueue(workspaceId, async () => {
+      guardClosed();
+      const remoteUrl = remoteUrlFor(opts.baseUrl, workspaceId);
+
+      return opts.mirrorCache.withMirror(workspaceId, async (handle) => {
+        // 1. Ensure repo exists on storage tier.
+        await ensureRepoCreated(workspaceId);
+
+        // 2. Pull latest state from storage tier into local mirror.
+        await fetchMirror(remoteUrl, opts.token, handle.dir);
+
+        // 3. Read mirror head + validate caller's parent.
+        const mirrorHead = await currentMirrorOid(handle.dir);
+        const callerParent =
+          input.parent === null ? null : (input.parent as string);
+
+        // Same parent-mismatch shape as apply().
+        if (mirrorHead === null && callerParent !== null) {
+          throw parentMismatch(
+            'mirror has no commits; caller passed a non-null parent',
+            mirrorHead,
+          );
+        }
+        if (mirrorHead !== null && callerParent === null) {
+          throw parentMismatch(
+            'mirror has commits; caller passed parent: null',
+            mirrorHead,
+          );
+        }
+        if (
+          mirrorHead !== null &&
+          callerParent !== null &&
+          mirrorHead !== callerParent
+        ) {
+          throw parentMismatch(
+            'caller parent does not match current mirror head',
+            mirrorHead,
+          );
+        }
+
+        // Capture the REMOTE's pre-apply state for the push lease.
+        // This is what the storage tier should currently have at
+        // refs/heads/main; it equals the mirror head we just read
+        // (mirrors are kept in sync via fetchMirror at the top of every
+        // apply). After we seed the mirror with a deterministic
+        // baseline below, the LOCAL mirror's HEAD advances — but the
+        // REMOTE doesn't. The lease must reflect the remote, not the
+        // post-seed local mirror.
+        const remoteLease = mirrorHead;
+
+        // 4. If mirror is empty, seed it with the deterministic empty
+        //    baseline (single empty-tree commit). The runner's first-
+        //    apply baseline OID matches this OID by construction —
+        //    both sides build from the same shape (sorted paths, fixed
+        //    dates, fixed author env, empty tree). For non-empty
+        //    mirrors, HEAD is the prior turn's tip == the runner's
+        //    baseline by symmetry (after each accept, both sides
+        //    advance to the same OID).
+        if (mirrorHead === null) {
+          const seededOid = await seedMirrorWithEmptyBaseline(handle.dir);
+          if (seededOid !== input.baselineCommit) {
+            throw new Error(
+              `seeded baseline OID ${seededOid} does not match runner baseline ${input.baselineCommit} (determinism contract violated)`,
+            );
+          }
+          // Note: we don't re-bind mirrorHead here. The post-seed local
+          // mirror state (refs/heads/main = seededOid) doesn't affect
+          // any downstream decision — the push lease uses remoteLease
+          // (the REMOTE's pre-apply state), and the delta uses
+          // callerParent (the runner's view).
+        } else if (mirrorHead !== input.baselineCommit) {
+          throw parentMismatch(
+            `mirror head ${mirrorHead} does not match runner baseline ${input.baselineCommit}`,
+            mirrorHead,
+          );
+        }
+
+        // 5-9: Fetch + ancestry-check + push + delta. The whole sequence
+        // shares one finally that removes the on-disk bundle file AND
+        // clears refs/bundle/* — without the broader scope, a throw
+        // between fetch and push (e.g., the new ancestry check) would
+        // leak temp refs into the next apply on this workspaceId.
+        const bundlePath = join(handle.dir, 'in.bundle');
+        await writeFile(
+          bundlePath,
+          Buffer.from(input.bundleBytes, 'base64'),
+        );
+        try {
+          // 5. Fetch the thin bundle into the mirror. Prereq is now
+          //    satisfied (mirror's refs/heads/main == baselineCommit).
+          const newTip = await fetchBundleIntoMirror(handle.dir, bundlePath);
+
+          // 6. Reject bundles whose tip doesn't descend from the
+          //    declared baseline. The runner's contract is "thin bundle
+          //    of new commits on top of baseline." A non-thin or
+          //    otherwise-detached bundle could still pass --force-with-
+          //    lease (the remote ref check) and replace HEAD with
+          //    unrelated history. The ancestor check closes that gap.
+          //
+          //    `git merge-base --is-ancestor A B` exits 0 if A is an
+          //    ancestor of B, 1 if not. Anything else is an error.
+          const ancestry = await runGit([
+            '-C',
+            handle.dir,
+            'merge-base',
+            '--is-ancestor',
+            input.baselineCommit,
+            newTip,
+          ]);
+          if (ancestry.code === 1) {
+            throw parentMismatch(
+              `bundle tip ${newTip} does not descend from baseline ${input.baselineCommit}`,
+              remoteLease,
+            );
+          }
+          if (ancestry.code !== 0) {
+            throw new Error(
+              `git merge-base --is-ancestor failed (exit=${ancestry.code}): ${ancestry.stderr}`,
+            );
+          }
+
+          // 7. Push the bundle's tip to the storage tier. git push
+          //    handles dependencies — on first apply, the baseline +
+          //    bundle commits all flow together. Use `remoteLease`
+          //    (the PRE-seed mirror head, == remote's current state)
+          //    for the --force-with-lease check.
+          const push = await pushBundleTip(
+            remoteUrl,
+            opts.token,
+            handle.dir,
+            newTip,
+            remoteLease,
+          );
+          if (!push.ok) {
+            if (push.nonFastForward) {
+              await fetchMirror(remoteUrl, opts.token, handle.dir);
+              const freshHead = await currentMirrorOid(handle.dir);
+              throw parentMismatch(
+                'remote rejected push: non-fast-forward (concurrent writer)',
+                freshHead,
+              );
+            }
+            throw new Error(`git push failed: ${push.stderr}`);
+          }
+
+          // 8. Update the local mirror's refs/heads/main to the new
+          //    tip so subsequent reads/lists see the current state
+          //    without requiring a fetchMirror round-trip first.
+          await runGit([
+            '-C',
+            handle.dir,
+            'update-ref',
+            'refs/heads/main',
+            newTip,
+          ]);
+
+          // 9. Build the delta payload. `from` is the CALLER'S view
+          //    of the previous state (input.parent), not the local
+          //    mirror head. For first apply, callerParent is null and
+          //    the delta reads as "everything added"; for subsequent
+          //    applies, callerParent equals the prior tip and we get
+          //    the per-turn diff.
+          const delta = await buildDelta(
+            handle.dir,
+            callerParent,
+            newTip,
+            input.reason,
+          );
+          return {
+            version: asWorkspaceVersion(newTip),
+            delta,
+          };
+        } finally {
+          // Cleanup runs on both success AND error paths:
+          //   - on-disk bundle file (always removed)
+          //   - refs/bundle/* (the commit objects stay; refs/heads/main
+          //     references them on success, but the temp refs would
+          //     leak into the next apply otherwise — and on error we
+          //     definitely don't want them lingering).
+          await rm(bundlePath, { force: true });
+          await clearBundleRefs(handle.dir);
+        }
+      });
+    });
+  };
+
+  // -------------------------------------------------------------------
+  // exportBaselineBundle (Phase 3): companion to applyBundle.
+  //
+  // The host-side commit-notify handler uses this to seed its bundler
+  // scratch repo with a self-contained git bundle of the workspace's
+  // state at `version`. Eliminates the need for deterministic
+  // reconstruction (which only worked for first apply); the bundle's
+  // tip OID matches the runner's local baseline OID by construction
+  // (both come from the same git history).
+  //
+  // For `version: null` (first apply, mirror is empty): we synthesize
+  // a deterministic empty-tree baseline. The runner's clone of this
+  // bundle has the same OID, so the runner's first thin bundle's
+  // prereq matches.
+  //
+  // For `version: <oid>` (subsequent apply): we bundle the mirror's
+  // state at `oid`. The runner advances its local baseline ref to
+  // this OID after each accept, so its next thin bundle's prereq
+  // matches.
+  //
+  // Enqueues per-workspaceId so concurrent apply + export stays
+  // serialized (the export needs a coherent mirror snapshot).
+  // -------------------------------------------------------------------
+  const exportBaselineBundle = async (
+    workspaceId: string,
+    input: WorkspaceExportBaselineBundleInput,
+  ): Promise<WorkspaceExportBaselineBundleOutput> => {
+    guardClosed();
+    return enqueue(workspaceId, async () => {
+      guardClosed();
+      if (input.version === null) {
+        // No commits yet — return the deterministic empty baseline.
+        // No mirror access needed.
+        return { bundleBytes: await buildEmptyBaselineBundle() };
+      }
+      // Need the commit in our mirror cache. ensureRepoCreated +
+      // fetchMirror keeps us in sync with the storage tier.
+      const remoteUrl = remoteUrlFor(opts.baseUrl, workspaceId);
+      return opts.mirrorCache.withMirror(workspaceId, async (handle) => {
+        await ensureRepoCreated(workspaceId);
+        await fetchMirror(remoteUrl, opts.token, handle.dir);
+        const bundleBytes = await exportMirrorBundle(
+          handle.dir,
+          input.version as string,
+        );
+        return { bundleBytes };
+      });
+    });
+  };
+
   const read = async (
     workspaceId: string,
     input: WorkspaceReadInput,
@@ -779,5 +1353,14 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
 
   const _internalQueueSize = (): number => queues.size;
 
-  return { apply, read, list, diff, shutdown, _internalQueueSize };
+  return {
+    apply,
+    applyBundle,
+    exportBaselineBundle,
+    read,
+    list,
+    diff,
+    shutdown,
+    _internalQueueSize,
+  };
 }

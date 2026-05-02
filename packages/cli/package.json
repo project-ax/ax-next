@@ -37,6 +37,7 @@
     "@ax/mcp-client": "workspace:*",
     "@ax/preset-k8s": "workspace:*",
     "@ax/test-harness": "workspace:*",
+    "@ax/validator-skill": "workspace:*",
     "zod": "^3.23.8"
   },
   "devDependencies": {

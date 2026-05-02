@@ -125,6 +125,7 @@ describe('@ax/preset-k8s wiring', () => {
         '@ax/storage-postgres',
         '@ax/teams',
         '@ax/tool-dispatcher',
+        '@ax/validator-skill',
         '@ax/workspace-git',
       ].sort(),
     );

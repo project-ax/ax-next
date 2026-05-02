@@ -349,6 +349,323 @@ describe('git-engine — queue map drops settled entries', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// applyBundle — direct-bundle apply path (Phase 3).
+//
+// The runner ships a `git bundle baseline..HEAD` (thin); the host plugin
+// fetches the bundle into its mirror cache (after seeding the
+// deterministic baseline, if needed) and pushes the bundle's tip to
+// the storage tier. No FileChange[] round-trip, no rehash.
+// ---------------------------------------------------------------------------
+
+import { spawn } from 'node:child_process';
+import * as fs from 'node:fs/promises';
+import * as path from 'node:path';
+
+interface SpawnResult {
+  code: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+async function git(
+  args: readonly string[],
+  cwd?: string,
+  env?: NodeJS.ProcessEnv,
+): Promise<SpawnResult> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('git', [...args], {
+      cwd,
+      env: env ?? process.env,
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (c: Buffer) => (stdout += c.toString('utf8')));
+    child.stderr.on('data', (c: Buffer) => (stderr += c.toString('utf8')));
+    child.once('error', reject);
+    child.once('close', (code) => resolve({ code, stdout, stderr }));
+  });
+}
+
+// Deterministic env shape — must match git-engine.ts's BASELINE_ENV.
+// If these drift, the simulated runner's baseline OID won't match what
+// the engine reconstructs, and applyBundle fails with a clear OID-
+// mismatch error (which is itself the test's safety net).
+const SIM_BASELINE_ENV: NodeJS.ProcessEnv = {
+  ...process.env,
+  GIT_AUTHOR_NAME: 'ax-runner',
+  GIT_AUTHOR_EMAIL: 'ax-runner@example.com',
+  GIT_COMMITTER_NAME: 'ax-runner',
+  GIT_COMMITTER_EMAIL: 'ax-runner@example.com',
+  GIT_AUTHOR_DATE: '1970-01-01T00:00:00Z',
+  GIT_COMMITTER_DATE: '1970-01-01T00:00:00Z',
+};
+
+interface SimulatedTurn {
+  bundleB64: string;
+  baselineCommit: string;
+  baselineFiles: Array<{ path: string; bytes: Uint8Array }>;
+}
+
+/**
+ * Simulate the runner-side flow: build deterministic baseline, clone,
+ * apply turn changes, bundle. Returns everything the engine needs to
+ * call applyBundle.
+ */
+async function simulateTurn(args: {
+  baselineFiles: ReadonlyArray<{ path: string; bytes: Uint8Array }>;
+  turnFiles: Record<string, string | null>;
+}): Promise<SimulatedTurn> {
+  const root = mkdtempSync(join(tmpdir(), 'ax-engine-bundle-sim-'));
+  try {
+    // 1. Build deterministic baseline (mirrors buildBaselineBundle +
+    //    seedMirrorWithBaseline shape).
+    const baselineDir = path.join(root, 'baseline');
+    await fs.mkdir(baselineDir, { recursive: true });
+    await git(['init', '-b', 'main', baselineDir], undefined, SIM_BASELINE_ENV);
+    await git(
+      ['-C', baselineDir, 'config', 'core.fileMode', 'false'],
+      undefined,
+      SIM_BASELINE_ENV,
+    );
+    const sorted = [...args.baselineFiles].sort((a, b) =>
+      a.path.localeCompare(b.path),
+    );
+    for (const { path: p, bytes } of sorted) {
+      const abs = path.join(baselineDir, p);
+      const dir = path.dirname(abs);
+      if (dir !== baselineDir) await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(abs, bytes, { mode: 0o644 });
+    }
+    await git(['-C', baselineDir, 'add', '-A'], undefined, SIM_BASELINE_ENV);
+    await git(
+      ['-C', baselineDir, 'commit', '--allow-empty', '-m', 'baseline'],
+      undefined,
+      SIM_BASELINE_ENV,
+    );
+    const baselineHead = await git(
+      ['-C', baselineDir, 'rev-parse', 'HEAD'],
+      undefined,
+      SIM_BASELINE_ENV,
+    );
+    const baselineCommit = baselineHead.stdout.trim();
+
+    // 2. Bundle the baseline (single ref) so we can clone from it
+    //    (mirrors materialize → runner clone shape).
+    const baselineBundle = path.join(root, 'baseline.bundle');
+    await git(
+      ['-C', baselineDir, 'bundle', 'create', baselineBundle, 'main'],
+      undefined,
+      SIM_BASELINE_ENV,
+    );
+
+    // 3. Clone into the runner's working tree, pin baseline ref.
+    const wt = path.join(root, 'wt');
+    const cl = await git(
+      ['clone', '--branch', 'main', baselineBundle, wt],
+    );
+    if (cl.code !== 0) throw new Error(`clone failed: ${cl.stderr}`);
+    await git(['-C', wt, 'update-ref', 'refs/heads/baseline', 'HEAD']);
+    await git(['-C', wt, 'config', 'user.name', 'ax-runner']);
+    await git(['-C', wt, 'config', 'user.email', 'ax-runner@example.com']);
+
+    // 4. Apply turn files.
+    for (const [p, content] of Object.entries(args.turnFiles)) {
+      const abs = path.join(wt, p);
+      if (content === null) {
+        await fs.unlink(abs);
+      } else {
+        const dir = path.dirname(abs);
+        if (dir !== wt) await fs.mkdir(dir, { recursive: true });
+        await fs.writeFile(abs, content);
+      }
+    }
+    await git(['-C', wt, 'add', '-A']);
+    await git(['-C', wt, 'commit', '-m', 'turn']);
+
+    // 5. Bundle the turn (thin: baseline..main + main ref).
+    const turnBundleBuf = await new Promise<Buffer>((resolve, reject) => {
+      const child = spawn('git', [
+        '-C',
+        wt,
+        'bundle',
+        'create',
+        '-',
+        'baseline..main',
+        'main',
+      ]);
+      const chunks: Buffer[] = [];
+      let stderr = '';
+      child.stdout.on('data', (c: Buffer) => chunks.push(c));
+      child.stderr.on('data', (c: Buffer) => (stderr += c.toString('utf8')));
+      child.once('error', reject);
+      child.once('close', (code) =>
+        code === 0
+          ? resolve(Buffer.concat(chunks))
+          : reject(new Error(`bundle exit=${code}: ${stderr}`)),
+      );
+    });
+    return {
+      bundleB64: turnBundleBuf.toString('base64'),
+      baselineCommit,
+      baselineFiles: [...args.baselineFiles],
+    };
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+}
+
+describe('git-engine — applyBundle direct-apply path', () => {
+  it('first apply: seeds mirror with deterministic baseline, fetches bundle, pushes tip', async () => {
+    const sim = await simulateTurn({
+      baselineFiles: [],
+      turnFiles: { '.ax/CLAUDE.md': '# memory' },
+    });
+
+    const result = await harness.engine.applyBundle('wsenginef001', {
+      bundleBytes: sim.bundleB64,
+      baselineCommit: sim.baselineCommit,
+      parent: null,
+      reason: 'turn',
+    });
+
+    // Version is the bundle's tip (the runner's commit OID, verbatim).
+    expect(result.version).toMatch(/^[0-9a-f]{40}$/);
+    expect(result.version).not.toBe(sim.baselineCommit);
+
+    // Delta reflects the turn change.
+    expect(result.delta.before).toBeNull();
+    expect(result.delta.after).toBe(result.version);
+    expect(result.delta.changes).toHaveLength(1);
+    expect(result.delta.changes[0]?.path).toBe('.ax/CLAUDE.md');
+    expect(result.delta.changes[0]?.kind).toBe('added');
+  });
+
+  it('second apply: reuses prior tip as baseline, no seed needed', async () => {
+    // Turn 1: seed.
+    const sim1 = await simulateTurn({
+      baselineFiles: [],
+      turnFiles: { 'a.txt': 'A1' },
+    });
+    const r1 = await harness.engine.applyBundle('wsenginef002', {
+      bundleBytes: sim1.bundleB64,
+      baselineCommit: sim1.baselineCommit,
+      parent: null,
+      reason: 'turn 1',
+    });
+
+    // Turn 2: runner's new baseline = turn 1's tip. The simulator
+    // builds a NEW deterministic baseline that includes the turn-1
+    // file, runs another turn on top.
+    //
+    // Wait — that's not quite right. After turn 1, the runner's local
+    // baseline advanced to turn 1's commit (real wall-time, not
+    // deterministic). The runner's NEXT bundle's baseline OID is the
+    // runner's local baseline ref, which == turn 1's tip OID.
+    //
+    // So for turn 2 simulation: the "baseline" we ship is turn 1's
+    // workspace state, but we mark baselineCommit = r1.version (the
+    // runner's actual local OID). The mirror already has this commit,
+    // so seedMirrorWithBaseline isn't called. baselineFiles is unused.
+    //
+    // We construct turn 2's bundle by cloning turn 1's tip from the
+    // server, advancing main, bundling.
+    const baseUrl = harness.baseUrl;
+    const turn2Root = mkdtempSync(join(tmpdir(), 'ax-engine-turn2-'));
+    let turn2BundleB64: string;
+    try {
+      // Clone the storage tier as it stands after turn 1.
+      const cl = await git(
+        [
+          '-c',
+          `http.extraHeader=Authorization: Bearer ${TOKEN}`,
+          'clone',
+          `${baseUrl}/wsenginef002.git`,
+          turn2Root,
+        ],
+      );
+      if (cl.code !== 0) {
+        throw new Error(`turn2 clone failed: ${cl.stderr}`);
+      }
+      // Pin baseline to current HEAD = turn 1's tip.
+      await git(['-C', turn2Root, 'update-ref', 'refs/heads/baseline', 'HEAD']);
+      await git(['-C', turn2Root, 'config', 'user.name', 'ax-runner']);
+      await git(['-C', turn2Root, 'config', 'user.email', 'ax-runner@example.com']);
+      // Make a turn-2 change.
+      await fs.writeFile(path.join(turn2Root, 'b.txt'), 'B1');
+      await git(['-C', turn2Root, 'add', '-A']);
+      await git(['-C', turn2Root, 'commit', '-m', 'turn 2']);
+      // Bundle thin. Use the explicit branch ref `main` (not `HEAD`)
+      // so the bundle carries refs/heads/main — matches what the
+      // engine's `fetchBundleIntoMirror` looks for via the
+      // `refs/heads/*:refs/bundle/*` refspec.
+      const buf = await new Promise<Buffer>((resolve, reject) => {
+        const child = spawn('git', [
+          '-C',
+          turn2Root,
+          'bundle',
+          'create',
+          '-',
+          'baseline..main',
+          'main',
+        ]);
+        const chunks: Buffer[] = [];
+        let stderr = '';
+        child.stdout.on('data', (c: Buffer) => chunks.push(c));
+        child.stderr.on('data', (c: Buffer) => (stderr += c.toString('utf8')));
+        child.once('error', reject);
+        child.once('close', (code) =>
+          code === 0
+            ? resolve(Buffer.concat(chunks))
+            : reject(new Error(`turn2 bundle exit=${code}: ${stderr}`)),
+        );
+      });
+      turn2BundleB64 = buf.toString('base64');
+    } finally {
+      await fs.rm(turn2Root, { recursive: true, force: true });
+    }
+
+    const r2 = await harness.engine.applyBundle('wsenginef002', {
+      bundleBytes: turn2BundleB64,
+      baselineCommit: r1.version, // runner's new baseline = turn 1's tip
+      parent: r1.version,
+      reason: 'turn 2',
+    });
+    expect(r2.version).toMatch(/^[0-9a-f]{40}$/);
+    expect(r2.version).not.toBe(r1.version);
+    // Both files present.
+    expect(r2.delta.changes.map((c) => c.path).sort()).toEqual(['b.txt']);
+  });
+
+  it('rejects when caller parent does not match mirror head', async () => {
+    // Sim turn against an empty workspace.
+    const sim1 = await simulateTurn({
+      baselineFiles: [],
+      turnFiles: { 'a.txt': 'A1' },
+    });
+    await harness.engine.applyBundle('wsenginef003', {
+      bundleBytes: sim1.bundleB64,
+      baselineCommit: sim1.baselineCommit,
+      parent: null,
+      reason: 'turn 1',
+    });
+
+    // Try a stale-parent apply.
+    const sim2 = await simulateTurn({
+      baselineFiles: [],
+      turnFiles: { 'b.txt': 'B1' },
+    });
+    await expect(
+      harness.engine.applyBundle('wsenginef003', {
+        bundleBytes: sim2.bundleB64,
+        baselineCommit: sim2.baselineCommit,
+        parent: null, // stale — mirror has commits now
+        reason: 'stale',
+      }),
+    ).rejects.toThrow(/parent/);
+  });
+});
+
 describe('git-engine — shutdown rejects subsequent operations', () => {
   it('apply after shutdown rejects with a clear message', async () => {
     await harness.engine.apply('wsenginee001', {

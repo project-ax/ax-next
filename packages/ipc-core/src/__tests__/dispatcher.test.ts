@@ -267,15 +267,18 @@ describe('dispatcher', () => {
   // /workspace.commit-notify
   // -------------------------------------------------------------------------
 
-  it('POST /workspace.commit-notify — happy path through real bus + MockWorkspace', async () => {
+  it('POST /workspace.commit-notify — empty-bundle short-circuit (Phase 3)', async () => {
+    // The full bundle round-trip (verify → walk → pre-apply → apply →
+    // applied) is exercised in detail by the handler-level tests at
+    // packages/ipc-core/src/handlers/__tests__/workspace-commit-notify.test.ts.
+    // Here we just smoke-test the dispatcher routing + schema +
+    // empty-bundle short-circuit against a real socket.
     const s = await setup({ plugins: [createMockWorkspacePlugin()] });
     setups.push(s);
-    const helloB64 = Buffer.from('hello world', 'utf8').toString('base64');
     const req = {
-      parentVersion: null,
-      commitRef: 'ref-1',
-      message: 'initial',
-      changes: [{ path: 'a.txt', kind: 'put', content: helloB64 }],
+      parentVersion: 'v-existing',
+      reason: 'turn',
+      bundleBytes: '',
     };
     const res = await doRequest(
       s.socketPath,
@@ -291,10 +294,8 @@ describe('dispatcher', () => {
       delta: null;
     };
     expect(parsed.accepted).toBe(true);
-    // Wire response NEVER carries the delta payload (Invariant I5).
+    expect(parsed.version).toBe('v-existing');
     expect(parsed.delta).toBeNull();
-    expect(typeof parsed.version).toBe('string');
-    expect(parsed.version.length).toBeGreaterThan(0);
   });
 
   // -------------------------------------------------------------------------

@@ -41,10 +41,14 @@
 
 import type { Plugin } from '@ax/core';
 import type {
+  WorkspaceApplyBundleInput,
+  WorkspaceApplyBundleOutput,
   WorkspaceApplyInput,
   WorkspaceApplyOutput,
   WorkspaceDiffInput,
   WorkspaceDiffOutput,
+  WorkspaceExportBaselineBundleInput,
+  WorkspaceExportBaselineBundleOutput,
   WorkspaceListInput,
   WorkspaceListOutput,
   WorkspaceReadInput,
@@ -170,6 +174,8 @@ export function createWorkspaceGitServerPlugin(
       version: '0.0.0',
       registers: [
         'workspace:apply',
+        'workspace:apply-bundle',
+        'workspace:export-baseline-bundle',
         'workspace:read',
         'workspace:list',
         'workspace:diff',
@@ -216,6 +222,35 @@ export function createWorkspaceGitServerPlugin(
           const workspaceId = resolveWorkspaceId(ctx);
           try {
             return await engine.apply(workspaceId, input);
+          } catch (err) {
+            throw _sanitizeTokenLeak(err, opts.token);
+          }
+        },
+      );
+
+      bus.registerService<WorkspaceApplyBundleInput, WorkspaceApplyBundleOutput>(
+        'workspace:apply-bundle',
+        PLUGIN_NAME,
+        async (ctx, input) => {
+          const workspaceId = resolveWorkspaceId(ctx);
+          try {
+            return await engine.applyBundle(workspaceId, input);
+          } catch (err) {
+            throw _sanitizeTokenLeak(err, opts.token);
+          }
+        },
+      );
+
+      bus.registerService<
+        WorkspaceExportBaselineBundleInput,
+        WorkspaceExportBaselineBundleOutput
+      >(
+        'workspace:export-baseline-bundle',
+        PLUGIN_NAME,
+        async (ctx, input) => {
+          const workspaceId = resolveWorkspaceId(ctx);
+          try {
+            return await engine.exportBaselineBundle(workspaceId, input);
           } catch (err) {
             throw _sanitizeTokenLeak(err, opts.token);
           }

@@ -13,6 +13,11 @@ export const IPC_TIMEOUTS_MS = Object.freeze({
   'tool.execute-host': 30_000,
   'tool.list': 5_000,
   'workspace.commit-notify': 30_000,
+  // Phase 3: session-start materialize fires once at boot. The host
+  // builds a baseline bundle by walking workspace:list + workspace:read,
+  // so the cost scales with workspace size. 30 s gives even chunky
+  // workspaces room without forcing per-file streaming on the wire.
+  'workspace.materialize': 30_000,
   'session.next-message': 30_000,
   // Runner-boot config fetch. Synchronous, small payload (a few KiB at
   // most). 5 s is generous; if the host can't answer this fast something

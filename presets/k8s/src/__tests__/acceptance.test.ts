@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { spawn } from 'node:child_process';
 import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -15,6 +16,10 @@ import {
   type WorkspaceApplyInput,
   type WorkspaceApplyOutput,
 } from '@ax/core';
+import {
+  buildBaselineBundle,
+  workspaceCommitNotifyHandler,
+} from '@ax/ipc-core';
 import { createStorageSqlitePlugin } from '@ax/storage-sqlite';
 import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
 import { createSandboxSubprocessPlugin } from '@ax/sandbox-subprocess';
@@ -548,6 +553,436 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         if (handle !== null) await handle.shutdown();
         if (server !== null) await server.close();
         await fs.rm(serverRepoRoot, { recursive: true, force: true });
+      }
+    },
+  );
+
+  // ---------------------------------------------------------------------------
+  // Phase 3 canary — bundler-driven workspace.commit-notify pipeline.
+  //
+  // Drives the REAL host-side handler (not the IPC transport) against a
+  // REAL workspace-git-server backend. Three scenarios:
+  //
+  //   1. Valid SKILL.md add → accepted, storage tier has the new commit.
+  //   2. Malformed SKILL.md add → rejected by validator-skill, storage
+  //      tier unchanged.
+  //   3. Bash-style delete (the gap that motivated Phase 3) → accepted,
+  //      storage tier reflects the delete.
+  //
+  // Each scenario uses a SEPARATE sub-test for clean isolation (the
+  // storage tier is per-workspace, but a fresh bareRepo per scenario
+  // makes parent-mismatch logic easier to reason about).
+  // ---------------------------------------------------------------------------
+
+  /** Spawn `git` for the runner-side simulation. */
+  async function git(
+    args: readonly string[],
+    cwd?: string,
+    env?: NodeJS.ProcessEnv,
+  ): Promise<{ code: number | null; stdout: string; stderr: string }> {
+    return new Promise((resolve, reject) => {
+      const child = spawn('git', [...args], { cwd, env: env ?? process.env });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (c: Buffer) => (stdout += c.toString('utf8')));
+      child.stderr.on('data', (c: Buffer) => (stderr += c.toString('utf8')));
+      child.once('error', reject);
+      child.once('close', (code) => resolve({ code, stdout, stderr }));
+    });
+  }
+
+  /**
+   * Simulate the runner producing a turn-end thin bundle. Mirrors
+   * agent-claude-sdk-runner's commitTurnAndBundle shape from inside
+   * the test (we can't import the runner package — it's not a preset
+   * dep — but the on-the-wire shape is small enough to inline).
+   */
+  async function simulateRunnerTurn(args: {
+    baselineFiles: ReadonlyArray<{ path: string; bytes: Uint8Array }>;
+    turnFiles: Record<string, string | null>;
+    /** Optional working dir; created in tmp if not provided. */
+    parentDir: string;
+  }): Promise<{ bundleB64: string }> {
+    const { baselineFiles, turnFiles, parentDir } = args;
+    const baselineB64 = await buildBaselineBundle({
+      paths: baselineFiles.map((f) => f.path),
+      read: async (p) => {
+        const f = baselineFiles.find((x) => x.path === p);
+        return f === undefined ? null : Buffer.from(f.bytes);
+      },
+    });
+    const root = await fs.mkdtemp(path.join(parentDir, 'sim-runner-'));
+    try {
+      const bundlePath = path.join(root, 'baseline.bundle');
+      await fs.writeFile(bundlePath, Buffer.from(baselineB64, 'base64'));
+      const wt = path.join(root, 'wt');
+      const cl = await git(['clone', '--branch', 'main', bundlePath, wt]);
+      if (cl.code !== 0) throw new Error(`clone failed: ${cl.stderr}`);
+      await git(['-C', wt, 'update-ref', 'refs/heads/baseline', 'HEAD']);
+      await git(['-C', wt, 'config', 'user.name', 'ax-runner']);
+      await git(['-C', wt, 'config', 'user.email', 'ax-runner@example.com']);
+
+      for (const [p, content] of Object.entries(turnFiles)) {
+        const abs = path.join(wt, p);
+        if (content === null) {
+          await fs.unlink(abs);
+        } else {
+          const dir = path.dirname(abs);
+          if (dir !== wt) await fs.mkdir(dir, { recursive: true });
+          await fs.writeFile(abs, content);
+        }
+      }
+      await git(['-C', wt, 'add', '-A']);
+      await git(['-C', wt, 'commit', '-m', 'turn']);
+
+      const buf = await new Promise<Buffer>((resolve, reject) => {
+        const child = spawn('git', [
+          '-C',
+          wt,
+          'bundle',
+          'create',
+          '-',
+          'baseline..main',
+          'main',
+        ]);
+        const chunks: Buffer[] = [];
+        let stderr = '';
+        child.stdout.on('data', (c: Buffer) => chunks.push(c));
+        child.stderr.on('data', (c: Buffer) => (stderr += c.toString('utf8')));
+        child.once('error', reject);
+        child.once('close', (code) =>
+          code === 0
+            ? resolve(Buffer.concat(chunks))
+            : reject(new Error(`bundle exit=${code}: ${stderr}`)),
+        );
+      });
+      return { bundleB64: buf.toString('base64') };
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  }
+
+  interface CanaryHarness {
+    bus: HookBus;
+    ctx: AgentContext;
+    server: WorkspaceGitServer;
+    serverRepoRoot: string;
+    workspaceId: string;
+    bareRepoPath: string;
+    handle: Awaited<ReturnType<typeof bootstrap>>;
+    teardown: () => Promise<void>;
+  }
+
+  async function bootCanaryHarness(
+    sessionId: string,
+  ): Promise<CanaryHarness> {
+    // Mirrors the partial-init pattern used by the earlier git-protocol
+    // canary above: every step that creates a tracked resource (server,
+    // bus handle) is gated by a try, so a throw before the helper
+    // returns doesn't leak a listener or temp repo into later tests.
+    const serverToken = randomBytes(32).toString('hex');
+    const serverRepoRoot = await fs.realpath(
+      await fs.mkdtemp(path.join(os.tmpdir(), 'ax-phase3-canary-')),
+    );
+    let server: WorkspaceGitServer | null = null;
+    let handle: Awaited<ReturnType<typeof bootstrap>> | null = null;
+    try {
+      server = await createWorkspaceGitServer({
+        repoRoot: serverRepoRoot,
+        host: '127.0.0.1',
+        port: 0,
+        token: serverToken,
+      });
+      const presetConfig: K8sPresetConfig = {
+        database: { connectionString: 'postgres://stub:5432/stub' },
+        eventbus: { connectionString: 'postgres://stub:5432/stub' },
+        session: { connectionString: 'postgres://stub:5432/stub' },
+        workspace: {
+          backend: 'git-protocol',
+          baseUrl: `http://127.0.0.1:${server.port}`,
+          token: serverToken,
+        },
+        sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
+        ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
+        chat: { runnerBinary: stubRunnerPath, chatTimeoutMs: 60_000 },
+        http: {
+          host: '127.0.0.1',
+          port: 0,
+          cookieKey: '0'.repeat(64),
+          allowedOrigins: [],
+        },
+        auth: { devBootstrap: { token: 'preset-test-bootstrap' } },
+      };
+      const presetPlugins = createK8sPlugins(presetConfig);
+      const kept = presetPlugins.filter(
+        (p) => !PLUGINS_TO_DROP.has(p.manifest.name),
+      );
+      const sqlitePath = path.join(tmp, `phase3-${sessionId}.sqlite`);
+      const replacements: Plugin[] = [
+        createStorageSqlitePlugin({ databasePath: sqlitePath }),
+        createSessionInmemoryPlugin(),
+        createSandboxSubprocessPlugin(),
+        createIpcServerPlugin(),
+        createTestProxyPlugin({
+          script: { entries: [{ kind: 'finish', reason: 'end_turn' }] },
+        }),
+        createPermissiveAgentsStubPlugin(),
+        createMcpClientPlugin(),
+      ];
+      const plugins: Plugin[] = [...kept, ...replacements];
+      const bus = new HookBus();
+      handle = await bootstrap({ bus, plugins, config: {} });
+      const userId = `phase3-user-${sessionId}`;
+      const agentId = `phase3-agent-${sessionId}`;
+      const ctx = makeAgentContext({
+        sessionId,
+        agentId,
+        userId,
+        workspace: { rootPath: tmp },
+      });
+      const workspaceId = workspaceIdFor({ userId, agentId });
+      const bareRepoPath = path.join(serverRepoRoot, `${workspaceId}.git`);
+      // Capture for the closure — TS can't narrow handle/server inside
+      // an async closure since they're outer let-bindings.
+      const handleCaptured = handle;
+      const serverCaptured = server;
+      return {
+        bus,
+        ctx,
+        server: serverCaptured,
+        serverRepoRoot,
+        workspaceId,
+        bareRepoPath,
+        handle: handleCaptured,
+        teardown: async () => {
+          await handleCaptured.shutdown();
+          await serverCaptured.close();
+          await fs.rm(serverRepoRoot, { recursive: true, force: true });
+        },
+      };
+    } catch (err) {
+      // Partial init — clean up whatever DID succeed before re-throwing.
+      // Reverse order of construction (handle drains before server
+      // closes; tempdir always cleaned).
+      if (handle !== null) {
+        await handle.shutdown().catch(() => {
+          /* best-effort */
+        });
+      }
+      if (server !== null) {
+        await server.close().catch(() => {
+          /* best-effort */
+        });
+      }
+      await fs
+        .rm(serverRepoRoot, { recursive: true, force: true })
+        .catch(() => {
+          /* best-effort */
+        });
+      throw err;
+    }
+  }
+
+  it(
+    'Phase 3 canary: workspace.commit-notify accepts a turn that adds a valid SKILL.md',
+    { timeout: 30_000 },
+    async () => {
+      const h = await bootCanaryHarness('phase3-valid-skill');
+      try {
+        const validSkillMd =
+          '---\nname: foo\ndescription: a thing the agent does\n---\n# Body\n';
+        const { bundleB64 } = await simulateRunnerTurn({
+          baselineFiles: [],
+          turnFiles: { '.ax/skills/foo/SKILL.md': validSkillMd },
+          parentDir: tmp,
+        });
+        const result = await workspaceCommitNotifyHandler(
+          {
+            parentVersion: null,
+            reason: 'turn',
+            bundleBytes: bundleB64,
+          },
+          h.ctx,
+          h.bus,
+        );
+        expect(result.status).toBe(200);
+        const body = result.body as {
+          accepted: true;
+          version: string;
+          delta: null;
+        };
+        expect(body.accepted).toBe(true);
+        expect(typeof body.version).toBe('string');
+        // Storage tier has the SKILL.md commit. Bare repo exists; the
+        // commit OID matches what the runner produced (auditability —
+        // bare repo OID chain == runner's chain).
+        expect(existsSync(h.bareRepoPath)).toBe(true);
+        const head = await git(
+          ['-C', h.bareRepoPath, 'rev-parse', 'refs/heads/main'],
+        );
+        expect(head.stdout.trim()).toBe(body.version);
+        // The file is in the tree.
+        const ls = await git(['-C', h.bareRepoPath, 'ls-tree', '-r', 'main']);
+        expect(ls.stdout).toContain('.ax/skills/foo/SKILL.md');
+      } finally {
+        await h.teardown();
+      }
+    },
+  );
+
+  it(
+    'Phase 3 canary: workspace.commit-notify rejects a turn that adds a SKILL.md with bad frontmatter',
+    { timeout: 30_000 },
+    async () => {
+      const h = await bootCanaryHarness('phase3-bad-skill');
+      try {
+        const badSkillMd = '# no frontmatter at all\n';
+        const { bundleB64 } = await simulateRunnerTurn({
+          baselineFiles: [],
+          turnFiles: { '.ax/skills/bar/SKILL.md': badSkillMd },
+          parentDir: tmp,
+        });
+        const result = await workspaceCommitNotifyHandler(
+          {
+            parentVersion: null,
+            reason: 'turn',
+            bundleBytes: bundleB64,
+          },
+          h.ctx,
+          h.bus,
+        );
+        expect(result.status).toBe(200);
+        const body = result.body as { accepted: false; reason: string };
+        expect(body.accepted).toBe(false);
+        expect(body.reason).toContain('.ax/skills/bar/SKILL.md');
+        // Storage tier was NOT updated. The bare repo may or may not
+        // exist (depending on whether ensureRepoCreated ran before the
+        // veto), but if it does, refs/heads/main should not exist
+        // (no commits landed).
+        if (existsSync(h.bareRepoPath)) {
+          const head = await git(
+            [
+              '-C',
+              h.bareRepoPath,
+              'rev-parse',
+              '--quiet',
+              '--verify',
+              'refs/heads/main',
+            ],
+          );
+          // exit 0 = ref exists; non-zero = ref doesn't exist.
+          expect(head.code).not.toBe(0);
+        }
+      } finally {
+        await h.teardown();
+      }
+    },
+  );
+
+  it(
+    'Phase 3 canary: workspace.commit-notify catches a Bash-deleted file (the gap that motivated Phase 3)',
+    { timeout: 30_000 },
+    async () => {
+      const h = await bootCanaryHarness('phase3-bash-delete');
+      try {
+        // Turn 1: seed the workspace with a file via the bundle path
+        // (so the storage tier has it to delete in turn 2).
+        const seed = await simulateRunnerTurn({
+          baselineFiles: [],
+          turnFiles: { 'doomed.txt': 'will be deleted via Bash' },
+          parentDir: tmp,
+        });
+        const turn1 = await workspaceCommitNotifyHandler(
+          {
+            parentVersion: null,
+            reason: 'turn 1: seed',
+            bundleBytes: seed.bundleB64,
+          },
+          h.ctx,
+          h.bus,
+        );
+        expect(turn1.status).toBe(200);
+        const turn1Body = turn1.body as { accepted: true; version: string };
+        expect(turn1Body.accepted).toBe(true);
+
+        // Turn 2: simulate the agent deleting the file via `Bash: rm`
+        // (no SDK Write/Edit/MultiEdit involved). The legacy
+        // PostToolUse observer would have missed this entirely; git
+        // status sees it.
+        //
+        // For turn 2 we can't use simulateRunnerTurn (which rebuilds a
+        // deterministic baseline) — the runner's actual baseline OID
+        // after turn 1 accept is the NON-deterministic turn-1 commit
+        // OID, which the simulator's deterministic build wouldn't
+        // reproduce. Instead, clone the storage tier directly (which
+        // has turn 1's commit at HEAD), make the delete commit, bundle
+        // baseline..main. This mirrors what the real runner does in
+        // production — its local repo persists across turns.
+        const turn2Root = await fs.mkdtemp(path.join(tmp, 'turn2-'));
+        let turn2BundleB64: string;
+        try {
+          const cl = await git(['clone', h.bareRepoPath, turn2Root]);
+          if (cl.code !== 0) throw new Error(`turn2 clone: ${cl.stderr}`);
+          // Pin baseline to current HEAD = turn 1's tip = runner's
+          // local baseline after turn 1 accept.
+          await git(['-C', turn2Root, 'update-ref', 'refs/heads/baseline', 'HEAD']);
+          await git(['-C', turn2Root, 'config', 'user.name', 'ax-runner']);
+          await git(['-C', turn2Root, 'config', 'user.email', 'ax-runner@example.com']);
+          // Bash-style delete.
+          await fs.unlink(path.join(turn2Root, 'doomed.txt'));
+          await git(['-C', turn2Root, 'add', '-A']);
+          await git(['-C', turn2Root, 'commit', '-m', 'turn 2: bash delete']);
+          // Bundle thin: baseline..main + main ref.
+          const buf = await new Promise<Buffer>((resolve, reject) => {
+            const child = spawn('git', [
+              '-C',
+              turn2Root,
+              'bundle',
+              'create',
+              '-',
+              'baseline..main',
+              'main',
+            ]);
+            const chunks: Buffer[] = [];
+            let stderr = '';
+            child.stdout.on('data', (c: Buffer) => chunks.push(c));
+            child.stderr.on('data', (c: Buffer) => (stderr += c.toString('utf8')));
+            child.once('error', reject);
+            child.once('close', (code) =>
+              code === 0
+                ? resolve(Buffer.concat(chunks))
+                : reject(new Error(`turn2 bundle: ${stderr}`)),
+            );
+          });
+          turn2BundleB64 = buf.toString('base64');
+        } finally {
+          await fs.rm(turn2Root, { recursive: true, force: true });
+        }
+
+        const turn2Result = await workspaceCommitNotifyHandler(
+          {
+            parentVersion: turn1Body.version,
+            reason: 'turn 2: bash delete',
+            bundleBytes: turn2BundleB64,
+          },
+          h.ctx,
+          h.bus,
+        );
+        expect(turn2Result.status).toBe(200);
+        const turn2Body = turn2Result.body as {
+          accepted: true;
+          version: string;
+        };
+        // turn 2 accepted — git status caught the Bash-style delete
+        // (the gap that motivated Phase 3). Pre-Phase-3, deletes via
+        // Bash were invisible to the PostToolUse-based observer.
+        expect(turn2Body.accepted).toBe(true);
+
+        // The file is GONE from the storage tier.
+        const ls = await git(['-C', h.bareRepoPath, 'ls-tree', '-r', 'main']);
+        expect(ls.stdout).not.toContain('doomed.txt');
+      } finally {
+        await h.teardown();
       }
     },
   );

@@ -126,4 +126,56 @@ describe('buildPodSpec', () => {
     // entire k8s network perimeter is a no-op for runner pods.
     expect(spec.metadata.labels['ax.io/plane']).toBe('execution');
   });
+
+  it('mounts /permanent (workspace) and /ephemeral (scratch) emptyDirs', () => {
+    // Phase 3: the legacy single /workspace mount is replaced by two
+    // emptyDirs. /permanent holds the git working tree (materialize source,
+    // turn-end commit/bundle target). /ephemeral holds caches and scratch
+    // (anything not part of the workspace lineage). Splitting them keeps
+    // the storage tier bounded by what's actually persisted across turns.
+    const spec = buildPodSpec('h', baseInput, baseResolved());
+    const containers = (
+      spec.spec as {
+        containers: Array<{ volumeMounts?: Array<{ name: string; mountPath: string }> }>;
+      }
+    ).containers;
+    const mounts = containers[0]!.volumeMounts ?? [];
+    expect(mounts.find((m) => m.mountPath === '/permanent')).toBeDefined();
+    expect(mounts.find((m) => m.mountPath === '/ephemeral')).toBeDefined();
+    // No legacy /workspace mount.
+    expect(mounts.find((m) => m.mountPath === '/workspace')).toBeUndefined();
+
+    const volumes = (spec.spec as { volumes?: Array<{ name: string; emptyDir?: object }> })
+      .volumes ?? [];
+    const permanent = volumes.find((v) => v.name === 'permanent');
+    expect(permanent?.emptyDir).toBeDefined();
+    const ephemeral = volumes.find((v) => v.name === 'ephemeral');
+    expect(ephemeral?.emptyDir).toBeDefined();
+    // No legacy `workspace` volume.
+    expect(volumes.find((v) => v.name === 'workspace')).toBeUndefined();
+  });
+
+  it('carries paranoid git env on the runner container', () => {
+    // Phase 3: the sandbox materializes /permanent from a host-streamed
+    // baseline bundle and ships per-turn diffs as `git bundle`. To do that
+    // it spawns the in-image `git` binary. These env vars are the locked-
+    // down rails per design doc Phase 3 / SECURITY.md — they prevent
+    // git-init from reading user-global config, refuse remote helpers,
+    // and pin commit author/committer to `ax-runner` so the host bundler
+    // can verify provenance before applying.
+    const spec = buildPodSpec('g', baseInput, baseResolved());
+    const env = (
+      spec.spec as { containers: Array<{ env: Array<{ name: string; value: string }> }> }
+    ).containers[0]!.env;
+    const byName = (n: string) => env.find((e) => e.name === n)?.value;
+
+    expect(byName('GIT_CONFIG_NOSYSTEM')).toBe('1');
+    expect(byName('GIT_CONFIG_GLOBAL')).toBe('/dev/null');
+    expect(byName('GIT_TERMINAL_PROMPT')).toBe('0');
+    expect(byName('HOME')).toBe('/nonexistent');
+    expect(byName('GIT_AUTHOR_NAME')).toBe('ax-runner');
+    expect(byName('GIT_AUTHOR_EMAIL')).toBe('ax-runner@example.com');
+    expect(byName('GIT_COMMITTER_NAME')).toBe('ax-runner');
+    expect(byName('GIT_COMMITTER_EMAIL')).toBe('ax-runner@example.com');
+  });
 });

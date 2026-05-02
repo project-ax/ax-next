@@ -354,6 +354,9 @@ importers:
       '@ax/test-harness':
         specifier: workspace:*
         version: link:../test-harness
+      '@ax/validator-skill':
+        specifier: workspace:*
+        version: link:../validator-skill
       zod:
         specifier: ^3.23.8
         version: 3.25.76
@@ -1032,6 +1035,28 @@ importers:
         specifier: ^4.1.4
         version: 4.1.5(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(jsdom@26.1.0)(vite@8.0.10(@types/node@25.6.0)(yaml@2.8.3))
 
+  packages/validator-skill:
+    dependencies:
+      '@ax/core':
+        specifier: workspace:*
+        version: link:../core
+      js-yaml:
+        specifier: ^4.1.0
+        version: 4.1.1
+    devDependencies:
+      '@types/js-yaml':
+        specifier: ^4.0.9
+        version: 4.0.9
+      '@types/node':
+        specifier: ^25.6.0
+        version: 25.6.0
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^4.1.4
+        version: 4.1.5(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(jsdom@26.1.0)(vite@8.0.10(@types/node@25.6.0)(yaml@2.8.3))
+
   packages/workspace-git:
     dependencies:
       '@ax/core':
@@ -1213,6 +1238,9 @@ importers:
       '@ax/teams':
         specifier: workspace:*
         version: link:../../packages/teams
+      '@ax/validator-skill':
+        specifier: workspace:*
+        version: link:../../packages/validator-skill
       '@ax/workspace-git':
         specifier: workspace:*
         version: link:../../packages/workspace-git
@@ -1223,6 +1251,9 @@ importers:
         specifier: workspace:*
         version: link:../../packages/workspace-git-server
     devDependencies:
+      '@ax/ipc-core':
+        specifier: workspace:*
+        version: link:../../packages/ipc-core
       '@ax/ipc-server':
         specifier: workspace:*
         version: link:../../packages/ipc-server
