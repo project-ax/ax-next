@@ -60,6 +60,21 @@ If the host crashes, hangs, or otherwise fails to call `killPod`, the pod doesn'
 
 The host plugin doesn't touch the filesystem at all. `grep -nE 'fs\\.|node:fs' packages/sandbox-k8s/src/*.ts` returns nothing — no `readFile`, no `writeFile`, no `mkdir`, no `unlink`. Everything goes through the k8s API. The legacy v1 provider had filesystem reach for socket paths (`/tmp/<session>.sock`); v2's HTTP-over-TCP shape eliminates that surface.
 
+### Git binary as of Phase 3
+
+The sandbox image now ships `git` so the runner can materialize `/permanent` from a host-streamed baseline bundle at session start and bundle per-turn diffs at turn end. That's a new spawn capability. We'd be lying to ourselves if we didn't write it down.
+
+The runner's git env is locked down at the pod-spec level (`pod-spec.ts`'s `gitParanoidEnv`):
+
+- `GIT_CONFIG_NOSYSTEM=1` and `GIT_CONFIG_GLOBAL=/dev/null` keep `git init` / `git clone` from reading the user-global or system-global git config. A compromised image with a malicious `/etc/gitconfig` (e.g., setting `core.editor` to a payload) can't reach those paths from within the runner's environment.
+- `HOME=/nonexistent` belt-and-suspenders the same point: even if a future git release adds new config locations under `$HOME`, the runner has no `$HOME` directory to look in.
+- `GIT_TERMINAL_PROMPT=0` refuses interactive credential prompts. A `git clone` against a missing remote fails fast instead of hanging waiting for stdin (which the runner has no humans on).
+- `GIT_AUTHOR_*` / `GIT_COMMITTER_*` pin to `ax-runner@example.com` so every commit the runner produces is provably authored by the runner. The host bundler verifies this before applying — a sandbox that managed to fabricate an unsigned commit attributed to a different identity gets the bundle rejected.
+
+What the env vars do NOT block: the runner CAN init a repo, commit, bundle, and push to the bundle file inside `/permanent`. That's the point — the design doc requires it. Network-reachable git remotes are blocked by the cluster NetworkPolicy (sandbox egress is allowed only to the host pod), not by env. Layered defense; if the NetworkPolicy is wrong, the env doesn't save us.
+
+`PATH` is intentionally NOT set in `gitParanoidEnv`. The container image's ENTRYPOINT controls binary lookup; if a future image trim removes `git` or replaces it with a different version, the runner's bootstrap fails loudly at `git --version` rather than silently picking up a different binary from a path we forced. Image is the trust root for binary lookup.
+
 ### Caller-controlled inputs to the pod spec
 
 Three fields cross from caller into pod env:

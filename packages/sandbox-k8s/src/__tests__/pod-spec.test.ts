@@ -126,4 +126,28 @@ describe('buildPodSpec', () => {
     // entire k8s network perimeter is a no-op for runner pods.
     expect(spec.metadata.labels['ax.io/plane']).toBe('execution');
   });
+
+  it('carries paranoid git env on the runner container', () => {
+    // Phase 3: the sandbox materializes /permanent from a host-streamed
+    // baseline bundle and ships per-turn diffs as `git bundle`. To do that
+    // it spawns the in-image `git` binary. These env vars are the locked-
+    // down rails per design doc Phase 3 / SECURITY.md — they prevent
+    // git-init from reading user-global config, refuse remote helpers,
+    // and pin commit author/committer to `ax-runner` so the host bundler
+    // can verify provenance before applying.
+    const spec = buildPodSpec('g', baseInput, baseResolved());
+    const env = (
+      spec.spec as { containers: Array<{ env: Array<{ name: string; value: string }> }> }
+    ).containers[0]!.env;
+    const byName = (n: string) => env.find((e) => e.name === n)?.value;
+
+    expect(byName('GIT_CONFIG_NOSYSTEM')).toBe('1');
+    expect(byName('GIT_CONFIG_GLOBAL')).toBe('/dev/null');
+    expect(byName('GIT_TERMINAL_PROMPT')).toBe('0');
+    expect(byName('HOME')).toBe('/nonexistent');
+    expect(byName('GIT_AUTHOR_NAME')).toBe('ax-runner');
+    expect(byName('GIT_AUTHOR_EMAIL')).toBe('ax-runner@example.com');
+    expect(byName('GIT_COMMITTER_NAME')).toBe('ax-runner');
+    expect(byName('GIT_COMMITTER_EMAIL')).toBe('ax-runner@example.com');
+  });
 });
