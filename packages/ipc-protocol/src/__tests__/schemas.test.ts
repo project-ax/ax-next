@@ -173,14 +173,54 @@ describe('workspace.commit-notify', () => {
     expect(r.success).toBe(false);
   });
 
-  it('round-trips a request payload', () => {
+  it('round-trips a request payload (Phase 3 bundleBytes shape)', () => {
     const parsed = WorkspaceCommitNotifyRequestSchema.parse({
       parentVersion: null,
-      commitRef: 'abc123',
-      message: 'initial',
+      reason: 'turn',
+      bundleBytes: '',
     });
     expect(parsed.parentVersion).toBeNull();
-    expect(parsed.commitRef).toBe('abc123');
+    expect(parsed.reason).toBe('turn');
+    expect(parsed.bundleBytes).toBe('');
+  });
+
+  it('round-trips a non-empty bundle as base64 string', () => {
+    const b64 = Buffer.from('PACK\x00\x00').toString('base64');
+    const parsed = WorkspaceCommitNotifyRequestSchema.parse({
+      parentVersion: 'v-token-1',
+      reason: 'turn',
+      bundleBytes: b64,
+    });
+    expect(parsed.parentVersion).toBe('v-token-1');
+    expect(parsed.bundleBytes).toBe(b64);
+  });
+
+  it('rejects a request missing bundleBytes', () => {
+    expect(
+      WorkspaceCommitNotifyRequestSchema.safeParse({
+        parentVersion: null,
+        reason: 'turn',
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects a request missing reason', () => {
+    expect(
+      WorkspaceCommitNotifyRequestSchema.safeParse({
+        parentVersion: null,
+        bundleBytes: '',
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects a request with non-string bundleBytes', () => {
+    expect(
+      WorkspaceCommitNotifyRequestSchema.safeParse({
+        parentVersion: null,
+        reason: 'turn',
+        bundleBytes: 42,
+      }).success,
+    ).toBe(false);
   });
 });
 
@@ -527,12 +567,13 @@ describe('timeouts', () => {
     expect(Object.isFrozen(IPC_TIMEOUTS_MS)).toBe(true);
   });
 
-  it('IPC_TIMEOUTS_MS has the seven expected keys', () => {
+  it('IPC_TIMEOUTS_MS has the eight expected keys (Phase 3 added workspace.materialize)', () => {
     const expected = [
       'tool.pre-call',
       'tool.execute-host',
       'tool.list',
       'workspace.commit-notify',
+      'workspace.materialize',
       'session.next-message',
       'session.get-config',
       'conversation.fetch-history',
@@ -547,11 +588,12 @@ describe('timeouts', () => {
       'tool.execute-host',
       'tool.list',
       'workspace.commit-notify',
+      'workspace.materialize',
       'session.next-message',
       'session.get-config',
       'conversation.fetch-history',
     ];
-    expect(names).toHaveLength(7);
+    expect(names).toHaveLength(8);
   });
 });
 

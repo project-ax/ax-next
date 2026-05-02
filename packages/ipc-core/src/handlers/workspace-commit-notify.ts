@@ -1,11 +1,4 @@
 import {
-  PluginError,
-  type FileChange,
-  type WorkspaceApplyInput,
-  type WorkspaceApplyOutput,
-  type WorkspaceVersion,
-} from '@ax/core';
-import {
   WorkspaceCommitNotifyRequestSchema,
   WorkspaceCommitNotifyResponseSchema,
 } from '@ax/ipc-protocol';
@@ -19,125 +12,53 @@ import type { ActionHandler } from './types.js';
 // ---------------------------------------------------------------------------
 // POST /workspace.commit-notify
 //
-// One per-turn (NOT per-tool-call) notify from the runner. Wire shape:
-//   { parentVersion, commitRef, message, changes }
+// Phase 3 wire change LANDED, real implementation PENDING.
 //
-// Hook pipeline:
-//   fire('workspace:pre-apply')  →  observe/transform, may reject
-//   call('workspace:apply')      →  the registered workspace plugin
-//   fire('workspace:applied')    →  observe-only (audit, scanners, etc.)
+// HALF-WIRED WINDOW STATUS:
+//   This commit (Slice 5) flips the wire schema from `{commitRef, message,
+//   changes}` to `{parentVersion, reason, bundleBytes}`. The runner is
+//   not yet shipping bundles (that's Slice 7), and the host bundler that
+//   unpacks them isn't built yet (that's Slice 6). This handler returns
+//   `{accepted: false, reason: 'bundle-wire-not-implemented'}` to make the
+//   gap explicit — no silent successes, no silent storage corruption.
 //
-// `commitRef` is an opaque runner-side identifier (the runner's local
-// snapshot handle — git impl uses a SHA, others may not). The host never
-// dispatches on it; the `changes` array IS the source of truth. Keeping
-// `commitRef` on the schema lets the runner correlate without forcing the
-// host into a backend-specific lookup.
+//   The window CLOSES when Slice 6 ships the real bundler (replacing this
+//   stub) and Slice 7 ships the runner sender. Both are required before
+//   this PR can land.
 //
-// Wire response is `{accepted, version, delta: null}` on success — the
-// delta is intentionally NEVER serialized (Invariant I5). `WorkspaceDelta`
-// carries lazy `contentBefore`/`contentAfter` fetchers that don't survive
-// JSON, and exposing the content set across the trust boundary widens the
-// blast radius of a compromised sandbox. Subscribers that need the delta
-// run host-side via `workspace:applied`.
+// TODO(phase-3-S6): replace with the real bundler-driven handler.
 // ---------------------------------------------------------------------------
 
-export const workspaceCommitNotifyHandler: ActionHandler = async (rawPayload, ctx, bus) => {
+export const workspaceCommitNotifyHandler: ActionHandler = async (
+  rawPayload,
+  ctx,
+  _bus,
+) => {
   const parsed = WorkspaceCommitNotifyRequestSchema.safeParse(rawPayload);
   if (!parsed.success) {
     return validationError(`workspace.commit-notify: ${parsed.error.message}`);
   }
-  const { parentVersion, message, changes } = parsed.data;
 
-  // The wire schema's `parentVersion` is `string | null`; stamp the brand so
-  // the workspace plugin keeps its opaque-token contract.
-  const parent = (parentVersion as WorkspaceVersion | null) ?? null;
-  // After Zod's transform, `changes[i].content` is a Uint8Array — shape-
-  // compatible with the kernel `FileChange` type.
-  const fileChanges: FileChange[] = changes;
-
-  // ---- pre-apply: subscribers can transform or veto ----
-  const pre = await bus.fire<{ changes: FileChange[]; parent: WorkspaceVersion | null; reason: string }>(
-    'workspace:pre-apply',
-    ctx,
-    { changes: fileChanges, parent, reason: message },
-  );
-  if (pre.rejected) {
-    const body = { accepted: false as const, reason: pre.reason };
-    const checked = WorkspaceCommitNotifyResponseSchema.safeParse(body);
-    if (!checked.success) {
-      logInternalError(
-        ctx.logger,
-        'workspace.commit-notify',
-        new Error(`response shape drift (rejected): ${checked.error.message}`),
-      );
-      return internalError();
-    }
-    return { status: 200, body: checked.data };
-  }
-
-  // ---- apply: thrown PluginError({code:'parent-mismatch'}) is the one
-  // failure mode we surface as accepted:false. Anything else bubbles up
-  // to the dispatcher, which turns it into a sanitized 500. ----
-  let applied: WorkspaceApplyOutput;
-  try {
-    applied = await bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>(
-      'workspace:apply',
-      ctx,
-      {
-        changes: pre.payload.changes,
-        parent: pre.payload.parent,
-        reason: pre.payload.reason,
-      },
-    );
-  } catch (err) {
-    if (err instanceof PluginError && err.code === 'parent-mismatch') {
-      const body = {
-        accepted: false as const,
-        reason: `parent-mismatch: ${err.message}`,
-      };
-      const checked = WorkspaceCommitNotifyResponseSchema.safeParse(body);
-      if (!checked.success) {
-        logInternalError(
-          ctx.logger,
-          'workspace.commit-notify',
-          new Error(`response shape drift (parent-mismatch): ${checked.error.message}`),
-        );
-        return internalError();
-      }
-      return { status: 200, body: checked.data };
-    }
-    // Re-throw — the dispatcher's catch-all logs and writes a 500.
-    throw err;
-  }
-
-  // ---- applied: observers (audit, canary, skill validator) get the
-  // host-side delta with its lazy fetchers intact. ----
-  const post = await bus.fire('workspace:applied', ctx, applied.delta);
-  if (post.rejected) {
-    // `workspace:applied` is post-fact — a "rejection" here means a
-    // subscriber tried to veto something already landed. Treat as
-    // misuse and 500 (sanitized). Log the reason for debugging.
-    logInternalError(
-      ctx.logger,
-      'workspace.commit-notify',
-      new Error(`workspace:applied subscriber rejected post-fact: ${post.reason}`),
-    );
-    return internalError();
-  }
+  // Loud diagnostic so a runtime that hits this stub during the half-
+  // wired window leaves a fingerprint in host logs. Disappears with
+  // Slice 6.
+  ctx.logger.error('workspace_commit_notify_stub', {
+    msg: 'bundle wire not yet implemented (Phase 3 half-wired window — Slice 5 → Slice 6)',
+    parentVersion: parsed.data.parentVersion,
+    reason: parsed.data.reason,
+    bundleBytesLength: parsed.data.bundleBytes.length,
+  });
 
   const body = {
-    accepted: true as const,
-    // Wire schema brands the version via .transform on parse; we hand off
-    // the unbranded string and let the schema re-brand on the way out.
-    version: applied.version as string,
-    delta: null,
+    accepted: false as const,
+    reason: 'bundle-wire-not-implemented',
   };
   const checked = WorkspaceCommitNotifyResponseSchema.safeParse(body);
   if (!checked.success) {
     logInternalError(
       ctx.logger,
       'workspace.commit-notify',
-      new Error(`response shape drift (accepted): ${checked.error.message}`),
+      new Error(`response shape drift (stub): ${checked.error.message}`),
     );
     return internalError();
   }

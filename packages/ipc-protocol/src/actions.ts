@@ -108,34 +108,18 @@ export const ToolListResponseSchema = z.object({
 export type ToolListResponse = z.infer<typeof ToolListResponseSchema>;
 
 // ---------------------------------------------------------------------------
-// workspace.commit-notify
+// FileChangeSchema (legacy — slated for deletion in Phase 3 Slice 10).
 //
-// Invariant I4: field names must not leak one backend's vocabulary.
-// - `parentVersion` / `version` instead of `parentSha` / `sha` (git-ism)
-// - `commitRef` is the generic handle — not "blobId", not "objectId"
-// - `delta` is null for now; schema leaves room for a future wire shape
-//   without forcing one backend's diff format into the protocol.
-//
-// `changes` is the runner's per-turn diff against `parentVersion`. The wire
-// is JSON, so binary file content is base64-encoded in transit and the Zod
-// transform decodes to `Uint8Array` so the parsed shape matches `@ax/core`'s
-// `FileChange` directly. Encoding is the runner's responsibility (see Task
-// 7c). `commitRef` is an opaque runner-side identifier; the host doesn't
-// dispatch on it — the `changes` array IS the source of truth.
+// Pre-Phase-3 wire shape for per-turn diffs. Still imported by tests in
+// the legacy diff-accumulator (also slated for deletion). Kept here to
+// avoid a multi-PR churn; the cleanup commit drops both together.
 // ---------------------------------------------------------------------------
 
-/**
- * Wire mirror of `@ax/core.FileChange`. The canonical type lives in
- * `@ax/core`; this schema parses the JSON-on-the-wire encoding (base64 for
- * `put.content`) and transforms it to bytes so the parsed value is
- * shape-compatible with the kernel type.
- */
 export const FileChangeSchema = z.discriminatedUnion('kind', [
   z.object({
     path: z.string(),
     kind: z.literal('put'),
     // Bytes ride the wire as base64 strings (JSON can't carry Uint8Array).
-    // Transform to bytes so consumers see `@ax/core.FileChange`-shaped data.
     content: z.string().transform((b64) => new Uint8Array(Buffer.from(b64, 'base64'))),
   }),
   z.object({
@@ -145,13 +129,39 @@ export const FileChangeSchema = z.discriminatedUnion('kind', [
 ]);
 export type WireFileChange = z.infer<typeof FileChangeSchema>;
 
+// ---------------------------------------------------------------------------
+// workspace.commit-notify
+//
+// Phase 3 (this PR): the runner ships per-turn diffs as a `git bundle` of
+// commits authored by `ax-runner`, base64-encoded as `bundleBytes`. The
+// host unpacks the bundle, verifies provenance, and translates to a
+// canonical `WorkspaceChange[]` BEFORE firing any bus hook. The wire field
+// `bundleBytes` is git-vocabulary, but per Invariant I1 that's allowed
+// here — same justification as `workspace.materialize`:
+//   1. This is the sandbox-host transport axis; no `workspace:*` bus hook
+//      ever sees the bundle bytes.
+//   2. Host bundler (Slice 6) decodes the bundle into backend-agnostic
+//      `WorkspaceChange[]` before the first subscriber visibility.
+//
+// `parentVersion` is opaque (`workspace:apply` returns it; the runner round-
+// trips it). `reason` is a free-text label for the commit ("turn", or a
+// future user-supplied tag); it surfaces as the `reason` field on the
+// `workspace:pre-apply` payload so subscribers can shape their decision.
+//
+// Empty bundle: a turn that wrote nothing. `bundleBytes === ''` short-
+// circuits the handler (no apply, returns `accepted: true` against the
+// existing parentVersion). Preserved as a no-op rather than a hard error
+// because some turn boundaries genuinely write nothing (e.g., the model
+// answered without touching files).
+// ---------------------------------------------------------------------------
+
 export const WorkspaceCommitNotifyRequestSchema = z.object({
   parentVersion: z.string().nullable(),
-  commitRef: z.string(),
-  message: z.string(),
-  // Backwards-compat default: pre-Task-7c runners that don't yet send
-  // `changes` continue to round-trip as an empty diff (no-op apply).
-  changes: z.array(FileChangeSchema).default([]),
+  reason: z.string(),
+  // base64-encoded git bundle bytes from the runner's
+  // `git bundle create - baseline..HEAD`. Empty string => no commits this
+  // turn (handler short-circuits; no apply called).
+  bundleBytes: z.string(),
 });
 export type WorkspaceCommitNotifyRequest = z.infer<
   typeof WorkspaceCommitNotifyRequestSchema

@@ -267,15 +267,19 @@ describe('dispatcher', () => {
   // /workspace.commit-notify
   // -------------------------------------------------------------------------
 
-  it('POST /workspace.commit-notify — happy path through real bus + MockWorkspace', async () => {
+  it('POST /workspace.commit-notify — half-wired stub returns bundle-wire-not-implemented (Phase 3 Slice 5)', async () => {
+    // Phase 3 Slice 5: wire schema bumped to {parentVersion, reason,
+    // bundleBytes}; real bundler-driven handler lands in Slice 6. Until
+    // then the dispatcher routes the request, the schema parses, and the
+    // stub returns accepted:false with a clear reason. Slice 6 replaces
+    // this with the real round-trip (bundle decoded → pre-apply → apply
+    // → applied).
     const s = await setup({ plugins: [createMockWorkspacePlugin()] });
     setups.push(s);
-    const helloB64 = Buffer.from('hello world', 'utf8').toString('base64');
     const req = {
       parentVersion: null,
-      commitRef: 'ref-1',
-      message: 'initial',
-      changes: [{ path: 'a.txt', kind: 'put', content: helloB64 }],
+      reason: 'turn',
+      bundleBytes: '',
     };
     const res = await doRequest(
       s.socketPath,
@@ -286,15 +290,11 @@ describe('dispatcher', () => {
     );
     expect(res.status).toBe(200);
     const parsed = JSON.parse(res.body) as {
-      accepted: true;
-      version: string;
-      delta: null;
+      accepted: false;
+      reason: string;
     };
-    expect(parsed.accepted).toBe(true);
-    // Wire response NEVER carries the delta payload (Invariant I5).
-    expect(parsed.delta).toBeNull();
-    expect(typeof parsed.version).toBe('string');
-    expect(parsed.version.length).toBeGreaterThan(0);
+    expect(parsed.accepted).toBe(false);
+    expect(parsed.reason).toBe('bundle-wire-not-implemented');
   });
 
   // -------------------------------------------------------------------------
