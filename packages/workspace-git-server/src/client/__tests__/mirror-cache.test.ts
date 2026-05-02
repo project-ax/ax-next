@@ -1,11 +1,25 @@
-import * as childProcess from 'node:child_process';
-import { existsSync, statSync } from 'node:fs';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createMirrorCache, type MirrorHandle } from '../mirror-cache.js';
+// Wrap node:child_process so we can count `git init --bare` invocations.
+// `vi.spyOn` does not work on ESM module namespaces (Vitest limitation), so
+// we use `vi.mock` with `importOriginal` to forward calls to the real
+// implementation while letting us inspect them via `mockedSpawn.mock.calls`.
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('node:child_process')>();
+  return {
+    ...actual,
+    spawn: vi.fn(actual.spawn),
+  };
+});
+
+// Imported AFTER vi.mock so the cache's `spawn` reference is the wrapped one.
+const { spawn: mockedSpawn } = await import('node:child_process');
+const { createMirrorCache } = await import('../mirror-cache.js');
+type MirrorHandle = import('../mirror-cache.js').MirrorHandle;
 
 // --------------------------------------------------------------------------
 // Test scaffolding: each test gets its own cacheRoot so we don't pollute the
@@ -168,43 +182,39 @@ describe('mirror-cache — shutdown removes all tempdirs', () => {
 
 describe('mirror-cache — concurrency-safe acquire', () => {
   it('10 simultaneous acquire(sameId) calls invoke git init exactly once', async () => {
-    const spawnSpy = vi.spyOn(childProcess, 'spawn');
+    vi.mocked(mockedSpawn).mockClear();
+    const cache = createMirrorCache({ cacheRoot });
     try {
-      const cache = createMirrorCache({ cacheRoot });
-      try {
-        const promises = Array.from({ length: 10 }, () =>
-          cache.acquire('ws-concurrent00001'),
-        );
-        const handles = await Promise.all(promises);
+      const promises = Array.from({ length: 10 }, () =>
+        cache.acquire('ws-concurrent00001'),
+      );
+      const handles = await Promise.all(promises);
 
-        // All resolve to the same handle (and thus the same dir).
-        for (let i = 1; i < handles.length; i++) {
-          expect(handles[i]).toBe(handles[0]);
-          expect(handles[i]!.dir).toBe(handles[0]!.dir);
-        }
-
-        // Count how many `git init` invocations happened. The spawn spy will
-        // pick up every spawn call; filter to ones where args[0] is 'git' and
-        // the first arg is 'init' (or args[1][0] === 'init' depending on shape).
-        const initInvocations = spawnSpy.mock.calls.filter((call) => {
-          const cmd = call[0];
-          const args = call[1];
-          return (
-            cmd === 'git' &&
-            Array.isArray(args) &&
-            args[0] === 'init' &&
-            args.includes('--bare')
-          );
-        });
-        expect(initInvocations.length).toBe(1);
-
-        // And the on-disk dir exists.
-        expect(isBareRepo(handles[0]!.dir)).toBe(true);
-      } finally {
-        await cache.shutdown();
+      // All resolve to the same handle (and thus the same dir).
+      for (let i = 1; i < handles.length; i++) {
+        expect(handles[i]).toBe(handles[0]);
+        expect(handles[i]!.dir).toBe(handles[0]!.dir);
       }
+
+      // Count how many `git init --bare` invocations happened. Filter to
+      // calls where args[0] === 'git' and the args list begins with 'init'
+      // and includes '--bare'.
+      const initInvocations = vi.mocked(mockedSpawn).mock.calls.filter((call) => {
+        const cmd = call[0];
+        const args = call[1];
+        return (
+          cmd === 'git' &&
+          Array.isArray(args) &&
+          args[0] === 'init' &&
+          args.includes('--bare')
+        );
+      });
+      expect(initInvocations.length).toBe(1);
+
+      // And the on-disk dir exists.
+      expect(isBareRepo(handles[0]!.dir)).toBe(true);
     } finally {
-      spawnSpy.mockRestore();
+      await cache.shutdown();
     }
   });
 });
@@ -240,38 +250,34 @@ describe('mirror-cache — custom cacheMaxEntries', () => {
 
 describe('mirror-cache — re-acquire after eviction', () => {
   it('with cap 1, evicted id re-acquires to a NEW dir and git init runs again', async () => {
-    const spawnSpy = vi.spyOn(childProcess, 'spawn');
+    vi.mocked(mockedSpawn).mockClear();
+    const cache = createMirrorCache({ cacheRoot, cacheMaxEntries: 1 });
     try {
-      const cache = createMirrorCache({ cacheRoot, cacheMaxEntries: 1 });
-      try {
-        const a1 = await cache.acquire('ws-evict0000000a01');
-        // Acquire B — evicts A.
-        const b = await cache.acquire('ws-evict0000000b01');
-        expect(existsSync(a1.dir)).toBe(false);
-        expect(isBareRepo(b.dir)).toBe(true);
+      const a1 = await cache.acquire('ws-evict0000000a01');
+      // Acquire B — evicts A.
+      const b = await cache.acquire('ws-evict0000000b01');
+      expect(existsSync(a1.dir)).toBe(false);
+      expect(isBareRepo(b.dir)).toBe(true);
 
-        // Re-acquire A — should be a fresh handle with a new dir.
-        const a2 = await cache.acquire('ws-evict0000000a01');
-        expect(a2.dir).not.toBe(a1.dir);
-        expect(isBareRepo(a2.dir)).toBe(true);
+      // Re-acquire A — should be a fresh handle with a new dir.
+      const a2 = await cache.acquire('ws-evict0000000a01');
+      expect(a2.dir).not.toBe(a1.dir);
+      expect(isBareRepo(a2.dir)).toBe(true);
 
-        // Count git init --bare invocations. Should be 3: A1, B, A2.
-        const initInvocations = spawnSpy.mock.calls.filter((call) => {
-          const cmd = call[0];
-          const args = call[1];
-          return (
-            cmd === 'git' &&
-            Array.isArray(args) &&
-            args[0] === 'init' &&
-            args.includes('--bare')
-          );
-        });
-        expect(initInvocations.length).toBe(3);
-      } finally {
-        await cache.shutdown();
-      }
+      // Count git init --bare invocations. Should be 3: A1, B, A2.
+      const initInvocations = vi.mocked(mockedSpawn).mock.calls.filter((call) => {
+        const cmd = call[0];
+        const args = call[1];
+        return (
+          cmd === 'git' &&
+          Array.isArray(args) &&
+          args[0] === 'init' &&
+          args.includes('--bare')
+        );
+      });
+      expect(initInvocations.length).toBe(3);
     } finally {
-      spawnSpy.mockRestore();
+      await cache.shutdown();
     }
   });
 });
