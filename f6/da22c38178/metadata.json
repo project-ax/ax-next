@@ -1,0 +1,25 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "f6da22c38178",
+  "strategy": "manual-commit",
+  "branch": "feat/phase-c-runner-sessions",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "packages/workspace-git-server/src/client/__tests__/mirror-cache.test.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/f6/da22c38178/0/metadata.json",
+      "transcript": "/f6/da22c38178/0/full.jsonl",
+      "content_hash": "/f6/da22c38178/0/content_hash.txt",
+      "prompt": "/f6/da22c38178/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 41,
+    "cache_creation_tokens": 64527,
+    "cache_read_tokens": 10358232,
+    "output_tokens": 18871,
+    "api_call_count": 36
+  }
+}

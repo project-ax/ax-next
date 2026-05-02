@@ -1,0 +1,48 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "f6da22c38178",
+  "session_id": "1977eb4a-3d20-4677-b8b8-a6cfa5d35ea6",
+  "strategy": "manual-commit",
+  "created_at": "2026-05-02T17:24:30.481769Z",
+  "branch": "feat/phase-c-runner-sessions",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "packages/workspace-git-server/src/client/__tests__/mirror-cache.test.ts"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "b2629fd09f00",
+  "checkpoint_transcript_start": 497,
+  "transcript_lines_at_start": 497,
+  "token_usage": {
+    "input_tokens": 41,
+    "cache_creation_tokens": 64527,
+    "cache_read_tokens": 10358232,
+    "output_tokens": 18871,
+    "api_call_count": 36
+  },
+  "session_metrics": {
+    "turn_count": 3
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-05-02T17:24:30.452455Z",
+    "agent_lines": 19,
+    "agent_removed": 5,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 19,
+    "total_lines_changed": 24,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}
