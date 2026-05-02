@@ -257,31 +257,19 @@ export function createConversationsPlugin(
         async (ctx, input) => storeRunnerSession(localStore, ctx, input),
       );
 
-      // chat:turn-end auto-append (Task 3 of Week 10–12).
+      // chat:turn-end subscriber.
       //
-      // The runner emits event.turn-end with `contentBlocks` + `role` after
-      // every turn; the IPC handler validates against EventTurnEndSchema
-      // and fires this subscriber. We append to ctx.conversationId via the
-      // existing :append-turn service hook so the same agents:resolve gate
-      // (Invariant J1) runs on the auto-append as on any explicit one.
-      //
-      // Contract:
-      //   - No-op when ctx.conversationId is unset (Task 16 wires it; until
-      //     then, canary chats run without a conversation).
-      //   - No-op when payload.contentBlocks is missing/empty (heartbeat
-      //     turn-ends MUST stay heartbeats — never write empty rows).
-      //   - Failures from :append-turn are caught and logged; chat flow
-      //     MUST NOT abort if storage hiccups (subscriber-must-not-throw).
+      // Phase D (2026-05-02): the runner's native jsonl is the source of
+      // truth for transcripts. We no longer call `conversations:append-turn`
+      // here — only bump `last_activity_at` so sidebar ordering keeps
+      // tracking user-visible activity (I8). Heartbeats stay heartbeats
+      // (no bump). The :append-turn service hook is still registered for
+      // explicit callers (channel-web's user-turn append on POST).
       bus.subscribe<TurnEndPayload>(
         'chat:turn-end',
         PLUGIN_NAME,
         async (ctx, payload) => {
-          // Phase B (2026-04-29): persist the turn AND bump
-          // last_activity_at in the same code path. The bump rides
-          // append's success — failed appends leave last_activity_at
-          // alone (the timestamp reflects persisted activity, not
-          // optimistic).
-          await handleTurnEnd(bus, localStore, ctx, payload);
+          await handleTurnEnd(localStore, ctx, payload);
           // Task 14 (J6): once the turn ends, clear active_req_id while
           // KEEPING active_session_id. The sandbox stays alive for the next
           // user message; only the in-flight reqId is dead. Compare-and-
@@ -343,59 +331,27 @@ interface SessionTerminatePayload {
 }
 
 async function handleTurnEnd(
-  bus: HookBus,
   store: ConversationStore,
   ctx: AgentContext,
   payload: TurnEndPayload,
 ): Promise<void> {
-  // No conversation context → nothing to persist (canary acceptance
-  // tests, ephemeral admin probes). Task 16 wires the orchestrator to
-  // populate conversationId on agent:invoke; until then this is the common
-  // path.
+  // No conversation context → nothing to do (canary acceptance tests,
+  // ephemeral admin probes).
   const conversationId = ctx.conversationId;
   if (conversationId === undefined) return;
 
   // Heartbeat turn-end (no content). The runner emits these every turn
-  // so the host knows the SDK is awaiting input — we deliberately don't
-  // write empty rows. Phase B: also no last_activity_at bump (I8 — the
-  // timestamp must reflect persisted user-visible activity, not the
-  // SDK's internal heartbeat cadence).
+  // so the host knows the SDK is awaiting input. I8: we DO NOT bump
+  // last_activity_at on heartbeats — the timestamp must reflect
+  // persisted user-visible activity, not the SDK's internal cadence.
   const blocks = payload.contentBlocks;
   if (blocks === undefined || blocks.length === 0) return;
 
-  const role = payload.role ?? 'assistant';
-
-  try {
-    await bus.call<AppendTurnInput, AppendTurnOutput>(
-      'conversations:append-turn',
-      ctx,
-      {
-        conversationId,
-        userId: ctx.userId,
-        role,
-        contentBlocks: blocks,
-      },
-    );
-  } catch (err) {
-    // Subscriber MUST NOT throw — a storage hiccup, ACL change, or
-    // validation reject in :append-turn would otherwise tear down the
-    // chat. Log at warn so the operator can spot it without breaking
-    // the live conversation.
-    ctx.logger.warn('conversations_auto_append_failed', {
-      conversationId,
-      role,
-      ...(payload.reqId !== undefined ? { reqId: payload.reqId } : {}),
-      err: err instanceof Error ? err : new Error(String(err)),
-    });
-    // Don't bump activity if the append failed — last_activity_at must
-    // only reflect persisted activity (I8).
-    return;
-  }
-
-  // Phase B (2026-04-29). Bump last_activity_at after successful append.
-  // Subscriber-must-not-throw posture preserved: log + swallow on a
-  // bump failure (the row is already persisted, the timestamp is
-  // best-effort).
+  // Phase D (2026-05-02): we no longer write a conversation_turns row
+  // here. Transcripts are sourced from the runner's native jsonl via
+  // conversations:get → workspace:read. The bump remains because
+  // sidebar ordering keys off last_activity_at (I8). Subscriber-must-
+  // not-throw posture: log + swallow on bump failure.
   try {
     await store.bumpLastActivity(conversationId, new Date());
   } catch (err) {

@@ -3,29 +3,35 @@ import {
   PostgreSqlContainer,
   type StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
-import { PluginError } from '@ax/core';
+import { PluginError, type AgentContext } from '@ax/core';
 import { createTestHarness, type TestHarness } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createConversationsPlugin } from '../plugin.js';
 import type {
+  AppendTurnInput,
+  AppendTurnOutput,
   CreateInput,
   CreateOutput,
   FetchHistoryInput,
   FetchHistoryOutput,
+  GetMetadataInput,
+  GetMetadataOutput,
 } from '../types.js';
 
 // ---------------------------------------------------------------------------
-// chat:turn-end auto-append subscriber test (Task 3 of Week 10–12).
+// chat:turn-end subscriber test (Phase D, Task 5).
 //
-// When the runner emits event.turn-end, the IPC handler fires
-// `chat:turn-end` on the host bus. This subscriber appends the assistant
-// (or tool) turn to ctx.conversationId via the existing :append-turn
-// service hook so the same agents:resolve gate (Invariant J1) runs.
+// Phase D collapses transcript persistence: the runner's native jsonl is the
+// source of truth, NOT the host's `conversation_turns` rows. The subscriber
+// no longer calls `conversations:append-turn` — it only bumps
+// `last_activity_at` so sidebar ordering still reflects user-visible
+// activity (I8).
 //
-// We exercise the subscriber directly via `bus.fire('chat:turn-end', ...)`
-// rather than spawning a runner: that's the contract surface the IPC
-// handler uses, and it lets us assert no-op vs append-success vs
-// append-failure-must-not-throw without a sandbox.
+// We exercise the subscriber via `bus.fire('chat:turn-end', ...)` and assert
+// on three things:
+//   1. `last_activity_at` is bumped on non-heartbeat turn-ends.
+//   2. `conversations:append-turn` is NEVER called from the subscriber path.
+//   3. Heartbeats stay no-ops (no bump, no row).
 // ---------------------------------------------------------------------------
 
 let container: StartedPostgreSqlContainer;
@@ -39,9 +45,13 @@ interface ResolvePolicy {
     | 'notfound';
 }
 
+interface CallSpy {
+  calls: Array<{ hookName: string; ctx: AgentContext; input: unknown }>;
+}
+
 async function makeHarness(
   policy: ResolvePolicy = { decide: () => 'allow' },
-): Promise<TestHarness> {
+): Promise<TestHarness & { spy: CallSpy }> {
   const h = await createTestHarness({
     services: {
       'agents:resolve': async (
@@ -70,13 +80,11 @@ async function makeHarness(
           message: `agent '${call.agentId}' forbidden for '${call.userId}'`,
         });
       },
-      // Phase D — conversations:get is no longer the right oracle for
-      // these subscriber tests (it reads from workspace jsonl, which
-      // we don't seed). We assert via conversations:fetch-history,
-      // which still reads from conversation_turns (the auto-append
-      // subscriber's destination). Default the workspace mocks to
-      // "no jsonl found" so the manifest's `calls` declaration is
-      // still satisfied even when fetch-history is the path used.
+      // conversations:get is unused by these tests, but the manifest
+      // declares `workspace:list` + `workspace:read` as required calls,
+      // so bootstrap fails fast without a registrant for them. Stub
+      // both with empty defaults — Phase D's transcript-from-workspace
+      // path is exercised in get.test.ts.
       'workspace:list': async () => ({ paths: [] as string[] }),
       'workspace:read': async () => ({ found: false }) as const,
     },
@@ -85,8 +93,21 @@ async function makeHarness(
       createConversationsPlugin(),
     ],
   });
+  // Wrap bus.call so tests can assert WHICH service hooks the subscriber
+  // path consulted. Phase D: we want to prove `conversations:append-turn`
+  // is never invoked from inside the subscriber.
+  const spy: CallSpy = { calls: [] };
+  const originalCall = h.bus.call.bind(h.bus);
+  h.bus.call = (async <I, O>(
+    hookName: string,
+    ctx: AgentContext,
+    input: I,
+  ): Promise<O> => {
+    spy.calls.push({ hookName, ctx, input });
+    return originalCall<I, O>(hookName, ctx, input);
+  }) as typeof h.bus.call;
   harnesses.push(h);
-  return h;
+  return Object.assign(h, { spy });
 }
 
 beforeAll(async () => {
@@ -113,14 +134,25 @@ afterAll(async () => {
   if (container) await container.stop();
 });
 
-describe('@ax/conversations chat:turn-end auto-append', () => {
-  it('appends the assistant turn when ctx.conversationId is set and contentBlocks is non-empty', async () => {
+describe('@ax/conversations chat:turn-end subscriber (Phase D)', () => {
+  it('bumps last_activity_at on chat:turn-end with content (no append-turn call)', async () => {
     const h = await makeHarness();
     const created = await h.bus.call<CreateInput, CreateOutput>(
       'conversations:create',
       h.ctx({ userId: 'userA' }),
       { userId: 'userA', agentId: 'agt_a' },
     );
+
+    const beforeMd = await h.bus.call<GetMetadataInput, GetMetadataOutput>(
+      'conversations:get-metadata',
+      h.ctx({ userId: 'userA' }),
+      { conversationId: created.conversationId, userId: 'userA' },
+    );
+    expect(beforeMd.lastActivityAt).toBeNull();
+
+    // Reset spy between create and the fire we care about — we want to
+    // assert about the subscriber path, not the create path.
+    h.spy.calls.length = 0;
 
     const ctx = h.ctx({
       userId: 'userA',
@@ -135,89 +167,32 @@ describe('@ax/conversations chat:turn-end auto-append', () => {
     });
     expect(result.rejected).toBe(false);
 
-    // Phase D: conversations:get reads from the workspace jsonl. The
-    // subscriber persists into conversation_turns; we read it back via
-    // conversations:fetch-history, which still consults the rows.
+    // The subscriber MUST NOT call conversations:append-turn — that's
+    // the Phase D pivot. Other hooks (none expected) would also surface
+    // here.
+    const appendCalls = h.spy.calls.filter(
+      (c) => c.hookName === 'conversations:append-turn',
+    );
+    expect(appendCalls).toHaveLength(0);
+
+    // last_activity_at IS bumped — sidebar ordering keys off it.
+    const afterMd = await h.bus.call<GetMetadataInput, GetMetadataOutput>(
+      'conversations:get-metadata',
+      h.ctx({ userId: 'userA' }),
+      { conversationId: created.conversationId, userId: 'userA' },
+    );
+    expect(afterMd.lastActivityAt).not.toBeNull();
+
+    // No row was written to conversation_turns. fetch-history reads the
+    // rows directly (it's the runner-replay path; Phase D leaves the
+    // host-rows API in place for explicit append-turn callers like the
+    // user-turn append on POST).
     const got = await h.bus.call<FetchHistoryInput, FetchHistoryOutput>(
       'conversations:fetch-history',
       h.ctx({ userId: 'userA' }),
       { conversationId: created.conversationId, userId: 'userA' },
     );
-    expect(got.turns).toHaveLength(1);
-    expect(got.turns[0]!.role).toBe('assistant');
-    expect(got.turns[0]!.contentBlocks).toEqual([
-      { type: 'text', text: 'hello world' },
-    ]);
-  });
-
-  it('defaults role to assistant when payload.role is omitted', async () => {
-    const h = await makeHarness();
-    const created = await h.bus.call<CreateInput, CreateOutput>(
-      'conversations:create',
-      h.ctx({ userId: 'userA' }),
-      { userId: 'userA', agentId: 'agt_a' },
-    );
-    const ctx = h.ctx({
-      userId: 'userA',
-      agentId: 'agt_a',
-      conversationId: created.conversationId,
-    });
-
-    await h.bus.fire('chat:turn-end', ctx, {
-      reason: 'user-message-wait',
-      contentBlocks: [{ type: 'text', text: 'no role on payload' }],
-    });
-
-    const got = await h.bus.call<FetchHistoryInput, FetchHistoryOutput>(
-      'conversations:fetch-history',
-      h.ctx({ userId: 'userA' }),
-      { conversationId: created.conversationId, userId: 'userA' },
-    );
-    expect(got.turns).toHaveLength(1);
-    expect(got.turns[0]!.role).toBe('assistant');
-  });
-
-  it('persists role=tool with tool_result blocks (replay round-trip)', async () => {
-    const h = await makeHarness();
-    const created = await h.bus.call<CreateInput, CreateOutput>(
-      'conversations:create',
-      h.ctx({ userId: 'userA' }),
-      { userId: 'userA', agentId: 'agt_a' },
-    );
-    const ctx = h.ctx({
-      userId: 'userA',
-      agentId: 'agt_a',
-      conversationId: created.conversationId,
-    });
-
-    await h.bus.fire('chat:turn-end', ctx, {
-      reason: 'user-message-wait',
-      role: 'tool',
-      contentBlocks: [
-        {
-          type: 'tool_result',
-          tool_use_id: 'tu_1',
-          content: '/tmp',
-          is_error: false,
-        },
-      ],
-    });
-
-    const got = await h.bus.call<FetchHistoryInput, FetchHistoryOutput>(
-      'conversations:fetch-history',
-      h.ctx({ userId: 'userA' }),
-      { conversationId: created.conversationId, userId: 'userA' },
-    );
-    expect(got.turns).toHaveLength(1);
-    expect(got.turns[0]!.role).toBe('tool');
-    expect(got.turns[0]!.contentBlocks).toEqual([
-      {
-        type: 'tool_result',
-        tool_use_id: 'tu_1',
-        content: '/tmp',
-        is_error: false,
-      },
-    ]);
+    expect(got.turns).toHaveLength(0);
   });
 
   it('no-ops when ctx.conversationId is unset (canary chats)', async () => {
@@ -228,27 +203,28 @@ describe('@ax/conversations chat:turn-end auto-append', () => {
       { userId: 'userA', agentId: 'agt_a' },
     );
 
+    h.spy.calls.length = 0;
+
     // Note: ctx WITHOUT conversationId — the canary acceptance test path
-    // (a session minted without an owner.conversationId). For the chat-
-    // flow path, the IPC server stamps conversationId onto ctx from the
-    // session row's `conversation_id` column (see ipc-server's listener
-    // and session-{inmemory,postgres} resolveToken). A regression test
-    // for that propagation lives in
-    // packages/ipc-server/src/__tests__/conversation-id-propagation.test.ts.
+    // (a session minted without an owner.conversationId).
     const ctx = h.ctx({ userId: 'userA', agentId: 'agt_a' });
 
     await h.bus.fire('chat:turn-end', ctx, {
       reason: 'user-message-wait',
       role: 'assistant',
-      contentBlocks: [{ type: 'text', text: 'this should NOT be persisted' }],
+      contentBlocks: [{ type: 'text', text: 'this should NOT bump anything' }],
     });
 
-    const got = await h.bus.call<FetchHistoryInput, FetchHistoryOutput>(
-      'conversations:fetch-history',
+    expect(
+      h.spy.calls.filter((c) => c.hookName === 'conversations:append-turn'),
+    ).toHaveLength(0);
+
+    const md = await h.bus.call<GetMetadataInput, GetMetadataOutput>(
+      'conversations:get-metadata',
       h.ctx({ userId: 'userA' }),
       { conversationId: created.conversationId, userId: 'userA' },
     );
-    expect(got.turns).toHaveLength(0);
+    expect(md.lastActivityAt).toBeNull();
   });
 
   it('no-ops when contentBlocks is empty/missing (heartbeat turn-ends)', async () => {
@@ -258,6 +234,9 @@ describe('@ax/conversations chat:turn-end auto-append', () => {
       h.ctx({ userId: 'userA' }),
       { userId: 'userA', agentId: 'agt_a' },
     );
+
+    h.spy.calls.length = 0;
+
     const ctx = h.ctx({
       userId: 'userA',
       agentId: 'agt_a',
@@ -277,30 +256,46 @@ describe('@ax/conversations chat:turn-end auto-append', () => {
       contentBlocks: [],
     });
 
-    const got = await h.bus.call<FetchHistoryInput, FetchHistoryOutput>(
-      'conversations:fetch-history',
+    // No append-turn calls.
+    expect(
+      h.spy.calls.filter((c) => c.hookName === 'conversations:append-turn'),
+    ).toHaveLength(0);
+
+    // I8: heartbeats DO NOT count toward user-visible activity. The
+    // timestamp must stay null until a real turn arrives.
+    const md = await h.bus.call<GetMetadataInput, GetMetadataOutput>(
+      'conversations:get-metadata',
       h.ctx({ userId: 'userA' }),
       { conversationId: created.conversationId, userId: 'userA' },
     );
-    expect(got.turns).toHaveLength(0);
+    expect(md.lastActivityAt).toBeNull();
   });
 
-  it('append-turn failure is caught — chat:turn-end fire does NOT throw or reject', async () => {
-    // We need a conversation row to exist so the :append-turn lookup
-    // doesn't fail at the conversation-row stage. Each harness shares
-    // the same postgres database, so a row created via the seed harness
-    // persists for the forbid-harness fire path.
-    const seedHarness = await makeHarness({ decide: () => 'allow' });
-    const created = await seedHarness.bus.call<CreateInput, CreateOutput>(
+  it('subscriber MUST NOT throw when bumpLastActivity fails', async () => {
+    const h = await makeHarness();
+    const created = await h.bus.call<CreateInput, CreateOutput>(
       'conversations:create',
-      seedHarness.ctx({ userId: 'userA' }),
+      h.ctx({ userId: 'userA' }),
       { userId: 'userA', agentId: 'agt_a' },
     );
 
-    // Forbid harness: agents:resolve denies, so :append-turn raises a
-    // PluginError forbidden. The subscriber MUST swallow it; otherwise a
-    // transient ACL change would tear down the running chat.
-    const h = await makeHarness({ decide: () => 'forbid' });
+    // Force the bump to fail by dropping the conversations table out
+    // from under the running plugin. The next bumpLastActivity will hit
+    // a relation-does-not-exist error from postgres — exactly the
+    // "storage hiccup" the subscriber-must-not-throw posture protects
+    // the live chat from.
+    const cleanup = new (await import('pg')).default.Client({
+      connectionString,
+    });
+    await cleanup.connect();
+    try {
+      await cleanup.query('DROP TABLE IF EXISTS conversations_v1_turns');
+      await cleanup.query(
+        'DROP TABLE IF EXISTS conversations_v1_conversations',
+      );
+    } finally {
+      await cleanup.end().catch(() => {});
+    }
 
     const ctx = h.ctx({
       userId: 'userA',
@@ -310,30 +305,49 @@ describe('@ax/conversations chat:turn-end auto-append', () => {
 
     let threw: unknown;
     try {
-      // bus.fire returns a FireResult — it doesn't throw on subscriber
-      // errors itself, but a misbehaving subscriber that re-throws WOULD
-      // be caught by HookBus and logged. We assert the subscriber
-      // does NOT trigger that error path AND does not reject the fire.
       const result = await h.bus.fire('chat:turn-end', ctx, {
         reason: 'user-message-wait',
         role: 'assistant',
-        contentBlocks: [{ type: 'text', text: 'denied' }],
+        contentBlocks: [{ type: 'text', text: 'storage is down' }],
       });
       expect(result.rejected).toBe(false);
     } catch (err) {
       threw = err;
     }
     expect(threw).toBeUndefined();
+  });
 
-    // Sanity: nothing got persisted.
-    const got = await seedHarness.bus.call<
-      FetchHistoryInput,
-      FetchHistoryOutput
-    >(
+  it('explicit conversations:append-turn callers still work (hook stays registered)', async () => {
+    // Phase D removes the SUBSCRIBER's auto-append, but the
+    // `conversations:append-turn` service hook stays registered for
+    // explicit callers (channel-web's POST path appends the user turn
+    // through it). This guards the manifest-level invariant that the
+    // hook is still callable end-to-end.
+    const h = await makeHarness();
+    const created = await h.bus.call<CreateInput, CreateOutput>(
+      'conversations:create',
+      h.ctx({ userId: 'userA' }),
+      { userId: 'userA', agentId: 'agt_a' },
+    );
+
+    const ctx = h.ctx({ userId: 'userA', agentId: 'agt_a' });
+    await h.bus.call<AppendTurnInput, AppendTurnOutput>(
+      'conversations:append-turn',
+      ctx,
+      {
+        conversationId: created.conversationId,
+        userId: 'userA',
+        role: 'user',
+        contentBlocks: [{ type: 'text', text: 'explicit user turn' }],
+      },
+    );
+
+    const got = await h.bus.call<FetchHistoryInput, FetchHistoryOutput>(
       'conversations:fetch-history',
-      seedHarness.ctx({ userId: 'userA' }),
+      h.ctx({ userId: 'userA' }),
       { conversationId: created.conversationId, userId: 'userA' },
     );
-    expect(got.turns).toHaveLength(0);
+    expect(got.turns).toHaveLength(1);
+    expect(got.turns[0]!.role).toBe('user');
   });
 });
