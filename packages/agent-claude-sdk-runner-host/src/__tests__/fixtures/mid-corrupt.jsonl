@@ -1,0 +1,3 @@
+{"parentUuid":null,"isSidechain":false,"type":"user","message":{"role":"user","content":"first turn"},"uuid":"u-first-first-first-first-firstfirst01","timestamp":"2026-04-24T19:37:00.381Z","sessionId":"sess-mid"}
+{not valid json at all,,,,
+{"parentUuid":"u-first","isSidechain":false,"message":{"id":"msg_x","type":"message","role":"assistant","content":[{"type":"text","text":"second turn"}]},"type":"assistant","uuid":"a-second-second-second-second-second02","timestamp":"2026-04-24T19:37:00.394Z","sessionId":"sess-mid"}

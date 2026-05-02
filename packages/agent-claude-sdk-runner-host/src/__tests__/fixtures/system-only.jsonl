@@ -1,0 +1,4 @@
+{"type":"ai-title","aiTitle":"Acceptance test","sessionId":"sess-only-system"}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-04-24T19:37:00.363Z","sessionId":"sess-only-system"}
+{"type":"queue-operation","operation":"dequeue","timestamp":"2026-04-24T19:37:00.377Z","sessionId":"sess-only-system"}
+{"type":"last-prompt","lastPrompt":"hello","sessionId":"sess-only-system"}
