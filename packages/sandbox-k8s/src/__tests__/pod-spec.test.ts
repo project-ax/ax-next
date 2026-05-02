@@ -127,6 +127,34 @@ describe('buildPodSpec', () => {
     expect(spec.metadata.labels['ax.io/plane']).toBe('execution');
   });
 
+  it('mounts /permanent (workspace) and /ephemeral (scratch) emptyDirs', () => {
+    // Phase 3: the legacy single /workspace mount is replaced by two
+    // emptyDirs. /permanent holds the git working tree (materialize source,
+    // turn-end commit/bundle target). /ephemeral holds caches and scratch
+    // (anything not part of the workspace lineage). Splitting them keeps
+    // the storage tier bounded by what's actually persisted across turns.
+    const spec = buildPodSpec('h', baseInput, baseResolved());
+    const containers = (
+      spec.spec as {
+        containers: Array<{ volumeMounts?: Array<{ name: string; mountPath: string }> }>;
+      }
+    ).containers;
+    const mounts = containers[0]!.volumeMounts ?? [];
+    expect(mounts.find((m) => m.mountPath === '/permanent')).toBeDefined();
+    expect(mounts.find((m) => m.mountPath === '/ephemeral')).toBeDefined();
+    // No legacy /workspace mount.
+    expect(mounts.find((m) => m.mountPath === '/workspace')).toBeUndefined();
+
+    const volumes = (spec.spec as { volumes?: Array<{ name: string; emptyDir?: object }> })
+      .volumes ?? [];
+    const permanent = volumes.find((v) => v.name === 'permanent');
+    expect(permanent?.emptyDir).toBeDefined();
+    const ephemeral = volumes.find((v) => v.name === 'ephemeral');
+    expect(ephemeral?.emptyDir).toBeDefined();
+    // No legacy `workspace` volume.
+    expect(volumes.find((v) => v.name === 'workspace')).toBeUndefined();
+  });
+
   it('carries paranoid git env on the runner container', () => {
     // Phase 3: the sandbox materializes /permanent from a host-streamed
     // baseline bundle and ships per-turn diffs as `git bundle`. To do that

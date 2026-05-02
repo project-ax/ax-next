@@ -149,13 +149,21 @@ export function buildPodSpec(
         securityContext: containerSecurity,
         volumeMounts: [
           { name: 'tmp', mountPath: '/tmp' },
-          { name: 'workspace', mountPath: '/workspace' },
+          // Phase 3: split the legacy /workspace mount in two. /permanent
+          // is the git working tree (materialized at session start, the
+          // source of every per-turn bundle). /ephemeral is caches and
+          // scratch the runner doesn't want to round-trip through the
+          // host. Splitting them keeps the storage tier bounded and gives
+          // the runner an explicit "this won't survive" signal.
+          { name: 'permanent', mountPath: '/permanent' },
+          { name: 'ephemeral', mountPath: '/ephemeral' },
         ],
       },
     ],
     volumes: [
       { name: 'tmp', emptyDir: {} },
-      { name: 'workspace', emptyDir: {} },
+      { name: 'permanent', emptyDir: {} },
+      { name: 'ephemeral', emptyDir: {} },
     ],
   };
 
