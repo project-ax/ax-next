@@ -17,20 +17,29 @@
 //      lines, unknown `type` values, and empty files all yield well-typed
 //      output — `[]` in the worst case.
 //
-// What we deliberately match (NOT invent):
+// Two behaviors that diverge from "1 jsonl line == 1 Turn":
 //
-//   - For an SDK user-message whose `content` is a tool_result array, the
-//     emitted Turn keeps role:'user'. That's what `appendTurn` produced
-//     when fed via `chat:turn-end`. Pivoting to role:'tool' here would
-//     diverge from the channel-web history shape and break replay.
-//   - We do NOT fabricate timestamps or uuids. A line missing either is
-//     skipped — silently — same as a corrupt line.
+//   - tool_result remap. A user-type line whose content carries any
+//     tool_result block becomes role='tool' (not 'user'). The channel-web
+//     history-adapter routes role='tool' into the assistant lane; without
+//     this remap a tool result would render as if the user typed it. This
+//     also matches what the legacy runner emitted via `chat:turn-end` —
+//     `role:'tool'` for tool_result-bearing emissions.
+//
+//   - Same-message.id coalesce. The SDK splits a logical assistant
+//     message that mixes text + tool_use across two consecutive jsonl
+//     lines (different uuid, same `message.id`). We append the second
+//     line's blocks onto the first emitted Turn so the consumer sees one
+//     assistant Turn with both blocks in order. Cross-message coalescing
+//     (i.e. text → tool_use → tool_result → followup-text) is NOT done
+//     here; granularity within a multi-step interaction will still
+//     differ from what the legacy runner emitted.
 // ---------------------------------------------------------------------------
 
 import { ContentBlockSchema, type ContentBlock } from '@ax/ipc-protocol';
 import { z } from 'zod';
 
-export type ParsedTurnRole = 'user' | 'assistant';
+export type ParsedTurnRole = 'user' | 'assistant' | 'tool';
 
 export interface ParsedTurn {
   turnId: string;
@@ -40,20 +49,18 @@ export interface ParsedTurn {
   createdAt: string;
 }
 
-// ---------------------------------------------------------------------------
-// Outer SDK-line envelope. Permissive on purpose — future SDK versions may
-// add fields, and we don't want a passthrough field to break parsing.
-// We only `branch` on `type === 'user' | 'assistant'`; everything else is
-// skipped (ai-title, queue-operation, system, result, summary, last-prompt,
-// and anything we haven't seen yet).
-// ---------------------------------------------------------------------------
+// Outer SDK-line envelope. `uuid` and `timestamp` are required up front:
+// without them the line can't be turned into a Turn anyway. `message` is
+// optional because non-turn-bearing lines (ai-title, queue-operation, …)
+// don't carry one.
 const SdkLineSchema = z
   .object({
     type: z.string(),
-    uuid: z.string().optional(),
-    timestamp: z.string().optional(),
+    uuid: z.string().min(1),
+    timestamp: z.string().min(1),
     message: z
       .object({
+        id: z.string().optional(),
         content: z.unknown(),
       })
       .passthrough()
@@ -67,26 +74,35 @@ function decodeBytes(bytes: Uint8Array): string {
   return new TextDecoder('utf-8').decode(bytes);
 }
 
-function normalizeContent(raw: unknown): ContentBlock[] {
-  // String content → wrap as a single text block, then validate.
+interface NormalizedContent {
+  blocks: ContentBlock[];
+  hasToolResult: boolean;
+}
+
+function normalizeContent(raw: unknown): NormalizedContent {
   if (typeof raw === 'string') {
     const wrapped = { type: 'text', text: raw };
     const r = ContentBlockSchema.safeParse(wrapped);
-    return r.success ? [r.data] : [];
+    return r.success
+      ? { blocks: [r.data], hasToolResult: false }
+      : { blocks: [], hasToolResult: false };
   }
   if (!Array.isArray(raw)) {
-    return [];
+    return { blocks: [], hasToolResult: false };
   }
 
-  const out: ContentBlock[] = [];
+  const blocks: ContentBlock[] = [];
+  let hasToolResult = false;
   for (const item of raw) {
     const r = ContentBlockSchema.safeParse(item);
-    if (r.success) out.push(r.data);
-    // failures: drop silently. They could be future-SDK block types or
-    // model-emitted garbage; the consumer (e.g. UI) is unprepared to
-    // render either, so dropping is the safe move. (I5.)
+    if (r.success) {
+      blocks.push(r.data);
+      if (r.data.type === 'tool_result') hasToolResult = true;
+    }
+    // Failures: drop. They could be future-SDK block types or model-emitted
+    // garbage; the consumer is unprepared to render either. (I5.)
   }
-  return out;
+  return { blocks, hasToolResult };
 }
 
 export function parseJsonlToTurns(jsonlBytes: Uint8Array): ParsedTurn[] {
@@ -97,6 +113,12 @@ export function parseJsonlToTurns(jsonlBytes: Uint8Array): ParsedTurn[] {
   const turns: ParsedTurn[] = [];
   let nextIndex = 0;
 
+  // Tracks the message.id of the most recently emitted assistant Turn, or
+  // null if the last emitted Turn was non-assistant (or nothing has been
+  // emitted yet). A blank/corrupt line in between does NOT clear this —
+  // nothing was emitted, so the streak continues.
+  let lastEmittedAssistantMsgId: string | null = null;
+
   for (const line of lines) {
     if (line.trim().length === 0) continue;
 
@@ -104,7 +126,6 @@ export function parseJsonlToTurns(jsonlBytes: Uint8Array): ParsedTurn[] {
     try {
       parsed = JSON.parse(line);
     } catch {
-      // Truncated tail or mid-file corruption. Skip and keep going.
       continue;
     }
 
@@ -117,25 +138,51 @@ export function parseJsonlToTurns(jsonlBytes: Uint8Array): ParsedTurn[] {
     // (ai-title, queue-operation, system, result, summary, last-prompt,
     // anything unknown) is metadata.
     if (type !== 'user' && type !== 'assistant') continue;
-
-    if (typeof uuid !== 'string' || uuid.length === 0) continue;
-    if (typeof timestamp !== 'string' || timestamp.length === 0) continue;
     if (!message) continue;
 
-    const contentBlocks = normalizeContent(message.content);
+    const { blocks, hasToolResult } = normalizeContent(message.content);
+    if (blocks.length === 0) continue;
 
-    // A turn-bearing line that produced zero valid blocks gets skipped
-    // entirely. Matches the chat:turn-end subscriber's heartbeat policy
-    // (empty turns aren't persisted as appended rows).
-    if (contentBlocks.length === 0) continue;
+    let role: ParsedTurnRole;
+    if (type === 'assistant') {
+      role = 'assistant';
+    } else {
+      // type === 'user'. Any tool_result in the array remaps to role='tool'
+      // so channel-web routes it into the assistant lane. Pure text/image
+      // (e.g. SDK caller attaching an image input) keeps role='user'.
+      role = hasToolResult ? 'tool' : 'user';
+    }
+
+    const prev = turns.length > 0 ? turns[turns.length - 1] : undefined;
+    if (
+      role === 'assistant' &&
+      lastEmittedAssistantMsgId !== null &&
+      typeof message.id === 'string' &&
+      message.id.length > 0 &&
+      message.id === lastEmittedAssistantMsgId &&
+      prev !== undefined
+    ) {
+      // Coalesce onto the previous Turn. Keep its turnId + createdAt; the
+      // SDK's first line is the canonical start of the logical message.
+      prev.contentBlocks = [...prev.contentBlocks, ...blocks];
+      continue;
+    }
 
     turns.push({
       turnId: uuid,
       turnIndex: nextIndex++,
-      role: type,
-      contentBlocks,
+      role,
+      contentBlocks: blocks,
       createdAt: timestamp,
     });
+
+    if (role === 'assistant' && typeof message.id === 'string' && message.id.length > 0) {
+      lastEmittedAssistantMsgId = message.id;
+    } else {
+      // A non-assistant emission, or an assistant emission missing
+      // message.id, breaks the coalesce streak.
+      lastEmittedAssistantMsgId = null;
+    }
   }
 
   return turns;
