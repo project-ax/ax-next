@@ -375,90 +375,99 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
       const serverRepoRoot = await fs.realpath(
         await fs.mkdtemp(path.join(os.tmpdir(), 'ax-preset-k8s-gitsrv-')),
       );
-      const server: WorkspaceGitServer = await createWorkspaceGitServer({
-        repoRoot: serverRepoRoot,
-        host: '127.0.0.1',
-        port: 0,
-        token: serverToken,
-      });
 
-      const script: StubRunnerScript = {
-        entries: [
-          { kind: 'assistant-text', content: CANARY_TEXT },
-          { kind: 'finish', reason: 'end_turn' },
-        ],
-      };
-
-      // Preset config — same shape as the local case except `workspace` flips
-      // to `git-protocol` and points at the tempdir storage tier.
-      const presetConfig: K8sPresetConfig = {
-        database: { connectionString: 'postgres://stub:5432/stub' },
-        eventbus: { connectionString: 'postgres://stub:5432/stub' },
-        session: { connectionString: 'postgres://stub:5432/stub' },
-        workspace: {
-          backend: 'git-protocol',
-          baseUrl: `http://127.0.0.1:${server.port}`,
-          token: serverToken,
-        },
-        sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
-        ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
-        chat: { runnerBinary: stubRunnerPath, chatTimeoutMs: 60_000 },
-        http: {
-          host: '127.0.0.1',
-          port: 0,
-          cookieKey: '0'.repeat(64),
-          allowedOrigins: [],
-        },
-        auth: { devBootstrap: { token: 'preset-test-bootstrap' } },
-      };
-
-      // Same filter as the local test. PLUGINS_TO_DROP doesn't list
-      // `@ax/workspace-git-server`, so the new workspace plugin is kept and
-      // exercised end-to-end.
-      const presetPlugins = createK8sPlugins(presetConfig);
-      const kept = presetPlugins.filter(
-        (p) => !PLUGINS_TO_DROP.has(p.manifest.name),
-      );
-
-      const observedChatEndReqIds: string[] = [];
-      const chatEndRecorder: Plugin = {
-        manifest: {
-          name: '@ax/preset-k8s/test/chat-end-recorder',
-          version: '0.0.0',
-          registers: [],
-          calls: [],
-          subscribes: ['chat:end'],
-        },
-        init({ bus }) {
-          bus.subscribe(
-            'chat:end',
-            '@ax/preset-k8s/test/chat-end-recorder',
-            async (recCtx: AgentContext) => {
-              observedChatEndReqIds.push(recCtx.reqId);
-              return undefined;
-            },
-          );
-        },
-      };
-
-      const sqlitePath = path.join(tmp, 'preset-k8s-acceptance-gitproto.sqlite');
-      const replacements: Plugin[] = [
-        createStorageSqlitePlugin({ databasePath: sqlitePath }),
-        createSessionInmemoryPlugin(),
-        createSandboxSubprocessPlugin(),
-        createIpcServerPlugin(),
-        createTestProxyPlugin({ script }),
-        createPermissiveAgentsStubPlugin(),
-        createMcpClientPlugin(),
-        chatEndRecorder,
-      ];
-
-      const plugins: Plugin[] = [...kept, ...replacements];
-
-      const bus = new HookBus();
-      const handle = await bootstrap({ bus, plugins, config: {} });
+      // `server` and `handle` are constructed inside the try below so that a
+      // throw during `createWorkspaceGitServer` (e.g. EADDRINUSE) or during
+      // `bootstrap` (e.g. a plugin init failure) doesn't leak the listener
+      // or any half-initialized state. The finally block gates each cleanup
+      // step on truthy so partial initialization unwinds in the right order.
+      let server: WorkspaceGitServer | null = null;
+      let handle: Awaited<ReturnType<typeof bootstrap>> | null = null;
 
       try {
+        server = await createWorkspaceGitServer({
+          repoRoot: serverRepoRoot,
+          host: '127.0.0.1',
+          port: 0,
+          token: serverToken,
+        });
+
+        const script: StubRunnerScript = {
+          entries: [
+            { kind: 'assistant-text', content: CANARY_TEXT },
+            { kind: 'finish', reason: 'end_turn' },
+          ],
+        };
+
+        // Preset config — same shape as the local case except `workspace` flips
+        // to `git-protocol` and points at the tempdir storage tier.
+        const presetConfig: K8sPresetConfig = {
+          database: { connectionString: 'postgres://stub:5432/stub' },
+          eventbus: { connectionString: 'postgres://stub:5432/stub' },
+          session: { connectionString: 'postgres://stub:5432/stub' },
+          workspace: {
+            backend: 'git-protocol',
+            baseUrl: `http://127.0.0.1:${server.port}`,
+            token: serverToken,
+          },
+          sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
+          ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
+          chat: { runnerBinary: stubRunnerPath, chatTimeoutMs: 60_000 },
+          http: {
+            host: '127.0.0.1',
+            port: 0,
+            cookieKey: '0'.repeat(64),
+            allowedOrigins: [],
+          },
+          auth: { devBootstrap: { token: 'preset-test-bootstrap' } },
+        };
+
+        // Same filter as the local test. PLUGINS_TO_DROP doesn't list
+        // `@ax/workspace-git-server`, so the new workspace plugin is kept and
+        // exercised end-to-end.
+        const presetPlugins = createK8sPlugins(presetConfig);
+        const kept = presetPlugins.filter(
+          (p) => !PLUGINS_TO_DROP.has(p.manifest.name),
+        );
+
+        const observedChatEndReqIds: string[] = [];
+        const chatEndRecorder: Plugin = {
+          manifest: {
+            name: '@ax/preset-k8s/test/chat-end-recorder',
+            version: '0.0.0',
+            registers: [],
+            calls: [],
+            subscribes: ['chat:end'],
+          },
+          init({ bus }) {
+            bus.subscribe(
+              'chat:end',
+              '@ax/preset-k8s/test/chat-end-recorder',
+              async (recCtx: AgentContext) => {
+                observedChatEndReqIds.push(recCtx.reqId);
+                return undefined;
+              },
+            );
+          },
+        };
+
+        const sqlitePath = path.join(tmp, 'preset-k8s-acceptance-gitproto.sqlite');
+        const replacements: Plugin[] = [
+          createStorageSqlitePlugin({ databasePath: sqlitePath }),
+          createSessionInmemoryPlugin(),
+          createSandboxSubprocessPlugin(),
+          createIpcServerPlugin(),
+          createTestProxyPlugin({ script }),
+          createPermissiveAgentsStubPlugin(),
+          createMcpClientPlugin(),
+          chatEndRecorder,
+        ];
+
+        const plugins: Plugin[] = [...kept, ...replacements];
+
+        const bus = new HookBus();
+        handle = await bootstrap({ bus, plugins, config: {} });
+
         const userId = 'preset-test-user';
         const agentId = 'preset-test-agent';
         const ctx = makeAgentContext({
@@ -530,8 +539,14 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         // the workspace plugin's mirror cache + git engine before the server
         // closes; closing the server first would cause in-flight smart-HTTP
         // calls to error out instead of completing cleanly.
-        await handle.shutdown();
-        await server.close();
+        //
+        // Each step is gated on truthy: if `createWorkspaceGitServer` threw,
+        // `server` is null and there's nothing to close; if `bootstrap` threw,
+        // `handle` is null and there's no kernel to drain. The tempdir rm
+        // is unconditional — `serverRepoRoot` was created BEFORE the try, so
+        // we always own it for cleanup.
+        if (handle !== null) await handle.shutdown();
+        if (server !== null) await server.close();
         await fs.rm(serverRepoRoot, { recursive: true, force: true });
       }
     },
