@@ -4,7 +4,12 @@ import {
   type AgentContext,
   type HookBus,
   type Plugin,
+  type WorkspaceListInput,
+  type WorkspaceListOutput,
+  type WorkspaceReadInput,
+  type WorkspaceReadOutput,
 } from '@ax/core';
+import { parseJsonlToTurns } from '@ax/agent-claude-sdk-runner-host';
 import type { ContentBlock } from '@ax/ipc-protocol';
 import { NoResultError, type Kysely } from 'kysely';
 import {
@@ -42,6 +47,7 @@ import type {
   ListOutput,
   StoreRunnerSessionInput,
   StoreRunnerSessionOutput,
+  Turn,
   UnbindSessionInput,
   UnbindSessionOutput,
 } from './types.js';
@@ -125,7 +131,16 @@ export function createConversationsPlugin(
         // host-side IPC handler.
         'conversations:store-runner-session',
       ],
-      calls: ['agents:resolve', 'database:get-instance'],
+      calls: [
+        'agents:resolve',
+        'database:get-instance',
+        // Phase D (2026-05-02): conversations:get reads the runner's
+        // native jsonl transcript via workspace:list + workspace:read
+        // instead of the conversation_turns rows. The hook's wire
+        // shape is unchanged; only the source-of-truth shifted.
+        'workspace:list',
+        'workspace:read',
+      ],
       // Task 14 (Week 10–12): subscribe to session:terminate so a sandbox
       // teardown clears active_session_id on every bound conversation row.
       subscribes: ['chat:turn-end', 'session:terminate'],
@@ -633,8 +648,55 @@ async function getConversation(
     input.userId,
     'conversations:get',
   );
-  const turns = await store.listTurns(input.conversationId);
+  // Phase D (2026-05-02): the transcript lives in the runner's native
+  // jsonl file inside the workspace, NOT in conversation_turns. We
+  // skip the workspace round-trip entirely when runnerSessionId is
+  // null (pre-Phase-C rows or fresh rows whose first turn hasn't
+  // landed yet — see Q3=(a)). The wire shape on
+  // `conversations:get` is unchanged.
+  const turns =
+    conv.runnerSessionId === null
+      ? []
+      : await readTranscriptFromWorkspace(bus, ctx, conv.runnerSessionId);
   return { conversation: conv, turns };
+}
+
+/**
+ * Phase D. Locate the runner's jsonl transcript by sessionId and parse it
+ * into the canonical Turn[] shape. We glob via `workspace:list` instead of
+ * hardcoding the SDK's cwd-encoding rule (which depends on
+ * `AX_WORKSPACE_ROOT` and isn't a stable contract).
+ *
+ * Two graceful-empty paths preserve subscriber expectations:
+ *   - `workspace:list` returns no matches → file hasn't been written
+ *     yet OR a pre-Phase-C row that bound a runner session before the
+ *     workspace plugin started persisting them.
+ *   - `workspace:read` returns `{found:false}` → race between list and
+ *     read (the file existed when listed, then vanished).
+ */
+async function readTranscriptFromWorkspace(
+  bus: HookBus,
+  ctx: AgentContext,
+  runnerSessionId: string,
+): Promise<Turn[]> {
+  const list = await bus.call<WorkspaceListInput, WorkspaceListOutput>(
+    'workspace:list',
+    ctx,
+    { pathGlob: `.claude/projects/**/${runnerSessionId}.jsonl` },
+  );
+  if (list.paths.length === 0) return [];
+  // Multiple matches are not expected — sessionIds are UUIDs and the
+  // workspace stores at most one jsonl per session — but if it
+  // happens, the list is sorted ascending by the workspace plugin so
+  // picking the first entry is deterministic.
+  const path = list.paths[0]!;
+  const read = await bus.call<WorkspaceReadInput, WorkspaceReadOutput>(
+    'workspace:read',
+    ctx,
+    { path },
+  );
+  if (!read.found) return [];
+  return parseJsonlToTurns(read.bytes);
 }
 
 async function listConversations(

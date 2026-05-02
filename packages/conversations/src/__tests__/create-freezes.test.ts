@@ -42,6 +42,12 @@ async function makeHarness(args: {
         }
         return { agent };
       },
+      // Phase D — conversations:get reads transcripts from the
+      // workspace's runner-native jsonl. These tests don't exercise
+      // that path, so default both hooks to "no jsonl found" → empty
+      // turns. Tests that need turns wire up real bytes.
+      'workspace:list': async () => ({ paths: [] as string[] }),
+      'workspace:read': async () => ({ found: false }) as const,
     },
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),

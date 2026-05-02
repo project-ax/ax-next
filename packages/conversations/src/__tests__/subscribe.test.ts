@@ -10,8 +10,8 @@ import { createConversationsPlugin } from '../plugin.js';
 import type {
   CreateInput,
   CreateOutput,
-  GetInput,
-  GetOutput,
+  FetchHistoryInput,
+  FetchHistoryOutput,
 } from '../types.js';
 
 // ---------------------------------------------------------------------------
@@ -70,6 +70,15 @@ async function makeHarness(
           message: `agent '${call.agentId}' forbidden for '${call.userId}'`,
         });
       },
+      // Phase D — conversations:get is no longer the right oracle for
+      // these subscriber tests (it reads from workspace jsonl, which
+      // we don't seed). We assert via conversations:fetch-history,
+      // which still reads from conversation_turns (the auto-append
+      // subscriber's destination). Default the workspace mocks to
+      // "no jsonl found" so the manifest's `calls` declaration is
+      // still satisfied even when fetch-history is the path used.
+      'workspace:list': async () => ({ paths: [] as string[] }),
+      'workspace:read': async () => ({ found: false }) as const,
     },
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),
@@ -126,8 +135,11 @@ describe('@ax/conversations chat:turn-end auto-append', () => {
     });
     expect(result.rejected).toBe(false);
 
-    const got = await h.bus.call<GetInput, GetOutput>(
-      'conversations:get',
+    // Phase D: conversations:get reads from the workspace jsonl. The
+    // subscriber persists into conversation_turns; we read it back via
+    // conversations:fetch-history, which still consults the rows.
+    const got = await h.bus.call<FetchHistoryInput, FetchHistoryOutput>(
+      'conversations:fetch-history',
       h.ctx({ userId: 'userA' }),
       { conversationId: created.conversationId, userId: 'userA' },
     );
@@ -156,8 +168,8 @@ describe('@ax/conversations chat:turn-end auto-append', () => {
       contentBlocks: [{ type: 'text', text: 'no role on payload' }],
     });
 
-    const got = await h.bus.call<GetInput, GetOutput>(
-      'conversations:get',
+    const got = await h.bus.call<FetchHistoryInput, FetchHistoryOutput>(
+      'conversations:fetch-history',
       h.ctx({ userId: 'userA' }),
       { conversationId: created.conversationId, userId: 'userA' },
     );
@@ -191,8 +203,8 @@ describe('@ax/conversations chat:turn-end auto-append', () => {
       ],
     });
 
-    const got = await h.bus.call<GetInput, GetOutput>(
-      'conversations:get',
+    const got = await h.bus.call<FetchHistoryInput, FetchHistoryOutput>(
+      'conversations:fetch-history',
       h.ctx({ userId: 'userA' }),
       { conversationId: created.conversationId, userId: 'userA' },
     );
@@ -231,8 +243,8 @@ describe('@ax/conversations chat:turn-end auto-append', () => {
       contentBlocks: [{ type: 'text', text: 'this should NOT be persisted' }],
     });
 
-    const got = await h.bus.call<GetInput, GetOutput>(
-      'conversations:get',
+    const got = await h.bus.call<FetchHistoryInput, FetchHistoryOutput>(
+      'conversations:fetch-history',
       h.ctx({ userId: 'userA' }),
       { conversationId: created.conversationId, userId: 'userA' },
     );
@@ -265,8 +277,8 @@ describe('@ax/conversations chat:turn-end auto-append', () => {
       contentBlocks: [],
     });
 
-    const got = await h.bus.call<GetInput, GetOutput>(
-      'conversations:get',
+    const got = await h.bus.call<FetchHistoryInput, FetchHistoryOutput>(
+      'conversations:fetch-history',
       h.ctx({ userId: 'userA' }),
       { conversationId: created.conversationId, userId: 'userA' },
     );
@@ -314,8 +326,11 @@ describe('@ax/conversations chat:turn-end auto-append', () => {
     expect(threw).toBeUndefined();
 
     // Sanity: nothing got persisted.
-    const got = await seedHarness.bus.call<GetInput, GetOutput>(
-      'conversations:get',
+    const got = await seedHarness.bus.call<
+      FetchHistoryInput,
+      FetchHistoryOutput
+    >(
+      'conversations:fetch-history',
       seedHarness.ctx({ userId: 'userA' }),
       { conversationId: created.conversationId, userId: 'userA' },
     );

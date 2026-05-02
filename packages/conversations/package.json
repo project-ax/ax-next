@@ -18,6 +18,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@ax/agent-claude-sdk-runner-host": "workspace:*",
     "@ax/core": "workspace:*",
     "@ax/ipc-protocol": "workspace:*",
     "kysely": "0.28.16",

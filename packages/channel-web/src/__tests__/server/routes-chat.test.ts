@@ -22,7 +22,11 @@ import type {
   CreateInput as ConvCreateInput,
   CreateOutput as ConvCreateOutput,
 } from '@ax/conversations';
-import { createTestHarness, type TestHarness } from '@ax/test-harness';
+import {
+  createMockWorkspacePlugin,
+  createTestHarness,
+  type TestHarness,
+} from '@ax/test-harness';
 import { createChannelWebServerPlugin } from '../../server/plugin';
 
 // ---------------------------------------------------------------------------
@@ -223,6 +227,13 @@ async function boot(args: BootArgs): Promise<BootResult> {
         ...(args.notFound !== undefined ? { notFound: args.notFound } : {}),
         ...(args.listFor !== undefined ? { listFor: args.listFor } : {}),
       }),
+      // Phase D — @ax/conversations declares `workspace:list` /
+      // `workspace:read` calls (used by conversations:get to read
+      // runner-native jsonl). Bootstrap verifies them at boot, so
+      // every harness that boots conversations needs a workspace
+      // plugin registered. Empty mock workspace = no jsonl found =
+      // empty turns, which is what these tests expect.
+      createMockWorkspacePlugin(),
       createConversationsPlugin(),
       chatRunMockPlugin(chatRunCaptures),
       createChannelWebServerPlugin({}),
@@ -660,6 +671,74 @@ async function appendTurn(
   );
 }
 
+// Phase D: seed the workspace's runner-native jsonl path with synthetic
+// SDK lines so conversations:get can return turns. Pairs with
+// `bindRunnerSession` below — both must run for the round-trip read to
+// see anything.
+async function seedWorkspaceJsonl(
+  harness: TestHarness,
+  runnerSessionId: string,
+  turns: Array<{
+    role: 'user' | 'assistant';
+    contentBlocks?: Array<{ type: string; [k: string]: unknown }>;
+    /** raw string `content` instead of structured blocks (user role only). */
+    content?: string;
+  }>,
+): Promise<void> {
+  const lines = turns.map((t, i) => {
+    const ts = new Date(2026, 3, 29, 12, 0, i).toISOString();
+    if (t.role === 'user') {
+      return JSON.stringify({
+        type: 'user',
+        message: { role: 'user', content: t.content ?? t.contentBlocks ?? '' },
+        uuid: `u-${i}`,
+        timestamp: ts,
+      });
+    }
+    return JSON.stringify({
+      type: 'assistant',
+      message: {
+        id: `m-${i}`,
+        role: 'assistant',
+        content: t.contentBlocks ?? [],
+      },
+      uuid: `u-${i}`,
+      timestamp: ts,
+    });
+  });
+  const bytes = new TextEncoder().encode(lines.join('\n'));
+  const path = `.claude/projects/-permanent/${runnerSessionId}.jsonl`;
+  await harness.bus.call(
+    'workspace:apply',
+    harness.ctx({ userId: 'system' }),
+    {
+      changes: [{ path, kind: 'put', content: bytes }],
+      parent: null,
+      reason: 'seed-jsonl',
+    },
+  );
+}
+
+// Phase D: bind `runner_session_id` so conversations:get hits the
+// workspace lookup path. Direct SQL — Phase B's
+// `conversations:store-runner-session` hook ships in the same plugin,
+// but raw SQL is the simplest fixture.
+async function bindRunnerSession(
+  conversationId: string,
+  runnerSessionId: string,
+): Promise<void> {
+  const client = new (await import('pg')).default.Client({ connectionString });
+  await client.connect();
+  try {
+    await client.query(
+      'UPDATE conversations_v1_conversations SET runner_session_id = $1, updated_at = NOW() WHERE conversation_id = $2',
+      [runnerSessionId, conversationId],
+    );
+  } finally {
+    await client.end().catch(() => {});
+  }
+}
+
 async function softDeleteConversation(
   conversationId: string,
 ): Promise<void> {
@@ -903,20 +982,22 @@ describe('@ax/channel-web GET /api/chat/conversations/:id', () => {
       { userId: 'userA', agentId: 'agt_test' },
     );
 
-    await appendTurn(booted.harness, created.conversationId, 'userA', 'user', [
-      { type: 'text', text: 'hi' },
+    // Phase D: conversations:get reads the runner-native jsonl from
+    // the workspace. Seed it via the mock workspace + bind the
+    // runner_session_id on the row.
+    const sessId = 'sess-test-1';
+    await seedWorkspaceJsonl(booted.harness, sessId, [
+      { role: 'user', content: 'hi' },
+      {
+        role: 'assistant',
+        contentBlocks: [
+          { type: 'thinking', thinking: 'pondering...', signature: 'sig123' },
+          { type: 'redacted_thinking', data: 'opaque-bytes' },
+          { type: 'text', text: 'hello!' },
+        ],
+      },
     ]);
-    await appendTurn(
-      booted.harness,
-      created.conversationId,
-      'userA',
-      'assistant',
-      [
-        { type: 'thinking', thinking: 'pondering...', signature: 'sig123' },
-        { type: 'redacted_thinking', data: 'opaque-bytes' },
-        { type: 'text', text: 'hello!' },
-      ],
-    );
+    await bindRunnerSession(created.conversationId, sessId);
 
     const r = await fetch(
       `http://127.0.0.1:${booted.port}/api/chat/conversations/${created.conversationId}`,
@@ -956,17 +1037,20 @@ describe('@ax/channel-web GET /api/chat/conversations/:id', () => {
       booted.harness.ctx({ userId: 'userA' }),
       { userId: 'userA', agentId: 'agt_test' },
     );
-    await appendTurn(
-      booted.harness,
-      created.conversationId,
-      'userA',
-      'assistant',
-      [
-        { type: 'thinking', thinking: 'pondering...', signature: 'sig123' },
-        { type: 'redacted_thinking', data: 'opaque-bytes' },
-        { type: 'text', text: 'hello!' },
-      ],
-    );
+    // Phase D: seed the runner-native jsonl in the mock workspace +
+    // bind runner_session_id on the row.
+    const sessId = 'sess-test-thinking';
+    await seedWorkspaceJsonl(booted.harness, sessId, [
+      {
+        role: 'assistant',
+        contentBlocks: [
+          { type: 'thinking', thinking: 'pondering...', signature: 'sig123' },
+          { type: 'redacted_thinking', data: 'opaque-bytes' },
+          { type: 'text', text: 'hello!' },
+        ],
+      },
+    ]);
+    await bindRunnerSession(created.conversationId, sessId);
 
     const r = await fetch(
       `http://127.0.0.1:${booted.port}/api/chat/conversations/${created.conversationId}?includeThinking=true`,

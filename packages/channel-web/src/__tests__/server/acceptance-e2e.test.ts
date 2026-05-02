@@ -17,12 +17,14 @@ import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createHttpServerPlugin, type HttpServerPlugin } from '@ax/http-server';
 import { createConversationsPlugin } from '@ax/conversations';
 import type {
-  AppendTurnInput as ConvAppendTurnInput,
-  AppendTurnOutput as ConvAppendTurnOutput,
   CreateInput,
   CreateOutput,
 } from '@ax/conversations';
-import { createTestHarness, type TestHarness } from '@ax/test-harness';
+import {
+  createMockWorkspacePlugin,
+  createTestHarness,
+  type TestHarness,
+} from '@ax/test-harness';
 import { createChannelWebServerPlugin } from '../../server/plugin';
 
 // ---------------------------------------------------------------------------
@@ -179,6 +181,9 @@ async function boot(args: BootArgs): Promise<{
       createDatabasePostgresPlugin({ connectionString }),
       authMockPlugin({ user: args.user }),
       agentsMockPlugin({ allowedFor: args.allowedFor }),
+      // Phase D — conversations plugin declares workspace:list/read
+      // calls. Empty mock workspace satisfies bootstrap.
+      createMockWorkspacePlugin(),
       createConversationsPlugin(),
       chatRunMockPlugin(),
       createChannelWebServerPlugin({}),
@@ -323,21 +328,63 @@ describe('Week 10-12 acceptance', () => {
       { userId: 'userA', agentId: 'agt' },
     );
     const cid = created.conversationId;
-    for (const [role, text] of [
+    // Phase D: GET reads from the runner's native jsonl in the
+    // workspace, not conversation_turns. Seed the mock workspace with
+    // a synthetic SDK transcript and bind the runner_session_id on the
+    // row so the lookup hits.
+    const sessId = 'sess-reload-1';
+    const lines = [
       ['user', 'one'],
       ['assistant', 'two'],
       ['user', 'three'],
-    ] as const) {
-      await booted.harness.bus.call<ConvAppendTurnInput, ConvAppendTurnOutput>(
-        'conversations:append-turn',
-        booted.harness.ctx({ userId: 'userA' }),
-        {
-          conversationId: cid,
-          userId: 'userA',
-          role,
-          contentBlocks: [{ type: 'text', text }],
+    ].map(([role, text], i) => {
+      const ts = new Date(2026, 3, 29, 12, 0, i).toISOString();
+      if (role === 'user') {
+        return JSON.stringify({
+          type: 'user',
+          message: { role: 'user', content: text },
+          uuid: `u-${i}`,
+          timestamp: ts,
+        });
+      }
+      return JSON.stringify({
+        type: 'assistant',
+        message: {
+          id: `m-${i}`,
+          role: 'assistant',
+          content: [{ type: 'text', text }],
         },
+        uuid: `u-${i}`,
+        timestamp: ts,
+      });
+    });
+    const bytes = new TextEncoder().encode(lines.join('\n'));
+    await booted.harness.bus.call(
+      'workspace:apply',
+      booted.harness.ctx({ userId: 'system' }),
+      {
+        changes: [
+          {
+            path: `.claude/projects/-permanent/${sessId}.jsonl`,
+            kind: 'put',
+            content: bytes,
+          },
+        ],
+        parent: null,
+        reason: 'seed-jsonl',
+      },
+    );
+    const pgClient = new (await import('pg')).default.Client({
+      connectionString,
+    });
+    await pgClient.connect();
+    try {
+      await pgClient.query(
+        'UPDATE conversations_v1_conversations SET runner_session_id = $1, updated_at = NOW() WHERE conversation_id = $2',
+        [sessId, cid],
       );
+    } finally {
+      await pgClient.end().catch(() => {});
     }
 
     const r = await fetch(

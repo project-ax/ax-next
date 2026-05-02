@@ -52,6 +52,10 @@ async function makeHarness(args: {
         }
         return { agent };
       },
+      // Phase D — manifest declares calls on workspace:list /
+      // workspace:read; bootstrap verifies them at boot.
+      'workspace:list': async () => ({ paths: [] as string[] }),
+      'workspace:read': async () => ({ found: false }) as const,
     },
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),

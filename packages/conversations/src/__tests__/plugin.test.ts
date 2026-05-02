@@ -33,7 +33,14 @@ describe('@ax/conversations plugin manifest', () => {
       ],
       // database:get-instance is hard — we run our own migration on init.
       // agents:resolve is hard — every hook gates through it (Invariant J1).
-      calls: ['agents:resolve', 'database:get-instance'],
+      // workspace:list + workspace:read are hard — Phase D conversations:get
+      // reads transcripts from the runner-native jsonl in the workspace.
+      calls: [
+        'agents:resolve',
+        'database:get-instance',
+        'workspace:list',
+        'workspace:read',
+      ],
       // chat:turn-end subscriber wires in Task 3 (auto-append).
       // session:terminate subscriber wires in Task 14 (clear bound rows).
       subscribes: ['chat:turn-end', 'session:terminate'],
