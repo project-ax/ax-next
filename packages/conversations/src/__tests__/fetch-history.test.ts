@@ -14,6 +14,8 @@ import type {
   CreateOutput,
   FetchHistoryInput,
   FetchHistoryOutput,
+  StoreRunnerSessionInput,
+  StoreRunnerSessionOutput,
 } from '../types.js';
 
 // ---------------------------------------------------------------------------
@@ -174,6 +176,34 @@ describe('@ax/conversations conversations:fetch-history', () => {
       expect(t).not.toHaveProperty('turnIndex');
       expect(t).not.toHaveProperty('createdAt');
     }
+    // Phase C: a freshly-created conversation has no bound runner session
+    // yet. Explicit null on the wire keeps the shape stable; runners
+    // branch on `null` vs string to decide replay vs SDK.resume(sessionId).
+    expect(result.runnerSessionId).toBeNull();
+  });
+
+  it('returns runnerSessionId once the conversation has been bound', async () => {
+    const { h } = await makeHarness();
+    const created = await h.bus.call<CreateInput, CreateOutput>(
+      'conversations:create',
+      h.ctx({ userId: 'userA' }),
+      { userId: 'userA', agentId: 'agt_a' },
+    );
+    // Bind a runner-session-id via the same hook the runner uses at boot.
+    await h.bus.call<StoreRunnerSessionInput, StoreRunnerSessionOutput>(
+      'conversations:store-runner-session',
+      h.ctx({ userId: 'userA' }),
+      {
+        conversationId: created.conversationId,
+        runnerSessionId: 'sdk-sess-XYZ',
+      },
+    );
+    const result = await h.bus.call<FetchHistoryInput, FetchHistoryOutput>(
+      'conversations:fetch-history',
+      h.ctx({ userId: 'userA' }),
+      { conversationId: created.conversationId, userId: 'userA' },
+    );
+    expect(result.runnerSessionId).toBe('sdk-sess-XYZ');
   });
 
   it('empty conversation returns turns: []', async () => {
@@ -189,6 +219,7 @@ describe('@ax/conversations conversations:fetch-history', () => {
       { conversationId: created.conversationId, userId: 'userA' },
     );
     expect(result.turns).toEqual([]);
+    expect(result.runnerSessionId).toBeNull();
   });
 
   it('cross-tenant fetch rejects as not-found (no existence leak)', async () => {

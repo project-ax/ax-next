@@ -339,11 +339,25 @@ describe('mirror-cache — pin protects in-flight op from eviction race', () => 
       const aHeld = new Promise<void>((resolve) => {
         releaseA = resolve;
       });
+      // Signal that A's body has actually run AND `aDir` has been set.
+      // Without this we'd have a test-side race: A's `acquireInternal` is
+      // async (mkdir + git-init-bare), so a setImmediate yield is NOT
+      // enough to guarantee A's body has executed. If B's acquire finished
+      // first, B's body would run while `aDir === ''` and the assertion
+      // `isBareRepo(aDir)` would fail on an empty path — masking the real
+      // pin/eviction property the test is here to pin.
+      let aEntered!: () => void;
+      const aEnteredP = new Promise<void>((resolve) => {
+        aEntered = resolve;
+      });
 
       let aDir = '';
       const aPromise = cache.withMirror('ws-pinAaaaaaaaaaaaa', async (handle) => {
         aDir = handle.dir;
         expect(isBareRepo(handle.dir)).toBe(true);
+        // Tell the test it can now safely launch B. This MUST come after
+        // `aDir` is set — otherwise B could race in and observe `aDir === ''`.
+        aEntered();
         // Hold the pin until the test releases us. While we hold, B will
         // arrive (cap=1 → eviction would otherwise rm A's dir).
         await aHeld;
@@ -356,11 +370,11 @@ describe('mirror-cache — pin protects in-flight op from eviction race', () => 
         return handle.dir;
       });
 
-      // Yield once so aPromise has had a chance to enter `acquireInternal`
-      // and pin A. Without this, B could race in and complete before A's
-      // pin lands. setImmediate is enough — the synchronous pin happens
-      // on the very next microtask tick.
-      await new Promise((r) => setImmediate(r));
+      // Wait for A to actually enter its body and set `aDir`. The pin on A
+      // is in place from the synchronous start of `withMirror(A)`, so A's
+      // pin is already present by the time we get here — what we're
+      // waiting for is the test-side bookkeeping (the `aDir` capture).
+      await aEnteredP;
 
       // Now acquire B in parallel. With cap=1, this triggers eviction. The
       // fix: A is pinned, so eviction skips A and the cache temporarily

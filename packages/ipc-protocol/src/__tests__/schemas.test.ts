@@ -14,6 +14,8 @@ import {
   SessionGetConfigResponseSchema,
   ConversationFetchHistoryRequestSchema,
   ConversationFetchHistoryResponseSchema,
+  ConversationStoreRunnerSessionRequestSchema,
+  ConversationStoreRunnerSessionResponseSchema,
   ToolDescriptorSchema,
   ToolCallSchema,
   AgentMessageSchema,
@@ -470,8 +472,12 @@ describe('conversation.fetch-history', () => {
   });
 
   it('response round-trips an empty turn list', () => {
-    const parsed = ConversationFetchHistoryResponseSchema.parse({ turns: [] });
+    const parsed = ConversationFetchHistoryResponseSchema.parse({
+      turns: [],
+      runnerSessionId: null,
+    });
     expect(parsed.turns).toEqual([]);
+    expect(parsed.runnerSessionId).toBeNull();
   });
 
   it('response round-trips user/assistant/tool turns with content blocks', () => {
@@ -500,10 +506,29 @@ describe('conversation.fetch-history', () => {
           ],
         },
       ],
+      runnerSessionId: null,
     });
     expect(parsed.turns).toHaveLength(3);
     expect(parsed.turns[0]?.role).toBe('user');
     expect(parsed.turns[2]?.contentBlocks[0]?.type).toBe('tool_result');
+    expect(parsed.runnerSessionId).toBeNull();
+  });
+
+  it('response round-trips a non-null runnerSessionId (Phase C resume)', () => {
+    // When the conversation has a bound runner session, the wire carries
+    // the opaque id back so the runner can pass it to SDK resume().
+    const parsed = ConversationFetchHistoryResponseSchema.parse({
+      turns: [],
+      runnerSessionId: 'sdk-sess-resume',
+    });
+    expect(parsed.runnerSessionId).toBe('sdk-sess-resume');
+  });
+
+  it('response rejects a missing runnerSessionId field (explicit null required)', () => {
+    // The field is nullable, NOT optional — explicit null keeps the wire
+    // shape stable and forces consumers to branch on three states.
+    const r = ConversationFetchHistoryResponseSchema.safeParse({ turns: [] });
+    expect(r.success).toBe(false);
   });
 
   it('response rejects an unknown role', () => {
@@ -511,6 +536,7 @@ describe('conversation.fetch-history', () => {
       turns: [
         { role: 'system', contentBlocks: [{ type: 'text', text: 'x' }] },
       ],
+      runnerSessionId: null,
     });
     expect(r.success).toBe(false);
   });
@@ -518,8 +544,84 @@ describe('conversation.fetch-history', () => {
   it('response rejects malformed content blocks (canonical schema)', () => {
     const r = ConversationFetchHistoryResponseSchema.safeParse({
       turns: [{ role: 'user', contentBlocks: [{ type: 'mystery' }] }],
+      runnerSessionId: null,
     });
     expect(r.success).toBe(false);
+  });
+});
+
+describe('conversation.store-runner-session', () => {
+  it('request round-trips a valid payload', () => {
+    const parsed = ConversationStoreRunnerSessionRequestSchema.parse({
+      conversationId: 'cnv_abc',
+      runnerSessionId: 'sdk-session-xyz',
+    });
+    expect(parsed.conversationId).toBe('cnv_abc');
+    expect(parsed.runnerSessionId).toBe('sdk-session-xyz');
+  });
+
+  it('request rejects a missing conversationId', () => {
+    const r = ConversationStoreRunnerSessionRequestSchema.safeParse({
+      runnerSessionId: 'sdk-session-xyz',
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it('request rejects a missing runnerSessionId', () => {
+    const r = ConversationStoreRunnerSessionRequestSchema.safeParse({
+      conversationId: 'cnv_abc',
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it('request rejects an empty conversationId', () => {
+    const r = ConversationStoreRunnerSessionRequestSchema.safeParse({
+      conversationId: '',
+      runnerSessionId: 'sdk-session-xyz',
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it('request rejects an empty runnerSessionId', () => {
+    const r = ConversationStoreRunnerSessionRequestSchema.safeParse({
+      conversationId: 'cnv_abc',
+      runnerSessionId: '',
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it('request rejects an oversized conversationId or runnerSessionId (>256 chars)', () => {
+    const big = 'x'.repeat(257);
+    expect(
+      ConversationStoreRunnerSessionRequestSchema.safeParse({
+        conversationId: big,
+        runnerSessionId: 'ok',
+      }).success,
+    ).toBe(false);
+    expect(
+      ConversationStoreRunnerSessionRequestSchema.safeParse({
+        conversationId: 'ok',
+        runnerSessionId: big,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('response round-trips { ok: true }', () => {
+    const parsed = ConversationStoreRunnerSessionResponseSchema.parse({
+      ok: true,
+    });
+    expect(parsed.ok).toBe(true);
+  });
+
+  it('ipc-client RESPONSE_SCHEMAS map includes the new key', async () => {
+    // The map is module-private, but its keyset is `IpcActionName`. A
+    // compile-time assignment proves the timeouts map (the keyset source)
+    // carries the new action; an `expect.toBeDefined()` on the timeout
+    // doubles as a runtime guard. The response-schema map in
+    // `ipc-client.ts` is type-checked against `IpcActionName` at build
+    // time, so any drift surfaces as a TS error before this test runs.
+    const action: IpcActionName = 'conversation.store-runner-session';
+    expect(IPC_TIMEOUTS_MS[action]).toBeDefined();
   });
 });
 
@@ -567,7 +669,7 @@ describe('timeouts', () => {
     expect(Object.isFrozen(IPC_TIMEOUTS_MS)).toBe(true);
   });
 
-  it('IPC_TIMEOUTS_MS has the eight expected keys (Phase 3 added workspace.materialize)', () => {
+  it('IPC_TIMEOUTS_MS has the nine expected keys (Phase C added conversation.store-runner-session)', () => {
     const expected = [
       'tool.pre-call',
       'tool.execute-host',
@@ -577,6 +679,7 @@ describe('timeouts', () => {
       'session.next-message',
       'session.get-config',
       'conversation.fetch-history',
+      'conversation.store-runner-session',
     ].sort();
     expect(Object.keys(IPC_TIMEOUTS_MS).sort()).toEqual(expected);
   });
@@ -592,8 +695,9 @@ describe('timeouts', () => {
       'session.next-message',
       'session.get-config',
       'conversation.fetch-history',
+      'conversation.store-runner-session',
     ];
-    expect(names).toHaveLength(8);
+    expect(names).toHaveLength(9);
   });
 });
 

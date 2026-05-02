@@ -867,6 +867,10 @@ async function fetchHistory(
   const turns = await store.listTurns(input.conversationId);
   return {
     turns: turns.map((t) => ({ role: t.role, contentBlocks: t.contentBlocks })),
+    // Phase C: runners branch on `runnerSessionId !== null` to choose
+    // SDK resume(sessionId) vs replay-from-DB. Pulled from the row we
+    // already loaded for the ACL gate above — no extra DB hit.
+    runnerSessionId: conv.runnerSessionId,
   };
 }
 

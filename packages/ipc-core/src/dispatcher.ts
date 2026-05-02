@@ -25,6 +25,7 @@ import { workspaceMaterializeHandler } from './handlers/workspace-materialize.js
 import { sessionNextMessageHandler } from './handlers/session-next-message.js';
 import { sessionGetConfigHandler } from './handlers/session-get-config.js';
 import { conversationFetchHistoryHandler } from './handlers/conversation-fetch-history.js';
+import { conversationStoreRunnerSessionHandler } from './handlers/conversation-store-runner-session.js';
 import {
   validateEventToolPostCall,
   fireEventToolPostCall,
@@ -78,6 +79,10 @@ ACTIONS.set('/session.get-config', { method: 'POST', handler: sessionGetConfigHa
 ACTIONS.set('/conversation.fetch-history', {
   method: 'POST',
   handler: conversationFetchHistoryHandler,
+});
+ACTIONS.set('/conversation.store-runner-session', {
+  method: 'POST',
+  handler: conversationStoreRunnerSessionHandler,
 });
 
 type EventSpec = {

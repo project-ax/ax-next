@@ -221,6 +221,31 @@ function userToolResult(
   } as unknown as SDKMessage;
 }
 
+function systemInit(sessionId: string): SDKMessage {
+  // Mirrors SDKSystemMessage from
+  // @anthropic-ai/claude-agent-sdk/sdk.d.ts:3282-3314 — the FIRST message
+  // every `query()` emits. Phase C uses session_id to bind the SDK's
+  // durable transcript to our conversation row so a future runner can
+  // resume() instead of replaying.
+  return {
+    type: 'system',
+    subtype: 'init',
+    session_id: sessionId,
+    apiKeySource: 'user',
+    claude_code_version: '0.0.0-test',
+    cwd: '/tmp/workspace',
+    tools: [],
+    mcp_servers: [],
+    model: 'claude-sonnet-4-7',
+    permissionMode: 'default',
+    slash_commands: [],
+    output_style: 'default',
+    skills: [],
+    plugins: [],
+    uuid: 'sys-init-uuid',
+  } as unknown as SDKMessage;
+}
+
 function resultSuccess(): SDKMessage {
   return {
     type: 'result',
@@ -1346,6 +1371,7 @@ describe('main()', () => {
               contentBlocks: [{ type: 'text', text: 'second question' }],
             },
           ],
+          runnerSessionId: null,
         };
       }
       throw new Error(`unexpected call: ${action}`);
@@ -1516,5 +1542,552 @@ describe('main()', () => {
     expect(sdkSawMessages).toEqual([
       { role: 'user', content: 'live message' },
     ]);
+  });
+
+  // ---------------------------------------------------------------------
+  // Phase C: runner-owned session ids.
+  //
+  // The Anthropic SDK emits a system/init message as the FIRST message
+  // of every query() (verified against sdk.d.ts SDKSystemMessage). When
+  // the runner has a bound conversation, we capture that session_id and
+  // POST it to the host via `conversation.store-runner-session` so a
+  // future restart can SDK.resume(sessionId) instead of replaying the
+  // transcript from our database.
+  //
+  // Once-only semantic: a single query() call can re-emit system/init on
+  // resume; only the first one is load-bearing for the bind. The handler
+  // sets a flag BEFORE awaiting the IPC so a re-entrant init can't
+  // double-fire.
+  //
+  // Non-fatal posture: if the bind IPC fails, the chat still completes.
+  // We just lose the resume optimization on next restart and fall back
+  // to fetch-history replay.
+  // ---------------------------------------------------------------------
+
+  describe('Phase C: runner_session_id binding', () => {
+    it('happy path: bound conversation → captures system/init session_id and POSTs conversation.store-runner-session exactly once', async () => {
+      setEnv(COMPLETE_ENV);
+      fakeClient = buildFakeClient();
+      fakeClient.call.mockImplementation(async (action: string) => {
+        if (action === 'session.get-config') {
+          return {
+            userId: 'u-test',
+            agentId: 'a-test',
+            agentConfig: {
+              systemPrompt: '',
+              allowedTools: [],
+              mcpConfigIds: [],
+              model: 'claude-sonnet-4-7',
+            },
+            conversationId: 'cnv-1',
+          };
+        }
+        if (action === 'workspace.materialize') return { bundleBytes: '' };
+        if (action === 'tool.list') return { tools: [] };
+        if (action === 'conversation.fetch-history') {
+          return { turns: [], runnerSessionId: null };
+        }
+        if (action === 'conversation.store-runner-session') {
+          return { ok: true };
+        }
+        throw new Error(`unexpected call: ${action}`);
+      });
+      fakeInbox = buildFakeInbox([userEntry('go'), cancelEntry]);
+      queryMock.mockImplementation(
+        ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+          return (async function* () {
+            const it = prompt[Symbol.asyncIterator]();
+            await it.next();
+            yield systemInit('sdk-sess-abc');
+            yield assistantText('hi');
+            yield resultSuccess();
+            await it.next();
+          })();
+        },
+      );
+
+      const { main } = await import('../main.js');
+      const rc = await main();
+      expect(rc).toBe(0);
+
+      const bindCalls = fakeClient.call.mock.calls.filter(
+        (c) => c[0] === 'conversation.store-runner-session',
+      );
+      expect(bindCalls).toHaveLength(1);
+      expect(bindCalls[0]?.[1]).toEqual({
+        conversationId: 'cnv-1',
+        runnerSessionId: 'sdk-sess-abc',
+      });
+    });
+
+    it('no conversation: conversationId is null → no conversation.store-runner-session call', async () => {
+      setEnv(COMPLETE_ENV);
+      fakeClient = buildFakeClient();
+      fakeClient.call.mockImplementation(async (action: string) => {
+        if (action === 'session.get-config') {
+          return {
+            userId: 'u-test',
+            agentId: 'a-test',
+            agentConfig: {
+              systemPrompt: '',
+              allowedTools: [],
+              mcpConfigIds: [],
+              model: 'claude-sonnet-4-7',
+            },
+            conversationId: null,
+          };
+        }
+        if (action === 'workspace.materialize') return { bundleBytes: '' };
+        if (action === 'tool.list') return { tools: [] };
+        if (action === 'conversation.store-runner-session') {
+          throw new Error(
+            'runner must NOT bind sessionId when conversationId is null',
+          );
+        }
+        throw new Error(`unexpected call: ${action}`);
+      });
+      fakeInbox = buildFakeInbox([userEntry('hello'), cancelEntry]);
+      queryMock.mockImplementation(
+        ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+          return (async function* () {
+            const it = prompt[Symbol.asyncIterator]();
+            await it.next();
+            yield systemInit('sdk-sess-xyz');
+            yield assistantText('ok');
+            yield resultSuccess();
+            await it.next();
+          })();
+        },
+      );
+
+      const { main } = await import('../main.js');
+      const rc = await main();
+      expect(rc).toBe(0);
+
+      const bindCalls = fakeClient.call.mock.calls.filter(
+        (c) => c[0] === 'conversation.store-runner-session',
+      );
+      expect(bindCalls).toHaveLength(0);
+    });
+
+    it('multiple system/init: only the FIRST triggers the bind (re-entrant init defense)', async () => {
+      // The SDK's resume(sessionId) flow can re-emit system/init within
+      // the same query(). We only build resume() in a later task, but
+      // the runner code path must defend today — the first init is the
+      // load-bearing one for the bind.
+      setEnv(COMPLETE_ENV);
+      fakeClient = buildFakeClient();
+      fakeClient.call.mockImplementation(async (action: string) => {
+        if (action === 'session.get-config') {
+          return {
+            userId: 'u-test',
+            agentId: 'a-test',
+            agentConfig: {
+              systemPrompt: '',
+              allowedTools: [],
+              mcpConfigIds: [],
+              model: 'claude-sonnet-4-7',
+            },
+            conversationId: 'cnv-2',
+          };
+        }
+        if (action === 'workspace.materialize') return { bundleBytes: '' };
+        if (action === 'tool.list') return { tools: [] };
+        if (action === 'conversation.fetch-history') {
+          return { turns: [], runnerSessionId: null };
+        }
+        if (action === 'conversation.store-runner-session') {
+          return { ok: true };
+        }
+        throw new Error(`unexpected call: ${action}`);
+      });
+      fakeInbox = buildFakeInbox([userEntry('first'), cancelEntry]);
+      queryMock.mockImplementation(
+        ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+          return (async function* () {
+            const it = prompt[Symbol.asyncIterator]();
+            await it.next();
+            yield systemInit('s1');
+            yield assistantText('a');
+            yield resultSuccess();
+            // Synthesized: would normally only happen on a real resume.
+            // The runner MUST ignore this for binding purposes.
+            yield systemInit('s2');
+            yield resultSuccess();
+            await it.next();
+          })();
+        },
+      );
+
+      const { main } = await import('../main.js');
+      const rc = await main();
+      expect(rc).toBe(0);
+
+      const bindCalls = fakeClient.call.mock.calls.filter(
+        (c) => c[0] === 'conversation.store-runner-session',
+      );
+      expect(bindCalls).toHaveLength(1);
+      expect(bindCalls[0]?.[1]).toEqual({
+        conversationId: 'cnv-2',
+        runnerSessionId: 's1',
+      });
+    });
+
+    it('IPC failure is non-fatal: bind throws → stderr logs error, chat still completes with outcome.kind=complete', async () => {
+      setEnv(COMPLETE_ENV);
+      fakeClient = buildFakeClient();
+      fakeClient.call.mockImplementation(async (action: string) => {
+        if (action === 'session.get-config') {
+          return {
+            userId: 'u-test',
+            agentId: 'a-test',
+            agentConfig: {
+              systemPrompt: '',
+              allowedTools: [],
+              mcpConfigIds: [],
+              model: 'claude-sonnet-4-7',
+            },
+            conversationId: 'cnv-3',
+          };
+        }
+        if (action === 'workspace.materialize') return { bundleBytes: '' };
+        if (action === 'tool.list') return { tools: [] };
+        if (action === 'conversation.fetch-history') {
+          return { turns: [], runnerSessionId: null };
+        }
+        if (action === 'conversation.store-runner-session') {
+          throw new Error('host returned 503');
+        }
+        throw new Error(`unexpected call: ${action}`);
+      });
+      fakeInbox = buildFakeInbox([userEntry('go'), cancelEntry]);
+      queryMock.mockImplementation(
+        ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+          return (async function* () {
+            const it = prompt[Symbol.asyncIterator]();
+            await it.next();
+            yield systemInit('sdk-sess-fail');
+            yield assistantText('still works');
+            yield resultSuccess();
+            await it.next();
+          })();
+        },
+      );
+
+      const stderrSpy = vi
+        .spyOn(process.stderr, 'write')
+        .mockImplementation(() => true);
+
+      try {
+        const { main } = await import('../main.js');
+        const rc = await main();
+        // Non-fatal: chat completed cleanly.
+        expect(rc).toBe(0);
+
+        const stderrText = stderrSpy.mock.calls
+          .map((c) => String(c[0]))
+          .join('');
+        expect(stderrText).toContain(
+          'conversation.store-runner-session failed',
+        );
+        expect(stderrText).toContain('host returned 503');
+      } finally {
+        stderrSpy.mockRestore();
+      }
+
+      const chatEnds = fakeClient.event.mock.calls.filter(
+        (c) => c[0] === 'event.chat-end',
+      );
+      expect(chatEnds).toHaveLength(1);
+      const payload = chatEnds[0]?.[1] as {
+        outcome: { kind: string };
+      };
+      expect(payload.outcome.kind).toBe('complete');
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // Phase C: SDK resume(sessionId) instead of replay-from-DB.
+  //
+  // When `conversation.fetch-history` returns a non-null `runnerSessionId`,
+  // the runner passes it as `options.resume` to `query()` and SKIPS the
+  // user-turn replay (the SDK rehydrates the conversation from its own
+  // on-disk transcript). When `runnerSessionId` is null, we fall back to
+  // the prior replay-from-DB path (Task 15).
+  //
+  // The trade-off the controller chose: when `runnerSessionId !== null`,
+  // the host's bus hook still reads turns from the DB even though the
+  // runner ignores them. That extra DB hit is cheap (one query at boot)
+  // and keeps the wire shape simple — a single response covers both the
+  // resume and the replay path.
+  // ---------------------------------------------------------------------
+
+  describe('Phase C: SDK resume(sessionId)', () => {
+    it('runnerSessionId set: passes options.resume to query() AND skips replay turns', async () => {
+      setEnv(COMPLETE_ENV);
+      fakeClient = buildFakeClient();
+      fakeClient.call.mockImplementation(async (action: string) => {
+        if (action === 'session.get-config') {
+          return {
+            userId: 'u-test',
+            agentId: 'a-test',
+            agentConfig: {
+              systemPrompt: '',
+              allowedTools: [],
+              mcpConfigIds: [],
+              model: 'claude-sonnet-4-7',
+            },
+            conversationId: 'cnv-resume',
+          };
+        }
+        if (action === 'workspace.materialize') return { bundleBytes: '' };
+        if (action === 'tool.list') return { tools: [] };
+        if (action === 'conversation.fetch-history') {
+          // Persisted user turn — would be replayed if runnerSessionId
+          // were null. Asserting it does NOT reach the SDK iterator
+          // pins the resume-vs-replay branching.
+          return {
+            turns: [
+              {
+                role: 'user',
+                contentBlocks: [{ type: 'text', text: 'persisted turn' }],
+              },
+            ],
+            runnerSessionId: 'sdk-sess-resume',
+          };
+        }
+        if (action === 'conversation.store-runner-session') {
+          return { ok: true };
+        }
+        throw new Error(`unexpected call: ${action}`);
+      });
+      fakeInbox = buildFakeInbox([userEntry('live message'), cancelEntry]);
+
+      const sdkSawMessages: Array<{ role: string; content: unknown }> = [];
+      queryMock.mockImplementation(
+        ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+          return (async function* () {
+            for await (const m of prompt) {
+              sdkSawMessages.push({
+                role: m.message.role,
+                content: m.message.content,
+              });
+            }
+            yield resultSuccess();
+          })();
+        },
+      );
+
+      const { main } = await import('../main.js');
+      const rc = await main();
+      expect(rc).toBe(0);
+
+      // (a) query() got options.resume set to the runner session id.
+      expect(queryMock).toHaveBeenCalledTimes(1);
+      const queryArg = queryMock.mock.calls[0]?.[0] as {
+        options: { resume?: string };
+      };
+      expect(queryArg.options.resume).toBe('sdk-sess-resume');
+
+      // (b) Replay turn was NOT yielded into the SDK prompt iterator —
+      // only the live inbox message reached the SDK. The SDK rehydrates
+      // its own conversation from disk via resume(sessionId), so re-
+      // emitting the persisted user turn would double-replay it.
+      expect(sdkSawMessages).toEqual([
+        { role: 'user', content: 'live message' },
+      ]);
+    });
+
+    it('runnerSessionId null: omits options.resume AND yields replay turns (replay-from-DB path)', async () => {
+      setEnv(COMPLETE_ENV);
+      fakeClient = buildFakeClient();
+      fakeClient.call.mockImplementation(async (action: string) => {
+        if (action === 'session.get-config') {
+          return {
+            userId: 'u-test',
+            agentId: 'a-test',
+            agentConfig: {
+              systemPrompt: '',
+              allowedTools: [],
+              mcpConfigIds: [],
+              model: 'claude-sonnet-4-7',
+            },
+            conversationId: 'cnv-replay',
+          };
+        }
+        if (action === 'workspace.materialize') return { bundleBytes: '' };
+        if (action === 'tool.list') return { tools: [] };
+        if (action === 'conversation.fetch-history') {
+          return {
+            turns: [
+              {
+                role: 'user',
+                contentBlocks: [{ type: 'text', text: 'persisted turn' }],
+              },
+            ],
+            runnerSessionId: null,
+          };
+        }
+        if (action === 'conversation.store-runner-session') {
+          return { ok: true };
+        }
+        throw new Error(`unexpected call: ${action}`);
+      });
+      fakeInbox = buildFakeInbox([userEntry('live message'), cancelEntry]);
+
+      const sdkSawMessages: Array<{ role: string; content: unknown }> = [];
+      queryMock.mockImplementation(
+        ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+          return (async function* () {
+            for await (const m of prompt) {
+              sdkSawMessages.push({
+                role: m.message.role,
+                content: m.message.content,
+              });
+            }
+            yield resultSuccess();
+          })();
+        },
+      );
+
+      const { main } = await import('../main.js');
+      const rc = await main();
+      expect(rc).toBe(0);
+
+      // (a) query() did NOT get options.resume — null runnerSessionId
+      // means the SDK is starting a fresh conversation; we fall back to
+      // the replay-from-DB path.
+      expect(queryMock).toHaveBeenCalledTimes(1);
+      const queryArg = queryMock.mock.calls[0]?.[0] as {
+        options: { resume?: string };
+      };
+      expect(queryArg.options.resume).toBeUndefined();
+
+      // (b) Replay turn WAS yielded first, then the live inbox message.
+      expect(sdkSawMessages).toEqual([
+        { role: 'user', content: 'persisted turn' },
+        { role: 'user', content: 'live message' },
+      ]);
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // Phase C: HOME redirect for the SDK subprocess.
+  //
+  // The Anthropic SDK writes its native session jsonl to
+  // ~/.claude/projects/<sessionId>.jsonl. In the k8s sandbox, the runner
+  // pod sets HOME=/nonexistent at the pod level so `git` (and any other
+  // tool the runner spawns) can't accidentally read a global ~/.gitconfig.
+  // The SDK can't write its jsonl into /nonexistent, so the targeted fix
+  // is to point HOME at the workspace root for the SDK subprocess only —
+  // the `env:` we pass into `query({ options: { env } })`. This way the
+  // jsonl lands inside the workspace where the turn-end
+  // `git status + git add -A + bundle` flow captures it. The runner
+  // process's own git operations still see HOME=/nonexistent because
+  // we don't override their env.
+  // ---------------------------------------------------------------------
+
+  describe('Phase C: HOME redirect for SDK subprocess', () => {
+    it('happy path: SDK env.HOME is set to workspaceRoot and ANTHROPIC_API_KEY is preserved', async () => {
+      setEnv(COMPLETE_ENV);
+      fakeClient = buildFakeClient();
+      fakeClient.call.mockImplementation(async (action: string) => {
+        if (action === 'session.get-config') {
+          return {
+            userId: 'u-test',
+            agentId: 'a-test',
+            agentConfig: {
+              systemPrompt: '',
+              allowedTools: [],
+              mcpConfigIds: [],
+              model: 'claude-sonnet-4-7',
+            },
+            conversationId: null,
+          };
+        }
+        if (action === 'workspace.materialize') return { bundleBytes: '' };
+        if (action === 'tool.list') return { tools: [] };
+        throw new Error(`unexpected call: ${action}`);
+      });
+      fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
+      queryMock.mockImplementation(
+        ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+          return (async function* () {
+            const it = prompt[Symbol.asyncIterator]();
+            await it.next();
+            yield assistantText('ok');
+            yield resultSuccess();
+            await it.next();
+          })();
+        },
+      );
+
+      const { main } = await import('../main.js');
+      const rc = await main();
+      expect(rc).toBe(0);
+
+      expect(queryMock).toHaveBeenCalledTimes(1);
+      const queryArg = queryMock.mock.calls[0]?.[0] as {
+        options: {
+          env: { HOME?: string; ANTHROPIC_API_KEY?: string };
+        };
+      };
+      // HOME points at the workspace so the SDK's native
+      // ~/.claude/projects/<sessionId>.jsonl writes land where the
+      // turn-end git status + bundle flow captures them.
+      expect(queryArg.options.env.HOME).toBe('/tmp/workspace');
+      // ANTHROPIC_API_KEY is preserved through the spread — the
+      // proxyStartup.anthropicEnv merge intent is documented here so
+      // a future refactor that drops the spread still trips this test.
+      expect(queryArg.options.env.ANTHROPIC_API_KEY).toBe(
+        COMPLETE_ENV.ANTHROPIC_API_KEY,
+      );
+    });
+
+    it('HOME override is per-SDK-subprocess only: process.env.HOME is NOT mutated by main()', async () => {
+      // The runner-process git operations inherit HOME=/nonexistent
+      // from process.env (pod-level setting). Mutating process.env.HOME
+      // here would defeat the git-paranoia posture for the runner's
+      // own git operations.
+      setEnv(COMPLETE_ENV);
+      const homeBefore = process.env.HOME;
+      fakeClient = buildFakeClient();
+      fakeClient.call.mockImplementation(async (action: string) => {
+        if (action === 'session.get-config') {
+          return {
+            userId: 'u-test',
+            agentId: 'a-test',
+            agentConfig: {
+              systemPrompt: '',
+              allowedTools: [],
+              mcpConfigIds: [],
+              model: 'claude-sonnet-4-7',
+            },
+            conversationId: null,
+          };
+        }
+        if (action === 'workspace.materialize') return { bundleBytes: '' };
+        if (action === 'tool.list') return { tools: [] };
+        throw new Error(`unexpected call: ${action}`);
+      });
+      fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
+      queryMock.mockImplementation(
+        ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+          return (async function* () {
+            const it = prompt[Symbol.asyncIterator]();
+            await it.next();
+            yield assistantText('ok');
+            yield resultSuccess();
+            await it.next();
+          })();
+        },
+      );
+
+      const { main } = await import('../main.js');
+      const rc = await main();
+      expect(rc).toBe(0);
+
+      expect(process.env.HOME).toBe(homeBefore);
+    });
   });
 });

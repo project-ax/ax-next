@@ -42,6 +42,10 @@ export function hookRejected(reason: string): HandlerErr {
  * Map a PluginError thrown inside a service hook call to a safe wire error.
  * Internal codes never leak to the client; only the bucketed HTTP status
  * and a fixed message do.
+ *
+ * `conflict` is mapped to 409 HOOK_REJECTED — used by
+ * `conversations:store-runner-session` (Phase C) when an idempotent bind
+ * sees a different runner session id already attached to the row.
  */
 export function mapPluginError(err: PluginError): HandlerErr {
   switch (err.code) {
@@ -75,6 +79,14 @@ export function mapPluginError(err: PluginError): HandlerErr {
         status: 403,
         body: { error: { code: 'HOOK_REJECTED', message: 'forbidden' } },
       };
+    // Phase C (runner-owned sessions). conversations:store-runner-session
+    // throws `conflict` when the conversation row is already bound to a
+    // different runnerSessionId. The runner should treat this as fatal
+    // (the binding it observed locally diverges from what the host has
+    // recorded for an earlier turn) — 409 maps to a non-retryable error
+    // on the client side.
+    case 'conflict':
+      return hookRejected('conflict');
     case 'no-service':
     case 'duplicate-service':
     case 'missing-service':

@@ -310,6 +310,14 @@ export type SessionGetConfigResponse = z.infer<typeof SessionGetConfigResponseSc
 //     implicit in the array order, and identity is the LLM's concern,
 //     not ours. A future audit/debug consumer that wants those fields
 //     should call `conversations:get` directly (host-side hook).
+//   - Phase C (2026-05-02): `runnerSessionId` is the bound runner-side
+//     session id, or `null` if no runner has ever bound one. Runners
+//     branch on `runnerSessionId !== null` to choose SDK
+//     `resume(sessionId)` vs replay-from-DB. Wire name is camelCase,
+//     opaque, never the snake_case `runner_session_id` from the DB row.
+//     Trade-off: the host still loads `turns` from the DB even when the
+//     runner is going to ignore them on a resume — the extra read is
+//     cheap (one query at runner boot) and keeps the wire shape simple.
 // ---------------------------------------------------------------------------
 
 export const ConversationFetchHistoryRequestSchema = z.object({
@@ -329,9 +337,57 @@ export type ConversationFetchHistoryTurn = z.infer<
 
 export const ConversationFetchHistoryResponseSchema = z.object({
   turns: z.array(ConversationFetchHistoryTurnSchema),
+  // Phase C: nullable, NEVER `undefined`. Explicit null keeps the wire
+  // shape stable and forces consumers to branch on three states (string,
+  // null, or schema-fail) rather than treat absent as "no opinion".
+  runnerSessionId: z.string().nullable(),
 });
 export type ConversationFetchHistoryResponse = z.infer<
   typeof ConversationFetchHistoryResponseSchema
+>;
+
+// ---------------------------------------------------------------------------
+// conversation.store-runner-session
+//
+// Runner → host RPC fired ONCE per session, the first time the SDK emits a
+// `system/init` message that carries a session_id. The runner forwards that
+// id so the host can persist it on the conversation row; on the next boot
+// the runner reads it back from the `conversation.fetch-history` response's
+// `runnerSessionId` field (NOT from `session.get-config` — see the deviation
+// note above on `ConversationFetchHistoryResponseSchema`) and calls
+// `query({ resume: sessionId })` instead of replaying the transcript
+// turn-by-turn. That swap is the whole point of Phase C — the SDK already
+// owns durable transcripts on disk under `~/.claude/projects/<sessionId>`,
+// and replaying our DB version on top of that is just expensive and racy.
+//
+// Authz on the host: the bus-side `conversations:store-runner-session` hook
+// runs a `ctx.userId`-scoped UPDATE only — it does NOT call `agents:resolve`
+// (Phase B's posture; see `packages/conversations/src/plugin.ts:234-238`).
+// The runner authenticates IPC via its session bearer token, the IPC server
+// resolves the token to ctx.userId, and that userId is what reaches the
+// UPDATE — same trust pivot as `conversation.fetch-history`.
+//
+// Field-name conventions (I1):
+//   - `runnerSessionId` is generic. SDKs other than Anthropic's also mint a
+//     resumable session identifier; we just hold the string and hand it
+//     back unchanged. No claude-sdk vocabulary leaks.
+// ---------------------------------------------------------------------------
+
+export const ConversationStoreRunnerSessionRequestSchema = z
+  .object({
+    conversationId: z.string().min(1).max(256),
+    runnerSessionId: z.string().min(1).max(256),
+  })
+  .strict();
+export type ConversationStoreRunnerSessionRequest = z.infer<
+  typeof ConversationStoreRunnerSessionRequestSchema
+>;
+
+export const ConversationStoreRunnerSessionResponseSchema = z
+  .object({ ok: z.literal(true) })
+  .strict();
+export type ConversationStoreRunnerSessionResponse = z.infer<
+  typeof ConversationStoreRunnerSessionResponseSchema
 >;
 
 // ---------------------------------------------------------------------------
