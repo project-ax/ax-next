@@ -1,0 +1,23 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "9aa2350b835f",
+  "strategy": "manual-commit",
+  "branch": "feat/phase-2-workspace-host-plugin",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/9a/a2350b835f/0/metadata.json",
+      "transcript": "/9a/a2350b835f/0/full.jsonl",
+      "content_hash": "/9a/a2350b835f/0/content_hash.txt",
+      "prompt": "/9a/a2350b835f/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 228,
+    "cache_creation_tokens": 1045919,
+    "cache_read_tokens": 30635383,
+    "output_tokens": 177843,
+    "api_call_count": 133
+  }
+}
