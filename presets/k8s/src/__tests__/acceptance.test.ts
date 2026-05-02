@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import * as os from 'node:os';
+import { randomBytes } from 'node:crypto';
 
 import {
   HookBus,
@@ -10,6 +12,8 @@ import {
   type AgentContext,
   type AgentOutcome,
   type Plugin,
+  type WorkspaceApplyInput,
+  type WorkspaceApplyOutput,
 } from '@ax/core';
 import { createStorageSqlitePlugin } from '@ax/storage-sqlite';
 import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
@@ -21,6 +25,11 @@ import {
   stubRunnerPath,
   type StubRunnerScript,
 } from '@ax/test-harness';
+import { workspaceIdFor } from '@ax/workspace-git-server';
+import {
+  createWorkspaceGitServer,
+  type WorkspaceGitServer,
+} from '@ax/workspace-git-server/server';
 
 import { createK8sPlugins, type K8sPresetConfig } from '../index.js';
 
@@ -330,6 +339,200 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         expect(observedChatEndReqIds).toHaveLength(1);
       } finally {
         await handle.shutdown();
+      }
+    },
+  );
+
+  // ---------------------------------------------------------------------------
+  // Phase 2 Task 18 — git-protocol backend acceptance.
+  //
+  // Parallel to the local-backend test above. The difference: instead of
+  // letting `@ax/workspace-git` write a bare repo on a tempdir, we boot an
+  // in-process `@ax/workspace-git-server` storage tier and point the preset
+  // at it via `workspace: { backend: 'git-protocol', baseUrl, token }`. That
+  // exercises the full chain — preset → bootstrap → workspace plugin → REST
+  // create-repo → git smart-HTTP push — that the chart wires up when an
+  // operator flips `gitServer.experimental.gitProtocol=true`.
+  //
+  // The chat path itself doesn't touch workspace ops (stub-runner just emits
+  // assistant-text + finish), so the load-bearing test for the new plugin's
+  // wiring is the explicit `workspace:apply` BEFORE the chat. That call:
+  //   1. Forces the workspace-git-server plugin to register its hooks
+  //      (otherwise the bus.call would throw `unknown service`).
+  //   2. Routes through `ensureRepoCreated` → POST /repos on the storage tier.
+  //   3. Pushes one commit via git smart-HTTP, materializing a bare repo at
+  //      `<serverRepoRoot>/<workspaceId>.git`.
+  // The post-chat filesystem assertion proves all three.
+  // ---------------------------------------------------------------------------
+  it(
+    'boots a preset-equivalent plugin set with the git-protocol workspace and completes a chat',
+    { timeout: 30_000 },
+    async () => {
+      // ---- Storage tier: boot an in-process workspace-git-server. -------
+      // Token: 32 random bytes (hex) per test run. Real deploys use a
+      // chart-managed Secret; the test value never leaves this process.
+      const serverToken = randomBytes(32).toString('hex');
+      const serverRepoRoot = await fs.realpath(
+        await fs.mkdtemp(path.join(os.tmpdir(), 'ax-preset-k8s-gitsrv-')),
+      );
+      const server: WorkspaceGitServer = await createWorkspaceGitServer({
+        repoRoot: serverRepoRoot,
+        host: '127.0.0.1',
+        port: 0,
+        token: serverToken,
+      });
+
+      const script: StubRunnerScript = {
+        entries: [
+          { kind: 'assistant-text', content: CANARY_TEXT },
+          { kind: 'finish', reason: 'end_turn' },
+        ],
+      };
+
+      // Preset config — same shape as the local case except `workspace` flips
+      // to `git-protocol` and points at the tempdir storage tier.
+      const presetConfig: K8sPresetConfig = {
+        database: { connectionString: 'postgres://stub:5432/stub' },
+        eventbus: { connectionString: 'postgres://stub:5432/stub' },
+        session: { connectionString: 'postgres://stub:5432/stub' },
+        workspace: {
+          backend: 'git-protocol',
+          baseUrl: `http://127.0.0.1:${server.port}`,
+          token: serverToken,
+        },
+        sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
+        ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
+        chat: { runnerBinary: stubRunnerPath, chatTimeoutMs: 60_000 },
+        http: {
+          host: '127.0.0.1',
+          port: 0,
+          cookieKey: '0'.repeat(64),
+          allowedOrigins: [],
+        },
+        auth: { devBootstrap: { token: 'preset-test-bootstrap' } },
+      };
+
+      // Same filter as the local test. PLUGINS_TO_DROP doesn't list
+      // `@ax/workspace-git-server`, so the new workspace plugin is kept and
+      // exercised end-to-end.
+      const presetPlugins = createK8sPlugins(presetConfig);
+      const kept = presetPlugins.filter(
+        (p) => !PLUGINS_TO_DROP.has(p.manifest.name),
+      );
+
+      const observedChatEndReqIds: string[] = [];
+      const chatEndRecorder: Plugin = {
+        manifest: {
+          name: '@ax/preset-k8s/test/chat-end-recorder',
+          version: '0.0.0',
+          registers: [],
+          calls: [],
+          subscribes: ['chat:end'],
+        },
+        init({ bus }) {
+          bus.subscribe(
+            'chat:end',
+            '@ax/preset-k8s/test/chat-end-recorder',
+            async (recCtx: AgentContext) => {
+              observedChatEndReqIds.push(recCtx.reqId);
+              return undefined;
+            },
+          );
+        },
+      };
+
+      const sqlitePath = path.join(tmp, 'preset-k8s-acceptance-gitproto.sqlite');
+      const replacements: Plugin[] = [
+        createStorageSqlitePlugin({ databasePath: sqlitePath }),
+        createSessionInmemoryPlugin(),
+        createSandboxSubprocessPlugin(),
+        createIpcServerPlugin(),
+        createTestProxyPlugin({ script }),
+        createPermissiveAgentsStubPlugin(),
+        createMcpClientPlugin(),
+        chatEndRecorder,
+      ];
+
+      const plugins: Plugin[] = [...kept, ...replacements];
+
+      const bus = new HookBus();
+      const handle = await bootstrap({ bus, plugins, config: {} });
+
+      try {
+        const userId = 'preset-test-user';
+        const agentId = 'preset-test-agent';
+        const ctx = makeAgentContext({
+          sessionId: 'preset-acceptance-session-gitproto',
+          agentId,
+          userId,
+          workspace: { rootPath: tmp },
+        });
+
+        // 1. Exercise the workspace plugin BEFORE the chat. This proves the
+        // git-protocol plugin's hooks actually wired up and round-trip through
+        // the storage tier — apply → ensureRepoCreated (POST /repos) → push
+        // first commit via git smart-HTTP. The chat itself doesn't touch
+        // workspace ops, so without this the storage tier stays empty.
+        const apply = await bus.call<
+          WorkspaceApplyInput,
+          WorkspaceApplyOutput
+        >('workspace:apply', ctx, {
+          changes: [
+            {
+              path: 'canary.txt',
+              kind: 'put',
+              content: new TextEncoder().encode('hi'),
+            },
+          ],
+          parent: null,
+          reason: 'acceptance canary',
+        });
+        expect(typeof apply.version).toBe('string');
+        expect(apply.delta.before).toBeNull();
+        expect(apply.delta.changes).toHaveLength(1);
+        expect(apply.delta.changes[0]).toMatchObject({
+          path: 'canary.txt',
+          kind: 'added',
+        });
+
+        // 2. Run the chat path through the same kernel. The stub-runner emits
+        // CANARY_TEXT + finish; same chat-end / outcome assertions as the
+        // local-backend test.
+        const outcome: AgentOutcome = await bus.call('agent:invoke', ctx, {
+          message: { role: 'user', content: 'hi' },
+        });
+        expect(outcome.kind).toBe('complete');
+        if (outcome.kind !== 'complete') {
+          throw new Error(
+            `expected complete, got ${outcome.kind}: ${JSON.stringify(outcome)}`,
+          );
+        }
+        const lastAssistant = [...outcome.messages]
+          .reverse()
+          .find((m) => m.role === 'assistant');
+        expect(lastAssistant?.content).toContain(CANARY_TEXT);
+        expect(observedChatEndReqIds).toHaveLength(1);
+
+        // 3. Filesystem assertion against the storage tier. The bare repo
+        // lives at `<serverRepoRoot>/<workspaceId>.git`; existence proves the
+        // workspace:apply above wrote through to the storage tier (vs. the
+        // mirror cache only). `workspaceIdFor` is the same derivation the
+        // production plugin uses (no override path in this preset), so the
+        // path here matches what the chart's storage tier would see.
+        const expectedWorkspaceId = workspaceIdFor({ userId, agentId });
+        const bareRepoPath = path.join(
+          serverRepoRoot,
+          `${expectedWorkspaceId}.git`,
+        );
+        expect(existsSync(bareRepoPath)).toBe(true);
+      } finally {
+        // Tear down in reverse order of construction. Kernel shutdown drains
+        // the workspace plugin's mirror cache + git engine before the server
+        // closes; closing the server first would cause in-flight smart-HTTP
+        // calls to error out instead of completing cleanly.
+        await handle.shutdown();
+        await server.close();
+        await fs.rm(serverRepoRoot, { recursive: true, force: true });
       }
     },
   );
