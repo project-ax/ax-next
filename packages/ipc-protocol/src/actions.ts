@@ -108,28 +108,6 @@ export const ToolListResponseSchema = z.object({
 export type ToolListResponse = z.infer<typeof ToolListResponseSchema>;
 
 // ---------------------------------------------------------------------------
-// FileChangeSchema (legacy — slated for deletion in Phase 3 Slice 10).
-//
-// Pre-Phase-3 wire shape for per-turn diffs. Still imported by tests in
-// the legacy diff-accumulator (also slated for deletion). Kept here to
-// avoid a multi-PR churn; the cleanup commit drops both together.
-// ---------------------------------------------------------------------------
-
-export const FileChangeSchema = z.discriminatedUnion('kind', [
-  z.object({
-    path: z.string(),
-    kind: z.literal('put'),
-    // Bytes ride the wire as base64 strings (JSON can't carry Uint8Array).
-    content: z.string().transform((b64) => new Uint8Array(Buffer.from(b64, 'base64'))),
-  }),
-  z.object({
-    path: z.string(),
-    kind: z.literal('delete'),
-  }),
-]);
-export type WireFileChange = z.infer<typeof FileChangeSchema>;
-
-// ---------------------------------------------------------------------------
 // workspace.commit-notify
 //
 // Phase 3 (this PR): the runner ships per-turn diffs as a `git bundle` of
