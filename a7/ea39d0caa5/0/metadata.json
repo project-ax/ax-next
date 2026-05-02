@@ -1,0 +1,23 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "a7ea39d0caa5",
+  "session_id": "4609cf39-ca85-4aaa-b394-f203b0ba3d9f",
+  "strategy": "manual-commit",
+  "created_at": "2026-05-02T01:49:35.563473Z",
+  "branch": "feat/phase-2-workspace-host-plugin",
+  "checkpoints_count": 1,
+  "files_touched": [],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "f921bd9adc4f",
+  "token_usage": {
+    "input_tokens": 230,
+    "cache_creation_tokens": 1049486,
+    "cache_read_tokens": 31480077,
+    "output_tokens": 182555,
+    "api_call_count": 135
+  },
+  "session_metrics": {
+    "turn_count": 1
+  }
+}
