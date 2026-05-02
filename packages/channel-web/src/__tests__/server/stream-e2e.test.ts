@@ -17,7 +17,11 @@ import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createHttpServerPlugin, type HttpServerPlugin } from '@ax/http-server';
 import { createConversationsPlugin } from '@ax/conversations';
 import type { CreateInput, CreateOutput } from '@ax/conversations';
-import { createTestHarness, type TestHarness } from '@ax/test-harness';
+import {
+  createMockWorkspacePlugin,
+  createTestHarness,
+  type TestHarness,
+} from '@ax/test-harness';
 import { createChannelWebServerPlugin } from '../../server/plugin';
 
 // ---------------------------------------------------------------------------
@@ -163,6 +167,9 @@ async function boot(args: BootArgs): Promise<{
       createDatabasePostgresPlugin({ connectionString }),
       authMockPlugin({ user: args.user }),
       agentsMockPlugin({ allowedFor: args.allowedFor }),
+      // Phase D — conversations plugin needs workspace:list/read
+      // registered to satisfy bootstrap's verifyCalls.
+      createMockWorkspacePlugin(),
       createConversationsPlugin(),
       chatRunMockPlugin(),
       createChannelWebServerPlugin({}),

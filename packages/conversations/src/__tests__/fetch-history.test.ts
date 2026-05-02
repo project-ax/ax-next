@@ -73,6 +73,12 @@ async function makeHarness(opts?: {
           message: `agent '${call.agentId}' not accessible to '${call.userId}'`,
         });
       },
+      // Phase D — `@ax/conversations` declares calls on `workspace:list`
+      // / `workspace:read` (used by conversations:get). fetch-history
+      // doesn't need them, but the manifest verification at bootstrap
+      // does, so we register no-op stubs.
+      'workspace:list': async () => ({ paths: [] as string[] }),
+      'workspace:read': async () => ({ found: false }) as const,
     },
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),

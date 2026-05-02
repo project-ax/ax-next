@@ -1,10 +1,15 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { spawn } from 'node:child_process';
 import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import * as os from 'node:os';
 import { randomBytes } from 'node:crypto';
+
+import {
+  PostgreSqlContainer,
+  type StartedPostgreSqlContainer,
+} from '@testcontainers/postgresql';
 
 import {
   HookBus,
@@ -20,6 +25,17 @@ import {
   buildBaselineBundle,
   workspaceCommitNotifyHandler,
 } from '@ax/ipc-core';
+import { createDatabasePostgresPlugin } from '@ax/database-postgres';
+import { createConversationsPlugin } from '@ax/conversations';
+import type {
+  CreateInput as ConversationsCreateInput,
+  CreateOutput as ConversationsCreateOutput,
+  StoreRunnerSessionInput as ConversationsStoreRunnerSessionInput,
+  StoreRunnerSessionOutput as ConversationsStoreRunnerSessionOutput,
+  GetInput as ConversationsGetInput,
+  GetOutput as ConversationsGetOutput,
+} from '@ax/conversations';
+import { parseJsonlToTurns } from '@ax/agent-claude-sdk-runner-host';
 import { createStorageSqlitePlugin } from '@ax/storage-sqlite';
 import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
 import { createSandboxSubprocessPlugin } from '@ax/sandbox-subprocess';
@@ -178,6 +194,18 @@ const CANARY_TEXT = 'preset-ok';
 describe('@ax/preset-k8s acceptance (stub runner)', () => {
   let tmp: string;
   let originalCredKey: string | undefined;
+  // Postgres testcontainer — only the Phase D canary needs it (conversations
+  // plugin requires `database:get-instance`). Boot is lazy: started by the
+  // single test that uses it on first call, reused if other future canaries
+  // need it. Stopped in afterAll.
+  let pgContainer: StartedPostgreSqlContainer | null = null;
+
+  async function ensurePostgresStarted(): Promise<string> {
+    if (pgContainer === null) {
+      pgContainer = await new PostgreSqlContainer('postgres:16-alpine').start();
+    }
+    return pgContainer.getConnectionUri();
+  }
 
   beforeEach(async () => {
     tmp = await fs.realpath(
@@ -194,6 +222,13 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
     if (originalCredKey === undefined) delete process.env.AX_CREDENTIALS_KEY;
     else process.env.AX_CREDENTIALS_KEY = originalCredKey;
     if (tmp) await fs.rm(tmp, { recursive: true, force: true });
+  });
+
+  afterAll(async () => {
+    if (pgContainer !== null) {
+      await pgContainer.stop();
+      pgContainer = null;
+    }
   });
 
   it(
@@ -983,6 +1018,226 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         expect(ls.stdout).not.toContain('doomed.txt');
       } finally {
         await h.teardown();
+      }
+    },
+  );
+
+  // ---------------------------------------------------------------------------
+  // Phase D canary — conversations:get reads transcripts from the runner-
+  // native jsonl in the workspace.
+  //
+  // Until Phase D, conversations:get returned `Turn[]` from the
+  // `conversation_turns` rows (written by the chat:turn-end subscriber).
+  // Phase D pivots: the subscriber stops writing rows, and conversations:get
+  // looks up the runner's session jsonl via `workspace:list` (glob match)
+  // + `workspace:read` and parses with `parseJsonlToTurns`.
+  //
+  // This canary proves the whole stack:
+  //   preset config (git-protocol workspace) →
+  //   bootstrap → workspace plugin (real workspace-git-server) →
+  //   workspace:apply seeds the jsonl into the storage tier →
+  //   conversations:get → workspace:list + workspace:read → parser →
+  //   canonical Turn[] shape.
+  //
+  // We do NOT drive `agent:invoke` — the chat path is not what we're
+  // verifying. We use `workspace:apply` to simulate what the runner's
+  // HOME-redirect + commit-notify pipeline would write at turn boundaries.
+  // (The Phase A spike confirmed that pipeline; the spec for THIS test is
+  // the read+parse path.)
+  //
+  // Postgres testcontainer is required because the conversations plugin
+  // calls `database:get-instance`. It's the only test in this file that
+  // does — the chat-path canaries above all use sqlite + in-memory session
+  // because they don't load conversations.
+  // ---------------------------------------------------------------------------
+  it(
+    'Phase D canary: conversations:get reads transcript from workspace jsonl',
+    { timeout: 180_000 },
+    async () => {
+      const connectionString = await ensurePostgresStarted();
+
+      // Storage tier — same shape as the git-protocol canary above.
+      const serverToken = randomBytes(32).toString('hex');
+      const serverRepoRoot = await fs.realpath(
+        await fs.mkdtemp(path.join(os.tmpdir(), 'ax-phase-d-canary-')),
+      );
+
+      let server: WorkspaceGitServer | null = null;
+      let handle: Awaited<ReturnType<typeof bootstrap>> | null = null;
+      try {
+        server = await createWorkspaceGitServer({
+          repoRoot: serverRepoRoot,
+          host: '127.0.0.1',
+          port: 0,
+          token: serverToken,
+        });
+
+        // No chat is driven; the script is a no-op stub kept only so the
+        // test-proxy plugin has something to serialize. Same posture as
+        // the Phase 3 canaries above.
+        const script: StubRunnerScript = {
+          entries: [{ kind: 'finish', reason: 'end_turn' }],
+        };
+
+        const presetConfig: K8sPresetConfig = {
+          database: { connectionString },
+          eventbus: { connectionString: 'postgres://stub:5432/stub' },
+          session: { connectionString: 'postgres://stub:5432/stub' },
+          workspace: {
+            backend: 'git-protocol',
+            baseUrl: `http://127.0.0.1:${server.port}`,
+            token: serverToken,
+          },
+          sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
+          ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
+          chat: { runnerBinary: stubRunnerPath, chatTimeoutMs: 60_000 },
+          http: {
+            host: '127.0.0.1',
+            port: 0,
+            cookieKey: '0'.repeat(64),
+            allowedOrigins: [],
+          },
+          auth: { devBootstrap: { token: 'preset-test-bootstrap' } },
+        };
+
+        // We use the existing PLUGINS_TO_DROP filter — it strips the
+        // postgres trio (database/storage/eventbus/session) from the
+        // preset's output. Then we add `database-postgres` back as a
+        // replacement (now connected to the real testcontainer) plus
+        // the `conversations` plugin (not in the preset; this canary
+        // is the only place in preset-k8s that loads it).
+        const presetPlugins = createK8sPlugins(presetConfig);
+        const kept = presetPlugins.filter(
+          (p) => !PLUGINS_TO_DROP.has(p.manifest.name),
+        );
+
+        const sqlitePath = path.join(tmp, 'preset-k8s-acceptance-phased.sqlite');
+        const replacements: Plugin[] = [
+          // database-postgres: real, against the testcontainer. Provides
+          // `database:get-instance` for the conversations plugin.
+          createDatabasePostgresPlugin({ connectionString }),
+          // conversations plugin — the unit under test for this canary.
+          createConversationsPlugin(),
+          // storage:set/get + session:* — sqlite + in-memory remain (the
+          // chat-path test above uses the same pair). Conversations does
+          // NOT depend on storage:get/set.
+          createStorageSqlitePlugin({ databasePath: sqlitePath }),
+          createSessionInmemoryPlugin(),
+          createSandboxSubprocessPlugin(),
+          createIpcServerPlugin(),
+          createTestProxyPlugin({ script }),
+          // agents:resolve permissive mock — conversations:create gates
+          // the user through this hook (Invariant J1).
+          createPermissiveAgentsStubPlugin(),
+          createMcpClientPlugin(),
+        ];
+
+        const plugins: Plugin[] = [...kept, ...replacements];
+
+        const bus = new HookBus();
+        handle = await bootstrap({ bus, plugins, config: {} });
+
+        const userId = 'phase-d-canary-user';
+        const agentId = 'phase-d-canary-agent';
+        const ctx = makeAgentContext({
+          sessionId: 'phase-d-canary-session',
+          agentId,
+          userId,
+          workspace: { rootPath: tmp },
+        });
+
+        // 1. Create a conversation. The conversations plugin freezes
+        // agentId on the row and starts with runner_session_id=null.
+        const conv = await bus.call<
+          ConversationsCreateInput,
+          ConversationsCreateOutput
+        >('conversations:create', ctx, { userId, agentId });
+        expect(conv.runnerSessionId).toBeNull();
+
+        // 2. Bind a runnerSessionId. This is what the runner-plugin's
+        // host-side IPC handler would do on the first turn (Phase C).
+        const runnerSessionId = '00000000-0000-0000-0000-000000000abc';
+        await bus.call<
+          ConversationsStoreRunnerSessionInput,
+          ConversationsStoreRunnerSessionOutput
+        >('conversations:store-runner-session', ctx, {
+          conversationId: conv.conversationId,
+          runnerSessionId,
+        });
+
+        // 3. Seed the jsonl into the workspace storage tier via the same
+        // workspace:apply hook the runner's commit-notify pipeline would
+        // write at turn boundaries. Format mirrors the SDK's real
+        // on-disk shape: one user line + one assistant line.
+        const jsonlText = [
+          JSON.stringify({
+            type: 'user',
+            message: { role: 'user', content: 'hello canary' },
+            uuid: 'u-1111',
+            timestamp: '2026-05-02T00:00:00.000Z',
+            sessionId: runnerSessionId,
+          }),
+          JSON.stringify({
+            type: 'assistant',
+            message: {
+              id: 'msg_canary',
+              type: 'message',
+              role: 'assistant',
+              content: [{ type: 'text', text: 'hi back' }],
+            },
+            uuid: 'u-2222',
+            timestamp: '2026-05-02T00:00:01.000Z',
+            sessionId: runnerSessionId,
+          }),
+          '',
+        ].join('\n');
+        const jsonlBytes = new TextEncoder().encode(jsonlText);
+        // The `.claude/projects/<encoded-cwd>/<sessionId>.jsonl` location
+        // is what the SDK writes after HOME redirect (Phase A spike).
+        // The `<encoded-cwd>` segment is whatever — `conversations:get`
+        // globs by sessionId across all subdirectories.
+        const jsonlPath = `.claude/projects/-permanent/${runnerSessionId}.jsonl`;
+        await bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>(
+          'workspace:apply',
+          ctx,
+          {
+            changes: [{ path: jsonlPath, kind: 'put', content: jsonlBytes }],
+            parent: null,
+            reason: 'phase-d canary: seed jsonl',
+          },
+        );
+
+        // 4. Call conversations:get. Internally it does:
+        //   workspace:list({pathGlob: ".claude/projects/**/<sessionId>.jsonl"})
+        //   → workspace:read({path}) → parseJsonlToTurns(bytes)
+        const got = await bus.call<
+          ConversationsGetInput,
+          ConversationsGetOutput
+        >('conversations:get', ctx, {
+          conversationId: conv.conversationId,
+          userId,
+        });
+
+        // 5a. Round-trip: the turns the hook returned must equal what the
+        // parser produces on the same jsonl bytes. Proof that no shape
+        // was lost between bytes-on-storage and Turn[]-on-wire.
+        const expected = parseJsonlToTurns(jsonlBytes);
+        expect(got.turns).toEqual(expected);
+        // 5b. Canary shape: the SDK fixture starts with a user line; the
+        // parser remaps a string content to a single text block.
+        expect(got.turns).toHaveLength(2);
+        expect(got.turns[0]!.role).toBe('user');
+        expect(got.turns[0]!.contentBlocks).toEqual([
+          { type: 'text', text: 'hello canary' },
+        ]);
+        expect(got.turns[1]!.role).toBe('assistant');
+        expect(got.turns[1]!.contentBlocks).toEqual([
+          { type: 'text', text: 'hi back' },
+        ]);
+      } finally {
+        if (handle !== null) await handle.shutdown();
+        if (server !== null) await server.close();
+        await fs.rm(serverRepoRoot, { recursive: true, force: true });
       }
     },
   );

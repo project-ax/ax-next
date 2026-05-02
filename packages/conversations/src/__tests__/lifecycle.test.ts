@@ -48,6 +48,12 @@ async function makeHarness(): Promise<TestHarness> {
         const call = input as { agentId: string };
         return { agent: { id: call.agentId, visibility: 'personal' } };
       },
+      // Phase D — conversations:get reads from workspace jsonl. The
+      // session-lifecycle tests use conversations:get to inspect row
+      // state (active_session_id / active_req_id) but don't care
+      // about turns. Default to "no jsonl" → empty turns.
+      'workspace:list': async () => ({ paths: [] as string[] }),
+      'workspace:read': async () => ({ found: false }) as const,
     },
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),
