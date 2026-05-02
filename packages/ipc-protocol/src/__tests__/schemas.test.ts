@@ -8,6 +8,8 @@ import {
   ToolListResponseSchema,
   WorkspaceCommitNotifyRequestSchema,
   WorkspaceCommitNotifyResponseSchema,
+  WorkspaceMaterializeRequestSchema,
+  WorkspaceMaterializeResponseSchema,
   SessionNextMessageResponseSchema,
   SessionGetConfigResponseSchema,
   ConversationFetchHistoryRequestSchema,
@@ -179,6 +181,48 @@ describe('workspace.commit-notify', () => {
     });
     expect(parsed.parentVersion).toBeNull();
     expect(parsed.commitRef).toBe('abc123');
+  });
+});
+
+describe('workspace.materialize', () => {
+  it('round-trips an empty bundle (brand-new workspace)', () => {
+    // Empty string => the host has nothing to ship. The runner reads this
+    // and does `git init` on /permanent instead of `git clone`.
+    const parsed = WorkspaceMaterializeResponseSchema.parse({ bundleBytes: '' });
+    expect(parsed.bundleBytes).toBe('');
+  });
+
+  it('round-trips a non-empty bundle', () => {
+    // Bytes are opaque base64 on the wire — schema does NOT decode (the
+    // runner side decodes on its own to write the file). We just preserve
+    // the payload faithfully.
+    const b64 = Buffer.from('PACK\x00\x00').toString('base64');
+    const parsed = WorkspaceMaterializeResponseSchema.parse({ bundleBytes: b64 });
+    expect(parsed.bundleBytes).toBe(b64);
+  });
+
+  it('rejects a response missing bundleBytes', () => {
+    expect(WorkspaceMaterializeResponseSchema.safeParse({}).success).toBe(false);
+  });
+
+  it('rejects a response with non-string bundleBytes', () => {
+    expect(
+      WorkspaceMaterializeResponseSchema.safeParse({ bundleBytes: 42 }).success,
+    ).toBe(false);
+  });
+
+  it('request schema accepts an empty object', () => {
+    expect(WorkspaceMaterializeRequestSchema.parse({})).toEqual({});
+  });
+
+  it('request schema rejects extra fields (.strict)', () => {
+    // The session's bearer token already identifies the workspace; any
+    // request field would be a vector for "fetch SOMEONE ELSE'S baseline."
+    // Closing that door at the schema layer makes the invariant load-bearing.
+    expect(
+      WorkspaceMaterializeRequestSchema.safeParse({ workspaceId: 'other' })
+        .success,
+    ).toBe(false);
   });
 });
 

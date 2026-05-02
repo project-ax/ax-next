@@ -21,6 +21,7 @@ import { toolPreCallHandler } from './handlers/tool-pre-call.js';
 import { toolExecuteHostHandler } from './handlers/tool-execute-host.js';
 import { toolListHandler } from './handlers/tool-list.js';
 import { workspaceCommitNotifyHandler } from './handlers/workspace-commit-notify.js';
+import { workspaceMaterializeHandler } from './handlers/workspace-materialize.js';
 import { sessionNextMessageHandler } from './handlers/session-next-message.js';
 import { sessionGetConfigHandler } from './handlers/session-get-config.js';
 import { conversationFetchHistoryHandler } from './handlers/conversation-fetch-history.js';
@@ -72,6 +73,7 @@ ACTIONS.set('/tool.pre-call', { method: 'POST', handler: toolPreCallHandler });
 ACTIONS.set('/tool.execute-host', { method: 'POST', handler: toolExecuteHostHandler });
 ACTIONS.set('/tool.list', { method: 'POST', handler: toolListHandler });
 ACTIONS.set('/workspace.commit-notify', { method: 'POST', handler: workspaceCommitNotifyHandler });
+ACTIONS.set('/workspace.materialize', { method: 'POST', handler: workspaceMaterializeHandler });
 ACTIONS.set('/session.get-config', { method: 'POST', handler: sessionGetConfigHandler });
 ACTIONS.set('/conversation.fetch-history', {
   method: 'POST',

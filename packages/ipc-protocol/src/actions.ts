@@ -179,6 +179,51 @@ export type WorkspaceCommitNotifyResponse = z.infer<
 >;
 
 // ---------------------------------------------------------------------------
+// workspace.materialize
+//
+// Sandbox -> Host RPC fired EXACTLY ONCE at session start, before the SDK's
+// query loop opens. The host produces a `git bundle` over the workspace's
+// current state (or empty bytes when the workspace is brand-new) and returns
+// it base64-encoded. The sandbox-side runner unpacks into `/permanent` so
+// the agent runs against a real git working tree from turn 1.
+//
+// `bundleBytes` is git-vocabulary on the wire — by Invariant I1 that's
+// allowed here because:
+//   1. This is the sandbox-host transport axis, not a subscriber-visible
+//      hook payload. No `workspace:*` bus hook ever sees the bundle bytes.
+//   2. The host bundler decodes the bundle into backend-agnostic
+//      `WorkspaceChange[]` before any subscriber visibility on the OUTBOUND
+//      direction (commit-notify); on the INBOUND direction (materialize)
+//      the bytes never leave the sandbox-host wire — they go straight into
+//      `git clone` on the runner side.
+//   3. The same justification is mirrored on `workspace.commit-notify`'s
+//      `bundleBytes` (Phase 3 wire change).
+//
+// Empty workspace handling: a brand-new workspace has nothing to materialize.
+// The handler returns `{ bundleBytes: '' }` and the runner's
+// `materializeWorkspace` falls through to `git init` instead of `git clone`.
+// This is the cleanest version of "no baseline yet" — no sentinel value, no
+// optional field, just an empty string that decodes to zero bytes.
+// ---------------------------------------------------------------------------
+
+// `.strict()` — the request takes no parameters today. The bearer token
+// already identifies the session, and the action is implicitly scoped to
+// the session's workspace. Stuffing unknown fields here is a bug.
+export const WorkspaceMaterializeRequestSchema = z.object({}).strict();
+export type WorkspaceMaterializeRequest = z.infer<
+  typeof WorkspaceMaterializeRequestSchema
+>;
+
+export const WorkspaceMaterializeResponseSchema = z.object({
+  // base64-encoded git bundle bytes. Empty string => empty workspace
+  // (the runner does `git init` instead of `git clone`).
+  bundleBytes: z.string(),
+});
+export type WorkspaceMaterializeResponse = z.infer<
+  typeof WorkspaceMaterializeResponseSchema
+>;
+
+// ---------------------------------------------------------------------------
 // session.get-config
 //
 // Runner → host RPC fetched at boot. Authentication is the bearer token
