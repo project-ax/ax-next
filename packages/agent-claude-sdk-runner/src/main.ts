@@ -231,6 +231,27 @@ export async function main(): Promise<number> {
   // Tracks the last accepted workspace version so the host's optimistic-
   // concurrency check sees a coherent lineage across turns.
   let parentVersion: string | null = null;
+
+  // Phase C: bind the SDK's session_id to our conversation row.
+  //
+  // The Anthropic SDK owns durable transcripts on disk (under HOME, which
+  // we redirect into the workspace in a sibling task). The first message
+  // every `query()` emits is `{ type: 'system', subtype: 'init',
+  // session_id, ... }` — see SDKSystemMessage in
+  // @anthropic-ai/claude-agent-sdk/sdk.d.ts:3282-3314. We capture that
+  // session_id once and POST it to the host so a future runner restart
+  // can `resume(sessionId)` instead of replaying the transcript from
+  // our DB.
+  //
+  // Once-only: a single `query()` can re-emit system/init on a resume
+  // path. Only the FIRST init is load-bearing for the bind — the runner
+  // sets the flag BEFORE the await so a re-entrant init can't
+  // double-fire even if the IPC is in flight.
+  //
+  // Non-fatal: if the bind fails, we lose the resume optimization on
+  // next restart and fall back to fetch-history replay. The chat itself
+  // continues uninterrupted.
+  let runnerSessionIdSent = false;
   // Host-side bookkeeping for the final event.chat-end outcome. The SDK
   // maintains its OWN transcript internally; this array is only the shape
   // the host cares about (user/assistant text round-tripped through
@@ -385,6 +406,32 @@ export async function main(): Promise<number> {
     });
 
     for await (const msg of queryIter) {
+      if (
+        msg.type === 'system' &&
+        msg.subtype === 'init' &&
+        !runnerSessionIdSent
+      ) {
+        // Set BEFORE the await so a re-entrant system/init (e.g. on a
+        // future resume() path) can't double-fire while this IPC is in
+        // flight.
+        runnerSessionIdSent = true;
+        if (conversationId !== null) {
+          try {
+            await client.call('conversation.store-runner-session', {
+              conversationId,
+              runnerSessionId: msg.session_id,
+            });
+          } catch (err) {
+            // Non-fatal: we lose the resume optimization on the next
+            // restart — the runner falls back to fetch-history replay.
+            // The chat continues uninterrupted.
+            process.stderr.write(
+              `runner: conversation.store-runner-session failed: ${err instanceof Error ? err.message : String(err)}\n`,
+            );
+          }
+        }
+        continue;
+      }
       if (msg.type === 'assistant') {
         const assistant: SDKAssistantMessage = msg;
         // Only plain text blocks round-trip into host history. Tool-use
