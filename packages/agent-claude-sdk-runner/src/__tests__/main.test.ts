@@ -1804,4 +1804,124 @@ describe('main()', () => {
       expect(payload.outcome.kind).toBe('complete');
     });
   });
+
+  // ---------------------------------------------------------------------
+  // Phase C: HOME redirect for the SDK subprocess.
+  //
+  // The Anthropic SDK writes its native session jsonl to
+  // ~/.claude/projects/<sessionId>.jsonl. In the k8s sandbox, the runner
+  // pod sets HOME=/nonexistent at the pod level so `git` (and any other
+  // tool the runner spawns) can't accidentally read a global ~/.gitconfig.
+  // The SDK can't write its jsonl into /nonexistent, so the targeted fix
+  // is to point HOME at the workspace root for the SDK subprocess only —
+  // the `env:` we pass into `query({ options: { env } })`. This way the
+  // jsonl lands inside the workspace where the turn-end
+  // `git status + git add -A + bundle` flow captures it. The runner
+  // process's own git operations still see HOME=/nonexistent because
+  // we don't override their env.
+  // ---------------------------------------------------------------------
+
+  describe('Phase C: HOME redirect for SDK subprocess', () => {
+    it('happy path: SDK env.HOME is set to workspaceRoot and ANTHROPIC_API_KEY is preserved', async () => {
+      setEnv(COMPLETE_ENV);
+      fakeClient = buildFakeClient();
+      fakeClient.call.mockImplementation(async (action: string) => {
+        if (action === 'session.get-config') {
+          return {
+            userId: 'u-test',
+            agentId: 'a-test',
+            agentConfig: {
+              systemPrompt: '',
+              allowedTools: [],
+              mcpConfigIds: [],
+              model: 'claude-sonnet-4-7',
+            },
+            conversationId: null,
+          };
+        }
+        if (action === 'workspace.materialize') return { bundleBytes: '' };
+        if (action === 'tool.list') return { tools: [] };
+        throw new Error(`unexpected call: ${action}`);
+      });
+      fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
+      queryMock.mockImplementation(
+        ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+          return (async function* () {
+            const it = prompt[Symbol.asyncIterator]();
+            await it.next();
+            yield assistantText('ok');
+            yield resultSuccess();
+            await it.next();
+          })();
+        },
+      );
+
+      const { main } = await import('../main.js');
+      const rc = await main();
+      expect(rc).toBe(0);
+
+      expect(queryMock).toHaveBeenCalledTimes(1);
+      const queryArg = queryMock.mock.calls[0]?.[0] as {
+        options: {
+          env: { HOME?: string; ANTHROPIC_API_KEY?: string };
+        };
+      };
+      // HOME points at the workspace so the SDK's native
+      // ~/.claude/projects/<sessionId>.jsonl writes land where the
+      // turn-end git status + bundle flow captures them.
+      expect(queryArg.options.env.HOME).toBe('/tmp/workspace');
+      // ANTHROPIC_API_KEY is preserved through the spread — the
+      // proxyStartup.anthropicEnv merge intent is documented here so
+      // a future refactor that drops the spread still trips this test.
+      expect(queryArg.options.env.ANTHROPIC_API_KEY).toBe(
+        COMPLETE_ENV.ANTHROPIC_API_KEY,
+      );
+    });
+
+    it('HOME override is per-SDK-subprocess only: process.env.HOME is NOT mutated by main()', async () => {
+      // The runner-process git operations inherit HOME=/nonexistent
+      // from process.env (pod-level setting). Mutating process.env.HOME
+      // here would defeat the git-paranoia posture for the runner's
+      // own git operations.
+      setEnv(COMPLETE_ENV);
+      const homeBefore = process.env.HOME;
+      fakeClient = buildFakeClient();
+      fakeClient.call.mockImplementation(async (action: string) => {
+        if (action === 'session.get-config') {
+          return {
+            userId: 'u-test',
+            agentId: 'a-test',
+            agentConfig: {
+              systemPrompt: '',
+              allowedTools: [],
+              mcpConfigIds: [],
+              model: 'claude-sonnet-4-7',
+            },
+            conversationId: null,
+          };
+        }
+        if (action === 'workspace.materialize') return { bundleBytes: '' };
+        if (action === 'tool.list') return { tools: [] };
+        throw new Error(`unexpected call: ${action}`);
+      });
+      fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
+      queryMock.mockImplementation(
+        ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+          return (async function* () {
+            const it = prompt[Symbol.asyncIterator]();
+            await it.next();
+            yield assistantText('ok');
+            yield resultSuccess();
+            await it.next();
+          })();
+        },
+      );
+
+      const { main } = await import('../main.js');
+      const rc = await main();
+      expect(rc).toBe(0);
+
+      expect(process.env.HOME).toBe(homeBefore);
+    });
+  });
 });

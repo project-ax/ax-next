@@ -368,7 +368,33 @@ export async function main(): Promise<number> {
         // ANTHROPIC_API_KEY is the `ax-cred:<hex>` placeholder (substituted
         // by the credential-proxy mid-flight); no ANTHROPIC_BASE_URL — SDK
         // calls api.anthropic.com directly through HTTPS_PROXY.
-        env: proxyStartup.anthropicEnv,
+        //
+        // Phase C: HOME redirect for the SDK subprocess.
+        //   - The k8s sandbox pod sets HOME=/nonexistent at the pod level
+        //     so `git` (and any other tool the runner spawns) can't
+        //     accidentally read a global ~/.gitconfig — git-paranoia.
+        //   - The SDK needs HOME pointed at the workspace so its native
+        //     ~/.claude/projects/<sessionId>.jsonl lands where the
+        //     turn-end `git status + git add -A + bundle` captures it,
+        //     closing the jsonl gap that workspace Phase 3 set up the
+        //     plumbing for.
+        //   - The runner-process git operations inherit HOME=/nonexistent
+        //     from process.env (we don't override their env), so the
+        //     redirect is targeted to this SDK subprocess only.
+        //   - Side effect: the SDK's auxiliary files (`.claude.json`,
+        //     `.claude/backups/`, etc.) also land in the workspace.
+        //     Acceptable trade-off (Q1 of the Phase C plan): the `.ax/`
+        //     filter in workspace:pre-apply doesn't subscribe validators
+        //     to them, and we can split with a symlink/copy step in a
+        //     follow-up if needed.
+        //   - HOME is spread AFTER ...proxyStartup.anthropicEnv so this
+        //     value wins on conflict. anthropicEnv currently doesn't set
+        //     HOME, but defensive ordering matches the intent: we
+        //     explicitly redirect HOME for the SDK subprocess.
+        env: {
+          ...proxyStartup.anthropicEnv,
+          HOME: env.workspaceRoot,
+        },
         cwd: env.workspaceRoot,
         disallowedTools: [...DISABLED_BUILTINS],
         // canUseTool stays as a belt-and-suspenders allow-path. The real
