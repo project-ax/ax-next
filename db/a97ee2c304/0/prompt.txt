@@ -1,0 +1,5 @@
+why are we implementing shards already? what is being sharded?
+
+---
+
+yes
