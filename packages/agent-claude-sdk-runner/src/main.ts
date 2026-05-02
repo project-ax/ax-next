@@ -1,12 +1,10 @@
 #!/usr/bin/env node
-import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import {
   query,
   type SDKAssistantMessage,
   type SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
-import { createDiffAccumulator, toWireChanges } from './diff-accumulator.js';
 import { createInboxLoop } from './inbox-loop.js';
 import {
   createIpcClient,
@@ -24,7 +22,12 @@ import {
 import { createCanUseTool } from './can-use-tool.js';
 import { readRunnerEnv } from './env.js';
 import { createHostMcpServer } from './host-mcp-server.js';
-import { materializeWorkspace } from './git-workspace.js';
+import {
+  advanceBaseline,
+  commitTurnAndBundle,
+  materializeWorkspace,
+  rollbackToBaseline,
+} from './git-workspace.js';
 import { createPostToolUseHook } from './post-tool-use.js';
 import { createPreToolUseHook } from './pre-tool-use.js';
 import { setupProxy } from './proxy-startup.js';
@@ -219,10 +222,12 @@ export async function main(): Promise<number> {
 
   const hostMcpServer = createHostMcpServer({ client, tools });
   const inbox = createInboxLoop({ client });
-  // Per-turn diff accumulator (Task 7c). PostToolUse populates; the
-  // `result` SDK message drains and ships a single `workspace.commit-
-  // notify`. Workspace commits are turn-end, NOT per-tool-call.
-  const diffs = createDiffAccumulator();
+  // Phase 3: workspace commits are turn-end via git-status against
+  // /permanent (`commitTurnAndBundle` at the SDK `result` boundary).
+  // The legacy PostToolUse-based diff accumulator is gone — git status
+  // catches ALL writes regardless of tool, including the Bash deletes
+  // and MCP writes the legacy path missed.
+
   // Tracks the last accepted workspace version so the host's optimistic-
   // concurrency check sees a coherent lineage across turns.
   let parentVersion: string | null = null;
@@ -356,11 +361,7 @@ export async function main(): Promise<number> {
           PostToolUse: [
             {
               hooks: [
-                createPostToolUseHook({
-                  client,
-                  diffs,
-                  workspaceRoot: env.workspaceRoot,
-                }),
+                createPostToolUseHook({ client }),
               ],
             },
           ],
@@ -543,39 +544,70 @@ export async function main(): Promise<number> {
           }
         }
       } else if (msg.type === 'result') {
-        // Turn boundary. Snapshot the per-turn diff accumulator and ship
-        // a single `workspace.commit-notify` when there are changes. We
-        // skip empty turns deliberately: a host with no workspace plugin
-        // registered would log an internal error on each empty notify,
-        // and `event.turn-end` already carries the heartbeat signal.
-        // Failures here MUST NOT terminate the chat.
+        // Turn boundary (Phase 3). Replaces the legacy PostToolUse-based
+        // diff observer with `git status` + bundle:
+        //   1. Stage everything in /permanent (`git add -A`) — catches
+        //      ALL writes, regardless of which tool wrote (Bash, MCP,
+        //      SDK Write/Edit/MultiEdit, raw fs, jsonl). Closes the
+        //      Bash-delete + MCP-write + jsonl gaps that motivated
+        //      the redesign.
+        //   2. If nothing's staged → empty turn → skip commit-notify
+        //      entirely (same heartbeat-only semantic the legacy path
+        //      had for empty diffs).
+        //   3. Otherwise: commit, build a thin `baseline..main` bundle,
+        //      ship as `workspace.commit-notify`.
+        //   4. On accept: advance refs/heads/baseline so the next turn
+        //      bundles from the new state.
+        //   5. On veto: roll the working tree back to baseline (the
+        //      agent's writes for this turn are undone).
+        //   6. On IPC error (host unreachable, 5xx): preserve the
+        //      working tree as-is. Don't advance baseline; don't
+        //      rollback. The next turn's `git add -A` will accumulate
+        //      this turn's changes plus the next turn's, and we ship
+        //      the combined bundle. Best-effort retry by accumulation.
         //
-        // Snapshot-then-drain-on-receipt: on thrown errors the
-        // accumulator stays intact so the next turn retries the same
-        // changes plus whatever new ones land — no silent data loss on
-        // transient network/timeout failures. On host `accepted: false`
-        // we drain anyway: re-sending against the same stale parent
-        // fails forever, and the proper "refresh parent on mismatch"
-        // flow needs a wire change out of scope here. Same trade-off
-        // the native runner makes; both paths share `DiffAccumulator`.
-        if (!diffs.isEmpty()) {
-          const snapshot = diffs.snapshot();
-          try {
-            const resp = (await client.call('workspace.commit-notify', {
-              parentVersion,
-              commitRef: randomUUID(),
-              message: 'turn',
-              changes: toWireChanges(snapshot),
-            })) as WorkspaceCommitNotifyResponse;
-            if (resp.accepted) {
-              diffs.drain();
-              parentVersion = resp.version as unknown as string;
-            } else {
-              diffs.drain();
+        // Failures here MUST NOT terminate the chat — `event.turn-end`
+        // is still the heartbeat the host keys off.
+        try {
+          const bundleB64 = await commitTurnAndBundle({
+            root: env.workspaceRoot,
+            reason: 'turn',
+          });
+          if (bundleB64 !== null) {
+            try {
+              const resp = (await client.call('workspace.commit-notify', {
+                parentVersion,
+                reason: 'turn',
+                bundleBytes: bundleB64,
+              })) as WorkspaceCommitNotifyResponse;
+              if (resp.accepted) {
+                parentVersion = resp.version as unknown as string;
+                await advanceBaseline(env.workspaceRoot);
+              } else {
+                // Host vetoed — surface to stderr (the host's log sink)
+                // and rollback so the agent's next turn starts clean.
+                process.stderr.write(
+                  `runner: workspace rejected: ${resp.reason}\n`,
+                );
+                await rollbackToBaseline(env.workspaceRoot);
+              }
+            } catch (err) {
+              // Network / 5xx / timeout: keep the working tree intact
+              // so the next turn's accumulated changes flow as one
+              // bundle. Don't advance baseline; don't rollback. Same
+              // trade-off the legacy accumulator path made.
+              process.stderr.write(
+                `runner: commit-notify failed: ${err instanceof Error ? err.message : String(err)}\n`,
+              );
             }
-          } catch {
-            /* preserve accumulator; next turn retries */
           }
+        } catch (err) {
+          // commitTurnAndBundle itself failed (git binary missing,
+          // /permanent in a weird state, etc.). Non-fatal; the next
+          // turn will retry.
+          process.stderr.write(
+            `runner: commitTurnAndBundle failed: ${err instanceof Error ? err.message : String(err)}\n`,
+          );
         }
 
         // One turn of assistant output finished. The SDK now awaits the

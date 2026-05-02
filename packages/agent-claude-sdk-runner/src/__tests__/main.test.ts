@@ -80,17 +80,27 @@ vi.mock('../inbox-loop.js', async (importOriginal) => {
   };
 });
 
-// Phase 3: the runner now materializes /permanent at session start by
-// spawning `git`. Mocking it out here keeps these unit tests fast and
-// hermetic — the real implementation is exercised in
-// `git-workspace.test.ts` against a real tempdir + git binary. Tests
-// that care whether materialize was called can spy on materializeMock.
+// Phase 3: the runner now spawns `git` for session-start materialize +
+// turn-end commit/bundle/rollback. Mocking these out keeps these unit
+// tests fast, hermetic, and free of stderr noise from git ops failing
+// against the test's fake AX_WORKSPACE_ROOT (`/tmp/workspace`).
+//
+// The REAL git-workspace ops are exercised in `git-workspace.test.ts`
+// against real tempdirs + git binary; the workspace-commit-notify
+// handler tests cover the host-side bundler. This file focuses on
+// main.ts's control-flow shape (env → boot → SDK loop → events).
 const materializeMock = vi.fn().mockResolvedValue(undefined);
+const commitTurnAndBundleMock = vi.fn().mockResolvedValue(null);
+const advanceBaselineMock = vi.fn().mockResolvedValue(undefined);
+const rollbackToBaselineMock = vi.fn().mockResolvedValue(undefined);
 vi.mock('../git-workspace.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../git-workspace.js')>();
   return {
     ...actual,
     materializeWorkspace: materializeMock,
+    commitTurnAndBundle: commitTurnAndBundleMock,
+    advanceBaseline: advanceBaselineMock,
+    rollbackToBaseline: rollbackToBaselineMock,
   };
 });
 
@@ -250,6 +260,12 @@ beforeEach(() => {
   queryMock.mockReset();
   materializeMock.mockReset();
   materializeMock.mockResolvedValue(undefined);
+  commitTurnAndBundleMock.mockReset();
+  commitTurnAndBundleMock.mockResolvedValue(null);
+  advanceBaselineMock.mockReset();
+  advanceBaselineMock.mockResolvedValue(undefined);
+  rollbackToBaselineMock.mockReset();
+  rollbackToBaselineMock.mockResolvedValue(undefined);
   createIpcClientMock = vi.fn();
   createInboxLoopMock = vi.fn();
 });
@@ -417,6 +433,214 @@ describe('main()', () => {
       expect(queryMock).not.toHaveBeenCalled();
       expect(fakeClient.event).not.toHaveBeenCalled();
       expect(createIpcClientMock).not.toHaveBeenCalled();
+    } finally {
+      stderrSpy.mockRestore();
+    }
+  });
+
+  it('Phase 3 turn end: bundle ships → commit-notify → host accepts → advance baseline', async () => {
+    // The new shape: at SDK `result`, runner calls commitTurnAndBundle.
+    // If non-null, runner ships workspace.commit-notify with bundleBytes.
+    // On host accept, runner advances baseline; on veto, runner rolls
+    // back. Fully replaces the legacy diff-accumulator path.
+    setEnv(COMPLETE_ENV);
+    commitTurnAndBundleMock.mockResolvedValueOnce('FAKE_BUNDLE_B64');
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u',
+          agentId: 'a',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          conversationId: null,
+        };
+      }
+      if (action === 'workspace.materialize') return { bundleBytes: 'B64' };
+      if (action === 'tool.list') return { tools: [] };
+      if (action === 'workspace.commit-notify') {
+        return { accepted: true, version: 'v-new', delta: null };
+      }
+      throw new Error(`unexpected: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
+    queryMock.mockImplementation(
+      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+        return (async function* () {
+          const it = prompt[Symbol.asyncIterator]();
+          await it.next();
+          yield assistantText('done');
+          yield resultSuccess();
+          await it.next();
+        })();
+      },
+    );
+
+    const { main } = await import('../main.js');
+    const rc = await main();
+    expect(rc).toBe(0);
+
+    // commit-notify was sent with bundleBytes from commitTurnAndBundle.
+    const commitCalls = fakeClient.call.mock.calls.filter(
+      (c) => c[0] === 'workspace.commit-notify',
+    );
+    expect(commitCalls).toHaveLength(1);
+    expect(commitCalls[0]?.[1]).toEqual({
+      parentVersion: null,
+      reason: 'turn',
+      bundleBytes: 'FAKE_BUNDLE_B64',
+    });
+    // advanceBaseline called on accept.
+    expect(advanceBaselineMock).toHaveBeenCalledTimes(1);
+    expect(rollbackToBaselineMock).not.toHaveBeenCalled();
+  });
+
+  it('Phase 3 turn end: empty turn (commitTurnAndBundle returns null) → no commit-notify', async () => {
+    setEnv(COMPLETE_ENV);
+    // Default mock returns null — empty turn.
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u',
+          agentId: 'a',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          conversationId: null,
+        };
+      }
+      if (action === 'workspace.materialize') return { bundleBytes: 'B64' };
+      if (action === 'tool.list') return { tools: [] };
+      throw new Error(`unexpected: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
+    queryMock.mockImplementation(
+      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+        return (async function* () {
+          const it = prompt[Symbol.asyncIterator]();
+          await it.next();
+          yield assistantText('done');
+          yield resultSuccess();
+          await it.next();
+        })();
+      },
+    );
+    const { main } = await import('../main.js');
+    expect(await main()).toBe(0);
+    const commitCalls = fakeClient.call.mock.calls.filter(
+      (c) => c[0] === 'workspace.commit-notify',
+    );
+    expect(commitCalls).toHaveLength(0);
+    expect(advanceBaselineMock).not.toHaveBeenCalled();
+    expect(rollbackToBaselineMock).not.toHaveBeenCalled();
+  });
+
+  it('Phase 3 turn end: host vetoes → rollback called, baseline NOT advanced', async () => {
+    setEnv(COMPLETE_ENV);
+    commitTurnAndBundleMock.mockResolvedValueOnce('BUNDLE_VETO');
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u',
+          agentId: 'a',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          conversationId: null,
+        };
+      }
+      if (action === 'workspace.materialize') return { bundleBytes: 'B64' };
+      if (action === 'tool.list') return { tools: [] };
+      if (action === 'workspace.commit-notify') {
+        return { accepted: false, reason: 'policy violation' };
+      }
+      throw new Error(`unexpected: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
+    const stderrSpy = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation(() => true);
+    queryMock.mockImplementation(
+      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+        return (async function* () {
+          const it = prompt[Symbol.asyncIterator]();
+          await it.next();
+          yield assistantText('done');
+          yield resultSuccess();
+          await it.next();
+        })();
+      },
+    );
+    try {
+      const { main } = await import('../main.js');
+      expect(await main()).toBe(0);
+      expect(rollbackToBaselineMock).toHaveBeenCalledTimes(1);
+      expect(advanceBaselineMock).not.toHaveBeenCalled();
+      const stderrText = stderrSpy.mock.calls.map((c) => String(c[0])).join('');
+      expect(stderrText).toContain('policy violation');
+    } finally {
+      stderrSpy.mockRestore();
+    }
+  });
+
+  it('Phase 3 turn end: commit-notify IPC error → preserve working tree (no rollback, no advance)', async () => {
+    setEnv(COMPLETE_ENV);
+    commitTurnAndBundleMock.mockResolvedValueOnce('BUNDLE_NETERR');
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u',
+          agentId: 'a',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          conversationId: null,
+        };
+      }
+      if (action === 'workspace.materialize') return { bundleBytes: 'B64' };
+      if (action === 'tool.list') return { tools: [] };
+      if (action === 'workspace.commit-notify') {
+        throw new Error('connect ECONNREFUSED');
+      }
+      throw new Error(`unexpected: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
+    const stderrSpy = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation(() => true);
+    queryMock.mockImplementation(
+      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+        return (async function* () {
+          const it = prompt[Symbol.asyncIterator]();
+          await it.next();
+          yield assistantText('done');
+          yield resultSuccess();
+          await it.next();
+        })();
+      },
+    );
+    try {
+      const { main } = await import('../main.js');
+      expect(await main()).toBe(0);
+      // Network error: no rollback (preserve tree), no advance.
+      expect(advanceBaselineMock).not.toHaveBeenCalled();
+      expect(rollbackToBaselineMock).not.toHaveBeenCalled();
     } finally {
       stderrSpy.mockRestore();
     }

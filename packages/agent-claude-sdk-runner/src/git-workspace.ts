@@ -144,3 +144,138 @@ export async function materializeWorkspace(input: MaterializeInput): Promise<voi
     await fs.rm(bundlePath, { force: true });
   }
 }
+
+// ---------------------------------------------------------------------------
+// Turn-end helpers (Phase 3 Slice 7).
+//
+// At each SDK `result` boundary, the runner:
+//   1. Stages everything in /permanent (`git add -A`) — catches whatever
+//      the agent wrote, regardless of which tool wrote it. Bash deletes,
+//      MCP writes, the SDK's internal jsonl: ALL of it.
+//   2. Detects empty turn (no staged changes) → returns null bundle so
+//      the runner skips the commit-notify call.
+//   3. Otherwise commits + bundles `baseline..main main` (thin bundle
+//      with the new tip ref). Returns base64 bytes.
+//
+// After the host responds:
+//   - Accepted: `advanceBaseline` moves refs/heads/baseline to HEAD so
+//     the next turn's bundle starts from the new state.
+//   - Rejected/vetoed: `rollbackToBaseline` resets working tree + HEAD
+//     to baseline, undoing the agent's writes for the failed turn. The
+//     SDK doesn't see the rollback (it's in the runner's local repo);
+//     the agent's next turn starts from a clean baseline.
+// ---------------------------------------------------------------------------
+
+/**
+ * Stage `/permanent`, commit if non-empty, build a thin bundle of the
+ * new commit(s).
+ *
+ * Returns the bundle as base64 bytes, OR null if the turn wrote nothing
+ * (no staged changes after `git add -A`). Caller should skip the
+ * commit-notify IPC call when null.
+ */
+export async function commitTurnAndBundle(input: {
+  root: string;
+  reason: string;
+}): Promise<string | null> {
+  const { root, reason } = input;
+
+  // Stage everything. `-A` catches additions, modifications, AND
+  // deletions — the load-bearing improvement over PostToolUse-based
+  // observation, which only saw additions/modifications via the SDK's
+  // Write/Edit/MultiEdit tools.
+  await expectOk(await runGit(['-C', root, 'add', '-A']), 'git add');
+
+  // Empty-turn detection: `git diff --cached --quiet` exits 0 when
+  // there are no staged changes, 1 when there are. We use this rather
+  // than parsing `git status` output — exit code is an authoritative
+  // signal that doesn't depend on porcelain format stability.
+  const status = await runGit(
+    ['-C', root, 'diff', '--cached', '--quiet'],
+    {},
+  );
+  if (status.code === 0) {
+    // Empty turn — no commits, no bundle.
+    return null;
+  }
+  if (status.code !== 1) {
+    // Anything other than 0 or 1 is an error from git itself.
+    throw new Error(
+      `git diff --cached --quiet failed (exit=${status.code}): ${status.stderr}`,
+    );
+  }
+
+  // Commit. Author + committer come from the pod-spec env (ax-runner
+  // pinned). The host bundler verifies this; a missing or wrong
+  // identity would surface as accepted:false at the host.
+  await expectOk(
+    await runGit(['-C', root, 'commit', '-m', reason]),
+    'git commit',
+  );
+
+  // Bundle `baseline..main main` — thin bundle with the new tip ref.
+  //   - `baseline..main` is the rev range (commits since the last
+  //     accepted state).
+  //   - `main` (no `refs/heads/` prefix needed) makes the bundle ship
+  //     refs/heads/main pointing at the tip. The host's
+  //     `fetchBundleIntoMirror` looks for refs/heads/* via its
+  //     refspec; without this trailing arg the bundle has no refs and
+  //     the host rejects "bundle introduced 0 refs".
+  //
+  // Bundle to a tempfile (NOT to stdout) — Node's child_process stdio
+  // can re-encode binary output via the default `'utf8'` decoder if a
+  // listener attaches before raw bytes flow. Tempfile path is
+  // unambiguous and trivially correct. Place it outside `root` so
+  // `git add -A` on the next turn doesn't accidentally stage it.
+  const bundlePath = `${root}.turn.bundle`;
+  await expectOk(
+    await runGit(
+      ['-C', root, 'bundle', 'create', bundlePath, 'baseline..main', 'main'],
+    ),
+    'git bundle create',
+  );
+  try {
+    const bytes = await fs.readFile(bundlePath);
+    return bytes.toString('base64');
+  } finally {
+    await fs.rm(bundlePath, { force: true });
+  }
+}
+
+/**
+ * Move `refs/heads/baseline` to current HEAD. Call this AFTER the host
+ * accepts a turn — the agent's view of "what's locked in" advances.
+ *
+ * Subsequent turns bundle `baseline..main` against the new baseline,
+ * shipping only the next turn's changes.
+ */
+export async function advanceBaseline(root: string): Promise<void> {
+  await expectOk(
+    await runGit(
+      ['-C', root, 'update-ref', 'refs/heads/baseline', 'HEAD'],
+    ),
+    'git update-ref baseline -> HEAD',
+  );
+}
+
+/**
+ * Roll the working tree + HEAD back to `refs/heads/baseline`. Call this
+ * after the host vetoes a turn — the agent's writes for that turn are
+ * undone.
+ *
+ * `git reset --hard baseline` does both: moves HEAD/main to baseline,
+ * AND wipes the working tree to match. The agent's next turn starts
+ * from a clean baseline state.
+ *
+ * The SDK doesn't see the rollback. Its in-memory view of the
+ * conversation continues, but its NEXT tool call to read a file would
+ * see the baseline content (not the rolled-back content). Whether that
+ * causes confusion is up to the agent / the system prompt; the runner
+ * just enforces the host's veto.
+ */
+export async function rollbackToBaseline(root: string): Promise<void> {
+  await expectOk(
+    await runGit(['-C', root, 'reset', '--hard', 'baseline']),
+    'git reset --hard baseline',
+  );
+}
