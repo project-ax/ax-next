@@ -1,0 +1,51 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "8553e3b335da",
+  "session_id": "7625cfa8-ece1-4865-b35c-bae1d71734d5",
+  "strategy": "manual-commit",
+  "created_at": "2026-05-02T23:58:00.208745Z",
+  "branch": "feat/phase-e-runner-owned-sessions",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "packages/channel-web/src/__tests__/server/plugin.test.ts",
+    "packages/channel-web/src/__tests__/server/routes-chat.test.ts",
+    "packages/channel-web/src/server/plugin.ts",
+    "packages/channel-web/src/server/routes-chat.ts"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "76358a994228",
+  "checkpoint_transcript_start": 232,
+  "transcript_lines_at_start": 232,
+  "token_usage": {
+    "input_tokens": 18,
+    "cache_creation_tokens": 19309,
+    "cache_read_tokens": 2411995,
+    "output_tokens": 11047,
+    "api_call_count": 13
+  },
+  "session_metrics": {
+    "turn_count": 3
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-05-02T23:58:00.128894Z",
+    "agent_lines": 50,
+    "agent_removed": 51,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 50,
+    "total_lines_changed": 101,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}

@@ -1,0 +1,59 @@
+<task-notification>
+<task-id>a5a65588a512a1139</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-vpulim-dev-ai-ax-next/7625cfa8-ece1-4865-b35c-bae1d71734d5/tasks/a5a65588a512a1139.output</output-file>
+<status>completed</status>
+<summary>Agent "Implement E-1: drop runner replay" completed</summary>
+<result>Commit landed: `a228e41`.
+
+## Report
+
+**What I implemented**
+
+Task E-1 with the agreed scope-expansion (option A): runner drops `conversation.fetch-history` entirely, AND `runnerSessionId` now rides on `session.get-config` so the SDK `resume(sessionId)` optimization is preserved. The IPC handler at `packages/ipc-core/src/handlers/session-get-config.ts` composes the wire response from two bus hooks (`session:get-config` + `conversations:get-metadata`); the bus-level `session:get-config` output type stays unchanged so the session backend doesn't grow conversations vocabulary.
+
+**Files changed**
+
+- `/Users/vpulim/dev/ai/ax-next/.worktrees/phase-e-runner-owned-sessions/packages/ipc-protocol/src/actions.ts` — added `runnerSessionId: z.string().nullable()` to `SessionGetConfigResponseSchema`
+- `/Users/vpulim/dev/ai/ax-next/.worktrees/phase-e-runner-owned-sessions/packages/ipc-protocol/src/__tests__/schemas.test.ts` — 4 new schema tests + updated 3 existing
+- `/Users/vpulim/dev/ai/ax-next/.worktrees/phase-e-runner-owned-sessions/packages/ipc-core/src/handlers/session-get-config.ts` — composition from two bus hooks
+- `/Users/vpulim/dev/ai/ax-next/.worktrees/phase-e-runner-owned-sessions/packages/ipc-core/src/handlers/__tests__/session-get-config.test.ts` — added 5 Phase E tests + adapted 2 existing
+- `/Users/vpulim/dev/ai/ax-next/.worktrees/phase-e-runner-owned-sessions/packages/agent-claude-sdk-runner/src/main.ts` — dropped `replayTurns` + the prompt-iterator's replay-yield loop; runner reads `runnerSessionId` directly from `cfg`
+- `/Users/vpulim/dev/ai/ax-next/.worktrees/phase-e-runner-owned-sessions/packages/agent-claude-sdk-runner/src/__tests__/main.test.ts` — removed 3 Task 15 replay tests; added 5 Phase E tests; adapted Phase C bind + resume tests to the new shape
+
+**Test results**
+
+- `@ax/ipc-protocol`: 112 passed (was 109; +3 net new)
+- `@ax/ipc-core`: 99 passed (was 94; +5 net new for handler composition tests)
+- `@ax/agent-claude-sdk-runner`: 116 passed (was 114; -3 deleted replay tests, +5 new Phase E tests)
+- `pnpm build`: clean
+- `pnpm test` (full suite): all green, no regressions
+
+**Self-review findings**
+
+- All `conversation.fetch-history` references in the runner package are now either intentional Phase E test names ("boot does NOT call conversation.fetch-history…") or comment-historical references ("What used to be `conversation.fetch-history` is gone too…"). No live calls.
+- `ConversationFetchHistoryResponse` and `ConversationFetchHistoryTurn` imports are dropped from the runner. `TextBlock` import stayed (still used by the tool_result narrowing block).
+- New tests assert behavior, not just mock invocation counts — both Phase E iterator tests capture the actual SDK-saw messages and assert deep equality, and the IPC handler tests pin both the response body shape AND the input shape passed to `conversations:get-metadata`.
+- IPC handler controls the userId argument it passes to `get-metadata` from the trusted bus response (not from the runner's request body) — security assertion in test "Phase E: composes runnerSessionId from conversations:get-metadata when conversationId is set" pins this.
+- HookBus wraps a thrown `Error` as `PluginError({code: 'unknown'})`, which `mapPluginError` defaults to 500 INTERNAL — so the "generic error → 500" test path holds.
+
+**Commit SHA:** `a228e41`
+
+**Half-wired window (intentional, per plan):** `conversation.fetch-history` IPC schema + dispatcher route + handler still exist (Task 5 deletes them). The runner no longer calls it. The schema-only test in `ipc-protocol` for `ConversationFetchHistory*Schema` still runs and passes — it's just dead-but-harmless wire surface.
+
+**Three threat models walk (paste-ready for PR body):**
+
+```
+## Security review
+- Sandbox: New IPC field `runnerSessionId: string | null` on session.get-config. Opaque token (max 256 chars at the validating store boundary). Handler controls the userId argument to get-metadata from the trusted bus response, NOT from the runner's request body — pinned by test. No new filesystem, network, or process capability granted.
+- Injection: N/A — no new untrusted-string flow. runnerSessionId is SDK-minted and used only as `query({ resume })` arg (SDK validates internally). Never interpolated into shell, paths, or HTML at any layer.
+- Supply chain: N/A — no package.json changes, no new transitive deps.
+```
+
+**Things I noticed but didn't fix:**
+
+- The new IPC handler dispatches two sequential bus calls per session boot when `conversationId !== null`. Cheap (one extra in-process hook call), but worth noting for the boundary-review section.
+- `conversations:get-metadata` returns ALL the metadata fields (workspaceRef, title, lastActivityAt, etc.); the handler only reads `runnerSessionId`. That's fine — the bus is in-process and the over-fetch is negligible — but if a future refactor narrows the signature, this caller is one of two now (the other is the host-side runner-host plugin).
+- I followed the plan's commit-message extension: `"feat(claude-sdk-runner): drop fetch-history replay; runner reads runnerSessionId from session.get-config"`.</result>
+<usage><total_tokens>182452</total_tokens><tool_uses>80</tool_uses><duration_ms>949473</duration_ms></usage>
+</task-notification>

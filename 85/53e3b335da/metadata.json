@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "8553e3b335da",
+  "strategy": "manual-commit",
+  "branch": "feat/phase-e-runner-owned-sessions",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "packages/channel-web/src/__tests__/server/plugin.test.ts",
+    "packages/channel-web/src/__tests__/server/routes-chat.test.ts",
+    "packages/channel-web/src/server/plugin.ts",
+    "packages/channel-web/src/server/routes-chat.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/85/53e3b335da/0/metadata.json",
+      "transcript": "/85/53e3b335da/0/full.jsonl",
+      "content_hash": "/85/53e3b335da/0/content_hash.txt",
+      "prompt": "/85/53e3b335da/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 18,
+    "cache_creation_tokens": 19309,
+    "cache_read_tokens": 2411995,
+    "output_tokens": 11047,
+    "api_call_count": 13
+  }
+}
