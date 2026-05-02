@@ -226,12 +226,21 @@ async function fetchMirror(
     // about the empty repo but exit 0. If it exits non-zero and the message
     // mentions "Couldn't find remote ref" or similar emptiness markers, the
     // mirror is effectively in the same state — still empty — so swallow.
-    // Anything else propagates.
+    //
+    // We also swallow "repository ... not found" (HTTP 404 from the storage
+    // tier) for the same reason: a `read`/`list`/`diff` against a workspaceId
+    // that no caller has ever written to is, semantically, a read against an
+    // empty workspace. The contract is "return empty / found:false for the
+    // unknown case" — and the engine's `apply()` always calls
+    // `ensureRepoCreated` before fetching, so a write path NEVER hits a 404
+    // here. (A misconfigured `baseUrl` would manifest as a connection error,
+    // not a 404 — different code path, different stderr signature.)
     const msg = r.stderr.toLowerCase();
     if (
       msg.includes('empty repository') ||
       msg.includes("couldn't find remote ref") ||
-      msg.includes('does not appear to be a git repository')
+      msg.includes('does not appear to be a git repository') ||
+      (msg.includes('repository') && msg.includes('not found'))
     ) {
       return;
     }
