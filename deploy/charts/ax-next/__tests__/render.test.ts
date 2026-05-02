@@ -421,3 +421,189 @@ describeIfHelm('ax-next chart: experimental sharded git-server', () => {
     );
   });
 });
+
+/**
+ * Pull the host Deployment's env array out of a parsed render. Loose typing —
+ * tests narrow on `name` and `value`/`valueFrom`.
+ */
+type EnvVar = {
+  name: string;
+  value?: string;
+  valueFrom?: Record<string, unknown>;
+};
+
+function findHostEnv(docs: K8sDoc[]): EnvVar[] {
+  const host = docs.find(
+    (d) => d.kind === 'Deployment' && d.metadata?.name === 'ax-test-ax-next-host',
+  );
+  if (!host) throw new Error('host Deployment not found in render');
+  const containers = (host.spec as { template?: { spec?: { containers?: Array<{ env?: EnvVar[] }> } } })
+    ?.template?.spec?.containers;
+  return containers?.[0]?.env ?? [];
+}
+
+describeIfHelm('ax-next chart: workspace.backend wiring', () => {
+  // beforeAll already ran for the suite above (helm dependency build is
+  // idempotent), but the suites are independent — re-run for safety. A
+  // no-op when the tarballs are already present.
+  beforeAll(() => {
+    if (!HELM) return;
+    const repoAdd = spawnSync(
+      HELM,
+      ['repo', 'add', '--force-update', 'bitnami', 'https://charts.bitnami.com/bitnami'],
+      { encoding: 'utf8', stdio: ['ignore', 'ignore', 'pipe'] },
+    );
+    if (repoAdd.status !== 0) {
+      throw new Error(
+        `helm repo add bitnami failed (exit ${repoAdd.status}): ${repoAdd.stderr ?? ''}`,
+      );
+    }
+    const r = spawnSync(HELM, ['dependency', 'build', chartDir], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    if (r.status !== 0) {
+      throw new Error(
+        `helm dependency build failed (exit ${r.status}): ${r.stderr ?? ''}`,
+      );
+    }
+  });
+
+  it('backend=local (default): host has AX_WORKSPACE_ROOT only', () => {
+    const docs = helmTemplate([]);
+    const env = findHostEnv(docs);
+    const names = env.map((e) => e.name);
+
+    expect(names).toContain('AX_WORKSPACE_BACKEND');
+    expect(env.find((e) => e.name === 'AX_WORKSPACE_BACKEND')?.value).toBe('local');
+    expect(names).toContain('AX_WORKSPACE_ROOT');
+    expect(names).not.toContain('AX_WORKSPACE_GIT_HTTP_URL');
+    expect(names).not.toContain('AX_WORKSPACE_GIT_HTTP_TOKEN');
+    expect(names).not.toContain('AX_WORKSPACE_GIT_SERVER_URL');
+    expect(names).not.toContain('AX_WORKSPACE_GIT_SERVER_TOKEN');
+  });
+
+  it('backend=http + gitServer.enabled: host has AX_WORKSPACE_GIT_HTTP_*, no _SERVER_*', () => {
+    const docs = helmTemplate([
+      '--set',
+      'workspace.backend=http',
+      '--set',
+      'gitServer.enabled=true',
+    ]);
+    const env = findHostEnv(docs);
+    const names = env.map((e) => e.name);
+    const byName = Object.fromEntries(env.map((e) => [e.name, e]));
+
+    expect(byName.AX_WORKSPACE_BACKEND?.value).toBe('http');
+    expect(byName.AX_WORKSPACE_GIT_HTTP_URL?.value).toBe(
+      'http://ax-test-ax-next-git-server.default.svc.cluster.local:7780',
+    );
+    expect(byName.AX_WORKSPACE_GIT_HTTP_TOKEN?.valueFrom).toBeDefined();
+    expect(names).not.toContain('AX_WORKSPACE_ROOT');
+    expect(names).not.toContain('AX_WORKSPACE_GIT_SERVER_URL');
+    expect(names).not.toContain('AX_WORKSPACE_GIT_SERVER_TOKEN');
+  });
+
+  it('backend=git-protocol + both toggles: host has AX_WORKSPACE_GIT_SERVER_*, experimental Service + STS render', () => {
+    const docs = helmTemplate([
+      '--set',
+      'workspace.backend=git-protocol',
+      '--set',
+      'gitServer.enabled=true',
+      '--set',
+      'gitServer.experimental.gitProtocol=true',
+      '--set',
+      'gitServer.storage=10Gi',
+    ]);
+    const env = findHostEnv(docs);
+    const names = env.map((e) => e.name);
+    const byName = Object.fromEntries(env.map((e) => [e.name, e]));
+
+    // Host env: ONLY the new vars, NO local/http vars.
+    expect(byName.AX_WORKSPACE_BACKEND?.value).toBe('git-protocol');
+    expect(byName.AX_WORKSPACE_GIT_SERVER_URL?.value).toBe(
+      'http://ax-test-ax-next-git-server-experimental.default.svc.cluster.local:7780',
+    );
+    expect(byName.AX_WORKSPACE_GIT_SERVER_TOKEN?.valueFrom).toBeDefined();
+    expect(names).not.toContain('AX_WORKSPACE_ROOT');
+    expect(names).not.toContain('AX_WORKSPACE_GIT_HTTP_URL');
+    expect(names).not.toContain('AX_WORKSPACE_GIT_HTTP_TOKEN');
+
+    // The new ClusterIP Service renders (regular, NOT headless).
+    const expService = docs.find(
+      (d) =>
+        d.kind === 'Service' &&
+        d.metadata?.name === 'ax-test-ax-next-git-server-experimental',
+    );
+    expect(expService, 'experimental ClusterIP Service').toBeDefined();
+    expect(expService?.spec?.clusterIP).not.toBe('None'); // regular ClusterIP
+    expect(expService?.spec?.selector?.['app.kubernetes.io/name']).toBe(
+      'ax-test-ax-next-git-server-experimental',
+    );
+    const expPorts = expService?.spec?.ports ?? [];
+    expect(expPorts.length).toBe(1);
+    expect(expPorts[0]?.port).toBe(7780);
+    expect(expPorts[0]?.targetPort).toBe('git');
+
+    // The StatefulSet renders.
+    const sts = docs.find(
+      (d) =>
+        d.kind === 'StatefulSet' &&
+        d.metadata?.name === 'ax-test-ax-next-git-server-experimental',
+    );
+    expect(sts, 'experimental StatefulSet').toBeDefined();
+
+    // Host pod does NOT mount the workspace PVC (no local storage needed).
+    const host = docs.find(
+      (d) => d.kind === 'Deployment' && d.metadata?.name === 'ax-test-ax-next-host',
+    );
+    const volumes =
+      (host?.spec as { template?: { spec?: { volumes?: Array<{ name?: string }> } } })?.template
+        ?.spec?.volumes ?? [];
+    expect(volumes.find((v) => v.name === 'workspace')).toBeUndefined();
+  });
+
+  it('backend=http + experimental.gitProtocol=true: legacy host wiring + experimental tier in canary-preflight', () => {
+    // The "stand the new tier up next to the live one and watch it idle"
+    // posture. Host traffic still goes to the legacy git-server-http
+    // backend; the experimental STS + Service render but receive no
+    // traffic (no host env points at them). This is the safe pre-cutover
+    // configuration.
+    const docs = helmTemplate([
+      '--set',
+      'workspace.backend=http',
+      '--set',
+      'gitServer.enabled=true',
+      '--set',
+      'gitServer.experimental.gitProtocol=true',
+      '--set',
+      'gitServer.storage=10Gi',
+    ]);
+    const env = findHostEnv(docs);
+    const names = env.map((e) => e.name);
+    const byName = Object.fromEntries(env.map((e) => [e.name, e]));
+
+    // Host pod still uses the legacy http path.
+    expect(byName.AX_WORKSPACE_BACKEND?.value).toBe('http');
+    expect(byName.AX_WORKSPACE_GIT_HTTP_URL?.value).toBe(
+      'http://ax-test-ax-next-git-server.default.svc.cluster.local:7780',
+    );
+    expect(byName.AX_WORKSPACE_GIT_HTTP_TOKEN?.valueFrom).toBeDefined();
+    expect(names).not.toContain('AX_WORKSPACE_GIT_SERVER_URL');
+    expect(names).not.toContain('AX_WORKSPACE_GIT_SERVER_TOKEN');
+
+    // But the experimental tier is provisioned and ready.
+    const sts = docs.find(
+      (d) =>
+        d.kind === 'StatefulSet' &&
+        d.metadata?.name === 'ax-test-ax-next-git-server-experimental',
+    );
+    expect(sts, 'experimental StatefulSet renders even when host points at legacy').toBeDefined();
+    const expService = docs.find(
+      (d) =>
+        d.kind === 'Service' &&
+        d.metadata?.name === 'ax-test-ax-next-git-server-experimental',
+    );
+    expect(expService, 'experimental ClusterIP Service renders').toBeDefined();
+  });
+});
