@@ -173,3 +173,24 @@ workspace.backend == "git-protocol".
 {{- define "ax-next.gitServerExperimentalServiceUrl" -}}
 {{- printf "http://%s.%s.svc.cluster.local:%d" (include "ax-next.gitServerExperimentalComponentName" .) (include "ax-next.hostNamespace" .) (int .Values.gitServer.service.port) -}}
 {{- end -}}
+
+{{/*
+Validate workspace.backend=git-protocol prerequisites. Fails fast at template
+time if the operator picked the new backend without enabling the experimental
+git-server tier — otherwise the host pod boots with AX_WORKSPACE_GIT_SERVER_URL
+pointing at a Service that doesn't render, and we'd discover the misconfiguration
+at first workspace op instead of at install. Belt-and-suspenders for the values
+schema, since helm has no native enum-with-prereqs validator.
+
+Invoked from `host/deployment.yaml`, which always renders.
+*/}}
+{{- define "ax-next.validateWorkspaceBackend" -}}
+{{- if eq .Values.workspace.backend "git-protocol" -}}
+{{- if not .Values.gitServer.enabled -}}
+{{- fail "workspace.backend=git-protocol requires gitServer.enabled=true" -}}
+{{- end -}}
+{{- if not .Values.gitServer.experimental.gitProtocol -}}
+{{- fail "workspace.backend=git-protocol requires gitServer.experimental.gitProtocol=true" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}

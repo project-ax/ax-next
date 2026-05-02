@@ -563,6 +563,34 @@ describeIfHelm('ax-next chart: workspace.backend wiring', () => {
     expect(volumes.find((v) => v.name === 'workspace')).toBeUndefined();
   });
 
+  it('backend=git-protocol without gitServer.enabled → render fails with sanitized error', () => {
+    // Guardrail: the host pod would otherwise boot pointing at a Service
+    // that doesn't render. Better to fail the install than discover this
+    // at first workspace op. Error must mention the toggle name so the
+    // operator knows what to flip.
+    const r = helmTemplateExpectFailure([
+      '--set',
+      'workspace.backend=git-protocol',
+    ]);
+    expect(r.status, 'helm template should fail').not.toBe(0);
+    expect(r.stderr).toMatch(
+      /workspace\.backend=git-protocol requires gitServer\.enabled=true/,
+    );
+  });
+
+  it('backend=git-protocol without gitServer.experimental.gitProtocol → render fails with sanitized error', () => {
+    const r = helmTemplateExpectFailure([
+      '--set',
+      'workspace.backend=git-protocol',
+      '--set',
+      'gitServer.enabled=true',
+    ]);
+    expect(r.status, 'helm template should fail').not.toBe(0);
+    expect(r.stderr).toMatch(
+      /workspace\.backend=git-protocol requires gitServer\.experimental\.gitProtocol=true/,
+    );
+  });
+
   it('backend=http + experimental.gitProtocol=true: legacy host wiring + experimental tier in canary-preflight', () => {
     // The "stand the new tier up next to the live one and watch it idle"
     // posture. Host traffic still goes to the legacy git-server-http
