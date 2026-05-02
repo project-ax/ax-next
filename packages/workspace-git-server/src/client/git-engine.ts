@@ -47,7 +47,7 @@
 
 import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
@@ -59,6 +59,8 @@ import {
   type WorkspaceApplyBundleOutput,
   type WorkspaceApplyInput,
   type WorkspaceApplyOutput,
+  type WorkspaceExportBaselineBundleInput,
+  type WorkspaceExportBaselineBundleOutput,
   type WorkspaceChange,
   type WorkspaceDelta,
   type WorkspaceDiffInput,
@@ -380,30 +382,21 @@ async function pushScratch(
 // --- apply-bundle pipeline helpers (Phase 3) ----------------------------
 
 /**
- * Seed an empty mirror with a deterministic baseline commit reconstructed
- * from the workspace's previous-version snapshot. The resulting commit
- * OID MUST match what the runner's `materializeWorkspace` cloned (so the
- * runner's thin bundle finds its prerequisite).
+ * Seed an empty mirror with a deterministic empty-tree baseline
+ * commit. Used for first apply against an empty storage tier — the
+ * runner's local baseline OID matches this commit by construction
+ * (both sides build with sorted paths, fixed dates, fixed author env,
+ * --allow-empty, core.fileMode=false).
  *
- * Determinism comes from:
- *   - sorted paths
- *   - core.fileMode=false (mode-bit ignored, every blob lands as 100644)
- *   - mode 0o644 on writeFile (determined regardless of host umask)
- *   - BASELINE_ENV (fixed author + fixed dates)
- *
- * Same shape as `buildBaselineBundle` in workspace-materialize.ts; the
- * contract is pinned via the WorkspaceApplyBundleInput type comment.
- *
- * After this returns: mirror's refs/heads/main points at a commit
- * whose OID equals the deterministic-baseline OID for these inputs.
+ * Returns the new commit's OID so the caller can verify it matches
+ * the runner's prereq.
  */
-async function seedMirrorWithBaseline(
-  mirror: string,
-  baselineFiles: ReadonlyArray<{ path: string; bytes: Bytes }>,
-): Promise<string> {
+async function seedMirrorWithEmptyBaseline(mirror: string): Promise<string> {
   const scratch = mkdtempSync(join(tmpdir(), 'ax-ws-baseline-'));
   try {
-    const init = await runGit(['init', '-b', 'baseline', scratch], {
+    // Init on `main` (matches the materialize bundle's branch + the
+    // bundler's expected refspec).
+    const init = await runGit(['init', '-b', 'main', scratch], {
       extraEnv: BASELINE_ENV,
     });
     if (init.code !== 0) {
@@ -416,26 +409,9 @@ async function seedMirrorWithBaseline(
     if (cfg.code !== 0) {
       throw new Error(`baseline config core.fileMode failed: ${cfg.stderr}`);
     }
-    // Sorted-paths invariant (load-bearing for OID determinism).
-    const sorted = [...baselineFiles].sort((a, b) =>
-      a.path.localeCompare(b.path),
-    );
-    for (const { path, bytes } of sorted) {
-      const abs = join(scratch, path);
-      const dir = dirname(abs);
-      if (dir !== scratch) {
-        await mkdir(dir, { recursive: true });
-      }
-      await writeFile(abs, bytes, { mode: 0o644 });
-    }
-    const add = await runGit(['-C', scratch, 'add', '-A'], {
-      extraEnv: BASELINE_ENV,
-    });
-    if (add.code !== 0) {
-      throw new Error(`baseline add failed: ${add.stderr}`);
-    }
-    // --allow-empty so brand-new workspaces (no files) still produce a
-    // baseline commit (empty-tree).
+    // --allow-empty produces a commit with the empty tree as its
+    // tree OID. Combined with deterministic dates + identity, this
+    // commit's OID is bit-for-bit reproducible.
     const commit = await runGit(
       ['-C', scratch, 'commit', '--allow-empty', '-m', 'baseline'],
       { extraEnv: BASELINE_ENV },
@@ -443,14 +419,12 @@ async function seedMirrorWithBaseline(
     if (commit.code !== 0) {
       throw new Error(`baseline commit failed: ${commit.stderr}`);
     }
-    // Push the baseline commit to the bare mirror's refs/heads/main.
-    // After this, mirror's `currentMirrorOid` returns the baseline OID.
     const push = await runGit([
       '-C',
       scratch,
       'push',
       mirror,
-      'baseline:refs/heads/main',
+      'main:refs/heads/main',
     ]);
     if (push.code !== 0) {
       throw new Error(`baseline push to mirror failed: ${push.stderr}`);
@@ -552,6 +526,118 @@ async function pushBundleTip(
     msg.includes('rejected') ||
     msg.includes('failed to push');
   return { ok: false, nonFastForward, stderr: r.stderr };
+}
+
+/**
+ * Build a self-contained git bundle of an empty-tree baseline commit
+ * with deterministic OID. Used when the workspace has no commits yet
+ * (first apply against an empty storage tier) — same shape as the
+ * materialize handler's empty-workspace bundle so the runner's
+ * matching clone has the same baseline OID.
+ */
+async function buildEmptyBaselineBundle(): Promise<string> {
+  const tmp = mkdtempSync(join(tmpdir(), 'ax-ws-empty-baseline-'));
+  try {
+    const init = await runGit(['init', '-b', 'main', tmp], {
+      extraEnv: BASELINE_ENV,
+    });
+    if (init.code !== 0) {
+      throw new Error(`empty baseline init failed: ${init.stderr}`);
+    }
+    const cfg = await runGit(
+      ['-C', tmp, 'config', 'core.fileMode', 'false'],
+      { extraEnv: BASELINE_ENV },
+    );
+    if (cfg.code !== 0) {
+      throw new Error(`empty baseline config failed: ${cfg.stderr}`);
+    }
+    const commit = await runGit(
+      ['-C', tmp, 'commit', '--allow-empty', '-m', 'baseline'],
+      { extraEnv: BASELINE_ENV },
+    );
+    if (commit.code !== 0) {
+      throw new Error(`empty baseline commit failed: ${commit.stderr}`);
+    }
+    // Bundle to a tempfile (NOT stdout) — runGit's utf8-decoded
+    // stdout would mangle binary bundle bytes. The pack format
+    // contains arbitrary binary data (deltas, blob bytes); we need
+    // raw bytes from the file.
+    const bundlePath = join(tmp, 'baseline.bundle');
+    const bundle = await runGit(
+      ['-C', tmp, 'bundle', 'create', bundlePath, 'main'],
+      { extraEnv: BASELINE_ENV },
+    );
+    if (bundle.code !== 0) {
+      throw new Error(`empty baseline bundle failed: ${bundle.stderr}`);
+    }
+    const bytes = await readFile(bundlePath);
+    return bytes.toString('base64');
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Bundle the mirror's state at a specific commit OID into a self-
+ * contained git bundle. The bundle ships every commit reachable from
+ * `oid` plus the ref `refs/heads/main` pointing at it.
+ *
+ * Caller invariant: `oid` MUST equal the mirror's current
+ * refs/heads/main (which we verify before bundling — drift here means
+ * the runner's view of `parent` doesn't match what we have, which is
+ * a parent-mismatch the apply path would catch downstream anyway).
+ */
+async function exportMirrorBundle(
+  mirror: string,
+  oid: string,
+): Promise<string> {
+  // Verify the mirror's HEAD matches the requested oid. If a concurrent
+  // writer landed something between the runner's parent and now, our
+  // mirror.HEAD has advanced past `oid`; the runner's apply will
+  // correctly hit parent-mismatch. Bundling our current HEAD here
+  // (which doesn't match `oid`) would silently mask that — better to
+  // fail loud.
+  const head = await runGit([
+    '-C',
+    mirror,
+    'rev-parse',
+    '--verify',
+    'refs/heads/main',
+  ]);
+  if (head.code !== 0) {
+    throw new Error(
+      `mirror has no refs/heads/main: ${head.stderr}`,
+    );
+  }
+  const headOid = head.stdout.trim();
+  if (headOid !== oid) {
+    throw new Error(
+      `mirror head ${headOid} does not match requested version ${oid} (concurrent writer or stale version)`,
+    );
+  }
+
+  // Bundle refs/heads/main directly. Use a tempfile (not stdout) for
+  // binary safety — runGit's utf8-decoded stdout would mangle the
+  // bundle bytes.
+  const out = mkdtempSync(join(tmpdir(), 'ax-export-bundle-'));
+  try {
+    const bundlePath = join(out, 'baseline.bundle');
+    const create = await runGit([
+      '-C',
+      mirror,
+      'bundle',
+      'create',
+      bundlePath,
+      'main',
+    ]);
+    if (create.code !== 0) {
+      throw new Error(`bundle create failed: ${create.stderr}`);
+    }
+    const bytes = await readFile(bundlePath);
+    return bytes.toString('base64');
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
 }
 
 /**
@@ -705,6 +791,10 @@ export interface GitEngine {
     workspaceId: string,
     input: WorkspaceApplyBundleInput,
   ): Promise<WorkspaceApplyBundleOutput>;
+  exportBaselineBundle(
+    workspaceId: string,
+    input: WorkspaceExportBaselineBundleInput,
+  ): Promise<WorkspaceExportBaselineBundleOutput>;
   read(workspaceId: string, input: WorkspaceReadInput): Promise<WorkspaceReadOutput>;
   list(workspaceId: string, input: WorkspaceListInput): Promise<WorkspaceListOutput>;
   diff(workspaceId: string, input: WorkspaceDiffInput): Promise<WorkspaceDiffOutput>;
@@ -977,21 +1067,16 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
         // post-seed local mirror.
         const remoteLease = mirrorHead;
 
-        // 4. If mirror is empty, seed it with the deterministic
-        //    baseline. After this, mirror's HEAD == input.baselineCommit
-        //    (verified — drift means the determinism contract broke).
-        //
-        //    If mirror already has commits, its HEAD is the prior turn's
-        //    tip, which by symmetry equals the runner's baseline. We
-        //    verify this match explicitly — drift here means the runner
-        //    and mirror disagree about lineage (e.g., a manual mutation
-        //    of the storage tier). Bail loud rather than silently
-        //    rebasing.
+        // 4. If mirror is empty, seed it with the deterministic empty
+        //    baseline (single empty-tree commit). The runner's first-
+        //    apply baseline OID matches this OID by construction —
+        //    both sides build from the same shape (sorted paths, fixed
+        //    dates, fixed author env, empty tree). For non-empty
+        //    mirrors, HEAD is the prior turn's tip == the runner's
+        //    baseline by symmetry (after each accept, both sides
+        //    advance to the same OID).
         if (mirrorHead === null) {
-          const seededOid = await seedMirrorWithBaseline(
-            handle.dir,
-            input.baselineFiles,
-          );
+          const seededOid = await seedMirrorWithEmptyBaseline(handle.dir);
           if (seededOid !== input.baselineCommit) {
             throw new Error(
               `seeded baseline OID ${seededOid} does not match runner baseline ${input.baselineCommit} (determinism contract violated)`,
@@ -1077,6 +1162,56 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
           //    objects are kept; refs/heads/main now references them).
           await clearBundleRefs(handle.dir);
         }
+      });
+    });
+  };
+
+  // -------------------------------------------------------------------
+  // exportBaselineBundle (Phase 3): companion to applyBundle.
+  //
+  // The host-side commit-notify handler uses this to seed its bundler
+  // scratch repo with a self-contained git bundle of the workspace's
+  // state at `version`. Eliminates the need for deterministic
+  // reconstruction (which only worked for first apply); the bundle's
+  // tip OID matches the runner's local baseline OID by construction
+  // (both come from the same git history).
+  //
+  // For `version: null` (first apply, mirror is empty): we synthesize
+  // a deterministic empty-tree baseline. The runner's clone of this
+  // bundle has the same OID, so the runner's first thin bundle's
+  // prereq matches.
+  //
+  // For `version: <oid>` (subsequent apply): we bundle the mirror's
+  // state at `oid`. The runner advances its local baseline ref to
+  // this OID after each accept, so its next thin bundle's prereq
+  // matches.
+  //
+  // Enqueues per-workspaceId so concurrent apply + export stays
+  // serialized (the export needs a coherent mirror snapshot).
+  // -------------------------------------------------------------------
+  const exportBaselineBundle = async (
+    workspaceId: string,
+    input: WorkspaceExportBaselineBundleInput,
+  ): Promise<WorkspaceExportBaselineBundleOutput> => {
+    guardClosed();
+    return enqueue(workspaceId, async () => {
+      guardClosed();
+      if (input.version === null) {
+        // No commits yet — return the deterministic empty baseline.
+        // No mirror access needed.
+        return { bundleBytes: await buildEmptyBaselineBundle() };
+      }
+      // Need the commit in our mirror cache. ensureRepoCreated +
+      // fetchMirror keeps us in sync with the storage tier.
+      const remoteUrl = remoteUrlFor(opts.baseUrl, workspaceId);
+      return opts.mirrorCache.withMirror(workspaceId, async (handle) => {
+        await ensureRepoCreated(workspaceId);
+        await fetchMirror(remoteUrl, opts.token, handle.dir);
+        const bundleBytes = await exportMirrorBundle(
+          handle.dir,
+          input.version as string,
+        );
+        return { bundleBytes };
       });
     });
   };
@@ -1181,5 +1316,14 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
 
   const _internalQueueSize = (): number => queues.size;
 
-  return { apply, applyBundle, read, list, diff, shutdown, _internalQueueSize };
+  return {
+    apply,
+    applyBundle,
+    exportBaselineBundle,
+    read,
+    list,
+    diff,
+    shutdown,
+    _internalQueueSize,
+  };
 }

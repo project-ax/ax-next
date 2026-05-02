@@ -104,28 +104,72 @@ export interface WorkspaceApplyBundleInput {
    */
   bundleBytes: string;
   /**
-   * Reconstructed baseline commit OID — the bundle's prerequisite.
-   * The host bundler computed this via deterministic baseline
-   * reconstruction. The workspace plugin can use it to verify the
-   * bundle's prereq matches what's in its mirror cache before
-   * attempting fetch.
+   * The bundle's prerequisite commit OID. The workspace plugin uses
+   * it to verify the bundle's prereq matches what's in its mirror
+   * cache before attempting fetch (and as a `--force-with-lease`
+   * value when pushing to the storage tier).
    */
   baselineCommit: string;
   parent: WorkspaceVersion | null;
   reason?: string;
-  /**
-   * Snapshot of the workspace at `parent` version. The workspace
-   * plugin uses this to seed its mirror cache when the cache is empty
-   * (first apply for this workspaceId) so it has the baseline commit
-   * to fetch the thin bundle against. After the first apply, the
-   * mirror cache retains the previous turn's tip and this snapshot is
-   * effectively unused — but we ship it on every call to keep the
-   * input shape stable.
-   */
-  baselineFiles: ReadonlyArray<{ path: string; bytes: Bytes }>;
 }
 
 export type WorkspaceApplyBundleOutput = WorkspaceApplyOutput;
+
+// ---------------------------------------------------------------------------
+// `workspace:export-baseline-bundle` (Phase 3, OPTIONAL service hook)
+//
+// Companion to `workspace:apply-bundle`. The host-side commit-notify
+// handler uses this to seed its bundler scratch repo with the
+// workspace's actual git state at the runner's parentVersion,
+// eliminating the need for deterministic reconstruction. Bundle-aware
+// backends register both hooks together; non-bundle backends register
+// neither.
+//
+// The output is a self-contained git bundle containing every commit
+// reachable from the workspace's state at `version`, with a single ref
+// (`refs/heads/main`) pointing at that state. The bundler clones this
+// into its scratch repo, then loads the runner's thin bundle on top.
+// The thin bundle's prereq matches the bundle's tip OID by
+// construction (both are the workspace's actual head at `version`).
+//
+// Special cases:
+//   - `version: null` (first apply): the workspace has no commits yet
+//     in the storage tier. The hook returns a DETERMINISTIC empty-tree
+//     baseline bundle, identical to what the materialize handler ships
+//     to the runner. The runner's clone -> first-turn bundle has its
+//     prereq pointing at this same deterministic OID.
+//   - `version: <git-sha>` (subsequent applies): the workspace has the
+//     prior turn's tip in the storage tier. The hook bundles
+//     `<version>` (a single commit + everything reachable). The
+//     runner's local baseline ref points at this same OID, so its
+//     thin bundle's prereq matches.
+//
+// Same I1 trade-off as apply-bundle: this hook's input/output have
+// git vocabulary (`bundleBytes`). Allowed because the hook is OPTIONAL
+// and only registered by bundle-aware backends. The bus surface stays
+// clean for non-bundle backends.
+// ---------------------------------------------------------------------------
+
+export interface WorkspaceExportBaselineBundleInput {
+  /**
+   * Workspace version to bundle. `null` means "the workspace's state
+   * BEFORE any apply" — the hook returns a deterministic empty-tree
+   * baseline. For non-null values, the hook bundles whatever's at
+   * that version in the workspace plugin's storage.
+   */
+  version: WorkspaceVersion | null;
+}
+
+export interface WorkspaceExportBaselineBundleOutput {
+  /**
+   * Base64-encoded git bundle. Always non-empty — even an empty
+   * workspace ships a bundle with one empty-tree commit on
+   * `refs/heads/main`. The runner's thin bundle's prereq matches
+   * this bundle's tip OID by construction.
+   */
+  bundleBytes: string;
+}
 
 export interface WorkspaceReadInput {
   path: string;

@@ -354,6 +354,9 @@ importers:
       '@ax/test-harness':
         specifier: workspace:*
         version: link:../test-harness
+      '@ax/validator-skill':
+        specifier: workspace:*
+        version: link:../validator-skill
       zod:
         specifier: ^3.23.8
         version: 3.25.76
@@ -1235,6 +1238,9 @@ importers:
       '@ax/teams':
         specifier: workspace:*
         version: link:../../packages/teams
+      '@ax/validator-skill':
+        specifier: workspace:*
+        version: link:../../packages/validator-skill
       '@ax/workspace-git':
         specifier: workspace:*
         version: link:../../packages/workspace-git
@@ -1245,6 +1251,9 @@ importers:
         specifier: workspace:*
         version: link:../../packages/workspace-git-server
     devDependencies:
+      '@ax/ipc-core':
+        specifier: workspace:*
+        version: link:../../packages/ipc-core
       '@ax/ipc-server':
         specifier: workspace:*
         version: link:../../packages/ipc-server

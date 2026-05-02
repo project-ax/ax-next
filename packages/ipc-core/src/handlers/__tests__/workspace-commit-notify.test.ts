@@ -114,9 +114,9 @@ async function simulateRunnerTurn(args: {
     const bundlePath = path.join(root, 'baseline.bundle');
     await fs.writeFile(bundlePath, Buffer.from(baselineB64, 'base64'));
     const wt = path.join(root, 'wt');
-    const cl = await git(['clone', '--branch', 'baseline', bundlePath, wt]);
+    const cl = await git(['clone', '--branch', 'main', bundlePath, wt]);
     if (cl.code !== 0) throw new Error(`clone failed: ${cl.stderr}`);
-    await git(['-C', wt, 'checkout', '-b', 'main']);
+    await git(['-C', wt, 'update-ref', 'refs/heads/baseline', 'HEAD']);
 
     for (const [p, content] of Object.entries(turnFiles)) {
       const abs = path.join(wt, p);

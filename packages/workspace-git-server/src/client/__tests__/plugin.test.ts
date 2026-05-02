@@ -102,7 +102,7 @@ afterEach(async () => {
 // ---------------------------------------------------------------------------
 
 describe('createWorkspaceGitServerPlugin — manifest', () => {
-  it('exposes the five workspace hooks (Phase 3 added apply-bundle), no calls, no subscribes', () => {
+  it('exposes the six workspace hooks (Phase 3 added apply-bundle + export-baseline-bundle), no calls, no subscribes', () => {
     const plugin = createWorkspaceGitServerPlugin({
       baseUrl: 'http://127.0.0.1:0',
       token: TOKEN,
@@ -111,6 +111,7 @@ describe('createWorkspaceGitServerPlugin — manifest', () => {
     expect(plugin.manifest.registers).toEqual([
       'workspace:apply',
       'workspace:apply-bundle',
+      'workspace:export-baseline-bundle',
       'workspace:read',
       'workspace:list',
       'workspace:diff',

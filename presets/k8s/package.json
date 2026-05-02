@@ -40,9 +40,11 @@
     "@ax/http-server": "workspace:*",
     "@ax/auth-oidc": "workspace:*",
     "@ax/static-files": "workspace:*",
-    "@ax/teams": "workspace:*"
+    "@ax/teams": "workspace:*",
+    "@ax/validator-skill": "workspace:*"
   },
   "devDependencies": {
+    "@ax/ipc-core": "workspace:*",
     "@ax/ipc-server": "workspace:*",
     "@ax/sandbox-subprocess": "workspace:*",
     "@ax/session-inmemory": "workspace:*",

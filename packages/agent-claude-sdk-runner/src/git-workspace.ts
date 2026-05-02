@@ -119,24 +119,25 @@ export async function materializeWorkspace(input: MaterializeInput): Promise<voi
   await fs.writeFile(bundlePath, Buffer.from(bundleBase64, 'base64'));
   try {
     await expectOk(
-      await runGit(['clone', '--branch', 'baseline', bundlePath, root]),
+      await runGit(['clone', '--branch', 'main', bundlePath, root]),
       'git clone',
     );
-    // After clone, HEAD is a symbolic ref to refs/heads/baseline. We
-    // need to MOVE OFF baseline so subsequent turn-end commits advance
-    // a different ref, leaving baseline pinned to the materialize tip.
-    // `git checkout -b main` creates `main` from current HEAD and
-    // switches; `refs/heads/baseline` stays where it is.
+    // Pin refs/heads/baseline to current HEAD (= main = bundle's tip)
+    // so the next `git bundle baseline..main` is well-defined.
+    // refs/heads/baseline doesn't exist after clone (the bundle only
+    // ships refs/heads/main); we create it here pinning to the same
+    // OID as main.
     //
     // After this, the contract is:
-    //   refs/heads/baseline   — the materialize tip (advances per turn
-    //                           via advanceBaseline after host accepts).
+    //   refs/heads/baseline   — the last-accepted state (advances per
+    //                           turn via advanceBaseline after host
+    //                           accepts).
     //   HEAD/refs/heads/main  — current working state; advances on each
     //                           turn-end commit.
-    //   git bundle baseline..HEAD — the per-turn diff.
+    //   git bundle baseline..main main — the per-turn thin bundle.
     await expectOk(
-      await runGit(['-C', root, 'checkout', '-b', 'main']),
-      'git checkout -b main',
+      await runGit(['-C', root, 'update-ref', 'refs/heads/baseline', 'HEAD']),
+      'git update-ref refs/heads/baseline',
     );
   } finally {
     // Best-effort cleanup of the bundle file. If unlink fails (e.g.,

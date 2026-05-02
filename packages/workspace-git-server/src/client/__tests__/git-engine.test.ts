@@ -422,7 +422,7 @@ async function simulateTurn(args: {
     //    seedMirrorWithBaseline shape).
     const baselineDir = path.join(root, 'baseline');
     await fs.mkdir(baselineDir, { recursive: true });
-    await git(['init', '-b', 'baseline', baselineDir], undefined, SIM_BASELINE_ENV);
+    await git(['init', '-b', 'main', baselineDir], undefined, SIM_BASELINE_ENV);
     await git(
       ['-C', baselineDir, 'config', 'core.fileMode', 'false'],
       undefined,
@@ -454,18 +454,18 @@ async function simulateTurn(args: {
     //    (mirrors materialize → runner clone shape).
     const baselineBundle = path.join(root, 'baseline.bundle');
     await git(
-      ['-C', baselineDir, 'bundle', 'create', baselineBundle, 'baseline'],
+      ['-C', baselineDir, 'bundle', 'create', baselineBundle, 'main'],
       undefined,
       SIM_BASELINE_ENV,
     );
 
-    // 3. Clone into the runner's working tree, switch off baseline.
+    // 3. Clone into the runner's working tree, pin baseline ref.
     const wt = path.join(root, 'wt');
     const cl = await git(
-      ['clone', '--branch', 'baseline', baselineBundle, wt],
+      ['clone', '--branch', 'main', baselineBundle, wt],
     );
     if (cl.code !== 0) throw new Error(`clone failed: ${cl.stderr}`);
-    await git(['-C', wt, 'checkout', '-b', 'main']);
+    await git(['-C', wt, 'update-ref', 'refs/heads/baseline', 'HEAD']);
     await git(['-C', wt, 'config', 'user.name', 'ax-runner']);
     await git(['-C', wt, 'config', 'user.email', 'ax-runner@example.com']);
 
@@ -527,7 +527,6 @@ describe('git-engine — applyBundle direct-apply path', () => {
       baselineCommit: sim.baselineCommit,
       parent: null,
       reason: 'turn',
-      baselineFiles: sim.baselineFiles,
     });
 
     // Version is the bundle's tip (the runner's commit OID, verbatim).
@@ -553,7 +552,6 @@ describe('git-engine — applyBundle direct-apply path', () => {
       baselineCommit: sim1.baselineCommit,
       parent: null,
       reason: 'turn 1',
-      baselineFiles: sim1.baselineFiles,
     });
 
     // Turn 2: runner's new baseline = turn 1's tip. The simulator
@@ -632,7 +630,6 @@ describe('git-engine — applyBundle direct-apply path', () => {
       baselineCommit: r1.version, // runner's new baseline = turn 1's tip
       parent: r1.version,
       reason: 'turn 2',
-      baselineFiles: [], // unused — mirror already has the prior tip
     });
     expect(r2.version).toMatch(/^[0-9a-f]{40}$/);
     expect(r2.version).not.toBe(r1.version);
@@ -651,7 +648,6 @@ describe('git-engine — applyBundle direct-apply path', () => {
       baselineCommit: sim1.baselineCommit,
       parent: null,
       reason: 'turn 1',
-      baselineFiles: sim1.baselineFiles,
     });
 
     // Try a stale-parent apply.
@@ -665,7 +661,6 @@ describe('git-engine — applyBundle direct-apply path', () => {
         baselineCommit: sim2.baselineCommit,
         parent: null, // stale — mirror has commits now
         reason: 'stale',
-        baselineFiles: sim2.baselineFiles,
       }),
     ).rejects.toThrow(/parent/);
   });

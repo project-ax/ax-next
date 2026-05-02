@@ -20,6 +20,8 @@ export type {
   WorkspaceApplyOutput,
   WorkspaceApplyBundleInput,
   WorkspaceApplyBundleOutput,
+  WorkspaceExportBaselineBundleInput,
+  WorkspaceExportBaselineBundleOutput,
   WorkspaceChange,
   WorkspaceChangeKind,
   WorkspaceDelta,

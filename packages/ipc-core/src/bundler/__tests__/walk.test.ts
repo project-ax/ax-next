@@ -37,24 +37,27 @@ interface SimArgs {
   turnFilesBytes?: Record<string, Buffer>;
 }
 
-async function simulateTurn(args: SimArgs): Promise<{ bundleB64: string }> {
+async function simulateTurn(
+  args: SimArgs,
+): Promise<{ bundleB64: string; baselineBundleB64: string }> {
   const { baselineFiles, turnFiles, turnFilesBytes = {} } = args;
-  const baselineB64 = await buildBaselineBundle({
+  const baselineBundleB64 = await buildBaselineBundle({
     paths: baselineFiles.map((f) => f.path),
     read: async (p) => {
       const f = baselineFiles.find((x) => x.path === p);
       return f === undefined ? null : f.bytes;
     },
   });
+  const baselineB64 = baselineBundleB64;
   const runnerRoot = await fs.mkdtemp(path.join(tmpdir(), 'ax-walk-sim-'));
   try {
     const bundlePath = path.join(runnerRoot, 'baseline.bundle');
     await fs.writeFile(bundlePath, Buffer.from(baselineB64, 'base64'));
     const wt = path.join(runnerRoot, 'wt');
-    const cl = await git(['clone', '--branch', 'baseline', bundlePath, wt]);
+    const cl = await git(['clone', '--branch', 'main', bundlePath, wt]);
     if (cl.code !== 0) throw new Error(`clone failed: ${cl.stderr}`);
-    // Move HEAD off baseline (mirrors materializeWorkspace).
-    await git(['-C', wt, 'checkout', '-b', 'main']);
+    // Pin refs/heads/baseline to HEAD (mirrors materializeWorkspace).
+    await git(['-C', wt, 'update-ref', 'refs/heads/baseline', 'HEAD']);
     await git(['-C', wt, 'config', 'user.name', 'ax-runner']);
     await git(['-C', wt, 'config', 'user.email', 'ax-runner@example.com']);
 
@@ -100,7 +103,7 @@ async function simulateTurn(args: SimArgs): Promise<{ bundleB64: string }> {
           : reject(new Error(`bundle exit=${code}: ${stderr}`)),
       );
     });
-    return { bundleB64: bundle.toString('base64') };
+    return { bundleB64: bundle.toString('base64'), baselineBundleB64 };
   } finally {
     await fs.rm(runnerRoot, { recursive: true, force: true });
   }
@@ -109,13 +112,13 @@ async function simulateTurn(args: SimArgs): Promise<{ bundleB64: string }> {
 describe('walkBundleChanges', () => {
   it('emits put for an added file (turn-end shape)', async () => {
     const baselineFiles: Array<{ path: string; bytes: Buffer }> = [];
-    const { bundleB64 } = await simulateTurn({
+    const { bundleB64, baselineBundleB64 } = await simulateTurn({
       baselineFiles,
       turnFiles: { '.ax/CLAUDE.md': 'hi' },
     });
     const scratch = await prepareScratchRepo({
       bundleBytes: bundleB64,
-      baselineFiles,
+      baselineBundleBytes: baselineBundleB64,
     });
     try {
       const r = await walkBundleChanges({
@@ -136,13 +139,13 @@ describe('walkBundleChanges', () => {
 
   it('emits put for a modified file', async () => {
     const baselineFiles = [{ path: 'a.txt', bytes: Buffer.from('old') }];
-    const { bundleB64 } = await simulateTurn({
+    const { bundleB64, baselineBundleB64 } = await simulateTurn({
       baselineFiles,
       turnFiles: { 'a.txt': 'new' },
     });
     const scratch = await prepareScratchRepo({
       bundleBytes: bundleB64,
-      baselineFiles,
+      baselineBundleBytes: baselineBundleB64,
     });
     try {
       const r = await walkBundleChanges({
@@ -163,13 +166,13 @@ describe('walkBundleChanges', () => {
     // The model uses `Bash: rm` (no Write/Edit/MultiEdit involved).
     // Phase 3 catches it via git diff regardless of the tool used.
     const baselineFiles = [{ path: 'a.txt', bytes: Buffer.from('doomed') }];
-    const { bundleB64 } = await simulateTurn({
+    const { bundleB64, baselineBundleB64 } = await simulateTurn({
       baselineFiles,
       turnFiles: { 'a.txt': null },
     });
     const scratch = await prepareScratchRepo({
       bundleBytes: bundleB64,
-      baselineFiles,
+      baselineBundleBytes: baselineBundleB64,
     });
     try {
       const r = await walkBundleChanges({
@@ -187,13 +190,13 @@ describe('walkBundleChanges', () => {
       { path: 'a.txt', bytes: Buffer.from('A1') },
       { path: 'b.txt', bytes: Buffer.from('B1') },
     ];
-    const { bundleB64 } = await simulateTurn({
+    const { bundleB64, baselineBundleB64 } = await simulateTurn({
       baselineFiles,
       turnFiles: { 'a.txt': 'A2', 'b.txt': null, 'c.txt': 'C1' },
     });
     const scratch = await prepareScratchRepo({
       bundleBytes: bundleB64,
-      baselineFiles,
+      baselineBundleBytes: baselineBundleB64,
     });
     try {
       const r = await walkBundleChanges({
@@ -213,14 +216,14 @@ describe('walkBundleChanges', () => {
   it('preserves binary content (NUL byte, high-bit) round-trip', async () => {
     const baselineFiles: Array<{ path: string; bytes: Buffer }> = [];
     const binary = Buffer.from([0x00, 0xff, 0x42, 0x00, 0x80]);
-    const { bundleB64 } = await simulateTurn({
+    const { bundleB64, baselineBundleB64 } = await simulateTurn({
       baselineFiles,
       turnFiles: {},
       turnFilesBytes: { 'bin.dat': binary },
     });
     const scratch = await prepareScratchRepo({
       bundleBytes: bundleB64,
-      baselineFiles,
+      baselineBundleBytes: baselineBundleB64,
     });
     try {
       const r = await walkBundleChanges({
@@ -239,13 +242,13 @@ describe('walkBundleChanges', () => {
   it('handles paths with spaces correctly (NUL-delimited diff-tree)', async () => {
     const baselineFiles: Array<{ path: string; bytes: Buffer }> = [];
     const weirdPath = 'foo bar/baz "quux".txt';
-    const { bundleB64 } = await simulateTurn({
+    const { bundleB64, baselineBundleB64 } = await simulateTurn({
       baselineFiles,
       turnFiles: { [weirdPath]: 'hello' },
     });
     const scratch = await prepareScratchRepo({
       bundleBytes: bundleB64,
-      baselineFiles,
+      baselineBundleBytes: baselineBundleB64,
     });
     try {
       const r = await walkBundleChanges({

@@ -47,6 +47,8 @@ import type {
   WorkspaceApplyOutput,
   WorkspaceDiffInput,
   WorkspaceDiffOutput,
+  WorkspaceExportBaselineBundleInput,
+  WorkspaceExportBaselineBundleOutput,
   WorkspaceListInput,
   WorkspaceListOutput,
   WorkspaceReadInput,
@@ -173,6 +175,7 @@ export function createWorkspaceGitServerPlugin(
       registers: [
         'workspace:apply',
         'workspace:apply-bundle',
+        'workspace:export-baseline-bundle',
         'workspace:read',
         'workspace:list',
         'workspace:diff',
@@ -232,6 +235,22 @@ export function createWorkspaceGitServerPlugin(
           const workspaceId = resolveWorkspaceId(ctx);
           try {
             return await engine.applyBundle(workspaceId, input);
+          } catch (err) {
+            throw _sanitizeTokenLeak(err, opts.token);
+          }
+        },
+      );
+
+      bus.registerService<
+        WorkspaceExportBaselineBundleInput,
+        WorkspaceExportBaselineBundleOutput
+      >(
+        'workspace:export-baseline-bundle',
+        PLUGIN_NAME,
+        async (ctx, input) => {
+          const workspaceId = resolveWorkspaceId(ctx);
+          try {
+            return await engine.exportBaselineBundle(workspaceId, input);
           } catch (err) {
             throw _sanitizeTokenLeak(err, opts.token);
           }

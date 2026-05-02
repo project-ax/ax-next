@@ -45,7 +45,9 @@ interface SimArgs {
  * Simulate runner's turn-end bundle. Returns the bundle bytes plus
  * the baselineFiles so the caller can pass both to prepareScratchRepo.
  */
-async function simulateTurn(args: SimArgs): Promise<{ bundleB64: string }> {
+async function simulateTurn(
+  args: SimArgs,
+): Promise<{ bundleB64: string; baselineBundleB64: string }> {
   const {
     baselineFiles,
     turnFiles,
@@ -53,23 +55,24 @@ async function simulateTurn(args: SimArgs): Promise<{ bundleB64: string }> {
     turnCommitter = turnAuthor,
   } = args;
 
-  const baselineB64 = await buildBaselineBundle({
+  const baselineBundleB64 = await buildBaselineBundle({
     paths: baselineFiles.map((f) => f.path),
     read: async (p) => {
       const f = baselineFiles.find((x) => x.path === p);
       return f === undefined ? null : f.bytes;
     },
   });
+  const baselineB64 = baselineBundleB64;
 
   const runnerRoot = await fs.mkdtemp(path.join(tmpdir(), 'ax-vfy-sim-'));
   try {
     const bundlePath = path.join(runnerRoot, 'baseline.bundle');
     await fs.writeFile(bundlePath, Buffer.from(baselineB64, 'base64'));
     const wt = path.join(runnerRoot, 'wt');
-    const cl = await git(['clone', '--branch', 'baseline', bundlePath, wt]);
+    const cl = await git(['clone', '--branch', 'main', bundlePath, wt]);
     if (cl.code !== 0) throw new Error(`clone failed: ${cl.stderr}`);
-    // Move HEAD off baseline (mirrors materializeWorkspace).
-    await git(['-C', wt, 'checkout', '-b', 'main']);
+    // Pin refs/heads/baseline to HEAD (mirrors materializeWorkspace).
+    await git(['-C', wt, 'update-ref', 'refs/heads/baseline', 'HEAD']);
 
     for (const [p, content] of Object.entries(turnFiles)) {
       const abs = path.join(wt, p);
@@ -122,7 +125,7 @@ async function simulateTurn(args: SimArgs): Promise<{ bundleB64: string }> {
           : reject(new Error(`bundle exit=${code}: ${stderr}`)),
       );
     });
-    return { bundleB64: bundle.toString('base64') };
+    return { bundleB64: bundle.toString('base64'), baselineBundleB64 };
   } finally {
     await fs.rm(runnerRoot, { recursive: true, force: true });
   }
@@ -131,14 +134,14 @@ async function simulateTurn(args: SimArgs): Promise<{ bundleB64: string }> {
 describe('verifyBundleAuthor', () => {
   it('accepts a turn bundle whose commit is authored by ax-runner', async () => {
     const baselineFiles = [{ path: 'a.txt', bytes: Buffer.from('A') }];
-    const { bundleB64 } = await simulateTurn({
+    const { bundleB64, baselineBundleB64 } = await simulateTurn({
       baselineFiles,
       turnFiles: { 'b.txt': 'B' },
       turnAuthor: 'ax-runner',
     });
     const scratch = await prepareScratchRepo({
       bundleBytes: bundleB64,
-      baselineFiles,
+      baselineBundleBytes: baselineBundleB64,
     });
     try {
       await expect(
@@ -154,14 +157,14 @@ describe('verifyBundleAuthor', () => {
 
   it('rejects a bundle authored by someone other than ax-runner', async () => {
     const baselineFiles = [{ path: 'a.txt', bytes: Buffer.from('A') }];
-    const { bundleB64 } = await simulateTurn({
+    const { bundleB64, baselineBundleB64 } = await simulateTurn({
       baselineFiles,
       turnFiles: { 'b.txt': 'B' },
       turnAuthor: 'eve',
     });
     const scratch = await prepareScratchRepo({
       bundleBytes: bundleB64,
-      baselineFiles,
+      baselineBundleBytes: baselineBundleB64,
     });
     try {
       await expect(
@@ -177,7 +180,7 @@ describe('verifyBundleAuthor', () => {
 
   it('rejects a bundle whose committer differs (author-set + committer-replaced)', async () => {
     const baselineFiles = [{ path: 'a.txt', bytes: Buffer.from('A') }];
-    const { bundleB64 } = await simulateTurn({
+    const { bundleB64, baselineBundleB64 } = await simulateTurn({
       baselineFiles,
       turnFiles: { 'b.txt': 'B' },
       turnAuthor: 'ax-runner',
@@ -185,7 +188,7 @@ describe('verifyBundleAuthor', () => {
     });
     const scratch = await prepareScratchRepo({
       bundleBytes: bundleB64,
-      baselineFiles,
+      baselineBundleBytes: baselineBundleB64,
     });
     try {
       await expect(
@@ -201,14 +204,14 @@ describe('verifyBundleAuthor', () => {
 
   it('rejects a bundle with a name that contains "ax-runner" as a substring', async () => {
     const baselineFiles = [{ path: 'a.txt', bytes: Buffer.from('A') }];
-    const { bundleB64 } = await simulateTurn({
+    const { bundleB64, baselineBundleB64 } = await simulateTurn({
       baselineFiles,
       turnFiles: { 'b.txt': 'B' },
       turnAuthor: 'evil-ax-runner',
     });
     const scratch = await prepareScratchRepo({
       bundleBytes: bundleB64,
-      baselineFiles,
+      baselineBundleBytes: baselineBundleB64,
     });
     try {
       await expect(
@@ -224,14 +227,14 @@ describe('verifyBundleAuthor', () => {
 
   it('rejects a bundle with a name that differs only by case', async () => {
     const baselineFiles = [{ path: 'a.txt', bytes: Buffer.from('A') }];
-    const { bundleB64 } = await simulateTurn({
+    const { bundleB64, baselineBundleB64 } = await simulateTurn({
       baselineFiles,
       turnFiles: { 'b.txt': 'B' },
       turnAuthor: 'Ax-Runner',
     });
     const scratch = await prepareScratchRepo({
       bundleBytes: bundleB64,
-      baselineFiles,
+      baselineBundleBytes: baselineBundleB64,
     });
     try {
       await expect(

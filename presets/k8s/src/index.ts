@@ -10,6 +10,7 @@ import { createWorkspaceGitServerPlugin } from '@ax/workspace-git-server';
 import { createSandboxK8sPlugin } from '@ax/sandbox-k8s';
 import { createChatOrchestratorPlugin } from '@ax/chat-orchestrator';
 import { auditLogPlugin } from '@ax/audit-log';
+import { createValidatorSkillPlugin } from '@ax/validator-skill';
 import { createMcpClientPlugin, createToolDispatcherPlugin } from '@ax/mcp-client';
 import { createCredentialProxyPlugin } from '@ax/credential-proxy';
 import { createCredentialsPlugin } from '@ax/credentials';
@@ -411,6 +412,13 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // (and therefore wires every subscriber) before any hook fires — but we
   // keep audit-log near the storage layer because that's its only call.
   plugins.push(auditLogPlugin());
+
+  // Phase 3: validator-skill subscribes to workspace:pre-apply and
+  // vetoes SKILL.md changes with malformed YAML frontmatter. Push
+  // order isn't load-bearing (kernel sequences subscribers via
+  // manifest), but we keep it adjacent to audit-log because both are
+  // observe-only hook subscribers with no dependencies of their own.
+  plugins.push(createValidatorSkillPlugin());
 
   // ----- 5. control-plane access (Week 9.5) -----------------------------
   // http-server provides the public-facing listener. auth registers the

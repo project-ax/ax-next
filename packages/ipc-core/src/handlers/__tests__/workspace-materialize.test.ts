@@ -76,7 +76,7 @@ async function unpackBundle(
     const bundlePath = join(tmp, 'b.bundle');
     await writeFile(bundlePath, Buffer.from(bundleB64, 'base64'));
     const wt = join(tmp, 'wt');
-    const clone = await git(['clone', '--branch', 'baseline', bundlePath, wt], tmp);
+    const clone = await git(['clone', '--branch', 'main', bundlePath, wt], tmp);
     if (clone.code !== 0) {
       throw new Error(`git clone failed: ${clone.stderr}`);
     }
@@ -98,7 +98,7 @@ async function unpackBundle(
       }
     }
     await walk(wt, '');
-    const ref = await git(['rev-parse', 'refs/heads/baseline'], wt);
+    const ref = await git(['rev-parse', 'refs/heads/main'], wt);
     return { files, ref: ref.stdout.trim() };
   } finally {
     await rm(tmp, { recursive: true, force: true });
@@ -214,7 +214,7 @@ describe('buildBaselineBundle (pure helper)', () => {
       await writeFile(bundlePath, Buffer.from(r, 'base64'));
       const wt = join(tmp, 'wt');
       const cl = await git(
-        ['clone', '--branch', 'baseline', bundlePath, wt],
+        ['clone', '--branch', 'main', bundlePath, wt],
         tmp,
       );
       expect(cl.code).toBe(0);

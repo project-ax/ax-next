@@ -16,6 +16,7 @@ import { createCredentialsPlugin } from '@ax/credentials';
 import { createCredentialsAnthropicOauthPlugin } from '@ax/credentials-anthropic-oauth';
 import { createCredentialProxyPlugin } from '@ax/credential-proxy';
 import { auditLogPlugin } from '@ax/audit-log';
+import { createValidatorSkillPlugin } from '@ax/validator-skill';
 import { createSandboxSubprocessPlugin } from '@ax/sandbox-subprocess';
 import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
 import { createIpcServerPlugin } from '@ax/ipc-server';
@@ -186,6 +187,12 @@ export async function main(opts: MainOptions): Promise<number> {
 
   // Audit log is part of the canary loop.
   plugins.push(auditLogPlugin());
+
+  // Phase 3: validator-skill subscribes to workspace:pre-apply and
+  // vetoes SKILL.md changes with malformed YAML frontmatter. CLI/k8s
+  // parity — same plugin set so dev runs catch the same SKILL.md
+  // shape failures production would.
+  plugins.push(createValidatorSkillPlugin());
 
   // Sandbox. Config only admits 'subprocess' today; the switch is future-
   // proofing for when alternate sandbox providers land.

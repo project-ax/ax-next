@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type {
@@ -105,7 +105,7 @@ export async function buildBaselineBundle(input: {
     // regardless of host umask or filesystem quirks (e.g., NTFS).
     // Required for OID determinism across host environments.
     await expectOk(
-      await runGitDeterministic(['init', '-b', 'baseline', tmp]),
+      await runGitDeterministic(['init', '-b', 'main', tmp]),
       'git init',
     );
     await expectOk(
@@ -141,12 +141,20 @@ export async function buildBaselineBundle(input: {
       ),
       'git commit',
     );
-    const bundle = await runGitDeterministic(
-      ['bundle', 'create', '-', 'baseline'],
-      { cwd: tmp },
+    // Bundle to a tempfile (NOT stdout) — runGit's utf8-decoded stdout
+    // would mangle binary bundle bytes. The pack format contains
+    // arbitrary binary data (deltas, blob bytes); we need raw bytes
+    // from the file.
+    const bundlePath = join(tmp, 'baseline.bundle');
+    await expectOk(
+      await runGitDeterministic(
+        ['bundle', 'create', bundlePath, 'main'],
+        { cwd: tmp },
+      ),
+      'git bundle create',
     );
-    await expectOk(bundle, 'git bundle create');
-    return bundle.stdout.toString('base64');
+    const bytes = await readFile(bundlePath);
+    return bytes.toString('base64');
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }

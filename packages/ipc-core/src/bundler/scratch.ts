@@ -3,25 +3,26 @@
 //
 // Builds a one-shot tempdir with:
 //   1. A bare scratch repo.
-//   2. A reconstructed `baseline` commit, deterministically built from
-//      the workspace's current state (sorted paths, fixed dates, fixed
-//      author env). The OID matches the runner's local
-//      `refs/heads/baseline`.
+//   2. The workspace's baseline state (loaded from a self-contained
+//      bundle the workspace plugin produced via
+//      `workspace:export-baseline-bundle`). The baseline OID matches
+//      the runner's local `refs/heads/baseline` by construction.
 //   3. The runner's thin bundle fetched into the scratch repo. Now
-//      `HEAD` is the runner's tip; `baseline..HEAD` is the per-turn
-//      diff.
+//      `HEAD` is the runner's tip; `baselineCommit..HEAD` is the
+//      per-turn diff.
 //
 // Returns `{ repoPath, baselineCommit, dispose }`. The verifier and
 // walker operate on `repoPath` with `baselineCommit` as the range
 // anchor. The handler must call `dispose` to clean up.
 //
-// Why deterministic baseline (load-bearing): the runner's thin bundle
-// declares `baseline-OID` as a prerequisite. The host has to PROVIDE
-// that OID by reconstructing the same commit. If the construction
-// drifts (different timestamps, different file ordering, different
-// author env), the OIDs diverge and `git fetch <bundle>` rejects with
-// "fatal: bad object". See `buildBaselineBundle` (in
-// workspace-materialize.ts) for the deterministic construction details.
+// Why baseline-from-bundle (not deterministic reconstruction): for the
+// FIRST apply (parent=null), we could rebuild a deterministic baseline
+// from workspace:list+read. But for SUBSEQUENT applies, the runner's
+// baseline OID is the actual previous-turn commit (real timestamps,
+// not deterministic), and reconstruction would produce a different
+// OID, failing the thin bundle's prereq check. The export-baseline-
+// bundle hook delegates to the workspace plugin's mirror cache, which
+// has the actual OID for both cases. One code path, both turns.
 //
 // Lifecycle: handler-scoped. Created at commit-notify start, disposed
 // at handler return (success OR failure). No cross-call state. If a
@@ -32,36 +33,44 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { expectOk, runGit, runGitDeterministic } from './git-spawn.js';
+import { expectOk, runGit } from './git-spawn.js';
 
 export interface PrepareScratchRepoInput {
   /** Base64-encoded thin bundle from the runner. Must be non-empty. */
   bundleBytes: string;
   /**
-   * Snapshot of the workspace at `parent` version (the runner's
-   * baseline state). Sorted internally; caller doesn't need to sort.
+   * Base64-encoded baseline bundle from the workspace plugin (via
+   * `workspace:export-baseline-bundle`). Self-contained — contains
+   * all commits reachable from the workspace's state at parent, with
+   * one ref `refs/heads/main` pointing at it.
    */
-  baselineFiles: ReadonlyArray<{ path: string; bytes: Buffer }>;
+  baselineBundleBytes: string;
 }
 
 export interface PreparedScratchRepo {
   /** Working-tree path; pass to runGit({cwd}) for read-only ops. */
   repoPath: string;
-  /** Reconstructed baseline commit OID. Use as the range anchor. */
+  /** Baseline commit OID (the bundle's prereq match point). */
   baselineCommit: string;
   /** Cleanup. Idempotent — safe to call multiple times or in finally. */
   dispose: () => Promise<void>;
 }
 
 /**
- * Build a scratch working-tree repo seeded with a deterministic
- * baseline commit, then load the runner's thin bundle into it.
+ * Build a scratch bare-repo seeded with the workspace's baseline
+ * (from the export-baseline-bundle), then load the runner's thin
+ * bundle on top.
  *
  * After this returns:
- *   - `<repoPath>/.git/refs/heads/baseline` → reconstructed baseline OID
- *   - `<repoPath>/.git/refs/heads/<runner-branch>` → bundle's tip
- *   - `git rev-list baseline..HEAD` walks the runner's per-turn commits
- *   - `git diff-tree -r baseline..HEAD` produces the per-turn diff
+ *   - `<repoPath>/refs/heads/main` -> baseline commit OID (from the
+ *      baseline bundle).
+ *   - `<repoPath>/refs/bundle/main` (or similar) -> runner's tip
+ *     (from the thin bundle).
+ *   - HEAD points at the bundle's tip so `baselineCommit..HEAD` is
+ *     the per-turn diff.
+ *   - `git rev-list baselineCommit..HEAD` walks the runner's per-turn
+ *     commits.
+ *   - `git diff-tree -r baselineCommit..HEAD` produces the diff.
  */
 export async function prepareScratchRepo(
   input: PrepareScratchRepoInput,
@@ -69,6 +78,11 @@ export async function prepareScratchRepo(
   if (input.bundleBytes === '') {
     throw new Error(
       'prepareScratchRepo: empty bundleBytes (handler should short-circuit empty turns before calling)',
+    );
+  }
+  if (input.baselineBundleBytes === '') {
+    throw new Error(
+      'prepareScratchRepo: empty baselineBundleBytes (workspace plugin must always ship a baseline)',
     );
   }
 
@@ -81,61 +95,48 @@ export async function prepareScratchRepo(
   };
 
   try {
-    const repoPath = join(tmp, 'work');
+    const repoPath = join(tmp, 'work.git');
     await mkdir(repoPath, { recursive: true });
 
     // -------------------------------------------------------------
-    // 1. Init the repo + reconstruct baseline (deterministically).
-    //
-    // Same shape as buildBaselineBundle in workspace-materialize.ts —
-    // we duplicate the logic here rather than calling into that
-    // function because (a) we need the working-tree result, not a
-    // bundle, and (b) buildBaselineBundle's tempdir lifecycle is
-    // distinct from ours. The deterministic guarantees come from
-    // runGitDeterministic + sorted paths + 0o644 mode +
-    // core.fileMode=false.
+    // 1. Init a BARE scratch repo. We don't need a working tree;
+    //    verify + walk operate on git plumbing (rev-list, diff-tree,
+    //    cat-file, ls-tree) which doesn't need a checkout.
     // -------------------------------------------------------------
     await expectOk(
-      await runGitDeterministic(['init', '-b', 'baseline', repoPath]),
-      'git init',
-    );
-    await expectOk(
-      await runGitDeterministic(['config', 'core.fileMode', 'false'], {
-        cwd: repoPath,
-      }),
-      'git config core.fileMode',
-    );
-    const sorted = [...input.baselineFiles].sort((a, b) =>
-      a.path.localeCompare(b.path),
-    );
-    for (const { path, bytes } of sorted) {
-      const abs = join(repoPath, path);
-      const dir = abs.slice(0, abs.lastIndexOf('/'));
-      if (dir.length > 0 && dir !== repoPath) {
-        await mkdir(dir, { recursive: true });
-      }
-      await writeFile(abs, bytes, { mode: 0o644 });
-    }
-    await expectOk(
-      await runGitDeterministic(['add', '-A'], { cwd: repoPath }),
-      'git add',
-    );
-    await expectOk(
-      await runGitDeterministic(
-        ['commit', '--allow-empty', '-m', 'baseline'],
-        { cwd: repoPath },
-      ),
-      'git commit baseline',
+      await runGit(['init', '--bare', '-b', 'main', repoPath]),
+      'git init --bare',
     );
 
-    // Capture the baseline OID. This is the value the runner's bundle
-    // references as a prerequisite; if the determinism guarantees
-    // hold, fetch will succeed in the next step.
-    const baselineRevParse = await runGit(
-      ['-C', repoPath, 'rev-parse', 'refs/heads/baseline'],
-      {},
+    // -------------------------------------------------------------
+    // 2. Load the workspace's baseline bundle. It ships
+    //    refs/heads/main -> baseline OID. Fetch onto refs/heads/main.
+    // -------------------------------------------------------------
+    const baselineBundlePath = join(tmp, 'baseline.bundle');
+    await writeFile(
+      baselineBundlePath,
+      Buffer.from(input.baselineBundleBytes, 'base64'),
     );
-    await expectOk(baselineRevParse, 'git rev-parse refs/heads/baseline');
+    await expectOk(
+      await runGit(
+        [
+          '-C',
+          repoPath,
+          'fetch',
+          '--quiet',
+          baselineBundlePath,
+          'refs/heads/main:refs/heads/main',
+        ],
+      ),
+      'git fetch baseline bundle',
+    );
+
+    // Capture the baseline OID. This is what the runner's thin bundle
+    // declares as its prereq.
+    const baselineRevParse = await runGit(
+      ['-C', repoPath, 'rev-parse', 'refs/heads/main'],
+    );
+    await expectOk(baselineRevParse, 'git rev-parse refs/heads/main');
     const baselineCommit = baselineRevParse.stdout.toString('utf8').trim();
     if (!/^[0-9a-f]{40}$/.test(baselineCommit)) {
       throw new Error(
@@ -144,20 +145,12 @@ export async function prepareScratchRepo(
     }
 
     // -------------------------------------------------------------
-    // 2. Load the thin bundle into the scratch repo.
-    //
-    // The bundle declares baseline as a prerequisite; the fetch
-    // succeeds iff the OID we just reconstructed matches the
-    // runner's. A mismatch surfaces as "fatal: bad object <oid>" —
-    // failure mode is loud, which is what we want when determinism
-    // guarantees drift.
-    //
-    // We fetch into a non-conflicting ref name so it doesn't clobber
-    // refs/heads/baseline. `git fetch ... 'refs/heads/*:refs/heads/*'`
-    // would do that; instead, route to a private ref.
+    // 3. Load the runner's thin bundle. Prereq is satisfied by the
+    //    baseline we just loaded. Route into refs/bundle/* so it
+    //    doesn't clobber refs/heads/main.
     // -------------------------------------------------------------
-    const bundlePath = join(tmp, 'in.bundle');
-    await writeFile(bundlePath, Buffer.from(input.bundleBytes, 'base64'));
+    const thinBundlePath = join(tmp, 'thin.bundle');
+    await writeFile(thinBundlePath, Buffer.from(input.bundleBytes, 'base64'));
     await expectOk(
       await runGit(
         [
@@ -165,26 +158,19 @@ export async function prepareScratchRepo(
           repoPath,
           'fetch',
           '--quiet',
-          bundlePath,
-          // The runner's bundle is `bundle create - HEAD` so it ships
-          // refs/heads/<whatever-the-runner-named-it>. We catch any
-          // ref the bundle introduces and route them under
-          // refs/bundle/* so we don't collide with our `baseline` ref.
+          thinBundlePath,
           'refs/heads/*:refs/bundle/*',
         ],
-        {},
       ),
-      'git fetch bundle',
+      'git fetch thin bundle',
     );
 
-    // The bundle's tip — what the runner ran `bundle create` with —
-    // becomes our HEAD for the verifier and walker. The runner ships
-    // exactly one ref tip per turn (refs/heads/main, or refs/heads/
-    // baseline pre-advance, or whatever — we pick the one ref that
-    // landed under refs/bundle/*).
+    // Pick the bundle's tip. The runner ships exactly one ref under
+    // refs/heads/* (main, by convention from `git checkout -b main`
+    // in materializeWorkspace). After the fetch above it lands at
+    // refs/bundle/main.
     const bundleRefs = await runGit(
       ['-C', repoPath, 'for-each-ref', '--format=%(refname)', 'refs/bundle/'],
-      {},
     );
     await expectOk(bundleRefs, 'git for-each-ref refs/bundle');
     const refList = bundleRefs.stdout
@@ -198,8 +184,6 @@ export async function prepareScratchRepo(
       );
     }
     if (refList.length > 1) {
-      // The runner ships exactly one ref tip per turn. Multiple refs
-      // would be a contract violation — don't try to guess.
       throw new Error(
         `prepareScratchRepo: bundle introduced ${refList.length} refs (expected exactly 1): ${refList.join(', ')}`,
       );
@@ -208,7 +192,6 @@ export async function prepareScratchRepo(
     await expectOk(
       await runGit(
         ['-C', repoPath, 'symbolic-ref', 'HEAD', refList[0]!],
-        {},
       ),
       'git symbolic-ref HEAD',
     );

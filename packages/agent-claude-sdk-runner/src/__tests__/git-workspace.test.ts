@@ -48,9 +48,9 @@ async function git(
 async function makeBundle(files: Record<string, string>): Promise<string> {
   const tmp = await fs.mkdtemp(path.join(tmpdir(), 'ax-rb-'));
   try {
-    await git(['init', '-b', 'baseline', tmp]);
-    // Author + committer must be set; we use the same identity the host
-    // bundler uses, but for this test it just needs to be SOMETHING valid.
+    // Bundle ships on refs/heads/main (matches the host materialize
+    // bundle's branch name).
+    await git(['init', '-b', 'main', tmp]);
     await git(['-C', tmp, 'config', 'user.email', 'test@example.com']);
     await git(['-C', tmp, 'config', 'user.name', 'test']);
     for (const [p, content] of Object.entries(files)) {
@@ -62,14 +62,12 @@ async function makeBundle(files: Record<string, string>): Promise<string> {
     // --allow-empty so empty `files` produces a bundle with one
     // empty-tree commit (mirrors the host's always-bundle contract).
     await git(['-C', tmp, 'commit', '--allow-empty', '-m', 'baseline']);
-    const bundle = await new Promise<string>((resolve, reject) => {
-      const child = spawn('git', ['-C', tmp, 'bundle', 'create', '-', 'baseline']);
-      const chunks: Buffer[] = [];
-      child.stdout.on('data', (c: Buffer) => chunks.push(c));
-      child.once('error', reject);
-      child.once('close', () => resolve(Buffer.concat(chunks).toString('base64')));
-    });
-    return bundle;
+    // Bundle to a tempfile (NOT stdout) — utf8-decoded stdout would
+    // mangle binary bundle bytes.
+    const bundleFile = path.join(tmp, 'b.bundle');
+    await git(['-C', tmp, 'bundle', 'create', bundleFile, 'main']);
+    const bytes = await fs.readFile(bundleFile);
+    return bytes.toString('base64');
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }

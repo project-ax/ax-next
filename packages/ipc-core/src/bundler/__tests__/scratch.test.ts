@@ -50,17 +50,18 @@ async function simulateRunnerTurn(args: {
   turnFiles: Record<string, string | null>; // null = delete
   /** Override commit author for the turn (defaults to ax-runner). */
   turnAuthor?: string;
-}): Promise<{ bundleB64: string }> {
+}): Promise<{ bundleB64: string; baselineBundleB64: string }> {
   const { baselineFiles, turnFiles, turnAuthor = 'ax-runner' } = args;
 
   // 1. Host builds + ships baseline.
-  const baselineB64 = await buildBaselineBundle({
+  const baselineBundleB64 = await buildBaselineBundle({
     paths: baselineFiles.map((f) => f.path),
     read: async (p) => {
       const f = baselineFiles.find((x) => x.path === p);
       return f === undefined ? null : f.bytes;
     },
   });
+  const baselineB64 = baselineBundleB64;
 
   // 2. Runner clones the bundle into a working tree, makes turn
   //    commits, bundles back. We use real git here because the runner
@@ -70,11 +71,11 @@ async function simulateRunnerTurn(args: {
     const bundlePath = path.join(runnerRoot, 'baseline.bundle');
     await fs.writeFile(bundlePath, Buffer.from(baselineB64, 'base64'));
     const wt = path.join(runnerRoot, 'wt');
-    const cl = await git(['clone', '--branch', 'baseline', bundlePath, wt]);
+    const cl = await git(['clone', '--branch', 'main', bundlePath, wt]);
     if (cl.code !== 0) throw new Error(`clone failed: ${cl.stderr}`);
-    // Move HEAD off baseline so commits advance `main`, not baseline.
-    // Mirrors materializeWorkspace's `git checkout -b main` step.
-    await git(['-C', wt, 'checkout', '-b', 'main']);
+    // Pin refs/heads/baseline to HEAD (mirrors materializeWorkspace).
+    // Subsequent commits advance `main` while `baseline` stays put.
+    await git(['-C', wt, 'update-ref', 'refs/heads/baseline', 'HEAD']);
 
     // Configure runner identity.
     await git(['-C', wt, 'config', 'user.name', turnAuthor]);
@@ -121,7 +122,7 @@ async function simulateRunnerTurn(args: {
           : reject(new Error(`bundle failed: ${stderr}`)),
       );
     });
-    return { bundleB64: bundle.toString('base64') };
+    return { bundleB64: bundle.toString('base64'), baselineBundleB64 };
   } finally {
     await fs.rm(runnerRoot, { recursive: true, force: true });
   }
@@ -129,14 +130,14 @@ async function simulateRunnerTurn(args: {
 
 describe('prepareScratchRepo', () => {
   it('loads the runner thin bundle and exposes baseline..HEAD as expected', async () => {
-    const { bundleB64 } = await simulateRunnerTurn({
+    const { bundleB64, baselineBundleB64 } = await simulateRunnerTurn({
       baselineFiles: [{ path: 'a.txt', bytes: Buffer.from('A') }],
       turnFiles: { 'b.txt': 'B' },
     });
 
     const scratch = await prepareScratchRepo({
       bundleBytes: bundleB64,
-      baselineFiles: [{ path: 'a.txt', bytes: Buffer.from('A') }],
+      baselineBundleBytes: baselineBundleB64,
     });
     try {
       // baselineCommit reachable.
@@ -175,69 +176,64 @@ describe('prepareScratchRepo', () => {
   });
 
   it('rejects empty bundleBytes (caller should short-circuit before)', async () => {
+    // Need a real baseline bundle for the test (any non-empty one will do).
+    const { baselineBundleB64 } = await simulateRunnerTurn({
+      baselineFiles: [],
+      turnFiles: { 'x.txt': 'x' },
+    });
     await expect(
-      prepareScratchRepo({ bundleBytes: '', baselineFiles: [] }),
+      prepareScratchRepo({
+        bundleBytes: '',
+        baselineBundleBytes: baselineBundleB64,
+      }),
     ).rejects.toThrow(/empty bundleBytes/);
   });
 
-  it('rejects when baseline reconstruction OID does not match the bundle prereq', async () => {
-    // Determinism failure simulation: build the bundle from one
-    // baseline, but pass a DIFFERENT baseline state to prepare. The
-    // OIDs diverge, the fetch's prereq check fails.
+  it('rejects empty baselineBundleBytes', async () => {
+    const { bundleB64 } = await simulateRunnerTurn({
+      baselineFiles: [],
+      turnFiles: { 'x.txt': 'x' },
+    });
+    await expect(
+      prepareScratchRepo({
+        bundleBytes: bundleB64,
+        baselineBundleBytes: '',
+      }),
+    ).rejects.toThrow(/empty baselineBundleBytes/);
+  });
+
+  it('rejects when baseline bundle OID does not match the thin bundle prereq', async () => {
+    // Build a thin bundle against one baseline, but try to load it on
+    // top of a DIFFERENT baseline. The thin bundle's prereq won't be
+    // in the loaded baseline → fetch fails.
     const { bundleB64 } = await simulateRunnerTurn({
       baselineFiles: [{ path: 'a.txt', bytes: Buffer.from('A') }],
       turnFiles: { 'b.txt': 'B' },
+    });
+    const { baselineBundleB64: differentBaseline } = await simulateRunnerTurn({
+      baselineFiles: [{ path: 'a.txt', bytes: Buffer.from('DIFFERENT') }],
+      turnFiles: { 'noop.txt': 'noop' },
     });
 
     await expect(
       prepareScratchRepo({
         bundleBytes: bundleB64,
-        baselineFiles: [
-          { path: 'a.txt', bytes: Buffer.from('DIFFERENT') }, // wrong content
-        ],
+        baselineBundleBytes: differentBaseline,
       }),
-    ).rejects.toThrow(/git fetch bundle failed/);
-  });
-
-  it('handles paths in unsorted input (caller can pass any order)', async () => {
-    // The host's workspace:list may return paths in any order. The
-    // helper sorts internally so the OID is stable.
-    const files = [
-      { path: 'b.txt', bytes: Buffer.from('B') },
-      { path: 'a.txt', bytes: Buffer.from('A') },
-      { path: '.ax/CLAUDE.md', bytes: Buffer.from('mem') },
-    ];
-    const { bundleB64 } = await simulateRunnerTurn({
-      baselineFiles: files,
-      turnFiles: { 'new.txt': 'NEW' },
-    });
-    // Pass baselineFiles in a DIFFERENT order — still works.
-    const scratch = await prepareScratchRepo({
-      bundleBytes: bundleB64,
-      baselineFiles: [files[2]!, files[0]!, files[1]!],
-    });
-    try {
-      const ls = await git(['-C', scratch.repoPath, 'ls-tree', '-r', 'HEAD']);
-      expect(ls.stdout).toContain('a.txt');
-      expect(ls.stdout).toContain('b.txt');
-      expect(ls.stdout).toContain('.ax/CLAUDE.md');
-      expect(ls.stdout).toContain('new.txt');
-    } finally {
-      await scratch.dispose();
-    }
+    ).rejects.toThrow(/fetch.*bundle failed/);
   });
 
   it('handles an empty-baseline + turn-adds-files scenario (brand-new workspace)', async () => {
     // Host materialize ships an empty-tree baseline; runner adds files
     // in turn 1.
-    const { bundleB64 } = await simulateRunnerTurn({
+    const { bundleB64, baselineBundleB64 } = await simulateRunnerTurn({
       baselineFiles: [],
       turnFiles: { '.ax/CLAUDE.md': 'first turn writes memory' },
     });
 
     const scratch = await prepareScratchRepo({
       bundleBytes: bundleB64,
-      baselineFiles: [],
+      baselineBundleBytes: baselineBundleB64,
     });
     try {
       const ls = await git(['-C', scratch.repoPath, 'ls-tree', '-r', 'HEAD']);
@@ -248,13 +244,13 @@ describe('prepareScratchRepo', () => {
   });
 
   it('dispose() is idempotent', async () => {
-    const { bundleB64 } = await simulateRunnerTurn({
+    const { bundleB64, baselineBundleB64 } = await simulateRunnerTurn({
       baselineFiles: [],
       turnFiles: { 'x.txt': 'x' },
     });
     const scratch = await prepareScratchRepo({
       bundleBytes: bundleB64,
-      baselineFiles: [],
+      baselineBundleBytes: baselineBundleB64,
     });
     await scratch.dispose();
     await expect(scratch.dispose()).resolves.toBeUndefined();
