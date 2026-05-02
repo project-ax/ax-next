@@ -531,11 +531,26 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
     return next;
   };
 
-  const parentMismatch = (message: string): PluginError =>
+  // `parentMismatch` carries the storage tier's actual head as
+  // `cause.actualParent` so callers (test harnesses, host-side retry loops)
+  // can rebase without re-querying. The contract is the same as
+  // `@ax/workspace-git-http`'s 409 envelope: `actualParent` is the server's
+  // current head (a `WorkspaceVersion` string, or `null` for an empty repo).
+  // Subscribers MUST treat the value as opaque — it's a brand-typed string
+  // and the only legal use is to feed it back into a follow-up
+  // `workspace:apply` as `parent`.
+  const parentMismatch = (
+    message: string,
+    actualParent: string | null,
+  ): PluginError =>
     new PluginError({
       code: 'parent-mismatch',
       plugin: PLUGIN_NAME,
       message,
+      cause: {
+        actualParent:
+          actualParent === null ? null : asWorkspaceVersion(actualParent),
+      },
     });
 
   const ensureRepoCreated = async (workspaceId: string): Promise<void> => {
@@ -581,21 +596,30 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
         input.parent === null ? null : (input.parent as string);
 
       // 5. Validate parent matches mirror head (the same logic from
-      // plugin-test-only.ts:528-547, kept verbatim).
+      // plugin-test-only.ts:528-547, kept verbatim). Each rejection carries
+      // the freshly-fetched mirror head as `cause.actualParent` so retry
+      // loops can rebase without re-querying.
       if (mirrorHead === null && callerParent !== null) {
         throw parentMismatch(
           'mirror has no commits; caller passed a non-null parent',
+          mirrorHead,
         );
       }
       if (mirrorHead !== null && callerParent === null) {
-        throw parentMismatch('mirror has commits; caller passed parent: null');
+        throw parentMismatch(
+          'mirror has commits; caller passed parent: null',
+          mirrorHead,
+        );
       }
       if (
         mirrorHead !== null &&
         callerParent !== null &&
         mirrorHead !== callerParent
       ) {
-        throw parentMismatch('caller parent does not match current mirror head');
+        throw parentMismatch(
+          'caller parent does not match current mirror head',
+          mirrorHead,
+        );
       }
 
       // 6. Build scratch tree, apply changes, commit, push.
@@ -611,8 +635,16 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
         );
         if (!push.ok) {
           if (push.nonFastForward) {
+            // Our local mirror was up-to-date when we read `mirrorHead`, but
+            // a concurrent writer landed a commit between our fetch and our
+            // push. Re-fetch + re-read so `cause.actualParent` reflects the
+            // server's NEW head (the value the caller's retry will need to
+            // rebase against), not the stale `mirrorHead` we computed earlier.
+            await fetchMirror(remoteUrl, opts.token, handle.dir);
+            const freshHead = await currentMirrorOid(handle.dir);
             throw parentMismatch(
               'remote rejected push: non-fast-forward (concurrent writer)',
+              freshHead,
             );
           }
           throw new Error(`git push failed: ${push.stderr}`);
