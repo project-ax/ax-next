@@ -1,0 +1,38 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "0893b0091245",
+  "session_id": "4609cf39-ca85-4aaa-b394-f203b0ba3d9f",
+  "strategy": "manual-commit",
+  "created_at": "2026-05-02T02:32:53.632477Z",
+  "branch": "feat/phase-2-workspace-host-plugin",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "packages/workspace-git-server/src/client/__tests__/workspace-id.test.ts",
+    "packages/workspace-git-server/src/client/workspace-id.ts"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "9ffbf069f808",
+  "token_usage": {
+    "input_tokens": 268,
+    "cache_creation_tokens": 1523612,
+    "cache_read_tokens": 41747791,
+    "output_tokens": 204556,
+    "api_call_count": 159
+  },
+  "session_metrics": {
+    "turn_count": 2
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-05-02T02:32:53.588475Z",
+    "agent_lines": 0,
+    "agent_removed": 0,
+    "human_added": 1,
+    "human_modified": 13,
+    "human_removed": 0,
+    "total_committed": 1,
+    "total_lines_changed": 14,
+    "agent_percentage": 0,
+    "metric_version": 2
+  }
+}
