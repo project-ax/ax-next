@@ -29,6 +29,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  PluginError,
   type WorkspaceApplyInput,
   type WorkspaceApplyOutput,
   type WorkspaceDiffInput,
@@ -43,7 +44,10 @@ import {
   createWorkspaceGitServer,
   type WorkspaceGitServer,
 } from '../../server/index.js';
-import { createWorkspaceGitServerPlugin } from '../plugin.js';
+import {
+  _sanitizeTokenLeak,
+  createWorkspaceGitServerPlugin,
+} from '../plugin.js';
 
 const TOKEN = 'super-secret-test-token-do-not-leak';
 
@@ -484,5 +488,69 @@ describe('createWorkspaceGitServerPlugin — token never leaks in errors', () =>
       captured = err;
     }
     assertNoTokenLeak(captured);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 7. _sanitizeTokenLeak unit tests — pin each documented behavior directly.
+//
+// The end-to-end token-leak tests above intentionally hit a closed port. The
+// resulting Node fetch error is wrapped by `repo-lifecycle.ts:opError`, which
+// already omits the token. So the scrubber runs against an error that was
+// already clean — the tests pass whether the scrubber exists or not. They're
+// still useful (they document that the fast-fail belt doesn't hang under
+// retry), but they don't pin scrubber behavior.
+//
+// These unit tests pin scrubber behavior directly by feeding it inputs that
+// DO contain the token.
+// ---------------------------------------------------------------------------
+
+describe('_sanitizeTokenLeak (internal)', () => {
+  it('scrubs the token from a plain Error message', () => {
+    const err = new Error(`POST /repos failed: token=${TOKEN}`);
+    const result = _sanitizeTokenLeak(err, TOKEN);
+    expect(result).toBe(err); // mutates in place
+    expect((result as Error).message).not.toContain(TOKEN);
+    expect((result as Error).message).toContain('<redacted>');
+  });
+
+  it('preserves PluginError code + instanceof while scrubbing', () => {
+    const err = new PluginError({
+      code: 'parent-mismatch',
+      plugin: '@ax/workspace-git-server',
+      message: `token=${TOKEN} mismatch`,
+    });
+    const result = _sanitizeTokenLeak(err, TOKEN);
+    expect(result).toBeInstanceOf(PluginError);
+    expect((result as PluginError).code).toBe('parent-mismatch');
+    expect((result as PluginError).message).not.toContain(TOKEN);
+    expect((result as PluginError).message).toContain('<redacted>');
+  });
+
+  it('passes non-Error values through unchanged', () => {
+    const stringErr = `token=${TOKEN}`;
+    const result = _sanitizeTokenLeak(stringErr, TOKEN);
+    // Strings (and other non-Error values) we deliberately don't touch — the
+    // contract is that we scrub Error message/stack only. Pass-through means
+    // the caller still sees whatever they threw, including the token.
+    expect(result).toBe(stringErr);
+  });
+
+  it('is a no-op when the token is empty (guard against false positives)', () => {
+    const err = new Error('some unrelated message with <> chars');
+    const before = err.message;
+    const result = _sanitizeTokenLeak(err, '');
+    expect(result).toBe(err);
+    expect((result as Error).message).toBe(before);
+  });
+
+  it('scrubs the stack as well as the message', () => {
+    const err = new Error('clean message');
+    // Force a stack containing the token, even though the message doesn't.
+    err.stack = `Error: clean message\n    at someFn (file.ts:1:1)\n    token=${TOKEN}`;
+    const result = _sanitizeTokenLeak(err, TOKEN);
+    expect((result as Error).message).not.toContain(TOKEN);
+    expect((result as Error).stack).not.toContain(TOKEN);
+    expect((result as Error).stack).toContain('<redacted>');
   });
 });

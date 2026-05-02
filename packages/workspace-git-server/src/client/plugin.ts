@@ -31,7 +31,7 @@
 // stderr. But errors travel through hook handlers, into the kernel, into
 // operator-visible logs — and "we audited every error path once in 2026"
 // is a thin guarantee. So every error escaping a hook handler here gets
-// passed through `sanitizeTokenLeak`, which scrubs the token from the
+// passed through `_sanitizeTokenLeak`, which scrubs the token from the
 // message and stack if (against expectation) it shows up. One pass, no
 // recursion, no clever wrapping. If a future code path leaks the token
 // through some unforeseen channel — JSON-stringified body in a 5xx
@@ -120,21 +120,23 @@ function withRetryClient(
  * return it unchanged. The hook layer will surface it as-is and the
  * harness's onError sink will stringify it; we don't try to scrub
  * arbitrary thrown values.
+ *
+ * @internal Exported with a leading underscore so unit tests can pin its
+ * five documented behaviors (message scrub, stack scrub, PluginError
+ * identity preserved, non-Error pass-through, empty-token guard) directly.
+ * Production callers go through the hook handlers below; nothing outside
+ * this package should import it.
  */
-function sanitizeTokenLeak(err: unknown, token: string): unknown {
+export function _sanitizeTokenLeak(err: unknown, token: string): unknown {
   if (!(err instanceof Error)) return err;
   if (token.length === 0) return err;
   const placeholder = '<redacted>';
-  let mutated = false;
   if (typeof err.message === 'string' && err.message.includes(token)) {
     err.message = err.message.split(token).join(placeholder);
-    mutated = true;
   }
   if (typeof err.stack === 'string' && err.stack.includes(token)) {
     err.stack = err.stack.split(token).join(placeholder);
-    mutated = true;
   }
-  void mutated; // local sentinel; future code may want to log the scrub
   return err;
 }
 
@@ -215,7 +217,7 @@ export function createWorkspaceGitServerPlugin(
           try {
             return await engine.apply(workspaceId, input);
           } catch (err) {
-            throw sanitizeTokenLeak(err, opts.token);
+            throw _sanitizeTokenLeak(err, opts.token);
           }
         },
       );
@@ -228,7 +230,7 @@ export function createWorkspaceGitServerPlugin(
           try {
             return await engine.read(workspaceId, input);
           } catch (err) {
-            throw sanitizeTokenLeak(err, opts.token);
+            throw _sanitizeTokenLeak(err, opts.token);
           }
         },
       );
@@ -241,7 +243,7 @@ export function createWorkspaceGitServerPlugin(
           try {
             return await engine.list(workspaceId, input);
           } catch (err) {
-            throw sanitizeTokenLeak(err, opts.token);
+            throw _sanitizeTokenLeak(err, opts.token);
           }
         },
       );
@@ -254,7 +256,7 @@ export function createWorkspaceGitServerPlugin(
           try {
             return await engine.diff(workspaceId, input);
           } catch (err) {
-            throw sanitizeTokenLeak(err, opts.token);
+            throw _sanitizeTokenLeak(err, opts.token);
           }
         },
       );
