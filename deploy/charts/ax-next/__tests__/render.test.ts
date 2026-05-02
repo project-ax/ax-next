@@ -591,6 +591,103 @@ describeIfHelm('ax-next chart: workspace.backend wiring', () => {
     );
   });
 
+  it('backend=git-protocol: host egress NetworkPolicy opens a rule to the experimental git-server tier', () => {
+    // Without this rule, the host pod's @ax/workspace-git-server traffic is
+    // denied at the CNI layer when networkPolicies.enabled=true (the default)
+    // — the legacy egress rule only matches `component: git-server`, but the
+    // experimental STS pods carry `component: git-server-experimental`.
+    // Render succeeds, the operator ships, every workspace op fails with an
+    // opaque connection error.
+    const docs = helmTemplate([
+      '--set',
+      'workspace.backend=git-protocol',
+      '--set',
+      'gitServer.enabled=true',
+      '--set',
+      'gitServer.experimental.gitProtocol=true',
+      '--set',
+      'gitServer.storage=10Gi',
+    ]);
+
+    const hostNp = docs.find(
+      (d) =>
+        d.kind === 'NetworkPolicy' &&
+        d.metadata?.name === 'ax-test-ax-next-host-network',
+    );
+    expect(hostNp, 'host NetworkPolicy renders').toBeDefined();
+
+    const egress = (hostNp?.spec?.egress as Array<{
+      to?: Array<{
+        podSelector?: { matchLabels?: Record<string, string> };
+      }>;
+      ports?: Array<{ port?: number; protocol?: string }>;
+    }>) ?? [];
+
+    // Find a rule whose `to` selects the experimental tier.
+    const expRule = egress.find((r) =>
+      (r.to ?? []).some(
+        (t) =>
+          t.podSelector?.matchLabels?.['app.kubernetes.io/name'] ===
+          'ax-test-ax-next-git-server-experimental',
+      ),
+    );
+    expect(
+      expRule,
+      'host egress includes a rule selecting the experimental git-server tier',
+    ).toBeDefined();
+    expect(expRule?.ports?.[0]?.port).toBe(7780);
+    expect(expRule?.ports?.[0]?.protocol).toBe('TCP');
+  });
+
+  it('backend=http + experimental.gitProtocol=false: host egress only includes the legacy git-server rule', () => {
+    // Symmetric guardrail: when the experimental toggle is off, the new
+    // egress rule must NOT render. Otherwise `helm template` would emit a
+    // dangling rule that selects pods that don't exist — harmless but
+    // confusing, and a sign the gate condition leaked.
+    const docs = helmTemplate([
+      '--set',
+      'workspace.backend=http',
+      '--set',
+      'gitServer.enabled=true',
+    ]);
+
+    const hostNp = docs.find(
+      (d) =>
+        d.kind === 'NetworkPolicy' &&
+        d.metadata?.name === 'ax-test-ax-next-host-network',
+    );
+    expect(hostNp, 'host NetworkPolicy renders').toBeDefined();
+
+    const egress = (hostNp?.spec?.egress as Array<{
+      to?: Array<{
+        podSelector?: { matchLabels?: Record<string, string> };
+      }>;
+    }>) ?? [];
+
+    // Legacy rule is present.
+    const legacyRule = egress.find((r) =>
+      (r.to ?? []).some(
+        (t) =>
+          t.podSelector?.matchLabels?.['app.kubernetes.io/name'] ===
+          'ax-test-ax-next-git-server',
+      ),
+    );
+    expect(legacyRule, 'legacy egress rule present').toBeDefined();
+
+    // Experimental rule MUST NOT render.
+    const expRule = egress.find((r) =>
+      (r.to ?? []).some(
+        (t) =>
+          t.podSelector?.matchLabels?.['app.kubernetes.io/name'] ===
+          'ax-test-ax-next-git-server-experimental',
+      ),
+    );
+    expect(
+      expRule,
+      'no experimental egress rule when experimental.gitProtocol is off',
+    ).toBeUndefined();
+  });
+
   it('backend=http + experimental.gitProtocol=true: legacy host wiring + experimental tier in canary-preflight', () => {
     // The "stand the new tier up next to the live one and watch it idle"
     // posture. Host traffic still goes to the legacy git-server-http
