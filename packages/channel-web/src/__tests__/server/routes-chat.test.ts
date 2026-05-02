@@ -11,6 +11,7 @@ import {
   describe,
   expect,
   it,
+  vi,
 } from 'vitest';
 import { PluginError, type AgentContext, type Plugin } from '@ax/core';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
@@ -357,12 +358,19 @@ describe('@ax/channel-web POST /api/chat/messages', () => {
     expect(await countConversations()).toBe(0);
   });
 
-  it('4. new conversation happy path: 202, row created, user turn appended, agent:invoke dispatched with server-minted reqId', async () => {
+  it('4. new conversation happy path: 202, row created, agent:invoke dispatched with server-minted reqId, no append-turn call', async () => {
     const booted = await boot({
       user: { id: 'userA', isAdmin: false },
       allowedFor: new Set(['userA']),
     });
     harnesses.push(booted.harness);
+
+    // Phase E: channel-web no longer calls conversations:append-turn —
+    // the runner's first SDK turn writes the user message to the
+    // workspace jsonl, which is the source of truth for transcripts.
+    // Spy on bus.call to prove the route never invokes the append-turn
+    // hook even on the happy path.
+    const callSpy = vi.spyOn(booted.harness.bus, 'call');
 
     const r = await postMessage(booted.port, {
       conversationId: null,
@@ -386,8 +394,11 @@ describe('@ax/channel-web POST /api/chat/messages', () => {
     expect(body.reqId).toMatch(/^req-[0-9a-f]{12}$/);
 
     expect(await countConversations()).toBe(1);
+    // Phase E: the turns table is no longer written by channel-web. The
+    // runner-native jsonl in the workspace is the source of truth; the
+    // turns table is dead-but-still-present until Task E-6 drops it.
     const turns = await listTurns(body.conversationId);
-    expect(turns).toEqual([{ role: 'user', turn_index: 0 }]);
+    expect(turns).toEqual([]);
 
     // agent:invoke dispatch — give the void-returning call a tick to flush.
     await new Promise((resolve) => setTimeout(resolve, 30));
@@ -399,9 +410,19 @@ describe('@ax/channel-web POST /api/chat/messages', () => {
     expect(cap.ctx.agentId).toBe('agt_test');
     // agent:invoke's first-turn message — extracted from the first text block.
     expect(cap.input.message).toEqual({ role: 'user', content: 'hello there' });
+
+    // Phase E invariant: conversations:append-turn must not be called
+    // anywhere in the POST handler chain. (The hook is still registered
+    // by @ax/conversations until Task E-3 deletes it; this assertion
+    // proves the writer side is gone today.)
+    const appendCalls = callSpy.mock.calls.filter(
+      ([hookName]) => hookName === 'conversations:append-turn',
+    );
+    expect(appendCalls).toHaveLength(0);
+    callSpy.mockRestore();
   });
 
-  it('5. existing conversation: turn appended, no new conversation created', async () => {
+  it('5. existing conversation: 202 returned, no new conversation created, no append-turn call', async () => {
     const booted = await boot({
       user: { id: 'userA', isAdmin: false },
       allowedFor: new Set(['userA']),
@@ -421,6 +442,8 @@ describe('@ax/channel-web POST /api/chat/messages', () => {
 
     expect(await countConversations()).toBe(1);
 
+    const callSpy = vi.spyOn(booted.harness.bus, 'call');
+
     const r = await postMessage(booted.port, {
       conversationId: created.conversationId,
       agentId: 'agt_test',
@@ -433,8 +456,16 @@ describe('@ax/channel-web POST /api/chat/messages', () => {
 
     // Still ONE conversation row.
     expect(await countConversations()).toBe(1);
+    // Phase E: turns table no longer written from this path.
     const turns = await listTurns(created.conversationId);
-    expect(turns).toEqual([{ role: 'user', turn_index: 0 }]);
+    expect(turns).toEqual([]);
+
+    // Phase E invariant: no append-turn call.
+    const appendCalls = callSpy.mock.calls.filter(
+      ([hookName]) => hookName === 'conversations:append-turn',
+    );
+    expect(appendCalls).toHaveLength(0);
+    callSpy.mockRestore();
   });
 
   it('6. mismatched agent on existing conversation → 400 (agent-mismatch, I10)', async () => {

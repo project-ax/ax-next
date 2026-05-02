@@ -34,7 +34,7 @@ const PLUGIN_NAME = '@ax/channel-web';
 //   - registers: nothing (the API surface is HTTP routes, not bus hooks).
 //   - calls: http:register-route, auth:require-user, agents:resolve,
 //     agents:list-for-user, conversations:get-by-req-id,
-//     conversations:create / :get / :list / :delete / :append-turn,
+//     conversations:create / :get / :list / :delete,
 //     agent:invoke. All hard — the chat-flow surface can't function without
 //     any of them.
 //   - subscribes: chat:stream-chunk (fills the buffer + per-connection
@@ -67,7 +67,6 @@ export function createChannelWebServerPlugin(
         'conversations:get',
         'conversations:list',
         'conversations:delete',
-        'conversations:append-turn',
         'agent:invoke',
       ],
       subscribes: ['chat:stream-chunk', 'chat:turn-end'],
