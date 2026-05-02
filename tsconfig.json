@@ -16,6 +16,7 @@
     { "path": "packages/ipc-server" },
     { "path": "packages/session-inmemory" },
     { "path": "packages/agent-claude-sdk-runner" },
+    { "path": "packages/agent-claude-sdk-runner-host" },
     { "path": "packages/chat-orchestrator" },
     { "path": "./packages/credentials" },
     { "path": "packages/credentials-store-db" },
