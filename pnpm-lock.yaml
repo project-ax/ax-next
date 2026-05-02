@@ -1273,6 +1273,12 @@ importers:
         specifier: workspace:*
         version: link:../../packages/workspace-git-server
     devDependencies:
+      '@ax/agent-claude-sdk-runner-host':
+        specifier: workspace:*
+        version: link:../../packages/agent-claude-sdk-runner-host
+      '@ax/conversations':
+        specifier: workspace:*
+        version: link:../../packages/conversations
       '@ax/ipc-core':
         specifier: workspace:*
         version: link:../../packages/ipc-core

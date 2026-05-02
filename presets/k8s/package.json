@@ -44,6 +44,8 @@
     "@ax/validator-skill": "workspace:*"
   },
   "devDependencies": {
+    "@ax/agent-claude-sdk-runner-host": "workspace:*",
+    "@ax/conversations": "workspace:*",
     "@ax/ipc-core": "workspace:*",
     "@ax/ipc-server": "workspace:*",
     "@ax/sandbox-subprocess": "workspace:*",
