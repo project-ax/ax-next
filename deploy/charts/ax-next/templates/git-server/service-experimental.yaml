@@ -1,0 +1,43 @@
+{{- if and .Values.gitServer.enabled .Values.gitServer.experimental.gitProtocol }}
+{{/*
+Regular ClusterIP Service fronting the experimental sharded git-server
+StatefulSet. Phase 2 of the workspace redesign — this is the URL the host
+plugin (`@ax/workspace-git-server`) hits when `workspace.backend` is set
+to `git-protocol`.
+
+Why this exists alongside the headless Service:
+  - The headless Service (`<sts>-headless`) provides per-pod DNS records
+    so a future shard router can address a specific ordinal directly.
+    That's load-bearing for N>1 sharding.
+  - This regular ClusterIP Service gives the host plugin a single stable
+    DNS name TODAY, while sharding is deferred (replicas: 1, see Phase 2
+    design Q5). At N=1 the per-pod DNS path and the load-balanced path
+    land on the same pod — but a single stable URL is simpler to wire and
+    matches the legacy `gitServerServiceUrl` shape the host already knows
+    how to consume.
+
+The two Services share selector labels (component=git-server-experimental)
+and target the same pods. Once sharding lands, the host plugin starts
+resolving per-pod DNS via the headless Service and this ClusterIP Service
+becomes a fallback / admin convenience.
+
+Deliberately distinct from the legacy ClusterIP Service (`gitServerComponentName`,
+no `-experimental` suffix); both render side-by-side during the canary.
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ax-next.gitServerExperimentalComponentName" . }}
+  namespace: {{ include "ax-next.hostNamespace" . }}
+  labels:
+    {{- include "ax-next.componentLabels" (dict "component" "git-server-experimental" "context" $) | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "ax-next.selectorLabels" (dict "component" "git-server-experimental" "context" $) | nindent 4 }}
+  ports:
+    - name: git
+      port: {{ .Values.gitServer.service.port }}
+      targetPort: git
+      protocol: TCP
+{{- end }}

@@ -159,3 +159,17 @@ suffix is always preserved.
 {{- $base := include "ax-next.fullname" . | trunc 39 | trimSuffix "-" -}}
 {{- printf "%s-git-server-experimental" $base | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
+
+{{/*
+Cluster-internal URL the host plugin uses to reach the EXPERIMENTAL git-server
+tier. Mirrors `ax-next.gitServerServiceUrl` for the legacy tier; routes traffic
+to the regular ClusterIP Service in front of the new StatefulSet (NOT the
+headless one — at N=1 they land on the same pod, but the ClusterIP form is
+the simpler, future-proof shape for the host plugin's URL config).
+
+The host deployment stamps this onto AX_WORKSPACE_GIT_SERVER_URL when
+workspace.backend == "git-protocol".
+*/}}
+{{- define "ax-next.gitServerExperimentalServiceUrl" -}}
+{{- printf "http://%s.%s.svc.cluster.local:%d" (include "ax-next.gitServerExperimentalComponentName" .) (include "ax-next.hostNamespace" .) (int .Values.gitServer.service.port) -}}
+{{- end -}}
