@@ -243,6 +243,91 @@ The sibling carried a "no GC for dangling objects" known limit from `@ax/workspa
 - Whether **SHA-256-mod-N shard distribution is uniform enough at our scale**. The Task 21 distribution test asserts 10 000 random workspace IDs across 4 shards land within ±5% of uniform, which is plenty for the math. Real-world workspace IDs may be biased (e.g., heavily prefix-clustered if we adopt a `<userId>-<n>` naming convention later), and biased inputs to a hash modulo can defeat the uniformity. We'll watch shard load in production once Phase 2 lands real traffic.
 - Whether the **empty-repo first-time-materialize contract** surfaces edge cases when the host pod and the runner sandbox are both fresh on the same workspace at the same time. Task 25's integration test exercises the contract, but it doesn't exercise the *concurrent-first-time* race. Phase 2 may need to revisit if the host plugin sees this case in the wild.
 
+## Phase 2 — host pod capability budget
+
+Phase 1 above is the storage tier — the StatefulSet pod that owns the bare repos. Phase 2 adds the **host-side** of the same package: the plugin (`createWorkspaceGitServerPlugin`) the host pod loads at boot to talk to that storage tier on every `workspace:apply` / `read` / `list` / `diff`. The host plugin is a separate process with its own capability budget, and that budget is what this section walks.
+
+We share the SECURITY.md instead of forking a second one because the two halves ship in lockstep — the plugin and the server speak the same wire, share the same bearer token, share the same `workspaceId` regex, and one can't move without the other. Two files would just drift.
+
+### Process spawn (host pod)
+
+The host plugin spawns the `git` binary. Same posture as the storage tier: argv-array form only, paranoid env, no shell.
+
+The full set of git invocations lives in `src/client/git-engine.ts` (the helpers extracted in Task 9). They are: `git init --bare -b main`, `git fetch`, `git push --force-with-lease`, `git ls-tree`, `git cat-file -e`, `git cat-file blob`, `git diff-tree`, `git rev-parse`, `git add -A`, `git commit --allow-empty -m`, and `git clone` (used to materialize a scratch working tree from a local mirror — never against an untrusted URL). That's the entire list; if you find a `child_process.spawn` we missed in this package, that's a bug.
+
+The only caller-derived elements that ever land in argv are:
+
+- **`workspaceId`** — produced upstream by `workspaceIdFor` (sha256-of-`userId/agentId`, prefixed `ws-`). Output always matches the regex `^[a-z0-9][a-z0-9_-]{0,62}$` by construction. No way for a caller to inject a `..`, a slash, or anything shell-special.
+- **`path`** — the file path inside the workspace, used in `git cat-file blob <oid>:<path>`. Lives under the workspace's bare-repo working tree. Subscribers don't pick it; the wire schema does.
+- **`oid`** — a 40-hex SHA from git's own object database (we never accept a caller-supplied oid as authoritative — we read it back from `rev-parse`).
+- **`remoteUrl`** — composed from a chart-stamped `baseUrl` (e.g. `http://<release>-ax-next-git-server-experimental.<ns>.svc.cluster.local:7780`) plus the regex-validated `workspaceId`. Both halves are regex-safe; there's no place to slip a shell metacharacter in.
+
+The child env is locked down to a constant — `HOST_GIT_ENV` in `git-engine.ts` is a **full env replacement**, never `{ ...process.env, ... }`:
+
+- `GIT_CONFIG_NOSYSTEM=1` — no `/etc/gitconfig`.
+- `GIT_CONFIG_GLOBAL=/dev/null` — no `~/.gitconfig`.
+- `GIT_TERMINAL_PROMPT=0` — never block waiting for a TTY.
+- `HOME=/nonexistent` — the binary won't find anything if it tries.
+- `PATH=/usr/local/bin:/usr/bin:/bin` — explicit, no inheritance. The host plugin's `git` is the host pod image's `git`, not a CI shim.
+
+(`mirror-cache.ts`'s `gitEnv()` has one deliberate exception: it inherits `process.env.PATH` because dev/test environments place `git` on Homebrew or asdf paths. Same other paranoid bits. Production overrides via the host pod's container PATH. Documented in that file's header comment.)
+
+Author identity is enforced via env on every `git commit` we issue:
+
+- `GIT_AUTHOR_NAME=ax-runner`
+- `GIT_AUTHOR_EMAIL=ax-runner@example.com`
+- `GIT_COMMITTER_NAME=ax-runner` (same value)
+- `GIT_COMMITTER_EMAIL=ax-runner@example.com` (same value)
+
+Every commit's git-level author is `ax-runner` regardless of which agent triggered it. Agent identity flows through `WorkspaceDelta.author` for audit; we don't let it pick the commit author. Phase 3 will add host-side enforcement that re-verifies this on the storage tier; Phase 2 only enforces on the host plugin's own commit-construction path.
+
+### Network reach
+
+One outbound destination, hard-coded by the chart:
+
+- HTTP to the storage tier's ClusterIP Service at `http://<release>-ax-next-git-server-experimental.<ns>.svc.cluster.local:7780`. The chart's NetworkPolicy on the host pod permits exactly that egress when `workspace.backend=git-protocol` AND `gitServer.experimental.gitProtocol=true` (Tasks 19–22, plus the egress fix that landed alongside Phase 2).
+
+Nothing else outbound from the workspace plugin. No fallback URL, no backup endpoint, no "ping a CDN to check connectivity." If the storage tier is unreachable, workspace ops fail loud — that's the point.
+
+The storage tier's NetworkPolicy permits inbound from host pods only (Phase 1's `git-server-experimental-network.yaml`). Two perimeters in series.
+
+**TLS:** not used today. Cluster-internal traffic between the host pod and the storage tier is plain HTTP, gated by the bearer token + NetworkPolicy. Same posture as `@ax/workspace-git-http`, same trade-off, same future work — see "Plain HTTP within the cluster, no mTLS" above.
+
+### Filesystem
+
+Two kinds of dir, both in tempdir, none persistent:
+
+- **Per-workspace bare mirrors** in `os.tmpdir()` (typically `/tmp/`), one per active workspaceId. Each mirror holds public git metadata only — commits, trees, blobs synced from the storage tier. **No secrets, no tokens, no credential material** ever lands in a mirror; the bearer token is passed via `http.extraHeader` and never written to disk. LRU-evicted at `cacheMaxEntries: 64` by default; the bound is configurable but the principle isn't.
+- **Scratch working trees** in `os.tmpdir()` per `apply` call. Built by `git clone <mirror> <scratch>` (local clone — no network), changes applied, committed, pushed, then `rmSync(scratch, { recursive: true, force: true })` in `finally`. Cleaned up on success, on failure, on exception, on shutdown.
+
+No persistent disk. The mirror cache is rebuildable on pod restart — cold-start cost is one `git fetch` per active workspace, which is normally seconds. We pay that to avoid having to think about persistent state lifecycle.
+
+### Bearer token discipline
+
+The token is the only thing standing between a NetworkPolicy bypass and the storage tier. We treat it accordingly.
+
+- **At rest:** lives in the host pod via `valueFrom.secretKeyRef` against the chart-managed `git-server-auth` Secret. Never `value: ...` in any template, never written to a config file, never logged at boot.
+- **On the wire to git:** passed via `git -c http.extraHeader=Authorization: Bearer <token>`. Git treats the value as opaque; doesn't echo it to stderr or stdout in normal operation. We never invoke `git` with the token as a positional argv element where it could end up in `ps`-visible state.
+- **On the wire to the lifecycle REST client:** passed to `createRepoLifecycleClient`, which constructs an `Authorization: Bearer ...` header and never logs it. The client deliberately omits the token from `opError` and from any thrown error's message.
+- **Defense-in-depth:** every error escaping a hook handler in `plugin.ts` passes through `_sanitizeTokenLeak`, which scrubs any literal occurrence of the token from the error's `.message` and `.stack` before re-throw. One pass, no recursion. Tests pin all five documented behaviors of the scrubber (message scrub, stack scrub, `PluginError` identity preserved, non-Error pass-through, empty-token guard).
+
+If a future code path leaks the token through some unforeseen channel — a JSON-stringified body in a 5xx response, a verbose retry log we add later, an unsanitized child-process echo — the scrubber catches it before it reaches the kernel's error logger. We're a nervous crab.
+
+### Three-threat-model walk (Phase 2 host pod)
+
+The same shape as Phase 1's walks above, applied to the host plugin's own capabilities.
+
+- **Sandbox escape:** The host pod's `git` binary lives in 2 of 3 tiers (host + storage); the **runner sandbox does NOT have `git` in Phase 2** (that's Phase 3's problem, where the bridge ships). Spawn discipline matches Phase 1: argv-array form, paranoid env, no shell interpolation. The `workspaceId` validation upstream guarantees regex-safe path components by construction. Mirror cache stays in `os.tmpdir()`; scratch trees ditto. The plugin doesn't write outside tempdir, doesn't bind a listener, doesn't hold a socket open. No escape vector we can name.
+- **Prompt injection:** The plugin sees model-output strings in exactly one place — the `reason` field on `workspace:apply`, used as the commit message via `git commit -m <reason>`. Git treats the `-m` value as opaque bytes; it's a single argv element, not a shell-interpolated string, so a `reason` of `$(rm -rf /)` is just nine bytes in a commit message. Phase 3+ subscribers viewing `WorkspaceDelta.reason` MUST treat it as untrusted text — render with escaping, log with bounded length, never feed it back into a shell or a templated string.
+- **Supply chain:** No new npm runtime deps in Phase 2. The plugin uses `@ax/core` types, Node stdlib (`child_process`, `fs/promises`, `os`, `path`, `crypto`), and the package's own internals (`mirror-cache`, `repo-lifecycle`, `retry`, `git-engine`, `workspace-id`). One genuinely new runtime dependency: **the `git` binary on the host pod's image.** Phase 1 already ships `git` on the storage tier image; Phase 2 adds it to the host image. Pin via the host pod's base image, same monthly + critical-CVE rebase cadence as Phase 1's storage tier. The CVE list in Phase 1's "Recent CVEs we care about" applies here too — neither CVE-2024-32002 nor CVE-2024-32004 is reachable via the plugin's invocation set (no untrusted-URL `clone`, no submodule recursion).
+
+### Boundary review (Phase 2 host plugin)
+
+- **Alternate impl this hook could have:** A pure-JS `isomorphic-git` host plugin (the v1 shape) is one alternate; a Gitea/GitLab-backed plugin that speaks the same `workspace:*` hooks but routes to a managed forge is another. The hook surface (`workspace:apply` / `read` / `list` / `diff` taking `WorkspaceVersion` opaque strings) doesn't bake in `git`-specific vocabulary, so a non-git impl would still satisfy the contract.
+- **Payload field names that might leak:** None on the bus. The plugin keeps `headOid` and other git-shaped vocabulary inside the package — `WorkspaceVersion` is brand-typed at the hook boundary, and subscribers can't legally do anything with it but pass it back into a follow-up call. The Phase 1 boundary review's promise ("Phase 2's plan will include a test that asserts this") is kept by the subscriber-no-leak test (`__tests__/subscriber-no-leak.test.ts`).
+- **Subscriber risk:** Phase 2's subscribers — the kernel's `workspace:*` callers in agent runtimes — never see a `headOid` or a shard ordinal. The brand type plus the test keeps it that way.
+- **Wire surface:** The plugin doesn't add any new IPC actions in Phase 2. The storage-tier wire (REST + smart-HTTP) lives in `src/server/repos.ts` + `src/server/smart-http.ts` and is unchanged.
+
 ## Security contact
 
 If we find a hole, we'd rather hear about it from you than read about it on Hacker News. Please email `vinay@canopyworks.com`.
