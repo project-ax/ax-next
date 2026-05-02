@@ -335,6 +335,48 @@ export type ConversationFetchHistoryResponse = z.infer<
 >;
 
 // ---------------------------------------------------------------------------
+// conversation.store-runner-session
+//
+// Runner → host RPC fired ONCE per session, the first time the SDK emits a
+// `system/init` message that carries a session_id. The runner forwards that
+// id so the host can persist it on the conversation row; on the next boot
+// the runner reads it back via `session.get-config` (or a sibling field) and
+// calls `query({ resume: sessionId })` instead of replaying the transcript
+// turn-by-turn. That swap is the whole point of Phase C — the SDK already
+// owns durable transcripts on disk under `~/.claude/projects/<sessionId>`,
+// and replaying our DB version on top of that is just expensive and racy.
+//
+// Authz on the host: the bus-side `conversations:store-runner-session` hook
+// runs a `ctx.userId`-scoped UPDATE only — it does NOT call `agents:resolve`
+// (Phase B's posture; see `packages/conversations/src/plugin.ts:234-238`).
+// The runner authenticates IPC via its session bearer token, the IPC server
+// resolves the token to ctx.userId, and that userId is what reaches the
+// UPDATE — same trust pivot as `conversation.fetch-history`.
+//
+// Field-name conventions (I1):
+//   - `runnerSessionId` is generic. SDKs other than Anthropic's also mint a
+//     resumable session identifier; we just hold the string and hand it
+//     back unchanged. No claude-sdk vocabulary leaks.
+// ---------------------------------------------------------------------------
+
+export const ConversationStoreRunnerSessionRequestSchema = z
+  .object({
+    conversationId: z.string().min(1).max(256),
+    runnerSessionId: z.string().min(1).max(256),
+  })
+  .strict();
+export type ConversationStoreRunnerSessionRequest = z.infer<
+  typeof ConversationStoreRunnerSessionRequestSchema
+>;
+
+export const ConversationStoreRunnerSessionResponseSchema = z
+  .object({ ok: z.literal(true) })
+  .strict();
+export type ConversationStoreRunnerSessionResponse = z.infer<
+  typeof ConversationStoreRunnerSessionResponseSchema
+>;
+
+// ---------------------------------------------------------------------------
 // session.next-message
 //
 // The request is an HTTP GET with a `?cursor=<n>` query-string parameter;

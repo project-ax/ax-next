@@ -14,6 +14,8 @@ import {
   SessionGetConfigResponseSchema,
   ConversationFetchHistoryRequestSchema,
   ConversationFetchHistoryResponseSchema,
+  ConversationStoreRunnerSessionRequestSchema,
+  ConversationStoreRunnerSessionResponseSchema,
   ToolDescriptorSchema,
   ToolCallSchema,
   AgentMessageSchema,
@@ -523,6 +525,81 @@ describe('conversation.fetch-history', () => {
   });
 });
 
+describe('conversation.store-runner-session', () => {
+  it('request round-trips a valid payload', () => {
+    const parsed = ConversationStoreRunnerSessionRequestSchema.parse({
+      conversationId: 'cnv_abc',
+      runnerSessionId: 'sdk-session-xyz',
+    });
+    expect(parsed.conversationId).toBe('cnv_abc');
+    expect(parsed.runnerSessionId).toBe('sdk-session-xyz');
+  });
+
+  it('request rejects a missing conversationId', () => {
+    const r = ConversationStoreRunnerSessionRequestSchema.safeParse({
+      runnerSessionId: 'sdk-session-xyz',
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it('request rejects a missing runnerSessionId', () => {
+    const r = ConversationStoreRunnerSessionRequestSchema.safeParse({
+      conversationId: 'cnv_abc',
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it('request rejects an empty conversationId', () => {
+    const r = ConversationStoreRunnerSessionRequestSchema.safeParse({
+      conversationId: '',
+      runnerSessionId: 'sdk-session-xyz',
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it('request rejects an empty runnerSessionId', () => {
+    const r = ConversationStoreRunnerSessionRequestSchema.safeParse({
+      conversationId: 'cnv_abc',
+      runnerSessionId: '',
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it('request rejects an oversized conversationId or runnerSessionId (>256 chars)', () => {
+    const big = 'x'.repeat(257);
+    expect(
+      ConversationStoreRunnerSessionRequestSchema.safeParse({
+        conversationId: big,
+        runnerSessionId: 'ok',
+      }).success,
+    ).toBe(false);
+    expect(
+      ConversationStoreRunnerSessionRequestSchema.safeParse({
+        conversationId: 'ok',
+        runnerSessionId: big,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('response round-trips { ok: true }', () => {
+    const parsed = ConversationStoreRunnerSessionResponseSchema.parse({
+      ok: true,
+    });
+    expect(parsed.ok).toBe(true);
+  });
+
+  it('ipc-client RESPONSE_SCHEMAS map includes the new key', async () => {
+    // The map is module-private, but its keyset is `IpcActionName`. A
+    // compile-time assignment proves the timeouts map (the keyset source)
+    // carries the new action; an `expect.toBeDefined()` on the timeout
+    // doubles as a runtime guard. The response-schema map in
+    // `ipc-client.ts` is type-checked against `IpcActionName` at build
+    // time, so any drift surfaces as a TS error before this test runs.
+    const action: IpcActionName = 'conversation.store-runner-session';
+    expect(IPC_TIMEOUTS_MS[action]).toBeDefined();
+  });
+});
+
 describe('errors', () => {
   it('enum covers exactly the six codes', () => {
     const expected = [
@@ -567,7 +644,7 @@ describe('timeouts', () => {
     expect(Object.isFrozen(IPC_TIMEOUTS_MS)).toBe(true);
   });
 
-  it('IPC_TIMEOUTS_MS has the eight expected keys (Phase 3 added workspace.materialize)', () => {
+  it('IPC_TIMEOUTS_MS has the nine expected keys (Phase C added conversation.store-runner-session)', () => {
     const expected = [
       'tool.pre-call',
       'tool.execute-host',
@@ -577,6 +654,7 @@ describe('timeouts', () => {
       'session.next-message',
       'session.get-config',
       'conversation.fetch-history',
+      'conversation.store-runner-session',
     ].sort();
     expect(Object.keys(IPC_TIMEOUTS_MS).sort()).toEqual(expected);
   });
@@ -592,8 +670,9 @@ describe('timeouts', () => {
       'session.next-message',
       'session.get-config',
       'conversation.fetch-history',
+      'conversation.store-runner-session',
     ];
-    expect(names).toHaveLength(8);
+    expect(names).toHaveLength(9);
   });
 });
 

@@ -29,6 +29,10 @@ export const IPC_TIMEOUTS_MS = Object.freeze({
   // conversation room to deserialize without us needing per-turn
   // streaming on this RPC.
   'conversation.fetch-history': 30_000,
+  // Phase C: runner stamps the SDK's session_id onto the conversation row
+  // so the next boot can resume() instead of replay. Tiny payload, single
+  // indexed UPDATE host-side. 5 s is generous — fail-fast beats retry.
+  'conversation.store-runner-session': 5_000,
 });
 
 /** The closed set of sandbox→host RPC action names. */
