@@ -352,8 +352,10 @@ export type ConversationFetchHistoryResponse = z.infer<
 // Runner → host RPC fired ONCE per session, the first time the SDK emits a
 // `system/init` message that carries a session_id. The runner forwards that
 // id so the host can persist it on the conversation row; on the next boot
-// the runner reads it back via `session.get-config` (or a sibling field) and
-// calls `query({ resume: sessionId })` instead of replaying the transcript
+// the runner reads it back from the `conversation.fetch-history` response's
+// `runnerSessionId` field (NOT from `session.get-config` — see the deviation
+// note above on `ConversationFetchHistoryResponseSchema`) and calls
+// `query({ resume: sessionId })` instead of replaying the transcript
 // turn-by-turn. That swap is the whole point of Phase C — the SDK already
 // owns durable transcripts on disk under `~/.claude/projects/<sessionId>`,
 // and replaying our DB version on top of that is just expensive and racy.
