@@ -18,6 +18,8 @@ export type {
   FileChange,
   WorkspaceApplyInput,
   WorkspaceApplyOutput,
+  WorkspaceApplyBundleInput,
+  WorkspaceApplyBundleOutput,
   WorkspaceChange,
   WorkspaceChangeKind,
   WorkspaceDelta,

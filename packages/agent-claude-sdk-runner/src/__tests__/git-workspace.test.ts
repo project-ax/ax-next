@@ -54,7 +54,9 @@ async function makeBundle(files: Record<string, string>): Promise<string> {
       await fs.writeFile(abs, content);
     }
     await git(['-C', tmp, 'add', '-A']);
-    await git(['-C', tmp, 'commit', '-m', 'baseline']);
+    // --allow-empty so empty `files` produces a bundle with one
+    // empty-tree commit (mirrors the host's always-bundle contract).
+    await git(['-C', tmp, 'commit', '--allow-empty', '-m', 'baseline']);
     const bundle = await new Promise<string>((resolve, reject) => {
       const child = spawn('git', ['-C', tmp, 'bundle', 'create', '-', 'baseline']);
       const chunks: Buffer[] = [];
@@ -81,18 +83,36 @@ afterEach(async () => {
 });
 
 describe('materializeWorkspace', () => {
-  it('initializes /permanent as an empty repo when bundleBytes is empty', async () => {
+  it('rejects an empty bundleBase64 (Phase 3 always-bundle contract)', async () => {
+    // Wire contract: workspace.materialize ALWAYS ships a non-empty
+    // bundle (one commit on refs/heads/baseline, possibly with an
+    // empty tree for brand-new workspaces). An empty bundle here
+    // means the host is broken or the wire was tampered with —
+    // bootstrap-fatal.
     const root = path.join(scratchRoot, 'permanent');
-    await materializeWorkspace({ root, bundleBase64: '' });
+    await expect(
+      materializeWorkspace({ root, bundleBase64: '' }),
+    ).rejects.toThrow(/empty bundleBase64/);
+  });
 
-    // .git exists; HEAD is unborn (no commits yet).
-    const stat = await fs.stat(path.join(root, '.git'));
-    expect(stat.isDirectory()).toBe(true);
-    // No refs yet — `git show-ref` exits non-zero with empty stdout when
-    // there are no refs. Either is fine; the assertion is "nothing
-    // committed."
-    const refs = await git(['-C', root, 'show-ref']);
-    expect(refs.stdout).toBe('');
+  it('clones from an empty-tree baseline bundle (brand-new workspace)', async () => {
+    // The host's empty-workspace materialize ships a baseline bundle
+    // with one commit whose tree is the empty tree. Runner clones it,
+    // ends up with an empty working tree but a valid baseline ref.
+    const bundleB64 = await makeBundle({});
+    const root = path.join(scratchRoot, 'permanent');
+
+    await materializeWorkspace({ root, bundleBase64: bundleB64 });
+
+    // Working tree is empty (no entries other than .git).
+    const entries = (await fs.readdir(root)).filter((e) => e !== '.git');
+    expect(entries).toEqual([]);
+
+    // baseline ref exists and == HEAD.
+    const baseline = await git(['-C', root, 'rev-parse', 'refs/heads/baseline']);
+    const head = await git(['-C', root, 'rev-parse', 'HEAD']);
+    expect(baseline.stdout.trim()).toBe(head.stdout.trim());
+    expect(baseline.stdout.trim()).toMatch(/^[0-9a-f]{40}$/);
   });
 
   it('clones from a non-empty baseline bundle and pins refs/heads/baseline to HEAD', async () => {

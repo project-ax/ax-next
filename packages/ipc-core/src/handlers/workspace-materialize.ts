@@ -1,4 +1,3 @@
-import { spawn } from 'node:child_process';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -17,6 +16,7 @@ import {
   logInternalError,
   validationError,
 } from '../errors.js';
+import { expectOk, runGitDeterministic } from '../bundler/git-spawn.js';
 import type { ActionHandler } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -24,127 +24,124 @@ import type { ActionHandler } from './types.js';
 //
 // Sandbox -> Host RPC fired ONCE at session start, before the SDK query
 // loop opens. The handler produces a `git bundle` over the workspace's
-// current state (or empty bytes for brand-new workspaces) and returns it
-// base64-encoded. The runner unpacks into `/permanent` so the agent runs
-// against a real git working tree from turn 1.
+// current state and returns it base64-encoded. The runner unpacks into
+// `/permanent` so the agent runs against a real git working tree from
+// turn 1.
 //
-// Implementation strategy: SLOW PATH (per Phase 3 plan, Open Question Q6).
-// The handler reconstructs the bundle by walking `workspace:list` and
-// `workspace:read` rather than reaching into the workspace plugin's local
-// mirror cache. That keeps Invariant I2 (no cross-plugin imports) clean —
-// the handler talks to the workspace via the bus, not the plugin's
-// internals. If profiling shows materialize is hot, a future
-// `workspace:bundle` service hook can short-circuit; for Phase 3, the
-// reconstruction is correct and the once-per-session cost is fine.
+// Implementation strategy: SLOW PATH per Phase 3 plan Q6. The handler
+// reconstructs the bundle by walking `workspace:list` + `workspace:read`
+// rather than reaching into the workspace plugin's local mirror cache.
+// That keeps Invariant I2 (no cross-plugin imports) clean. If profiling
+// shows materialize is hot, a future `workspace:bundle` service hook
+// can short-circuit; for Phase 3, the reconstruction is correct and the
+// once-per-session cost is fine.
+//
+// DETERMINISM (Phase 3 direct-apply path): the baseline commit MUST be
+// reproducible. The runner's per-turn thin bundle (`baseline..HEAD`)
+// references this commit OID as a prerequisite; the host needs to
+// rebuild the same OID at commit-notify time to load the bundle into
+// its scratch repo, AND the workspace plugin's mirror cache needs the
+// same OID at its HEAD so it can fetch the bundle directly. Three
+// requirements:
+//
+//   1. Stable input order — paths are sorted before being committed.
+//   2. Stable timestamps — GIT_AUTHOR_DATE and GIT_COMMITTER_DATE are
+//      pinned to epoch 0 UTC.
+//   3. Stable identity — author/committer are pinned to ax-runner.
+//
+// Empty workspace handling: ALWAYS produce a bundle, even when the
+// workspace is empty. We commit `--allow-empty` so the bundle has
+// exactly one commit on `refs/heads/baseline` whose tree is git's
+// well-known empty-tree OID. The runner clones this and pins
+// refs/heads/baseline; subsequent turn-end bundles (`baseline..HEAD`)
+// always have a valid prerequisite. Eliminates the empty-bundle wire
+// special case on both sides.
 //
 // Ordering: snapshot of the workspace at "now". `list` and `read` calls
-// fan out to whichever workspace plugin is registered; the host serializes
-// per-workspace writes elsewhere (Phase 2's per-workspace queue), so a
-// concurrent `apply` cannot interleave between our `list` and `read` calls
-// in a way that produces an inconsistent bundle. The bundle reflects a
-// single point-in-time snapshot.
+// fan out to whichever workspace plugin is registered; the host
+// serializes per-workspace writes elsewhere (Phase 2's per-workspace
+// queue), so a concurrent `apply` cannot interleave between our `list`
+// and `read` calls in a way that produces an inconsistent bundle.
 // ---------------------------------------------------------------------------
 
-interface SpawnResult {
-  code: number | null;
-  stdout: Buffer;
-  stderr: string;
-}
-
-// Locked-down git env for the host bundler — same shape as the storage-tier
-// caller's gitEnv() (mirror-cache.ts), with author identity layered on for
-// the synthetic baseline commit. PATH is fixed (rather than inheriting
-// process.env.PATH) because the host pod's image is the trust root for
-// binary lookup; a maliciously placed `git` in PATH would defeat the
-// whole point of bundle-author verification.
-const HOST_GIT_ENV: NodeJS.ProcessEnv = {
-  GIT_CONFIG_NOSYSTEM: '1',
-  GIT_CONFIG_GLOBAL: '/dev/null',
-  GIT_TERMINAL_PROMPT: '0',
-  HOME: '/nonexistent',
-  PATH: '/usr/local/bin:/usr/bin:/bin',
-  GIT_AUTHOR_NAME: 'ax-runner',
-  GIT_AUTHOR_EMAIL: 'ax-runner@example.com',
-  GIT_COMMITTER_NAME: 'ax-runner',
-  GIT_COMMITTER_EMAIL: 'ax-runner@example.com',
-};
-
-function runGit(
-  args: readonly string[],
-  opts: { cwd?: string; stdin?: Buffer } = {},
-): Promise<SpawnResult> {
-  return new Promise((resolve, reject) => {
-    const child = spawn('git', [...args], {
-      env: HOST_GIT_ENV,
-      cwd: opts.cwd,
-      stdio: [opts.stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
-    });
-    const out: Buffer[] = [];
-    const err: Buffer[] = [];
-    child.stdout?.on('data', (c: Buffer) => out.push(c));
-    child.stderr?.on('data', (c: Buffer) => err.push(c));
-    child.once('error', reject);
-    child.once('close', (code) => {
-      resolve({
-        code,
-        stdout: Buffer.concat(out),
-        stderr: Buffer.concat(err).toString('utf8'),
-      });
-    });
-    if (opts.stdin !== undefined) {
-      child.stdin?.end(opts.stdin);
-    }
-  });
-}
-
-async function expectOk(result: SpawnResult, label: string): Promise<void> {
-  if (result.code !== 0) {
-    throw new Error(`${label} failed (exit=${result.code}): ${result.stderr}`);
-  }
-}
-
 /**
- * Build a single-commit `baseline` bundle from a snapshot of the workspace.
- * Returns base64 bytes, or `''` for an empty workspace.
+ * Build a single-commit `baseline` bundle from a snapshot of the
+ * workspace. Returns base64 bytes — never empty (an empty workspace
+ * still produces a one-commit bundle with the empty tree).
  *
- * Pure helper, easy to test in isolation: pass it a list of paths + a read
- * function and it reconstructs the bundle.
+ * Deterministic: same `(paths, read)` inputs produce the same bundle
+ * bytes byte-for-byte. The commit OID is reproducible. Load-bearing for
+ * the direct-apply path (Slice 6's commit-notify handler reuses this
+ * helper to rebuild the baseline commit at apply time).
+ *
+ * Pure helper, easy to test in isolation: pass it a list of paths + a
+ * read function and it reconstructs the bundle.
  */
 export async function buildBaselineBundle(input: {
   paths: readonly string[];
   read: (path: string) => Promise<Buffer | null>;
 }): Promise<string> {
-  // Drop paths that read returns null for (e.g., listed but deleted between
-  // list and read — race-tolerant). If everything's gone, return empty.
+  // Sort paths so the input order doesn't perturb the commit OID.
+  const sortedPaths = [...input.paths].sort();
+  // Drop paths that read returns null for (e.g., listed but deleted
+  // between list and read — race-tolerant). The remaining set defines
+  // the baseline tree; an empty set is fine — we commit --allow-empty.
   const entries: Array<{ path: string; bytes: Buffer }> = [];
-  for (const p of input.paths) {
+  for (const p of sortedPaths) {
     const bytes = await input.read(p);
     if (bytes === null) continue;
     entries.push({ path: p, bytes });
   }
-  if (entries.length === 0) return '';
 
   const tmp = await mkdtemp(join(tmpdir(), 'ax-mat-'));
   try {
-    // Build a real working tree, commit, then bundle.
-    // (Index-only construction with `git mktree` is faster but harder to
-    // get right when paths contain nested directories; the working-tree
-    // path is correctness-by-construction.)
-    await expectOk(await runGit(['init', '-b', 'baseline', tmp]), 'git init');
+    // Build a real working tree, commit, then bundle. Index-only
+    // construction with `git mktree` is faster but harder to get right
+    // when paths contain nested directories; the working-tree path is
+    // correctness-by-construction.
+    //
+    // `core.fileMode=false`: makes git ignore the filesystem's
+    // executable-bit perception. Every file lands as 100644 in the tree
+    // regardless of host umask or filesystem quirks (e.g., NTFS).
+    // Required for OID determinism across host environments.
+    await expectOk(
+      await runGitDeterministic(['init', '-b', 'baseline', tmp]),
+      'git init',
+    );
+    await expectOk(
+      await runGitDeterministic(
+        ['config', 'core.fileMode', 'false'],
+        { cwd: tmp },
+      ),
+      'git config core.fileMode',
+    );
     for (const { path, bytes } of entries) {
       const abs = join(tmp, path);
       const dir = abs.slice(0, abs.lastIndexOf('/'));
       if (dir.length > 0 && dir !== tmp) {
         await mkdir(dir, { recursive: true });
       }
-      await writeFile(abs, bytes);
+      // mode 0o644: explicit so file creation is deterministic across
+      // host umasks. Combined with core.fileMode=false above, the tree
+      // OID doesn't depend on the host environment.
+      await writeFile(abs, bytes, { mode: 0o644 });
     }
-    await expectOk(await runGit(['add', '-A'], { cwd: tmp }), 'git add');
     await expectOk(
-      await runGit(['commit', '-m', 'baseline'], { cwd: tmp }),
+      await runGitDeterministic(['add', '-A'], { cwd: tmp }),
+      'git add',
+    );
+    // --allow-empty: the workspace may have nothing in it (brand-new
+    // session). We still want a baseline commit so the runner has a
+    // valid `refs/heads/baseline` to bundle from. The empty case
+    // commits with git's well-known empty-tree (4b825dc6...).
+    await expectOk(
+      await runGitDeterministic(
+        ['commit', '--allow-empty', '-m', 'baseline'],
+        { cwd: tmp },
+      ),
       'git commit',
     );
-    const bundle = await runGit(
+    const bundle = await runGitDeterministic(
       ['bundle', 'create', '-', 'baseline'],
       { cwd: tmp },
     );
@@ -165,8 +162,9 @@ export const workspaceMaterializeHandler: ActionHandler = async (
     return validationError(`workspace.materialize: ${parsed.error.message}`);
   }
 
-  // List the workspace at HEAD. Empty list => brand-new workspace; return
-  // the empty bundle and let the runner do `git init`.
+  // List the workspace at HEAD. Empty list is fine — we still produce
+  // a bundle with an empty-tree baseline commit so the runner can
+  // bundle subsequent turns from a valid `baseline` ref.
   const listed = await bus.call<WorkspaceListInput, WorkspaceListOutput>(
     'workspace:list',
     ctx,
