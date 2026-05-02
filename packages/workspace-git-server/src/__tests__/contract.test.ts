@@ -46,6 +46,7 @@ import { createWorkspaceGitServerPlugin } from '../client/plugin.js';
 let scenarioCount = 0;
 const bootedServers: WorkspaceGitServer[] = [];
 const cacheRoots: string[] = [];
+const repoRoots: string[] = [];
 
 afterAll(async () => {
   await Promise.allSettled(bootedServers.map((s) => s.close()));
@@ -53,13 +54,18 @@ afterAll(async () => {
   // Best-effort cleanup of cache tempdirs from the production run. Plugin
   // shutdown already removes them, but if a scenario crashes before
   // teardown they'd linger.
+  const { rm } = await import('node:fs/promises');
   await Promise.allSettled(
-    cacheRoots.map(async (r) => {
-      const { rm } = await import('node:fs/promises');
-      await rm(r, { recursive: true, force: true });
-    }),
+    cacheRoots.map((r) => rm(r, { recursive: true, force: true })),
   );
   cacheRoots.length = 0;
+  // Server-side bare-repo roots — same crash-leak risk as the cache roots
+  // above. The server's own `close()` doesn't unlink its repo directory, so
+  // these tempdirs would otherwise pile up under /tmp across runs.
+  await Promise.allSettled(
+    repoRoots.map((r) => rm(r, { recursive: true, force: true })),
+  );
+  repoRoots.length = 0;
 });
 
 // ---------------------------------------------------------------------------
@@ -69,8 +75,10 @@ afterAll(async () => {
 runWorkspaceContract('@ax/workspace-git-server (test-only)', () =>
   createTestOnlyGitServerPlugin({
     boot: async () => {
+      const repoRoot = mkdtempSync(join(tmpdir(), 'ax-ws-server-contract-'));
+      repoRoots.push(repoRoot);
       const server = await createWorkspaceGitServer({
-        repoRoot: mkdtempSync(join(tmpdir(), 'ax-ws-server-contract-')),
+        repoRoot,
         host: '127.0.0.1',
         port: 0,
         token: 'secret',
@@ -97,6 +105,7 @@ runWorkspaceContract('@ax/workspace-git-server (test-only)', () =>
 // the same server, so version histories don't bleed.
 
 const sharedRepoRoot = mkdtempSync(join(tmpdir(), 'ax-ws-server-prod-contract-'));
+repoRoots.push(sharedRepoRoot);
 const sharedServer = await createWorkspaceGitServer({
   repoRoot: sharedRepoRoot,
   host: '127.0.0.1',
