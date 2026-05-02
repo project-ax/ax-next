@@ -281,3 +281,17 @@ describe('mirror-cache — re-acquire after eviction', () => {
     }
   });
 });
+
+// --------------------------------------------------------------------------
+// 8. acquire() after shutdown() rejects with a clear message.
+// --------------------------------------------------------------------------
+
+describe('mirror-cache — acquire after shutdown rejects', () => {
+  it('rejects with an Error whose message mentions shutdown', async () => {
+    const cache = createMirrorCache({ cacheRoot });
+    await cache.shutdown();
+    await expect(cache.acquire('ws-aaaaaaaaaaaaaaaa')).rejects.toThrow(
+      /shutdown/i,
+    );
+  });
+});
