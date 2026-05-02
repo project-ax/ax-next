@@ -78,4 +78,17 @@ spec:
         - port: {{ .Values.gitServer.port }}
           protocol: TCP
     {{- end }}
+    {{- if and (eq .Values.workspace.backend "git-protocol") .Values.gitServer.enabled .Values.gitServer.experimental.gitProtocol }}
+    # Experimental sharded git-server StatefulSet (workspace.backend ==
+    # git-protocol). Pinned by the experimental component label — the
+    # legacy rule above won't match these pods. Without this rule the
+    # host's @ax/workspace-git-server traffic is denied at the CNI layer.
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "ax-next.selectorLabels" (dict "component" "git-server-experimental" "context" $) | nindent 14 }}
+      ports:
+        - port: {{ .Values.gitServer.port }}
+          protocol: TCP
+    {{- end }}
 {{- end }}

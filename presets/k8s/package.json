@@ -25,6 +25,7 @@
     "@ax/session-postgres": "workspace:*",
     "@ax/workspace-git": "workspace:*",
     "@ax/workspace-git-http": "workspace:*",
+    "@ax/workspace-git-server": "workspace:*",
     "@ax/sandbox-k8s": "workspace:*",
     "@ax/agent-claude-sdk-runner": "workspace:*",
     "@ax/chat-orchestrator": "workspace:*",

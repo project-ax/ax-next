@@ -1219,6 +1219,9 @@ importers:
       '@ax/workspace-git-http':
         specifier: workspace:*
         version: link:../../packages/workspace-git-http
+      '@ax/workspace-git-server':
+        specifier: workspace:*
+        version: link:../../packages/workspace-git-server
     devDependencies:
       '@ax/ipc-server':
         specifier: workspace:*

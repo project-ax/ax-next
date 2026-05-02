@@ -6,6 +6,7 @@ import { createEventbusPostgresPlugin } from '@ax/eventbus-postgres';
 import { createSessionPostgresPlugin } from '@ax/session-postgres';
 import { createWorkspaceGitPlugin } from '@ax/workspace-git';
 import { createWorkspaceGitHttpPlugin } from '@ax/workspace-git-http';
+import { createWorkspaceGitServerPlugin } from '@ax/workspace-git-server';
 import { createSandboxK8sPlugin } from '@ax/sandbox-k8s';
 import { createChatOrchestratorPlugin } from '@ax/chat-orchestrator';
 import { auditLogPlugin } from '@ax/audit-log';
@@ -104,11 +105,14 @@ function parseCookieKeyString(raw: string): Buffer {
 /**
  * Discriminated union for the workspace backend. `local` keeps the
  * single-replica on-PVC bare repo path; `http` forwards every workspace op to
- * the shared git-server pod so multiple host replicas can share state.
+ * the shared git-server pod so multiple host replicas can share state;
+ * `git-protocol` talks to the new sharded git-server storage tier (Phase 1
+ * of the workspace redesign) via @ax/workspace-git-server.
  */
 export type K8sWorkspaceConfig =
   | { backend: 'local'; repoRoot: string }
-  | { backend: 'http'; baseUrl: string; token: string };
+  | { backend: 'http'; baseUrl: string; token: string }
+  | { backend: 'git-protocol'; baseUrl: string; token: string };
 
 export interface K8sPresetConfig {
   /**
@@ -137,7 +141,7 @@ export interface K8sPresetConfig {
     poolMax?: number;
   };
   /**
-   * Workspace backend selection. Two flavors:
+   * Workspace backend selection. Three flavors:
    *
    *   - `local`: `@ax/workspace-git` writes a bare repo on the host pod's PVC.
    *     Single-replica deploys only — two hosts mounting the same RWO PVC
@@ -149,9 +153,17 @@ export interface K8sPresetConfig {
    *     points at the git-server's cluster Service; `token` is the shared
    *     bearer token (via Helm-managed Secret).
    *
-   * The Helm chart drives this via `workspace.backend: local|http` and the
-   * env vars `AX_WORKSPACE_BACKEND` / `AX_WORKSPACE_ROOT` /
-   * `AX_WORKSPACE_GIT_HTTP_URL` / `AX_WORKSPACE_GIT_HTTP_TOKEN`. The host
+   *   - `git-protocol`: `@ax/workspace-git-server` talks to the new sharded
+   *     git-server tier (Phase 1 of the workspace redesign). Multi-replica
+   *     capable; sharding currently deferred but the storage tier is a
+   *     StatefulSet so future scale-out doesn't change the plugin shape.
+   *     Gated behind the chart's `gitServer.experimental.gitProtocol=true`
+   *     toggle. `baseUrl` + `token` mirror the http backend's shape.
+   *
+   * The Helm chart drives this via `workspace.backend: local|http|git-protocol`
+   * and the env vars `AX_WORKSPACE_BACKEND` / `AX_WORKSPACE_ROOT` /
+   * `AX_WORKSPACE_GIT_HTTP_URL` / `AX_WORKSPACE_GIT_HTTP_TOKEN` /
+   * `AX_WORKSPACE_GIT_SERVER_URL` / `AX_WORKSPACE_GIT_SERVER_TOKEN`. The host
    * entrypoint reads those and constructs this config.
    */
   workspace: K8sWorkspaceConfig;
@@ -367,10 +379,18 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
 
   // ----- 3. workspace ----------------------------------------------------
   // Discriminated on `backend`. The shape difference is intentional: `local`
-  // wants a filesystem path, `http` wants a URL + bearer token. Both register
-  // the same four `workspace:*` service hooks (Invariant I1 — the contract is
-  // the same regardless of backend).
-  if (config.workspace.backend === 'http') {
+  // wants a filesystem path; `http` and `git-protocol` both want a URL +
+  // bearer token but route to different storage tiers. All three register
+  // the same four `workspace:*` service hooks (Invariant I1 — the contract
+  // is the same regardless of backend).
+  if (config.workspace.backend === 'git-protocol') {
+    plugins.push(
+      createWorkspaceGitServerPlugin({
+        baseUrl: config.workspace.baseUrl,
+        token: config.workspace.token,
+      }),
+    );
+  } else if (config.workspace.backend === 'http') {
     plugins.push(
       createWorkspaceGitHttpPlugin({
         baseUrl: config.workspace.baseUrl,
@@ -546,14 +566,18 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
 // reads them via this helper to build the discriminated `workspace` config
 // before calling `createK8sPlugins`.
 //
-//   AX_WORKSPACE_BACKEND        local | http   (default: local)
-//   AX_WORKSPACE_ROOT           required when backend === 'local'
-//   AX_WORKSPACE_GIT_HTTP_URL   required when backend === 'http'
-//   AX_WORKSPACE_GIT_HTTP_TOKEN required when backend === 'http'
+//   AX_WORKSPACE_BACKEND          local | http | git-protocol  (default: local)
+//   AX_WORKSPACE_ROOT             required when backend === 'local'
+//   AX_WORKSPACE_GIT_HTTP_URL     required when backend === 'http'
+//   AX_WORKSPACE_GIT_HTTP_TOKEN   required when backend === 'http'
+//   AX_WORKSPACE_GIT_SERVER_URL   required when backend === 'git-protocol'
+//   AX_WORKSPACE_GIT_SERVER_TOKEN required when backend === 'git-protocol'
 //
 // We throw loudly on missing/unknown values rather than silently defaulting
 // — a misconfigured workspace backend is a deploy-time bug, not a runtime
-// surprise we want to paper over.
+// surprise we want to paper over. Error messages never echo the token (an
+// errant log line carrying the bearer token through the kernel's logger is
+// the supply-chain failure we're trying NOT to ship).
 // ---------------------------------------------------------------------------
 
 /**
@@ -561,7 +585,8 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
  *
  * Defaults to `local` when `AX_WORKSPACE_BACKEND` is unset (matches the
  * chart's default). Throws when the chosen backend's required vars are
- * missing or when the backend value is unknown.
+ * missing or when the backend value is unknown. Thrown messages never
+ * contain the bearer token literal.
  *
  * @param env - the env map to read from. Defaults to `process.env`. Pass an
  *   explicit object to keep tests deterministic (don't rely on the real
@@ -603,8 +628,24 @@ export function workspaceConfigFromEnv(
     return { backend: 'http', baseUrl, token };
   }
 
+  if (backend === 'git-protocol') {
+    const baseUrl = env.AX_WORKSPACE_GIT_SERVER_URL;
+    const token = env.AX_WORKSPACE_GIT_SERVER_TOKEN;
+    if (baseUrl === undefined || baseUrl === '') {
+      throw new Error(
+        'AX_WORKSPACE_BACKEND=git-protocol requires AX_WORKSPACE_GIT_SERVER_URL to be set',
+      );
+    }
+    if (token === undefined || token === '') {
+      throw new Error(
+        'AX_WORKSPACE_BACKEND=git-protocol requires AX_WORKSPACE_GIT_SERVER_TOKEN to be set',
+      );
+    }
+    return { backend: 'git-protocol', baseUrl, token };
+  }
+
   throw new Error(
-    `unknown AX_WORKSPACE_BACKEND=${backend}; expected 'local' or 'http'`,
+    `unknown AX_WORKSPACE_BACKEND=${backend}; expected 'local', 'http', or 'git-protocol'`,
   );
 }
 
@@ -616,7 +657,11 @@ export function workspaceConfigFromEnv(
 // Required env (per the chart):
 //   - DATABASE_URL                — postgres DSN (database/eventbus/session)
 //   - AX_K8S_HOST_IPC_URL          — cluster URL runners use to reach @ax/ipc-http
-//   - AX_WORKSPACE_BACKEND + the per-backend vars (delegated to workspaceConfigFromEnv)
+//   - AX_WORKSPACE_BACKEND        — local | http | git-protocol (default: local)
+//       and the per-backend vars (delegated to workspaceConfigFromEnv):
+//         - local:        AX_WORKSPACE_ROOT
+//         - http:         AX_WORKSPACE_GIT_HTTP_URL / AX_WORKSPACE_GIT_HTTP_TOKEN
+//         - git-protocol: AX_WORKSPACE_GIT_SERVER_URL / AX_WORKSPACE_GIT_SERVER_TOKEN
 //   - AX_HTTP_HOST / AX_HTTP_PORT  — public-facing http listener
 //   - AX_HTTP_COOKIE_KEY           — 32-byte signing key (hex / base64)
 //   - AX_HTTP_ALLOWED_ORIGINS      — CSRF allow-list (comma-separated)

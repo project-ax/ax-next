@@ -159,3 +159,38 @@ suffix is always preserved.
 {{- $base := include "ax-next.fullname" . | trunc 39 | trimSuffix "-" -}}
 {{- printf "%s-git-server-experimental" $base | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
+
+{{/*
+Cluster-internal URL the host plugin uses to reach the EXPERIMENTAL git-server
+tier. Mirrors `ax-next.gitServerServiceUrl` for the legacy tier; routes traffic
+to the regular ClusterIP Service in front of the new StatefulSet (NOT the
+headless one — at N=1 they land on the same pod, but the ClusterIP form is
+the simpler, future-proof shape for the host plugin's URL config).
+
+The host deployment stamps this onto AX_WORKSPACE_GIT_SERVER_URL when
+workspace.backend == "git-protocol".
+*/}}
+{{- define "ax-next.gitServerExperimentalServiceUrl" -}}
+{{- printf "http://%s.%s.svc.cluster.local:%d" (include "ax-next.gitServerExperimentalComponentName" .) (include "ax-next.hostNamespace" .) (int .Values.gitServer.service.port) -}}
+{{- end -}}
+
+{{/*
+Validate workspace.backend=git-protocol prerequisites. Fails fast at template
+time if the operator picked the new backend without enabling the experimental
+git-server tier — otherwise the host pod boots with AX_WORKSPACE_GIT_SERVER_URL
+pointing at a Service that doesn't render, and we'd discover the misconfiguration
+at first workspace op instead of at install. Belt-and-suspenders for the values
+schema, since helm has no native enum-with-prereqs validator.
+
+Invoked from `host/deployment.yaml`, which always renders.
+*/}}
+{{- define "ax-next.validateWorkspaceBackend" -}}
+{{- if eq .Values.workspace.backend "git-protocol" -}}
+{{- if not .Values.gitServer.enabled -}}
+{{- fail "workspace.backend=git-protocol requires gitServer.enabled=true" -}}
+{{- end -}}
+{{- if not .Values.gitServer.experimental.gitProtocol -}}
+{{- fail "workspace.backend=git-protocol requires gitServer.experimental.gitProtocol=true" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}

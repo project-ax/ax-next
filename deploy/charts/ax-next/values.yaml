@@ -79,8 +79,17 @@ host:
 # over HTTP to the dedicated git-server pod, which is the unique writer.
 # Multi-replica capable. When `http`, set gitServer.enabled=true (and the
 # local PVC fields below stop mattering — they're not mounted).
+# `git-protocol`: the new sharded git-server tier (Phase 1 of the workspace
+# redesign — Phase 2 closes the host-side wiring). The host's
+# `@ax/workspace-git-server` plugin speaks smart-HTTP + REST to the
+# experimental StatefulSet via its ClusterIP Service. Multi-replica capable;
+# sharding is currently deferred (replicas: 1) but the storage tier is a
+# StatefulSet so future scale-out doesn't change the chart shape. When
+# `git-protocol`, the operator MUST also set `gitServer.enabled=true` AND
+# `gitServer.experimental.gitProtocol=true` — the chart fails fast at
+# template time if either is missing.
 workspace:
-  backend: local         # local | http
+  backend: local         # local | http | git-protocol
   storage: 10Gi
   storageClassName: ""   # empty → cluster default
   accessMode: ReadWriteOnce
@@ -98,6 +107,12 @@ gitServer:
     # When true AND gitServer.enabled=true, the chart renders a StatefulSet
     # + headless Service + per-shard PVCs in addition to the legacy
     # Deployment + ClusterIP. Production canary path; default OFF.
+    #
+    # Flipping this on alone (without `workspace.backend: git-protocol`)
+    # provisions the new StatefulSet + Service tier but does NOT route host
+    # traffic to it — the host pod keeps using the legacy backend. That's
+    # the canary-preflight posture: stand the new tier up, watch it idle,
+    # then flip `workspace.backend` to `git-protocol` to cut traffic over.
     gitProtocol: false
   # Number of storage-tier shards. Each shard is its own StatefulSet ordinal
   # with its own PVC. Pick at install time; changing it later requires

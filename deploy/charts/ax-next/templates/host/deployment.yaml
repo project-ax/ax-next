@@ -1,3 +1,4 @@
+{{- include "ax-next.validateWorkspaceBackend" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -84,6 +85,19 @@ spec:
             - name: AX_WORKSPACE_GIT_HTTP_URL
               value: {{ include "ax-next.gitServerServiceUrl" . | quote }}
             - name: AX_WORKSPACE_GIT_HTTP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ax-next.gitServerAuthSecretName" . }}
+                  key: token
+            {{- else if eq .Values.workspace.backend "git-protocol" }}
+            # Phase 2 of workspace redesign: host's `@ax/workspace-git-server`
+            # plugin talks smart-HTTP + REST to the experimental StatefulSet
+            # via its ClusterIP Service. Bearer token is shared with the
+            # legacy tier (same Secret) so a canary cutover doesn't require
+            # rotating credentials.
+            - name: AX_WORKSPACE_GIT_SERVER_URL
+              value: {{ include "ax-next.gitServerExperimentalServiceUrl" . | quote }}
+            - name: AX_WORKSPACE_GIT_SERVER_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ include "ax-next.gitServerAuthSecretName" . }}

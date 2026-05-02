@@ -287,6 +287,102 @@ describe('workspaceConfigFromEnv', () => {
     ).toThrowError(/AX_WORKSPACE_GIT_HTTP_URL/);
   });
 
+  // -------------------------------------------------------------------------
+  // git-protocol backend (Phase 2 of the workspace redesign). Talks to the
+  // sharded git-server storage tier via @ax/workspace-git-server. Same shape
+  // as the http backend (URL + bearer token), different env-var names so an
+  // operator can distinguish at a glance which tier they're pointing at.
+  // -------------------------------------------------------------------------
+
+  it('reads git-protocol config from AX_WORKSPACE_GIT_SERVER_{URL,TOKEN}', () => {
+    expect(
+      workspaceConfigFromEnv({
+        AX_WORKSPACE_BACKEND: 'git-protocol',
+        AX_WORKSPACE_GIT_SERVER_URL: 'http://example',
+        AX_WORKSPACE_GIT_SERVER_TOKEN: 'secret-token',
+      }),
+    ).toEqual({
+      backend: 'git-protocol',
+      baseUrl: 'http://example',
+      token: 'secret-token',
+    });
+  });
+
+  it('throws when git-protocol backend is missing AX_WORKSPACE_GIT_SERVER_URL', () => {
+    const token = 'secret-token-do-not-leak';
+    let caught: unknown;
+    try {
+      workspaceConfigFromEnv({
+        AX_WORKSPACE_BACKEND: 'git-protocol',
+        AX_WORKSPACE_GIT_SERVER_TOKEN: token,
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toMatch(/AX_WORKSPACE_GIT_SERVER_URL/);
+    // Token leak check: the thrown error must NOT contain the token literal.
+    expect((caught as Error).message).not.toContain(token);
+  });
+
+  it('throws when git-protocol backend is missing AX_WORKSPACE_GIT_SERVER_TOKEN', () => {
+    const token = 'secret-token-do-not-leak';
+    let caught: unknown;
+    try {
+      workspaceConfigFromEnv({
+        AX_WORKSPACE_BACKEND: 'git-protocol',
+        AX_WORKSPACE_GIT_SERVER_URL: 'http://example',
+        // intentionally NOT setting the TOKEN; the failure happens before any
+        // token would be in scope, but we keep the literal handy for the
+        // sanity assertion below.
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toMatch(/AX_WORKSPACE_GIT_SERVER_TOKEN/);
+    expect((caught as Error).message).not.toContain(token);
+  });
+
+  it('treats empty AX_WORKSPACE_GIT_SERVER_URL as missing (not as valid)', () => {
+    expect(() =>
+      workspaceConfigFromEnv({
+        AX_WORKSPACE_BACKEND: 'git-protocol',
+        AX_WORKSPACE_GIT_SERVER_URL: '',
+        AX_WORKSPACE_GIT_SERVER_TOKEN: 'shh',
+      }),
+    ).toThrowError(/AX_WORKSPACE_GIT_SERVER_URL/);
+  });
+
+  it('treats empty AX_WORKSPACE_GIT_SERVER_TOKEN as missing (not as valid)', () => {
+    const token = '';
+    expect(() =>
+      workspaceConfigFromEnv({
+        AX_WORKSPACE_BACKEND: 'git-protocol',
+        AX_WORKSPACE_GIT_SERVER_URL: 'http://example',
+        AX_WORKSPACE_GIT_SERVER_TOKEN: token,
+      }),
+    ).toThrowError(/AX_WORKSPACE_GIT_SERVER_TOKEN/);
+  });
+
+  it('does not leak the token in any thrown error message', () => {
+    // Belt-and-suspenders: even when both vars are set but the URL is
+    // empty, the token literal must never appear in the error message.
+    const token = 'super-secret-token-12345';
+    let caught: unknown;
+    try {
+      workspaceConfigFromEnv({
+        AX_WORKSPACE_BACKEND: 'git-protocol',
+        AX_WORKSPACE_GIT_SERVER_URL: '',
+        AX_WORKSPACE_GIT_SERVER_TOKEN: token,
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).not.toContain(token);
+  });
+
   it('throws on unknown backend value', () => {
     expect(() =>
       workspaceConfigFromEnv({ AX_WORKSPACE_BACKEND: 'sftp' }),
