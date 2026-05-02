@@ -41,8 +41,9 @@ describe('@ax/conversations plugin manifest', () => {
         'workspace:list',
         'workspace:read',
       ],
-      // chat:turn-end subscriber wires in Task 3 (auto-append).
-      // session:terminate subscriber wires in Task 14 (clear bound rows).
+      // chat:turn-end subscriber bumps last_activity_at only (Phase D
+      // dropped the conversation_turns auto-append).
+      // session:terminate subscriber clears bound rows (Task 14).
       subscribes: ['chat:turn-end', 'session:terminate'],
     });
   });
