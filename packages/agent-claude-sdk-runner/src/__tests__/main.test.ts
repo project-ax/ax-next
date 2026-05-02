@@ -80,6 +80,20 @@ vi.mock('../inbox-loop.js', async (importOriginal) => {
   };
 });
 
+// Phase 3: the runner now materializes /permanent at session start by
+// spawning `git`. Mocking it out here keeps these unit tests fast and
+// hermetic — the real implementation is exercised in
+// `git-workspace.test.ts` against a real tempdir + git binary. Tests
+// that care whether materialize was called can spy on materializeMock.
+const materializeMock = vi.fn().mockResolvedValue(undefined);
+vi.mock('../git-workspace.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../git-workspace.js')>();
+  return {
+    ...actual,
+    materializeWorkspace: materializeMock,
+  };
+});
+
 const COMPLETE_ENV = {
   AX_RUNNER_ENDPOINT: 'unix:///tmp/ax.sock',
   AX_SESSION_ID: 'sess-1',
@@ -234,6 +248,8 @@ const cancelEntry: InboxLoopEntry = { type: 'cancel' };
 
 beforeEach(() => {
   queryMock.mockReset();
+  materializeMock.mockReset();
+  materializeMock.mockResolvedValue(undefined);
   createIpcClientMock = vi.fn();
   createInboxLoopMock = vi.fn();
 });
@@ -260,6 +276,7 @@ describe('main()', () => {
           conversationId: null,
         };
       }
+      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
       if (action === 'workspace.commit-notify') {
         return { accepted: true, version: 'v1', delta: null };
@@ -294,10 +311,25 @@ describe('main()', () => {
 
     expect(rc).toBe(0);
 
-    // Two calls at boot: session.get-config + tool.list (Week 9.5).
-    expect(fakeClient.call).toHaveBeenCalledTimes(2);
+    // Three calls at boot: session.get-config + workspace.materialize +
+    // tool.list. Materialize is Phase 3; the runner clones (or inits)
+    // /permanent before the SDK query opens.
+    expect(fakeClient.call).toHaveBeenCalledTimes(3);
     expect(fakeClient.call).toHaveBeenCalledWith('session.get-config', {});
+    expect(fakeClient.call).toHaveBeenCalledWith('workspace.materialize', {});
     expect(fakeClient.call).toHaveBeenCalledWith('tool.list', {});
+    // Materialize must be called BEFORE tool.list so the workspace exists
+    // by the time the SDK query opens.
+    const callOrder = fakeClient.call.mock.calls.map((c) => c[0]);
+    expect(callOrder.indexOf('workspace.materialize')).toBeLessThan(
+      callOrder.indexOf('tool.list'),
+    );
+    // Materialize was actually invoked on the workspace root.
+    expect(materializeMock).toHaveBeenCalledTimes(1);
+    expect(materializeMock).toHaveBeenCalledWith({
+      root: '/tmp/workspace',
+      bundleBase64: '',
+    });
     // Empty turns (no file changes accumulated) skip commit-notify; the
     // event.turn-end below is the heartbeat the host keys off (Task 7c).
     const commitNotifies = fakeClient.call.mock.calls.filter(
@@ -390,6 +422,104 @@ describe('main()', () => {
     }
   });
 
+  it('bootstrap failure: workspace.materialize IPC error → exit 2, no query, materialize stderr', async () => {
+    // Phase 3: materialize failure is bootstrap-fatal. The runner cannot
+    // operate against an undefined workspace state — better to exit loud
+    // than to desync silently from the host's view of the lineage.
+    setEnv(COMPLETE_ENV);
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          conversationId: null,
+        };
+      }
+      if (action === 'workspace.materialize') {
+        throw new Error('host bundler exploded');
+      }
+      throw new Error(`unexpected call: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([]);
+
+    const stderrSpy = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation(() => true);
+
+    try {
+      const { main } = await import('../main.js');
+      const rc = await main();
+      expect(rc).toBe(2);
+
+      const stderrMessages = stderrSpy.mock.calls
+        .map((c) => String(c[0]))
+        .join('');
+      expect(stderrMessages).toContain('workspace.materialize failed');
+      expect(stderrMessages).toContain('host bundler exploded');
+
+      expect(queryMock).not.toHaveBeenCalled();
+      expect(fakeClient.close).toHaveBeenCalledTimes(1);
+    } finally {
+      stderrSpy.mockRestore();
+    }
+  });
+
+  it('bootstrap failure: materializeWorkspace throws → exit 2, no query', async () => {
+    // Distinct from the IPC-error case: the IPC succeeds (bundle bytes
+    // returned), but the runner-side `git clone` blows up. Same fatal
+    // semantics — we can't proceed against a broken /permanent.
+    setEnv(COMPLETE_ENV);
+    materializeMock.mockRejectedValueOnce(new Error('git clone failed: bad bundle'));
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          conversationId: null,
+        };
+      }
+      if (action === 'workspace.materialize') {
+        return { bundleBytes: 'malformed' };
+      }
+      throw new Error(`unexpected call: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([]);
+
+    const stderrSpy = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation(() => true);
+
+    try {
+      const { main } = await import('../main.js');
+      const rc = await main();
+      expect(rc).toBe(2);
+
+      const stderrMessages = stderrSpy.mock.calls
+        .map((c) => String(c[0]))
+        .join('');
+      expect(stderrMessages).toContain('workspace.materialize failed');
+      expect(stderrMessages).toContain('git clone failed: bad bundle');
+
+      expect(queryMock).not.toHaveBeenCalled();
+    } finally {
+      stderrSpy.mockRestore();
+    }
+  });
+
   it('multi-block assistant turn: text + thinking + tool_use all flow into event.turn-end contentBlocks in order', async () => {
     setEnv(COMPLETE_ENV);
     fakeClient = buildFakeClient();
@@ -407,6 +537,7 @@ describe('main()', () => {
           conversationId: null,
         };
       }
+      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
       throw new Error(`unexpected call: ${action}`);
     });
@@ -482,6 +613,7 @@ describe('main()', () => {
           conversationId: null,
         };
       }
+      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
       throw new Error(`unexpected call: ${action}`);
     });
@@ -570,6 +702,7 @@ describe('main()', () => {
           conversationId: null,
         };
       }
+      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
       throw new Error(`unexpected call: ${action}`);
     });
@@ -673,6 +806,7 @@ describe('main()', () => {
           conversationId: null,
         };
       }
+      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
       throw new Error(`unexpected call: ${action}`);
     });
@@ -727,6 +861,7 @@ describe('main()', () => {
           conversationId: null,
         };
       }
+      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
       throw new Error(`unexpected call: ${action}`);
     });
@@ -835,6 +970,7 @@ describe('main()', () => {
           conversationId: null,
         };
       }
+      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
       throw new Error(`unexpected call: ${action}`);
     });
@@ -881,6 +1017,7 @@ describe('main()', () => {
           conversationId: null,
         };
       }
+      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
       throw new Error(`unexpected call: ${action}`);
     });
@@ -949,6 +1086,7 @@ describe('main()', () => {
           conversationId: 'cnv_resume',
         };
       }
+      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
       if (action === 'conversation.fetch-history') {
         // Pin the request shape: conversationId from session.get-config.
@@ -1064,6 +1202,7 @@ describe('main()', () => {
           conversationId: null,
         };
       }
+      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
       if (action === 'conversation.fetch-history') {
         throw new Error('runner must NOT fetch history when conversationId is null');
@@ -1111,6 +1250,7 @@ describe('main()', () => {
           conversationId: 'cnv_resume',
         };
       }
+      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
       if (action === 'conversation.fetch-history') {
         throw new Error('storage hiccup');

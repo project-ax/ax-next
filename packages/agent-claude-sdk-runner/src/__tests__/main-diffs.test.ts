@@ -85,6 +85,18 @@ vi.mock('../inbox-loop.js', async (importOriginal) => {
   };
 });
 
+// Phase 3: stub the runner's session-start materialize. This file pre-dates
+// the materialize step; its tests care about the per-turn diff path, not
+// boot-time git init/clone. Real materialize is exercised in
+// `git-workspace.test.ts`.
+vi.mock('../git-workspace.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../git-workspace.js')>();
+  return {
+    ...actual,
+    materializeWorkspace: vi.fn().mockResolvedValue(undefined),
+  };
+});
+
 let workspaceRoot: string;
 const ORIGINAL_ENV = process.env;
 
@@ -204,6 +216,7 @@ describe('claude-sdk runner — per-turn workspace diff (Task 7c)', () => {
           },
         };
       }
+      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
       if (action === 'workspace.commit-notify') {
         return { accepted: true, version: 'v1', delta: null };
@@ -364,6 +377,7 @@ describe('claude-sdk runner — per-turn workspace diff (Task 7c)', () => {
           },
         };
       }
+      if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
       if (action === 'workspace.commit-notify') {
         return { accepted: true, version: `v${nextVersion++}`, delta: null };

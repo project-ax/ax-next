@@ -19,10 +19,12 @@ import {
   type TextBlock,
   type ToolListResponse,
   type WorkspaceCommitNotifyResponse,
+  type WorkspaceMaterializeResponse,
 } from '@ax/ipc-protocol';
 import { createCanUseTool } from './can-use-tool.js';
 import { readRunnerEnv } from './env.js';
 import { createHostMcpServer } from './host-mcp-server.js';
+import { materializeWorkspace } from './git-workspace.js';
 import { createPostToolUseHook } from './post-tool-use.js';
 import { createPreToolUseHook } from './pre-tool-use.js';
 import { setupProxy } from './proxy-startup.js';
@@ -123,6 +125,34 @@ export async function main(): Promise<number> {
   } catch (err) {
     process.stderr.write(
       `runner: session.get-config failed: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+    await client.close();
+    return 2;
+  }
+
+  // Phase 3: materialize /permanent from a host-streamed baseline bundle
+  // BEFORE the SDK query opens. Failure here is bootstrap-fatal — the
+  // runner has nowhere to write tool output and can't bundle turn-end
+  // diffs without a working tree.
+  //
+  // Why fatal vs. fall-through to `git init`: a materialize failure means
+  // the host either crashed mid-bundle, or its workspace plugin returned
+  // a malformed response. Either is a strong signal something is wrong
+  // upstream; falling through would silently desync the runner from the
+  // host's view of the workspace lineage. Better to fail loud and let
+  // the operator see the error.
+  try {
+    const matResp = (await client.call(
+      'workspace.materialize',
+      {},
+    )) as WorkspaceMaterializeResponse;
+    await materializeWorkspace({
+      root: env.workspaceRoot,
+      bundleBase64: matResp.bundleBytes,
+    });
+  } catch (err) {
+    process.stderr.write(
+      `runner: workspace.materialize failed: ${err instanceof Error ? err.message : String(err)}\n`,
     );
     await client.close();
     return 2;
