@@ -105,6 +105,20 @@ export async function withRetry<T>(
   const maxAttempts = opts?.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
   const backoffBaseMs = opts?.backoffBaseMs ?? DEFAULT_BACKOFF_BASE_MS;
 
+  // Validate input shape before entering the loop. A negative or
+  // non-integer `maxAttempts` would skip the loop and fall through to the
+  // defensive throw at the bottom — which throws `undefined`, an utterly
+  // useless failure mode. A negative or NaN `backoffBaseMs` would compute
+  // a NaN/negative wait and turn the retry into a tight loop. We reject
+  // both with a clear TypeError so misconfiguration fails loudly at the
+  // first call instead of silently swallowing the operation.
+  if (!Number.isInteger(maxAttempts) || maxAttempts < 0) {
+    throw new TypeError('maxAttempts must be a non-negative integer');
+  }
+  if (!Number.isFinite(backoffBaseMs) || backoffBaseMs < 0) {
+    throw new TypeError('backoffBaseMs must be a non-negative number');
+  }
+
   let lastErr: unknown;
   for (let attempt = 0; attempt <= maxAttempts; attempt++) {
     try {

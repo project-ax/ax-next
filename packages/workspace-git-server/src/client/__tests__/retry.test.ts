@@ -281,3 +281,88 @@ describe('withRetry — predicate is structural, not message-based', () => {
     expect(calls()).toBe(1);
   });
 });
+
+// --------------------------------------------------------------------------
+// 8. Input validation rejects malformed RetryOptions
+//
+// Without the guard, a negative or non-integer `maxAttempts` skips the loop
+// and the defensive throw at the bottom rethrows `undefined`. A negative or
+// NaN `backoffBaseMs` would compute a NaN/negative wait and turn the retry
+// into a tight loop. Both fail loudly with a clear TypeError.
+// --------------------------------------------------------------------------
+
+describe('withRetry — input validation', () => {
+  it('rejects with TypeError when maxAttempts is negative', async () => {
+    const { fn } = makeFn([{ throws: errnoErr('ECONNREFUSED') }]);
+    await expect(withRetry(fn, { maxAttempts: -1 })).rejects.toThrow(TypeError);
+    await expect(withRetry(fn, { maxAttempts: -1 })).rejects.toThrow(
+      /maxAttempts.*non-negative integer/,
+    );
+  });
+
+  it('rejects with TypeError when maxAttempts is non-integer (1.5)', async () => {
+    const { fn } = makeFn([{ throws: errnoErr('ECONNREFUSED') }]);
+    await expect(withRetry(fn, { maxAttempts: 1.5 })).rejects.toThrow(TypeError);
+    await expect(withRetry(fn, { maxAttempts: 1.5 })).rejects.toThrow(
+      /maxAttempts.*non-negative integer/,
+    );
+  });
+
+  it('rejects with TypeError when maxAttempts is NaN', async () => {
+    const { fn } = makeFn([{ throws: errnoErr('ECONNREFUSED') }]);
+    await expect(withRetry(fn, { maxAttempts: Number.NaN })).rejects.toThrow(
+      TypeError,
+    );
+    await expect(withRetry(fn, { maxAttempts: Number.NaN })).rejects.toThrow(
+      /maxAttempts.*non-negative integer/,
+    );
+  });
+
+  it('rejects with TypeError when backoffBaseMs is negative', async () => {
+    const { fn } = makeFn([{ throws: errnoErr('ECONNREFUSED') }]);
+    await expect(
+      withRetry(fn, { maxAttempts: 1, backoffBaseMs: -100 }),
+    ).rejects.toThrow(TypeError);
+    await expect(
+      withRetry(fn, { maxAttempts: 1, backoffBaseMs: -100 }),
+    ).rejects.toThrow(/backoffBaseMs.*non-negative number/);
+  });
+
+  it('rejects with TypeError when backoffBaseMs is NaN', async () => {
+    const { fn } = makeFn([{ throws: errnoErr('ECONNREFUSED') }]);
+    await expect(
+      withRetry(fn, { maxAttempts: 1, backoffBaseMs: Number.NaN }),
+    ).rejects.toThrow(TypeError);
+    await expect(
+      withRetry(fn, { maxAttempts: 1, backoffBaseMs: Number.NaN }),
+    ).rejects.toThrow(/backoffBaseMs.*non-negative number/);
+  });
+
+  it('accepts maxAttempts: 0 (one try, no retry)', async () => {
+    // Boundary case: zero is a valid value (matches the "no retries" intent).
+    // The loop runs once with `attempt: 0 <= maxAttempts: 0`, returns or
+    // throws on that single attempt — no setTimeout fires.
+    const err = errnoErr('ECONNREFUSED');
+    const { fn, calls } = makeFn([{ throws: err }]);
+    await expect(withRetry(fn, { maxAttempts: 0 })).rejects.toBe(err);
+    expect(calls()).toBe(1);
+  });
+
+  it('accepts backoffBaseMs: 0 (zero-wait between retries)', async () => {
+    // Boundary case: zero base means setTimeout(0) on each retry, which is
+    // legal and useful in tests that don't care about timing.
+    vi.useFakeTimers();
+    try {
+      const { fn, calls } = makeFn([
+        { throws: errnoErr('ECONNREFUSED') },
+        { resolves: 'ok' },
+      ]);
+      const promise = withRetry(fn, { maxAttempts: 1, backoffBaseMs: 0 });
+      await drain();
+      expect(await promise).toBe('ok');
+      expect(calls()).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
