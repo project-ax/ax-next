@@ -10,12 +10,21 @@
 // the plugin's lifetime; LRU eviction caps total disk use.
 //
 // Why `Map<id, Promise<MirrorHandle>>` and not `Map<id, MirrorHandle>`:
-// concurrency. When two callers `acquire(id)` for the same id arrive before
-// the first `git init` finishes, both must wait on the same in-flight init —
+// concurrency. When two callers ask for the same id before the first
+// `git init` finishes, both must wait on the same in-flight init —
 // otherwise we'd double-init into the same dir, which races and wastes work.
 // Inserting the Promise into the map *synchronously* (before any `await`)
-// closes the race window: every subsequent `acquire(sameId)` finds the
+// closes the race window: every subsequent caller for the same id finds the
 // existing Promise and just `await`s it.
+//
+// Pin/release contract (the API the engine actually uses): `withMirror(id, fn)`
+// pins the entry, runs `fn(handle)`, and releases on completion (success
+// OR failure). Eviction skips entries whose pinCount > 0 — so an in-flight
+// `git fetch` against a mirror can never race against an `rm -rf` on that
+// same dir from a concurrent acquire on a different workspaceId. If every
+// entry is pinned and we're already at the cap, we let the cache grow
+// temporarily — correctness over a strict cap. The cap settles back to the
+// configured value as pins drain.
 //
 // Why we accept inheriting `process.env.PATH`: dev and CI environments place
 // `git` on non-standard paths (Homebrew on `/usr/local/bin` or
@@ -52,7 +61,19 @@ export interface WorkspaceGitMirrorCacheOptions {
 }
 
 export interface MirrorCache {
-  acquire(workspaceId: string): Promise<MirrorHandle>;
+  /**
+   * Pin a mirror, run `fn(handle)`, release the pin (always — even on throw).
+   * Eviction will skip this entry while `fn` is running, so the handle's
+   * `dir` is guaranteed to exist for the duration of `fn`.
+   *
+   * Concurrent `withMirror` calls for the same workspaceId share one mirror
+   * dir (the underlying handle promise is memoized by id). Concurrent calls
+   * for DIFFERENT ids run in parallel without serializing.
+   */
+  withMirror<T>(
+    workspaceId: string,
+    fn: (handle: MirrorHandle) => Promise<T>,
+  ): Promise<T>;
   shutdown(): Promise<void>;
 }
 
@@ -113,11 +134,15 @@ export function createMirrorCache(
     opts?.cacheRoot ?? mkdtempSync(join(tmpdir(), 'ax-ws-mirror-cache-'));
 
   // The map: id → in-flight or settled Promise<MirrorHandle>. Inserted
-  // synchronously by `acquire` before any await, which is what makes
-  // concurrent `acquire(sameId)` calls share a single Promise.
+  // synchronously by the internal `acquire` helper before any await, which
+  // is what makes concurrent calls for the same id share a single Promise.
   const entries = new Map<string, Promise<MirrorHandle>>();
   // Access order, oldest at index 0, newest at the end. Tracks LRU.
   const accessOrder: string[] = [];
+  // Active pin count per workspaceId. Incremented on enter to `withMirror`,
+  // decremented on exit (success OR failure). Eviction skips entries with
+  // pinCount > 0 so an in-flight git op can't get its dir rm'd from under it.
+  const pinCount = new Map<string, number>();
   let closed = false;
 
   function bump(workspaceId: string): void {
@@ -127,9 +152,25 @@ export function createMirrorCache(
   }
 
   async function evictLruIfOver(): Promise<void> {
+    // Walk the access order from oldest to newest, picking the first
+    // unpinned entry to evict. If every entry is pinned and we're at cap,
+    // we let the cache grow — correctness (no `rm -rf` of a live mirror)
+    // over a strict cap. The cap settles back as pins drain on the next
+    // call that triggers eviction.
     while (accessOrder.length > cacheMaxEntries) {
-      const evictId = accessOrder.shift();
-      if (evictId === undefined) break;
+      let evictIdx = -1;
+      for (let i = 0; i < accessOrder.length; i++) {
+        const id = accessOrder[i]!;
+        if ((pinCount.get(id) ?? 0) === 0) {
+          evictIdx = i;
+          break;
+        }
+      }
+      if (evictIdx === -1) {
+        // Every entry is pinned. Bail — we'll re-check on the next acquire.
+        return;
+      }
+      const evictId = accessOrder.splice(evictIdx, 1)[0]!;
       const inflight = entries.get(evictId);
       entries.delete(evictId);
       if (inflight) {
@@ -176,9 +217,12 @@ export function createMirrorCache(
     }
   }
 
-  async function acquire(workspaceId: string): Promise<MirrorHandle> {
+  // Internal-only: looks up or builds the handle, but does NOT touch
+  // `pinCount` and does NOT trigger eviction. `withMirror` wraps this with
+  // pin/release + post-pin eviction.
+  async function acquireInternal(workspaceId: string): Promise<MirrorHandle> {
     if (closed) {
-      throw new Error('MirrorCache: acquire() after shutdown()');
+      throw new Error('MirrorCache: withMirror() after shutdown()');
     }
     const existing = entries.get(workspaceId);
     if (existing !== undefined) {
@@ -186,13 +230,13 @@ export function createMirrorCache(
       return existing;
     }
     // SYNCHRONOUS Map insertion before any await — this is what closes the
-    // concurrency race. Subsequent `acquire(sameId)` calls in the same tick
+    // concurrency race. Subsequent calls for the same id in the same tick
     // will find the existing Promise via the `entries.get` above.
     const promise = buildHandle(workspaceId);
     entries.set(workspaceId, promise);
     accessOrder.push(workspaceId);
 
-    // If buildHandle rejects, drop the cache entry so a future acquire can
+    // If buildHandle rejects, drop the cache entry so a future call can
     // try again rather than getting the cached failure forever.
     promise.catch(() => {
       if (entries.get(workspaceId) === promise) {
@@ -202,14 +246,38 @@ export function createMirrorCache(
       }
     });
 
-    // Evict LRU after settling — but we need to wait for the new build to
-    // finish before potentially evicting it (if the cap is 0 or 1). Eviction
-    // happens *after* this acquire's Promise resolves to keep semantics
-    // simple: the caller always gets a usable handle, even if it'll be
-    // evicted soon.
-    await promise;
-    await evictLruIfOver();
     return promise;
+  }
+
+  async function withMirror<T>(
+    workspaceId: string,
+    fn: (handle: MirrorHandle) => Promise<T>,
+  ): Promise<T> {
+    // Pin BEFORE the build/await: the synchronous insertion into pinCount
+    // protects this entry from eviction triggered by a concurrent
+    // `withMirror(otherId)` that arrives during our `acquireInternal` await.
+    pinCount.set(workspaceId, (pinCount.get(workspaceId) ?? 0) + 1);
+    try {
+      const handle = await acquireInternal(workspaceId);
+      // Run eviction once the new entry is in place. With pins respected,
+      // we won't evict ourselves here; we may evict OTHER unpinned entries
+      // that pushed us over the cap.
+      await evictLruIfOver();
+      return await fn(handle);
+    } finally {
+      const n = pinCount.get(workspaceId) ?? 0;
+      if (n <= 1) {
+        pinCount.delete(workspaceId);
+      } else {
+        pinCount.set(workspaceId, n - 1);
+      }
+      // Eviction may have been deferred while this id was pinned. If we're
+      // the last pin to release and the cache is over cap, run eviction
+      // now so the cap is honored as soon as it's safe.
+      if ((pinCount.get(workspaceId) ?? 0) === 0) {
+        await evictLruIfOver();
+      }
+    }
   }
 
   async function shutdown(): Promise<void> {
@@ -229,11 +297,12 @@ export function createMirrorCache(
 
     entries.clear();
     accessOrder.length = 0;
+    pinCount.clear();
 
     for (const dir of dirsToRemove) {
       await rm(dir, { recursive: true, force: true }).catch(() => undefined);
     }
   }
 
-  return { acquire, shutdown };
+  return { withMirror, shutdown };
 }

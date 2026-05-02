@@ -590,93 +590,92 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
       guardClosed();
       const remoteUrl = remoteUrlFor(opts.baseUrl, workspaceId);
 
-      // 1. Acquire mirror.
-      const handle = await opts.mirrorCache.acquire(workspaceId);
+      return opts.mirrorCache.withMirror(workspaceId, async (handle) => {
+        // 1. Ensure the repo exists on the storage tier (first apply only).
+        await ensureRepoCreated(workspaceId);
 
-      // 2. Ensure the repo exists on the storage tier (first apply only).
-      await ensureRepoCreated(workspaceId);
-
-      // 3. Fetch latest state into the mirror.
-      await fetchMirror(remoteUrl, opts.token, handle.dir);
-
-      // 4. Read current mirror head.
-      const mirrorHead = await currentMirrorOid(handle.dir);
-      const callerParent =
-        input.parent === null ? null : (input.parent as string);
-
-      // 5. Validate parent matches mirror head (the same logic from
-      // plugin-test-only.ts:528-547, kept verbatim). Each rejection carries
-      // the freshly-fetched mirror head as `cause.actualParent` so retry
-      // loops can rebase without re-querying.
-      if (mirrorHead === null && callerParent !== null) {
-        throw parentMismatch(
-          'mirror has no commits; caller passed a non-null parent',
-          mirrorHead,
-        );
-      }
-      if (mirrorHead !== null && callerParent === null) {
-        throw parentMismatch(
-          'mirror has commits; caller passed parent: null',
-          mirrorHead,
-        );
-      }
-      if (
-        mirrorHead !== null &&
-        callerParent !== null &&
-        mirrorHead !== callerParent
-      ) {
-        throw parentMismatch(
-          'caller parent does not match current mirror head',
-          mirrorHead,
-        );
-      }
-
-      // 6. Build scratch tree, apply changes, commit, push.
-      const scratch = await buildScratch(handle.dir, mirrorHead);
-      try {
-        await applyChanges(scratch, input.changes);
-        const newOid = await commitScratch(scratch, input.reason);
-        const push = await pushScratch(
-          remoteUrl,
-          opts.token,
-          scratch,
-          mirrorHead,
-        );
-        if (!push.ok) {
-          if (push.nonFastForward) {
-            // Our local mirror was up-to-date when we read `mirrorHead`, but
-            // a concurrent writer landed a commit between our fetch and our
-            // push. Re-fetch + re-read so `cause.actualParent` reflects the
-            // server's NEW head (the value the caller's retry will need to
-            // rebase against), not the stale `mirrorHead` we computed earlier.
-            await fetchMirror(remoteUrl, opts.token, handle.dir);
-            const freshHead = await currentMirrorOid(handle.dir);
-            throw parentMismatch(
-              'remote rejected push: non-fast-forward (concurrent writer)',
-              freshHead,
-            );
-          }
-          throw new Error(`git push failed: ${push.stderr}`);
-        }
-
-        // 7. Refresh mirror so the just-pushed commit + its blobs are
-        // available for diff/contentAfter.
+        // 2. Fetch latest state into the mirror.
         await fetchMirror(remoteUrl, opts.token, handle.dir);
 
-        // 8. Build the delta payload.
-        const delta = await buildDelta(
-          handle.dir,
-          mirrorHead,
-          newOid,
-          input.reason,
-        );
-        return {
-          version: asWorkspaceVersion(newOid),
-          delta,
-        };
-      } finally {
-        rmSync(scratch, { recursive: true, force: true });
-      }
+        // 3. Read current mirror head.
+        const mirrorHead = await currentMirrorOid(handle.dir);
+        const callerParent =
+          input.parent === null ? null : (input.parent as string);
+
+        // 4. Validate parent matches mirror head (the same logic from
+        // plugin-test-only.ts:528-547, kept verbatim). Each rejection carries
+        // the freshly-fetched mirror head as `cause.actualParent` so retry
+        // loops can rebase without re-querying.
+        if (mirrorHead === null && callerParent !== null) {
+          throw parentMismatch(
+            'mirror has no commits; caller passed a non-null parent',
+            mirrorHead,
+          );
+        }
+        if (mirrorHead !== null && callerParent === null) {
+          throw parentMismatch(
+            'mirror has commits; caller passed parent: null',
+            mirrorHead,
+          );
+        }
+        if (
+          mirrorHead !== null &&
+          callerParent !== null &&
+          mirrorHead !== callerParent
+        ) {
+          throw parentMismatch(
+            'caller parent does not match current mirror head',
+            mirrorHead,
+          );
+        }
+
+        // 5. Build scratch tree, apply changes, commit, push.
+        const scratch = await buildScratch(handle.dir, mirrorHead);
+        try {
+          await applyChanges(scratch, input.changes);
+          const newOid = await commitScratch(scratch, input.reason);
+          const push = await pushScratch(
+            remoteUrl,
+            opts.token,
+            scratch,
+            mirrorHead,
+          );
+          if (!push.ok) {
+            if (push.nonFastForward) {
+              // Our local mirror was up-to-date when we read `mirrorHead`, but
+              // a concurrent writer landed a commit between our fetch and our
+              // push. Re-fetch + re-read so `cause.actualParent` reflects the
+              // server's NEW head (the value the caller's retry will need to
+              // rebase against), not the stale `mirrorHead` we computed earlier.
+              await fetchMirror(remoteUrl, opts.token, handle.dir);
+              const freshHead = await currentMirrorOid(handle.dir);
+              throw parentMismatch(
+                'remote rejected push: non-fast-forward (concurrent writer)',
+                freshHead,
+              );
+            }
+            throw new Error(`git push failed: ${push.stderr}`);
+          }
+
+          // 6. Refresh mirror so the just-pushed commit + its blobs are
+          // available for diff/contentAfter.
+          await fetchMirror(remoteUrl, opts.token, handle.dir);
+
+          // 7. Build the delta payload.
+          const delta = await buildDelta(
+            handle.dir,
+            mirrorHead,
+            newOid,
+            input.reason,
+          );
+          return {
+            version: asWorkspaceVersion(newOid),
+            delta,
+          };
+        } finally {
+          rmSync(scratch, { recursive: true, force: true });
+        }
+      });
     });
   };
 
@@ -688,23 +687,24 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
     return enqueue(workspaceId, async () => {
       guardClosed();
       const remoteUrl = remoteUrlFor(opts.baseUrl, workspaceId);
-      const handle = await opts.mirrorCache.acquire(workspaceId);
-      await fetchMirror(remoteUrl, opts.token, handle.dir);
-      const target =
-        input.version !== undefined
-          ? (input.version as string)
-          : await currentMirrorOid(handle.dir);
-      if (target === null) return { found: false };
-      const exists = await runGit([
-        '-C',
-        handle.dir,
-        'cat-file',
-        '-e',
-        `${target}:${input.path}`,
-      ]);
-      if (exists.code !== 0) return { found: false };
-      const bytes = await readBlobBytes(handle.dir, target, input.path);
-      return { found: true, bytes };
+      return opts.mirrorCache.withMirror(workspaceId, async (handle) => {
+        await fetchMirror(remoteUrl, opts.token, handle.dir);
+        const target =
+          input.version !== undefined
+            ? (input.version as string)
+            : await currentMirrorOid(handle.dir);
+        if (target === null) return { found: false };
+        const exists = await runGit([
+          '-C',
+          handle.dir,
+          'cat-file',
+          '-e',
+          `${target}:${input.path}`,
+        ]);
+        if (exists.code !== 0) return { found: false };
+        const bytes = await readBlobBytes(handle.dir, target, input.path);
+        return { found: true, bytes };
+      });
     });
   };
 
@@ -716,33 +716,34 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
     return enqueue(workspaceId, async () => {
       guardClosed();
       const remoteUrl = remoteUrlFor(opts.baseUrl, workspaceId);
-      const handle = await opts.mirrorCache.acquire(workspaceId);
-      await fetchMirror(remoteUrl, opts.token, handle.dir);
-      const target =
-        input.version !== undefined
-          ? (input.version as string)
-          : await currentMirrorOid(handle.dir);
-      if (target === null) return { paths: [] };
-      const r = await runGit([
-        '-C',
-        handle.dir,
-        'ls-tree',
-        '-r',
-        '--name-only',
-        target,
-      ]);
-      if (r.code !== 0) {
-        throw new Error(`git ls-tree failed: ${r.stderr}`);
-      }
-      let paths = r.stdout
-        .split('\n')
-        .map((l) => l.trim())
-        .filter((l) => l.length > 0);
-      if (input.pathGlob !== undefined) {
-        const re = globToRegex(input.pathGlob);
-        paths = paths.filter((p) => re.test(p));
-      }
-      return { paths };
+      return opts.mirrorCache.withMirror(workspaceId, async (handle) => {
+        await fetchMirror(remoteUrl, opts.token, handle.dir);
+        const target =
+          input.version !== undefined
+            ? (input.version as string)
+            : await currentMirrorOid(handle.dir);
+        if (target === null) return { paths: [] };
+        const r = await runGit([
+          '-C',
+          handle.dir,
+          'ls-tree',
+          '-r',
+          '--name-only',
+          target,
+        ]);
+        if (r.code !== 0) {
+          throw new Error(`git ls-tree failed: ${r.stderr}`);
+        }
+        let paths = r.stdout
+          .split('\n')
+          .map((l) => l.trim())
+          .filter((l) => l.length > 0);
+        if (input.pathGlob !== undefined) {
+          const re = globToRegex(input.pathGlob);
+          paths = paths.filter((p) => re.test(p));
+        }
+        return { paths };
+      });
     });
   };
 
@@ -754,12 +755,13 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
     return enqueue(workspaceId, async () => {
       guardClosed();
       const remoteUrl = remoteUrlFor(opts.baseUrl, workspaceId);
-      const handle = await opts.mirrorCache.acquire(workspaceId);
-      await fetchMirror(remoteUrl, opts.token, handle.dir);
-      const from = input.from === null ? null : (input.from as string);
-      const to = input.to as string;
-      const delta = await buildDelta(handle.dir, from, to, undefined);
-      return { delta };
+      return opts.mirrorCache.withMirror(workspaceId, async (handle) => {
+        await fetchMirror(remoteUrl, opts.token, handle.dir);
+        const from = input.from === null ? null : (input.from as string);
+        const to = input.to as string;
+        const delta = await buildDelta(handle.dir, from, to, undefined);
+        return { delta };
+      });
     });
   };
 
