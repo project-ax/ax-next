@@ -420,6 +420,7 @@ describe('session.get-config', () => {
       agentId: 'a-1',
       agentConfig: baseConfig,
       conversationId: 'cnv_abc',
+      runnerSessionId: null,
     });
     expect(parsed.conversationId).toBe('cnv_abc');
   });
@@ -430,6 +431,7 @@ describe('session.get-config', () => {
       agentId: 'a-1',
       agentConfig: baseConfig,
       conversationId: null,
+      runnerSessionId: null,
     });
     expect(parsed.conversationId).toBeNull();
   });
@@ -439,6 +441,56 @@ describe('session.get-config', () => {
       userId: 'u-1',
       agentId: 'a-1',
       agentConfig: baseConfig,
+      runnerSessionId: null,
+    });
+    expect(r.success).toBe(false);
+  });
+
+  // Phase E (2026-05-09). runnerSessionId is the new field that lets the
+  // runner skip a separate fetch-history round-trip — the bind state
+  // rides session.get-config now that fetch-history is going away.
+  it('accepts a response with runnerSessionId as a non-empty string (Phase C resume)', () => {
+    const parsed = SessionGetConfigResponseSchema.parse({
+      userId: 'u-1',
+      agentId: 'a-1',
+      agentConfig: baseConfig,
+      conversationId: 'cnv_abc',
+      runnerSessionId: 'sdk-sess-resume',
+    });
+    expect(parsed.runnerSessionId).toBe('sdk-sess-resume');
+  });
+
+  it('accepts a response with runnerSessionId null (no bind yet OR no conversation)', () => {
+    const parsed = SessionGetConfigResponseSchema.parse({
+      userId: 'u-1',
+      agentId: 'a-1',
+      agentConfig: baseConfig,
+      conversationId: null,
+      runnerSessionId: null,
+    });
+    expect(parsed.runnerSessionId).toBeNull();
+  });
+
+  it('rejects a response missing runnerSessionId (must be explicit null — same posture as conversationId)', () => {
+    // Field is nullable, NOT optional. Forces consumers to branch on
+    // three states (string, null, schema-fail) rather than treat absent
+    // as "no opinion" — same wire-stability argument as conversationId.
+    const r = SessionGetConfigResponseSchema.safeParse({
+      userId: 'u-1',
+      agentId: 'a-1',
+      agentConfig: baseConfig,
+      conversationId: null,
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it('rejects a response with runnerSessionId set to a non-string', () => {
+    const r = SessionGetConfigResponseSchema.safeParse({
+      userId: 'u-1',
+      agentId: 'a-1',
+      agentConfig: baseConfig,
+      conversationId: null,
+      runnerSessionId: 42,
     });
     expect(r.success).toBe(false);
   });

@@ -253,6 +253,16 @@ export type WorkspaceMaterializeResponse = z.infer<
 // must NOT interpolate it into shell commands, file paths, or HTML. We
 // brand the field at the consumer side rather than here so subscriber
 // hooks downstream of the runner don't need a wire-level brand.
+//
+// Phase E (2026-05-09): the response also carries `runnerSessionId`. The
+// Phase C deviation note on `ConversationFetchHistoryResponseSchema`
+// argued the bind state should NOT ride session.get-config because the
+// session backend doesn't own conversation rows. Phase E moots that —
+// `conversation.fetch-history` is being deleted, and the IPC handler
+// composes from two bus hooks (`session:get-config` + `conversations:
+// get-metadata`) to assemble the wire response. The bus-level
+// `session:get-config` output type stays unchanged; only the wire
+// surface picks up the field.
 // ---------------------------------------------------------------------------
 
 export const SessionGetConfigRequestSchema = z.object({}).strict();
@@ -274,7 +284,7 @@ export const SessionGetConfigResponseSchema = z.object({
    * Conversation this session is bound to, when one exists. Nullable
    * because not every session is conversation-scoped (canary acceptance
    * tests, ephemeral admin probes, pre-Task-15 sessions). The runner uses
-   * this to decide whether to call `conversation.fetch-history` at boot.
+   * this to decide whether `runnerSessionId` is meaningful.
    *
    * The host populates this from the session row (Task 15 added a
    * `conversation_id` column to the session backend; the orchestrator
@@ -283,6 +293,19 @@ export const SessionGetConfigResponseSchema = z.object({
    * would force every consumer to branch on three states).
    */
   conversationId: z.string().nullable(),
+  /**
+   * Phase E (2026-05-09): the bound runner-side session id, or null if
+   * no runner has ever bound one (or `conversationId` is null). Runners
+   * branch on `runnerSessionId !== null` to choose SDK
+   * `resume(sessionId)` vs a fresh SDK session. Wire name is camelCase,
+   * opaque, and does NOT leak the specific runner shape (no
+   * `sdk_session_id`, no `jsonl_path`).
+   *
+   * NEVER `undefined` — explicit null keeps the wire shape stable and
+   * forces consumers to branch on three states (string, null,
+   * schema-fail) rather than treat absent as "no opinion".
+   */
+  runnerSessionId: z.string().nullable(),
 });
 export type SessionGetConfigResponse = z.infer<typeof SessionGetConfigResponseSchema>;
 
