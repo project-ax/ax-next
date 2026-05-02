@@ -472,8 +472,12 @@ describe('conversation.fetch-history', () => {
   });
 
   it('response round-trips an empty turn list', () => {
-    const parsed = ConversationFetchHistoryResponseSchema.parse({ turns: [] });
+    const parsed = ConversationFetchHistoryResponseSchema.parse({
+      turns: [],
+      runnerSessionId: null,
+    });
     expect(parsed.turns).toEqual([]);
+    expect(parsed.runnerSessionId).toBeNull();
   });
 
   it('response round-trips user/assistant/tool turns with content blocks', () => {
@@ -502,10 +506,29 @@ describe('conversation.fetch-history', () => {
           ],
         },
       ],
+      runnerSessionId: null,
     });
     expect(parsed.turns).toHaveLength(3);
     expect(parsed.turns[0]?.role).toBe('user');
     expect(parsed.turns[2]?.contentBlocks[0]?.type).toBe('tool_result');
+    expect(parsed.runnerSessionId).toBeNull();
+  });
+
+  it('response round-trips a non-null runnerSessionId (Phase C resume)', () => {
+    // When the conversation has a bound runner session, the wire carries
+    // the opaque id back so the runner can pass it to SDK resume().
+    const parsed = ConversationFetchHistoryResponseSchema.parse({
+      turns: [],
+      runnerSessionId: 'sdk-sess-resume',
+    });
+    expect(parsed.runnerSessionId).toBe('sdk-sess-resume');
+  });
+
+  it('response rejects a missing runnerSessionId field (explicit null required)', () => {
+    // The field is nullable, NOT optional — explicit null keeps the wire
+    // shape stable and forces consumers to branch on three states.
+    const r = ConversationFetchHistoryResponseSchema.safeParse({ turns: [] });
+    expect(r.success).toBe(false);
   });
 
   it('response rejects an unknown role', () => {
@@ -513,6 +536,7 @@ describe('conversation.fetch-history', () => {
       turns: [
         { role: 'system', contentBlocks: [{ type: 'text', text: 'x' }] },
       ],
+      runnerSessionId: null,
     });
     expect(r.success).toBe(false);
   });
@@ -520,6 +544,7 @@ describe('conversation.fetch-history', () => {
   it('response rejects malformed content blocks (canonical schema)', () => {
     const r = ConversationFetchHistoryResponseSchema.safeParse({
       turns: [{ role: 'user', contentBlocks: [{ type: 'mystery' }] }],
+      runnerSessionId: null,
     });
     expect(r.success).toBe(false);
   });

@@ -310,6 +310,14 @@ export type SessionGetConfigResponse = z.infer<typeof SessionGetConfigResponseSc
 //     implicit in the array order, and identity is the LLM's concern,
 //     not ours. A future audit/debug consumer that wants those fields
 //     should call `conversations:get` directly (host-side hook).
+//   - Phase C (2026-05-02): `runnerSessionId` is the bound runner-side
+//     session id, or `null` if no runner has ever bound one. Runners
+//     branch on `runnerSessionId !== null` to choose SDK
+//     `resume(sessionId)` vs replay-from-DB. Wire name is camelCase,
+//     opaque, never the snake_case `runner_session_id` from the DB row.
+//     Trade-off: the host still loads `turns` from the DB even when the
+//     runner is going to ignore them on a resume — the extra read is
+//     cheap (one query at runner boot) and keeps the wire shape simple.
 // ---------------------------------------------------------------------------
 
 export const ConversationFetchHistoryRequestSchema = z.object({
@@ -329,6 +337,10 @@ export type ConversationFetchHistoryTurn = z.infer<
 
 export const ConversationFetchHistoryResponseSchema = z.object({
   turns: z.array(ConversationFetchHistoryTurnSchema),
+  // Phase C: nullable, NEVER `undefined`. Explicit null keeps the wire
+  // shape stable and forces consumers to branch on three states (string,
+  // null, or schema-fail) rather than treat absent as "no opinion".
+  runnerSessionId: z.string().nullable(),
 });
 export type ConversationFetchHistoryResponse = z.infer<
   typeof ConversationFetchHistoryResponseSchema

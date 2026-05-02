@@ -289,6 +289,18 @@ export interface FetchHistoryTurn {
 }
 export interface FetchHistoryOutput {
   turns: FetchHistoryTurn[];
+  /**
+   * Phase C (2026-05-02). The bound runner-side session id, or `null` if
+   * the conversation has never had a runner bind one. Runners use this to
+   * decide between SDK `resume(sessionId)` (non-null — SDK rehydrates the
+   * transcript from its own on-disk store) and replay-from-DB (null —
+   * yield user-turn `turns` into the SDK prompt iterator).
+   *
+   * Opaque at this layer (no field name leaks the specific runner shape;
+   * I9). Same wire-name as the row column-name's camelCase form, NOT the
+   * snake_case `runner_session_id` from the DB.
+   */
+  runnerSessionId: string | null;
 }
 
 // ---------------------------------------------------------------------------

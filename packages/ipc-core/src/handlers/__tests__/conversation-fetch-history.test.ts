@@ -46,7 +46,7 @@ function makeBus(opts: BusOpts = {}): { bus: HookBus; calls: Array<{ ctx: AgentC
       if (opts.fetchImpl !== undefined) {
         return opts.fetchImpl(ctx, input);
       }
-      return { turns: [] };
+      return { turns: [], runnerSessionId: null };
     },
   );
   return { bus, calls };
@@ -70,6 +70,7 @@ describe('conversation.fetch-history handler', () => {
             contentBlocks: [{ type: 'text', text: 'hello' }],
           },
         ],
+        runnerSessionId: null,
       }),
     });
     const ctx = ctxWith('u-1');

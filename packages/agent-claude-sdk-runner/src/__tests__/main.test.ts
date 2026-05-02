@@ -1371,6 +1371,7 @@ describe('main()', () => {
               contentBlocks: [{ type: 'text', text: 'second question' }],
             },
           ],
+          runnerSessionId: null,
         };
       }
       throw new Error(`unexpected call: ${action}`);
@@ -1584,7 +1585,7 @@ describe('main()', () => {
         if (action === 'workspace.materialize') return { bundleBytes: '' };
         if (action === 'tool.list') return { tools: [] };
         if (action === 'conversation.fetch-history') {
-          return { turns: [] };
+          return { turns: [], runnerSessionId: null };
         }
         if (action === 'conversation.store-runner-session') {
           return { ok: true };
@@ -1693,7 +1694,7 @@ describe('main()', () => {
         if (action === 'workspace.materialize') return { bundleBytes: '' };
         if (action === 'tool.list') return { tools: [] };
         if (action === 'conversation.fetch-history') {
-          return { turns: [] };
+          return { turns: [], runnerSessionId: null };
         }
         if (action === 'conversation.store-runner-session') {
           return { ok: true };
@@ -1752,7 +1753,7 @@ describe('main()', () => {
         if (action === 'workspace.materialize') return { bundleBytes: '' };
         if (action === 'tool.list') return { tools: [] };
         if (action === 'conversation.fetch-history') {
-          return { turns: [] };
+          return { turns: [], runnerSessionId: null };
         }
         if (action === 'conversation.store-runner-session') {
           throw new Error('host returned 503');
@@ -1802,6 +1803,171 @@ describe('main()', () => {
         outcome: { kind: string };
       };
       expect(payload.outcome.kind).toBe('complete');
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // Phase C: SDK resume(sessionId) instead of replay-from-DB.
+  //
+  // When `conversation.fetch-history` returns a non-null `runnerSessionId`,
+  // the runner passes it as `options.resume` to `query()` and SKIPS the
+  // user-turn replay (the SDK rehydrates the conversation from its own
+  // on-disk transcript). When `runnerSessionId` is null, we fall back to
+  // the prior replay-from-DB path (Task 15).
+  //
+  // The trade-off the controller chose: when `runnerSessionId !== null`,
+  // the host's bus hook still reads turns from the DB even though the
+  // runner ignores them. That extra DB hit is cheap (one query at boot)
+  // and keeps the wire shape simple — a single response covers both the
+  // resume and the replay path.
+  // ---------------------------------------------------------------------
+
+  describe('Phase C: SDK resume(sessionId)', () => {
+    it('runnerSessionId set: passes options.resume to query() AND skips replay turns', async () => {
+      setEnv(COMPLETE_ENV);
+      fakeClient = buildFakeClient();
+      fakeClient.call.mockImplementation(async (action: string) => {
+        if (action === 'session.get-config') {
+          return {
+            userId: 'u-test',
+            agentId: 'a-test',
+            agentConfig: {
+              systemPrompt: '',
+              allowedTools: [],
+              mcpConfigIds: [],
+              model: 'claude-sonnet-4-7',
+            },
+            conversationId: 'cnv-resume',
+          };
+        }
+        if (action === 'workspace.materialize') return { bundleBytes: '' };
+        if (action === 'tool.list') return { tools: [] };
+        if (action === 'conversation.fetch-history') {
+          // Persisted user turn — would be replayed if runnerSessionId
+          // were null. Asserting it does NOT reach the SDK iterator
+          // pins the resume-vs-replay branching.
+          return {
+            turns: [
+              {
+                role: 'user',
+                contentBlocks: [{ type: 'text', text: 'persisted turn' }],
+              },
+            ],
+            runnerSessionId: 'sdk-sess-resume',
+          };
+        }
+        if (action === 'conversation.store-runner-session') {
+          return { ok: true };
+        }
+        throw new Error(`unexpected call: ${action}`);
+      });
+      fakeInbox = buildFakeInbox([userEntry('live message'), cancelEntry]);
+
+      const sdkSawMessages: Array<{ role: string; content: unknown }> = [];
+      queryMock.mockImplementation(
+        ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+          return (async function* () {
+            for await (const m of prompt) {
+              sdkSawMessages.push({
+                role: m.message.role,
+                content: m.message.content,
+              });
+            }
+            yield resultSuccess();
+          })();
+        },
+      );
+
+      const { main } = await import('../main.js');
+      const rc = await main();
+      expect(rc).toBe(0);
+
+      // (a) query() got options.resume set to the runner session id.
+      expect(queryMock).toHaveBeenCalledTimes(1);
+      const queryArg = queryMock.mock.calls[0]?.[0] as {
+        options: { resume?: string };
+      };
+      expect(queryArg.options.resume).toBe('sdk-sess-resume');
+
+      // (b) Replay turn was NOT yielded into the SDK prompt iterator —
+      // only the live inbox message reached the SDK. The SDK rehydrates
+      // its own conversation from disk via resume(sessionId), so re-
+      // emitting the persisted user turn would double-replay it.
+      expect(sdkSawMessages).toEqual([
+        { role: 'user', content: 'live message' },
+      ]);
+    });
+
+    it('runnerSessionId null: omits options.resume AND yields replay turns (replay-from-DB path)', async () => {
+      setEnv(COMPLETE_ENV);
+      fakeClient = buildFakeClient();
+      fakeClient.call.mockImplementation(async (action: string) => {
+        if (action === 'session.get-config') {
+          return {
+            userId: 'u-test',
+            agentId: 'a-test',
+            agentConfig: {
+              systemPrompt: '',
+              allowedTools: [],
+              mcpConfigIds: [],
+              model: 'claude-sonnet-4-7',
+            },
+            conversationId: 'cnv-replay',
+          };
+        }
+        if (action === 'workspace.materialize') return { bundleBytes: '' };
+        if (action === 'tool.list') return { tools: [] };
+        if (action === 'conversation.fetch-history') {
+          return {
+            turns: [
+              {
+                role: 'user',
+                contentBlocks: [{ type: 'text', text: 'persisted turn' }],
+              },
+            ],
+            runnerSessionId: null,
+          };
+        }
+        if (action === 'conversation.store-runner-session') {
+          return { ok: true };
+        }
+        throw new Error(`unexpected call: ${action}`);
+      });
+      fakeInbox = buildFakeInbox([userEntry('live message'), cancelEntry]);
+
+      const sdkSawMessages: Array<{ role: string; content: unknown }> = [];
+      queryMock.mockImplementation(
+        ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+          return (async function* () {
+            for await (const m of prompt) {
+              sdkSawMessages.push({
+                role: m.message.role,
+                content: m.message.content,
+              });
+            }
+            yield resultSuccess();
+          })();
+        },
+      );
+
+      const { main } = await import('../main.js');
+      const rc = await main();
+      expect(rc).toBe(0);
+
+      // (a) query() did NOT get options.resume — null runnerSessionId
+      // means the SDK is starting a fresh conversation; we fall back to
+      // the replay-from-DB path.
+      expect(queryMock).toHaveBeenCalledTimes(1);
+      const queryArg = queryMock.mock.calls[0]?.[0] as {
+        options: { resume?: string };
+      };
+      expect(queryArg.options.resume).toBeUndefined();
+
+      // (b) Replay turn WAS yielded first, then the live inbox message.
+      expect(sdkSawMessages).toEqual([
+        { role: 'user', content: 'persisted turn' },
+        { role: 'user', content: 'live message' },
+      ]);
     });
   });
 

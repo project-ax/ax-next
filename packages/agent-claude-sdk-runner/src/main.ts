@@ -170,31 +170,44 @@ export async function main(): Promise<number> {
   // conversation than crash on resume. We log to stderr and continue
   // with an empty history.
   //
-  // What we replay (and what we DON'T):
-  //   - User turns and tool turns (tool_result blocks): yielded as
-  //     SDKUserMessage. The SDK accepts a user message whose content is
-  //     either a string or an Anthropic-compatible content-block array;
-  //     we use the array form so tool_result blocks round-trip.
-  //   - Assistant turns: NOT re-yielded. The SDK's prompt iterator only
-  //     accepts user-shaped messages; injecting prior assistant text
-  //     would require either the SDK's `resume(sessionId)` (we don't
-  //     track its internal session id across runner restarts) or a
-  //     `setMessages` API that doesn't exist today. The model regenerates
-  //     from the user-side context. This re-spends LLM tokens but is
-  //     simple and correct — the model has full context for a coherent
-  //     continuation. (Future optimization: pursue resume(sessionId).)
+  // Phase C (2026-05-02): two paths now.
+  //   1. `runnerSessionId !== null` — the conversation has a bound SDK
+  //      session id from a prior runner. We pass it as `options.resume`
+  //      to `query()` and SKIP the replay populate; the SDK rehydrates
+  //      the conversation from its own on-disk transcript. Re-emitting
+  //      the persisted turns would double-replay them.
+  //   2. `runnerSessionId === null` — first-boot path (or unbind path).
+  //      Yield prior user turns into the prompt iterator before the live
+  //      inbox so the model has the context to regenerate.
+  //
+  // What we replay (when no resume is in effect) and what we DON'T:
+  //   - User turns: yielded as SDKUserMessage. The SDK accepts a user
+  //     message whose content is either a string or an Anthropic-
+  //     compatible content-block array; we use the array form so
+  //     multi-block user turns (e.g. with images) round-trip.
+  //   - Assistant + tool turns: NOT re-yielded. The SDK's prompt
+  //     iterator only accepts user-shaped messages, and Anthropic's API
+  //     rejects tool_result blocks that aren't paired with a preceding
+  //     assistant tool_use. The model regenerates the tool flow from
+  //     the user-side context.
   let replayTurns: ConversationFetchHistoryTurn[] = [];
+  let runnerSessionId: string | null = null;
   if (conversationId !== null) {
     try {
       const resp = (await client.call('conversation.fetch-history', {
         conversationId,
       })) as ConversationFetchHistoryResponse;
-      replayTurns = resp.turns;
+      runnerSessionId = resp.runnerSessionId;
+      // When a runner-session id is bound, the SDK rehydrates the
+      // transcript on its own via `options.resume` (set below). Skip the
+      // replay populate so `userMessages()` only yields the live inbox.
+      replayTurns = runnerSessionId === null ? resp.turns : [];
     } catch (err) {
       process.stderr.write(
         `runner: conversation.fetch-history failed: ${err instanceof Error ? err.message : String(err)}\n`,
       );
       replayTurns = [];
+      runnerSessionId = null;
     }
   }
 
@@ -299,10 +312,15 @@ export async function main(): Promise<number> {
   // tool_result block that isn't paired with a tool_use in the
   // immediately preceding assistant message, and we don't have the
   // assistant turn (since the prompt iterator only accepts user-shaped
-  // messages). Without the SDK's resume() API, replaying tool turns is
-  // not safely possible. The conversation row still stores the tool
-  // turn (Task 3's auto-append); on replay the SDK only sees user text
-  // turns and the model regenerates tool flows from there.
+  // messages). The conversation row still stores the tool turn (Task
+  // 3's auto-append); on replay the SDK only sees user text turns and
+  // the model regenerates tool flows from there.
+  //
+  // Phase C (2026-05-02): when `runnerSessionId !== null`, the boot
+  // block above sets `replayTurns = []` so this generator only yields
+  // the live inbox. The SDK rehydrates the transcript itself via
+  // `options.resume = runnerSessionId` (set on the `query()` call
+  // below). No double-replay.
   async function* userMessages(): AsyncGenerator<SDKUserMessage> {
     // ----- replay -----
     for (const turn of replayTurns) {
@@ -365,6 +383,14 @@ export async function main(): Promise<number> {
     const queryIter = query({
       prompt: userMessages(),
       options: {
+        // Phase C: SDK resume(sessionId). When the conversation has a
+        // bound runner session id, the SDK rehydrates the transcript
+        // from its own on-disk store under HOME (workspaceRoot, see
+        // below). Spread-conditional so the field is OMITTED on first
+        // boot — the SDK's `resume?: string` typing is "string or
+        // missing", not "string or null"; passing `undefined` would be
+        // a type-level rather than a wire-level signal.
+        ...(runnerSessionId !== null ? { resume: runnerSessionId } : {}),
         // ANTHROPIC_API_KEY is the `ax-cred:<hex>` placeholder (substituted
         // by the credential-proxy mid-flight); no ANTHROPIC_BASE_URL — SDK
         // calls api.anthropic.com directly through HTTPS_PROXY.
