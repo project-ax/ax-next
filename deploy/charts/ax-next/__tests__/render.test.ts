@@ -730,5 +730,34 @@ describeIfHelm('ax-next chart: workspace.backend wiring', () => {
         d.metadata?.name === 'ax-test-ax-next-git-server-experimental',
     );
     expect(expService, 'experimental ClusterIP Service renders').toBeDefined();
+
+    // Critical: the host egress rule to the experimental tier MUST NOT render
+    // in canary-preflight. The host pod isn't talking to that tier yet (env
+    // vars still point at legacy), so opening egress is unnecessary widening.
+    // The gate is `workspace.backend == "git-protocol"` AND both toggles —
+    // this test pins the AND so a future "simplify the gate" refactor can't
+    // silently grant cross-tier egress.
+    const hostNp = docs.find(
+      (d) =>
+        d.kind === 'NetworkPolicy' &&
+        d.metadata?.name === 'ax-test-ax-next-host-network',
+    );
+    expect(hostNp, 'host NetworkPolicy renders').toBeDefined();
+    const egress = (hostNp?.spec?.egress as Array<{
+      to?: Array<{
+        podSelector?: { matchLabels?: Record<string, string> };
+      }>;
+    }>) ?? [];
+    const expRule = egress.find((r) =>
+      (r.to ?? []).some(
+        (t) =>
+          t.podSelector?.matchLabels?.['app.kubernetes.io/name'] ===
+          'ax-test-ax-next-git-server-experimental',
+      ),
+    );
+    expect(
+      expRule,
+      'no experimental egress rule when backend=http (canary-preflight)',
+    ).toBeUndefined();
   });
 });

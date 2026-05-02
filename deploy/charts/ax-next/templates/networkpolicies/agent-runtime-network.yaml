@@ -78,7 +78,7 @@ spec:
         - port: {{ .Values.gitServer.port }}
           protocol: TCP
     {{- end }}
-    {{- if and .Values.gitServer.enabled .Values.gitServer.experimental.gitProtocol }}
+    {{- if and (eq .Values.workspace.backend "git-protocol") .Values.gitServer.enabled .Values.gitServer.experimental.gitProtocol }}
     # Experimental sharded git-server StatefulSet (workspace.backend ==
     # git-protocol). Pinned by the experimental component label — the
     # legacy rule above won't match these pods. Without this rule the
