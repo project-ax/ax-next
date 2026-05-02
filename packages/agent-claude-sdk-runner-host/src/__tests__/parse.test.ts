@@ -134,6 +134,25 @@ describe('parseJsonlToTurns', () => {
     ]);
   });
 
+  it('skips lines with isSidechain:true (internal SDK sub-calls)', async () => {
+    // Sidechain lines (Task-tool sub-agents, extended tool-planning) are
+    // internal SDK traffic. They must not surface as canonical turns or
+    // bump the turnIndex counter.
+    const bytes = await readFixture('sidechain.jsonl');
+    const turns = parseJsonlToTurns(bytes);
+
+    expect(turns).toHaveLength(2);
+    expectAllShapeInvariants(turns);
+
+    expect(turns[0].role).toBe('user');
+    expect(turns[0].turnId).toBe('u-main-0001');
+    expect(turns[0].turnIndex).toBe(0);
+
+    expect(turns[1].role).toBe('assistant');
+    expect(turns[1].turnId).toBe('a-main-0003');
+    expect(turns[1].turnIndex).toBe(1);
+  });
+
   it('skips a mid-file invalid-JSON line and emits the bracketing valid turns', async () => {
     const bytes = await readFixture('mid-corrupt.jsonl');
     const turns = parseJsonlToTurns(bytes);

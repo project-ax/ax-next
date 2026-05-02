@@ -244,17 +244,19 @@ describe('@ax/conversations chat:turn-end subscriber (Phase D)', () => {
     });
 
     // Missing contentBlocks.
-    await h.bus.fire('chat:turn-end', ctx, {
+    const r1 = await h.bus.fire('chat:turn-end', ctx, {
       reason: 'user-message-wait',
       role: 'assistant',
     });
+    expect(r1.rejected).toBe(false);
 
     // Empty array.
-    await h.bus.fire('chat:turn-end', ctx, {
+    const r2 = await h.bus.fire('chat:turn-end', ctx, {
       reason: 'user-message-wait',
       role: 'assistant',
       contentBlocks: [],
     });
+    expect(r2.rejected).toBe(false);
 
     // No append-turn calls.
     expect(

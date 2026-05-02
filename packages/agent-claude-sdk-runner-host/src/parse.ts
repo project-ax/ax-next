@@ -58,6 +58,7 @@ const SdkLineSchema = z
     type: z.string(),
     uuid: z.string().min(1),
     timestamp: z.string().min(1),
+    isSidechain: z.boolean().optional(),
     message: z
       .object({
         id: z.string().optional(),
@@ -139,6 +140,12 @@ export function parseJsonlToTurns(jsonlBytes: Uint8Array): ParsedTurn[] {
     // anything unknown) is metadata.
     if (type !== 'user' && type !== 'assistant') continue;
     if (!message) continue;
+
+    // Sidechain lines are internal SDK sub-calls (e.g. Task-tool sub-agents,
+    // extended tool-planning). Excluded from the canonical turn stream;
+    // surfacing them in the conversation history would expose internal
+    // model traffic that was never meant for the user.
+    if (env.data.isSidechain === true) continue;
 
     const { blocks, hasToolResult } = normalizeContent(message.content);
     if (blocks.length === 0) continue;
