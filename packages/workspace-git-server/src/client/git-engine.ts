@@ -320,7 +320,6 @@ async function commitScratch(
 async function pushScratch(
   remoteUrl: string,
   token: string,
-  _mirror: string,
   scratch: string,
   parent: string | null,
 ): Promise<{ ok: true } | { ok: false; nonFastForward: boolean; stderr: string }> {
@@ -477,6 +476,12 @@ export interface GitEngine {
   list(workspaceId: string, input: WorkspaceListInput): Promise<WorkspaceListOutput>;
   diff(workspaceId: string, input: WorkspaceDiffInput): Promise<WorkspaceDiffOutput>;
   shutdown(): Promise<void>;
+  /**
+   * @internal Test-only seam: returns the current size of the per-workspace
+   * queue Map. Used to pin the regression test for the settled-tail cleanup.
+   * Do NOT call from production code — this is not part of the supported API.
+   */
+  _internalQueueSize(): number;
 }
 
 /**
@@ -506,13 +511,23 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
     // settled fulfilled or rejected — one workspace's failure shouldn't
     // permanently wedge the queue.
     const next = tail.then(fn, fn);
-    queues.set(
-      workspaceId,
-      next.then(
-        () => undefined,
-        () => undefined,
-      ),
+    const tracked = next.then(
+      () => undefined,
+      () => undefined,
     );
+    queues.set(workspaceId, tracked);
+    // Drop the entry once this tail settles, but only if no later op chained
+    // onto it (i.e., the Map still points at THIS tracked Promise). A new
+    // `enqueue` for the same workspaceId arriving before `tracked` settles
+    // synchronously replaces the entry — this guard prevents us from
+    // clobbering that newer tail. Without this cleanup the Map would grow
+    // unboundedly across the engine's lifetime, since every workspaceId we
+    // ever serviced would linger as a settled Promise reference.
+    void tracked.then(() => {
+      if (queues.get(workspaceId) === tracked) {
+        queues.delete(workspaceId);
+      }
+    });
     return next;
   };
 
@@ -591,7 +606,6 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
         const push = await pushScratch(
           remoteUrl,
           opts.token,
-          handle.dir,
           scratch,
           mirrorHead,
         );
@@ -720,5 +734,7 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
     createdWorkspaces.clear();
   };
 
-  return { apply, read, list, diff, shutdown };
+  const _internalQueueSize = (): number => queues.size;
+
+  return { apply, read, list, diff, shutdown, _internalQueueSize };
 }

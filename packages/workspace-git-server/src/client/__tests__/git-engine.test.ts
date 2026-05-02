@@ -306,6 +306,49 @@ describe('git-engine — read/list/diff smoke', () => {
   });
 });
 
+describe('git-engine — queue map drops settled entries', () => {
+  it('queues map shrinks back to 0 after a workspace op settles', async () => {
+    // Sanity: clean engine has no queue entries before any work.
+    expect(harness.engine._internalQueueSize()).toBe(0);
+
+    await harness.engine.apply('ws-leak-check-test', {
+      changes: [
+        {
+          path: 'a.txt',
+          kind: 'put',
+          content: new TextEncoder().encode('A'),
+        },
+      ],
+      parent: null,
+    });
+
+    // The cleanup callback runs on a microtask after the tracked tail
+    // settles. Drain a couple of microtask turns so it has a chance to fire.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(harness.engine._internalQueueSize()).toBe(0);
+
+    // And after several distinct workspaceIds, the engine still doesn't
+    // accumulate state — this is the actual leak being pinned.
+    for (const id of ['ws-leak-1', 'ws-leak-2', 'ws-leak-3']) {
+      await harness.engine.apply(id, {
+        changes: [
+          {
+            path: 'x',
+            kind: 'put',
+            content: new TextEncoder().encode('x'),
+          },
+        ],
+        parent: null,
+      });
+    }
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(harness.engine._internalQueueSize()).toBe(0);
+  });
+});
+
 describe('git-engine — shutdown rejects subsequent operations', () => {
   it('apply after shutdown rejects with a clear message', async () => {
     await harness.engine.apply('wsenginee001', {
