@@ -676,79 +676,111 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
   async function bootCanaryHarness(
     sessionId: string,
   ): Promise<CanaryHarness> {
+    // Mirrors the partial-init pattern used by the earlier git-protocol
+    // canary above: every step that creates a tracked resource (server,
+    // bus handle) is gated by a try, so a throw before the helper
+    // returns doesn't leak a listener or temp repo into later tests.
     const serverToken = randomBytes(32).toString('hex');
     const serverRepoRoot = await fs.realpath(
       await fs.mkdtemp(path.join(os.tmpdir(), 'ax-phase3-canary-')),
     );
-    const server = await createWorkspaceGitServer({
-      repoRoot: serverRepoRoot,
-      host: '127.0.0.1',
-      port: 0,
-      token: serverToken,
-    });
-    const presetConfig: K8sPresetConfig = {
-      database: { connectionString: 'postgres://stub:5432/stub' },
-      eventbus: { connectionString: 'postgres://stub:5432/stub' },
-      session: { connectionString: 'postgres://stub:5432/stub' },
-      workspace: {
-        backend: 'git-protocol',
-        baseUrl: `http://127.0.0.1:${server.port}`,
-        token: serverToken,
-      },
-      sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
-      ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
-      chat: { runnerBinary: stubRunnerPath, chatTimeoutMs: 60_000 },
-      http: {
+    let server: WorkspaceGitServer | null = null;
+    let handle: Awaited<ReturnType<typeof bootstrap>> | null = null;
+    try {
+      server = await createWorkspaceGitServer({
+        repoRoot: serverRepoRoot,
         host: '127.0.0.1',
         port: 0,
-        cookieKey: '0'.repeat(64),
-        allowedOrigins: [],
-      },
-      auth: { devBootstrap: { token: 'preset-test-bootstrap' } },
-    };
-    const presetPlugins = createK8sPlugins(presetConfig);
-    const kept = presetPlugins.filter(
-      (p) => !PLUGINS_TO_DROP.has(p.manifest.name),
-    );
-    const sqlitePath = path.join(tmp, `phase3-${sessionId}.sqlite`);
-    const replacements: Plugin[] = [
-      createStorageSqlitePlugin({ databasePath: sqlitePath }),
-      createSessionInmemoryPlugin(),
-      createSandboxSubprocessPlugin(),
-      createIpcServerPlugin(),
-      createTestProxyPlugin({
-        script: { entries: [{ kind: 'finish', reason: 'end_turn' }] },
-      }),
-      createPermissiveAgentsStubPlugin(),
-      createMcpClientPlugin(),
-    ];
-    const plugins: Plugin[] = [...kept, ...replacements];
-    const bus = new HookBus();
-    const handle = await bootstrap({ bus, plugins, config: {} });
-    const userId = `phase3-user-${sessionId}`;
-    const agentId = `phase3-agent-${sessionId}`;
-    const ctx = makeAgentContext({
-      sessionId,
-      agentId,
-      userId,
-      workspace: { rootPath: tmp },
-    });
-    const workspaceId = workspaceIdFor({ userId, agentId });
-    const bareRepoPath = path.join(serverRepoRoot, `${workspaceId}.git`);
-    return {
-      bus,
-      ctx,
-      server,
-      serverRepoRoot,
-      workspaceId,
-      bareRepoPath,
-      handle,
-      teardown: async () => {
-        await handle.shutdown();
-        await server.close();
-        await fs.rm(serverRepoRoot, { recursive: true, force: true });
-      },
-    };
+        token: serverToken,
+      });
+      const presetConfig: K8sPresetConfig = {
+        database: { connectionString: 'postgres://stub:5432/stub' },
+        eventbus: { connectionString: 'postgres://stub:5432/stub' },
+        session: { connectionString: 'postgres://stub:5432/stub' },
+        workspace: {
+          backend: 'git-protocol',
+          baseUrl: `http://127.0.0.1:${server.port}`,
+          token: serverToken,
+        },
+        sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
+        ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
+        chat: { runnerBinary: stubRunnerPath, chatTimeoutMs: 60_000 },
+        http: {
+          host: '127.0.0.1',
+          port: 0,
+          cookieKey: '0'.repeat(64),
+          allowedOrigins: [],
+        },
+        auth: { devBootstrap: { token: 'preset-test-bootstrap' } },
+      };
+      const presetPlugins = createK8sPlugins(presetConfig);
+      const kept = presetPlugins.filter(
+        (p) => !PLUGINS_TO_DROP.has(p.manifest.name),
+      );
+      const sqlitePath = path.join(tmp, `phase3-${sessionId}.sqlite`);
+      const replacements: Plugin[] = [
+        createStorageSqlitePlugin({ databasePath: sqlitePath }),
+        createSessionInmemoryPlugin(),
+        createSandboxSubprocessPlugin(),
+        createIpcServerPlugin(),
+        createTestProxyPlugin({
+          script: { entries: [{ kind: 'finish', reason: 'end_turn' }] },
+        }),
+        createPermissiveAgentsStubPlugin(),
+        createMcpClientPlugin(),
+      ];
+      const plugins: Plugin[] = [...kept, ...replacements];
+      const bus = new HookBus();
+      handle = await bootstrap({ bus, plugins, config: {} });
+      const userId = `phase3-user-${sessionId}`;
+      const agentId = `phase3-agent-${sessionId}`;
+      const ctx = makeAgentContext({
+        sessionId,
+        agentId,
+        userId,
+        workspace: { rootPath: tmp },
+      });
+      const workspaceId = workspaceIdFor({ userId, agentId });
+      const bareRepoPath = path.join(serverRepoRoot, `${workspaceId}.git`);
+      // Capture for the closure — TS can't narrow handle/server inside
+      // an async closure since they're outer let-bindings.
+      const handleCaptured = handle;
+      const serverCaptured = server;
+      return {
+        bus,
+        ctx,
+        server: serverCaptured,
+        serverRepoRoot,
+        workspaceId,
+        bareRepoPath,
+        handle: handleCaptured,
+        teardown: async () => {
+          await handleCaptured.shutdown();
+          await serverCaptured.close();
+          await fs.rm(serverRepoRoot, { recursive: true, force: true });
+        },
+      };
+    } catch (err) {
+      // Partial init — clean up whatever DID succeed before re-throwing.
+      // Reverse order of construction (handle drains before server
+      // closes; tempdir always cleaned).
+      if (handle !== null) {
+        await handle.shutdown().catch(() => {
+          /* best-effort */
+        });
+      }
+      if (server !== null) {
+        await server.close().catch(() => {
+          /* best-effort */
+        });
+      }
+      await fs
+        .rm(serverRepoRoot, { recursive: true, force: true })
+        .catch(() => {
+          /* best-effort */
+        });
+      throw err;
+    }
   }
 
   it(

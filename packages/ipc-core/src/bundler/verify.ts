@@ -20,17 +20,19 @@
 // (where the scratch lives) and `baselineCommit` (the SHA to walk from);
 // we run `git rev-list <baselineCommit>..HEAD` and verify each commit.
 //
-// Identity match is EXACT: the parser pulls the name field (the part
-// before `<email>`) and string-compares to `ax-runner`. We do NOT
+// Identity match is EXACT on BOTH name AND email. We do NOT
 // substring-match (would let `evil-ax-runner` slip through) and we do
-// NOT lowercase (the env pins exact case). The email is captured into
-// the diagnostic but not part of the equality check — names are the
-// authoritative identity anchor here.
+// NOT lowercase (the env pins exact case). Checking the email closes
+// a spoofing gap: a compromised sandbox that bypasses the pod-spec
+// env could fake the name with a different email; pinning both
+// matches the full pod-spec identity (GIT_AUTHOR_NAME +
+// GIT_AUTHOR_EMAIL pair).
 // ---------------------------------------------------------------------------
 
 import { runGit } from './git-spawn.js';
 
-const EXPECTED_IDENTITY = 'ax-runner';
+const EXPECTED_NAME = 'ax-runner';
+const EXPECTED_EMAIL = 'ax-runner@example.com';
 
 /**
  * Verify every commit in `<baselineCommit>..HEAD` is authored AND
@@ -70,25 +72,27 @@ export async function verifyBundleAuthor(input: {
         `git cat-file -p ${oid} failed (exit=${cat.code}): ${cat.stderr}`,
       );
     }
-    const { authorName, committerName } = parseAuthorCommitter(
-      cat.stdout.toString('utf8'),
-    );
-    if (authorName !== EXPECTED_IDENTITY) {
+    const { authorName, authorEmail, committerName, committerEmail } =
+      parseAuthorCommitter(cat.stdout.toString('utf8'));
+    if (authorName !== EXPECTED_NAME || authorEmail !== EXPECTED_EMAIL) {
       throw new Error(
-        `bundle commit ${oid} has author=${JSON.stringify(authorName)}; expected ${EXPECTED_IDENTITY}`,
+        `bundle commit ${oid} has author=${JSON.stringify(authorName + ' <' + authorEmail + '>')}; expected ${EXPECTED_NAME} <${EXPECTED_EMAIL}>`,
       );
     }
-    if (committerName !== EXPECTED_IDENTITY) {
+    if (
+      committerName !== EXPECTED_NAME ||
+      committerEmail !== EXPECTED_EMAIL
+    ) {
       throw new Error(
-        `bundle commit ${oid} has committer=${JSON.stringify(committerName)}; expected ${EXPECTED_IDENTITY}`,
+        `bundle commit ${oid} has committer=${JSON.stringify(committerName + ' <' + committerEmail + '>')}; expected ${EXPECTED_NAME} <${EXPECTED_EMAIL}>`,
       );
     }
   }
 }
 
 /**
- * Parse the author + committer name out of a `git cat-file -p` blob.
- * Format (canonical):
+ * Parse the author + committer name + email out of a `git cat-file -p`
+ * blob. Format (canonical):
  *   tree <oid>
  *   parent <oid>
  *   author <name> <<email>> <ts> <tz>
@@ -99,35 +103,52 @@ export async function verifyBundleAuthor(input: {
  * The name is everything between `author ` (or `committer `) and the
  * ` <` that opens the email. Names with spaces are valid (`First Last`),
  * but cannot contain `<` (git escapes those during commit creation).
+ * The email is everything between `<` and `>`.
  *
  * Exported for unit testing without spawning git.
  */
 export function parseAuthorCommitter(catFileBody: string): {
   authorName: string;
+  authorEmail: string;
   committerName: string;
+  committerEmail: string;
 } {
   const lines = catFileBody.split('\n');
   let authorName = '';
+  let authorEmail = '';
   let committerName = '';
+  let committerEmail = '';
   for (const line of lines) {
     if (line.startsWith('author ')) {
-      authorName = extractName(line.slice('author '.length));
+      const parsed = extractIdent(line.slice('author '.length));
+      authorName = parsed.name;
+      authorEmail = parsed.email;
     } else if (line.startsWith('committer ')) {
-      committerName = extractName(line.slice('committer '.length));
+      const parsed = extractIdent(line.slice('committer '.length));
+      committerName = parsed.name;
+      committerEmail = parsed.email;
     } else if (line.length === 0) {
       // First blank line ends the header block; message follows.
       break;
     }
   }
-  return { authorName, committerName };
+  return { authorName, authorEmail, committerName, committerEmail };
 }
 
-function extractName(rest: string): string {
-  // `<name> <<email>> <ts> <tz>` — the name is everything before ` <`.
-  const idx = rest.indexOf(' <');
-  if (idx < 0) {
-    // Malformed line — git produces well-formed output, but be defensive.
-    return rest;
+function extractIdent(rest: string): { name: string; email: string } {
+  // `<name> <<email>> <ts> <tz>` — split at ` <` (name end) and `>`
+  // (email end).
+  const lt = rest.indexOf(' <');
+  if (lt < 0) {
+    // Malformed — git produces well-formed output, but be defensive.
+    return { name: rest, email: '' };
   }
-  return rest.slice(0, idx);
+  const name = rest.slice(0, lt);
+  const afterLt = rest.slice(lt + 2);
+  const gt = afterLt.indexOf('>');
+  if (gt < 0) {
+    return { name, email: '' };
+  }
+  const email = afterLt.slice(0, gt);
+  return { name, email };
 }

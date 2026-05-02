@@ -1,6 +1,6 @@
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type {
   WorkspaceListInput,
   WorkspaceListOutput,
@@ -117,8 +117,11 @@ export async function buildBaselineBundle(input: {
     );
     for (const { path, bytes } of entries) {
       const abs = join(tmp, path);
-      const dir = abs.slice(0, abs.lastIndexOf('/'));
-      if (dir.length > 0 && dir !== tmp) {
+      // path.dirname (not lastIndexOf('/')) for cross-platform safety —
+      // join() uses OS separators (\ on Windows), and substring slicing
+      // on '/' would silently mis-resolve there. dirname handles both.
+      const dir = dirname(abs);
+      if (dir !== tmp) {
         await mkdir(dir, { recursive: true });
       }
       // mode 0o644: explicit so file creation is deterministic across

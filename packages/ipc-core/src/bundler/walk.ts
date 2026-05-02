@@ -86,10 +86,22 @@ export async function walkBundleChanges(input: {
       out.push({ path, kind: 'put', content });
     } else if (status === 'D') {
       out.push({ path, kind: 'delete' });
+    } else {
+      // T (type-change file↔symlink, blob↔tree), R (rename), C (copy),
+      // U (unmerged), X (unknown). None should appear in the shape we
+      // ask for (no -M, no -C, single linear branch). Silently skipping
+      // would let the host's view of the workspace diverge from the
+      // runner's — better to fail loud and surface the unexpected
+      // status as a bug to investigate.
+      //
+      // Type-change specifically: our FileChange contract carries only
+      // bytes (no mode info), so we can't faithfully preserve a
+      // file→symlink transition. If we ever need to support that, this
+      // is the spot to add a TODO + a real plan.
+      throw new Error(
+        `walkBundleChanges: unsupported diff-tree status '${status}' for path ${JSON.stringify(path)}`,
+      );
     }
-    // T (type-change), R (rename), C (copy), U (unmerged), X (unknown) —
-    // not produced by our shape (no -M, no -C, single linear branch).
-    // Silently skip if encountered; that's a "shouldn't happen" path.
   }
   return out;
 }

@@ -108,6 +108,29 @@ export const ToolListResponseSchema = z.object({
 export type ToolListResponse = z.infer<typeof ToolListResponseSchema>;
 
 // ---------------------------------------------------------------------------
+// Bundle-bytes wire validator (shared between commit-notify + materialize).
+//
+// Both wire shapes carry git bundle bytes as base64 strings. We validate
+// the base64 shape at the protocol boundary so malformed payloads
+// surface as a 400 VALIDATION error here rather than as an INTERNAL 500
+// later in `git fetch` / `Buffer.from(..., 'base64')`. The empty string
+// is allowed (means "no bundle this turn" on commit-notify; materialize
+// always returns non-empty in practice).
+//
+// Pattern: standard base64 alphabet (A-Z, a-z, 0-9, +, /), length is a
+// multiple of 4, and `=` padding only at the tail. The regex matches
+// the canonical shape; Buffer.from(s, 'base64') is permissive (it
+// silently ignores garbage), so we don't lean on it for validation.
+// ---------------------------------------------------------------------------
+
+const BASE64_RE = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+const BundleBytesSchema = z
+  .string()
+  .refine((s) => s === '' || BASE64_RE.test(s), {
+    message: 'bundleBytes must be empty or canonical base64',
+  });
+
+// ---------------------------------------------------------------------------
 // workspace.commit-notify
 //
 // Phase 3 (this PR): the runner ships per-turn diffs as a `git bundle` of
@@ -139,7 +162,7 @@ export const WorkspaceCommitNotifyRequestSchema = z.object({
   // base64-encoded git bundle bytes from the runner's
   // `git bundle create - baseline..HEAD`. Empty string => no commits this
   // turn (handler short-circuits; no apply called).
-  bundleBytes: z.string(),
+  bundleBytes: BundleBytesSchema,
 });
 export type WorkspaceCommitNotifyRequest = z.infer<
   typeof WorkspaceCommitNotifyRequestSchema
@@ -187,11 +210,10 @@ export type WorkspaceCommitNotifyResponse = z.infer<
 //   3. The same justification is mirrored on `workspace.commit-notify`'s
 //      `bundleBytes` (Phase 3 wire change).
 //
-// Empty workspace handling: a brand-new workspace has nothing to materialize.
-// The handler returns `{ bundleBytes: '' }` and the runner's
-// `materializeWorkspace` falls through to `git init` instead of `git clone`.
-// This is the cleanest version of "no baseline yet" — no sentinel value, no
-// optional field, just an empty string that decodes to zero bytes.
+// Empty workspace handling: even a brand-new workspace gets a bundle
+// with one commit (the deterministic empty-tree baseline). The runner
+// always clones; there's no `git init` shortcut. Symmetric on both
+// sides — see `buildBaselineBundle` in the materialize handler.
 // ---------------------------------------------------------------------------
 
 // `.strict()` — the request takes no parameters today. The bearer token
@@ -203,9 +225,12 @@ export type WorkspaceMaterializeRequest = z.infer<
 >;
 
 export const WorkspaceMaterializeResponseSchema = z.object({
-  // base64-encoded git bundle bytes. Empty string => empty workspace
-  // (the runner does `git init` instead of `git clone`).
-  bundleBytes: z.string(),
+  // base64-encoded git bundle bytes. Always non-empty — even an empty
+  // workspace ships a single empty-tree baseline commit so the runner
+  // has a valid `refs/heads/baseline` to bundle from on subsequent
+  // turns. (Validated as canonical base64 — empty allowed by the
+  // shared schema, but materialize never returns empty in practice.)
+  bundleBytes: BundleBytesSchema,
 });
 export type WorkspaceMaterializeResponse = z.infer<
   typeof WorkspaceMaterializeResponseSchema

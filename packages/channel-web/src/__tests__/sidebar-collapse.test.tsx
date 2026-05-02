@@ -55,9 +55,16 @@ describe('Sidebar collapse', () => {
 
     const { container } = render(<App />);
     // Wait for AppContent (and thus the keyboard handler) to mount.
+    // waitFor confirms `aside.sidebar` is in the DOM, but AppContent's
+    // useEffect — which `addEventListener('keydown', onKey)` — runs
+    // AFTER the commit. On loaded CI runners the macrotask gap between
+    // commit and effect can outlast waitFor's poll, leading to a
+    // racy "fire keydown before listener attaches" miss. Yielding one
+    // macrotask after waitFor lets the effect flush deterministically.
     await waitFor(() => {
       expect(container.querySelector('aside.sidebar')).toBeTruthy();
     });
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(document.body.classList.contains('sidebar-collapsed')).toBe(false);
     fireEvent.keyDown(document, { key: '\\', metaKey: true });

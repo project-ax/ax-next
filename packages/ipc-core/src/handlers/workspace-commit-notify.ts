@@ -3,14 +3,9 @@ import {
   type FileChange,
   type WorkspaceApplyBundleInput,
   type WorkspaceApplyBundleOutput,
-  type WorkspaceApplyInput,
   type WorkspaceApplyOutput,
   type WorkspaceExportBaselineBundleInput,
   type WorkspaceExportBaselineBundleOutput,
-  type WorkspaceListInput,
-  type WorkspaceListOutput,
-  type WorkspaceReadInput,
-  type WorkspaceReadOutput,
   type WorkspaceVersion,
 } from '@ax/core';
 import {
@@ -114,62 +109,37 @@ export const workspaceCommitNotifyHandler: ActionHandler = async (
   // Get the workspace's baseline bundle. The workspace plugin (e.g.,
   // workspace-git-server) bundles its mirror cache state at `parent`;
   // we load it into our scratch repo so the runner's thin bundle's
-  // prereq is satisfied by construction. This replaces the earlier
-  // deterministic-reconstruction approach (which only worked for
-  // first apply — for subsequent applies the runner's baseline is
-  // the actual prior-turn commit OID, which has real timestamps and
-  // doesn't reproduce deterministically).
+  // prereq is satisfied by construction.
   //
-  // FALLBACK PATH (workspace:export-baseline-bundle not registered):
-  // we fall back to the workspace:list/read reconstruction approach.
-  // That only handles first apply correctly; subsequent applies will
-  // fail with a baseline-drift error. Non-bundle backends should
-  // implement export-baseline-bundle alongside apply-bundle to
-  // participate fully.
+  // PHASE 3 BACKEND CONTRACT: any workspace backend participating in
+  // the bundle wire MUST register `workspace:export-baseline-bundle`.
+  // Without it, the host can't load the runner's thin bundle on top
+  // of the prior workspace state — there's no way to reconstruct the
+  // prior turn's actual commit OID (it had real wall-clock timestamps
+  // from the runner side).
+  //
+  // For the FIRST apply only (parent=null), a deterministic empty-
+  // baseline reconstruction would work, but we don't take that
+  // shortcut: it would let a non-Phase-3 backend appear to work for
+  // turn 1 then break loudly on turn 2 (worst kind of silent
+  // regression). Reject up front.
+  if (!bus.hasService('workspace:export-baseline-bundle')) {
+    logInternalError(
+      ctx.logger,
+      'workspace.commit-notify',
+      new Error(
+        'no registered workspace plugin implements workspace:export-baseline-bundle (Phase 3 thin-bundle wire requires it; only @ax/workspace-git-server provides it today)',
+      ),
+    );
+    return internalError();
+  }
   let baselineBundleBytes: string;
   try {
-    if (bus.hasService('workspace:export-baseline-bundle')) {
-      const out = await bus.call<
-        WorkspaceExportBaselineBundleInput,
-        WorkspaceExportBaselineBundleOutput
-      >('workspace:export-baseline-bundle', ctx, { version: parent });
-      baselineBundleBytes = out.bundleBytes;
-    } else {
-      // Fallback: synthesize a baseline bundle from list+read using
-      // the deterministic helper (only correct for first apply).
-      const listInput: WorkspaceListInput =
-        parent !== null ? { version: parent } : {};
-      const listed = await bus.call<WorkspaceListInput, WorkspaceListOutput>(
-        'workspace:list',
-        ctx,
-        listInput,
-      );
-      const baselineFiles: Array<{ path: string; bytes: Buffer }> = [];
-      for (const path of listed.paths) {
-        const readInput: WorkspaceReadInput =
-          parent !== null ? { path, version: parent } : { path };
-        const r = await bus.call<WorkspaceReadInput, WorkspaceReadOutput>(
-          'workspace:read',
-          ctx,
-          readInput,
-        );
-        if (r.found) {
-          baselineFiles.push({ path, bytes: Buffer.from(r.bytes) });
-        }
-      }
-      // Lazy-import to avoid a circular import at module load — the
-      // materialize handler imports prepareScratchRepo from the same
-      // bundler module via a different path. Build the deterministic
-      // bundle inline.
-      const { buildBaselineBundle } = await import('./workspace-materialize.js');
-      baselineBundleBytes = await buildBaselineBundle({
-        paths: baselineFiles.map((f) => f.path),
-        read: async (p) => {
-          const f = baselineFiles.find((x) => x.path === p);
-          return f === undefined ? null : f.bytes;
-        },
-      });
-    }
+    const out = await bus.call<
+      WorkspaceExportBaselineBundleInput,
+      WorkspaceExportBaselineBundleOutput
+    >('workspace:export-baseline-bundle', ctx, { version: parent });
+    baselineBundleBytes = out.bundleBytes;
   } catch (err) {
     logInternalError(ctx.logger, 'workspace.commit-notify', err);
     return internalError();
@@ -265,39 +235,23 @@ export const workspaceCommitNotifyHandler: ActionHandler = async (
       return { status: 200, body: checked.data };
     }
 
-    // ---- apply: prefer apply-bundle (direct path, no rehash) ----
+    // ---- apply: workspace:apply-bundle is required (the export-
+    //      baseline-bundle gate above already rejected backends that
+    //      don't implement the bundle wire — apply-bundle and export-
+    //      baseline-bundle ship together as the Phase 3 backend
+    //      contract).
     let applied: WorkspaceApplyOutput;
     try {
-      if (bus.hasService('workspace:apply-bundle')) {
-        // Bundle-aware backend (workspace-git-server). Pass the bundle
-        // bytes + the prereq OID directly; the backend git-fetches
-        // into its mirror cache + pushes to the storage tier. Bare
-        // repo OID chain == runner's chain.
-        const out = await bus.call<
-          WorkspaceApplyBundleInput,
-          WorkspaceApplyBundleOutput
-        >('workspace:apply-bundle', ctx, {
-          bundleBytes,
-          baselineCommit: scratch.baselineCommit,
-          parent,
-          reason,
-        });
-        applied = out;
-      } else {
-        // Fallback: backends that don't implement apply-bundle (e.g.,
-        // a future GCS-backed plugin) get the FileChange[] path. Same
-        // changes the bundler walked, just routed through the legacy
-        // hash-and-commit pipeline.
-        applied = await bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>(
-          'workspace:apply',
-          ctx,
-          {
-            changes: allChanges,
-            parent,
-            reason,
-          },
-        );
-      }
+      const out = await bus.call<
+        WorkspaceApplyBundleInput,
+        WorkspaceApplyBundleOutput
+      >('workspace:apply-bundle', ctx, {
+        bundleBytes,
+        baselineCommit: scratch.baselineCommit,
+        parent,
+        reason,
+      });
+      applied = out;
     } catch (err) {
       if (err instanceof PluginError && err.code === 'parent-mismatch') {
         const body = {
@@ -327,15 +281,19 @@ export const workspaceCommitNotifyHandler: ActionHandler = async (
     if (post.rejected) {
       // workspace:applied is post-fact — a "rejection" here means a
       // subscriber tried to veto something already landed. Treat as
-      // misuse and 500 (sanitized). Log the reason for debugging.
+      // misuse: log the reason but DO NOT fail the request. The
+      // workspace already mutated; returning 500 here would tell the
+      // runner the turn failed and force a parent-mismatch on the
+      // next turn (the runner's local baseline would be behind the
+      // storage tier's HEAD). Observe-only hooks must stay observe-
+      // only.
       logInternalError(
         ctx.logger,
         'workspace.commit-notify',
         new Error(
-          `workspace:applied subscriber rejected post-fact: ${post.reason}`,
+          `workspace:applied subscriber rejected post-fact (ignored — apply already landed): ${post.reason}`,
         ),
       );
-      return internalError();
     }
 
     const body = {

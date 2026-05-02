@@ -250,7 +250,7 @@ describe('verifyBundleAuthor', () => {
 });
 
 describe('parseAuthorCommitter (pure helper)', () => {
-  it('extracts both names from a canonical cat-file body', () => {
+  it('extracts both names AND emails from a canonical cat-file body', () => {
     const body =
       'tree abc123\n' +
       'parent def456\n' +
@@ -260,7 +260,9 @@ describe('parseAuthorCommitter (pure helper)', () => {
       'commit message body\n';
     expect(parseAuthorCommitter(body)).toEqual({
       authorName: 'ax-runner',
+      authorEmail: 'ax-runner@example.com',
       committerName: 'ax-runner',
+      committerEmail: 'ax-runner@example.com',
     });
   });
 
@@ -268,25 +270,29 @@ describe('parseAuthorCommitter (pure helper)', () => {
     const body =
       'tree abc\n' +
       'author First Last <a@b.c> 1 +0\n' +
-      'committer Second Last <a@b.c> 1 +0\n' +
+      'committer Second Last <c@d.e> 1 +0\n' +
       '\n' +
       'msg\n';
     expect(parseAuthorCommitter(body)).toEqual({
       authorName: 'First Last',
+      authorEmail: 'a@b.c',
       committerName: 'Second Last',
+      committerEmail: 'c@d.e',
     });
   });
 
   it('handles a root commit (no parent line)', () => {
     const body =
       'tree abc\n' +
-      'author ax-runner <a@b.c> 1 +0\n' +
-      'committer ax-runner <a@b.c> 1 +0\n' +
+      'author ax-runner <ax-runner@example.com> 1 +0\n' +
+      'committer ax-runner <ax-runner@example.com> 1 +0\n' +
       '\n' +
       'msg\n';
     expect(parseAuthorCommitter(body)).toEqual({
       authorName: 'ax-runner',
+      authorEmail: 'ax-runner@example.com',
       committerName: 'ax-runner',
+      committerEmail: 'ax-runner@example.com',
     });
   });
 
@@ -294,7 +300,9 @@ describe('parseAuthorCommitter (pure helper)', () => {
     const body = 'tree abc\nparent def\n\nmsg\n';
     expect(parseAuthorCommitter(body)).toEqual({
       authorName: '',
+      authorEmail: '',
       committerName: '',
+      committerEmail: '',
     });
   });
 });

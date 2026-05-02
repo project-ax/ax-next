@@ -1029,7 +1029,7 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
         await fetchMirror(remoteUrl, opts.token, handle.dir);
 
         // 3. Read mirror head + validate caller's parent.
-        let mirrorHead = await currentMirrorOid(handle.dir);
+        const mirrorHead = await currentMirrorOid(handle.dir);
         const callerParent =
           input.parent === null ? null : (input.parent as string);
 
@@ -1082,7 +1082,11 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
               `seeded baseline OID ${seededOid} does not match runner baseline ${input.baselineCommit} (determinism contract violated)`,
             );
           }
-          mirrorHead = seededOid;
+          // Note: we don't re-bind mirrorHead here. The post-seed local
+          // mirror state (refs/heads/main = seededOid) doesn't affect
+          // any downstream decision — the push lease uses remoteLease
+          // (the REMOTE's pre-apply state), and the delta uses
+          // callerParent (the runner's view).
         } else if (mirrorHead !== input.baselineCommit) {
           throw parentMismatch(
             `mirror head ${mirrorHead} does not match runner baseline ${input.baselineCommit}`,
@@ -1090,27 +1094,55 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
           );
         }
 
-        // 5. Fetch the thin bundle into the mirror. Prereq is now
-        //    satisfied (mirrorHead == baselineCommit).
+        // 5-9: Fetch + ancestry-check + push + delta. The whole sequence
+        // shares one finally that removes the on-disk bundle file AND
+        // clears refs/bundle/* — without the broader scope, a throw
+        // between fetch and push (e.g., the new ancestry check) would
+        // leak temp refs into the next apply on this workspaceId.
         const bundlePath = join(handle.dir, 'in.bundle');
         await writeFile(
           bundlePath,
           Buffer.from(input.bundleBytes, 'base64'),
         );
-        let newTip: string;
         try {
-          newTip = await fetchBundleIntoMirror(handle.dir, bundlePath);
-        } finally {
-          await rm(bundlePath, { force: true });
-        }
+          // 5. Fetch the thin bundle into the mirror. Prereq is now
+          //    satisfied (mirror's refs/heads/main == baselineCommit).
+          const newTip = await fetchBundleIntoMirror(handle.dir, bundlePath);
 
-        // 6. Push the bundle's tip to the storage tier. git push
-        //    handles dependencies — on first apply, the baseline +
-        //    bundle commits all flow together. Use `remoteLease` (the
-        //    PRE-seed mirror head, == remote's current state) for the
-        //    --force-with-lease check; the post-seed mirrorHead reflects
-        //    the LOCAL mirror only.
-        try {
+          // 6. Reject bundles whose tip doesn't descend from the
+          //    declared baseline. The runner's contract is "thin bundle
+          //    of new commits on top of baseline." A non-thin or
+          //    otherwise-detached bundle could still pass --force-with-
+          //    lease (the remote ref check) and replace HEAD with
+          //    unrelated history. The ancestor check closes that gap.
+          //
+          //    `git merge-base --is-ancestor A B` exits 0 if A is an
+          //    ancestor of B, 1 if not. Anything else is an error.
+          const ancestry = await runGit([
+            '-C',
+            handle.dir,
+            'merge-base',
+            '--is-ancestor',
+            input.baselineCommit,
+            newTip,
+          ]);
+          if (ancestry.code === 1) {
+            throw parentMismatch(
+              `bundle tip ${newTip} does not descend from baseline ${input.baselineCommit}`,
+              remoteLease,
+            );
+          }
+          if (ancestry.code !== 0) {
+            throw new Error(
+              `git merge-base --is-ancestor failed (exit=${ancestry.code}): ${ancestry.stderr}`,
+            );
+          }
+
+          // 7. Push the bundle's tip to the storage tier. git push
+          //    handles dependencies — on first apply, the baseline +
+          //    bundle commits all flow together. Use `remoteLease`
+          //    (the PRE-seed mirror head, == remote's current state)
+          //    for the --force-with-lease check.
           const push = await pushBundleTip(
             remoteUrl,
             opts.token,
@@ -1130,9 +1162,9 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
             throw new Error(`git push failed: ${push.stderr}`);
           }
 
-          // 7. Update the local mirror's refs/heads/main to the new tip
-          //    so subsequent reads/lists see the current state without
-          //    requiring a fetchMirror round-trip first.
+          // 8. Update the local mirror's refs/heads/main to the new
+          //    tip so subsequent reads/lists see the current state
+          //    without requiring a fetchMirror round-trip first.
           await runGit([
             '-C',
             handle.dir,
@@ -1141,12 +1173,12 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
             newTip,
           ]);
 
-          // 8. Build the delta payload. `from` is the CALLER'S view of
-          //    the previous state (input.parent), not the post-seed
-          //    local mirror head. For first apply, callerParent is null
-          //    and the delta reads as "everything added"; for subsequent
-          //    applies, callerParent equals the prior tip and we get the
-          //    per-turn diff.
+          // 9. Build the delta payload. `from` is the CALLER'S view
+          //    of the previous state (input.parent), not the local
+          //    mirror head. For first apply, callerParent is null and
+          //    the delta reads as "everything added"; for subsequent
+          //    applies, callerParent equals the prior tip and we get
+          //    the per-turn diff.
           const delta = await buildDelta(
             handle.dir,
             callerParent,
@@ -1158,8 +1190,13 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
             delta,
           };
         } finally {
-          // 9. Clean up the temporary refs/bundle/* refs (the commit
-          //    objects are kept; refs/heads/main now references them).
+          // Cleanup runs on both success AND error paths:
+          //   - on-disk bundle file (always removed)
+          //   - refs/bundle/* (the commit objects stay; refs/heads/main
+          //     references them on success, but the temp refs would
+          //     leak into the next apply otherwise — and on error we
+          //     definitely don't want them lingering).
+          await rm(bundlePath, { force: true });
           await clearBundleRefs(handle.dir);
         }
       });
