@@ -325,10 +325,23 @@ describe('createWorkspaceGitServerPlugin — custom workspaceIdFor', () => {
 // ---------------------------------------------------------------------------
 
 describe('createWorkspaceGitServerPlugin — shutdown', () => {
+  // Track the harness across the test body so afterEach can drain it on
+  // failure paths. If an assertion throws BEFORE the explicit `harness.close()`
+  // below, the plugin's mirror cache + engine queue would otherwise leak into
+  // later tests.
+  let harness: TestHarness | null = null;
+
+  afterEach(async () => {
+    if (harness !== null) {
+      await harness.close();
+      harness = null;
+    }
+  });
+
   it('harness.close() removes the cache root tempdirs and drains the engine queue', async () => {
     const booted = await bootServer();
     const cacheRoot = freshCacheRoot();
-    const harness = await createTestHarness({
+    harness = await createTestHarness({
       plugins: [
         createWorkspaceGitServerPlugin({
           baseUrl: booted.baseUrl,
@@ -360,6 +373,9 @@ describe('createWorkspaceGitServerPlugin — shutdown', () => {
     expect(before.length).toBeGreaterThan(0);
 
     await harness.close();
+    // The successful-path close happened — clear the outer ref so afterEach
+    // doesn't try to close a drained harness a second time.
+    harness = null;
 
     // Post-shutdown: the cache's mirror dirs are gone. The cache root itself
     // may persist (the cache only rm's the mirror subdirs it created), so we
