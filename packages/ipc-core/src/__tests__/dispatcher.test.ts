@@ -267,17 +267,16 @@ describe('dispatcher', () => {
   // /workspace.commit-notify
   // -------------------------------------------------------------------------
 
-  it('POST /workspace.commit-notify — half-wired stub returns bundle-wire-not-implemented (Phase 3 Slice 5)', async () => {
-    // Phase 3 Slice 5: wire schema bumped to {parentVersion, reason,
-    // bundleBytes}; real bundler-driven handler lands in Slice 6. Until
-    // then the dispatcher routes the request, the schema parses, and the
-    // stub returns accepted:false with a clear reason. Slice 6 replaces
-    // this with the real round-trip (bundle decoded → pre-apply → apply
-    // → applied).
+  it('POST /workspace.commit-notify — empty-bundle short-circuit (Phase 3)', async () => {
+    // The full bundle round-trip (verify → walk → pre-apply → apply →
+    // applied) is exercised in detail by the handler-level tests at
+    // packages/ipc-core/src/handlers/__tests__/workspace-commit-notify.test.ts.
+    // Here we just smoke-test the dispatcher routing + schema +
+    // empty-bundle short-circuit against a real socket.
     const s = await setup({ plugins: [createMockWorkspacePlugin()] });
     setups.push(s);
     const req = {
-      parentVersion: null,
+      parentVersion: 'v-existing',
       reason: 'turn',
       bundleBytes: '',
     };
@@ -290,11 +289,13 @@ describe('dispatcher', () => {
     );
     expect(res.status).toBe(200);
     const parsed = JSON.parse(res.body) as {
-      accepted: false;
-      reason: string;
+      accepted: true;
+      version: string;
+      delta: null;
     };
-    expect(parsed.accepted).toBe(false);
-    expect(parsed.reason).toBe('bundle-wire-not-implemented');
+    expect(parsed.accepted).toBe(true);
+    expect(parsed.version).toBe('v-existing');
+    expect(parsed.delta).toBeNull();
   });
 
   // -------------------------------------------------------------------------
