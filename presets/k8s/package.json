@@ -45,9 +45,11 @@
   },
   "devDependencies": {
     "@ax/agent-claude-sdk-runner-host": "workspace:*",
+    "@ax/conversation-titles": "workspace:*",
     "@ax/conversations": "workspace:*",
     "@ax/ipc-core": "workspace:*",
     "@ax/ipc-server": "workspace:*",
+    "@ax/llm-anthropic": "workspace:*",
     "@ax/sandbox-subprocess": "workspace:*",
     "@ax/session-inmemory": "workspace:*",
     "@ax/storage-sqlite": "workspace:*",

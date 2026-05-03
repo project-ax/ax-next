@@ -34,8 +34,13 @@ import type {
   StoreRunnerSessionOutput as ConversationsStoreRunnerSessionOutput,
   GetInput as ConversationsGetInput,
   GetOutput as ConversationsGetOutput,
+  GetMetadataInput as ConversationsGetMetadataInput,
+  GetMetadataOutput as ConversationsGetMetadataOutput,
 } from '@ax/conversations';
 import { parseJsonlToTurns } from '@ax/agent-claude-sdk-runner-host';
+import { createLlmAnthropicPlugin } from '@ax/llm-anthropic';
+import { createConversationTitlesPlugin } from '@ax/conversation-titles';
+import type Anthropic from '@anthropic-ai/sdk';
 import { createStorageSqlitePlugin } from '@ax/storage-sqlite';
 import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
 import { createSandboxSubprocessPlugin } from '@ax/sandbox-subprocess';
@@ -1232,6 +1237,262 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         expect(got.turns[1]!.contentBlocks).toEqual([
           { type: 'text', text: 'hi back' },
         ]);
+      } finally {
+        if (handle !== null) await handle.shutdown();
+        if (server !== null) await server.close();
+        await fs.rm(serverRepoRoot, { recursive: true, force: true });
+      }
+    },
+  );
+
+  // ---------------------------------------------------------------------------
+  // Phase F canary — conversation-titles auto-titles via llm:call after the
+  // first assistant turn lands. Wires the @ax/llm-anthropic registrar (with a
+  // stub Anthropic client so the test stays hermetic) and the
+  // @ax/conversation-titles subscriber on top of the same conversations +
+  // workspace-git-server stack the Phase D canary uses.
+  //
+  // Pipeline under test:
+  //   bus.fire('chat:turn-end', { role: 'assistant', ... })
+  //     → conversation-titles subscriber
+  //         → conversations:get  (reads jsonl from workspace storage)
+  //         → llm:call           (stub registrar, returns fixed title)
+  //         → conversations:set-title { ifNull: true }
+  //   → conversations:get-metadata returns the persisted title.
+  //
+  // Why we drive `bus.fire` directly rather than `agent:invoke`: the chat
+  // path is not what we're verifying. We seed the transcript with the same
+  // workspace:apply pattern the Phase D canary uses (proven shape) and fire
+  // the post-turn event ourselves. `bus.fire` awaits subscribers
+  // sequentially, so by the time the await resolves the chained
+  // call/registrar work has completed — the polling loop below is purely
+  // defensive in case any layer adds async-isolation later.
+  // ---------------------------------------------------------------------------
+  it(
+    'Phase F canary: conversation-titles auto-titles via llm:call after assistant turn',
+    { timeout: 180_000 },
+    async () => {
+      const connectionString = await ensurePostgresStarted();
+
+      // Counter the stub increments per messages.create call. The single-call
+      // assertion is the I3 (chat:turn-end fires once) witness for the title
+      // path: a duplicate-delivery bug would show up here as count === 2.
+      const llmCallCounter = { count: 0 };
+      function makeStubClient(): Anthropic {
+        return {
+          messages: {
+            create: async (_params: unknown) => {
+              llmCallCounter.count += 1;
+              return {
+                id: 'msg_stub',
+                type: 'message',
+                role: 'assistant',
+                model: 'claude-haiku-4-5-20251001',
+                content: [{ type: 'text', text: 'Test Conversation Title' }],
+                stop_reason: 'end_turn',
+                stop_sequence: null,
+                usage: {
+                  input_tokens: 5,
+                  output_tokens: 3,
+                  cache_creation_input_tokens: null,
+                  cache_read_input_tokens: null,
+                  server_tool_use: null,
+                  service_tier: null,
+                },
+              } as unknown as Anthropic.Message;
+            },
+          },
+        } as unknown as Anthropic;
+      }
+
+      const serverToken = randomBytes(32).toString('hex');
+      const serverRepoRoot = await fs.realpath(
+        await fs.mkdtemp(path.join(os.tmpdir(), 'ax-phase-f-canary-')),
+      );
+
+      let server: WorkspaceGitServer | null = null;
+      let handle: Awaited<ReturnType<typeof bootstrap>> | null = null;
+      try {
+        server = await createWorkspaceGitServer({
+          repoRoot: serverRepoRoot,
+          host: '127.0.0.1',
+          port: 0,
+          token: serverToken,
+        });
+
+        // No chat is driven; the stub-runner script is a no-op kept only so
+        // the test-proxy plugin has something to serialize. Same posture as
+        // the Phase D canary above.
+        const script: StubRunnerScript = {
+          entries: [{ kind: 'finish', reason: 'end_turn' }],
+        };
+
+        const presetConfig: K8sPresetConfig = {
+          database: { connectionString },
+          eventbus: { connectionString: 'postgres://stub:5432/stub' },
+          session: { connectionString: 'postgres://stub:5432/stub' },
+          workspace: {
+            backend: 'git-protocol',
+            baseUrl: `http://127.0.0.1:${server.port}`,
+            token: serverToken,
+          },
+          sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
+          ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
+          chat: { runnerBinary: stubRunnerPath, chatTimeoutMs: 60_000 },
+          http: {
+            host: '127.0.0.1',
+            port: 0,
+            cookieKey: '0'.repeat(64),
+            allowedOrigins: [],
+          },
+          auth: { devBootstrap: { token: 'preset-test-bootstrap' } },
+        };
+
+        const presetPlugins = createK8sPlugins(presetConfig);
+        const kept = presetPlugins.filter(
+          (p) => !PLUGINS_TO_DROP.has(p.manifest.name),
+        );
+
+        const sqlitePath = path.join(tmp, 'preset-k8s-acceptance-phasef.sqlite');
+        const replacements: Plugin[] = [
+          createDatabasePostgresPlugin({ connectionString }),
+          createConversationsPlugin(),
+          // llm-anthropic with a stub client — registers `llm:call`. The
+          // conversation-titles subscriber calls into this. retryDelayMs: 0
+          // keeps the test fast even if the stub ever throws transient.
+          createLlmAnthropicPlugin({
+            apiKey: 'stub-key',
+            clientFactory: () => makeStubClient(),
+            retryDelayMs: 0,
+          }),
+          // conversation-titles — the unit under test. Subscribes to
+          // chat:turn-end and chains conversations:get → llm:call →
+          // conversations:set-title.
+          createConversationTitlesPlugin(),
+          createStorageSqlitePlugin({ databasePath: sqlitePath }),
+          createSessionInmemoryPlugin(),
+          createSandboxSubprocessPlugin(),
+          createIpcServerPlugin(),
+          createTestProxyPlugin({ script }),
+          createPermissiveAgentsStubPlugin(),
+          createMcpClientPlugin(),
+        ];
+
+        const plugins: Plugin[] = [...kept, ...replacements];
+
+        const bus = new HookBus();
+        handle = await bootstrap({ bus, plugins, config: {} });
+
+        const userId = 'phase-f-canary-user';
+        const agentId = 'phase-f-canary-agent';
+
+        // 1. Create a conversation. Bootstrap context (no conversationId yet).
+        const bootstrapCtx = makeAgentContext({
+          sessionId: 'phase-f-canary-session',
+          agentId,
+          userId,
+          workspace: { rootPath: tmp },
+        });
+        const conv = await bus.call<
+          ConversationsCreateInput,
+          ConversationsCreateOutput
+        >('conversations:create', bootstrapCtx, { userId, agentId });
+
+        // 2. Bind a runnerSessionId so the jsonl glob has a target.
+        const runnerSessionId = '00000000-0000-0000-0000-0000000ff000';
+        await bus.call<
+          ConversationsStoreRunnerSessionInput,
+          ConversationsStoreRunnerSessionOutput
+        >('conversations:store-runner-session', bootstrapCtx, {
+          conversationId: conv.conversationId,
+          runnerSessionId,
+        });
+
+        // 3. Seed the jsonl (one user line + one assistant line) so the
+        // titles subscriber sees a non-empty transcript and proceeds with
+        // the llm:call. An empty transcript is the documented early-return
+        // path; we'd be testing a no-op without this seed.
+        const jsonlText = [
+          JSON.stringify({
+            type: 'user',
+            message: { role: 'user', content: 'hello canary' },
+            uuid: 'u-1111',
+            timestamp: '2026-05-03T00:00:00.000Z',
+            sessionId: runnerSessionId,
+          }),
+          JSON.stringify({
+            type: 'assistant',
+            message: {
+              id: 'msg_canary',
+              type: 'message',
+              role: 'assistant',
+              content: [{ type: 'text', text: 'hi back' }],
+            },
+            uuid: 'u-2222',
+            timestamp: '2026-05-03T00:00:01.000Z',
+            sessionId: runnerSessionId,
+          }),
+          '',
+        ].join('\n');
+        const jsonlBytes = new TextEncoder().encode(jsonlText);
+        const jsonlPath = `.claude/projects/-permanent/${runnerSessionId}.jsonl`;
+        await bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>(
+          'workspace:apply',
+          bootstrapCtx,
+          {
+            changes: [{ path: jsonlPath, kind: 'put', content: jsonlBytes }],
+            parent: null,
+            reason: 'phase-f canary: seed jsonl',
+          },
+        );
+
+        // 4. Build the per-turn context that includes conversationId — the
+        // titles subscriber early-returns when ctx.conversationId is unset.
+        // makeAgentContext supports this field directly; chat-orchestrator
+        // does the same in production (see Task 16 of Week 10–12).
+        const turnCtx = makeAgentContext({
+          sessionId: 'phase-f-canary-session',
+          agentId,
+          userId,
+          conversationId: conv.conversationId,
+          workspace: { rootPath: tmp },
+        });
+
+        // 5. Fire the post-turn event. bus.fire awaits subscribers
+        // sequentially, so when this resolves the title-write chain has
+        // completed (or logged + swallowed). The poll below is defensive.
+        await bus.fire('chat:turn-end', turnCtx, {
+          role: 'assistant',
+          contentBlocks: [{ type: 'text', text: 'hi back' }],
+          reqId: 'r-canary',
+        });
+
+        // 6. Poll conversations:get-metadata for up to 5s for a non-null
+        // title. Strictly `!== null` — an empty string would be a bug we
+        // want to catch, not silently treat as "still pending".
+        let title: string | null = null;
+        const deadline = Date.now() + 5_000;
+        while (Date.now() < deadline) {
+          const meta = await bus.call<
+            ConversationsGetMetadataInput,
+            ConversationsGetMetadataOutput
+          >('conversations:get-metadata', turnCtx, {
+            conversationId: conv.conversationId,
+            userId,
+          });
+          if (meta.title !== null) {
+            title = meta.title;
+            break;
+          }
+          await new Promise((r) => setTimeout(r, 100));
+        }
+
+        // The title we asserted is exactly what the stub returned — proves
+        // the value flowed through validateGeneratedTitle (which is
+        // pass-through on this input) and on into the row.
+        expect(title).toBe('Test Conversation Title');
+        // Single LLM call — guards against duplicate subscriber delivery.
+        expect(llmCallCounter.count).toBe(1);
       } finally {
         if (handle !== null) await handle.shutdown();
         if (server !== null) await server.close();

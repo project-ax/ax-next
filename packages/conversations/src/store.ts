@@ -293,6 +293,22 @@ export interface ConversationStore {
    * the orchestrator's J1 ACL check at agent:invoke entry.
    */
   bumpLastActivity(conversationId: string, at: Date): Promise<boolean>;
+  /**
+   * Phase F (2026-05-03). Update an existing row's title. Always scopes
+   * by `(conversation_id, user_id, deleted_at IS NULL)`. When
+   * `ifNull === true`, additionally requires `title IS NULL` — atomic
+   * single-statement compare-and-set so a slow auto-title proposal
+   * cannot clobber a user's rename. The `title` is validated via
+   * `validateTitle()` before this call (the plugin layer does so).
+   *
+   * Returns true iff a row was updated.
+   */
+  setTitle(args: {
+    conversationId: string;
+    userId: string;
+    title: string;
+    ifNull?: boolean;
+  }): Promise<boolean>;
 }
 
 export function createConversationStore(
@@ -509,6 +525,27 @@ export function createConversationStore(
         .where('conversation_id', '=', conversationId)
         .where('deleted_at', 'is', null)
         .executeTakeFirst();
+      return Number(result.numUpdatedRows ?? 0n) > 0;
+    },
+
+    async setTitle({ conversationId, userId, title, ifNull }) {
+      // The plugin layer has already validated `title` via
+      // validateTitle(); we accept the trusted string here. The
+      // (user_id, deleted_at IS NULL) predicates ensure foreign /
+      // tombstoned rows can never be updated. When ifNull is true we
+      // additionally gate on `title IS NULL` for an atomic
+      // compare-and-set: a slow auto-title proposal cannot clobber
+      // a user-driven rename that landed first.
+      let q = db
+        .updateTable('conversations_v1_conversations')
+        .set({ title, updated_at: new Date() })
+        .where('conversation_id', '=', conversationId)
+        .where('user_id', '=', userId)
+        .where('deleted_at', 'is', null);
+      if (ifNull === true) {
+        q = q.where('title', 'is', null);
+      }
+      const result = await q.executeTakeFirst();
       return Number(result.numUpdatedRows ?? 0n) > 0;
     },
   };

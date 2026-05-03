@@ -254,6 +254,54 @@ export interface StoreRunnerSessionInput {
 }
 export type StoreRunnerSessionOutput = void;
 
+/**
+ * Phase F (2026-05-03). Update an existing conversation row's title
+ * post-creation. Used by the auto-title pipeline (after the first
+ * user/assistant exchange the conversation-titles plugin proposes a
+ * short summary) and any future user-driven rename UI.
+ *
+ * ACL: same posture as `conversations:get` — `(conversation_id,
+ * user_id)` pre-filter, then `agents:resolve(agent_id, user_id)`. A
+ * foreign row looks identical to "no such row" from the caller's
+ * perspective; the agents:resolve gate runs ONLY after the row's
+ * existence + ownership are confirmed.
+ *
+ * Validation: title must be 1–256 chars (matches the column's CHECK
+ * + the existing `validateTitle()` shape). Empty / null / oversized
+ * titles throw `PluginError({ code: 'invalid-payload' })`.
+ *
+ * `ifNull = true` makes the UPDATE atomic on `title IS NULL` — if a
+ * concurrent caller (or a user-driven rename) has already set a
+ * title, this hook is a no-op and returns `{ updated: false }`. This
+ * is the auto-title pipeline's safety: a slow LLM-derived title can
+ * never clobber a user's rename.
+ *
+ * `ifNull = false` (default) overwrites unconditionally. The same
+ * `(conversation_id, user_id, deleted_at IS NULL)` filter still
+ * applies — soft-deleted rows are not reachable.
+ */
+export interface SetTitleInput {
+  conversationId: string;
+  userId: string;
+  title: string;
+  /**
+   * When true, only writes if the existing title is NULL (atomic
+   * single-statement compare-and-set). Defaults to false.
+   */
+  ifNull?: boolean;
+}
+export interface SetTitleOutput {
+  /**
+   * True iff a row was updated. False when:
+   *   - `ifNull=true` and the row already had a title, OR
+   *   - the row didn't match the (id, userId, alive) filter (the
+   *     plugin layer turns the latter into `not-found` before we
+   *     reach the store, so in practice `updated=false` only
+   *     surfaces from the ifNull=true / already-titled case).
+   */
+  updated: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Plugin config
 // ---------------------------------------------------------------------------

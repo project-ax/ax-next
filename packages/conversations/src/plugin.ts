@@ -39,6 +39,8 @@ import type {
   GetOutput,
   ListInput,
   ListOutput,
+  SetTitleInput,
+  SetTitleOutput,
   StoreRunnerSessionInput,
   StoreRunnerSessionOutput,
   Turn,
@@ -121,6 +123,10 @@ export function createConversationsPlugin(
         // native session id. Caller (Phase C) is the runner-plugin's
         // host-side IPC handler.
         'conversations:store-runner-session',
+        // Phase F (2026-05-03): post-creation title update for the
+        // auto-title pipeline (caller is @ax/conversation-titles' Phase
+        // F chat:turn-end subscriber) plus future user-driven rename UI.
+        'conversations:set-title',
       ],
       calls: [
         'agents:resolve',
@@ -224,6 +230,18 @@ export function createConversationsPlugin(
         'conversations:store-runner-session',
         PLUGIN_NAME,
         async (ctx, input) => storeRunnerSession(localStore, ctx, input),
+      );
+
+      // Phase F (2026-05-03). Post-creation title update. Same ACL
+      // posture as `conversations:get` — load the row first (user_id
+      // pre-filter), then call agents:resolve. A foreign / missing /
+      // tombstoned row surfaces as 'not-found' BEFORE the gate fires,
+      // so the agents:resolve denial path doesn't leak existence.
+      bus.registerService<SetTitleInput, SetTitleOutput>(
+        'conversations:set-title',
+        PLUGIN_NAME,
+        async (ctx, input) =>
+          setConversationTitle(localStore, bus, ctx, input),
       );
 
       // chat:turn-end subscriber.
@@ -474,6 +492,80 @@ async function createConversation(
     workspaceRef,
   });
   return conv;
+}
+
+async function setConversationTitle(
+  store: ConversationStore,
+  bus: HookBus,
+  ctx: AgentContext,
+  input: SetTitleInput,
+): Promise<SetTitleOutput> {
+  const hookName = 'conversations:set-title';
+  // Validate the title BEFORE any I/O. validateTitle() throws
+  // PluginError({ code: 'invalid-payload' }) on empty / oversize /
+  // wrong type. Null is rejected here (the hook contract requires a
+  // string) — validateTitle returns null on null input, which the
+  // contract treats as invalid.
+  const title = validateTitle(input.title);
+  if (title === null) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: 'title must be a non-empty string',
+    });
+  }
+  // Load the row first with the user_id pre-filter. A foreign or
+  // tombstoned row collapses to 'not-found' identically — the
+  // agents:resolve gate runs ONLY after we've confirmed the row
+  // exists for this user, so the denial path never leaks existence.
+  const conv = await store.getByIdNotDeleted(input.conversationId);
+  if (conv === null || conv.userId !== input.userId) {
+    throw new PluginError({
+      code: 'not-found',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `conversation '${input.conversationId}' not found`,
+    });
+  }
+  // J1: ACL gate AFTER existence check, BEFORE the store write. If
+  // resolve forbids/not-founds the agent, propagate verbatim and
+  // leave the row untouched.
+  await assertAgentReachable(bus, ctx, conv.agentId, input.userId, hookName);
+  const updated = await store.setTitle({
+    conversationId: input.conversationId,
+    userId: input.userId,
+    title,
+    // exactOptionalPropertyTypes: only pass `ifNull` when the caller
+    // explicitly set it. Spreading the property absent-when-undefined
+    // matches the store's optional-property contract.
+    ...(input.ifNull === undefined ? {} : { ifNull: input.ifNull }),
+  });
+
+  if (updated) {
+    return { updated: true };
+  }
+
+  // updated=false has two possible causes:
+  //   (a) ifNull=true and the row was already titled — legitimate no-op.
+  //   (b) the row was deleted (or moved cross-tenant) between the
+  //       existence check above and the UPDATE — should surface as
+  //       not-found so the caller sees the real failure rather than
+  //       silently treating a vanished row as "no update needed".
+  // Re-check existence to disambiguate. The contract on
+  // SetTitleOutput.updated documents only meaning (a); leaking (b) as
+  // updated=false would let callers ignore a real not-found.
+  const current = await store.getByIdNotDeleted(input.conversationId);
+  if (current === null || current.userId !== input.userId) {
+    throw new PluginError({
+      code: 'not-found',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `conversation '${input.conversationId}' not found`,
+    });
+  }
+
+  return { updated: false };
 }
 
 async function getConversationMetadata(

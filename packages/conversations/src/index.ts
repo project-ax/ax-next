@@ -39,6 +39,8 @@ export type {
   GetOutput,
   ListInput,
   ListOutput,
+  SetTitleInput,
+  SetTitleOutput,
   StoreRunnerSessionInput,
   StoreRunnerSessionOutput,
   Turn,

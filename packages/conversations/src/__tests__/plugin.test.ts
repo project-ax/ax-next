@@ -27,6 +27,9 @@ describe('@ax/conversations plugin manifest', () => {
         // Phase B (2026-04-29): runner-owned-sessions metadata reads.
         'conversations:get-metadata',
         'conversations:store-runner-session',
+        // Phase F (2026-05-03): post-creation title update for the
+        // auto-title pipeline + future user-driven rename UI.
+        'conversations:set-title',
       ],
       // database:get-instance is hard — we run our own migration on init.
       // agents:resolve is hard — every hook gates through it (Invariant J1).
