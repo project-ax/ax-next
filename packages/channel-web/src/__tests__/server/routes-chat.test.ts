@@ -41,7 +41,7 @@ import { createChannelWebServerPlugin } from '../../server/plugin';
 //   2. Foreign agent → 403
 //   3. Agent not-found → 404 (agent-not-found)
 //   4. New conversation happy path → 202 + conversation row + agent:invoke dispatch
-//   5. Existing conversation happy path → no new conversation row, turn appended
+//   5. Existing conversation happy path → 202, no new conversation row, no append-turn call
 //   6. Mismatched agent → 400 (agent-mismatch, I10)
 //   7. Conversation not-found → 404 (conversation-not-found)
 //   8. Cross-tenant conversation → 404 (no leak; not 403)
