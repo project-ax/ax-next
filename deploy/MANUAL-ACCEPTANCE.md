@@ -194,6 +194,10 @@ small HTTP front door:
    knobs flipped on:
 
    ```bash
+   # http.cookieKey + an auth provider are now required since issue #39 —
+   # without them the host pod crash-loops on AX_HTTP_COOKIE_KEY required /
+   # no-auth-providers. devBootstrap is the simplest path for the canary;
+   # production deploys swap it for the auth.google.* set.
    helm upgrade --install ax-next deploy/charts/ax-next \
      --namespace ax-next --create-namespace \
      --set replicas=2 \
@@ -202,7 +206,9 @@ small HTTP front door:
      --set image.repository=<your-registry>/ax-next/agent \
      --set image.tag=<your-tag> \
      --set credentials.key="$(openssl rand -base64 32)" \
-     --set anthropic.apiKey="$ANTHROPIC_API_KEY"
+     --set anthropic.apiKey="$ANTHROPIC_API_KEY" \
+     --set http.cookieKey="$(openssl rand -hex 32)" \
+     --set auth.devBootstrap.token="$(openssl rand -hex 16)"
    ```
 
 2. Wait for both host pods, the git-server pod, and postgres to be Ready:

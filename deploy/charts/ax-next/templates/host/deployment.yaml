@@ -84,27 +84,31 @@ spec:
             {{- end }}
 
             # Auth providers — at least one must be configured (the auth
-            # plugin throws no-auth-providers otherwise).
-            {{- if .Values.auth.devBootstrap }}
-            {{- if .Values.auth.devBootstrap.token }}
+            # plugin throws no-auth-providers otherwise). Both gates use
+            # the shared helpers so deployment + secret stay in sync; the
+            # devBootstrap gate is lookup-stable (existing-secret keeps
+            # the env across upgrades that don't re-pass the token).
+            {{- if eq (include "ax-next.devBootstrapEnabled" .) "true" }}
             - name: AX_DEV_BOOTSTRAP_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ include "ax-next.fullname" . }}-secrets
                   key: dev-bootstrap-token
             {{- end }}
-            {{- end }}
-            {{- if .Values.auth.google }}
-            {{- if .Values.auth.google.clientId }}
+            {{- if eq (include "ax-next.googleAuthEnabled" .) "true" }}
             - name: AX_AUTH_GOOGLE_CLIENT_ID
               value: {{ .Values.auth.google.clientId | quote }}
+            # clientSecret via Secret — never inline in the rendered Deployment
+            # so anyone with `get deployments` RBAC can't read it.
             - name: AX_AUTH_GOOGLE_CLIENT_SECRET
-              value: {{ .Values.auth.google.clientSecret | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ax-next.fullname" . }}-secrets
+                  key: google-client-secret
             - name: AX_AUTH_GOOGLE_ISSUER
               value: {{ .Values.auth.google.issuer | quote }}
             - name: AX_AUTH_GOOGLE_REDIRECT_URI
               value: {{ .Values.auth.google.redirectUri | quote }}
-            {{- end }}
             {{- end }}
 
             # Sandbox plugin reads these to size + place runner pods.

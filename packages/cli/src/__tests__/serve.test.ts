@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import {
   type Plugin,
@@ -24,10 +24,22 @@ import { runServeCommand } from '../commands/serve.js';
 // (the kind goldenpath, channel-web's UI) authenticate themselves.
 // ---------------------------------------------------------------------------
 
+// Capture + restore so a parallel test file in the same vitest worker
+// doesn't see our override leak in (or out — restoring the original keeps
+// future runs deterministic).
+let originalAllowNoOrigins: string | undefined;
 beforeAll(() => {
+  originalAllowNoOrigins = process.env.AX_HTTP_ALLOW_NO_ORIGINS;
   // Silence the http-server's empty-allow-list warning. We test with
   // X-Requested-With: ax-admin instead of an Origin allow-list.
   process.env.AX_HTTP_ALLOW_NO_ORIGINS = '1';
+});
+afterAll(() => {
+  if (originalAllowNoOrigins === undefined) {
+    delete process.env.AX_HTTP_ALLOW_NO_ORIGINS;
+  } else {
+    process.env.AX_HTTP_ALLOW_NO_ORIGINS = originalAllowNoOrigins;
+  }
 });
 
 interface ServeHandle {

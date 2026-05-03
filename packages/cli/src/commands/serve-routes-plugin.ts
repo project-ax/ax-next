@@ -31,7 +31,7 @@
 // guaranteed to be wired before this plugin's init() runs. Doing it inline
 // would mean racing http-server's init().
 
-import { randomUUID } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import {
   PluginError,
   makeAgentContext,
@@ -143,12 +143,20 @@ async function handleChat(
   serveToken: string | undefined,
 ): Promise<void> {
   // Auth: when serveToken is set, /chat requires Bearer <token>.
+  // timingSafeEqual prevents byte-by-byte timing leaks in the comparison;
+  // the byte-length pre-check is required (timingSafeEqual throws on
+  // unequal-length inputs) AND is itself a leak channel, but only on
+  // total-length — not on token contents. The token never appears in any
+  // error response regardless of whether the compare passes.
   if (serveToken !== undefined && serveToken !== '') {
     const auth = req.headers['authorization'] ?? '';
     const expected = `Bearer ${serveToken}`;
-    // Length-pre-check + string compare. The token never appears in any
-    // error message regardless of whether the compare passes.
-    if (auth.length !== expected.length || auth !== expected) {
+    const authBuf = Buffer.from(auth, 'utf8');
+    const expectedBuf = Buffer.from(expected, 'utf8');
+    if (
+      authBuf.length !== expectedBuf.length ||
+      !timingSafeEqual(authBuf, expectedBuf)
+    ) {
       res.status(401).json({
         error: { code: 'UNAUTHORIZED', message: 'invalid or missing bearer token' },
       });
