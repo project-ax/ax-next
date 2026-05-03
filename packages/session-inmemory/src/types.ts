@@ -138,11 +138,17 @@ export interface SessionGetConfigOutput {
   agentConfig: AgentConfig;
   /**
    * Conversation this session is bound to (Task 15 of Week 10–12). Null
-   * for non-conversation sessions. The runner reads this from
-   * `session.get-config` at boot and uses it as the workspace / session
-   * lookup key — combined with the `runnerSessionId` returned on the same
-   * response (Phase E), it decides between a fresh SDK boot and an SDK
-   * `resume(sessionId)`. There is no separate fetch-history IPC.
+   * for non-conversation sessions. Storage-only at this layer — the
+   * session backend just persists what the orchestrator passed at create
+   * time and hands it back unchanged.
+   *
+   * The IPC handler for `session.get-config` (in `@ax/ipc-core`)
+   * enriches its wire response with `runnerSessionId` via a separate
+   * `conversations:get-metadata` round-trip; the runner reads BOTH
+   * fields from that wire response and uses them to decide between a
+   * fresh SDK boot and an SDK `resume(sessionId)`. There is no separate
+   * fetch-history IPC. (I4 — `runnerSessionId` lives in
+   * `@ax/conversations`, not here.)
    */
   conversationId: string | null;
 }
