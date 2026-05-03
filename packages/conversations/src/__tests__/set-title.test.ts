@@ -43,6 +43,14 @@ interface MockResolveCall {
 
 interface MockResolvePolicy {
   decide(call: MockResolveCall): 'allow' | 'forbid' | 'notfound';
+  /**
+   * Test seam for race-window simulation. Runs AFTER the policy
+   * decides 'allow' but BEFORE we return the resolved agent. This is
+   * the same point in the call graph where a concurrent caller could
+   * delete the conversation row — the handler has already loaded the
+   * row, but hasn't yet called store.setTitle.
+   */
+  onAllow?(call: MockResolveCall): Promise<void>;
 }
 
 let container: StartedPostgreSqlContainer;
@@ -64,6 +72,9 @@ async function makeHarness(policy: MockResolvePolicy): Promise<{
         resolveCalls.push(call);
         const decision = policy.decide(call);
         if (decision === 'allow') {
+          if (policy.onAllow !== undefined) {
+            await policy.onAllow(call);
+          }
           return { agent: { id: call.agentId, workspaceRef: null } };
         }
         if (decision === 'notfound') {
@@ -417,6 +428,67 @@ describe('conversations:set-title', () => {
     expect(resolveCalls).toHaveLength(0);
 
     // Original row's title is still null.
+    expect(await readTitleFromDb(conv.conversationId)).toBeNull();
+  });
+
+  it('throws not-found when the row is concurrently deleted between the existence check and the UPDATE', async () => {
+    // Race: handler loads the row + ACL'd, then a concurrent caller
+    // soft-deletes it before the UPDATE lands. setTitle's WHERE clause
+    // includes `deleted_at IS NULL`, so the UPDATE matches zero rows
+    // → store returns updated=false. Without the post-write existence
+    // re-check, that "zero rows" is indistinguishable from a legitimate
+    // ifNull=true no-op and the caller silently sees `{ updated: false }`
+    // instead of the real failure.
+    let convId = '';
+    const { h } = await makeHarness({
+      decide: () => 'allow',
+      onAllow: async () => {
+        if (convId === '') return; // pre-create call; nothing to delete yet.
+        // Simulate a concurrent deletion of THIS conversation between
+        // our existence check and our UPDATE. Use direct SQL — the
+        // handler is mid-flight inside the same bus call, so we can't
+        // use conversations:delete (it would re-enter agents:resolve).
+        const client = new pg.Client({ connectionString });
+        await client.connect();
+        try {
+          await client.query(
+            "UPDATE conversations_v1_conversations SET deleted_at = now() WHERE conversation_id = $1",
+            [convId],
+          );
+        } finally {
+          await client.end().catch(() => {});
+        }
+      },
+    });
+
+    const conv = await h.bus.call<CreateInput, CreateOutput>(
+      'conversations:create',
+      h.ctx({ userId: 'userA' }),
+      { userId: 'userA', agentId: 'agt_a' },
+    );
+    // Arm the race injector: from now on, every agents:resolve 'allow'
+    // soft-deletes this row before returning.
+    convId = conv.conversationId;
+
+    let caught: unknown;
+    try {
+      await h.bus.call<SetTitleInput, SetTitleOutput>(
+        'conversations:set-title',
+        h.ctx({ userId: 'userA' }),
+        {
+          conversationId: conv.conversationId,
+          userId: 'userA',
+          title: 'racing',
+        },
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('not-found');
+    expect((caught as PluginError).plugin).toBe('@ax/conversations');
+
+    // Title was never persisted — the row is gone.
     expect(await readTitleFromDb(conv.conversationId)).toBeNull();
   });
 });

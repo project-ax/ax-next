@@ -171,6 +171,33 @@ describe('@ax/conversation-titles chat:turn-end subscriber', () => {
     expect(stubs.setTitleCalls).toHaveLength(0);
   });
 
+  it('is a no-op when there is more than one assistant turn (post-first turn)', async () => {
+    // Regression: subscriber must NOT retry auto-titling after the first
+    // assistant turn. If the first attempt was lost (LLM error / validation
+    // rejected), every subsequent assistant turn would otherwise re-fire,
+    // expanding LLM spend and titling from a transcript the design didn't
+    // specify.
+    const stubs = makeStubsBus();
+    stubs.setGetResult({
+      conversation: makeConversation({ title: null }),
+      turns: [
+        turn('user', [{ type: 'text', text: 'Q1' }]),
+        turn('assistant', [{ type: 'text', text: 'A1' }]),
+        turn('user', [{ type: 'text', text: 'Q2' }]),
+        turn('assistant', [{ type: 'text', text: 'A2' }]),
+      ],
+    });
+    const plugin = createConversationTitlesPlugin();
+    await plugin.init({ bus: stubs.bus, config: {} });
+
+    const ctx = makeCtx({ conversationId: 'c1' });
+    await stubs.bus.fire('chat:turn-end', ctx, { role: 'assistant' });
+
+    expect(stubs.getCalls).toHaveLength(1);
+    expect(stubs.llmCalls).toHaveLength(0);
+    expect(stubs.setTitleCalls).toHaveLength(0);
+  });
+
   it('is a no-op when ctx.conversationId is undefined', async () => {
     const stubs = makeStubsBus();
     const plugin = createConversationTitlesPlugin();
@@ -273,7 +300,10 @@ describe('@ax/conversation-titles chat:turn-end subscriber', () => {
     const stubs = makeStubsBus();
     stubs.setGetResult({
       conversation: makeConversation({ title: null }),
-      turns: [turn('user', [{ type: 'text', text: 'Hi' }])],
+      turns: [
+        turn('user', [{ type: 'text', text: 'Hi' }]),
+        turn('assistant', [{ type: 'text', text: 'Hello!' }]),
+      ],
     });
     stubs.setLlmResult(async () => {
       throw new PluginError({
@@ -301,28 +331,63 @@ describe('@ax/conversation-titles chat:turn-end subscriber', () => {
     const stubs = makeStubsBus();
     stubs.setGetResult({
       conversation: makeConversation({ title: null }),
-      turns: [turn('user', [{ type: 'text', text: 'Hi' }])],
+      turns: [
+        turn('user', [{ type: 'text', text: 'Hi' }]),
+        turn('assistant', [{ type: 'text', text: 'Hello!' }]),
+      ],
     });
     stubs.setLlmResult({
       text: 'Untitled',
       stopReason: 'end_turn',
       usage: { inputTokens: 1, outputTokens: 1 },
     });
+    const debugSpy = vi.fn();
     const plugin = createConversationTitlesPlugin();
     await plugin.init({ bus: stubs.bus, config: {} });
 
-    const ctx = makeCtx({ conversationId: 'c1' });
+    const baseCtx = makeCtx({ conversationId: 'c1' });
+    const ctx: AgentContext = {
+      ...baseCtx,
+      logger: {
+        ...baseCtx.logger,
+        debug: debugSpy,
+      },
+    };
     await stubs.bus.fire('chat:turn-end', ctx, { role: 'assistant' });
 
     expect(stubs.llmCalls).toHaveLength(1);
     expect(stubs.setTitleCalls).toHaveLength(0);
+
+    // Privacy: the validation-skipped log MUST log the length of the
+    // model's output (a useful "model misbehaving?" signal) and MUST NOT
+    // log the raw text — model output is untrusted content (CLAUDE.md
+    // invariant 5) and our SECURITY.md says we don't log prompt-derived
+    // text.
+    expect(debugSpy).toHaveBeenCalledWith(
+      'conversation_titles_validation_skipped',
+      expect.objectContaining({
+        conversationId: 'c1',
+        rawLength: 'Untitled'.length,
+      }),
+    );
+    const calls = debugSpy.mock.calls;
+    const skippedCall = calls.find(
+      (c) => c[0] === 'conversation_titles_validation_skipped',
+    );
+    expect(skippedCall).toBeDefined();
+    const bindings = skippedCall![1] as Record<string, unknown>;
+    expect(bindings.raw).toBeUndefined();
+    expect(JSON.stringify(bindings)).not.toContain('Untitled');
   });
 
   it('sanitizes quoted/multi-line model output before writing set-title', async () => {
     const stubs = makeStubsBus();
     stubs.setGetResult({
       conversation: makeConversation({ title: null }),
-      turns: [turn('user', [{ type: 'text', text: 'Hi' }])],
+      turns: [
+        turn('user', [{ type: 'text', text: 'Hi' }]),
+        turn('assistant', [{ type: 'text', text: 'Hello!' }]),
+      ],
     });
     stubs.setLlmResult({
       text: '"Hello World"\n',
@@ -344,7 +409,10 @@ describe('@ax/conversation-titles chat:turn-end subscriber', () => {
     const stubs = makeStubsBus();
     stubs.setGetResult({
       conversation: makeConversation({ title: null }),
-      turns: [turn('user', [{ type: 'text', text: 'Hi' }])],
+      turns: [
+        turn('user', [{ type: 'text', text: 'Hi' }]),
+        turn('assistant', [{ type: 'text', text: 'Hello!' }]),
+      ],
     });
     stubs.setLlmResult({
       text: 'Race Loser',
@@ -381,7 +449,10 @@ describe('@ax/conversation-titles chat:turn-end subscriber', () => {
     const stubs = makeStubsBus();
     stubs.setGetResult({
       conversation: makeConversation({ title: null }),
-      turns: [turn('user', [{ type: 'text', text: 'Hi' }])],
+      turns: [
+        turn('user', [{ type: 'text', text: 'Hi' }]),
+        turn('assistant', [{ type: 'text', text: 'Hello!' }]),
+      ],
     });
     stubs.setLlmResult({
       text: 'Some Title',

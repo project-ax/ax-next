@@ -541,7 +541,31 @@ async function setConversationTitle(
     // matches the store's optional-property contract.
     ...(input.ifNull === undefined ? {} : { ifNull: input.ifNull }),
   });
-  return { updated };
+
+  if (updated) {
+    return { updated: true };
+  }
+
+  // updated=false has two possible causes:
+  //   (a) ifNull=true and the row was already titled — legitimate no-op.
+  //   (b) the row was deleted (or moved cross-tenant) between the
+  //       existence check above and the UPDATE — should surface as
+  //       not-found so the caller sees the real failure rather than
+  //       silently treating a vanished row as "no update needed".
+  // Re-check existence to disambiguate. The contract on
+  // SetTitleOutput.updated documents only meaning (a); leaking (b) as
+  // updated=false would let callers ignore a real not-found.
+  const current = await store.getByIdNotDeleted(input.conversationId);
+  if (current === null || current.userId !== input.userId) {
+    throw new PluginError({
+      code: 'not-found',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `conversation '${input.conversationId}' not found`,
+    });
+  }
+
+  return { updated: false };
 }
 
 async function getConversationMetadata(

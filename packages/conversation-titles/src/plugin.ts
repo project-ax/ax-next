@@ -111,6 +111,17 @@ async function handleTurnEnd(
   if (conv.conversation.title !== null) return;
   if (conv.turns.length === 0) return;
 
+  // Only auto-title on the first assistant turn. If that attempt was lost
+  // (LLM error, validation rejected the output), we deliberately don't
+  // retry on later turns — the design says "after the first assistant
+  // turn", and re-firing per turn would mean later titles summarize a
+  // different transcript than the design specifies (and would expand
+  // LLM spend silently). Manual retitling is a future feature.
+  const assistantTurnCount = conv.turns.filter(
+    (t) => t.role === 'assistant',
+  ).length;
+  if (assistantTurnCount !== 1) return;
+
   const prompt = buildPrompt(conv.turns);
   const llmOut = await bus.call<LlmCallInput, LlmCallOutput>(
     'llm:call',
@@ -130,9 +141,15 @@ async function handleTurnEnd(
     // whitespace). Leave the row's title NULL — better than writing
     // garbage. Logged at debug because this is expected to happen
     // occasionally on signal-poor first turns and isn't actionable.
+    // SECURITY: `llmOut.text` is untrusted model-generated content
+    // (CLAUDE.md invariant 5). Logging it would violate this plugin's
+    // SECURITY.md ("we don't log prompt-derived text") and could
+    // surface user content in operator-visible logs. The length is a
+    // useful signal (very long = model misbehaving) without leaking
+    // content.
     ctx.logger.debug('conversation_titles_validation_skipped', {
       conversationId: ctx.conversationId,
-      raw: llmOut.text,
+      rawLength: llmOut.text.length,
     });
     return;
   }
