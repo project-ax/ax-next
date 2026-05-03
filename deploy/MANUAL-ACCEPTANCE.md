@@ -32,10 +32,17 @@ kind load docker-image ax-next/agent:dev --name ax-next-dev
 #    want `helm uninstall` to take the namespace with it).
 kubectl create namespace ax-next-runners
 
-# 4. Install the chart (into the ax-next namespace — every probe below
-#    assumes that, including the new HTTP runner-IPC checks under "Known
-#    gotchas").
-helm install ax-next deploy/charts/ax-next \
+# 4. Install (or re-install) the chart into the ax-next namespace.
+#    `upgrade --install` is idempotent — safe to re-run after a partial
+#    failure without `helm uninstall` first. Every probe below assumes
+#    the ax-next namespace, including the HTTP runner-IPC checks under
+#    "Known gotchas".
+#
+#    Heads up: regenerating `credentials.key` on every run invalidates
+#    any encrypted secrets in the database. That's fine for a from-
+#    scratch kind run, but if you've seeded credentials and want to keep
+#    them, pin the key once (e.g., to a file) and reuse it across runs.
+helm upgrade --install ax-next deploy/charts/ax-next \
   --namespace ax-next --create-namespace \
   -f deploy/charts/ax-next/kind-dev-values.yaml \
   --set image.repository=ax-next/agent \
