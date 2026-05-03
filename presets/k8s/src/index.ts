@@ -465,24 +465,6 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // is exactly what the kernel's topo-sort needs to see.
   plugins.push(createTeamsPlugin({ mountAdminRoutes: true }));
 
-  // static-files (optional): serves channel-web's bundle from the same
-  // listener so cookies and CSRF stay same-origin in production. The
-  // plugin registers a `/*` catchall LAST so every API route registered
-  // earlier wins. When `staticFiles` is unset, no catchall is mounted
-  // and unknown paths return 404 — the dev workflow uses Vite's proxy
-  // instead. SPA fallback defaults on so client-side routing works.
-  if (config.staticFiles !== undefined) {
-    plugins.push(
-      createStaticFilesPlugin({
-        dir: config.staticFiles.dir,
-        ...(config.staticFiles.mountPath !== undefined
-          ? { mountPath: config.staticFiles.mountPath }
-          : {}),
-        spaFallback: config.staticFiles.spaFallback ?? true,
-      }),
-    );
-  }
-
   // ----- 6. chat plane ---------------------------------------------------
   // sandbox-k8s registers `sandbox:open-session`. No subprocess fallback
   // here — this preset is k8s-only.
@@ -589,6 +571,31 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // is in-process; multi-replica fan-out is a future slice that swaps
   // it for redis / pg-logical without changing the SSE handler shape.
   plugins.push(createChannelWebServerPlugin());
+
+  // ----- 11. static-files (optional, MUST be last) ----------------------
+  // Serves channel-web's bundle from the same listener so cookies and
+  // CSRF stay same-origin in production. The plugin registers a `/*`
+  // splat catchall — the http-server router does SPECIFICITY-based
+  // matching (exact > non-splat patterns > splats; see
+  // packages/http-server/src/router.ts:137-163), so /api/chat/* and
+  // /admin/* always win over /* regardless of registration order. We
+  // still push static-files LAST so the visual order matches the intent
+  // and a future reader doesn't read this as a shadowing bug.
+  //
+  // When `staticFiles` is unset, no catchall is mounted and unknown
+  // paths return 404 — the dev workflow uses Vite's proxy instead.
+  // SPA fallback defaults on so client-side routing works.
+  if (config.staticFiles !== undefined) {
+    plugins.push(
+      createStaticFilesPlugin({
+        dir: config.staticFiles.dir,
+        ...(config.staticFiles.mountPath !== undefined
+          ? { mountPath: config.staticFiles.mountPath }
+          : {}),
+        spaFallback: config.staticFiles.spaFallback ?? true,
+      }),
+    );
+  }
 
   return plugins;
 }
