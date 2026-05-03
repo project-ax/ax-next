@@ -1,0 +1,32 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "0dee1ccdd98c",
+  "session_id": "7625cfa8-ece1-4865-b35c-bae1d71734d5",
+  "strategy": "manual-commit",
+  "created_at": "2026-05-03T09:50:21.337241Z",
+  "branch": "feat/phase-e-runner-owned-sessions",
+  "checkpoints_count": 1,
+  "files_touched": [],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "1b76c61e2a2a",
+  "token_usage": {
+    "input_tokens": 281,
+    "cache_creation_tokens": 1173594,
+    "cache_read_tokens": 43627159,
+    "output_tokens": 124091,
+    "api_call_count": 188
+  },
+  "session_metrics": {
+    "turn_count": 10
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}
