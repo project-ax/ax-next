@@ -432,36 +432,4 @@ describe('@ax/conversations conversations:get reads from workspace jsonl', () =>
     ]);
   });
 
-  it('does NOT consult store.listTurns — DB-direct turns are ignored', async () => {
-    // Append a turn via the existing :append-turn service hook (Phase D
-    // Task 5 will remove this from the chat:turn-end subscriber, but the
-    // service hook itself stays). conversations:get must NOT see it
-    // because it now reads from workspace, not from conversation_turns.
-    const { h } = await makeHarness({});
-    const created = await h.bus.call<CreateInput, CreateOutput>(
-      'conversations:create',
-      h.ctx({ userId: 'userA' }),
-      { userId: 'userA', agentId: 'agt_a' },
-    );
-    await h.bus.call(
-      'conversations:append-turn',
-      h.ctx({ userId: 'userA' }),
-      {
-        conversationId: created.conversationId,
-        userId: 'userA',
-        role: 'user',
-        contentBlocks: [{ type: 'text', text: 'this is in the DB only' }],
-      },
-    );
-    // Leave runner_session_id null — the workspace path is short-
-    // circuited and the DB row is invisible. This is the load-bearing
-    // assertion: no DB fallback.
-
-    const got = await h.bus.call<GetInput, GetOutput>(
-      'conversations:get',
-      h.ctx({ userId: 'userA' }),
-      { conversationId: created.conversationId, userId: 'userA' },
-    );
-    expect(got.turns).toEqual([]);
-  });
 });

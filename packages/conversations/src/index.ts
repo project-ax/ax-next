@@ -3,12 +3,10 @@ export {
   runConversationsMigration,
   type ConversationDatabase,
   type ConversationsRow,
-  type TurnsRow,
 } from './migrations.js';
 export {
   createConversationStore,
   mintConversationId,
-  mintTurnId,
   validateContentBlocks,
   validateRole,
   validateRunnerType,
@@ -16,7 +14,6 @@ export {
   validateWorkspaceRefForFreeze,
   type ConversationStore,
   type ConversationStoreCreateArgs,
-  type ConversationStoreAppendTurnArgs,
   type ConversationMetadata,
   type StoreRunnerSessionResult,
 } from './store.js';
@@ -25,8 +22,6 @@ export {
   type ConversationScope,
 } from './scope.js';
 export type {
-  AppendTurnInput,
-  AppendTurnOutput,
   BindSessionInput,
   BindSessionOutput,
   ContentBlock,

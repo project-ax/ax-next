@@ -11,6 +11,7 @@ import {
   describe,
   expect,
   it,
+  vi,
 } from 'vitest';
 import { PluginError, type AgentContext, type Plugin } from '@ax/core';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
@@ -40,7 +41,7 @@ import { createChannelWebServerPlugin } from '../../server/plugin';
 //   2. Foreign agent → 403
 //   3. Agent not-found → 404 (agent-not-found)
 //   4. New conversation happy path → 202 + conversation row + agent:invoke dispatch
-//   5. Existing conversation happy path → no new conversation row, turn appended
+//   5. Existing conversation happy path → 202, no new conversation row, no append-turn call
 //   6. Mismatched agent → 400 (agent-mismatch, I10)
 //   7. Conversation not-found → 404 (conversation-not-found)
 //   8. Cross-tenant conversation → 404 (no leak; not 403)
@@ -271,21 +272,14 @@ async function countConversations(): Promise<number> {
   }
 }
 
-async function listTurns(
-  conversationId: string,
-): Promise<Array<{ role: string; turn_index: number }>> {
-  const client = new (await import('pg')).default.Client({ connectionString });
-  await client.connect();
-  try {
-    const r = await client.query(
-      'SELECT role, turn_index FROM conversations_v1_turns WHERE conversation_id = $1 ORDER BY turn_index ASC',
-      [conversationId],
-    );
-    return r.rows as Array<{ role: string; turn_index: number }>;
-  } finally {
-    await client.end().catch(() => {});
-  }
-}
+// Phase E (2026-05-09): the `listTurns` helper that queried
+// `conversations_v1_turns` was deleted alongside the table itself. The
+// runner-native workspace jsonl is now the source of truth for transcripts
+// (Task E-6 dropped the table from the migration), so any "no turn was
+// written" assertion is implicit — there is no host-side table to peek
+// into. The remaining tests still assert agent:invoke dispatch + the
+// absence of any conversations:append-turn hook call, which is the
+// real behavioral contract.
 
 async function postMessage(
   port: number,
@@ -357,12 +351,19 @@ describe('@ax/channel-web POST /api/chat/messages', () => {
     expect(await countConversations()).toBe(0);
   });
 
-  it('4. new conversation happy path: 202, row created, user turn appended, agent:invoke dispatched with server-minted reqId', async () => {
+  it('4. new conversation happy path: 202, row created, agent:invoke dispatched with server-minted reqId, no append-turn call', async () => {
     const booted = await boot({
       user: { id: 'userA', isAdmin: false },
       allowedFor: new Set(['userA']),
     });
     harnesses.push(booted.harness);
+
+    // Phase E: channel-web no longer calls conversations:append-turn —
+    // the runner's first SDK turn writes the user message to the
+    // workspace jsonl, which is the source of truth for transcripts.
+    // Spy on bus.call to prove the route never invokes the append-turn
+    // hook even on the happy path.
+    const callSpy = vi.spyOn(booted.harness.bus, 'call');
 
     const r = await postMessage(booted.port, {
       conversationId: null,
@@ -386,8 +387,10 @@ describe('@ax/channel-web POST /api/chat/messages', () => {
     expect(body.reqId).toMatch(/^req-[0-9a-f]{12}$/);
 
     expect(await countConversations()).toBe(1);
-    const turns = await listTurns(body.conversationId);
-    expect(turns).toEqual([{ role: 'user', turn_index: 0 }]);
+    // Phase E (Task E-6): the conversations_v1_turns table is gone.
+    // The runner-native jsonl in the workspace is the source of truth
+    // for transcripts. "No host-side turn was written" is implicit —
+    // there is no table left to peek into.
 
     // agent:invoke dispatch — give the void-returning call a tick to flush.
     await new Promise((resolve) => setTimeout(resolve, 30));
@@ -399,9 +402,19 @@ describe('@ax/channel-web POST /api/chat/messages', () => {
     expect(cap.ctx.agentId).toBe('agt_test');
     // agent:invoke's first-turn message — extracted from the first text block.
     expect(cap.input.message).toEqual({ role: 'user', content: 'hello there' });
+
+    // Phase E invariant: conversations:append-turn must not be called
+    // anywhere in the POST handler chain. (The hook is still registered
+    // by @ax/conversations until Task E-3 deletes it; this assertion
+    // proves the writer side is gone today.)
+    const appendCalls = callSpy.mock.calls.filter(
+      ([hookName]) => hookName === 'conversations:append-turn',
+    );
+    expect(appendCalls).toHaveLength(0);
+    callSpy.mockRestore();
   });
 
-  it('5. existing conversation: turn appended, no new conversation created', async () => {
+  it('5. existing conversation: 202 returned, no new conversation created, no append-turn call', async () => {
     const booted = await boot({
       user: { id: 'userA', isAdmin: false },
       allowedFor: new Set(['userA']),
@@ -421,6 +434,8 @@ describe('@ax/channel-web POST /api/chat/messages', () => {
 
     expect(await countConversations()).toBe(1);
 
+    const callSpy = vi.spyOn(booted.harness.bus, 'call');
+
     const r = await postMessage(booted.port, {
       conversationId: created.conversationId,
       agentId: 'agt_test',
@@ -433,8 +448,15 @@ describe('@ax/channel-web POST /api/chat/messages', () => {
 
     // Still ONE conversation row.
     expect(await countConversations()).toBe(1);
-    const turns = await listTurns(created.conversationId);
-    expect(turns).toEqual([{ role: 'user', turn_index: 0 }]);
+    // Phase E (Task E-6): conversations_v1_turns was dropped; the
+    // workspace jsonl is the transcript source of truth.
+
+    // Phase E invariant: no append-turn call.
+    const appendCalls = callSpy.mock.calls.filter(
+      ([hookName]) => hookName === 'conversations:append-turn',
+    );
+    expect(appendCalls).toHaveLength(0);
+    callSpy.mockRestore();
   });
 
   it('6. mismatched agent on existing conversation → 400 (agent-mismatch, I10)', async () => {
@@ -461,9 +483,9 @@ describe('@ax/channel-web POST /api/chat/messages', () => {
 
     expect(r.status).toBe(400);
     expect(await r.json()).toEqual({ error: 'agent-mismatch' });
-    // No turn appended.
-    const turns = await listTurns(created.conversationId);
-    expect(turns).toHaveLength(0);
+    // Phase E (Task E-6): conversations_v1_turns was dropped; the
+    // 400 response above is the load-bearing assertion that no work
+    // was kicked off for the mismatched agent.
   });
 
   it('7. conversation not-found → 404 (conversation-not-found)', async () => {
@@ -521,9 +543,9 @@ describe('@ax/channel-web POST /api/chat/messages', () => {
 
     expect(r.status).toBe(404); // NOT 403.
     expect(await r.json()).toEqual({ error: 'conversation-not-found' });
-    // userA's conversation has no turns.
-    const turns = await listTurns(created.conversationId);
-    expect(turns).toHaveLength(0);
+    // Phase E (Task E-6): conversations_v1_turns was dropped; the
+    // chatRunCaptures assertion below is the load-bearing proof that
+    // userB's request never reached agent:invoke.
     expect(bootB.chatRunCaptures).toHaveLength(0);
   });
 

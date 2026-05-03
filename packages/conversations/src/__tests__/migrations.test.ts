@@ -15,6 +15,12 @@ import {
 // conversations_v1_conversations adding runner_type, runner_session_id,
 // workspace_ref, last_activity_at — all nullable. No v1 → v2 split (I1):
 // greenfield, ALTER in place forever.
+//
+// Phase E (2026-05-09) migration. Forward-only DROP of the now-dead
+// conversations_v1_turns table. Phase D switched the reader to the
+// runner-native workspace jsonl, Phase E removes the writer. The DROP
+// step uses IF EXISTS so it's idempotent on both fresh databases (where
+// the table never existed) and existing databases (where it did).
 // ---------------------------------------------------------------------------
 
 let container: StartedPostgreSqlContainer;
@@ -102,6 +108,57 @@ describe('Phase B migration', () => {
         AND column_name IN ('runner_type', 'runner_session_id', 'workspace_ref', 'last_activity_at')
     `.execute(db);
     expect(cols.rows).toHaveLength(4);
+  });
+
+  it('does NOT create the conversations_v1_turns table on a fresh database (Phase E)', async () => {
+    const db = makeKysely();
+    await runConversationsMigration(db);
+
+    const r = await sql<{ exists: boolean }>`
+      SELECT EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_name = 'conversations_v1_turns'
+      ) AS exists
+    `.execute(db);
+    expect(r.rows[0]?.exists).toBe(false);
+  });
+
+  it('drops a pre-existing conversations_v1_turns table (Phase E forward-only DROP)', async () => {
+    const db = makeKysely();
+    // Simulate a pre-Phase-E database by creating the legacy turns table
+    // up front, then running the migration. The Phase E DROP step must
+    // remove it. This proves DROP TABLE IF EXISTS is idempotent on an
+    // existing schema (I11).
+    await sql`
+      CREATE TABLE conversations_v1_turns (
+        turn_id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        turn_index INTEGER NOT NULL,
+        role TEXT NOT NULL,
+        content_blocks JSONB NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (conversation_id, turn_index)
+      )
+    `.execute(db);
+
+    // Sanity: table exists before the migration runs.
+    const before = await sql<{ exists: boolean }>`
+      SELECT EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_name = 'conversations_v1_turns'
+      ) AS exists
+    `.execute(db);
+    expect(before.rows[0]?.exists).toBe(true);
+
+    await runConversationsMigration(db);
+
+    const after = await sql<{ exists: boolean }>`
+      SELECT EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_name = 'conversations_v1_turns'
+      ) AS exists
+    `.execute(db);
+    expect(after.rows[0]?.exists).toBe(false);
   });
 
   it('existing rows survive the migration with NULL Phase B columns (no backfill)', async () => {

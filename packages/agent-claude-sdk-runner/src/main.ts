@@ -10,8 +10,6 @@ import {
   createIpcClient,
   type AgentMessage,
   type ContentBlock,
-  type ConversationFetchHistoryResponse,
-  type ConversationFetchHistoryTurn,
   type ImageBlock,
   type SessionGetConfigResponse,
   type TextBlock,
@@ -110,6 +108,7 @@ export async function main(): Promise<number> {
   // config.
   let agentConfig: SessionGetConfigResponse['agentConfig'];
   let conversationId: string | null = null;
+  let runnerSessionId: string | null = null;
   try {
     const cfg = (await client.call(
       'session.get-config',
@@ -118,13 +117,28 @@ export async function main(): Promise<number> {
     agentConfig = cfg.agentConfig;
     // Task 15 (Week 10–12): the host populates conversationId at session-
     // creation time when the runner is for an existing conversation. The
-    // runner uses a truthy value as the trigger to fetch transcript
-    // history and replay it into the SDK's prompt iterator (J3 + J6
-    // resume). We normalize `undefined` (older host that hasn't shipped
-    // the field) and `null` (non-conversation session) into the same
-    // skip-replay branch via a strict equality check on the string type
-    // — anything else takes the fetch path.
+    // runner uses a non-null value as the trigger to bind the SDK
+    // session id back via `conversation.store-runner-session` after
+    // first init. We normalize `undefined` (older host that hasn't
+    // shipped the field) and `null` (non-conversation session) into the
+    // same skip-bind branch via a strict equality check on the string
+    // type.
     conversationId = typeof cfg.conversationId === 'string' ? cfg.conversationId : null;
+    // Phase E (2026-05-09): runnerSessionId rides the same response now
+    // that `conversation.fetch-history` is gone. Non-null = the SDK has
+    // bound a session id on a prior boot; we pass it as `options.resume`
+    // to `query()` below so the SDK rehydrates from its own on-disk
+    // transcript instead of starting a fresh conversation. Null = first
+    // boot OR conversationId is null; the SDK starts fresh.
+    //
+    // Empty string is treated as null. The wire schema is
+    // `z.string().nullable()` (no `.min(1)`), so a future bug or stale
+    // row could in principle deliver `''`. Passing `resume: ''` to the
+    // SDK is undefined behavior; coerce defensively.
+    runnerSessionId =
+      typeof cfg.runnerSessionId === 'string' && cfg.runnerSessionId.length > 0
+        ? cfg.runnerSessionId
+        : null;
   } catch (err) {
     process.stderr.write(
       `runner: session.get-config failed: ${err instanceof Error ? err.message : String(err)}\n`,
@@ -161,55 +175,21 @@ export async function main(): Promise<number> {
     return 2;
   }
 
-  // Task 15 (Week 10–12): replay-at-boot. Fetch the persisted transcript
-  // BEFORE constructing the SDK iterator so the model sees prior turns
-  // before any live inbox message.
+  // Phase E (2026-05-09): the replay-at-boot path is gone. Transcripts
+  // live in the runner's native ~/.claude/projects/<sessionId>.jsonl
+  // file (HOME-redirected into the workspace by Phase C), and the host
+  // reads them back via @ax/workspace-* on demand (Phase D). The runner
+  // never re-emits prior user turns into the SDK's prompt iterator: the
+  // SDK's own `resume(sessionId)` rehydrates the entire conversation
+  // from disk when `runnerSessionId` is set above, and a null
+  // `runnerSessionId` means there's no prior conversation to rehydrate
+  // (first boot for this conversation, or non-conversation session).
   //
-  // Failure semantics: NON-FATAL. A storage hiccup or ACL drift here
-  // shouldn't kill the chat — we'd rather hand the user a fresh
-  // conversation than crash on resume. We log to stderr and continue
-  // with an empty history.
-  //
-  // Phase C (2026-05-02): two paths now.
-  //   1. `runnerSessionId !== null` — the conversation has a bound SDK
-  //      session id from a prior runner. We pass it as `options.resume`
-  //      to `query()` and SKIP the replay populate; the SDK rehydrates
-  //      the conversation from its own on-disk transcript. Re-emitting
-  //      the persisted turns would double-replay them.
-  //   2. `runnerSessionId === null` — first-boot path (or unbind path).
-  //      Yield prior user turns into the prompt iterator before the live
-  //      inbox so the model has the context to regenerate.
-  //
-  // What we replay (when no resume is in effect) and what we DON'T:
-  //   - User turns: yielded as SDKUserMessage. The SDK accepts a user
-  //     message whose content is either a string or an Anthropic-
-  //     compatible content-block array; we use the array form so
-  //     multi-block user turns (e.g. with images) round-trip.
-  //   - Assistant + tool turns: NOT re-yielded. The SDK's prompt
-  //     iterator only accepts user-shaped messages, and Anthropic's API
-  //     rejects tool_result blocks that aren't paired with a preceding
-  //     assistant tool_use. The model regenerates the tool flow from
-  //     the user-side context.
-  let replayTurns: ConversationFetchHistoryTurn[] = [];
-  let runnerSessionId: string | null = null;
-  if (conversationId !== null) {
-    try {
-      const resp = (await client.call('conversation.fetch-history', {
-        conversationId,
-      })) as ConversationFetchHistoryResponse;
-      runnerSessionId = resp.runnerSessionId;
-      // When a runner-session id is bound, the SDK rehydrates the
-      // transcript on its own via `options.resume` (set below). Skip the
-      // replay populate so `userMessages()` only yields the live inbox.
-      replayTurns = runnerSessionId === null ? resp.turns : [];
-    } catch (err) {
-      process.stderr.write(
-        `runner: conversation.fetch-history failed: ${err instanceof Error ? err.message : String(err)}\n`,
-      );
-      replayTurns = [];
-      runnerSessionId = null;
-    }
-  }
+  // What used to be `conversation.fetch-history` is gone too: the bind
+  // state (`runnerSessionId`) now rides on the `session.get-config`
+  // response, composed by the host's IPC handler from
+  // `conversations:get-metadata`. One IPC, one response — no separate
+  // replay payload to chase.
 
   let tools;
   try {
@@ -253,8 +233,8 @@ export async function main(): Promise<number> {
   // session_id, ... }` — see SDKSystemMessage in
   // @anthropic-ai/claude-agent-sdk/sdk.d.ts:3282-3314. We capture that
   // session_id once and POST it to the host so a future runner restart
-  // can `resume(sessionId)` instead of replaying the transcript from
-  // our DB.
+  // can `resume(sessionId)` — read back via the runnerSessionId field
+  // on the next session.get-config response (Phase E).
   //
   // Once-only: a single `query()` can re-emit system/init on a resume
   // path. Only the FIRST init is load-bearing for the bind — the runner
@@ -262,15 +242,14 @@ export async function main(): Promise<number> {
   // double-fire even if the IPC is in flight.
   //
   // Non-fatal: if the bind fails, we lose the resume optimization on
-  // next restart and fall back to fetch-history replay. The chat itself
-  // continues uninterrupted.
+  // next restart (the SDK starts a fresh session and writes a new jsonl,
+  // which the workspace-jsonl reader still picks up alongside any
+  // earlier jsonl files). The chat itself continues uninterrupted.
   let runnerSessionIdSent = false;
   // Host-side bookkeeping for the final event.chat-end outcome. The SDK
   // maintains its OWN transcript internally; this array is only the shape
   // the host cares about (user/assistant text round-tripped through
-  // AgentMessage). NOT the same as `replayTurns` above — replayTurns is
-  // the persisted history we pull at boot to seed the SDK; chatEndHistory
-  // is the within-process trace the host gets at chat:end.
+  // AgentMessage).
   const chatEndHistory: AgentMessage[] = [];
 
   // Per-turn content-block accumulators. Drained at the SDK `result`
@@ -304,56 +283,13 @@ export async function main(): Promise<number> {
   // tells the SDK no more user messages are coming, which lets the outer
   // `for await (msg of queryIter)` drain naturally and exit.
   //
-  // Task 15 (Week 10–12): replay-at-boot. We yield prior user turns
-  // (role=user with text content) BEFORE pulling from the live inbox.
-  // Assistant AND tool turns are skipped — the model regenerates the
-  // tool flow from the user-side context. We can't re-yield tool turns
-  // standalone: Anthropic's API rejects (400 invalid_request_error) any
-  // tool_result block that isn't paired with a tool_use in the
-  // immediately preceding assistant message, and we don't have the
-  // assistant turn (since the prompt iterator only accepts user-shaped
-  // messages). The conversation row still stores the tool turn (Task
-  // 3's auto-append); on replay the SDK only sees user text turns and
-  // the model regenerates tool flows from there.
-  //
-  // Phase C (2026-05-02): when `runnerSessionId !== null`, the boot
-  // block above sets `replayTurns = []` so this generator only yields
-  // the live inbox. The SDK rehydrates the transcript itself via
-  // `options.resume = runnerSessionId` (set on the `query()` call
-  // below). No double-replay.
+  // Phase E (2026-05-09): no more replay-from-DB. The SDK's
+  // `resume(sessionId)` rehydrates the transcript from its own on-disk
+  // store (~/.claude/projects/<sessionId>.jsonl, HOME-redirected into
+  // the workspace by Phase C) when `runnerSessionId !== null`. The
+  // generator only yields live inbox messages; prior turns are the
+  // SDK's responsibility to surface to the model.
   async function* userMessages(): AsyncGenerator<SDKUserMessage> {
-    // ----- replay -----
-    for (const turn of replayTurns) {
-      if (turn.role === 'user') {
-        // Collapse plain-text contentBlocks back into a string for the
-        // SDK (matches the live-inbox shape so the model doesn't see a
-        // mid-conversation format change). Multi-block user turns
-        // (e.g. with images) yield the full block array.
-        const allText = turn.contentBlocks.every(
-          (b): b is TextBlock => b.type === 'text',
-        );
-        const content: SDKUserMessage['message']['content'] = allText
-          ? turn.contentBlocks
-              .map((b) => (b as TextBlock).text)
-              .join('\n')
-          : (turn.contentBlocks as unknown as SDKUserMessage['message']['content']);
-        yield {
-          type: 'user',
-          parent_tool_use_id: null,
-          message: { role: 'user', content },
-        };
-      } else {
-        // assistant + tool turns are NOT re-yielded; the model
-        // regenerates from the user-side context. Tool turns
-        // specifically can't be yielded standalone (Anthropic 400:
-        // tool_result without paired tool_use in the immediately
-        // preceding assistant message).
-        process.stderr.write(
-          `runner: skipping replay of role=${turn.role} turn (model will regenerate from user-side context)\n`,
-        );
-      }
-    }
-    // ----- live inbox -----
     for (;;) {
       const entry = await inbox.next();
       if (entry.type === 'cancel') return;
@@ -463,24 +399,35 @@ export async function main(): Promise<number> {
         msg.subtype === 'init' &&
         !runnerSessionIdSent
       ) {
-        // Set BEFORE the await so a re-entrant system/init (e.g. on a
-        // future resume() path) can't double-fire while this IPC is in
-        // flight.
-        runnerSessionIdSent = true;
-        if (conversationId !== null) {
+        if (conversationId === null) {
+          // No conversation row to bind to — flag the once-only path
+          // so a re-entrant system/init can't fire spurious binds.
+          runnerSessionIdSent = true;
+        } else {
+          // Phase E (2026-05-09): this write is the ONLY durable link
+          // from the conversation row to the workspace jsonl. After the
+          // bind, `conversations:get` reads the transcript via
+          // `runnerSessionId`-keyed glob; before the bind, it short-
+          // circuits to `turns: []` because there's nothing to look up.
+          // If this fails AND we continue, the conversation is silently
+          // empty forever — no future read sees the jsonl, and no future
+          // boot can resume() because the row's `runner_session_id`
+          // stays NULL. Fail the run instead so the host's `chat:end`
+          // outcome is `terminated` and the operator notices.
           try {
             await client.call('conversation.store-runner-session', {
               conversationId,
               runnerSessionId: msg.session_id,
             });
           } catch (err) {
-            // Non-fatal: we lose the resume optimization on the next
-            // restart — the runner falls back to fetch-history replay.
-            // The chat continues uninterrupted.
-            process.stderr.write(
-              `runner: conversation.store-runner-session failed: ${err instanceof Error ? err.message : String(err)}\n`,
+            throw new Error(
+              `conversation.store-runner-session failed: ${err instanceof Error ? err.message : String(err)}`,
             );
           }
+          // Set AFTER the successful await — on retry-after-recoverable
+          // throw (none today, but future-proof), the next system/init
+          // would correctly re-attempt the bind.
+          runnerSessionIdSent = true;
         }
         continue;
       }

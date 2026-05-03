@@ -315,6 +315,7 @@ describe('main()', () => {
             model: 'claude-sonnet-4-7',
           },
           conversationId: null,
+          runnerSessionId: null,
         };
       }
       if (action === 'workspace.materialize') return { bundleBytes: '' };
@@ -483,6 +484,7 @@ describe('main()', () => {
             model: 'claude-sonnet-4-7',
           },
           conversationId: null,
+          runnerSessionId: null,
         };
       }
       if (action === 'workspace.materialize') return { bundleBytes: 'B64' };
@@ -540,6 +542,7 @@ describe('main()', () => {
             model: 'claude-sonnet-4-7',
           },
           conversationId: null,
+          runnerSessionId: null,
         };
       }
       if (action === 'workspace.materialize') return { bundleBytes: 'B64' };
@@ -584,6 +587,7 @@ describe('main()', () => {
             model: 'claude-sonnet-4-7',
           },
           conversationId: null,
+          runnerSessionId: null,
         };
       }
       if (action === 'workspace.materialize') return { bundleBytes: 'B64' };
@@ -636,6 +640,7 @@ describe('main()', () => {
             model: 'claude-sonnet-4-7',
           },
           conversationId: null,
+          runnerSessionId: null,
         };
       }
       if (action === 'workspace.materialize') return { bundleBytes: 'B64' };
@@ -689,6 +694,7 @@ describe('main()', () => {
             model: 'claude-sonnet-4-7',
           },
           conversationId: null,
+          runnerSessionId: null,
         };
       }
       if (action === 'workspace.materialize') {
@@ -739,6 +745,7 @@ describe('main()', () => {
             model: 'claude-sonnet-4-7',
           },
           conversationId: null,
+          runnerSessionId: null,
         };
       }
       if (action === 'workspace.materialize') {
@@ -784,6 +791,7 @@ describe('main()', () => {
             model: 'claude-sonnet-4-7',
           },
           conversationId: null,
+          runnerSessionId: null,
         };
       }
       if (action === 'workspace.materialize') return { bundleBytes: '' };
@@ -860,6 +868,7 @@ describe('main()', () => {
             model: 'claude-sonnet-4-7',
           },
           conversationId: null,
+          runnerSessionId: null,
         };
       }
       if (action === 'workspace.materialize') return { bundleBytes: '' };
@@ -949,6 +958,7 @@ describe('main()', () => {
             model: 'claude-sonnet-4-7',
           },
           conversationId: null,
+          runnerSessionId: null,
         };
       }
       if (action === 'workspace.materialize') return { bundleBytes: '' };
@@ -1053,6 +1063,7 @@ describe('main()', () => {
             model: 'claude-sonnet-4-7',
           },
           conversationId: null,
+          runnerSessionId: null,
         };
       }
       if (action === 'workspace.materialize') return { bundleBytes: '' };
@@ -1108,6 +1119,7 @@ describe('main()', () => {
             model: 'claude-sonnet-4-7',
           },
           conversationId: null,
+          runnerSessionId: null,
         };
       }
       if (action === 'workspace.materialize') return { bundleBytes: '' };
@@ -1217,6 +1229,7 @@ describe('main()', () => {
             model: 'claude-sonnet-4-7',
           },
           conversationId: null,
+          runnerSessionId: null,
         };
       }
       if (action === 'workspace.materialize') return { bundleBytes: '' };
@@ -1264,6 +1277,7 @@ describe('main()', () => {
             model: 'claude-sonnet-4-7',
           },
           conversationId: null,
+          runnerSessionId: null,
         };
       }
       if (action === 'workspace.materialize') return { bundleBytes: '' };
@@ -1309,133 +1323,23 @@ describe('main()', () => {
   });
 
   // ---------------------------------------------------------------------
-  // Task 15 (Week 10–12): replay-at-boot.
+  // Phase E (2026-05-09): no replay-from-DB at boot.
   //
-  // The runner pulls the persisted transcript at boot and yields prior
-  // user / tool turns into the SDK's prompt iterator BEFORE pulling the
-  // first live inbox message. Assistant turns are NOT re-yielded — the
-  // prompt iterator only takes user-shaped messages, and the model
-  // regenerates from the user-side context.
+  // The Task 15 replay path is gone. The SDK's `resume(sessionId)`
+  // rehydrates the transcript from its own on-disk store
+  // (~/.claude/projects/<sessionId>.jsonl, HOME-redirected into the
+  // workspace by Phase C); the runner never re-emits prior user turns
+  // into the prompt iterator. The bind state (`runnerSessionId`) rides
+  // on the `session.get-config` response now — there's no separate
+  // `conversation.fetch-history` IPC at boot.
+  //
+  // These tests pin the new behavior: the runner MUST NOT call
+  // `conversation.fetch-history` regardless of conversationId or
+  // runnerSessionId, and the SDK's prompt iterator MUST only carry
+  // live inbox messages.
   // ---------------------------------------------------------------------
 
-  it('Task 15 replay: fetches history when conversationId is non-null and yields prior user turns BEFORE the live inbox (assistant + tool turns are skipped — Anthropic API requires tool_result paired with preceding tool_use)', async () => {
-    setEnv(COMPLETE_ENV);
-    fakeClient = buildFakeClient();
-    fakeClient.call.mockImplementation(async (action: string, payload: unknown) => {
-      if (action === 'session.get-config') {
-        return {
-          userId: 'u-test',
-          agentId: 'a-test',
-          agentConfig: {
-            systemPrompt: '',
-            allowedTools: [],
-            mcpConfigIds: [],
-            model: 'claude-sonnet-4-7',
-          },
-          conversationId: 'cnv_resume',
-        };
-      }
-      if (action === 'workspace.materialize') return { bundleBytes: '' };
-      if (action === 'tool.list') return { tools: [] };
-      if (action === 'conversation.fetch-history') {
-        // Pin the request shape: conversationId from session.get-config.
-        expect(payload).toEqual({ conversationId: 'cnv_resume' });
-        return {
-          turns: [
-            {
-              role: 'user',
-              contentBlocks: [
-                { type: 'text', text: 'first question' },
-              ],
-            },
-            {
-              role: 'assistant',
-              contentBlocks: [
-                { type: 'text', text: 'first answer (will not re-yield)' },
-                { type: 'tool_use', id: 'tu_1', name: 'Bash', input: { cmd: 'ls' } },
-              ],
-            },
-            {
-              role: 'tool',
-              contentBlocks: [
-                {
-                  type: 'tool_result',
-                  tool_use_id: 'tu_1',
-                  content: 'ok',
-                  is_error: false,
-                },
-              ],
-            },
-            {
-              role: 'user',
-              contentBlocks: [{ type: 'text', text: 'second question' }],
-            },
-          ],
-          runnerSessionId: null,
-        };
-      }
-      throw new Error(`unexpected call: ${action}`);
-    });
-    fakeInbox = buildFakeInbox([userEntry('live message'), cancelEntry]);
-
-    // Capture the order in which the SDK saw user-shaped messages so we
-    // can assert: replay turns FIRST (in order), live inbox LAST.
-    const sdkSawMessages: Array<{
-      role: string;
-      content: unknown;
-    }> = [];
-
-    queryMock.mockImplementation(
-      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
-        return (async function* () {
-          for await (const m of prompt) {
-            sdkSawMessages.push({
-              role: m.message.role,
-              content: m.message.content,
-            });
-          }
-          yield resultSuccess();
-        })();
-      },
-    );
-
-    const { main } = await import('../main.js');
-    const rc = await main();
-    expect(rc).toBe(0);
-
-    // The runner made exactly one conversation.fetch-history call.
-    const fetchCalls = fakeClient.call.mock.calls.filter(
-      (c) => c[0] === 'conversation.fetch-history',
-    );
-    expect(fetchCalls).toHaveLength(1);
-    expect(fetchCalls[0]?.[1]).toEqual({ conversationId: 'cnv_resume' });
-
-    // The SDK saw replay USER turns FIRST, then the live inbox.
-    // Assistant AND tool turns from the persisted transcript are NOT
-    // re-yielded (Anthropic's API rejects tool_result blocks that
-    // aren't paired with a preceding assistant tool_use; without the
-    // SDK's resume() API, replaying tool turns is unsafe). The model
-    // regenerates the tool flow from the user-side context.
-    expect(sdkSawMessages).toHaveLength(3);
-    // Replay user turn #1 — text-only, collapsed back to a string.
-    expect(sdkSawMessages[0]).toEqual({
-      role: 'user',
-      content: 'first question',
-    });
-    // Replay user turn #2 — assistant + tool turns from the spec are
-    // skipped, so user turn #2 is the second message the SDK sees.
-    expect(sdkSawMessages[1]).toEqual({
-      role: 'user',
-      content: 'second question',
-    });
-    // Live inbox message LAST.
-    expect(sdkSawMessages[2]).toEqual({
-      role: 'user',
-      content: 'live message',
-    });
-  });
-
-  it('Task 15: skips fetch when conversationId is null', async () => {
+  it('Phase E: boot does NOT call conversation.fetch-history when conversationId is null', async () => {
     setEnv(COMPLETE_ENV);
     fakeClient = buildFakeClient();
     fakeClient.call.mockImplementation(async (action: string) => {
@@ -1450,12 +1354,13 @@ describe('main()', () => {
             model: 'claude-sonnet-4-7',
           },
           conversationId: null,
+          runnerSessionId: null,
         };
       }
       if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
       if (action === 'conversation.fetch-history') {
-        throw new Error('runner must NOT fetch history when conversationId is null');
+        throw new Error('runner must NOT call fetch-history (Phase E)');
       }
       throw new Error(`unexpected call: ${action}`);
     });
@@ -1475,7 +1380,6 @@ describe('main()', () => {
     const rc = await main();
     expect(rc).toBe(0);
 
-    // No fetch-history call at all.
     expect(
       fakeClient.call.mock.calls.filter(
         (c) => c[0] === 'conversation.fetch-history',
@@ -1483,7 +1387,61 @@ describe('main()', () => {
     ).toHaveLength(0);
   });
 
-  it('Task 15: fetch-history failure is non-fatal — runner continues with empty replay', async () => {
+  it('Phase E: boot does NOT call conversation.fetch-history when conversationId is set + runnerSessionId is null (no resume path)', async () => {
+    // The runner used to fetch history here to seed the prompt iterator
+    // with prior user turns. Phase E drops that path entirely — the
+    // SDK starts fresh, and the prior conversation's jsonl files (if
+    // any) are picked up by the workspace-jsonl reader independently.
+    setEnv(COMPLETE_ENV);
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          conversationId: 'cnv_fresh',
+          runnerSessionId: null,
+        };
+      }
+      if (action === 'workspace.materialize') return { bundleBytes: '' };
+      if (action === 'tool.list') return { tools: [] };
+      if (action === 'conversation.fetch-history') {
+        throw new Error('runner must NOT call fetch-history (Phase E)');
+      }
+      if (action === 'conversation.store-runner-session') return { ok: true };
+      throw new Error(`unexpected call: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([userEntry('go'), cancelEntry]);
+    queryMock.mockImplementation(
+      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+        return (async function* () {
+          const it = prompt[Symbol.asyncIterator]();
+          await it.next();
+          yield systemInit('sdk-sess-fresh');
+          yield resultSuccess();
+          await it.next();
+        })();
+      },
+    );
+
+    const { main } = await import('../main.js');
+    const rc = await main();
+    expect(rc).toBe(0);
+
+    expect(
+      fakeClient.call.mock.calls.filter(
+        (c) => c[0] === 'conversation.fetch-history',
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('Phase E: boot does NOT call conversation.fetch-history when runnerSessionId is set (resume path)', async () => {
     setEnv(COMPLETE_ENV);
     fakeClient = buildFakeClient();
     fakeClient.call.mockImplementation(async (action: string) => {
@@ -1498,13 +1456,116 @@ describe('main()', () => {
             model: 'claude-sonnet-4-7',
           },
           conversationId: 'cnv_resume',
+          runnerSessionId: 'sdk-sess-resume',
         };
       }
       if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
       if (action === 'conversation.fetch-history') {
-        throw new Error('storage hiccup');
+        throw new Error('runner must NOT call fetch-history (Phase E)');
       }
+      if (action === 'conversation.store-runner-session') return { ok: true };
+      throw new Error(`unexpected call: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([userEntry('go'), cancelEntry]);
+    queryMock.mockImplementation(
+      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+        return (async function* () {
+          const it = prompt[Symbol.asyncIterator]();
+          await it.next();
+          yield resultSuccess();
+          await it.next();
+        })();
+      },
+    );
+
+    const { main } = await import('../main.js');
+    const rc = await main();
+    expect(rc).toBe(0);
+
+    expect(
+      fakeClient.call.mock.calls.filter(
+        (c) => c[0] === 'conversation.fetch-history',
+      ),
+    ).toHaveLength(0);
+  });
+
+  it('Phase E: prompt iterator yields ONLY live inbox messages when runnerSessionId is null (no replay seeding)', async () => {
+    setEnv(COMPLETE_ENV);
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          conversationId: 'cnv_fresh',
+          runnerSessionId: null,
+        };
+      }
+      if (action === 'workspace.materialize') return { bundleBytes: '' };
+      if (action === 'tool.list') return { tools: [] };
+      if (action === 'conversation.store-runner-session') return { ok: true };
+      throw new Error(`unexpected call: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([
+      userEntry('first'),
+      userEntry('second'),
+      cancelEntry,
+    ]);
+
+    const sdkSawMessages: Array<{ role: string; content: unknown }> = [];
+    queryMock.mockImplementation(
+      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+        return (async function* () {
+          for await (const m of prompt) {
+            sdkSawMessages.push({
+              role: m.message.role,
+              content: m.message.content,
+            });
+            yield resultSuccess();
+          }
+        })();
+      },
+    );
+
+    const { main } = await import('../main.js');
+    const rc = await main();
+    expect(rc).toBe(0);
+
+    // Only the live inbox messages — no prior-turn seeding.
+    expect(sdkSawMessages).toEqual([
+      { role: 'user', content: 'first' },
+      { role: 'user', content: 'second' },
+    ]);
+  });
+
+  it('Phase E: prompt iterator yields ONLY live inbox messages when runnerSessionId is set (SDK rehydrates via resume — no replay seeding)', async () => {
+    setEnv(COMPLETE_ENV);
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          conversationId: 'cnv_resume',
+          runnerSessionId: 'sdk-sess-resume',
+        };
+      }
+      if (action === 'workspace.materialize') return { bundleBytes: '' };
+      if (action === 'tool.list') return { tools: [] };
+      if (action === 'conversation.store-runner-session') return { ok: true };
       throw new Error(`unexpected call: ${action}`);
     });
     fakeInbox = buildFakeInbox([userEntry('live message'), cancelEntry]);
@@ -1524,21 +1585,10 @@ describe('main()', () => {
       },
     );
 
-    const stderrSpy = vi
-      .spyOn(process.stderr, 'write')
-      .mockImplementation(() => true);
-    try {
-      const { main } = await import('../main.js');
-      const rc = await main();
-      // Non-fatal: chat completes (rc 0), no terminated outcome.
-      expect(rc).toBe(0);
-      // We logged the failure to stderr.
-      const stderrText = stderrSpy.mock.calls.map((c) => String(c[0])).join('');
-      expect(stderrText).toContain('conversation.fetch-history failed');
-    } finally {
-      stderrSpy.mockRestore();
-    }
-    // SDK only saw the live inbox message — replay was empty.
+    const { main } = await import('../main.js');
+    const rc = await main();
+    expect(rc).toBe(0);
+
     expect(sdkSawMessages).toEqual([
       { role: 'user', content: 'live message' },
     ]);
@@ -1560,8 +1610,9 @@ describe('main()', () => {
   // double-fire.
   //
   // Non-fatal posture: if the bind IPC fails, the chat still completes.
-  // We just lose the resume optimization on next restart and fall back
-  // to fetch-history replay.
+  // We just lose the resume optimization on next restart — the SDK
+  // mints a fresh session id and writes a new jsonl alongside any
+  // earlier ones (Phase E read path picks them all up).
   // ---------------------------------------------------------------------
 
   describe('Phase C: runner_session_id binding', () => {
@@ -1580,13 +1631,11 @@ describe('main()', () => {
               model: 'claude-sonnet-4-7',
             },
             conversationId: 'cnv-1',
+            runnerSessionId: null,
           };
         }
         if (action === 'workspace.materialize') return { bundleBytes: '' };
         if (action === 'tool.list') return { tools: [] };
-        if (action === 'conversation.fetch-history') {
-          return { turns: [], runnerSessionId: null };
-        }
         if (action === 'conversation.store-runner-session') {
           return { ok: true };
         }
@@ -1635,6 +1684,7 @@ describe('main()', () => {
               model: 'claude-sonnet-4-7',
             },
             conversationId: null,
+            runnerSessionId: null,
           };
         }
         if (action === 'workspace.materialize') return { bundleBytes: '' };
@@ -1689,13 +1739,11 @@ describe('main()', () => {
               model: 'claude-sonnet-4-7',
             },
             conversationId: 'cnv-2',
+            runnerSessionId: null,
           };
         }
         if (action === 'workspace.materialize') return { bundleBytes: '' };
         if (action === 'tool.list') return { tools: [] };
-        if (action === 'conversation.fetch-history') {
-          return { turns: [], runnerSessionId: null };
-        }
         if (action === 'conversation.store-runner-session') {
           return { ok: true };
         }
@@ -1733,7 +1781,14 @@ describe('main()', () => {
       });
     });
 
-    it('IPC failure is non-fatal: bind throws → stderr logs error, chat still completes with outcome.kind=complete', async () => {
+    it('Phase E: bind IPC failure is FATAL — runner exits non-zero with chat-end outcome.kind=terminated', async () => {
+      // Phase E (2026-05-09): the bind call is the only durable link
+      // from the conversation row to the workspace jsonl. If we let it
+      // fail silently, `conversations:get` permanently returns turns=[]
+      // for this conversation (it short-circuits on `runnerSessionId ===
+      // null`) and no future runner can resume(). Failing the run loud
+      // surfaces the breakage in the host's chat:end outcome instead of
+      // hiding it.
       setEnv(COMPLETE_ENV);
       fakeClient = buildFakeClient();
       fakeClient.call.mockImplementation(async (action: string) => {
@@ -1748,13 +1803,11 @@ describe('main()', () => {
               model: 'claude-sonnet-4-7',
             },
             conversationId: 'cnv-3',
+            runnerSessionId: null,
           };
         }
         if (action === 'workspace.materialize') return { bundleBytes: '' };
         if (action === 'tool.list') return { tools: [] };
-        if (action === 'conversation.fetch-history') {
-          return { turns: [], runnerSessionId: null };
-        }
         if (action === 'conversation.store-runner-session') {
           throw new Error('host returned 503');
         }
@@ -1767,63 +1820,52 @@ describe('main()', () => {
             const it = prompt[Symbol.asyncIterator]();
             await it.next();
             yield systemInit('sdk-sess-fail');
-            yield assistantText('still works');
+            yield assistantText('should not reach the wire');
             yield resultSuccess();
             await it.next();
           })();
         },
       );
 
-      const stderrSpy = vi
-        .spyOn(process.stderr, 'write')
-        .mockImplementation(() => true);
+      const { main } = await import('../main.js');
+      const rc = await main();
+      // FATAL: runner exits non-zero.
+      expect(rc).toBe(1);
 
-      try {
-        const { main } = await import('../main.js');
-        const rc = await main();
-        // Non-fatal: chat completed cleanly.
-        expect(rc).toBe(0);
-
-        const stderrText = stderrSpy.mock.calls
-          .map((c) => String(c[0]))
-          .join('');
-        expect(stderrText).toContain(
-          'conversation.store-runner-session failed',
-        );
-        expect(stderrText).toContain('host returned 503');
-      } finally {
-        stderrSpy.mockRestore();
-      }
-
+      // chat-end carries the failure shape so the host operator sees it.
       const chatEnds = fakeClient.event.mock.calls.filter(
         (c) => c[0] === 'event.chat-end',
       );
       expect(chatEnds).toHaveLength(1);
       const payload = chatEnds[0]?.[1] as {
-        outcome: { kind: string };
+        outcome: { kind: string; reason?: string };
       };
-      expect(payload.outcome.kind).toBe('complete');
+      expect(payload.outcome.kind).toBe('terminated');
+      expect(payload.outcome.reason).toContain(
+        'conversation.store-runner-session failed',
+      );
+      expect(payload.outcome.reason).toContain('host returned 503');
     });
   });
 
   // ---------------------------------------------------------------------
-  // Phase C: SDK resume(sessionId) instead of replay-from-DB.
+  // Phase C / Phase E: SDK resume(sessionId).
   //
-  // When `conversation.fetch-history` returns a non-null `runnerSessionId`,
-  // the runner passes it as `options.resume` to `query()` and SKIPS the
-  // user-turn replay (the SDK rehydrates the conversation from its own
-  // on-disk transcript). When `runnerSessionId` is null, we fall back to
-  // the prior replay-from-DB path (Task 15).
+  // When `runnerSessionId` is non-null on the `session.get-config`
+  // response, the runner passes it as `options.resume` to `query()`.
+  // The SDK rehydrates the conversation from its own on-disk transcript
+  // (~/.claude/projects/<sessionId>.jsonl, HOME-redirected into the
+  // workspace by Phase C) — there's no DB replay layer to consult.
   //
-  // The trade-off the controller chose: when `runnerSessionId !== null`,
-  // the host's bus hook still reads turns from the DB even though the
-  // runner ignores them. That extra DB hit is cheap (one query at boot)
-  // and keeps the wire shape simple — a single response covers both the
-  // resume and the replay path.
+  // Phase E (2026-05-09): runnerSessionId now rides the
+  // session.get-config response directly (composed by the host's IPC
+  // handler from `conversations:get-metadata`). The separate
+  // `conversation.fetch-history` IPC is gone — see the "boot does NOT
+  // call conversation.fetch-history" tests above.
   // ---------------------------------------------------------------------
 
   describe('Phase C: SDK resume(sessionId)', () => {
-    it('runnerSessionId set: passes options.resume to query() AND skips replay turns', async () => {
+    it('runnerSessionId set on session.get-config: passes options.resume to query()', async () => {
       setEnv(COMPLETE_ENV);
       fakeClient = buildFakeClient();
       fakeClient.call.mockImplementation(async (action: string) => {
@@ -1838,24 +1880,11 @@ describe('main()', () => {
               model: 'claude-sonnet-4-7',
             },
             conversationId: 'cnv-resume',
+            runnerSessionId: 'sdk-sess-resume',
           };
         }
         if (action === 'workspace.materialize') return { bundleBytes: '' };
         if (action === 'tool.list') return { tools: [] };
-        if (action === 'conversation.fetch-history') {
-          // Persisted user turn — would be replayed if runnerSessionId
-          // were null. Asserting it does NOT reach the SDK iterator
-          // pins the resume-vs-replay branching.
-          return {
-            turns: [
-              {
-                role: 'user',
-                contentBlocks: [{ type: 'text', text: 'persisted turn' }],
-              },
-            ],
-            runnerSessionId: 'sdk-sess-resume',
-          };
-        }
         if (action === 'conversation.store-runner-session') {
           return { ok: true };
         }
@@ -1889,16 +1918,15 @@ describe('main()', () => {
       };
       expect(queryArg.options.resume).toBe('sdk-sess-resume');
 
-      // (b) Replay turn was NOT yielded into the SDK prompt iterator —
-      // only the live inbox message reached the SDK. The SDK rehydrates
-      // its own conversation from disk via resume(sessionId), so re-
-      // emitting the persisted user turn would double-replay it.
+      // (b) Only the live inbox reached the SDK — no replay seeding.
+      // The SDK rehydrates its own conversation from disk via
+      // resume(sessionId).
       expect(sdkSawMessages).toEqual([
         { role: 'user', content: 'live message' },
       ]);
     });
 
-    it('runnerSessionId null: omits options.resume AND yields replay turns (replay-from-DB path)', async () => {
+    it('runnerSessionId null on session.get-config: omits options.resume', async () => {
       setEnv(COMPLETE_ENV);
       fakeClient = buildFakeClient();
       fakeClient.call.mockImplementation(async (action: string) => {
@@ -1912,22 +1940,12 @@ describe('main()', () => {
               mcpConfigIds: [],
               model: 'claude-sonnet-4-7',
             },
-            conversationId: 'cnv-replay',
+            conversationId: 'cnv-fresh',
+            runnerSessionId: null,
           };
         }
         if (action === 'workspace.materialize') return { bundleBytes: '' };
         if (action === 'tool.list') return { tools: [] };
-        if (action === 'conversation.fetch-history') {
-          return {
-            turns: [
-              {
-                role: 'user',
-                contentBlocks: [{ type: 'text', text: 'persisted turn' }],
-              },
-            ],
-            runnerSessionId: null,
-          };
-        }
         if (action === 'conversation.store-runner-session') {
           return { ok: true };
         }
@@ -1955,19 +1973,68 @@ describe('main()', () => {
       expect(rc).toBe(0);
 
       // (a) query() did NOT get options.resume — null runnerSessionId
-      // means the SDK is starting a fresh conversation; we fall back to
-      // the replay-from-DB path.
+      // means the SDK is starting a fresh session.
       expect(queryMock).toHaveBeenCalledTimes(1);
       const queryArg = queryMock.mock.calls[0]?.[0] as {
         options: { resume?: string };
       };
       expect(queryArg.options.resume).toBeUndefined();
 
-      // (b) Replay turn WAS yielded first, then the live inbox message.
+      // (b) Phase E: only the live inbox reached the SDK — no replay
+      // seeding, no prior turns regenerated from DB.
       expect(sdkSawMessages).toEqual([
-        { role: 'user', content: 'persisted turn' },
         { role: 'user', content: 'live message' },
       ]);
+    });
+
+    it('Phase E: empty-string runnerSessionId is treated as null (no resume; defensive against malformed wire)', async () => {
+      // The wire schema is `z.string().nullable()` (no `.min(1)`), so a
+      // future regression or stale row could deliver `''`. Passing
+      // `resume: ''` to the SDK is undefined behavior; the runner
+      // coerces empty-string to null at the boundary.
+      setEnv(COMPLETE_ENV);
+      fakeClient = buildFakeClient();
+      fakeClient.call.mockImplementation(async (action: string) => {
+        if (action === 'session.get-config') {
+          return {
+            userId: 'u-test',
+            agentId: 'a-test',
+            agentConfig: {
+              systemPrompt: '',
+              allowedTools: [],
+              mcpConfigIds: [],
+              model: 'claude-sonnet-4-7',
+            },
+            conversationId: 'cnv-empty-rsid',
+            runnerSessionId: '', // <- the load-bearing input
+          };
+        }
+        if (action === 'workspace.materialize') return { bundleBytes: '' };
+        if (action === 'tool.list') return { tools: [] };
+        if (action === 'conversation.store-runner-session') {
+          return { ok: true };
+        }
+        throw new Error(`unexpected call: ${action}`);
+      });
+      fakeInbox = buildFakeInbox([userEntry('go'), cancelEntry]);
+      queryMock.mockImplementation(() => {
+        return (async function* () {
+          yield systemInit('sdk-sess-fresh');
+          yield resultSuccess();
+        })();
+      });
+
+      const { main } = await import('../main.js');
+      const rc = await main();
+      expect(rc).toBe(0);
+
+      // options.resume must be undefined — empty-string was coerced to null,
+      // and the spread-conditional doesn't include `resume` on null.
+      expect(queryMock).toHaveBeenCalledTimes(1);
+      const queryArg = queryMock.mock.calls[0]?.[0] as {
+        options: { resume?: string };
+      };
+      expect(queryArg.options.resume).toBeUndefined();
     });
   });
 
@@ -2003,6 +2070,7 @@ describe('main()', () => {
               model: 'claude-sonnet-4-7',
             },
             conversationId: null,
+            runnerSessionId: null,
           };
         }
         if (action === 'workspace.materialize') return { bundleBytes: '' };
@@ -2064,6 +2132,7 @@ describe('main()', () => {
               model: 'claude-sonnet-4-7',
             },
             conversationId: null,
+            runnerSessionId: null,
           };
         }
         if (action === 'workspace.materialize') return { bundleBytes: '' };

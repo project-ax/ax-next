@@ -68,7 +68,6 @@ function conversationsMockPlugin(args: {
         // routes-chat.test.ts).
         'conversations:create',
         'conversations:get',
-        'conversations:append-turn',
         'conversations:list',
         'conversations:delete',
       ],
@@ -106,17 +105,6 @@ function conversationsMockPlugin(args: {
           message: 'conversations:get stub (not exercised by this suite)',
         });
       });
-      bus.registerService(
-        'conversations:append-turn',
-        'mock-conversations',
-        async () => {
-          throw new PluginError({
-            code: 'not-implemented',
-            plugin: 'mock-conversations',
-            message: 'conversations:append-turn stub (not exercised by this suite)',
-          });
-        },
-      );
       bus.registerService('conversations:list', 'mock-conversations', async () => {
         throw new PluginError({
           code: 'not-implemented',
@@ -360,7 +348,6 @@ describe('@ax/channel-web server plugin (integration)', () => {
         'conversations:get',
         'conversations:list',
         'conversations:delete',
-        'conversations:append-turn',
         'agent:invoke',
       ],
       subscribes: ['chat:stream-chunk', 'chat:turn-end'],

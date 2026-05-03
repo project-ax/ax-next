@@ -14,7 +14,6 @@ describe('@ax/conversations plugin manifest', () => {
       version: '0.0.0',
       registers: [
         'conversations:create',
-        'conversations:append-turn',
         'conversations:get',
         'conversations:list',
         'conversations:delete',
@@ -25,8 +24,6 @@ describe('@ax/conversations plugin manifest', () => {
         // Task 14 (Week 10–12): active_session_id lifecycle (J6).
         'conversations:bind-session',
         'conversations:unbind-session',
-        // Task 15 (Week 10–12): runner replays history at boot (J3 + J6).
-        'conversations:fetch-history',
         // Phase B (2026-04-29): runner-owned-sessions metadata reads.
         'conversations:get-metadata',
         'conversations:store-runner-session',

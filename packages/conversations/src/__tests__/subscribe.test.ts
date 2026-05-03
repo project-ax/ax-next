@@ -8,12 +8,8 @@ import { createTestHarness, type TestHarness } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createConversationsPlugin } from '../plugin.js';
 import type {
-  AppendTurnInput,
-  AppendTurnOutput,
   CreateInput,
   CreateOutput,
-  FetchHistoryInput,
-  FetchHistoryOutput,
   GetMetadataInput,
   GetMetadataOutput,
 } from '../types.js';
@@ -25,7 +21,9 @@ import type {
 // source of truth, NOT the host's `conversation_turns` rows. The subscriber
 // no longer calls `conversations:append-turn` — it only bumps
 // `last_activity_at` so sidebar ordering still reflects user-visible
-// activity (I8).
+// activity (I8). Phase E (Task 3) deleted the :append-turn hook entirely;
+// the spy assertions below are vestigial belt-and-braces — the filter just
+// returns an empty array because the hook is gone.
 //
 // We exercise the subscriber via `bus.fire('chat:turn-end', ...)` and assert
 // on three things:
@@ -183,16 +181,9 @@ describe('@ax/conversations chat:turn-end subscriber (Phase D)', () => {
     );
     expect(afterMd.lastActivityAt).not.toBeNull();
 
-    // No row was written to conversation_turns. fetch-history reads the
-    // rows directly (it's the runner-replay path; Phase D leaves the
-    // host-rows API in place for explicit append-turn callers like the
-    // user-turn append on POST).
-    const got = await h.bus.call<FetchHistoryInput, FetchHistoryOutput>(
-      'conversations:fetch-history',
-      h.ctx({ userId: 'userA' }),
-      { conversationId: created.conversationId, userId: 'userA' },
-    );
-    expect(got.turns).toHaveLength(0);
+    // No row was written to conversation_turns: the :append-turn hook
+    // is gone (Task E-3) so there's no path from the subscriber to the
+    // turns table. The append-call filter above already proves this.
   });
 
   it('no-ops when ctx.conversationId is unset (canary chats)', async () => {
@@ -319,37 +310,4 @@ describe('@ax/conversations chat:turn-end subscriber (Phase D)', () => {
     expect(threw).toBeUndefined();
   });
 
-  it('explicit conversations:append-turn callers still work (hook stays registered)', async () => {
-    // Phase D removes the SUBSCRIBER's auto-append, but the
-    // `conversations:append-turn` service hook stays registered for
-    // explicit callers (channel-web's POST path appends the user turn
-    // through it). This guards the manifest-level invariant that the
-    // hook is still callable end-to-end.
-    const h = await makeHarness();
-    const created = await h.bus.call<CreateInput, CreateOutput>(
-      'conversations:create',
-      h.ctx({ userId: 'userA' }),
-      { userId: 'userA', agentId: 'agt_a' },
-    );
-
-    const ctx = h.ctx({ userId: 'userA', agentId: 'agt_a' });
-    await h.bus.call<AppendTurnInput, AppendTurnOutput>(
-      'conversations:append-turn',
-      ctx,
-      {
-        conversationId: created.conversationId,
-        userId: 'userA',
-        role: 'user',
-        contentBlocks: [{ type: 'text', text: 'explicit user turn' }],
-      },
-    );
-
-    const got = await h.bus.call<FetchHistoryInput, FetchHistoryOutput>(
-      'conversations:fetch-history',
-      h.ctx({ userId: 'userA' }),
-      { conversationId: created.conversationId, userId: 'userA' },
-    );
-    expect(got.turns).toHaveLength(1);
-    expect(got.turns[0]!.role).toBe('user');
-  });
 });

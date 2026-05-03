@@ -61,6 +61,23 @@ async function makeHarness() {
   });
 }
 
+// Poll until `target` no longer exists on disk (the async 'close' cleanup
+// handler has rmdir'd it). CI machines under load can take >50ms to drain
+// the 'close' event, so a fixed sleep here is flaky — wait on the actual
+// condition instead. The caller still asserts ENOENT after; this just
+// gives that assertion enough headroom to be deterministic.
+async function waitForRemoval(target: string, deadlineMs = 5000): Promise<void> {
+  const deadline = Date.now() + deadlineMs;
+  while (Date.now() < deadline) {
+    const stillThere = await fs.stat(target).then(
+      () => true,
+      () => false,
+    );
+    if (!stillThere) return;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+}
+
 function readFirstStdoutLine(result: OpenSessionResult): Promise<string> {
   const stdout = result.handle.child?.stdout;
   if (stdout === undefined) {
@@ -109,11 +126,10 @@ describe('sandbox:open-session', () => {
     // SIGTERM should have been enough — 5s SIGKILL escalator unused.
     expect(final.signal).toBe('SIGTERM');
 
-    // Allow the async 'close' cleanup handler to run.
-    await new Promise((r) => setTimeout(r, 50));
-
-    // Socket dir was removed.
+    // Socket dir is removed by the async 'close' cleanup handler. Poll
+    // until it's gone (or timeout) so this isn't flaky under CI load.
     const socketDir = path.dirname(endpointToSocketPath(result.runnerEndpoint));
+    await waitForRemoval(socketDir);
     await expect(fs.stat(socketDir)).rejects.toMatchObject({ code: 'ENOENT' });
 
     await fs.rm(ws, { recursive: true, force: true });
@@ -398,8 +414,9 @@ describe('sandbox:open-session', () => {
 
     await result.handle.kill();
     await result.handle.exited;
-    await new Promise((r) => setTimeout(r, 50));
     // Tempdir cleanup sweeps the CA file too — no separate handler.
+    // Poll for the removal so CI load doesn't flake the assertion.
+    await waitForRemoval(caPath as string);
     await expect(fs.stat(caPath as string)).rejects.toMatchObject({ code: 'ENOENT' });
     await fs.rm(ws, { recursive: true, force: true });
   });

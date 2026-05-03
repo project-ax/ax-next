@@ -99,10 +99,11 @@ export async function runSessionMigration<DB>(db: Kysely<DB>): Promise<void> {
   //
   // Forward-only additive ALTER. The orchestrator (Task 16) populates this
   // when minting a session for an existing conversation; the runner reads
-  // it back via `session:get-config` and uses it as the trigger to call
-  // `conversation.fetch-history` at boot. Existing v2 rows pre-Task-15
-  // simply have a NULL — the runner treats null as "no history to
-  // replay".
+  // it back via `session:get-config` and uses it as the workspace /
+  // runner-session lookup key (Phase E — replay-from-history is gone, the
+  // runner relies on SDK `resume(sessionId)` against its native on-disk
+  // transcript instead). Existing v2 rows pre-Task-15 simply have a NULL
+  // — the runner treats null as "no prior conversation to rehydrate".
   //
   // Why a column on v2 instead of bumping to v3? The session ↔ agent
   // immutability contract (I10) says this row is INSERT-once-per-session;

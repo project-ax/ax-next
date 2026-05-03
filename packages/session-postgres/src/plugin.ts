@@ -74,9 +74,10 @@ export interface SessionCreateInput {
    *
    * Week 10–12 Task 15: optional `conversationId` ties this session to a
    * persisted conversation row; the runner reads it back via
-   * `session:get-config` and uses non-null as the trigger to call
-   * `conversation.fetch-history`. Null/undefined for non-conversation
-   * sessions.
+   * `session:get-config` and uses it as the workspace / runner-session
+   * lookup key (Phase E — replay-from-history is gone, the runner relies
+   * on SDK `resume(sessionId)` against its native on-disk transcript
+   * instead). Null/undefined for non-conversation sessions.
    */
   owner?: {
     userId: string;
@@ -114,9 +115,18 @@ export interface SessionGetConfigOutput {
   agentId: string;
   agentConfig: AgentConfig;
   /**
-   * Conversation this session is bound to (Week 10–12 Task 15). Null for
-   * non-conversation sessions; the runner uses non-null as the trigger
-   * to call `conversation.fetch-history` at boot.
+   * Conversation this session is bound to (Week 10–12 Task 15). Null
+   * for non-conversation sessions. Storage-only at this layer — the
+   * session backend just persists what the orchestrator passed at
+   * create time and hands it back unchanged.
+   *
+   * The IPC handler for `session.get-config` (in `@ax/ipc-core`)
+   * enriches its wire response with `runnerSessionId` via a separate
+   * `conversations:get-metadata` round-trip; the runner reads BOTH
+   * fields from that wire response and uses them to decide between a
+   * fresh SDK boot and an SDK `resume(sessionId)`. There is no
+   * separate fetch-history IPC. (I4 — `runnerSessionId` lives in
+   * `@ax/conversations`, not here.)
    */
   conversationId: string | null;
 }

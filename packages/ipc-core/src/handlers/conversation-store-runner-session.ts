@@ -21,8 +21,7 @@ import type { ActionHandler } from './types.js';
 // host will use this id later to ask the SDK to resume the in-runner
 // session instead of replaying turns from the host DB.
 //
-// Authz pattern (mirrors conversation.fetch-history, but the gate lives
-// strictly on the bus impl side):
+// Authz pattern (gate lives strictly on the bus impl side):
 //
 //   1. The IPC server's auth gate already resolved the runner's bearer
 //      token to ctx.userId (Week 9.5; ipc-server/listener.ts).
@@ -30,11 +29,10 @@ import type { ActionHandler } from './types.js';
 //      (request schema is .strict — extra fields fail 400 here, before
 //      the bus is touched, so a malicious runner can't smuggle a foreign
 //      userId).
-//   3. We pass `parsed.data` straight through to the service hook. Unlike
-//      conversations:fetch-history (whose impl explicitly accepts userId
-//      in input), conversations:store-runner-session reads `ctx.userId`
-//      directly inside `storeRunnerSession()` — so we deliberately do NOT
-//      add userId to the input. Adding it would be noise the bus ignores.
+//   3. We pass `parsed.data` straight through to the service hook.
+//      conversations:store-runner-session reads `ctx.userId` directly
+//      inside `storeRunnerSession()` — so we deliberately do NOT add
+//      userId to the input. Adding it would be noise the bus ignores.
 //   4. The bus impl runs a userId-scoped UPDATE: a runner whose ctx.userId
 //      doesn't own `conversationId` will see `not-found`, never the row.
 //      No `agents:resolve` round-trip — the orchestrator already gated the
@@ -49,7 +47,7 @@ import type { ActionHandler } from './types.js';
 //
 // On success the bus returns void; we shape the wire response as
 // `{ ok: true }` and re-parse it through the response schema for
-// shape-drift defense (mirrors conversation-fetch-history).
+// shape-drift defense.
 // ---------------------------------------------------------------------------
 
 export const conversationStoreRunnerSessionHandler: ActionHandler = async (

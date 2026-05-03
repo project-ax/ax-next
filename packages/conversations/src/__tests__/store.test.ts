@@ -24,8 +24,6 @@ const opened: Kysely<ConversationDatabase>[] = [];
 function makeKysely(): Kysely<ConversationDatabase> {
   const k = new Kysely<ConversationDatabase>({
     dialect: new PostgresDialect({
-      // max 4 so the appendTurn concurrency test has multiple connections
-      // to race through.
       pool: new pg.Pool({ connectionString, max: 4 }),
     }),
   });
@@ -149,43 +147,6 @@ describe('store + migrations round-trip', () => {
     expect(round!.conversationId).toBe(created.conversationId);
   });
 
-  it('preserves turn ordering across appends', async () => {
-    const db = makeKysely();
-    await runConversationsMigration(db);
-    const store = createConversationStore(db);
-
-    const conv = await store.create({
-      userId: 'u1',
-      agentId: 'agt_x',
-      title: null,
-    });
-
-    const t0 = await store.appendTurn({
-      conversationId: conv.conversationId,
-      role: 'user',
-      contentBlocks: [{ type: 'text', text: 'hello' }],
-    });
-    const t1 = await store.appendTurn({
-      conversationId: conv.conversationId,
-      role: 'assistant',
-      contentBlocks: [{ type: 'text', text: 'hi back' }],
-    });
-    const t2 = await store.appendTurn({
-      conversationId: conv.conversationId,
-      role: 'tool',
-      contentBlocks: [{ type: 'tool_result', tool_use_id: 'x', content: 'ok' }],
-    });
-
-    expect(t0.turnIndex).toBe(0);
-    expect(t1.turnIndex).toBe(1);
-    expect(t2.turnIndex).toBe(2);
-
-    const turns = await store.listTurns(conv.conversationId);
-    expect(turns.map((t) => t.turnIndex)).toEqual([0, 1, 2]);
-    expect(turns.map((t) => t.role)).toEqual(['user', 'assistant', 'tool']);
-    expect(turns[0]!.contentBlocks).toEqual([{ type: 'text', text: 'hello' }]);
-  });
-
   it('soft-delete sets deleted_at; scopedConversations filters it out', async () => {
     const db = makeKysely();
     await runConversationsMigration(db);
@@ -244,76 +205,6 @@ describe('store + migrations round-trip', () => {
 
     const justA = await store.listForUser('u1', 'agt_a');
     expect(justA.map((c) => c.title)).toEqual(['A']);
-  });
-
-  it('appendTurn assigns sequential turn_index under concurrent inserts', async () => {
-    const db = makeKysely();
-    await runConversationsMigration(db);
-    const store = createConversationStore(db);
-
-    const conv = await store.create({
-      userId: 'u1',
-      agentId: 'agt_x',
-      title: null,
-    });
-
-    // Fire 8 concurrent appends. The SELECT FOR UPDATE inside appendTurn
-    // serializes them; the unique-violation retry catches the (rare)
-    // case where a fallback path slips through. Either way, indexes
-    // 0..7 must each appear exactly once.
-    const N = 8;
-    const results = await Promise.all(
-      Array.from({ length: N }, (_, i) =>
-        store.appendTurn({
-          conversationId: conv.conversationId,
-          role: 'user',
-          contentBlocks: [{ type: 'text', text: `msg ${i}` }],
-        }),
-      ),
-    );
-    const indexes = results.map((t) => t.turnIndex).sort((a, b) => a - b);
-    expect(indexes).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
-
-    const turns = await store.listTurns(conv.conversationId);
-    expect(turns.map((t) => t.turnIndex)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
-  });
-
-  it('appendTurn refuses to write to a tombstoned conversation (TOCTOU close)', async () => {
-    // Regression: the appendTurn locking SELECT must filter
-    // `deleted_at IS NULL` so a softDelete that lands between the
-    // plugin's pre-check and the FOR UPDATE acquisition cannot let
-    // turns slip into a tombstoned conversation.
-    const db = makeKysely();
-    await runConversationsMigration(db);
-    const store = createConversationStore(db);
-
-    const conv = await store.create({
-      userId: 'u1',
-      agentId: 'agt_x',
-      title: null,
-    });
-    expect(await store.softDelete(conv.conversationId)).toBe(true);
-
-    // store.appendTurn is the lower layer — it throws NoResultError when
-    // the locking SELECT returns no rows. The plugin layer translates
-    // that to PluginError('not-found'); here we just assert the throw.
-    await expect(
-      store.appendTurn({
-        conversationId: conv.conversationId,
-        role: 'user',
-        contentBlocks: [{ type: 'text', text: 'should-not-land' }],
-      }),
-    ).rejects.toThrow();
-
-    // No turn was written.
-    expect(await store.listTurns(conv.conversationId)).toEqual([]);
-  });
-
-  it('listTurns returns empty for an unknown conversation', async () => {
-    const db = makeKysely();
-    await runConversationsMigration(db);
-    const store = createConversationStore(db);
-    expect(await store.listTurns('cnv_does_not_exist')).toEqual([]);
   });
 
   it('runConversationsMigration is idempotent', async () => {

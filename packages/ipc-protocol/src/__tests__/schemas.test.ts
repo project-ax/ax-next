@@ -12,8 +12,6 @@ import {
   WorkspaceMaterializeResponseSchema,
   SessionNextMessageResponseSchema,
   SessionGetConfigResponseSchema,
-  ConversationFetchHistoryRequestSchema,
-  ConversationFetchHistoryResponseSchema,
   ConversationStoreRunnerSessionRequestSchema,
   ConversationStoreRunnerSessionResponseSchema,
   ToolDescriptorSchema,
@@ -420,6 +418,7 @@ describe('session.get-config', () => {
       agentId: 'a-1',
       agentConfig: baseConfig,
       conversationId: 'cnv_abc',
+      runnerSessionId: null,
     });
     expect(parsed.conversationId).toBe('cnv_abc');
   });
@@ -430,6 +429,7 @@ describe('session.get-config', () => {
       agentId: 'a-1',
       agentConfig: baseConfig,
       conversationId: null,
+      runnerSessionId: null,
     });
     expect(parsed.conversationId).toBeNull();
   });
@@ -439,112 +439,55 @@ describe('session.get-config', () => {
       userId: 'u-1',
       agentId: 'a-1',
       agentConfig: baseConfig,
-    });
-    expect(r.success).toBe(false);
-  });
-});
-
-describe('conversation.fetch-history', () => {
-  it('request requires a non-empty conversationId', () => {
-    expect(
-      ConversationFetchHistoryRequestSchema.safeParse({ conversationId: '' })
-        .success,
-    ).toBe(false);
-    const ok = ConversationFetchHistoryRequestSchema.parse({
-      conversationId: 'cnv_abc',
-    });
-    expect(ok.conversationId).toBe('cnv_abc');
-  });
-
-  it('request rejects unknown fields (strict)', () => {
-    const r = ConversationFetchHistoryRequestSchema.safeParse({
-      conversationId: 'cnv_abc',
-      sneaky: 'no',
-    });
-    expect(r.success).toBe(false);
-  });
-
-  it('request rejects an oversized conversationId (>256 chars)', () => {
-    const r = ConversationFetchHistoryRequestSchema.safeParse({
-      conversationId: 'c'.repeat(257),
-    });
-    expect(r.success).toBe(false);
-  });
-
-  it('response round-trips an empty turn list', () => {
-    const parsed = ConversationFetchHistoryResponseSchema.parse({
-      turns: [],
       runnerSessionId: null,
     });
-    expect(parsed.turns).toEqual([]);
-    expect(parsed.runnerSessionId).toBeNull();
+    expect(r.success).toBe(false);
   });
 
-  it('response round-trips user/assistant/tool turns with content blocks', () => {
-    const parsed = ConversationFetchHistoryResponseSchema.parse({
-      turns: [
-        {
-          role: 'user',
-          contentBlocks: [{ type: 'text', text: 'hello' }],
-        },
-        {
-          role: 'assistant',
-          contentBlocks: [
-            { type: 'thinking', thinking: 'plan', signature: 'sig' },
-            { type: 'text', text: 'hi back' },
-          ],
-        },
-        {
-          role: 'tool',
-          contentBlocks: [
-            {
-              type: 'tool_result',
-              tool_use_id: 'tu_1',
-              content: 'ok',
-              is_error: false,
-            },
-          ],
-        },
-      ],
-      runnerSessionId: null,
-    });
-    expect(parsed.turns).toHaveLength(3);
-    expect(parsed.turns[0]?.role).toBe('user');
-    expect(parsed.turns[2]?.contentBlocks[0]?.type).toBe('tool_result');
-    expect(parsed.runnerSessionId).toBeNull();
-  });
-
-  it('response round-trips a non-null runnerSessionId (Phase C resume)', () => {
-    // When the conversation has a bound runner session, the wire carries
-    // the opaque id back so the runner can pass it to SDK resume().
-    const parsed = ConversationFetchHistoryResponseSchema.parse({
-      turns: [],
+  // Phase E (2026-05-09). session.get-config returns runnerSessionId so
+  // the runner doesn't need a separate IPC for the bind state.
+  it('accepts a response with runnerSessionId as a non-empty string (Phase C resume)', () => {
+    const parsed = SessionGetConfigResponseSchema.parse({
+      userId: 'u-1',
+      agentId: 'a-1',
+      agentConfig: baseConfig,
+      conversationId: 'cnv_abc',
       runnerSessionId: 'sdk-sess-resume',
     });
     expect(parsed.runnerSessionId).toBe('sdk-sess-resume');
   });
 
-  it('response rejects a missing runnerSessionId field (explicit null required)', () => {
-    // The field is nullable, NOT optional — explicit null keeps the wire
-    // shape stable and forces consumers to branch on three states.
-    const r = ConversationFetchHistoryResponseSchema.safeParse({ turns: [] });
-    expect(r.success).toBe(false);
+  it('accepts a response with runnerSessionId null (no bind yet OR no conversation)', () => {
+    const parsed = SessionGetConfigResponseSchema.parse({
+      userId: 'u-1',
+      agentId: 'a-1',
+      agentConfig: baseConfig,
+      conversationId: null,
+      runnerSessionId: null,
+    });
+    expect(parsed.runnerSessionId).toBeNull();
   });
 
-  it('response rejects an unknown role', () => {
-    const r = ConversationFetchHistoryResponseSchema.safeParse({
-      turns: [
-        { role: 'system', contentBlocks: [{ type: 'text', text: 'x' }] },
-      ],
-      runnerSessionId: null,
+  it('rejects a response missing runnerSessionId (must be explicit null — same posture as conversationId)', () => {
+    // Field is nullable, NOT optional. Forces consumers to branch on
+    // three states (string, null, schema-fail) rather than treat absent
+    // as "no opinion" — same wire-stability argument as conversationId.
+    const r = SessionGetConfigResponseSchema.safeParse({
+      userId: 'u-1',
+      agentId: 'a-1',
+      agentConfig: baseConfig,
+      conversationId: null,
     });
     expect(r.success).toBe(false);
   });
 
-  it('response rejects malformed content blocks (canonical schema)', () => {
-    const r = ConversationFetchHistoryResponseSchema.safeParse({
-      turns: [{ role: 'user', contentBlocks: [{ type: 'mystery' }] }],
-      runnerSessionId: null,
+  it('rejects a response with runnerSessionId set to a non-string', () => {
+    const r = SessionGetConfigResponseSchema.safeParse({
+      userId: 'u-1',
+      agentId: 'a-1',
+      agentConfig: baseConfig,
+      conversationId: null,
+      runnerSessionId: 42,
     });
     expect(r.success).toBe(false);
   });
@@ -669,7 +612,7 @@ describe('timeouts', () => {
     expect(Object.isFrozen(IPC_TIMEOUTS_MS)).toBe(true);
   });
 
-  it('IPC_TIMEOUTS_MS has the nine expected keys (Phase C added conversation.store-runner-session)', () => {
+  it('IPC_TIMEOUTS_MS has the eight expected keys (Phase E dropped conversation.fetch-history)', () => {
     const expected = [
       'tool.pre-call',
       'tool.execute-host',
@@ -678,7 +621,6 @@ describe('timeouts', () => {
       'workspace.materialize',
       'session.next-message',
       'session.get-config',
-      'conversation.fetch-history',
       'conversation.store-runner-session',
     ].sort();
     expect(Object.keys(IPC_TIMEOUTS_MS).sort()).toEqual(expected);
@@ -694,10 +636,9 @@ describe('timeouts', () => {
       'workspace.materialize',
       'session.next-message',
       'session.get-config',
-      'conversation.fetch-history',
       'conversation.store-runner-session',
     ];
-    expect(names).toHaveLength(9);
+    expect(names).toHaveLength(8);
   });
 });
 

@@ -48,14 +48,16 @@ import {
 //        - conversationId === null → conversations:create
 //        - else → conversations:get; on agent-mismatch → 400 (I10)
 //        - on conversations:get not-found OR forbidden → 404 (no leak)
-//   5. appends the user turn FIRST so a fresh-session replay (Task 15) sees
-//      the latest user input even if agent:invoke dispatch fires before the
-//      runner's first turn loop.
-//   6. server-mints `reqId` (J9 — never client-supplied). The browser uses
+//   5. server-mints `reqId` (J9 — never client-supplied). The browser uses
 //      it to subscribe to `GET /api/chat/stream/:reqId` for streaming.
-//   7. dispatches `agent:invoke` ASYNC (no `await`) — the orchestrator owns the
+//   6. dispatches `agent:invoke` ASYNC (no `await`) — the orchestrator owns the
 //      lifecycle from here, the response returns 202 quickly so the client
 //      can race over to the SSE subscription before the first chunk lands.
+//
+// Phase E (runner-owned sessions): the route NO LONGER calls
+// conversations:append-turn for the user message. The runner's first
+// SDK turn writes the user message to the workspace jsonl (the source
+// of truth for transcripts), and conversations:get reads from there.
 //
 // CSRF (J8): the http-server's CSRF subscriber gates this route
 // automatically (it fires `http:request` BEFORE handler dispatch and
@@ -70,8 +72,10 @@ import {
 //     itself imports @ax/ipc-protocol). All other plugins are reached via
 //     bus.call.
 //   - I3: full handler + tests in this PR (Task 9 of Week 10–12).
-//   - I4: the conversation row is the source of truth for the user turn —
-//     the route appends BEFORE agent:invoke dispatch.
+//   - I4: the workspace jsonl is the source of truth for the user turn
+//     (Phase E — runner-owned sessions). The route does not append; it
+//     dispatches agent:invoke and the runner's first SDK turn writes
+//     the message to the workspace.
 //   - I5: zod-validates body, http-server enforces 1 MiB body cap, CSRF by
 //     subscriber, auth by gate.
 // ---------------------------------------------------------------------------
@@ -176,13 +180,6 @@ interface AgentsListForUserAgent {
 }
 interface AgentsListForUserOutput {
   agents: AgentsListForUserAgent[];
-}
-
-interface ConversationsAppendTurnInput {
-  conversationId: string;
-  userId: string;
-  role: 'user' | 'assistant' | 'tool';
-  contentBlocks: PostMessageRequest['contentBlocks'];
 }
 
 interface AgentInvokeInput {
@@ -301,28 +298,13 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
         }
       }
 
-      // 5) Append the user turn FIRST. A fresh-session replay (Task 15)
-      // sees the latest user input even if agent:invoke dispatch fires before
-      // the runner's first turn loop. The append is awaited so a storage
-      // failure surfaces as a 500 instead of a silent drop.
-      await bus.call<ConversationsAppendTurnInput, unknown>(
-        'conversations:append-turn',
-        initCtx,
-        {
-          conversationId,
-          userId,
-          role: 'user',
-          contentBlocks: body.contentBlocks,
-        },
-      );
-
-      // 6) Mint reqId (J9 — server-side only). The schema doesn't carry a
+      // 5) Mint reqId (J9 — server-side only). The schema doesn't carry a
       // reqId field on the request body; even if a client tried to inject
       // one, zod's strict shape would refuse it (and we'd ignore it here
       // regardless because we never read from the body to source reqId).
       const reqId = makeReqId();
 
-      // 7) Dispatch agent:invoke async. The orchestrator decides whether to
+      // 6) Dispatch agent:invoke async. The orchestrator decides whether to
       // open a new session or route the message into an existing live one
       // (J6 — Task 16). When `conversationId`'s row already has an alive
       // `active_session_id`, the orchestrator enqueues into THAT inbox
@@ -375,7 +357,7 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
           });
         });
 
-      // 8) 202 Accepted — the browser uses { conversationId, reqId } to
+      // 7) 202 Accepted — the browser uses { conversationId, reqId } to
       // subscribe to the SSE endpoint.
       res.status(202).json({ conversationId, reqId });
     },

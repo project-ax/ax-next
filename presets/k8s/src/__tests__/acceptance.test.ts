@@ -1023,16 +1023,14 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
   );
 
   // ---------------------------------------------------------------------------
-  // Phase D canary — conversations:get reads transcripts from the runner-
-  // native jsonl in the workspace.
+  // Phase D / Phase E canary — conversations:get reads transcripts from the
+  // runner-native jsonl in the workspace. After Phase E (2026-05-09) this
+  // is the ONLY transcript path: the legacy `conversations_v1_turns` table,
+  // the `:append-turn` / `:fetch-history` service hooks, and the
+  // `conversation.fetch-history` IPC are all gone. No DB fallback exists,
+  // so this canary now guards the entire read path end-to-end.
   //
-  // Until Phase D, conversations:get returned `Turn[]` from the
-  // `conversation_turns` rows (written by the chat:turn-end subscriber).
-  // Phase D pivots: the subscriber stops writing rows, and conversations:get
-  // looks up the runner's session jsonl via `workspace:list` (glob match)
-  // + `workspace:read` and parses with `parseJsonlToTurns`.
-  //
-  // This canary proves the whole stack:
+  // The pipeline:
   //   preset config (git-protocol workspace) →
   //   bootstrap → workspace plugin (real workspace-git-server) →
   //   workspace:apply seeds the jsonl into the storage tier →

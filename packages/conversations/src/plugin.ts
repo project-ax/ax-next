@@ -11,23 +11,19 @@ import {
 } from '@ax/core';
 import { parseJsonlToTurns } from '@ax/agent-claude-sdk-runner-host';
 import type { ContentBlock } from '@ax/ipc-protocol';
-import { NoResultError, type Kysely } from 'kysely';
+import { type Kysely } from 'kysely';
 import {
   runConversationsMigration,
   type ConversationDatabase,
 } from './migrations.js';
 import {
   createConversationStore,
-  validateContentBlocks,
-  validateRole,
   validateRunnerType,
   validateTitle,
   validateWorkspaceRefForFreeze,
   type ConversationStore,
 } from './store.js';
 import type {
-  AppendTurnInput,
-  AppendTurnOutput,
   BindSessionInput,
   BindSessionOutput,
   ConversationsConfig,
@@ -35,8 +31,6 @@ import type {
   CreateOutput,
   DeleteInput,
   DeleteOutput,
-  FetchHistoryInput,
-  FetchHistoryOutput,
   GetByReqIdInput,
   GetByReqIdOutput,
   GetInput,
@@ -112,7 +106,6 @@ export function createConversationsPlugin(
       version: '0.0.0',
       registers: [
         'conversations:create',
-        'conversations:append-turn',
         'conversations:get',
         'conversations:list',
         'conversations:delete',
@@ -120,8 +113,6 @@ export function createConversationsPlugin(
         // Task 14 (Week 10–12): active_session_id lifecycle (J6).
         'conversations:bind-session',
         'conversations:unbind-session',
-        // Task 15 (Week 10–12): runner replays history at boot (J3 + J6).
-        'conversations:fetch-history',
         // Phase B (2026-04-29): runner-owned-sessions metadata reads.
         // Sidebar / runner-plugin call site lands in Phase C — half-
         // wired window OPEN (closed by Phase C, see PR notes).
@@ -169,12 +160,6 @@ export function createConversationsPlugin(
           createConversation(localStore, bus, ctx, input, resolvedConfig),
       );
 
-      bus.registerService<AppendTurnInput, AppendTurnOutput>(
-        'conversations:append-turn',
-        PLUGIN_NAME,
-        async (ctx, input) => appendTurn(localStore, bus, ctx, input),
-      );
-
       bus.registerService<GetInput, GetOutput>(
         'conversations:get',
         PLUGIN_NAME,
@@ -219,22 +204,6 @@ export function createConversationsPlugin(
         async (ctx, input) => unbindSession(localStore, ctx, input),
       );
 
-      // Task 15 (Week 10–12): runner replay (J3 + J6 resume).
-      //
-      // Returns the persisted transcript for a conversation in turn-index
-      // order, formatted as `{ role, contentBlocks }` for the runner's
-      // SDK prompt iterator. Reuses the same ACL gate as
-      // `conversations:get` — the row must belong to ctx.userId AND
-      // `agents:resolve` must succeed for the frozen agentId. A foreign
-      // conversationId rejects with `not-found` (same not-found-instead-
-      // of-forbidden posture as elsewhere — guessing a tenant id leaks
-      // no signal).
-      bus.registerService<FetchHistoryInput, FetchHistoryOutput>(
-        'conversations:fetch-history',
-        PLUGIN_NAME,
-        async (ctx, input) => fetchHistory(localStore, bus, ctx, input),
-      );
-
       // Phase B (2026-04-29). Metadata-only read. Same ACL posture as
       // conversations:get — user_id pre-filter, then agents:resolve.
       // Half-wired window: no in-process caller until Phase C wires
@@ -260,11 +229,11 @@ export function createConversationsPlugin(
       // chat:turn-end subscriber.
       //
       // Phase D (2026-05-02): the runner's native jsonl is the source of
-      // truth for transcripts. We no longer call `conversations:append-turn`
-      // here — only bump `last_activity_at` so sidebar ordering keeps
-      // tracking user-visible activity (I8). Heartbeats stay heartbeats
-      // (no bump). The :append-turn service hook is still registered for
-      // explicit callers (channel-web's user-turn append on POST).
+      // truth for transcripts. The subscriber only bumps `last_activity_at`
+      // so sidebar ordering keeps tracking user-visible activity (I8).
+      // Heartbeats stay heartbeats (no bump). Phase E Task 3 deleted the
+      // `conversations:append-turn` service hook entirely — no callers
+      // remain in the monorepo.
       bus.subscribe<TurnEndPayload>(
         'chat:turn-end',
         PLUGIN_NAME,
@@ -505,58 +474,6 @@ async function createConversation(
     workspaceRef,
   });
   return conv;
-}
-
-async function appendTurn(
-  store: ConversationStore,
-  bus: HookBus,
-  ctx: AgentContext,
-  input: AppendTurnInput,
-): Promise<AppendTurnOutput> {
-  const role = validateRole(input.role);
-  const blocks = validateContentBlocks(input.contentBlocks);
-  // Look up the conversation row to discover its frozen agent_id, then
-  // re-check ACL via agents:resolve. We deliberately filter by user_id
-  // first so that a row owned by someone else returns 'not-found' rather
-  // than leaking existence via the agents:resolve denial.
-  const conv = await store.getByIdNotDeleted(input.conversationId);
-  if (conv === null || conv.userId !== input.userId) {
-    throw new PluginError({
-      code: 'not-found',
-      plugin: PLUGIN_NAME,
-      hookName: 'conversations:append-turn',
-      message: `conversation '${input.conversationId}' not found`,
-    });
-  }
-  await assertAgentReachable(
-    bus,
-    ctx,
-    conv.agentId,
-    input.userId,
-    'conversations:append-turn',
-  );
-  // The store's locking SELECT filters `deleted_at IS NULL` so a
-  // softDelete that lands between getByIdNotDeleted above and the
-  // FOR UPDATE acquisition surfaces as NoResultError. Translate
-  // that to PluginError('not-found') for a uniform contract — same
-  // shape as setActiveSession returning falsey on a missing row.
-  try {
-    return await store.appendTurn({
-      conversationId: input.conversationId,
-      role,
-      contentBlocks: blocks,
-    });
-  } catch (err) {
-    if (err instanceof NoResultError) {
-      throw new PluginError({
-        code: 'not-found',
-        plugin: PLUGIN_NAME,
-        hookName: 'conversations:append-turn',
-        message: `conversation '${input.conversationId}' not found`,
-      });
-    }
-    throw err;
-  }
 }
 
 async function getConversationMetadata(
@@ -832,64 +749,6 @@ async function unbindSession(
       message: `conversation '${conversationId}' not found`,
     });
   }
-}
-
-async function fetchHistory(
-  store: ConversationStore,
-  bus: HookBus,
-  ctx: AgentContext,
-  input: FetchHistoryInput,
-): Promise<FetchHistoryOutput> {
-  const hookName = 'conversations:fetch-history';
-  // Defensive bounds at the boundary. The same posture every other
-  // hook applies — empty / oversized values must not sneak past.
-  if (
-    typeof input.conversationId !== 'string' ||
-    input.conversationId.length === 0 ||
-    input.conversationId.length > 256
-  ) {
-    throw new PluginError({
-      code: 'invalid-payload',
-      plugin: PLUGIN_NAME,
-      hookName,
-      message: `'conversationId' must be a non-empty string (≤ 256 chars)`,
-    });
-  }
-  if (typeof input.userId !== 'string' || input.userId.length === 0) {
-    throw new PluginError({
-      code: 'invalid-payload',
-      plugin: PLUGIN_NAME,
-      hookName,
-      message: `'userId' must be a non-empty string`,
-    });
-  }
-  // ACL gate — same shape as conversations:get. Filter by user_id first
-  // so a foreign row presents as 'not-found' (no existence-leak via the
-  // agents:resolve denial path).
-  const conv = await store.getByIdNotDeleted(input.conversationId);
-  if (conv === null || conv.userId !== input.userId) {
-    throw new PluginError({
-      code: 'not-found',
-      plugin: PLUGIN_NAME,
-      hookName,
-      message: `conversation '${input.conversationId}' not found`,
-    });
-  }
-  await assertAgentReachable(
-    bus,
-    ctx,
-    conv.agentId,
-    input.userId,
-    hookName,
-  );
-  const turns = await store.listTurns(input.conversationId);
-  return {
-    turns: turns.map((t) => ({ role: t.role, contentBlocks: t.contentBlocks })),
-    // Phase C: runners branch on `runnerSessionId !== null` to choose
-    // SDK resume(sessionId) vs replay-from-DB. Pulled from the row we
-    // already loaded for the ACL gate above — no extra DB hit.
-    runnerSessionId: conv.runnerSessionId,
-  };
 }
 
 async function deleteConversation(

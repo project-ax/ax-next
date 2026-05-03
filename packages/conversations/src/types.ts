@@ -103,18 +103,6 @@ export interface CreateInput {
 }
 export type CreateOutput = Conversation;
 
-export interface AppendTurnInput {
-  conversationId: string;
-  /**
-   * The user this turn belongs to. The `agents:resolve` gate uses this
-   * to authorize the write against the conversation's frozen agent_id.
-   */
-  userId: string;
-  role: TurnRole;
-  contentBlocks: ContentBlock[];
-}
-export type AppendTurnOutput = Turn;
-
 export interface GetInput {
   conversationId: string;
   userId: string;
@@ -265,43 +253,6 @@ export interface StoreRunnerSessionInput {
   runnerSessionId: string;
 }
 export type StoreRunnerSessionOutput = void;
-
-/**
- * Fetch the persisted turn history for a conversation, formatted for
- * runner replay (Week 10–12 Task 15, Invariant J3 + J6 resume).
- *
- * The output strips `turnId` / `turnIndex` / `createdAt` from the full
- * `Turn` shape — replay into the SDK's prompt iterator only needs role
- * + content blocks, and a smaller payload keeps the wire surface tight.
- *
- * ACL: same `(user_id, agent_id)` gate as `conversations:get` (J1). A
- * caller that doesn't own the row gets `PluginError({ code: 'not-found' })`
- * — the same not-found-instead-of-forbidden posture as elsewhere, so a
- * tenant-id guess leaks no signal.
- */
-export interface FetchHistoryInput {
-  conversationId: string;
-  userId: string;
-}
-export interface FetchHistoryTurn {
-  role: TurnRole;
-  contentBlocks: ContentBlock[];
-}
-export interface FetchHistoryOutput {
-  turns: FetchHistoryTurn[];
-  /**
-   * Phase C (2026-05-02). The bound runner-side session id, or `null` if
-   * the conversation has never had a runner bind one. Runners use this to
-   * decide between SDK `resume(sessionId)` (non-null — SDK rehydrates the
-   * transcript from its own on-disk store) and replay-from-DB (null —
-   * yield user-turn `turns` into the SDK prompt iterator).
-   *
-   * Opaque at this layer (no field name leaks the specific runner shape;
-   * I9). Same wire-name as the row column-name's camelCase form, NOT the
-   * snake_case `runner_session_id` from the DB.
-   */
-  runnerSessionId: string | null;
-}
 
 // ---------------------------------------------------------------------------
 // Plugin config
