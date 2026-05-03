@@ -30,6 +30,8 @@
     "@ax/agent-claude-sdk-runner": "workspace:*",
     "@ax/chat-orchestrator": "workspace:*",
     "@ax/audit-log": "workspace:*",
+    "@ax/channel-web": "workspace:*",
+    "@ax/conversations": "workspace:*",
     "@ax/mcp-client": "workspace:*",
     "@ax/credential-proxy": "workspace:*",
     "@ax/credentials": "workspace:*",
@@ -46,7 +48,6 @@
   "devDependencies": {
     "@ax/agent-claude-sdk-runner-host": "workspace:*",
     "@ax/conversation-titles": "workspace:*",
-    "@ax/conversations": "workspace:*",
     "@ax/ipc-core": "workspace:*",
     "@ax/ipc-server": "workspace:*",
     "@ax/llm-anthropic": "workspace:*",

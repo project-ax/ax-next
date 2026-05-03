@@ -114,6 +114,13 @@ const PLUGINS_TO_DROP = new Set<string>([
   '@ax/auth-oidc',
   '@ax/teams',
   '@ax/static-files',
+  // channel-web's REST surface depends on the http-server we just dropped;
+  // this canary drives `agent:invoke` directly via bus.call.
+  '@ax/channel-web',
+  // Conversations is postgres-backed; not exercised by the multi-tenant
+  // ACL canary (we go straight through the chat-orchestrator's agents:resolve
+  // gate without touching conversation rows).
+  '@ax/conversations',
   '@ax/agents',
   '@ax/workspace-git',
   '@ax/workspace-git-http',

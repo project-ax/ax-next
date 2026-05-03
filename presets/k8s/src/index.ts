@@ -22,6 +22,8 @@ import { createHttpServerPlugin } from '@ax/http-server';
 import { createAuthPlugin, type AuthConfig } from '@ax/auth-oidc';
 import { createTeamsPlugin } from '@ax/teams';
 import { createStaticFilesPlugin } from '@ax/static-files';
+import { createConversationsPlugin } from '@ax/conversations';
+import { createChannelWebServerPlugin } from '@ax/channel-web/server';
 
 // ---------------------------------------------------------------------------
 // @ax/preset-k8s — production assembly: postgres trio + workspace-git +
@@ -562,6 +564,31 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // until both upstream plugins have registered. Reuses the shared
   // postgres pool via `database:get-instance` (no second pool).
   plugins.push(createAgentsPlugin());
+
+  // ----- 9. conversations ------------------------------------------------
+  // Registers `conversations:*` (create/get/list/delete/get-by-req-id +
+  // bind-session/unbind-session + Phase B/F additions). Calls
+  // `agents:resolve`, `database:get-instance`, `workspace:list/read`
+  // — all already loaded above; topo-sort handles the ordering.
+  //
+  // Defaults `defaultRunnerType: 'claude-sdk'` (the only runner shipped
+  // today). Auto-titling (@ax/conversation-titles) is NOT loaded here —
+  // it would require @ax/llm-anthropic with a separate ANTHROPIC_API_KEY,
+  // which conflicts with the OAuth-only credential posture. Conversations
+  // stay `title: null` until a user-driven rename ships.
+  plugins.push(createConversationsPlugin());
+
+  // ----- 10. channel-web HTTP surface -----------------------------------
+  // Mounts /api/chat/messages, /api/chat/conversations[/:id],
+  // /api/chat/agents, /api/chat/stream/:reqId. Hard-depends on
+  // http-server, auth-oidc, agents, conversations, chat-orchestrator
+  // (agent:invoke). All registrants are loaded above; the kernel's
+  // topo-sort blocks init until each call has a registrant.
+  //
+  // J8: single-replica only. The chunk-buffer behind /api/chat/stream
+  // is in-process; multi-replica fan-out is a future slice that swaps
+  // it for redis / pg-logical without changing the SSE handler shape.
+  plugins.push(createChannelWebServerPlugin());
 
   return plugins;
 }

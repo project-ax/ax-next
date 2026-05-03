@@ -61,6 +61,11 @@ const useChatThreadRuntime = (transport: AxChatTransport, user = 'guest'): Assis
           };
           const ext = attachment.name.split('.').pop()?.toLowerCase() ?? '';
           const mimeType = attachment.contentType || attachment.file.type || EXT_MIME[ext] || 'application/octet-stream';
+          // TODO(channel-web): /api/files has no real backend yet — only the
+          // mock implements it. In production (preset-k8s) attachments will
+          // 404 here. Either disable the composer's attach button until a
+          // host-side blob-store + /api/files route lands, or accept the
+          // failure mode. Tracked alongside the channel-web wire-up PR.
           const resp = await fetch(`/api/files?agent=default&user=${encodeURIComponent(user)}&filename=${encodeURIComponent(attachment.name)}`, {
             method: 'POST',
             headers: { 'Content-Type': mimeType },
