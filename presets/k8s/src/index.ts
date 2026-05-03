@@ -22,6 +22,8 @@ import { createHttpServerPlugin } from '@ax/http-server';
 import { createAuthPlugin, type AuthConfig } from '@ax/auth-oidc';
 import { createTeamsPlugin } from '@ax/teams';
 import { createStaticFilesPlugin } from '@ax/static-files';
+import { createConversationsPlugin } from '@ax/conversations';
+import { createChannelWebServerPlugin } from '@ax/channel-web/server';
 
 // ---------------------------------------------------------------------------
 // @ax/preset-k8s — production assembly: postgres trio + workspace-git +
@@ -463,24 +465,6 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // is exactly what the kernel's topo-sort needs to see.
   plugins.push(createTeamsPlugin({ mountAdminRoutes: true }));
 
-  // static-files (optional): serves channel-web's bundle from the same
-  // listener so cookies and CSRF stay same-origin in production. The
-  // plugin registers a `/*` catchall LAST so every API route registered
-  // earlier wins. When `staticFiles` is unset, no catchall is mounted
-  // and unknown paths return 404 — the dev workflow uses Vite's proxy
-  // instead. SPA fallback defaults on so client-side routing works.
-  if (config.staticFiles !== undefined) {
-    plugins.push(
-      createStaticFilesPlugin({
-        dir: config.staticFiles.dir,
-        ...(config.staticFiles.mountPath !== undefined
-          ? { mountPath: config.staticFiles.mountPath }
-          : {}),
-        spaFallback: config.staticFiles.spaFallback ?? true,
-      }),
-    );
-  }
-
   // ----- 6. chat plane ---------------------------------------------------
   // sandbox-k8s registers `sandbox:open-session`. No subprocess fallback
   // here — this preset is k8s-only.
@@ -562,6 +546,56 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // until both upstream plugins have registered. Reuses the shared
   // postgres pool via `database:get-instance` (no second pool).
   plugins.push(createAgentsPlugin());
+
+  // ----- 9. conversations ------------------------------------------------
+  // Registers `conversations:*` (create/get/list/delete/get-by-req-id +
+  // bind-session/unbind-session + Phase B/F additions). Calls
+  // `agents:resolve`, `database:get-instance`, `workspace:list/read`
+  // — all already loaded above; topo-sort handles the ordering.
+  //
+  // Defaults `defaultRunnerType: 'claude-sdk'` (the only runner shipped
+  // today). Auto-titling (@ax/conversation-titles) is NOT loaded here —
+  // it would require @ax/llm-anthropic with a separate ANTHROPIC_API_KEY,
+  // which conflicts with the OAuth-only credential posture. Conversations
+  // stay `title: null` until a user-driven rename ships.
+  plugins.push(createConversationsPlugin());
+
+  // ----- 10. channel-web HTTP surface -----------------------------------
+  // Mounts /api/chat/messages, /api/chat/conversations[/:id],
+  // /api/chat/agents, /api/chat/stream/:reqId. Hard-depends on
+  // http-server, auth-oidc, agents, conversations, chat-orchestrator
+  // (agent:invoke). All registrants are loaded above; the kernel's
+  // topo-sort blocks init until each call has a registrant.
+  //
+  // J8: single-replica only. The chunk-buffer behind /api/chat/stream
+  // is in-process; multi-replica fan-out is a future slice that swaps
+  // it for redis / pg-logical without changing the SSE handler shape.
+  plugins.push(createChannelWebServerPlugin());
+
+  // ----- 11. static-files (optional, MUST be last) ----------------------
+  // Serves channel-web's bundle from the same listener so cookies and
+  // CSRF stay same-origin in production. The plugin registers a `/*`
+  // splat catchall — the http-server router does SPECIFICITY-based
+  // matching (exact > non-splat patterns > splats; see
+  // packages/http-server/src/router.ts:137-163), so /api/chat/* and
+  // /admin/* always win over /* regardless of registration order. We
+  // still push static-files LAST so the visual order matches the intent
+  // and a future reader doesn't read this as a shadowing bug.
+  //
+  // When `staticFiles` is unset, no catchall is mounted and unknown
+  // paths return 404 — the dev workflow uses Vite's proxy instead.
+  // SPA fallback defaults on so client-side routing works.
+  if (config.staticFiles !== undefined) {
+    plugins.push(
+      createStaticFilesPlugin({
+        dir: config.staticFiles.dir,
+        ...(config.staticFiles.mountPath !== undefined
+          ? { mountPath: config.staticFiles.mountPath }
+          : {}),
+        spaFallback: config.staticFiles.spaFallback ?? true,
+      }),
+    );
+  }
 
   return plugins;
 }

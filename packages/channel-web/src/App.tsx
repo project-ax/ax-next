@@ -2,7 +2,7 @@
  * App — auth-gated root component.
  *
  * Boot flow:
- *   1. `loading` — fetch `/api/auth/get-session` on mount.
+ *   1. `loading` — fetch `/admin/me` on mount (see `lib/auth.ts`).
  *   2. `unauthenticated` — render `<LoginPage />` (single Google CTA).
  *   3. `authenticated` — render `<AppContent />` with the assistant-ui
  *      runtime, sidebar, session header, and thread.
@@ -13,7 +13,7 @@
  *
  * Per-test-file note: components in `components/` render in isolation and
  * bypass the auth gate. Only `App.tsx` is gated; downstream tests don't
- * need to mock `/api/auth/*`.
+ * need to mock the auth wire.
  */
 import { useEffect, useState } from 'react';
 import { AssistantRuntimeProvider } from '@assistant-ui/react';

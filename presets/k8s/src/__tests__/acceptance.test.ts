@@ -116,6 +116,14 @@ const PLUGINS_TO_DROP = new Set<string>([
   '@ax/auth-oidc',
   '@ax/teams',
   '@ax/static-files',
+  // channel-web's HTTP surface (POST /api/chat/messages, etc.) hard-depends
+  // on the http-server we just dropped. The chat path here goes through
+  // bus.call('agent:invoke', ...) directly, so we don't need the REST shell.
+  '@ax/channel-web',
+  // Conversations is postgres-backed (`database:get-instance`) and not
+  // exercised by the chat-path canaries. The Phase D canary further down
+  // loads it explicitly against a real testcontainer; everywhere else, drop.
+  '@ax/conversations',
   // Agents plugin is postgres-backed and depends on http+auth above; we
   // mount a permissive `agents:resolve` mock plugin further down.
   '@ax/agents',
@@ -1105,10 +1113,12 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
 
         // We use the existing PLUGINS_TO_DROP filter — it strips the
         // postgres trio (database/storage/eventbus/session) from the
-        // preset's output. Then we add `database-postgres` back as a
-        // replacement (now connected to the real testcontainer) plus
-        // the `conversations` plugin (not in the preset; this canary
-        // is the only place in preset-k8s that loads it).
+        // preset's output AND the conversations plugin (which is in the
+        // preset but can't run without postgres in this test rig). Then
+        // we add `database-postgres` back as a replacement (now
+        // connected to the real testcontainer) plus the `conversations`
+        // plugin we just dropped — this canary needs the real one
+        // wired against the real testcontainer database.
         const presetPlugins = createK8sPlugins(presetConfig);
         const kept = presetPlugins.filter(
           (p) => !PLUGINS_TO_DROP.has(p.manifest.name),

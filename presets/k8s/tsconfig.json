@@ -19,6 +19,8 @@
     { "path": "../../packages/agent-claude-sdk-runner" },
     { "path": "../../packages/chat-orchestrator" },
     { "path": "../../packages/audit-log" },
+    { "path": "../../packages/channel-web" },
+    { "path": "../../packages/conversations" },
     { "path": "../../packages/mcp-client" },
     { "path": "../../packages/credential-proxy" },
     { "path": "../../packages/credentials" },

@@ -4,9 +4,9 @@
  * Covers the AdminPanel chrome + AgentForm CRUD flow:
  *
  *   1. Opening with `view="agents"` lists existing agents from
- *      `/api/admin/agents`.
+ *      `/admin/agents`.
  *   2. Clicking "+ New agent" reveals the form (name, system prompt, etc.).
- *   3. Filling + submitting the form POSTs to `/api/admin/agents`, then
+ *   3. Filling + submitting the form POSTs to `/admin/agents`, then
  *      re-fetches the list so the new row appears.
  *   4. Clicking the close (×) button calls `onClose`.
  *
@@ -82,7 +82,7 @@ describe('AdminPanel — agents', () => {
     expect(screen.getByLabelText(/system prompt/i)).toBeTruthy();
   });
 
-  it('submitting the form POSTs to /api/admin/agents', async () => {
+  it('submitting the form POSTs to /admin/agents', async () => {
     fetchMock.mockResolvedValueOnce({
       ok: true,
       json: async () => ({ agents: [] }),
@@ -113,7 +113,7 @@ describe('AdminPanel — agents', () => {
       const calls = fetchMock.mock.calls;
       const post = calls.find(
         ([url, opts]) =>
-          url === '/api/admin/agents' &&
+          url === '/admin/agents' &&
           (opts as RequestInit | undefined)?.method === 'POST',
       );
       expect(post).toBeTruthy();
@@ -131,7 +131,7 @@ describe('AdminPanel — agents', () => {
         <AdminPanel view="agents" onClose={onClose} />
       </UserProvider>,
     );
-    // Wait for the initial /api/admin/agents fetch to settle so the list
+    // Wait for the initial /admin/agents fetch to settle so the list
     // (or empty state) is in the DOM before we click close. Otherwise we
     // race the unmount against the pending state update and React logs
     // an act() warning.

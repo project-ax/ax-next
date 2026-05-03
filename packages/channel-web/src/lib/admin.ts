@@ -1,15 +1,20 @@
 /**
- * Admin client — typed wrappers around `/api/admin/*`.
+ * Admin client — typed wrappers around `/admin/*`.
  *
  * Used by `AdminPanel` (chrome) and the per-view forms — agents in
  * Task 22, MCP servers in Task 23, teams placeholder in Task 24. Routes
  * the `AdminView` type through here so `App.tsx` and `AdminPanel.tsx`
  * both import it from a neutral location and don't form an import cycle.
  *
+ * Path convention matches `lib/auth.ts` (`/admin/me`, `/admin/sign-out`)
+ * and the real backend's route registrations (`@ax/agents`,
+ * `@ax/mcp-client`, `@ax/teams` all mount at `/admin/*`, no `/api`
+ * prefix). The mock backend serves the same shapes from `/api/admin/*`
+ * — that's a mock-only quirk; production hits `/admin/*`.
+ *
  * SECURITY NOTE — every endpoint these helpers hit is guarded server-side
- * by the admin role check (mock: `mock/admin/*`, real backend in
- * Week 9.5). Hiding admin entries from non-admins in the UI is a
- * convenience; access control sits on the server.
+ * by the admin role check. Hiding admin entries from non-admins in the
+ * UI is a convenience; access control sits on the server.
  */
 import type { Agent, AgentInput } from '../../mock/agents';
 import type { McpServer } from '../../mock/admin/mcp-servers';
@@ -22,14 +27,14 @@ const headers = { 'content-type': 'application/json' };
 // Agents (admin scope) ---------------------------------------------------
 
 export async function listAdminAgents(): Promise<Agent[]> {
-  const res = await fetch('/api/admin/agents', { credentials: 'include' });
+  const res = await fetch('/admin/agents', { credentials: 'include' });
   if (!res.ok) throw new Error(`list agents: ${res.status}`);
   const body = await res.json();
   return body.agents;
 }
 
 export async function createAgent(input: AgentInput): Promise<{ id: string }> {
-  const res = await fetch('/api/admin/agents', {
+  const res = await fetch('/admin/agents', {
     method: 'POST',
     headers,
     credentials: 'include',
@@ -43,7 +48,7 @@ export async function patchAgent(
   id: string,
   patch: Partial<AgentInput>,
 ): Promise<void> {
-  const res = await fetch(`/api/admin/agents/${encodeURIComponent(id)}`, {
+  const res = await fetch(`/admin/agents/${encodeURIComponent(id)}`, {
     method: 'PATCH',
     headers,
     credentials: 'include',
@@ -53,7 +58,7 @@ export async function patchAgent(
 }
 
 export async function deleteAgent(id: string): Promise<void> {
-  const res = await fetch(`/api/admin/agents/${encodeURIComponent(id)}`, {
+  const res = await fetch(`/admin/agents/${encodeURIComponent(id)}`, {
     method: 'DELETE',
     credentials: 'include',
   });
@@ -72,7 +77,7 @@ export interface McpServerInput {
 }
 
 export async function listMcpServers(): Promise<McpServer[]> {
-  const res = await fetch('/api/admin/mcp-servers', { credentials: 'include' });
+  const res = await fetch('/admin/mcp-servers', { credentials: 'include' });
   if (!res.ok) throw new Error(`list mcp: ${res.status}`);
   return (await res.json()).servers;
 }
@@ -80,7 +85,7 @@ export async function listMcpServers(): Promise<McpServer[]> {
 export async function createMcpServer(
   input: McpServerInput,
 ): Promise<{ id: string }> {
-  const res = await fetch('/api/admin/mcp-servers', {
+  const res = await fetch('/admin/mcp-servers', {
     method: 'POST',
     headers,
     credentials: 'include',
@@ -95,7 +100,7 @@ export async function patchMcpServer(
   patch: Partial<McpServerInput>,
 ): Promise<void> {
   const res = await fetch(
-    `/api/admin/mcp-servers/${encodeURIComponent(id)}`,
+    `/admin/mcp-servers/${encodeURIComponent(id)}`,
     {
       method: 'PATCH',
       headers,
@@ -108,7 +113,7 @@ export async function patchMcpServer(
 
 export async function deleteMcpServer(id: string): Promise<void> {
   const res = await fetch(
-    `/api/admin/mcp-servers/${encodeURIComponent(id)}`,
+    `/admin/mcp-servers/${encodeURIComponent(id)}`,
     { method: 'DELETE', credentials: 'include' },
   );
   if (!res.ok) throw new Error(`delete mcp: ${res.status}`);
@@ -122,7 +127,7 @@ export async function testMcpServer(
 ): Promise<{ ok: boolean; error?: string }> {
   try {
     const res = await fetch(
-      `/api/admin/mcp-servers/${encodeURIComponent(id)}/test`,
+      `/admin/mcp-servers/${encodeURIComponent(id)}/test`,
       { method: 'POST', credentials: 'include' },
     );
     if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
@@ -137,7 +142,7 @@ export async function testMcpServer(
 // is enough so AgentForm can populate the team-owner dropdown.
 
 export async function listTeams(): Promise<Team[]> {
-  const res = await fetch('/api/admin/teams', { credentials: 'include' });
+  const res = await fetch('/admin/teams', { credentials: 'include' });
   if (!res.ok) throw new Error(`list teams: ${res.status}`);
   return (await res.json()).teams;
 }

@@ -4,7 +4,7 @@
  * Mirrors the agents test (Task 22): list → reveal form → POST →
  * re-fetch. Adds two cases that don't exist on the agents path:
  *
- *   - The Test button calls `/api/admin/mcp-servers/:id/test` and
+ *   - The Test button calls `/admin/mcp-servers/:id/test` and
  *     surfaces "ok" inline on success.
  *   - The same button surfaces an "error" badge on failure (HTTP 5xx
  *     or `{ ok: false, error }` body).
@@ -102,7 +102,7 @@ describe('AdminPanel — MCP servers', () => {
     await waitFor(() => {
       const post = fetchMock.mock.calls.find(
         ([url, opts]) =>
-          url === '/api/admin/mcp-servers' &&
+          url === '/admin/mcp-servers' &&
           (opts as RequestInit | undefined)?.method === 'POST',
       );
       expect(post).toBeTruthy();

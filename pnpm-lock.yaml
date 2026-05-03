@@ -1250,9 +1250,15 @@ importers:
       '@ax/auth-oidc':
         specifier: workspace:*
         version: link:../../packages/auth-oidc
+      '@ax/channel-web':
+        specifier: workspace:*
+        version: link:../../packages/channel-web
       '@ax/chat-orchestrator':
         specifier: workspace:*
         version: link:../../packages/chat-orchestrator
+      '@ax/conversations':
+        specifier: workspace:*
+        version: link:../../packages/conversations
       '@ax/core':
         specifier: workspace:*
         version: link:../../packages/core
@@ -1317,9 +1323,6 @@ importers:
       '@ax/conversation-titles':
         specifier: workspace:*
         version: link:../../packages/conversation-titles
-      '@ax/conversations':
-        specifier: workspace:*
-        version: link:../../packages/conversations
       '@ax/ipc-core':
         specifier: workspace:*
         version: link:../../packages/ipc-core
