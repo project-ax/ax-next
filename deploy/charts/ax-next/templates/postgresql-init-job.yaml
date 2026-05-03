@@ -34,7 +34,11 @@ spec:
       restartPolicy: OnFailure
       containers:
         - name: pg-init
-          image: docker.io/bitnami/postgresql:16
+          # Derived from the same `postgresql.image.*` values the subchart
+          # consumes — keeps the init image and the running postgres on
+          # the same registry (e.g. bitnamilegacy/* after Bitnami's late-
+          # 2025 catalog move). Override at install time if needed.
+          image: "{{ .Values.postgresql.image.registry }}/{{ .Values.postgresql.image.repository }}:{{ .Values.postgresql.image.tag }}"
           command: ["/bin/bash", "-c"]
           args:
             - |

@@ -195,6 +195,15 @@ postgres:
 # the schema-init job both read these values, so overriding them here
 # flows through to both sides automatically.
 postgresql:
+  # Bitnami moved most of its images from `bitnami/*` to `bitnamilegacy/*`
+  # in late 2025 — the old paths now 404 on Docker Hub. Pin to the legacy
+  # mirror so fresh installs Just Work. Consumers wanting the new bitnami
+  # premium catalog can override registry/repository at install time.
+  # Tag matches v1 ax for consistency.
+  image:
+    registry: docker.io
+    repository: bitnamilegacy/postgresql
+    tag: 17.6.0-debian-12-r4
   auth:
     database: ax_next
     username: ax_next

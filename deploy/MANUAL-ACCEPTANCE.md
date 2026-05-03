@@ -147,9 +147,10 @@ Same procedure as kind, but:
   loaded, port-forward into the host's Service and POST to `/chat`; the
   runner pod gets created, connects back over HTTP, and returns.
 
-- **The embedded postgres** uses Bitnami's chart at version `16.7.27`. Bitnami
-  recently moved many images from `bitnami/*` to `bitnamilegacy/*`. If image
-  pulls fail, set `postgres.embedded.image.registry` accordingly. See
+- **The embedded postgres** uses Bitnami's chart at version `16.7.27`,
+  pinned to the `bitnamilegacy/postgresql` repository (Bitnami moved most
+  images out of `bitnami/*` in late 2025). Override `postgresql.image.*`
+  in values if you'd rather pull from somewhere else. See
   `deploy/charts/ax-next/SECURITY.md` for the full note.
 
 - **Network policies** can interfere with kind's default CNI. The kind dev
