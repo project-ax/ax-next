@@ -3,7 +3,6 @@ export {
   runConversationsMigration,
   type ConversationDatabase,
   type ConversationsRow,
-  type TurnsRow,
 } from './migrations.js';
 export {
   createConversationStore,
