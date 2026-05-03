@@ -42,3 +42,33 @@ export type AgentOutcome =
 export type FireResult<P> =
   | { rejected: false; payload: P }
   | Rejection;
+
+/**
+ * Canonical input to the `llm:call` service hook.
+ *
+ * Provider-agnostic. The registrar plugin (e.g. `@ax/llm-anthropic`) is
+ * responsible for translating to its SDK's request shape. Optional fields
+ * fall back to plugin-level defaults — callers that don't care about model
+ * selection or output cap can pass just `messages`.
+ */
+export interface LlmCallInput {
+  model?: string;
+  maxTokens?: number;
+  system?: string;
+  messages: Array<{ role: 'user' | 'assistant'; content: string }>;
+  temperature?: number;
+}
+
+/**
+ * Canonical output from `llm:call`. The model's response text and the
+ * structural fields the orchestrator needs to decide what to do next.
+ *
+ * `stopReason` is normalized to a small known set; provider-specific values
+ * (e.g. `pause_turn`, `refusal`) collapse to `'unknown'` so subscribers can
+ * key off the union exhaustively without per-provider branches.
+ */
+export interface LlmCallOutput {
+  text: string;
+  stopReason: 'end_turn' | 'max_tokens' | 'tool_use' | 'stop_sequence' | 'unknown';
+  usage: { inputTokens: number; outputTokens: number };
+}
