@@ -134,7 +134,13 @@ export function buildPodSpec(
       {
         name: 'runner',
         image: config.image,
-        command: ['node', input.runnerBinary],
+        // `args` (not `command`) so the image's ENTRYPOINT (tini in
+        // container/agent/Dockerfile) stays PID 1 and reaps any orphaned
+        // grandchildren of the Claude SDK runner subprocess. K8s `command`
+        // replaces ENTRYPOINT entirely; `args` only replaces CMD. The
+        // image contract: ENTRYPOINT must be a process supervisor that
+        // execs its argv (e.g. `tini --`) so `args` reaches node verbatim.
+        args: ['node', input.runnerBinary],
         env,
         resources: {
           limits: {

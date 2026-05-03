@@ -38,7 +38,7 @@ spec:
         - name: host
           image: {{ include "ax-next.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy | default "IfNotPresent" }}
-          command: {{ .Values.host.command | toJson }}
+          args: {{ .Values.host.args | toJson }}
           ports:
             - name: http
               containerPort: {{ .Values.host.ports.http }}

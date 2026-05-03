@@ -28,9 +28,9 @@ updating the security note.
 - **Web proxy.** Legacy ran an HTTP forward proxy on the host pod for runner-pod
   egress. Week 10+.
 - **Admin / OAuth templates.** Multi-tenant + auth slice is Week 9.5.
-- **`Dockerfile.agent`.** Building the runner image is a build concern, not a
-  chart concern. Bring your own image. <!-- TODO(deploy): add Dockerfile.agent in
-  a follow-up PR -->
+- **The agent image.** Built from `container/agent/Dockerfile` (see the
+  step-by-step below). The same image is used for the host pod and for the
+  per-session runner pods.
 
 ## Deploy to a local kind cluster
 
@@ -48,10 +48,10 @@ covered in [`MANUAL-ACCEPTANCE.md`](MANUAL-ACCEPTANCE.md) once Task 21 lands.
 # 1. Spin up a kind cluster.
 kind create cluster --name ax-next-dev
 
-# 2. Build and load the agent image. Dockerfile.agent is NOT in this PR —
-#    bring your own that bundles the host CLI + runner binaries. See
-#    `packages/sandbox-k8s/SECURITY.md` for what the runner side expects.
-docker build -t ax-next/agent:dev -f deploy/Dockerfile.agent .
+# 2. Build and load the agent image. Same image powers the host pod
+#    AND the per-session runner pods (bundled-runner-binary pattern).
+#    See `packages/sandbox-k8s/SECURITY.md` for what the runner expects.
+docker build -t ax-next/agent:dev -f container/agent/Dockerfile .
 kind load docker-image ax-next/agent:dev --name ax-next-dev
 
 # 3. Pull subchart deps. Helm caches them in `charts/ax-next/charts/`.
@@ -79,7 +79,7 @@ kubectl port-forward svc/ax-next-host 8080:80
 To pick up code changes:
 
 ```bash
-docker build -t ax-next/agent:dev -f deploy/Dockerfile.agent .
+docker build -t ax-next/agent:dev -f container/agent/Dockerfile .
 kind load docker-image ax-next/agent:dev --name ax-next-dev
 kubectl rollout restart deployment/ax-next-host
 ```

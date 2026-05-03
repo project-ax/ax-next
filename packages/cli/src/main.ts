@@ -332,9 +332,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       });
   } else if (argv[0] === 'serve') {
     // Long-running k8s-mode entrypoint. The chart's host pod runs this.
-    // Local-dev users running `node dist/cli/index.js serve` will boot the
-    // full k8s preset — they need DATABASE_URL + AX_K8S_HOST_IPC_URL +
-    // AX_WORKSPACE_BACKEND set, otherwise we exit 2 with a clear message.
+    // Local-dev users running `node packages/cli/dist/main.js serve` will
+    // boot the full k8s preset — they need DATABASE_URL + AX_K8S_HOST_IPC_URL
+    // + AX_WORKSPACE_BACKEND set, otherwise we exit 2 with a clear message.
     runServeCommand({ argv: argv.slice(1) })
       .then((code) => process.exit(code))
       .catch((e) => {
