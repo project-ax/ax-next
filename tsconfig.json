@@ -36,6 +36,7 @@
     { "path": "packages/auth-oidc" },
     { "path": "packages/agents" },
     { "path": "packages/teams" },
+    { "path": "packages/conversation-titles" },
     { "path": "packages/conversations" },
     { "path": "packages/credential-proxy" },
     { "path": "packages/credential-proxy-bridge" },
