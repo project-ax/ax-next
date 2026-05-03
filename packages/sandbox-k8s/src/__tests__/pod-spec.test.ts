@@ -31,6 +31,21 @@ describe('buildPodSpec', () => {
     });
   });
 
+  it('uses args (not command) so the image ENTRYPOINT stays PID 1', () => {
+    // Regression: switching to `command` here replaces the image's
+    // ENTRYPOINT (tini in container/agent/Dockerfile), so orphaned
+    // grandchildren of the Claude SDK runner stop being reaped. Args
+    // preserve the supervisor; this test pins that contract.
+    const spec = buildPodSpec('pod-x', baseInput, baseResolved());
+    const container = (
+      spec.spec as {
+        containers: Array<{ command?: string[]; args?: string[] }>;
+      }
+    ).containers[0]!;
+    expect(container.command).toBeUndefined();
+    expect(container.args).toEqual(['node', '/opt/runner.js']);
+  });
+
   it('does not declare a containerPort (runner is purely an IPC client)', () => {
     const spec = buildPodSpec('pod-x', baseInput, baseResolved());
     const container = (

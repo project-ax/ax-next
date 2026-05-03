@@ -68,11 +68,11 @@ host:
     initialDelaySeconds: 10
     periodSeconds: 30
   terminationGracePeriodSeconds: 30
-  # Absolute path inside the agent image (container/agent/Dockerfile).
-  # The image's deploy tree lives at /opt/ax-next/host; dist/main.js is
-  # the cli's binary entrypoint and contains an `import.meta.url` IIFE
-  # that dispatches subcommands.
-  command: ["node", "/opt/ax-next/host/dist/main.js", "serve", "--port", "8080"]
+  # `args` (not `command`) so the image's ENTRYPOINT (tini) stays as PID 1.
+  # In k8s, `command` replaces ENTRYPOINT entirely; `args` only replaces CMD.
+  # The deploy tree lives at /opt/ax-next/host inside container/agent/Dockerfile;
+  # dist/main.js is the cli binary IIFE that dispatches subcommands.
+  args: ["node", "/opt/ax-next/host/dist/main.js", "serve", "--port", "8080"]
   env: []
 
 # ─── Workspace persistence ───────────────────────────────────────

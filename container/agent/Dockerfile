@@ -33,7 +33,9 @@
 #
 # Image hardening:
 #   - Non-root UID/GID 1000:1000, /usr/sbin/nologin shell.
-#   - tini as PID 1, then `node` exec — SIGTERM reaches Node cleanly.
+#   - tini as PID 1 (ENTRYPOINT is `tini --` only — see CMD/ENTRYPOINT note
+#     near the bottom). SIGTERM reaches Node cleanly; orphaned grandchildren
+#     of the Claude SDK runner subprocess get reaped instead of zombifying.
 #   - apt lists wiped after install; no compilers; no curl/openssl from apt.
 #   - readOnlyRootFilesystem-compatible: writes only go to /tmp (emptyDir)
 #     and /home/axagent (writable; the credential-proxy CA dir defaults to
@@ -112,12 +114,11 @@ USER 1000:1000
 # containerPort separately.
 EXPOSE 8080
 
-# Direct exec via tini for clean signal handling. Default CMD makes
-# `kubectl run --rm -it ax-next/agent:dev` sensible. Both consumers
-# override:
-#   - Host pod: chart's `host.command` becomes the container `command`
-#     (which overrides ENTRYPOINT, so the chart fully controls invocation).
-#   - Runner pods: @ax/sandbox-k8s sets `command: ['node', <abs path>]`
-#     resolved at host startup.
-ENTRYPOINT ["/usr/bin/tini", "--", "node", "/opt/ax-next/host/dist/main.js"]
-CMD ["serve", "--port", "8080"]
+# tini sits alone in ENTRYPOINT so consumers can override the program
+# without dropping zombie reaping. Kubernetes `args` only replaces CMD, not
+# ENTRYPOINT, so both the host pod (chart's `host.args`) and runner pods
+# (@ax/sandbox-k8s `args: ['node', <abs path>]`) keep tini as PID 1. CMD is
+# the host-pod default so `docker run ax-next/agent:dev` does the obvious
+# thing locally.
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["node", "/opt/ax-next/host/dist/main.js", "serve", "--port", "8080"]
