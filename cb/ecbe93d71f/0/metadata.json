@@ -1,0 +1,42 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "cbecbe93d71f",
+  "session_id": "7fd61324-4678-4113-b63a-a8fe968bba48",
+  "strategy": "manual-commit",
+  "created_at": "2026-05-03T12:16:45.489691Z",
+  "branch": "feat/phase-f-conversation-titles",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "packages/conversation-titles/src/__tests__/validate.test.ts",
+    "packages/conversation-titles/src/validate.ts",
+    "packages/llm-anthropic/src/__tests__/plugin.test.ts",
+    "packages/llm-anthropic/src/plugin.ts"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "a76d7872f464",
+  "checkpoint_transcript_start": 495,
+  "transcript_lines_at_start": 495,
+  "token_usage": {
+    "input_tokens": 0,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 0,
+    "output_tokens": 0,
+    "api_call_count": 0
+  },
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-05-03T12:16:45.465125Z",
+    "agent_lines": 72,
+    "agent_removed": 2,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 72,
+    "total_lines_changed": 74,
+    "agent_percentage": 100,
+    "metric_version": 2
+  }
+}
