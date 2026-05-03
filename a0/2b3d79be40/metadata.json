@@ -1,0 +1,23 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "a02b3d79be40",
+  "strategy": "manual-commit",
+  "branch": "feat/phase-e-runner-owned-sessions",
+  "checkpoints_count": 2,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/a0/2b3d79be40/0/metadata.json",
+      "transcript": "/a0/2b3d79be40/0/full.jsonl",
+      "content_hash": "/a0/2b3d79be40/0/content_hash.txt",
+      "prompt": "/a0/2b3d79be40/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 263,
+    "cache_creation_tokens": 1162625,
+    "cache_read_tokens": 38831943,
+    "output_tokens": 118207,
+    "api_call_count": 175
+  }
+}

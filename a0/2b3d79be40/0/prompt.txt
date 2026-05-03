@@ -1,0 +1,49 @@
+Continue Phase E implementation. Check if Task E-1 implementer (agent a5a65588a512a1139) has reported back. If yes, dispatch spec reviewer. If still working, schedule another check.
+
+---
+
+Create pr
+
+---
+
+What are the transcript reports you’re referring to?
+
+---
+
+leave as is
+
+---
+
+FAIL  src/__tests__/open-session.test.ts > sandbox:open-session > happy path: spawns runner, returns handle; kill() reaps with SIGTERM; cleans up socket dir
+packages/sandbox-subprocess test: AssertionError: promise resolved "Stats{ dev: 2049, mode: 16832, …(12) }" instead of rejecting
+packages/sandbox-subprocess test: - Expected
+packages/sandbox-subprocess test: + Received
+packages/sandbox-subprocess test: - Error {
+packages/sandbox-subprocess test: -   "message": "rejected promise",
+packages/sandbox-subprocess test: + Stats {
+packages/sandbox-subprocess test: +   "atimeMs": 1777800403237.4507,
+packages/sandbox-subprocess test: +   "birthtimeMs": 1777800403237.4507,
+packages/sandbox-subprocess test: +   "blksize": 4096,
+packages/sandbox-subprocess test: +   "blocks": 8,
+packages/sandbox-subprocess test: +   "ctimeMs": 1777800403444.4512,
+packages/sandbox-subprocess test: +   "dev": 2049,
+packages/sandbox-subprocess test: +   "gid": 1001,
+packages/sandbox-subprocess test: +   "ino": 8701219,
+packages/sandbox-subprocess test: +   "mode": 16832,
+packages/sandbox-subprocess test: +   "mtimeMs": 1777800403444.4512,
+packages/sandbox-subprocess test: +   "nlink": 2,
+packages/sandbox-subprocess test: +   "rdev": 0,
+packages/sandbox-subprocess test: +   "size": 4096,
+packages/sandbox-subprocess test: +   "uid": 1001,
+packages/sandbox-subprocess test:   }
+packages/sandbox-subprocess test:  ❯ src/__tests__/open-session.test.ts:117:37
+packages/sandbox-subprocess test:     115|     // Socket dir was removed.
+packages/sandbox-subprocess test:     116|     const socketDir = path.dirname(endpointToSocketPath(result.runnerE…
+packages/sandbox-subprocess test:     117|     await expect(fs.stat(socketDir)).rejects.toMatchObject({ code: 'EN…
+packages/sandbox-subprocess test:        |                                     ^
+packages/sandbox-subprocess test:     118|
+packages/sandbox-subprocess test:     119|     await fs.rm(ws, { recursive: true, force: true });
+
+---
+
+address PR comments
