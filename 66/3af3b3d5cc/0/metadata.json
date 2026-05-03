@@ -1,0 +1,39 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "663af3b3d5cc",
+  "session_id": "7fd61324-4678-4113-b63a-a8fe968bba48",
+  "strategy": "manual-commit",
+  "created_at": "2026-05-03T12:10:13.631535Z",
+  "branch": "feat/phase-f-conversation-titles",
+  "checkpoints_count": 1,
+  "files_touched": [],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "a76d7872f464",
+  "token_usage": {
+    "input_tokens": 125,
+    "cache_creation_tokens": 620045,
+    "cache_read_tokens": 13194998,
+    "output_tokens": 104160,
+    "api_call_count": 88
+  },
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}

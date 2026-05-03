@@ -1,0 +1,23 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "663af3b3d5cc",
+  "strategy": "manual-commit",
+  "branch": "feat/phase-f-conversation-titles",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/66/3af3b3d5cc/0/metadata.json",
+      "transcript": "/66/3af3b3d5cc/0/full.jsonl",
+      "content_hash": "/66/3af3b3d5cc/0/content_hash.txt",
+      "prompt": "/66/3af3b3d5cc/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 125,
+    "cache_creation_tokens": 620045,
+    "cache_read_tokens": 13194998,
+    "output_tokens": 104160,
+    "api_call_count": 88
+  }
+}
