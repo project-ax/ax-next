@@ -19,11 +19,9 @@ We're a nervous crab. Don't ship without doing this.
 ## Goldenpath: kind
 
 ```bash
-# 1. Build the runner image
-#    Dockerfile.agent is a follow-up PR — bring your own image OR build a
-#    minimal one that bundles the runner binary:
-#      @ax/agent-claude-sdk-runner   → /opt/ax-next/agent-claude-sdk-runner.js
-docker build -t ax-next/agent:dev -f deploy/Dockerfile.agent .
+# 1. Build the agent image (host + runner share this one — see
+#    container/agent/Dockerfile for the bundled-runner-binary layout).
+docker build -t ax-next/agent:dev -f container/agent/Dockerfile .
 
 # 2. Create a kind cluster + load the image
 kind create cluster --name ax-next-dev
@@ -133,13 +131,9 @@ Same procedure as kind, but:
 
   The end-to-end "chat returns a response" criterion requires the `serve`
   subcommand (now shipped — see "multi-replica chat" scenario below) and
-  a pre-built runner image (`Dockerfile.agent`, follow-up #4 in the
-  Week 7-9 followups doc). With the runner image in place, port-forward
-  into the host's Service and POST to `/chat`; the runner pod gets
-  created, connects back over HTTP, and returns.
-
-- **`Dockerfile.agent` is not in this PR.** Pre-build any image bundling the
-  Claude SDK runner binary; the chart only consumes it.
+  the agent image built from `container/agent/Dockerfile`. With the image
+  loaded, port-forward into the host's Service and POST to `/chat`; the
+  runner pod gets created, connects back over HTTP, and returns.
 
 - **The embedded postgres** uses Bitnami's chart at version `16.7.27`. Bitnami
   recently moved many images from `bitnami/*` to `bitnamilegacy/*`. If image
@@ -175,8 +169,8 @@ small HTTP front door:
 
 - A kind cluster (or any k8s cluster you trust) with `kubectl` configured.
 - The agent image built and pushed to a registry the cluster can reach
-  (the image must include the cli's `dist/main.js`; see follow-up #4 for
-  the `Dockerfile.agent`).
+  (build from `container/agent/Dockerfile` — same image is used for the
+  host pod and the per-session runner pods).
 - An Anthropic API key.
 
 ### Steps

@@ -68,7 +68,11 @@ host:
     initialDelaySeconds: 10
     periodSeconds: 30
   terminationGracePeriodSeconds: 30
-  command: ["node", "dist/cli/index.js", "serve", "--port", "8080"]
+  # Absolute path inside the agent image (container/agent/Dockerfile).
+  # The image's deploy tree lives at /opt/ax-next/host; dist/main.js is
+  # the cli's binary entrypoint and contains an `import.meta.url` IIFE
+  # that dispatches subcommands.
+  command: ["node", "/opt/ax-next/host/dist/main.js", "serve", "--port", "8080"]
   env: []
 
 # ─── Workspace persistence ───────────────────────────────────────
