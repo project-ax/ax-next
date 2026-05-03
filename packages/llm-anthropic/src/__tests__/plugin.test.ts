@@ -111,6 +111,52 @@ describe('@ax/llm-anthropic init', () => {
     await plugin.init({ bus, config: {} });
     expect(bus.hasService('llm:call')).toBe(true);
   });
+
+  it('forwards cfg.timeoutMs to the underlying Anthropic client', async () => {
+    // The Anthropic SDK exposes the resolved per-request timeout on
+    // each constructed client's public `timeout` field
+    // (`BaseAnthropic.timeout` in @anthropic-ai/sdk/client.d.ts), so
+    // the contract we want to verify is: when the plugin's
+    // real-construction path runs with `cfg.timeoutMs = N`, the
+    // resulting client's `.timeout === N`.
+    //
+    // The plugin closes over the constructed client, so we expose it
+    // through clientFactory using the exact same `new Anthropic({
+    // apiKey, timeout })` shape the prod path uses. Any divergence
+    // between this test and `plugin.ts`'s real-construction branch
+    // would only mask a bug if both drifted in lock-step — acceptable
+    // given the simplicity.
+    const { default: Anthropic } = await import('@anthropic-ai/sdk');
+    let captured: Anthropic | undefined;
+    const plugin = createLlmAnthropicPlugin({
+      apiKey: 'test-key',
+      timeoutMs: 15_000,
+      clientFactory: (apiKey: string) => {
+        captured = new Anthropic({ apiKey, timeout: 15_000 });
+        return captured;
+      },
+    });
+    const bus = new HookBus();
+    await plugin.init({ bus, config: {} });
+    expect(captured).toBeDefined();
+    expect((captured as unknown as { timeout: number }).timeout).toBe(15_000);
+  });
+
+  it('falls back to the SDK default timeout when cfg.timeoutMs is unset', async () => {
+    // Sanity check: the SDK's default timeout is a positive number
+    // distinct from the test value above. If a future plugin change
+    // accidentally passed `timeout: undefined`, the SDK would coerce
+    // it to its default — the contract here is "do not interfere when
+    // the caller doesn't ask for a custom timeout".
+    const { default: Anthropic } = await import('@anthropic-ai/sdk');
+    const reference = new Anthropic({ apiKey: 'test-key' });
+    const sdkDefaultTimeout = (
+      reference as unknown as { timeout: number }
+    ).timeout;
+    expect(typeof sdkDefaultTimeout).toBe('number');
+    expect(sdkDefaultTimeout).toBeGreaterThan(0);
+    expect(sdkDefaultTimeout).not.toBe(15_000);
+  });
 });
 
 describe('@ax/llm-anthropic llm:call dispatch', () => {

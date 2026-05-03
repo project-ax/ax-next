@@ -26,6 +26,15 @@ describe('validateGeneratedTitle', () => {
     expect(validateGeneratedTitle('Untitled')).toBeNull();
   });
 
+  it('returns null when the Untitled sentinel is wrapped in quotes', () => {
+    expect(validateGeneratedTitle('"Untitled"')).toBeNull();
+  });
+
+  it('returns null on case variants of Untitled', () => {
+    expect(validateGeneratedTitle('untitled')).toBeNull();
+    expect(validateGeneratedTitle('UNTITLED')).toBeNull();
+  });
+
   it('returns null on whitespace-only input', () => {
     expect(validateGeneratedTitle('   ')).toBeNull();
   });

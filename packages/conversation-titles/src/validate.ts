@@ -35,7 +35,9 @@ export function validateGeneratedTitle(raw: string): string | null {
     }
   }
   if (s.length === 0) return null;
-  if (s === 'Untitled') return null;
+  // Case-insensitive: model rarely deviates from the prompt's "exactly:
+  // Untitled" but the safety net is one comparison.
+  if (s.toLowerCase() === 'untitled') return null;
   if (s.length > TITLE_MAX) s = s.slice(0, TITLE_MAX).trim();
   return s.length > 0 ? s : null;
 }

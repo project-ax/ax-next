@@ -29,6 +29,14 @@ export interface LlmAnthropicConfig {
    */
   retryDelayMs?: number;
   /**
+   * Per-request timeout passed to the Anthropic SDK client, in milliseconds.
+   * The SDK default is 600s (10 minutes); for latency-sensitive contexts
+   * (auto-titling, short interactive turns) callers should set something
+   * lower so a stuck request doesn't pin a worker for ten minutes.
+   * Unset = inherit the SDK default.
+   */
+  timeoutMs?: number;
+  /**
    * Test seam: hand back a stub Anthropic client instead of constructing
    * a real one. Production callers leave this unset.
    */
@@ -56,7 +64,12 @@ export function createLlmAnthropicPlugin(cfg: LlmAnthropicConfig = {}): Plugin {
         });
       }
       const client =
-        cfg.clientFactory !== undefined ? cfg.clientFactory(apiKey) : new Anthropic({ apiKey });
+        cfg.clientFactory !== undefined
+          ? cfg.clientFactory(apiKey)
+          : new Anthropic({
+              apiKey,
+              ...(cfg.timeoutMs !== undefined ? { timeout: cfg.timeoutMs } : {}),
+            });
       bus.registerService<LlmCallInput, LlmCallOutput>(
         'llm:call',
         PLUGIN_NAME,
