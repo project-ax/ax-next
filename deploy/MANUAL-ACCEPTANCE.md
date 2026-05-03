@@ -27,7 +27,12 @@ docker build -t ax-next/agent:dev -f container/agent/Dockerfile .
 kind create cluster --name ax-next-dev
 kind load docker-image ax-next/agent:dev --name ax-next-dev
 
-# 3. Install the chart (into the ax-next namespace — every probe below
+# 3. Create the runner namespace. The chart does NOT create it (that's
+#    intentional — the host's RBAC binding is scoped here, and we don't
+#    want `helm uninstall` to take the namespace with it).
+kubectl create namespace ax-next-runners
+
+# 4. Install the chart (into the ax-next namespace — every probe below
 #    assumes that, including the new HTTP runner-IPC checks under "Known
 #    gotchas").
 helm install ax-next deploy/charts/ax-next \
@@ -38,15 +43,15 @@ helm install ax-next deploy/charts/ax-next \
   --set credentials.key="$(openssl rand -base64 32)" \
   --set anthropic.apiKey="$ANTHROPIC_API_KEY"
 
-# 4. Wait for the host pod to be Ready (postgres init job runs first; the
+# 5. Wait for the host pod to be Ready (postgres init job runs first; the
 #    host Deployment waits on it).
 kubectl wait -n ax-next --for=condition=Ready pod \
   -l app.kubernetes.io/component=ax-next-host --timeout=180s
 
-# 5. Port-forward the host service
+# 6. Port-forward the host service
 kubectl port-forward -n ax-next svc/ax-next-host 8080:80 &
 
-# 6. Send a chat from the local CLI pointing at the cluster
+# 7. Send a chat from the local CLI pointing at the cluster
 ax-next chat --endpoint http://localhost:8080 "list the files in /workspace"
 ```
 
