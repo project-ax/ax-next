@@ -24,7 +24,6 @@ import { workspaceCommitNotifyHandler } from './handlers/workspace-commit-notify
 import { workspaceMaterializeHandler } from './handlers/workspace-materialize.js';
 import { sessionNextMessageHandler } from './handlers/session-next-message.js';
 import { sessionGetConfigHandler } from './handlers/session-get-config.js';
-import { conversationFetchHistoryHandler } from './handlers/conversation-fetch-history.js';
 import { conversationStoreRunnerSessionHandler } from './handlers/conversation-store-runner-session.js';
 import {
   validateEventToolPostCall,
@@ -76,10 +75,6 @@ ACTIONS.set('/tool.list', { method: 'POST', handler: toolListHandler });
 ACTIONS.set('/workspace.commit-notify', { method: 'POST', handler: workspaceCommitNotifyHandler });
 ACTIONS.set('/workspace.materialize', { method: 'POST', handler: workspaceMaterializeHandler });
 ACTIONS.set('/session.get-config', { method: 'POST', handler: sessionGetConfigHandler });
-ACTIONS.set('/conversation.fetch-history', {
-  method: 'POST',
-  handler: conversationFetchHistoryHandler,
-});
 ACTIONS.set('/conversation.store-runner-session', {
   method: 'POST',
   handler: conversationStoreRunnerSessionHandler,

@@ -19,8 +19,7 @@ import { conversationStoreRunnerSessionHandler } from '../conversation-store-run
 //     runnerSessionId required).
 //   - Pass-through to bus.call('conversations:store-runner-session', ...)
 //     with NO userId smuggled in the body — the bus reads ctx.userId
-//     directly. Posture differs from conversation.fetch-history (whose
-//     bus impl explicitly accepts userId in input).
+//     directly.
 //   - PluginError mapping: conflict → 409 HOOK_REJECTED, not-found → 404,
 //     invalid-payload → 400, anything else → 500.
 //   - Response re-parse for shape-drift defense.

@@ -1,7 +1,6 @@
 import * as http from 'node:http';
 import { z } from 'zod';
 import {
-  ConversationFetchHistoryResponseSchema,
   ConversationStoreRunnerSessionResponseSchema,
   IPC_TIMEOUTS_MS,
   IpcErrorEnvelopeSchema,
@@ -76,7 +75,6 @@ const RESPONSE_SCHEMAS: Record<IpcActionName, z.ZodTypeAny> = {
   'workspace.materialize': WorkspaceMaterializeResponseSchema,
   'session.next-message': SessionNextMessageResponseSchema,
   'session.get-config': SessionGetConfigResponseSchema,
-  'conversation.fetch-history': ConversationFetchHistoryResponseSchema,
   'conversation.store-runner-session': ConversationStoreRunnerSessionResponseSchema,
 };
 
