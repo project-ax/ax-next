@@ -28,7 +28,8 @@ spec:
     - Ingress
     - Egress
   ingress:
-    # Runner pods → host (cross-namespace).
+    # Runner pods → host (cross-namespace). Runners ONLY reach the IPC
+    # back-channel; never the public surface (issue #39).
     - from:
         - namespaceSelector:
             matchLabels:
@@ -37,15 +38,20 @@ spec:
             matchLabels:
               ax.io/plane: execution
       ports:
-        - port: {{ .Values.host.ports.http }}
+        - port: {{ .Values.host.ports.ipc }}
           protocol: TCP
     # Anyone in the host's own namespace (ingress controller, port-forward).
+    # Both ports — operators may forward either the IPC port (debugging
+    # the runner back-channel) or the public surface (the normal /chat
+    # case). Production ingress controllers should target public-http.
     - from:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: {{ include "ax-next.hostNamespace" . }}
       ports:
-        - port: {{ .Values.host.ports.http }}
+        - port: {{ .Values.host.ports.ipc }}
+          protocol: TCP
+        - port: {{ .Values.host.ports.publicHttp }}
           protocol: TCP
   egress:
     # PostgreSQL.

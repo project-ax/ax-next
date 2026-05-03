@@ -69,3 +69,22 @@ networkPolicies:
 
 ingress:
   enabled: false
+
+# ─── HTTP-server (issue #39) ─────────────────────────────────────
+# 32-byte signing key for auth-oidc session cookies. Hex form (64
+# chars) is what `openssl rand -hex 32` outputs. This default value
+# is for kind ONLY. Operators running a real cluster MUST override
+# (the chart's lookup-stable Secret preserves the key across
+# `helm upgrade`, so a real install with `--set http.cookieKey=...`
+# won't bump into this default once installed).
+http:
+  cookieKey: "0000000000000000000000000000000000000000000000000000000000000000"
+
+# ─── Auth (kind path) ─────────────────────────────────────────────
+# Pre-shared bearer token for /auth/dev-bootstrap. The goldenpath in
+# deploy/MANUAL-ACCEPTANCE.md exchanges this for a session cookie.
+# NEVER use this in production — the auth plugin refuses
+# dev-bootstrap entirely when NODE_ENV=production.
+auth:
+  devBootstrap:
+    token: "kind-dev-bootstrap-token-not-secret"

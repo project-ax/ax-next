@@ -40,16 +40,72 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy | default "IfNotPresent" }}
           args: {{ .Values.host.args | toJson }}
           ports:
-            - name: http
-              containerPort: {{ .Values.host.ports.http }}
+            # @ax/ipc-http — runner-pod ↔ host back-channel (BIND_HOST/PORT).
+            # NOT public traffic.
+            - name: ipc
+              containerPort: {{ .Values.host.ports.ipc }}
+              protocol: TCP
+            # @ax/http-server — public surface (AX_HTTP_HOST/PORT). Carries
+            # /chat, /health, /admin/*, /auth/*, /api/chat/*. This is the
+            # listener Ingress / port-forward should target.
+            - name: public-http
+              containerPort: {{ .Values.host.ports.publicHttp }}
               protocol: TCP
           env:
             - name: AX_CONFIG_PATH
               value: "/etc/ax-next/ax.config.yaml"
+
+            # @ax/ipc-http listener (runner-pod back-channel).
             - name: BIND_HOST
               value: "0.0.0.0"
             - name: PORT
-              value: {{ .Values.host.ports.http | quote }}
+              value: {{ .Values.host.ports.ipc | quote }}
+
+            # @ax/http-server listener (public surface — issue #39).
+            - name: AX_HTTP_HOST
+              value: "0.0.0.0"
+            - name: AX_HTTP_PORT
+              value: {{ .Values.host.ports.publicHttp | quote }}
+            - name: AX_HTTP_COOKIE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ax-next.fullname" . }}-secrets
+                  key: http-cookie-key
+            {{- if .Values.http.allowedOrigins }}
+            - name: AX_HTTP_ALLOWED_ORIGINS
+              value: {{ join "," .Values.http.allowedOrigins | quote }}
+            {{- else }}
+            # No allow-list set; suppress the http-server's loud warn so
+            # operators who deliberately rely on the X-Requested-With
+            # header for CSRF (kind / canary) don't get a wall of stderr.
+            # Production deploys SHOULD set http.allowedOrigins.
+            - name: AX_HTTP_ALLOW_NO_ORIGINS
+              value: "1"
+            {{- end }}
+
+            # Auth providers — at least one must be configured (the auth
+            # plugin throws no-auth-providers otherwise).
+            {{- if .Values.auth.devBootstrap }}
+            {{- if .Values.auth.devBootstrap.token }}
+            - name: AX_DEV_BOOTSTRAP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ax-next.fullname" . }}-secrets
+                  key: dev-bootstrap-token
+            {{- end }}
+            {{- end }}
+            {{- if .Values.auth.google }}
+            {{- if .Values.auth.google.clientId }}
+            - name: AX_AUTH_GOOGLE_CLIENT_ID
+              value: {{ .Values.auth.google.clientId | quote }}
+            - name: AX_AUTH_GOOGLE_CLIENT_SECRET
+              value: {{ .Values.auth.google.clientSecret | quote }}
+            - name: AX_AUTH_GOOGLE_ISSUER
+              value: {{ .Values.auth.google.issuer | quote }}
+            - name: AX_AUTH_GOOGLE_REDIRECT_URI
+              value: {{ .Values.auth.google.redirectUri | quote }}
+            {{- end }}
+            {{- end }}
 
             # Sandbox plugin reads these to size + place runner pods.
             - name: K8S_RUNTIME_CLASS
@@ -58,8 +114,10 @@ spec:
               value: {{ include "ax-next.runnerNamespace" . | quote }}
             - name: K8S_POD_IMAGE
               value: {{ include "ax-next.image" . | quote }}
-            - name: K8S_IMAGE_PULL_POLICY
-              value: {{ .Values.image.pullPolicy | default "IfNotPresent" | quote }}
+            {{- /* K8S_IMAGE_PULL_POLICY: removed in issue #39 — no plugin
+                  reads it. The runner pod's pull policy is the cluster's
+                  default; operators wanting an override should patch the
+                  sandbox-k8s pod template instead. */}}
             {{- if .Values.imagePullSecrets }}
             - name: K8S_IMAGE_PULL_SECRETS
               value: {{ join "," .Values.imagePullSecrets | quote }}

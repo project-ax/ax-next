@@ -1,21 +1,36 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { randomBytes } from 'node:crypto';
 import {
   type Plugin,
   type AgentOutcome,
   type AgentMessage,
 } from '@ax/core';
+import {
+  createHttpServerPlugin,
+  type HttpServerPlugin,
+} from '@ax/http-server';
 import { runServeCommand } from '../commands/serve.js';
 
 // ---------------------------------------------------------------------------
-// Tests for the `serve` subcommand. Avoids the real k8s preset by injecting
-// a `pluginsFactory` that registers a tiny stub plugin with `session:create`
-// + `agent:invoke` — enough surface for the HTTP handler to exercise. Real
-// preset boot requires Postgres + k8s API, which we don't want to drag into
-// a unit test.
+// Tests for the `serve` subcommand. After issue #39, `serve` no longer owns
+// its own listener — it registers `/chat` + `/health` against @ax/http-server
+// via http:register-route. So tests boot a real http-server plugin alongside
+// a tiny stub that registers `session:create` + `agent:invoke`, and read the
+// bound port off the http-server.
+//
+// CSRF: the http-server's built-in subscriber rejects state-changing methods
+// without an allow-listed Origin OR `X-Requested-With: ax-admin`. Tests
+// supply the latter on every POST /chat call, mirroring how headless callers
+// (the kind goldenpath, channel-web's UI) authenticate themselves.
 // ---------------------------------------------------------------------------
 
+beforeAll(() => {
+  // Silence the http-server's empty-allow-list warning. We test with
+  // X-Requested-With: ax-admin instead of an Origin allow-list.
+  process.env.AX_HTTP_ALLOW_NO_ORIGINS = '1';
+});
+
 interface ServeHandle {
-  host: string;
   port: number;
   close: () => Promise<void>;
 }
@@ -63,60 +78,34 @@ async function bootServe(opts: {
   argv?: string[];
   plugin?: Plugin;
 } = {}): Promise<ServeHandle> {
+  const httpServer: HttpServerPlugin = createHttpServerPlugin({
+    host: '127.0.0.1',
+    port: 0,
+    cookieKey: randomBytes(32),
+    allowedOrigins: [],
+  });
+
   return new Promise((resolve, reject) => {
-    const argv = opts.argv ?? ['--port', '0', '--host', '127.0.0.1'];
+    const argv = opts.argv ?? [];
     void runServeCommand({
       argv,
       env: opts.env ?? {},
       stdout: () => undefined,
       stderr: () => undefined,
-      pluginsFactory: () => [opts.plugin ?? stubPlugin()],
-      onListening: (h) => resolve(h),
+      pluginsFactory: () => [httpServer, opts.plugin ?? stubPlugin()],
+      onReady: ({ close }) => {
+        resolve({
+          port: httpServer.boundPort(),
+          close,
+        });
+      },
     }).catch(reject);
   });
 }
 
+const CSRF_HEADER = { 'x-requested-with': 'ax-admin' };
+
 describe('serve command — argument parsing', () => {
-  it('rejects --port without a value', async () => {
-    const code = await runServeCommand({
-      argv: ['--port'],
-      env: {},
-      stdout: () => undefined,
-      stderr: () => undefined,
-    });
-    expect(code).toBe(2);
-  });
-
-  it('rejects out-of-range --port', async () => {
-    const code = await runServeCommand({
-      argv: ['--port', '99999'],
-      env: {},
-      stdout: () => undefined,
-      stderr: () => undefined,
-    });
-    expect(code).toBe(2);
-  });
-
-  it('rejects negative --port', async () => {
-    const code = await runServeCommand({
-      argv: ['--port', '-1'],
-      env: {},
-      stdout: () => undefined,
-      stderr: () => undefined,
-    });
-    expect(code).toBe(2);
-  });
-
-  it('rejects non-integer --port', async () => {
-    const code = await runServeCommand({
-      argv: ['--port', '8080.5'],
-      env: {},
-      stdout: () => undefined,
-      stderr: () => undefined,
-    });
-    expect(code).toBe(2);
-  });
-
   it('rejects unknown argument', async () => {
     const code = await runServeCommand({
       argv: ['--bogus'],
@@ -139,7 +128,7 @@ describe('serve command — argument parsing', () => {
 
   it('without pluginsFactory, env-driven preset config is required (DATABASE_URL etc.)', async () => {
     const code = await runServeCommand({
-      argv: ['--port', '0'],
+      argv: [],
       env: {},
       stdout: () => undefined,
       stderr: () => undefined,
@@ -168,7 +157,7 @@ describe('serve command — HTTP surface', () => {
     handle = await bootServe({ env: { AX_SERVE_TOKEN: 'secret' } });
     const r = await fetch(`http://127.0.0.1:${handle.port}/chat`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...CSRF_HEADER },
       body: JSON.stringify({ message: 'hi' }),
     });
     expect(r.status).toBe(401);
@@ -180,7 +169,11 @@ describe('serve command — HTTP surface', () => {
     handle = await bootServe({ env: { AX_SERVE_TOKEN: 'secret' } });
     const r = await fetch(`http://127.0.0.1:${handle.port}/chat`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'authorization': 'Bearer wrong' },
+      headers: {
+        'content-type': 'application/json',
+        'authorization': 'Bearer wrong',
+        ...CSRF_HEADER,
+      },
       body: JSON.stringify({ message: 'hi' }),
     });
     expect(r.status).toBe(401);
@@ -190,7 +183,11 @@ describe('serve command — HTTP surface', () => {
     handle = await bootServe({ env: { AX_SERVE_TOKEN: 'secret' } });
     const r = await fetch(`http://127.0.0.1:${handle.port}/chat`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'authorization': 'Bearer secret' },
+      headers: {
+        'content-type': 'application/json',
+        'authorization': 'Bearer secret',
+        ...CSRF_HEADER,
+      },
       body: JSON.stringify({ message: 'hello' }),
     });
     expect(r.status).toBe(200);
@@ -203,32 +200,50 @@ describe('serve command — HTTP surface', () => {
 
   it('POST /chat works without AX_SERVE_TOKEN (warning logged at boot)', async () => {
     let warned = false;
+    const httpServer = createHttpServerPlugin({
+      host: '127.0.0.1',
+      port: 0,
+      cookieKey: randomBytes(32),
+      allowedOrigins: [],
+    });
     handle = await new Promise<ServeHandle>((resolve, reject) => {
       void runServeCommand({
-        argv: ['--port', '0', '--host', '127.0.0.1'],
+        argv: [],
         env: {},
         stdout: () => undefined,
         stderr: (line) => {
           if (line.includes('AX_SERVE_TOKEN')) warned = true;
         },
-        pluginsFactory: () => [stubPlugin()],
-        onListening: (h) => resolve(h),
+        pluginsFactory: () => [httpServer, stubPlugin()],
+        onReady: ({ close }) => {
+          resolve({ port: httpServer.boundPort(), close });
+        },
       }).catch(reject);
     });
     expect(warned).toBe(true);
     const r = await fetch(`http://127.0.0.1:${handle.port}/chat`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...CSRF_HEADER },
       body: JSON.stringify({ message: 'hi' }),
     });
     expect(r.status).toBe(200);
+  });
+
+  it('POST /chat returns 403 without X-Requested-With (CSRF gate)', async () => {
+    handle = await bootServe();
+    const r = await fetch(`http://127.0.0.1:${handle.port}/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'hi' }),
+    });
+    expect(r.status).toBe(403);
   });
 
   it('POST /chat returns 415 on wrong content-type', async () => {
     handle = await bootServe();
     const r = await fetch(`http://127.0.0.1:${handle.port}/chat`, {
       method: 'POST',
-      headers: { 'content-type': 'text/plain' },
+      headers: { 'content-type': 'text/plain', ...CSRF_HEADER },
       body: '{}',
     });
     expect(r.status).toBe(415);
@@ -238,7 +253,7 @@ describe('serve command — HTTP surface', () => {
     handle = await bootServe();
     const r = await fetch(`http://127.0.0.1:${handle.port}/chat`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...CSRF_HEADER },
       body: 'not-json',
     });
     expect(r.status).toBe(400);
@@ -248,7 +263,7 @@ describe('serve command — HTTP surface', () => {
     handle = await bootServe();
     const r = await fetch(`http://127.0.0.1:${handle.port}/chat`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...CSRF_HEADER },
       body: JSON.stringify({ noMessageHere: true }),
     });
     expect(r.status).toBe(400);
@@ -258,7 +273,7 @@ describe('serve command — HTTP surface', () => {
     handle = await bootServe();
     const r = await fetch(`http://127.0.0.1:${handle.port}/chat`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...CSRF_HEADER },
       body: JSON.stringify({ message: '' }),
     });
     expect(r.status).toBe(400);
@@ -269,7 +284,7 @@ describe('serve command — HTTP surface', () => {
     const big = 'x'.repeat(2 * 1024 * 1024); // 2 MiB > 1 MiB cap
     const r = await fetch(`http://127.0.0.1:${handle.port}/chat`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...CSRF_HEADER },
       body: big,
     });
     expect(r.status).toBe(413);
@@ -283,7 +298,15 @@ describe('serve command — HTTP surface', () => {
 
   it('returns 405 for unsupported methods', async () => {
     handle = await bootServe();
-    const r = await fetch(`http://127.0.0.1:${handle.port}/health`, { method: 'DELETE' });
+    // CSRF gate fires before the router on state-changing methods, so a
+    // bare DELETE (no Origin / no X-Requested-With) returns 403 — that's
+    // http-server contract, not /health's. Adding the CSRF bypass header
+    // lets the request reach the router, which is what we're actually
+    // testing here: only GET is registered for /health.
+    const r = await fetch(`http://127.0.0.1:${handle.port}/health`, {
+      method: 'DELETE',
+      headers: CSRF_HEADER,
+    });
     expect(r.status).toBe(405);
   });
 
@@ -291,7 +314,7 @@ describe('serve command — HTTP surface', () => {
     handle = await bootServe();
     const r = await fetch(`http://127.0.0.1:${handle.port}/chat`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...CSRF_HEADER },
       body: JSON.stringify({ message: 'hi', sessionId: 'my-session-abc' }),
     });
     expect(r.status).toBe(200);
@@ -315,7 +338,7 @@ describe('serve command — HTTP surface', () => {
     });
     const r = await fetch(`http://127.0.0.1:${handle.port}/chat`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...CSRF_HEADER },
       body: JSON.stringify({ message: 'hi' }),
     });
     expect(r.status).toBe(500);

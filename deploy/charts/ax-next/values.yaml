@@ -42,12 +42,26 @@ namespace:
 # ─── Host pod ────────────────────────────────────────────────────
 host:
   ports:
-    http: 8080
+    # @ax/ipc-http listener — runner pods reach back to the host here.
+    # NOT public traffic. NetworkPolicy + the runner pod's own egress
+    # ACL are what bound this; never expose via Ingress.
+    ipc: 8080
+    # @ax/http-server listener — public surface. Carries /chat + /health
+    # (registered by `serve` via http:register-route — see issue #39),
+    # plus /admin/*, /auth/*, /api/chat/* (channel-web), and the future
+    # admin UI bundle (Week 10–12). This is where Ingress points.
+    publicHttp: 9090
   # Service port that runner pods connect to for IPC. The host Service
-  # maps :ipcServicePort → :ports.http (containerPort). Decoupled from
-  # ports.http so operators can front the host with the conventional :80
+  # maps :ipcServicePort → :ports.ipc (containerPort). Decoupled from
+  # ports.ipc so operators can front the host with the conventional :80
   # while the container listens on :8080.
   ipcServicePort: 80
+  # Service port for the public listener. Maps :publicHttpServicePort →
+  # :ports.publicHttp. Default is the conventional :80 — but ipc already
+  # owns :80 on the same Service, so we pick :9090 here too. Operators
+  # fronting with an Ingress override this with whatever port the
+  # Ingress controller expects.
+  publicHttpServicePort: 9090
   resources:
     requests:
       cpu: 200m
@@ -58,13 +72,13 @@ host:
   readinessProbe:
     httpGet:
       path: /health
-      port: http
+      port: public-http
     initialDelaySeconds: 5
     periodSeconds: 10
   livenessProbe:
     httpGet:
       path: /health
-      port: http
+      port: public-http
     initialDelaySeconds: 10
     periodSeconds: 30
   terminationGracePeriodSeconds: 30
@@ -72,7 +86,11 @@ host:
   # In k8s, `command` replaces ENTRYPOINT entirely; `args` only replaces CMD.
   # The deploy tree lives at /opt/ax-next/host inside container/agent/Dockerfile;
   # dist/main.js is the cli binary IIFE that dispatches subcommands.
-  args: ["node", "/opt/ax-next/host/dist/main.js", "serve", "--port", "8080"]
+  #
+  # No more --port: the standalone listener is gone (issue #39). The IPC
+  # listener reads BIND_HOST/PORT, the public listener reads
+  # AX_HTTP_HOST/AX_HTTP_PORT — both stamped by the deployment template.
+  args: ["node", "/opt/ax-next/host/dist/main.js", "serve"]
   env: []
 
 # ─── Workspace persistence ───────────────────────────────────────
@@ -223,6 +241,50 @@ credentials:
 
 anthropic:
   apiKey: ""
+
+# ─── HTTP-server config (public surface — issue #39) ─────────────
+# `cookieKey` signs auth-oidc's session cookie. 32 bytes; provide
+# via `--set http.cookieKey=$(openssl rand -hex 32)` (or 44 base64
+# chars). When empty AND no existing Secret carries one, the chart
+# falls through to `required` and `helm install` fails loudly.
+# Like `credentials.key`, the Secret is `lookup`-stable — `helm
+# upgrade` keeps the existing key rather than rotating it (rotating
+# invalidates every active session cookie).
+#
+# `allowedOrigins` is the exact-match CSRF allow-list for state-
+# changing methods. Empty allows only X-Requested-With: ax-admin
+# callers (the http-server logs a warn when empty unless
+# AX_HTTP_ALLOW_NO_ORIGINS=1 is set on the pod).
+http:
+  cookieKey: ""
+  allowedOrigins: []
+
+# ─── Auth providers ──────────────────────────────────────────────
+# At least one provider must be configured (the auth plugin throws
+# `no-auth-providers` at init otherwise).
+#
+# `devBootstrap.token`: pre-shared bearer token for dev / canary /
+# kind. Mints a single shared `is_admin` user via
+# `POST /auth/dev-bootstrap`. The auth plugin REFUSES this when
+# NODE_ENV=production; flip to Google OIDC for prod.
+#
+# When `devBootstrap.token` is empty AND no existing Secret carries
+# one, the chart falls through to `required` and `helm install`
+# fails loudly. The Secret is `lookup`-stable like `credentials.key`
+# — the operator's pre-shared token isn't rotated by `helm upgrade`.
+#
+# `google`: OIDC config for production. `clientSecret` is plain text
+# in values today (operators that care override via `--set` from a
+# vault). When ALL google fields are unset, the google provider
+# isn't registered.
+auth:
+  devBootstrap:
+    token: ""
+  google:
+    clientId: ""
+    clientSecret: ""
+    issuer: ""
+    redirectUri: ""
 
 # ─── Network policies ────────────────────────────────────────────
 # `enabled: true` is the safe default. Disabling is supported only for
