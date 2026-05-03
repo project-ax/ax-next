@@ -9,6 +9,7 @@
       "default": "./dist/src/server/index.js"
     }
   },
+  "files": ["dist"],
   "scripts": {
     "dev": "vite",
     "build": "tsc --build && vite build",
