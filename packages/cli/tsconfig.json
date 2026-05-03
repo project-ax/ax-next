@@ -8,6 +8,7 @@
   "exclude": ["src/__tests__/**", "dist", "node_modules"],
   "references": [
     { "path": "../core" },
+    { "path": "../http-server" },
     { "path": "../storage-sqlite" },
     { "path": "../audit-log" },
     { "path": "../credential-proxy" },

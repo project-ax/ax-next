@@ -55,11 +55,13 @@ helm upgrade --install ax-next deploy/charts/ax-next \
 kubectl wait -n ax-next --for=condition=Ready pod \
   -l app.kubernetes.io/component=ax-next-host --timeout=180s
 
-# 6. Port-forward the host service
-kubectl port-forward -n ax-next svc/ax-next-host 8080:80 &
+# 6. Port-forward the host's public-http port (where /chat + /health live).
+#    The host Service also exposes :80 for the runner-IPC back-channel —
+#    that's not for human use, runner pods reach it cluster-internally.
+kubectl port-forward -n ax-next svc/ax-next-host 9090:9090 &
 
 # 7. Send a chat from the local CLI pointing at the cluster
-ax-next chat --endpoint http://localhost:8080 "list the files in /workspace"
+ax-next chat --endpoint http://localhost:9090 "list the files in /workspace"
 ```
 
 ## Acceptance criteria
@@ -192,6 +194,10 @@ small HTTP front door:
    knobs flipped on:
 
    ```bash
+   # http.cookieKey + an auth provider are now required since issue #39 —
+   # without them the host pod crash-loops on AX_HTTP_COOKIE_KEY required /
+   # no-auth-providers. devBootstrap is the simplest path for the canary;
+   # production deploys swap it for the auth.google.* set.
    helm upgrade --install ax-next deploy/charts/ax-next \
      --namespace ax-next --create-namespace \
      --set replicas=2 \
@@ -200,7 +206,9 @@ small HTTP front door:
      --set image.repository=<your-registry>/ax-next/agent \
      --set image.tag=<your-tag> \
      --set credentials.key="$(openssl rand -base64 32)" \
-     --set anthropic.apiKey="$ANTHROPIC_API_KEY"
+     --set anthropic.apiKey="$ANTHROPIC_API_KEY" \
+     --set http.cookieKey="$(openssl rand -hex 32)" \
+     --set auth.devBootstrap.token="$(openssl rand -hex 16)"
    ```
 
 2. Wait for both host pods, the git-server pod, and postgres to be Ready:
@@ -212,10 +220,12 @@ small HTTP front door:
    Expected: 2 host pods (`ax-next-host-...`), 1 git-server pod
    (`ax-next-git-server-...`), and the postgres pod, all `1/1 Running`.
 
-3. Port-forward into the host's Service from the local shell:
+3. Port-forward into the host's public-http port from the local shell.
+   `/chat` + `/health` live here (issue #39); the Service's :80 port is
+   the runner-IPC back-channel and not for human traffic.
 
    ```bash
-   kubectl -n ax-next port-forward svc/ax-next-host 8080:80 &
+   kubectl -n ax-next port-forward svc/ax-next-host 9090:9090 &
    ```
 
 4. Fire two concurrent chat requests against the host Service. The
@@ -225,9 +235,16 @@ small HTTP front door:
    request is independent:
 
    ```bash
-   curl -X POST http://localhost:8080/chat -H 'Content-Type: application/json' \
+   # X-Requested-With: ax-admin satisfies the http-server's CSRF gate on
+   # state-changing methods (issue #39). Without it the request hits
+   # csrf-failed:origin-missing and returns 403.
+   curl -X POST http://localhost:9090/chat \
+     -H 'Content-Type: application/json' \
+     -H 'X-Requested-With: ax-admin' \
      -d '{"message":"hello from session A"}' &
-   curl -X POST http://localhost:8080/chat -H 'Content-Type: application/json' \
+   curl -X POST http://localhost:9090/chat \
+     -H 'Content-Type: application/json' \
+     -H 'X-Requested-With: ax-admin' \
      -d '{"message":"hello from session B"}' &
    wait
    ```

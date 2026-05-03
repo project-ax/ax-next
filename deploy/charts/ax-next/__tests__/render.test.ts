@@ -28,6 +28,13 @@ const REQUIRED = [
   'credentials.key=test',
   '--set',
   'anthropic.apiKey=test',
+  // Required since issue #39: http-server's cookie signing key + an auth
+  // provider. 64-hex-char zero is fine for chart-render tests; these never
+  // boot the host.
+  '--set',
+  'http.cookieKey=0000000000000000000000000000000000000000000000000000000000000000',
+  '--set',
+  'auth.devBootstrap.token=test-bootstrap',
 ];
 
 /** A rendered k8s resource. Loose typing — tests narrow as needed. */

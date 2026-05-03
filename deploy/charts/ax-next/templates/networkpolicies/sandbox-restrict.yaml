@@ -41,6 +41,8 @@ spec:
   egress:
     # Host pod IPC port. Cross-namespace because the host runs in
     # Release.Namespace and runners run in .Values.namespace.runner.
+    # Runners ONLY need the IPC back-channel — not the public surface
+    # (issue #39 listener split).
     - to:
         - namespaceSelector:
             matchLabels:
@@ -49,7 +51,7 @@ spec:
             matchLabels:
               {{- include "ax-next.selectorLabels" (dict "component" "host" "context" $) | nindent 14 }}
       ports:
-        - port: {{ .Values.host.ports.http }}
+        - port: {{ .Values.host.ports.ipc }}
           protocol: TCP
     # DNS (cluster DNS lives in kube-system).
     - ports:

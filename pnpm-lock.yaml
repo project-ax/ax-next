@@ -352,6 +352,9 @@ importers:
       '@ax/credentials-store-db':
         specifier: workspace:*
         version: link:../credentials-store-db
+      '@ax/http-server':
+        specifier: workspace:*
+        version: link:../http-server
       '@ax/ipc-server':
         specifier: workspace:*
         version: link:../ipc-server

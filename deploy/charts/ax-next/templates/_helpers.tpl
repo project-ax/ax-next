@@ -194,3 +194,50 @@ Invoked from `host/deployment.yaml`, which always renders.
 {{- end -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+Auth-provider gates — single source of truth shared between hook-secret.yaml
+and host/deployment.yaml. Each helper returns the literal string "true" when
+the provider is configured for THIS render, "false" otherwise. Callers
+compare with `eq` (helm has no boolean-returning template primitive).
+
+A provider counts as "configured" when EITHER the operator passed values
+this install/upgrade OR the existing chart Secret carries the lookup-stable
+data key from a prior install. The lookup branch is what keeps a
+`helm upgrade` that doesn't re-pass `--set` args from silently dropping the
+provider's env var (which would tank boot with `no-auth-providers`).
+
+Helm executes `lookup` against the live cluster only — it returns nil during
+`helm template` / `--dry-run` / first-install. So the helper falls through
+to the values-driven branch in those cases, which is exactly the semantics
+hook-secret.yaml's `required` already enforces.
+*/}}
+
+{{- define "ax-next.devBootstrapEnabled" -}}
+{{- $existing := lookup "v1" "Secret" (include "ax-next.hostNamespace" .) (printf "%s-secrets" (include "ax-next.fullname" .)) -}}
+{{- if and .Values.auth.devBootstrap .Values.auth.devBootstrap.token -}}
+true
+{{- else if and $existing $existing.data (index $existing.data "dev-bootstrap-token") -}}
+true
+{{- else -}}
+false
+{{- end -}}
+{{- end -}}
+
+{{- define "ax-next.googleAuthEnabled" -}}
+{{- if and .Values.auth.google .Values.auth.google.clientId -}}
+true
+{{- else -}}
+false
+{{- end -}}
+{{- end -}}
+{{/*
+NOTE: googleAuthEnabled deliberately does NOT check the existing Secret —
+unlike devBootstrap, google needs clientId/issuer/redirectUri inline in the
+deployment env (only clientSecret is secret-stored). If an operator drops
+clientId from values, we have nothing to stamp those non-secret env vars
+with, so the cleanest behavior is "no google this render." The secret's
+google-client-secret data key stays lookup-stable inside hook-secret.yaml so
+re-enabling google later (re-passing clientId) doesn't require re-passing
+the secret.
+*/}}

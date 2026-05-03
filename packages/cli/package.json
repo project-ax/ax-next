@@ -23,6 +23,7 @@
   },
   "dependencies": {
     "@ax/core": "workspace:*",
+    "@ax/http-server": "workspace:*",
     "@ax/storage-sqlite": "workspace:*",
     "@ax/audit-log": "workspace:*",
     "@ax/credential-proxy": "workspace:*",

@@ -10,7 +10,15 @@ spec:
   selector:
     {{- include "ax-next.selectorLabels" (dict "component" "host" "context" $) | nindent 4 }}
   ports:
-    - name: http
+    # @ax/ipc-http — runner pods reach the host's back-channel through
+    # this port. Cluster-internal only; never expose via Ingress.
+    - name: ipc
       port: {{ .Values.host.ipcServicePort | default 80 }}
-      targetPort: http
+      targetPort: ipc
+      protocol: TCP
+    # @ax/http-server — public surface (/chat, /health, /admin/*,
+    # /auth/*, /api/chat/*). Ingress / port-forward target.
+    - name: public-http
+      port: {{ .Values.host.publicHttpServicePort | default 9090 }}
+      targetPort: public-http
       protocol: TCP
