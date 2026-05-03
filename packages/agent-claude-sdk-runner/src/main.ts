@@ -130,7 +130,15 @@ export async function main(): Promise<number> {
     // to `query()` below so the SDK rehydrates from its own on-disk
     // transcript instead of starting a fresh conversation. Null = first
     // boot OR conversationId is null; the SDK starts fresh.
-    runnerSessionId = typeof cfg.runnerSessionId === 'string' ? cfg.runnerSessionId : null;
+    //
+    // Empty string is treated as null. The wire schema is
+    // `z.string().nullable()` (no `.min(1)`), so a future bug or stale
+    // row could in principle deliver `''`. Passing `resume: ''` to the
+    // SDK is undefined behavior; coerce defensively.
+    runnerSessionId =
+      typeof cfg.runnerSessionId === 'string' && cfg.runnerSessionId.length > 0
+        ? cfg.runnerSessionId
+        : null;
   } catch (err) {
     process.stderr.write(
       `runner: session.get-config failed: ${err instanceof Error ? err.message : String(err)}\n`,
@@ -391,26 +399,35 @@ export async function main(): Promise<number> {
         msg.subtype === 'init' &&
         !runnerSessionIdSent
       ) {
-        // Set BEFORE the await so a re-entrant system/init (e.g. on a
-        // future resume() path) can't double-fire while this IPC is in
-        // flight.
-        runnerSessionIdSent = true;
-        if (conversationId !== null) {
+        if (conversationId === null) {
+          // No conversation row to bind to — flag the once-only path
+          // so a re-entrant system/init can't fire spurious binds.
+          runnerSessionIdSent = true;
+        } else {
+          // Phase E (2026-05-09): this write is the ONLY durable link
+          // from the conversation row to the workspace jsonl. After the
+          // bind, `conversations:get` reads the transcript via
+          // `runnerSessionId`-keyed glob; before the bind, it short-
+          // circuits to `turns: []` because there's nothing to look up.
+          // If this fails AND we continue, the conversation is silently
+          // empty forever — no future read sees the jsonl, and no future
+          // boot can resume() because the row's `runner_session_id`
+          // stays NULL. Fail the run instead so the host's `chat:end`
+          // outcome is `terminated` and the operator notices.
           try {
             await client.call('conversation.store-runner-session', {
               conversationId,
               runnerSessionId: msg.session_id,
             });
           } catch (err) {
-            // Non-fatal: we lose the resume optimization on the next
-            // restart — the SDK starts a fresh session id, and the
-            // workspace-jsonl reader still picks up any prior jsonl
-            // files alongside the new one (Phase E read path). The
-            // chat continues uninterrupted.
-            process.stderr.write(
-              `runner: conversation.store-runner-session failed: ${err instanceof Error ? err.message : String(err)}\n`,
+            throw new Error(
+              `conversation.store-runner-session failed: ${err instanceof Error ? err.message : String(err)}`,
             );
           }
+          // Set AFTER the successful await — on retry-after-recoverable
+          // throw (none today, but future-proof), the next system/init
+          // would correctly re-attempt the bind.
+          runnerSessionIdSent = true;
         }
         continue;
       }

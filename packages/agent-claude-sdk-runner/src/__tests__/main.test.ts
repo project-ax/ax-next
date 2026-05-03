@@ -1781,7 +1781,14 @@ describe('main()', () => {
       });
     });
 
-    it('IPC failure is non-fatal: bind throws → stderr logs error, chat still completes with outcome.kind=complete', async () => {
+    it('Phase E: bind IPC failure is FATAL — runner exits non-zero with chat-end outcome.kind=terminated', async () => {
+      // Phase E (2026-05-09): the bind call is the only durable link
+      // from the conversation row to the workspace jsonl. If we let it
+      // fail silently, `conversations:get` permanently returns turns=[]
+      // for this conversation (it short-circuits on `runnerSessionId ===
+      // null`) and no future runner can resume(). Failing the run loud
+      // surfaces the breakage in the host's chat:end outcome instead of
+      // hiding it.
       setEnv(COMPLETE_ENV);
       fakeClient = buildFakeClient();
       fakeClient.call.mockImplementation(async (action: string) => {
@@ -1813,42 +1820,31 @@ describe('main()', () => {
             const it = prompt[Symbol.asyncIterator]();
             await it.next();
             yield systemInit('sdk-sess-fail');
-            yield assistantText('still works');
+            yield assistantText('should not reach the wire');
             yield resultSuccess();
             await it.next();
           })();
         },
       );
 
-      const stderrSpy = vi
-        .spyOn(process.stderr, 'write')
-        .mockImplementation(() => true);
+      const { main } = await import('../main.js');
+      const rc = await main();
+      // FATAL: runner exits non-zero.
+      expect(rc).toBe(1);
 
-      try {
-        const { main } = await import('../main.js');
-        const rc = await main();
-        // Non-fatal: chat completed cleanly.
-        expect(rc).toBe(0);
-
-        const stderrText = stderrSpy.mock.calls
-          .map((c) => String(c[0]))
-          .join('');
-        expect(stderrText).toContain(
-          'conversation.store-runner-session failed',
-        );
-        expect(stderrText).toContain('host returned 503');
-      } finally {
-        stderrSpy.mockRestore();
-      }
-
+      // chat-end carries the failure shape so the host operator sees it.
       const chatEnds = fakeClient.event.mock.calls.filter(
         (c) => c[0] === 'event.chat-end',
       );
       expect(chatEnds).toHaveLength(1);
       const payload = chatEnds[0]?.[1] as {
-        outcome: { kind: string };
+        outcome: { kind: string; reason?: string };
       };
-      expect(payload.outcome.kind).toBe('complete');
+      expect(payload.outcome.kind).toBe('terminated');
+      expect(payload.outcome.reason).toContain(
+        'conversation.store-runner-session failed',
+      );
+      expect(payload.outcome.reason).toContain('host returned 503');
     });
   });
 
@@ -1989,6 +1985,56 @@ describe('main()', () => {
       expect(sdkSawMessages).toEqual([
         { role: 'user', content: 'live message' },
       ]);
+    });
+
+    it('Phase E: empty-string runnerSessionId is treated as null (no resume; defensive against malformed wire)', async () => {
+      // The wire schema is `z.string().nullable()` (no `.min(1)`), so a
+      // future regression or stale row could deliver `''`. Passing
+      // `resume: ''` to the SDK is undefined behavior; the runner
+      // coerces empty-string to null at the boundary.
+      setEnv(COMPLETE_ENV);
+      fakeClient = buildFakeClient();
+      fakeClient.call.mockImplementation(async (action: string) => {
+        if (action === 'session.get-config') {
+          return {
+            userId: 'u-test',
+            agentId: 'a-test',
+            agentConfig: {
+              systemPrompt: '',
+              allowedTools: [],
+              mcpConfigIds: [],
+              model: 'claude-sonnet-4-7',
+            },
+            conversationId: 'cnv-empty-rsid',
+            runnerSessionId: '', // <- the load-bearing input
+          };
+        }
+        if (action === 'workspace.materialize') return { bundleBytes: '' };
+        if (action === 'tool.list') return { tools: [] };
+        if (action === 'conversation.store-runner-session') {
+          return { ok: true };
+        }
+        throw new Error(`unexpected call: ${action}`);
+      });
+      fakeInbox = buildFakeInbox([userEntry('go'), cancelEntry]);
+      queryMock.mockImplementation(() => {
+        return (async function* () {
+          yield systemInit('sdk-sess-fresh');
+          yield resultSuccess();
+        })();
+      });
+
+      const { main } = await import('../main.js');
+      const rc = await main();
+      expect(rc).toBe(0);
+
+      // options.resume must be undefined — empty-string was coerced to null,
+      // and the spread-conditional doesn't include `resume` on null.
+      expect(queryMock).toHaveBeenCalledTimes(1);
+      const queryArg = queryMock.mock.calls[0]?.[0] as {
+        options: { resume?: string };
+      };
+      expect(queryArg.options.resume).toBeUndefined();
     });
   });
 
