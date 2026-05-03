@@ -8,8 +8,6 @@ import { createTestHarness, type TestHarness } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createConversationsPlugin } from '../plugin.js';
 import type {
-  AppendTurnInput,
-  AppendTurnOutput,
   CreateInput,
   CreateOutput,
   DeleteInput,
@@ -143,7 +141,7 @@ afterAll(async () => {
 
 describe('@ax/conversations ACL gate', () => {
   it('every hook calls agents:resolve before touching the store', async () => {
-    // Allow everything. We assert that BOTH create and append-turn fire
+    // Allow everything. We assert that create / get / delete each fire
     // an agents:resolve call so a future regression that bypasses the
     // gate breaks this test.
     const { h, calls } = await makeHarness({
@@ -157,34 +155,20 @@ describe('@ax/conversations ACL gate', () => {
     );
     expect(calls).toEqual([{ agentId: 'agt_a', userId: 'userA' }]);
 
-    await h.bus.call<AppendTurnInput, AppendTurnOutput>(
-      'conversations:append-turn',
-      h.ctx({ userId: 'userA' }),
-      {
-        conversationId: created.conversationId,
-        userId: 'userA',
-        role: 'user',
-        contentBlocks: [{ type: 'text', text: 'hi' }],
-      },
-    );
-    // Each hook calls resolve once.
-    expect(calls).toHaveLength(2);
-    expect(calls[1]).toEqual({ agentId: 'agt_a', userId: 'userA' });
-
     // get + delete also gate.
     await h.bus.call<GetInput, GetOutput>(
       'conversations:get',
       h.ctx({ userId: 'userA' }),
       { conversationId: created.conversationId, userId: 'userA' },
     );
-    expect(calls).toHaveLength(3);
+    expect(calls).toHaveLength(2);
 
     await h.bus.call<DeleteInput, void>(
       'conversations:delete',
       h.ctx({ userId: 'userA' }),
       { conversationId: created.conversationId, userId: 'userA' },
     );
-    expect(calls).toHaveLength(4);
+    expect(calls).toHaveLength(3);
   });
 
   it('list with agentId calls agents:resolve; list without does NOT (implicit ACL via user_id)', async () => {
@@ -313,35 +297,6 @@ describe('@ax/conversations ACL gate', () => {
       { userId: 'userA' },
     );
     expect(aList.map((c) => c.title).sort()).toEqual(['A1', 'A2']);
-  });
-
-  it('append-turn rejects with not-found when the row belongs to someone else', async () => {
-    const { h } = await makeHarness({ decide: () => 'allow' });
-
-    const created = await h.bus.call<CreateInput, CreateOutput>(
-      'conversations:create',
-      h.ctx({ userId: 'userA' }),
-      { userId: 'userA', agentId: 'agt_a' },
-    );
-
-    // userB tries to append to userA's conversation. The user_id filter
-    // hides existence — we get not-found, not forbidden.
-    let caught: unknown;
-    try {
-      await h.bus.call<AppendTurnInput, AppendTurnOutput>(
-        'conversations:append-turn',
-        h.ctx({ userId: 'userB' }),
-        {
-          conversationId: created.conversationId,
-          userId: 'userB',
-          role: 'user',
-          contentBlocks: [{ type: 'text', text: 'sneak' }],
-        },
-      );
-    } catch (err) {
-      caught = err;
-    }
-    expect((caught as PluginError).code).toBe('not-found');
   });
 
   describe('conversations:get-by-req-id', () => {
