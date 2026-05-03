@@ -269,4 +269,40 @@ describeIfHelm('host deployment env vs preset loader', () => {
     expect(portEnv).toBeDefined();
     expect(String(ipcPort)).toBe(String(portEnv));
   });
+
+  // The credential-proxy plugin's preset config defaults its unix socket
+  // to /var/run/ax/proxy.sock. The container runs as UID 1000 (per the
+  // agent Dockerfile), so the chart must (a) mount a writable emptyDir
+  // there and (b) set fsGroup=1000 so the kubelet chowns the volume to
+  // a group the user is in. Without either, the proxy's listen() fails
+  // with EACCES and the host pod crash-loops at boot.
+  it('mounts an emptyDir at /var/run/ax for the credential-proxy socket', () => {
+    const dep = renderHostDeployment();
+    const spec = dep.spec as {
+      template?: {
+        spec?: {
+          containers?: Array<{
+            volumeMounts?: Array<{ name?: string; mountPath?: string }>;
+          }>;
+          volumes?: Array<{ name?: string; emptyDir?: object }>;
+        };
+      };
+    };
+    const container = spec.template?.spec?.containers?.[0];
+    const mount = container?.volumeMounts?.find((m) => m.mountPath === '/var/run/ax');
+    expect(mount, 'volumeMount at /var/run/ax').toBeDefined();
+    const volume = spec.template?.spec?.volumes?.find((v) => v.name === mount?.name);
+    expect(volume, `volume backing the /var/run/ax mount`).toBeDefined();
+    expect(volume?.emptyDir, `${mount?.name} must be an emptyDir`).toBeDefined();
+  });
+
+  it('host pod sets fsGroup=1000 so emptyDirs are writable by the UID-1000 user', () => {
+    const dep = renderHostDeployment();
+    const spec = dep.spec as {
+      template?: { spec?: { securityContext?: { fsGroup?: number; runAsUser?: number } } };
+    };
+    const sc = spec.template?.spec?.securityContext;
+    expect(sc?.fsGroup, 'pod-level fsGroup').toBe(1000);
+    expect(sc?.runAsUser, 'pod-level runAsUser').toBe(1000);
+  });
 });

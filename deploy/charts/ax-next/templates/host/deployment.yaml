@@ -28,6 +28,16 @@ spec:
     spec:
       serviceAccountName: {{ include "ax-next.hostComponentName" . }}
       terminationGracePeriodSeconds: {{ .Values.host.terminationGracePeriodSeconds | default 30 }}
+      # The agent image runs as UID 1000 (see container/agent/Dockerfile's
+      # `USER 1000:1000`). fsGroup makes mounted emptyDirs (notably
+      # /var/run/ax for the credential-proxy unix socket) writable by that
+      # user — without it, the proxy's `listen()` call fails with
+      # `EACCES: permission denied /var/run/ax/proxy.sock` and the pod
+      # crash-loops at boot.
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- range . }}
@@ -218,6 +228,11 @@ spec:
             - name: ax-config
               mountPath: /etc/ax-next
               readOnly: true
+            # @ax/credential-proxy listens on a unix socket inside this dir
+            # (default `/var/run/ax/proxy.sock`). Must be writable by the
+            # container's UID — securityContext.fsGroup above handles that.
+            - name: proxy-socket
+              mountPath: /var/run/ax
             {{- if eq .Values.workspace.backend "local" }}
             - name: workspace
               mountPath: {{ .Values.workspace.mountPath }}
@@ -226,6 +241,12 @@ spec:
         - name: ax-config
           configMap:
             name: {{ include "ax-next.fullname" . }}-config
+        # Ephemeral; the proxy socket only needs to outlive the pod's own
+        # lifetime. emptyDir gets its group ownership from fsGroup above
+        # (1000), and emptyDir's default mount mode adds g+w/g+s so files
+        # created here inherit group 1000 and are writable.
+        - name: proxy-socket
+          emptyDir: {}
         {{- if eq .Values.workspace.backend "local" }}
         - name: workspace
           persistentVolumeClaim:
