@@ -6,8 +6,8 @@ const PLUGIN_NAME = '@ax/llm-anthropic';
 const PLUGIN_VERSION = '0.0.0';
 
 // Statuses we consider transient — a 1-shot retry buys us resilience without
-// turning the plugin into a backoff library. Anything else (auth, validation,
-// quota-exhausted-with-no-retry-after) is the orchestrator's problem.
+// turning the plugin into a backoff library. Anything else — auth, validation,
+// persistent quota — is the orchestrator's problem.
 const TRANSIENT_STATUSES = new Set<number>([429, 500, 502, 503, 504]);
 const DEFAULT_RETRY_DELAY_MS = 1000;
 
@@ -73,15 +73,14 @@ async function callWithRetry(
 ): Promise<LlmCallOutput> {
   const req = toAnthropicRequest(input, cfg);
   const retryDelayMs = cfg.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
-  let lastErr: unknown;
 
-  // Two attempts max — initial + one retry on transient status.
+  // Two attempts max — initial + one retry on transient status. Every path
+  // through the loop body either returns or throws.
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       const res = await client.messages.create(req);
       return fromAnthropicResponse(res);
     } catch (e) {
-      lastErr = e;
       if (attempt === 0 && isTransient(e)) {
         if (retryDelayMs > 0) await sleep(retryDelayMs);
         continue;
@@ -95,17 +94,10 @@ async function callWithRetry(
       });
     }
   }
-
-  // Reachable only if attempt 0 was transient and attempt 1 also failed
-  // without re-entering the catch's throw branch (defensive — the loop
-  // structure makes this unreachable today, but the explicit throw keeps
-  // the function total).
-  throw new PluginError({
-    code: 'unknown',
-    plugin: PLUGIN_NAME,
-    hookName: 'llm:call',
-    message: `Anthropic API call exhausted retries: ${errorMessage(lastErr)}`,
-  });
+  // Unreachable: the loop body above always returns or throws. TypeScript
+  // can't see that through the numeric `for`, so this is here purely as an
+  // assertion — if it ever fires, the loop's control flow has been broken.
+  throw new Error('callWithRetry: loop exited without returning or throwing');
 }
 
 function isTransient(err: unknown): boolean {

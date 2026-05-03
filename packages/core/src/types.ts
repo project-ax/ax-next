@@ -50,6 +50,20 @@ export type FireResult<P> =
  * responsible for translating to its SDK's request shape. Optional fields
  * fall back to plugin-level defaults — callers that don't care about model
  * selection or output cap can pass just `messages`.
+ *
+ * Shape biases — acknowledged and deferred:
+ *  - `system` is a top-level field (Anthropic-shape). An OpenAI-style
+ *    registrar must coalesce this into a `messages[0]` with role `'system'`.
+ *  - `messages.role` is `'user' | 'assistant'` only — system is the
+ *    top-level field above, not an entry in `messages`.
+ *  - `messages.content` is `string` — multimodal blocks (`ContentBlock[]`)
+ *    are deferred. No tool-use, streaming, or citations either.
+ *
+ * If a second registrar (OpenAI, local model) lands and these biases bite,
+ * the right fix is to widen the canonical shape — accept `'system'` in
+ * `messages.role`, drop the top-level `system` — before a third registrar
+ * shows up. Phase F is the only consumer today, so the cost of changing
+ * later is bounded.
  */
 export interface LlmCallInput {
   model?: string;
