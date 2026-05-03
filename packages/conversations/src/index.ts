@@ -8,7 +8,6 @@ export {
 export {
   createConversationStore,
   mintConversationId,
-  mintTurnId,
   validateContentBlocks,
   validateRole,
   validateRunnerType,
@@ -16,7 +15,6 @@ export {
   validateWorkspaceRefForFreeze,
   type ConversationStore,
   type ConversationStoreCreateArgs,
-  type ConversationStoreAppendTurnArgs,
   type ConversationMetadata,
   type StoreRunnerSessionResult,
 } from './store.js';

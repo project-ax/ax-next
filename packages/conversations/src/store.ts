@@ -6,12 +6,10 @@ import type { Kysely } from 'kysely';
 import type {
   ConversationDatabase,
   ConversationsRow,
-  TurnsRow,
 } from './migrations.js';
 import { scopedConversations } from './scope.js';
 import type {
   Conversation,
-  Turn,
   TurnRole,
 } from './types.js';
 
@@ -124,10 +122,6 @@ export function mintConversationId(): string {
   return `cnv_${randomBytes(16).toString('base64url')}`;
 }
 
-export function mintTurnId(): string {
-  return `trn_${randomBytes(16).toString('base64url')}`;
-}
-
 // ---------------------------------------------------------------------------
 // Row → domain mapping. Defensive — JSONB columns return parsed JS values
 // from `pg`'s default casts; we narrow them before exposing.
@@ -148,39 +142,6 @@ export function rowToConversation(row: ConversationsRow): Conversation {
       row.last_activity_at === null ? null : row.last_activity_at.toISOString(),
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
-  };
-}
-
-function rowToTurn(row: TurnsRow): Turn {
-  // We don't trust the DB blindly — JSONB columns can drift across schema
-  // changes, replication hiccups, manual SQL, or future migrations. The
-  // canonical ContentBlockSchema validates on read AND write so the type
-  // promise we make to consumers stays honest.
-  const parsedBlocks = ContentBlockArraySchema.safeParse(row.content_blocks);
-  if (!parsedBlocks.success) {
-    throw new PluginError({
-      code: 'corrupt-row',
-      plugin: PLUGIN_NAME,
-      message: `conversations_v1_turns.${row.turn_id} has invalid content_blocks JSONB: ${parsedBlocks.error.message}`,
-    });
-  }
-  if (
-    row.role !== 'user' &&
-    row.role !== 'assistant' &&
-    row.role !== 'tool'
-  ) {
-    throw new PluginError({
-      code: 'corrupt-row',
-      plugin: PLUGIN_NAME,
-      message: `conversations_v1_turns.${row.turn_id} has invalid role`,
-    });
-  }
-  return {
-    turnId: row.turn_id,
-    turnIndex: row.turn_index,
-    role: row.role,
-    contentBlocks: parsedBlocks.data,
-    createdAt: row.created_at.toISOString(),
   };
 }
 
@@ -208,12 +169,6 @@ export interface ConversationStoreCreateArgs {
    * for the same reason as runnerType — pre-Phase-B test rows.
    */
   workspaceRef?: string | null;
-}
-
-export interface ConversationStoreAppendTurnArgs {
-  conversationId: string;
-  role: TurnRole;
-  contentBlocks: ContentBlock[];
 }
 
 /**
@@ -264,10 +219,7 @@ export interface ConversationStore {
   ): Promise<Conversation | null>;
   /** Multi-row reads always go through scopedConversations(). */
   listForUser(userId: string, agentId?: string): Promise<Conversation[]>;
-  /** Read all turns for a conversation in turn_index order. */
-  listTurns(conversationId: string): Promise<Turn[]>;
   create(args: ConversationStoreCreateArgs): Promise<Conversation>;
-  appendTurn(args: ConversationStoreAppendTurnArgs): Promise<Turn>;
   /** Soft delete — sets deleted_at on the matching row. Idempotent: returns false on missing/already-deleted. */
   softDelete(conversationId: string): Promise<boolean>;
   /**
@@ -383,16 +335,6 @@ export function createConversationStore(
       return rows.map(rowToConversation);
     },
 
-    async listTurns(conversationId) {
-      const rows = await db
-        .selectFrom('conversations_v1_turns')
-        .selectAll('conversations_v1_turns')
-        .where('conversation_id', '=', conversationId)
-        .orderBy('turn_index', 'asc')
-        .execute();
-      return rows.map(rowToTurn);
-    },
-
     async create({ userId, agentId, title, runnerType, workspaceRef }) {
       const id = mintConversationId();
       const now = new Date();
@@ -419,70 +361,6 @@ export function createConversationStore(
         .returningAll()
         .executeTakeFirstOrThrow();
       return rowToConversation(row as ConversationsRow);
-    },
-
-    async appendTurn({ conversationId, role, contentBlocks }) {
-      // Compute turn_index inside a transaction with row-level locking on
-      // the conversation row. Concurrent inserts on the same conversation
-      // serialize through SELECT ... FOR UPDATE, so the UNIQUE(
-      // conversation_id, turn_index) constraint can never trip — the
-      // index lookup, mint, and insert all happen under the lock.
-      return await db.transaction().execute(async (trx) => {
-        // Lock the conversation row to serialize appendTurn calls for
-        // this conversation. Reading + write happen inside the same tx
-        // so isolation is consistent.
-        //
-        // The `deleted_at IS NULL` filter closes a TOCTOU window: a
-        // concurrent softDelete landing between the plugin's pre-check
-        // (`getByIdNotDeleted`) and the FOR UPDATE acquisition would
-        // otherwise let turns slip into a tombstoned conversation.
-        // executeTakeFirstOrThrow → NoResultError surfaces as a
-        // PluginError('not-found') in the plugin layer.
-        await trx
-          .selectFrom('conversations_v1_conversations')
-          .select('conversation_id')
-          .where('conversation_id', '=', conversationId)
-          .where('deleted_at', 'is', null)
-          .forUpdate()
-          .executeTakeFirstOrThrow();
-
-        const lastRow = await trx
-          .selectFrom('conversations_v1_turns')
-          .select('turn_index')
-          .where('conversation_id', '=', conversationId)
-          .orderBy('turn_index', 'desc')
-          .limit(1)
-          .executeTakeFirst();
-        const nextIndex = lastRow === undefined ? 0 : lastRow.turn_index + 1;
-
-        const id = mintTurnId();
-        const now = new Date();
-        const row = await trx
-          .insertInto('conversations_v1_turns')
-          .values({
-            turn_id: id,
-            conversation_id: conversationId,
-            turn_index: nextIndex,
-            role,
-            // Kysely's pg dialect serializes JSONB on the way down; pass
-            // the array directly via JSON.stringify (matches @ax/agents
-            // store pattern for allowed_tools).
-            content_blocks: JSON.stringify(contentBlocks) as unknown,
-            created_at: now,
-          } as never)
-          .returningAll()
-          .executeTakeFirstOrThrow();
-
-        // Touch updated_at on the parent row so list orderings stay
-        // sensible. Stays inside the same tx.
-        await trx
-          .updateTable('conversations_v1_conversations')
-          .set({ updated_at: now })
-          .where('conversation_id', '=', conversationId)
-          .execute();
-
-        return rowToTurn(row as TurnsRow);
-      });
     },
 
     async softDelete(conversationId) {
