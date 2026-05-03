@@ -138,8 +138,11 @@ export interface SessionGetConfigOutput {
   agentConfig: AgentConfig;
   /**
    * Conversation this session is bound to (Task 15 of Week 10–12). Null
-   * for non-conversation sessions; the runner uses non-null as the
-   * trigger to call `conversation.fetch-history` at boot.
+   * for non-conversation sessions. The runner reads this from
+   * `session.get-config` at boot and uses it as the workspace / session
+   * lookup key — combined with the `runnerSessionId` returned on the same
+   * response (Phase E), it decides between a fresh SDK boot and an SDK
+   * `resume(sessionId)`. There is no separate fetch-history IPC.
    */
   conversationId: string | null;
 }

@@ -22,8 +22,6 @@ export {
   type ConversationScope,
 } from './scope.js';
 export type {
-  AppendTurnInput,
-  AppendTurnOutput,
   BindSessionInput,
   BindSessionOutput,
   ContentBlock,
