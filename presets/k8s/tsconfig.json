@@ -13,7 +13,6 @@
     { "path": "../../packages/eventbus-postgres" },
     { "path": "../../packages/session-postgres" },
     { "path": "../../packages/workspace-git" },
-    { "path": "../../packages/workspace-git-http" },
     { "path": "../../packages/workspace-git-server" },
     { "path": "../../packages/sandbox-k8s" },
     { "path": "../../packages/agent-claude-sdk-runner" },

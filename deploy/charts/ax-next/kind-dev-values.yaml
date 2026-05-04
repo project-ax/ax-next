@@ -38,8 +38,21 @@ host:
       value: "debug"
 
 workspace:
+  backend: git-protocol
   storage: 1Gi
   storageClassName: ""
+
+# Stand up the dedicated git-server StatefulSet tier alongside the
+# host. Combined with `workspace.backend: git-protocol` above, the host
+# pod's @ax/workspace-git-server plugin routes every workspace op there.
+gitServer:
+  enabled: true
+  storage: 1Gi
+
+gitServerImage:
+  repository: ax-next/git-server
+  tag: dev
+  pullPolicy: IfNotPresent
 
 sandbox:
   # kind doesn't ship gVisor. The plugin will WARN at boot.

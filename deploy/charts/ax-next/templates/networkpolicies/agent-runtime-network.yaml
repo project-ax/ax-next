@@ -8,9 +8,10 @@ Allows the host pod to do its job:
       - k8s API (443/6443, scoped via the host SA's Role to runner CRUD)
       - DNS (53)
       - HTTPS (443) — Anthropic API + future channel integrations
-      - git-server pod (only when gitServer.enabled — same-namespace, port
-        from .Values.gitServer.port). Without this rule the host's
-        @ax/workspace-git-http calls would be denied at the CNI layer
+      - git-server StatefulSet (only when gitServer.enabled +
+        workspace.backend=git-protocol — same-namespace, port from
+        .Values.gitServer.port). Without this rule the host's
+        @ax/workspace-git-server calls would be denied at the CNI layer
         when networkPolicies.enabled=true.
 */}}
 apiVersion: networking.k8s.io/v1
@@ -72,23 +73,11 @@ spec:
           protocol: UDP
         - port: 53
           protocol: TCP
-    {{- if .Values.gitServer.enabled }}
-    # git-server pod (workspace.backend == http). Same-namespace, single
-    # leaf service. Pinned by component label so we don't accidentally
-    # widen this beyond the git-server.
-    - to:
-        - podSelector:
-            matchLabels:
-              {{- include "ax-next.selectorLabels" (dict "component" "git-server" "context" $) | nindent 14 }}
-      ports:
-        - port: {{ .Values.gitServer.port }}
-          protocol: TCP
-    {{- end }}
-    {{- if and (eq .Values.workspace.backend "git-protocol") .Values.gitServer.enabled .Values.gitServer.experimental.gitProtocol }}
-    # Experimental sharded git-server StatefulSet (workspace.backend ==
-    # git-protocol). Pinned by the experimental component label — the
-    # legacy rule above won't match these pods. Without this rule the
-    # host's @ax/workspace-git-server traffic is denied at the CNI layer.
+    {{- if and (eq .Values.workspace.backend "git-protocol") .Values.gitServer.enabled }}
+    # Sharded git-server StatefulSet (workspace.backend == git-protocol).
+    # Same-namespace, pinned by the git-server-experimental component
+    # label. Without this rule the host's @ax/workspace-git-server traffic
+    # would be denied at the CNI layer.
     - to:
         - podSelector:
             matchLabels:

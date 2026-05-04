@@ -1,4 +1,4 @@
-{{- if and .Values.gitServer.enabled .Values.gitServer.experimental.gitProtocol }}
+{{- if .Values.gitServer.enabled }}
 {{/*
 Regular ClusterIP Service fronting the experimental sharded git-server
 StatefulSet. Phase 2 of the workspace redesign — this is the URL the host

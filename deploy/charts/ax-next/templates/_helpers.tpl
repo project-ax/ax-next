@@ -189,9 +189,6 @@ Invoked from `host/deployment.yaml`, which always renders.
 {{- if not .Values.gitServer.enabled -}}
 {{- fail "workspace.backend=git-protocol requires gitServer.enabled=true" -}}
 {{- end -}}
-{{- if not .Values.gitServer.experimental.gitProtocol -}}
-{{- fail "workspace.backend=git-protocol requires gitServer.experimental.gitProtocol=true" -}}
-{{- end -}}
 {{- end -}}
 {{- end -}}
 

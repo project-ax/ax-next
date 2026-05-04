@@ -1,4 +1,4 @@
-{{- if and .Values.gitServer.enabled .Values.gitServer.experimental.gitProtocol }}
+{{- if .Values.gitServer.enabled }}
 {{/*
 Experimental sharded git-server StatefulSet (Phase 1 of workspace redesign).
 
@@ -169,9 +169,7 @@ spec:
         resources:
           requests:
             storage: {{ required "gitServer.storage is required when gitServer.enabled=true" .Values.gitServer.storage }}
-        {{- if .Values.gitServer.storageClassName }}
-        storageClassName: {{ .Values.gitServer.storageClassName }}
-        {{- else }}
-        storageClassName: ""
+        {{- with .Values.gitServer.storageClassName }}
+        storageClassName: {{ . }}
         {{- end }}
 {{- end }}

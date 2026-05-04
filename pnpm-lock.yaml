@@ -1173,37 +1173,6 @@ importers:
         specifier: ^4.1.4
         version: 4.1.5(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(jsdom@26.1.0)(vite@8.0.10(@types/node@25.6.0)(yaml@2.8.3))
 
-  packages/workspace-git-http:
-    dependencies:
-      '@ax/core':
-        specifier: workspace:*
-        version: link:../core
-      '@ax/ipc-core':
-        specifier: workspace:*
-        version: link:../ipc-core
-      '@ax/workspace-git-core':
-        specifier: workspace:*
-        version: link:../workspace-git-core
-      '@ax/workspace-protocol':
-        specifier: workspace:*
-        version: link:../workspace-protocol
-      zod:
-        specifier: ^3.23.8
-        version: 3.25.76
-    devDependencies:
-      '@ax/test-harness':
-        specifier: workspace:*
-        version: link:../test-harness
-      '@types/node':
-        specifier: ^25.6.0
-        version: 25.6.0
-      typescript:
-        specifier: ^6.0.3
-        version: 6.0.3
-      vitest:
-        specifier: ^4.1.4
-        version: 4.1.5(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(jsdom@26.1.0)(vite@8.0.10(@types/node@25.6.0)(yaml@2.8.3))
-
   packages/workspace-git-server:
     dependencies:
       '@ax/core':
@@ -1316,9 +1285,6 @@ importers:
       '@ax/workspace-git':
         specifier: workspace:*
         version: link:../../packages/workspace-git
-      '@ax/workspace-git-http':
-        specifier: workspace:*
-        version: link:../../packages/workspace-git-http
       '@ax/workspace-git-server':
         specifier: workspace:*
         version: link:../../packages/workspace-git-server

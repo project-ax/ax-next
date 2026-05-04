@@ -165,37 +165,46 @@ describe('@ax/preset-k8s workspace backend selection', () => {
     });
     const names = new Set(plugins.map((p) => p.manifest.name));
     expect(names.has('@ax/workspace-git')).toBe(true);
-    expect(names.has('@ax/workspace-git-http')).toBe(false);
+    expect(names.has('@ax/workspace-git-server')).toBe(false);
   });
 
-  it("backend: 'http' registers @ax/workspace-git-http", () => {
+  it("backend: 'git-protocol' registers @ax/workspace-git-server", () => {
     const plugins = createK8sPlugins({
       ...stubConfig,
       workspace: {
-        backend: 'http',
+        backend: 'git-protocol',
         baseUrl: 'http://git-server.ax-next.svc.cluster.local:7780',
         token: 'stub-token',
       },
     });
     const names = new Set(plugins.map((p) => p.manifest.name));
-    expect(names.has('@ax/workspace-git-http')).toBe(true);
+    expect(names.has('@ax/workspace-git-server')).toBe(true);
     expect(names.has('@ax/workspace-git')).toBe(false);
   });
 
-  it("each backend registers the workspace:* service hooks it claims to", () => {
-    // Reflex check: every backend must register the four base
-    // workspace:* hooks (apply/read/list/diff). Bundle-aware backends
-    // (`local`, `git-protocol`) additionally register the Phase 3
-    // bundle hooks; `http` is the legacy non-bundle path. If a refactor
-    // accidentally drops a hook, this fails before bootstrap does.
+  it("each backend registers the full bundle-aware workspace:* surface", () => {
+    // Reflex check: every backend must register all six workspace:*
+    // hooks (apply/read/list/diff + apply-bundle + export-baseline-bundle).
+    // The earlier four-hook backend (@ax/workspace-git-http) was retired
+    // 2026-05-04 because multi-turn writes silently failed without the
+    // bundle hooks. If a refactor accidentally drops a hook, this fails
+    // before bootstrap does.
+    const expected = [
+      'workspace:apply',
+      'workspace:apply-bundle',
+      'workspace:diff',
+      'workspace:export-baseline-bundle',
+      'workspace:list',
+      'workspace:read',
+    ];
     const localPlugins = createK8sPlugins({
       ...stubConfig,
       workspace: { backend: 'local', repoRoot: '/tmp/preset-k8s-stub' },
     });
-    const httpPlugins = createK8sPlugins({
+    const gitProtocolPlugins = createK8sPlugins({
       ...stubConfig,
       workspace: {
-        backend: 'http',
+        backend: 'git-protocol',
         baseUrl: 'http://git-server:7780',
         token: 't',
       },
@@ -205,20 +214,8 @@ describe('@ax/preset-k8s workspace backend selection', () => {
         .flatMap((p) => p.manifest.registers)
         .filter((h) => h.startsWith('workspace:'))
         .sort();
-    expect(wsHooksFor(localPlugins)).toEqual([
-      'workspace:apply',
-      'workspace:apply-bundle',
-      'workspace:diff',
-      'workspace:export-baseline-bundle',
-      'workspace:list',
-      'workspace:read',
-    ]);
-    expect(wsHooksFor(httpPlugins)).toEqual([
-      'workspace:apply',
-      'workspace:diff',
-      'workspace:list',
-      'workspace:read',
-    ]);
+    expect(wsHooksFor(localPlugins)).toEqual(expected);
+    expect(wsHooksFor(gitProtocolPlugins)).toEqual(expected);
   });
 });
 
@@ -248,57 +245,9 @@ describe('workspaceConfigFromEnv', () => {
     ).toThrowError(/AX_WORKSPACE_ROOT/);
   });
 
-  it('reads http config from AX_WORKSPACE_GIT_HTTP_{URL,TOKEN}', () => {
-    expect(
-      workspaceConfigFromEnv({
-        AX_WORKSPACE_BACKEND: 'http',
-        AX_WORKSPACE_GIT_HTTP_URL: 'http://git-server:7780',
-        AX_WORKSPACE_GIT_HTTP_TOKEN: 'shh',
-      }),
-    ).toEqual({
-      backend: 'http',
-      baseUrl: 'http://git-server:7780',
-      token: 'shh',
-    });
-  });
-
-  it('throws when http backend is missing AX_WORKSPACE_GIT_HTTP_URL', () => {
-    expect(() =>
-      workspaceConfigFromEnv({
-        AX_WORKSPACE_BACKEND: 'http',
-        AX_WORKSPACE_GIT_HTTP_TOKEN: 'shh',
-      }),
-    ).toThrowError(/AX_WORKSPACE_GIT_HTTP_URL/);
-  });
-
-  it('throws when http backend is missing AX_WORKSPACE_GIT_HTTP_TOKEN', () => {
-    expect(() =>
-      workspaceConfigFromEnv({
-        AX_WORKSPACE_BACKEND: 'http',
-        AX_WORKSPACE_GIT_HTTP_URL: 'http://git-server:7780',
-      }),
-    ).toThrowError(/AX_WORKSPACE_GIT_HTTP_TOKEN/);
-  });
-
-  it('treats empty-string env values as missing (not as valid)', () => {
-    // K8s downward-API and missing-secret edges sometimes inject "" rather
-    // than unsetting the var. We don't want an empty URL/token to silently
-    // pass — it would 401 or DNS-fail at first request and confuse the
-    // operator.
-    expect(() =>
-      workspaceConfigFromEnv({
-        AX_WORKSPACE_BACKEND: 'http',
-        AX_WORKSPACE_GIT_HTTP_URL: '',
-        AX_WORKSPACE_GIT_HTTP_TOKEN: 'shh',
-      }),
-    ).toThrowError(/AX_WORKSPACE_GIT_HTTP_URL/);
-  });
-
   // -------------------------------------------------------------------------
-  // git-protocol backend (Phase 2 of the workspace redesign). Talks to the
-  // sharded git-server storage tier via @ax/workspace-git-server. Same shape
-  // as the http backend (URL + bearer token), different env-var names so an
-  // operator can distinguish at a glance which tier they're pointing at.
+  // git-protocol backend. Talks to the sharded git-server storage tier via
+  // @ax/workspace-git-server. URL + bearer token, distinct env-var names.
   // -------------------------------------------------------------------------
 
   it('reads git-protocol config from AX_WORKSPACE_GIT_SERVER_{URL,TOKEN}', () => {
@@ -405,9 +354,9 @@ describe('loadK8sConfigFromEnv', () => {
   const minRequired = (extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv => ({
     DATABASE_URL: 'postgres://u:p@db:5432/ax_next',
     AX_K8S_HOST_IPC_URL: 'http://ax-next-host.ax-next.svc:80',
-    AX_WORKSPACE_BACKEND: 'http',
-    AX_WORKSPACE_GIT_HTTP_URL: 'http://git-server:7780',
-    AX_WORKSPACE_GIT_HTTP_TOKEN: 't',
+    AX_WORKSPACE_BACKEND: 'git-protocol',
+    AX_WORKSPACE_GIT_SERVER_URL: 'http://git-server:7780',
+    AX_WORKSPACE_GIT_SERVER_TOKEN: 't',
     AX_HTTP_HOST: '0.0.0.0',
     AX_HTTP_PORT: '8080',
     AX_HTTP_COOKIE_KEY: HEX_KEY,
@@ -422,7 +371,7 @@ describe('loadK8sConfigFromEnv', () => {
     expect(cfg.eventbus.connectionString).toBe('postgres://u:p@db:5432/ax_next');
     expect(cfg.session.connectionString).toBe('postgres://u:p@db:5432/ax_next');
     expect(cfg.workspace).toEqual({
-      backend: 'http',
+      backend: 'git-protocol',
       baseUrl: 'http://git-server:7780',
       token: 't',
     });
@@ -558,8 +507,8 @@ describe('loadK8sConfigFromEnv', () => {
 
   it('propagates workspace errors from workspaceConfigFromEnv', () => {
     const env = minRequired();
-    delete env.AX_WORKSPACE_GIT_HTTP_TOKEN;
-    expect(() => loadK8sConfigFromEnv(env)).toThrowError(/AX_WORKSPACE_GIT_HTTP_TOKEN/);
+    delete env.AX_WORKSPACE_GIT_SERVER_TOKEN;
+    expect(() => loadK8sConfigFromEnv(env)).toThrowError(/AX_WORKSPACE_GIT_SERVER_TOKEN/);
   });
 
   it('throws when AX_HTTP_HOST is missing', () => {
