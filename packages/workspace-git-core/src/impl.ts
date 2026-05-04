@@ -194,29 +194,57 @@ async function buildEmptyBaselineBundle(): Promise<string> {
  * Ships every commit reachable from `oid` plus a single ref
  * `refs/heads/main` pointing at it.
  *
- * Caller invariant: `oid` MUST equal the bare repo's current
- * refs/heads/main. The mutex around export-baseline-bundle guarantees no
- * concurrent apply has advanced HEAD past `oid` between the version check
- * and the bundle.
+ * `oid` does NOT have to be the bare repo's current HEAD — we honor the
+ * documented contract (`@ax/core/src/workspace.ts`: "bundles <version>
+ * (a single commit + everything reachable)") and bundle whatever
+ * reachable commit the caller asks for. The stale-parent race (a
+ * concurrent writer landed something between the runner's snapshot and
+ * now) leaves `oid` as an ancestor of HEAD, still reachable, and
+ * apply-bundle's CAS catches the actual drift downstream as a
+ * structured `parent-mismatch`. A strict HEAD-equality check here would
+ * mask that as a 500 in commit-notify.
+ *
+ * We assemble the bundle in a scratch bare repo so we don't have to
+ * mutate gitdir's refs (a temp ref under `refs/tmp/*` in gitdir would
+ * still need its name rewritten to `refs/heads/main` for the consumer's
+ * `fetch refs/heads/main:refs/heads/main`, and rewriting in-place is
+ * the racy thing we'd be avoiding by using a temp ref in the first
+ * place). Scratch gives us a clean `refs/heads/main -> oid` setup.
  */
 async function exportBundleAt(gitdir: string, oid: string): Promise<string> {
-  const head = await runGit([
-    '-C', gitdir, 'rev-parse', '--verify', 'refs/heads/main',
+  // Verify the oid exists in gitdir. Commits are append-only on main,
+  // so any oid we ever issued for this workspace remains reachable; an
+  // unknown oid is a real misuse (forged baseline) and gets a loud throw.
+  const verify = await runGit([
+    '-C', gitdir, 'rev-parse', '--verify', `${oid}^{commit}`,
   ]);
-  if (head.code !== 0) {
-    throw new Error(`bare repo has no refs/heads/main: ${head.stderr}`);
-  }
-  const headOid = head.stdout.trim();
-  if (headOid !== oid) {
+  if (verify.code !== 0) {
     throw new Error(
-      `bare repo head ${headOid} does not match requested version ${oid}`,
+      `bare repo has no commit at ${oid}: ${verify.stderr}`,
     );
   }
-  const out = mkdtempSync(join(tmpdir(), 'ax-ws-git-export-bundle-'));
+  const scratch = mkdtempSync(join(tmpdir(), 'ax-ws-git-export-bundle-'));
   try {
-    const bundlePath = join(out, 'export.bundle');
+    // Bare scratch repo. We fetch the requested oid by SHA into
+    // refs/heads/main, then bundle from there. The fetch carries every
+    // commit reachable from oid (git's smart-fetch); the resulting
+    // bundle ships refs/heads/main -> oid plus all ancestors, exactly
+    // the shape the consumer's `fetch refs/heads/main:refs/heads/main`
+    // expects.
+    const init = await runGit(['init', '--bare', '-b', 'main', scratch]);
+    if (init.code !== 0) {
+      throw new Error(`export scratch init failed: ${init.stderr}`);
+    }
+    const fetch = await runGit([
+      '-C', scratch, 'fetch', '--quiet', gitdir,
+      `+${oid}:refs/heads/main`,
+    ]);
+    if (fetch.code !== 0) {
+      throw new Error(`export scratch fetch failed: ${fetch.stderr}`);
+    }
+    const bundlePath = join(scratch, 'export.bundle');
     const create = await runGit([
-      '-C', gitdir, 'bundle', 'create', bundlePath, 'main',
+      '-C', scratch, 'bundle', 'create', bundlePath, 'main',
     ]);
     if (create.code !== 0) {
       throw new Error(`bundle create failed: ${create.stderr}`);
@@ -224,7 +252,7 @@ async function exportBundleAt(gitdir: string, oid: string): Promise<string> {
     const bytes = await readFile(bundlePath);
     return bytes.toString('base64');
   } finally {
-    rmSync(out, { recursive: true, force: true });
+    rmSync(scratch, { recursive: true, force: true });
   }
 }
 

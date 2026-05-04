@@ -547,6 +547,90 @@ describe('@ax/workspace-git bundle hooks (Phase 3)', () => {
     expect(after.stdout.trim()).toBe('');
   });
 
+  it("export-baseline-bundle({version: <stale-but-reachable-oid>}) bundles that oid (no strict-HEAD check)", async () => {
+    // Regression: the old strict-HEAD check rejected any oid that wasn't
+    // current refs/heads/main, throwing inside commit-notify and
+    // surfacing as a 500 instead of the structured `parent-mismatch`
+    // that apply-bundle's CAS would have produced. The hook contract
+    // (@ax/core/src/workspace.ts) says we bundle "<version> + everything
+    // reachable" — ancestor commits qualify too.
+    //
+    // Set up: two applies produce v1 then v2 (HEAD == v2). Then ask for
+    // a bundle at v1. This used to throw "head v2 does not match
+    // requested version v1"; it must now succeed and ship v1's history.
+    const r1 = await h.bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>(
+      'workspace:apply',
+      h.ctx(),
+      {
+        changes: [
+          {
+            path: 'a.txt',
+            kind: 'put',
+            content: new TextEncoder().encode('A'),
+          },
+        ],
+        parent: null,
+      },
+    );
+    const r2 = await h.bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>(
+      'workspace:apply',
+      h.ctx(),
+      {
+        changes: [
+          {
+            path: 'b.txt',
+            kind: 'put',
+            content: new TextEncoder().encode('B'),
+          },
+        ],
+        parent: r1.version,
+      },
+    );
+    expect(r2.version).not.toBe(r1.version);
+
+    // Ask for a bundle at the OLDER version (still reachable from HEAD
+    // as an ancestor — git's append-only main contract).
+    const exported = await h.bus.call<
+      WorkspaceExportBaselineBundleInput,
+      WorkspaceExportBaselineBundleOutput
+    >('workspace:export-baseline-bundle', h.ctx(), {
+      version: asWorkspaceVersion(r1.version),
+    });
+
+    // The bundle's tip should be r1, not r2 (we asked for the stale oid).
+    const scratch = mkdtempSync(join(tmpdir(), 'ax-ws-bundle-stale-'));
+    try {
+      const bundlePath = join(scratch, 'b.bundle');
+      await fs.writeFile(bundlePath, Buffer.from(exported.bundleBytes, 'base64'));
+      const cl = await run([
+        'clone', '--branch', 'main', bundlePath, scratch + '/clone',
+      ]);
+      expect(cl.code).toBe(0);
+      const head = await run(['-C', scratch + '/clone', 'rev-parse', 'HEAD']);
+      expect(head.stdout.trim()).toBe(r1.version);
+      // a.txt is in the bundle (from r1), b.txt is NOT (it landed in r2).
+      const lsTree = await run(['-C', scratch + '/clone', 'ls-tree', '-r', '--name-only', 'HEAD']);
+      expect(lsTree.stdout.trim().split('\n').sort()).toEqual(['a.txt']);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+
+  it("export-baseline-bundle({version: <unknown-oid>}) throws (unknown commits are misuse, not stale)", async () => {
+    // Sanity: an oid that's not reachable in the bare repo is genuinely
+    // misuse (forged or wrong-workspace baseline), not a benign stale
+    // parent. Loud throw, no silent empty bundle.
+    const fakeOid = 'deadbeef'.repeat(5); // 40 hex chars, not in repo
+    await expect(
+      h.bus.call<
+        WorkspaceExportBaselineBundleInput,
+        WorkspaceExportBaselineBundleOutput
+      >('workspace:export-baseline-bundle', h.ctx(), {
+        version: asWorkspaceVersion(fakeOid),
+      }),
+    ).rejects.toThrow(/no commit at deadbeef/);
+  });
+
   it("export-baseline-bundle({version: <existing-oid>}) bundles the workspace state at that version", async () => {
     // First write something via the FileChange path to make sure
     // export works against state produced by workspace:apply (not just
