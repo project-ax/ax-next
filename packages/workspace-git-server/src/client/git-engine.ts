@@ -533,9 +533,14 @@ async function pushBundleTip(
  * with deterministic OID. Used when the workspace has no commits yet
  * (first apply against an empty storage tier) — same shape as the
  * materialize handler's empty-workspace bundle so the runner's
- * matching clone has the same baseline OID.
+ * matching clone has the same baseline OID. Returns both the bundle
+ * bytes and the tip OID so callers can validate that a caller-supplied
+ * version matches.
  */
-async function buildEmptyBaselineBundle(): Promise<string> {
+async function buildEmptyBaselineBundle(): Promise<{
+  bundleBytes: string;
+  oid: string;
+}> {
   const tmp = mkdtempSync(join(tmpdir(), 'ax-ws-empty-baseline-'));
   try {
     const init = await runGit(['init', '-b', 'main', tmp], {
@@ -558,6 +563,14 @@ async function buildEmptyBaselineBundle(): Promise<string> {
     if (commit.code !== 0) {
       throw new Error(`empty baseline commit failed: ${commit.stderr}`);
     }
+    const revParse = await runGit(
+      ['-C', tmp, 'rev-parse', 'main'],
+      { extraEnv: BASELINE_ENV },
+    );
+    if (revParse.code !== 0) {
+      throw new Error(`empty baseline rev-parse failed: ${revParse.stderr}`);
+    }
+    const oid = revParse.stdout.trim();
     // Bundle to a tempfile (NOT stdout) — runGit's utf8-decoded
     // stdout would mangle binary bundle bytes. The pack format
     // contains arbitrary binary data (deltas, blob bytes); we need
@@ -571,7 +584,7 @@ async function buildEmptyBaselineBundle(): Promise<string> {
       throw new Error(`empty baseline bundle failed: ${bundle.stderr}`);
     }
     const bytes = await readFile(bundlePath);
-    return bytes.toString('base64');
+    return { bundleBytes: bytes.toString('base64'), oid };
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
@@ -1243,7 +1256,8 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
         // Explicit seed condition: ALWAYS the deterministic empty
         // baseline, regardless of mirror state. No mirror access
         // needed.
-        return { bundleBytes: await buildEmptyBaselineBundle() };
+        const { bundleBytes } = await buildEmptyBaselineBundle();
+        return { bundleBytes };
       }
       // version=undefined: bundle the mirror's CURRENT HEAD; if there
       // are no commits yet, degrade to deterministic empty baseline.
@@ -1254,16 +1268,22 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
         await ensureRepoCreated(workspaceId);
         await fetchMirror(remoteUrl, opts.token, handle.dir);
         const head = await currentMirrorOid(handle.dir);
-        // If the mirror is empty (no commits in storage yet), the only
-        // tip OID any prior caller could have observed is the
-        // deterministic empty baseline. Return it regardless of which
-        // version was requested — the requested OID, if any, is X by
-        // construction. This matters for the FIRST commit-notify of a
-        // session where the workspace had no history at materialize
-        // time: the runner's parentVersion = X (from materialize), and
-        // commit-notify here needs to reproduce a bundle with tip = X.
+        // If the mirror is empty (no commits in storage yet), only the
+        // deterministic empty-baseline OID is a valid version (the only
+        // tip a prior caller could have observed). undefined → return
+        // empty baseline; <empty-baseline-oid> → return empty baseline;
+        // any other oid → throw (genuine misuse: forged oid or
+        // wrong-workspace baseline). Matters for the FIRST commit-notify
+        // of a session that materialized against an empty workspace,
+        // which legitimately passes parentVersion = empty-baseline-oid.
         if (head === null) {
-          return { bundleBytes: await buildEmptyBaselineBundle() };
+          const empty = await buildEmptyBaselineBundle();
+          if (input.version !== undefined && input.version !== empty.oid) {
+            throw new Error(
+              `no commit at ${input.version} in empty workspace (expected ${empty.oid} or null)`,
+            );
+          }
+          return { bundleBytes: empty.bundleBytes };
         }
         // Mirror non-empty: undefined → bundle HEAD; oid → bundle that
         // oid (exportMirrorBundle verifies oid == HEAD and throws on
