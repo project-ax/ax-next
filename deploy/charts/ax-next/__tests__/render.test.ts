@@ -106,37 +106,41 @@ if (!HELM) {
 
 const STS_NAME = 'ax-test-ax-next-git-server-experimental';
 
-describeIfHelm('ax-next chart: git-server StatefulSet', () => {
-  // Pull subchart tarballs (postgresql) into charts/ before any render. They
-  // ship via Chart.yaml dependency declaration and are gitignored, so a fresh
-  // checkout (CI, new clones) needs `helm dependency build` once. Idempotent;
-  // a no-op when the tarballs are already present.
-  //
-  // The bitnami repo also has to be registered locally for `dependency build`
-  // to resolve postgresql. `helm repo add ... --force-update` is idempotent.
-  beforeAll(() => {
-    if (!HELM) return;
-    const repoAdd = spawnSync(
-      HELM,
-      ['repo', 'add', '--force-update', 'bitnami', 'https://charts.bitnami.com/bitnami'],
-      { encoding: 'utf8', stdio: ['ignore', 'ignore', 'pipe'] },
+// Pull subchart tarballs (postgresql) into charts/ before any render. They
+// ship via Chart.yaml dependency declaration and are gitignored, so a fresh
+// checkout (CI, new clones) needs `helm dependency build` once. Idempotent;
+// a no-op when the tarballs are already present.
+//
+// The bitnami repo also has to be registered locally for `dependency build`
+// to resolve postgresql. `helm repo add ... --force-update` is idempotent.
+//
+// Module-level so both describe blocks share one setup; without this the
+// subprocess overhead doubles (each `helm dependency build` walks the
+// chart tree even when it's a no-op).
+beforeAll(() => {
+  if (!HELM) return;
+  const repoAdd = spawnSync(
+    HELM,
+    ['repo', 'add', '--force-update', 'bitnami', 'https://charts.bitnami.com/bitnami'],
+    { encoding: 'utf8', stdio: ['ignore', 'ignore', 'pipe'] },
+  );
+  if (repoAdd.status !== 0) {
+    throw new Error(
+      `helm repo add bitnami failed (exit ${repoAdd.status}): ${repoAdd.stderr ?? ''}`,
     );
-    if (repoAdd.status !== 0) {
-      throw new Error(
-        `helm repo add bitnami failed (exit ${repoAdd.status}): ${repoAdd.stderr ?? ''}`,
-      );
-    }
-    const r = spawnSync(HELM, ['dependency', 'build', chartDir], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'ignore', 'pipe'],
-    });
-    if (r.status !== 0) {
-      throw new Error(
-        `helm dependency build failed (exit ${r.status}): ${r.stderr ?? ''}`,
-      );
-    }
+  }
+  const r = spawnSync(HELM, ['dependency', 'build', chartDir], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'ignore', 'pipe'],
   });
+  if (r.status !== 0) {
+    throw new Error(
+      `helm dependency build failed (exit ${r.status}): ${r.stderr ?? ''}`,
+    );
+  }
+});
 
+describeIfHelm('ax-next chart: git-server StatefulSet', () => {
   it('gitServer.enabled=true: StatefulSet + headless Service + ClusterIP Service + NetworkPolicy render', () => {
     const docs = helmTemplate([
       '--set', 'gitServer.enabled=true',
@@ -306,29 +310,6 @@ function findHostEnv(docs: K8sDoc[]): EnvVar[] {
 }
 
 describeIfHelm('ax-next chart: workspace.backend wiring', () => {
-  beforeAll(() => {
-    if (!HELM) return;
-    const repoAdd = spawnSync(
-      HELM,
-      ['repo', 'add', '--force-update', 'bitnami', 'https://charts.bitnami.com/bitnami'],
-      { encoding: 'utf8', stdio: ['ignore', 'ignore', 'pipe'] },
-    );
-    if (repoAdd.status !== 0) {
-      throw new Error(
-        `helm repo add bitnami failed (exit ${repoAdd.status}): ${repoAdd.stderr ?? ''}`,
-      );
-    }
-    const r = spawnSync(HELM, ['dependency', 'build', chartDir], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'ignore', 'pipe'],
-    });
-    if (r.status !== 0) {
-      throw new Error(
-        `helm dependency build failed (exit ${r.status}): ${r.stderr ?? ''}`,
-      );
-    }
-  });
-
   it('backend=local (default): host has AX_WORKSPACE_ROOT only', () => {
     const docs = helmTemplate([]);
     const env = findHostEnv(docs);

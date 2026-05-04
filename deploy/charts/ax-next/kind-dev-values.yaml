@@ -48,12 +48,6 @@ workspace:
 gitServer:
   enabled: true
   storage: 1Gi
-  # kind's default StorageClass is `standard` (rancher.io/local-path).
-  # The StatefulSet template emits an explicit `storageClassName: ""`
-  # when this is empty, which means "no class" in Kubernetes — the PVC
-  # never binds. Pin to the kind default so the StatefulSet binds at
-  # install time.
-  storageClassName: standard
 
 gitServerImage:
   repository: ax-next/git-server

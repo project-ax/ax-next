@@ -169,9 +169,7 @@ spec:
         resources:
           requests:
             storage: {{ required "gitServer.storage is required when gitServer.enabled=true" .Values.gitServer.storage }}
-        {{- if .Values.gitServer.storageClassName }}
-        storageClassName: {{ .Values.gitServer.storageClassName }}
-        {{- else }}
-        storageClassName: ""
+        {{- with .Values.gitServer.storageClassName }}
+        storageClassName: {{ . }}
         {{- end }}
 {{- end }}

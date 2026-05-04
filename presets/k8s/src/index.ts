@@ -688,10 +688,9 @@ export function workspaceConfigFromEnv(
 // Required env (per the chart):
 //   - DATABASE_URL                — postgres DSN (database/eventbus/session)
 //   - AX_K8S_HOST_IPC_URL          — cluster URL runners use to reach @ax/ipc-http
-//   - AX_WORKSPACE_BACKEND        — local | http | git-protocol (default: local)
+//   - AX_WORKSPACE_BACKEND        — local | git-protocol (default: local)
 //       and the per-backend vars (delegated to workspaceConfigFromEnv):
 //         - local:        AX_WORKSPACE_ROOT
-//         - http:         AX_WORKSPACE_GIT_HTTP_URL / AX_WORKSPACE_GIT_HTTP_TOKEN
 //         - git-protocol: AX_WORKSPACE_GIT_SERVER_URL / AX_WORKSPACE_GIT_SERVER_TOKEN
 //   - AX_HTTP_HOST / AX_HTTP_PORT  — public-facing http listener
 //   - AX_HTTP_COOKIE_KEY           — 32-byte signing key (hex / base64)
