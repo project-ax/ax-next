@@ -26,6 +26,7 @@
 
 import { spawn } from 'node:child_process';
 import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
 import * as path from 'node:path';
 
 interface SpawnResult {
@@ -113,9 +114,15 @@ export async function materializeWorkspace(input: MaterializeInput): Promise<voi
   // Two-step: write the bundle bytes to a temp file OUTSIDE the target
   // dir (clone refuses to clone into a non-empty directory), then clone
   // from the bundle file.
-  const parentDir = path.dirname(root);
-  await fs.mkdir(parentDir, { recursive: true });
-  const bundlePath = `${root}.baseline.bundle`;
+  //
+  // We pin the bundle to `os.tmpdir()` rather than `${root}.baseline.bundle`
+  // because the parent of `root` is often a read-only volume root (e.g.
+  // the k8s sandbox mounts /permanent as the workspace dir under
+  // `readOnlyRootFilesystem: true`, so writing `/permanent.baseline.bundle`
+  // at filesystem `/` fails with EROFS). /tmp is always writable in
+  // both subprocess and k8s sandboxes.
+  await fs.mkdir(root, { recursive: true });
+  const bundlePath = path.join(os.tmpdir(), `ax-baseline-${Date.now()}-${Math.random().toString(36).slice(2, 10)}.bundle`);
   await fs.writeFile(bundlePath, Buffer.from(bundleBase64, 'base64'));
   try {
     await expectOk(
@@ -226,9 +233,12 @@ export async function commitTurnAndBundle(input: {
   // Bundle to a tempfile (NOT to stdout) — Node's child_process stdio
   // can re-encode binary output via the default `'utf8'` decoder if a
   // listener attaches before raw bytes flow. Tempfile path is
-  // unambiguous and trivially correct. Place it outside `root` so
-  // `git add -A` on the next turn doesn't accidentally stage it.
-  const bundlePath = `${root}.turn.bundle`;
+  // unambiguous and trivially correct. Place it in `os.tmpdir()` so
+  // it's outside `root` (avoiding `git add -A` on the next turn) AND
+  // is on a writable filesystem (the parent of `root` is often a
+  // read-only volume root in the k8s sandbox; see materializeWorkspace
+  // for the matching note).
+  const bundlePath = path.join(os.tmpdir(), `ax-turn-${Date.now()}-${Math.random().toString(36).slice(2, 10)}.bundle`);
   await expectOk(
     await runGit(
       ['-C', root, 'bundle', 'create', bundlePath, 'baseline..main', 'main'],

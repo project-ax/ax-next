@@ -44,6 +44,35 @@ spec:
         - name: {{ . }}
         {{- end }}
       {{- end }}
+      {{- if .Values.sandbox.proxySocketHostPath }}
+      # When the credential-proxy lives on a hostPath (the kind / single-
+      # node posture), the kubelet creates the dir owned by root:root —
+      # the non-root host container then can't write the proxy socket OR
+      # the MITM CA. fsGroup doesn't apply to hostPath, so we chown via
+      # an init container that runs as root, sets ownership to the same
+      # UID:GID the host container uses (1000:1000 from the agent
+      # Dockerfile), and exits. The runner pod mounts the same dir
+      # read-only, so chmod 0750 is enough — we don't need world reads.
+      initContainers:
+        - name: proxy-socket-chown
+          image: {{ include "ax-next.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy | default "IfNotPresent" }}
+          command: ["sh", "-c"]
+          args:
+            - |
+              chown -R 1000:1000 /var/run/ax && \
+              chmod -R 0750 /var/run/ax
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            allowPrivilegeEscalation: false
+            capabilities:
+              add: ["CHOWN", "FOWNER"]
+              drop: ["ALL"]
+          volumeMounts:
+            - name: proxy-socket
+              mountPath: /var/run/ax
+      {{- end }}
       containers:
         - name: host
           image: {{ include "ax-next.image" . }}
@@ -148,6 +177,22 @@ spec:
             {{- if .Values.imagePullSecrets }}
             - name: K8S_IMAGE_PULL_SECRETS
               value: {{ join "," .Values.imagePullSecrets | quote }}
+            {{- end }}
+            {{- if .Values.sandbox.proxySocketHostPath }}
+            # Tells @ax/sandbox-k8s to (a) mount this hostPath at
+            # /var/run/ax in every runner pod and (b) stamp the matching
+            # AX_PROXY_UNIX_SOCKET / NODE_EXTRA_CA_CERTS / SSL_CERT_FILE
+            # env so the runner can dial the host pod's credential-proxy
+            # and trust its MITM certs. Mirrors the host-side mount above.
+            - name: K8S_PROXY_SOCKET_HOST_PATH
+              value: {{ .Values.sandbox.proxySocketHostPath | quote }}
+            # Pin the credential-proxy's CA dir into the SAME shared dir
+            # so `ca.crt` lands at the path the runner is told to read
+            # (`/var/run/ax/proxy-ca/ca.crt`). Without this, the host
+            # writes the cert to ~/.ax/proxy-ca/ inside the host pod's
+            # private filesystem and the runner can't reach it.
+            - name: AX_PROXY_CA_DIR
+              value: "/var/run/ax/proxy-ca"
             {{- end }}
 
             # Cluster-internal URL runner pods use to reach our IPC listener
@@ -254,12 +299,28 @@ spec:
         - name: ax-config
           configMap:
             name: {{ include "ax-next.fullname" . }}-config
-        # Ephemeral; the proxy socket only needs to outlive the pod's own
-        # lifetime. emptyDir gets its group ownership from fsGroup above
-        # (1000), and emptyDir's default mount mode adds g+w/g+s so files
-        # created here inherit group 1000 and are writable.
+        # The credential-proxy's Unix socket (and MITM CA cert) live in
+        # this dir. When `sandbox.proxySocketHostPath` is set, the runner
+        # pods get a SAME hostPath mount at the same in-pod mountpoint
+        # — that's what makes the socket reachable cross-pod. Without
+        # it (the legacy posture), the dir is an emptyDir scoped to the
+        # host pod and runner pods can't reach the proxy.
+        #
+        # SECURITY: hostPath is single-node-only and lets a pod that
+        # mounts it write to the node filesystem. We use it here because
+        # cross-pod Unix sockets have no good alternative on a single
+        # kind node; production should switch the credential-proxy to
+        # TCP listen mode + Service so the Unix socket disappears.
         - name: proxy-socket
+        {{- if .Values.sandbox.proxySocketHostPath }}
+          hostPath:
+            path: {{ .Values.sandbox.proxySocketHostPath | quote }}
+            type: DirectoryOrCreate
+        {{- else }}
+          # Ephemeral; emptyDir gets its group ownership from fsGroup
+          # above (1000), so the proxy can bind() the socket as UID 1000.
           emptyDir: {}
+        {{- end }}
         {{- if eq .Values.workspace.backend "local" }}
         - name: workspace
           persistentVolumeClaim:

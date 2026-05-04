@@ -78,7 +78,12 @@ describe('sandbox:open-session (k8s)', () => {
     expect(env.AX_SESSION_ID).toBe('sess-1');
     expect(typeof env.AX_AUTH_TOKEN).toBe('string');
     expect(env.AX_AUTH_TOKEN!.length).toBeGreaterThan(0);
-    expect(env.AX_WORKSPACE_ROOT).toBe('/tmp/ws');
+    // pod-spec hardcodes /permanent — the runner pod's writable mount
+    // for the workspace working tree. The caller's `workspaceRoot` is
+    // host-side (process.cwd / `/opt/ax-next/host`) and would point at
+    // a read-only path inside the runner pod's filesystem namespace;
+    // hardcoding here keeps the runner from ever seeing the host path.
+    expect(env.AX_WORKSPACE_ROOT).toBe('/permanent');
     expect(env.AX_RUNNER_BINARY).toBe('/opt/ax/runner.js');
     // AX_RUNNER_ENDPOINT is the host's @ax/ipc-http URL (config.hostIpcUrl),
     // stamped at spec-build time — no pod-IP-derived placeholder.

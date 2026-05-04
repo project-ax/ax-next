@@ -79,7 +79,31 @@ function validateKind(kind: unknown): string {
   return kind;
 }
 
-export function createCredentialsPlugin(): Plugin {
+/**
+ * Optional config for `createCredentialsPlugin`. Today this only carries
+ * the env-fallback map — `{ ref → ENV_VAR_NAME }` — used when the
+ * credentials store has no row for `(userId, ref)` and the operator wants
+ * a process-env value to act as the universal fallback.
+ *
+ * Use case: kind / single-tenant deployments where the operator already
+ * supplies `ANTHROPIC_API_KEY` via the chart's Secret. The agent's
+ * `requiredCredentials.ANTHROPIC_API_KEY → 'anthropic-api'` would
+ * otherwise fail at proxy:open-session time because no admin has called
+ * `credentials:set` for this user yet. The fallback closes that gap.
+ *
+ * SECURITY: env values bypass the per-user credentials store. The same
+ * value is returned for EVERY user. This is fine for single-tenant kind
+ * dev where there's one admin user, but multi-tenant deployments MUST
+ * leave `envFallback` empty and seed credentials per-user via the
+ * credentials admin surface. The plugin warns at boot when fallback is
+ * configured to make the trade-off impossible to miss.
+ */
+export interface CredentialsPluginConfig {
+  envFallback?: Readonly<Record<string, string>>;
+}
+
+export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): Plugin {
+  const envFallback = config.envFallback ?? {};
   return {
     manifest: {
       name: PLUGIN_NAME,
@@ -228,6 +252,16 @@ export function createCredentialsPlugin(): Plugin {
           { blob: Uint8Array | undefined }
         >('credentials:store-blob:get', ctx, { userId, ref });
         if (got.blob === undefined) {
+          // Env fallback — single-tenant / kind-dev posture. See
+          // CredentialsPluginConfig.envFallback for the trade-off. We
+          // only fall through when there's no row at all; tombstones
+          // (deleted credentials) still throw not-found because that's
+          // a deliberate user action and must NOT fall back.
+          const envName = envFallback[ref];
+          if (envName !== undefined) {
+            const v = process.env[envName];
+            if (typeof v === 'string' && v.length > 0) return v;
+          }
           throw new PluginError({
             code: 'credential-not-found',
             plugin: PLUGIN_NAME,

@@ -186,6 +186,14 @@ export interface K8sPresetConfig {
     activeDeadlineSeconds?: number;
     readinessPollMs?: number;
     readinessTimeoutMs?: number;
+    /**
+     * Node-filesystem path that backs `/var/run/ax` in BOTH the host
+     * pod and every runner pod, so the credential-proxy's Unix socket
+     * + CA cert are reachable cross-pod. See sandbox-k8s/config.ts for
+     * the full security caveat. Empty / unset = no shared mount; the
+     * runner crashes at boot with `missing AX_PROXY_*`.
+     */
+    proxySocketHostPath?: string;
   };
   /**
    * IPC listener config — the host pod's @ax/ipc-http TCP listener that
@@ -333,7 +341,17 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // consumer-facing credentials:get/set/delete contract. Init throws if
   // AX_CREDENTIALS_KEY isn't in env.
   plugins.push(createCredentialsStoreDbPlugin());
-  plugins.push(createCredentialsPlugin());
+  // envFallback: the chart already plumbs ANTHROPIC_API_KEY into the
+  // host pod's env (from the operator-supplied Secret). Wire it as the
+  // universal fallback for the canonical `anthropic-api` ref so the
+  // kind goldenpath works without an extra "now go seed credentials"
+  // step. Multi-tenant deployments should leave this empty and seed
+  // per-user via the credentials admin surface (see SECURITY.md).
+  plugins.push(
+    createCredentialsPlugin({
+      envFallback: { 'anthropic-api': 'ANTHROPIC_API_KEY' },
+    }),
+  );
 
   // Phase 3 — Anthropic OAuth per-kind sub-services. Same load reasoning
   // as the CLI preset: purely additive, only dispatches when an agent
@@ -502,6 +520,9 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
       : {}),
     ...(config.sandbox?.readinessTimeoutMs !== undefined
       ? { readinessTimeoutMs: config.sandbox.readinessTimeoutMs }
+      : {}),
+    ...(config.sandbox?.proxySocketHostPath !== undefined
+      ? { proxySocketHostPath: config.sandbox.proxySocketHostPath }
       : {}),
   };
   plugins.push(createSandboxK8sPlugin(sandboxOpts));
@@ -750,8 +771,25 @@ export function loadK8sConfigFromEnv(
   if (env.K8S_POD_IMAGE !== undefined && env.K8S_POD_IMAGE !== '') {
     sandbox.image = env.K8S_POD_IMAGE;
   }
-  if (env.K8S_RUNTIME_CLASS !== undefined && env.K8S_RUNTIME_CLASS !== '') {
+  if (env.K8S_RUNTIME_CLASS !== undefined) {
+    // Empty string is meaningful: it means "no runtimeClassName in the
+    // pod spec" (the kind-dev posture). Skipping the assignment when
+    // empty would let sandbox-k8s/config.ts apply its `'gvisor'` default,
+    // which then 403s on a kind cluster without that RuntimeClass
+    // installed. The chart's `kind-dev-values.yaml` sets
+    // `sandbox.runtimeClassName: ""` precisely so this branch fires.
     sandbox.runtimeClassName = env.K8S_RUNTIME_CLASS;
+  }
+  if (
+    env.K8S_PROXY_SOCKET_HOST_PATH !== undefined &&
+    env.K8S_PROXY_SOCKET_HOST_PATH !== ''
+  ) {
+    // Node-filesystem path that the host pod also mounts at
+    // `/var/run/ax`. When set, runner pods get the same hostPath at the
+    // same in-pod mountpoint so the credential-proxy socket + CA cert
+    // are reachable cross-pod. Kind-only / single-node posture; see
+    // sandbox-k8s/config.ts for the SECURITY trade-off.
+    sandbox.proxySocketHostPath = env.K8S_PROXY_SOCKET_HOST_PATH;
   }
   if (env.K8S_IMAGE_PULL_SECRETS !== undefined && env.K8S_IMAGE_PULL_SECRETS !== '') {
     sandbox.imagePullSecrets = env.K8S_IMAGE_PULL_SECRETS.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
@@ -887,6 +925,18 @@ export function loadK8sConfigFromEnv(
   if (Object.keys(chat).length > 0) config.chat = chat;
   if (env.AX_PROXY_SOCKET_PATH !== undefined && env.AX_PROXY_SOCKET_PATH !== '') {
     config.credentialProxy = { socketPath: env.AX_PROXY_SOCKET_PATH };
+  }
+  if (env.AX_PROXY_CA_DIR !== undefined && env.AX_PROXY_CA_DIR !== '') {
+    // Where the credential-proxy stores its MITM root CA (`ca.crt` +
+    // `ca.key`). When the chart routes runner pods through the
+    // host-pod proxy via a shared hostPath, this MUST live inside that
+    // shared dir so runner pods can read `ca.crt` (read-only). See
+    // sandbox-k8s/pod-spec.ts for the matching mount + the
+    // `NODE_EXTRA_CA_CERTS=/var/run/ax/proxy-ca/ca.crt` env stamp.
+    config.credentialProxy = {
+      ...(config.credentialProxy ?? {}),
+      caDir: env.AX_PROXY_CA_DIR,
+    };
   }
   // Static-file serving for channel-web's SPA bundle. The chart's default
   // points this at `/opt/ax-next/host/web` — a stable path the agent

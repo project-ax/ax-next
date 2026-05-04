@@ -45,7 +45,16 @@ describe('setupProxy', () => {
       proxyEndpoint: 'http://127.0.0.1:54321',
     };
     const out = await setupProxy(env);
-    expect(out.anthropicEnv).toEqual({ ANTHROPIC_API_KEY: 'ax-cred:0123456789abcdef0123456789abcdef' });
+    // setupProxy now also stamps HTTPS_PROXY/HTTP_PROXY/NODE_OPTIONS so
+    // the SDK subprocess routes its outbound fetch through the bridge
+    // (see proxy-bootstrap.cjs). Pin the credential placeholder here;
+    // the proxy + bootstrap details are covered by their own assertions.
+    expect(out.anthropicEnv.ANTHROPIC_API_KEY).toBe(
+      'ax-cred:0123456789abcdef0123456789abcdef',
+    );
+    expect(out.anthropicEnv.HTTPS_PROXY).toBe('http://127.0.0.1:54321');
+    expect(out.anthropicEnv.HTTP_PROXY).toBe('http://127.0.0.1:54321');
+    expect(out.anthropicEnv.NODE_OPTIONS).toMatch(/--require=.*proxy-bootstrap\.cjs/);
     expect(out.anthropicEnv.ANTHROPIC_BASE_URL).toBeUndefined();
     expect(out.stop).toBeUndefined();
     // Direct mode: sandbox-subprocess set HTTPS_PROXY in the child env at
@@ -199,7 +208,15 @@ describe('setupProxy', () => {
         );
         expect(process.env.HTTPS_PROXY).toBe(process.env.HTTP_PROXY);
         // anthropicEnv carries the placeholder; no ANTHROPIC_BASE_URL.
-        expect(out.anthropicEnv).toEqual({ ANTHROPIC_API_KEY: 'ax-cred:fedcba9876543210fedcba9876543210' });
+        // Plus the proxy + NODE_OPTIONS bootstrap so the SDK subprocess
+        // routes its outbound fetch through the bridge.
+        expect(out.anthropicEnv.ANTHROPIC_API_KEY).toBe(
+          'ax-cred:fedcba9876543210fedcba9876543210',
+        );
+        expect(out.anthropicEnv.HTTPS_PROXY).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+        expect(out.anthropicEnv.HTTP_PROXY).toBe(out.anthropicEnv.HTTPS_PROXY);
+        expect(out.anthropicEnv.NODE_OPTIONS).toMatch(/--require=.*proxy-bootstrap\.cjs/);
+        expect(out.anthropicEnv.ANTHROPIC_BASE_URL).toBeUndefined();
       } finally {
         out.stop?.();
       }

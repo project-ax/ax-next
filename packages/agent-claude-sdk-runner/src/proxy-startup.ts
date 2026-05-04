@@ -25,7 +25,16 @@
 // the host), and forwards. The runner never sees the real key — that's I1.
 // ---------------------------------------------------------------------------
 
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { MissingEnvError, type RunnerEnv } from './env.js';
+
+// Path to the CJS bootstrap that the SDK subprocess loads via
+// NODE_OPTIONS=--require. Resolved relative to THIS file so it survives
+// pnpm hoisting and tsc dist layout (both ts → js sit next to the .cjs).
+function proxyBootstrapPath(): string {
+  return path.join(path.dirname(fileURLToPath(import.meta.url)), 'proxy-bootstrap.cjs');
+}
 
 export interface ProxyStartup {
   /**
@@ -62,6 +71,18 @@ export async function setupProxy(env: RunnerEnv): Promise<ProxyStartup> {
     const local = `http://127.0.0.1:${bridge.port}`;
     process.env.HTTP_PROXY = local;
     process.env.HTTPS_PROXY = local;
+
+    // Critical: Node's built-in fetch (undici) does NOT auto-honor
+    // HTTP_PROXY / HTTPS_PROXY env vars. Without setGlobalDispatcher
+    // pointing at a ProxyAgent, the Claude SDK's outbound fetch
+    // bypasses the bridge entirely — the SDK calls api.anthropic.com
+    // directly with the `ax-cred:<hex>` placeholder, the proxy never
+    // substitutes, and the upstream rejects with "Invalid API key".
+    // Library users that explicitly set their own dispatcher win;
+    // we only override the global, which the bare fetch() reads.
+    const { ProxyAgent, setGlobalDispatcher } = await import('undici');
+    setGlobalDispatcher(new ProxyAgent(local));
+
     stop = bridge.stop;
   }
 
@@ -71,7 +92,18 @@ export async function setupProxy(env: RunnerEnv): Promise<ProxyStartup> {
   // teardown (which can race the host's next session-spawn). The
   // try/catch here keeps that cleanup tight to the bridge's lifetime.
   try {
+    // Start from the runner's own env so PATH, HOME, TMPDIR, and the
+    // git-paranoid set survive into the SDK subprocess. The SDK
+    // builds the subprocess env from `query({ options: { env } })`
+    // exactly — keys not present here are NOT inherited from
+    // process.env. Without forwarding PATH, the SDK's Bash tool
+    // executes `ls` and gets exit code 127 (command not found).
+    // Per-session secret env vars (ANTHROPIC_API_KEY, AX_AUTH_TOKEN)
+    // are already inside the trust boundary of the runner pod.
     const anthropicEnv: Record<string, string> = {};
+    for (const [k, v] of Object.entries(process.env)) {
+      if (typeof v === 'string') anthropicEnv[k] = v;
+    }
     // sandbox-subprocess injected the envMap from proxy:open-session into
     // the child env, so process.env.ANTHROPIC_API_KEY already holds the
     // `ax-cred:<hex>` placeholder. We forward that through options.env so
@@ -96,6 +128,43 @@ export async function setupProxy(env: RunnerEnv): Promise<ProxyStartup> {
       );
     }
     anthropicEnv.ANTHROPIC_API_KEY = placeholder;
+
+    // Forward the proxy + NODE_OPTIONS=--require=<bootstrap> into the
+    // SDK subprocess so its undici dispatcher routes through the bridge
+    // too (see proxy-bootstrap.cjs for the full rationale). Only set
+    // when we're in bridge mode (proxyUnixSocket present) — subprocess
+    // sandbox already has HTTPS_PROXY in the child env from sandbox-
+    // subprocess and uses ProxyAgent on the parent dispatcher only,
+    // which the subprocess doesn't inherit either, but THAT path needs
+    // the same fix for the same reason. Wiring it for both is harmless.
+    if (env.proxyUnixSocket !== undefined || env.proxyEndpoint !== undefined) {
+      const proxyUrl = env.proxyEndpoint ?? process.env.HTTPS_PROXY;
+      if (proxyUrl !== undefined) {
+        anthropicEnv.HTTPS_PROXY = proxyUrl;
+        anthropicEnv.HTTP_PROXY = proxyUrl;
+      }
+      // Forward NODE_EXTRA_CA_CERTS / SSL_CERT_FILE so the subprocess
+      // trusts the credential-proxy's MITM root CA. Without these the
+      // TLS handshake to api.anthropic.com (the proxy presents its own
+      // cert during MITM) fails with `SSL certificate verification
+      // failed` — sandbox-k8s/pod-spec stamps these on the runner pod
+      // env but the SDK builds the subprocess env from `o6` (our
+      // anthropicEnv), NOT from the runner's process.env. Have to
+      // copy them explicitly.
+      if (process.env.NODE_EXTRA_CA_CERTS !== undefined) {
+        anthropicEnv.NODE_EXTRA_CA_CERTS = process.env.NODE_EXTRA_CA_CERTS;
+      }
+      if (process.env.SSL_CERT_FILE !== undefined) {
+        anthropicEnv.SSL_CERT_FILE = process.env.SSL_CERT_FILE;
+      }
+      // Append our --require to any caller-supplied NODE_OPTIONS so
+      // operators can still set their own (e.g. --max-old-space-size).
+      const existing = process.env.NODE_OPTIONS ?? '';
+      const requireFlag = `--require=${proxyBootstrapPath()}`;
+      anthropicEnv.NODE_OPTIONS = existing.length > 0
+        ? `${existing} ${requireFlag}`
+        : requireFlag;
+    }
 
     return stop !== undefined ? { anthropicEnv, stop } : { anthropicEnv };
   } catch (err) {

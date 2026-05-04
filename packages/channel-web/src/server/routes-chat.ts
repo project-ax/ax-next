@@ -319,13 +319,48 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
       // makeAgentContext provides (process.cwd) — the orchestrator's
       // resolution is not our concern, and overriding here would extend
       // the contract this PR is explicitly leaving alone for Task 16.
+      const placeholderSessionId = makeReqId();
       const agentInvokeCtx = makeAgentContext({
-        sessionId: makeReqId(),
+        sessionId: placeholderSessionId,
         agentId: body.agentId,
         userId,
         conversationId,
         reqId,
       });
+
+      // Bind reqId on the conversation row IMMEDIATELY (before the
+      // browser's SSE GET races us). The orchestrator's own bind
+      // happens after sandbox:open-session — that's seconds later for
+      // a fresh runner pod, and the browser's `EventSource(/api/chat/
+      // stream/:reqId)` arrives within microseconds of our 202. Without
+      // the early bind, the SSE handler's `conversations:get-by-req-id`
+      // returns not-found and the browser sees a 404, never retried,
+      // and the chat appears dead. We pass the placeholder sessionId;
+      // the orchestrator overwrites it with the real one once
+      // sandbox:open-session returns. Best-effort: bind failures fall
+      // through silently — the orchestrator's later bind retries.
+      if (bus.hasService('conversations:bind-session')) {
+        try {
+          await bus.call<
+            {
+              conversationId: string;
+              sessionId: string;
+              reqId: string;
+            },
+            unknown
+          >('conversations:bind-session', agentInvokeCtx, {
+            conversationId,
+            sessionId: placeholderSessionId,
+            reqId,
+          });
+        } catch (err) {
+          agentInvokeCtx.logger.warn('chat_bind_session_failed', {
+            plugin: PLUGIN_NAME,
+            conversationId,
+            err: err instanceof Error ? { name: err.name, message: err.message } : String(err),
+          });
+        }
+      }
 
       const message: AgentMessage = {
         role: 'user',

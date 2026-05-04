@@ -670,8 +670,18 @@ export function createOrchestrator(
           sessionId: ctx.sessionId,
           userId: ctx.userId,
           agentId: agent.id,
-          allowlist: agent.allowedHosts ?? [],
-          credentials: agent.requiredCredentials ?? {},
+          // Default to the api.anthropic.com allowlist + the canonical
+          // ANTHROPIC_API_KEY → 'anthropic-api' credential ref when the
+          // agent record carries no explicit per-row entries. The
+          // production agents plugin (`@ax/agents`) doesn't yet persist
+          // these fields; without a default the runner boots without an
+          // API key and crashes at proxy-startup with `missing
+          // ANTHROPIC_API_KEY`. Agents that DO declare entries override
+          // these wholesale.
+          allowlist: agent.allowedHosts ?? ['api.anthropic.com'],
+          credentials: agent.requiredCredentials ?? {
+            ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' },
+          },
         },
       );
       // Mark opened BEFORE endpointToProxyConfig — that helper throws on

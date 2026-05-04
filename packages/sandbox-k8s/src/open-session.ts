@@ -45,6 +45,21 @@ export const AgentConfigSchema = z.object({
   model: z.string(),
 });
 
+// ProxyConfig — see chat-orchestrator/src/orchestrator.ts for the
+// authoritative shape. Re-declared structurally here so this file stays
+// free of cross-package imports (Invariant I2). Both `endpoint` and
+// `unixSocketPath` are optional + mutually exclusive at construction
+// time (the orchestrator's `endpointToProxyConfig` enforces it). For
+// k8s today only `unixSocketPath` is meaningful — pod-spec mounts the
+// socket into the runner via hostPath. `endpoint` (TCP) is accepted
+// for forward-compat but currently unused on this side.
+export const ProxyConfigSchema = z.object({
+  endpoint: z.string().optional(),
+  unixSocketPath: z.string().optional(),
+  caCertPem: z.string().min(1),
+  envMap: z.record(z.string(), z.string()),
+});
+
 export const OpenSessionInputSchema = z.object({
   sessionId: z.string().min(1),
   workspaceRoot: z.string().regex(/^\//, 'workspaceRoot must be absolute'),
@@ -56,6 +71,14 @@ export const OpenSessionInputSchema = z.object({
       agentConfig: AgentConfigSchema,
     })
     .optional(),
+  /**
+   * Per-session credential-proxy blob from the orchestrator. When
+   * present, pod-spec stamps `AX_PROXY_*`, `NODE_EXTRA_CA_CERTS`, and
+   * the credential placeholder envMap onto the runner pod, plus mounts
+   * `config.proxySocketHostPath` (if set) at `/var/run/ax`. Unset =
+   * no credential-proxy loaded; runner will fail loud at boot.
+   */
+  proxyConfig: ProxyConfigSchema.optional(),
 });
 
 export type OpenSessionInput = z.input<typeof OpenSessionInputSchema>;
@@ -173,6 +196,20 @@ export function createOpenSession(deps: OpenSessionDeps) {
       runnerEndpoint: deps.config.hostIpcUrl,
       // ctx.requestId may be undefined in synthetic tests; pass through.
       requestId: ctx.reqId,
+      ...(input.proxyConfig !== undefined
+        ? {
+            proxyConfig: {
+              caCertPem: input.proxyConfig.caCertPem,
+              envMap: input.proxyConfig.envMap,
+              ...(input.proxyConfig.endpoint !== undefined
+                ? { endpoint: input.proxyConfig.endpoint }
+                : {}),
+              ...(input.proxyConfig.unixSocketPath !== undefined
+                ? { unixSocketPath: input.proxyConfig.unixSocketPath }
+                : {}),
+            },
+          }
+        : {}),
     }, deps.config);
 
     podLog.info('creating_pod', {

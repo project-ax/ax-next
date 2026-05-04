@@ -182,6 +182,15 @@ gitServer:
 # (you'll get a loud warning at host pod boot from the plugin).
 sandbox:
   runtimeClassName: gvisor
+  # Node-filesystem path that the host pod and every runner pod both
+  # mount at /var/run/ax. When set, the credential-proxy's Unix socket
+  # + MITM CA cert live here so runner pods can dial the proxy. When
+  # empty (the default), the host pod uses an emptyDir for the socket
+  # and runner pods CANNOT reach the proxy — the runner will crash at
+  # boot with `missing AX_PROXY_*`. Single-node / kind-only posture.
+  # Production should switch the proxy to TCP listen mode instead; see
+  # SECURITY.md.
+  proxySocketHostPath: ""
 
 # ─── PostgreSQL ──────────────────────────────────────────────────
 # Two modes:

@@ -99,8 +99,16 @@ FROM node:20-bookworm-slim AS runtime
 # is to pin to specific package versions once the image build pipeline
 # lands.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates tini \
+ && apt-get install -y --no-install-recommends ca-certificates tini git \
  && rm -rf /var/lib/apt/lists/*
+# `git` is needed by the host pod's @ax/ipc-core workspace.materialize
+# handler (it runs `git bundle` to seed the runner's /permanent dir at
+# session start) AND by runner pods themselves (they spawn `git` to
+# materialize and to ship per-turn diffs). The original Dockerfile
+# header noted git would live only in the storage-tier image; that's
+# now wrong — workspace.materialize runs on the host. Comment-only
+# header at the top of this file should be updated when that lands as
+# its own change.
 
 # Non-root user. The node:bookworm-slim base ships with a `node` user at
 # UID 1000; we drop it and create our own `axagent` so usernames in `ps`,

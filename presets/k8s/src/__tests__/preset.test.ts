@@ -473,6 +473,46 @@ describe('loadK8sConfigFromEnv', () => {
     });
   });
 
+  // Regression: empty K8S_RUNTIME_CLASS must be passed through as the
+  // empty string so sandbox-k8s/config.ts skips its `'gvisor'` default.
+  // The kind-dev posture sets `sandbox.runtimeClassName: ""` explicitly
+  // so runner pod creation doesn't 403 on a cluster without gVisor; if
+  // the preset treats empty as "unset", that intent is silently dropped.
+  it('honors an explicit empty K8S_RUNTIME_CLASS (kind-dev posture)', () => {
+    const cfg = loadK8sConfigFromEnv(
+      minRequired({ K8S_RUNTIME_CLASS: '' }),
+    );
+    expect(cfg.sandbox?.runtimeClassName).toBe('');
+  });
+
+  // Regression: the credential-proxy cross-pod hostPath posture is opt-in
+  // via K8S_PROXY_SOCKET_HOST_PATH. Without it the preset must NOT set
+  // sandbox.proxySocketHostPath (which would 1) make the host stamp
+  // proxy env on runner pods and 2) mount a non-existent hostPath).
+  it('reads K8S_PROXY_SOCKET_HOST_PATH into sandbox.proxySocketHostPath', () => {
+    const cfg = loadK8sConfigFromEnv(
+      minRequired({ K8S_PROXY_SOCKET_HOST_PATH: '/var/lib/ax-next-proxy' }),
+    );
+    expect(cfg.sandbox?.proxySocketHostPath).toBe('/var/lib/ax-next-proxy');
+  });
+
+  it('leaves proxySocketHostPath unset when K8S_PROXY_SOCKET_HOST_PATH is empty', () => {
+    const cfg = loadK8sConfigFromEnv(
+      minRequired({ K8S_PROXY_SOCKET_HOST_PATH: '' }),
+    );
+    expect(cfg.sandbox?.proxySocketHostPath).toBeUndefined();
+  });
+
+  // Regression: AX_PROXY_CA_DIR must end up on credentialProxy.caDir so
+  // the host writes its MITM root CA into the shared dir where the
+  // runner expects to read it (`/var/run/ax/proxy-ca/ca.crt`).
+  it('reads AX_PROXY_CA_DIR into credentialProxy.caDir', () => {
+    const cfg = loadK8sConfigFromEnv(
+      minRequired({ AX_PROXY_CA_DIR: '/var/run/ax/proxy-ca' }),
+    );
+    expect(cfg.credentialProxy?.caDir).toBe('/var/run/ax/proxy-ca');
+  });
+
   it('reads BIND_HOST and PORT into ipc.host/port', () => {
     const cfg = loadK8sConfigFromEnv(
       minRequired({ BIND_HOST: '127.0.0.1', PORT: '9090' }),
