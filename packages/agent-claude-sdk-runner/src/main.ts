@@ -158,15 +158,25 @@ export async function main(): Promise<number> {
   // upstream; falling through would silently desync the runner from the
   // host's view of the workspace lineage. Better to fail loud and let
   // the operator see the error.
+  // The materialize-time tip OID seeds parentVersion below. When the
+  // workspace already has prior history (any session beyond the first
+  // ever), this is the workspace's actual HEAD — not null. Sending
+  // null on the first commit-notify of a non-first session would make
+  // the host export the deterministic empty baseline whose tip
+  // doesn't match our local baseline ref, and the bundler would
+  // reject our thin bundle with "Repository lacks these prerequisite
+  // commits".
+  let initialBaselineCommit: string;
   try {
     const matResp = (await client.call(
       'workspace.materialize',
       {},
     )) as WorkspaceMaterializeResponse;
-    await materializeWorkspace({
+    const out = await materializeWorkspace({
       root: env.workspaceRoot,
       bundleBase64: matResp.bundleBytes,
     });
+    initialBaselineCommit = out.baselineCommit;
   } catch (err) {
     process.stderr.write(
       `runner: workspace.materialize failed: ${err instanceof Error ? err.message : String(err)}\n`,
@@ -222,8 +232,11 @@ export async function main(): Promise<number> {
   // and MCP writes the legacy path missed.
 
   // Tracks the last accepted workspace version so the host's optimistic-
-  // concurrency check sees a coherent lineage across turns.
-  let parentVersion: string | null = null;
+  // concurrency check sees a coherent lineage across turns. Initialized
+  // to the materialize-time baseline OID so the FIRST commit-notify of
+  // this session reports a parent that matches what the host's
+  // workspace-export-baseline-bundle hook will reproduce.
+  let parentVersion: string | null = initialBaselineCommit;
 
   // Phase C: bind the SDK's session_id to our conversation row.
   //

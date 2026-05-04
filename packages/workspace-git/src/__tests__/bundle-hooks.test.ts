@@ -631,6 +631,41 @@ describe('@ax/workspace-git bundle hooks (Phase 3)', () => {
     ).rejects.toThrow(/no commit at deadbeef/);
   });
 
+  it("export-baseline-bundle({version: <empty-baseline-oid>}) on empty repo returns the deterministic empty baseline", async () => {
+    // The legitimate counterpart to the unknown-oid case above: the
+    // first commit-notify of a session that materialized against an
+    // empty workspace passes parentVersion = the deterministic
+    // empty-baseline OID (the runner's pinned baseline tip). The host
+    // must reproduce a bundle with that exact tip — otherwise the
+    // bundler scratch repo would prereq-mismatch when applying the
+    // runner's thin bundle. The full end-to-end scenario is covered
+    // by ax-next-dev acceptance; this unit test pins the contract.
+    const sim = await simulateRunnerTurn({
+      turnPath: 'permanent/x.txt',
+      turnContent: 'unused',
+    });
+    const out = await h.bus.call<
+      WorkspaceExportBaselineBundleInput,
+      WorkspaceExportBaselineBundleOutput
+    >('workspace:export-baseline-bundle', h.ctx(), {
+      version: asWorkspaceVersion(sim.baselineCommit),
+    });
+    // Verify the bundle's tip OID matches the requested version.
+    const scratch = mkdtempSync(join(tmpdir(), 'ax-ws-bundle-empty-'));
+    try {
+      const bundlePath = join(scratch, 'b.bundle');
+      await fs.writeFile(bundlePath, Buffer.from(out.bundleBytes, 'base64'));
+      const cl = await run([
+        'clone', '--branch', 'main', bundlePath, scratch + '/clone',
+      ]);
+      expect(cl.code).toBe(0);
+      const head = await run(['-C', scratch + '/clone', 'rev-parse', 'HEAD']);
+      expect(head.stdout.trim()).toBe(sim.baselineCommit);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+
   it("export-baseline-bundle({version: <existing-oid>}) bundles the workspace state at that version", async () => {
     // First write something via the FileChange path to make sure
     // export works against state produced by workspace:apply (not just

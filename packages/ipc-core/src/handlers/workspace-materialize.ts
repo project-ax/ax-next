@@ -2,6 +2,8 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type {
+  WorkspaceExportBaselineBundleInput,
+  WorkspaceExportBaselineBundleOutput,
   WorkspaceListInput,
   WorkspaceListOutput,
   WorkspaceReadInput,
@@ -173,29 +175,46 @@ export const workspaceMaterializeHandler: ActionHandler = async (
     return validationError(`workspace.materialize: ${parsed.error.message}`);
   }
 
-  // List the workspace at HEAD. Empty list is fine — we still produce
-  // a bundle with an empty-tree baseline commit so the runner can
-  // bundle subsequent turns from a valid `baseline` ref.
-  const listed = await bus.call<WorkspaceListInput, WorkspaceListOutput>(
-    'workspace:list',
-    ctx,
-    {},
-  );
-
   let bundleBytes: string;
   try {
-    bundleBytes = await buildBaselineBundle({
-      paths: listed.paths,
-      read: async (path) => {
-        const r = await bus.call<WorkspaceReadInput, WorkspaceReadOutput>(
-          'workspace:read',
-          ctx,
-          { path },
-        );
-        if (!r.found) return null;
-        return Buffer.from(r.bytes);
-      },
-    });
+    if (bus.hasService('workspace:export-baseline-bundle')) {
+      // Bundle-aware backend (workspace-git-core, workspace-git-server, …):
+      // delegate so the bundle's tip OID equals the workspace's actual
+      // HEAD. The runner pins refs/heads/baseline at that OID; subsequent
+      // turn bundles ship `baseline..HEAD` with that OID as their prereq;
+      // commit-notify resolves the same OID via its own
+      // `workspace:export-baseline-bundle({version: parent})` call. Without
+      // this delegation, deterministic reconstruction would diverge from
+      // the workspace's real history and every multi-turn write would
+      // fail with "Repository lacks these prerequisite commits".
+      const out = await bus.call<
+        WorkspaceExportBaselineBundleInput,
+        WorkspaceExportBaselineBundleOutput
+      >('workspace:export-baseline-bundle', ctx, {});
+      bundleBytes = out.bundleBytes;
+    } else {
+      // Non-bundle backend: reconstruct deterministically from list +
+      // read. The bundle is still valid; the runner just can't ship
+      // bundle-wire writes (commit-notify rejects backends without
+      // export-baseline-bundle, so this path is read-only / probe).
+      const listed = await bus.call<WorkspaceListInput, WorkspaceListOutput>(
+        'workspace:list',
+        ctx,
+        {},
+      );
+      bundleBytes = await buildBaselineBundle({
+        paths: listed.paths,
+        read: async (path) => {
+          const r = await bus.call<WorkspaceReadInput, WorkspaceReadOutput>(
+            'workspace:read',
+            ctx,
+            { path },
+          );
+          if (!r.found) return null;
+          return Buffer.from(r.bytes);
+        },
+      });
+    }
   } catch (err) {
     // Bundle construction failures are sanitized to 500 — the underlying
     // git stderr can echo a temp path or filename, neither of which the

@@ -533,9 +533,14 @@ async function pushBundleTip(
  * with deterministic OID. Used when the workspace has no commits yet
  * (first apply against an empty storage tier) — same shape as the
  * materialize handler's empty-workspace bundle so the runner's
- * matching clone has the same baseline OID.
+ * matching clone has the same baseline OID. Returns both the bundle
+ * bytes and the tip OID so callers can validate that a caller-supplied
+ * version matches.
  */
-async function buildEmptyBaselineBundle(): Promise<string> {
+async function buildEmptyBaselineBundle(): Promise<{
+  bundleBytes: string;
+  oid: string;
+}> {
   const tmp = mkdtempSync(join(tmpdir(), 'ax-ws-empty-baseline-'));
   try {
     const init = await runGit(['init', '-b', 'main', tmp], {
@@ -558,6 +563,14 @@ async function buildEmptyBaselineBundle(): Promise<string> {
     if (commit.code !== 0) {
       throw new Error(`empty baseline commit failed: ${commit.stderr}`);
     }
+    const revParse = await runGit(
+      ['-C', tmp, 'rev-parse', 'main'],
+      { extraEnv: BASELINE_ENV },
+    );
+    if (revParse.code !== 0) {
+      throw new Error(`empty baseline rev-parse failed: ${revParse.stderr}`);
+    }
+    const oid = revParse.stdout.trim();
     // Bundle to a tempfile (NOT stdout) — runGit's utf8-decoded
     // stdout would mangle binary bundle bytes. The pack format
     // contains arbitrary binary data (deltas, blob bytes); we need
@@ -571,7 +584,7 @@ async function buildEmptyBaselineBundle(): Promise<string> {
       throw new Error(`empty baseline bundle failed: ${bundle.stderr}`);
     }
     const bytes = await readFile(bundlePath);
-    return bytes.toString('base64');
+    return { bundleBytes: bytes.toString('base64'), oid };
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
@@ -1033,13 +1046,19 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
         const callerParent =
           input.parent === null ? null : (input.parent as string);
 
-        // Same parent-mismatch shape as apply().
-        if (mirrorHead === null && callerParent !== null) {
-          throw parentMismatch(
-            'mirror has no commits; caller passed a non-null parent',
-            mirrorHead,
-          );
-        }
+        // Parent-CAS:
+        //   - mirror empty + callerParent null: first apply against empty
+        //     workspace. Allowed; we'll seed below.
+        //   - mirror empty + callerParent non-null: also allowed when
+        //     callerParent == baselineCommit == deterministic empty OID.
+        //     The runner pins parentVersion to the materialize-time tip
+        //     so subsequent-session writes line up with prior history;
+        //     when prior history was empty, that tip IS the deterministic
+        //     baseline OID, and the seededOid check below verifies it.
+        //   - mirror non-null + callerParent null: rejected — runner
+        //     thinks workspace is empty but it isn't.
+        //   - mirror non-null + callerParent non-null + mismatch:
+        //     rejected — concurrent-writer race.
         if (mirrorHead !== null && callerParent === null) {
           throw parentMismatch(
             'mirror has commits; caller passed parent: null',
@@ -1234,20 +1253,44 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
     return enqueue(workspaceId, async () => {
       guardClosed();
       if (input.version === null) {
-        // No commits yet — return the deterministic empty baseline.
-        // No mirror access needed.
-        return { bundleBytes: await buildEmptyBaselineBundle() };
+        // Explicit seed condition: ALWAYS the deterministic empty
+        // baseline, regardless of mirror state. No mirror access
+        // needed.
+        const { bundleBytes } = await buildEmptyBaselineBundle();
+        return { bundleBytes };
       }
-      // Need the commit in our mirror cache. ensureRepoCreated +
-      // fetchMirror keeps us in sync with the storage tier.
+      // version=undefined: bundle the mirror's CURRENT HEAD; if there
+      // are no commits yet, degrade to deterministic empty baseline.
+      // version=oid: bundle that exact commit. Both paths need the
+      // mirror in sync with the storage tier.
       const remoteUrl = remoteUrlFor(opts.baseUrl, workspaceId);
       return opts.mirrorCache.withMirror(workspaceId, async (handle) => {
         await ensureRepoCreated(workspaceId);
         await fetchMirror(remoteUrl, opts.token, handle.dir);
-        const bundleBytes = await exportMirrorBundle(
-          handle.dir,
-          input.version as string,
-        );
+        const head = await currentMirrorOid(handle.dir);
+        // If the mirror is empty (no commits in storage yet), only the
+        // deterministic empty-baseline OID is a valid version (the only
+        // tip a prior caller could have observed). undefined → return
+        // empty baseline; <empty-baseline-oid> → return empty baseline;
+        // any other oid → throw (genuine misuse: forged oid or
+        // wrong-workspace baseline). Matters for the FIRST commit-notify
+        // of a session that materialized against an empty workspace,
+        // which legitimately passes parentVersion = empty-baseline-oid.
+        if (head === null) {
+          const empty = await buildEmptyBaselineBundle();
+          if (input.version !== undefined && input.version !== empty.oid) {
+            throw new Error(
+              `no commit at ${input.version} in empty workspace (expected ${empty.oid} or null)`,
+            );
+          }
+          return { bundleBytes: empty.bundleBytes };
+        }
+        // Mirror non-empty: undefined → bundle HEAD; oid → bundle that
+        // oid (exportMirrorBundle verifies oid == HEAD and throws on
+        // mismatch — that's a real concurrent-writer race, not the
+        // empty-seed case).
+        const oid = input.version === undefined ? head : (input.version as string);
+        const bundleBytes = await exportMirrorBundle(handle.dir, oid);
         return { bundleBytes };
       });
     });

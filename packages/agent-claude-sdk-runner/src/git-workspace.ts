@@ -98,7 +98,9 @@ export interface MaterializeInput {
  * target). Bootstrap-fatal — the runner can't proceed without a clean
  * workspace.
  */
-export async function materializeWorkspace(input: MaterializeInput): Promise<void> {
+export async function materializeWorkspace(
+  input: MaterializeInput,
+): Promise<{ baselineCommit: string }> {
   const { root, bundleBase64 } = input;
 
   if (bundleBase64 === '') {
@@ -146,6 +148,19 @@ export async function materializeWorkspace(input: MaterializeInput): Promise<voi
       await runGit(['-C', root, 'update-ref', 'refs/heads/baseline', 'HEAD']),
       'git update-ref refs/heads/baseline',
     );
+    // Resolve the baseline OID for the caller. The runner uses this to
+    // initialize parentVersion for its first commit-notify call: when
+    // the workspace has prior history, parentVersion=null on the first
+    // turn would cause commit-notify to export the deterministic empty
+    // baseline (tip≠HEAD), and the bundler scratch repo would reject
+    // the runner's thin bundle with "Repository lacks these prerequisite
+    // commits". The fix is to thread the materialize-time tip OID
+    // through to the first commit-notify so the host can resolve the
+    // matching baseline bundle.
+    const head = await runGit(['-C', root, 'rev-parse', 'refs/heads/baseline']);
+    await expectOk(head, 'git rev-parse refs/heads/baseline');
+    const baselineCommit = head.stdout.toString('utf8').trim();
+    return { baselineCommit };
   } finally {
     // Best-effort cleanup of the bundle file. If unlink fails (e.g.,
     // already gone), nothing depends on it.
