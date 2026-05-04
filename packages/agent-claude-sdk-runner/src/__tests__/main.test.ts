@@ -89,7 +89,7 @@ vi.mock('../inbox-loop.js', async (importOriginal) => {
 // against real tempdirs + git binary; the workspace-commit-notify
 // handler tests cover the host-side bundler. This file focuses on
 // main.ts's control-flow shape (env → boot → SDK loop → events).
-const materializeMock = vi.fn().mockResolvedValue(undefined);
+const materializeMock = vi.fn().mockResolvedValue({ baselineCommit: 'mock-baseline-oid' });
 const commitTurnAndBundleMock = vi.fn().mockResolvedValue(null);
 const advanceBaselineMock = vi.fn().mockResolvedValue(undefined);
 const rollbackToBaselineMock = vi.fn().mockResolvedValue(undefined);
@@ -284,7 +284,7 @@ const cancelEntry: InboxLoopEntry = { type: 'cancel' };
 beforeEach(() => {
   queryMock.mockReset();
   materializeMock.mockReset();
-  materializeMock.mockResolvedValue(undefined);
+  materializeMock.mockResolvedValue({ baselineCommit: 'mock-baseline-oid' });
   commitTurnAndBundleMock.mockReset();
   commitTurnAndBundleMock.mockResolvedValue(null);
   advanceBaselineMock.mockReset();
@@ -516,8 +516,15 @@ describe('main()', () => {
       (c) => c[0] === 'workspace.commit-notify',
     );
     expect(commitCalls).toHaveLength(1);
+    // parentVersion is the materialize-time baselineCommit, not null.
+    // The runner threads the materialized OID through so the host's
+    // export-baseline-bundle({version: parent}) reproduces a bundle
+    // whose tip matches the runner's local baseline ref. Without this,
+    // the FIRST commit-notify of a session whose workspace already has
+    // history fails with "Repository lacks these prerequisite commits"
+    // (see the materialize/commit-notify OID-drift fix).
     expect(commitCalls[0]?.[1]).toEqual({
-      parentVersion: null,
+      parentVersion: 'mock-baseline-oid',
       reason: 'turn',
       bundleBytes: 'FAKE_BUNDLE_B64',
     });

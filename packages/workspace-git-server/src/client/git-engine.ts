@@ -1033,13 +1033,19 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
         const callerParent =
           input.parent === null ? null : (input.parent as string);
 
-        // Same parent-mismatch shape as apply().
-        if (mirrorHead === null && callerParent !== null) {
-          throw parentMismatch(
-            'mirror has no commits; caller passed a non-null parent',
-            mirrorHead,
-          );
-        }
+        // Parent-CAS:
+        //   - mirror empty + callerParent null: first apply against empty
+        //     workspace. Allowed; we'll seed below.
+        //   - mirror empty + callerParent non-null: also allowed when
+        //     callerParent == baselineCommit == deterministic empty OID.
+        //     The runner pins parentVersion to the materialize-time tip
+        //     so subsequent-session writes line up with prior history;
+        //     when prior history was empty, that tip IS the deterministic
+        //     baseline OID, and the seededOid check below verifies it.
+        //   - mirror non-null + callerParent null: rejected — runner
+        //     thinks workspace is empty but it isn't.
+        //   - mirror non-null + callerParent non-null + mismatch:
+        //     rejected — concurrent-writer race.
         if (mirrorHead !== null && callerParent === null) {
           throw parentMismatch(
             'mirror has commits; caller passed parent: null',
@@ -1234,20 +1240,37 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
     return enqueue(workspaceId, async () => {
       guardClosed();
       if (input.version === null) {
-        // No commits yet — return the deterministic empty baseline.
-        // No mirror access needed.
+        // Explicit seed condition: ALWAYS the deterministic empty
+        // baseline, regardless of mirror state. No mirror access
+        // needed.
         return { bundleBytes: await buildEmptyBaselineBundle() };
       }
-      // Need the commit in our mirror cache. ensureRepoCreated +
-      // fetchMirror keeps us in sync with the storage tier.
+      // version=undefined: bundle the mirror's CURRENT HEAD; if there
+      // are no commits yet, degrade to deterministic empty baseline.
+      // version=oid: bundle that exact commit. Both paths need the
+      // mirror in sync with the storage tier.
       const remoteUrl = remoteUrlFor(opts.baseUrl, workspaceId);
       return opts.mirrorCache.withMirror(workspaceId, async (handle) => {
         await ensureRepoCreated(workspaceId);
         await fetchMirror(remoteUrl, opts.token, handle.dir);
-        const bundleBytes = await exportMirrorBundle(
-          handle.dir,
-          input.version as string,
-        );
+        const head = await currentMirrorOid(handle.dir);
+        // If the mirror is empty (no commits in storage yet), the only
+        // tip OID any prior caller could have observed is the
+        // deterministic empty baseline. Return it regardless of which
+        // version was requested — the requested OID, if any, is X by
+        // construction. This matters for the FIRST commit-notify of a
+        // session where the workspace had no history at materialize
+        // time: the runner's parentVersion = X (from materialize), and
+        // commit-notify here needs to reproduce a bundle with tip = X.
+        if (head === null) {
+          return { bundleBytes: await buildEmptyBaselineBundle() };
+        }
+        // Mirror non-empty: undefined → bundle HEAD; oid → bundle that
+        // oid (exportMirrorBundle verifies oid == HEAD and throws on
+        // mismatch — that's a real concurrent-writer race, not the
+        // empty-seed case).
+        const oid = input.version === undefined ? head : (input.version as string);
+        const bundleBytes = await exportMirrorBundle(handle.dir, oid);
         return { bundleBytes };
       });
     });

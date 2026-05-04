@@ -153,12 +153,22 @@ export type WorkspaceApplyBundleOutput = WorkspaceApplyOutput;
 
 export interface WorkspaceExportBaselineBundleInput {
   /**
-   * Workspace version to bundle. `null` means "the workspace's state
-   * BEFORE any apply" — the hook returns a deterministic empty-tree
-   * baseline. For non-null values, the hook bundles whatever's at
-   * that version in the workspace plugin's storage.
+   * Which workspace state to bundle:
+   *   - `undefined` (or omitted): the workspace's CURRENT HEAD. If the
+   *     workspace has no commits yet, the hook returns the same
+   *     deterministic empty-tree baseline as the `null` case. Used by
+   *     `workspace.materialize` — the runner needs a bundle whose tip
+   *     OID matches the workspace's actual HEAD, so its first thin
+   *     bundle's prereq lines up with what `commit-notify` will fetch
+   *     via `workspace:export-baseline-bundle({version: parent})`.
+   *   - `null`: the seed condition — ALWAYS the deterministic empty-tree
+   *     baseline, regardless of current state. Used by `commit-notify`
+   *     when the runner reports `parentVersion: null` (first apply).
+   *   - `<oid>`: bundle whatever's at that exact version in the
+   *     workspace plugin's storage. Used by `commit-notify` for
+   *     subsequent applies (`parent` is the runner's prior tip).
    */
-  version: WorkspaceVersion | null;
+  version?: WorkspaceVersion | null;
 }
 
 export interface WorkspaceExportBaselineBundleOutput {

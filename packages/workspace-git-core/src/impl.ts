@@ -893,21 +893,33 @@ export function registerWorkspaceGitHooks(
     'workspace:export-baseline-bundle',
     PLUGIN_NAME,
     async (_ctx, input) => {
-      // version=null is the seed-condition path: the workspace has no
-      // commits in storage yet, so we ship a deterministic empty
-      // baseline bundle whose tip OID matches the runner's
-      // first-thin-bundle prereq by construction. No mutex needed —
-      // the bundle is built from a temp scratch repo, not from the
-      // bare repo.
+      // version=null: explicit seed condition — ALWAYS deterministic
+      // empty baseline, regardless of current state. No mutex needed
+      // (built from a temp scratch repo).
       if (input.version === null) {
         return { bundleBytes: await buildEmptyBaselineBundle() };
       }
-      // version=oid: bundle the bare repo's state at that oid. The
-      // mutex serializes against concurrent applies so HEAD doesn't
-      // shift between the version check and the bundle.
+      // Otherwise (version=undefined or version=<oid>): we need to
+      // bundle either the current HEAD or that exact oid. The mutex
+      // serializes against concurrent applies so HEAD doesn't shift
+      // between the version check and the bundle.
       return mutex.run(async () => {
         await ensureRepo(gitdir);
-        const bundleBytes = await exportBundleAt(gitdir, input.version as string);
+        const head = await resolveHead(gitdir);
+        // Empty bare repo: degrade to the deterministic empty baseline
+        // regardless of which version was requested. The requested oid,
+        // if any, is the deterministic empty OID by construction
+        // (the only tip a prior caller could have observed on an
+        // empty repo). Matters for the first commit-notify of a
+        // session that materialized against an empty workspace.
+        if (head === null) {
+          return { bundleBytes: await buildEmptyBaselineBundle() };
+        }
+        // Repo non-empty: undefined → bundle HEAD; oid → bundle that
+        // oid (exportBundleAt throws on mismatch, surfacing a real
+        // concurrent-writer race rather than the empty-seed case).
+        const oid = input.version === undefined ? head : (input.version as string);
+        const bundleBytes = await exportBundleAt(gitdir, oid);
         return { bundleBytes };
       });
     },
@@ -923,13 +935,19 @@ export function registerWorkspaceGitHooks(
         const currentVersion: WorkspaceVersion | null =
           currentOid === null ? null : asWorkspaceVersion(currentOid);
 
-        // Same parent-CAS as workspace:apply.
-        if (input.parent !== currentVersion) {
+        // Parent-CAS:
+        //   - repo empty: parent may be null (first apply) OR the
+        //     deterministic empty-baseline OID (the runner's
+        //     materialize-time tip on a previously-empty workspace).
+        //     The seededOid check below verifies OID equality when
+        //     non-null.
+        //   - repo non-empty: parent MUST match currentVersion.
+        if (currentVersion !== null && input.parent !== currentVersion) {
           throw new PluginError({
             code: 'parent-mismatch',
             plugin: PLUGIN_NAME,
             hookName: 'workspace:apply-bundle',
-            message: `expected parent ${currentVersion === null ? 'null' : currentVersion}, got ${input.parent === null ? 'null' : input.parent}`,
+            message: `expected parent ${currentVersion}, got ${input.parent === null ? 'null' : input.parent}`,
           });
         }
 

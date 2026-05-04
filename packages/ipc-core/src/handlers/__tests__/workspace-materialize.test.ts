@@ -9,8 +9,11 @@ import {
   makeAgentContext,
   type AgentContext,
   type FileChange,
+  type Plugin,
   type WorkspaceApplyInput,
   type WorkspaceApplyOutput,
+  type WorkspaceExportBaselineBundleInput,
+  type WorkspaceExportBaselineBundleOutput,
 } from '@ax/core';
 import { createMockWorkspacePlugin } from '@ax/test-harness';
 import {
@@ -284,5 +287,131 @@ describe('workspace.materialize handler', () => {
     const errBody = result.body as { error: { code: string; message: string } };
     expect(errBody.error.code).toBe('VALIDATION');
     expect(errBody.error.message).toContain('workspace.materialize');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// workspace.materialize handler — bundle-aware backend integration
+//
+// When the registered workspace backend implements
+// `workspace:export-baseline-bundle`, materialize MUST delegate to it
+// instead of reconstructing a deterministic baseline from list+read.
+//
+// Why: the runner unpacks the bundle and pins refs/heads/baseline at
+// the bundle's tip OID. That OID becomes the prereq for every thin
+// bundle the runner ships back. Commit-notify reconstructs the same
+// baseline by calling `workspace:export-baseline-bundle({version: parent})`.
+// If the two OIDs disagree (deterministic-X vs workspace-actual-HEAD),
+// commit-notify rejects every multi-turn write with "Repository lacks
+// these prerequisite commits" — silently dropping the runner's commits.
+//
+// Bundle-aware backends register the hook; non-bundle backends don't.
+// Materialize probes via `bus.hasService` and falls back to the
+// deterministic reconstruction when absent.
+// ---------------------------------------------------------------------------
+describe('workspace.materialize handler — bundle-aware backend', () => {
+  /**
+   * Probe plugin that registers list/read returning ONE file ('a.txt'
+   * = 'A') AND export-baseline-bundle returning a sentinel bundle.
+   * The deterministic-reconstruction path would produce a real bundle
+   * containing 'a.txt'; the export hook returns the sentinel. Test
+   * verifies materialize emits the sentinel.
+   */
+  function createProbePlugin(opts: {
+    sentinelBundleB64: string;
+    onExport: (input: WorkspaceExportBaselineBundleInput) => void;
+  }): Plugin {
+    return {
+      manifest: {
+        name: '@ax/test-probe-bundle-backend',
+        version: '0.0.0',
+        registers: [
+          'workspace:list',
+          'workspace:read',
+          'workspace:export-baseline-bundle',
+        ],
+        calls: [],
+        subscribes: [],
+      },
+      init({ bus }) {
+        bus.registerService('workspace:list', '@ax/test-probe-bundle-backend', async () => ({
+          paths: ['a.txt'],
+        }));
+        bus.registerService('workspace:read', '@ax/test-probe-bundle-backend', async () => ({
+          found: true,
+          bytes: enc.encode('A'),
+        }));
+        bus.registerService<
+          WorkspaceExportBaselineBundleInput,
+          WorkspaceExportBaselineBundleOutput
+        >(
+          'workspace:export-baseline-bundle',
+          '@ax/test-probe-bundle-backend',
+          async (_ctx, input) => {
+            opts.onExport(input);
+            return { bundleBytes: opts.sentinelBundleB64 };
+          },
+        );
+      },
+    };
+  }
+
+  it("delegates to workspace:export-baseline-bundle when the hook is registered", async () => {
+    // Build a real, valid sentinel bundle so we can verify materialize
+    // returns its bytes verbatim. The contents don't matter; only that
+    // they aren't what buildBaselineBundle would have produced.
+    const sentinelBundleB64 = await buildBaselineBundle({
+      paths: ['SENTINEL.txt'],
+      read: async () => Buffer.from('sentinel-marker'),
+    });
+
+    let exportCalls = 0;
+    let lastExportInput: WorkspaceExportBaselineBundleInput | undefined;
+    const probe = createProbePlugin({
+      sentinelBundleB64,
+      onExport: (input) => {
+        exportCalls++;
+        lastExportInput = input;
+      },
+    });
+
+    const bus = new HookBus();
+    await bootstrap({ bus, plugins: [probe], config: {} });
+    const ctx = makeAgentContext({
+      sessionId: 'wm-bundle-test',
+      agentId: 'wm-agent',
+      userId: 'wm-user',
+    });
+
+    const result = await workspaceMaterializeHandler({}, ctx, bus);
+    expect(result.status).toBe(200);
+    const bundleBytes = (result.body as { bundleBytes: string }).bundleBytes;
+
+    expect(exportCalls).toBe(1);
+    // version: undefined → "current HEAD". Materialize doesn't know the
+    // OID, so it leaves the field unset and lets the backend decide.
+    expect(lastExportInput?.version).toBeUndefined();
+    expect(bundleBytes).toBe(sentinelBundleB64);
+
+    // The sentinel's tree should contain SENTINEL.txt — the
+    // deterministic-reconstruction path (which would have produced a
+    // bundle with 'a.txt') is NOT invoked.
+    const unpacked = await unpackBundle(bundleBytes);
+    expect(unpacked.files).toEqual({ 'SENTINEL.txt': 'sentinel-marker' });
+  });
+
+  it("falls back to deterministic reconstruction when export-baseline-bundle is NOT registered", async () => {
+    // Vanilla MockWorkspace: only registers the four base hooks. The
+    // existing 'returns a clonable bundle reflecting the workspace HEAD'
+    // test already covers this path — this test pins the contract via a
+    // direct hasService probe to guard against accidental regressions.
+    const { bus, ctx } = await makeEnv();
+    expect(bus.hasService('workspace:export-baseline-bundle')).toBe(false);
+    const result = await workspaceMaterializeHandler({}, ctx, bus);
+    expect(result.status).toBe(200);
+    const bundleBytes = (result.body as { bundleBytes: string }).bundleBytes;
+    // Empty MockWorkspace → empty deterministic baseline (clonable, no files).
+    const unpacked = await unpackBundle(bundleBytes);
+    expect(unpacked.files).toEqual({});
   });
 });
