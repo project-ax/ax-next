@@ -44,6 +44,12 @@ workspace:
 sandbox:
   # kind doesn't ship gVisor. The plugin will WARN at boot.
   runtimeClassName: ""
+  # Single-node hostPath that bridges the host pod's credential-proxy
+  # socket + CA cert into every runner pod. Required for the kind
+  # goldenpath — without it the runner pod can't reach the proxy and
+  # crashes at boot with `missing AX_PROXY_*`. Real clusters should
+  # switch the proxy to TCP listen mode + Service.
+  proxySocketHostPath: "/var/lib/ax-next-proxy"
 
 postgres:
   external:

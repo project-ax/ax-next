@@ -10,7 +10,14 @@ import { MissingEnvError } from '../env.js';
 // Snapshot a few env vars setupProxy mutates so the test suite stays
 // deterministic — tests run sequentially in vitest by default but
 // process.env is process-global, so be defensive.
-const ENV_KEYS_TO_SAVE = ['HTTP_PROXY', 'HTTPS_PROXY', 'ANTHROPIC_API_KEY'] as const;
+const ENV_KEYS_TO_SAVE = [
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'ANTHROPIC_API_KEY',
+  'AX_AUTH_TOKEN',
+  'AX_RUNNER_ENDPOINT',
+  'AX_SESSION_ID',
+] as const;
 
 describe('setupProxy', () => {
   let savedEnv: Record<string, string | undefined> = {};
@@ -45,7 +52,20 @@ describe('setupProxy', () => {
       proxyEndpoint: 'http://127.0.0.1:54321',
     };
     const out = await setupProxy(env);
-    expect(out.anthropicEnv).toEqual({ ANTHROPIC_API_KEY: 'ax-cred:0123456789abcdef0123456789abcdef' });
+    // setupProxy now also stamps HTTPS_PROXY/HTTP_PROXY/NODE_OPTIONS so
+    // the SDK subprocess routes its outbound fetch through the bridge
+    // (see proxy-bootstrap.cjs). Pin the credential placeholder here;
+    // the proxy + bootstrap details are covered by their own assertions.
+    expect(out.anthropicEnv.ANTHROPIC_API_KEY).toBe(
+      'ax-cred:0123456789abcdef0123456789abcdef',
+    );
+    expect(out.anthropicEnv.HTTPS_PROXY).toBe('http://127.0.0.1:54321');
+    expect(out.anthropicEnv.HTTP_PROXY).toBe('http://127.0.0.1:54321');
+    // The bootstrap path is JSON.stringify-quoted so install paths with
+    // spaces don't split NODE_OPTIONS at the whitespace boundary.
+    expect(out.anthropicEnv.NODE_OPTIONS).toMatch(
+      /--require="[^"]*proxy-bootstrap\.cjs"/,
+    );
     expect(out.anthropicEnv.ANTHROPIC_BASE_URL).toBeUndefined();
     expect(out.stop).toBeUndefined();
     // Direct mode: sandbox-subprocess set HTTPS_PROXY in the child env at
@@ -95,6 +115,34 @@ describe('setupProxy', () => {
   // -------------------------------------------------------------------
   // Bridge mode — AX_PROXY_UNIX_SOCKET (k8s sandbox).
   // -------------------------------------------------------------------
+
+  // -------------------------------------------------------------------
+  // Capability minimization (I5): control-plane env vars must NOT be
+  // forwarded into the SDK subprocess. The Bash tool can spawn arbitrary
+  // commands the model requests; an `echo $AX_AUTH_TOKEN` would land the
+  // bearer in tool output → model context → assistant reply. A regression
+  // here is a real exfiltration path.
+  // -------------------------------------------------------------------
+
+  it('direct mode: does NOT forward AX_* control-plane env into the SDK subprocess', async () => {
+    process.env.ANTHROPIC_API_KEY = 'ax-cred:0123456789abcdef0123456789abcdef';
+    process.env.AX_AUTH_TOKEN = 'ipc-bearer-secret';
+    process.env.AX_RUNNER_ENDPOINT = 'http://host.internal:9090';
+    process.env.AX_SESSION_ID = 'sess-1234';
+    const env: RunnerEnv = {
+      runnerEndpoint: 'unix:///tmp/x.sock',
+      sessionId: 's',
+      authToken: 'ipc-bearer-secret',
+      workspaceRoot: '/ws',
+      proxyEndpoint: 'http://127.0.0.1:54321',
+    };
+    const out = await setupProxy(env);
+    expect(out.anthropicEnv.AX_AUTH_TOKEN).toBeUndefined();
+    expect(out.anthropicEnv.AX_RUNNER_ENDPOINT).toBeUndefined();
+    expect(out.anthropicEnv.AX_SESSION_ID).toBeUndefined();
+    // Sanity: PATH (allow-listed) IS forwarded so the Bash tool works.
+    expect(out.anthropicEnv.PATH).toBe(process.env.PATH);
+  });
 
   it('throws when both proxyEndpoint and proxyUnixSocket are set (mutually exclusive)', async () => {
     const env: RunnerEnv = {
@@ -199,7 +247,17 @@ describe('setupProxy', () => {
         );
         expect(process.env.HTTPS_PROXY).toBe(process.env.HTTP_PROXY);
         // anthropicEnv carries the placeholder; no ANTHROPIC_BASE_URL.
-        expect(out.anthropicEnv).toEqual({ ANTHROPIC_API_KEY: 'ax-cred:fedcba9876543210fedcba9876543210' });
+        // Plus the proxy + NODE_OPTIONS bootstrap so the SDK subprocess
+        // routes its outbound fetch through the bridge.
+        expect(out.anthropicEnv.ANTHROPIC_API_KEY).toBe(
+          'ax-cred:fedcba9876543210fedcba9876543210',
+        );
+        expect(out.anthropicEnv.HTTPS_PROXY).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+        expect(out.anthropicEnv.HTTP_PROXY).toBe(out.anthropicEnv.HTTPS_PROXY);
+        expect(out.anthropicEnv.NODE_OPTIONS).toMatch(
+          /--require="[^"]*proxy-bootstrap\.cjs"/,
+        );
+        expect(out.anthropicEnv.ANTHROPIC_BASE_URL).toBeUndefined();
       } finally {
         out.stop?.();
       }

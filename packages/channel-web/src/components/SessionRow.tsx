@@ -173,8 +173,9 @@ export function SessionRow({
       await fetch(`/api/chat/conversations/${encodeURIComponent(id)}`, {
         method: 'DELETE',
         // CSRF: same posture as the chat-flow POST. The host's CSRF
-        // subscriber accepts X-Requested-With OR same-Origin.
-        headers: { 'x-requested-with': 'ax-chat' },
+        // subscriber accepts the literal `ax-admin` value (see
+        // @ax/http-server csrf.ts) OR a same-Origin request.
+        headers: { 'x-requested-with': 'ax-admin' },
         credentials: 'include',
       });
     } catch (err) {

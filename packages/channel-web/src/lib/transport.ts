@@ -161,7 +161,10 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
       prepareSendMessagesRequest: async () => ({ body: {} }),
     });
     this.streamApi = opts.streamApi ?? '/api/chat/stream';
-    this.fetchImpl = opts.fetch ?? fetch;
+    // Bind to globalThis so the stored reference doesn't lose its Window
+    // receiver. Calling `this.fetchImpl(...)` with `this === transport`
+    // would otherwise throw `TypeError: Illegal invocation` in the browser.
+    this.fetchImpl = opts.fetch ?? globalThis.fetch.bind(globalThis);
     this.getConversationIdFn = opts.getConversationId;
     this.setConversationIdFn = opts.setConversationId;
     this.getAgentIdFn = opts.getAgentId;
@@ -216,10 +219,13 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        // CSRF: the host's CSRF subscriber accepts X-Requested-With OR
-        // same-Origin; this header is the cheapest path that works
-        // across same-origin and subdomain deployments.
-        'x-requested-with': 'ax-chat',
+        // CSRF: the host's CSRF subscriber accepts the literal value
+        // `ax-admin` for X-Requested-With OR a same-Origin request. The
+        // exact value is the contract (see @ax/http-server csrf.ts);
+        // browsers can't set custom headers on cross-origin simple
+        // requests without a CORS preflight, so any non-attacker caller
+        // can supply it.
+        'x-requested-with': 'ax-admin',
       },
       body: JSON.stringify(postBody),
       credentials: 'include',

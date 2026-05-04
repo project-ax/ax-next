@@ -245,6 +245,12 @@ describe('AxChatTransport sendMessages two-phase exchange', () => {
       agentId: 'agent-1',
       contentBlocks: [{ type: 'text', text: 'hi' }],
     });
+    // Regression: the http-server CSRF subscriber accepts the literal
+    // `ax-admin` value (csrf.ts BYPASS_VALUE). Sending any other value
+    // causes a 403 on every state-changing request when the cookie-only
+    // session can't satisfy the same-Origin rule.
+    const headers = (calls[0]?.init?.headers ?? {}) as Record<string, string>;
+    expect(headers['x-requested-with']).toBe('ax-admin');
   });
 
   test('preserves conversationId across messages within a thread', async () => {
@@ -341,5 +347,62 @@ describe('AxChatTransport sendMessages two-phase exchange', () => {
     expect(chunks.map((c) => c.type)).toEqual(['finish']);
     // No fetches issued.
     expect(calls).toHaveLength(0);
+  });
+
+  // Regression: the constructor previously stored the global `fetch`
+  // reference unbound (`opts.fetch ?? fetch`). Calling
+  // `this.fetchImpl(url, init)` then ran fetch with `this === transport`,
+  // which the browser's WebIDL binding rejects as
+  // `TypeError: Failed to execute 'fetch' on 'Window': Illegal invocation`.
+  // That made the chat UI fail silently — the message rendered locally
+  // but no POST ever fired. This test pins the binding by stubbing
+  // globalThis.fetch with a function that REQUIRES its receiver to be
+  // globalThis itself; if the transport stores it unbound, the call
+  // throws and the test fails.
+  test('default fetch is bound to globalThis (regression)', async () => {
+    const calls: Array<{ url: string; method: string }> = [];
+    const trueFetch = function (
+      this: unknown,
+      url: string,
+      init?: RequestInit,
+    ): Promise<Response> {
+      if (this !== globalThis) {
+        throw new TypeError(
+          "Failed to execute 'fetch' on 'Window': Illegal invocation",
+        );
+      }
+      calls.push({ url, method: init?.method ?? 'GET' });
+      if (url.includes('/api/chat/messages')) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ conversationId: 'c1', reqId: 'r1' }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
+        );
+      }
+      // Stream phase — empty body, immediate close.
+      return Promise.resolve(
+        new Response(sseStream(`data: {"reqId":"r1","done":true}\n\n`), {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        }),
+      );
+    };
+    const orig = globalThis.fetch;
+    // Cast through unknown — vitest doesn't widen RequestInfo to plain string.
+    globalThis.fetch = trueFetch as unknown as typeof fetch;
+    try {
+      const transport = new AxChatTransport({ getAgentId: () => 'agent-1' });
+      const stream = await transport.sendMessages({
+        messages: [
+          { id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] },
+        ],
+      } as unknown as Parameters<typeof transport.sendMessages>[0]);
+      await drain(stream);
+    } finally {
+      globalThis.fetch = orig;
+    }
+    expect(calls.map((c) => c.method)).toEqual(['POST', 'GET']);
+    expect(calls[0]?.url).toContain('/api/chat/messages');
   });
 });

@@ -193,4 +193,86 @@ describe('buildPodSpec', () => {
     expect(byName('GIT_COMMITTER_NAME')).toBe('ax-runner');
     expect(byName('GIT_COMMITTER_EMAIL')).toBe('ax-runner@example.com');
   });
+
+  // Phase 1a — credential-proxy cross-pod reach (k8s side).
+  describe('proxyConfig wiring', () => {
+    const proxyInput = {
+      ...baseInput,
+      proxyConfig: {
+        unixSocketPath: '/var/run/ax/proxy.sock',
+        caCertPem: '-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n',
+        envMap: {
+          ANTHROPIC_API_KEY: 'ax-cred:00000000000000000000000000000000',
+        },
+      },
+    };
+
+    it('stamps AX_PROXY_UNIX_SOCKET, NODE_EXTRA_CA_CERTS, SSL_CERT_FILE, and the placeholder envMap when proxyConfig is present', () => {
+      // Without these env vars the runner exits at boot with "missing
+      // required env: AX_PROXY_ENDPOINT or AX_PROXY_UNIX_SOCKET" — which
+      // is exactly how the kind goldenpath broke before this wiring.
+      const spec = buildPodSpec('p', proxyInput, baseResolved());
+      const env = (
+        spec.spec as { containers: Array<{ env: Array<{ name: string; value: string }> }> }
+      ).containers[0]!.env;
+      const byName = (n: string) => env.find((e) => e.name === n)?.value;
+      expect(byName('AX_PROXY_UNIX_SOCKET')).toBe('/var/run/ax/proxy.sock');
+      expect(byName('NODE_EXTRA_CA_CERTS')).toBe('/var/run/ax/proxy-ca/ca.crt');
+      expect(byName('SSL_CERT_FILE')).toBe('/var/run/ax/proxy-ca/ca.crt');
+      expect(byName('ANTHROPIC_API_KEY')).toBe(
+        'ax-cred:00000000000000000000000000000000',
+      );
+    });
+
+    it('mounts the proxy socket dir at /var/run/ax via hostPath when proxySocketHostPath is set', () => {
+      // The mount is what makes the host pod's Unix socket reachable
+      // from the runner pod — without it, the env stamps point at a
+      // path that doesn't exist inside the runner.
+      const cfg = resolveConfig({
+        hostIpcUrl: 'http://test-host:8080',
+        proxySocketHostPath: '/var/lib/ax-next-proxy',
+      });
+      const spec = buildPodSpec('p', proxyInput, cfg);
+      const containers = (
+        spec.spec as {
+          containers: Array<{
+            volumeMounts: Array<{ name: string; mountPath: string; readOnly?: boolean }>;
+          }>;
+          volumes: Array<{ name: string; hostPath?: { path: string; type: string } }>;
+        }
+      );
+      const mount = containers.containers[0]!.volumeMounts.find(
+        (m) => m.name === 'proxy-socket',
+      );
+      // RW (no readOnly): connect(2) to a Unix socket needs write
+      // access — a read-only mount silently blocks the runner-side
+      // bridge dial. See pod-spec.ts comment for the trade-off.
+      expect(mount).toEqual({
+        name: 'proxy-socket',
+        mountPath: '/var/run/ax',
+      });
+      const vol = (spec.spec as {
+        volumes: Array<{ name: string; hostPath?: { path: string; type: string } }>;
+      }).volumes.find((v) => v.name === 'proxy-socket');
+      expect(vol?.hostPath).toEqual({
+        path: '/var/lib/ax-next-proxy',
+        type: 'DirectoryOrCreate',
+      });
+    });
+
+    it('skips both the mount and the env when proxyConfig is absent (legacy posture)', () => {
+      // When @ax/credential-proxy isn't loaded (synthetic preset, tests),
+      // the orchestrator never calls proxy:open-session and never threads
+      // proxyConfig through. Pod-spec must NOT add the env stamps in
+      // that case — they'd point at paths that don't exist.
+      const spec = buildPodSpec('p', baseInput, baseResolved());
+      const env = (
+        spec.spec as { containers: Array<{ env: Array<{ name: string }> }> }
+      ).containers[0]!.env;
+      expect(env.find((e) => e.name === 'AX_PROXY_UNIX_SOCKET')).toBeUndefined();
+      expect(env.find((e) => e.name === 'NODE_EXTRA_CA_CERTS')).toBeUndefined();
+      const vols = (spec.spec as { volumes: Array<{ name: string }> }).volumes;
+      expect(vols.find((v) => v.name === 'proxy-socket')).toBeUndefined();
+    });
+  });
 });

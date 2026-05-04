@@ -14,17 +14,20 @@
   "bin": {
     "ax-claude-sdk-runner": "./dist/main.js"
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc --build",
-    "postbuild": "chmod +x dist/main.js",
+    "postbuild": "chmod +x dist/main.js && cp src/proxy-bootstrap.cjs dist/",
     "test": "vitest run",
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.2.119",
     "@ax/credential-proxy-bridge": "workspace:*",
     "@ax/ipc-protocol": "workspace:*",
-    "@anthropic-ai/claude-agent-sdk": "0.2.119",
+    "undici": "^6.25.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {

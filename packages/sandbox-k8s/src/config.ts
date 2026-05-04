@@ -59,6 +59,25 @@ export interface SandboxK8sConfig {
    * pull is failing — surfacing fast helps the operator notice.
    */
   readinessTimeoutMs?: number;
+  /**
+   * Node-filesystem path that backs `/var/run/ax` in BOTH the host pod
+   * and every runner pod, so the credential-proxy's Unix socket and CA
+   * certificate live in a directory readable from both sides.
+   *
+   * When set, every runner pod gets a `hostPath` volume at this node
+   * path mounted at `/var/run/ax`, and the runner env carries the
+   * proxy's socket path + the CA cert path so the SDK can reach the
+   * credential-proxy and trust its MITM certs. When unset, runner pods
+   * get NO proxy mount and crash at boot with "missing AX_PROXY_*" —
+   * which is the intended posture for presets that don't load
+   * `@ax/credential-proxy`.
+   *
+   * `hostPath` is a kind-only / single-node posture. Production deploys
+   * should switch the credential-proxy to TCP listen mode and reach it
+   * over a Service (the chart can grow a `credentialProxy.tcp` knob
+   * once that lands). Documented in SECURITY.md.
+   */
+  proxySocketHostPath?: string;
 }
 
 export interface ResolvedSandboxK8sConfig {
@@ -74,6 +93,8 @@ export interface ResolvedSandboxK8sConfig {
   activeDeadlineSeconds: number;
   readinessPollMs: number;
   readinessTimeoutMs: number;
+  /** See SandboxK8sConfig.proxySocketHostPath. Empty = unset. */
+  proxySocketHostPath: string;
 }
 
 export function resolveConfig(
@@ -99,6 +120,7 @@ export function resolveConfig(
     activeDeadlineSeconds: raw.activeDeadlineSeconds ?? 3600,
     readinessPollMs: raw.readinessPollMs ?? 250,
     readinessTimeoutMs: raw.readinessTimeoutMs ?? 60_000,
+    proxySocketHostPath: raw.proxySocketHostPath ?? '',
   };
   if (raw.imagePullSecrets !== undefined) {
     resolved.imagePullSecrets = raw.imagePullSecrets;

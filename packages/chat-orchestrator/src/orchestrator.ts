@@ -662,6 +662,33 @@ export function createOrchestrator(
     }
     let proxyConfig: ProxyConfig;
     let proxyOpened = false;
+    // Default to the api.anthropic.com allowlist + the canonical
+    // ANTHROPIC_API_KEY → 'anthropic-api' credential ref when the agent
+    // record carries no explicit per-row entries. The production agents
+    // plugin (`@ax/agents`) doesn't yet persist these fields; without a
+    // default the runner boots without an API key and crashes at
+    // proxy-startup with `missing ANTHROPIC_API_KEY`.
+    //
+    // Coupled defaults (all-or-nothing): a partially-populated agent
+    // record (e.g. allowedHosts:['api.openai.com'] but no
+    // requiredCredentials) used to mix and match — the OpenAI allowlist
+    // would land alongside the Anthropic credential ref, either
+    // over-permitting egress or breaking the agent's real provider.
+    // We fall back to the Anthropic pair only when BOTH fields are
+    // missing; a partial config raises loud at agent:invoke time as
+    // a structured outcome rather than at proxy-startup with a stale
+    // credential map.
+    const allowedHostsMissing = agent.allowedHosts === undefined;
+    const requiredCredsMissing = agent.requiredCredentials === undefined;
+    if (allowedHostsMissing !== requiredCredsMissing) {
+      const outcome: AgentOutcome = {
+        kind: 'terminated',
+        reason: 'agent-proxy-config-incomplete',
+      };
+      await bus.fire('chat:end', ctx, { outcome });
+      return outcome;
+    }
+    const useAnthropicDefaults = allowedHostsMissing; // and therefore both
     try {
       const opened = await bus.call<ProxyOpenSessionInput, ProxyOpenSessionOutput>(
         'proxy:open-session',
@@ -670,8 +697,12 @@ export function createOrchestrator(
           sessionId: ctx.sessionId,
           userId: ctx.userId,
           agentId: agent.id,
-          allowlist: agent.allowedHosts ?? [],
-          credentials: agent.requiredCredentials ?? {},
+          allowlist: useAnthropicDefaults
+            ? ['api.anthropic.com']
+            : agent.allowedHosts!,
+          credentials: useAnthropicDefaults
+            ? { ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' } }
+            : agent.requiredCredentials!,
         },
       );
       // Mark opened BEFORE endpointToProxyConfig — that helper throws on

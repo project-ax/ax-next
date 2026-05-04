@@ -77,6 +77,105 @@ describe('@ax/credentials plugin', () => {
     ).rejects.toMatchObject({ code: 'credential-not-found' });
   });
 
+  // Phase 1a — env fallback for the kind-dev posture. The k8s preset
+  // configures `envFallback: { 'anthropic-api': 'ANTHROPIC_API_KEY' }`
+  // so the runner can dial the credential-proxy without an admin
+  // having pre-seeded a per-user credential. Without this fallback
+  // the kind goldenpath fails at proxy:open-session with
+  // `credential-not-found`.
+  it('falls back to process.env when envFallback maps the ref', async () => {
+    const bus = new HookBus();
+    await bootstrap({
+      bus,
+      plugins: [
+        memStoragePlugin(),
+        createCredentialsStoreDbPlugin(),
+        createCredentialsPlugin({
+          envFallback: { 'anthropic-api': 'ANTHROPIC_API_KEY' },
+        }),
+      ],
+      config: {},
+    });
+    process.env.ANTHROPIC_API_KEY = 'sk-test-fallback';
+    try {
+      const got = await bus.call<{ ref: string; userId: string }, string>(
+        'credentials:get',
+        ctx(),
+        { ref: 'anthropic-api', userId: 'u' },
+      );
+      expect(got).toBe('sk-test-fallback');
+    } finally {
+      delete process.env.ANTHROPIC_API_KEY;
+    }
+  });
+
+  it('envFallback only kicks in when the store has no row (set wins)', async () => {
+    // A real credentials:set MUST take precedence — the env value is a
+    // fallback for the kind canary, never an override of operator-set
+    // credentials.
+    const bus = new HookBus();
+    await bootstrap({
+      bus,
+      plugins: [
+        memStoragePlugin(),
+        createCredentialsStoreDbPlugin(),
+        createCredentialsPlugin({
+          envFallback: { 'anthropic-api': 'ANTHROPIC_API_KEY' },
+        }),
+      ],
+      config: {},
+    });
+    process.env.ANTHROPIC_API_KEY = 'sk-from-env';
+    try {
+      await bus.call('credentials:set', ctx(), {
+        ref: 'anthropic-api',
+        userId: 'u',
+        kind: 'api-key',
+        payload: bytes('sk-from-store'),
+      });
+      const got = await bus.call<{ ref: string; userId: string }, string>(
+        'credentials:get',
+        ctx(),
+        { ref: 'anthropic-api', userId: 'u' },
+      );
+      expect(got).toBe('sk-from-store');
+    } finally {
+      delete process.env.ANTHROPIC_API_KEY;
+    }
+  });
+
+  it('envFallback does NOT override a tombstoned (deleted) credential', async () => {
+    // Deletion is a deliberate user action; falling back to env after
+    // delete would silently re-grant access.
+    const bus = new HookBus();
+    await bootstrap({
+      bus,
+      plugins: [
+        memStoragePlugin(),
+        createCredentialsStoreDbPlugin(),
+        createCredentialsPlugin({
+          envFallback: { 'anthropic-api': 'ANTHROPIC_API_KEY' },
+        }),
+      ],
+      config: {},
+    });
+    process.env.ANTHROPIC_API_KEY = 'sk-from-env';
+    try {
+      await bus.call('credentials:set', ctx(), {
+        ref: 'anthropic-api',
+        userId: 'u',
+        kind: 'api-key',
+        payload: bytes('sk-from-store'),
+      });
+      await bus.call('credentials:delete', ctx(), { ref: 'anthropic-api', userId: 'u' });
+      await expect(
+        bus.call('credentials:get', ctx(), { ref: 'anthropic-api', userId: 'u' }),
+      ).rejects.toMatchObject({ code: 'credential-not-found' });
+    } finally {
+      delete process.env.ANTHROPIC_API_KEY;
+    }
+  });
+
   it('credentials:delete removes the credential', async () => {
     const bus = new HookBus();
     await bootstrap({
