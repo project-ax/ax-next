@@ -94,52 +94,34 @@ host:
   env: []
 
 # ─── Workspace persistence ───────────────────────────────────────
-# `local` (the historical default): the host's `@ax/workspace-git` writes
-# directly to the PVC mounted inside the host pod at workspace.mountPath.
-# Single-replica only — two hosts would race for the same bare repo.
-# `http`: the host's `@ax/workspace-git-http` forwards every workspace op
-# over HTTP to the dedicated git-server pod, which is the unique writer.
-# Multi-replica capable. When `http`, set gitServer.enabled=true (and the
-# local PVC fields below stop mattering — they're not mounted).
-# `git-protocol`: the new sharded git-server tier (Phase 1 of the workspace
-# redesign — Phase 2 closes the host-side wiring). The host's
-# `@ax/workspace-git-server` plugin speaks smart-HTTP + REST to the
-# experimental StatefulSet via its ClusterIP Service. Multi-replica capable;
-# sharding is currently deferred (replicas: 1) but the storage tier is a
-# StatefulSet so future scale-out doesn't change the chart shape. When
-# `git-protocol`, the operator MUST also set `gitServer.enabled=true` AND
-# `gitServer.experimental.gitProtocol=true` — the chart fails fast at
-# template time if either is missing.
+# `local` (default): the host's `@ax/workspace-git` writes directly to
+# the PVC mounted inside the host pod at workspace.mountPath. Single-
+# replica only — two hosts mounting the same RWO PVC would race for the
+# same bare repo.
+# `git-protocol`: the host's `@ax/workspace-git-server` plugin speaks
+# smart-HTTP + REST to the dedicated git-server StatefulSet via its
+# ClusterIP Service. Multi-replica capable; sharding is currently deferred
+# (replicas: 1) but the storage tier is a StatefulSet so future scale-out
+# doesn't change the chart shape. When `git-protocol`, the operator MUST
+# also set `gitServer.enabled=true` (the chart fails fast at template time
+# if missing).
 workspace:
-  backend: local         # local | http | git-protocol
+  backend: local         # local | git-protocol
   storage: 10Gi
   storageClassName: ""   # empty → cluster default
   accessMode: ReadWriteOnce
   mountPath: /var/lib/ax-next/workspaces
 
-# ─── Git-server pod (workspace.backend: http only) ────────────────
-# Dedicated pod that owns the bare repo on a PVC. Every host replica talks
-# to it for workspace ops. ALWAYS replicas: 1 — adding more would re-
-# introduce the multi-writer race we're solving here. Not a knob.
+# ─── Git-server pod (workspace.backend: git-protocol only) ────────
+# Dedicated StatefulSet that owns the bare git repos on per-ordinal PVCs.
+# Every host replica talks to it for workspace ops. The earlier all-in-one
+# Deployment (served by `@ax/workspace-git-http`) was retired 2026-05-04;
+# this StatefulSet is the only tier now.
 gitServer:
-  enabled: false         # set true when workspace.backend == "http"
-  experimental:
-    # Toggle for the new sharded git-server tier (Phase 1 of the workspace
-    # redesign — see docs/plans/2026-05-01-workspace-redesign-design.md).
-    # When true AND gitServer.enabled=true, the chart renders a StatefulSet
-    # + headless Service + per-shard PVCs in addition to the legacy
-    # Deployment + ClusterIP. Production canary path; default OFF.
-    #
-    # Flipping this on alone (without `workspace.backend: git-protocol`)
-    # provisions the new StatefulSet + Service tier but does NOT route host
-    # traffic to it — the host pod keeps using the legacy backend. That's
-    # the canary-preflight posture: stand the new tier up, watch it idle,
-    # then flip `workspace.backend` to `git-protocol` to cut traffic over.
-    gitProtocol: false
+  enabled: false         # set true when workspace.backend == "git-protocol"
   # Number of storage-tier shards. Each shard is its own StatefulSet ordinal
   # with its own PVC. Pick at install time; changing it later requires
   # manual workspace migration (drain → rsync bare repos → flip traffic).
-  # Only consulted when experimental.gitProtocol=true.
   shards: 1
   port: 7780
   service:
@@ -160,9 +142,7 @@ gitServer:
     limits:
       cpu: 500m
       memory: 512Mi
-  # Same image as host + runners — bundled-binary pattern.
-  command: ["node", "/opt/ax-next/git-server/index.js"]
-  terminationGracePeriodSeconds: 60   # bumped from 30 — gives in-flight pushes more time to drain
+  terminationGracePeriodSeconds: 60   # gives in-flight pushes time to drain
   readinessProbe:
     httpGet:
       path: /healthz

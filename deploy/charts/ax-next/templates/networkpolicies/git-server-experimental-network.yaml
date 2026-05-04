@@ -1,4 +1,4 @@
-{{- if and .Values.networkPolicies.enabled .Values.gitServer.enabled .Values.gitServer.experimental.gitProtocol }}
+{{- if and .Values.networkPolicies.enabled .Values.gitServer.enabled }}
 {{/*
 Experimental git-server StatefulSet NetworkPolicy.
 

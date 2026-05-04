@@ -130,7 +130,6 @@ const PLUGINS_TO_DROP = new Set<string>([
   // Workspace plugins talk to a real git repo / git-server pod; the chat
   // path here doesn't exercise workspace ops. Drop them.
   '@ax/workspace-git',
-  '@ax/workspace-git-http',
   // Anthropic OAuth sub-service: we never dispatch an OAuth-keyed
   // credential because the test-proxy serves the runner directly without
   // touching credentials:resolve at all.

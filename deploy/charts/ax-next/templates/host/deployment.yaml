@@ -207,24 +207,16 @@ spec:
               value: {{ .Values.workspace.mountPath | quote }}
             {{- end }}
 
-            # Workspace backend selection. The host's plugin loader (Task 19)
-            # reads AX_WORKSPACE_BACKEND and registers the matching plugin.
+            # Workspace backend selection. The host's plugin loader reads
+            # AX_WORKSPACE_BACKEND and registers the matching plugin
+            # (@ax/workspace-git for `local`, @ax/workspace-git-server for
+            # `git-protocol`).
             - name: AX_WORKSPACE_BACKEND
               value: {{ .Values.workspace.backend | quote }}
-            {{- if eq .Values.workspace.backend "http" }}
-            - name: AX_WORKSPACE_GIT_HTTP_URL
-              value: {{ include "ax-next.gitServerServiceUrl" . | quote }}
-            - name: AX_WORKSPACE_GIT_HTTP_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "ax-next.gitServerAuthSecretName" . }}
-                  key: token
-            {{- else if eq .Values.workspace.backend "git-protocol" }}
-            # Phase 2 of workspace redesign: host's `@ax/workspace-git-server`
-            # plugin talks smart-HTTP + REST to the experimental StatefulSet
-            # via its ClusterIP Service. Bearer token is shared with the
-            # legacy tier (same Secret) so a canary cutover doesn't require
-            # rotating credentials.
+            {{- if eq .Values.workspace.backend "git-protocol" }}
+            # Host's `@ax/workspace-git-server` plugin talks smart-HTTP +
+            # REST to the dedicated git-server StatefulSet via its
+            # ClusterIP Service.
             - name: AX_WORKSPACE_GIT_SERVER_URL
               value: {{ include "ax-next.gitServerExperimentalServiceUrl" . | quote }}
             - name: AX_WORKSPACE_GIT_SERVER_TOKEN

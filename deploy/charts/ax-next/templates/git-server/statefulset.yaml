@@ -1,4 +1,4 @@
-{{- if and .Values.gitServer.enabled .Values.gitServer.experimental.gitProtocol }}
+{{- if .Values.gitServer.enabled }}
 {{/*
 Experimental sharded git-server StatefulSet (Phase 1 of workspace redesign).
 

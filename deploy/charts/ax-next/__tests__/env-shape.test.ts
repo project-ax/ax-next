@@ -41,6 +41,13 @@ const REQUIRED = [
   'credentials.key=test',
   '--set',
   'anthropic.apiKey=test',
+  // http-server cookie key (required since issue #39). Kind-dev-values
+  // sets this too, but renders without kind-dev need it explicitly.
+  '--set',
+  'http.cookieKey=0000000000000000000000000000000000000000000000000000000000000000',
+  // auth provider gate — chart fails template if no provider is set.
+  '--set',
+  'auth.devBootstrap.token=test-bootstrap',
 ];
 
 type K8sDoc = {
@@ -62,7 +69,7 @@ function helmTemplate(extraArgs: readonly string[]): K8sDoc[] {
   if (!HELM) throw new Error('helm not available');
   const out = execFileSync(
     HELM,
-    ['template', 'ax-test', chartDir, ...REQUIRED, ...extraArgs],
+    ['template', 'ax-test', chartDir, '--namespace', 'default', ...REQUIRED, ...extraArgs],
     {
       encoding: 'utf8',
       maxBuffer: 32 * 1024 * 1024,
@@ -169,6 +176,23 @@ describeIfHelm('host deployment env vs preset loader', () => {
     return dep;
   }
 
+  /**
+   * Render the host Deployment with the chart's default values only —
+   * no kind-dev overrides. Use for tests pinning production-shape
+   * behavior that kind-dev intentionally diverges from (e.g., the
+   * proxy-socket emptyDir).
+   */
+  function renderHostDeploymentDefaults(): K8sDoc {
+    const docs = helmTemplate([]);
+    const dep = docs.find(
+      (d) =>
+        d.kind === 'Deployment' &&
+        (d.metadata?.name ?? '').endsWith('-host'),
+    );
+    if (dep === undefined) throw new Error('host Deployment not found in render');
+    return dep;
+  }
+
   function envKeysOf(deployment: K8sDoc): Set<string> {
     const spec = deployment.spec as { template?: { spec?: { containers?: Array<{ env?: Array<{ name?: string }> }> } } };
     const container = spec?.template?.spec?.containers?.[0];
@@ -212,22 +236,27 @@ describeIfHelm('host deployment env vs preset loader', () => {
   });
 
   it('local workspace backend stamps AX_WORKSPACE_ROOT', () => {
-    const env = envKeysOf(renderHostDeployment());
+    // Override kind-dev-values' git-protocol back to local for this
+    // assertion. The kind cluster ships the git-server StatefulSet
+    // tier by default; local-backend coverage is a separate code path.
+    const env = envKeysOf(
+      renderHostDeployment(['--set', 'workspace.backend=local']),
+    );
     expect(env.has('AX_WORKSPACE_BACKEND')).toBe(true);
     expect(env.has('AX_WORKSPACE_ROOT')).toBe(true);
   });
 
-  it('http backend stamps AX_WORKSPACE_GIT_HTTP_URL + token', () => {
+  it('git-protocol backend stamps AX_WORKSPACE_GIT_SERVER_URL + token', () => {
     const env = envKeysOf(
       renderHostDeployment([
         '--set',
-        'workspace.backend=http',
+        'workspace.backend=git-protocol',
         '--set',
         'gitServer.enabled=true',
       ]),
     );
-    expect(env.has('AX_WORKSPACE_GIT_HTTP_URL')).toBe(true);
-    expect(env.has('AX_WORKSPACE_GIT_HTTP_TOKEN')).toBe(true);
+    expect(env.has('AX_WORKSPACE_GIT_SERVER_URL')).toBe(true);
+    expect(env.has('AX_WORKSPACE_GIT_SERVER_TOKEN')).toBe(true);
   });
 
   it('public-http port matches AX_HTTP_PORT env value', () => {
@@ -289,18 +318,7 @@ describeIfHelm('host deployment env vs preset loader', () => {
   it('default render: mounts an emptyDir at /var/run/ax for the credential-proxy socket', () => {
     // Render WITHOUT kind-dev-values so we exercise the
     // proxySocketHostPath-unset branch (production default).
-    // http.cookieKey is required by the chart but not relevant to this
-    // assertion — pass a stub to satisfy the validation.
-    const docs = helmTemplate([
-      '--set',
-      'http.cookieKey=' + '0'.repeat(64),
-    ]);
-    const dep = docs.find(
-      (d) =>
-        d.kind === 'Deployment' &&
-        (d.metadata?.name ?? '').endsWith('-host'),
-    );
-    if (dep === undefined) throw new Error('host Deployment not found in render');
+    const dep = renderHostDeploymentDefaults();
     const spec = dep.spec as {
       template?: {
         spec?: {
