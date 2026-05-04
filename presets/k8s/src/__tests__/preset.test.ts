@@ -182,10 +182,12 @@ describe('@ax/preset-k8s workspace backend selection', () => {
     expect(names.has('@ax/workspace-git')).toBe(false);
   });
 
-  it("both backends register the same workspace:* service hooks", () => {
-    // Invariant I1 reflex check: regardless of backend the kernel must see
-    // the same four service hooks. If a future refactor accidentally drops
-    // one from either plugin, this fails before bootstrap does.
+  it("each backend registers the workspace:* service hooks it claims to", () => {
+    // Reflex check: every backend must register the four base
+    // workspace:* hooks (apply/read/list/diff). Bundle-aware backends
+    // (`local`, `git-protocol`) additionally register the Phase 3
+    // bundle hooks; `http` is the legacy non-bundle path. If a refactor
+    // accidentally drops a hook, this fails before bootstrap does.
     const localPlugins = createK8sPlugins({
       ...stubConfig,
       workspace: { backend: 'local', repoRoot: '/tmp/preset-k8s-stub' },
@@ -205,7 +207,9 @@ describe('@ax/preset-k8s workspace backend selection', () => {
         .sort();
     expect(wsHooksFor(localPlugins)).toEqual([
       'workspace:apply',
+      'workspace:apply-bundle',
       'workspace:diff',
+      'workspace:export-baseline-bundle',
       'workspace:list',
       'workspace:read',
     ]);

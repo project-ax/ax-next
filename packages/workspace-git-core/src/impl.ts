@@ -1,5 +1,8 @@
-import { existsSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import * as fs from 'node:fs';
+import { readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import git from 'isomorphic-git';
 import picomatch from 'picomatch';
@@ -9,12 +12,16 @@ import {
   type Bytes,
   type FileChange,
   type HookBus,
+  type WorkspaceApplyBundleInput,
+  type WorkspaceApplyBundleOutput,
   type WorkspaceApplyInput,
   type WorkspaceApplyOutput,
   type WorkspaceChange,
   type WorkspaceDelta,
   type WorkspaceDiffInput,
   type WorkspaceDiffOutput,
+  type WorkspaceExportBaselineBundleInput,
+  type WorkspaceExportBaselineBundleOutput,
   type WorkspaceListInput,
   type WorkspaceListOutput,
   type WorkspaceReadInput,
@@ -45,6 +52,277 @@ const BOT_AUTHOR = {
 // the workspace contract is "path → bytes," nothing else.
 const FILE_MODE = '100644';
 const TREE_MODE = '040000';
+
+// ---------------------------------------------------------------------------
+// Phase 3 bundle hooks (workspace:export-baseline-bundle +
+// workspace:apply-bundle).
+//
+// The bundle wire ships git pack data between the runner and the host; both
+// hooks have git-vocabulary fields (`bundleBytes`, `baselineCommit`) per the
+// I1 trade-off documented in @ax/core/src/workspace.ts. They're optional
+// service hooks — non-bundle backends just don't register them. We register
+// them here so the local single-replica plugin can participate in
+// commit-notify alongside @ax/workspace-git-server.
+//
+// Why we shell out to the `git` binary for these (instead of staying inside
+// isomorphic-git like the four base hooks): isomorphic-git has no `bundle`
+// support — neither create nor verify nor fetch-from-bundle. The bundle
+// wire is the contract, and short of reimplementing the pack/bundle file
+// format ourselves, the only way to honor it is to call out to real git.
+// We isolate that call site to a single `runGit` helper with a locked-down
+// environment (no global config, no system config, fixed PATH) so the
+// existing fs-only capability surface only widens by the minimum needed.
+//
+// Determinism contract: the BASELINE_ENV constants below MUST match the
+// values used by @ax/workspace-git-server's BASELINE_ENV and @ax/ipc-core's
+// buildBaselineBundle. If they drift, the runner's first thin bundle's
+// prereq OID won't match what this backend reconstructs and apply-bundle
+// fails loud with an OID-mismatch. We deliberately duplicate the constants
+// rather than import (Invariant 2 — no cross-plugin imports).
+// ---------------------------------------------------------------------------
+
+const BASELINE_DATE = '1970-01-01T00:00:00Z';
+const AUTHOR_ENV = {
+  GIT_AUTHOR_NAME: 'ax-runner',
+  GIT_AUTHOR_EMAIL: 'ax-runner@example.com',
+  GIT_COMMITTER_NAME: 'ax-runner',
+  GIT_COMMITTER_EMAIL: 'ax-runner@example.com',
+} as const;
+const BASELINE_ENV = {
+  ...AUTHOR_ENV,
+  GIT_AUTHOR_DATE: BASELINE_DATE,
+  GIT_COMMITTER_DATE: BASELINE_DATE,
+} as const;
+
+// Locked-down env for git child processes. No global config, no system
+// config, no terminal prompts, fixed PATH. PATH is hard-coded so a CI
+// environment with a malicious `git` binary on $PATH can't subvert us.
+const GIT_PROCESS_ENV: NodeJS.ProcessEnv = {
+  GIT_CONFIG_NOSYSTEM: '1',
+  GIT_CONFIG_GLOBAL: '/dev/null',
+  GIT_TERMINAL_PROMPT: '0',
+  HOME: '/nonexistent',
+  PATH: '/usr/local/bin:/usr/bin:/bin',
+  ...AUTHOR_ENV,
+};
+
+interface GitResult {
+  code: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+function runGit(
+  args: readonly string[],
+  extraEnv?: NodeJS.ProcessEnv,
+): Promise<GitResult> {
+  return new Promise((resolve, reject) => {
+    const env: NodeJS.ProcessEnv = { ...GIT_PROCESS_ENV, ...(extraEnv ?? {}) };
+    const child = spawn('git', [...args], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const out: Buffer[] = [];
+    const err: Buffer[] = [];
+    child.stdout.on('data', (c: Buffer) => out.push(c));
+    child.stderr.on('data', (c: Buffer) => err.push(c));
+    child.once('error', reject);
+    child.once('close', (code) =>
+      resolve({
+        code,
+        stdout: Buffer.concat(out).toString('utf8'),
+        stderr: Buffer.concat(err).toString('utf8'),
+      }),
+    );
+  });
+}
+
+/**
+ * Build a self-contained git bundle of an empty-tree baseline commit
+ * with deterministic OID. Used when the workspace has no commits yet
+ * (first apply against an empty repo) — same shape as the materialize
+ * handler's empty-workspace bundle so the runner's matching clone has
+ * the same baseline OID.
+ */
+async function buildEmptyBaselineBundle(): Promise<string> {
+  const tmp = mkdtempSync(join(tmpdir(), 'ax-ws-git-empty-baseline-'));
+  try {
+    const init = await runGit(['init', '-b', 'main', tmp], BASELINE_ENV);
+    if (init.code !== 0) {
+      throw new Error(`empty baseline init failed: ${init.stderr}`);
+    }
+    const cfg = await runGit(
+      ['-C', tmp, 'config', 'core.fileMode', 'false'],
+      BASELINE_ENV,
+    );
+    if (cfg.code !== 0) {
+      throw new Error(`empty baseline config failed: ${cfg.stderr}`);
+    }
+    const commit = await runGit(
+      ['-C', tmp, 'commit', '--allow-empty', '-m', 'baseline'],
+      BASELINE_ENV,
+    );
+    if (commit.code !== 0) {
+      throw new Error(`empty baseline commit failed: ${commit.stderr}`);
+    }
+    // Bundle to a tempfile (not stdout) — runGit decodes stdout as utf8
+    // which would mangle binary pack bytes.
+    const bundlePath = join(tmp, 'baseline.bundle');
+    const bundle = await runGit(
+      ['-C', tmp, 'bundle', 'create', bundlePath, 'main'],
+      BASELINE_ENV,
+    );
+    if (bundle.code !== 0) {
+      throw new Error(`empty baseline bundle failed: ${bundle.stderr}`);
+    }
+    const bytes = await readFile(bundlePath);
+    return bytes.toString('base64');
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Bundle the bare repo's state at `oid` into a self-contained git bundle.
+ * Ships every commit reachable from `oid` plus a single ref
+ * `refs/heads/main` pointing at it.
+ *
+ * Caller invariant: `oid` MUST equal the bare repo's current
+ * refs/heads/main. The mutex around export-baseline-bundle guarantees no
+ * concurrent apply has advanced HEAD past `oid` between the version check
+ * and the bundle.
+ */
+async function exportBundleAt(gitdir: string, oid: string): Promise<string> {
+  const head = await runGit([
+    '-C', gitdir, 'rev-parse', '--verify', 'refs/heads/main',
+  ]);
+  if (head.code !== 0) {
+    throw new Error(`bare repo has no refs/heads/main: ${head.stderr}`);
+  }
+  const headOid = head.stdout.trim();
+  if (headOid !== oid) {
+    throw new Error(
+      `bare repo head ${headOid} does not match requested version ${oid}`,
+    );
+  }
+  const out = mkdtempSync(join(tmpdir(), 'ax-ws-git-export-bundle-'));
+  try {
+    const bundlePath = join(out, 'export.bundle');
+    const create = await runGit([
+      '-C', gitdir, 'bundle', 'create', bundlePath, 'main',
+    ]);
+    if (create.code !== 0) {
+      throw new Error(`bundle create failed: ${create.stderr}`);
+    }
+    const bytes = await readFile(bundlePath);
+    return bytes.toString('base64');
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Seed an empty bare repo with the deterministic empty-tree baseline
+ * commit. Used by apply-bundle when the repo has no commits yet — the
+ * runner's first thin bundle's prereq OID matches this commit's OID by
+ * construction (both built from the same shape: sorted paths, fixed
+ * dates, fixed author env, --allow-empty, core.fileMode=false).
+ *
+ * Returns the new commit's OID so the caller can verify it matches the
+ * runner's declared baselineCommit before fetching the bundle.
+ */
+async function seedBareWithEmptyBaseline(gitdir: string): Promise<string> {
+  const scratch = mkdtempSync(join(tmpdir(), 'ax-ws-git-baseline-seed-'));
+  try {
+    const init = await runGit(['init', '-b', 'main', scratch], BASELINE_ENV);
+    if (init.code !== 0) {
+      throw new Error(`baseline seed init failed: ${init.stderr}`);
+    }
+    const cfg = await runGit(
+      ['-C', scratch, 'config', 'core.fileMode', 'false'],
+      BASELINE_ENV,
+    );
+    if (cfg.code !== 0) {
+      throw new Error(`baseline seed config failed: ${cfg.stderr}`);
+    }
+    const commit = await runGit(
+      ['-C', scratch, 'commit', '--allow-empty', '-m', 'baseline'],
+      BASELINE_ENV,
+    );
+    if (commit.code !== 0) {
+      throw new Error(`baseline seed commit failed: ${commit.stderr}`);
+    }
+    const push = await runGit([
+      '-C', scratch, 'push', gitdir, 'main:refs/heads/main',
+    ]);
+    if (push.code !== 0) {
+      throw new Error(`baseline seed push failed: ${push.stderr}`);
+    }
+    const rp = await runGit(['-C', scratch, 'rev-parse', 'HEAD']);
+    if (rp.code !== 0) {
+      throw new Error(`baseline seed rev-parse failed: ${rp.stderr}`);
+    }
+    return rp.stdout.trim();
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Fetch a thin bundle into the bare repo under refs/bundle/* (so it
+ * doesn't clobber refs/heads/main during the fetch). Returns the
+ * single tip OID the bundle introduced. The bundle's prereq MUST already
+ * be reachable in the repo or git rejects with "fatal: bad object".
+ */
+async function fetchBundleIntoBare(
+  gitdir: string,
+  bundlePath: string,
+): Promise<string> {
+  const fetch = await runGit([
+    '-C', gitdir, 'fetch', '--quiet', bundlePath,
+    'refs/heads/*:refs/bundle/*',
+  ]);
+  if (fetch.code !== 0) {
+    throw new Error(`bundle fetch failed: ${fetch.stderr}`);
+  }
+  const list = await runGit([
+    '-C', gitdir, 'for-each-ref',
+    '--format=%(refname) %(objectname)', 'refs/bundle/',
+  ]);
+  if (list.code !== 0) {
+    throw new Error(`for-each-ref refs/bundle failed: ${list.stderr}`);
+  }
+  const lines = list.stdout
+    .split('\n')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  if (lines.length !== 1) {
+    throw new Error(
+      `bundle introduced ${lines.length} refs (expected exactly 1): ${lines.join(', ')}`,
+    );
+  }
+  const parts = lines[0]!.split(' ');
+  if (parts.length !== 2) {
+    throw new Error(`malformed for-each-ref output: ${lines[0]}`);
+  }
+  return parts[1]!;
+}
+
+/**
+ * Drop refs/bundle/* after a successful apply. The commit objects stay
+ * (referenced by refs/heads/main now); the temp refs would otherwise
+ * leak into the next apply on this repo.
+ */
+async function clearBundleRefs(gitdir: string): Promise<void> {
+  const list = await runGit([
+    '-C', gitdir, 'for-each-ref', '--format=%(refname)', 'refs/bundle/',
+  ]);
+  if (list.code !== 0) return; // best-effort
+  const refs = list.stdout
+    .split('\n')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  for (const ref of refs) {
+    await runGit(['-C', gitdir, 'update-ref', '-d', ref]);
+  }
+}
 
 type Snapshot = Map<string, Bytes>;
 
@@ -538,6 +816,153 @@ export function registerWorkspaceGitHooks(
         input.to as string,
       );
       return { delta };
+    },
+  );
+
+  bus.registerService<
+    WorkspaceExportBaselineBundleInput,
+    WorkspaceExportBaselineBundleOutput
+  >(
+    'workspace:export-baseline-bundle',
+    PLUGIN_NAME,
+    async (_ctx, input) => {
+      // version=null is the seed-condition path: the workspace has no
+      // commits in storage yet, so we ship a deterministic empty
+      // baseline bundle whose tip OID matches the runner's
+      // first-thin-bundle prereq by construction. No mutex needed —
+      // the bundle is built from a temp scratch repo, not from the
+      // bare repo.
+      if (input.version === null) {
+        return { bundleBytes: await buildEmptyBaselineBundle() };
+      }
+      // version=oid: bundle the bare repo's state at that oid. The
+      // mutex serializes against concurrent applies so HEAD doesn't
+      // shift between the version check and the bundle.
+      return mutex.run(async () => {
+        await ensureRepo(gitdir);
+        const bundleBytes = await exportBundleAt(gitdir, input.version as string);
+        return { bundleBytes };
+      });
+    },
+  );
+
+  bus.registerService<WorkspaceApplyBundleInput, WorkspaceApplyBundleOutput>(
+    'workspace:apply-bundle',
+    PLUGIN_NAME,
+    async (ctx, input) => {
+      return mutex.run(async () => {
+        await ensureRepo(gitdir);
+        const currentOid = await resolveHead(gitdir);
+        const currentVersion: WorkspaceVersion | null =
+          currentOid === null ? null : asWorkspaceVersion(currentOid);
+
+        // Same parent-CAS as workspace:apply.
+        if (input.parent !== currentVersion) {
+          throw new PluginError({
+            code: 'parent-mismatch',
+            plugin: PLUGIN_NAME,
+            hookName: 'workspace:apply-bundle',
+            message: `expected parent ${currentVersion === null ? 'null' : currentVersion}, got ${input.parent === null ? 'null' : input.parent}`,
+          });
+        }
+
+        // Seed the deterministic baseline if the repo is empty so the
+        // thin bundle's prereq is satisfied. The seed's OID MUST match
+        // the runner's declared baselineCommit (determinism contract);
+        // any drift means the runner and host disagree on the empty-
+        // baseline shape, which would let turn-1 silently corrupt
+        // turn-2's history.
+        if (currentOid === null) {
+          const seededOid = await seedBareWithEmptyBaseline(gitdir);
+          if (seededOid !== input.baselineCommit) {
+            throw new Error(
+              `seeded baseline OID ${seededOid} does not match runner baseline ${input.baselineCommit} (determinism contract violated)`,
+            );
+          }
+        } else if (currentOid !== input.baselineCommit) {
+          throw new PluginError({
+            code: 'parent-mismatch',
+            plugin: PLUGIN_NAME,
+            hookName: 'workspace:apply-bundle',
+            message: `bare repo head ${currentOid} does not match runner baseline ${input.baselineCommit}`,
+          });
+        }
+
+        // Write bundle to a tempfile inside the gitdir so the fetch
+        // can address it by path. One finally cleans up both the
+        // bundle file and the temp refs/bundle/* refs.
+        const bundlePath = join(gitdir, 'in.bundle');
+        await writeFile(bundlePath, Buffer.from(input.bundleBytes, 'base64'));
+        try {
+          const newTip = await fetchBundleIntoBare(gitdir, bundlePath);
+
+          // Reject bundles whose tip doesn't descend from the declared
+          // baseline. The runner's contract is "thin bundle of new
+          // commits on top of baseline." A non-thin or otherwise-
+          // detached bundle could still pass the parent-CAS above and
+          // replace HEAD with unrelated history. The ancestor check
+          // closes that gap.
+          const ancestry = await runGit([
+            '-C', gitdir, 'merge-base', '--is-ancestor',
+            input.baselineCommit, newTip,
+          ]);
+          if (ancestry.code === 1) {
+            throw new PluginError({
+              code: 'parent-mismatch',
+              plugin: PLUGIN_NAME,
+              hookName: 'workspace:apply-bundle',
+              message: `bundle tip ${newTip} does not descend from baseline ${input.baselineCommit}`,
+            });
+          }
+          if (ancestry.code !== 0) {
+            throw new Error(
+              `git merge-base --is-ancestor failed (exit=${ancestry.code}): ${ancestry.stderr}`,
+            );
+          }
+
+          // Advance refs/heads/main to the bundle tip.
+          const update = await runGit([
+            '-C', gitdir, 'update-ref', 'refs/heads/main', newTip,
+          ]);
+          if (update.code !== 0) {
+            throw new Error(`update-ref failed: ${update.stderr}`);
+          }
+
+          // Build the delta. `from` is the caller's view of the
+          // previous state (currentVersion). For first apply,
+          // currentVersion is null and the delta reads as "everything
+          // added since empty"; for subsequent applies, currentVersion
+          // equals the prior tip and we get the per-turn diff.
+          const fromCommitOid =
+            currentVersion === null ? null : (currentVersion as string);
+          const fromSnapshot: Snapshot =
+            fromCommitOid === null
+              ? new Map()
+              : await readSnapshotAt(gitdir, fromCommitOid);
+          const toSnapshot = await readSnapshotAt(gitdir, newTip);
+          const newVersion = asWorkspaceVersion(newTip);
+          const author: WorkspaceDelta['author'] = {
+            agentId: ctx.agentId,
+            userId: ctx.userId,
+            sessionId: ctx.sessionId,
+          };
+          const delta = buildDelta(
+            fromSnapshot,
+            toSnapshot,
+            currentVersion,
+            newVersion,
+            input.reason,
+            author,
+            gitdir,
+            fromCommitOid,
+            newTip,
+          );
+          return { version: newVersion, delta };
+        } finally {
+          await rm(bundlePath, { force: true });
+          await clearBundleRefs(gitdir);
+        }
+      });
     },
   );
 }

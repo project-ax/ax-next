@@ -128,7 +128,7 @@ export const workspaceCommitNotifyHandler: ActionHandler = async (
       ctx.logger,
       'workspace.commit-notify',
       new Error(
-        'no registered workspace plugin implements workspace:export-baseline-bundle (Phase 3 thin-bundle wire requires it; only @ax/workspace-git-server provides it today)',
+        'no registered workspace plugin implements workspace:export-baseline-bundle (Phase 3 thin-bundle wire requires it; provided by @ax/workspace-git and @ax/workspace-git-server)',
       ),
     );
     return internalError();
