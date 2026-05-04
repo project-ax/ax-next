@@ -666,6 +666,73 @@ describe('@ax/channel-web POST /api/chat/messages', () => {
     expect(r.status).toBe(400);
     expect(await r.json()).toEqual({ error: 'invalid-payload' });
   });
+
+  it('12. follow-up turn preserves existing activeSessionId (J6 routing intact)', async () => {
+    // Regression: the early `conversations:bind-session` used to pass a
+    // fresh placeholder `sessionId` regardless of any existing active
+    // session. On a follow-up turn, that clobbered the live session id
+    // the orchestrator's J6 routing reads back; `session:is-alive` then
+    // returned false on the placeholder and forced a fresh sandbox spawn
+    // even when the runner was still alive. The early bind must
+    // preserve the existing activeSessionId and only update active_req_id.
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+    });
+    harnesses.push(booted.harness);
+
+    // Pre-create a conversation and bind it to a "live" session, mimicking
+    // the state after a prior turn opened a sandbox.
+    const created = await booted.harness.bus.call<
+      ConvCreateInput,
+      ConvCreateOutput
+    >(
+      'conversations:create',
+      booted.harness.ctx({ userId: 'userA' }),
+      { userId: 'userA', agentId: 'agt_test' },
+    );
+    const liveSessionId = 'sess_live_from_prior_turn';
+    const priorReqId = 'req-priorprior01';
+    await booted.harness.bus.call<
+      { conversationId: string; sessionId: string; reqId: string },
+      void
+    >('conversations:bind-session', booted.harness.ctx({ userId: 'userA' }), {
+      conversationId: created.conversationId,
+      sessionId: liveSessionId,
+      reqId: priorReqId,
+    });
+
+    const r = await postMessage(booted.port, {
+      conversationId: created.conversationId,
+      agentId: 'agt_test',
+      contentBlocks: [{ type: 'text', text: 'follow-up' }],
+    });
+    expect(r.status).toBe(202);
+    const body = (await r.json()) as { conversationId: string; reqId: string };
+    expect(body.reqId).not.toBe(priorReqId);
+
+    // After the early bind: activeSessionId stays pointed at the live
+    // session, active_req_id advances to the new reqId. This is what the
+    // orchestrator's J6 routing reads back when deciding whether to route
+    // into the existing sandbox.
+    interface GetInput {
+      conversationId: string;
+      userId: string;
+    }
+    interface GetOutput {
+      conversation: {
+        activeSessionId: string | null;
+        activeReqId: string | null;
+      };
+    }
+    const got = await booted.harness.bus.call<GetInput, GetOutput>(
+      'conversations:get',
+      booted.harness.ctx({ userId: 'userA' }),
+      { conversationId: created.conversationId, userId: 'userA' },
+    );
+    expect(got.conversation.activeSessionId).toBe(liveSessionId);
+    expect(got.conversation.activeReqId).toBe(body.reqId);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -36,6 +36,54 @@ function proxyBootstrapPath(): string {
   return path.join(path.dirname(fileURLToPath(import.meta.url)), 'proxy-bootstrap.cjs');
 }
 
+// Explicit allowlist of process.env keys to forward into the SDK
+// subprocess. Anything not here (and not matching ENV_ALLOWLIST_PREFIXES
+// below) is dropped. Notably excludes AX_* — the runner's IPC bearer
+// (`AX_AUTH_TOKEN`) and other control-plane env vars must never be
+// reachable from a Bash tool the SDK spawns: `echo $AX_AUTH_TOKEN` in a
+// tool call would land in the model's context and could be exfiltrated
+// via the next assistant message.
+const ENV_ALLOWLIST = new Set<string>([
+  // Filesystem / process basics
+  'PATH',
+  'HOME',
+  'TMPDIR',
+  'TMP',
+  'TEMP',
+  'USER',
+  'USERNAME',
+  'LOGNAME',
+  // Locale / terminal
+  'LANG',
+  'LANGUAGE',
+  'TZ',
+  'TERM',
+  'COLUMNS',
+  'LINES',
+  // Network
+  'NO_PROXY',
+  'no_proxy',
+  'http_proxy',
+  'https_proxy',
+]);
+
+// Prefix allowlist:
+//   - GIT_* — git ops invoked by the Bash tool. sandbox-k8s/pod-spec
+//             stamps GIT_CONFIG_COUNT / GIT_CONFIG_KEY_<n> /
+//             GIT_CONFIG_VALUE_<n> with safe.directory=* so git on the
+//             kubelet-owned /permanent mount doesn't hit "dubious
+//             ownership."
+//   - LC_*  — locale categories (LC_CTYPE, LC_COLLATE, etc.).
+const ENV_ALLOWLIST_PREFIXES = ['GIT_', 'LC_'] as const;
+
+function isEnvAllowed(key: string): boolean {
+  if (ENV_ALLOWLIST.has(key)) return true;
+  for (const prefix of ENV_ALLOWLIST_PREFIXES) {
+    if (key.startsWith(prefix)) return true;
+  }
+  return false;
+}
+
 export interface ProxyStartup {
   /**
    * Env to pass into the SDK's `query({ options: { env } })`. Always
@@ -92,17 +140,23 @@ export async function setupProxy(env: RunnerEnv): Promise<ProxyStartup> {
   // teardown (which can race the host's next session-spawn). The
   // try/catch here keeps that cleanup tight to the bridge's lifetime.
   try {
-    // Start from the runner's own env so PATH, HOME, TMPDIR, and the
-    // git-paranoid set survive into the SDK subprocess. The SDK
-    // builds the subprocess env from `query({ options: { env } })`
+    // Build the SDK subprocess env from an explicit allowlist of the
+    // runner's own env (see ENV_ALLOWLIST + ENV_ALLOWLIST_PREFIXES). The
+    // SDK builds the subprocess env from `query({ options: { env } })`
     // exactly — keys not present here are NOT inherited from
-    // process.env. Without forwarding PATH, the SDK's Bash tool
-    // executes `ls` and gets exit code 127 (command not found).
-    // Per-session secret env vars (ANTHROPIC_API_KEY, AX_AUTH_TOKEN)
-    // are already inside the trust boundary of the runner pod.
+    // process.env. Without forwarding PATH, the SDK's Bash tool executes
+    // `ls` and gets exit code 127 (command not found); without the GIT_*
+    // family, git ops in /permanent fail "dubious ownership."
+    //
+    // Capability minimization (I5): control-plane vars that ARE in the
+    // runner's process.env (notably AX_AUTH_TOKEN, the IPC bearer) stay
+    // out of the SDK subprocess. The Bash tool can spawn arbitrary
+    // commands the model requests, and `echo $AX_AUTH_TOKEN` would land
+    // the bearer in tool output → model context → assistant reply.
     const anthropicEnv: Record<string, string> = {};
     for (const [k, v] of Object.entries(process.env)) {
-      if (typeof v === 'string') anthropicEnv[k] = v;
+      if (typeof v !== 'string') continue;
+      if (isEnvAllowed(k)) anthropicEnv[k] = v;
     }
     // sandbox-subprocess injected the envMap from proxy:open-session into
     // the child env, so process.env.ANTHROPIC_API_KEY already holds the
@@ -159,8 +213,13 @@ export async function setupProxy(env: RunnerEnv): Promise<ProxyStartup> {
       }
       // Append our --require to any caller-supplied NODE_OPTIONS so
       // operators can still set their own (e.g. --max-old-space-size).
+      // Quote the path with JSON.stringify: Node tokenizes NODE_OPTIONS
+      // on whitespace using shell-like quoting rules. Under pnpm hoisting
+      // (or any install path containing a space), an unquoted
+      // `--require=/Users/foo bar/proxy-bootstrap.cjs` would split mid-path
+      // and the SDK subprocess would fail at startup before our hook ran.
       const existing = process.env.NODE_OPTIONS ?? '';
-      const requireFlag = `--require=${proxyBootstrapPath()}`;
+      const requireFlag = `--require=${JSON.stringify(proxyBootstrapPath())}`;
       anthropicEnv.NODE_OPTIONS = existing.length > 0
         ? `${existing} ${requireFlag}`
         : requireFlag;

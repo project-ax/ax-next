@@ -434,6 +434,119 @@ describe('@ax/workspace-git bundle hooks (Phase 3)', () => {
     ).rejects.toMatchObject({ code: 'parent-mismatch' });
   });
 
+  it("apply-bundle: seeded-baseline mismatch leaves the bare repo empty so retries can recover", async () => {
+    // Regression: an apply-bundle against an empty repo with a baselineCommit
+    // that doesn't match the deterministic seed used to push refs/heads/main
+    // BEFORE checking the OID. On mismatch the repo was left non-empty,
+    // making every subsequent retry with parent:null fail the parent-CAS
+    // forever until someone manually deleted refs/heads/main. The fix:
+    // validate the seed in scratch before pushing to gitdir.
+    const wrongBaseline = 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef';
+    // Build a real bundle from a real runner turn so the bundleBytes
+    // parses; then deliberately lie about baselineCommit. The mismatch
+    // must throw before any state lands in gitdir.
+    const sim = await simulateRunnerTurn({
+      turnPath: 'permanent/test1.txt',
+      turnContent: 'hello-permanent',
+    });
+    await expect(
+      h.bus.call<WorkspaceApplyBundleInput, WorkspaceApplyBundleOutput>(
+        'workspace:apply-bundle',
+        h.ctx(),
+        {
+          bundleBytes: sim.bundleB64,
+          baselineCommit: wrongBaseline,
+          parent: null,
+          reason: 'mismatched',
+        },
+      ),
+    ).rejects.toMatchObject({ code: 'parent-mismatch' });
+
+    // The bare repo's HEAD must still be unset — a retry with the right
+    // baseline + parent:null is what unwedges the workspace.
+    const headFile = path.join(repoRoot, 'repo.git', 'refs', 'heads', 'main');
+    let headExists = true;
+    try {
+      await fs.stat(headFile);
+    } catch {
+      headExists = false;
+    }
+    expect(headExists).toBe(false);
+
+    // Sanity: a fresh apply with the right baseline + parent:null now succeeds.
+    const recovery = await h.bus.call<
+      WorkspaceApplyBundleInput,
+      WorkspaceApplyBundleOutput
+    >('workspace:apply-bundle', h.ctx(), {
+      bundleBytes: sim.bundleB64,
+      baselineCommit: sim.baselineCommit,
+      parent: null,
+      reason: 'recovery',
+    });
+    expect(recovery.version).toMatch(/^[0-9a-f]{40}$/);
+  });
+
+  it("apply-bundle: stale refs/bundle/* from a crashed prior apply don't wedge the next apply", async () => {
+    // Regression: fetchBundleIntoBare used to clear refs/bundle/* only in
+    // the trailing finally. A crash between `git fetch` and the cleanup
+    // (or just an interrupted process) left stale temp refs; the next
+    // apply's for-each-ref then saw multiple refs and threw on the count
+    // check. Pre-clearing in the helper makes retries crash-safe by
+    // construction.
+    //
+    // Simulate the crash by initializing the bare repo and planting a
+    // stale loose ref under refs/bundle/. Empty-tree OID (known-fixed)
+    // is a safe target — git's for-each-ref doesn't validate object
+    // presence.
+    const sim = await simulateRunnerTurn({
+      turnPath: 'permanent/test1.txt',
+      turnContent: 'hello-permanent',
+    });
+    const bareGitDir = path.join(repoRoot, 'repo.git');
+    await run(['init', '--bare', '-b', 'main', bareGitDir]);
+    // Plant the stale ref by writing the loose ref file directly. We use
+    // the empty-tree OID (a fixed 40-hex git knows about); update-ref
+    // would reject it on object-presence checks, so we go around the
+    // plumbing the same way an interrupted prior apply would have.
+    const emptyTreeOid = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+    const refPath = path.join(
+      bareGitDir,
+      'refs',
+      'bundle',
+      'heads',
+      'main',
+    );
+    await fs.mkdir(path.dirname(refPath), { recursive: true });
+    await fs.writeFile(refPath, emptyTreeOid + '\n');
+
+    // Sanity-check the wedged state: for-each-ref sees the stale ref.
+    const before = await run(
+      ['-C', bareGitDir, 'for-each-ref', '--format=%(refname)', 'refs/bundle/'],
+    );
+    expect(before.stdout.trim()).toBe('refs/bundle/heads/main');
+
+    // With the stale ref in place, apply-bundle must still succeed —
+    // the pre-clear in fetchBundleIntoBare drops refs/bundle/* before
+    // the new fetch.
+    const result = await h.bus.call<
+      WorkspaceApplyBundleInput,
+      WorkspaceApplyBundleOutput
+    >('workspace:apply-bundle', h.ctx(), {
+      bundleBytes: sim.bundleB64,
+      baselineCommit: sim.baselineCommit,
+      parent: null,
+      reason: 'after-crash',
+    });
+    expect(result.version).toMatch(/^[0-9a-f]{40}$/);
+
+    // After a successful apply, refs/bundle/* is empty (the trailing
+    // cleanup still runs).
+    const after = await run(
+      ['-C', bareGitDir, 'for-each-ref', '--format=%(refname)', 'refs/bundle/'],
+    );
+    expect(after.stdout.trim()).toBe('');
+  });
+
   it("export-baseline-bundle({version: <existing-oid>}) bundles the workspace state at that version", async () => {
     // First write something via the FileChange path to make sure
     // export works against state produced by workspace:apply (not just

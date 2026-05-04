@@ -258,6 +258,10 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
 
       // 4) Get-or-create the conversation.
       let conversationId: string;
+      // Track any existing live session on this conversation. The early
+      // bind below preserves it instead of clobbering with a placeholder
+      // (would defeat the orchestrator's J6 routing — see comment there).
+      let existingActiveSessionId: string | null = null;
       if (body.conversationId === null) {
         const created = await bus.call<
           ConversationsCreateInput,
@@ -284,6 +288,7 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
             return;
           }
           conversationId = got.conversation.conversationId;
+          existingActiveSessionId = got.conversation.activeSessionId;
         } catch (err) {
           if (err instanceof PluginError) {
             // not-found OR forbidden BOTH collapse to 404 — we never tell
@@ -335,11 +340,24 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
       // stream/:reqId)` arrives within microseconds of our 202. Without
       // the early bind, the SSE handler's `conversations:get-by-req-id`
       // returns not-found and the browser sees a 404, never retried,
-      // and the chat appears dead. We pass the placeholder sessionId;
-      // the orchestrator overwrites it with the real one once
-      // sandbox:open-session returns. Best-effort: bind failures fall
-      // through silently — the orchestrator's later bind retries.
+      // and the chat appears dead.
+      //
+      // sessionId we bind:
+      //   - First turn (no existing active session) → placeholderSessionId.
+      //     The orchestrator overwrites it with the real one once
+      //     sandbox:open-session returns.
+      //   - Follow-up turn with an existing active session → that
+      //     session's id. Clobbering with the placeholder would defeat
+      //     the orchestrator's J6 routing: it reads
+      //     conversation.activeSessionId to decide whether to route into
+      //     a live sandbox or fresh-spawn. A placeholder makes
+      //     `session:is-alive` return false and forces fresh-spawn even
+      //     when the live session is reachable.
+      //
+      // Best-effort: bind failures fall through silently — the
+      // orchestrator's later bind retries.
       if (bus.hasService('conversations:bind-session')) {
+        const sessionIdToBind = existingActiveSessionId ?? placeholderSessionId;
         try {
           await bus.call<
             {
@@ -350,7 +368,7 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
             unknown
           >('conversations:bind-session', agentInvokeCtx, {
             conversationId,
-            sessionId: placeholderSessionId,
+            sessionId: sessionIdToBind,
             reqId,
           });
         } catch (err) {

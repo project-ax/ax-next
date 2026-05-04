@@ -97,12 +97,22 @@ const BASELINE_ENV = {
 // Locked-down env for git child processes. No global config, no system
 // config, no terminal prompts, fixed PATH. PATH is hard-coded so a CI
 // environment with a malicious `git` binary on $PATH can't subvert us.
+//
+// We include the standard Linux/CI locations (`/usr/local/bin`, `/usr/bin`,
+// `/bin`) plus the two common macOS locations:
+//   - `/opt/homebrew/bin` — Homebrew default on Apple Silicon (the host
+//      plugin runs in the dev process on the engineer's laptop, which
+//      typically has git only here).
+//   - `/opt/local/bin`    — MacPorts default.
+// This list is closed: we don't inherit `process.env.PATH` because the
+// security goal is to pick git from a known set of locations, not from
+// whatever the user's shell happens to have first.
 const GIT_PROCESS_ENV: NodeJS.ProcessEnv = {
   GIT_CONFIG_NOSYSTEM: '1',
   GIT_CONFIG_GLOBAL: '/dev/null',
   GIT_TERMINAL_PROMPT: '0',
   HOME: '/nonexistent',
-  PATH: '/usr/local/bin:/usr/bin:/bin',
+  PATH: '/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin:/opt/local/bin',
   ...AUTHOR_ENV,
 };
 
@@ -220,15 +230,24 @@ async function exportBundleAt(gitdir: string, oid: string): Promise<string> {
 
 /**
  * Seed an empty bare repo with the deterministic empty-tree baseline
- * commit. Used by apply-bundle when the repo has no commits yet — the
- * runner's first thin bundle's prereq OID matches this commit's OID by
- * construction (both built from the same shape: sorted paths, fixed
- * dates, fixed author env, --allow-empty, core.fileMode=false).
+ * commit, but ONLY if the seed's OID matches `expectedOid`. Used by
+ * apply-bundle when the repo has no commits yet — the runner's first
+ * thin bundle's prereq OID must match the seed by construction (both
+ * built from the same shape: sorted paths, fixed dates, fixed author
+ * env, --allow-empty, core.fileMode=false).
  *
- * Returns the new commit's OID so the caller can verify it matches the
- * runner's declared baselineCommit before fetching the bundle.
+ * We build in scratch first, verify the OID, and only push to gitdir on
+ * match. Seeding gitdir on mismatch would create refs/heads/main in the
+ * bare repo and trip the parent-CAS check on every retry, wedging the
+ * repo until someone manually deletes the ref.
+ *
+ * Returns the seeded OID. Throws on mismatch with seededOid in the
+ * message so the caller's error envelope is unambiguous.
  */
-async function seedBareWithEmptyBaseline(gitdir: string): Promise<string> {
+async function seedBareWithEmptyBaseline(
+  gitdir: string,
+  expectedOid: string,
+): Promise<string> {
   const scratch = mkdtempSync(join(tmpdir(), 'ax-ws-git-baseline-seed-'));
   try {
     const init = await runGit(['init', '-b', 'main', scratch], BASELINE_ENV);
@@ -249,17 +268,30 @@ async function seedBareWithEmptyBaseline(gitdir: string): Promise<string> {
     if (commit.code !== 0) {
       throw new Error(`baseline seed commit failed: ${commit.stderr}`);
     }
+    const rp = await runGit(['-C', scratch, 'rev-parse', 'HEAD']);
+    if (rp.code !== 0) {
+      throw new Error(`baseline seed rev-parse failed: ${rp.stderr}`);
+    }
+    const seededOid = rp.stdout.trim();
+    // Validate BEFORE writing to gitdir. On mismatch we throw and the
+    // bare repo stays empty — next retry with parent:null still passes
+    // the parent-CAS, so the workspace can recover once the runner
+    // catches up.
+    if (seededOid !== expectedOid) {
+      throw new PluginError({
+        code: 'parent-mismatch',
+        plugin: PLUGIN_NAME,
+        hookName: 'workspace:apply-bundle',
+        message: `seeded baseline OID ${seededOid} does not match runner baseline ${expectedOid} (determinism contract violated)`,
+      });
+    }
     const push = await runGit([
       '-C', scratch, 'push', gitdir, 'main:refs/heads/main',
     ]);
     if (push.code !== 0) {
       throw new Error(`baseline seed push failed: ${push.stderr}`);
     }
-    const rp = await runGit(['-C', scratch, 'rev-parse', 'HEAD']);
-    if (rp.code !== 0) {
-      throw new Error(`baseline seed rev-parse failed: ${rp.stderr}`);
-    }
-    return rp.stdout.trim();
+    return seededOid;
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
@@ -275,6 +307,13 @@ async function fetchBundleIntoBare(
   gitdir: string,
   bundlePath: string,
 ): Promise<string> {
+  // Crash-safety: a prior apply that crashed between `git fetch` and the
+  // outer `clearBundleRefs(gitdir)` cleanup would leave stale temp refs
+  // under refs/bundle/. Without this pre-clear, the next apply's
+  // for-each-ref below sees N+1 refs and the count check throws even on
+  // a perfectly valid bundle, wedging the repo until someone manually
+  // cleans it. Clearing first makes retries crash-safe by construction.
+  await clearBundleRefs(gitdir);
   const fetch = await runGit([
     '-C', gitdir, 'fetch', '--quiet', bundlePath,
     'refs/heads/*:refs/bundle/*',
@@ -871,14 +910,12 @@ export function registerWorkspaceGitHooks(
         // the runner's declared baselineCommit (determinism contract);
         // any drift means the runner and host disagree on the empty-
         // baseline shape, which would let turn-1 silently corrupt
-        // turn-2's history.
+        // turn-2's history. The helper validates in scratch first and
+        // only writes to gitdir on match — a mismatch leaves the repo
+        // empty so the next retry with parent:null can still pass the
+        // parent-CAS.
         if (currentOid === null) {
-          const seededOid = await seedBareWithEmptyBaseline(gitdir);
-          if (seededOid !== input.baselineCommit) {
-            throw new Error(
-              `seeded baseline OID ${seededOid} does not match runner baseline ${input.baselineCommit} (determinism contract violated)`,
-            );
-          }
+          await seedBareWithEmptyBaseline(gitdir, input.baselineCommit);
         } else if (currentOid !== input.baselineCommit) {
           throw new PluginError({
             code: 'parent-mismatch',

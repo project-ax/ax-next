@@ -69,6 +69,8 @@ export default tseslint.config(
       '**/node_modules/**',
       '**/*.tsbuildinfo',
       '**/coverage/**',
+      // Local kind-dev mount; built JS bundles only, not source.
+      '.dev-mount/**',
     ],
   },
 
@@ -123,6 +125,15 @@ export default tseslint.config(
     },
     rules: {
       'local/no-bare-tenant-tables': 'error',
+    },
+  },
+
+  {
+    // .cjs files are CommonJS by design (e.g. NODE_OPTIONS=--require
+    // bootstraps that must load synchronously) and need require().
+    files: ['**/*.cjs'],
+    rules: {
+      '@typescript-eslint/no-require-imports': 'off',
     },
   },
 

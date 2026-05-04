@@ -830,6 +830,83 @@ describe('chat-orchestrator', () => {
     });
   });
 
+  it('terminates with agent-proxy-config-incomplete when only allowedHosts is set on the agent', async () => {
+    // Regression: defaults used to apply field-by-field, so an agent with
+    // `allowedHosts: ['api.openai.com']` but no requiredCredentials would
+    // get a mixed config — the OpenAI allowlist alongside the Anthropic
+    // credential ref. Either over-permits egress or breaks the agent's
+    // real provider. The fix: fall back only when BOTH fields are
+    // missing; a partial config raises loud at agent:invoke time.
+    const proxy = buildProxyHooks();
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.openai.com'],
+          // requiredCredentials intentionally omitted
+        },
+      }),
+    });
+    Object.assign(mocks.services, proxy.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinary: '/irrelevant',
+          chatTimeoutMs: 5_000,
+        }),
+      ],
+    });
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('proxy-partial-config'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('terminated');
+    expect((outcome as { reason: string }).reason).toBe(
+      'agent-proxy-config-incomplete',
+    );
+    // Loud: never opened a session with the mixed config.
+    expect(proxy.state.openCalls).toBe(0);
+  });
+
+  it('terminates with agent-proxy-config-incomplete when only requiredCredentials is set on the agent', async () => {
+    // Mirror of the previous test for the other half of the partial-
+    // config bug.
+    const proxy = buildProxyHooks();
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          // allowedHosts intentionally omitted
+          requiredCredentials: {
+            OPENAI_API_KEY: { ref: 'openai-api', kind: 'api-key' },
+          },
+        },
+      }),
+    });
+    Object.assign(mocks.services, proxy.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinary: '/irrelevant',
+          chatTimeoutMs: 5_000,
+        }),
+      ],
+    });
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('proxy-partial-config-2'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('terminated');
+    expect((outcome as { reason: string }).reason).toBe(
+      'agent-proxy-config-incomplete',
+    );
+    expect(proxy.state.openCalls).toBe(0);
+  });
+
   it('translates a unix:// proxyEndpoint into proxyConfig.unixSocketPath', async () => {
     const proxy = buildProxyHooks({
       openOutput: {
