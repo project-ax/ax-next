@@ -305,4 +305,20 @@ describeIfHelm('host deployment env vs preset loader', () => {
     expect(sc?.fsGroup, 'pod-level fsGroup').toBe(1000);
     expect(sc?.runAsUser, 'pod-level runAsUser').toBe(1000);
   });
+
+  // channel-web SPA (default-on). The chart stamps AX_STATIC_FILES_DIR onto
+  // the host deployment so the @ax/static-files plugin loads pointing at
+  // the in-image bundle. With the env unset, the public listener returns
+  // 404 on `/` (which is what API-only deploys want).
+  it('default render stamps AX_STATIC_FILES_DIR so the SPA is served', () => {
+    const env = envKeysOf(renderHostDeployment());
+    expect(env.has('AX_STATIC_FILES_DIR'), 'channelWeb.enabled defaults true').toBe(true);
+  });
+
+  it('channelWeb.enabled=false drops AX_STATIC_FILES_DIR', () => {
+    const env = envKeysOf(
+      renderHostDeployment(['--set', 'channelWeb.enabled=false']),
+    );
+    expect(env.has('AX_STATIC_FILES_DIR')).toBe(false);
+  });
 });

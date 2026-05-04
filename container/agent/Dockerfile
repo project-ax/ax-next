@@ -70,14 +70,22 @@ COPY . .
 # references, so this transitively builds @ax/agent-claude-sdk-runner and
 # every other workspace dep.
 #
+# `pnpm --filter @ax/channel-web build` runs tsc + Vite for the SPA
+# bundle. tsc-alone (which the cli's reference graph would do) emits the
+# server-side TS to dist/, but the Vite step that produces dist-web/ is a
+# separate command. Without it, the static-files plugin's `dir` would
+# resolve to a missing path at runtime.
+#
 # `pnpm deploy --prod --legacy /tmp/deploy` stamps a self-contained tree
-# with only the prod deps of @ax/cli resolved + copied in. The --legacy
+# with only the prod deps of @ax/cli resolved + copied in. channel-web's
+# `files: ["dist", "dist-web"]` brings the SPA bundle along. The --legacy
 # flag opts back into the pre-pnpm-v10 deploy semantics; the new behaviour
 # requires inject-workspace-packages=true on every workspace package, which
 # isn't how this monorepo is configured. Switching the whole monorepo to
 # injected deps is a separate change.
 RUN pnpm install --frozen-lockfile \
  && pnpm --filter @ax/cli build \
+ && pnpm --filter @ax/channel-web build \
  && pnpm --filter @ax/cli deploy --prod --legacy /tmp/deploy
 
 # -----------------------------------------------------------------------------
@@ -104,6 +112,15 @@ RUN userdel --remove node 2>/dev/null || true \
  && chown -R 1000:1000 /opt/ax-next
 
 COPY --from=builder --chown=1000:1000 /tmp/deploy /opt/ax-next/host
+
+# Stable path for the channel-web SPA bundle. `pnpm deploy --legacy`
+# buries workspace packages under
+# `node_modules/.pnpm/@ax+channel-web@file+.../node_modules/@ax/channel-web/`
+# — a path with pnpm-internal bits that the chart can't reliably stamp
+# without coupling to pnpm's layout. Copy the bundle directly from the
+# builder's source tree to a stable, chart-friendly location instead.
+# The chart's default `channelWeb.bundleDir` points here.
+COPY --from=builder --chown=1000:1000 /workspace/packages/channel-web/dist-web /opt/ax-next/host/web
 
 WORKDIR /opt/ax-next/host
 

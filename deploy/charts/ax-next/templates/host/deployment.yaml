@@ -121,6 +121,14 @@ spec:
               value: {{ .Values.auth.google.redirectUri | quote }}
             {{- end }}
 
+            # channel-web SPA — when enabled, @ax/static-files serves the
+            # bundle at /* (with SPA fallback). Disable via
+            # --set channelWeb.enabled=false for headless / API-only deploys.
+            {{- if .Values.channelWeb.enabled }}
+            - name: AX_STATIC_FILES_DIR
+              value: {{ .Values.channelWeb.bundleDir | quote }}
+            {{- end }}
+
             # Sandbox plugin reads these to size + place runner pods.
             - name: K8S_RUNTIME_CLASS
               value: {{ .Values.sandbox.runtimeClassName | quote }}
