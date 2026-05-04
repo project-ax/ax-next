@@ -299,11 +299,16 @@ describeIfHelm('host deployment env vs preset loader', () => {
   it('host pod sets fsGroup=1000 so emptyDirs are writable by the UID-1000 user', () => {
     const dep = renderHostDeployment();
     const spec = dep.spec as {
-      template?: { spec?: { securityContext?: { fsGroup?: number; runAsUser?: number } } };
+      template?: {
+        spec?: {
+          securityContext?: { fsGroup?: number; runAsUser?: number; runAsGroup?: number };
+        };
+      };
     };
     const sc = spec.template?.spec?.securityContext;
     expect(sc?.fsGroup, 'pod-level fsGroup').toBe(1000);
     expect(sc?.runAsUser, 'pod-level runAsUser').toBe(1000);
+    expect(sc?.runAsGroup, 'pod-level runAsGroup').toBe(1000);
   });
 
   // channel-web SPA (default-on). The chart stamps AX_STATIC_FILES_DIR onto

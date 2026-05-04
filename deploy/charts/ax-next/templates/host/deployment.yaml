@@ -124,9 +124,14 @@ spec:
             # channel-web SPA — when enabled, @ax/static-files serves the
             # bundle at /* (with SPA fallback). Disable via
             # --set channelWeb.enabled=false for headless / API-only deploys.
+            #
+            # `required`: an empty bundleDir would render value: "" and the
+            # preset's `AX_STATIC_FILES_DIR` gate (set-and-non-empty) would
+            # silently skip loading the static-files plugin — operator
+            # explicitly enabled the SPA, fail loudly instead.
             {{- if .Values.channelWeb.enabled }}
             - name: AX_STATIC_FILES_DIR
-              value: {{ .Values.channelWeb.bundleDir | quote }}
+              value: {{ required "channelWeb.bundleDir is required when channelWeb.enabled=true" .Values.channelWeb.bundleDir | quote }}
             {{- end }}
 
             # Sandbox plugin reads these to size + place runner pods.
