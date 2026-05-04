@@ -272,19 +272,42 @@ describeIfHelm('host deployment env vs preset loader', () => {
 
   // The credential-proxy plugin's preset config defaults its unix socket
   // to /var/run/ax/proxy.sock. The container runs as UID 1000 (per the
-  // agent Dockerfile), so the chart must (a) mount a writable emptyDir
-  // there and (b) set fsGroup=1000 so the kubelet chowns the volume to
-  // a group the user is in. Without either, the proxy's listen() fails
-  // with EACCES and the host pod crash-loops at boot.
-  it('mounts an emptyDir at /var/run/ax for the credential-proxy socket', () => {
-    const dep = renderHostDeployment();
+  // agent Dockerfile), so the chart must (a) mount a writable dir there
+  // and (b) set fsGroup=1000 (or chown for hostPath) so the proxy's
+  // listen() doesn't fail with EACCES at boot.
+  //
+  // Two branches in the template — the volume backing depends on whether
+  // sandbox.proxySocketHostPath is set:
+  //   - unset (production default) → emptyDir (private to the host pod;
+  //     fsGroup makes it writable as UID 1000).
+  //   - set (kind / single-node)  → hostPath at the configured path
+  //     (shared with runner pods so cross-pod Unix socket works; an
+  //     init container chowns the dir since fsGroup doesn't apply here).
+  // We assert both branches independently so a regression in either is
+  // a loud failure.
+
+  it('default render: mounts an emptyDir at /var/run/ax for the credential-proxy socket', () => {
+    // Render WITHOUT kind-dev-values so we exercise the
+    // proxySocketHostPath-unset branch (production default).
+    // http.cookieKey is required by the chart but not relevant to this
+    // assertion — pass a stub to satisfy the validation.
+    const docs = helmTemplate([
+      '--set',
+      'http.cookieKey=' + '0'.repeat(64),
+    ]);
+    const dep = docs.find(
+      (d) =>
+        d.kind === 'Deployment' &&
+        (d.metadata?.name ?? '').endsWith('-host'),
+    );
+    if (dep === undefined) throw new Error('host Deployment not found in render');
     const spec = dep.spec as {
       template?: {
         spec?: {
           containers?: Array<{
             volumeMounts?: Array<{ name?: string; mountPath?: string }>;
           }>;
-          volumes?: Array<{ name?: string; emptyDir?: object }>;
+          volumes?: Array<{ name?: string; emptyDir?: object; hostPath?: object }>;
         };
       };
     };
@@ -294,6 +317,41 @@ describeIfHelm('host deployment env vs preset loader', () => {
     const volume = spec.template?.spec?.volumes?.find((v) => v.name === mount?.name);
     expect(volume, `volume backing the /var/run/ax mount`).toBeDefined();
     expect(volume?.emptyDir, `${mount?.name} must be an emptyDir`).toBeDefined();
+    expect(volume?.hostPath, `${mount?.name} must NOT be a hostPath in default render`).toBeUndefined();
+  });
+
+  it('kind-dev render: mounts the configured hostPath at /var/run/ax', () => {
+    // kind-dev-values.yaml sets sandbox.proxySocketHostPath. The runner
+    // pods need to reach the host pod's credential-proxy via a unix
+    // socket — and the only cross-pod Unix-socket path on a single
+    // kind node is via a shared hostPath. The chart template must
+    // route through the hostPath branch when this value is set.
+    const dep = renderHostDeployment();
+    const spec = dep.spec as {
+      template?: {
+        spec?: {
+          containers?: Array<{
+            volumeMounts?: Array<{ name?: string; mountPath?: string }>;
+          }>;
+          volumes?: Array<{
+            name?: string;
+            emptyDir?: object;
+            hostPath?: { path?: string; type?: string };
+          }>;
+        };
+      };
+    };
+    const container = spec.template?.spec?.containers?.[0];
+    const mount = container?.volumeMounts?.find((m) => m.mountPath === '/var/run/ax');
+    expect(mount, 'volumeMount at /var/run/ax').toBeDefined();
+    const volume = spec.template?.spec?.volumes?.find((v) => v.name === mount?.name);
+    expect(volume, 'volume backing the /var/run/ax mount').toBeDefined();
+    expect(volume?.hostPath, `${mount?.name} must be a hostPath under kind-dev`).toBeDefined();
+    expect(volume?.hostPath?.path, 'hostPath.path').toBe('/var/lib/ax-next-proxy');
+    // DirectoryOrCreate so the kubelet creates the dir on first boot
+    // (the path doesn't exist on a fresh node).
+    expect(volume?.hostPath?.type, 'hostPath.type').toBe('DirectoryOrCreate');
+    expect(volume?.emptyDir, `${mount?.name} must NOT also be emptyDir`).toBeUndefined();
   });
 
   it('host pod sets fsGroup=1000 so emptyDirs are writable by the UID-1000 user', () => {
