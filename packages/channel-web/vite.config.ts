@@ -21,6 +21,14 @@ import { mockMiddleware } from './mock/server';
 const backendUrl = process.env.AX_BACKEND_URL;
 
 export default defineConfig({
+  // SPA bundle goes to `dist-web/` so it's isolated from the TypeScript
+  // server-side output that lands in `dist/`. The agent image's static-files
+  // plugin serves only `dist-web/` — pointing it at `dist/` would also expose
+  // `dist/src/server/...` (compiled TS, including source maps) to anyone
+  // who can hit /. Both directories ship via the package's `files` field.
+  build: {
+    outDir: 'dist-web',
+  },
   plugins: [
     react(),
     ...(backendUrl

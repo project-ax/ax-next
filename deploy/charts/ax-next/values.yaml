@@ -242,6 +242,20 @@ credentials:
 anthropic:
   apiKey: ""
 
+# ─── Channel-web (browser SPA) ───────────────────────────────────
+# When enabled, the host pod's @ax/static-files plugin serves the
+# channel-web React bundle on otherwise-unmatched paths. The image's
+# build pipeline already produces `dist-web/` (vite output) inside the
+# channel-web package, so flipping this on is just stamping the env
+# var. Disable for headless / API-only deploys.
+channelWeb:
+  enabled: true
+  # In-image path of the SPA bundle. The agent Dockerfile's runtime stage
+  # copies channel-web/dist-web here directly, so this path is stable and
+  # doesn't depend on pnpm's internal node_modules layout. Operators who
+  # repackage the image with a different layout can override.
+  bundleDir: /opt/ax-next/host/web
+
 # ─── HTTP-server config (public surface — issue #39) ─────────────
 # `cookieKey` signs auth-oidc's session cookie. 32 bytes; provide
 # via `--set http.cookieKey=$(openssl rand -hex 32)` (or 44 base64

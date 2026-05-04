@@ -888,5 +888,15 @@ export function loadK8sConfigFromEnv(
   if (env.AX_PROXY_SOCKET_PATH !== undefined && env.AX_PROXY_SOCKET_PATH !== '') {
     config.credentialProxy = { socketPath: env.AX_PROXY_SOCKET_PATH };
   }
+  // Static-file serving for channel-web's SPA bundle. The chart's default
+  // points this at `/opt/ax-next/host/web` — a stable path the agent
+  // Dockerfile populates by COPY-ing channel-web/dist-web there directly,
+  // avoiding the pnpm-internal `node_modules/.pnpm/...` layout. When unset,
+  // the host pod boots without the static-files plugin and the public
+  // listener returns 404 on `/` — which is the dev posture (Vite serves
+  // the bundle at :5173 with /api/* proxied to the host).
+  if (env.AX_STATIC_FILES_DIR !== undefined && env.AX_STATIC_FILES_DIR !== '') {
+    config.staticFiles = { dir: env.AX_STATIC_FILES_DIR };
+  }
   return config;
 }

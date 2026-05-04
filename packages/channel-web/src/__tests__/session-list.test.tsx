@@ -12,12 +12,18 @@
  *   3. Each row's color dot picks up the matching agent's color (so
  *      the sidebar is scannable across multiple agents).
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, waitFor, act } from '@testing-library/react';
 import { SessionList } from '../components/SessionList';
 import { agentStoreActions } from '../lib/agent-store';
 
 const fetchMock = vi.fn();
+
+// Pin the wall clock to noon of a fixed day. The grouping test below builds
+// "today" as `now - 1 hour`; without a fake clock that fixture lands on
+// yesterday's calendar day whenever the suite runs between 00:00 and 01:00
+// local time, and the assertions for the "today" label flake.
+const FIXED_NOW = new Date('2026-05-03T12:00:00');
 
 const seedAgents = () =>
   agentStoreActions.setAgents([
@@ -42,6 +48,13 @@ beforeEach(() => {
   fetchMock.mockReset();
   globalThis.fetch = fetchMock as unknown as typeof fetch;
   seedAgents();
+  // shouldAdvanceTime keeps setTimeout-driven internals (waitFor polling,
+  // act flushes) ticking; freezing it absolutely would deadlock those.
+  vi.useFakeTimers({ now: FIXED_NOW.getTime(), shouldAdvanceTime: true });
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe('SessionList', () => {
