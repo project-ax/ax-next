@@ -11,38 +11,41 @@
       "default": "./dist/index.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc --build",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:k8s-e2e": "vitest run --config vitest.config.k8s-e2e.ts"
   },
   "dependencies": {
-    "@ax/core": "workspace:*",
-    "@ax/database-postgres": "workspace:*",
-    "@ax/storage-postgres": "workspace:*",
-    "@ax/eventbus-postgres": "workspace:*",
-    "@ax/session-postgres": "workspace:*",
-    "@ax/workspace-git": "workspace:*",
-    "@ax/workspace-git-server": "workspace:*",
-    "@ax/sandbox-k8s": "workspace:*",
     "@ax/agent-claude-sdk-runner": "workspace:*",
-    "@ax/chat-orchestrator": "workspace:*",
+    "@ax/agents": "workspace:*",
     "@ax/audit-log": "workspace:*",
+    "@ax/auth-oidc": "workspace:*",
     "@ax/channel-web": "workspace:*",
+    "@ax/chat-orchestrator": "workspace:*",
     "@ax/conversations": "workspace:*",
-    "@ax/mcp-client": "workspace:*",
+    "@ax/core": "workspace:*",
     "@ax/credential-proxy": "workspace:*",
     "@ax/credentials": "workspace:*",
-    "@ax/credentials-store-db": "workspace:*",
     "@ax/credentials-anthropic-oauth": "workspace:*",
-    "@ax/ipc-http": "workspace:*",
-    "@ax/agents": "workspace:*",
+    "@ax/credentials-store-db": "workspace:*",
+    "@ax/database-postgres": "workspace:*",
+    "@ax/eventbus-postgres": "workspace:*",
     "@ax/http-server": "workspace:*",
-    "@ax/auth-oidc": "workspace:*",
+    "@ax/ipc-http": "workspace:*",
+    "@ax/mcp-client": "workspace:*",
+    "@ax/sandbox-k8s": "workspace:*",
+    "@ax/session-postgres": "workspace:*",
     "@ax/static-files": "workspace:*",
+    "@ax/storage-postgres": "workspace:*",
     "@ax/teams": "workspace:*",
-    "@ax/validator-skill": "workspace:*"
+    "@ax/validator-skill": "workspace:*",
+    "@ax/workspace-git": "workspace:*",
+    "@ax/workspace-git-server": "workspace:*"
   },
   "devDependencies": {
     "@ax/agent-claude-sdk-runner-host": "workspace:*",
@@ -59,6 +62,7 @@
     "@types/pg": "8.20.0",
     "kysely": "0.28.16",
     "pg": "8.20.0",
+    "playwright": "^1.59.1",
     "typescript": "^6.0.3",
     "vitest": "^4.1.4"
   }
