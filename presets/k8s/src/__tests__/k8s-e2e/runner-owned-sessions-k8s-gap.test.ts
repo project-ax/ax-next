@@ -358,14 +358,21 @@ describe('k8s-e2e — runner-owned-sessions regression suite', () => {
           }
         });
         await page.locator('.composer-input').fill('and now ok again');
-        await page.click('button[aria-label="Send"]');
-        // Give the network event loop a tick.
-        await page.waitForRequest(
+        // Register the waiter BEFORE the click that triggers the request.
+        // Awaiting it after `page.click` would let the POST race ahead of
+        // the listener registration; on a fast click → POST path the
+        // promise then never resolves and 5s later the test fails with a
+        // misleading timeout. Per Playwright's documented pattern for
+        // event-triggering actions, create the promise first, perform the
+        // action, then await.
+        const reqPromise = page.waitForRequest(
           (req) =>
             req.method() === 'POST' &&
             req.url().endsWith('/api/chat/messages'),
           { timeout: 5_000 },
         );
+        await page.click('button[aria-label="Send"]');
+        await reqPromise;
         expect(postSeen.length).toBeGreaterThanOrEqual(1);
       } finally {
         if (browser !== null) await browser.close();
