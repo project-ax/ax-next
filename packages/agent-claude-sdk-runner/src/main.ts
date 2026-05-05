@@ -715,6 +715,32 @@ export async function main(): Promise<number> {
       // the host doesn't need to see them. (`user` messages ARE handled
       // above, but only to extract tool_result blocks for replay.)
     }
+    // Final commit: the SDK subprocess writes the assistant response to
+    // the jsonl AFTER yielding `result` to Node.js. The per-turn commit in
+    // the `result` handler fires before those writes land, so the assistant
+    // response is always missing from the committed state. Committing here
+    // — after the for-await fully drains — captures the SDK's delayed
+    // writes. If nothing changed vs. the last per-turn commit (e.g. the
+    // SDK flushed everything before `result`), `git add -A` produces an
+    // empty diff and no commit is created (commitTurnAndBundle short-
+    // circuits on empty diffs).
+    try {
+      const finalBundle = await commitTurnAndBundle({
+        root: env.workspaceRoot,
+        reason: 'turn',
+      });
+      if (finalBundle !== null) {
+        await client.call('workspace.commit-notify', {
+          parentVersion,
+          reason: 'turn',
+          bundleBytes: finalBundle,
+        }).catch((err) => {
+          process.stderr.write(`runner: final commit-notify failed: ${err instanceof Error ? err.message : String(err)}\n`);
+        });
+      }
+    } catch (err) {
+      process.stderr.write(`runner: final commitTurnAndBundle failed: ${err instanceof Error ? err.message : String(err)}\n`);
+    }
   } catch (err) {
     exitCode = 1;
     if (err instanceof Error) {
