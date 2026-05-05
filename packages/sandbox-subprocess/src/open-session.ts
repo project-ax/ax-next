@@ -78,6 +78,12 @@ export const OpenSessionInputSchema = z.object({
       userId: z.string().min(1),
       agentId: z.string().min(1),
       agentConfig: AgentConfigSchema,
+      // Optional: ties this session to a persisted conversation row so the
+      // runner's bind-on-resume path (agent-claude-sdk-runner) can choose
+      // resume vs fresh-spawn from session:get-config alone. Forwarded
+      // verbatim into session:create so the v2 row's conversation_id column
+      // is written atomically with the session — no separate UPDATE.
+      conversationId: z.string().min(1).optional(),
     })
     .optional(),
   proxyConfig: ProxyConfigSchema.optional(),
@@ -128,6 +134,7 @@ interface SessionCreateInput {
       mcpConfigIds: string[];
       model: string;
     };
+    conversationId?: string;
   };
 }
 interface SessionCreateOutput {
@@ -200,7 +207,14 @@ export async function openSessionImpl(
       workspaceRoot: input.workspaceRoot,
     };
     if (input.owner !== undefined) {
-      sessionCreateInput.owner = input.owner;
+      sessionCreateInput.owner = {
+        userId: input.owner.userId,
+        agentId: input.owner.agentId,
+        agentConfig: input.owner.agentConfig,
+        ...(input.owner.conversationId !== undefined
+          ? { conversationId: input.owner.conversationId }
+          : {}),
+      };
     }
     created = await bus.call<SessionCreateInput, SessionCreateOutput>(
       'session:create',

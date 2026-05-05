@@ -619,10 +619,33 @@ async function getConversation(
   // null (pre-Phase-C rows or fresh rows whose first turn hasn't
   // landed yet — see Q3=(a)). The wire shape on
   // `conversations:get` is unchanged.
+  //
+  // Build a synthetic ctx scoped to the conversation's owner before the
+  // workspace round-trip. The host-side workspace plugins (workspace-git,
+  // workspace-git-server-client) derive their workspaceId from
+  // (ctx.userId, ctx.agentId); the runner pod's commit-notify wrote the
+  // jsonl into ws-<hash([conv.userId, conv.agentId])>. Channel-web calls
+  // us with `initCtx` (userId='system', agentId='@ax/channel-web') —
+  // forwarding that ctx into workspace:list looks up a different (empty)
+  // workspaceId and returns no matches. The auth gate (input.userId ===
+  // conv.userId, plus assertAgentReachable above) already proved the
+  // caller owns this conversation, so it's safe to lift conv.userId /
+  // conv.agentId into the synthetic ctx for the read.
   const turns =
     conv.runnerSessionId === null
       ? []
-      : await readTranscriptFromWorkspace(bus, ctx, conv.runnerSessionId);
+      : await readTranscriptFromWorkspace(
+          bus,
+          makeAgentContext({
+            reqId: ctx.reqId,
+            sessionId: ctx.sessionId,
+            userId: conv.userId,
+            agentId: conv.agentId,
+            logger: ctx.logger,
+            workspace: ctx.workspace,
+          }),
+          conv.runnerSessionId,
+        );
   return { conversation: conv, turns };
 }
 

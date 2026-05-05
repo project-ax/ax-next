@@ -618,4 +618,83 @@ describe('sandbox:open-session', () => {
     await fs.rm(ws, { recursive: true, force: true });
   });
 
+  it('owner.conversationId round-trips through session:create → session:get-config', async () => {
+    // Bug 1 regression net: prior to this fix, OpenSessionInputSchema
+    // stripped `owner.conversationId` (it wasn't declared on the Zod
+    // schema) so session:create wrote the v2 row with conversation_id =
+    // NULL even when the orchestrator had set ctx.conversationId. The
+    // runner's bind-skip branch then fired and resume-on-second-turn
+    // never landed — surfaced as runner-owned-sessions-k8s-gap.test.ts:
+    // 137. The k8s sibling carries the same fix; both must update in
+    // the same PR (no half-wired sandbox windows).
+    const ws = await mkWorkspace();
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    const result = await h.bus.call<unknown, OpenSessionResult>(
+      'sandbox:open-session',
+      ctx,
+      {
+        sessionId: 'sub-conv',
+        workspaceRoot: ws,
+        runnerBinary: ECHO_STUB,
+        owner: {
+          userId: 'u-1',
+          agentId: 'agt-1',
+          agentConfig: {
+            systemPrompt: 'be helpful',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          conversationId: 'conv-77',
+        },
+      },
+    );
+
+    const cfg = await h.bus.call<unknown, { conversationId: string | null }>(
+      'session:get-config',
+      h.ctx({ sessionId: 'sub-conv' }),
+      {},
+    );
+    expect(cfg.conversationId).toBe('conv-77');
+
+    await result.handle.kill();
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
+  it('omits conversationId when owner has no conversationId (back-compat with non-orchestrator callers)', async () => {
+    const ws = await mkWorkspace();
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    const result = await h.bus.call<unknown, OpenSessionResult>(
+      'sandbox:open-session',
+      ctx,
+      {
+        sessionId: 'sub-noconv',
+        workspaceRoot: ws,
+        runnerBinary: ECHO_STUB,
+        owner: {
+          userId: 'u-1',
+          agentId: 'agt-1',
+          agentConfig: {
+            systemPrompt: 'be helpful',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+        },
+      },
+    );
+
+    const cfg = await h.bus.call<unknown, { conversationId: string | null }>(
+      'session:get-config',
+      h.ctx({ sessionId: 'sub-noconv' }),
+      {},
+    );
+    expect(cfg.conversationId).toBeNull();
+
+    await result.handle.kill();
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
 });

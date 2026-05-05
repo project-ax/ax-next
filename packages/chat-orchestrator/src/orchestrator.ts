@@ -247,12 +247,15 @@ interface OpenSessionInput {
    * orchestrator from agents:resolve and forwarded through the sandbox
    * plugin so the v2 session row can be written atomically with the
    * session itself. The runner reads this back via session:get-config
-   * (Task 6d).
+   * (Task 6d). `conversationId` is forwarded the same way when the
+   * inbound request carried one (channel-web SSE flow); the runner uses
+   * it to choose resume-vs-fresh-spawn without a separate lookup.
    */
   owner: {
     userId: string;
     agentId: string;
     agentConfig: AgentConfig;
+    conversationId?: string;
   };
   /**
    * Per-session proxy blob. Populated only when @ax/credential-proxy is
@@ -799,6 +802,13 @@ export function createOrchestrator(
           userId: ctx.userId,
           agentId: agent.id,
           agentConfig,
+          // Forward ctx.conversationId so session:create writes the v2
+          // row's conversation_id column atomically. Omitted (rather than
+          // null) when the request had no conversation context — keeps
+          // non-orchestrator/CLI callers and tests unaffected.
+          ...(ctx.conversationId !== undefined
+            ? { conversationId: ctx.conversationId }
+            : {}),
         },
         // Phase 6: credential-proxy is mandatory; proxyConfig is always set
         // by the time we reach this point (the !proxyOpenLoaded gate above

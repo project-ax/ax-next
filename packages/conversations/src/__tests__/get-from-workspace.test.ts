@@ -240,6 +240,86 @@ describe('@ax/conversations conversations:get reads from workspace jsonl', () =>
     ]);
   });
 
+  it('workspace:list / workspace:read see ctx scoped to the conversation owner — not the caller-ctx', async () => {
+    // Regression: pre-fix, conversations:get forwarded the caller's ctx
+    // straight into readTranscriptFromWorkspace. Channel-web calls us
+    // with `initCtx` (userId='system', agentId='@ax/channel-web'). The
+    // host-side workspace plugins derive workspaceId from
+    // (ctx.userId, ctx.agentId) — so workspace:list looked at a
+    // different (empty) workspaceId than the one the runner pod's
+    // commit-notify wrote into. End user impact: the runner-owned
+    // jsonl WAS persisted, but the GET endpoint silently returned
+    // empty turns and turn-2 resume had no memory of turn-1.
+    //
+    // After the fix, conversations:get rebuilds a synthetic ctx scoped
+    // to (conv.userId, conv.agentId) before the workspace round-trip.
+    // We verify by capturing ctx in custom workspace mocks and
+    // asserting userId/agentId match the conversation owner regardless
+    // of the caller-ctx.
+    const capturedListCtx: Array<{
+      userId: string;
+      agentId: string;
+    }> = [];
+    const capturedReadCtx: Array<{
+      userId: string;
+      agentId: string;
+    }> = [];
+    const h = await createTestHarness({
+      services: {
+        'agents:resolve': async (_ctx, input: unknown) => {
+          const call = input as { agentId: string };
+          return {
+            agent: { id: call.agentId, visibility: 'personal' },
+          };
+        },
+        'workspace:list': async (ctx) => {
+          capturedListCtx.push({
+            userId: ctx.userId,
+            agentId: ctx.agentId,
+          });
+          return {
+            paths: ['.claude/projects/-permanent/sess-xyz.jsonl'],
+          };
+        },
+        'workspace:read': async (ctx) => {
+          capturedReadCtx.push({
+            userId: ctx.userId,
+            agentId: ctx.agentId,
+          });
+          return { found: true as const, bytes: makeJsonlBytes() };
+        },
+      },
+      plugins: [
+        createDatabasePostgresPlugin({ connectionString }),
+        createConversationsPlugin(),
+      ],
+    });
+    harnesses.push(h);
+
+    const created = await h.bus.call<CreateInput, CreateOutput>(
+      'conversations:create',
+      h.ctx({ userId: 'real-owner', agentId: 'agt_owner' }),
+      { userId: 'real-owner', agentId: 'agt_owner' },
+    );
+    await setRunnerSessionViaStore(created.conversationId, 'sess-xyz');
+
+    // Caller-ctx mimics channel-web's initCtx: NOT the conversation owner.
+    await h.bus.call<GetInput, GetOutput>(
+      'conversations:get',
+      h.ctx({ userId: 'caller-system', agentId: 'caller-channel-web' }),
+      { conversationId: created.conversationId, userId: 'real-owner' },
+    );
+
+    // Workspace round-trip ran with the conversation owner's identity,
+    // not the caller's.
+    expect(capturedListCtx).toEqual([
+      { userId: 'real-owner', agentId: 'agt_owner' },
+    ]);
+    expect(capturedReadCtx).toEqual([
+      { userId: 'real-owner', agentId: 'agt_owner' },
+    ]);
+  });
+
   it('returns empty turns when workspace:list returns no matches (jsonl not yet written)', async () => {
     const { h, mocks } = await makeHarness({
       workspaceList: async () => ({ paths: [] }),
