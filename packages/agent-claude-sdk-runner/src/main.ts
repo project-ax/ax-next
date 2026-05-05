@@ -730,13 +730,19 @@ export async function main(): Promise<number> {
         reason: 'turn',
       });
       if (finalBundle !== null) {
-        await client.call('workspace.commit-notify', {
+        await (client.call('workspace.commit-notify', {
           parentVersion,
           reason: 'turn',
           bundleBytes: finalBundle,
-        }).catch((err) => {
-          process.stderr.write(`runner: final commit-notify failed: ${err instanceof Error ? err.message : String(err)}\n`);
-        });
+        }) as Promise<WorkspaceCommitNotifyResponse>)
+          .then((resp) => {
+            if (!resp.accepted) {
+              process.stderr.write(`runner: final workspace rejected: ${resp.reason}\n`);
+            }
+          })
+          .catch((err) => {
+            process.stderr.write(`runner: final commit-notify failed: ${err instanceof Error ? err.message : String(err)}\n`);
+          });
       }
     } catch (err) {
       process.stderr.write(`runner: final commitTurnAndBundle failed: ${err instanceof Error ? err.message : String(err)}\n`);

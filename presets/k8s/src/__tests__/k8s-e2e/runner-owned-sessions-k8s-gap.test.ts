@@ -43,7 +43,6 @@ import {
   dbQueryRows,
   deleteAgent,
   deleteConversation,
-  getRunnerLogs,
   sendAndWaitForBackend,
   signIn,
   waitFor,
