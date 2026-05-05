@@ -227,4 +227,81 @@ describe('sandbox:open-session (k8s)', () => {
     ).rejects.toMatchObject({ code: 'invalid-payload' });
     expect(api.creates).toHaveLength(0);
   });
+
+  it('owner.conversationId round-trips through session:create → session:get-config', async () => {
+    // Bug 1 regression net: prior to this fix, OpenSessionInputSchema
+    // stripped `owner.conversationId` (it wasn't declared on the Zod
+    // schema) so session:create wrote the v2 row with conversation_id =
+    // NULL even when the orchestrator had set ctx.conversationId. The
+    // runner's bind-skip branch (agent-claude-sdk-runner/src/main.ts:
+    // 415-418) then fired and resume-on-second-turn never landed —
+    // surfaced as runner-owned-sessions-k8s-gap.test.ts:137.
+    const api = makeMockK8sApi();
+    api.setReadResponses(readyPod());
+    const h = await makeHarness(api);
+    const ctx = h.ctx();
+    await h.bus.call(
+      'sandbox:open-session',
+      ctx,
+      {
+        sessionId: 'sess-conv',
+        workspaceRoot: '/tmp/ws',
+        runnerBinary: '/opt/ax/runner.js',
+        owner: {
+          userId: 'u-1',
+          agentId: 'agt-1',
+          agentConfig: {
+            systemPrompt: 'be helpful',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          conversationId: 'conv-42',
+        },
+      },
+    );
+
+    // session:get-config keys off ctx.sessionId (no input field — see
+    // session-inmemory/plugin.ts:296). Build a fresh ctx pinned to the
+    // session we just opened.
+    const cfg = await h.bus.call<unknown, { conversationId: string | null }>(
+      'session:get-config',
+      h.ctx({ sessionId: 'sess-conv' }),
+      {},
+    );
+    expect(cfg.conversationId).toBe('conv-42');
+  });
+
+  it('omits conversationId when owner has no conversationId (back-compat with non-orchestrator callers)', async () => {
+    const api = makeMockK8sApi();
+    api.setReadResponses(readyPod());
+    const h = await makeHarness(api);
+    const ctx = h.ctx();
+    await h.bus.call(
+      'sandbox:open-session',
+      ctx,
+      {
+        sessionId: 'sess-noconv',
+        workspaceRoot: '/tmp/ws',
+        runnerBinary: '/opt/ax/runner.js',
+        owner: {
+          userId: 'u-1',
+          agentId: 'agt-1',
+          agentConfig: {
+            systemPrompt: 'be helpful',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+        },
+      },
+    );
+    const cfg = await h.bus.call<unknown, { conversationId: string | null }>(
+      'session:get-config',
+      h.ctx({ sessionId: 'sess-noconv' }),
+      {},
+    );
+    // session-inmemory normalizes "absent" to null on the read side.
+    expect(cfg.conversationId).toBeNull();
+  });
 });

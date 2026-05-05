@@ -50,6 +50,12 @@ const TEST_AGENT = {
 
 interface CallTrace {
   sandboxOpen: number;
+  /**
+   * Captured `sandbox:open-session` input on each call. Tests that need to
+   * assert the orchestrator forwarded `ctx.conversationId` into
+   * `owner.conversationId` read from here.
+   */
+  openSessionInputs: unknown[];
   queueWork: Array<{ sessionId: string; reqId: string; payload: AgentMessage }>;
   bindSession: Array<{ conversationId: string; sessionId: string; reqId: string }>;
   conversationsGet: number;
@@ -75,6 +81,7 @@ function buildMocks(opts: {
 }): BuiltMocks {
   const trace: CallTrace = {
     sandboxOpen: 0,
+    openSessionInputs: [],
     queueWork: [],
     bindSession: [],
     conversationsGet: 0,
@@ -141,6 +148,7 @@ function buildMocks(opts: {
     },
     'sandbox:open-session': async (ctx, input: unknown) => {
       trace.sandboxOpen += 1;
+      trace.openSessionInputs.push(input);
       if (opts.openSession !== undefined) {
         return opts.openSession(ctx, input);
       }
@@ -241,6 +249,13 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
     // Single user-message enqueue with the request's reqId.
     expect(mocks.trace.queueWork).toHaveLength(1);
     expect(mocks.trace.queueWork[0]!.sessionId).toBe('fresh-session');
+    // No ctx.conversationId → owner.conversationId is omitted (not null,
+    // not empty string) so non-orchestrator callers and pre-Week-10
+    // sessions stay structurally identical to before.
+    const openInput = mocks.trace.openSessionInputs[0] as {
+      owner: { conversationId?: unknown };
+    };
+    expect(openInput.owner.conversationId).toBeUndefined();
   });
 
   it('2) ctx.conversationId set, no active_session_id → fresh sandbox + bind', async () => {
@@ -282,6 +297,16 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
     expect(mocks.trace.queueWork).toHaveLength(1);
     expect(mocks.trace.queueWork[0]!.sessionId).toBe('s-fresh');
     expect(mocks.trace.queueWork[0]!.reqId).toBe('req-A');
+    // ctx.conversationId is forwarded into sandbox:open-session.owner so
+    // the v2 row's conversation_id column is written atomically with
+    // session:create. Without this forwarding, the runner reads
+    // conversationId=null from session:get-config, never calls
+    // conversation.store-runner-session, and resume-on-second-turn fails
+    // (regression: runner-owned-sessions-k8s-gap.test.ts:137).
+    const openInput = mocks.trace.openSessionInputs[0] as {
+      owner: { conversationId?: string };
+    };
+    expect(openInput.owner.conversationId).toBe('conv-1');
   });
 
   it('3) ctx.conversationId set, active_session_id alive → routes to existing inbox; no sandbox:open-session', async () => {
@@ -376,6 +401,14 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
       { conversationId: 'conv-3', sessionId: 's-fresh-2', reqId: 'req-C' },
     ]);
     expect(mocks.trace.queueWork[0]!.sessionId).toBe('s-fresh-2');
+    // Stale-session path also spawns a fresh sandbox — conversationId
+    // must be forwarded just like the no-active-session path (scenario 2).
+    // Without this, a regression on the stale branch would silently drop
+    // conversationId and break runner-side bind on the recovered session.
+    const openInput = mocks.trace.openSessionInputs[0] as {
+      owner: { conversationId?: string };
+    };
+    expect(openInput.owner.conversationId).toBe('conv-3');
   });
 
   it('5) routed path: session:queue-work carries the new reqId, not the original', async () => {
