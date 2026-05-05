@@ -401,6 +401,14 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
       { conversationId: 'conv-3', sessionId: 's-fresh-2', reqId: 'req-C' },
     ]);
     expect(mocks.trace.queueWork[0]!.sessionId).toBe('s-fresh-2');
+    // Stale-session path also spawns a fresh sandbox — conversationId
+    // must be forwarded just like the no-active-session path (scenario 2).
+    // Without this, a regression on the stale branch would silently drop
+    // conversationId and break runner-side bind on the recovered session.
+    const openInput = mocks.trace.openSessionInputs[0] as {
+      owner: { conversationId?: string };
+    };
+    expect(openInput.owner.conversationId).toBe('conv-3');
   });
 
   it('5) routed path: session:queue-work carries the new reqId, not the original', async () => {

@@ -217,7 +217,12 @@ describe('@ax/ipc-http: auth-resolved ids propagate onto per-request ctx', () =>
       port: listener.port,
       token,
       cleanup: async () => {
+        // Close listener before harness so the listener stops handling
+        // requests against a torn-down bus. Harness close drains
+        // plugin-held resources (session-inmemory's interval timers,
+        // etc.) so test isolation holds across afterEach.
         await listener.close();
+        await harness.close({ onError: () => {} });
       },
     });
 

@@ -659,6 +659,7 @@ describe('sandbox:open-session', () => {
     expect(cfg.conversationId).toBe('conv-77');
 
     await result.handle.kill();
+    await result.handle.exited;
     await fs.rm(ws, { recursive: true, force: true });
   });
 
@@ -694,6 +695,7 @@ describe('sandbox:open-session', () => {
     expect(cfg.conversationId).toBeNull();
 
     await result.handle.kill();
+    await result.handle.exited;
     await fs.rm(ws, { recursive: true, force: true });
   });
 
