@@ -18,20 +18,36 @@ import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { AgentChip } from '../components/AgentChip';
 import { agentStoreActions } from '../lib/agent-store';
 
+// Hoisted because vi.mock factory is hoisted to the top of the module —
+// it can't reference plain top-level `const`s without `vi.hoisted`.
+const switchToNewThread = vi.hoisted(() => vi.fn());
+vi.mock('@assistant-ui/react', async () => {
+  const actual = await vi.importActual<Record<string, unknown>>(
+    '@assistant-ui/react',
+  );
+  return {
+    ...actual,
+    useAui: () => ({
+      threads: () => ({ switchToNewThread, switchToThread: vi.fn() }),
+    }),
+  };
+});
+
 const fetchMock = vi.fn();
 
 beforeEach(() => {
   fetchMock.mockReset();
+  switchToNewThread.mockReset();
   globalThis.fetch = fetchMock as unknown as typeof fetch;
   // Reset store between tests to avoid bleed.
   agentStoreActions.setActiveSession(null, false);
   agentStoreActions.setSelectedAgent(null);
   agentStoreActions.setAgents([
     {
-      id: 'tide',
+      id: 'ax',
       owner_id: 't1',
       owner_type: 'team',
-      name: 'tide',
+      name: 'ax',
       desc: 'work',
       color: '#7aa6c9',
       tag: 'work',
@@ -62,9 +78,9 @@ beforeEach(() => {
 
 describe('AgentChip + AgentMenu', () => {
   it('lists agents in the menu and marks selected with aria-current', () => {
-    agentStoreActions.setSelectedAgent('tide');
+    agentStoreActions.setSelectedAgent('ax');
     const { container } = render(<AgentChip />);
-    fireEvent.click(screen.getByRole('button', { name: /tide/i }));
+    fireEvent.click(screen.getByRole('button', { name: /ax/i }));
     // Menu rows are plain buttons (role=menu/menuitem semantics dropped
     // until full keyboard nav is implemented). Two rows exist; the
     // active one carries `aria-current="true"`.
@@ -77,10 +93,10 @@ describe('AgentChip + AgentMenu', () => {
   });
 
   it('empty conversation: picking a different agent records the pick without a network call (I10 — agent immutability)', async () => {
-    agentStoreActions.setSelectedAgent('tide');
+    agentStoreActions.setSelectedAgent('ax');
     agentStoreActions.setActiveSession('sess-1', false);
     const { container } = render(<AgentChip />);
-    fireEvent.click(screen.getByRole('button', { name: /tide/i }));
+    fireEvent.click(screen.getByRole('button', { name: /ax/i }));
     const mercyRow = Array.from(
       container.querySelectorAll<HTMLButtonElement>('button.agent-menu-row'),
     ).find((b) => /mercy/i.test(b.textContent ?? ''));
@@ -95,27 +111,44 @@ describe('AgentChip + AgentMenu', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('non-empty session: picking a different agent sets pending (no new session yet)', () => {
-    agentStoreActions.setSelectedAgent('tide');
+  it('non-empty session: picking a different agent sets pending (no new session yet) AND clears the visible thread (regression)', () => {
+    agentStoreActions.setSelectedAgent('ax');
     agentStoreActions.setActiveSession('sess-1', true);
     const { container } = render(<AgentChip />);
-    fireEvent.click(screen.getByRole('button', { name: /tide/i }));
+    fireEvent.click(screen.getByRole('button', { name: /ax/i }));
     const mercyRow = Array.from(
       container.querySelectorAll<HTMLButtonElement>('button.agent-menu-row'),
     ).find((b) => /mercy/i.test(b.textContent ?? ''));
     fireEvent.click(mercyRow!);
-    // No PATCH, no POST — just pendingAgentId set
+    // No PATCH, no POST — just pendingAgentId set.
     expect(fetchMock).not.toHaveBeenCalled();
-    // Chip now shows mercy
+    // Chip now shows mercy.
     expect(screen.getByRole('button', { name: /mercy/i })).toBeTruthy();
+    // Without this call the previous session's chat history would
+    // remain visible behind the freshly-pending agent. assistant-ui's
+    // RemoteThreadList drives the visible thread, so we have to ask
+    // it to switch — pickAgent alone only updates the chip.
+    expect(switchToNewThread).toHaveBeenCalledTimes(1);
+  });
+
+  it('empty session: picking a different agent does NOT switch threads (welcome already showing)', () => {
+    agentStoreActions.setSelectedAgent('ax');
+    agentStoreActions.setActiveSession('sess-1', false);
+    const { container } = render(<AgentChip />);
+    fireEvent.click(screen.getByRole('button', { name: /ax/i }));
+    const mercyRow = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('button.agent-menu-row'),
+    ).find((b) => /mercy/i.test(b.textContent ?? ''));
+    fireEvent.click(mercyRow!);
+    expect(switchToNewThread).not.toHaveBeenCalled();
   });
 
   it('switching active session clears pendingAgentId', () => {
     // Set up a pending switch first (mercy pending while on sess-1).
-    agentStoreActions.setSelectedAgent('tide');
+    agentStoreActions.setSelectedAgent('ax');
     agentStoreActions.setActiveSession('sess-1', true);
     const { container } = render(<AgentChip />);
-    fireEvent.click(screen.getByRole('button', { name: /tide/i }));
+    fireEvent.click(screen.getByRole('button', { name: /ax/i }));
     const mercyRow = Array.from(
       container.querySelectorAll<HTMLButtonElement>('button.agent-menu-row'),
     ).find((b) => /mercy/i.test(b.textContent ?? ''));
@@ -124,11 +157,11 @@ describe('AgentChip + AgentMenu', () => {
     expect(screen.getByRole('button', { name: /mercy/i })).toBeTruthy();
 
     // Now switch to a different session — pending should clear, chip
-    // falls back to the explicitly-selected agent (tide).
+    // falls back to the explicitly-selected agent (ax).
     act(() => {
       agentStoreActions.setActiveSession('sess-2', false);
     });
-    expect(screen.getByRole('button', { name: /tide/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /ax/i })).toBeTruthy();
     expect(screen.queryByRole('button', { name: /mercy/i })).toBeFalsy();
   });
 });

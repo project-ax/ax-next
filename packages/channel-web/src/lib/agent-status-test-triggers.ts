@@ -53,7 +53,7 @@ const defaultFindLastUserMessage = (): HTMLElement | null => {
 /**
  * Attach an inline error row to a user-message DOM node. Lives in the
  * DOM only — not persisted. Mirrors the `.msg-error` markup from the
- * Tide Sessions design.
+ * design (Tide Sessions.html).
  */
 function attachMessageError(
   msgEl: HTMLElement,

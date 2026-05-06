@@ -28,10 +28,10 @@ const FIXED_NOW = new Date('2026-05-03T12:00:00');
 const seedAgents = () =>
   agentStoreActions.setAgents([
     {
-      id: 'tide',
+      id: 'ax',
       owner_id: 't1',
       owner_type: 'team',
-      name: 'tide',
+      name: 'ax',
       desc: '',
       color: '#7aa6c9',
       tag: 'work',
@@ -71,7 +71,7 @@ describe('SessionList', () => {
         {
           conversationId: 's-today',
           userId: 'u2',
-          agentId: 'tide',
+          agentId: 'ax',
           title: 'today session',
           activeSessionId: null,
           activeReqId: null,
@@ -81,7 +81,7 @@ describe('SessionList', () => {
         {
           conversationId: 's-yesterday',
           userId: 'u2',
-          agentId: 'tide',
+          agentId: 'ax',
           title: 'yesterday session',
           activeSessionId: null,
           activeReqId: null,
@@ -91,7 +91,7 @@ describe('SessionList', () => {
         {
           conversationId: 's-earlier',
           userId: 'u2',
-          agentId: 'tide',
+          agentId: 'ax',
           title: 'earlier session',
           activeSessionId: null,
           activeReqId: null,
@@ -120,7 +120,7 @@ describe('SessionList', () => {
         {
           conversationId: 's-1',
           userId: 'u2',
-          agentId: 'tide',
+          agentId: 'ax',
           title: 'one',
           activeSessionId: null,
           activeReqId: null,
@@ -130,7 +130,7 @@ describe('SessionList', () => {
         {
           conversationId: 's-2',
           userId: 'u2',
-          agentId: 'tide',
+          agentId: 'ax',
           title: 'two',
           activeSessionId: null,
           activeReqId: null,
@@ -159,7 +159,7 @@ describe('SessionList', () => {
         {
           conversationId: 's-1',
           userId: 'u2',
-          agentId: 'tide',
+          agentId: 'ax',
           title: 'one',
           activeSessionId: null,
           activeReqId: null,

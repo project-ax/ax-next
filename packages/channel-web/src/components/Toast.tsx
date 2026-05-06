@@ -28,7 +28,7 @@
  *     `aria-live="assertive"`) so screen readers announce errors
  *     immediately rather than waiting for the current utterance.
  *
- * Mirrors `.toast-stack` / `.toast` markup from the Tide Sessions design.
+ * Mirrors `.toast-stack` / `.toast` markup from the the design.
  */
 import { useCallback, useEffect, useState } from 'react';
 import { type Toast as ToastModel, toastActions, useToastStore } from '../lib/toast-store';

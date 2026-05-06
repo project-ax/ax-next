@@ -1,7 +1,7 @@
 /**
  * LoginPage — unauthenticated landing.
  *
- * Centered Tide-warm card with the brand wordmark, a one-line blurb, and
+ * Centered warm card with the brand wordmark, a one-line blurb, and
  * a single "Sign in with Google" CTA. Clicking navigates to
  * `/auth/sign-in/google` (handled by @ax/auth-oidc); the server
  * 302-redirects to Google, then back via `/auth/callback/google` which
@@ -16,7 +16,7 @@ export function LoginPage() {
   return (
     <div className="login-page">
       <div className="login-card">
-        <div className="login-brand">tide</div>
+        <div className="login-brand">ax</div>
         <p className="login-blurb">Sign in to start chatting</p>
         <button
           className="login-cta"

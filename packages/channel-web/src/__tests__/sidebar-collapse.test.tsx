@@ -20,12 +20,12 @@ describe('Sidebar collapse', () => {
 
   it('persists to localStorage and hydrates on mount', () => {
     setSidebarCollapsed(true);
-    expect(localStorage.getItem('tide-sidebar-collapsed')).toBe('1');
+    expect(localStorage.getItem('ax-sidebar-collapsed')).toBe('1');
     setSidebarCollapsed(false);
-    expect(localStorage.getItem('tide-sidebar-collapsed')).toBeNull();
+    expect(localStorage.getItem('ax-sidebar-collapsed')).toBeNull();
 
     // simulate fresh page load with persisted state
-    localStorage.setItem('tide-sidebar-collapsed', '1');
+    localStorage.setItem('ax-sidebar-collapsed', '1');
     hydrateSidebarCollapsed();
     expect(document.body.classList.contains('sidebar-collapsed')).toBe(true);
   });

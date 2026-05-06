@@ -35,7 +35,7 @@ beforeEach(() => {
     {
       id: 's-1',
       title: 'first thread',
-      agent_id: 'tide',
+      agent_id: 'ax',
       updated_at: 1,
       created_at: 1,
       user_id: 'u2',
@@ -85,7 +85,7 @@ describe('SessionHeader', () => {
 
   it('renders the agent chip in the header-left slot', () => {
     const { container } = render(<SessionHeader />);
-    // AgentChip moved from Sidebar to SessionHeader per Tide Sessions.html.
+    // AgentChip moved from Sidebar to SessionHeader per the design (Tide Sessions.html).
     expect(container.querySelector('.agent-chip')).toBeTruthy();
   });
 
@@ -106,7 +106,7 @@ describe('SessionHeader', () => {
       {
         id: 's-1',
         title: 'first thread',
-        agent_id: 'tide',
+        agent_id: 'ax',
         updated_at: 2,
         created_at: 1,
         user_id: 'u2',

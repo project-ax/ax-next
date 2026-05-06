@@ -1,5 +1,5 @@
 /**
- * ToolUse — tool-call rendering per Tide design.
+ * ToolUse — tool-call rendering per design.
  *
  * Two pieces:
  *
@@ -13,7 +13,7 @@
  *     JSON, and either a result or error block. Used as the
  *     `tools.Fallback` for unknown tool names.
  *
- * The header verb-mapping is best-effort. Known tool ids from the Tide
+ * The header verb-mapping is best-effort. Known tool ids from the design
  * mock get a hand-tuned phrase; anything else falls back to the tool
  * name's last segment ("github.search_issues" → "ran search issues").
  *

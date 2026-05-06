@@ -6,7 +6,7 @@
  * (Task 13), inline rename + delete (Task 14), user menu (Task 21).
  *
  * The collapse toggle used to live in `.sidebar-head`; Task 16 moved it
- * to the session header per the Tide design — the toggle belongs at the
+ * to the session header per the design — the toggle belongs at the
  * top of the main pane, not inside the sidebar.
  *
  * Class names match `design_handoff_tide/Tide Sessions.html` so the
@@ -26,7 +26,7 @@ export function Sidebar({
     <aside className="sidebar" data-testid="sidebar" id="sidebar">
       <div className="sidebar-head">
         <div className="brand">
-          <span className="brand-word">tide</span>
+          <span className="brand-word">ax</span>
         </div>
         <SidebarCollapseToggle />
       </div>

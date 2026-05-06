@@ -50,7 +50,7 @@ describe('mock user-scoped agents', () => {
       const body = await res.json();
       const ids = (body.agents as Agent[]).map((a) => a.id);
       expect(ids).toContain('mercy');
-      expect(ids).toContain('tide');
+      expect(ids).toContain('ax');
       expect(ids).toContain('team-engineering');
     } finally {
       await close();
@@ -64,7 +64,7 @@ describe('mock user-scoped agents', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       const ids = (body.agents as Agent[]).map((a) => a.id);
-      expect(ids).toContain('tide');
+      expect(ids).toContain('ax');
       expect(ids).toContain('team-engineering');
       expect(ids).not.toContain('mercy');
     } finally {

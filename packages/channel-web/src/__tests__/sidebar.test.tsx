@@ -11,7 +11,7 @@ const testUser = {
 };
 
 describe('Sidebar', () => {
-  it('renders the Tide structure with all required class hooks', () => {
+  it('renders the sidebar structure with all required class hooks', () => {
     const { container } = render(
       <UserProvider value={testUser}>
         <Sidebar />
@@ -20,7 +20,7 @@ describe('Sidebar', () => {
     const sidebar = screen.getByTestId('sidebar');
     expect(sidebar.tagName).toBe('ASIDE');
     expect(sidebar.className).toContain('sidebar');
-    expect(container.querySelector('.brand-word')?.textContent).toBe('tide');
+    expect(container.querySelector('.brand-word')?.textContent).toBe('ax');
     expect(container.querySelector('.sidebar-collapse')).toBeTruthy();
     expect(container.querySelector('.new-session-btn')).toBeTruthy();
     expect(container.querySelector('.sessions-scroll')).toBeTruthy();
@@ -34,7 +34,7 @@ describe('Sidebar', () => {
         <Sidebar />
       </UserProvider>,
     );
-    // AgentChip moved to SessionHeader per Tide Sessions.html layout.
+    // AgentChip moved to SessionHeader per the design (Tide Sessions.html) layout.
     expect(container.querySelector('button.agent-chip')).toBeNull();
 
     const userRow = container.querySelector('button.user-row');

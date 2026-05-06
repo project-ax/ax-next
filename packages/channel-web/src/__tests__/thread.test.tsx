@@ -1,16 +1,16 @@
 /**
  * Thread — assistant-ui Thread root + welcome empty state + message
- * styling per Tide (Task 18).
+ * styling per the design (Task 18).
  *
  * Behaviors under test:
  *
- *   1. Empty state renders the Tide welcome copy ("One conversation. /
+ *   1. Empty state renders the welcome copy ("One conversation. /
  *      Say anything.") when there are no messages. This is the
  *      `ThreadPrimitive.If empty` branch.
  *
  *   2. Structural markup includes both `.timeline` (the viewport that
- *      Tide's max-width + padding lives on) and `.composer` (the
- *      fixed-bottom field). Both class names are load-bearing — Tide's
+ *      the design's max-width + padding lives on) and `.composer` (the
+ *      fixed-bottom field). Both class names are load-bearing — the design's
  *      CSS hooks into them for layout and the sidebar-collapsed shift.
  *
  * We don't drive `appendMessage` directly here — assistant-ui's

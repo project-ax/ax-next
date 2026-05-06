@@ -122,7 +122,7 @@ export function Composer() {
         <div className="composer-field">
           <AttachMenu />
           <ComposerPrimitive.Input
-            placeholder="Message tide…"
+            placeholder="Message ax…"
             className="composer-input"
             autoFocus
             rows={1}

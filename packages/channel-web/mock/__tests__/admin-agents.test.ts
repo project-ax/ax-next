@@ -50,7 +50,7 @@ describe('mock admin agents', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       const ids = (body.agents as Agent[]).map((a) => a.id).sort();
-      expect(ids).toEqual(['mercy', 'team-engineering', 'tide']);
+      expect(ids).toEqual(['ax', 'mercy', 'team-engineering']);
     } finally {
       await close();
     }
@@ -100,17 +100,17 @@ describe('mock admin agents', () => {
   it('admin PATCH partially updates an agent', async () => {
     const { url, close } = await startServer(store);
     try {
-      const before = store.collection<Agent>('agents').get('tide');
+      const before = store.collection<Agent>('agents').get('ax');
       expect(before).toBeTruthy();
-      const res = await fetch(`${url}/api/admin/agents/tide`, {
+      const res = await fetch(`${url}/api/admin/agents/ax`, {
         method: 'PATCH',
         headers: { cookie: ADMIN, 'content-type': 'application/json' },
         body: JSON.stringify({ desc: 'updated description' }),
       });
       expect(res.status).toBe(200);
-      const after = store.collection<Agent>('agents').get('tide');
+      const after = store.collection<Agent>('agents').get('ax');
       expect(after?.desc).toBe('updated description');
-      expect(after?.name).toBe('tide');
+      expect(after?.name).toBe('ax');
       expect((after?.updated_at ?? 0)).toBeGreaterThan(before?.updated_at ?? 0);
     } finally {
       await close();

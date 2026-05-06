@@ -7,7 +7,7 @@
  *      when the runtime isn't running.
  *
  *   2. Renders the .composer fixed-bottom container with .composer-field
- *      child markup that the Tide CSS hooks into. The CSS class names are
+ *      child markup that the CSS hooks into. The CSS class names are
  *      load-bearing — the focus halo, send-when-ready accent, and
  *      sidebar-collapsed shift all key off them.
  *
@@ -51,7 +51,7 @@ describe('Composer', () => {
       </StubRuntimeProvider>,
     );
     expect(screen.getByLabelText('Attach')).toBeTruthy();
-    expect(screen.getByPlaceholderText('Message tide…')).toBeTruthy();
+    expect(screen.getByPlaceholderText('Message ax…')).toBeTruthy();
     expect(screen.getByLabelText('Send')).toBeTruthy();
   });
 

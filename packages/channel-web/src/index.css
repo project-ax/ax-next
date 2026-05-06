@@ -1321,7 +1321,7 @@ body.sidebar-collapsed .composer { left: 56px; }
    SEARCH MODE — Task 26. The bar sits above the timeline (inside the
    thread root, above the viewport) when search is open. The body class
    `.searching` activates the CSS rule that hides the composer's attach
-   button — per Tide spec, search mode and attach are mutually
+   button — per the design spec, search mode and attach are mutually
    exclusive affordances.
    ============================================================= */
 
@@ -1394,7 +1394,7 @@ body.searching .attach-btn { display: none; }
 /* =============================================================
    THREAD + TIMELINE — adapted from `design_handoff_tide/Tide
    Sessions.html` (`.timeline`, `.msg`, `.msg-body`, `.msg-actions`,
-   `.intro`). Tide uses no avatars and no meta column — role is
+   `.intro`). the design uses no avatars and no meta column — role is
    conveyed by alignment + a subtle wash on the user side. Bottom
    padding (220px) is load-bearing: it clears the fixed-bottom
    composer so the last message is fully visible above it.
@@ -1428,8 +1428,8 @@ body.searching .attach-btn { display: none; }
   padding: 24px 24px 220px;
 }
 
-/* Welcome empty state — replaces Tide's `.intro` namespace with
-   `.thread-welcome*` so the file's intro tokens (used by Tide's
+/* Welcome empty state — replaces the design's `.intro` namespace with
+   `.thread-welcome*` so the file's intro tokens (used by the design's
    marketing demo) don't accidentally clash. */
 .thread-welcome {
   text-align: center;
@@ -1496,7 +1496,7 @@ body.searching .attach-btn { display: none; }
   max-width: 56ch;
 }
 
-/* Action bar — autohides until message hover or focus. Per Tide spec the
+/* Action bar — autohides until message hover or focus. Per the design spec the
    timestamp sits in front of the icons and the whole row is mono-styled. */
 .msg-actions {
   display: flex;
@@ -1573,7 +1573,7 @@ body.searching .attach-btn { display: none; }
    Tool calls — subtle inline lines above the agent reply. Header
    is a comma-joined list of past-tense verbs ("Searched the web,
    read the file") plus a chevron. Click to expand a code-y block
-   with raw args + result JSON. Per Tide.
+   with raw args + result JSON. Per the design.
    ============================================================= */
 .tgroup {
   display: flex;
@@ -1709,7 +1709,7 @@ body.searching .attach-btn { display: none; }
 
 /* =============================================================
    LOGIN PAGE — unauthenticated landing. Centered card, brand
-   wordmark, single Google CTA. Matches the Tide aesthetic: warm
+   wordmark, single Google CTA. Matches the aesthetic: warm
    surface-raised panel, soft shadow, no chrome, no marketing.
    ============================================================= */
 
