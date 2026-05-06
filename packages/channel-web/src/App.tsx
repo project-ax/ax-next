@@ -32,6 +32,7 @@ import { LoginPage } from './components/LoginPage';
 import { Sidebar } from './components/Sidebar';
 import { SessionHeader } from './components/SessionHeader';
 import { Thread } from './components/Thread';
+import { ToastStack } from './components/Toast';
 import { AdminPanel } from './components/admin/AdminPanel';
 import { UserProvider } from './lib/user-context';
 import type { AdminView } from './lib/admin';
@@ -137,6 +138,7 @@ const AppContent = ({ user }: { user: AuthUser }) => {
             <Thread />
           </main>
           <AdminPanel view={adminView} onClose={() => setAdminView(null)} />
+          <ToastStack />
         </div>
       </AssistantRuntimeProvider>
     </UserProvider>

@@ -17,7 +17,13 @@ export {
   type ChunkBuffer,
   type ChunkBufferOptions,
 } from './chunk-buffer.js';
-export type { SseFrame, StreamChunk, StreamChunkKind } from './types.js';
+export type {
+  PhaseEvent,
+  PhaseKind,
+  SseFrame,
+  StreamChunk,
+  StreamChunkKind,
+} from './types.js';
 // Re-export wire schemas/types for the chat-flow producer endpoint
 // (POST /api/chat/messages) and the read+delete surface (Tasks 10-13).
 // Internal handler factories stay private.

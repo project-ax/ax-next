@@ -304,4 +304,94 @@ describe('sandbox:open-session (k8s)', () => {
     // session-inmemory normalizes "absent" to null on the read side.
     expect(cfg.conversationId).toBeNull();
   });
+
+  // -----------------------------------------------------------------------
+  // chat:phase producer — sandbox-k8s announces sandbox-starting BEFORE
+  // calling createNamespacedPod so the UI can show "Starting sandbox…"
+  // while the pod is being provisioned (which is the slowest step).
+  // -----------------------------------------------------------------------
+
+  it('fires chat:phase { reqId, phase: "sandbox-starting" } BEFORE createNamespacedPod', async () => {
+    const api = makeMockK8sApi();
+    api.setReadResponses(readyPod());
+    const h = await makeHarness(api);
+
+    // Subscribe to chat:phase and record the order against pod-create.
+    const events: Array<{ at: 'phase' | 'create'; payload?: unknown }> = [];
+    h.bus.subscribe(
+      'chat:phase',
+      'test-phase-recorder',
+      async (_ctx, payload) => {
+        events.push({ at: 'phase', payload });
+        return undefined;
+      },
+    );
+    // Wrap api.createNamespacedPod to record when it ran.
+    const origCreate = api.createNamespacedPod.bind(api);
+    api.createNamespacedPod = async (args) => {
+      events.push({ at: 'create' });
+      return origCreate(args);
+    };
+
+    const ctx = h.ctx();
+    await h.bus.call<unknown, OpenSessionResult>(
+      'sandbox:open-session',
+      ctx,
+      {
+        sessionId: 'sess-phase-1',
+        workspaceRoot: '/tmp/ws',
+        runnerBinary: '/opt/ax/runner.js',
+      },
+    );
+
+    expect(events).toHaveLength(2);
+    expect(events[0]!.at).toBe('phase');
+    expect(events[0]!.payload).toEqual({
+      reqId: ctx.reqId,
+      phase: 'sandbox-starting',
+    });
+    expect(events[1]!.at).toBe('create');
+  });
+
+  it('still completes openSession when chat:phase has no subscribers', async () => {
+    // Defensive: phase is fire-and-forget. With no subscribers attached,
+    // the bus's fire returns { rejected: false, payload } and pod create
+    // proceeds normally.
+    const api = makeMockK8sApi();
+    api.setReadResponses(readyPod());
+    const h = await makeHarness(api);
+    const result = await h.bus.call<unknown, OpenSessionResult>(
+      'sandbox:open-session',
+      h.ctx(),
+      {
+        sessionId: 'sess-phase-2',
+        workspaceRoot: '/tmp/ws',
+        runnerBinary: '/opt/ax/runner.js',
+      },
+    );
+    expect(result.runnerEndpoint).toBe(TEST_HOST_IPC_URL);
+    expect(api.creates).toHaveLength(1);
+  });
+
+  it('still creates the pod when a chat:phase subscriber rejects', async () => {
+    // Phase is informational, never veto-capable for our purposes. A
+    // misbehaving subscriber that rejects must not block sandbox start.
+    const api = makeMockK8sApi();
+    api.setReadResponses(readyPod());
+    const h = await makeHarness(api);
+    h.bus.subscribe('chat:phase', 'test-phase-rejector', async () => ({
+      rejected: true,
+      reason: 'nope',
+    }));
+    await h.bus.call<unknown, OpenSessionResult>(
+      'sandbox:open-session',
+      h.ctx(),
+      {
+        sessionId: 'sess-phase-3',
+        workspaceRoot: '/tmp/ws',
+        runnerBinary: '/opt/ax/runner.js',
+      },
+    );
+    expect(api.creates).toHaveLength(1);
+  });
 });

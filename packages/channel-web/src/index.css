@@ -1082,6 +1082,242 @@ body.sidebar-collapsed .composer { left: 56px; }
 }
 
 /* =============================================================
+   AGENT STATUS ROW — slim, ephemeral status surface above the
+   composer. Reflects transient agent state ("Thinking…", "Starting
+   sandbox…", "Searching the web…") and recoverable errors. NOT part
+   of chat history (lives in `.composer-inner`, outside `.timeline`).
+   Markup + CSS mirror `design_handoff_tide/Tide Sessions.html`.
+   See `lib/agent-status-store.ts` and `components/AgentStatus.tsx`.
+   ============================================================= */
+
+.agent-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 22px;                 /* reserve space so layout doesn't jump */
+  margin-bottom: 8px;
+  padding: 0 4px;
+  font-size: 12.5px;
+  color: var(--ink-mute);
+  letter-spacing: -0.005em;
+  opacity: 0;
+  transform: translateY(2px);
+  transition: opacity 200ms ease, transform 200ms ease;
+  pointer-events: none;
+}
+.agent-status.visible {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+.agent-status::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+  animation: breathe 1.6s ease-in-out infinite;
+}
+.agent-status-text {
+  /* Crossfade label swaps so "Thinking…" → "Starting sandbox…" feels smooth. */
+  transition: opacity 140ms ease;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agent-status-text.swapping { opacity: 0; }
+.agent-status-cancel {
+  all: unset;
+  cursor: pointer;
+  margin-left: 4px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  color: var(--ink-ghost);
+  letter-spacing: 0.02em;
+  opacity: 0;
+  transition: opacity 140ms ease, color 120ms ease, background 120ms ease;
+}
+.agent-status:hover .agent-status-cancel,
+.agent-status:focus-within .agent-status-cancel { opacity: 1; }
+.agent-status-cancel:hover {
+  color: var(--ink);
+  background: var(--bg-deep);
+}
+/* Keyboard focus — `all: unset` above strips the native ring; this
+   restores a visible focus indicator only for keyboard users. */
+.agent-status-cancel:focus-visible {
+  opacity: 1;
+  color: var(--ink);
+  background: var(--bg-deep);
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Error variant: red dot, danger-tinted text. Persistent (no auto-hide)
+   and the action button is always visible (retry/dismiss). */
+.agent-status.error::before {
+  background: var(--danger);
+  animation: none;
+  opacity: 1;
+  transform: scale(1);
+}
+.agent-status.error { color: var(--danger); }
+.agent-status.error .agent-status-cancel { opacity: 1; }
+
+@keyframes breathe {
+  0%, 100% { opacity: 0.25; transform: scale(0.8); }
+  50%      { opacity: 1;    transform: scale(1.15); }
+}
+
+/* ---- Inline message error: attached to a failed user message ---- */
+.msg-error {
+  margin-top: 6px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--danger);
+  letter-spacing: -0.005em;
+  animation: msg-error-in 220ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.msg.you .msg-error { justify-content: flex-end; }
+.msg-error-icon {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--danger);
+  color: #ffffff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.msg-error-label { color: var(--danger); }
+.msg-error-actions {
+  display: flex;
+  gap: 4px;
+  margin-left: 2px;
+}
+.msg-error-action {
+  all: unset;
+  cursor: pointer;
+  padding: 1px 8px;
+  border-radius: 3px;
+  font-size: 11.5px;
+  color: var(--ink-soft);
+  transition: color 120ms ease, background 120ms ease;
+}
+.msg-error-action:hover {
+  color: var(--ink);
+  background: var(--bg-deep);
+}
+.msg-error-action.retry {
+  color: var(--danger);
+  font-weight: 500;
+}
+.msg-error-action.retry:hover {
+  background: color-mix(in oklch, var(--danger) 12%, transparent);
+  color: var(--danger);
+}
+
+@keyframes msg-error-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ---- Toast: top-right slide-in, session-level errors ---- */
+.toast-stack {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+.toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 240px;
+  max-width: 360px;
+  padding: 10px 12px 10px 14px;
+  background: var(--surface-raised);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  box-shadow: var(--shadow-md);
+  font-size: 12.5px;
+  color: var(--ink);
+  letter-spacing: -0.005em;
+  animation: toast-in 220ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.toast.leaving { animation: toast-out 180ms ease forwards; }
+@keyframes toast-in {
+  from { opacity: 0; transform: translateX(8px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+@keyframes toast-out {
+  to { opacity: 0; transform: translateX(8px); }
+}
+.toast-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ink-mute);
+  margin-top: 5px;
+  flex-shrink: 0;
+}
+.toast.error .toast-dot { background: var(--danger); }
+.toast-body {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.4;
+}
+.toast-title {
+  font-weight: 500;
+  margin-bottom: 1px;
+}
+.toast-detail {
+  color: var(--ink-mute);
+  font-size: 11.5px;
+}
+.toast-close {
+  all: unset;
+  cursor: pointer;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  color: var(--ink-ghost);
+  flex-shrink: 0;
+  transition: color 120ms ease, background 120ms ease;
+}
+.toast-close:hover {
+  color: var(--ink);
+  background: var(--bg-deep);
+}
+/* Keyboard focus — same reason as `.agent-status-cancel:focus-visible`. */
+.toast-close:focus-visible {
+  color: var(--ink);
+  background: var(--bg-deep);
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.toast-close svg {
+  width: 10px;
+  height: 10px;
+}
+
+/* =============================================================
    SEARCH MODE — Task 26. The bar sits above the timeline (inside the
    thread root, above the viewport) when search is open. The body class
    `.searching` activates the CSS rule that hides the composer's attach

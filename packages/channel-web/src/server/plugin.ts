@@ -8,12 +8,13 @@ import { createChunkBuffer, type ChunkBuffer } from './chunk-buffer.js';
 import { registerChatRoutes } from './routes-chat.js';
 import {
   createBufferFillSubscriber,
+  createPhaseFillSubscriber,
   createSseHandler,
   createTurnEndEvictor,
   type RouteRequest,
   type RouteResponse,
 } from './sse.js';
-import type { StreamChunk } from './types.js';
+import type { PhaseEvent, StreamChunk } from './types.js';
 
 const PLUGIN_NAME = '@ax/channel-web';
 
@@ -38,6 +39,7 @@ const PLUGIN_NAME = '@ax/channel-web';
 //     agent:invoke. All hard — the chat-flow surface can't function without
 //     any of them.
 //   - subscribes: chat:stream-chunk (fills the buffer + per-connection
+//     filter), chat:phase (single-slot phase memory + per-connection
 //     filter), chat:turn-end (host-side eviction so the buffer doesn't
 //     grow unbounded for streams nobody listens to).
 // ---------------------------------------------------------------------------
@@ -69,7 +71,7 @@ export function createChannelWebServerPlugin(
         'conversations:delete',
         'agent:invoke',
       ],
-      subscribes: ['chat:stream-chunk', 'chat:turn-end'],
+      subscribes: ['chat:stream-chunk', 'chat:phase', 'chat:turn-end'],
     },
 
     async init({ bus }) {
@@ -90,6 +92,16 @@ export function createChannelWebServerPlugin(
         'chat:stream-chunk',
         `${PLUGIN_NAME}/buffer-fill`,
         createBufferFillSubscriber(localBuffer),
+      );
+
+      // Phase-fill subscriber — same role as buffer-fill but for the
+      // single-slot phase memory. Without this, an SSE consumer that
+      // attaches after sandbox-k8s fires `chat:phase` would never see
+      // the "Starting sandbox…" label.
+      bus.subscribe<PhaseEvent>(
+        'chat:phase',
+        `${PLUGIN_NAME}/phase-fill`,
+        createPhaseFillSubscriber(localBuffer),
       );
 
       // Turn-end evictor — pre-cleans the buffer for terminated turns
@@ -147,6 +159,7 @@ export function createChannelWebServerPlugin(
       // Drop our subscribers so a re-init in tests doesn't leave the
       // old buffer-fill closure ALONGSIDE the new one.
       busRef?.unsubscribe('chat:stream-chunk', `${PLUGIN_NAME}/buffer-fill`);
+      busRef?.unsubscribe('chat:phase', `${PLUGIN_NAME}/phase-fill`);
       busRef?.unsubscribe(
         'chat:turn-end',
         `${PLUGIN_NAME}/turn-end-evictor`,

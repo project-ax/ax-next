@@ -44,12 +44,25 @@
 
 import type { ContentBlock } from '@ax/ipc-protocol';
 import { HttpChatTransport, type UIMessage, type UIMessageChunk } from 'ai';
+import { agentStatusActions } from './agent-status-store';
 
 const DEFAULT_USER = 'guest';
+
+/**
+ * Map a wire phase value to the user-facing label. Centralized here so
+ * future i18n is one switch (and adding a phase doesn't require changing
+ * the parser). Returning `null` means "unknown phase" — we ignore it
+ * rather than render a half-baked default; forward-compat with newer
+ * server builds that emit a phase the client doesn't yet recognize.
+ */
+const PHASE_LABELS: Record<string, string> = {
+  'sandbox-starting': 'Starting sandbox…',
+};
 
 /** Shape of one SSE `data:` JSON payload. Matches `SseFrame` in src/server/types.ts. */
 type SseFrame =
   | { reqId: string; text: string; kind: 'text' | 'thinking' }
+  | { reqId: string; phase: string }
   | { reqId: string; done: true };
 
 interface AxChatTransportOptions {
@@ -277,6 +290,12 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
    *   - thinking-kind chunk → text-delta under id `thinking-N`. Whether
    *     the renderer SHOWS thinking parts is a UI decision (Task 21's
    *     toggle); the transport always emits, the UI hides by default.
+   *   - phase frame → side-channel: drives `agentStatusActions.set(label)`
+   *     directly. Phases are out-of-band agent-state metadata, not
+   *     message content, so they intentionally bypass the AI-SDK chunk
+   *     pipeline (the runtime's "running" state already drives the
+   *     row's visibility; phases just relabel it). On the first content
+   *     chunk we swap back to "Thinking…" — phases are pre-content only.
    *   - done frame → close any open part, emit `finish`.
    *   - stream close (no done frame) → same finish posture.
    */
@@ -289,6 +308,11 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
     let openThinking: string | null = null; // active thinking-N id
     let finished = false;
     let carry = '';
+    /** True once any text/thinking chunk has arrived. After that we
+     *  stop relabeling the status row from phase frames (phases are
+     *  pre-content only) and we restore the "Thinking…" label exactly
+     *  once. */
+    let contentSeen = false;
 
     const closeOpen = (controller: TransformStreamDefaultController<UIMessageChunk>): void => {
       if (openText !== null) {
@@ -366,8 +390,26 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
                 finished = true;
                 return;
               }
+              // phase frame — out-of-band; drives the status row directly.
+              if ('phase' in frame && typeof frame.phase === 'string') {
+                if (contentSeen) continue; // pre-content only
+                const label = PHASE_LABELS[frame.phase];
+                if (label !== undefined) {
+                  agentStatusActions.set(label);
+                }
+                continue;
+              }
               // text/thinking chunk
               if ('text' in frame && typeof frame.text === 'string') {
+                if (!contentSeen) {
+                  contentSeen = true;
+                  // Restore the default working label so the cleanup
+                  // posture (RunningEffect in AgentStatus.tsx) hides on
+                  // turn end. Without this swap, a turn that ran with a
+                  // phase would leave the row stuck on the phase label
+                  // while the "Thinking…"-keyed cleanup never fires.
+                  agentStatusActions.set('Thinking…');
+                }
                 const id = ensureOpenForKind(frame.kind, controller);
                 controller.enqueue({
                   type: 'text-delta',

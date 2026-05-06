@@ -5,7 +5,7 @@ import {
   type HookBus,
 } from '@ax/core';
 import type { ChunkBuffer } from './chunk-buffer.js';
-import type { SseFrame, StreamChunk } from './types.js';
+import type { PhaseEvent, SseFrame, StreamChunk } from './types.js';
 
 // ---------------------------------------------------------------------------
 // SSE handler factory.
@@ -175,6 +175,7 @@ export function createSseHandler(deps: SseHandlerDeps) {
     // cleanly distinguishable in logs.
     const subscriberSuffix = `${reqId}-${Math.random().toString(36).slice(2, 10)}`;
     const chunkSubKey = `${PLUGIN_NAME}/sse-chunk/${subscriberSuffix}`;
+    const phaseSubKey = `${PLUGIN_NAME}/sse-phase/${subscriberSuffix}`;
     const turnEndSubKey = `${PLUGIN_NAME}/sse-turn-end/${subscriberSuffix}`;
 
     const cleanup = (): void => {
@@ -187,6 +188,7 @@ export function createSseHandler(deps: SseHandlerDeps) {
       // unsubscribe is idempotent if no match — safe to call even when a
       // subscriber was never registered (e.g. error in setup).
       deps.bus.unsubscribe('chat:stream-chunk', chunkSubKey);
+      deps.bus.unsubscribe('chat:phase', phaseSubKey);
       deps.bus.unsubscribe('chat:turn-end', turnEndSubKey);
     };
 
@@ -220,6 +222,14 @@ export function createSseHandler(deps: SseHandlerDeps) {
     // in the buffer DURING the drain is harmless because we re-snapshot
     // a copy via `tail()`, so any concurrent appends are visible to
     // the subscriber pass that follows.
+    //
+    // Phase replays first — it's "before content" by construction (the
+    // buffer evicts phase as soon as a content chunk lands), so emitting
+    // it ahead of the chunks matches the order the original turn fired.
+    const replayPhase = deps.buffer.tailPhase(reqId);
+    if (replayPhase !== null) {
+      safeWrite({ reqId, phase: replayPhase });
+    }
     const replay = deps.buffer.tail(reqId);
     for (const chunk of replay) {
       safeWrite({ reqId: chunk.reqId, text: chunk.text, kind: chunk.kind });
@@ -239,6 +249,18 @@ export function createSseHandler(deps: SseHandlerDeps) {
         });
         // Subscribers are observation-only here; we never reject or
         // mutate. Returning undefined means "pass through".
+        return undefined;
+      },
+    );
+
+    // 4b-bis) Attach the live phase subscriber. Same filter posture as
+    // chunks; subscribers are observation-only and never veto.
+    deps.bus.subscribe<PhaseEvent>(
+      'chat:phase',
+      phaseSubKey,
+      async (_ctx, payload) => {
+        if (payload.reqId !== reqId) return undefined;
+        safeWrite({ reqId: payload.reqId, phase: payload.phase });
         return undefined;
       },
     );
@@ -311,6 +333,28 @@ export function createBufferFillSubscriber(buffer: ChunkBuffer) {
       text: payload.text,
       kind: payload.kind,
     });
+    return undefined;
+  };
+}
+
+/**
+ * Sister to `createBufferFillSubscriber`, but for `chat:phase`. Captures
+ * the latest phase per reqId so an SSE handler attaching after the phase
+ * fired still sees it on replay.
+ */
+export function createPhaseFillSubscriber(buffer: ChunkBuffer) {
+  return async function (
+    _ctx: AgentContext,
+    payload: PhaseEvent,
+  ): Promise<undefined> {
+    if (
+      typeof payload?.reqId !== 'string' ||
+      payload.reqId.length === 0 ||
+      payload?.phase !== 'sandbox-starting'
+    ) {
+      return undefined;
+    }
+    buffer.appendPhase(payload.reqId, payload.phase);
     return undefined;
   };
 }

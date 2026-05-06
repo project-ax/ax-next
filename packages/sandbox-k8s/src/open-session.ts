@@ -231,6 +231,22 @@ export function createOpenSession(deps: OpenSessionDeps) {
       image: deps.config.image,
     });
 
+    // Tell the UI we're about to provision the pod. `chat:phase` is a
+    // backend-agnostic notification (the value `'sandbox-starting'` is
+    // shared with future docker / firecracker providers — subscribers
+    // must not key off it for k8s-specific behavior). Awaited so the
+    // SSE buffer-fill + per-connection subscribers see the phase
+    // BEFORE pod create races ahead; the call is microseconds because
+    // those subscribers are sync. Subscriber-thrown errors are caught
+    // by the bus (logged as `hook_subscriber_failed`); a rejection-
+    // returning subscriber is intentionally NOT veto-capable here —
+    // we ignore the FireResult so a misbehaving subscriber can't block
+    // sandbox startup.
+    await deps.bus.fire('chat:phase', ctx, {
+      reqId: ctx.reqId,
+      phase: 'sandbox-starting' as const,
+    });
+
     try {
       await deps.api.createNamespacedPod({
         namespace: deps.config.namespace,

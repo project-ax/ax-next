@@ -350,7 +350,7 @@ describe('@ax/channel-web server plugin (integration)', () => {
         'conversations:delete',
         'agent:invoke',
       ],
-      subscribes: ['chat:stream-chunk', 'chat:turn-end'],
+      subscribes: ['chat:stream-chunk', 'chat:phase', 'chat:turn-end'],
     });
   });
 });
