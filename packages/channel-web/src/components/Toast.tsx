@@ -9,10 +9,32 @@
  * timer, so the timer's lifetime is tied to the rendered DOM node —
  * unmount cancels the timeout, keeping the store free of timer churn.
  *
+ * **Two-phase dismiss** (auto + manual):
+ *
+ *   1. The duration timeout fires (info) OR the user clicks the close
+ *      button. We flip a local `leaving` flag — the CSS rule
+ *      `.toast.leaving` runs the 180 ms `toast-out` slide-out animation.
+ *   2. After 180 ms (matching the CSS keyframe), we actually remove the
+ *      toast from the store, which unmounts the node.
+ *
+ *   Without phase 1 the React unmount races ahead of the CSS animation
+ *   and the slide-out is invisible — `.toast.leaving` was dead CSS
+ *   before this split.
+ *
+ * Accessibility:
+ *
+ *   - Stack region uses `aria-live="polite"` for ambient info toasts.
+ *   - Error items also carry `role="alert"` (which implies
+ *     `aria-live="assertive"`) so screen readers announce errors
+ *     immediately rather than waiting for the current utterance.
+ *
  * Mirrors `.toast-stack` / `.toast` markup from the Tide Sessions design.
  */
-import { useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { type Toast as ToastModel, toastActions, useToastStore } from '../lib/toast-store';
+
+/** Must match the duration of the `toast-out` keyframe in `index.css`. */
+const TOAST_LEAVE_MS = 180;
 
 export const ToastStack = () => {
   const { toasts } = useToastStore();
@@ -26,18 +48,33 @@ export const ToastStack = () => {
 };
 
 const ToastItem = ({ toast }: { toast: ToastModel }) => {
+  const [leaving, setLeaving] = useState(false);
+  const startLeave = useCallback(() => setLeaving(true), []);
+
+  // Phase 1: auto-dismiss timer flips the leaving flag.
   useEffect(() => {
     if (toast.duration <= 0) return;
-    const timer = window.setTimeout(() => {
-      toastActions.dismiss(toast.id);
-    }, toast.duration);
+    const timer = window.setTimeout(startLeave, toast.duration);
     return () => window.clearTimeout(timer);
-  }, [toast.id, toast.duration]);
+  }, [toast.id, toast.duration, startLeave]);
 
-  const onClose = () => toastActions.dismiss(toast.id);
+  // Phase 2: once leaving, wait for the CSS animation to finish, then
+  // remove from the store so React unmounts the node.
+  useEffect(() => {
+    if (!leaving) return;
+    const timer = window.setTimeout(
+      () => toastActions.dismiss(toast.id),
+      TOAST_LEAVE_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [leaving, toast.id]);
+
+  const isError = toast.kind === 'error';
+  const className =
+    'toast' + (isError ? ' error' : '') + (leaving ? ' leaving' : '');
 
   return (
-    <div className={'toast' + (toast.kind === 'error' ? ' error' : '')}>
+    <div className={className} role={isError ? 'alert' : undefined}>
       <span className="toast-dot" />
       <div className="toast-body">
         <div className="toast-title">{toast.title}</div>
@@ -47,7 +84,7 @@ const ToastItem = ({ toast }: { toast: ToastModel }) => {
         type="button"
         className="toast-close"
         aria-label="Dismiss"
-        onClick={onClose}
+        onClick={startLeave}
       >
         <svg viewBox="0 0 10 10" aria-hidden="true">
           <path

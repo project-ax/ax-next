@@ -94,7 +94,13 @@ export function Composer() {
   // Dev-only test-trigger interceptor. assistant-ui's ComposerPrimitive.Root
   // composes our onSubmit BEFORE its own; calling preventDefault here
   // skips the default runtime-send path.
+  //
+  // Gated on `import.meta.env.DEV` so production builds NEVER intercept —
+  // a real user typing "/status" or "/error something" must reach the
+  // model unchanged. Vite + vitest both set DEV=true, so the gate is
+  // open in dev and tests; production bundles tree-shake the dead branch.
   const onSubmit = (e: React.FormEvent<HTMLFormElement>) => {
+    if (!import.meta.env.DEV) return;
     const text = inputRef.current?.value.trim() ?? '';
     if (!text.startsWith('/status') && !text.startsWith('/error')) return;
     if (handleTestTrigger(text)) {

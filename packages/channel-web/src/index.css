@@ -1146,6 +1146,15 @@ body.sidebar-collapsed .composer { left: 56px; }
   color: var(--ink);
   background: var(--bg-deep);
 }
+/* Keyboard focus — `all: unset` above strips the native ring; this
+   restores a visible focus indicator only for keyboard users. */
+.agent-status-cancel:focus-visible {
+  opacity: 1;
+  color: var(--ink);
+  background: var(--bg-deep);
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 
 /* Error variant: red dot, danger-tinted text. Persistent (no auto-hide)
    and the action button is always visible (retry/dismiss). */
@@ -1295,6 +1304,13 @@ body.sidebar-collapsed .composer { left: 56px; }
 .toast-close:hover {
   color: var(--ink);
   background: var(--bg-deep);
+}
+/* Keyboard focus — same reason as `.agent-status-cancel:focus-visible`. */
+.toast-close:focus-visible {
+  color: var(--ink);
+  background: var(--bg-deep);
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 .toast-close svg {
   width: 10px;

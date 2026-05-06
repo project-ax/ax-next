@@ -136,7 +136,10 @@ describe('AgentStatus', () => {
     expect(screen.getByRole('button', { name: /dismiss/i })).toBeTruthy();
   });
 
-  it('clicking retry runs the retry handler AND hides the row', () => {
+  it('clicking retry invokes the handler WITHOUT auto-hiding (handler decides)', () => {
+    // Retry handlers commonly transition the row to a follow-up working
+    // state ("Reconnecting…"). Auto-hiding right after retry() would
+    // flash that follow-up label invisibly.
     let retried = 0;
     const { container } = render(
       <StubRuntimeProvider>
@@ -147,11 +150,36 @@ describe('AgentStatus', () => {
       agentStatusActions.error('Connection lost', {
         retry: () => {
           retried += 1;
+          // Simulate the typical retry flow: swap to a follow-up label.
+          agentStatusActions.show('Reconnecting…');
         },
       }),
     );
     fireEvent.click(screen.getByRole('button', { name: /retry/i }));
     expect(retried).toBe(1);
+    // Row stays visible because the retry handler showed a new label.
+    const row = container.querySelector('.agent-status');
+    expect(row?.classList.contains('visible')).toBe(true);
+    expect(screen.getByText('Reconnecting…')).toBeTruthy();
+  });
+
+  it('clicking dismiss invokes the dismiss handler AND hides the row', () => {
+    // Dismiss = "make this go away". Hiding is the right behavior.
+    let dismissed = 0;
+    const { container } = render(
+      <StubRuntimeProvider>
+        <AgentStatus />
+      </StubRuntimeProvider>,
+    );
+    act(() =>
+      agentStatusActions.error('Disconnected', {
+        dismiss: () => {
+          dismissed += 1;
+        },
+      }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: /dismiss/i }));
+    expect(dismissed).toBe(1);
     const row = container.querySelector('.agent-status');
     expect(row?.classList.contains('visible')).toBe(false);
   });

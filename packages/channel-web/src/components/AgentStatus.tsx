@@ -61,8 +61,17 @@ export const AgentStatus = () => {
 
   const onAction = () => {
     if (isError) {
-      if (retry) retry();
-      else if (dismiss) dismiss();
+      // Retry is fundamentally different from dismiss: a retry handler
+      // commonly transitions the row to a follow-up working state
+      // ("Reconnecting…", "Retrying…"). If we hide right after the
+      // callback, that follow-up flashes invisibly. So: retry → call
+      // and let the handler decide what state the row should land in;
+      // dismiss → hide (the user's intent was "make this go away").
+      if (retry) {
+        retry();
+        return;
+      }
+      if (dismiss) dismiss();
       agentStatusActions.hide();
       return;
     }
