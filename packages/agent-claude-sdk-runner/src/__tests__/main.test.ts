@@ -943,6 +943,36 @@ describe('main()', () => {
         { type: 'text', text: 'done' },
       ],
     });
+
+    // Live streaming surfaces both halves of the tool-call too: a
+    // tool-use chunk when the model issues the call, and a tool-result
+    // chunk when the SDK echoes the result back. The host's SSE handler
+    // forwards these to the browser so Thread.tsx renders ToolGroup +
+    // ToolFallback live, not just on history reload.
+    const streamChunks = fakeClient.event.mock.calls.filter(
+      (c) => c[0] === 'event.stream-chunk',
+    );
+    // Three chunks: tool-use, tool-result, then text "done".
+    expect(streamChunks).toHaveLength(3);
+    expect(streamChunks[0]?.[1]).toEqual({
+      reqId: expect.any(String),
+      kind: 'tool-use',
+      toolCallId: 'tu_42',
+      toolName: 'Bash',
+      input: { command: 'pwd' },
+    });
+    expect(streamChunks[1]?.[1]).toEqual({
+      reqId: expect.any(String),
+      kind: 'tool-result',
+      toolCallId: 'tu_42',
+      output: '/tmp/work',
+      isError: false,
+    });
+    expect(streamChunks[2]?.[1]).toEqual({
+      reqId: expect.any(String),
+      kind: 'text',
+      text: 'done',
+    });
   });
 
   it('tool_result with mixed text+image content: both blocks survive into the role=tool turn-end', async () => {
@@ -1172,10 +1202,10 @@ describe('main()', () => {
     const streamChunks = fakeClient.event.mock.calls.filter(
       (c) => c[0] === 'event.stream-chunk',
     );
-    // Three chunks: thinking, text "hello", text "world". The empty-text
-    // block, the redacted_thinking block, and the tool_use block do not
-    // contribute.
-    expect(streamChunks).toHaveLength(3);
+    // Four chunks in emission order: thinking, text "hello", tool-use,
+    // text "world". The empty-text block and redacted_thinking block do
+    // not contribute (no human-readable content).
+    expect(streamChunks).toHaveLength(4);
     expect(streamChunks[0]?.[1]).toEqual({
       reqId: 'r42',
       text: 'pondering',
@@ -1187,6 +1217,13 @@ describe('main()', () => {
       kind: 'text',
     });
     expect(streamChunks[2]?.[1]).toEqual({
+      reqId: 'r42',
+      kind: 'tool-use',
+      toolCallId: 'tu_1',
+      toolName: 'Bash',
+      input: { command: 'ls' },
+    });
+    expect(streamChunks[3]?.[1]).toEqual({
       reqId: 'r42',
       text: 'world',
       kind: 'text',

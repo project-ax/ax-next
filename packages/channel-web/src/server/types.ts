@@ -7,18 +7,33 @@
 // import path into channel-web's react bundle.
 // ---------------------------------------------------------------------------
 
-export type StreamChunkKind = 'text' | 'thinking';
+export type StreamChunkKind = 'text' | 'thinking' | 'tool-use' | 'tool-result';
 
 /**
- * One streaming chunk observation. Matches `EventStreamChunkSchema` shape;
- * `text` is UNTRUSTED model output (Invariant J2) — JSON-encoded into SSE
- * frames here, sanitized at render in the browser.
+ * One streaming chunk observation. Matches `EventStreamChunkSchema`'s
+ * discriminated union (LLM-API vocabulary, not transport — Invariant I1).
+ *
+ * `text`, `input` (a string-keyed object), and `output` are UNTRUSTED
+ * model / tool output (Invariant J2) — JSON-encoded into SSE frames here,
+ * sanitized at render in the browser.
  */
-export interface StreamChunk {
-  reqId: string;
-  text: string;
-  kind: StreamChunkKind;
-}
+export type StreamChunk =
+  | { reqId: string; kind: 'text'; text: string }
+  | { reqId: string; kind: 'thinking'; text: string }
+  | {
+      reqId: string;
+      kind: 'tool-use';
+      toolCallId: string;
+      toolName: string;
+      input: Record<string, unknown>;
+    }
+  | {
+      reqId: string;
+      kind: 'tool-result';
+      toolCallId: string;
+      output: string;
+      isError?: boolean;
+    };
 
 /**
  * Phase events surfaced to the client out-of-band of message content.
@@ -47,7 +62,7 @@ export type PhaseKind = 'sandbox-starting';
  *   - done  frame: `{ reqId, done: true }`         — turn terminator.
  */
 export type SseFrame =
-  | { reqId: string; text: string; kind: StreamChunkKind }
+  | StreamChunk
   | { reqId: string; phase: PhaseKind }
   | { reqId: string; done: true };
 

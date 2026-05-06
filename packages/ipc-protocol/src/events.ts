@@ -14,14 +14,48 @@ import { ContentBlockSchema } from './content-blocks.js';
 // ---------------------------------------------------------------------------
 
 /**
- * Incremental output from the current LLM turn. Schema only in 6.5a —
- * runtime wiring arrives in 6.5b once the streaming plumbing is live.
+ * Incremental output from the current LLM turn.
+ *
+ * Discriminated on `kind`:
+ *   - `text` / `thinking`: streamed prose / reasoning, carries `text`.
+ *   - `tool-use`: model emitted a tool call with structured `input`.
+ *   - `tool-result`: tool finished and produced `output` (or an error).
+ *
+ * The host's chat:stream-chunk subscribers fan these out to clients verbatim;
+ * the wire is opaque about how each variant should be rendered. Field names
+ * are LLM-API vocabulary (Anthropic's tool_use/tool_result), not transport
+ * vocabulary — boundary review I1.
  */
-export const EventStreamChunkSchema = z.object({
-  reqId: z.string(),
-  text: z.string(),
-  kind: z.enum(['text', 'thinking']),
-});
+export const EventStreamChunkSchema = z.discriminatedUnion('kind', [
+  z.object({
+    reqId: z.string(),
+    kind: z.literal('text'),
+    text: z.string(),
+  }),
+  z.object({
+    reqId: z.string(),
+    kind: z.literal('thinking'),
+    text: z.string(),
+  }),
+  z.object({
+    reqId: z.string(),
+    kind: z.literal('tool-use'),
+    /** Matches Anthropic ToolUseBlock.id; round-trips with tool-result.toolCallId. */
+    toolCallId: z.string(),
+    toolName: z.string(),
+    /** Raw input the model produced for this tool call. */
+    input: z.record(z.unknown()),
+  }),
+  z.object({
+    reqId: z.string(),
+    kind: z.literal('tool-result'),
+    toolCallId: z.string(),
+    /** Stringified result. Tools producing rich content (images) flatten to
+     *  text on the wire; full structure persists at turn-end. */
+    output: z.string(),
+    isError: z.boolean().optional(),
+  }),
+]);
 export type EventStreamChunk = z.infer<typeof EventStreamChunkSchema>;
 
 /**

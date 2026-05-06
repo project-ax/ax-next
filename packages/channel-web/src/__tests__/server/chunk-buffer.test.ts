@@ -1,6 +1,11 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createChunkBuffer } from '../../server/chunk-buffer';
+import type { StreamChunk } from '../../server/types';
+
+// Type-narrow accessor — these tests only push text/thinking variants.
+const textOf = (c: StreamChunk): string =>
+  c.kind === 'text' || c.kind === 'thinking' ? c.text : '';
 
 describe('@ax/channel-web ChunkBuffer', () => {
   beforeEach(() => {
@@ -18,7 +23,7 @@ describe('@ax/channel-web ChunkBuffer', () => {
       buf.append({ reqId: 'r1', text: 'b', kind: 'text' });
       buf.append({ reqId: 'r1', text: 'c', kind: 'text' });
       const tail = buf.tail('r1');
-      expect(tail.map((c) => c.text)).toEqual(['a', 'b', 'c']);
+      expect(tail.map(textOf)).toEqual(['a', 'b', 'c']);
     } finally {
       buf.dispose();
     }
@@ -39,8 +44,8 @@ describe('@ax/channel-web ChunkBuffer', () => {
       buf.append({ reqId: 'r1', text: 'a', kind: 'text' });
       buf.append({ reqId: 'r2', text: 'B', kind: 'thinking' });
       buf.append({ reqId: 'r1', text: 'b', kind: 'text' });
-      expect(buf.tail('r1').map((c) => c.text)).toEqual(['a', 'b']);
-      expect(buf.tail('r2').map((c) => c.text)).toEqual(['B']);
+      expect(buf.tail('r1').map(textOf)).toEqual(['a', 'b']);
+      expect(buf.tail('r2').map(textOf)).toEqual(['B']);
     } finally {
       buf.dispose();
     }
@@ -55,8 +60,8 @@ describe('@ax/channel-web ChunkBuffer', () => {
       }
       const tail = buf.tail('r1');
       expect(tail).toHaveLength(256);
-      expect(tail[0]!.text).toBe('4');
-      expect(tail[255]!.text).toBe('259');
+      expect(textOf(tail[0]!)).toBe('4');
+      expect(textOf(tail[255]!)).toBe('259');
     } finally {
       buf.dispose();
     }
@@ -69,7 +74,7 @@ describe('@ax/channel-web ChunkBuffer', () => {
       buf.append({ reqId: 'r2', text: 'b', kind: 'text' });
       buf.evictReqId('r1');
       expect(buf.tail('r1')).toEqual([]);
-      expect(buf.tail('r2').map((c) => c.text)).toEqual(['b']);
+      expect(buf.tail('r2').map(textOf)).toEqual(['b']);
     } finally {
       buf.dispose();
     }
@@ -97,7 +102,7 @@ describe('@ax/channel-web ChunkBuffer', () => {
       // r-old was last written at t=0; now t≈62s → evicted.
       // r-fresh was written at t=31s; now t≈62s → still alive.
       expect(buf.tail('r-old')).toEqual([]);
-      expect(buf.tail('r-fresh').map((c) => c.text)).toEqual(['fresh']);
+      expect(buf.tail('r-fresh').map(textOf)).toEqual(['fresh']);
     } finally {
       buf.dispose();
     }
@@ -115,7 +120,7 @@ describe('@ax/channel-web ChunkBuffer', () => {
       buf.append({ reqId: 'r-live', text: 'c', kind: 'text' });
       vi.advanceTimersByTime(40_000);
       // After ~120s the row is still there because every gap < TTL.
-      expect(buf.tail('r-live').map((c) => c.text)).toEqual(['a', 'b', 'c']);
+      expect(buf.tail('r-live').map(textOf)).toEqual(['a', 'b', 'c']);
     } finally {
       buf.dispose();
     }
@@ -129,7 +134,7 @@ describe('@ax/channel-web ChunkBuffer', () => {
     vi.advanceTimersByTime(120_000);
     // tail still returns the seeded data because our retention map wasn't
     // touched after dispose — sweep was cancelled.
-    expect(buf.tail('r1').map((c) => c.text)).toEqual(['a']);
+    expect(buf.tail('r1').map(textOf)).toEqual(['a']);
   });
 
   // -----------------------------------------------------------------------
@@ -168,7 +173,7 @@ describe('@ax/channel-web ChunkBuffer', () => {
       buf.append({ reqId: 'r1', text: 'hi', kind: 'text' });
       expect(buf.tailPhase('r1')).toBeNull();
       // Content is intact; only the phase slot was cleared.
-      expect(buf.tail('r1').map((c) => c.text)).toEqual(['hi']);
+      expect(buf.tail('r1').map(textOf)).toEqual(['hi']);
     } finally {
       buf.dispose();
     }

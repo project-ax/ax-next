@@ -34,8 +34,36 @@ interface GetConversationResponse {
   turns: Turn[];
 }
 
+/**
+ * Tool result lookup keyed by `tool_use_id`. Built once across all turns so
+ * an assistant turn's `tool_use` block can be paired with the tool turn that
+ * carries the corresponding `tool_result`.
+ */
+type ToolResultMap = Map<
+  string,
+  { content: string; isError: boolean }
+>;
+
+const flattenToolResultContent = (
+  content: unknown,
+): string => {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter((c): c is { type: 'text'; text: string } =>
+        !!c && typeof c === 'object' && (c as { type?: string }).type === 'text',
+      )
+      .map((c) => c.text)
+      .join('\n');
+  }
+  return '';
+};
+
 /** Convert AX content blocks to assistant-ui message parts. */
-function blocksToParts(blocks: ContentBlock[]): Array<Record<string, unknown>> {
+function blocksToParts(
+  blocks: ContentBlock[],
+  toolResults: ToolResultMap,
+): Array<Record<string, unknown>> {
   const parts: Array<Record<string, unknown>> = [];
   for (const block of blocks) {
     if (block.type === 'text') {
@@ -77,15 +105,40 @@ function blocksToParts(blocks: ContentBlock[]): Array<Record<string, unknown>> {
       continue;
     }
     if (block.type === 'tool_use') {
-      // Surface as text fallback in MVP. Rich tool-call rendering lands later.
-      parts.push({
-        type: 'text',
-        text: `[tool: ${block.name}]`,
-      });
+      // Emit an AI SDK v5 dynamic-tool UIMessage part. assistant-ui's
+      // react-ai-sdk bridge converts these into tool-call ThreadMessage
+      // parts, which Thread.tsx renders via ToolGroup + ToolFallback.
+      const matched = toolResults.get(block.id);
+      const part: Record<string, unknown> = {
+        type: 'dynamic-tool',
+        toolName: block.name,
+        toolCallId: block.id,
+        input: block.input,
+      };
+      if (matched) {
+        part.state = 'output-available';
+        part.output = matched.content;
+        if (matched.isError) {
+          // The bridge prefers `output-error` when an explicit errorText is
+          // present. Match that shape so the failed group renders red.
+          part.state = 'output-error';
+          part.errorText = matched.content || 'tool failed';
+          delete part.output;
+        }
+      } else {
+        // Result not in this transcript (turn streaming dropped it, or the
+        // tool is still in flight). Mark as input-available so the row
+        // shows up; the absence of output is rendered as a quiet "running".
+        part.state = 'input-available';
+      }
+      parts.push(part);
       continue;
     }
     if (block.type === 'tool_result') {
-      parts.push({ type: 'text', text: '[tool result]' });
+      // Tool results live in tool-role turns; collectToolResults() pulls
+      // them into the lookup map so the matching assistant turn's tool_use
+      // can reference them. An orphan here means there's no preceding
+      // tool_use — drop silently.
       continue;
     }
     // Anything else falls through as a text placeholder so the message
@@ -99,6 +152,22 @@ function blocksToParts(blocks: ContentBlock[]): Array<Record<string, unknown>> {
     parts.push({ type: 'text', text: '' });
   }
   return parts;
+}
+
+/** Build a tool_use_id → result lookup from every block we'll see. */
+function collectToolResults(turns: Turn[]): ToolResultMap {
+  const map: ToolResultMap = new Map();
+  for (const turn of turns) {
+    for (const block of turn.contentBlocks) {
+      if (block.type === 'tool_result') {
+        map.set(block.tool_use_id, {
+          content: flattenToolResultContent(block.content),
+          isError: block.is_error === true,
+        });
+      }
+    }
+  }
+  return map;
 }
 
 /**
@@ -147,14 +216,27 @@ export const createAxHistoryAdapter = (
 
           const body = (await response.json()) as GetConversationResponse;
           const turns = Array.isArray(body.turns) ? body.turns : [];
+          const toolResults = collectToolResults(turns);
+
+          // Drop tool-role turns from the rendered list — their tool_result
+          // content has been merged into the prior assistant turn's tool_use
+          // parts via collectToolResults. Rendering a turn that's only
+          // tool_result blocks would just be a blank assistant bubble.
+          const renderable = turns.filter(
+            (t) => t.role !== 'tool' || t.contentBlocks.some((b) => b.type !== 'tool_result'),
+          );
 
           type StorageContent = Parameters<typeof formatAdapter.decode>[0]['content'];
-          const items = turns.map((t) => {
-            const parts = blocksToParts(t.contentBlocks);
+          // parent_id has to chain through *renderable* messages — once
+          // we drop tool-role turns, turnIndex - 1 may point to an id
+          // that was never imported, and assistant-ui's MessageRepository
+          // will throw "Parent message not found".
+          let prevId: string | null = null;
+          const items = renderable.map((t) => {
+            const parts = blocksToParts(t.contentBlocks, toolResults);
             const id = `${conversationId}-${t.turnIndex}`;
-            const parentId = t.turnIndex > 0
-              ? `${conversationId}-${t.turnIndex - 1}`
-              : null;
+            const parentId = prevId;
+            prevId = id;
             return formatAdapter.decode({
               id,
               parent_id: parentId,

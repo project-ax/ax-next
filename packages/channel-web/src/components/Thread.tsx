@@ -46,6 +46,7 @@ import { thinkingStoreActions, useThinkingStore } from '../lib/thinking-store';
 import { MarkdownText } from './MarkdownText';
 import { Composer } from './Composer';
 import { SearchBar } from './SearchBar';
+import { ToolFallback, ToolGroup } from './ToolUse';
 
 /**
  * MessageTime — renders the message createdAt as a lowercase clock-time
@@ -180,7 +181,13 @@ const AssistantMessage: FC = () => (
   <MessagePrimitive.Root asChild>
     <div className="msg agent" data-role="assistant">
       <div className="msg-body">
-        <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
+        <MessagePrimitive.Parts
+          components={{
+            Text: MarkdownText,
+            tools: { Fallback: ToolFallback },
+            ToolGroup,
+          }}
+        />
       </div>
       <ActionBarPrimitive.Root className="msg-actions">
         <MessageTime />
