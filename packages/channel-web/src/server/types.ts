@@ -21,11 +21,41 @@ export interface StreamChunk {
 }
 
 /**
+ * Phase events surfaced to the client out-of-band of message content.
+ *
+ * Currently the only phase is `'sandbox-starting'`, fired by sandbox
+ * providers that have a non-instant startup (today: `@ax/sandbox-k8s`
+ * before `createNamespacedPod`). `@ax/sandbox-subprocess` has nothing
+ * to announce — it's instant — so it doesn't fire at all.
+ *
+ * The string is intentionally backend-agnostic ("sandbox-starting", not
+ * "pod-starting"): subscribers must NOT key off it to do k8s-specific
+ * things. A future docker provider would emit the same value.
+ *
+ * The wire frame is a separate `SseFrame` variant so the client can
+ * branch without nullable fields.
+ */
+export type PhaseKind = 'sandbox-starting';
+
+/**
  * Frame the SSE handler emits to the client. Matches the `data:` JSON the
- * browser parses verbatim. `done: true` is a separate frame fired on
- * `chat:turn-end`; the chunk-frame and the done-frame are deliberately
- * disjoint discriminants so the client can branch without nullable fields.
+ * browser parses verbatim. The three variants are deliberately disjoint
+ * so the client can `switch` on a single discriminator.
+ *
+ *   - chunk frame: `{ reqId, text, kind }`        — content delta.
+ *   - phase frame: `{ reqId, phase }`             — out-of-band agent state.
+ *   - done  frame: `{ reqId, done: true }`         — turn terminator.
  */
 export type SseFrame =
   | { reqId: string; text: string; kind: StreamChunkKind }
+  | { reqId: string; phase: PhaseKind }
   | { reqId: string; done: true };
+
+/**
+ * Payload for the `chat:phase` subscriber hook. Matches the SSE phase
+ * frame's payload shape — the SSE handler's job is just to JSON-encode it.
+ */
+export interface PhaseEvent {
+  reqId: string;
+  phase: PhaseKind;
+}

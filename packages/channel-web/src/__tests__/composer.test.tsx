@@ -16,14 +16,19 @@
  * the primitives have a runtime to talk to. Send behavior wiring is
  * verified end-to-end in Task 18+ when the composer is mounted in App.
  */
-import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { fireEvent, render, screen } from '@testing-library/react';
 import {
   AssistantRuntimeProvider,
   useLocalRuntime,
 } from '@assistant-ui/react';
 import type { ReactNode } from 'react';
 import { Composer } from '../components/Composer';
+import {
+  agentStatusActions,
+  getAgentStatusSnapshot,
+} from '../lib/agent-status-store';
+import { testTriggersInternals } from '../lib/agent-status-test-triggers';
 
 const StubRuntimeProvider = ({ children }: { children: ReactNode }) => {
   const runtime = useLocalRuntime({
@@ -59,5 +64,76 @@ describe('Composer', () => {
     expect(container.querySelector('.composer')).toBeTruthy();
     expect(container.querySelector('.composer-field')).toBeTruthy();
     expect(container.querySelector('.composer-input')).toBeTruthy();
+  });
+
+  it('renders the agent-status row inside .composer-inner (above the field)', () => {
+    const { container } = render(
+      <StubRuntimeProvider>
+        <Composer />
+      </StubRuntimeProvider>,
+    );
+    const inner = container.querySelector('.composer-inner');
+    expect(inner).toBeTruthy();
+    // Status row sits inside composer-inner so it's outside the timeline.
+    expect(inner?.querySelector('.agent-status')).toBeTruthy();
+  });
+
+  describe('test triggers', () => {
+    beforeEach(() => {
+      agentStatusActions.reset();
+    });
+    afterEach(() => {
+      testTriggersInternals.cancelPendingTimers();
+      agentStatusActions.reset();
+    });
+
+    it('intercepts /status submission (does not send as a chat message)', () => {
+      const { container } = render(
+        <StubRuntimeProvider>
+          <Composer />
+        </StubRuntimeProvider>,
+      );
+      const input = container.querySelector(
+        '.composer-input',
+      ) as HTMLTextAreaElement;
+      const form = container.querySelector('.composer-inner') as HTMLFormElement;
+      fireEvent.change(input, { target: { value: '/status Building…' } });
+      fireEvent.submit(form);
+      // Status row is now visible with the custom label; the input is cleared.
+      expect(getAgentStatusSnapshot().mode).toBe('working');
+      expect(getAgentStatusSnapshot().text).toBe('Building…');
+      expect(input.value).toBe('');
+    });
+
+    it('intercepts /error transient submission and flips into error mode', () => {
+      const { container } = render(
+        <StubRuntimeProvider>
+          <Composer />
+        </StubRuntimeProvider>,
+      );
+      const input = container.querySelector(
+        '.composer-input',
+      ) as HTMLTextAreaElement;
+      const form = container.querySelector('.composer-inner') as HTMLFormElement;
+      fireEvent.change(input, { target: { value: '/error transient' } });
+      fireEvent.submit(form);
+      expect(getAgentStatusSnapshot().mode).toBe('error');
+    });
+
+    it('passes regular text through (no interception)', () => {
+      const { container } = render(
+        <StubRuntimeProvider>
+          <Composer />
+        </StubRuntimeProvider>,
+      );
+      const input = container.querySelector(
+        '.composer-input',
+      ) as HTMLTextAreaElement;
+      const form = container.querySelector('.composer-inner') as HTMLFormElement;
+      fireEvent.change(input, { target: { value: 'hello agent' } });
+      fireEvent.submit(form);
+      // The status row should NOT have been flipped on by a trigger.
+      expect(getAgentStatusSnapshot().mode).toBe('hidden');
+    });
   });
 });

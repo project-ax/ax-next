@@ -9,13 +9,14 @@ import {
 import { createChunkBuffer } from '../../server/chunk-buffer';
 import {
   createBufferFillSubscriber,
+  createPhaseFillSubscriber,
   createSseHandler,
   createTurnEndEvictor,
   type RouteRequest,
   type RouteResponse,
   type RouteStream,
 } from '../../server/sse';
-import type { StreamChunk } from '../../server/types';
+import type { PhaseEvent, StreamChunk } from '../../server/types';
 
 // ---------------------------------------------------------------------------
 // SSE handler tests. We exercise the handler by directly calling it with
@@ -192,6 +193,13 @@ function bootHandler(opts: BootOpts = {}) {
     'chat:stream-chunk',
     '@ax/channel-web/buffer-fill',
     createBufferFillSubscriber(buffer),
+  );
+  // Plugin-side phase-fill subscriber — same role as buffer-fill but for
+  // single-slot phase memory.
+  bus.subscribe(
+    'chat:phase',
+    '@ax/channel-web/phase-fill',
+    createPhaseFillSubscriber(buffer),
   );
   // Plugin-side turn-end evictor.
   bus.subscribe(
@@ -438,6 +446,115 @@ describe('@ax/channel-web SSE handler', () => {
       expect(
         captured.streamWrites.filter((s) => s.startsWith('data:')),
       ).toHaveLength(0);
+    } finally {
+      buffer.dispose();
+    }
+  });
+
+  // -----------------------------------------------------------------------
+  // chat:phase — out-of-band agent-state frames. Same posture as chunks:
+  // per-connection subscriber filters by reqId, the buffer-fill flavor
+  // captures phase for replay-on-attach.
+  // -----------------------------------------------------------------------
+
+  it('phase fires on bus → SSE phase frame written to the connection', async () => {
+    const { bus, initCtx, handler, buffer } = bootHandler();
+    try {
+      const req = fakeReq();
+      const { res, captured } = fakeRes();
+      await handler(req, res);
+
+      await bus.fire<PhaseEvent>('chat:phase', initCtx, {
+        reqId: 'r-test',
+        phase: 'sandbox-starting',
+      });
+
+      const frames = captured.streamWrites.filter((s) => s.startsWith('data:'));
+      expect(frames).toEqual([
+        'data: {"reqId":"r-test","phase":"sandbox-starting"}\n\n',
+      ]);
+    } finally {
+      buffer.dispose();
+    }
+  });
+
+  it('phase frames with non-matching reqId are NOT emitted', async () => {
+    const { bus, initCtx, handler, buffer } = bootHandler();
+    try {
+      const req = fakeReq();
+      const { res, captured } = fakeRes();
+      await handler(req, res);
+
+      await bus.fire<PhaseEvent>('chat:phase', initCtx, {
+        reqId: 'r-other',
+        phase: 'sandbox-starting',
+      });
+
+      expect(
+        captured.streamWrites.filter((s) => s.startsWith('data:')),
+      ).toEqual([]);
+    } finally {
+      buffer.dispose();
+    }
+  });
+
+  it('phase fired BEFORE attach is replayed on connect (pre-content window)', async () => {
+    // Mirrors the chunk replay test: an SSE consumer that connects after
+    // sandbox-k8s already announced the phase should still see it. This
+    // is the whole reason for the single-slot phase memory in
+    // chunk-buffer.
+    const { bus, initCtx, handler, buffer } = bootHandler();
+    try {
+      // Phase fires while no SSE listener is attached.
+      await bus.fire<PhaseEvent>('chat:phase', initCtx, {
+        reqId: 'r-test',
+        phase: 'sandbox-starting',
+      });
+
+      // Now the client connects.
+      const req = fakeReq();
+      const { res, captured } = fakeRes();
+      await handler(req, res);
+
+      const frames = captured.streamWrites.filter((s) => s.startsWith('data:'));
+      expect(frames).toEqual([
+        'data: {"reqId":"r-test","phase":"sandbox-starting"}\n\n',
+      ]);
+    } finally {
+      buffer.dispose();
+    }
+  });
+
+  it('phase replay precedes any chunk replay (matches original fire order)', async () => {
+    const { bus, initCtx, handler, buffer } = bootHandler();
+    try {
+      await bus.fire<PhaseEvent>('chat:phase', initCtx, {
+        reqId: 'r-test',
+        phase: 'sandbox-starting',
+      });
+      // (In the real flow the buffer evicts phase as soon as content
+      // lands, so this scenario — phase-then-chunk-then-attach — is
+      // mostly theoretical. We still verify the *ordering* matches the
+      // would-be live ordering.)
+      // To exercise the ordering test we need to re-introduce the phase
+      // post-content. Since appendPhase is ignored after content, we
+      // attach BEFORE any content lands and verify phase comes first.
+      const req = fakeReq();
+      const { res, captured } = fakeRes();
+      await handler(req, res);
+      await bus.fire<StreamChunk>('chat:stream-chunk', initCtx, {
+        reqId: 'r-test',
+        text: 'hi',
+        kind: 'text',
+      });
+
+      const frames = captured.streamWrites.filter((s) => s.startsWith('data:'));
+      expect(frames[0]).toBe(
+        'data: {"reqId":"r-test","phase":"sandbox-starting"}\n\n',
+      );
+      expect(frames[1]).toBe(
+        'data: {"reqId":"r-test","text":"hi","kind":"text"}\n\n',
+      );
     } finally {
       buffer.dispose();
     }

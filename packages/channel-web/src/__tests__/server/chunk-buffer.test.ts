@@ -131,4 +131,84 @@ describe('@ax/channel-web ChunkBuffer', () => {
     // touched after dispose — sweep was cancelled.
     expect(buf.tail('r1').map((c) => c.text)).toEqual(['a']);
   });
+
+  // -----------------------------------------------------------------------
+  // Phase slot — single per-reqId, evicted as soon as any content lands.
+  // Used by the SSE handler to replay "Starting sandbox…" for clients that
+  // attach AFTER sandbox-k8s fired `chat:phase` but BEFORE the runner
+  // started streaming content.
+  // -----------------------------------------------------------------------
+
+  it('appendPhase + tailPhase returns the latest phase for a reqId', () => {
+    const buf = createChunkBuffer();
+    try {
+      buf.appendPhase('r1', 'sandbox-starting');
+      expect(buf.tailPhase('r1')).toBe('sandbox-starting');
+    } finally {
+      buf.dispose();
+    }
+  });
+
+  it('tailPhase is null for unknown reqIds and reqIds with no phase yet', () => {
+    const buf = createChunkBuffer();
+    try {
+      expect(buf.tailPhase('r-unknown')).toBeNull();
+      buf.append({ reqId: 'r1', text: 'a', kind: 'text' });
+      expect(buf.tailPhase('r1')).toBeNull();
+    } finally {
+      buf.dispose();
+    }
+  });
+
+  it('first content chunk evicts the phase (phase is pre-content only)', () => {
+    const buf = createChunkBuffer();
+    try {
+      buf.appendPhase('r1', 'sandbox-starting');
+      expect(buf.tailPhase('r1')).toBe('sandbox-starting');
+      buf.append({ reqId: 'r1', text: 'hi', kind: 'text' });
+      expect(buf.tailPhase('r1')).toBeNull();
+      // Content is intact; only the phase slot was cleared.
+      expect(buf.tail('r1').map((c) => c.text)).toEqual(['hi']);
+    } finally {
+      buf.dispose();
+    }
+  });
+
+  it('appendPhase is ignored once content has arrived', () => {
+    // Race protection: a stray phase event arriving after the model
+    // already started streaming should not relabel the row.
+    const buf = createChunkBuffer();
+    try {
+      buf.append({ reqId: 'r1', text: 'hi', kind: 'text' });
+      buf.appendPhase('r1', 'sandbox-starting');
+      expect(buf.tailPhase('r1')).toBeNull();
+    } finally {
+      buf.dispose();
+    }
+  });
+
+  it('phase is keyed by reqId — different reqIds do not bleed', () => {
+    const buf = createChunkBuffer();
+    try {
+      buf.appendPhase('r1', 'sandbox-starting');
+      expect(buf.tailPhase('r2')).toBeNull();
+      buf.append({ reqId: 'r2', text: 'a', kind: 'text' });
+      // r1 phase still set; r2's content didn't touch it.
+      expect(buf.tailPhase('r1')).toBe('sandbox-starting');
+    } finally {
+      buf.dispose();
+    }
+  });
+
+  it('evictReqId clears the phase along with chunks', () => {
+    const buf = createChunkBuffer();
+    try {
+      buf.appendPhase('r1', 'sandbox-starting');
+      buf.evictReqId('r1');
+      expect(buf.tailPhase('r1')).toBeNull();
+      expect(buf.tail('r1')).toEqual([]);
+    } finally {
+      buf.dispose();
+    }
+  });
 });

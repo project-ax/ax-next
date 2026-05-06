@@ -11,8 +11,12 @@
  * method shape, then drive `processResponseStream` directly when we
  * only care about chunk parsing.
  */
-import { describe, test, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, test, expect, vi } from 'vitest';
 import { AxChatTransport } from '../lib/transport';
+import {
+  agentStatusActions,
+  getAgentStatusSnapshot,
+} from '../lib/agent-status-store';
 
 /**
  * Build a ReadableStream<Uint8Array> from a string body. Mirrors how fetch
@@ -182,6 +186,82 @@ describe('AxChatTransport SSE chunk parsing', () => {
     const finish = chunks.find((c) => c.type === 'finish') as { finishReason: string } | undefined;
     expect(finish).toBeTruthy();
     expect(finish?.finishReason).toBe('stop');
+  });
+});
+
+describe('AxChatTransport SSE phase parsing', () => {
+  // Phase frames bypass the UIMessageChunk pipeline (they're agent-state
+  // metadata, not message content) and drive the agent-status store
+  // directly. The store's snapshot is what we assert against.
+  beforeEach(() => {
+    agentStatusActions.reset();
+    // The phase handler is conditional on running already showing the
+    // row; emulate the running effect's seed so phase has somewhere to
+    // land. Without this, agentStatusActions.set() is also a no-op-ish
+    // (it would show working with the new label, but explicit seed
+    // matches the production order).
+    agentStatusActions.show('Thinking…');
+  });
+  afterEach(() => {
+    agentStatusActions.reset();
+  });
+
+  test('phase frame relabels the status row to the human label', async () => {
+    const transport = new AxChatTransport({ getAgentId: () => 'a' });
+    const body =
+      `data: {"reqId":"r1","phase":"sandbox-starting"}\n\n` +
+      `data: {"reqId":"r1","done":true}\n\n`;
+    await drain(asProcess(transport)(sseStream(body)));
+    expect(getAgentStatusSnapshot().text).toBe('Starting sandbox…');
+  });
+
+  test('first content chunk after a phase frame swaps label back to "Thinking…"', async () => {
+    // Phase = pre-content only. Once content streams, the row's label
+    // returns to the default working label so the run-end cleanup hides
+    // it correctly.
+    const transport = new AxChatTransport({ getAgentId: () => 'a' });
+    const body =
+      `data: {"reqId":"r1","phase":"sandbox-starting"}\n\n` +
+      `data: {"reqId":"r1","text":"hello","kind":"text"}\n\n` +
+      `data: {"reqId":"r1","done":true}\n\n`;
+    await drain(asProcess(transport)(sseStream(body)));
+    expect(getAgentStatusSnapshot().text).toBe('Thinking…');
+  });
+
+  test('phase frames after content are ignored (pre-content only)', async () => {
+    const transport = new AxChatTransport({ getAgentId: () => 'a' });
+    const body =
+      `data: {"reqId":"r1","text":"hello","kind":"text"}\n\n` +
+      `data: {"reqId":"r1","phase":"sandbox-starting"}\n\n` +
+      `data: {"reqId":"r1","done":true}\n\n`;
+    await drain(asProcess(transport)(sseStream(body)));
+    // First content chunk swapped to "Thinking…"; the late phase is a no-op.
+    expect(getAgentStatusSnapshot().text).toBe('Thinking…');
+  });
+
+  test('unknown phase value is ignored (forward-compat with newer servers)', async () => {
+    const transport = new AxChatTransport({ getAgentId: () => 'a' });
+    const body =
+      `data: {"reqId":"r1","phase":"future-phase-we-dont-know"}\n\n` +
+      `data: {"reqId":"r1","done":true}\n\n`;
+    await drain(asProcess(transport)(sseStream(body)));
+    // No relabel happened — the row stays on whatever it was seeded to.
+    expect(getAgentStatusSnapshot().text).toBe('Thinking…');
+  });
+
+  test('phase frames do not produce UIMessageChunks', async () => {
+    // Critical: phase is OUT-OF-BAND. If the parser leaked it as a
+    // text-delta or finish, the assistant message would render with
+    // garbage content.
+    const transport = new AxChatTransport({ getAgentId: () => 'a' });
+    const body =
+      `data: {"reqId":"r1","phase":"sandbox-starting"}\n\n` +
+      `data: {"reqId":"r1","done":true}\n\n`;
+    const chunks = await drain(
+      asProcess(transport)(sseStream(body)),
+    ) as Array<{ type: string }>;
+    // Only `finish` should make it through.
+    expect(chunks.map((c) => c.type)).toEqual(['finish']);
   });
 });
 

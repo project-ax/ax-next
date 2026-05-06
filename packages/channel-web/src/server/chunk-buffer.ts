@@ -1,4 +1,4 @@
-import type { StreamChunk } from './types.js';
+import type { PhaseKind, StreamChunk } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Per-reqId chunk ring buffer for SSE reconnect tail.
@@ -38,15 +38,30 @@ const SWEEP_INTERVAL_MS = 30_000;
 
 interface BufferEntry {
   chunks: StreamChunk[];
+  /**
+   * Latest phase event for this reqId, or null. Phase is single-slot
+   * (only one in-flight phase at a time today) and is automatically
+   * evicted as soon as any content chunk lands — once the model is
+   * streaming text, "Starting sandbox…" is no longer the truth.
+   */
+  phase: PhaseKind | null;
   /** Wall-clock ms at the most recent append. */
   lastWriteMs: number;
 }
 
 export interface ChunkBuffer {
-  /** Push a chunk into the per-reqId ring. Refreshes the entry's TTL. */
+  /** Push a chunk into the per-reqId ring. Refreshes the entry's TTL.
+   *  Also evicts any pending phase slot — phase belongs to the pre-content
+   *  window only, so the first content chunk supersedes it. */
   append(chunk: StreamChunk): void;
+  /** Set the latest phase for a reqId. Replaces any prior phase slot.
+   *  Refreshes the entry's TTL. Ignored if a content chunk has already
+   *  arrived for this reqId (phase is pre-content only). */
+  appendPhase(reqId: string, phase: PhaseKind): void;
   /** Snapshot of the current chunks for a reqId, in insertion order. */
   tail(reqId: string): readonly StreamChunk[];
+  /** Latest phase for a reqId, or null. Cleared by the first content chunk. */
+  tailPhase(reqId: string): PhaseKind | null;
   /** Drop the entry for `reqId`. Idempotent. */
   evictReqId(reqId: string): void;
   /** Stop the sweep timer. Safe to call multiple times. */
@@ -95,6 +110,7 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
       if (existing === undefined) {
         map.set(chunk.reqId, {
           chunks: [chunk],
+          phase: null,
           lastWriteMs: now(),
         });
         return;
@@ -109,6 +125,26 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
           existing.chunks.length - MAX_CHUNKS_PER_REQ_ID,
         );
       }
+      // Once content starts streaming, the phase ("Starting sandbox…")
+      // is no longer the truth. Evict so reconnects don't briefly
+      // flicker back to a stale label.
+      existing.phase = null;
+      existing.lastWriteMs = now();
+    },
+
+    appendPhase(reqId, phase) {
+      const existing = map.get(reqId);
+      if (existing === undefined) {
+        map.set(reqId, {
+          chunks: [],
+          phase,
+          lastWriteMs: now(),
+        });
+        return;
+      }
+      // Already past pre-content window — phase is no longer relevant.
+      if (existing.chunks.length > 0) return;
+      existing.phase = phase;
       existing.lastWriteMs = now();
     },
 
@@ -119,6 +155,10 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
       // chunks before they finish, which would otherwise mutate their
       // snapshot mid-iteration.
       return entry.chunks.slice();
+    },
+
+    tailPhase(reqId) {
+      return map.get(reqId)?.phase ?? null;
     },
 
     evictReqId(reqId) {

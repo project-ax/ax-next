@@ -18,10 +18,22 @@
  *
  *   - `ThreadPrimitive.If running={...}` is what swaps Send for Cancel
  *     while a run is in flight. Same pattern v1 uses (thread.tsx ~157).
+ *
+ *   - Above the field sits `<AgentStatus />` — a slim row that reflects
+ *     transient agent state ("Thinking…", "Starting sandbox…") and
+ *     recoverable errors. Lives in `.composer-inner` so it's *outside*
+ *     the message timeline (not persisted to chat history).
+ *
+ *   - The form's `onSubmit` intercepts dev-only test triggers
+ *     (`/status …`, `/error …`) before assistant-ui sends them as real
+ *     messages. `composeEventHandlers` in ComposerPrimitive.Root calls
+ *     ours first and skips its default send when we `preventDefault`.
  */
 import { useEffect, useRef, useState } from 'react';
 import { ComposerPrimitive, ThreadPrimitive } from '@assistant-ui/react';
 import { Paperclip } from 'lucide-react';
+import { handleTestTrigger } from '../lib/agent-status-test-triggers';
+import { AgentStatus } from './AgentStatus';
 
 function AttachMenu() {
   const [open, setOpen] = useState(false);
@@ -77,9 +89,30 @@ function AttachMenu() {
 }
 
 export function Composer() {
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  // Dev-only test-trigger interceptor. assistant-ui's ComposerPrimitive.Root
+  // composes our onSubmit BEFORE its own; calling preventDefault here
+  // skips the default runtime-send path.
+  const onSubmit = (e: React.FormEvent<HTMLFormElement>) => {
+    const text = inputRef.current?.value.trim() ?? '';
+    if (!text.startsWith('/status') && !text.startsWith('/error')) return;
+    if (handleTestTrigger(text)) {
+      e.preventDefault();
+      if (inputRef.current) {
+        inputRef.current.value = '';
+        // assistant-ui's input also tracks state internally; dispatching
+        // an input event lets it observe the cleared value so the
+        // textarea's auto-grow + ready-state CSS reset correctly.
+        inputRef.current.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+    }
+  };
+
   return (
     <div className="composer">
-      <ComposerPrimitive.Root className="composer-inner">
+      <ComposerPrimitive.Root className="composer-inner" onSubmit={onSubmit}>
+        <AgentStatus />
         <div className="composer-field">
           <AttachMenu />
           <ComposerPrimitive.Input
@@ -87,6 +120,7 @@ export function Composer() {
             className="composer-input"
             autoFocus
             rows={1}
+            ref={inputRef}
           />
           <ThreadPrimitive.If running={false}>
             <ComposerPrimitive.Send asChild>
