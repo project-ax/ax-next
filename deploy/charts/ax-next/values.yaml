@@ -227,6 +227,16 @@ postgresql:
 # (See packages/credentials/SECURITY.md for the format details.)
 credentials:
   key: ""
+  admin:
+    # When true, the host pod loads @ax/credentials-admin-routes which
+    # mounts:
+    #   /admin/credentials*    — admin-only CRUD (full scope axis)
+    #   /settings/credentials* — per-user CRUD (scope='user', actor-bound)
+    #
+    # OAuth start/finish endpoints are NOT here — they land in Phase 3.
+    # Off by default so the admin surface stays minimal until the UI is
+    # wired up; flip on with `--set credentials.admin.enabled=true`.
+    enabled: false
 
 anthropic:
   apiKey: ""

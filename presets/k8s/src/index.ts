@@ -15,6 +15,7 @@ import { createCredentialProxyPlugin } from '@ax/credential-proxy';
 import { createCredentialsPlugin } from '@ax/credentials';
 import { createCredentialsStoreDbPlugin } from '@ax/credentials-store-db';
 import { createCredentialsAnthropicOauthPlugin } from '@ax/credentials-anthropic-oauth';
+import { createCredentialsAdminRoutesPlugin } from '@ax/credentials-admin-routes';
 import { createIpcHttpPlugin } from '@ax/ipc-http';
 import { createAgentsPlugin } from '@ax/agents';
 import { createHttpServerPlugin } from '@ax/http-server';
@@ -304,6 +305,21 @@ export interface K8sPresetConfig {
     caDir?: string;
   };
   /**
+   * When true, load @ax/credentials-admin-routes — mounts
+   * /admin/credentials* (admin-only CRUD over the full scope axis) and
+   * /settings/credentials* (per-user CRUD restricted to scope='user').
+   * Off by default; the chart flips it via
+   * `--set credentials.admin.enabled=true` which in turn sets
+   * `AX_CREDENTIALS_ADMIN_ENABLED=true` on the host pod.
+   *
+   * Requires `AX_CREDENTIALS_KEY` (already required by @ax/credentials,
+   * so this flag inherits the same precondition).
+   *
+   * OAuth start/finish routes do NOT live in this plugin — Phase 3 adds
+   * them on top of an in-memory pending-state holder. This is CRUD-only.
+   */
+  credentialsAdmin?: boolean;
+  /**
    * Optional static-file serving (production single-binary mode). When
    * set, mounts `@ax/static-files` after the API routes so it serves
    * channel-web's bundle on otherwise-unmatched paths. SPA fallback
@@ -575,6 +591,19 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // until both upstream plugins have registered. Reuses the shared
   // postgres pool via `database:get-instance` (no second pool).
   plugins.push(createAgentsPlugin());
+
+  // ----- 8b. credentials admin routes (optional) -------------------------
+  // Mounts /admin/credentials* (admin-only CRUD) + /settings/credentials*
+  // (per-user CRUD locked to scope='user') on the existing http listener.
+  // Loaded only when the operator opts in — the chart's
+  // `credentials.admin.enabled=true` flag sets AX_CREDENTIALS_ADMIN_ENABLED
+  // which loadK8sConfigFromEnv translates into cfg.credentialsAdmin.
+  //
+  // OAuth start/finish endpoints are NOT here; Phase 3 adds them on top
+  // of an in-memory pending-state holder.
+  if (config.credentialsAdmin === true) {
+    plugins.push(createCredentialsAdminRoutesPlugin());
+  }
 
   // ----- 9. conversations ------------------------------------------------
   // Registers `conversations:*` (create/get/list/delete/get-by-req-id +
@@ -961,6 +990,16 @@ export function loadK8sConfigFromEnv(
   if (env.AX_STATIC_FILES_DIR !== undefined && env.AX_STATIC_FILES_DIR !== '') {
     config.staticFiles = { dir: env.AX_STATIC_FILES_DIR };
   }
+  // ---- credentials admin routes (optional) -------------------------------
+  // Translates the chart's `credentials.admin.enabled=true` (which lands
+  // as AX_CREDENTIALS_ADMIN_ENABLED on the host pod) into the config
+  // flag. Only the literal string 'true' (case-insensitive) flips it on
+  // — anything else (unset, '', '0', 'false') leaves it undefined so
+  // createK8sPlugins skips the plugin.
+  if ((env.AX_CREDENTIALS_ADMIN_ENABLED ?? '').toLowerCase() === 'true') {
+    config.credentialsAdmin = true;
+  }
+
   // ---- titles (auto-titling subscriber) -----------------------------------
   // Gated on ANTHROPIC_API_KEY presence: multi-tenant deploys without a
   // shared host key get no auto-titling, same as today. When the key IS

@@ -1279,6 +1279,9 @@ importers:
       '@ax/credentials':
         specifier: workspace:*
         version: link:../../packages/credentials
+      '@ax/credentials-admin-routes':
+        specifier: workspace:*
+        version: link:../../packages/credentials-admin-routes
       '@ax/credentials-anthropic-oauth':
         specifier: workspace:*
         version: link:../../packages/credentials-anthropic-oauth

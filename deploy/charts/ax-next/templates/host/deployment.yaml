@@ -233,6 +233,15 @@ spec:
                   name: {{ include "ax-next.fullname" . }}-secrets
                   key: credentials-key
 
+            # Conditionally mount /admin/credentials* + /settings/credentials*
+            # by loading @ax/credentials-admin-routes. Off by default; the
+            # preset reads this env var (loadK8sConfigFromEnv) and only loads
+            # the plugin when it's literally 'true'.
+            {{- if .Values.credentials.admin.enabled }}
+            - name: AX_CREDENTIALS_ADMIN_ENABLED
+              value: "true"
+            {{- end }}
+
             # Anthropic API key — required (see plan note: openrouter is
             # deferred to MVP follow-up).
             - name: ANTHROPIC_API_KEY

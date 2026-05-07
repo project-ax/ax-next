@@ -32,6 +32,7 @@
     "@ax/core": "workspace:*",
     "@ax/credential-proxy": "workspace:*",
     "@ax/credentials": "workspace:*",
+    "@ax/credentials-admin-routes": "workspace:*",
     "@ax/credentials-anthropic-oauth": "workspace:*",
     "@ax/credentials-store-db": "workspace:*",
     "@ax/database-postgres": "workspace:*",
