@@ -625,3 +625,34 @@ describe('loadK8sConfigFromEnv', () => {
     });
   });
 });
+
+describe('createK8sPlugins — conditional title plugins', () => {
+  it('omits @ax/llm-anthropic and @ax/conversation-titles when cfg.titles is undefined', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const names = plugins.map((p) => p.manifest.name);
+    expect(names).not.toContain('@ax/llm-anthropic');
+    expect(names).not.toContain('@ax/conversation-titles');
+  });
+
+  it('includes both plugins when cfg.titles is set', () => {
+    const plugins = createK8sPlugins({
+      ...stubConfig,
+      titles: { model: 'anthropic/claude-haiku-4-5-20251001' },
+    });
+    const names = plugins.map((p) => p.manifest.name);
+    expect(names).toContain('@ax/llm-anthropic');
+    expect(names).toContain('@ax/conversation-titles');
+  });
+
+  it('passes cfg.titles.model into the conversation-titles plugin manifest', () => {
+    const plugins = createK8sPlugins({
+      ...stubConfig,
+      titles: { model: 'anthropic/claude-sonnet-4-7' },
+    });
+    const titlesPlugin = plugins.find(
+      (p) => p.manifest.name === '@ax/conversation-titles',
+    );
+    expect(titlesPlugin).toBeDefined();
+    expect(titlesPlugin!.manifest.calls).toContain('llm:call:anthropic');
+  });
+});

@@ -22,6 +22,11 @@ import { createAuthPlugin, type AuthConfig } from '@ax/auth-oidc';
 import { createTeamsPlugin } from '@ax/teams';
 import { createStaticFilesPlugin } from '@ax/static-files';
 import { createConversationsPlugin } from '@ax/conversations';
+import { createLlmAnthropicPlugin } from '@ax/llm-anthropic';
+import {
+  createConversationTitlesPlugin,
+  type ConversationTitlesConfig,
+} from '@ax/conversation-titles';
 import { createChannelWebServerPlugin } from '@ax/channel-web/server';
 
 // ---------------------------------------------------------------------------
@@ -578,11 +583,26 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // — all already loaded above; topo-sort handles the ordering.
   //
   // Defaults `defaultRunnerType: 'claude-sdk'` (the only runner shipped
-  // today). Auto-titling (@ax/conversation-titles) is NOT loaded here —
-  // it would require @ax/llm-anthropic with a separate ANTHROPIC_API_KEY,
-  // which conflicts with the OAuth-only credential posture. Conversations
-  // stay `title: null` until a user-driven rename ships.
+  // today). Auto-titling (@ax/conversation-titles) loads conditionally
+  // on `cfg.titles` being defined — `loadK8sConfigFromEnv` populates it
+  // iff ANTHROPIC_API_KEY is in env. Multi-tenant deploys without a
+  // shared host key opt out cleanly (cfg.titles undefined → both
+  // plugins skipped → conversations stay `title: null`, same as today).
   plugins.push(createConversationsPlugin());
+
+  // Auto-titling: @ax/llm-anthropic registers `llm:call:anthropic`,
+  // @ax/conversation-titles subscribes to `chat:turn-end` and dispatches
+  // `llm:call:${provider}` after the first assistant turn lands.
+  // Conditional on cfg.titles (driven by ANTHROPIC_API_KEY presence in
+  // loadK8sConfigFromEnv) so multi-tenant deploys opt out cleanly.
+  if (config.titles !== undefined) {
+    plugins.push(createLlmAnthropicPlugin());
+    const titlesCfg: ConversationTitlesConfig = {};
+    if (config.titles.model !== undefined) {
+      titlesCfg.model = config.titles.model;
+    }
+    plugins.push(createConversationTitlesPlugin(titlesCfg));
+  }
 
   // ----- 10. channel-web HTTP surface -----------------------------------
   // Mounts /api/chat/messages, /api/chat/conversations[/:id],
