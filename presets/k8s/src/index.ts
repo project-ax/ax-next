@@ -16,6 +16,7 @@ import { createCredentialsPlugin } from '@ax/credentials';
 import { createCredentialsStoreDbPlugin } from '@ax/credentials-store-db';
 import { createCredentialsAnthropicOauthPlugin } from '@ax/credentials-anthropic-oauth';
 import { createCredentialsAdminRoutesPlugin } from '@ax/credentials-admin-routes';
+import { createCredentialsOauthPendingPlugin } from '@ax/credentials-oauth-pending';
 import { createIpcHttpPlugin } from '@ax/ipc-http';
 import { createAgentsPlugin } from '@ax/agents';
 import { createHttpServerPlugin } from '@ax/http-server';
@@ -594,14 +595,20 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
 
   // ----- 8b. credentials admin routes (optional) -------------------------
   // Mounts /admin/credentials* (admin-only CRUD) + /settings/credentials*
-  // (per-user CRUD locked to scope='user') on the existing http listener.
-  // Loaded only when the operator opts in — the chart's
-  // `credentials.admin.enabled=true` flag sets AX_CREDENTIALS_ADMIN_ENABLED
-  // which loadK8sConfigFromEnv translates into cfg.credentialsAdmin.
+  // (per-user CRUD locked to scope='user') + /admin|settings/credentials/oauth/*
+  // (web-paste flow) on the existing http listener. Loaded only when the
+  // operator opts in — the chart's `credentials.admin.enabled=true` flag
+  // sets AX_CREDENTIALS_ADMIN_ENABLED which loadK8sConfigFromEnv
+  // translates into cfg.credentialsAdmin.
   //
-  // OAuth start/finish endpoints are NOT here; Phase 3 adds them on top
-  // of an in-memory pending-state holder.
+  // The OAuth pending-state holder rides alongside: it's an in-memory
+  // single-replica plugin that holds PKCE + redirect state between
+  // /oauth/start and /oauth/finish (5min TTL, 1000 entry cap). Multi-
+  // replica deployments need either sticky sessions for that 5min window
+  // or a DB-backed sibling plugin — see the manifest comment in
+  // @ax/credentials-oauth-pending.
   if (config.credentialsAdmin === true) {
+    plugins.push(createCredentialsOauthPendingPlugin());
     plugins.push(createCredentialsAdminRoutesPlugin());
   }
 

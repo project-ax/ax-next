@@ -38,10 +38,26 @@ describe('credentials-admin-routes loaded conditionally', () => {
     ).toBeDefined();
   });
 
+  it('loads @ax/credentials-oauth-pending alongside when credentialsAdmin === true', () => {
+    // The OAuth web-paste flow needs an in-memory state holder for the
+    // ~5 minute window between /oauth/start and /oauth/finish. The
+    // plugin is single-replica only — see its manifest comment. The
+    // credentials-admin-routes plugin's manifest declares calls into
+    // `credentials:oauth:stash-pending` / `:claim-pending`, so the
+    // wiring-invariants check below would fail without this co-load.
+    const plugins = createK8sPlugins({ ...baseCfg, credentialsAdmin: true });
+    expect(
+      plugins.find((p) => p.manifest.name === '@ax/credentials-oauth-pending'),
+    ).toBeDefined();
+  });
+
   it('does NOT load when credentialsAdmin is undefined', () => {
     const plugins = createK8sPlugins(baseCfg);
     expect(
       plugins.find((p) => p.manifest.name === '@ax/credentials-admin-routes'),
+    ).toBeUndefined();
+    expect(
+      plugins.find((p) => p.manifest.name === '@ax/credentials-oauth-pending'),
     ).toBeUndefined();
   });
 
@@ -49,6 +65,9 @@ describe('credentials-admin-routes loaded conditionally', () => {
     const plugins = createK8sPlugins({ ...baseCfg, credentialsAdmin: false });
     expect(
       plugins.find((p) => p.manifest.name === '@ax/credentials-admin-routes'),
+    ).toBeUndefined();
+    expect(
+      plugins.find((p) => p.manifest.name === '@ax/credentials-oauth-pending'),
     ).toBeUndefined();
   });
 

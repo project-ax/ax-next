@@ -28,6 +28,7 @@
     { "path": "../../packages/credentials-store-db" },
     { "path": "../../packages/credentials-anthropic-oauth" },
     { "path": "../../packages/credentials-admin-routes" },
+    { "path": "../../packages/credentials-oauth-pending" },
     { "path": "../../packages/ipc-http" },
     { "path": "../../packages/agents" },
     { "path": "../../packages/http-server" },

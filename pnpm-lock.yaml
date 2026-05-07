@@ -1304,6 +1304,9 @@ importers:
       '@ax/credentials-anthropic-oauth':
         specifier: workspace:*
         version: link:../../packages/credentials-anthropic-oauth
+      '@ax/credentials-oauth-pending':
+        specifier: workspace:*
+        version: link:../../packages/credentials-oauth-pending
       '@ax/credentials-store-db':
         specifier: workspace:*
         version: link:../../packages/credentials-store-db
