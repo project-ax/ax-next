@@ -22,6 +22,11 @@ import { createAuthPlugin, type AuthConfig } from '@ax/auth-oidc';
 import { createTeamsPlugin } from '@ax/teams';
 import { createStaticFilesPlugin } from '@ax/static-files';
 import { createConversationsPlugin } from '@ax/conversations';
+import { createLlmAnthropicPlugin } from '@ax/llm-anthropic';
+import {
+  createConversationTitlesPlugin,
+  DEFAULT_TITLE_MODEL,
+} from '@ax/conversation-titles';
 import { createChannelWebServerPlugin } from '@ax/channel-web/server';
 
 // ---------------------------------------------------------------------------
@@ -216,6 +221,23 @@ export interface K8sPresetConfig {
     runnerBinary?: string;
     chatTimeoutMs?: number;
     oneShot?: boolean;
+  };
+  /**
+   * Auto-titling config. When present, the preset loads @ax/llm-anthropic
+   * and @ax/conversation-titles; conversations get a one-line title written
+   * after the first assistant turn (`ifNull: true`, never clobbers a user
+   * rename). When absent, titles stay null — same as today's behavior.
+   *
+   * `model` uses the `<provider>/<model-id>` convention; the titles plugin
+   * splits on the first `/` and dispatches `llm:call:${provider}`. Default:
+   * `'anthropic/claude-haiku-4-5-20251001'`.
+   *
+   * `loadK8sConfigFromEnv` populates this field iff `ANTHROPIC_API_KEY` is
+   * present in the env; otherwise it leaves the field undefined (multi-
+   * tenant deploys without a shared host key opt out cleanly).
+   */
+  titles?: {
+    model?: string;
   };
   /**
    * @ax/http-server config. The host listener that serves /admin/*, /auth/*,
@@ -561,11 +583,35 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // — all already loaded above; topo-sort handles the ordering.
   //
   // Defaults `defaultRunnerType: 'claude-sdk'` (the only runner shipped
-  // today). Auto-titling (@ax/conversation-titles) is NOT loaded here —
-  // it would require @ax/llm-anthropic with a separate ANTHROPIC_API_KEY,
-  // which conflicts with the OAuth-only credential posture. Conversations
-  // stay `title: null` until a user-driven rename ships.
+  // today). Auto-titling (@ax/conversation-titles) loads conditionally
+  // on `cfg.titles` being defined — `loadK8sConfigFromEnv` populates it
+  // iff ANTHROPIC_API_KEY is in env. Multi-tenant deploys without a
+  // shared host key opt out cleanly (cfg.titles undefined → both
+  // plugins skipped → conversations stay `title: null`, same as today).
   plugins.push(createConversationsPlugin());
+
+  // Auto-titling: @ax/llm-anthropic registers `llm:call:anthropic`,
+  // @ax/conversation-titles subscribes to `chat:turn-end` and dispatches
+  // `llm:call:${provider}` after the first assistant turn lands.
+  // Conditional on cfg.titles (driven by ANTHROPIC_API_KEY presence in
+  // loadK8sConfigFromEnv) so multi-tenant deploys opt out cleanly.
+  if (config.titles !== undefined) {
+    // This preset only ships @ax/llm-anthropic. A non-anthropic provider
+    // would leave `llm:call:<provider>` unregistered, which the kernel's
+    // topo-sort would catch at bootstrap with a less-readable error than
+    // this one. Future providers slot in by adding sibling plugins here
+    // and lifting this guard.
+    const titleModel = config.titles.model ?? DEFAULT_TITLE_MODEL;
+    if (!titleModel.startsWith('anthropic/')) {
+      throw new PluginError({
+        code: 'invalid-config',
+        plugin: '@ax/preset-k8s',
+        message: `titles.model='${titleModel}' — this preset only supports 'anthropic/<model-id>' (no other provider plugins are loaded)`,
+      });
+    }
+    plugins.push(createLlmAnthropicPlugin());
+    plugins.push(createConversationTitlesPlugin({ model: titleModel }));
+  }
 
   // ----- 10. channel-web HTTP surface -----------------------------------
   // Mounts /api/chat/messages, /api/chat/conversations[/:id],
@@ -914,6 +960,26 @@ export function loadK8sConfigFromEnv(
   // the bundle at :5173 with /api/* proxied to the host).
   if (env.AX_STATIC_FILES_DIR !== undefined && env.AX_STATIC_FILES_DIR !== '') {
     config.staticFiles = { dir: env.AX_STATIC_FILES_DIR };
+  }
+  // ---- titles (auto-titling subscriber) -----------------------------------
+  // Gated on ANTHROPIC_API_KEY presence: multi-tenant deploys without a
+  // shared host key get no auto-titling, same as today. When the key IS
+  // set, the preset loads @ax/llm-anthropic + @ax/conversation-titles and
+  // titles get a one-line summary after the first assistant turn.
+  //
+  // The default falls through to DEFAULT_TITLE_MODEL exported from
+  // @ax/conversation-titles — one source of truth (CLAUDE.md invariant I4).
+  // Presets are exempt from I2's no-cross-plugin-imports rule (they wire
+  // plugins together by definition); the chart's `values.yaml` literal is
+  // the only remaining duplicate, and it must stay in lockstep with this
+  // export by hand (helm can't import TS).
+  if (env.ANTHROPIC_API_KEY !== undefined && env.ANTHROPIC_API_KEY !== '') {
+    const titleModelRaw = env.AX_TITLE_MODEL;
+    const titleModel =
+      titleModelRaw === undefined || titleModelRaw === ''
+        ? DEFAULT_TITLE_MODEL
+        : titleModelRaw;
+    config.titles = { model: titleModel };
   }
   return config;
 }

@@ -411,3 +411,22 @@ describeIfHelm('ax-next chart: workspace.backend wiring', () => {
     expect(tierRule?.ports?.[0]?.protocol).toBe('TCP');
   });
 });
+
+describeIfHelm('ax-next chart: titles.model wiring', () => {
+  it('default: AX_TITLE_MODEL renders the values.yaml default', () => {
+    const docs = helmTemplate([]);
+    const env = findHostEnv(docs);
+    const found = env.find((e) => e.name === 'AX_TITLE_MODEL');
+    expect(found, 'AX_TITLE_MODEL env var present').toBeDefined();
+    expect(found?.value).toBe('anthropic/claude-haiku-4-5-20251001');
+  });
+
+  it('overrides: titles.model=<value> stamps that value into the env', () => {
+    const docs = helmTemplate([
+      '--set', 'titles.model=anthropic/claude-sonnet-4-7',
+    ]);
+    const env = findHostEnv(docs);
+    const found = env.find((e) => e.name === 'AX_TITLE_MODEL');
+    expect(found?.value).toBe('anthropic/claude-sonnet-4-7');
+  });
+});

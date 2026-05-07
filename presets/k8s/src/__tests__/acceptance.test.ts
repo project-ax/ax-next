@@ -1377,7 +1377,11 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           // conversation-titles — the unit under test. Subscribes to
           // chat:turn-end and chains conversations:get → llm:call →
           // conversations:set-title.
-          createConversationTitlesPlugin(),
+          // Pin the model explicitly so this test is robust to future
+          // default-value changes in @ax/conversation-titles.
+          createConversationTitlesPlugin({
+            model: 'anthropic/claude-haiku-4-5-20251001',
+          }),
           createStorageSqlitePlugin({ databasePath: sqlitePath }),
           createSessionInmemoryPlugin(),
           createSandboxSubprocessPlugin(),

@@ -231,6 +231,24 @@ credentials:
 anthropic:
   apiKey: ""
 
+# ─── Auto-titling ─────────────────────────────────────────────────
+# When `anthropic.apiKey` is set, the host pod loads
+# @ax/conversation-titles and writes a short title to each
+# conversation after its first assistant turn (ifNull: true, never
+# clobbers a user rename). When unset, titles stay null.
+#
+# `model` uses the `<provider>/<model-id>` convention. Today's only
+# provider is `anthropic`. Future providers slot in by registering
+# `llm:call:<provider>` from a sibling plugin.
+titles:
+  # Title-LLM model. Default: cheapest current Claude. Override for
+  # benchmarking or to follow a model deprecation.
+  #
+  # NOTE: this default must stay in lockstep with `DEFAULT_TITLE_MODEL`
+  # exported from @ax/conversation-titles — helm can't import TS, so
+  # the operator-facing default is duplicated here by hand.
+  model: anthropic/claude-haiku-4-5-20251001
+
 # ─── Channel-web (browser SPA) ───────────────────────────────────
 # When enabled, the host pod's @ax/static-files plugin serves the
 # channel-web React bundle on otherwise-unmatched paths. The image's

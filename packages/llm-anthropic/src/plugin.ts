@@ -48,7 +48,7 @@ export function createLlmAnthropicPlugin(cfg: LlmAnthropicConfig = {}): Plugin {
     manifest: {
       name: PLUGIN_NAME,
       version: PLUGIN_VERSION,
-      registers: ['llm:call'],
+      registers: ['llm:call:anthropic'],
       calls: [],
       subscribes: [],
     },
@@ -71,7 +71,7 @@ export function createLlmAnthropicPlugin(cfg: LlmAnthropicConfig = {}): Plugin {
               ...(cfg.timeoutMs !== undefined ? { timeout: cfg.timeoutMs } : {}),
             });
       bus.registerService<LlmCallInput, LlmCallOutput>(
-        'llm:call',
+        'llm:call:anthropic',
         PLUGIN_NAME,
         async (_ctx, input) => callWithRetry(client, input, cfg),
       );
@@ -101,7 +101,7 @@ async function callWithRetry(
       throw new PluginError({
         code: 'unknown',
         plugin: PLUGIN_NAME,
-        hookName: 'llm:call',
+        hookName: 'llm:call:anthropic',
         message: `Anthropic API call failed: ${errorMessage(e)}`,
         ...(e instanceof Error ? { cause: e } : {}),
       });

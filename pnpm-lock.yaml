@@ -1233,6 +1233,9 @@ importers:
       '@ax/chat-orchestrator':
         specifier: workspace:*
         version: link:../../packages/chat-orchestrator
+      '@ax/conversation-titles':
+        specifier: workspace:*
+        version: link:../../packages/conversation-titles
       '@ax/conversations':
         specifier: workspace:*
         version: link:../../packages/conversations
@@ -1263,6 +1266,9 @@ importers:
       '@ax/ipc-http':
         specifier: workspace:*
         version: link:../../packages/ipc-http
+      '@ax/llm-anthropic':
+        specifier: workspace:*
+        version: link:../../packages/llm-anthropic
       '@ax/mcp-client':
         specifier: workspace:*
         version: link:../../packages/mcp-client
@@ -1294,18 +1300,12 @@ importers:
       '@ax/agent-claude-sdk-runner-host':
         specifier: workspace:*
         version: link:../../packages/agent-claude-sdk-runner-host
-      '@ax/conversation-titles':
-        specifier: workspace:*
-        version: link:../../packages/conversation-titles
       '@ax/ipc-core':
         specifier: workspace:*
         version: link:../../packages/ipc-core
       '@ax/ipc-server':
         specifier: workspace:*
         version: link:../../packages/ipc-server
-      '@ax/llm-anthropic':
-        specifier: workspace:*
-        version: link:../../packages/llm-anthropic
       '@ax/sandbox-subprocess':
         specifier: workspace:*
         version: link:../../packages/sandbox-subprocess

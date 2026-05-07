@@ -49,12 +49,12 @@ class FakeApiError extends Error {
 const ORIGINAL_ENV_KEY = process.env.ANTHROPIC_API_KEY;
 
 describe('@ax/llm-anthropic plugin manifest', () => {
-  it('declares registers: ["llm:call"], no calls, no subscribes', () => {
+  it('declares registers: ["llm:call:anthropic"], no calls, no subscribes', () => {
     const plugin = createLlmAnthropicPlugin({ apiKey: 'test-key' });
     expect(plugin.manifest).toEqual({
       name: '@ax/llm-anthropic',
       version: '0.0.0',
-      registers: ['llm:call'],
+      registers: ['llm:call:anthropic'],
       calls: [],
       subscribes: [],
     });
@@ -99,7 +99,7 @@ describe('@ax/llm-anthropic init', () => {
     });
     const bus = new HookBus();
     await plugin.init({ bus, config: {} });
-    expect(bus.hasService('llm:call')).toBe(true);
+    expect(bus.hasService('llm:call:anthropic')).toBe(true);
   });
 
   it('succeeds when ANTHROPIC_API_KEY env var is set and cfg.apiKey is unset', async () => {
@@ -109,7 +109,7 @@ describe('@ax/llm-anthropic init', () => {
     });
     const bus = new HookBus();
     await plugin.init({ bus, config: {} });
-    expect(bus.hasService('llm:call')).toBe(true);
+    expect(bus.hasService('llm:call:anthropic')).toBe(true);
   });
 
   it('forwards cfg.timeoutMs to the underlying Anthropic client', async () => {
@@ -173,7 +173,7 @@ describe('@ax/llm-anthropic llm:call dispatch', () => {
       messages: [{ role: 'user', content: 'Hi' }],
       maxTokens: 32,
     };
-    const out = await bus.call<LlmCallInput, LlmCallOutput>('llm:call', ctx, input);
+    const out = await bus.call<LlmCallInput, LlmCallOutput>('llm:call:anthropic', ctx, input);
 
     expect(create).toHaveBeenCalledOnce();
     expect(create).toHaveBeenCalledWith({
@@ -203,7 +203,7 @@ describe('@ax/llm-anthropic llm:call dispatch', () => {
     const bus = new HookBus();
     await plugin.init({ bus, config: {} });
     const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' });
-    const out = await bus.call<LlmCallInput, LlmCallOutput>('llm:call', ctx, {
+    const out = await bus.call<LlmCallInput, LlmCallOutput>('llm:call:anthropic', ctx, {
       messages: [{ role: 'user', content: 'Hi' }],
     });
 
@@ -226,7 +226,7 @@ describe('@ax/llm-anthropic llm:call dispatch', () => {
     const bus = new HookBus();
     await plugin.init({ bus, config: {} });
     const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' });
-    const out = await bus.call<LlmCallInput, LlmCallOutput>('llm:call', ctx, {
+    const out = await bus.call<LlmCallInput, LlmCallOutput>('llm:call:anthropic', ctx, {
       messages: [{ role: 'user', content: 'Hi' }],
     });
     expect(create).toHaveBeenCalledTimes(2);
@@ -248,7 +248,7 @@ describe('@ax/llm-anthropic llm:call dispatch', () => {
 
     let caught: unknown;
     try {
-      await bus.call<LlmCallInput, LlmCallOutput>('llm:call', ctx, {
+      await bus.call<LlmCallInput, LlmCallOutput>('llm:call:anthropic', ctx, {
         messages: [{ role: 'user', content: 'Hi' }],
       });
     } catch (e) {
@@ -258,7 +258,7 @@ describe('@ax/llm-anthropic llm:call dispatch', () => {
     expect(caught).toMatchObject({
       code: 'unknown',
       plugin: '@ax/llm-anthropic',
-      hookName: 'llm:call',
+      hookName: 'llm:call:anthropic',
     });
     expect(create).toHaveBeenCalledOnce();
   });
@@ -278,7 +278,7 @@ describe('@ax/llm-anthropic llm:call dispatch', () => {
 
     let caught: unknown;
     try {
-      await bus.call<LlmCallInput, LlmCallOutput>('llm:call', ctx, {
+      await bus.call<LlmCallInput, LlmCallOutput>('llm:call:anthropic', ctx, {
         messages: [{ role: 'user', content: 'Hi' }],
       });
     } catch (e) {
@@ -288,7 +288,7 @@ describe('@ax/llm-anthropic llm:call dispatch', () => {
     expect(caught).toMatchObject({
       code: 'unknown',
       plugin: '@ax/llm-anthropic',
-      hookName: 'llm:call',
+      hookName: 'llm:call:anthropic',
     });
     // 1 initial + 1 retry = 2 attempts.
     expect(create).toHaveBeenCalledTimes(2);

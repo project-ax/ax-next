@@ -98,6 +98,44 @@ describe('@ax/preset-k8s wiring', () => {
     expect(unsatisfied).toEqual([]);
   });
 
+  // The two invariant checks above run with the default `stubConfig`, which
+  // doesn't enable titles. The conditional title plugins introduce a new
+  // `llm:call:anthropic` registrant + matching subscriber call, so they need
+  // their own pair of invariant checks — a future refactor that drops
+  // `createLlmAnthropicPlugin()` from the conditional block would otherwise
+  // pass the default-config tests but break the kernel's topo-sort at boot.
+  it('every required service hook has exactly one registrant (titles enabled)', () => {
+    const plugins = createK8sPlugins({
+      ...stubConfig,
+      titles: { model: 'anthropic/claude-haiku-4-5-20251001' },
+    });
+    const registrations = new Map<string, string[]>();
+    for (const p of plugins) {
+      for (const hook of p.manifest.registers) {
+        const owners = registrations.get(hook) ?? [];
+        owners.push(p.manifest.name);
+        registrations.set(hook, owners);
+      }
+    }
+    const duplicates = [...registrations.entries()].filter(
+      ([, owners]) => owners.length > 1,
+    );
+    expect(duplicates).toEqual([]);
+  });
+
+  it('every "calls" entry is satisfied by some plugin\'s "registers" (titles enabled)', () => {
+    const plugins = createK8sPlugins({
+      ...stubConfig,
+      titles: { model: 'anthropic/claude-haiku-4-5-20251001' },
+    });
+    const allRegistered = new Set<string>(
+      plugins.flatMap((p) => p.manifest.registers),
+    );
+    const allCalls = new Set<string>(plugins.flatMap((p) => p.manifest.calls));
+    const unsatisfied = [...allCalls].filter((c) => !allRegistered.has(c));
+    expect(unsatisfied).toEqual([]);
+  });
+
   it('contains the expected production plugin set', () => {
     // Sanity check the preset hasn't silently dropped a plugin during a
     // refactor — this is the canary that says "k8s mode means THIS list."
@@ -593,5 +631,80 @@ describe('loadK8sConfigFromEnv', () => {
         minRequired({ AX_AUTH_SESSION_LIFETIME_SECONDS: '-1' }),
       ),
     ).toThrowError(/AX_AUTH_SESSION_LIFETIME_SECONDS/);
+  });
+
+  describe('loadK8sConfigFromEnv — titles', () => {
+    it('omits cfg.titles when ANTHROPIC_API_KEY is unset', () => {
+      const cfg = loadK8sConfigFromEnv(minRequired());
+      expect(cfg.titles).toBeUndefined();
+    });
+
+    it('sets cfg.titles with the default model when ANTHROPIC_API_KEY is set and AX_TITLE_MODEL is unset', () => {
+      const cfg = loadK8sConfigFromEnv(minRequired({
+        ANTHROPIC_API_KEY: 'sk-ant-stub',
+      }));
+      expect(cfg.titles).toEqual({ model: 'anthropic/claude-haiku-4-5-20251001' });
+    });
+
+    it('respects AX_TITLE_MODEL when set', () => {
+      const cfg = loadK8sConfigFromEnv(minRequired({
+        ANTHROPIC_API_KEY: 'sk-ant-stub',
+        AX_TITLE_MODEL: 'anthropic/claude-sonnet-4-7',
+      }));
+      expect(cfg.titles).toEqual({ model: 'anthropic/claude-sonnet-4-7' });
+    });
+
+    it('treats empty AX_TITLE_MODEL as unset (defaults applied)', () => {
+      const cfg = loadK8sConfigFromEnv(minRequired({
+        ANTHROPIC_API_KEY: 'sk-ant-stub',
+        AX_TITLE_MODEL: '',
+      }));
+      expect(cfg.titles).toEqual({ model: 'anthropic/claude-haiku-4-5-20251001' });
+    });
+  });
+});
+
+describe('createK8sPlugins — conditional title plugins', () => {
+  it('omits @ax/llm-anthropic and @ax/conversation-titles when cfg.titles is undefined', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const names = plugins.map((p) => p.manifest.name);
+    expect(names).not.toContain('@ax/llm-anthropic');
+    expect(names).not.toContain('@ax/conversation-titles');
+  });
+
+  it('includes both plugins when cfg.titles is set', () => {
+    const plugins = createK8sPlugins({
+      ...stubConfig,
+      titles: { model: 'anthropic/claude-haiku-4-5-20251001' },
+    });
+    const names = plugins.map((p) => p.manifest.name);
+    expect(names).toContain('@ax/llm-anthropic');
+    expect(names).toContain('@ax/conversation-titles');
+  });
+
+  it('passes cfg.titles.model into the conversation-titles plugin manifest', () => {
+    const plugins = createK8sPlugins({
+      ...stubConfig,
+      titles: { model: 'anthropic/claude-sonnet-4-7' },
+    });
+    const titlesPlugin = plugins.find(
+      (p) => p.manifest.name === '@ax/conversation-titles',
+    );
+    expect(titlesPlugin).toBeDefined();
+    expect(titlesPlugin!.manifest.calls).toContain('llm:call:anthropic');
+  });
+
+  it('throws invalid-config when titles.model uses a non-anthropic provider', () => {
+    // The preset only ships @ax/llm-anthropic. A non-anthropic provider
+    // would leave `llm:call:<provider>` unregistered and the kernel's
+    // topo-sort would fail at bootstrap with an opaque error. We catch
+    // it here at construction time with a message that names the
+    // offending value.
+    expect(() =>
+      createK8sPlugins({
+        ...stubConfig,
+        titles: { model: 'openai/gpt-4' },
+      }),
+    ).toThrowError(/openai\/gpt-4/);
   });
 });
