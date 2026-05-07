@@ -230,6 +230,15 @@ async function makeFakeMcpServer(opts: {
 }
 
 async function signIn(stack: BootedStack): Promise<string> {
+  return (await signInWithUser(stack)).cookie;
+}
+
+/** Variant of signIn() that also returns the resolved userId, for tests
+ *  that need to seed scope='user' rows bound to whatever user the
+ *  bootstrap path resolved (which isn't always the literal 'u'). */
+async function signInWithUser(
+  stack: BootedStack,
+): Promise<{ cookie: string; userId: string }> {
   const r = await fetch(`http://127.0.0.1:${stack.port}/auth/dev-bootstrap`, {
     method: 'POST',
     headers: {
@@ -243,7 +252,8 @@ async function signIn(stack: BootedStack): Promise<string> {
     r.headers.getSetCookie?.() ?? [r.headers.get('set-cookie') ?? ''];
   const cookieHeader = setCookie.find((c) => c.startsWith('ax_auth_session='));
   if (cookieHeader === undefined) throw new Error('no session cookie returned');
-  return cookieHeader.split(';')[0]!;
+  const body = (await r.json()) as { user: { id: string } };
+  return { cookie: cookieHeader.split(';')[0]!, userId: body.user.id };
 }
 
 /** Mint a SECOND user via raw SQL (separate user_id, distinct subject) and
@@ -482,15 +492,30 @@ describe('@ax/mcp-client admin routes', () => {
     // config that REFERENCES it via credentialRefs; the GET response
     // body must contain the ref id (`cred-foo`) but NOT the resolved
     // value (`super-secret-value`).
-    const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' });
+    //
+    // The credential MUST be seeded under whatever userId the dev-bootstrap
+    // path actually creates — earlier this seeded under hardcoded 'u', but
+    // dev-bootstrap may resolve the user to a different id. If they
+    // mismatch the credential is non-resolvable and the leak assertion
+    // passes vacuously (no value to leak), defeating the regression test.
+    const { cookie, userId } = await signInWithUser(stack);
+    const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId });
     await stack.harness.bus.call('credentials:set', ctx, {
       scope: 'user',
-      ownerId: 'u',
+      ownerId: userId,
       ref: 'cred-foo',
       kind: 'api-key',
       payload: new TextEncoder().encode('super-secret-value'),
     });
-    const cookie = await signIn(stack);
+    // Sanity check that we'd actually fail this test if the credential
+    // leaked: the credential MUST resolve under the same actor context the
+    // route handler will run with. If this throws 'credential-not-found',
+    // the leak assertion below would pass vacuously.
+    const resolved = await stack.harness.bus.call<
+      { ref: string; userId: string },
+      string
+    >('credentials:get', ctx, { ref: 'cred-foo', userId });
+    expect(resolved).toBe('super-secret-value');
     const create = await http(stack.port, 'POST', '/admin/mcp-servers', {
       cookie,
       body: {
