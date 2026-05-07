@@ -14,7 +14,7 @@
  *
  * Only one row is open at a time — opening a row collapses any other.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { listProviders, validateProviderKey, type ProviderEntry } from '../../lib/providers';
 import { ProviderKeyForm } from './ProviderKeyForm';
 
@@ -24,6 +24,7 @@ export function ProviderKeysTab() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [validating, setValidating] = useState(false);
   const [rowError, setRowError] = useState<Record<string, string>>({});
+  const editingIdRef = useRef<string | null>(null);
 
   const fetchProviders = async () => {
     try {
@@ -42,10 +43,12 @@ export function ProviderKeysTab() {
     // Clear error for any previously-open row when switching rows.
     setRowError({});
     setEditingId(providerId);
+    editingIdRef.current = providerId;
   };
 
   const handleCancel = (providerId: string) => {
     setEditingId(null);
+    editingIdRef.current = null;
     setRowError((prev) => ({ ...prev, [providerId]: '' }));
   };
 
@@ -53,18 +56,27 @@ export function ProviderKeysTab() {
     setValidating(true);
     try {
       await validateProviderKey(provider.id, key);
+      // Guard: bail if user navigated away from this row while we were validating.
+      if (editingIdRef.current !== provider.id) {
+        setValidating(false);
+        return;
+      }
       // Refetch so the row switches to "configured" state.
       const list = await listProviders();
       setProviders(list);
       setEditingId(null);
+      editingIdRef.current = null;
       setRowError((prev) => ({ ...prev, [provider.id]: '' }));
     } catch (err) {
+      setValidating(false);
+      // Guard: bail if user navigated away from this row while we were validating.
+      if (editingIdRef.current !== provider.id) {
+        return;
+      }
       setRowError((prev) => ({
         ...prev,
         [provider.id]: err instanceof Error ? err.message : String(err),
       }));
-    } finally {
-      setValidating(false);
     }
   };
 
@@ -109,6 +121,7 @@ export function ProviderKeysTab() {
             </div>
             {isEditing && (
               <ProviderKeyForm
+                key={provider.id}
                 onSave={(key) => handleSave(provider, key)}
                 onCancel={() => handleCancel(provider.id)}
                 {...(error ? { error } : {})}
