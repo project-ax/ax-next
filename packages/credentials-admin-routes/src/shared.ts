@@ -123,6 +123,13 @@ export function writeServiceError(res: RouteResponse, err: unknown): boolean {
       res.status(400).json({ error: err.message });
       return true;
     }
+    if (err.code === 'unsupported-credential-kind') {
+      // User-facing "wrong kind" — surface as 400, not 500. The kinds
+      // catalog is published at /admin/credentials/kinds; if a client
+      // somehow posts a kind that isn't in it, that's a bad request.
+      res.status(400).json({ error: err.message });
+      return true;
+    }
   }
   return false;
 }

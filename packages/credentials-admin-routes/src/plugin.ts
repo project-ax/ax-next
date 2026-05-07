@@ -63,11 +63,30 @@ export function createCredentialsAdminRoutesPlugin(): Plugin {
         agentId: PLUGIN_NAME,
         userId: 'system',
       });
-      unregisterRoutes.push(...(await registerAdminCredentialsRoutes(bus, initCtx)));
-      unregisterRoutes.push(
-        ...(await registerSettingsCredentialsRoutes(bus, initCtx)),
-      );
-      unregisterRoutes.push(...(await registerOauthRoutes(bus, initCtx)));
+      // Atomic route registration: if any of the three register* calls
+      // throws after earlier ones succeeded, init() would otherwise leave
+      // partially-mounted routes behind (and shutdown won't run because
+      // bootstrap treats the plugin as failed). Unwind anything we already
+      // pushed, best-effort, then rethrow.
+      try {
+        unregisterRoutes.push(
+          ...(await registerAdminCredentialsRoutes(bus, initCtx)),
+        );
+        unregisterRoutes.push(
+          ...(await registerSettingsCredentialsRoutes(bus, initCtx)),
+        );
+        unregisterRoutes.push(...(await registerOauthRoutes(bus, initCtx)));
+      } catch (err) {
+        while (unregisterRoutes.length > 0) {
+          const fn = unregisterRoutes.pop();
+          try {
+            fn?.();
+          } catch {
+            // best-effort unwind
+          }
+        }
+        throw err;
+      }
     },
 
     async shutdown() {
