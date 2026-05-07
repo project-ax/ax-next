@@ -60,6 +60,16 @@ export function AdminSettings({ onClose }: AdminSettingsProps) {
         </ul>
       </nav>
       <div className="admin-settings-content" role="tabpanel">
+        <div className="admin-canary-banner" role="status">
+          <span aria-hidden="true" className="admin-canary-banner-icon">⚠</span>
+          <span>
+            Heads up: the canary scanner isn't wired in yet. Until it
+            is, this deployment has no automated secret-leak veto and
+            no LLM-output redaction. We trust ourselves with our
+            internal data, but we wouldn't ship this to outside users
+            yet — and neither should you. Tracked for Week 13+.
+          </span>
+        </div>
         {activeTab === 'provider-keys' && <ProviderKeysTab />}
         {activeTab === 'model-config' && <ModelConfigTab />}
         {activeTab === 'agents' && <AgentForm />}
