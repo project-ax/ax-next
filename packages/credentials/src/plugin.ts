@@ -60,8 +60,9 @@ export interface CredentialsGetInput {
 export type CredentialsGetOutput = string;
 
 export interface CredentialsSetInput {
+  scope: CredentialScope;
+  ownerId: string | null;
   ref: string;
-  userId: string;
   kind: string;
   payload: Uint8Array;
   expiresAt?: number;
@@ -71,8 +72,9 @@ export interface CredentialsSetInput {
 export type CredentialsSetOutput = void;
 
 export interface CredentialsDeleteInput {
+  scope: CredentialScope;
+  ownerId: string | null;
   ref: string;
-  userId: string;
 }
 
 export type CredentialsDeleteOutput = void;
@@ -267,8 +269,9 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
         'credentials:set',
         PLUGIN_NAME,
         async (ctx, input) => {
+          const scope = validateScope(input.scope);
+          const ownerId = validateOwnerIdForScope(scope, input.ownerId);
           const ref = validateRef(input.ref);
-          const userId = validateUserId(input.userId);
           const kind = validateKind(input.kind);
           if (!(input.payload instanceof Uint8Array)) {
             throw new PluginError({
@@ -278,7 +281,7 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
             });
           }
           const blob = wrapEnvelope(kind, input.payload, input.expiresAt, input.metadata);
-          await bus.call('credentials:store-blob:put', ctx, { userId, ref, blob });
+          await bus.call('credentials:store-blob:put', ctx, { scope, ownerId, ref, blob });
         },
       );
 
@@ -293,10 +296,12 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
         userId: string,
         ref: string,
       ): Promise<string> {
+        // Phase 1.3 transition: still single-scope (user). Task 1.4 walks
+        // the full user → agent → global precedence chain.
         const got = await bus.call<
-          { userId: string; ref: string },
+          { scope: 'user'; ownerId: string; ref: string },
           { blob: Uint8Array | undefined }
-        >('credentials:store-blob:get', ctx, { userId, ref });
+        >('credentials:store-blob:get', ctx, { scope: 'user', ownerId: userId, ref });
         if (got.blob === undefined) {
           // Env fallback — single-tenant / kind-dev posture. See
           // CredentialsPluginConfig.envFallback for the trade-off. We
@@ -331,11 +336,12 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
             { payload: env.payload, userId, ref },
           );
           if (out.refreshed !== undefined) {
-            // Re-store under the same kind. Sub-service may bump expiresAt
-            // or metadata as part of the refresh — propagate both.
+            // Re-store under the same scope+ownerId. Sub-service may bump
+            // expiresAt or metadata as part of the refresh — propagate both.
             const refreshArgs: CredentialsSetInput = {
+              scope: 'user',
+              ownerId: userId,
               ref,
-              userId,
               kind: env.kind,
               payload: out.refreshed.payload,
             };
@@ -386,15 +392,17 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
         'credentials:delete',
         PLUGIN_NAME,
         async (ctx, input) => {
+          const scope = validateScope(input.scope);
+          const ownerId = validateOwnerIdForScope(scope, input.ownerId);
           const ref = validateRef(input.ref);
-          const userId = validateUserId(input.userId);
           // The store-blob layer is bytes-only and has no `:delete` hook in
           // Phase 1b, so we use the same encrypted-empty-string tombstone we
           // had when this plugin called storage:set directly. credentials:get
           // checks for empty plaintext above and reports not-found.
           const tombstone = encryptWithKey(key, '');
           await bus.call('credentials:store-blob:put', ctx, {
-            userId,
+            scope,
+            ownerId,
             ref,
             blob: tombstone,
           });

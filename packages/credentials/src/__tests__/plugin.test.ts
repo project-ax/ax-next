@@ -10,7 +10,7 @@ function memStoragePlugin() {
     manifest: {
       name: 'mem-storage',
       version: '0.0.0',
-      registers: ['storage:get', 'storage:set'],
+      registers: ['storage:get', 'storage:set', 'storage:list-prefix'],
       calls: [],
       subscribes: [],
     },
@@ -23,6 +23,17 @@ function memStoragePlugin() {
         'mem-storage',
         async (_ctx, { key, value }: { key: string; value: Uint8Array }) => {
           store.set(key, value);
+        },
+      );
+      bus.registerService(
+        'storage:list-prefix',
+        'mem-storage',
+        async (_ctx, { prefix }: { prefix: string }) => {
+          const entries: Array<{ key: string; value: Uint8Array }> = [];
+          for (const [k, v] of store.entries()) {
+            if (k.startsWith(prefix)) entries.push({ key: k, value: v });
+          }
+          return { entries };
         },
       );
     },
@@ -52,8 +63,9 @@ describe('@ax/credentials plugin', () => {
       config: {},
     });
     await bus.call('credentials:set', ctx(), {
+      scope: 'user',
+      ownerId: 'u',
       ref: 'gh-token',
-      userId: 'u',
       kind: 'api-key',
       payload: bytes('ghp_abc123'),
     });
@@ -128,8 +140,9 @@ describe('@ax/credentials plugin', () => {
     process.env.ANTHROPIC_API_KEY = 'sk-from-env';
     try {
       await bus.call('credentials:set', ctx(), {
+        scope: 'user',
+        ownerId: 'u',
         ref: 'anthropic-api',
-        userId: 'u',
         kind: 'api-key',
         payload: bytes('sk-from-store'),
       });
@@ -162,12 +175,17 @@ describe('@ax/credentials plugin', () => {
     process.env.ANTHROPIC_API_KEY = 'sk-from-env';
     try {
       await bus.call('credentials:set', ctx(), {
+        scope: 'user',
+        ownerId: 'u',
         ref: 'anthropic-api',
-        userId: 'u',
         kind: 'api-key',
         payload: bytes('sk-from-store'),
       });
-      await bus.call('credentials:delete', ctx(), { ref: 'anthropic-api', userId: 'u' });
+      await bus.call('credentials:delete', ctx(), {
+        scope: 'user',
+        ownerId: 'u',
+        ref: 'anthropic-api',
+      });
       await expect(
         bus.call('credentials:get', ctx(), { ref: 'anthropic-api', userId: 'u' }),
       ).rejects.toMatchObject({ code: 'credential-not-found' });
@@ -184,12 +202,17 @@ describe('@ax/credentials plugin', () => {
       config: {},
     });
     await bus.call('credentials:set', ctx(), {
+      scope: 'user',
+      ownerId: 'u',
       ref: 'x',
-      userId: 'u',
       kind: 'api-key',
       payload: bytes('v'),
     });
-    await bus.call('credentials:delete', ctx(), { ref: 'x', userId: 'u' });
+    await bus.call('credentials:delete', ctx(), {
+      scope: 'user',
+      ownerId: 'u',
+      ref: 'x',
+    });
     await expect(
       bus.call('credentials:get', ctx(), { ref: 'x', userId: 'u' }),
     ).rejects.toMatchObject({ code: 'credential-not-found' });
@@ -204,15 +227,16 @@ describe('@ax/credentials plugin', () => {
     });
     await expect(
       bus.call('credentials:set', ctx(), {
+        scope: 'user',
+        ownerId: 'u',
         ref: 'has space',
-        userId: 'u',
         kind: 'api-key',
         payload: bytes('v'),
       }),
     ).rejects.toBeInstanceOf(PluginError);
   });
 
-  it('rejects credentials:set with an invalid userId', async () => {
+  it('rejects credentials:set with an invalid ownerId', async () => {
     const bus = new HookBus();
     await bootstrap({
       bus,
@@ -221,8 +245,9 @@ describe('@ax/credentials plugin', () => {
     });
     await expect(
       bus.call('credentials:set', ctx(), {
+        scope: 'user',
+        ownerId: 'has space',
         ref: 'r1',
-        userId: 'has space',
         kind: 'api-key',
         payload: bytes('v'),
       }),
@@ -238,8 +263,9 @@ describe('@ax/credentials plugin', () => {
     });
     await expect(
       bus.call('credentials:set', ctx(), {
+        scope: 'user',
+        ownerId: 'u',
         ref: 'r1',
-        userId: 'u',
         kind: 'BAD KIND',
         payload: bytes('v'),
       }),
@@ -254,14 +280,16 @@ describe('@ax/credentials plugin', () => {
       config: {},
     });
     await bus.call('credentials:set', ctx(), {
+      scope: 'user',
+      ownerId: 'alice',
       ref: 'shared',
-      userId: 'alice',
       kind: 'api-key',
       payload: bytes('alice-secret'),
     });
     await bus.call('credentials:set', ctx(), {
+      scope: 'user',
+      ownerId: 'bob',
       ref: 'shared',
-      userId: 'bob',
       kind: 'api-key',
       payload: bytes('bob-secret'),
     });
@@ -328,8 +356,9 @@ describe('@ax/credentials plugin', () => {
       config: {},
     });
     await bus.call('credentials:set', ctx(), {
+      scope: 'user',
+      ownerId: 'u',
       ref: 'oauth1',
-      userId: 'u',
       kind: 'fake-oauth',
       payload: bytes('refresh-token-blob'),
     });
@@ -394,8 +423,9 @@ describe('@ax/credentials plugin', () => {
       config: {},
     });
     await bus.call('credentials:set', ctx(), {
+      scope: 'user',
+      ownerId: 'u',
       ref: 'oauth1',
-      userId: 'u',
       kind: 'fake-oauth',
       payload: bytes('refresh-token-v1'),
     });
@@ -443,8 +473,9 @@ describe('@ax/credentials plugin', () => {
       config: {},
     });
     await bus.call('credentials:set', ctx(), {
+      scope: 'user',
+      ownerId: 'u',
       ref: 'r1',
-      userId: 'u',
       kind: 'slow-oauth',
       payload: bytes('blob'),
     });
@@ -505,14 +536,16 @@ describe('@ax/credentials plugin', () => {
       config: {},
     });
     await bus.call('credentials:set', ctx(), {
+      scope: 'user',
+      ownerId: 'alice',
       ref: 'r1',
-      userId: 'alice',
       kind: 'slow-oauth',
       payload: bytes('blob1'),
     });
     await bus.call('credentials:set', ctx(), {
+      scope: 'user',
+      ownerId: 'bob',
       ref: 'r1',
-      userId: 'bob',
       kind: 'slow-oauth',
       payload: bytes('blob2'),
     });
@@ -541,8 +574,9 @@ describe('@ax/credentials plugin', () => {
       config: {},
     });
     await bus.call('credentials:set', ctx(), {
+      scope: 'user',
+      ownerId: 'u',
       ref: 'oauth-no-resolver',
-      userId: 'u',
       kind: 'anthropic-oauth',
       payload: bytes('{"accessToken":"x","refreshToken":"y","expiresAt":1}'),
     });
@@ -559,8 +593,9 @@ describe('@ax/credentials plugin', () => {
       config: {},
     });
     await bus.call('credentials:set', ctx(), {
+      scope: 'user',
+      ownerId: 'u',
       ref: 'k1',
-      userId: 'u',
       kind: 'api-key',
       payload: bytes('sk-real'),
     });
@@ -581,19 +616,20 @@ describe('@ax/credentials plugin', () => {
       config: {},
     });
     await bus.call('credentials:set', ctx(), {
+      scope: 'user',
+      ownerId: 'u',
       ref: 'x',
-      userId: 'u',
       kind: 'api-key',
       payload: bytes('UNIQUE-SECRET-9f3a'),
     });
     const memGet = await bus.call<{ key: string }, { value: Uint8Array | undefined }>(
       'storage:get',
       ctx(),
-      { key: 'credential:u:x' },
+      { key: 'credential:v2:user:u:x' },
     );
     const tampered = new Uint8Array(memGet.value!);
     tampered[tampered.length - 1] ^= 0xff;
-    await bus.call('storage:set', ctx(), { key: 'credential:u:x', value: tampered });
+    await bus.call('storage:set', ctx(), { key: 'credential:v2:user:u:x', value: tampered });
     // Tampered ciphertext MUST reject — assert that first. A future regression
     // that silently returns a value would otherwise slip past the redaction
     // check (no err === no String(err) === no assertion).

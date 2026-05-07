@@ -129,6 +129,8 @@ export async function runCredentialsCommand(opts: RunCredentialsOptions): Promis
         'credentials:set',
         makeAgentContext({ sessionId: 'cli', agentId: 'cli', userId: CLI_USER_ID }),
         {
+          scope: 'user',
+          ownerId: CLI_USER_ID,
           ref,
           userId: CLI_USER_ID,
           kind: 'api-key',
@@ -284,6 +286,8 @@ async function runLoginCommand(
         'credentials:set',
         makeAgentContext({ sessionId: 'cli', agentId: 'cli', userId: CLI_USER_ID }),
         {
+          scope: 'user',
+          ownerId: CLI_USER_ID,
           ref,
           userId: CLI_USER_ID,
           kind: exchanged.kind,
