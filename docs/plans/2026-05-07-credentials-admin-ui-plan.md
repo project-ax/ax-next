@@ -2667,59 +2667,38 @@ PR title: `feat(channel-web): SettingsPanel — My credentials`
 
 ## PHASE 6 — Phase F canary upgrades
 
-**Outcome:** Acceptance test in `presets/k8s/src/__tests__/acceptance.test.ts` covers all four scenarios end-to-end: (a) global api-key resolution, (b) agent override of global, (c) user override of agent, (d) anthropic-oauth paste flow with stub.
+**Outcome:** k8s-e2e canary in `presets/k8s/src/__tests__/k8s-e2e/credentials-admin-roundtrip.test.ts` covers wire-layer + ACL + plugin-load ordering for all four scenarios on the live cluster: (a) global round-trip [pre-existing], (b) global+agent coexistence, (c) /settings/credentials forces scope=user + ownerId=actor, (d) anthropic-oauth /start handler.
 
-**PR title:** `test(preset-k8s/acceptance): credentials scope precedence + OAuth paste-flow canaries`
+**Plan deviation (recorded post-implementation):** the original brief targeted `acceptance.test.ts` with chat-turn-resolution proofs (e.g. "the LLM stub sees sk-global"). Investigation surfaced that the in-process acceptance test substitutes `@ax/test-harness/test-proxy` for the credential-proxy and short-circuits the credentials chain entirely, so a chat-turn resolution proof is not actionable there. Additionally, on the live cluster a chat-turn assertion would require either test-only credentials code in production (constraint violation per Phase 6 brief) or scraping credential-proxy logs for plaintext. We pivoted to wire-layer + ACL coverage at the k8s-e2e level, which is the value-add over the existing unit-level scope-precedence.test.ts (resolution semantics) and oauth-flow.test.ts (full /start → /finish round-trip with fake-oauth stub).
 
-### Task 6.1: Add four targeted acceptance test cases
+**Deferred to a follow-up:** chat-turn-resolution e2e proof; OAuth /finish round-trip on live cluster.
+
+**PR title:** `test(preset-k8s/k8s-e2e): credentials wire+ACL canaries (scope coexist, settings ACL, oauth start)`
+
+### Task 6.1: Add four targeted k8s-e2e canary cases
 
 **Files:**
-- Modify: `presets/k8s/src/__tests__/acceptance.test.ts`
+- Modify: `presets/k8s/src/__tests__/k8s-e2e/credentials-admin-roundtrip.test.ts`
+- Modify: `presets/k8s/src/__tests__/k8s-e2e/helpers.ts` (add `seedSettingsCredential`, `listSettingsCredentials`, `deleteSettingsCredential`, `startAdminOauth`)
 
-- [ ] **Step 1: Write test (a) — global resolution**
+- [x] **Step 1: Test (a) — global round-trip canary** (already in place from earlier Phase 2 work; kept as-is)
 
-```ts
-it('Phase F: a session resolves a global api-key seeded via /admin/credentials', async () => {
-  await seedAdminCredential({ scope: 'global', ownerId: null, ref: 'anthropic-api-key', kind: 'api-key', payload: 'sk-global' });
-  // Run a chat turn; the anthropic-llm stub asserts the api-key it received is 'sk-global'.
-});
-```
+- [x] **Step 2: Test (b) — global + agent-scoped at the same ref coexist and are distinguishable in /admin/credentials** (replaces the original "agent override of global" chat-turn assertion; resolution semantics covered by scope-precedence.test.ts)
 
-- [ ] **Step 2: Write test (b) — agent override**
+- [x] **Step 3: Test (c) — /settings/credentials forces scope=user + ownerId=actor.id** (replaces the original "user override of agent" chat-turn assertion; cross-user assertion is impossible under dev-bootstrap single-user limitation, covered at unit level instead)
 
-```ts
-it('Phase F: agent-scoped credential overrides global', async () => {
-  await seedAdminCredential({ scope: 'global', ownerId: null, ref: 'anthropic-api-key', kind: 'api-key', payload: 'sk-global' });
-  await seedAdminCredential({ scope: 'agent', ownerId: 'agent-canary', ref: 'anthropic-api-key', kind: 'api-key', payload: 'sk-agent' });
-  // Run a chat turn against agent-canary; the stub asserts 'sk-agent'.
-});
-```
+- [x] **Step 4: Test (d) — OAuth /start with kind=anthropic-oauth returns pendingId + authorizeUrl** (proves anthropic-oauth + oauth-pending plugin load + admin gating + PKCE URL build; /finish on live cluster deferred — stub provider in production preset is a constraint violation)
 
-- [ ] **Step 3: Write test (c) — user override**
+- [x] **Step 5: Run + commit**
 
-```ts
-it('Phase F: user-scoped credential overrides agent and global', async () => {
-  await seedAdminCredential({ scope: 'global', ownerId: null, ref: 'anthropic-api-key', kind: 'api-key', payload: 'sk-global' });
-  await seedAdminCredential({ scope: 'agent', ownerId: 'agent-canary', ref: 'anthropic-api-key', kind: 'api-key', payload: 'sk-agent' });
-  // Now POST as alice via /settings/credentials:
-  await seedSettingsCredential({ asUser: 'alice', ref: 'anthropic-api-key', kind: 'api-key', payload: 'sk-alice' });
-  // Run a chat turn as alice; stub asserts 'sk-alice'.
-});
-```
-
-- [ ] **Step 4: Write test (d) — OAuth paste flow** (covered partially in Task 3.3; expand to the full canary loop here)
-
-- [ ] **Step 5: Run + commit**
-
-Run: `pnpm --filter '@ax/preset-k8s' test acceptance`
-Expected: PASS.
+Run: `cd presets/k8s && pnpm vitest run --config vitest.config.k8s-e2e.ts credentials-admin-roundtrip` (without `AX_K8S_E2E=1` → 4 skipped, gate works). Build + filtered test pass.
 
 ```bash
-git add presets/k8s
-git commit -m "test(preset-k8s/acceptance): scope precedence + OAuth paste-flow canaries"
+git add presets/k8s docs/plans
+git commit -m "test(preset-k8s/k8s-e2e): credentials wire+ACL canaries (scope coexist, settings ACL, oauth start)"
 ```
 
-PR title: `test(preset-k8s/acceptance): credentials scope precedence + OAuth paste-flow canaries`
+PR title: `test(preset-k8s/k8s-e2e): credentials wire+ACL canaries (scope coexist, settings ACL, oauth start)`
 
 ---
 

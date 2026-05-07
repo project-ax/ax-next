@@ -216,6 +216,138 @@ export async function deleteAdminCredential(
   }
 }
 
+export interface SettingsCredentialInput {
+  ref: string;
+  kind: string;
+  /** Plaintext payload — encoded to base64 before sending. */
+  payload: string;
+}
+
+/**
+ * POST /settings/credentials — per-user paste-flow create. The route
+ * IGNORES any scope/ownerId in the body (forces scope='user',
+ * ownerId=actor.id on the server side); we don't even let the caller
+ * pass them, so a typo can't slip through and look successful.
+ *
+ * Distinct from /admin/credentials in that it requires NO admin role —
+ * any authed user can write their own credentials. This is the load-
+ * bearing helper for proving the route forces ownerId=actor.
+ */
+export async function seedSettingsCredential(
+  cookie: string,
+  input: SettingsCredentialInput,
+): Promise<void> {
+  const res = await fetch(`${HOST_BASE_URL}/settings/credentials`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-requested-with': 'ax-admin',
+      cookie,
+    },
+    body: JSON.stringify({
+      ref: input.ref,
+      kind: input.kind,
+      payload: Buffer.from(input.payload).toString('base64'),
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(
+      `POST /settings/credentials failed: ${res.status} ${await res.text().catch(() => '')}`,
+    );
+  }
+}
+
+/**
+ * GET /settings/credentials — actor-only metadata listing. Returns the
+ * `credentials` array verbatim. Each entry is metadata-only — same shape
+ * as the admin list, but pre-filtered to scope='user' + ownerId=actor.
+ */
+export async function listSettingsCredentials(
+  cookie: string,
+): Promise<Array<{ scope: string; ownerId: string | null; ref: string; kind: string }>> {
+  const res = await fetch(`${HOST_BASE_URL}/settings/credentials`, {
+    headers: {
+      'x-requested-with': 'ax-admin',
+      cookie,
+    },
+  });
+  if (!res.ok) {
+    throw new Error(
+      `GET /settings/credentials failed: ${res.status} ${await res.text().catch(() => '')}`,
+    );
+  }
+  const body = (await res.json()) as {
+    credentials: Array<{ scope: string; ownerId: string | null; ref: string; kind: string }>;
+  };
+  return body.credentials;
+}
+
+/**
+ * DELETE /settings/credentials/:ref — actor-only delete. The route
+ * pins (scope, ownerId) to (user, actor.id) server-side, so the helper
+ * only needs the ref.
+ */
+export async function deleteSettingsCredential(
+  cookie: string,
+  args: { ref: string },
+): Promise<void> {
+  const url = `${HOST_BASE_URL}/settings/credentials/${encodeURIComponent(args.ref)}`;
+  const res = await fetch(url, {
+    method: 'DELETE',
+    headers: {
+      'x-requested-with': 'ax-admin',
+      cookie,
+    },
+  });
+  if (!res.ok && res.status !== 404) {
+    throw new Error(
+      `DELETE ${url} failed: ${res.status} ${await res.text().catch(() => '')}`,
+    );
+  }
+}
+
+/**
+ * POST /admin/credentials/oauth/start — admin-only kick off of the
+ * web-paste OAuth flow. Returns `{ pendingId, authorizeUrl }`.
+ *
+ * We deliberately DON'T provide a `/finish` helper for the live-cluster
+ * suite: completing the flow requires either (a) a fake-oauth provider
+ * loaded into the production preset (constraint violation — test-only
+ * code in production) or (b) a real Anthropic OAuth consent (impossible
+ * in CI). The unit-level oauth-flow.test.ts covers the full round-trip
+ * with a fake-oauth stub kind.
+ */
+export async function startAdminOauth(
+  cookie: string,
+  input: {
+    scope: 'global' | 'user' | 'agent';
+    ownerId: string | null;
+    ref: string;
+    kind: string;
+  },
+): Promise<{ pendingId: string; authorizeUrl: string }> {
+  const res = await fetch(`${HOST_BASE_URL}/admin/credentials/oauth/start`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-requested-with': 'ax-admin',
+      cookie,
+    },
+    body: JSON.stringify({
+      scope: input.scope,
+      ownerId: input.ownerId,
+      ref: input.ref,
+      kind: input.kind,
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(
+      `POST /admin/credentials/oauth/start failed: ${res.status} ${await res.text().catch(() => '')}`,
+    );
+  }
+  return (await res.json()) as { pendingId: string; authorizeUrl: string };
+}
+
 export async function deleteAgent(
   cookie: string,
   agentId: string,
