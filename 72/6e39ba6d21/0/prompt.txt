@@ -1,0 +1,64 @@
+<task-notification>
+<task-id>a8b37c15ff0108bc5</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-vpulim-dev-ai-ax-next/8a60c6cc-3809-480f-a216-d8dbb3e43622/tasks/a8b37c15ff0108bc5.output</output-file>
+<status>completed</status>
+<summary>Agent "Implement Phase 6: canary upgrades" completed</summary>
+<result>All green. Final report below.
+
+---
+
+# Phase 6 (Task 6.1) — Implementation Report
+
+## Status: COMPLETE
+
+## Summary
+
+Added three new live-cluster canaries (and four helpers) to `presets/k8s/src/__tests__/k8s-e2e/credentials-admin-roundtrip.test.ts` covering wire-layer + ACL + plugin-load ordering for the credentials admin surface. Plan deviation documented (chat-turn-resolution proof and OAuth /finish on live cluster are deferred to follow-ups).
+
+## Test counts
+
+- `@ax/preset-k8s`: **68 tests passed** (4 test files; +4 new k8s-e2e canaries gated on `AX_K8S_E2E=1`, properly skip in hermetic mode)
+- `@ax/credentials`: **51 tests passed** (6 test files; unchanged — existing scope-precedence + facade unit tests)
+- `@ax/credentials-admin-routes`: **24 tests passed** (3 test files; unchanged — admin-handlers, settings-handlers, oauth-flow)
+- k8s-e2e suite (gated): 4 tests in `credentials-admin-roundtrip.test.ts`, all skip cleanly when `AX_K8S_E2E` unset
+- `pnpm build`: green
+
+## Files modified
+
+- `/Users/vpulim/dev/ai/ax-next/.worktrees/feat-credentials-admin-ui/presets/k8s/src/__tests__/k8s-e2e/credentials-admin-roundtrip.test.ts` — header rewritten with explicit covered/deferred scope; 3 new tests added (~+340 lines)
+- `/Users/vpulim/dev/ai/ax-next/.worktrees/feat-credentials-admin-ui/presets/k8s/src/__tests__/k8s-e2e/helpers.ts` — 4 new helpers (~+132 lines)
+- `/Users/vpulim/dev/ai/ax-next/.worktrees/feat-credentials-admin-ui/docs/plans/2026-05-07-credentials-admin-ui-plan.md` — Phase 6 section updated with completed checkboxes and plan-deviation rationale
+
+## Commit
+
+`1576f85 test(preset-k8s/k8s-e2e): credentials wire+ACL canaries (scope coexist, settings ACL, oauth start)`
+
+(26 commits ahead of `main` now)
+
+## Covered
+
+1. **(a) Global api-key round-trip** — pre-existing canary, kept as-is. POST → GET → DELETE for `scope=global, ownerId=null`.
+2. **(b) Global + agent-scoped coexistence** — both rows at same `ref` distinguishable in /admin/credentials by `(scope, ownerId)`. Catches a "list collapses rows" regression that would silently hide an agent override behind a global of the same ref. Asserts metadata-only response (neither plaintext leaks).
+3. **(c) /settings/credentials forces ACL** — POST as dev-bootstrap user → row lands at `scope=user, ownerId=&lt;actor.id&gt;`. Verified via both GET /settings/credentials (actor's view) and GET /admin/credentials (admin sees scope=user with right ownerId). Defensive assertion: no row at `scope!=user` for the same ref (catches "settings route accepted body-supplied scope" bug).
+4. **(d) OAuth /start canary** — POST /admin/credentials/oauth/start with `kind=anthropic-oauth` returns valid `{pendingId, authorizeUrl}` with `state` + `code_challenge` + `code_challenge_method=S256` query params. Proves `@ax/credentials-anthropic-oauth` + `@ax/credentials-oauth-pending` are loaded, admin gate works on the OAuth subroutes, and PKCE URL build is wired end-to-end. Pending entry self-evicts on TTL — no cleanup needed.
+
+## Deferred (documented in test file header + plan)
+
+1. **Chat-turn-resolution e2e proof** — that a credential seeded via /admin actually flows through credential-proxy at proxy:open-session time and lands in Anthropic API call. Reason: live host uses real Anthropic; proving requires either test-only code in production preset (Phase 6 constraint violation) or brittle log-scraping of credential-proxy plaintext. Resolution semantics covered at unit level by `packages/credentials/src/__tests__/scope-precedence.test.ts`.
+2. **OAuth /finish on live cluster** — completing the paste flow requires either fake-oauth provider loaded into production (constraint violation) or real Anthropic OAuth consent (impossible in CI). Full /start → /finish round-trip covered at unit level by `packages/credentials-admin-routes/src/__tests__/oauth-flow.test.ts` with fake-oauth stub kind.
+
+## Constraint adherence
+
+- No production preset code touched (verified — only test files + helpers + plan).
+- New tests gated on `AX_K8S_E2E=1`; skip cleanly without it (verified by running k8s-e2e config without env: 4 skipped, 1 file).
+- Test file header makes covered/deferred scope explicit (~50 lines of leading block comment).
+- All assertions are real (no `it.skip` shipped; hermetic gate is `describe.skip` based on env, which is the suite-wide convention).
+
+## Key findings during investigation
+
+- The in-process `acceptance.test.ts` cannot meaningfully test credentials at chat-turn time because it substitutes `@ax/test-harness/test-proxy` for the production `credential-proxy`, which short-circuits the credentials chain entirely. Documented in plan deviation.
+- The dev-bootstrap auth surface returns a single fixed admin id, so cross-user assertions ("alice can't see bob's") cannot be done at k8s-e2e level. That's covered at unit level by `settings-handlers.test.ts`. Documented in test header.
+- Existing unit-level coverage is comprehensive: scope-precedence (6 cases including envFallback + concurrent-resolve dedup) + oauth-flow (7 cases including wrong-actor 410 + scope=user forcing). The k8s-e2e canary's job is wire-layer + plugin-load ordering on top, not re-running the unit suite at e2e level.</result>
+<usage><total_tokens>138063</total_tokens><tool_uses>38</tool_uses><duration_ms>656247</duration_ms></usage>
+</task-notification>
