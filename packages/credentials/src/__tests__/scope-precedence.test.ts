@@ -134,4 +134,49 @@ describe('credentials:get scope precedence (user > agent > global)', () => {
       'GLOBAL',
     );
   });
+
+  // Regression: two concurrent credentials:get calls from DIFFERENT users
+  // for the same global blob (distinct userIds, same resolved row) used to
+  // miss the inflight-mutex because the key was `(userId, ref)`. With OAuth
+  // refresh paths at non-user scopes (Phase 3), this would let the resolver
+  // fire twice — racing token rotations is the bug we're closing here.
+  //
+  // The fix: hoist the store-blob walk OUT of the mutex; key the mutex on
+  // the resolved (scope, ownerId, ref) tuple so two callers landing on the
+  // same global row share one Promise.
+  it('dedupes concurrent credentials:get for the same global blob across users', async () => {
+    const bus = await makeBus();
+    const seedCtx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'admin' });
+    await bus.call('credentials:set', seedCtx, {
+      scope: 'global',
+      ownerId: null,
+      ref: 'shared',
+      kind: 'fake-refresh',
+      payload: new TextEncoder().encode('initial'),
+    });
+
+    let resolverCalls = 0;
+    bus.registerService(
+      'credentials:resolve:fake-refresh',
+      'test',
+      async (_ctx, input: { payload: Uint8Array; userId: string; ref: string }) => {
+        resolverCalls += 1;
+        // Yield once so two concurrent callers can both queue against the
+        // mutex before either resolves. Without the fix, each caller has a
+        // distinct mutex key and both arrive here.
+        await new Promise((r) => setImmediate(r));
+        return { value: `value-${new TextDecoder().decode(input.payload)}` };
+      },
+    );
+
+    const ctxAlice = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'alice' });
+    const ctxBob = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'bob' });
+    const [a, b] = await Promise.all([
+      bus.call('credentials:get', ctxAlice, { ref: 'shared', userId: 'alice' }),
+      bus.call('credentials:get', ctxBob, { ref: 'shared', userId: 'bob' }),
+    ]);
+    expect(a).toBe('value-initial');
+    expect(b).toBe('value-initial');
+    expect(resolverCalls).toBe(1);
+  });
 });

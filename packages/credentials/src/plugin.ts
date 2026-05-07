@@ -335,11 +335,68 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
         },
       );
 
-      // Per-(userId, ref) mutex. Two concurrent credentials:get calls for the
-      // same blob share one Promise, so an OAuth refresh fires at most once
-      // even when proxy:open-session and a concurrent proxy:rotate-session
-      // both ask. Different (userId, ref) pairs run in parallel. (I7.)
+      // Per-resolved-row mutex. The key is the RESOLVED (scope, ownerId, ref)
+      // tuple — NOT (userId, ref). Two concurrent credentials:get calls
+      // landing on the same row (e.g. two distinct users hitting the same
+      // global OAuth blob) share one Promise so the refresh fires at most
+      // once. Different rows run in parallel; this is the same shape as
+      // the original (userId, ref) mutex but corrected for the cross-user
+      // case the precedence chain introduced. (I7.)
       const inflight = new Map<string, Promise<string>>();
+
+      function mutexKey(scope: CredentialScope, ownerId: string | null, ref: string): string {
+        return `${scope}:${ownerId ?? ''}:${ref}`;
+      }
+
+      async function resolveFromRow(
+        ctx: Parameters<Parameters<typeof bus.registerService>[2]>[0],
+        scope: CredentialScope,
+        ownerId: string | null,
+        ref: string,
+        userId: string,
+        env: ReturnType<typeof unwrapEnvelope>,
+      ): Promise<string> {
+        const subService = `credentials:resolve:${env.kind}`;
+        if (bus.hasService(subService)) {
+          const out = await bus.call<CredentialsResolveInput, CredentialsResolveOutput>(
+            subService,
+            ctx,
+            { payload: env.payload, userId, ref },
+          );
+          if (out.refreshed !== undefined) {
+            // Re-store under the SAME scope+ownerId we resolved from.
+            // Sub-service may bump expiresAt or metadata as part of the
+            // refresh — propagate both.
+            const refreshArgs: CredentialsSetInput = {
+              scope,
+              ownerId,
+              ref,
+              kind: env.kind,
+              payload: out.refreshed.payload,
+            };
+            if (out.refreshed.expiresAt !== undefined) {
+              refreshArgs.expiresAt = out.refreshed.expiresAt;
+            }
+            const md = out.refreshed.metadata ?? env.metadata;
+            if (md !== undefined) refreshArgs.metadata = md;
+            await bus.call('credentials:set', ctx, refreshArgs);
+          }
+          return out.value;
+        }
+        // No sub-service registered. Only `api-key` defaults to the
+        // payload-is-the-value UTF-8 path. Any other kind without its
+        // resolver loaded is a misconfiguration — fail closed rather
+        // than handing back the (encrypted) blob bytes as a string,
+        // which would leak unparsed envelope content into the caller.
+        if (env.kind === 'api-key') {
+          return new TextDecoder().decode(env.payload);
+        }
+        throw new PluginError({
+          code: 'unsupported-credential-kind',
+          plugin: PLUGIN_NAME,
+          message: `no resolver registered for credential kind '${env.kind}' (ref='${ref}')`,
+        });
+      }
 
       async function doResolve(
         ctx: Parameters<Parameters<typeof bus.registerService>[2]>[0],
@@ -353,6 +410,12 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
         // (NOT "give up entirely") because deleting at one scope shouldn't
         // mask a value at another. Tombstone semantics for non-fallthrough
         // are tested at the per-scope set/delete level.
+        //
+        // The walk runs OUTSIDE the inflight mutex — store-blob:get is
+        // cheap (one row read, no network refresh), and pulling it out of
+        // the mutex lets us key the mutex on the row that actually got
+        // hit, not on the (userId, ref) input. That's what makes a
+        // cross-user refresh share one resolver call.
         const attempts: Array<{ scope: CredentialScope; ownerId: string | null }> = [];
         attempts.push({ scope: 'user', ownerId: userId });
         if (ctx.agentId !== undefined && ctx.agentId !== '') {
@@ -369,46 +432,18 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
           const env = unwrapEnvelope(got.blob);
           if (env.isTombstone) continue; // tombstone in this scope; try next
 
-          const subService = `credentials:resolve:${env.kind}`;
-          if (bus.hasService(subService)) {
-            const out = await bus.call<CredentialsResolveInput, CredentialsResolveOutput>(
-              subService,
-              ctx,
-              { payload: env.payload, userId, ref },
-            );
-            if (out.refreshed !== undefined) {
-              // Re-store under the SAME scope+ownerId we resolved from.
-              // Sub-service may bump expiresAt or metadata as part of the
-              // refresh — propagate both.
-              const refreshArgs: CredentialsSetInput = {
-                scope: a.scope,
-                ownerId: a.ownerId,
-                ref,
-                kind: env.kind,
-                payload: out.refreshed.payload,
-              };
-              if (out.refreshed.expiresAt !== undefined) {
-                refreshArgs.expiresAt = out.refreshed.expiresAt;
-              }
-              const md = out.refreshed.metadata ?? env.metadata;
-              if (md !== undefined) refreshArgs.metadata = md;
-              await bus.call('credentials:set', ctx, refreshArgs);
-            }
-            return out.value;
+          // Found the row. Mutex on the RESOLVED tuple so concurrent
+          // callers landing here share one resolver Promise.
+          const key = mutexKey(a.scope, a.ownerId, ref);
+          const existing = inflight.get(key);
+          if (existing !== undefined) return existing;
+          const p = resolveFromRow(ctx, a.scope, a.ownerId, ref, userId, env);
+          inflight.set(key, p);
+          try {
+            return await p;
+          } finally {
+            inflight.delete(key);
           }
-          // No sub-service registered. Only `api-key` defaults to the
-          // payload-is-the-value UTF-8 path. Any other kind without its
-          // resolver loaded is a misconfiguration — fail closed rather
-          // than handing back the (encrypted) blob bytes as a string,
-          // which would leak unparsed envelope content into the caller.
-          if (env.kind === 'api-key') {
-            return new TextDecoder().decode(env.payload);
-          }
-          throw new PluginError({
-            code: 'unsupported-credential-kind',
-            plugin: PLUGIN_NAME,
-            message: `no resolver registered for credential kind '${env.kind}' (ref='${ref}')`,
-          });
         }
         // None of the v2 scopes had it. Fall through to env fallback —
         // single-tenant / kind-dev posture. See CredentialsPluginConfig.envFallback
@@ -436,16 +471,7 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
         async (ctx, input) => {
           const ref = validateRef(input.ref);
           const userId = validateUserId(input.userId);
-          const mutexKey = `${userId}:${ref}`;
-          const existing = inflight.get(mutexKey);
-          if (existing !== undefined) return existing;
-          const p = doResolve(ctx, userId, ref);
-          inflight.set(mutexKey, p);
-          try {
-            return await p;
-          } finally {
-            inflight.delete(mutexKey);
-          }
+          return doResolve(ctx, userId, ref);
         },
       );
 
