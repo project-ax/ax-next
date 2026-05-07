@@ -59,6 +59,22 @@ describe('HookBus — service hooks', () => {
     expect(bus.hasService('x')).toBe(true);
   });
 
+  it('listServices returns the registered service names in registration order', () => {
+    const bus = new HookBus();
+    expect(bus.listServices()).toEqual([]);
+    bus.registerService('a', 'p1', async () => undefined);
+    bus.registerService('b', 'p2', async () => undefined);
+    expect(bus.listServices()).toEqual(['a', 'b']);
+  });
+
+  it('listServices returns a fresh array (mutation does not affect bus state)', () => {
+    const bus = new HookBus();
+    bus.registerService('a', 'p1', async () => undefined);
+    const list = bus.listServices();
+    list.pop();
+    expect(bus.listServices()).toEqual(['a']);
+  });
+
   it("handler's PluginError passes through unchanged (not re-wrapped)", async () => {
     const bus = new HookBus();
     const original = new PluginError({

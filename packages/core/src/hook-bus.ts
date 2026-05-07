@@ -42,6 +42,15 @@ export class HookBus {
     return this.services.has(hookName);
   }
 
+  /**
+   * Snapshot of currently-registered service-hook names. Order is
+   * registration order (Map iteration order). Returned as a fresh array
+   * so callers can't mutate internal state.
+   */
+  listServices(): string[] {
+    return [...this.services.keys()];
+  }
+
   async call<I, O>(hookName: string, ctx: AgentContext, input: I): Promise<O> {
     const registered = this.services.get(hookName);
     if (registered === undefined) {
