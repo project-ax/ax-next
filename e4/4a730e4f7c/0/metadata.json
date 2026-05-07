@@ -1,0 +1,43 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "e44a730e4f7c",
+  "session_id": "8a60c6cc-3809-480f-a216-d8dbb3e43622",
+  "strategy": "manual-commit",
+  "created_at": "2026-05-07T11:09:55.705058Z",
+  "branch": "feat/credentials-admin-ui",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "pnpm-lock.yaml",
+    "presets/k8s/package.json",
+    "presets/k8s/src/__tests__/credentials-admin-loaded.test.ts",
+    "presets/k8s/src/index.ts",
+    "presets/k8s/tsconfig.json"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "10c56eb60d66",
+  "checkpoint_transcript_start": 250,
+  "transcript_lines_at_start": 250,
+  "token_usage": {
+    "input_tokens": 0,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 0,
+    "output_tokens": 0,
+    "api_call_count": 0
+  },
+  "session_metrics": {
+    "turn_count": 3
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-05-07T11:09:55.687636Z",
+    "agent_lines": 37,
+    "agent_removed": 6,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 37,
+    "total_lines_changed": 43,
+    "agent_percentage": 100,
+    "metric_version": 2
+  }
+}
