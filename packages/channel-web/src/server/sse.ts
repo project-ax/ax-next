@@ -328,7 +328,37 @@ export function createBufferFillSubscriber(buffer: ChunkBuffer) {
       buffer.append(payload as StreamChunk);
       return undefined;
     }
-    if (payload.kind === 'tool-use' || payload.kind === 'tool-result') {
+    if (payload.kind === 'tool-use') {
+      const p = payload as {
+        toolCallId?: unknown;
+        toolName?: unknown;
+        input?: unknown;
+      };
+      if (
+        typeof p.toolCallId !== 'string' ||
+        typeof p.toolName !== 'string' ||
+        typeof p.input !== 'object' ||
+        p.input === null ||
+        Array.isArray(p.input)
+      ) {
+        return undefined;
+      }
+      buffer.append(payload as StreamChunk);
+      return undefined;
+    }
+    if (payload.kind === 'tool-result') {
+      const p = payload as {
+        toolCallId?: unknown;
+        output?: unknown;
+        isError?: unknown;
+      };
+      if (
+        typeof p.toolCallId !== 'string' ||
+        typeof p.output !== 'string' ||
+        (p.isError !== undefined && typeof p.isError !== 'boolean')
+      ) {
+        return undefined;
+      }
       buffer.append(payload as StreamChunk);
       return undefined;
     }

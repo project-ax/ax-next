@@ -1644,7 +1644,7 @@ body.searching .attach-btn { display: none; }
   line-height: 1.55;
   color: var(--ink-soft);
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 .tstep + .tstep { margin-top: 6px; }
 

@@ -127,7 +127,7 @@ const AppContent = ({ user }: { user: AuthUser }) => {
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [agents, selectedAgentId, pendingAgentId]);
+  }, [agents, selectedAgentId, pendingAgentId, runtime]);
 
   return (
     <UserProvider value={user}>

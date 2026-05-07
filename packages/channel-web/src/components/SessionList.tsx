@@ -100,8 +100,9 @@ export function SessionList() {
     // Bridge into assistant-ui's RemoteThreadList so the active thread
     // (and its history-adapter load) actually changes. Without this the
     // sidebar selection is purely cosmetic and the chat pane stays on
-    // whatever thread the runtime started with.
-    void aui.threads().switchToThread(id);
+    // whatever thread the runtime started with. (Return type is void —
+    // any async work happens inside assistant-ui; we can't catch here.)
+    aui.threads().switchToThread(id);
   };
 
   return (

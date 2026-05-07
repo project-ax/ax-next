@@ -111,7 +111,7 @@ export function AgentForm() {
       .catch(() => setTeams([]));
     void listMcpServers()
       .then((m) => setMcps(m ?? []))
-      .catch(() => {});
+      .catch(() => setMcps([]));
   }, [editing]);
 
   const startNew = () => {

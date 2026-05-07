@@ -42,7 +42,7 @@ describe('mock user-scoped agents', () => {
 
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-  it('admin sees personal + team agents (mercy + tide + team-engineering)', async () => {
+  it('admin sees personal + team agents (mercy + ax + team-engineering)', async () => {
     const { url, close } = await startServer(store);
     try {
       const res = await fetch(`${url}/api/agents`, { headers: { cookie: ADMIN } });

@@ -465,6 +465,13 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
               // existing tool-call part and flips its state to
               // `output-available` (or `output-error`).
               if ('kind' in frame && frame.kind === 'tool-result') {
+                // Replay can attach mid-turn at a result chunk (no preceding
+                // text/thinking/tool-use). Flip contentSeen so subsequent
+                // phase frames don't think we're still pre-content.
+                if (!contentSeen) {
+                  contentSeen = true;
+                  agentStatusActions.set('Thinking…');
+                }
                 if (frame.isError === true) {
                   controller.enqueue({
                     type: 'tool-output-error',

@@ -84,6 +84,7 @@ const EMPTY_PARTS: readonly unknown[] = Object.freeze([]);
 
 export const ToolGroup: FC<GroupProps> = ({ startIndex, endIndex, children }) => {
   const [open, setOpen] = useState(false);
+  const bodyId = `tgroup-body-${startIndex}-${endIndex}`;
   // useMessage selectors must return stable references — useSyncExternalStore
   // bails out when the previous and next snapshots are not identical (===),
   // so `m.parts ?? []` would allocate a new empty array on every call and
@@ -106,6 +107,7 @@ export const ToolGroup: FC<GroupProps> = ({ startIndex, endIndex, children }) =>
         type="button"
         className="tgroup-head"
         aria-expanded={open}
+        aria-controls={bodyId}
         onClick={() => setOpen((v) => !v)}
       >
         <span className="tgroup-title">{phrase}</span>
@@ -126,7 +128,7 @@ export const ToolGroup: FC<GroupProps> = ({ startIndex, endIndex, children }) =>
           />
         </svg>
       </button>
-      <div className="tgroup-body" role="region">
+      <div id={bodyId} className="tgroup-body" role="region" hidden={!open}>
         {children}
       </div>
     </div>

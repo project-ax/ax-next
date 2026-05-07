@@ -44,7 +44,7 @@ export const EventStreamChunkSchema = z.discriminatedUnion('kind', [
     toolCallId: z.string(),
     toolName: z.string(),
     /** Raw input the model produced for this tool call. */
-    input: z.record(z.unknown()),
+    input: z.record(z.string(), z.unknown()),
   }),
   z.object({
     reqId: z.string(),
