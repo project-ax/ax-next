@@ -1,7 +1,6 @@
 import { makeAgentContext, type AgentContext, type HookBus } from '@ax/core';
 import { z } from 'zod';
 import {
-  ADMIN_BODY_MAX_BYTES,
   parseRequestBody,
   requireAdmin,
   requireUser,

@@ -57,7 +57,7 @@ export function CredentialsList({
     void reload();
     // `client` is captured from `variant`; refreshing on `refreshKey`
     // change lets parents force a re-fetch.
-  }, [variant, refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [variant, refreshKey]);
 
   async function onDelete(c: CredentialMeta): Promise<void> {
     const ok = window.confirm(

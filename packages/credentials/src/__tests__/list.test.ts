@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { bootstrap, HookBus, makeAgentContext } from '@ax/core';
 import { createStorageSqlitePlugin } from '@ax/storage-sqlite';
 import { createCredentialsStoreDbPlugin } from '@ax/credentials-store-db';
-import { createCredentialsPlugin } from '../plugin.js';
+import { createCredentialsPlugin, type CredentialMeta } from '../plugin.js';
 
 const KEY = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 
@@ -35,7 +35,9 @@ describe('credentials:list + credentials:list-kinds', () => {
       kind: 'api-key',
       payload: new TextEncoder().encode('SECRET-DO-NOT-LEAK'),
     });
-    const out = (await bus.call('credentials:list', ctx, {})) as { credentials: any[] };
+    const out = (await bus.call('credentials:list', ctx, {})) as {
+      credentials: CredentialMeta[];
+    };
     expect(out.credentials).toHaveLength(1);
     const e = out.credentials[0];
     expect(e.scope).toBe('global');
@@ -74,14 +76,17 @@ describe('credentials:list + credentials:list-kinds', () => {
       kind: 'api-key',
       payload: new Uint8Array([2]),
     });
-    const all = ((await bus.call('credentials:list', ctx, {})) as { credentials: any[] })
-      .credentials;
+    const all = (
+      (await bus.call('credentials:list', ctx, {})) as {
+        credentials: CredentialMeta[];
+      }
+    ).credentials;
     expect(all).toHaveLength(2);
     const userOnly = (
       (await bus.call('credentials:list', ctx, {
         scope: 'user',
         ownerId: 'alice',
-      })) as { credentials: any[] }
+      })) as { credentials: CredentialMeta[] }
     ).credentials;
     expect(userOnly.map((e) => e.ref)).toEqual(['u']);
   });
@@ -108,7 +113,9 @@ describe('credentials:list + credentials:list-kinds', () => {
       ownerId: 'alice',
       ref: 'dead',
     });
-    const out = (await bus.call('credentials:list', ctx, {})) as { credentials: any[] };
+    const out = (await bus.call('credentials:list', ctx, {})) as {
+      credentials: CredentialMeta[];
+    };
     expect(out.credentials.map((e) => e.ref)).toEqual(['live']);
   });
 
