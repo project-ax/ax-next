@@ -1,0 +1,101 @@
+<task-notification>
+<task-id>a7107b9077ee0268d</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-vpulim-dev-ai-ax-next/8a60c6cc-3809-480f-a216-d8dbb3e43622/tasks/a7107b9077ee0268d.output</output-file>
+<status>completed</status>
+<summary>Agent "Implement Phase 1: scope axis + v2 keys" completed</summary>
+<result>Per Task 1.8 step 4, I should NOT open a PR (per user instruction). Phase 1 is complete.
+
+## Final Report
+
+**Status: DONE_WITH_CONCERNS**
+
+All 8 tasks (1.1–1.8) complete. Phase 1 outcome shipped: `@ax/credentials` exposes `scope`/`ownerId` on `set`/`delete`, walks user→agent→global precedence in `get`, returns metadata via `credentials:list` + `credentials:list-kinds`. Storage uses v2 keys with v1 read-fallback for `scope='user'`. CLI keeps working unchanged (writes `scope='user'`, `ownerId=CLI_USER_ID`); `credentials migrate` subcommand added.
+
+### Tasks
+
+| Task | Status | Notes |
+|---|---|---|
+| 1.1 | DONE | `validateScope` / `validateOwnerIdForScope` / `SCOPE_VALUES` exported from `@ax/credentials` |
+| 1.2 | DONE | v2 key format + `:list` + v1 read-fallback in `@ax/credentials-store-db`; `storage:list-prefix` added to `@ax/storage-sqlite` and `@ax/storage-postgres` |
+| 1.3 | DONE | facade `set` / `delete` take `scope`/`ownerId`; CLI updated to pass them |
+| 1.4 | DONE | full user→agent→global precedence chain in `credentials:get`, with envFallback at the tail |
+| Unblock | DONE | `HookBus.listServices()` added to core with two unit tests (registration order + fresh-array immutability) |
+| 1.5 | DONE | `credentials:list` (metadata only, no plaintext) + `credentials:list-kinds` (walks `credentials:login:*` services); 6 tests covering scope filtering, tombstone-skip, secret-leak guard, oauth discovery |
+| 1.6 | DONE | `runMigrateCommand` added; 3 tests covering v1→v2 copy, dry-run-without-`--yes`, no-op when only v2 rows exist |
+| 1.7 | DONE | `wrapEnvelope` now stamps `createdAt: Date.now()`; list handler renders `new Date(env.createdAt).toISOString()`; backward-compat default `new Date(0).toISOString()` for envelopes without `createdAt` (1970 — flagged as legacy in audit) |
+| 1.8 | DONE | scoped tests + full `pnpm test` pass; `pnpm build` clean. PR not opened per instruction. |
+
+### Test counts (delta vs baseline)
+
+| Package | before | after |
+|---|---|---|
+| `@ax/core` | 18 passed | **20 passed** (added 2 listServices tests) |
+| `@ax/credentials` | 27 passed | **49 passed** (+22) |
+| `@ax/credentials-store-db` | 12 passed | **17 passed** (+5) |
+| `@ax/storage-sqlite` | 4 passed | **5 passed** (+1) |
+| `@ax/storage-postgres` | 3 passed | **3 passed** (no new tests for `:list-prefix`; type-checks but unverified at integration; will get hit in Phase 2 acceptance) |
+| `@ax/cli` | 86 passed | **89 passed** (+3 migrate tests) |
+| `@ax/mcp-client` | 131 passed | **131 passed** (mem-storage stubs + 1 set-call updated for v2 shape) |
+| Full monorepo | passed | **all passed** |
+| `pnpm build` | clean | **clean** |
+
+### Commits
+
+```
+9aa6f8f feat(credentials): persist createdAt in envelope; surface in list metadata
+9e7b85b feat(cli): pass scope=user on set; add credentials migrate subcommand
+398a07f feat(credentials): add list + list-kinds (metadata only, no plaintext)
+d13c635 feat(core): add HookBus.listServices() for plugin introspection
+2df8f08 test(mcp-client): update mem-storage stubs + credentials:set call shape for v2 keys
+6ccf60b feat(credentials): user&gt;agent&gt;global resolution precedence in get()
+f8dfa84 feat(credentials): scope/ownerId on set + delete
+96f34b9 feat(credentials-store-db): v2 key format + scope axis + list (with v1 read-fallback)
+710f333 feat(credentials): add scope + ownerId validators
+```
+
+Branch: `feat/credentials-admin-ui` — 9 commits ahead of `main` (`d27b492`).
+
+### Files modified
+
+Core / facade / store-db:
+- `packages/core/src/hook-bus.ts` (+listServices)
+- `packages/core/src/__tests__/hook-bus.test.ts` (+2 tests)
+- `packages/credentials/src/plugin.ts` (scope types/validators, set/delete/get reshaping, list + list-kinds, createdAt)
+- `packages/credentials/src/index.ts` (re-exports)
+- `packages/credentials/package.json` (devDep on @ax/storage-sqlite)
+- `packages/credentials/src/__tests__/{scope-validation,scope-set-delete,scope-precedence,list}.test.ts` (new)
+- `packages/credentials/src/__tests__/plugin.test.ts` (updated to v2 set shape; tombstone-fallthrough test rewritten)
+- `packages/credentials-store-db/src/plugin.ts` (rewrite — v2 keys, scope axis, list, v1 fallback)
+- `packages/credentials-store-db/src/index.ts` (re-exports)
+- `packages/credentials-store-db/src/__tests__/{plugin,v2-keys}.test.ts` (updated + new)
+- `packages/storage-sqlite/src/plugin.ts` (+`storage:list-prefix` via Kysely + ESCAPE)
+- `packages/storage-postgres/src/plugin.ts` (+`storage:list-prefix`, parallel impl)
+
+CLI:
+- `packages/cli/src/commands/credentials.ts` (set/login pass scope+ownerId; migrate subcommand)
+- `packages/cli/src/__tests__/credentials-migrate.test.ts` (new)
+
+Downstream test fixups (already-existing tests broken by the API change):
+- `packages/mcp-client/src/__tests__/{plugin,config,admin-routes}.test.ts`
+
+Lockfile:
+- `pnpm-lock.yaml`
+
+### Deviations from plan
+
+1. Plan uses `{ path: ':memory:' }` for `createStorageSqlitePlugin`; actual config field is `databasePath`. Used the real field everywhere.
+2. Plan tests use `.rejects.toThrow(/credential-not-found/)` — `.toThrow()` matches against `.message`, but the error's plain message is `"no credential for ref='X'"`. Used `.rejects.toMatchObject({ code: 'credential-not-found' })` to mirror the existing `plugin.test.ts` pattern.
+3. Plan's storage-sqlite snippet uses raw `db.prepare(...).all(...)`; actual storage-sqlite uses Kysely. Implemented via `selectFrom('kv').where(sql\`key LIKE ${...} ESCAPE '\\\\'\`)` with explicit `%`/`_`/`\\` escaping. Mirrored in storage-postgres.
+4. Updated CLI to pass `scope:'user', ownerId:CLI_USER_ID` in **Task 1.3** (not 1.6), because the facade interface change otherwise breaks every CLI test immediately. The `migrate` subcommand still landed in 1.6 per plan.
+5. Per plan Task 1.4's note about the inflight mutex keyed on `(userId, ref)`: kept the existing key shape — the precedence walk happens inside `doResolve`, the mutex correctly serializes any concurrent `credentials:get(ref, userId)` calls regardless of which scope they end up resolving from.
+6. **Behavior change: tombstone-vs-envFallback** (intentional, documented at the design level by the plan's `if (env.isTombstone) continue;` semantics). Pre-precedence: deleting a user-scoped credential made `credentials:get` reject with `credential-not-found` even if `envFallback` had a mapping. Post-precedence: a user-scope tombstone falls through to agent → global → envFallback. Operators relying on "delete means deny everywhere" should leave envFallback empty. Existing `plugin.test.ts` test (`envFallback does NOT override a tombstoned credential`) was rewritten to assert the new contract (`envFallback fires when every scope is tombstoned`). Worth flagging in PR notes.
+
+### Concerns / follow-ups
+
+- **storage-postgres** `:list-prefix` integration tests not added in this phase. Hooked into manifest, type-checks, but only exercised through unit tests on the sqlite path. Phase 2 acceptance against the k8s preset will hit it; if it explodes there, the fix is a one-liner (LIKE/ESCAPE syntax difference, unlikely).
+- **createdAt backward-compat**: envelopes written before Task 1.7 don't carry `createdAt`. The list handler renders them as `new Date(0).toISOString()` (1970-01-01). After a `migrate --yes` from v1 keys, all v1-origin entries will show 1970 in the admin UI until they're re-written. Acceptable for MVP — admins can re-set the credential to refresh the timestamp.
+- **`credentials:list-kinds` discovery surface**: ties kind discovery to the `credentials:login:*` service-name convention. Works today, but the plan's Phase 3 OAuth additions need to keep that naming or the kind disappears from the admin UI dropdown. Worth a comment in `@ax/credentials-anthropic-oauth`'s manifest as a load-bearing constraint.
+- **`HookBus.listServices()` is a new core API surface.** Trivial implementation, additive only, but adds an introspection capability. Subscribers that key off "what's registered" could cause surprising coupling — consumers should treat the result as observability-only, not control-flow input. The current single consumer (`credentials:list-kinds`) does exactly that.</result>
+<usage><total_tokens>237048</total_tokens><tool_uses>53</tool_uses><duration_ms>740323</duration_ms></usage>
+</task-notification>
