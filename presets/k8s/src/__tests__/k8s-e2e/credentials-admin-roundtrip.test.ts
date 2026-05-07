@@ -39,6 +39,7 @@ describeIfE2E('Phase F: admin /admin/credentials round-trip', () => {
     const { cookie } = await signIn();
     const ref = `phase-f-canary-${Date.now()}`;
     const payload = 'sk-canary-do-not-leak';
+    let deleteAsserted = false;
 
     try {
       // POST. The route forces admin-only and validates payload shape;
@@ -52,9 +53,12 @@ describeIfE2E('Phase F: admin /admin/credentials round-trip', () => {
       });
 
       // GET — metadata only. The seeded plaintext must NOT be visible.
-      const list = await listAdminCredentials(cookie);
-      const found = list.find((c) => c.ref === ref);
-      expect(found, `seeded credential not in list: ${JSON.stringify(list)}`).toBeDefined();
+      const listAfterCreate = await listAdminCredentials(cookie);
+      const found = listAfterCreate.find((c) => c.ref === ref);
+      expect(
+        found,
+        `seeded credential not in list: ${JSON.stringify(listAfterCreate)}`,
+      ).toBeDefined();
       expect(found).toMatchObject({
         scope: 'global',
         ownerId: null,
@@ -62,17 +66,41 @@ describeIfE2E('Phase F: admin /admin/credentials round-trip', () => {
         kind: 'api-key',
       });
       // Sanity: the response must never contain the secret bytes.
-      expect(JSON.stringify(list)).not.toContain(payload);
-    } finally {
-      // Always clean up — leaving a global api-key around between test
-      // runs would either confuse later canaries or, worse, intercept a
-      // real ANTHROPIC_API_KEY proxy lookup if the ref happens to
-      // collide with a production seed.
+      expect(JSON.stringify(listAfterCreate)).not.toContain(payload);
+
+      // DELETE is part of the round-trip assertion, not just cleanup.
+      // We need to know the row actually went away — a finally-only
+      // delete would silently mask a "delete returns 204 but doesn't
+      // remove the row" regression on the live cluster.
       await deleteAdminCredential(cookie, {
         scope: 'global',
         ownerId: null,
         ref,
       });
+      const listAfterDelete = await listAdminCredentials(cookie);
+      expect(
+        listAfterDelete.find((c) => c.ref === ref),
+        `credential survived DELETE: ${JSON.stringify(listAfterDelete)}`,
+      ).toBeUndefined();
+      deleteAsserted = true;
+    } finally {
+      // Cleanup-on-failure only. If an assertion above threw before the
+      // DELETE step landed, make sure we don't leave a stray global
+      // api-key around — a collision with a real ANTHROPIC_API_KEY ref
+      // could intercept a production proxy lookup. Guarded with
+      // try/catch so a failed cleanup doesn't shadow the original
+      // assertion failure (the test's actual signal).
+      if (!deleteAsserted) {
+        try {
+          await deleteAdminCredential(cookie, {
+            scope: 'global',
+            ownerId: null,
+            ref,
+          });
+        } catch {
+          // best-effort cleanup; the original failure is what matters
+        }
+      }
     }
   });
 });
