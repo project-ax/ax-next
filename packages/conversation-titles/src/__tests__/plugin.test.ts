@@ -8,7 +8,10 @@ import {
   type LlmCallOutput,
 } from '@ax/core';
 import type { ContentBlock } from '@ax/ipc-protocol';
-import { createConversationTitlesPlugin } from '../plugin.js';
+import {
+  createConversationTitlesPlugin,
+  parseModelRef,
+} from '../plugin.js';
 import type {
   Conversation,
   GetInput,
@@ -22,7 +25,7 @@ import type {
 // ---------------------------------------------------------------------------
 // Test fixtures.
 //
-// We register stubs for `conversations:get`, `llm:call`, and
+// We register stubs for `conversations:get`, `llm:call:anthropic`, and
 // `conversations:set-title` directly on a HookBus, mirror the @ax/llm-anthropic
 // plugin test pattern (HookBus + makeAgentContext + manual hook registration).
 // ---------------------------------------------------------------------------
@@ -68,7 +71,7 @@ function makeStubsBus(): Stubs {
     },
   );
   bus.registerService<LlmCallInput, LlmCallOutput>(
-    'llm:call',
+    'llm:call:anthropic',
     'mock-llm',
     async (_ctx, input) => {
       llmCalls.push(input);
@@ -141,13 +144,19 @@ function makeCtx(overrides: {
 // ---------------------------------------------------------------------------
 
 describe('@ax/conversation-titles plugin manifest', () => {
-  it('declares no registers, three calls, one subscribe', () => {
-    const plugin = createConversationTitlesPlugin();
+  it('declares no registers, three calls (with configured provider hook), one subscribe', () => {
+    const plugin = createConversationTitlesPlugin({
+      model: 'anthropic/claude-haiku-4-5-20251001',
+    });
     expect(plugin.manifest).toEqual({
       name: '@ax/conversation-titles',
       version: '0.0.0',
       registers: [],
-      calls: ['llm:call', 'conversations:get', 'conversations:set-title'],
+      calls: [
+        'llm:call:anthropic',
+        'conversations:get',
+        'conversations:set-title',
+      ],
       subscribes: ['chat:turn-end'],
     });
   });
@@ -476,5 +485,112 @@ describe('@ax/conversation-titles chat:turn-end subscriber', () => {
     });
     expect(fireResult.rejected).toBe(false);
     expect(stubs.setTitleCalls).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseModelRef
+// ---------------------------------------------------------------------------
+
+describe('@ax/conversation-titles parseModelRef', () => {
+  it('splits on the first slash', () => {
+    expect(parseModelRef('anthropic/claude-haiku-4-5-20251001')).toEqual({
+      provider: 'anthropic',
+      modelId: 'claude-haiku-4-5-20251001',
+    });
+  });
+
+  it('splits routing-style values on the FIRST slash only', () => {
+    expect(parseModelRef('openrouter/anthropic/claude-3-5-sonnet')).toEqual({
+      provider: 'openrouter',
+      modelId: 'anthropic/claude-3-5-sonnet',
+    });
+  });
+
+  it.each([
+    ['empty', ''],
+    ['no-slash', 'no-slash'],
+    ['leading-slash', '/leading'],
+    ['trailing-slash', 'trailing/'],
+  ])('throws invalid-config on %s', (_label, ref) => {
+    expect(() => parseModelRef(ref)).toThrowError(PluginError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// factory config
+// ---------------------------------------------------------------------------
+
+describe('@ax/conversation-titles factory config', () => {
+  it('produces a manifest with the configured provider hook (anthropic)', () => {
+    const plugin = createConversationTitlesPlugin({
+      model: 'anthropic/claude-haiku-4-5-20251001',
+    });
+    expect(plugin.manifest.calls).toEqual([
+      'llm:call:anthropic',
+      'conversations:get',
+      'conversations:set-title',
+    ]);
+  });
+
+  it('produces a manifest with a different provider hook when configured', () => {
+    const plugin = createConversationTitlesPlugin({ model: 'openai/gpt-4' });
+    expect(plugin.manifest.calls).toEqual([
+      'llm:call:openai',
+      'conversations:get',
+      'conversations:set-title',
+    ]);
+  });
+
+  it('uses the default model when cfg.model is omitted', () => {
+    const plugin = createConversationTitlesPlugin();
+    expect(plugin.manifest.calls).toContain('llm:call:anthropic');
+  });
+
+  it('throws invalid-config at factory time on bad model', () => {
+    expect(() =>
+      createConversationTitlesPlugin({ model: 'no-slash' }),
+    ).toThrowError(PluginError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// dispatches the configured provider hook
+// ---------------------------------------------------------------------------
+
+describe('@ax/conversation-titles dispatches the configured provider hook', () => {
+  it('calls llm:call:openai when configured for openai', async () => {
+    const stubs = makeStubsBus();
+    const openaiCalls: LlmCallInput[] = [];
+    stubs.bus.registerService<LlmCallInput, LlmCallOutput>(
+      'llm:call:openai',
+      'mock-openai',
+      async (_ctx, input) => {
+        openaiCalls.push(input);
+        return {
+          text: 'OpenAI Title',
+          stopReason: 'end_turn',
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+    );
+    stubs.setGetResult({
+      conversation: makeConversation({ title: null }),
+      turns: [
+        turn('user', [{ type: 'text', text: 'hi' }]),
+        turn('assistant', [{ type: 'text', text: 'hello' }]),
+      ],
+    });
+
+    const plugin = createConversationTitlesPlugin({ model: 'openai/gpt-4' });
+    await plugin.init({ bus: stubs.bus, config: {} });
+
+    await stubs.bus.fire('chat:turn-end', makeCtx({ conversationId: 'c1' }), {
+      role: 'assistant',
+    });
+
+    expect(openaiCalls.length).toBe(1);
+    expect(openaiCalls[0].model).toBe('gpt-4');
+    expect(stubs.llmCalls.length).toBe(0); // anthropic hook not called
   });
 });

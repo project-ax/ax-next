@@ -1,4 +1,5 @@
 import {
+  PluginError,
   type AgentContext,
   type HookBus,
   type LlmCallInput,
@@ -17,14 +18,64 @@ import type {
 const PLUGIN_NAME = '@ax/conversation-titles';
 const PLUGIN_VERSION = '0.0.0';
 
-// Cheapest current Claude. Title quality is consistently good at this size;
-// no point burning a Sonnet's budget on an eight-word label.
-const TITLE_MODEL = 'claude-haiku-4-5-20251001';
 const TITLE_MAX_TOKENS = 32;
 // A touch of variety so titles don't all converge to the same dull phrase
 // across similar conversations, but mostly deterministic — a high-temperature
 // title is a coin flip and we'd rather it be readable.
 const TITLE_TEMPERATURE = 0.3;
+
+/**
+ * Default `provider/model` reference — preserves today's hardcoded haiku.
+ * Operators override via the preset's `AX_TITLE_MODEL` env var, which flows
+ * through `K8sPresetConfig.titles.model` to the factory's `cfg.model`.
+ */
+export const DEFAULT_TITLE_MODEL = 'anthropic/claude-haiku-4-5-20251001';
+
+export interface ConversationTitlesConfig {
+  /**
+   * Title-LLM model reference in the form `<provider>/<model-id>`.
+   * Splits on the first `/`. Provider becomes the bus hook name suffix
+   * (`llm:call:<provider>`); model-id flows into the call's `model` field.
+   *
+   * Default: `'anthropic/claude-haiku-4-5-20251001'`.
+   */
+  model?: string;
+}
+
+export interface ParsedModelRef {
+  provider: string;
+  modelId: string;
+}
+
+/**
+ * Parse a `provider/model-id` reference. Splits on the FIRST `/` so a
+ * future routing-style value like `openrouter/anthropic/claude-3-5-sonnet`
+ * yields provider=`openrouter`, modelId=`anthropic/claude-3-5-sonnet`.
+ *
+ * Throws `PluginError({ code: 'invalid-config' })` on:
+ *   - empty string
+ *   - missing `/`
+ *   - leading `/` (empty provider)
+ *   - trailing `/` (empty model-id)
+ */
+export function parseModelRef(ref: string): ParsedModelRef {
+  if (typeof ref !== 'string' || ref.length === 0) {
+    throw new PluginError({
+      code: 'invalid-config',
+      plugin: PLUGIN_NAME,
+      message: `model must be 'provider/model-id' (got empty value)`,
+    });
+  }
+  const idx = ref.indexOf('/');
+  if (idx <= 0 || idx === ref.length - 1) {
+    throw new PluginError({
+      code: 'invalid-config',
+      plugin: PLUGIN_NAME,
+      message: `model must be 'provider/model-id' (got: ${ref})`,
+    });
+  }
+  return { provider: ref.slice(0, idx), modelId: ref.slice(idx + 1) };
+}
 
 /**
  * `chat:turn-end` payload shape. The bus delivers whatever the publisher
@@ -49,13 +100,19 @@ interface TurnEndPayload {
  * call so a slow LLM round-trip can never clobber a user-driven rename.
  * At-least-once subscriber delivery is therefore safe.
  */
-export function createConversationTitlesPlugin(): Plugin {
+export function createConversationTitlesPlugin(
+  cfg: ConversationTitlesConfig = {},
+): Plugin {
+  const modelRef = cfg.model ?? DEFAULT_TITLE_MODEL;
+  const { provider, modelId } = parseModelRef(modelRef);
+  const llmCallHook = `llm:call:${provider}`;
+
   return {
     manifest: {
       name: PLUGIN_NAME,
       version: PLUGIN_VERSION,
       registers: [],
-      calls: ['llm:call', 'conversations:get', 'conversations:set-title'],
+      calls: [llmCallHook, 'conversations:get', 'conversations:set-title'],
       subscribes: ['chat:turn-end'],
     },
     async init({ bus }) {
@@ -69,7 +126,7 @@ export function createConversationTitlesPlugin(): Plugin {
           // than letting the bus's generic `hook_subscriber_failed` swallow
           // the context.
           try {
-            await handleTurnEnd(bus, ctx, payload);
+            await handleTurnEnd(bus, ctx, payload, { llmCallHook, modelId });
           } catch (err) {
             ctx.logger.warn('conversation_titles_subscriber_failed', {
               err: err instanceof Error ? err : new Error(String(err)),
@@ -89,6 +146,7 @@ async function handleTurnEnd(
   bus: HookBus,
   ctx: AgentContext,
   payload: TurnEndPayload,
+  cfg: { llmCallHook: string; modelId: string },
 ): Promise<void> {
   // Title fires only on the assistant's reply. User and tool turns are
   // signal-poor for a one-line summary, and waiting for the assistant
@@ -124,10 +182,10 @@ async function handleTurnEnd(
 
   const prompt = buildPrompt(conv.turns);
   const llmOut = await bus.call<LlmCallInput, LlmCallOutput>(
-    'llm:call',
+    cfg.llmCallHook,
     ctx,
     {
-      model: TITLE_MODEL,
+      model: cfg.modelId,
       maxTokens: TITLE_MAX_TOKENS,
       system: prompt.system,
       messages: [{ role: 'user', content: prompt.user }],
