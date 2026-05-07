@@ -111,7 +111,7 @@ export function ProviderKeysTab() {
               <ProviderKeyForm
                 onSave={(key) => handleSave(provider, key)}
                 onCancel={() => handleCancel(provider.id)}
-                error={error}
+                {...(error ? { error } : {})}
                 saving={validating}
               />
             )}
