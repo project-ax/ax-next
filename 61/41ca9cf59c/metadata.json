@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "6141ca9cf59c",
+  "strategy": "manual-commit",
+  "branch": "feat/credentials-admin-ui",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "presets/k8s/src/__tests__/k8s-e2e/credentials-admin-roundtrip.test.ts",
+    "presets/k8s/src/__tests__/k8s-e2e/helpers.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/61/41ca9cf59c/0/metadata.json",
+      "transcript": "/61/41ca9cf59c/0/full.jsonl",
+      "content_hash": "/61/41ca9cf59c/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 0,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 0,
+    "output_tokens": 0,
+    "api_call_count": 0
+  }
+}
