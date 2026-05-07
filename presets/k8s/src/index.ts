@@ -26,7 +26,6 @@ import { createLlmAnthropicPlugin } from '@ax/llm-anthropic';
 import {
   createConversationTitlesPlugin,
   DEFAULT_TITLE_MODEL,
-  type ConversationTitlesConfig,
 } from '@ax/conversation-titles';
 import { createChannelWebServerPlugin } from '@ax/channel-web/server';
 
@@ -597,12 +596,21 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // Conditional on cfg.titles (driven by ANTHROPIC_API_KEY presence in
   // loadK8sConfigFromEnv) so multi-tenant deploys opt out cleanly.
   if (config.titles !== undefined) {
-    plugins.push(createLlmAnthropicPlugin());
-    const titlesCfg: ConversationTitlesConfig = {};
-    if (config.titles.model !== undefined) {
-      titlesCfg.model = config.titles.model;
+    // This preset only ships @ax/llm-anthropic. A non-anthropic provider
+    // would leave `llm:call:<provider>` unregistered, which the kernel's
+    // topo-sort would catch at bootstrap with a less-readable error than
+    // this one. Future providers slot in by adding sibling plugins here
+    // and lifting this guard.
+    const titleModel = config.titles.model ?? DEFAULT_TITLE_MODEL;
+    if (!titleModel.startsWith('anthropic/')) {
+      throw new PluginError({
+        code: 'invalid-config',
+        plugin: '@ax/preset-k8s',
+        message: `titles.model='${titleModel}' — this preset only supports 'anthropic/<model-id>' (no other provider plugins are loaded)`,
+      });
     }
-    plugins.push(createConversationTitlesPlugin(titlesCfg));
+    plugins.push(createLlmAnthropicPlugin());
+    plugins.push(createConversationTitlesPlugin({ model: titleModel }));
   }
 
   // ----- 10. channel-web HTTP surface -----------------------------------
