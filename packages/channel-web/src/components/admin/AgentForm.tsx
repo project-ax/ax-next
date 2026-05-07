@@ -1,24 +1,22 @@
 /**
- * AgentForm — admin CRUD for agents (Task 22).
+ * AgentForm — admin CRUD for agents.
+ *
+ * Shape mirrors the real `/admin/agents` wire (camelCase + visibility).
+ * The legacy snake_case mock fields (desc/color/tag/owner_type) have no
+ * counterpart on the server — we drop them rather than send-and-pray.
  *
  * Two states share the same component:
  *
- *   - List view: every agent on the system, with edit + delete buttons
- *     per row, and a "+ New agent" button at the top.
+ *   - List view: every agent the actor can see, with edit + delete
+ *     buttons per row, and a "+ New agent" button at the top.
  *   - Form view: opens for "+ New agent" or "edit". Submit POSTs (new)
  *     or PATCHes (edit) and re-fetches the list on success.
  *
- * Owner picker — `owner_type` (user/team) toggles the `owner_id`
- * dropdown source. The teams list comes from `/api/admin/teams`.
- * Users come from a hardcoded `[u1, u2]` shim because there's no
- * `/api/users` endpoint yet — the mock seed only knows admin/alice.
- * When a real user-list endpoint shows up (post-MVP), swap the
- * `KNOWN_USERS` constant for a fetch.
- *
- * The chip inputs (`allowed_tools`, `mcp_config_ids`) are deliberately
- * dumb comma-separated text fields. A drag-reorder multiselect with
- * server-side completion is on the deferred polish list — the design
- * handoff treats these as low-traffic admin paths.
+ * Visibility radio toggles the team picker. The teams list comes from
+ * `/admin/teams`. The chip inputs (`allowedTools`, `mcpConfigIds`) are
+ * deliberately dumb comma-separated text fields. A drag-reorder
+ * multiselect is on the deferred polish list — admin paths are
+ * low-traffic.
  */
 import { useEffect, useState } from 'react';
 import {
@@ -28,17 +26,11 @@ import {
   deleteAgent,
   listMcpServers,
   listTeams,
+  type AdminAgent,
+  type AdminAgentInput,
 } from '../../lib/admin';
-import type { Agent, AgentInput } from '../../../mock/agents';
 import type { Team } from '../../../mock/admin/teams';
 import type { McpServer } from '../../../mock/admin/mcp-servers';
-
-// Hardcoded users until a `/api/users` endpoint exists. Mirrors
-// `mock/seed.ts`. TODO(post-MVP): wire to a real user directory.
-const KNOWN_USERS: { id: string; name: string }[] = [
-  { id: 'u1', name: 'Admin (admin@local)' },
-  { id: 'u2', name: 'Alice (alice@local)' },
-];
 
 const MODELS = [
   'claude-sonnet-4-6',
@@ -47,42 +39,33 @@ const MODELS = [
 ];
 
 type FormState = {
-  name: string;
-  desc: string;
-  color: string;
-  tag: string;
-  owner_type: 'user' | 'team';
-  owner_id: string;
-  system_prompt: string;
+  displayName: string;
+  visibility: 'personal' | 'team';
+  teamId: string;
+  systemPrompt: string;
   model: string;
-  allowed_tools: string;
-  mcp_config_ids: string;
+  allowedTools: string;
+  mcpConfigIds: string;
 };
 
 const emptyForm = (): FormState => ({
-  name: '',
-  desc: '',
-  color: '#7aa6c9',
-  tag: '',
-  owner_type: 'user',
-  owner_id: KNOWN_USERS[0]?.id ?? '',
-  system_prompt: '',
+  displayName: '',
+  visibility: 'personal',
+  teamId: '',
+  systemPrompt: '',
   model: MODELS[0] ?? 'claude-sonnet-4-6',
-  allowed_tools: '',
-  mcp_config_ids: '',
+  allowedTools: '',
+  mcpConfigIds: '',
 });
 
-const formFromAgent = (a: Agent): FormState => ({
-  name: a.name,
-  desc: a.desc,
-  color: a.color || '#7aa6c9',
-  tag: a.tag,
-  owner_type: a.owner_type,
-  owner_id: a.owner_id,
-  system_prompt: a.system_prompt,
+const formFromAgent = (a: AdminAgent): FormState => ({
+  displayName: a.displayName,
+  visibility: a.visibility,
+  teamId: a.visibility === 'team' ? a.ownerId : '',
+  systemPrompt: a.systemPrompt,
   model: a.model || MODELS[0] || 'claude-sonnet-4-6',
-  allowed_tools: a.allowed_tools.join(', '),
-  mcp_config_ids: a.mcp_config_ids.join(', '),
+  allowedTools: (a.allowedTools ?? []).join(', '),
+  mcpConfigIds: (a.mcpConfigIds ?? []).join(', '),
 });
 
 const splitChips = (s: string): string[] =>
@@ -92,13 +75,13 @@ const splitChips = (s: string): string[] =>
     .filter(Boolean);
 
 export function AgentForm() {
-  const [agents, setAgents] = useState<Agent[]>([]);
+  const [agents, setAgents] = useState<AdminAgent[]>([]);
   // `null` = not yet loaded (radio disabled), `[]` = loaded but empty.
-  // Distinguishing the two prevents writing an empty `owner_id` if the
-  // user toggles to `team` before `/api/admin/teams` resolves.
+  // Distinguishing the two prevents writing an empty `teamId` if the
+  // user toggles to `team` before `/admin/teams` resolves.
   const [teams, setTeams] = useState<Team[] | null>(null);
   const [mcps, setMcps] = useState<McpServer[]>([]);
-  const [editing, setEditing] = useState<Agent | 'new' | null>(null);
+  const [editing, setEditing] = useState<AdminAgent | 'new' | null>(null);
   const [form, setForm] = useState<FormState>(() => emptyForm());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -117,7 +100,7 @@ export function AgentForm() {
   }, []);
 
   // Teams + mcp servers are only needed once the form actually opens —
-  // they feed the owner dropdown and the chip placeholder. Defer fetching
+  // they feed the team picker and the chip placeholder. Defer fetching
   // until then so the list view stays a single round-trip. Both lookups
   // are best-effort: if either fails or returns a shape we can't read,
   // fall back to empty arrays — the form still submits.
@@ -125,10 +108,10 @@ export function AgentForm() {
     if (editing === null) return;
     void listTeams()
       .then((t) => setTeams(t ?? []))
-      .catch(() => {});
+      .catch(() => setTeams([]));
     void listMcpServers()
       .then((m) => setMcps(m ?? []))
-      .catch(() => {});
+      .catch(() => setMcps([]));
   }, [editing]);
 
   const startNew = () => {
@@ -137,7 +120,7 @@ export function AgentForm() {
     setEditing('new');
   };
 
-  const startEdit = (a: Agent) => {
+  const startEdit = (a: AdminAgent) => {
     setError(null);
     setForm(formFromAgent(a));
     setEditing(a);
@@ -151,29 +134,46 @@ export function AgentForm() {
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (busy) return;
-    if (!form.name.trim()) {
+    if (!form.displayName.trim()) {
       setError('name is required');
+      return;
+    }
+    if (form.visibility === 'team' && !form.teamId) {
+      setError('team is required when visibility is team');
       return;
     }
     setBusy(true);
     setError(null);
-    const payload: AgentInput = {
-      name: form.name.trim(),
-      desc: form.desc,
-      color: form.color || '#7aa6c9',
-      tag: form.tag,
-      owner_type: form.owner_type,
-      owner_id: form.owner_id,
-      system_prompt: form.system_prompt,
+    const allowedTools = splitChips(form.allowedTools);
+    const mcpConfigIds = splitChips(form.mcpConfigIds);
+    if (allowedTools.length === 0 && mcpConfigIds.length === 0) {
+      setBusy(false);
+      setError('agent must list at least one tool or one MCP config');
+      return;
+    }
+    const base: AdminAgentInput = {
+      displayName: form.displayName.trim(),
+      systemPrompt: form.systemPrompt,
       model: form.model,
-      allowed_tools: splitChips(form.allowed_tools),
-      mcp_config_ids: splitChips(form.mcp_config_ids),
+      allowedTools,
+      mcpConfigIds,
+      visibility: form.visibility,
+      ...(form.visibility === 'team' ? { teamId: form.teamId } : {}),
     };
     try {
       if (editing === 'new') {
-        await createAgent(payload);
+        await createAgent(base);
       } else if (editing) {
-        await patchAgent(editing.id, payload);
+        // PATCH cannot change visibility/teamId; send only fields the
+        // backend accepts on update.
+        const patch: Partial<AdminAgentInput> = {
+          displayName: base.displayName,
+          systemPrompt: base.systemPrompt,
+          model: base.model,
+          allowedTools: base.allowedTools,
+          mcpConfigIds: base.mcpConfigIds,
+        };
+        await patchAgent(editing.id, patch);
       }
       await refresh();
       setEditing(null);
@@ -184,10 +184,10 @@ export function AgentForm() {
     }
   };
 
-  const remove = async (a: Agent) => {
+  const remove = async (a: AdminAgent) => {
     // `confirm()` is fine for the mock — the design has us using inline
     // confirm rows like the session list, but that's deferred polish.
-    if (!confirm(`Delete agent "${a.name}"?`)) return;
+    if (!confirm(`Delete agent "${a.displayName}"?`)) return;
     try {
       await deleteAgent(a.id);
       await refresh();
@@ -195,11 +195,6 @@ export function AgentForm() {
       setError(err instanceof Error ? err.message : String(err));
     }
   };
-
-  const ownerOptions =
-    form.owner_type === 'team'
-      ? (teams ?? []).map((t) => ({ id: t.id, name: t.name }))
-      : KNOWN_USERS;
 
   return (
     <div className="admin-form-wrap">
@@ -224,13 +219,13 @@ export function AgentForm() {
                 <li key={a.id} className="admin-list-row">
                   <span
                     className="admin-list-swatch"
-                    style={{ background: a.color || '#7aa6c9' }}
+                    style={{ background: agentColorFor(a.id) }}
                     aria-hidden="true"
                   />
                   <div className="admin-list-text">
-                    <div className="admin-list-name">{a.name}</div>
+                    <div className="admin-list-name">{a.displayName}</div>
                     <div className="admin-list-meta">
-                      {a.owner_type} · {a.owner_id} · {a.model || '—'}
+                      {a.visibility} · {a.ownerId} · {a.model || '—'}
                     </div>
                   </div>
                   <div className="admin-list-actions">
@@ -261,98 +256,73 @@ export function AgentForm() {
             <input
               id="agent-name"
               type="text"
-              value={form.name}
+              value={form.displayName}
               onChange={(e) =>
-                setForm((f) => ({ ...f, name: e.target.value }))
+                setForm((f) => ({ ...f, displayName: e.target.value }))
               }
               required
             />
 
-            <label htmlFor="agent-desc">Description</label>
-            <input
-              id="agent-desc"
-              type="text"
-              value={form.desc}
-              onChange={(e) =>
-                setForm((f) => ({ ...f, desc: e.target.value }))
-              }
-            />
-
-            <label htmlFor="agent-color">Color</label>
-            <input
-              id="agent-color"
-              type="color"
-              value={form.color}
-              onChange={(e) =>
-                setForm((f) => ({ ...f, color: e.target.value }))
-              }
-            />
-
-            <label htmlFor="agent-tag">Tag</label>
-            <input
-              id="agent-tag"
-              type="text"
-              value={form.tag}
-              onChange={(e) => setForm((f) => ({ ...f, tag: e.target.value }))}
-            />
-
-            <span className="admin-form-label">Owner type</span>
+            <span className="admin-form-label">Visibility</span>
             <div className="admin-form-radios">
               <label>
                 <input
                   type="radio"
-                  name="owner_type"
-                  value="user"
-                  checked={form.owner_type === 'user'}
+                  name="visibility"
+                  value="personal"
+                  checked={form.visibility === 'personal'}
+                  disabled={editing !== 'new'}
                   onChange={() =>
-                    setForm((f) => ({
-                      ...f,
-                      owner_type: 'user',
-                      owner_id: KNOWN_USERS[0]?.id ?? '',
-                    }))
+                    setForm((f) => ({ ...f, visibility: 'personal', teamId: '' }))
                   }
                 />{' '}
-                user
+                personal
               </label>
               <label>
                 <input
                   type="radio"
-                  name="owner_type"
+                  name="visibility"
                   value="team"
-                  checked={form.owner_type === 'team'}
+                  checked={form.visibility === 'team'}
                   // Disable until teams are loaded — flipping to `team`
-                  // before then would write an empty owner_id and the
-                  // server would reject the submit.
-                  disabled={teams === null}
+                  // before then would write an empty teamId and the
+                  // server would reject the submit. Also disabled for
+                  // edits: the backend rejects visibility changes.
+                  disabled={editing !== 'new' || teams === null}
                   onChange={() =>
                     setForm((f) => ({
                       ...f,
-                      owner_type: 'team',
-                      owner_id: teams?.[0]?.id ?? '',
+                      visibility: 'team',
+                      teamId: teams?.[0]?.id ?? '',
                     }))
                   }
                 />{' '}
                 team
-                {teams === null && (
+                {editing === 'new' && teams === null && (
                   <span className="form-hint"> (loading teams…)</span>
                 )}
               </label>
             </div>
 
-            <label htmlFor="agent-owner">Owner</label>
-            <select
-              id="agent-owner"
-              value={form.owner_id}
-              onChange={(e) =>
-                setForm((f) => ({ ...f, owner_id: e.target.value }))
-              }
-            >
-              {ownerOptions.map((o) => (
-                <option key={o.id} value={o.id}>
-                  {o.name}
-                </option>
-              ))}
-            </select>
+            {form.visibility === 'team' && (
+              <>
+                <label htmlFor="agent-team">Team</label>
+                <select
+                  id="agent-team"
+                  value={form.teamId}
+                  disabled={editing !== 'new'}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, teamId: e.target.value }))
+                  }
+                >
+                  {(teams ?? []).map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
+                    </option>
+                  ))}
+                </select>
+              </>
+            )}
 
             <label htmlFor="agent-model">Model</label>
             <select
@@ -373,9 +343,9 @@ export function AgentForm() {
             <textarea
               id="agent-system-prompt"
               rows={5}
-              value={form.system_prompt}
+              value={form.systemPrompt}
               onChange={(e) =>
-                setForm((f) => ({ ...f, system_prompt: e.target.value }))
+                setForm((f) => ({ ...f, systemPrompt: e.target.value }))
               }
             />
 
@@ -384,9 +354,9 @@ export function AgentForm() {
               id="agent-tools"
               type="text"
               placeholder="comma, separated, names"
-              value={form.allowed_tools}
+              value={form.allowedTools}
               onChange={(e) =>
-                setForm((f) => ({ ...f, allowed_tools: e.target.value }))
+                setForm((f) => ({ ...f, allowedTools: e.target.value }))
               }
             />
 
@@ -402,9 +372,9 @@ export function AgentForm() {
                       .join(', ')}`
                   : 'comma-separated server IDs'
               }
-              value={form.mcp_config_ids}
+              value={form.mcpConfigIds}
               onChange={(e) =>
-                setForm((f) => ({ ...f, mcp_config_ids: e.target.value }))
+                setForm((f) => ({ ...f, mcpConfigIds: e.target.value }))
               }
             />
           </div>
@@ -430,4 +400,16 @@ export function AgentForm() {
       )}
     </div>
   );
+}
+
+// Stable per-agent color from a small palette. The wire doesn't carry
+// a per-agent color, so we derive one from the id so the list looks
+// consistent across reloads. Same shape as `AgentChip.agentColorFor`.
+function agentColorFor(agentId: string): string {
+  const palette = ['#7aa6c9', '#b08968', '#9c89b8', '#90a955', '#d4a373', '#9b5de5'];
+  let hash = 0;
+  for (let i = 0; i < agentId.length; i++) {
+    hash = (hash * 31 + agentId.charCodeAt(i)) >>> 0;
+  }
+  return palette[hash % palette.length] ?? '#888';
 }

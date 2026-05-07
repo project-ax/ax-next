@@ -3,7 +3,7 @@
  *
  * Click the user row → opens a popover with: Account, Preferences,
  * role-gated Admin entries (Agents / MCP Servers / Teams), theme
- * tri-toggle (auto / light / dark, persisted to `localStorage['tide-theme']`),
+ * tri-toggle (auto / light / dark, persisted to `localStorage['ax-theme']`),
  * and Sign out. Footer carries the AX logo.
  *
  * SECURITY NOTE — UI affordance only. Hiding the Admin entries from
@@ -200,7 +200,7 @@ export function UserMenu({
             <span>Sign out</span>
           </button>
           <div className="user-menu-foot">
-            <span>tide v0.3</span>
+            <span>ax v0.3</span>
           </div>
         </div>
       )}

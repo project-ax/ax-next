@@ -3,20 +3,28 @@
  *
  * Reads agent state from `agent-store`. Click toggles the menu open;
  * the menu's row-click forwards through `agentStoreActions.pickAgent`,
- * which decides between PATCH (empty session), defer (non-empty), or
- * just-record (no session yet) per the deferred-switch contract.
+ * which decides between defer (non-empty session) or just-record (no
+ * session yet) per the deferred-switch contract.
  *
  * Display priority for the chip name: `pendingAgentId` > `selectedAgentId`
  * > first agent. The pending agent wins so the chip immediately reflects
  * a deferred switch even though no session exists for it yet.
+ *
+ * Switching agents on a non-empty session also drives assistant-ui to a
+ * fresh local thread so the chat pane goes blank (the welcome empty
+ * state). Without this, the previous session's history would remain
+ * visible until the user typed something — confusing because the chip
+ * already shows the new agent.
  */
 import { useEffect, useRef, useState } from 'react';
+import { useAui } from '@assistant-ui/react';
 import { agentStoreActions, useAgentStore } from '../lib/agent-store';
 import { AgentMenu } from './AgentMenu';
 
 export function AgentChip() {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
+  const aui = useAui();
   const {
     agents,
     selectedAgentId,
@@ -40,10 +48,22 @@ export function AgentChip() {
 
   const handlePick = (agentId: string): void => {
     setOpen(false);
+    const wasNonEmpty = activeSessionHasMessages;
     void agentStoreActions.pickAgent(agentId, {
       activeSessionId,
       hasMessages: activeSessionHasMessages,
     });
+    if (wasNonEmpty) {
+      // Match the user-visible promise of the deferred-switch contract:
+      // "the chat view goes blank". Without this the pending agent
+      // shows in the chip but the previous thread's history stays on
+      // screen until the next message.
+      try {
+        aui.threads().switchToNewThread();
+      } catch (err) {
+        console.warn('[agent-chip] switchToNewThread failed', err);
+      }
+    }
   };
 
   return (

@@ -1,9 +1,9 @@
 /**
  * Thread — assistant-ui Thread root + welcome empty state + message
- * styling per Tide (Task 18).
+ * styling per the design (Task 18).
  *
  * Wraps `ThreadPrimitive.Root` / `Viewport` / `Messages` and provides the
- * Tide-styled welcome empty state, user/assistant message variants, and
+ * design-styled welcome empty state, user/assistant message variants, and
  * the inline edit composer for user-message edit-in-place. The Composer
  * is mounted as a sibling of `.timeline` so it can be `position: fixed`
  * over the viewport and reveal scroll-fade behavior in front of it.
@@ -12,7 +12,7 @@
  *
  *   - User messages get a `you-wash` background bubble (`.msg.you
  *     .msg-body`); assistant messages flow inline as plain prose
- *     (`.msg.agent .msg-body`). This is Tide — no avatars, no meta
+ *     (`.msg.agent .msg-body`). This is the design — no avatars, no meta
  *     column, no "Assistant:" labels. Just text.
  *
  *   - Action bars (`.msg-actions`) live at the bottom of each message
@@ -29,7 +29,7 @@
  *
  * Reference: v1's `~/dev/ai/ax/ui/chat/src/components/thread.tsx`. We
  * borrow the structure (root → viewport → if-empty welcome → messages →
- * composer) but Tide's design replaces v1's tailwind chrome wholesale.
+ * composer) but the design's design replaces v1's tailwind chrome wholesale.
  */
 import {
   ActionBarPrimitive,
@@ -46,10 +46,11 @@ import { thinkingStoreActions, useThinkingStore } from '../lib/thinking-store';
 import { MarkdownText } from './MarkdownText';
 import { Composer } from './Composer';
 import { SearchBar } from './SearchBar';
+import { ToolFallback, ToolGroup } from './ToolUse';
 
 /**
  * MessageTime — renders the message createdAt as a lowercase clock-time
- * label (e.g., "9:12 am") in the message footer. Mirrors Tide Sessions.html.
+ * label (e.g., "9:12 am") in the message footer. Mirrors the design (Tide Sessions.html).
  */
 const MessageTime: FC = () => {
   const ts = useMessage((m) => m.createdAt);
@@ -180,7 +181,13 @@ const AssistantMessage: FC = () => (
   <MessagePrimitive.Root asChild>
     <div className="msg agent" data-role="assistant">
       <div className="msg-body">
-        <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
+        <MessagePrimitive.Parts
+          components={{
+            Text: MarkdownText,
+            tools: { Fallback: ToolFallback },
+            ToolGroup,
+          }}
+        />
       </div>
       <ActionBarPrimitive.Root className="msg-actions">
         <MessageTime />
@@ -207,7 +214,7 @@ const AssistantMessage: FC = () => (
  * Visually mirrors the user message bubble (right-aligned, you-wash background)
  * with an accent halo to signal edit mode. No visible cancel/update buttons —
  * Enter commits (ComposerPrimitive default), Escape cancels (cancelOnEscape).
- * Mirrors the Tide design's `.msg-body.editing` in-place edit pattern.
+ * Mirrors the design's `.msg-body.editing` in-place edit pattern.
  */
 const EditComposer: FC = () => (
   <ComposerPrimitive.Root className="msg you msg-edit">

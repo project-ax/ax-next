@@ -110,6 +110,14 @@ const AppContent = ({ user }: { user: AuthUser }) => {
           pendingAgentId ?? selectedAgentId ?? agents[0]?.id ?? null;
         if (!activeAgentId) return;
         e.preventDefault();
+        try {
+          // Drive assistant-ui to a fresh thread first so the chat pane
+          // clears (welcome empty state). Without this the chat keeps
+          // showing the previous thread until the next message lands.
+          runtime.threads.switchToNewThread();
+        } catch (err) {
+          console.warn('[app] ⌘N switchToNewThread failed', err);
+        }
         void sessionStoreActions
           .createAndActivate(activeAgentId)
           .catch((err) => {
@@ -119,7 +127,7 @@ const AppContent = ({ user }: { user: AuthUser }) => {
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [agents, selectedAgentId, pendingAgentId]);
+  }, [agents, selectedAgentId, pendingAgentId, runtime]);
 
   return (
     <UserProvider value={user}>

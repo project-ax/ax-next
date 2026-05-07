@@ -18,7 +18,7 @@ beforeEach(() => {
 
 describe('Theme toggle', () => {
   it('hydrate reads from localStorage and applies data-theme', () => {
-    localStorage.setItem('tide-theme', 'dark');
+    localStorage.setItem('ax-theme', 'dark');
     hydrateTheme();
     expect(document.documentElement.getAttribute('data-theme')).toBe('dark');
   });
@@ -32,14 +32,14 @@ describe('Theme toggle', () => {
   it('setTheme(light) sets attribute and persists', () => {
     setTheme('light');
     expect(document.documentElement.getAttribute('data-theme')).toBe('light');
-    expect(localStorage.getItem('tide-theme')).toBe('light');
+    expect(localStorage.getItem('ax-theme')).toBe('light');
   });
 
   it('setTheme(auto) removes attribute and clears localStorage', () => {
     setTheme('dark');
     setTheme('auto');
     expect(document.documentElement.getAttribute('data-theme')).toBeNull();
-    expect(localStorage.getItem('tide-theme')).toBeNull();
+    expect(localStorage.getItem('ax-theme')).toBeNull();
   });
 
   it('clicking dark in the user menu wires through', () => {
@@ -51,6 +51,6 @@ describe('Theme toggle', () => {
     fireEvent.click(screen.getByRole('button', { name: /Alice/i }));
     fireEvent.click(screen.getByRole('radio', { name: /dark/i }));
     expect(document.documentElement.getAttribute('data-theme')).toBe('dark');
-    expect(localStorage.getItem('tide-theme')).toBe('dark');
+    expect(localStorage.getItem('ax-theme')).toBe('dark');
   });
 });

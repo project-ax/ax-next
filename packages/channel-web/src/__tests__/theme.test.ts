@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 describe('design tokens', () => {
-  it('declares Tide palette on :root', () => {
+  it('declares palette on :root', () => {
     const src = readFileSync(join(__dirname, '../index.css'), 'utf-8');
     for (const tok of ['--bg', '--ink', '--accent', '--rule', '--surface-raised',
                        '--bg-deep', '--ink-soft', '--ink-mute', '--ink-ghost',

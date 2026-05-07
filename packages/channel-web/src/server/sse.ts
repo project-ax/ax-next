@@ -232,7 +232,8 @@ export function createSseHandler(deps: SseHandlerDeps) {
     }
     const replay = deps.buffer.tail(reqId);
     for (const chunk of replay) {
-      safeWrite({ reqId: chunk.reqId, text: chunk.text, kind: chunk.kind });
+      // The chunk *is* a valid SseFrame variant — types align by design.
+      safeWrite(chunk);
     }
 
     // 4b) Attach the live chunk subscriber. Filter by reqId so multiple
@@ -242,11 +243,7 @@ export function createSseHandler(deps: SseHandlerDeps) {
       chunkSubKey,
       async (_ctx, payload) => {
         if (payload.reqId !== reqId) return undefined;
-        safeWrite({
-          reqId: payload.reqId,
-          text: payload.text,
-          kind: payload.kind,
-        });
+        safeWrite(payload);
         // Subscribers are observation-only here; we never reject or
         // mutate. Returning undefined means "pass through".
         return undefined;
@@ -321,18 +318,50 @@ export function createBufferFillSubscriber(buffer: ChunkBuffer) {
     // Defensive: a malformed event from the bus shouldn't tear down the
     // host. The schema validation already happened in the IPC handler
     // (Task 5); this is belt-and-braces.
-    if (
-      typeof payload?.reqId !== 'string' ||
-      typeof payload?.text !== 'string' ||
-      (payload?.kind !== 'text' && payload?.kind !== 'thinking')
-    ) {
+    if (typeof payload?.reqId !== 'string' || typeof payload?.kind !== 'string') {
       return undefined;
     }
-    buffer.append({
-      reqId: payload.reqId,
-      text: payload.text,
-      kind: payload.kind,
-    });
+    if (payload.kind === 'text' || payload.kind === 'thinking') {
+      if (typeof (payload as { text?: unknown }).text !== 'string') {
+        return undefined;
+      }
+      buffer.append(payload as StreamChunk);
+      return undefined;
+    }
+    if (payload.kind === 'tool-use') {
+      const p = payload as {
+        toolCallId?: unknown;
+        toolName?: unknown;
+        input?: unknown;
+      };
+      if (
+        typeof p.toolCallId !== 'string' ||
+        typeof p.toolName !== 'string' ||
+        typeof p.input !== 'object' ||
+        p.input === null ||
+        Array.isArray(p.input)
+      ) {
+        return undefined;
+      }
+      buffer.append(payload as StreamChunk);
+      return undefined;
+    }
+    if (payload.kind === 'tool-result') {
+      const p = payload as {
+        toolCallId?: unknown;
+        output?: unknown;
+        isError?: unknown;
+      };
+      if (
+        typeof p.toolCallId !== 'string' ||
+        typeof p.output !== 'string' ||
+        (p.isError !== undefined && typeof p.isError !== 'boolean')
+      ) {
+        return undefined;
+      }
+      buffer.append(payload as StreamChunk);
+      return undefined;
+    }
     return undefined;
   };
 }

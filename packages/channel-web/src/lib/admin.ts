@@ -9,48 +9,88 @@
  * Path convention matches `lib/auth.ts` (`/admin/me`, `/admin/sign-out`)
  * and the real backend's route registrations (`@ax/agents`,
  * `@ax/mcp-client`, `@ax/teams` all mount at `/admin/*`, no `/api`
- * prefix). The mock backend serves the same shapes from `/api/admin/*`
- * — that's a mock-only quirk; production hits `/admin/*`.
+ * prefix).
+ *
+ * Wire shape for /admin/agents is the real backend's camelCase contract
+ * (see packages/agents/src/admin-routes.ts):
+ *   GET  /admin/agents       → { agents: AdminAgent[] }
+ *   POST /admin/agents       body: AdminAgentInput              → { agent }
+ *   PATCH /admin/agents/:id  body: Partial<AdminAgentInput>     → { agent }
+ *   DELETE /admin/agents/:id                                    → 204
  *
  * SECURITY NOTE — every endpoint these helpers hit is guarded server-side
  * by the admin role check. Hiding admin entries from non-admins in the
  * UI is a convenience; access control sits on the server.
+ *
+ * CSRF — state-changing methods (POST/PATCH/DELETE) carry
+ * `X-Requested-With: ax-admin` so they pass the http-server's CSRF guard
+ * regardless of how `allowedOrigins` is configured. Same posture as
+ * `lib/auth.ts` and `components/SessionRow.tsx`.
  */
-import type { Agent, AgentInput } from '../../mock/agents';
 import type { McpServer } from '../../mock/admin/mcp-servers';
 import type { Team } from '../../mock/admin/teams';
 
 export type AdminView = 'agents' | 'mcp-servers' | 'teams' | null;
 
-const headers = { 'content-type': 'application/json' };
+const writeHeaders = {
+  'content-type': 'application/json',
+  'x-requested-with': 'ax-admin',
+};
 
 // Agents (admin scope) ---------------------------------------------------
 
-export async function listAdminAgents(): Promise<Agent[]> {
+export interface AdminAgent {
+  id: string;
+  ownerId: string;
+  ownerType: 'user' | 'team';
+  visibility: 'personal' | 'team';
+  displayName: string;
+  systemPrompt: string;
+  allowedTools: string[];
+  mcpConfigIds: string[];
+  model: string;
+  workspaceRef: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AdminAgentInput {
+  displayName: string;
+  systemPrompt: string;
+  allowedTools: string[];
+  mcpConfigIds: string[];
+  model: string;
+  visibility: 'personal' | 'team';
+  teamId?: string;
+  workspaceRef?: string | null;
+}
+
+export async function listAdminAgents(): Promise<AdminAgent[]> {
   const res = await fetch('/admin/agents', { credentials: 'include' });
   if (!res.ok) throw new Error(`list agents: ${res.status}`);
-  const body = await res.json();
+  const body = (await res.json()) as { agents: AdminAgent[] };
   return body.agents;
 }
 
-export async function createAgent(input: AgentInput): Promise<{ id: string }> {
+export async function createAgent(input: AdminAgentInput): Promise<AdminAgent> {
   const res = await fetch('/admin/agents', {
     method: 'POST',
-    headers,
+    headers: writeHeaders,
     credentials: 'include',
     body: JSON.stringify(input),
   });
   if (!res.ok) throw new Error(`create agent: ${res.status}`);
-  return res.json();
+  const body = (await res.json()) as { agent: AdminAgent };
+  return body.agent;
 }
 
 export async function patchAgent(
   id: string,
-  patch: Partial<AgentInput>,
+  patch: Partial<AdminAgentInput>,
 ): Promise<void> {
   const res = await fetch(`/admin/agents/${encodeURIComponent(id)}`, {
     method: 'PATCH',
-    headers,
+    headers: writeHeaders,
     credentials: 'include',
     body: JSON.stringify(patch),
   });
@@ -60,6 +100,7 @@ export async function patchAgent(
 export async function deleteAgent(id: string): Promise<void> {
   const res = await fetch(`/admin/agents/${encodeURIComponent(id)}`, {
     method: 'DELETE',
+    headers: { 'x-requested-with': 'ax-admin' },
     credentials: 'include',
   });
   if (!res.ok) throw new Error(`delete agent: ${res.status}`);
@@ -87,7 +128,7 @@ export async function createMcpServer(
 ): Promise<{ id: string }> {
   const res = await fetch('/admin/mcp-servers', {
     method: 'POST',
-    headers,
+    headers: writeHeaders,
     credentials: 'include',
     body: JSON.stringify(input),
   });
@@ -103,7 +144,7 @@ export async function patchMcpServer(
     `/admin/mcp-servers/${encodeURIComponent(id)}`,
     {
       method: 'PATCH',
-      headers,
+      headers: writeHeaders,
       credentials: 'include',
       body: JSON.stringify(patch),
     },
@@ -114,7 +155,11 @@ export async function patchMcpServer(
 export async function deleteMcpServer(id: string): Promise<void> {
   const res = await fetch(
     `/admin/mcp-servers/${encodeURIComponent(id)}`,
-    { method: 'DELETE', credentials: 'include' },
+    {
+      method: 'DELETE',
+      headers: { 'x-requested-with': 'ax-admin' },
+      credentials: 'include',
+    },
   );
   if (!res.ok) throw new Error(`delete mcp: ${res.status}`);
 }
@@ -128,7 +173,11 @@ export async function testMcpServer(
   try {
     const res = await fetch(
       `/admin/mcp-servers/${encodeURIComponent(id)}/test`,
-      { method: 'POST', credentials: 'include' },
+      {
+        method: 'POST',
+        headers: { 'x-requested-with': 'ax-admin' },
+        credentials: 'include',
+      },
     );
     if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
     return res.json();

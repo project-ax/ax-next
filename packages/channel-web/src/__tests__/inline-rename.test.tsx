@@ -29,10 +29,10 @@ const fetchMock = vi.fn();
 const seedAgents = () =>
   agentStoreActions.setAgents([
     {
-      id: 'tide',
+      id: 'ax',
       owner_id: 't1',
       owner_type: 'team',
-      name: 'tide',
+      name: 'ax',
       desc: '',
       color: '#7aa6c9',
       tag: 'work',
@@ -54,7 +54,7 @@ const seedOneSession = (id = 's-1', title = 'old title') => {
       {
         conversationId: id,
         userId: 'u2',
-        agentId: 'tide',
+        agentId: 'ax',
         title,
         activeSessionId: null,
         activeReqId: null,
@@ -99,7 +99,7 @@ describe('Inline rename', () => {
         {
           conversationId: 's-1',
           userId: 'u2',
-          agentId: 'tide',
+          agentId: 'ax',
           title: 'new title',
           activeSessionId: null,
           activeReqId: null,
@@ -228,7 +228,7 @@ describe('Inline rename', () => {
           {
             id: 's-1',
             title: 'old title',
-            agent_id: 'tide',
+            agent_id: 'ax',
             updated_at: Date.now(),
             created_at: Date.now(),
             user_id: 'u2',
@@ -269,7 +269,7 @@ describe('Inline rename', () => {
           {
             id: 's-1',
             title: 'blurred title',
-            agent_id: 'tide',
+            agent_id: 'ax',
             updated_at: Date.now(),
             created_at: Date.now(),
             user_id: 'u2',

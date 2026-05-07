@@ -144,6 +144,131 @@ describe('createAxHistoryAdapter', () => {
     });
   });
 
+  it('tool_use + tool_result across turns merges into a single output-available tool part', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        conversation: { conversationId: 'conv-1', title: null },
+        turns: [
+          {
+            turnId: 't0',
+            turnIndex: 0,
+            role: 'user',
+            contentBlocks: [{ type: 'text', text: 'run echo' }],
+            createdAt: '2026-04-01T00:00:00Z',
+          },
+          {
+            turnId: 't1',
+            turnIndex: 1,
+            role: 'assistant',
+            contentBlocks: [
+              { type: 'tool_use', id: 'tu_1', name: 'Bash', input: { cmd: 'echo hi' } },
+            ],
+            createdAt: '2026-04-01T00:00:01Z',
+          },
+          {
+            turnId: 't2',
+            turnIndex: 2,
+            role: 'tool',
+            contentBlocks: [
+              { type: 'tool_result', tool_use_id: 'tu_1', content: 'hi' },
+            ],
+            createdAt: '2026-04-01T00:00:02Z',
+          },
+          {
+            turnId: 't3',
+            turnIndex: 3,
+            role: 'assistant',
+            contentBlocks: [{ type: 'text', text: 'done' }],
+            createdAt: '2026-04-01T00:00:03Z',
+          },
+        ],
+      }),
+    });
+    const adapter = createAxHistoryAdapter(() => 'conv-1');
+    const result = await adapter.withFormat!(makeFormatAdapter()).load();
+    // The tool-role turn (t2) is dropped — its contents are merged.
+    expect(result.messages).toHaveLength(3);
+    const toolTurn = result.messages[1]!.message;
+    const parts = (toolTurn.content as { parts: Array<Record<string, unknown>> }).parts;
+    expect(parts[0]).toMatchObject({
+      type: 'dynamic-tool',
+      toolName: 'Bash',
+      toolCallId: 'tu_1',
+      state: 'output-available',
+      input: { cmd: 'echo hi' },
+      output: 'hi',
+    });
+  });
+
+  it('a tool_use without a matching tool_result is emitted as input-available', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        conversation: { conversationId: 'conv-1', title: null },
+        turns: [
+          {
+            turnId: 't0',
+            turnIndex: 0,
+            role: 'assistant',
+            contentBlocks: [
+              { type: 'tool_use', id: 'tu_orphan', name: 'Bash', input: {} },
+            ],
+            createdAt: '2026-04-01T00:00:00Z',
+          },
+        ],
+      }),
+    });
+    const adapter = createAxHistoryAdapter(() => 'conv-1');
+    const result = await adapter.withFormat!(makeFormatAdapter()).load();
+    const parts = (result.messages[0]!.message.content as { parts: Array<Record<string, unknown>> }).parts;
+    expect(parts[0]).toMatchObject({
+      type: 'dynamic-tool',
+      toolName: 'Bash',
+      toolCallId: 'tu_orphan',
+      state: 'input-available',
+    });
+    expect(parts[0]?.['output']).toBeUndefined();
+  });
+
+  it('a tool_result with is_error: true becomes an output-error part', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        conversation: { conversationId: 'conv-1', title: null },
+        turns: [
+          {
+            turnId: 't0',
+            turnIndex: 0,
+            role: 'assistant',
+            contentBlocks: [{ type: 'tool_use', id: 'tu_x', name: 'Bash', input: {} }],
+            createdAt: '2026-04-01T00:00:00Z',
+          },
+          {
+            turnId: 't1',
+            turnIndex: 1,
+            role: 'tool',
+            contentBlocks: [
+              { type: 'tool_result', tool_use_id: 'tu_x', content: 'oops', is_error: true },
+            ],
+            createdAt: '2026-04-01T00:00:01Z',
+          },
+        ],
+      }),
+    });
+    const adapter = createAxHistoryAdapter(() => 'conv-1');
+    const result = await adapter.withFormat!(makeFormatAdapter()).load();
+    expect(result.messages).toHaveLength(1);
+    const parts = (result.messages[0]!.message.content as { parts: Array<Record<string, unknown>> }).parts;
+    expect(parts[0]).toMatchObject({
+      type: 'dynamic-tool',
+      toolName: 'Bash',
+      toolCallId: 'tu_x',
+      state: 'output-error',
+      errorText: 'oops',
+    });
+  });
+
   it('an empty contentBlocks array still produces a single empty text part', async () => {
     fetchMock.mockResolvedValueOnce({
       ok: true,

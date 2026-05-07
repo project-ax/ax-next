@@ -1,7 +1,7 @@
 /**
  * SessionHeader — sticky top bar of the main pane.
  *
- * Left slot: AgentChip (agent identity + switcher, per Tide Sessions.html).
+ * Left slot: AgentChip (agent identity + switcher, per the design (Tide Sessions.html)).
  * Right slot: session title as small uppercase ghost label (double-click to rename).
  *
  * The rename flow: double-click → contenteditable, Enter/blur commits via
@@ -121,7 +121,7 @@ export function SessionHeader() {
         <div className="header-left">
           {/* Mobile hamburger — hidden on desktop via CSS. */}
           <SidebarMobileToggle />
-          {/* Agent chip: identity + agent switcher, left-aligned per Tide Sessions.html. */}
+          {/* Agent chip: identity + agent switcher, left-aligned per the design (Tide Sessions.html). */}
           <AgentChip />
         </div>
         <div

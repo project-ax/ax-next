@@ -3,36 +3,41 @@
  * actually create a session. The JSX matches the original stub byte-for-
  * byte so the existing CSS rules carry without diff.
  *
- * On click: read the currently-selected (or pending) agent from the
- * agent-store, POST `/api/chat/sessions { agentId }`, then activate the
- * new id and bump the SessionList's version counter. If no agent is
- * selected (cold start with empty agent list), the click is a no-op —
- * the agent chip should hydrate before the button is reachable in
- * practice, but we don't crash if it doesn't.
+ * On click: drive assistant-ui to a fresh local thread (so the active
+ * `Thread` view goes blank — "One conversation. Say anything."), then
+ * clear the local active-session pointer and bump the SessionList's
+ * version counter. The chat-flow server mints the conversationId on the
+ * first user message via POST /api/chat/messages with conversationId=null,
+ * so we don't issue a network call here.
  */
+import { useAui } from '@assistant-ui/react';
 import { useAgentStore } from '../lib/agent-store';
 import { sessionStoreActions } from '../lib/session-store';
 
 export function NewSessionButton() {
   const { agents, selectedAgentId, pendingAgentId } = useAgentStore();
+  const aui = useAui();
   const activeAgentId = pendingAgentId ?? selectedAgentId ?? agents[0]?.id ?? null;
 
-  const handleClick = async (): Promise<void> => {
+  const handleClick = (): void => {
     if (!activeAgentId) return;
     try {
-      await sessionStoreActions.createAndActivate(activeAgentId);
+      // Bridge into assistant-ui's RemoteThreadList so the visible
+      // thread actually changes. Without this the click only resets
+      // local store state — the chat pane keeps showing whatever
+      // thread the runtime had active.
+      aui.threads().switchToNewThread();
     } catch (err) {
-      console.warn('[new-session-btn] create failed', err);
+      console.warn('[new-session-btn] switchToNewThread failed', err);
     }
+    sessionStoreActions.newLocalConversation();
   };
 
   return (
     <button
       className="new-session-btn"
       type="button"
-      onClick={() => {
-        void handleClick();
-      }}
+      onClick={handleClick}
     >
       <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
         <path

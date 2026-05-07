@@ -17,6 +17,7 @@
  * this; we re-sort defensively in case the wire shape changes).
  */
 import { useEffect } from 'react';
+import { useAui } from '@assistant-ui/react';
 import { useAgentStore } from '../lib/agent-store';
 import {
   conversationToSessionRow,
@@ -61,6 +62,7 @@ function groupByDay(rows: SessionRowData[]): Group[] {
 export function SessionList() {
   const { sessions, activeSessionId, version } = useSessionStore();
   const { agents } = useAgentStore();
+  const aui = useAui();
 
   // Re-fetch on mount and on version bumps. The chat-flow API returns
   // a flat array of Conversation rows; we map to the internal SessionRow
@@ -95,6 +97,12 @@ export function SessionList() {
     // see session-store for why). If we later track per-row metadata
     // we can refine this.
     sessionStoreActions.setActiveSession(id, true);
+    // Bridge into assistant-ui's RemoteThreadList so the active thread
+    // (and its history-adapter load) actually changes. Without this the
+    // sidebar selection is purely cosmetic and the chat pane stays on
+    // whatever thread the runtime started with. (Return type is void —
+    // any async work happens inside assistant-ui; we can't catch here.)
+    aui.threads().switchToThread(id);
   };
 
   return (

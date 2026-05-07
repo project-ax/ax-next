@@ -2,7 +2,7 @@
  * Theme tri-toggle — owned by `<html data-theme>` so the existing CSS
  * variables (`:root`, `[data-theme="dark"]`, `prefers-color-scheme: dark`)
  * drive paint without a parallel React-state copy. localStorage persists
- * across reloads under `'tide-theme'`.
+ * across reloads under `'ax-theme'`.
  *
  * Three modes:
  *  - `auto`   — no `data-theme` attribute; system preference takes over
@@ -17,7 +17,7 @@
 import { useSyncExternalStore } from 'react';
 
 export type Theme = 'auto' | 'light' | 'dark';
-const KEY = 'tide-theme';
+const KEY = 'ax-theme';
 const listeners = new Set<() => void>();
 
 const getSnapshot = (): Theme => {

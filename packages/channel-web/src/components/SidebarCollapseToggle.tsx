@@ -1,7 +1,7 @@
 /**
  * SidebarCollapseToggle — small button that flips
  * `body.sidebar-collapsed` on/off. CSS rules in `index.css` (copied from
- * the Tide handoff) own the actual width transitions.
+ * the design handoff) own the actual width transitions.
  *
  * Lives in `.sidebar-head` for now; Task 16 may move/duplicate it into
  * the session header. Kept as its own component so the move is a

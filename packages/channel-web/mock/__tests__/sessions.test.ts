@@ -43,8 +43,8 @@ describe('mock sessions', () => {
     const { url, close } = await startServer(store);
     try {
       // Seed one session for each user directly via the store
-      store.collection<{ id: string; user_id: string; agent_id: string; title: string; created_at: number; updated_at: number }>('sessions').upsert({ id: 'sess-alice', user_id: 'u2', agent_id: 'tide', title: 'a', created_at: 1, updated_at: 2 });
-      store.collection<{ id: string; user_id: string; agent_id: string; title: string; created_at: number; updated_at: number }>('sessions').upsert({ id: 'sess-admin', user_id: 'u1', agent_id: 'tide', title: 'b', created_at: 3, updated_at: 4 });
+      store.collection<{ id: string; user_id: string; agent_id: string; title: string; created_at: number; updated_at: number }>('sessions').upsert({ id: 'sess-alice', user_id: 'u2', agent_id: 'ax', title: 'a', created_at: 1, updated_at: 2 });
+      store.collection<{ id: string; user_id: string; agent_id: string; title: string; created_at: number; updated_at: number }>('sessions').upsert({ id: 'sess-admin', user_id: 'u1', agent_id: 'ax', title: 'b', created_at: 3, updated_at: 4 });
       const res = await fetch(`${url}/api/chat/sessions`, { headers: { cookie: ALICE } });
       expect(res.status).toBe(200);
       const body = await res.json();
@@ -58,13 +58,13 @@ describe('mock sessions', () => {
       const res = await fetch(`${url}/api/chat/sessions`, {
         method: 'POST',
         headers: { cookie: ALICE, 'content-type': 'application/json' },
-        body: JSON.stringify({ agentId: 'tide' }),
+        body: JSON.stringify({ agentId: 'ax' }),
       });
       expect(res.status).toBe(201);
       const body = await res.json();
       expect(body.id).toMatch(/^sess-/);
       const all = store.collection<{ id: string; user_id: string }>('sessions').list();
-      expect(all.find((s) => s.id === body.id)).toMatchObject({ user_id: 'u2', agent_id: 'tide' });
+      expect(all.find((s) => s.id === body.id)).toMatchObject({ user_id: 'u2', agent_id: 'ax' });
     } finally { await close(); }
   });
 
@@ -83,7 +83,7 @@ describe('mock sessions', () => {
   });
 
   it('renames a session', async () => {
-    store.collection<{ id: string; user_id: string; agent_id: string; title: string; created_at: number; updated_at: number }>('sessions').upsert({ id: 'sess-alice', user_id: 'u2', agent_id: 'tide', title: 'old', created_at: 1, updated_at: 2 });
+    store.collection<{ id: string; user_id: string; agent_id: string; title: string; created_at: number; updated_at: number }>('sessions').upsert({ id: 'sess-alice', user_id: 'u2', agent_id: 'ax', title: 'old', created_at: 1, updated_at: 2 });
     const { url, close } = await startServer(store);
     try {
       const res = await fetch(`${url}/api/chat/sessions/sess-alice`, {
@@ -98,7 +98,7 @@ describe('mock sessions', () => {
   });
 
   it('deletes a session and its messages (204)', async () => {
-    store.collection<{ id: string; user_id: string; agent_id: string; title: string; created_at: number; updated_at: number }>('sessions').upsert({ id: 'sess-alice', user_id: 'u2', agent_id: 'tide', title: 't', created_at: 1, updated_at: 1 });
+    store.collection<{ id: string; user_id: string; agent_id: string; title: string; created_at: number; updated_at: number }>('sessions').upsert({ id: 'sess-alice', user_id: 'u2', agent_id: 'ax', title: 't', created_at: 1, updated_at: 1 });
     store.collection<{ id: string; session_id: string }>('messages').upsert({ id: 'm1', session_id: 'sess-alice' });
     const { url, close } = await startServer(store);
     try {
@@ -112,7 +112,7 @@ describe('mock sessions', () => {
   });
 
   it('rejects cross-tenant history fetch (403)', async () => {
-    store.collection<{ id: string; user_id: string; agent_id: string; title: string; created_at: number; updated_at: number }>('sessions').upsert({ id: 'sess-alice', user_id: 'u2', agent_id: 'tide', title: 't', created_at: 1, updated_at: 1 });
+    store.collection<{ id: string; user_id: string; agent_id: string; title: string; created_at: number; updated_at: number }>('sessions').upsert({ id: 'sess-alice', user_id: 'u2', agent_id: 'ax', title: 't', created_at: 1, updated_at: 1 });
     const { url, close } = await startServer(store);
     try {
       const res = await fetch(`${url}/api/chat/sessions/sess-alice/history`, { headers: { cookie: ADMIN } });
@@ -121,7 +121,7 @@ describe('mock sessions', () => {
   });
 
   it('returns history messages for the owner', async () => {
-    store.collection<{ id: string; user_id: string; agent_id: string; title: string; created_at: number; updated_at: number }>('sessions').upsert({ id: 'sess-alice', user_id: 'u2', agent_id: 'tide', title: 't', created_at: 1, updated_at: 1 });
+    store.collection<{ id: string; user_id: string; agent_id: string; title: string; created_at: number; updated_at: number }>('sessions').upsert({ id: 'sess-alice', user_id: 'u2', agent_id: 'ax', title: 't', created_at: 1, updated_at: 1 });
     store.collection<{ id: string; session_id: string; role: string; content: string; created_at: number }>('messages').upsert({ id: 'm1', session_id: 'sess-alice', role: 'user', content: 'hi', created_at: 1 });
     const { url, close } = await startServer(store);
     try {

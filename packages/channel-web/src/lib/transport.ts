@@ -61,7 +61,22 @@ const PHASE_LABELS: Record<string, string> = {
 
 /** Shape of one SSE `data:` JSON payload. Matches `SseFrame` in src/server/types.ts. */
 type SseFrame =
-  | { reqId: string; text: string; kind: 'text' | 'thinking' }
+  | { reqId: string; kind: 'text'; text: string }
+  | { reqId: string; kind: 'thinking'; text: string }
+  | {
+      reqId: string;
+      kind: 'tool-use';
+      toolCallId: string;
+      toolName: string;
+      input: Record<string, unknown>;
+    }
+  | {
+      reqId: string;
+      kind: 'tool-result';
+      toolCallId: string;
+      output: string;
+      isError?: boolean;
+    }
   | { reqId: string; phase: string }
   | { reqId: string; done: true };
 
@@ -400,7 +415,10 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
                 continue;
               }
               // text/thinking chunk
-              if ('text' in frame && typeof frame.text === 'string') {
+              if (
+                'kind' in frame &&
+                (frame.kind === 'text' || frame.kind === 'thinking')
+              ) {
                 if (!contentSeen) {
                   contentSeen = true;
                   // Restore the default working label so the cleanup
@@ -419,6 +437,57 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
                     ? { providerMetadata: { ax: { thinking: true } } }
                     : {}),
                 });
+                continue;
+              }
+              // tool-use frame: model issued a tool call. Close any open
+              // text/thinking part first — assistant-ui's MessageRepository
+              // expects parts to come in ordered. Then emit the AI SDK v5
+              // `tool-input-available` chunk which assistant-ui's
+              // react-ai-sdk bridge converts to a tool-call ThreadMessage
+              // part rendered by Thread.tsx via ToolGroup + ToolFallback.
+              if ('kind' in frame && frame.kind === 'tool-use') {
+                if (!contentSeen) {
+                  contentSeen = true;
+                  agentStatusActions.set('Thinking…');
+                }
+                closeOpen(controller);
+                controller.enqueue({
+                  type: 'tool-input-available',
+                  toolCallId: frame.toolCallId,
+                  toolName: frame.toolName,
+                  input: frame.input,
+                  dynamic: true,
+                });
+                continue;
+              }
+              // tool-result frame: the tool finished. Pair to the prior
+              // tool-use by toolCallId; AI SDK threads the output into the
+              // existing tool-call part and flips its state to
+              // `output-available` (or `output-error`).
+              if ('kind' in frame && frame.kind === 'tool-result') {
+                // Replay can attach mid-turn at a result chunk (no preceding
+                // text/thinking/tool-use). Flip contentSeen so subsequent
+                // phase frames don't think we're still pre-content.
+                if (!contentSeen) {
+                  contentSeen = true;
+                  agentStatusActions.set('Thinking…');
+                }
+                if (frame.isError === true) {
+                  controller.enqueue({
+                    type: 'tool-output-error',
+                    toolCallId: frame.toolCallId,
+                    errorText: frame.output || 'tool failed',
+                    dynamic: true,
+                  });
+                } else {
+                  controller.enqueue({
+                    type: 'tool-output-available',
+                    toolCallId: frame.toolCallId,
+                    output: frame.output,
+                    dynamic: true,
+                  });
+                }
+                continue;
               }
             }
           },

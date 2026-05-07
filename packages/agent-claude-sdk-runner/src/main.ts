@@ -525,13 +525,32 @@ export async function main(): Promise<number> {
           } else if (block.type === 'tool_use') {
             // Tool-use blocks are observed via event.tool-post-call
             // (when the tool actually runs) and persisted at turn-end.
-            // They are not streamed text and have no `kind` mapping.
+            const toolInput = (block.input ?? {}) as Record<string, unknown>;
             turnContentBlocks.push({
               type: 'tool_use',
               id: block.id,
               name: block.name,
-              input: (block.input ?? {}) as Record<string, unknown>,
+              input: toolInput,
             });
+            // Per-block streaming for tool calls. Mirrors the text/thinking
+            // path above so the host's chat:stream-chunk subscriber can
+            // fan tool activity to live SSE clients (channel-web's Thread
+            // renders these via ToolGroup + ToolFallback). Failure is
+            // non-fatal: the canonical transcript still flows via
+            // event.turn-end.
+            if (currentReqId !== undefined) {
+              await client
+                .event('event.stream-chunk', {
+                  reqId: currentReqId,
+                  kind: 'tool-use',
+                  toolCallId: block.id,
+                  toolName: block.name,
+                  input: toolInput,
+                })
+                .catch(() => {
+                  /* host may be tearing down; non-fatal */
+                });
+            }
           }
         }
       } else if (msg.type === 'user') {
@@ -598,6 +617,34 @@ export async function main(): Promise<number> {
                     : {}),
                 };
                 turnToolResultBlocks.push(normalized);
+                // Per-block streaming for the result. Flatten array content
+                // (text + image entries) to a string for the wire — the
+                // canonical full-fidelity copy still ships via turn-end /
+                // tool_result blocks. Failure non-fatal.
+                if (currentReqId !== undefined) {
+                  const flatOutput =
+                    typeof normalizedContent === 'string'
+                      ? normalizedContent
+                      : normalizedContent
+                          .filter(
+                            (c): c is TextBlock => c.type === 'text',
+                          )
+                          .map((c) => c.text)
+                          .join('\n');
+                  await client
+                    .event('event.stream-chunk', {
+                      reqId: currentReqId,
+                      kind: 'tool-result',
+                      toolCallId: tr.tool_use_id,
+                      output: flatOutput,
+                      ...(typeof tr.is_error === 'boolean'
+                        ? { isError: tr.is_error }
+                        : {}),
+                    })
+                    .catch(() => {
+                      /* host may be tearing down; non-fatal */
+                    });
+                }
               }
             }
           }

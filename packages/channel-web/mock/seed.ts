@@ -5,14 +5,14 @@ export const defaultSeeds: Record<string, unknown[]> = {
   ],
   agents: [
     {
-      id: 'tide',
+      id: 'ax',
       owner_id: 't1',
       owner_type: 'team',
-      name: 'tide',
+      name: 'ax',
       tag: 'work',
       desc: 'your default work agent',
       color: '#7aa6c9',
-      system_prompt: 'You are tide, a helpful assistant.',
+      system_prompt: 'You are ax, a helpful assistant.',
       allowed_tools: [],
       mcp_config_ids: [],
       model: 'claude-sonnet-4-6',

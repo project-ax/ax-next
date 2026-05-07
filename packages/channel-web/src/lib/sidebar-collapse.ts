@@ -1,6 +1,6 @@
 /**
  * Sidebar collapse + mobile-open state — both owned by
- * `document.body.classList` so the existing CSS rules (copied from the Tide
+ * `document.body.classList` so the existing CSS rules (copied from the design
  * handoff) drive layout without a parallel React-state copy.
  *
  * Two body classes, two concerns:
@@ -17,7 +17,7 @@
  */
 import { useSyncExternalStore } from 'react';
 
-const KEY = 'tide-sidebar-collapsed';
+const KEY = 'ax-sidebar-collapsed';
 const listeners = new Set<() => void>();
 
 const getCollapsedSnapshot = (): boolean =>
