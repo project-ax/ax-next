@@ -30,7 +30,12 @@
 import type { McpServer } from '../../mock/admin/mcp-servers';
 import type { Team } from '../../mock/admin/teams';
 
-export type AdminView = 'agents' | 'mcp-servers' | 'teams' | null;
+export type AdminView =
+  | 'agents'
+  | 'mcp-servers'
+  | 'teams'
+  | 'credentials'
+  | null;
 
 const writeHeaders = {
   'content-type': 'application/json',

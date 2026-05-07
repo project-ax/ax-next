@@ -164,6 +164,18 @@ export function UserMenu({
               >
                 Admin · Teams
               </button>
+              <button
+                type="button"
+                className="user-menu-item"
+                role="menuitem"
+                onClick={() => {
+                  setOpen(false);
+                  onOpenAdmin?.('credentials');
+                }}
+                data-action="admin-credentials"
+              >
+                Admin · Credentials
+              </button>
             </>
           )}
           <div className="user-menu-divider" />

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { UserMenu } from '../components/UserMenu';
 import { UserProvider } from '../lib/user-context';
@@ -27,6 +27,19 @@ describe('UserMenu', () => {
     expect(screen.getByText(/Admin · Agents/)).toBeTruthy();
     expect(screen.getByText(/Admin · MCP Servers/)).toBeTruthy();
     expect(screen.getByText(/Admin · Teams/)).toBeTruthy();
+    expect(screen.getByText(/Admin · Credentials/)).toBeTruthy();
+  });
+
+  it('Admin · Credentials entry opens the credentials view', () => {
+    const onOpenAdmin = vi.fn();
+    render(
+      <UserProvider value={adminUser}>
+        <UserMenu onOpenAdmin={onOpenAdmin} />
+      </UserProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Admin/i }));
+    fireEvent.click(screen.getByText(/Admin · Credentials/));
+    expect(onOpenAdmin).toHaveBeenCalledWith('credentials');
   });
 
   it('regular user does not see admin entries', () => {
