@@ -466,8 +466,12 @@ async function runMigrateCommand(
     }
 
     if (!opts.argv.includes('--yes')) {
-      err(`would migrate ${v1Entries.length} credentials. Re-run with --yes to proceed.`);
-      return 1;
+      // Dry-run: informational, not an error. Exiting 0 lets shell
+      // pipelines like `credentials migrate || abort` use this as a
+      // preflight without false-positive failures. Reserve non-zero for
+      // real errors (catch block below).
+      out(`would migrate ${v1Entries.length} credentials. Re-run with --yes to proceed.`);
+      return 0;
     }
 
     let migrated = 0;

@@ -10,16 +10,23 @@ import { runCredentialsCommand } from '../commands/credentials.js';
 const TEST_KEY_HEX = '42'.repeat(32);
 
 let tmp: string;
+let savedCredentialsKey: string | undefined;
 
 function emptyStdin(): NodeJS.ReadableStream {
   return Readable.from([]);
 }
 
 beforeEach(() => {
+  // Snapshot the env var so afterEach can restore it — leaving the test
+  // key in process.env across files leaks state into subsequent runs and
+  // can produce confusing test interactions.
+  savedCredentialsKey = process.env.AX_CREDENTIALS_KEY;
   process.env.AX_CREDENTIALS_KEY = TEST_KEY_HEX;
   tmp = mkdtempSync(join(tmpdir(), 'ax-cred-mig-'));
 });
 afterEach(() => {
+  if (savedCredentialsKey === undefined) delete process.env.AX_CREDENTIALS_KEY;
+  else process.env.AX_CREDENTIALS_KEY = savedCredentialsKey;
   rmSync(tmp, { recursive: true, force: true });
 });
 
@@ -76,7 +83,7 @@ describe('ax-next credentials migrate', () => {
     }
   });
 
-  it('without --yes refuses to mutate and exits non-zero', async () => {
+  it('without --yes refuses to mutate and exits 0 (informational dry-run)', async () => {
     const dbPath = join(tmp, 'db.sqlite');
     {
       const bus = new HookBus();
@@ -101,7 +108,9 @@ describe('ax-next credentials migrate', () => {
       stderr: (l) => lines.push(l),
       sqlitePath: dbPath,
     });
-    expect(code).toBe(1);
+    // Dry-run is informational, not an error — exit 0 so shell pipelines
+    // using `credentials migrate` as a preflight don't false-positive.
+    expect(code).toBe(0);
     expect(lines.join('\n')).toMatch(/--yes/);
 
     // v2 row must NOT have been written.
