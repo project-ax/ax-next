@@ -37,9 +37,16 @@ export function SettingsPanel({
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="settings-panel" role="dialog" aria-modal="true">
+      <div
+        className="settings-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="settings-panel-title"
+      >
         <div className="settings-panel-header">
-          <h2 className="settings-panel-title">My credentials</h2>
+          <h2 id="settings-panel-title" className="settings-panel-title">
+            My credentials
+          </h2>
           <button
             type="button"
             className="settings-panel-close"

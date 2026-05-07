@@ -51,10 +51,21 @@ export function OAuthFlowForm({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Client-side ownerId requirement: for admin variant with scope !== 'global',
+  // an empty ownerId would bind the credential to nobody — the server rejects
+  // it with 400. Disable the submit button up front so the round-trip never
+  // happens, and surface a hint near the field.
+  const ownerIdRequired =
+    variant === 'admin' && scope !== 'global' && ownerId.trim().length === 0;
+
   const start = async (): Promise<void> => {
     if (busy) return;
     if (ref.trim().length === 0) {
       setError('ref is required');
+      return;
+    }
+    if (ownerIdRequired) {
+      setError(`ownerId is required when scope='${scope}'`);
       return;
     }
     setBusy(true);
@@ -64,12 +75,7 @@ export function OAuthFlowForm({
         variant === 'admin'
           ? await adminCredentials.oauthStart({
               scope,
-              ownerId:
-                scope === 'global'
-                  ? null
-                  : ownerId.trim().length > 0
-                    ? ownerId.trim()
-                    : null,
+              ownerId: scope === 'global' ? null : ownerId.trim(),
               ref: ref.trim(),
               kind,
             })
@@ -155,7 +161,13 @@ export function OAuthFlowForm({
                   placeholder={
                     scope === 'user' ? 'e.g. alice' : 'e.g. agt-12345'
                   }
+                  aria-describedby="oauth-owner-hint"
+                  aria-invalid={ownerIdRequired}
+                  required
                 />
+                <span id="oauth-owner-hint" className="admin-form-hint">
+                  Required when scope is {scope}.
+                </span>
               </>
             )}
           </>
@@ -206,7 +218,7 @@ export function OAuthFlowForm({
             type="button"
             className="admin-btn admin-btn-primary"
             onClick={() => void start()}
-            disabled={busy}
+            disabled={busy || ownerIdRequired || ref.trim().length === 0}
           >
             {busy ? 'Opening…' : 'Open'}
           </button>

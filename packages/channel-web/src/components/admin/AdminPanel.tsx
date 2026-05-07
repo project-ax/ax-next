@@ -46,9 +46,16 @@ export function AdminPanel({
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="admin-panel" role="dialog" aria-modal="true">
+      <div
+        className="admin-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="admin-panel-title"
+      >
         <div className="admin-panel-header">
-          <h2 className="admin-panel-title">Admin · {TITLES[view]}</h2>
+          <h2 id="admin-panel-title" className="admin-panel-title">
+            Admin · {TITLES[view]}
+          </h2>
           <button
             type="button"
             className="admin-panel-close"
