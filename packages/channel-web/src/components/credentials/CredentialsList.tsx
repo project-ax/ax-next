@@ -37,7 +37,7 @@ export interface CredentialsListProps {
 export function CredentialsList({
   variant,
   refreshKey = 0,
-}: CredentialsListProps): React.ReactElement {
+}: CredentialsListProps) {
   const [list, setList] = useState<CredentialMeta[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 

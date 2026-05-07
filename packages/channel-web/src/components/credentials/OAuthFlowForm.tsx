@@ -42,7 +42,7 @@ export function OAuthFlowForm({
   kind,
   onAdded,
   onCancel,
-}: OAuthFlowFormProps): React.ReactElement {
+}: OAuthFlowFormProps) {
   const [scope, setScope] = useState<Scope>('global');
   const [ownerId, setOwnerId] = useState('');
   const [ref, setRef] = useState('');

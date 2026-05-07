@@ -37,7 +37,7 @@ type Mode =
 export function CredentialAddMenu({
   variant,
   onAdded,
-}: CredentialAddMenuProps): React.ReactElement {
+}: CredentialAddMenuProps) {
   const [mode, setMode] = useState<Mode>({ kind: 'closed' });
   const [kinds, setKinds] = useState<CredentialKind[] | null>(null);
   const [error, setError] = useState<string | null>(null);

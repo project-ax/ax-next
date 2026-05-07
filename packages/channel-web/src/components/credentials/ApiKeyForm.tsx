@@ -38,7 +38,7 @@ export function ApiKeyForm({
   kind = 'api-key',
   onAdded,
   onCancel,
-}: ApiKeyFormProps): React.ReactElement {
+}: ApiKeyFormProps) {
   const [scope, setScope] = useState<Scope>('global');
   const [ownerId, setOwnerId] = useState('');
   const [ref, setRef] = useState('');
