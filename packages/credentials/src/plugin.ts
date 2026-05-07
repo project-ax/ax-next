@@ -6,6 +6,52 @@ const REF_RE = /^[a-z0-9][a-z0-9_.-]{0,127}$/;
 const USER_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}$/;
 const KIND_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
+export const SCOPE_VALUES = ['global', 'user', 'agent'] as const;
+export type CredentialScope = (typeof SCOPE_VALUES)[number];
+
+export function validateScope(scope: unknown): CredentialScope {
+  if (typeof scope !== 'string' || !(SCOPE_VALUES as readonly string[]).includes(scope)) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: `scope must be one of ${SCOPE_VALUES.join('|')}`,
+    });
+  }
+  return scope as CredentialScope;
+}
+
+export function validateOwnerIdForScope(
+  scope: CredentialScope,
+  ownerId: unknown,
+): string | null {
+  if (scope === 'global') {
+    if (ownerId !== null) {
+      throw new PluginError({
+        code: 'invalid-payload',
+        plugin: PLUGIN_NAME,
+        message: "ownerId must be null when scope='global'",
+      });
+    }
+    return null;
+  }
+  if (typeof ownerId !== 'string' || ownerId.length === 0) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: `ownerId is required when scope='${scope}'`,
+    });
+  }
+  // Reuse the existing USER_ID_RE — same character set is fine for agent ids.
+  if (!USER_ID_RE.test(ownerId)) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: `ownerId must match ${USER_ID_RE.source}`,
+    });
+  }
+  return ownerId;
+}
+
 export interface CredentialsGetInput {
   ref: string;
   userId: string;
