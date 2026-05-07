@@ -49,6 +49,14 @@ describe('credentials:list + credentials:list-kinds', () => {
     expect(JSON.stringify(out)).not.toContain('SECRET-DO-NOT-LEAK');
   });
 
+  it('list rejects ownerId filter without scope (fail closed)', async () => {
+    const bus = await makeBus();
+    const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'admin' });
+    await expect(
+      bus.call('credentials:list', ctx, { ownerId: 'alice' }),
+    ).rejects.toMatchObject({ code: 'invalid-payload' });
+  });
+
   it('list filters by scope', async () => {
     const bus = await makeBus();
     const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'alice' });

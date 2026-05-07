@@ -474,6 +474,17 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
         'credentials:list',
         PLUGIN_NAME,
         async (ctx, input) => {
+          // Reject `ownerId` without `scope` — the previous silent-ignore
+          // could mask caller bugs (e.g., admin UI passing user id but
+          // forgetting to set scope='user' would return GLOBAL rows). Fail
+          // closed instead.
+          if (input.scope === undefined && input.ownerId !== undefined) {
+            throw new PluginError({
+              code: 'invalid-payload',
+              plugin: PLUGIN_NAME,
+              message: 'ownerId filter requires scope to be specified',
+            });
+          }
           const filter: { scope?: CredentialScope; ownerId?: string | null } = {};
           if (input.scope !== undefined) filter.scope = validateScope(input.scope);
           if (input.ownerId !== undefined && filter.scope !== undefined) {
