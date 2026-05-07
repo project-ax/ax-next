@@ -34,6 +34,7 @@ import { SessionHeader } from './components/SessionHeader';
 import { Thread } from './components/Thread';
 import { ToastStack } from './components/Toast';
 import { AdminPanel } from './components/admin/AdminPanel';
+import { SettingsPanel } from './components/settings/SettingsPanel';
 import { UserProvider } from './lib/user-context';
 import type { AdminView } from './lib/admin';
 
@@ -81,6 +82,10 @@ const AppContent = ({ user }: { user: AuthUser }) => {
   // `adminView` is set by the user menu's Admin entries. AdminPanel
   // renders below when non-null.
   const [adminView, setAdminView] = useState<AdminView>(null);
+  // `settingsOpen` is set by the user menu's "My credentials" entry.
+  // SettingsPanel renders below when true. Available to every signed-in
+  // user (no isAdmin gate — server-side scope='user' enforces ownership).
+  const [settingsOpen, setSettingsOpen] = useState(false);
   // Mobile slide-over open state (Task 27). Used to render the scrim
   // that closes the sidebar on tap. Desktop CSS hides the scrim.
   const sidebarOpen = useSidebarOpen();
@@ -133,7 +138,10 @@ const AppContent = ({ user }: { user: AuthUser }) => {
     <UserProvider value={user}>
       <AssistantRuntimeProvider runtime={runtime}>
         <div className="app-layout">
-          <Sidebar onOpenAdmin={setAdminView} />
+          <Sidebar
+            onOpenAdmin={setAdminView}
+            onOpenSettings={() => setSettingsOpen(true)}
+          />
           {sidebarOpen && (
             <div
               className="sidebar-scrim"
@@ -146,6 +154,10 @@ const AppContent = ({ user }: { user: AuthUser }) => {
             <Thread />
           </main>
           <AdminPanel view={adminView} onClose={() => setAdminView(null)} />
+          <SettingsPanel
+            open={settingsOpen}
+            onClose={() => setSettingsOpen(false)}
+          />
           <ToastStack />
         </div>
       </AssistantRuntimeProvider>

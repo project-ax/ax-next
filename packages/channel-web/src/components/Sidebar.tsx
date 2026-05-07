@@ -21,7 +21,11 @@ import type { AdminView } from '../lib/admin';
 
 export function Sidebar({
   onOpenAdmin,
-}: { onOpenAdmin?: ((view: AdminView) => void) | undefined } = {}) {
+  onOpenSettings,
+}: {
+  onOpenAdmin?: ((view: AdminView) => void) | undefined;
+  onOpenSettings?: (() => void) | undefined;
+} = {}) {
   return (
     <aside className="sidebar" data-testid="sidebar" id="sidebar">
       <div className="sidebar-head">
@@ -34,7 +38,7 @@ export function Sidebar({
       <div className="sessions-scroll" role="navigation" aria-label="sessions">
         <SessionList />
       </div>
-      <UserMenu onOpenAdmin={onOpenAdmin} />
+      <UserMenu onOpenAdmin={onOpenAdmin} onOpenSettings={onOpenSettings} />
     </aside>
   );
 }

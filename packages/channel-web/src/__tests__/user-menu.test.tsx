@@ -52,6 +52,28 @@ describe('UserMenu', () => {
     expect(screen.queryByText(/Admin · Agents/)).toBeNull();
   });
 
+  it('regular user sees "My credentials" entry', () => {
+    render(
+      <UserProvider value={regularUser}>
+        <UserMenu />
+      </UserProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Alice/i }));
+    expect(screen.getByText(/My credentials/i)).toBeTruthy();
+  });
+
+  it('"My credentials" entry calls onOpenSettings', () => {
+    const onOpenSettings = vi.fn();
+    render(
+      <UserProvider value={regularUser}>
+        <UserMenu onOpenSettings={onOpenSettings} />
+      </UserProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Alice/i }));
+    fireEvent.click(screen.getByText(/My credentials/i));
+    expect(onOpenSettings).toHaveBeenCalled();
+  });
+
   it('outside click closes the menu', () => {
     render(
       <div>
