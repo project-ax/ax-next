@@ -1,0 +1,55 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "3a08683ab4a2",
+  "session_id": "8a60c6cc-3809-480f-a216-d8dbb3e43622",
+  "strategy": "manual-commit",
+  "created_at": "2026-05-07T11:02:54.517138Z",
+  "branch": "feat/credentials-admin-ui",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "packages/credentials-oauth-pending/package.json",
+    "packages/credentials-oauth-pending/src/__tests__/state.test.ts",
+    "packages/credentials-oauth-pending/src/index.ts",
+    "packages/credentials-oauth-pending/src/plugin.ts",
+    "packages/credentials-oauth-pending/src/state.ts",
+    "packages/credentials-oauth-pending/tsconfig.json",
+    "pnpm-lock.yaml",
+    "tsconfig.json"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "10c56eb60d66",
+  "checkpoint_transcript_start": 222,
+  "transcript_lines_at_start": 222,
+  "token_usage": {
+    "input_tokens": 12,
+    "cache_creation_tokens": 4789,
+    "cache_read_tokens": 1341187,
+    "output_tokens": 4696,
+    "api_call_count": 7
+  },
+  "session_metrics": {
+    "turn_count": 3
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-05-07T11:02:54.500036Z",
+    "agent_lines": 398,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 398,
+    "total_lines_changed": 398,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}

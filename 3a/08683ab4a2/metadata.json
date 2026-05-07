@@ -1,0 +1,32 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "3a08683ab4a2",
+  "strategy": "manual-commit",
+  "branch": "feat/credentials-admin-ui",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "packages/credentials-oauth-pending/package.json",
+    "packages/credentials-oauth-pending/src/__tests__/state.test.ts",
+    "packages/credentials-oauth-pending/src/index.ts",
+    "packages/credentials-oauth-pending/src/plugin.ts",
+    "packages/credentials-oauth-pending/src/state.ts",
+    "packages/credentials-oauth-pending/tsconfig.json",
+    "pnpm-lock.yaml",
+    "tsconfig.json"
+  ],
+  "sessions": [
+    {
+      "metadata": "/3a/08683ab4a2/0/metadata.json",
+      "transcript": "/3a/08683ab4a2/0/full.jsonl",
+      "content_hash": "/3a/08683ab4a2/0/content_hash.txt",
+      "prompt": "/3a/08683ab4a2/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 12,
+    "cache_creation_tokens": 4789,
+    "cache_read_tokens": 1341187,
+    "output_tokens": 4696,
+    "api_call_count": 7
+  }
+}
