@@ -218,6 +218,23 @@ export interface K8sPresetConfig {
     oneShot?: boolean;
   };
   /**
+   * Auto-titling config. When present, the preset loads @ax/llm-anthropic
+   * and @ax/conversation-titles; conversations get a one-line title written
+   * after the first assistant turn (`ifNull: true`, never clobbers a user
+   * rename). When absent, titles stay null — same as today's behavior.
+   *
+   * `model` uses the `<provider>/<model-id>` convention; the titles plugin
+   * splits on the first `/` and dispatches `llm:call:${provider}`. Default:
+   * `'anthropic/claude-haiku-4-5-20251001'`.
+   *
+   * `loadK8sConfigFromEnv` populates this field iff `ANTHROPIC_API_KEY` is
+   * present in the env; otherwise it leaves the field undefined (multi-
+   * tenant deploys without a shared host key opt out cleanly).
+   */
+  titles?: {
+    model?: string;
+  };
+  /**
    * @ax/http-server config. The host listener that serves /admin/*, /auth/*,
    * /admin/me, /admin/sign-out, and (Week 10-12) the admin UI. Distinct from
    * the @ax/ipc-http listener above — that one is the runner-pod ↔ host
@@ -914,6 +931,26 @@ export function loadK8sConfigFromEnv(
   // the bundle at :5173 with /api/* proxied to the host).
   if (env.AX_STATIC_FILES_DIR !== undefined && env.AX_STATIC_FILES_DIR !== '') {
     config.staticFiles = { dir: env.AX_STATIC_FILES_DIR };
+  }
+  // ---- titles (auto-titling subscriber) -----------------------------------
+  // Gated on ANTHROPIC_API_KEY presence: multi-tenant deploys without a
+  // shared host key get no auto-titling, same as today. When the key IS
+  // set, the preset loads @ax/llm-anthropic + @ax/conversation-titles and
+  // titles get a one-line summary after the first assistant turn.
+  //
+  // The default literal duplicates DEFAULT_TITLE_MODEL from
+  // @ax/conversation-titles. Per CLAUDE.md invariant I2 (no cross-plugin
+  // imports) we don't import it; per I4 (one source of truth) the operator-
+  // facing default is owned here, and the plugin's internal default
+  // (DEFAULT_TITLE_MODEL) is the fallback when the factory's `cfg.model` is
+  // omitted entirely. They must remain in lockstep.
+  if (env.ANTHROPIC_API_KEY !== undefined && env.ANTHROPIC_API_KEY !== '') {
+    const titleModelRaw = env.AX_TITLE_MODEL;
+    const titleModel =
+      titleModelRaw === undefined || titleModelRaw === ''
+        ? 'anthropic/claude-haiku-4-5-20251001'
+        : titleModelRaw;
+    config.titles = { model: titleModel };
   }
   return config;
 }

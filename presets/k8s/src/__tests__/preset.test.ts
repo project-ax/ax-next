@@ -594,4 +594,34 @@ describe('loadK8sConfigFromEnv', () => {
       ),
     ).toThrowError(/AX_AUTH_SESSION_LIFETIME_SECONDS/);
   });
+
+  describe('loadK8sConfigFromEnv — titles', () => {
+    it('omits cfg.titles when ANTHROPIC_API_KEY is unset', () => {
+      const cfg = loadK8sConfigFromEnv(minRequired());
+      expect(cfg.titles).toBeUndefined();
+    });
+
+    it('sets cfg.titles with the default model when ANTHROPIC_API_KEY is set and AX_TITLE_MODEL is unset', () => {
+      const cfg = loadK8sConfigFromEnv(minRequired({
+        ANTHROPIC_API_KEY: 'sk-ant-stub',
+      }));
+      expect(cfg.titles).toEqual({ model: 'anthropic/claude-haiku-4-5-20251001' });
+    });
+
+    it('respects AX_TITLE_MODEL when set', () => {
+      const cfg = loadK8sConfigFromEnv(minRequired({
+        ANTHROPIC_API_KEY: 'sk-ant-stub',
+        AX_TITLE_MODEL: 'anthropic/claude-sonnet-4-7',
+      }));
+      expect(cfg.titles).toEqual({ model: 'anthropic/claude-sonnet-4-7' });
+    });
+
+    it('treats empty AX_TITLE_MODEL as unset (defaults applied)', () => {
+      const cfg = loadK8sConfigFromEnv(minRequired({
+        ANTHROPIC_API_KEY: 'sk-ant-stub',
+        AX_TITLE_MODEL: '',
+      }));
+      expect(cfg.titles).toEqual({ model: 'anthropic/claude-haiku-4-5-20251001' });
+    });
+  });
 });
