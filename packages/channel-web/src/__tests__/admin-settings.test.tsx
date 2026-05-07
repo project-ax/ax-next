@@ -38,6 +38,9 @@ describe('AdminSettings', () => {
     // The provider-keys tab button should be selected.
     const tab = screen.getByRole('tab', { name: /Provider Keys/i });
     expect(tab.getAttribute('aria-selected')).toBe('true');
+    // Canary banner is present and visible.
+    expect(screen.getByText(/canary scanner isn't wired in yet/i)).toBeTruthy();
+    expect(screen.getByText(/no automated secret-leak veto/i)).toBeTruthy();
     // Wait for ProviderKeysTab to settle (it fetches on mount).
     await waitFor(() => {
       // AgentForm renders a "+ New agent" button — it must NOT be present.

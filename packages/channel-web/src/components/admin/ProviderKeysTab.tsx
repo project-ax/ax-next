@@ -104,7 +104,7 @@ export function ProviderKeysTab() {
               {provider.configured ? (
                 <>
                   <span className="provider-badge provider-badge-configured">Configured</span>
-                  <span className="provider-key-masked">••••{provider.ref.slice(-4)}</span>
+                  <span className="provider-key-masked">••••••••</span>
                 </>
               ) : (
                 <span className="provider-unconfigured">Not configured</span>
