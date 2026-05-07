@@ -25,6 +25,7 @@ import { createConversationsPlugin } from '@ax/conversations';
 import { createLlmAnthropicPlugin } from '@ax/llm-anthropic';
 import {
   createConversationTitlesPlugin,
+  DEFAULT_TITLE_MODEL,
   type ConversationTitlesConfig,
 } from '@ax/conversation-titles';
 import { createChannelWebServerPlugin } from '@ax/channel-web/server';
@@ -958,17 +959,17 @@ export function loadK8sConfigFromEnv(
   // set, the preset loads @ax/llm-anthropic + @ax/conversation-titles and
   // titles get a one-line summary after the first assistant turn.
   //
-  // The default literal duplicates DEFAULT_TITLE_MODEL from
-  // @ax/conversation-titles. Per CLAUDE.md invariant I2 (no cross-plugin
-  // imports) we don't import it; per I4 (one source of truth) the operator-
-  // facing default is owned here, and the plugin's internal default
-  // (DEFAULT_TITLE_MODEL) is the fallback when the factory's `cfg.model` is
-  // omitted entirely. They must remain in lockstep.
+  // The default falls through to DEFAULT_TITLE_MODEL exported from
+  // @ax/conversation-titles — one source of truth (CLAUDE.md invariant I4).
+  // Presets are exempt from I2's no-cross-plugin-imports rule (they wire
+  // plugins together by definition); the chart's `values.yaml` literal is
+  // the only remaining duplicate, and it must stay in lockstep with this
+  // export by hand (helm can't import TS).
   if (env.ANTHROPIC_API_KEY !== undefined && env.ANTHROPIC_API_KEY !== '') {
     const titleModelRaw = env.AX_TITLE_MODEL;
     const titleModel =
       titleModelRaw === undefined || titleModelRaw === ''
-        ? 'anthropic/claude-haiku-4-5-20251001'
+        ? DEFAULT_TITLE_MODEL
         : titleModelRaw;
     config.titles = { model: titleModel };
   }

@@ -243,6 +243,10 @@ anthropic:
 titles:
   # Title-LLM model. Default: cheapest current Claude. Override for
   # benchmarking or to follow a model deprecation.
+  #
+  # NOTE: this default must stay in lockstep with `DEFAULT_TITLE_MODEL`
+  # exported from @ax/conversation-titles — helm can't import TS, so
+  # the operator-facing default is duplicated here by hand.
   model: anthropic/claude-haiku-4-5-20251001
 
 # ─── Channel-web (browser SPA) ───────────────────────────────────
