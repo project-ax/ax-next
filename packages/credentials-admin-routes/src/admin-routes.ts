@@ -4,6 +4,7 @@ import {
   ADMIN_BODY_MAX_BYTES,
   parseRequestBody,
   requireAdmin,
+  requireUser,
   writeServiceError,
   type RouteRequest,
   type RouteResponse,
@@ -24,10 +25,12 @@ import {
 // trick the store into accepting a malformed shape (but a route-layer
 // reject avoids the round-trip).
 //
-// `/admin/credentials/kinds` (the kinds catalog) is added in Phase 4 —
-// the admin UI's "create credential" form is the only consumer and it
-// lands then. Adding it here would be half-wired (no caller in Phase 2),
-// which violates the policy in CLAUDE.md.
+// `/admin/credentials/kinds` (the kinds catalog) is mounted under the
+// admin namespace for routing convenience but the auth gate is relaxed
+// to `auth:require-user` — the catalog isn't admin-sensitive (it just
+// answers "what flows does this deployment support?") and the settings
+// UI for any authed user consumes it too. Same posture as a public
+// "supported features" endpoint.
 // ---------------------------------------------------------------------------
 
 const PLUGIN_NAME = '@ax/credentials-admin-routes';
@@ -85,6 +88,7 @@ export function createAdminCredentialsHandlers(deps: AdminRouteDeps): {
   list: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   create: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   destroy: (req: RouteRequest, res: RouteResponse) => Promise<void>;
+  kinds: (req: RouteRequest, res: RouteResponse) => Promise<void>;
 } {
   // Per-handler ctx is acceptable for MVP. A subscriber observing audit
   // events sees `userId: 'admin'` in the ctx — the actual acting-user id
@@ -181,6 +185,26 @@ export function createAdminCredentialsHandlers(deps: AdminRouteDeps): {
       }
     },
 
+    /**
+     * GET /admin/credentials/kinds — catalog of supported credential
+     * kinds and their flow shape (paste vs oauth). Auth gate is relaxed
+     * to any authed user (settings UI consumes the same route).
+     */
+    async kinds(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const actor = await requireUser(deps.bus, ctx, req, res);
+      if (actor === null) return;
+      try {
+        const out = await deps.bus.call<
+          Record<string, never>,
+          { kinds: Array<{ kind: string; flow: string }> }
+        >('credentials:list-kinds', ctx, {});
+        res.status(200).json(out);
+      } catch (err) {
+        if (writeServiceError(res, err)) return;
+        throw err;
+      }
+    },
+
     /** DELETE /admin/credentials/:scope/:ownerId/:ref */
     async destroy(req: RouteRequest, res: RouteResponse): Promise<void> {
       const actor = await requireAdmin(deps.bus, ctx, req, res);
@@ -237,6 +261,11 @@ export async function registerAdminCredentialsRoutes(
     handler: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   }> = [
     { method: 'GET', path: '/admin/credentials', handler: handlers.list },
+    // `/admin/credentials/kinds` is a literal route — exact-match dispatch
+    // in @ax/http-server's router wins over the `:scope/:ownerId/:ref`
+    // pattern below regardless of registration order, but we list it first
+    // for readability.
+    { method: 'GET', path: '/admin/credentials/kinds', handler: handlers.kinds },
     { method: 'POST', path: '/admin/credentials', handler: handlers.create },
     {
       method: 'DELETE',

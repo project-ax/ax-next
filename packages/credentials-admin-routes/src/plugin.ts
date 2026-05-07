@@ -48,6 +48,7 @@ export function createCredentialsAdminRoutesPlugin(): Plugin {
         'auth:require-user',
         'http:register-route',
         'credentials:list',
+        'credentials:list-kinds',
         'credentials:set',
         'credentials:delete',
         'credentials:oauth:stash-pending',

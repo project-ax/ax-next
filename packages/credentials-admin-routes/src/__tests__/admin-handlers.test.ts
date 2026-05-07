@@ -214,6 +214,45 @@ describe('admin credentials handlers', () => {
     expect(statusOf()).toBe(204);
   });
 
+  it('GET /admin/credentials/kinds returns the catalog (any authed user)', async () => {
+    // Non-admin should pass — the kinds route relaxes the gate to
+    // `auth:require-user`. This is the load-bearing assertion for Phase 4.
+    const bus = await makeBus({ id: 'alice', isAdmin: false });
+    const handlers = createAdminCredentialsHandlers({ bus });
+    const { res, statusOf, bodyOf } = mkRes();
+    await handlers.kinds(mkReq({}), res);
+    expect(statusOf()).toBe(200);
+    const body = bodyOf() as { kinds: Array<{ kind: string; flow: string }> };
+    expect(Array.isArray(body.kinds)).toBe(true);
+    // api-key is always reported (registered by the credentials facade).
+    expect(body.kinds.find((k) => k.kind === 'api-key')).toBeDefined();
+  });
+
+  it('GET /admin/credentials/kinds returns 401 when auth fails', async () => {
+    const bus = new HookBus();
+    await bootstrap({
+      bus,
+      plugins: [
+        createStorageSqlitePlugin({ databasePath: ':memory:' }),
+        createCredentialsStoreDbPlugin(),
+        createCredentialsPlugin(),
+      ],
+      config: {},
+    });
+    const { PluginError } = await import('@ax/core');
+    bus.registerService('auth:require-user', 'test', async () => {
+      throw new PluginError({
+        code: 'unauthenticated',
+        plugin: 'test',
+        message: 'no cookie',
+      });
+    });
+    const handlers = createAdminCredentialsHandlers({ bus });
+    const { res, statusOf } = mkRes();
+    await handlers.kinds(mkReq({}), res);
+    expect(statusOf()).toBe(401);
+  });
+
   it('GET /admin/credentials returns 401 when auth:require-user rejects', async () => {
     const bus = new HookBus();
     await bootstrap({
