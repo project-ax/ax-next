@@ -157,9 +157,12 @@ describe('@ax/credentials plugin', () => {
     }
   });
 
-  it('envFallback does NOT override a tombstoned (deleted) credential', async () => {
-    // Deletion is a deliberate user action; falling back to env after
-    // delete would silently re-grant access.
+  it('envFallback fires when every scope is tombstoned (precedence chain semantics)', async () => {
+    // Phase 1.4 introduces user→agent→global resolution precedence. A
+    // tombstone in one scope means "no credential here, try next scope"
+    // (NOT "give up entirely"), so a delete in user scope falls through
+    // to agent → global → envFallback. Operators who want delete to
+    // mean "deny everywhere" should leave envFallback empty.
     const bus = new HookBus();
     await bootstrap({
       bus,
@@ -186,9 +189,13 @@ describe('@ax/credentials plugin', () => {
         ownerId: 'u',
         ref: 'anthropic-api',
       });
-      await expect(
-        bus.call('credentials:get', ctx(), { ref: 'anthropic-api', userId: 'u' }),
-      ).rejects.toMatchObject({ code: 'credential-not-found' });
+      // Tombstone falls through; agent + global empty; env fallback wins.
+      const got = await bus.call<{ ref: string; userId: string }, string>(
+        'credentials:get',
+        ctx(),
+        { ref: 'anthropic-api', userId: 'u' },
+      );
+      expect(got).toBe('sk-from-env');
     } finally {
       delete process.env.ANTHROPIC_API_KEY;
     }

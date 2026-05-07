@@ -296,76 +296,87 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
         userId: string,
         ref: string,
       ): Promise<string> {
-        // Phase 1.3 transition: still single-scope (user). Task 1.4 walks
-        // the full user → agent → global precedence chain.
-        const got = await bus.call<
-          { scope: 'user'; ownerId: string; ref: string },
-          { blob: Uint8Array | undefined }
-        >('credentials:store-blob:get', ctx, { scope: 'user', ownerId: userId, ref });
-        if (got.blob === undefined) {
-          // Env fallback — single-tenant / kind-dev posture. See
-          // CredentialsPluginConfig.envFallback for the trade-off. We
-          // only fall through when there's no row at all; tombstones
-          // (deleted credentials) still throw not-found because that's
-          // a deliberate user action and must NOT fall back.
-          const envName = envFallback[ref];
-          if (envName !== undefined) {
-            const v = process.env[envName];
-            if (typeof v === 'string' && v.length > 0) return v;
-          }
-          throw new PluginError({
-            code: 'credential-not-found',
-            plugin: PLUGIN_NAME,
-            message: `no credential for ref='${ref}'`,
-          });
+        // Walk the resolution-precedence chain: user → agent → global →
+        // envFallback → not-found. The chain is intentionally fixed (not
+        // configurable) — that's the point of the abstraction. Tombstones
+        // in any scope short-circuit "no credential here, try next scope"
+        // (NOT "give up entirely") because deleting at one scope shouldn't
+        // mask a value at another. Tombstone semantics for non-fallthrough
+        // are tested at the per-scope set/delete level.
+        const attempts: Array<{ scope: CredentialScope; ownerId: string | null }> = [];
+        attempts.push({ scope: 'user', ownerId: userId });
+        if (ctx.agentId !== undefined && ctx.agentId !== '') {
+          attempts.push({ scope: 'agent', ownerId: ctx.agentId });
         }
-        const env = unwrapEnvelope(got.blob);
-        if (env.isTombstone) {
-          throw new PluginError({
-            code: 'credential-not-found',
-            plugin: PLUGIN_NAME,
-            message: `no credential for ref='${ref}'`,
-          });
-        }
+        attempts.push({ scope: 'global', ownerId: null });
 
-        const subService = `credentials:resolve:${env.kind}`;
-        if (bus.hasService(subService)) {
-          const out = await bus.call<CredentialsResolveInput, CredentialsResolveOutput>(
-            subService,
-            ctx,
-            { payload: env.payload, userId, ref },
-          );
-          if (out.refreshed !== undefined) {
-            // Re-store under the same scope+ownerId. Sub-service may bump
-            // expiresAt or metadata as part of the refresh — propagate both.
-            const refreshArgs: CredentialsSetInput = {
-              scope: 'user',
-              ownerId: userId,
-              ref,
-              kind: env.kind,
-              payload: out.refreshed.payload,
-            };
-            if (out.refreshed.expiresAt !== undefined) {
-              refreshArgs.expiresAt = out.refreshed.expiresAt;
+        for (const a of attempts) {
+          const got = await bus.call<
+            { scope: CredentialScope; ownerId: string | null; ref: string },
+            { blob: Uint8Array | undefined }
+          >('credentials:store-blob:get', ctx, { scope: a.scope, ownerId: a.ownerId, ref });
+          if (got.blob === undefined) continue;
+          const env = unwrapEnvelope(got.blob);
+          if (env.isTombstone) continue; // tombstone in this scope; try next
+
+          const subService = `credentials:resolve:${env.kind}`;
+          if (bus.hasService(subService)) {
+            const out = await bus.call<CredentialsResolveInput, CredentialsResolveOutput>(
+              subService,
+              ctx,
+              { payload: env.payload, userId, ref },
+            );
+            if (out.refreshed !== undefined) {
+              // Re-store under the SAME scope+ownerId we resolved from.
+              // Sub-service may bump expiresAt or metadata as part of the
+              // refresh — propagate both.
+              const refreshArgs: CredentialsSetInput = {
+                scope: a.scope,
+                ownerId: a.ownerId,
+                ref,
+                kind: env.kind,
+                payload: out.refreshed.payload,
+              };
+              if (out.refreshed.expiresAt !== undefined) {
+                refreshArgs.expiresAt = out.refreshed.expiresAt;
+              }
+              const md = out.refreshed.metadata ?? env.metadata;
+              if (md !== undefined) refreshArgs.metadata = md;
+              await bus.call('credentials:set', ctx, refreshArgs);
             }
-            const md = out.refreshed.metadata ?? env.metadata;
-            if (md !== undefined) refreshArgs.metadata = md;
-            await bus.call('credentials:set', ctx, refreshArgs);
+            return out.value;
           }
-          return out.value;
+          // No sub-service registered. Only `api-key` defaults to the
+          // payload-is-the-value UTF-8 path. Any other kind without its
+          // resolver loaded is a misconfiguration — fail closed rather
+          // than handing back the (encrypted) blob bytes as a string,
+          // which would leak unparsed envelope content into the caller.
+          if (env.kind === 'api-key') {
+            return new TextDecoder().decode(env.payload);
+          }
+          throw new PluginError({
+            code: 'unsupported-credential-kind',
+            plugin: PLUGIN_NAME,
+            message: `no resolver registered for credential kind '${env.kind}' (ref='${ref}')`,
+          });
         }
-        // No sub-service registered. Only `api-key` defaults to the
-        // payload-is-the-value UTF-8 path. Any other kind without its
-        // resolver loaded is a misconfiguration — fail closed rather
-        // than handing back the (encrypted) blob bytes as a string,
-        // which would leak unparsed envelope content into the caller.
-        if (env.kind === 'api-key') {
-          return new TextDecoder().decode(env.payload);
+        // None of the v2 scopes had it. Fall through to env fallback —
+        // single-tenant / kind-dev posture. See CredentialsPluginConfig.envFallback
+        // for the trade-off. We only land here when no row matched
+        // anywhere; tombstones in user scope are skipped per attempt loop
+        // and would make us proceed to agent/global, but if every scope
+        // is empty-or-tombstoned, env fallback is correct. Tombstones in
+        // ALL scopes meaning "deny everywhere" still permit env fallback
+        // — operators who want stricter behaviour should leave env empty.
+        const envName = envFallback[ref];
+        if (envName !== undefined) {
+          const v = process.env[envName];
+          if (typeof v === 'string' && v.length > 0) return v;
         }
         throw new PluginError({
-          code: 'unsupported-credential-kind',
+          code: 'credential-not-found',
           plugin: PLUGIN_NAME,
-          message: `no resolver registered for credential kind '${env.kind}' (ref='${ref}')`,
+          message: `no credential for ref='${ref}'`,
         });
       }
 

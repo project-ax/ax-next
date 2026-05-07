@@ -25,10 +25,22 @@ describe('credentials:set / :delete with scope', () => {
     return bus;
   }
 
-  // Task 1.4 implements the resolution-precedence chain (user→agent→global)
-  // in `credentials:get`. Until then, `get` only resolves user-scoped rows;
-  // re-enable this test in 1.4.
-  it.todo('writes a global credential');
+  it('writes a global credential', async () => {
+    const bus = await makeBus();
+    const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'admin' });
+    await bus.call('credentials:set', ctx, {
+      scope: 'global',
+      ownerId: null,
+      ref: 'anthropic-api-key',
+      kind: 'api-key',
+      payload: new TextEncoder().encode('sk-test'),
+    });
+    const value = await bus.call('credentials:get', ctx, {
+      ref: 'anthropic-api-key',
+      userId: 'someone',
+    });
+    expect(value).toBe('sk-test');
+  });
 
   it('writes a user-scoped credential reachable only by that user', async () => {
     const bus = await makeBus();
