@@ -22,6 +22,7 @@
     { "path": "packages/credentials-store-db" },
     { "path": "packages/credentials-anthropic-oauth" },
     { "path": "packages/credentials-admin-routes" },
+    { "path": "packages/credentials-oauth-pending" },
     { "path": "packages/mcp-client" },
     { "path": "packages/workspace-git" },
     { "path": "packages/workspace-git-core" },
