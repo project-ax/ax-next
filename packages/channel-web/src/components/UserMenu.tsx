@@ -16,7 +16,7 @@
  * bug, that's a security bug — and the fix lives on the server, not here.
  */
 import { useEffect, useRef, useState } from 'react';
-import { LogOut, Moon, Settings, Sun, UserRound } from 'lucide-react';
+import { KeyRound, LogOut, Moon, Settings, Sun, UserRound } from 'lucide-react';
 import { useUser } from '../lib/user-context';
 import { signOut } from '../lib/auth';
 import type { AdminView } from '../lib/admin';
@@ -34,7 +34,11 @@ const THEME_OPTIONS: ThemeOption[] = [
 
 export function UserMenu({
   onOpenAdmin,
-}: { onOpenAdmin?: ((view: AdminView) => void) | undefined } = {}) {
+  onOpenSettings,
+}: {
+  onOpenAdmin?: ((view: AdminView) => void) | undefined;
+  onOpenSettings?: (() => void) | undefined;
+} = {}) {
   const user = useUser();
   const theme = useTheme();
   const [open, setOpen] = useState(false);
@@ -125,6 +129,19 @@ export function UserMenu({
             <span>Settings</span>
             <span className="kbd">⌘,</span>
           </button>
+          <button
+            type="button"
+            className="user-menu-item"
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
+              onOpenSettings?.();
+            }}
+            data-action="my-credentials"
+          >
+            <KeyRound aria-hidden="true" />
+            <span>My credentials</span>
+          </button>
           {isAdmin && (
             <>
               <div className="user-menu-divider" />
@@ -163,6 +180,18 @@ export function UserMenu({
                 data-action="admin-teams"
               >
                 Admin · Teams
+              </button>
+              <button
+                type="button"
+                className="user-menu-item"
+                role="menuitem"
+                onClick={() => {
+                  setOpen(false);
+                  onOpenAdmin?.('credentials');
+                }}
+                data-action="admin-credentials"
+              >
+                Admin · Credentials
               </button>
             </>
           )}

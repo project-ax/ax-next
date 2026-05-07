@@ -309,6 +309,198 @@ kubectl -n ax-next delete pvc ax-next-git-server-repo
 kubectl -n ax-next delete secret ax-next-git-server-auth
 ```
 
+## Scenario: Credentials admin UI
+
+This scenario walks the end-to-end credentials admin surface that landed
+in the Week 10–12 admin-UI slice. We want to prove three things:
+
+1. An admin can seed an `api-key` credential through the browser, no
+   `kubectl edit secret` required.
+2. A real chat actually picks that credential up — meaning the v2 scope
+   axis (user → agent → global) is wired all the way through to the
+   credential-proxy that the runner pod talks to.
+3. Per-user "My credentials" are isolated — one user's row doesn't leak
+   to another, and the admin surface stays admin-only.
+
+We're a nervous crab. The whole point of the admin UI is to keep secrets
+out of `helm --set ...` shell history and out of YAML, so this is the
+scenario we hate skipping the most.
+
+### Prerequisites
+
+- The kind goldenpath above already booted. The host pod is Ready, and
+  port-forward 9090 is live.
+- `credentials.admin.enabled=true` on the chart values. The default is
+  off — flip it on with `--set credentials.admin.enabled=true` on the
+  `helm upgrade` from the goldenpath section. Without this flag the
+  `/admin/credentials*` and `/settings/credentials*` routes don't mount,
+  and the user menu's "Credentials" entries do nothing.
+- The chat UI at `http://localhost:9090/` loads, and you can sign in.
+  Dev-bootstrap (single shared admin user) is the simplest path; Google
+  OIDC works too.
+
+### Steps — admin: seed an api-key credential
+
+1. Open `http://localhost:9090/` in a browser. Sign in if prompted.
+2. Click your avatar (top-right) to open the user menu. The menu shows
+   "My credentials" for everyone, plus an "Admin · Credentials" entry
+   below the divider — that one is admin-only.
+3. Click "Admin · Credentials". The Credentials admin tab opens with an
+   (initially empty) list and an "Add credential" button.
+4. Click "Add credential" → choose "api-key" from the kind menu.
+5. Fill in the form:
+   - **Scope:** `global` (visible to every user, the same as
+     `ANTHROPIC_API_KEY` would have been).
+   - **Ref:** `anthropic-api-key`.
+   - **Secret:** paste a real Anthropic API key.
+6. Click **Save**.
+
+Expected:
+
+- [ ] The credential appears in the list with `kind: api-key` and
+      `scope: global`. We never echo the secret back — the list shows
+      metadata only (kind, scope, ref, createdAt). If the secret shows
+      up anywhere in the UI, that's a bug, stop and file it.
+- [ ] `kubectl exec -n ax-next deploy/ax-next-host -- psql -U ax-next
+      -d ax-next -c "SELECT count(*) FROM storage_postgres_v1_kv WHERE
+      key LIKE 'credential:v2:%';"` returns `count = 1`. The blob is
+      encrypted at rest with `AX_CREDENTIALS_KEY` — `psql` won't show
+      plaintext, that's the point.
+
+### Steps — admin: prove end-to-end resolution from a chat
+
+This is the load-bearing one — it proves the credential the admin UI
+just stored actually reaches the runner pod when it makes an LLM call.
+
+1. Back in the chat UI, start a new conversation with the default
+   agent.
+2. Send any prompt that triggers an LLM call. "say hi" works.
+
+Expected:
+
+- [ ] The chat returns a response. (If we removed `--set
+      anthropic.apiKey=...` from the helm install — see Task 7.2 —
+      this proves the admin-seeded credential is the only path; no env
+      fallback masking the result. If we kept it set, the env fallback
+      could still serve, so this only proves "credentials work", not
+      "admin-seeded credentials work" in that case. We recommend doing
+      this scenario without the env-var set, on a fresh kind cluster,
+      for the strongest proof.)
+- [ ] A runner pod was spawned (`kubectl get pods -n ax-next-runners`)
+      and exited cleanly within ~60s.
+- [ ] No `level >= warn` lines about credentials in
+      `kubectl logs -n ax-next deploy/ax-next-host`.
+
+### Steps — admin: OAuth (anthropic-oauth)
+
+Skip this if `@ax/credentials-anthropic-oauth` isn't loaded in the host
+pod (it's optional — the kinds menu won't show "anthropic-oauth" unless
+the plugin registered). The flow uses the web-paste pattern: the host
+opens the Anthropic sign-in tab; we complete the flow there; we
+copy-paste the resulting code back. We don't take a callback URL —
+that keeps the host's network surface smaller.
+
+1. From the Credentials admin tab, click "Add credential" →
+   "anthropic-oauth".
+2. The form shows an "Open Anthropic sign-in" button. Click it. A new
+   tab opens to Anthropic's OAuth start URL with a PKCE challenge baked
+   in.
+3. In the new tab: complete the Anthropic flow (sign in, approve).
+4. Anthropic shows a code on the final page. Copy it.
+5. Back in the original tab, paste the code into the form and click
+   **Submit**.
+
+Expected:
+
+- [ ] The new entry shows up in the list with `kind: anthropic-oauth`.
+- [ ] Sending a chat that hits `anthropic` resolves through the OAuth
+      credential rather than the api-key (verifiable from the host
+      pod's logs — it'll log which kind resolved). If the api-key is
+      also present at the same scope, the api-key wins (one-row-per-
+      ref means the admin should delete the api-key first if they want
+      OAuth to take over).
+
+### Steps — non-admin: My credentials
+
+This proves the per-user surface is actually per-user — admin reads can
+see it (because they list any scope), but a non-admin user only sees
+their own.
+
+Caveat: the dev-bootstrap auth path mints a single shared user with
+`is_admin=true`. There's no way to be a non-admin via dev-bootstrap.
+Two real-cluster options to actually test the non-admin path:
+
+- **Google OIDC.** Sign in as a second Google account that the chart
+  hasn't promoted to admin. New users default to `is_admin=false`.
+- **Manual SQL flip.** As admin, sign in once as a second account
+  (still via Google or another provider), then
+  `kubectl exec -n ax-next deploy/ax-next-host -- psql -U ax-next
+  -d ax-next -c "UPDATE auth_oidc_v1_users SET is_admin=false
+  WHERE email='other@example.com';"`. Sign out + back in as that user.
+
+Once signed in as a non-admin:
+
+1. Click the avatar → user menu. Confirm the "Admin · …" entries are
+   absent (UI affordance only — the server enforces ACL too, see
+   below).
+2. Click "My credentials". A settings panel opens with a credentials
+   list scoped to this user.
+3. Add an api-key with `ref: my-personal-key` and any payload.
+
+Expected:
+
+- [ ] The new credential shows up in the list with `scope: user`.
+- [ ] The admin user (separate browser session) sees this row in the
+      Credentials admin tab too — their list spans every scope.
+- [ ] The non-admin user does NOT see the global `anthropic-api-key`
+      we seeded earlier, even though it would resolve for them at
+      chat time. (Listing is per-scope; resolution walks the chain.
+      We don't conflate the two.)
+
+### Steps — ACL probe
+
+Belt-and-suspenders check that the server enforces what the UI hides.
+With the non-admin user signed in, hit the admin route directly:
+
+```bash
+# session cookie from the non-admin browser, copied via DevTools
+curl -i -H "Cookie: <non-admin-session-cookie>" \
+  http://localhost:9090/admin/credentials
+```
+
+Expected: HTTP 403. If this returns 200 with someone else's
+credential metadata, that's a security bug — stop and file it before
+shipping.
+
+### Acceptance criteria
+
+- [ ] Admin api-key seed → list shows the row, no plaintext.
+- [ ] Chat returns a response after the seed, proving end-to-end
+      resolution.
+- [ ] Admin OAuth seed (when the plugin is loaded) → list shows the
+      row with `kind: anthropic-oauth`.
+- [ ] Non-admin "My credentials" creates a `scope: user` row that's
+      visible to the admin's full list and invisible to other
+      non-admin users.
+- [ ] `GET /admin/credentials` returns 403 for the non-admin session.
+
+### Cleanup
+
+The credentials live in postgres. `helm uninstall` does NOT delete
+postgres data by default (the PVCs hang around). To wipe seeded
+credentials:
+
+```bash
+kubectl exec -n ax-next deploy/ax-next-host -- \
+  psql -U ax-next -d ax-next \
+  -c "DELETE FROM storage_postgres_v1_kv WHERE key LIKE 'credential:v2:%';"
+```
+
+The encryption key (`AX_CREDENTIALS_KEY` in the host Secret) is
+`helm.sh/resource-policy: keep` — surviving uninstall on purpose, so
+that ciphertext we left behind is still decryptable. Delete the
+Secret by hand if a true clean slate is wanted.
+
 ## When this passes, do
 1. Update the PR description's acceptance section with the date + cluster
    used + a copy of the `psql` count outputs.

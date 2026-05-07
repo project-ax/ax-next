@@ -1,6 +1,6 @@
-import type { Plugin } from '@ax/core';
+import { PluginError, type Plugin } from '@ax/core';
 import { openDatabase, type Database } from './schema.js';
-import type { Kysely } from 'kysely';
+import { sql, type Kysely } from 'kysely';
 
 const PLUGIN_NAME = '@ax/storage-sqlite';
 
@@ -15,7 +15,7 @@ export function createStorageSqlitePlugin(config: StorageSqliteConfig): Plugin {
     manifest: {
       name: PLUGIN_NAME,
       version: '0.0.0',
-      registers: ['storage:get', 'storage:set'],
+      registers: ['storage:get', 'storage:set', 'storage:list-prefix'],
       calls: [],
       subscribes: [],
     },
@@ -52,6 +52,31 @@ export function createStorageSqlitePlugin(config: StorageSqliteConfig): Plugin {
             .execute();
         },
       );
+
+      bus.registerService<
+        { prefix: string },
+        { entries: Array<{ key: string; value: Uint8Array }> }
+      >('storage:list-prefix', PLUGIN_NAME, async (_ctx, { prefix }) => {
+        if (typeof prefix !== 'string' || prefix.length === 0) {
+          throw new PluginError({
+            code: 'invalid-payload',
+            plugin: PLUGIN_NAME,
+            message: 'prefix is required',
+          });
+        }
+        // Escape SQL-LIKE meta-characters (% and _ and \) so a literal
+        // prefix doesn't accidentally match glob-like keys. The ESCAPE
+        // clause tells SQLite that '\' precedes literal meta-chars.
+        const escaped = prefix.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
+        const rows = await db!
+          .selectFrom('kv')
+          .select(['key', 'value'])
+          .where(sql<boolean>`key LIKE ${escaped + '%'} ESCAPE '\\'`)
+          .execute();
+        return {
+          entries: rows.map((r) => ({ key: r.key, value: new Uint8Array(r.value) })),
+        };
+      });
     },
     async shutdown() {
       if (db !== undefined) {
