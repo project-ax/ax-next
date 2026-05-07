@@ -84,37 +84,49 @@ describe('PendingStore', () => {
   });
 
   it('capacity overflow evicts oldest by expiresAt', () => {
-    const store = createPendingStore({ ttlMs: 60_000, capacity: 2 });
-    const id1 = store.stash({
-      codeVerifier: '1',
-      state: 's',
-      scope: 'user',
-      ownerId: 'a',
-      ref: 'r',
-      kind: 'k',
-      userId: 'a',
-    });
-    const id2 = store.stash({
-      codeVerifier: '2',
-      state: 's',
-      scope: 'user',
-      ownerId: 'a',
-      ref: 'r',
-      kind: 'k',
-      userId: 'a',
-    });
-    const id3 = store.stash({
-      codeVerifier: '3',
-      state: 's',
-      scope: 'user',
-      ownerId: 'a',
-      ref: 'r',
-      kind: 'k',
-      userId: 'a',
-    });
-    expect(store.claim(id1, 'a')).toBeUndefined(); // evicted
-    expect(store.claim(id2, 'a')).toBeDefined();
-    expect(store.claim(id3, 'a')).toBeDefined();
+    // Fake timers force distinct expiresAt values across stashes — without
+    // them, three back-to-back stashes can land on the same Date.now()
+    // millisecond, which makes "oldest by expiresAt" implementation-defined
+    // (Map insertion-order tiebreak). Advancing 1ms between each pins the
+    // ordering deterministically.
+    vi.useFakeTimers();
+    try {
+      const store = createPendingStore({ ttlMs: 60_000, capacity: 2 });
+      const id1 = store.stash({
+        codeVerifier: '1',
+        state: 's',
+        scope: 'user',
+        ownerId: 'a',
+        ref: 'r',
+        kind: 'k',
+        userId: 'a',
+      });
+      vi.advanceTimersByTime(1);
+      const id2 = store.stash({
+        codeVerifier: '2',
+        state: 's',
+        scope: 'user',
+        ownerId: 'a',
+        ref: 'r',
+        kind: 'k',
+        userId: 'a',
+      });
+      vi.advanceTimersByTime(1);
+      const id3 = store.stash({
+        codeVerifier: '3',
+        state: 's',
+        scope: 'user',
+        ownerId: 'a',
+        ref: 'r',
+        kind: 'k',
+        userId: 'a',
+      });
+      expect(store.claim(id1, 'a')).toBeUndefined(); // evicted
+      expect(store.claim(id2, 'a')).toBeDefined();
+      expect(store.claim(id3, 'a')).toBeDefined();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('pendingId is a base64url string of >=20 chars', () => {
