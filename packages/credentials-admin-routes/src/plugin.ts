@@ -2,6 +2,10 @@ import { type Plugin } from '@ax/core';
 import { registerAdminCredentialsRoutes } from './admin-routes.js';
 import { registerSettingsCredentialsRoutes } from './settings-routes.js';
 import { registerOauthRoutes } from './oauth-routes.js';
+import {
+  registerProviderRoutes,
+  registerProviderService,
+} from './providers-routes.js';
 import { makeAgentContext } from '@ax/core';
 
 const PLUGIN_NAME = '@ax/credentials-admin-routes';
@@ -35,7 +39,7 @@ export function createCredentialsAdminRoutesPlugin(): Plugin {
     manifest: {
       name: PLUGIN_NAME,
       version: '0.0.0',
-      registers: [],
+      registers: ['credentials:list-providers'],
       // Hard deps. http:register-route + auth:require-user come from
       // @ax/http-server + @ax/auth-oidc; credentials:* from @ax/credentials.
       // Topo-sort ensures all are loaded before our init runs.
@@ -44,6 +48,9 @@ export function createCredentialsAdminRoutesPlugin(): Plugin {
       // checked at runtime (bus.hasService) — declaring every kind here
       // would couple the plugin to a static list. The OAuth start handler
       // 400s when the kind isn't registered.
+      //
+      // `credentials:validate:*` is also checked at runtime (bus.hasService)
+      // — the validate endpoint falls back to built-in logic if not registered.
       calls: [
         'auth:require-user',
         'http:register-route',
@@ -63,8 +70,11 @@ export function createCredentialsAdminRoutesPlugin(): Plugin {
         agentId: PLUGIN_NAME,
         userId: 'system',
       });
-      // Atomic route registration: if any of the three register* calls
-      // throws after earlier ones succeeded, init() would otherwise leave
+      // Register the credentials:list-providers service first so the HTTP
+      // handlers can call it via the bus.
+      unregisterRoutes.push(registerProviderService(bus));
+      // Atomic route registration: if any of the register* calls throws
+      // after earlier ones succeeded, init() would otherwise leave
       // partially-mounted routes behind (and shutdown won't run because
       // bootstrap treats the plugin as failed). Unwind anything we already
       // pushed, best-effort, then rethrow.
@@ -76,6 +86,9 @@ export function createCredentialsAdminRoutesPlugin(): Plugin {
           ...(await registerSettingsCredentialsRoutes(bus, initCtx)),
         );
         unregisterRoutes.push(...(await registerOauthRoutes(bus, initCtx)));
+        unregisterRoutes.push(
+          ...(await registerProviderRoutes(bus, initCtx)),
+        );
       } catch (err) {
         while (unregisterRoutes.length > 0) {
           const fn = unregisterRoutes.pop();
