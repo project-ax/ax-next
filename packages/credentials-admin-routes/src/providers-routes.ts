@@ -62,13 +62,14 @@ const STATIC_PROVIDERS: ProviderEntry[] = [
  * list in future work.
  */
 export function registerProviderService(bus: HookBus): () => void {
-  return bus.registerService(
+  bus.registerService(
     'credentials:list-providers',
     PLUGIN_NAME,
     async (_ctx, _input: Record<string, never>) => {
       return { providers: STATIC_PROVIDERS };
     },
   );
+  return () => {};  // services don't have an unregister mechanism
 }
 
 // ---------------------------------------------------------------------------
