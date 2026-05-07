@@ -19,7 +19,6 @@ import { useEffect, useRef, useState } from 'react';
 import { KeyRound, LogOut, Moon, Settings, Sun, UserRound } from 'lucide-react';
 import { useUser } from '../lib/user-context';
 import { signOut } from '../lib/auth';
-import type { AdminView } from '../lib/admin';
 import { useTheme, setTheme, type Theme } from '../lib/theme';
 
 interface ThemeOption {
@@ -33,10 +32,10 @@ const THEME_OPTIONS: ThemeOption[] = [
 ];
 
 export function UserMenu({
-  onOpenAdmin,
+  onOpenAdminSettings,
   onOpenSettings,
 }: {
-  onOpenAdmin?: ((view: AdminView) => void) | undefined;
+  onOpenAdminSettings?: (() => void) | undefined;
   onOpenSettings?: (() => void) | undefined;
 } = {}) {
   const user = useUser();
@@ -151,47 +150,11 @@ export function UserMenu({
                 role="menuitem"
                 onClick={() => {
                   setOpen(false);
-                  onOpenAdmin?.('agents');
+                  onOpenAdminSettings?.();
                 }}
-                data-action="admin-agents"
+                data-action="admin-settings"
               >
-                Admin · Agents
-              </button>
-              <button
-                type="button"
-                className="user-menu-item"
-                role="menuitem"
-                onClick={() => {
-                  setOpen(false);
-                  onOpenAdmin?.('mcp-servers');
-                }}
-                data-action="admin-mcp"
-              >
-                Admin · MCP Servers
-              </button>
-              <button
-                type="button"
-                className="user-menu-item"
-                role="menuitem"
-                onClick={() => {
-                  setOpen(false);
-                  onOpenAdmin?.('teams');
-                }}
-                data-action="admin-teams"
-              >
-                Admin · Teams
-              </button>
-              <button
-                type="button"
-                className="user-menu-item"
-                role="menuitem"
-                onClick={() => {
-                  setOpen(false);
-                  onOpenAdmin?.('credentials');
-                }}
-                data-action="admin-credentials"
-              >
-                Admin · Credentials
+                Admin Settings
               </button>
             </>
           )}

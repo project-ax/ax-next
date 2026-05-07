@@ -17,29 +17,31 @@ const regularUser = {
 };
 
 describe('UserMenu', () => {
-  it('admin sees admin entries when menu is open', () => {
+  it('admin sees single "Admin Settings" entry when menu is open', () => {
     render(
       <UserProvider value={adminUser}>
         <UserMenu />
       </UserProvider>,
     );
     fireEvent.click(screen.getByRole('button', { name: /Admin/i }));
-    expect(screen.getByText(/Admin · Agents/)).toBeTruthy();
-    expect(screen.getByText(/Admin · MCP Servers/)).toBeTruthy();
-    expect(screen.getByText(/Admin · Teams/)).toBeTruthy();
-    expect(screen.getByText(/Admin · Credentials/)).toBeTruthy();
+    expect(screen.getByText('Admin Settings')).toBeTruthy();
+    // Old per-view entries must be gone.
+    expect(screen.queryByText(/Admin · Agents/)).toBeNull();
+    expect(screen.queryByText(/Admin · MCP Servers/)).toBeNull();
+    expect(screen.queryByText(/Admin · Teams/)).toBeNull();
+    expect(screen.queryByText(/Admin · Credentials/)).toBeNull();
   });
 
-  it('Admin · Credentials entry opens the credentials view', () => {
-    const onOpenAdmin = vi.fn();
+  it('"Admin Settings" entry calls onOpenAdminSettings', () => {
+    const onOpenAdminSettings = vi.fn();
     render(
       <UserProvider value={adminUser}>
-        <UserMenu onOpenAdmin={onOpenAdmin} />
+        <UserMenu onOpenAdminSettings={onOpenAdminSettings} />
       </UserProvider>,
     );
     fireEvent.click(screen.getByRole('button', { name: /Admin/i }));
-    fireEvent.click(screen.getByText(/Admin · Credentials/));
-    expect(onOpenAdmin).toHaveBeenCalledWith('credentials');
+    fireEvent.click(screen.getByText('Admin Settings'));
+    expect(onOpenAdminSettings).toHaveBeenCalledTimes(1);
   });
 
   it('regular user does not see admin entries', () => {
@@ -49,7 +51,7 @@ describe('UserMenu', () => {
       </UserProvider>,
     );
     fireEvent.click(screen.getByRole('button', { name: /Alice/i }));
-    expect(screen.queryByText(/Admin · Agents/)).toBeNull();
+    expect(screen.queryByText('Admin Settings')).toBeNull();
   });
 
   it('regular user sees "My credentials" entry', () => {

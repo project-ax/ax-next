@@ -33,10 +33,9 @@ import { Sidebar } from './components/Sidebar';
 import { SessionHeader } from './components/SessionHeader';
 import { Thread } from './components/Thread';
 import { ToastStack } from './components/Toast';
-import { AdminPanel } from './components/admin/AdminPanel';
+import { AdminSettings } from './components/admin/AdminSettings';
 import { SettingsPanel } from './components/settings/SettingsPanel';
 import { UserProvider } from './lib/user-context';
-import type { AdminView } from './lib/admin';
 
 type AuthState = 'loading' | 'authenticated' | 'unauthenticated';
 
@@ -79,9 +78,9 @@ export const App = () => {
 const AppContent = ({ user }: { user: AuthUser }) => {
   const { agents, selectedAgentId, pendingAgentId } = useAgentStore();
   const runtime = useAxChatRuntime(user.id);
-  // `adminView` is set by the user menu's Admin entries. AdminPanel
-  // renders below when non-null.
-  const [adminView, setAdminView] = useState<AdminView>(null);
+  // `adminSettingsOpen` is set by the user menu's "Admin Settings" entry.
+  // AdminSettings renders in the main pane when true.
+  const [adminSettingsOpen, setAdminSettingsOpen] = useState(false);
   // `settingsOpen` is set by the user menu's "My credentials" entry.
   // SettingsPanel renders below when true. Available to every signed-in
   // user (no isAdmin gate — server-side scope='user' enforces ownership).
@@ -139,7 +138,7 @@ const AppContent = ({ user }: { user: AuthUser }) => {
       <AssistantRuntimeProvider runtime={runtime}>
         <div className="app-layout">
           <Sidebar
-            onOpenAdmin={setAdminView}
+            onOpenAdminSettings={() => setAdminSettingsOpen(true)}
             onOpenSettings={() => setSettingsOpen(true)}
           />
           {sidebarOpen && (
@@ -150,10 +149,14 @@ const AppContent = ({ user }: { user: AuthUser }) => {
             />
           )}
           <main className="pane">
-            <SessionHeader />
-            <Thread />
+            {adminSettingsOpen
+              ? <AdminSettings onClose={() => setAdminSettingsOpen(false)} />
+              : <>
+                  <SessionHeader />
+                  <Thread />
+                </>
+            }
           </main>
-          <AdminPanel view={adminView} onClose={() => setAdminView(null)} />
           <SettingsPanel
             open={settingsOpen}
             onClose={() => setSettingsOpen(false)}
