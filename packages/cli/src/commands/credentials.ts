@@ -68,6 +68,12 @@ const USAGE = `usage:
     PKCE OAuth flow against Claude Max. Default ref: 'anthropic-personal'.
     Opens a browser; waits up to 60 seconds for the redirect.
 
+  ax-next credentials migrate [--yes]
+    Copies legacy v1 storage keys (credential:<userId>:<ref>) to v2 keys
+    (credential:v2:user:<userId>:<ref>) so the new scope-aware admin UI
+    can list them. v1 rows stay in place as a read-fallback. Run with
+    --yes to actually mutate; bare invocation is a dry-run summary.
+
 env:
   AX_CREDENTIALS_KEY  required, 32 bytes (64 hex chars or 44 base64 chars)`;
 
@@ -78,6 +84,9 @@ export async function runCredentialsCommand(opts: RunCredentialsOptions): Promis
   const verb = opts.argv[0];
   if (verb === 'login') {
     return runLoginCommand(opts, out, err);
+  }
+  if (verb === 'migrate') {
+    return runMigrateCommand(opts, out, err);
   }
   if (verb !== 'set') {
     err(USAGE);
@@ -403,4 +412,94 @@ function startRedirectListener(expectedState: string): Promise<{
       resolve({ server, codePromise });
     });
   });
+}
+
+// ── credentials migrate ─────────────────────────────────────────────
+//
+// Copies v1 storage keys (`credential:<userId>:<ref>`) to v2 keys
+// (`credential:v2:user:<userId>:<ref>`). The v1 rows stay in place — the
+// store-blob layer reads v1 as a fallback when scope='user', so existing
+// code paths keep working. The migration is needed because the new
+// `credentials:list` hook only walks v2 keys (v1 had no concept of
+// scope, so admin UI can't list them).
+//
+// Idempotent: skips keys that already match `credential:v2:`. Safe to
+// re-run. Bare invocation is a dry-run; pass --yes to actually mutate.
+
+async function runMigrateCommand(
+  opts: RunCredentialsOptions,
+  out: (line: string) => void,
+  err: (line: string) => void,
+): Promise<number> {
+  const bus = new HookBus();
+  let handle;
+  try {
+    handle = await bootstrap({
+      bus,
+      plugins: [
+        createStorageSqlitePlugin({ databasePath: opts.sqlitePath ?? DEFAULT_SQLITE_PATH }),
+      ],
+      config: {},
+    });
+  } catch (e) {
+    if (e instanceof PluginError) {
+      err(`error: ${e.message}`);
+      return 1;
+    }
+    err('error: unexpected failure');
+    return 1;
+  }
+
+  try {
+    const ctx = makeAgentContext({ sessionId: 'cli', agentId: 'cli', userId: CLI_USER_ID });
+
+    // Find every key under the `credential:` prefix, then filter out v2
+    // (already migrated) and any other shape that doesn't look like
+    // `credential:<userId>:<ref>`.
+    const list = await bus.call<
+      { prefix: string },
+      { entries: Array<{ key: string; value: Uint8Array }> }
+    >('storage:list-prefix', ctx, { prefix: 'credential:' });
+    const v1Entries = list.entries.filter((e) => !e.key.startsWith('credential:v2:'));
+
+    if (v1Entries.length === 0) {
+      out('no v1 credentials found; nothing to migrate');
+      return 0;
+    }
+
+    if (!opts.argv.includes('--yes')) {
+      err(`would migrate ${v1Entries.length} credentials. Re-run with --yes to proceed.`);
+      return 1;
+    }
+
+    let migrated = 0;
+    for (const e of v1Entries) {
+      // Key shape: `credential:<userId>:<ref>` — split on the FIRST colon
+      // after the prefix. Refs may contain `.` and `-` but never `:`, so
+      // anything after the first colon is the ref.
+      const rest = e.key.slice('credential:'.length);
+      const colon = rest.indexOf(':');
+      if (colon < 0) continue;
+      const userId = rest.slice(0, colon);
+      const ref = rest.slice(colon + 1);
+      const newKey = `credential:v2:user:${userId}:${ref}`;
+      await bus.call('storage:set', ctx, { key: newKey, value: e.value });
+      migrated++;
+    }
+
+    out(`migrated ${migrated} credentials from v1 to v2 (scope=user)`);
+    out(
+      'v1 keys are still present and readable as a fallback. Remove them only after verifying.',
+    );
+    return 0;
+  } catch (e) {
+    if (e instanceof PluginError) {
+      err(`error: ${e.message}`);
+      return 1;
+    }
+    err('error: unexpected failure');
+    return 1;
+  } finally {
+    await handle.shutdown();
+  }
 }
