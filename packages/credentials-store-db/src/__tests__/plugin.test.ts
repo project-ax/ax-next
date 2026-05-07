@@ -3,16 +3,16 @@ import { HookBus, bootstrap, makeAgentContext, type Plugin } from '@ax/core';
 import { createStorageSqlitePlugin } from '@ax/storage-sqlite';
 import { createCredentialsStoreDbPlugin } from '../plugin.js';
 
-// Minimal in-memory storage:get / storage:set plugin. Mirrors the helper
-// in @ax/credentials's tests; lets us assert the underlying KV layout
-// directly without standing up sqlite.
+// Minimal in-memory storage:get / storage:set / storage:list-prefix plugin.
+// Mirrors the helper in @ax/credentials's tests; lets us assert the underlying
+// KV layout directly without standing up sqlite.
 function memStoragePlugin(): Plugin {
   const store = new Map<string, Uint8Array>();
   return {
     manifest: {
       name: 'mem-storage',
       version: '0.0.0',
-      registers: ['storage:get', 'storage:set'],
+      registers: ['storage:get', 'storage:set', 'storage:list-prefix'],
       calls: [],
       subscribes: [],
     },
@@ -25,6 +25,17 @@ function memStoragePlugin(): Plugin {
         'mem-storage',
         async (_ctx, { key, value }: { key: string; value: Uint8Array }) => {
           store.set(key, value);
+        },
+      );
+      bus.registerService(
+        'storage:list-prefix',
+        'mem-storage',
+        async (_ctx, { prefix }: { prefix: string }) => {
+          const entries: Array<{ key: string; value: Uint8Array }> = [];
+          for (const [k, v] of store.entries()) {
+            if (k.startsWith(prefix)) entries.push({ key: k, value: v });
+          }
+          return { entries };
         },
       );
     },
@@ -46,76 +57,87 @@ async function bootstrapWithMemStore(): Promise<HookBus> {
 }
 
 describe('@ax/credentials-store-db plugin', () => {
-  it('registers credentials:store-blob:put and credentials:store-blob:get', async () => {
+  it('registers credentials:store-blob:put / :get / :list', async () => {
     const bus = await bootstrapWithMemStore();
     expect(bus.hasService('credentials:store-blob:put')).toBe(true);
     expect(bus.hasService('credentials:store-blob:get')).toBe(true);
+    expect(bus.hasService('credentials:store-blob:list')).toBe(true);
   });
 
-  it('manifest declares storage:get / storage:set as calls', () => {
+  it('manifest declares storage:get / storage:set / storage:list-prefix as calls', () => {
     const p = createCredentialsStoreDbPlugin();
     expect(p.manifest.name).toBe('@ax/credentials-store-db');
     expect(p.manifest.registers).toContain('credentials:store-blob:put');
     expect(p.manifest.registers).toContain('credentials:store-blob:get');
+    expect(p.manifest.registers).toContain('credentials:store-blob:list');
     expect(p.manifest.calls).toContain('storage:get');
     expect(p.manifest.calls).toContain('storage:set');
+    expect(p.manifest.calls).toContain('storage:list-prefix');
   });
 
-  it('put then get round-trips a blob', async () => {
+  it('put then get round-trips a blob (scope=user)', async () => {
     const bus = await bootstrapWithMemStore();
     const blob = new Uint8Array([1, 2, 3, 4, 5]);
-    await bus.call('credentials:store-blob:put', ctx(), { userId: 'u', ref: 'r1', blob });
+    await bus.call('credentials:store-blob:put', ctx(), {
+      scope: 'user',
+      ownerId: 'u',
+      ref: 'r1',
+      blob,
+    });
     const got = await bus.call<
-      { userId: string; ref: string },
+      { scope: string; ownerId: string | null; ref: string },
       { blob: Uint8Array | undefined }
-    >('credentials:store-blob:get', ctx(), { userId: 'u', ref: 'r1' });
+    >('credentials:store-blob:get', ctx(), { scope: 'user', ownerId: 'u', ref: 'r1' });
     expect(got.blob).toBeDefined();
     expect(Array.from(got.blob!)).toEqual([1, 2, 3, 4, 5]);
   });
 
-  it('get returns { blob: undefined } for missing (userId, ref)', async () => {
+  it('get returns { blob: undefined } for missing (scope, ownerId, ref)', async () => {
     const bus = await bootstrapWithMemStore();
     const got = await bus.call<
-      { userId: string; ref: string },
+      { scope: string; ownerId: string | null; ref: string },
       { blob: Uint8Array | undefined }
-    >('credentials:store-blob:get', ctx(), { userId: 'u', ref: 'nope' });
+    >('credentials:store-blob:get', ctx(), { scope: 'user', ownerId: 'u', ref: 'nope' });
     expect(got.blob).toBeUndefined();
   });
 
-  it('put overwrites existing value at the same (userId, ref)', async () => {
+  it('put overwrites existing value at the same (scope, ownerId, ref)', async () => {
     const bus = await bootstrapWithMemStore();
     await bus.call('credentials:store-blob:put', ctx(), {
-      userId: 'u',
+      scope: 'user',
+      ownerId: 'u',
       ref: 'r1',
       blob: new Uint8Array([1, 1]),
     });
     await bus.call('credentials:store-blob:put', ctx(), {
-      userId: 'u',
+      scope: 'user',
+      ownerId: 'u',
       ref: 'r1',
       blob: new Uint8Array([9, 9, 9]),
     });
     const got = await bus.call<
-      { userId: string; ref: string },
+      { scope: string; ownerId: string | null; ref: string },
       { blob: Uint8Array | undefined }
-    >('credentials:store-blob:get', ctx(), { userId: 'u', ref: 'r1' });
+    >('credentials:store-blob:get', ctx(), { scope: 'user', ownerId: 'u', ref: 'r1' });
     expect(Array.from(got.blob!)).toEqual([9, 9, 9]);
   });
 
-  it('uses the "credential:<userId>:" key prefix when reading/writing storage', async () => {
+  it('uses the "credential:v2:" key prefix when reading/writing storage', async () => {
     // Verify the seam through the storage:* layer directly. A vault-backed
     // sibling impl wouldn't go through storage at all, but the default
-    // store-db's contract is exactly that it owns the `credential:` prefix.
+    // store-db's contract is exactly that it owns the `credential:v2:` prefix.
     const bus = await bootstrapWithMemStore();
     const blob = new Uint8Array([42, 42, 42]);
     await bus.call('credentials:store-blob:put', ctx(), {
-      userId: 'u',
+      scope: 'user',
+      ownerId: 'u',
       ref: 'gh-token',
       blob,
     });
     const directly = await bus.call<{ key: string }, { value: Uint8Array | undefined }>(
       'storage:get',
       ctx(),
-      { key: 'credential:u:gh-token' },
+      { key: 'credential:v2:user:u:gh-token' },
     );
     expect(directly.value).toBeDefined();
     expect(Array.from(directly.value!)).toEqual([42, 42, 42]);
@@ -126,33 +148,35 @@ describe('@ax/credentials-store-db plugin', () => {
       value: new Uint8Array([1]),
     });
     const got = await bus.call<
-      { userId: string; ref: string },
+      { scope: string; ownerId: string | null; ref: string },
       { blob: Uint8Array | undefined }
-    >('credentials:store-blob:get', ctx(), { userId: 'u', ref: 'gh-token' });
+    >('credentials:store-blob:get', ctx(), { scope: 'user', ownerId: 'u', ref: 'gh-token' });
     expect(Array.from(got.blob!)).toEqual([42, 42, 42]);
   });
 
-  it('different userIds do not collide on the same ref', async () => {
-    // I14: (userId, ref) is the unique key, not ref alone.
+  it('different ownerIds do not collide on the same ref', async () => {
+    // (scope, ownerId, ref) is the unique key, not ref alone.
     const bus = await bootstrapWithMemStore();
     await bus.call('credentials:store-blob:put', ctx(), {
-      userId: 'alice',
+      scope: 'user',
+      ownerId: 'alice',
       ref: 'shared',
       blob: new Uint8Array([0xa1]),
     });
     await bus.call('credentials:store-blob:put', ctx(), {
-      userId: 'bob',
+      scope: 'user',
+      ownerId: 'bob',
       ref: 'shared',
       blob: new Uint8Array([0xb0]),
     });
     const a = await bus.call<
-      { userId: string; ref: string },
+      { scope: string; ownerId: string | null; ref: string },
       { blob: Uint8Array | undefined }
-    >('credentials:store-blob:get', ctx(), { userId: 'alice', ref: 'shared' });
+    >('credentials:store-blob:get', ctx(), { scope: 'user', ownerId: 'alice', ref: 'shared' });
     const b = await bus.call<
-      { userId: string; ref: string },
+      { scope: string; ownerId: string | null; ref: string },
       { blob: Uint8Array | undefined }
-    >('credentials:store-blob:get', ctx(), { userId: 'bob', ref: 'shared' });
+    >('credentials:store-blob:get', ctx(), { scope: 'user', ownerId: 'bob', ref: 'shared' });
     expect(Array.from(a.blob!)).toEqual([0xa1]);
     expect(Array.from(b.blob!)).toEqual([0xb0]);
   });
@@ -161,18 +185,20 @@ describe('@ax/credentials-store-db plugin', () => {
     const bus = await bootstrapWithMemStore();
     await expect(
       bus.call('credentials:store-blob:put', ctx(), {
-        userId: 'u',
+        scope: 'user',
+        ownerId: 'u',
         ref: 'has space',
         blob: new Uint8Array([1]),
       }),
     ).rejects.toMatchObject({ code: 'invalid-payload' });
   });
 
-  it('rejects credentials:store-blob:put with an invalid userId', async () => {
+  it('rejects credentials:store-blob:put with an invalid ownerId', async () => {
     const bus = await bootstrapWithMemStore();
     await expect(
       bus.call('credentials:store-blob:put', ctx(), {
-        userId: 'has space',
+        scope: 'user',
+        ownerId: 'has space',
         ref: 'r1',
         blob: new Uint8Array([1]),
       }),
@@ -183,7 +209,8 @@ describe('@ax/credentials-store-db plugin', () => {
     const bus = await bootstrapWithMemStore();
     await expect(
       bus.call('credentials:store-blob:put', ctx(), {
-        userId: 'u',
+        scope: 'user',
+        ownerId: 'u',
         ref: 'r1',
         blob: 'not bytes' as unknown as Uint8Array,
       }),
@@ -193,7 +220,11 @@ describe('@ax/credentials-store-db plugin', () => {
   it('rejects credentials:store-blob:get with an invalid ref', async () => {
     const bus = await bootstrapWithMemStore();
     await expect(
-      bus.call('credentials:store-blob:get', ctx(), { userId: 'u', ref: 'has space' }),
+      bus.call('credentials:store-blob:get', ctx(), {
+        scope: 'user',
+        ownerId: 'u',
+        ref: 'has space',
+      }),
     ).rejects.toMatchObject({ code: 'invalid-payload' });
   });
 
@@ -208,11 +239,16 @@ describe('@ax/credentials-store-db plugin', () => {
       config: {},
     });
     const blob = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
-    await bus.call('credentials:store-blob:put', ctx(), { userId: 'u', ref: 'r1', blob });
+    await bus.call('credentials:store-blob:put', ctx(), {
+      scope: 'user',
+      ownerId: 'u',
+      ref: 'r1',
+      blob,
+    });
     const got = await bus.call<
-      { userId: string; ref: string },
+      { scope: string; ownerId: string | null; ref: string },
       { blob: Uint8Array | undefined }
-    >('credentials:store-blob:get', ctx(), { userId: 'u', ref: 'r1' });
+    >('credentials:store-blob:get', ctx(), { scope: 'user', ownerId: 'u', ref: 'r1' });
     expect(Array.from(got.blob!)).toEqual([0xde, 0xad, 0xbe, 0xef]);
   });
 });

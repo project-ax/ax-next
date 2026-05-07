@@ -1,5 +1,5 @@
-import { makeAgentContext, type Plugin } from '@ax/core';
-import type { Kysely } from 'kysely';
+import { makeAgentContext, PluginError, type Plugin } from '@ax/core';
+import { sql, type Kysely } from 'kysely';
 import { runStorageMigration, type StorageDatabase } from './migrations.js';
 
 /**
@@ -20,7 +20,7 @@ export function createStoragePostgresPlugin(): Plugin {
     manifest: {
       name: PLUGIN_NAME,
       version: '0.0.0',
-      registers: ['storage:get', 'storage:set'],
+      registers: ['storage:get', 'storage:set', 'storage:list-prefix'],
       calls: ['database:get-instance'],
       subscribes: [],
     },
@@ -82,6 +82,33 @@ export function createStoragePostgresPlugin(): Plugin {
             .execute();
         },
       );
+
+      bus.registerService<
+        { prefix: string },
+        { entries: Array<{ key: string; value: Uint8Array }> }
+      >('storage:list-prefix', PLUGIN_NAME, async (_ctx, { prefix }) => {
+        if (typeof prefix !== 'string' || prefix.length === 0) {
+          throw new PluginError({
+            code: 'invalid-payload',
+            plugin: PLUGIN_NAME,
+            message: 'prefix is required',
+          });
+        }
+        // Escape SQL-LIKE meta-characters so a literal prefix doesn't
+        // glob-match. ESCAPE clause tells Postgres '\' is the escape.
+        const escaped = prefix
+          .replace(/\\/g, '\\\\')
+          .replace(/%/g, '\\%')
+          .replace(/_/g, '\\_');
+        const rows = await db!
+          .selectFrom('storage_postgres_v1_kv')
+          .select(['key', 'value'])
+          .where(sql<boolean>`key LIKE ${escaped + '%'} ESCAPE '\\'`)
+          .execute();
+        return {
+          entries: rows.map((r) => ({ key: r.key, value: new Uint8Array(r.value) })),
+        };
+      });
     },
   };
 }
