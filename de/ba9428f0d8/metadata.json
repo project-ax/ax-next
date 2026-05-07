@@ -1,0 +1,23 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "deba9428f0d8",
+  "strategy": "manual-commit",
+  "branch": "feat/credentials-admin-ui",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/de/ba9428f0d8/0/metadata.json",
+      "transcript": "/de/ba9428f0d8/0/full.jsonl",
+      "content_hash": "/de/ba9428f0d8/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 108,
+    "cache_creation_tokens": 294357,
+    "cache_read_tokens": 7238445,
+    "output_tokens": 45557,
+    "api_call_count": 51
+  }
+}
