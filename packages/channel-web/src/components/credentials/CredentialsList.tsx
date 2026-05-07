@@ -80,10 +80,14 @@ export function CredentialsList({
     }
   }
 
+  // Initial-load error (no list yet) takes over the whole panel — there's
+  // nothing else to show. After the first successful load, errors render
+  // inline above the still-visible table so a failed delete doesn't make
+  // the whole list disappear.
   if (list === null && error === null) {
     return <div className="admin-empty">Loading…</div>;
   }
-  if (error !== null) {
+  if (list === null && error !== null) {
     return (
       <div className="admin-error" role="alert">
         Error: {error}
@@ -91,53 +95,68 @@ export function CredentialsList({
     );
   }
   return (
-    <table className="credentials-list admin-table">
-      <thead>
-        <tr>
-          <th>Scope</th>
-          <th>Owner</th>
-          <th>Ref</th>
-          <th>Kind</th>
-          <th>Created</th>
-          <th />
-        </tr>
-      </thead>
-      <tbody>
-        {list!.length === 0 ? (
+    <>
+      {error !== null && (
+        <div className="admin-error" role="alert">
+          <span>Error: {error}</span>
+          <button
+            type="button"
+            className="admin-btn"
+            aria-label="Dismiss error"
+            onClick={() => setError(null)}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+      <table className="credentials-list admin-table">
+        <thead>
           <tr>
-            <td colSpan={6} className="admin-empty">
-              No credentials yet.
-            </td>
+            <th>Scope</th>
+            <th>Owner</th>
+            <th>Ref</th>
+            <th>Kind</th>
+            <th>Created</th>
+            <th />
           </tr>
-        ) : (
-          list!.map((c) => (
-            <tr key={`${c.scope}:${c.ownerId ?? '_'}:${c.ref}`}>
-              <td>{c.scope}</td>
-              <td>{c.ownerId ?? '—'}</td>
-              <td>{c.ref}</td>
-              <td>{c.kind}</td>
-              <td>
-                {(() => {
-                  const t = Date.parse(c.createdAt);
-                  return Number.isFinite(t)
-                    ? new Date(t).toLocaleString()
-                    : c.createdAt;
-                })()}
-              </td>
-              <td>
-                <button
-                  type="button"
-                  className="admin-btn admin-btn-danger"
-                  aria-label={`Delete ${c.ref}`}
-                  onClick={() => void onDelete(c)}
-                >
-                  Delete
-                </button>
+        </thead>
+        <tbody>
+          {list!.length === 0 ? (
+            <tr>
+              <td colSpan={6} className="admin-empty">
+                No credentials yet.
               </td>
             </tr>
-          ))
-        )}
-      </tbody>
-    </table>
+          ) : (
+            list!.map((c) => (
+              <tr key={`${c.scope}:${c.ownerId ?? '_'}:${c.ref}`}>
+                <td>{c.scope}</td>
+                <td>{c.ownerId ?? '—'}</td>
+                <td>{c.ref}</td>
+                <td>{c.kind}</td>
+                <td>
+                  {(() => {
+                    const t = Date.parse(c.createdAt);
+                    return Number.isFinite(t)
+                      ? new Date(t).toLocaleString()
+                      : c.createdAt;
+                  })()}
+                </td>
+                <td>
+                  <button
+                    type="button"
+                    className="admin-btn admin-btn-danger"
+                    aria-label={`Delete ${c.ref}`}
+                    onClick={() => void onDelete(c)}
+                  >
+                    Delete
+                  </button>
+                </td>
+              </tr>
+            ))
+          )}
+        </tbody>
+      </table>
+    </>
   );
 }

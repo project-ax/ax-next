@@ -128,6 +128,40 @@ describe('CredentialsList — admin variant', () => {
     render(<CredentialsList variant="admin" />);
     await waitFor(() => expect(screen.getByText(/error/i)).toBeTruthy());
   });
+
+  it('delete failure keeps the table visible with a dismissible error banner', async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonOk({
+          credentials: [
+            {
+              scope: 'global',
+              ownerId: null,
+              ref: 'doomed',
+              kind: 'api-key',
+              createdAt: '2026-05-07T00:00:00.000Z',
+            },
+          ],
+        }),
+      )
+      // DELETE fails — table must stay visible.
+      .mockResolvedValueOnce(new Response('boom', { status: 500 }));
+
+    render(<CredentialsList variant="admin" />);
+    await waitFor(() => expect(screen.getByText('doomed')).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('button', { name: /Delete doomed/i }));
+
+    // Error banner appears…
+    await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy());
+    // …and the row is still rendered.
+    expect(screen.getByText('doomed')).toBeTruthy();
+
+    // Dismiss clears the banner; table remains.
+    fireEvent.click(screen.getByRole('button', { name: /Dismiss error/i }));
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    expect(screen.getByText('doomed')).toBeTruthy();
+  });
 });
 
 describe('CredentialsList — user variant', () => {
