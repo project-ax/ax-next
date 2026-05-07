@@ -107,3 +107,11 @@ http:
 auth:
   devBootstrap:
     token: "kind-dev-bootstrap-token-not-secret"
+
+# ─── Credentials admin UI ─────────────────────────────────────────
+# Enable the HTTP routes that back the admin Credentials tab and the
+# per-user "My credentials" settings panel. In a real cluster you'd
+# gate this on an operator decision; for kind dev we always want it.
+credentials:
+  admin:
+    enabled: true
