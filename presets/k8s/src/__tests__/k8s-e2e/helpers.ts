@@ -121,6 +121,101 @@ export async function createAgent(
   };
 }
 
+export interface AdminCredentialInput {
+  scope: 'global' | 'user' | 'agent';
+  ownerId: string | null;
+  ref: string;
+  kind: string;
+  /** Plaintext payload — encoded to base64 before sending. */
+  payload: string;
+}
+
+/**
+ * POST /admin/credentials — admin-only paste-flow create. The route
+ * requires an admin session cookie (same dev-bootstrap path as the
+ * agents helpers above) and a CSRF-bypass header.
+ *
+ * Returns void; the route echoes metadata but tests usually only care
+ * that the call succeeded. Use a follow-up GET if you need shape
+ * inspection.
+ */
+export async function seedAdminCredential(
+  cookie: string,
+  input: AdminCredentialInput,
+): Promise<void> {
+  const res = await fetch(`${HOST_BASE_URL}/admin/credentials`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-requested-with': 'ax-admin',
+      cookie,
+    },
+    body: JSON.stringify({
+      scope: input.scope,
+      ownerId: input.ownerId,
+      ref: input.ref,
+      kind: input.kind,
+      payload: Buffer.from(input.payload).toString('base64'),
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(
+      `POST /admin/credentials failed: ${res.status} ${await res.text().catch(() => '')}`,
+    );
+  }
+}
+
+/**
+ * GET /admin/credentials — admin-only metadata listing. Returns the
+ * `credentials` array from the response body verbatim. Each entry is
+ * metadata-only (`{ scope, ownerId, ref, kind, createdAt, ... }`) — the
+ * route never echoes the encrypted blob.
+ */
+export async function listAdminCredentials(
+  cookie: string,
+): Promise<Array<{ scope: string; ownerId: string | null; ref: string; kind: string }>> {
+  const res = await fetch(`${HOST_BASE_URL}/admin/credentials`, {
+    headers: {
+      'x-requested-with': 'ax-admin',
+      cookie,
+    },
+  });
+  if (!res.ok) {
+    throw new Error(
+      `GET /admin/credentials failed: ${res.status} ${await res.text().catch(() => '')}`,
+    );
+  }
+  const body = (await res.json()) as {
+    credentials: Array<{ scope: string; ownerId: string | null; ref: string; kind: string }>;
+  };
+  return body.credentials;
+}
+
+/**
+ * DELETE /admin/credentials/:scope/:ownerId/:ref — admin-only delete.
+ * The route accepts `_` as the ownerId placeholder for scope='global'
+ * (URLs can't carry null); the helper translates accordingly.
+ */
+export async function deleteAdminCredential(
+  cookie: string,
+  args: { scope: 'global' | 'user' | 'agent'; ownerId: string | null; ref: string },
+): Promise<void> {
+  const ownerSeg = args.ownerId === null ? '_' : encodeURIComponent(args.ownerId);
+  const url = `${HOST_BASE_URL}/admin/credentials/${args.scope}/${ownerSeg}/${encodeURIComponent(args.ref)}`;
+  const res = await fetch(url, {
+    method: 'DELETE',
+    headers: {
+      'x-requested-with': 'ax-admin',
+      cookie,
+    },
+  });
+  if (!res.ok && res.status !== 404) {
+    throw new Error(
+      `DELETE ${url} failed: ${res.status} ${await res.text().catch(() => '')}`,
+    );
+  }
+}
+
 export async function deleteAgent(
   cookie: string,
   agentId: string,
