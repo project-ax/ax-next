@@ -557,6 +557,9 @@ importers:
       '@ax/credentials':
         specifier: workspace:*
         version: link:../credentials
+      '@ax/credentials-oauth-pending':
+        specifier: workspace:*
+        version: link:../credentials-oauth-pending
       '@ax/credentials-store-db':
         specifier: workspace:*
         version: link:../credentials-store-db

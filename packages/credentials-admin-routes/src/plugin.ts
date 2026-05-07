@@ -1,6 +1,7 @@
 import { type Plugin } from '@ax/core';
 import { registerAdminCredentialsRoutes } from './admin-routes.js';
 import { registerSettingsCredentialsRoutes } from './settings-routes.js';
+import { registerOauthRoutes } from './oauth-routes.js';
 import { makeAgentContext } from '@ax/core';
 
 const PLUGIN_NAME = '@ax/credentials-admin-routes';
@@ -21,8 +22,10 @@ const PLUGIN_NAME = '@ax/credentials-admin-routes';
 // req/res surface (no @ax/http-server import per Invariant I2), 64 KiB
 // body cap, zod-validated payloads, and PluginError → HTTP-status mapping.
 //
-// OAuth start/finish routes do NOT live here — Phase 3 adds them on top
-// of an in-memory pending-state holder. This Phase 2 plugin is CRUD-only.
+// OAuth start/finish routes ride alongside (Phase 3): they call into
+// `credentials:oauth:stash-pending` / `:claim-pending` (the in-memory
+// state holder in @ax/credentials-oauth-pending) and the per-kind
+// `credentials:login:*` / `credentials:exchange:*` services.
 // ---------------------------------------------------------------------------
 
 export function createCredentialsAdminRoutesPlugin(): Plugin {
@@ -36,12 +39,19 @@ export function createCredentialsAdminRoutesPlugin(): Plugin {
       // Hard deps. http:register-route + auth:require-user come from
       // @ax/http-server + @ax/auth-oidc; credentials:* from @ax/credentials.
       // Topo-sort ensures all are loaded before our init runs.
+      //
+      // Per-kind `credentials:login:*` and `credentials:exchange:*` are
+      // checked at runtime (bus.hasService) — declaring every kind here
+      // would couple the plugin to a static list. The OAuth start handler
+      // 400s when the kind isn't registered.
       calls: [
         'auth:require-user',
         'http:register-route',
         'credentials:list',
         'credentials:set',
         'credentials:delete',
+        'credentials:oauth:stash-pending',
+        'credentials:oauth:claim-pending',
       ],
       subscribes: [],
     },
@@ -56,6 +66,7 @@ export function createCredentialsAdminRoutesPlugin(): Plugin {
       unregisterRoutes.push(
         ...(await registerSettingsCredentialsRoutes(bus, initCtx)),
       );
+      unregisterRoutes.push(...(await registerOauthRoutes(bus, initCtx)));
     },
 
     async shutdown() {
