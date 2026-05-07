@@ -324,6 +324,10 @@ describe('providers handlers', () => {
 
   it('uses credentials:validate:<id> service when registered on bus', async () => {
     const bus = await makeBus({ id: 'admin', isAdmin: true });
+    // Stub fetch so any call to it would fail — the handler should NOT reach the built-in fallback
+    const fetchSpy = vi.fn().mockRejectedValue(new Error('should not call fetch'));
+    vi.stubGlobal('fetch', fetchSpy);
+
     // Register a custom validator that always accepts.
     bus.registerService(
       'credentials:validate:anthropic',
@@ -342,7 +346,7 @@ describe('providers handlers', () => {
 
     expect(statusOf()).toBe(200);
     expect((bodyOf() as { provider: { configured: boolean } }).provider.configured).toBe(true);
-    // fetch should NOT have been called.
-    expect(vi.isMockFunction(globalThis.fetch)).toBe(false);
+    // bus service was preferred; no HTTP call made
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
