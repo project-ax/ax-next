@@ -1,0 +1,37 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "9dfe1cc02284",
+  "session_id": "8a60c6cc-3809-480f-a216-d8dbb3e43622",
+  "strategy": "manual-commit",
+  "created_at": "2026-05-07T13:40:10.688197Z",
+  "branch": "feat/credentials-admin-ui",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "packages/credentials/src/__tests__/scope-precedence.test.ts"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "4d7d814a8f7e",
+  "token_usage": {
+    "input_tokens": 149,
+    "cache_creation_tokens": 362383,
+    "cache_read_tokens": 13811593,
+    "output_tokens": 73982,
+    "api_call_count": 78
+  },
+  "session_metrics": {
+    "turn_count": 5
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-05-07T13:40:10.661283Z",
+    "agent_lines": 0,
+    "agent_removed": 0,
+    "human_added": 24,
+    "human_modified": 1,
+    "human_removed": 0,
+    "total_committed": 24,
+    "total_lines_changed": 27,
+    "agent_percentage": 0,
+    "metric_version": 2
+  }
+}
