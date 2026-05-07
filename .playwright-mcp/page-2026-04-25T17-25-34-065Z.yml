@@ -1,0 +1,34 @@
+- generic [ref=e3]:
+  - complementary [ref=e4]:
+    - generic [ref=e7]: tide
+    - button "engineering" [ref=e9] [cursor=pointer]:
+      - generic [ref=e12]: engineering
+      - generic [ref=e13]: ▾
+    - button "new session ⌘N" [ref=e14] [cursor=pointer]:
+      - generic [ref=e15]: +
+      - generic [ref=e16]: new session
+      - generic [ref=e17]: ⌘N
+    - navigation "sessions" [ref=e18]
+    - button "Admin" [ref=e20] [cursor=pointer]:
+      - generic [ref=e21]: A
+      - generic [ref=e23]: Admin
+      - generic [ref=e24]: ▾
+  - main [ref=e25]:
+    - generic [ref=e29]:
+      - button "Search" [ref=e30] [cursor=pointer]:
+        - generic [ref=e31]: ⌕
+      - button "New session" [ref=e32] [cursor=pointer]:
+        - generic [ref=e33]: ⌘N
+      - button "More" [ref=e34] [cursor=pointer]: ⋯
+      - button "Collapse sidebar" [expanded] [ref=e35] [cursor=pointer]:
+        - img [ref=e36]
+    - generic [ref=e38]:
+      - generic [ref=e40]:
+        - generic [ref=e41]: One conversation.
+        - generic [ref=e42]: Say anything.
+      - generic [ref=e45]:
+        - button "Attach" [disabled] [ref=e46]:
+          - generic [ref=e47]: +
+        - textbox "Message tide…" [active] [ref=e48]
+        - button "Send" [disabled] [ref=e49] [cursor=pointer]:
+          - img [ref=e50]

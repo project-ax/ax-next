@@ -1,0 +1,49 @@
+- generic [ref=e3]:
+  - complementary [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e7]: tide
+      - button "Collapse sidebar" [expanded] [ref=e8] [cursor=pointer]:
+        - img [ref=e9]
+    - button "new session ⌘N" [ref=e11] [cursor=pointer]:
+      - img [ref=e12]
+      - generic [ref=e14]: new session
+      - generic [ref=e15]: ⌘N
+    - navigation "sessions" [ref=e16]:
+      - generic [ref=e53]:
+        - generic [ref=e54]: today
+        - generic [ref=e55] [cursor=pointer]:
+          - generic [ref=e57]: test
+          - button "more" [ref=e58]: ⋯
+        - generic [ref=e59] [cursor=pointer]:
+          - generic [ref=e61]: testset
+          - button "more" [ref=e62]: ⋯
+        - generic [ref=e63] [cursor=pointer]:
+          - generic [ref=e65]: tesssst
+          - button "more" [ref=e66]: ⋯
+        - generic [ref=e67] [cursor=pointer]:
+          - generic [ref=e69]: new session
+          - button "more" [ref=e70]: ⋯
+    - button "Alice alice@local" [ref=e18] [cursor=pointer]:
+      - generic [ref=e19]: A
+      - generic [ref=e20]:
+        - generic [ref=e21]: Alice
+        - generic [ref=e22]: alice@local
+      - img [ref=e23]
+  - main [ref=e25]:
+    - generic [ref=e27]:
+      - button "engineering" [ref=e111] [cursor=pointer]:
+        - generic [ref=e33]: engineering
+        - img [ref=e34]
+      - generic [ref=e36]: test
+    - generic [ref=e37]:
+      - generic [ref=e39]:
+        - generic [ref=e40]: One conversation.
+        - generic [ref=e41]: Say anything.
+      - generic [ref=e43]:
+        - generic [ref=e44]:
+          - button "Attach" [ref=e46] [cursor=pointer]:
+            - img [ref=e47]
+          - textbox "Message tide…" [ref=e49]
+          - button "Send" [disabled] [ref=e50] [cursor=pointer]:
+            - img [ref=e51]
+        - generic: ⏎ send · ⇧⏎ newline

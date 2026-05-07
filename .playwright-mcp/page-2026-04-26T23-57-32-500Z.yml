@@ -1,0 +1,735 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - generic [ref=e3]:
+      - generic [ref=e4]: ◇
+      - generic [ref=e5]: ax-next / architecture brief
+    - generic [ref=e6]:
+      - generic [ref=e7]: rev 2026.04.26
+      - generic [ref=e8]: kernel ~1.6k LOC
+      - generic [ref=e9]: plugins 25+
+      - generic [ref=e10]: status ∎ active
+  - main [ref=e11]:
+    - generic [ref=e12]:
+      - generic [ref=e13]:
+        - generic [ref=e14]: fig. 00
+        - text: a small kernel, surrounded by paranoia
+      - heading "ax ‑next v2" [level=1] [ref=e15]:
+        - text: ax
+        - generic [ref=e16]: ‑next v2
+      - paragraph [ref=e17]:
+        - text: A greenfield rewrite.
+        - emphasis [ref=e18]: One tiny kernel
+        - text: ", twenty‑five plugins, and a hook bus that refuses to leak. We replaced a 20,000‑line host monolith with ~1,600 lines that mostly orchestrate hooks — everything else is a plugin you can develop, test, and debug without booting the rest of the system."
+      - generic [ref=e19]:
+        - generic [ref=e20]:
+          - generic [ref=e21]:
+            - generic [ref=e22]: "[01]"
+            - text: kernel size
+          - generic [ref=e23]:
+            - text: ~1,600 LOC. Bootstrap, hook bus, chat loop skeleton, identity, IPC primitives.
+            - emphasis [ref=e24]: Nothing else.
+        - generic [ref=e25]:
+          - generic [ref=e26]:
+            - generic [ref=e27]: "[02]"
+            - text: trust surface
+          - generic [ref=e28]: Hook bus is the only inter‑plugin API. No DI container. No cross‑plugin imports. Capabilities explicit and minimised.
+        - generic [ref=e29]:
+          - generic [ref=e30]:
+            - generic [ref=e31]: "[03]"
+            - text: deployment
+          - generic [ref=e32]: Docker, k8s, multi‑replica — differ only in which plugins are loaded. Core never knows which is running.
+        - generic [ref=e33]:
+          - generic [ref=e34]:
+            - generic [ref=e35]: "[04]"
+            - text: motto
+          - generic [ref=e36]: If you can't name the alternate impl, the abstraction is premature. Just write a function.
+      - generic [ref=e37]:
+        - text: ◊ nervous crab, peeking through its claws
+        - text: — behind the claws, the door is locked
+    - generic [ref=e38]:
+      - generic [ref=e39]:
+        - generic [ref=e40]:
+          - text: § 01
+          - generic [ref=e41]: the why
+        - generic [ref=e42]:
+          - heading "We had too much orchestration in one file." [level=2] [ref=e43]:
+            - text: We had
+            - emphasis [ref=e44]: too much
+            - text: orchestration in one file.
+          - paragraph [ref=e45]: The old AX shipped chat reliability, observability, and security as one tangled monolith. v2 is the same product taken apart, slowly, by someone with surgical tweezers and a strong opinion about boundaries.
+      - generic [ref=e46]:
+        - generic [ref=e47]:
+          - heading "// metric" [level=3] [ref=e48]
+          - paragraph [ref=e50]:
+            - text: host code
+            - text: single orchestration file
+            - text: kernel after rewrite
+            - text: reduction
+        - generic [ref=e51]:
+          - heading "// before" [level=3] [ref=e52]
+          - generic [ref=e53]:
+            - text: "20"
+            - superscript [ref=e54]: k LOC
+          - paragraph [ref=e55]: ~20,000 LOC of host code, with server‑completions.ts alone at 2,400 lines. Everything that touched a chat — canaries, scanners, memory, retries, sandbox lifecycle, skill validation — lived in the same orchestration file.
+        - generic [ref=e56]:
+          - heading "// after" [level=3] [ref=e57]
+          - generic [ref=e58]:
+            - text: "1.6"
+            - superscript [ref=e59]: k LOC
+          - paragraph [ref=e60]: "@ax/core is a kernel: bootstrap, hook bus, ~50‑line chat loop, identity, IPC primitives. ~92% smaller trusted surface. Every other concern is a plugin that registers against the hook bus and gets tested on its own."
+    - generic [ref=e61]:
+      - generic [ref=e62]:
+        - generic [ref=e63]:
+          - text: § 02
+          - generic [ref=e64]: the shape
+        - generic [ref=e65]:
+          - heading "Channels call in. Plugins answer. The kernel never leaves the middle." [level=2] [ref=e66]:
+            - text: Channels call in.
+            - emphasis [ref=e67]: Plugins
+            - text: answer. The kernel never leaves the middle.
+          - paragraph [ref=e68]:
+            - text: A request arrives at a channel (Slack, web UI, CLI). The channel maps it to a session and calls
+            - code [ref=e69]: chat:run
+            - text: — a service hook the kernel itself registers. From there the kernel orchestrates a small loop, firing hooks that plugins observe, transform, or veto.
+      - generic [ref=e70]:
+        - generic [ref=e71]: fig. 01 — layered view
+        - generic [ref=e72]: channels in · bus · kernel · bus · plugins
+        - generic [ref=e73]:
+          - generic [ref=e74]: ◇ [01] entry points
+          - generic [ref=e75]:
+            - generic [ref=e76]: Channels — they call us; we don't call them
+            - generic [ref=e77]:
+              - generic [ref=e78]: channel-web
+              - generic [ref=e79]: channel-slack
+              - generic [ref=e80]: cli
+              - generic [ref=e81]: http-server
+              - generic [ref=e82]: scheduler
+        - generic [ref=e84]: — hook bus · service + subscriber —
+        - generic [ref=e85]:
+          - generic [ref=e86]: ◆ [02] @ax/core ~1.6k LOC
+          - generic [ref=e87]:
+            - generic [ref=e88]: Kernel — five things every plugin assumes exists
+            - generic [ref=e89]:
+              - generic [ref=e90]: bootstrap
+              - generic [ref=e91]: hook bus
+              - generic [ref=e92]: chat loop
+              - generic [ref=e93]: identity / ctx
+              - generic [ref=e94]: ipc primitives
+        - generic [ref=e96]: — hook bus · service + subscriber —
+        - generic [ref=e97]:
+          - generic [ref=e98]: ○ [03a] sandbox / runner
+          - generic [ref=e100]:
+            - generic [ref=e101]: sandbox-subprocess
+            - generic [ref=e102]: sandbox-k8s
+            - generic [ref=e103]: agent-claude-sdk-runner
+            - generic [ref=e104]: agent-native-runner
+            - generic [ref=e105]: tool-bash
+            - generic [ref=e106]: tool-file-io
+            - generic [ref=e107]: tool-dispatcher
+        - generic [ref=e108]:
+          - generic [ref=e109]: ○ [03b] llm
+          - generic [ref=e111]:
+            - generic [ref=e112]: llm-anthropic
+            - generic [ref=e113]: llm-mock
+            - generic [ref=e114]: llm-proxy-anthropic-format
+            - generic [ref=e115]: mcp-client
+        - generic [ref=e116]:
+          - generic [ref=e117]: ○ [03c] storage / state
+          - generic [ref=e119]:
+            - generic [ref=e120]: storage-sqlite
+            - generic [ref=e121]: storage-postgres
+            - generic [ref=e122]: session-inmemory
+            - generic [ref=e123]: session-postgres
+            - generic [ref=e124]: database-postgres
+            - generic [ref=e125]: eventbus-inprocess
+            - generic [ref=e126]: eventbus-postgres
+            - generic [ref=e127]: credentials
+            - generic [ref=e128]: audit-log
+        - generic [ref=e129]:
+          - generic [ref=e130]: ○ [03d] workspace + ipc + auth
+          - generic [ref=e132]:
+            - generic [ref=e133]: workspace-git
+            - generic [ref=e134]: workspace-git-core
+            - generic [ref=e135]: workspace-git-http
+            - generic [ref=e136]: workspace-protocol
+            - generic [ref=e137]: ipc-core
+            - generic [ref=e138]: ipc-http
+            - generic [ref=e139]: ipc-protocol
+            - generic [ref=e140]: ipc-server
+            - generic [ref=e141]: auth-oidc
+            - generic [ref=e142]: teams
+            - generic [ref=e143]: agents
+    - generic [ref=e144]:
+      - generic [ref=e145]:
+        - generic [ref=e146]:
+          - text: § 03
+          - generic [ref=e147]: five invariants
+        - generic [ref=e148]:
+          - heading "The five rules every PR is checked against." [level=2] [ref=e149]:
+            - text: The five rules
+            - emphasis [ref=e150]: every PR
+            - text: is checked against.
+          - paragraph [ref=e151]: These aren't style preferences. They're the load‑bearing assumptions that let plugins stay independently testable. Break one and we lose the property the rewrite was supposed to give us.
+      - generic [ref=e152]:
+        - generic [ref=e153]:
+          - generic [ref=e154]: I1
+          - generic [ref=e155]:
+            - text: Hooks are
+            - emphasis [ref=e156]: transport
+            - text: ‑ and
+            - emphasis [ref=e157]: storage
+            - text: ‑agnostic.
+          - generic [ref=e158]:
+            - paragraph [ref=e159]:
+              - text: "No"
+              - code [ref=e160]: git
+              - text: ","
+              - code [ref=e161]: sqlite
+              - text: ", or"
+              - code [ref=e162]: k8s
+              - text: vocabulary in hook payloads. If a field name only makes sense for one backend, it leaks.
+              - code [ref=e163]: WorkspaceVersion
+              - text: "is an opaque token: the git impl makes it a SHA, the GCS impl makes it a manifest object name — subscribers never parse it."
+            - paragraph [ref=e164]:
+              - text: The day someone PRs a
+              - code [ref=e165]: commit_sha
+              - text: field is the day we stop being a kernel and start being a backend.
+        - generic [ref=e166]:
+          - generic [ref=e167]: I2
+          - generic [ref=e168]:
+            - text: "No"
+            - emphasis [ref=e169]: cross‑plugin
+            - text: imports. Ever.
+          - generic [ref=e170]:
+            - paragraph [ref=e171]:
+              - text: Plugins talk only through the hook bus.
+              - code [ref=e172]: storage-postgres
+              - text: doesn't import from
+              - code [ref=e173]: audit-log
+              - text: ; it calls
+              - code [ref=e174]: audit:write
+              - text: . Enforced by lint (
+              - code [ref=e175]: no-restricted-imports
+              - text: in eslint config) once scaffolded.
+            - paragraph [ref=e176]: The bus IS the inter‑plugin API. There is no second one.
+        - generic [ref=e177]:
+          - generic [ref=e178]: I3
+          - generic [ref=e179]:
+            - text: "No"
+            - emphasis [ref=e180]: half‑wired
+            - text: plugins.
+          - paragraph [ref=e182]: "A plugin is either fully registered, tested, and reachable from the canary acceptance test — or it doesn't merge. No \"wire this up later\" PRs. Half‑wired infrastructure becomes a trap: it confuses readers, drifts from the rest of the system, and represents work that looks done."
+        - generic [ref=e183]:
+          - generic [ref=e184]: I4
+          - generic [ref=e185]:
+            - text: One
+            - emphasis [ref=e186]: source of truth
+            - text: per concept.
+          - generic [ref=e187]:
+            - paragraph [ref=e188]: If two plugins both store state about the same thing — skills, tools, sessions — one of them is wrong. Coordinate through service hooks, not shared rows. Per‑plugin migrations means stores don't share tables, which forbids foreign keys across plugin boundaries.
+            - paragraph [ref=e189]: That's a feature. Each schema evolves independently.
+        - generic [ref=e190]:
+          - generic [ref=e191]: I5
+          - generic [ref=e192]:
+            - emphasis [ref=e193]: Capabilities
+            - text: are explicit and minimised.
+          - generic [ref=e194]:
+            - paragraph [ref=e195]: "Every plugin, tool, IPC handler, and sandbox boundary grants the smallest set of capabilities it needs — no more. The list to think about: filesystem paths, network reach, process spawn, env access, untrusted‑input handling."
+            - paragraph [ref=e196]: Untrusted content (model output, tool output, third‑party plugin code) is treated as untrusted at every hop. The whole point of v2 is that we're the secure one.
+    - generic [ref=e197]:
+      - generic [ref=e198]:
+        - generic [ref=e199]:
+          - text: § 04
+          - generic [ref=e200]: hook flavors
+        - generic [ref=e201]:
+          - heading "Two flavors of hook. Confuse them at your peril." [level=2] [ref=e202]:
+            - text: Two flavors of hook.
+            - emphasis [ref=e203]: Confuse them
+            - text: at your peril.
+          - paragraph [ref=e204]: The bus has two registration primitives because the natural shape genuinely differs. Service hooks are dependency‑injection. Subscriber hooks are middleware. Trying to unify them produces awkward APIs — e.g., having to pick one subscriber's return value as canonical.
+      - generic [ref=e205]:
+        - generic [ref=e206]:
+          - generic [ref=e207]: "[ 04 / a ]"
+          - generic [ref=e208]:
+            - emphasis [ref=e209]: service
+            - text: hook
+          - generic [ref=e210]: // exactly one producer · like DI
+          - paragraph [ref=e211]: Core picks the registered plugin (config‑driven) and calls it. Two plugins registering for the same service is a boot‑time error. Returns a value.
+          - generic [ref=e212]:
+            - generic [ref=e213]:
+              - code [ref=e214]: llm:call
+              - text: →response
+            - generic [ref=e215]:
+              - code [ref=e216]: sandbox:spawn
+              - text: →SandboxHandle
+            - generic [ref=e217]:
+              - code [ref=e218]: storage:get
+              - text: →value
+            - generic [ref=e219]:
+              - code [ref=e220]: workspace:apply
+              - text: "→{ version, delta }"
+          - img [ref=e222]:
+            - generic [ref=e223]: caller
+            - generic [ref=e224]: provider
+            - generic [ref=e225]: call
+            - generic [ref=e226]: return value
+        - generic [ref=e227]:
+          - generic [ref=e228]: "[ 04 / b ]"
+          - generic [ref=e229]:
+            - emphasis [ref=e230]: subscriber
+            - text: hook
+          - generic [ref=e231]: // many observers · like middleware
+          - paragraph [ref=e232]: Called in order. Each subscriber sees the payload and can pass through, transform, or reject. Rejection short‑circuits with a structured failure. Observers that throw are caught — never take down the chat.
+          - generic [ref=e233]:
+            - generic [ref=e234]:
+              - code [ref=e235]: tool:pre-call
+              - text: →scanner can veto bash
+            - generic [ref=e236]:
+              - code [ref=e237]: llm:pre-call
+              - text: →memory injects context
+            - generic [ref=e238]:
+              - code [ref=e239]: workspace:pre-apply
+              - text: →secret scanner vetoes
+            - generic [ref=e240]:
+              - code [ref=e241]: chat:end
+              - text: →cost meter, audit log
+          - img [ref=e243]:
+            - generic [ref=e244]: payload
+            - generic [ref=e245]: out
+            - generic [ref=e247]: s1
+            - generic [ref=e249]: s2
+            - generic [ref=e251]: s3
+            - generic [ref=e252]: reject
+    - generic [ref=e253]:
+      - generic [ref=e254]:
+        - generic [ref=e255]:
+          - text: § 05
+          - generic [ref=e256]: the chat loop
+        - generic [ref=e257]:
+          - heading "~50 lines that you can read end to end." [level=2] [ref=e258]:
+            - text: ~50 lines that you can
+            - emphasis [ref=e259]: read end to end
+            - text: .
+          - paragraph [ref=e260]: This is the entire orchestration skeleton in core. Plugins do everything interesting via hook fires — memory recall, history compaction, scanner injection, sandbox spawn, audit, diagnostic collection — all of them subscribers we don't see here.
+      - generic [ref=e261]:
+        - generic [ref=e262]:
+          - generic [ref=e263]: "@ax/core / chat-loop.ts"
+          - generic [ref=e264]: "async function runChat(ctx: ChatContext, message: Message) { await hooks.fire('chat:start', ctx, message); try { let messages = [message]; while (true) { // llm round‑trip const req = await hooks.fire('llm:pre-call', ctx, { messages, tools: ctx.tools }); let res = await hooks.call('llm:call', ctx, req); res = await hooks.fire('llm:post-call', ctx, req, res); messages.push(res.assistantMessage); if (res.toolCalls.length === 0) break; // tool round‑trip(s) for (const call of res.toolCalls) { const input = await hooks.fire('tool:pre-call', ctx, call); if (input.rejected) { messages.push(rejectionMessage(input)); continue; } let out = await hooks.call('tool:execute', ctx, input); out = await hooks.fire('tool:post-call', ctx, input, out); messages.push(toolResult(call, out)); } } const outcome = { kind: 'complete', messages }; await hooks.fire('chat:end', ctx, outcome); return outcome; } catch (err) { const outcome = { kind: 'terminated', reason: classify(err), error: err }; await hooks.fire('chat:end', ctx, outcome); return outcome; } }"
+        - generic [ref=e265]:
+          - 'heading "The whole point: skeleton in core, organs in plugins." [level=3] [ref=e266]':
+            - text: "The whole point:"
+            - emphasis [ref=e267]: skeleton in core
+            - text: ", organs in plugins."
+          - paragraph [ref=e268]: Compare the orchestration line counts. Same product. Same chat. Same retries, observability, and security guarantees — just relocated to plugins where they can be tested in isolation.
+          - generic [ref=e269]:
+            - generic [ref=e270]:
+              - generic [ref=e271]: // legacy
+              - generic [ref=e272]: server-completions.ts (the monolith)
+              - generic [ref=e273]: 2,400
+            - generic [ref=e274]:
+              - generic [ref=e275]: // v2
+              - generic [ref=e276]: core / chat-loop.ts (the skeleton)
+              - generic [ref=e277]: ~50
+          - paragraph [ref=e278]:
+            - text: "what moved out:"
+            - text: — skill validation → workspace:applied subscriber
+            - text: — memory recall → llm:pre-call subscriber
+            - text: — canary scanner → tool:pre/post-call subscribers
+            - text: — chat events → chat:end subscriber
+            - text: — sandbox spawn → tool:execute / chat:start subscriber
+    - generic [ref=e279]:
+      - generic [ref=e280]:
+        - generic [ref=e281]:
+          - text: § 06
+          - generic [ref=e282]: the turn
+        - generic [ref=e283]:
+          - heading "One session. Two turns. Two modes." [level=2] [ref=e284]:
+            - text: One
+            - emphasis [ref=e285]: session
+            - text: . Two turns. Two modes.
+          - paragraph [ref=e286]:
+            - text: Walk a single chat session from "deploy the staging api" to the final answer. Toggle the mode and watch the flow stay
+            - emphasis [ref=e287]: identical
+            - text: — the only thing that changes is which plugin sits at the far end of the sandbox lifeline, and whether IPC crosses a process boundary.
+      - generic [ref=e288]:
+        - generic [ref=e289]:
+          - tablist "deployment mode" [ref=e290]:
+            - button "local mode subprocess · sqlite · unix socket" [pressed] [ref=e291] [cursor=pointer]:
+              - generic [ref=e292]: local mode
+              - generic [ref=e294]: subprocess · sqlite · unix socket
+            - button "k8s mode pod · postgres · http" [ref=e295] [cursor=pointer]:
+              - generic [ref=e296]: k8s mode
+              - generic [ref=e298]: pod · postgres · http
+          - generic [ref=e299]: fig. 02 · one user message · two LLM turns
+        - img "sequence diagram" [ref=e301]:
+          - generic [ref=e302]:
+            - generic [ref=e304]: "[ CALLER ]"
+            - generic [ref=e305]: User
+            - generic [ref=e307]: "[ ENTRY POINT ]"
+            - generic [ref=e308]: "@ax/channel-web"
+            - generic [ref=e310]: "[ KERNEL · CHAT LOOP ]"
+            - generic [ref=e311]: "@ax/core"
+            - generic [ref=e313]: "[ SERVICE · LLM ]"
+            - generic [ref=e314]: "@ax/llm-anthropic"
+            - generic [ref=e315]:
+              - generic [ref=e317]: "[ SERVICE · SANDBOX ]"
+              - generic [ref=e318]: "@ax/sandbox-subprocess"
+          - generic [ref=e321]: PHASE · ENTER
+          - generic [ref=e322]:
+            - generic [ref=e323]: "[01]"
+            - generic [ref=e324]: "\"deploy the staging api\""
+          - generic [ref=e325]:
+            - generic [ref=e326]: "[02]"
+            - generic [ref=e327]: "build ctx { reqId, sessionId, agentId }"
+            - generic [ref=e328]: chat:run(ctx, msg)
+          - generic [ref=e331]: PHASE · TURN 1 · MODEL CALLS A TOOL
+          - generic [ref=e332]:
+            - generic [ref=e333]: "[03]"
+            - generic [ref=e335]: fires
+            - generic [ref=e336]: chat:start(ctx)
+            - generic [ref=e339]: audit:write
+            - generic [ref=e342]: diag:open
+          - generic [ref=e343]:
+            - generic [ref=e344]: "[04]"
+            - generic [ref=e346]: fires
+            - generic [ref=e347]: llm:pre-call
+            - generic [ref=e350]: memory.inject
+            - generic [ref=e353]: compactor
+          - generic [ref=e354]:
+            - generic [ref=e355]: "[05]"
+            - generic [ref=e356]: llm:call(messages, tools)
+          - generic [ref=e358]: "response { tool_calls: [bash] }"
+          - generic [ref=e359]:
+            - generic [ref=e360]: "[06]"
+            - generic [ref=e362]: fires
+            - generic [ref=e363]: llm:post-call
+            - generic [ref=e366]: output-sanitizer
+          - generic [ref=e367]:
+            - generic [ref=e368]: "[07]"
+            - generic [ref=e370]: fires
+            - generic [ref=e371]: tool:pre-call
+            - generic [ref=e374]: canary-scanner
+            - generic [ref=e377]: veto?
+          - generic [ref=e378]:
+            - generic [ref=e379]: "[08]"
+            - generic [ref=e380]: tool:execute(bash, "kubectl apply ...")
+            - generic [ref=e381]: → via unix socket, in-process
+          - generic [ref=e383]: "stdout, exitCode: 0"
+          - generic [ref=e384]:
+            - generic [ref=e385]: "[09]"
+            - generic [ref=e387]: fires
+            - generic [ref=e388]: tool:post-call
+            - generic [ref=e391]: output-scanner
+            - generic [ref=e394]: taint-tag
+          - generic [ref=e395]:
+            - generic [ref=e397]: PHASE · TURN 2 · MODEL FINALIZES
+            - generic [ref=e399]: loop ↻
+          - generic [ref=e400]:
+            - generic [ref=e401]: "[10]"
+            - generic [ref=e403]: fires
+            - generic [ref=e404]: llm:pre-call
+            - generic [ref=e405]: (messages now include tool result)
+          - generic [ref=e406]:
+            - generic [ref=e407]: "[11]"
+            - generic [ref=e408]: llm:call(messages, tools)
+          - generic [ref=e410]: "response { tool_calls: [] } → break"
+          - generic [ref=e413]: PHASE · EXIT
+          - generic [ref=e414]:
+            - generic [ref=e415]: "[12]"
+            - generic [ref=e417]: fires
+            - generic [ref=e418]: chat:end(ctx, outcome)
+            - generic [ref=e421]: cost-meter
+            - generic [ref=e424]: audit:end
+            - generic [ref=e427]: diag:close
+          - generic [ref=e428]:
+            - generic [ref=e429]: "[13]"
+            - generic [ref=e430]: "outcome { kind: 'complete', messages }"
+          - generic [ref=e431]:
+            - generic [ref=e432]: "[14]"
+            - generic [ref=e433]: "\"deployment complete ✓\""
+          - generic [ref=e434]:
+            - generic [ref=e435]: single host
+            - generic [ref=e436]: in-process function calls
+            - generic [ref=e437]: child process · unix socket
+            - generic [ref=e438]: core sees neither socket nor URL — that's the whole game.
+        - generic [ref=e439]:
+          - generic [ref=e442]: service hook · call
+          - generic [ref=e445]: return value
+          - generic [ref=e448]: user/channel msg
+          - generic [ref=e451]: kernel fires (broadcast)
+          - generic [ref=e454]: subscriber plugin
+          - generic [ref=e457]: process boundary (k8s only)
+        - generic [ref=e458]:
+          - generic [ref=e459]:
+            - heading "◆local mode · what's behind each lifeline" [level=4] [ref=e460]
+            - generic [ref=e461]:
+              - generic [ref=e462]: channel-web
+              - generic [ref=e463]: "@ax/channel-web (in-process)"
+            - generic [ref=e464]:
+              - generic [ref=e465]: "@ax/core"
+              - generic [ref=e466]: runs on the host process
+            - generic [ref=e467]:
+              - generic [ref=e468]: llm:call
+              - generic [ref=e469]: "@ax/llm-anthropic (HTTPS to api.anthropic.com)"
+            - generic [ref=e470]:
+              - generic [ref=e471]: tool:execute
+              - generic [ref=e472]: "@ax/sandbox-subprocess (unix socket)"
+            - generic [ref=e473]:
+              - generic [ref=e474]: storage:set
+              - generic [ref=e475]: "@ax/storage-sqlite (single file)"
+            - generic [ref=e476]:
+              - generic [ref=e477]: audit:write
+              - generic [ref=e478]: "@ax/audit-log → sqlite"
+            - generic [ref=e479]:
+              - generic [ref=e480]: session:lookup
+              - generic [ref=e481]: "@ax/session-inmemory"
+          - generic [ref=e482]:
+            - heading "◇k8s mode (for reference)" [level=4] [ref=e483]
+            - generic [ref=e484]:
+              - generic [ref=e485]: tool:execute
+              - generic [ref=e486]: "@ax/sandbox-k8s (HTTP to pod)"
+            - generic [ref=e487]:
+              - generic [ref=e488]: storage:set
+              - generic [ref=e489]: "@ax/storage-postgres"
+            - generic [ref=e490]:
+              - generic [ref=e491]: session:lookup
+              - generic [ref=e492]: "@ax/session-postgres"
+    - generic [ref=e493]:
+      - generic [ref=e494]:
+        - generic [ref=e495]:
+          - text: § 07
+          - generic [ref=e496]: deployment
+        - generic [ref=e497]:
+          - heading "Docker mode and k8s mode differ only in which plugins are loaded." [level=2] [ref=e498]:
+            - text: Docker mode and k8s mode
+            - emphasis [ref=e499]: differ only
+            - text: in which plugins are loaded.
+          - paragraph [ref=e500]:
+            - text: Same kernel binary. Same chat loop. Different rows in the table below. A "profile" is just a set of plugins;
+            - code [ref=e501]: ax.config.ts
+            - text: names them. No code change to switch deployment shapes.
+      - table [ref=e503]:
+        - rowgroup [ref=e504]:
+          - row "// hook docker mode · single host k8s mode · multi‑replica" [ref=e505]:
+            - columnheader "// hook" [ref=e506]
+            - columnheader "docker mode · single host" [ref=e507]
+            - columnheader "k8s mode · multi‑replica" [ref=e508]
+        - rowgroup [ref=e509]:
+          - row "sandbox:spawn @ax/sandbox-subprocess spawn node + IPC over unix socket @ax/sandbox-k8s create pod + IPC over HTTP" [ref=e510]:
+            - cell "sandbox:spawn" [ref=e511]
+            - cell "@ax/sandbox-subprocess spawn node + IPC over unix socket" [ref=e512]:
+              - text: "@ax/sandbox-subprocess"
+              - generic [ref=e513]: spawn node + IPC over unix socket
+            - cell "@ax/sandbox-k8s create pod + IPC over HTTP" [ref=e514]:
+              - text: "@ax/sandbox-k8s"
+              - generic [ref=e515]: create pod + IPC over HTTP
+          - row "ipc:transport @ax/ipc-core unix socket framing @ax/ipc-http http long‑poll framing" [ref=e516]:
+            - cell "ipc:transport" [ref=e517]
+            - cell "@ax/ipc-core unix socket framing" [ref=e518]:
+              - text: "@ax/ipc-core"
+              - generic [ref=e519]: unix socket framing
+            - cell "@ax/ipc-http http long‑poll framing" [ref=e520]:
+              - text: "@ax/ipc-http"
+              - generic [ref=e521]: http long‑poll framing
+          - row "workspace:apply @ax/workspace-git local git, atomic ref update @ax/workspace-git-http talks to ax‑git server pod" [ref=e522]:
+            - cell "workspace:apply" [ref=e523]
+            - cell "@ax/workspace-git local git, atomic ref update" [ref=e524]:
+              - text: "@ax/workspace-git"
+              - generic [ref=e525]: local git, atomic ref update
+            - cell "@ax/workspace-git-http talks to ax‑git server pod" [ref=e526]:
+              - text: "@ax/workspace-git-http"
+              - generic [ref=e527]: talks to ax‑git server pod
+          - row "storage:get / set @ax/storage-sqlite single‑file db @ax/storage-postgres shared, multi‑replica safe" [ref=e528]:
+            - cell "storage:get / set" [ref=e529]
+            - cell "@ax/storage-sqlite single‑file db" [ref=e530]:
+              - text: "@ax/storage-sqlite"
+              - generic [ref=e531]: single‑file db
+            - cell "@ax/storage-postgres shared, multi‑replica safe" [ref=e532]:
+              - text: "@ax/storage-postgres"
+              - generic [ref=e533]: shared, multi‑replica safe
+          - row "eventbus:emit @ax/eventbus-inprocess in‑memory emitter @ax/eventbus-postgres listen / notify across replicas" [ref=e534]:
+            - cell "eventbus:emit" [ref=e535]
+            - cell "@ax/eventbus-inprocess in‑memory emitter" [ref=e536]:
+              - text: "@ax/eventbus-inprocess"
+              - generic [ref=e537]: in‑memory emitter
+            - cell "@ax/eventbus-postgres listen / notify across replicas" [ref=e538]:
+              - text: "@ax/eventbus-postgres"
+              - generic [ref=e539]: listen / notify across replicas
+          - row "session:lookup @ax/session-inmemory map in process memory @ax/session-postgres durable sessions, replica affinity" [ref=e540]:
+            - cell "session:lookup" [ref=e541]
+            - cell "@ax/session-inmemory map in process memory" [ref=e542]:
+              - text: "@ax/session-inmemory"
+              - generic [ref=e543]: map in process memory
+            - cell "@ax/session-postgres durable sessions, replica affinity" [ref=e544]:
+              - text: "@ax/session-postgres"
+              - generic [ref=e545]: durable sessions, replica affinity
+          - row "audit:write @ax/audit-log sqlite‑backed @ax/audit-log postgres‑backed (same plugin, different db)" [ref=e546]:
+            - cell "audit:write" [ref=e547]
+            - cell "@ax/audit-log sqlite‑backed" [ref=e548]:
+              - text: "@ax/audit-log"
+              - generic [ref=e549]: sqlite‑backed
+            - cell "@ax/audit-log postgres‑backed (same plugin, different db)" [ref=e550]:
+              - text: "@ax/audit-log"
+              - generic [ref=e551]: postgres‑backed (same plugin, different db)
+      - paragraph [ref=e552]:
+        - text: // THE CRITICAL CONSTRAINT
+        - text: The hook surface MUST be transport‑agnostic. The moment a payload includes a Unix socket path or HTTP URL, the abstraction has leaked.
+        - code [ref=e553]: SandboxHandle
+        - text: exposes
+        - code [ref=e554]: send / recv / kill
+        - text: . Core sees neither socket nor URL.
+    - generic [ref=e555]:
+      - generic [ref=e556]:
+        - generic [ref=e557]:
+          - text: § 08
+          - generic [ref=e558]: build order
+        - generic [ref=e559]:
+          - heading "Greenfield. Legacy is read‑only." [level=2] [ref=e560]:
+            - text: Greenfield. Legacy is
+            - emphasis [ref=e561]: read‑only
+            - text: .
+          - paragraph [ref=e562]: ~3 months of focused part‑time work. Early weeks are net‑new code (kernel, harness, smallest end‑to‑end). Later weeks are heavy on porting from legacy — but porting into clean plugin shape, not into refactor. Today is 2026‑04‑26.
+      - generic [ref=e563]:
+        - generic [ref=e564]:
+          - generic [ref=e565]:
+            - generic [ref=e566]: week 1‑2
+            - generic [ref=e567]:
+              - text: The
+              - emphasis [ref=e568]: kernel
+              - text: .
+            - generic [ref=e569]: Done
+          - generic [ref=e570]:
+            - paragraph [ref=e571]:
+              - text: "New monorepo: pnpm + changesets + tsconfig refs."
+              - code [ref=e572]: "@ax/core"
+              - text: ships hook bus,
+              - code [ref=e573]: ChatContext
+              - text: ", IPC primitives, logger, error types. Test harness with"
+              - code [ref=e574]: MockServices
+              - text: .
+            - generic [ref=e575]:
+              - generic [ref=e576]: "@ax/core"
+              - generic [ref=e577]: "@ax/test-harness"
+        - generic [ref=e578]:
+          - generic [ref=e579]:
+            - generic [ref=e580]: week 3
+            - generic [ref=e581]:
+              - text: Smallest viable
+              - emphasis [ref=e582]: end‑to‑end
+              - text: .
+            - generic [ref=e583]: "Done · PR #2"
+          - generic [ref=e584]:
+            - paragraph [ref=e585]: Mock LLM, subprocess sandbox, sqlite storage, CLI. Send a message, get "hello" back. Full loop runs through plugin boundaries.
+            - generic [ref=e586]:
+              - generic [ref=e587]: "@ax/llm-mock"
+              - generic [ref=e588]: "@ax/sandbox-subprocess"
+              - generic [ref=e589]: "@ax/storage-sqlite"
+              - generic [ref=e590]: "@ax/cli"
+        - generic [ref=e591]:
+          - generic [ref=e592]:
+            - generic [ref=e593]: week 4‑6
+            - generic [ref=e594]:
+              - text: Real
+              - emphasis [ref=e595]: LLM
+              - text: + tools.
+            - generic [ref=e596]: "Done · PR #5"
+          - generic [ref=e597]:
+            - paragraph [ref=e598]: Anthropic provider, bash tool, file I/O tool. 154 tests across 11 packages. I1‑I12 invariants audit trail. Smoke test passes against real Anthropic API.
+            - generic [ref=e599]:
+              - generic [ref=e600]: "@ax/llm-anthropic"
+              - generic [ref=e601]: "@ax/tool-bash"
+              - generic [ref=e602]: "@ax/tool-file-io"
+              - generic [ref=e603]: "@ax/tool-dispatcher"
+              - generic [ref=e604]: "@ax/agent-runner-core"
+        - generic [ref=e605]:
+          - generic [ref=e606]:
+            - generic [ref=e607]: week 6.5 · topology shift
+            - generic [ref=e608]:
+              - text: Claude SDK runner +
+              - emphasis [ref=e609]: host‑side MCP
+              - text: .
+            - generic [ref=e610]: Done
+          - generic [ref=e611]:
+            - paragraph [ref=e612]: "MVP direction: claude-sdk-runner replaces from‑scratch agent, host owns MCP client. Skipped openrouter / pi-session for MVP — ships when there's a second LLM."
+            - generic [ref=e613]:
+              - generic [ref=e614]: "@ax/agent-claude-sdk-runner"
+              - generic [ref=e615]: "@ax/mcp-client"
+        - generic [ref=e616]:
+          - generic [ref=e617]:
+            - generic [ref=e618]: week 7‑9
+            - generic [ref=e619]:
+              - text: Production
+              - emphasis [ref=e620]: deployment
+              - text: shapes.
+            - generic [ref=e621]: Done
+          - generic [ref=e622]:
+            - paragraph [ref=e623]: "k8s sandbox, postgres storage / session / eventbus, workspace‑git over HTTP. Deploy target: real k8s cluster."
+            - generic [ref=e624]:
+              - generic [ref=e625]: "@ax/sandbox-k8s"
+              - generic [ref=e626]: "@ax/storage-postgres"
+              - generic [ref=e627]: "@ax/eventbus-postgres"
+              - generic [ref=e628]: "@ax/session-postgres"
+              - generic [ref=e629]: "@ax/workspace-git"
+        - generic [ref=e630]:
+          - generic [ref=e631]:
+            - generic [ref=e632]: week 9.5 · just landed
+            - generic [ref=e633]:
+              - text: Multi‑tenant +
+              - emphasis [ref=e634]: workspace HTTP
+              - text: .
+            - generic [ref=e635]: "Active · PR #11, #17"
+          - generic [ref=e636]:
+            - paragraph [ref=e637]: "Multi‑tenant slice: teams, agents, auth-OIDC wired to channel-web LoginPage. Workspace‑git‑http merged at PR #11 (24 commits, 840+ tests, multi-replica safe). Channel-web LoginPage now uses real OIDC. Static-files plugin + http-server splat routes."
+            - generic [ref=e638]:
+              - generic [ref=e639]: "@ax/teams"
+              - generic [ref=e640]: "@ax/agents"
+              - generic [ref=e641]: "@ax/auth-oidc"
+              - generic [ref=e642]: "@ax/workspace-git-http"
+              - generic [ref=e643]: "@ax/static-files"
+              - generic [ref=e644]: "@ax/channel-web"
+        - generic [ref=e645]:
+          - generic [ref=e646]:
+            - generic [ref=e647]: week 10‑12
+            - generic [ref=e648]:
+              - text: Channels +
+              - emphasis [ref=e649]: observability
+              - text: .
+            - generic [ref=e650]: Next
+          - generic [ref=e651]:
+            - paragraph [ref=e652]: "Slack channel, audit + canary scanner, memory plugin (port + simplify). Goal: feature parity with legacy AX."
+            - generic [ref=e653]:
+              - generic [ref=e654]: channel-slack
+              - generic [ref=e655]: scanner-canary
+              - generic [ref=e656]: memory-cortex
+        - generic [ref=e657]:
+          - generic [ref=e658]:
+            - generic [ref=e659]: week 13+
+            - generic [ref=e660]:
+              - text: Cleanups &
+              - emphasis [ref=e661]: additive
+              - text: plugins.
+            - generic [ref=e662]: Future
+          - generic [ref=e663]:
+            - paragraph [ref=e664]:
+              - text: Now things are pluggable, cleanups are bounded.
+              - code [ref=e665]: "@ax/workspace-gcs"
+              - text: lands additively against the §4.5 contract — no subscriber changes. That's the test of whether the abstraction actually held.
+            - generic [ref=e666]:
+              - generic [ref=e667]: workspace-gcs
+              - generic [ref=e668]: llm-router
+              - generic [ref=e669]: memory-pgvector
+    - generic [ref=e670]:
+      - generic [ref=e671]: ◇
+      - blockquote [ref=e672]:
+        - text: We're a
+        - emphasis [ref=e673]: nervous crab
+        - text: peeking through its claws.
+        - text: But behind those claws, we know exactly what we're doing.
+      - generic [ref=e674]: voice · tone · mascot
+    - generic [ref=e675]:
+      - generic [ref=e676]: docs / plans / 2026‑04‑22 plugin architecture · revised 2026‑04‑26
+      - generic [ref=e677]:
+        - generic [ref=e678]: kernel ~1.6k
+        - generic [ref=e679]: plugins 25+
+        - generic [ref=e680]: tests 1000+
+        - generic [ref=e681]: ∎ active

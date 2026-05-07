@@ -1,0 +1,2734 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Tide — Minimal</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500&family=Inter:wght@400;500&family=IBM+Plex+Serif:wght@400;500&family=EB+Garamond:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  /* =========================================================
+     TIDE MINIMAL
+     One column. One chat. Reply in thread.
+
+     No rail, no meta, no ruler, no breaks. The chat IS the UI.
+     ========================================================= */
+
+  :root {
+    --bg:         #fafaf7;
+    --ink:        #18181a;
+    --ink-soft:   #4a4a4e;
+    --ink-mute:   #8a8a8e;
+    --ink-ghost:  #c7c6bf;
+    --rule:       #e8e6de;
+    --bg-deep:    #f1efe8;
+    --accent:     #2a5a5a;
+    --you-wash:   #ecede6;
+    --sans: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    --serif: 'Fraunces', Georgia, serif;
+    --user-font: var(--sans);
+    --agent-font: var(--serif);
+    --user-size: 15px;
+    --agent-size: 16.5px;
+    --agent-style: normal;
+  }
+  /* ===== Font themes ===== */
+  [data-font="editorial"] {
+    --user-font: 'Inter', system-ui, sans-serif;
+    --agent-font: 'Fraunces', Georgia, serif;
+    --user-size: 15px; --agent-size: 16.5px; --agent-style: normal;
+  }
+  [data-font="clean"] {
+    --user-font: 'Inter', system-ui, sans-serif;
+    --agent-font: 'Inter', system-ui, sans-serif;
+    --user-size: 15px; --agent-size: 15px; --agent-style: normal;
+  }
+  [data-font="literary"] {
+    --user-font: 'JetBrains Mono', ui-monospace, monospace;
+    --agent-font: 'EB Garamond', Georgia, serif;
+    --user-size: 14px; --agent-size: 18px; --agent-style: normal;
+    color-scheme: light;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg:        #16171a;
+      --ink:       #ece9e1;
+      --ink-soft:  #b6b2a7;
+      --ink-mute:  #76736a;
+      --ink-ghost: #3e3c37;
+      --rule:      #26272b;
+      --bg-deep:   #1c1d21;
+      --accent:    #6fb3a9;
+      --you-wash:  #1f2024;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg:        #16171a;
+    --ink:       #ece9e1;
+    --ink-soft:  #b6b2a7;
+    --ink-mute:  #76736a;
+    --ink-ghost: #3e3c37;
+    --rule:      #26272b;
+    --bg-deep:   #1c1d21;
+    --accent:    #6fb3a9;
+    --you-wash:  #1f2024;
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.58;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    letter-spacing: -0.005em;
+  }
+  body {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+  ::selection { background: var(--ink); color: var(--bg); }
+
+  /* ---- Header: just a wordmark. No counts, no status. ---- */
+  .header {
+    position: sticky;
+    top: 0;
+    background: var(--bg);
+    padding: 22px 24px 18px;
+    display: flex;
+    justify-content: center;
+    z-index: 10;
+  }
+  .header-inner {
+    width: 100%;
+    max-width: 640px;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+  }
+  .wordmark {
+    font-family: var(--serif);
+    font-size: 19px;
+    font-weight: 500;
+    letter-spacing: -0.015em;
+    color: var(--ink);
+  }
+  .wordmark-dot {
+    display: inline-block;
+    width: 5px; height: 5px;
+    border-radius: 50%;
+    background: var(--accent);
+    margin-right: 8px;
+    transform: translateY(-3px);
+  }
+  .theme-btn {
+    all: unset;
+    cursor: pointer;
+    font-size: 11px;
+    color: var(--ink-mute);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    transition: color 140ms ease;
+  }
+  .theme-btn:hover { color: var(--ink); }
+  .header-actions {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+  .font-btn {
+    all: unset;
+    cursor: pointer;
+    color: var(--ink-mute);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    transition: color 140ms ease;
+  }
+  .font-btn-wrap { position: relative; }
+  .font-btn:hover { color: var(--ink); }
+  .font-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    background: var(--bg);
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.08);
+    padding: 4px;
+    display: none;
+    flex-direction: column;
+    min-width: 180px;
+    z-index: 50;
+  }
+  .font-menu.open { display: flex; }
+  .font-opt {
+    all: unset;
+    cursor: pointer;
+    padding: 8px 12px;
+    border-radius: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .font-opt:hover { background: var(--you-wash); }
+  .font-opt-name {
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink);
+  }
+  .font-opt-name.active::after { content: ' ·'; color: var(--accent); }
+  .font-opt-sample {
+    font-size: 13px;
+    color: var(--ink-soft);
+    letter-spacing: 0;
+    text-transform: none;
+  }
+  .font-opt.editorial .font-opt-sample { font-family: 'Fraunces', serif; }
+  .font-opt.clean .font-opt-sample { font-family: 'Inter', sans-serif; }
+  .font-opt.literary .font-opt-sample { font-family: 'EB Garamond', serif; font-size: 15px; }
+
+  /* ---- Timeline ---- */
+  .timeline {
+    flex: 1;
+    width: 100%;
+    max-width: 640px;
+    margin: 0 auto;
+    padding: 24px 24px 220px;
+  }
+
+  /* ---- Day marker: just a small centered date. Rarely seen. ---- */
+  .day {
+    text-align: center;
+    margin: 28px 0 20px;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    color: var(--ink-mute);
+    text-transform: uppercase;
+  }
+
+  /* ---- Message: no avatar, no meta column. Just text. ---- */
+  .msg {
+    margin-bottom: 22px;
+    position: relative;
+    max-width: 100%;
+  }
+
+  .msg-body {
+    font-family: var(--user-font);
+    font-size: var(--user-size);
+    line-height: 1.6;
+    color: var(--ink);
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+  }
+  .msg-body p { margin-bottom: 0.6em; }
+  .msg-body p:last-child { margin-bottom: 0; }
+
+  /* Subtle role differentiation: user is right-aligned with a
+     warm wash; agent is left-aligned plain prose. No bubbles;
+     the wash is barely visible. Serif for the agent. */
+  .msg.you {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+  }
+  .msg.you .msg-body {
+    background: var(--you-wash);
+    padding: 8px 14px;
+    border-radius: 14px;
+    max-width: 78%;
+  }
+  .msg.you .msg-footer {
+    justify-content: flex-end;
+  }
+  .msg.agent .msg-body {
+    font-family: var(--agent-font);
+    font-size: var(--agent-size);
+    font-style: var(--agent-style);
+    line-height: 1.55;
+    letter-spacing: -0.008em;
+    max-width: 56ch;
+  }
+
+  /* =========================================================
+     CHART EMBED — an iframe-based chart rendered inline in an
+     agent response. The iframe is sandboxed (no scripts, no
+     same-origin) so it can render arbitrary HTML the model
+     emits without risk. The HOST styles the frame; the CONTENT
+     styles itself to match Tide tokens (passed in via the doc).
+     ========================================================= */
+  .chart-embed {
+    margin: 12px 0 4px;
+    max-width: 56ch;
+    position: relative;
+  }
+  .chart-embed-frame {
+    width: 100%;
+    min-height: 160px;
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    background: var(--bg);
+    display: block;
+    transition: border-color 180ms ease;
+  }
+  .chart-embed:hover .chart-embed-frame {
+    border-color: var(--ink-ghost);
+  }
+  .chart-embed-caption {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--ink-mute);
+    letter-spacing: 0.04em;
+    font-family: var(--sans);
+  }
+  .chart-embed-caption .label {
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+  .chart-embed-caption .meta {
+    color: var(--ink-ghost);
+    font-style: italic;
+    font-family: var(--serif);
+    letter-spacing: 0.01em;
+    text-transform: none;
+  }
+  .chart-embed-actions {
+    display: inline-flex;
+    gap: 10px;
+    opacity: 0;
+    transition: opacity 160ms ease;
+  }
+  .chart-embed:hover .chart-embed-actions { opacity: 1; }
+  .chart-embed-action {
+    all: unset;
+    cursor: pointer;
+    color: var(--ink-mute);
+    font-size: 11px;
+    transition: color 120ms ease;
+  }
+  .chart-embed-action:hover { color: var(--ink); }
+
+  /* Loading skeleton */
+  .chart-embed.loading .chart-embed-frame {
+    border-style: dashed;
+    border-color: var(--ink-ghost);
+    background: repeating-linear-gradient(
+      45deg,
+      transparent 0 12px,
+      color-mix(in srgb, var(--ink-ghost) 8%, transparent) 12px 14px
+    );
+  }
+  .chart-embed.loading::before {
+    content: 'drawing…';
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    font-family: var(--serif);
+    font-style: italic;
+    font-size: 13px;
+    color: var(--ink-mute);
+    z-index: 1;
+  }
+
+  /* Hover: show a tiny timestamp + reply hint. That's the only
+     hover chrome. */
+  .msg-footer {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    margin-top: 4px;
+    font-size: 11px;
+    color: var(--ink-ghost);
+    opacity: 0;
+    transition: opacity 140ms ease;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+  }
+  .msg:hover .msg-footer { opacity: 1; }
+  .reply-btn {
+    all: unset;
+    cursor: pointer;
+    color: var(--ink-mute);
+    transition: color 120ms ease;
+  }
+  .reply-btn:hover { color: var(--ink); }
+  .break-btn {
+    all: unset;
+    cursor: pointer;
+    color: var(--ink-mute);
+    font-family: var(--serif);
+    font-style: italic;
+    white-space: nowrap;
+    transition: color 120ms ease;
+  }
+  .break-btn:hover { color: var(--accent); }
+
+  /* ---- Reply: indented, a thin rule on the left ---- */
+  .msg.reply {
+    margin-left: 24px;
+    padding-left: 16px;
+    border-left: 1px solid var(--rule);
+    margin-bottom: 14px;
+  }
+  .msg.reply.you { justify-content: flex-start; margin-left: 24px; }
+  .msg.reply.you .msg-body { background: transparent; padding: 0; }
+  .msg.reply .msg-body {
+    font-size: 14px;
+    line-height: 1.55;
+  }
+  .msg.reply.agent .msg-body { font-size: 15px; max-width: 52ch; }
+  .msg.reply .msg-footer { font-size: 10.5px; }
+
+  /* Entry animation */
+  @keyframes msg-in {
+    from { opacity: 0; transform: translateY(4px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  .msg.entering { animation: msg-in 280ms cubic-bezier(0.2,0.8,0.2,1) both; }
+
+  /* Thinking — one dot that breathes, nothing else */
+  .thinking {
+    margin-bottom: 22px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding-left: 2px;
+  }
+  .thinking::before {
+    content: '';
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    animation: breathe 1.6s ease-in-out infinite;
+  }
+  @keyframes breathe {
+    0%, 100% { opacity: 0.25; transform: scale(0.8); }
+    50%      { opacity: 1;    transform: scale(1.15); }
+  }
+  .thinking.reply { margin-left: 40px; }
+
+  /* ---- Composer: fixed to bottom, centered, soft ---- */
+  .composer {
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    padding: 40px 24px 22px;
+    background: linear-gradient(to top,
+      var(--bg) 60%,
+      color-mix(in srgb, var(--bg) 80%, transparent) 85%,
+      transparent 100%);
+    display: flex;
+    justify-content: center;
+    z-index: 20;
+  }
+  .composer-inner {
+    width: 100%;
+    max-width: 640px;
+  }
+  .composer-reply {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 14px;
+    margin-bottom: 8px;
+    background: var(--bg-deep);
+    border: 1px solid var(--rule);
+    border-left: 2px solid var(--accent);
+    border-radius: 8px 8px 0 0;
+    font-size: 12px;
+    color: var(--ink-soft);
+  }
+  .composer-reply[hidden] { display: none; }
+  .composer-reply-label {
+    color: var(--ink-mute);
+    white-space: nowrap;
+  }
+  .composer-reply-label strong {
+    color: var(--ink);
+    font-weight: 500;
+  }
+  .composer-reply-preview {
+    flex: 1;
+    color: var(--ink-mute);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-style: italic;
+  }
+  .composer-reply-cancel {
+    all: unset;
+    cursor: pointer;
+    color: var(--ink-mute);
+    font-size: 16px;
+    line-height: 1;
+    padding: 0 2px;
+    transition: color 120ms ease;
+  }
+  .composer-reply-cancel:hover { color: var(--ink); }
+
+  .composer-field {
+    display: flex;
+    align-items: flex-end;
+    gap: 10px;
+    background: var(--bg);
+    border: 1px solid var(--rule);
+    border-radius: 14px;
+    padding: 10px 12px 10px 16px;
+    transition: border-color 140ms ease, box-shadow 140ms ease;
+  }
+  .composer-field:focus-within {
+    border-color: var(--ink-ghost);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.04);
+  }
+  .composer-reply:not([hidden]) + .composer-field {
+    border-top-left-radius: 0;
+    border-top-right-radius: 0;
+  }
+  .composer textarea {
+    all: unset;
+    flex: 1 1 auto;
+    min-width: 0;
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.55;
+    color: var(--ink);
+    resize: none;
+    min-height: 22px;
+    max-height: 180px;
+    padding: 2px 0;
+  }
+  .composer textarea::placeholder { color: var(--ink-mute); }
+  .send-btn {
+    all: unset;
+    cursor: pointer;
+    width: 30px; height: 30px;
+    border-radius: 50%;
+    background: var(--ink-ghost);
+    color: var(--bg);
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+    transition: background 140ms ease, transform 140ms ease;
+  }
+  .send-btn.ready { background: var(--ink); }
+  .send-btn:hover.ready { transform: scale(1.05); }
+  .send-btn svg { width: 14px; height: 14px; }
+
+  /* "New topic" button inside composer field — mirrors send-btn
+     visually but in a quieter, outline style. Provides a touch-
+     friendly way to trigger the break shortcut. */
+  .topic-btn {
+    all: unset;
+    cursor: pointer;
+    width: 26px; height: 26px;
+    border-radius: 50%;
+    border: 1px solid var(--rule);
+    color: var(--ink-mute);
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+    transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
+    align-self: flex-end;
+    margin-bottom: 2px;
+  }
+  .topic-btn:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+  .topic-btn svg { width: 11px; height: 11px; }
+  /* Hide when the topic is already active (break is most recent) */
+  body.topic-active .topic-btn { display: none; }
+  body.searching .topic-btn { display: none; }
+
+  .composer-hint {
+    margin-top: 8px;
+    font-size: 10.5px;
+    color: var(--ink-ghost);
+    text-align: center;
+    letter-spacing: 0.04em;
+  }
+  .composer-hint kbd {
+    font-family: ui-monospace, 'SF Mono', monospace;
+    font-size: 10px;
+    color: var(--ink-mute);
+  }
+
+  /* ---- Search mode ---- */
+  /* When body.searching is set, the composer becomes a search field.
+     Visually: the field gets a subtle accent tint; the send icon
+     flips to a × (clear); the hint changes to search-specific. */
+  body.searching .composer-field {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+  }
+  body.searching .send-btn {
+    background: var(--ink-mute);
+  }
+  body.searching .send-btn.ready {
+    background: var(--ink);
+  }
+  .search-prefix {
+    display: none;
+    color: var(--ink-mute);
+    font-size: 13px;
+    margin-right: -2px;
+    letter-spacing: 0.04em;
+    user-select: none;
+  }
+  body.searching .search-prefix { display: inline-block; }
+
+  /* Highlight matches inside message bodies */
+  mark.hit {
+    background: color-mix(in srgb, var(--accent) 30%, transparent);
+    color: var(--ink);
+    padding: 0 2px;
+    border-radius: 2px;
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+  }
+  body:not(.searching) .msg.miss { display: none; } /* never actually used */
+  body.searching .msg.miss { display: none; }
+  body.searching .day { display: none; }
+  body.searching .msg.current-hit .msg-body {
+    outline: 2px solid var(--accent);
+    outline-offset: 6px;
+    border-radius: 4px;
+    transition: outline-color 160ms ease;
+  }
+
+  /* Search status bar — tiny, above the composer */
+  .search-status {
+    position: fixed;
+    left: 0; right: 0;
+    bottom: 96px;
+    display: none;
+    justify-content: center;
+    pointer-events: none;
+    z-index: 19;
+  }
+  body.searching .search-status { display: flex; }
+  .search-status-pill {
+    pointer-events: auto;
+    background: var(--bg);
+    border: 1px solid var(--rule);
+    border-radius: 99px;
+    padding: 5px 12px;
+    font-size: 11px;
+    color: var(--ink-mute);
+    box-shadow: 0 4px 14px rgba(0,0,0,0.06);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    letter-spacing: 0.02em;
+  }
+  .search-status-pill strong { color: var(--ink); font-weight: 500; }
+  .search-status-pill .dot {
+    width: 4px; height: 4px; border-radius: 50%;
+    background: var(--ink-ghost);
+  }
+  .search-status-pill button {
+    all: unset;
+    cursor: pointer;
+    color: var(--ink-mute);
+    transition: color 120ms ease;
+  }
+  .search-status-pill button:hover { color: var(--ink); }
+  .search-status-pill.semantic { border-color: var(--accent); color: var(--ink-soft); }
+  .search-status-pill.semantic strong { color: var(--accent); }
+
+  /* Empty-state inside timeline when no matches */
+  .search-empty {
+    text-align: center;
+    padding: 80px 0;
+    color: var(--ink-mute);
+    font-size: 13px;
+  }
+  .search-empty .big {
+    font-family: var(--serif);
+    font-size: 18px;
+    color: var(--ink-soft);
+    margin-bottom: 8px;
+    letter-spacing: -0.005em;
+  }
+  .search-empty button {
+    all: unset;
+    cursor: pointer;
+    color: var(--accent);
+    border-bottom: 1px dotted var(--accent);
+    margin-top: 10px;
+    display: inline-block;
+    font-size: 12.5px;
+  }
+  .search-empty button:hover { color: var(--ink); border-color: var(--ink); }
+  .search-thinking {
+    display: inline-block;
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    animation: breathe 1.6s ease-in-out infinite;
+    vertical-align: middle;
+    margin-right: 6px;
+  }
+
+  /* ---- Empty state intro ---- */
+  .intro {
+    text-align: center;
+    color: var(--ink-mute);
+    padding: 64px 0 40px;
+    font-size: 13.5px;
+  }
+  .intro .big {
+    font-family: var(--serif);
+    font-size: 22px;
+    color: var(--ink);
+    margin-bottom: 6px;
+    font-weight: 500;
+    letter-spacing: -0.01em;
+  }
+
+  /* ---- Tweaks panel ---- */
+  .tweaks {
+    position: fixed;
+    right: 16px;
+    top: 64px;
+    width: 220px;
+    background: var(--bg);
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    box-shadow: 0 8px 28px rgba(0,0,0,0.06);
+    padding: 14px;
+    font-size: 12px;
+    z-index: 30;
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(-4px);
+    transition: opacity 180ms ease, transform 180ms ease;
+  }
+  .tweaks.visible {
+    opacity: 1; pointer-events: auto; transform: translateY(0);
+  }
+  .tweaks-title {
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-mute);
+    margin-bottom: 10px;
+  }
+  .tweak-row { margin-bottom: 12px; }
+  .tweak-row:last-child { margin-bottom: 0; }
+  .tweak-label {
+    font-size: 10.5px;
+    color: var(--ink-mute);
+    margin-bottom: 6px;
+    letter-spacing: 0.02em;
+  }
+  .tweak-seg {
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: 1fr;
+    gap: 2px;
+    padding: 2px;
+    background: var(--bg-deep);
+    border-radius: 6px;
+  }
+  .tweak-seg button {
+    all: unset;
+    cursor: pointer;
+    text-align: center;
+    font-size: 11px;
+    padding: 5px 0;
+    border-radius: 4px;
+    color: var(--ink-mute);
+    transition: background 120ms ease, color 120ms ease;
+  }
+  .tweak-seg button:hover { color: var(--ink); }
+  .tweak-seg button.current {
+    background: var(--bg);
+    color: var(--ink);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+  }
+
+  /* --- Density --- */
+  [data-density="tight"] .msg { margin-bottom: 14px; }
+  [data-density="tight"] .msg.reply { margin-bottom: 8px; }
+  [data-density="loose"] .msg { margin-bottom: 32px; }
+  [data-density="loose"] .msg.reply { margin-bottom: 22px; }
+
+  /* --- Agent voice variant: sans instead of serif --- */
+  [data-voice="sans"] .msg.agent .msg-body {
+    font-family: var(--sans);
+    font-size: 15px;
+    letter-spacing: -0.005em;
+  }
+
+  @media (max-width: 640px) {
+    .tweaks { display: none; }
+    .msg.reply { margin-left: 14px; padding-left: 12px; }
+    .msg.you .msg-body { max-width: 86%; }
+    .tide-line { display: none; }
+  }
+
+  /* ---- TIDE LINE: calendar ruler, left edge ----
+     A 4px strip that maps to calendar days (not doc position).
+     Hover to scrub. Each tick = 1 day; opacity encodes density. */
+  .tide-line {
+    position: fixed;
+    top: 0; left: 0; bottom: 0;
+    width: 20px;
+    z-index: 25;
+    cursor: ns-resize;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 70px 0 120px;
+    gap: 0;
+    transition: background 180ms ease;
+  }
+  .tide-line:hover { background: color-mix(in srgb, var(--bg-deep) 70%, transparent); }
+  .tide-line-track {
+    position: relative;
+    width: 4px;
+    flex: 1;
+    background: transparent;
+  }
+  .tide-day {
+    position: absolute;
+    left: 0; right: 0;
+    background: var(--ink-ghost);
+    transition: background 140ms ease, transform 140ms ease;
+  }
+  .tide-line:hover .tide-day { background: var(--ink-mute); }
+  .tide-day.d0    { opacity: 0.22; }   /* quiet day */
+  .tide-day.d1    { opacity: 0.45; }
+  .tide-day.d2    { opacity: 0.7; }
+  .tide-day.d3    { opacity: 1; }      /* busy day */
+  .tide-day.today { background: var(--accent); opacity: 1; }
+  .tide-label {
+    position: absolute;
+    left: 16px;
+    transform: translateY(-50%);
+    font-size: 9px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-mute);
+    pointer-events: none;
+    white-space: nowrap;
+    opacity: 0;
+    transition: opacity 160ms ease;
+    font-family: ui-monospace, 'SF Mono', monospace;
+  }
+  .tide-line:hover .tide-label { opacity: 0.8; }
+  .tide-label.anchor { opacity: 0.55; }
+  .tide-line:hover .tide-label.anchor { opacity: 0.9; }
+
+  .tide-cursor {
+    position: absolute;
+    left: -3px; right: -3px;
+    height: 2px;
+    background: var(--accent);
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 140ms ease;
+    z-index: 2;
+  }
+  .tide-line:hover .tide-cursor,
+  .tide-line.pinned .tide-cursor { opacity: 1; }
+
+  .tide-chip {
+    position: fixed;
+    left: 30px;
+    transform: translateY(-50%);
+    background: var(--bg);
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    box-shadow: 0 6px 24px rgba(0,0,0,0.08);
+    padding: 10px 14px;
+    font-size: 12px;
+    color: var(--ink);
+    max-width: 280px;
+    min-width: 200px;
+    z-index: 26;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 140ms ease, transform 140ms ease;
+  }
+  .tide-chip.visible {
+    opacity: 1;
+    transform: translateY(-50%);
+  }
+  .tide-chip-date {
+    font-family: var(--serif);
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--ink);
+    letter-spacing: -0.01em;
+  }
+  .tide-chip-count {
+    font-size: 10.5px;
+    color: var(--ink-mute);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    margin-top: 2px;
+  }
+  .tide-chip-summary {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--rule);
+    font-size: 12px;
+    color: var(--ink-soft);
+    line-height: 1.5;
+    font-style: italic;
+    min-height: 18px;
+  }
+  .tide-chip-summary.loading::after {
+    content: '';
+    display: inline-block;
+    width: 5px; height: 5px;
+    border-radius: 50%;
+    background: var(--accent);
+    animation: breathe 1.6s ease-in-out infinite;
+    vertical-align: middle;
+  }
+
+  /* ---- Topic break: hairline separator signaling fresh context ---- */
+  .brk {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 24px 0 22px;
+    cursor: pointer;
+  }
+  .brk-line {
+    flex: 1;
+    height: 1px;
+    background: var(--rule);
+    transition: background 180ms ease;
+  }
+  .brk:hover .brk-line { background: var(--ink-ghost); }
+  .brk-label {
+    font-family: var(--serif);
+    font-size: 12px;
+    font-style: italic;
+    color: var(--ink-mute);
+    letter-spacing: 0.01em;
+    white-space: nowrap;
+    padding: 0 4px;
+    transition: color 160ms ease;
+  }
+  .brk:hover .brk-label { color: var(--ink-soft); }
+  .brk-label-edit {
+    all: unset;
+    font-family: var(--serif);
+    font-size: 12px;
+    font-style: italic;
+    color: var(--ink);
+    text-align: center;
+    min-width: 80px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: var(--bg-deep);
+  }
+  .brk-x {
+    all: unset;
+    font-size: 14px;
+    line-height: 1;
+    color: var(--ink-ghost);
+    padding: 2px 6px;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 160ms ease, color 120ms ease;
+  }
+  .brk:hover .brk-x { opacity: 1; }
+  .brk-x:hover { color: var(--ink); }
+
+  /* Ghost gutter between messages: click to insert a break */
+  /* Dim messages outside the active context window */
+  .msg.stale { opacity: 0.5; transition: opacity 200ms ease; }
+  .msg.stale:hover { opacity: 0.9; }
+
+  /* =========================================================
+     Tool calls — quiet marginalia above the agent's reply.
+     Each tool is one serif line; click to expand args+result.
+     ========================================================= */
+  .msg-tools {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 10px;
+    font-family: var(--serif);
+    font-size: 13.5px;
+    font-style: italic;
+    color: var(--ink-mute);
+    max-width: 56ch;
+  }
+  .msg.reply .msg-tools { font-size: 12.5px; margin-bottom: 8px; }
+  .tool {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    cursor: pointer;
+    user-select: none;
+    transition: color 120ms ease;
+  }
+  .tool:hover { color: var(--ink-soft); }
+  .tool-glyph {
+    font-family: ui-monospace, 'SF Mono', monospace;
+    font-size: 11px;
+    font-style: normal;
+    color: var(--accent);
+    flex-shrink: 0;
+    width: 14px;
+    text-align: center;
+    opacity: 0.8;
+  }
+  .tool.running .tool-glyph {
+    animation: toolspin 1.1s linear infinite;
+  }
+  .tool.failed .tool-glyph { color: #b04545; }
+  @keyframes toolspin { to { transform: rotate(360deg); } }
+  .tool-name { font-style: normal; font-family: ui-monospace, 'SF Mono', monospace; font-size: 11.5px; color: var(--ink-soft); letter-spacing: 0.01em; }
+  .tool-args {
+    color: var(--ink-ghost);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+    flex: 1;
+  }
+  .tool-result-hint {
+    color: var(--ink-ghost);
+    font-size: 11.5px;
+    font-style: normal;
+    font-family: ui-monospace, 'SF Mono', monospace;
+    flex-shrink: 0;
+  }
+  .tool-detail {
+    display: none;
+    margin: 2px 0 6px 22px;
+    padding: 10px 14px;
+    background: var(--bg-deep);
+    border-radius: 8px;
+    border-left: 2px solid var(--rule);
+    font-family: ui-monospace, 'SF Mono', monospace;
+    font-size: 11.5px;
+    font-style: normal;
+    line-height: 1.55;
+    color: var(--ink-soft);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .tool.expanded + .tool-detail { display: block; }
+  .tool-detail-label {
+    text-transform: uppercase;
+    font-size: 9.5px;
+    letter-spacing: 0.14em;
+    color: var(--ink-ghost);
+    margin-bottom: 4px;
+  }
+  .tool-detail-label:not(:first-child) { margin-top: 10px; }
+
+  /* =========================================================
+     Touch / coarse-pointer adaptations
+     When hover isn't available, replace hover-gated affordances
+     with always-visible (but quiet) alternatives.
+     ========================================================= */
+  @media (hover: none), (pointer: coarse) {
+    /* Message meta: always visible at reduced emphasis. Tapping
+       a message still feels identical but the hint doesn't hide. */
+    .msg-footer { opacity: 0.55; transition: none; }
+    .msg:active .msg-footer { opacity: 1; }
+
+    /* Stale messages: don't fight with touch — just dim, no hover reveal */
+    .msg.stale:hover { opacity: 0.5; }
+    .msg.stale:active { opacity: 0.9; }
+
+    /* Topic button: slightly bigger tap target */
+    .topic-btn { width: 30px; height: 30px; }
+    .topic-btn svg { width: 12px; height: 12px; }
+
+    /* Tide line: expand tap target; stay "expressed" so the
+       rail is clearly interactive. Tap scrubs; touchmove scrubs. */
+    .tide-line {
+      width: 28px;
+      background: color-mix(in srgb, var(--bg-deep) 35%, transparent);
+    }
+    .tide-line .tide-day {
+      background: var(--ink-mute);
+    }
+    .tide-line .tide-label { opacity: 0.65; }
+    .tide-line .tide-label.anchor { opacity: 0.8; }
+    /* Active scrubbing shows the cursor */
+    .tide-line.pinned { background: color-mix(in srgb, var(--bg-deep) 55%, transparent); }
+  }
+
+  /* Composer hint: shows active topic name */
+  .composer-topic {
+    display: none;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+    padding: 0 2px;
+    font-size: 11px;
+    color: var(--ink-mute);
+    letter-spacing: 0.02em;
+  }
+  .composer-topic.visible { display: flex; }
+  .composer-topic strong {
+    font-family: var(--serif);
+    font-weight: 500;
+    font-style: italic;
+    color: var(--ink-soft);
+  }
+  .composer-topic-clear {
+    all: unset;
+    cursor: pointer;
+    color: var(--ink-ghost);
+    transition: color 120ms ease;
+  }
+  .composer-topic-clear:hover { color: var(--ink); }
+</style>
+</head>
+<body data-density="comfortable" data-voice="serif">
+
+<header class="header">
+  <div class="header-inner">
+    <span class="wordmark"><span class="wordmark-dot"></span>tide</span>
+    <div class="header-actions">
+      <div class="font-btn-wrap">
+        <button class="font-btn" id="fontBtn" aria-label="Change fonts" aria-haspopup="menu">fonts</button>
+        <div class="font-menu" id="fontMenu" role="menu">
+          <button class="font-opt editorial" data-font="editorial" role="menuitem">
+            <span class="font-opt-name">Editorial</span>
+            <span class="font-opt-sample">The soft light of a morning</span>
+          </button>
+          <button class="font-opt clean" data-font="clean" role="menuitem">
+            <span class="font-opt-name">System</span>
+            <span class="font-opt-sample">The soft light of a morning</span>
+          </button>
+          <button class="font-opt literary" data-font="literary" role="menuitem">
+            <span class="font-opt-name">Literary</span>
+            <span class="font-opt-sample">The soft light of a morning</span>
+          </button>
+        </div>
+      </div>
+      <button class="theme-btn" id="themeBtn">theme</button>
+    </div>
+  </div>
+</header>
+
+<main class="timeline" id="timeline">
+  <!-- rendered -->
+</main>
+
+<div class="composer">
+  <div class="composer-inner">
+    <div class="composer-topic" id="composerTopic">
+      <span>topic:</span>
+      <strong id="composerTopicName">fresh start</strong>
+      <button class="composer-topic-clear" id="composerTopicClear" title="Remove topic break">reset context</button>
+    </div>
+    <div class="composer-reply" id="composerReply" hidden>
+      <span class="composer-reply-label">replying to <strong id="composerReplyWho">Tide</strong></span>
+      <span class="composer-reply-preview" id="composerReplyPreview"></span>
+      <button class="composer-reply-cancel" id="composerReplyCancel" aria-label="Cancel reply">×</button>
+    </div>
+    <div class="composer-field">
+      <span class="search-prefix">find</span>
+      <button class="topic-btn" id="topicBtn" title="New topic (⌘↵)" aria-label="Start a new topic">
+        <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M8 3 L8 13 M3 8 L13 8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+        </svg>
+      </button>
+      <textarea id="composerInput" placeholder="Message Tide…" rows="1"></textarea>
+      <button class="send-btn" id="sendBtn" aria-label="Send">
+        <svg class="icon-send" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M3 8 L12 8 M8 4 L12 8 L8 12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <svg class="icon-clear" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" style="display:none">
+          <path d="M4 4 L12 12 M12 4 L4 12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+        </svg>
+      </button>
+    </div>
+    <div class="composer-hint" id="composerHint">
+      <kbd>⏎</kbd> send · <kbd>⇧⏎</kbd> newline · <kbd>/</kbd> or <kbd>⌘K</kbd> find · <kbd>⌘⏎</kbd> new topic
+    </div>
+  </div>
+</div>
+
+<!-- Search status pill -->
+<div class="search-status" id="searchStatus">
+  <div class="search-status-pill" id="searchStatusPill">
+    <span id="searchStatusText"><strong>0</strong> results</span>
+    <span class="dot"></span>
+    <button id="searchPrev">↑</button>
+    <button id="searchNext">↓ next</button>
+    <span class="dot"></span>
+    <button id="searchExit">esc</button>
+  </div>
+</div>
+
+<!-- Tide line — calendar ruler on the left -->
+<div class="tide-line" id="tideLine" aria-label="Browse by date">
+  <div class="tide-line-track" id="tideTrack">
+    <div class="tide-cursor" id="tideCursor"></div>
+  </div>
+</div>
+<div class="tide-chip" id="tideChip">
+  <div class="tide-chip-date" id="tideChipDate"></div>
+  <div class="tide-chip-count" id="tideChipCount"></div>
+  <div class="tide-chip-summary" id="tideChipSummary"></div>
+</div>
+
+<!-- Tweaks panel (hidden until host toggles edit mode) -->
+<div class="tweaks" id="tweaks">
+  <div class="tweaks-title">Tweaks</div>
+  <div class="tweak-row">
+    <div class="tweak-label">Density</div>
+    <div class="tweak-seg" data-tweak="density">
+      <button data-value="tight">Tight</button>
+      <button data-value="comfortable">Comfy</button>
+      <button data-value="loose">Loose</button>
+    </div>
+  </div>
+  <div class="tweak-row">
+    <div class="tweak-label">Agent voice</div>
+    <div class="tweak-seg" data-tweak="voice">
+      <button data-value="serif">Serif</button>
+      <button data-value="sans">Sans</button>
+    </div>
+  </div>
+  <div class="tweak-row">
+    <div class="tweak-label">Theme</div>
+    <div class="tweak-seg" data-tweak="theme">
+      <button data-value="auto">Auto</button>
+      <button data-value="light">Light</button>
+      <button data-value="dark">Dark</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* =========================================================
+   State
+   ========================================================= */
+const STORAGE_KEY = 'tide-minimal-v5';
+let messages = loadMessages();
+let replyTo = null; // id of the message being replied to
+
+function loadMessages() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch(_) {}
+  // Seed — 6 weeks of realistic chat to make browsing worth doing
+  const now = Date.now();
+  const D = 24 * 3600 * 1000;
+  const H = 3600 * 1000;
+  const M = 60 * 1000;
+  // Each entry: [daysAgo, hourOffset, role, text]
+  const seeds = [
+    [42, -4,  'agent', "hi. i'm tide — your on-call thinking partner.\n\nmessage me anything. i'll remember what we've talked about and pick up where we left off."],
+    [42, -3,  'you',   "ok. what's today's cal look like?"],
+    [42, -3,  'agent', "three things: 9am board prep with kailash, 11am dpa redlines call with mercy, 2pm 1:1 with anjanette. nothing after 3.",
+      [{name:'calendar.read', args:{range:'today', cal:'primary'}, result:'3 events', status:'done'}]],
+    [41, -5,  'you',   "kailash thinks we should push the series c narrative harder in the board deck. thoughts?"],
+    [41, -5,  'agent', "if the ask is a sharper narrative, the q4 traction slide is the obvious lever — the current one leads with expansion revenue; it should lead with net retention and the enterprise logo wins. want me to draft the new version?",
+      [{name:'drive.find', args:{query:'q4 board deck'}, result:'Board Q4 — v7.key', status:'done'},
+       {name:'keynote.read_slide', args:{file:'Board Q4 — v7.key', slide:9}, result:'Q4 traction — 320 words, 2 charts', status:'done'}]],
+    [41, -4,  'you',   "yes. also — kavi has a school permission slip due friday. remind me thursday evening."],
+    [40, -7,  'you',   "reviewing the mercy dpa. they're pushing back on 7.3. what's our fallback?"],
+    [40, -7,  'agent', "the 7.3 wording was softened once already in october. further softening risks drift from the enterprise template. safer move is to hold and offer a written comfort letter on retention."],
+    [40, -6,  'you',   "comfort letter. draft it."],
+    [38, -3,  'you',   "anjanette q3 review — tough call on the stretch rating"],
+    [38, -3,  'agent', "she hit every objective but missed on the hiring bar. spec was '2-3 seniors'; she landed one. you told her in august the bar would be the hiring, not the output. i'd say 'exceeds expectations', not 'outstanding'."],
+    [35, -8,  'you',   "need to book tokyo for the ax conference. dates?"],
+    [35, -8,  'agent', "june 14-18. jal 061 narita direct is still the obvious one; ¥380k return if you book by may 15. want me to hold it?",
+      [{name:'web.search', args:{q:'ax conference 2026 tokyo dates'}, result:'ax.tokyo/2026 → Jun 14–18', status:'done'},
+       {name:'flights.search', args:{from:'SFO', to:'NRT', depart:'2026-06-13', ret:'2026-06-18'}, result:'12 options · best: JAL 061 ¥380k', status:'done'}]],
+    [35, -7,  'you',   "hold it. ryokan in kyoto for the 19-21 after?"],
+    [35, -7,  'agent', "tawaraya is available — pricey but your daughter will lose her mind over the garden. booking the same room you liked in 2023."],
+    [33, -4,  'agent', "daily digest · 9am: anjanette's 360 feedback came in overnight. two flags worth reading before your 1:1 thursday — i'll put them on your morning queue."],
+    [33, -3,  'you',   "send me the flags directly"],
+    [33, -3,  'agent', "first: one of her reports says she reviews PRs unevenly — some get 30 line comments, others sail through. second: a peer said her meeting summaries skip decisions that didn't go her way. neither is a pattern yet — but both are worth naming."],
+    [30, -6,  'you',   "reykjavik marathon recap — i'm thinking about signing up for next year. pace strategy?"],
+    [30, -6,  'agent', "at your current cda of 4:45 and given the hills from km 18 onward, i'd target 3:45 with a conservative first half. the mistake you made in berlin was going out at 5:10/km and paying for it from 32 on."],
+    [28, -5,  'you',   "cowork interim PHI rules — are we compliant yet?"],
+    [28, -5,  'agent', "not fully. the BAA template still references the old minimum-necessary wording. karim was supposed to close the loop with legal last week. want me to ping him?",
+      [{name:'drive.read', args:{file:'cowork/BAA-template-v3.docx'}, result:'§4.2 uses 2019 language', status:'done'},
+       {name:'linear.search', args:{project:'compliance', query:'PHI BAA karim'}, result:'COMP-284 · open · last touched 11d ago', status:'done'}]],
+    [28, -5,  'you',   "ping him. cc me."],
+    [25, -7,  'you',   "casa california — brochure copy. hemanth wants it 'warmer'. i don't know what that means."],
+    [25, -7,  'agent', "'warmer' in hemanth's mouth usually means 'less feature-list, more sensory'. the current copy opens with the square footage. try opening with the morning light in the kitchen."],
+    [21, -3,  'agent', "weekend heads-up: the gw-psh-21 watch fired twice overnight. both self-recovered. no action needed, but the pattern is new — worth a look monday."],
+    [20, -8,  'you',   "pattern on gw-psh-21?"],
+    [20, -8,  'agent', "both fires were within the 3am-4am window. temp sensor in the closet rack crosses the threshold at the same time the building hvac cycles down. it's environmental, not firmware.",
+      null,
+      {type:'line', title:'rack temp · last 14 nights', meta:'°C at sensor 4, 02:00–05:00 window', min:30, max:36, threshold:34,
+       data:[
+         {label:'mon', v:31.2},{label:'',v:31.8},{label:'',v:32.1},{label:'',v:31.6},
+         {label:'',v:32.4},{label:'',v:33.1},{label:'sun',v:33.6},
+         {label:'',v:33.9},{label:'',v:34.2},{label:'',v:34.5},{label:'',v:33.8},
+         {label:'',v:34.1},{label:'',v:34.6},{label:'sun',v:34.3}
+       ]}],
+    [20, -8,  'you',   "so we need better hvac or a better threshold"],
+    [20, -7,  'agent', "better threshold is cheaper. i'd propose an adaptive baseline that learns the nightly dip — i can sketch it if you want."],
+    [18, -5,  'you',   "sourdough hydration is killing me. the crumb is tight"],
+    [18, -5,  'agent', "at 72% you're probably under-fermenting rather than over-hydrating. try extending bulk by 45 minutes and see if the crumb opens. what's your ambient?"],
+    [15, -6,  'you',   "denver home search — the elm st place is back on the market at 1.29"],
+    [15, -6,  'agent', "that's 80k below what they asked in january. something's wrong with it or the market turned on them. ask for the inspection report before you book a second visit."],
+    [12, -4,  'you',   "investor update draft — the q1 numbers are soft. how do i frame it?"],
+    [12, -4,  'agent', "don't frame it. lead with the soft numbers in the first paragraph and the structural reasons in the second. good investors read past framing; the ones who don't, you don't want."],
+    [10, -3,  'you',   "eli chen reference call — the callback is scheduled for tomorrow 3pm. what do i actually want to ask?"],
+    [10, -3,  'agent', "the two questions worth asking: 'what did you see him do when a project was failing?' and 'would you hire him again, and for what role?'. everything else is noise."],
+    [8,  -5,  'you',   "q2 reforecast — r&d is tracking 12% over. do we pull back or push through?"],
+    [8,  -5,  'agent', "depends on what the 12% is buying. pi-agent-core is driving most of the overrun — the rest is flat. if it's the bet, push through.",
+      [{name:'finance.read', args:{sheet:'Q2 reforecast', range:'R&D lines'}, result:'6 lines · 12.3% over', status:'done'}],
+      {type:'bars', title:'R&D spend vs plan', meta:'% over plan, by program', big:'+12.3% TOTAL',
+       data:[
+         {label:'pi-agent', v:28},
+         {label:'ax-2p',   v:9},
+         {label:'infra',   v:4, muted:true},
+         {label:'prod',    v:-2, muted:true},
+         {label:'ops',     v:1, muted:true},
+         {label:'ux',      v:0, muted:true},
+       ]}],
+    [6,  -4,  'you',   "bonsai — the juniper looks stressed. leaves yellowing on one side."],
+    [6,  -4,  'agent', "one-sided yellowing on a juniper is almost always root issue or light imbalance. when was the last repot? and is the yellow side toward the window or away?"],
+    [6,  -4,  'you',   "away. repotted in november"],
+    [6,  -4,  'agent', "rotate 90° weekly for a month. if it doesn't even out, we'll look at the roots."],
+    [4,  -8,  'you',   "fast forward integration — mira still hasn't acked INC-4412"],
+    [4,  -8,  'agent', "she acked it 18 minutes ago. closing the watch.",
+      [{name:'slack.search', args:{query:'INC-4412 from:@mira', since:'today'}, result:'1 msg · 18m ago', status:'done'},
+       {name:'linear.update', args:{ticket:'INC-4412', status:'closed'}, result:'ok', status:'done'}]],
+    [3,  -3,  'you',   "kailash's pairing question — he wants to pair with hemanth on the skill bridge design. scope concerns?"],
+    [3,  -3,  'agent', "hemanth's scope discipline is the concern, not kailash. if they pair, you need a written scope doc before day one. i can draft one."],
+    [2,  -5,  'you',   "board deck q4 prep — final review tomorrow"],
+    [2,  -5,  'agent', "three things i'd change before it goes out: slide 4 is too dense, slide 9's chart has a misleading y-axis, and the appendix is missing the q3 cohort retention. want me to mark them up?",
+      [{name:'drive.read', args:{file:'Board Q4 — final.key'}, result:'18 slides', status:'done'},
+       {name:'keynote.analyze', args:{file:'Board Q4 — final.key', checks:['density','charts','coverage']}, result:'3 issues', status:'done'}]],
+    [2,  -5,  'you',   "mark them up"],
+    [1,  -6,  'you',   "morning. dpa redlines — any updates overnight?"],
+    [1,  -6,  'agent', "mercy came back at 3am pt. they accepted 4.2 and 6.1; still pushing on 7.3. want me to draft a response?",
+      [{name:'email.search', args:{from:'legal@mercy.health', since:'24h'}, result:'1 thread · 3:02am PT', status:'done'},
+       {name:'email.read', args:{thread:'dpa-redlines-v4'}, result:'3 redlines · 2 accepted, 1 open', status:'done'}]],
+    [0,  -2,  'you',   "morning. can you draft a two-line response to the DPA redlines from mercy? i'll revise."],
+    [0,  -1,  'agent', "sure. something like:\n\n\"thanks for the pass. we're aligned on 4.2 and 6.1; we'd like to hold on 7.3 as drafted. i'll send a clean copy with the two edits this afternoon.\"\n\nwant it warmer, or keep it curt?"],
+    [0,  -1,  'you',   "curt is fine. send it."],
+  ];
+  return seeds.map((s, i) => ({
+    id: 's' + i,
+    role: s[2],
+    text: s[3],
+    tools: s[4] || undefined,
+    chart: s[5] || undefined,
+    ts: now - s[0] * D + s[1] * H,
+  }));
+}
+function save() {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(messages)); } catch(_) {}
+  if (typeof buildTideLine === 'function') buildTideLine();
+}
+
+/* =========================================================
+   Rendering
+   ========================================================= */
+const timeline = document.getElementById('timeline');
+
+function render() {
+  timeline.innerHTML = '';
+  if (messages.length === 0) {
+    const intro = document.createElement('div');
+    intro.className = 'intro';
+    intro.innerHTML = '<div class="big">One conversation.</div>Say anything.';
+    timeline.appendChild(intro);
+    return;
+  }
+
+  // Group by day — insert a day marker whenever the date changes
+  let lastDay = null;
+  // We render in-order. Replies go immediately after their parent.
+  // The data is stored flat; we rearrange here for display.
+  const byParent = new Map();
+  const tops = [];
+  messages.forEach(m => {
+    if (m.replyTo) {
+      if (!byParent.has(m.replyTo)) byParent.set(m.replyTo, []);
+      byParent.get(m.replyTo).push(m);
+    } else {
+      tops.push(m);
+    }
+  });
+
+  tops.forEach((m, idx) => {
+    const day = dayOf(m.ts);
+    if (day !== lastDay) {
+      const d = document.createElement('div');
+      d.className = 'day';
+      d.textContent = dayLabel(m.ts);
+      timeline.appendChild(d);
+      lastDay = day;
+    }
+    if (m.type === 'break') {
+      timeline.appendChild(buildBreak(m));
+      return;
+    }
+    // Gap-to-insert affordance between top-level messages
+    const el = buildMsg(m, false);
+    // Stale if before the most recent break
+    if (isStale(m)) el.classList.add('stale');
+    timeline.appendChild(el);
+    const replies = byParent.get(m.id) || [];
+    replies.forEach(r => {
+      const rel = buildMsg(r, true);
+      if (isStale(m)) rel.classList.add('stale');
+      timeline.appendChild(rel);
+    });
+  });
+
+  updateComposerTopic();
+}
+
+function buildBreak(b) {
+  const el = document.createElement('div');
+  el.className = 'brk';
+  el.dataset.id = b.id;
+  el.innerHTML = `
+    <div class="brk-line"></div>
+    <div class="brk-label">${b.label ? escapeHtml(b.label) : 'fresh start · ' + timeLabel(b.ts)}</div>
+    <div class="brk-line"></div>
+    <button class="brk-x" title="Remove topic break">×</button>
+  `;
+  el.querySelector('.brk-label').addEventListener('click', (e) => {
+    e.stopPropagation();
+    editBreakLabel(el, b);
+  });
+  el.querySelector('.brk-x').addEventListener('click', (e) => {
+    e.stopPropagation();
+    removeBreak(b.id);
+  });
+  return el;
+}
+
+function editBreakLabel(el, b) {
+  const labelEl = el.querySelector('.brk-label');
+  const input = document.createElement('input');
+  input.className = 'brk-label-edit';
+  input.value = b.label || '';
+  input.placeholder = 'name this topic…';
+  labelEl.replaceWith(input);
+  input.focus();
+  input.select();
+  const commit = () => {
+    const v = input.value.trim();
+    b.label = v || null;
+    save();
+    render();
+  };
+  input.addEventListener('blur', commit);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+    if (e.key === 'Escape') { input.value = b.label || ''; input.blur(); }
+  });
+}
+
+function isStale(m) {
+  // A message is stale if there's any break AFTER it (in flat order)
+  const idx = messages.indexOf(m);
+  for (let i = idx + 1; i < messages.length; i++) {
+    if (messages[i].type === 'break') return true;
+  }
+  return false;
+}
+
+function mostRecentBreak() {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].type === 'break') return messages[i];
+  }
+  return null;
+}
+
+function insertBreak(beforeId) {
+  const brk = { id: 'b' + Date.now(), type: 'break', ts: Date.now(), label: null };
+  if (beforeId) {
+    const idx = messages.findIndex(x => x.id === beforeId);
+    if (idx >= 0) messages.splice(idx, 0, brk);
+    else messages.push(brk);
+  } else {
+    messages.push(brk);
+  }
+  save();
+  render();
+  scrollToEnd();
+}
+function insertBreakBefore(id) { insertBreak(id); }
+function insertBreakAfter(id) {
+  const idx = messages.findIndex(x => x.id === id);
+  if (idx < 0) { insertBreak(); return; }
+  // Skip past any replies to this message so the break lands after the thread
+  let end = idx + 1;
+  while (end < messages.length && messages[end].replyTo === id) end++;
+  const nextId = messages[end]?.id;
+  insertBreak(nextId);
+}
+function removeBreak(id) {
+  messages = messages.filter(m => m.id !== id);
+  save();
+  render();
+}
+
+function updateComposerTopic() {
+  const brk = mostRecentBreak();
+  const box = document.getElementById('composerTopic');
+  const name = document.getElementById('composerTopicName');
+  // Is the break the last item in the timeline (no messages after it)?
+  const brkIsLast = brk && messages[messages.length - 1] === brk;
+  document.body.classList.toggle('topic-active', !!brkIsLast);
+  if (brk) {
+    box.classList.add('visible');
+    name.textContent = brk.label || 'fresh start · ' + timeLabel(brk.ts);
+  } else {
+    box.classList.remove('visible');
+  }
+}
+
+function dayOf(ts) { return new Date(ts).toDateString(); }
+function dayLabel(ts) {
+  const d = new Date(ts);
+  const today = new Date();
+  const yesterday = new Date(today); yesterday.setDate(today.getDate() - 1);
+  if (d.toDateString() === today.toDateString()) return 'today';
+  if (d.toDateString() === yesterday.toDateString()) return 'yesterday';
+  return d.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
+}
+function timeLabel(ts) {
+  const d = new Date(ts);
+  let h = d.getHours();
+  const m = String(d.getMinutes()).padStart(2, '0');
+  const ap = h >= 12 ? 'pm' : 'am';
+  h = h % 12; if (h === 0) h = 12;
+  return `${h}:${m} ${ap}`;
+}
+
+function buildMsg(m, isReply) {
+  const el = document.createElement('article');
+  el.className = 'msg ' + m.role + (isReply ? ' reply' : '');
+  el.dataset.id = m.id;
+
+  // Tools — rendered before the body (agent messages only)
+  if (m.role === 'agent' && Array.isArray(m.tools) && m.tools.length) {
+    el.appendChild(buildTools(m.tools));
+  }
+
+  const body = document.createElement('div');
+  body.className = 'msg-body';
+  // Simple paragraph splitting
+  body.textContent = m.text;
+  el.appendChild(body);
+
+  // Chart embed — agent-only, rendered after the text body.
+  if (m.role === 'agent' && m.chart) {
+    el.appendChild(buildChart(m.chart));
+  }
+
+  const footer = document.createElement('div');
+  footer.className = 'msg-footer';
+  const time = document.createElement('span');
+  time.textContent = timeLabel(m.ts);
+  footer.appendChild(time);
+  if (!isReply) {
+    const btn = document.createElement('button');
+    btn.className = 'reply-btn';
+    btn.textContent = '↳ reply';
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      setReplyTarget(m);
+    });
+    footer.appendChild(btn);
+    const brkBtn = document.createElement('button');
+    brkBtn.className = 'break-btn';
+    brkBtn.textContent = '+ new topic below';
+    brkBtn.title = 'Start a new topic after this message';
+    brkBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      insertBreakAfter(m.id);
+    });
+    footer.appendChild(brkBtn);
+  }
+  el.appendChild(footer);
+  return el;
+}
+
+function buildTools(tools) {
+  const wrap = document.createElement('div');
+  wrap.className = 'msg-tools';
+  tools.forEach(t => {
+    const row = document.createElement('div');
+    row.className = 'tool' + (t.status === 'running' ? ' running' : '') + (t.status === 'failed' ? ' failed' : '');
+    row.title = 'Click to ' + (t.status === 'running' ? 'see progress' : 'see details');
+
+    const glyph = document.createElement('span');
+    glyph.className = 'tool-glyph';
+    // ⌁ running, → done, ✕ failed
+    glyph.textContent = t.status === 'running' ? '⌁' : t.status === 'failed' ? '✕' : '→';
+    row.appendChild(glyph);
+
+    const name = document.createElement('span');
+    name.className = 'tool-name';
+    name.textContent = t.name;
+    row.appendChild(name);
+
+    const args = document.createElement('span');
+    args.className = 'tool-args';
+    args.textContent = formatToolArgs(t.args);
+    row.appendChild(args);
+
+    const hint = document.createElement('span');
+    hint.className = 'tool-result-hint';
+    hint.textContent = t.status === 'running' ? '…' : t.status === 'failed' ? '' : formatToolResultHint(t.result);
+    row.appendChild(hint);
+
+    const detail = document.createElement('div');
+    detail.className = 'tool-detail';
+    renderToolDetail(detail, t);
+
+    row.addEventListener('click', () => {
+      const wasExpanded = row.classList.contains('expanded');
+      // Collapse siblings for a cleaner focus
+      wrap.querySelectorAll('.tool.expanded').forEach(r => r.classList.remove('expanded'));
+      if (!wasExpanded) row.classList.add('expanded');
+    });
+
+    wrap.appendChild(row);
+    wrap.appendChild(detail);
+  });
+  return wrap;
+}
+
+/* =========================================================
+   CHART EMBED — builds a <figure> containing a sandboxed iframe
+   whose srcdoc is a self-contained HTML chart that inherits
+   Tide's tokens (passed in as CSS custom properties).
+
+   The chart is an SVG rendered in pure HTML; no scripts run in
+   the iframe (sandbox=""). This keeps arbitrary model output
+   safe while still letting it control layout, colors, labels.
+   ========================================================= */
+function buildChart(chart) {
+  const fig = document.createElement('figure');
+  fig.className = 'chart-embed loading';
+
+  const frame = document.createElement('iframe');
+  frame.className = 'chart-embed-frame';
+  frame.setAttribute('sandbox', ''); // no scripts, no same-origin
+  frame.setAttribute('loading', 'lazy');
+  frame.setAttribute('title', chart.title || 'Chart');
+  // Height per chart type
+  const h = chart.type === 'spark' ? 80 : chart.type === 'bars' ? 220 : 200;
+  frame.style.height = h + 'px';
+  frame.srcdoc = chartDoc(chart, tokensFromPage());
+
+  // Reveal when loaded
+  frame.addEventListener('load', () => fig.classList.remove('loading'));
+  // Safety: reveal after 1.2s even if load fires oddly
+  setTimeout(() => fig.classList.remove('loading'), 1200);
+
+  fig.appendChild(frame);
+
+  // Caption below: label · meta, plus hover actions
+  const cap = document.createElement('figcaption');
+  cap.className = 'chart-embed-caption';
+  const left = document.createElement('span');
+  left.className = 'label';
+  left.textContent = (chart.title || 'chart').toLowerCase();
+  cap.appendChild(left);
+  const right = document.createElement('span');
+  right.className = 'meta';
+  right.textContent = chart.meta || '';
+  cap.appendChild(right);
+  fig.appendChild(cap);
+
+  return fig;
+}
+
+/* Read Tide's current design tokens so the iframe can match. */
+function tokensFromPage() {
+  const cs = getComputedStyle(document.body);
+  const get = (k) => cs.getPropertyValue(k).trim();
+  return {
+    bg:       get('--bg')       || '#fbfbf7',
+    ink:      get('--ink')      || '#1d1d1a',
+    inkSoft:  get('--ink-soft') || '#4a4a45',
+    inkMute:  get('--ink-mute') || '#7a7a72',
+    inkGhost: get('--ink-ghost')|| '#aba99f',
+    rule:     get('--rule')     || '#dfded4',
+    accent:   get('--accent')   || '#8b2e1f',
+    youWash:  get('--you-wash') || '#ecede6',
+    sans:     get('--sans')     || 'Inter, system-ui, sans-serif',
+    serif:    get('--serif')    || 'Fraunces, Georgia, serif',
+  };
+}
+
+/* Build the srcdoc HTML for the iframe. */
+function chartDoc(chart, t) {
+  const svg = renderChartSVG(chart, t);
+  return `<!DOCTYPE html><html><head><meta charset="utf-8">
+<style>
+  html, body { margin: 0; padding: 0; background: ${t.bg}; color: ${t.ink};
+    font-family: ${t.sans}; height: 100%; }
+  .wrap { padding: 14px 14px 10px; box-sizing: border-box; height: 100%; }
+  .hd { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 8px; }
+  .hd .t { font-family: ${t.serif}; font-size: 14px; font-style: italic; color: ${t.ink}; letter-spacing: 0; }
+  .hd .v { font-family: ${t.sans}; font-size: 11px; color: ${t.inkMute}; letter-spacing: 0.08em; text-transform: uppercase; }
+  .chart { position: relative; width: 100%; height: calc(100% - ${(chart.title || chart.big) ? '30px' : '0px'} - ${chart.legend ? '20px' : '0px'}); }
+  .chart svg { width: 100%; height: 100%; display: block; }
+  .axis { stroke: ${t.inkGhost}; stroke-width: 0.5; }
+  .grid { stroke: ${t.inkGhost}; stroke-width: 0.4; stroke-dasharray: 2 4; opacity: 0.5; }
+  .line { fill: none; stroke: ${t.accent}; stroke-width: 1.4; stroke-linejoin: round; }
+  .area { fill: ${t.accent}; opacity: 0.08; }
+  .dot  { fill: ${t.accent}; }
+  .bar  { fill: ${t.accent}; opacity: 0.75; }
+  .bar.muted { fill: ${t.inkGhost}; opacity: 0.5; }
+  .lbl  { fill: ${t.inkMute}; font-family: ${t.sans}; font-size: 9.5px; letter-spacing: 0.06em; text-transform: uppercase; }
+  .val  { fill: ${t.ink}; font-family: ${t.sans}; font-size: 10px; font-weight: 500; }
+  .legend { font-family: ${t.sans}; font-size: 10px; color: ${t.inkMute}; letter-spacing: 0.06em; text-transform: uppercase; margin-top: 6px; }
+  .swatch { display: inline-block; width: 8px; height: 2px; background: ${t.accent}; margin-right: 5px; vertical-align: middle; }
+</style></head>
+<body><div class="wrap">
+  ${(chart.title || chart.big) ? `<div class="hd">
+    <span class="t">${chart.title || ''}</span>
+    <span class="v">${chart.big || ''}</span>
+  </div>` : ''}
+  <div class="chart">${svg}</div>
+  ${chart.legend ? `<div class="legend"><span class="swatch"></span>${chart.legend}</div>` : ''}
+</div></body></html>`;
+}
+
+/* SVG renderers for chart types. Uses viewBox-based layout so
+   the chart scales with the iframe size. */
+function renderChartSVG(chart, t) {
+  const W = 560, H = chart.type === 'spark' ? 60 : 180;
+  if (chart.type === 'line' || !chart.type) return renderLine(chart, W, H, t);
+  if (chart.type === 'bars') return renderBars(chart, W, H, t);
+  if (chart.type === 'spark') return renderSpark(chart, W, H, t);
+  return '';
+}
+
+function renderLine(chart, W, H, t) {
+  const data = chart.data || [];
+  const pad = { l: 34, r: 14, t: 10, b: 26 };
+  const iw = W - pad.l - pad.r, ih = H - pad.t - pad.b;
+  const vals = data.map(d => d.v);
+  const min = chart.min != null ? chart.min : Math.min(...vals, 0);
+  const max = chart.max != null ? chart.max : Math.max(...vals);
+  const span = max - min || 1;
+  const x = (i) => pad.l + (iw * i) / Math.max(data.length - 1, 1);
+  const y = (v) => pad.t + ih - ((v - min) / span) * ih;
+  const pts = data.map((d, i) => `${x(i)},${y(d.v)}`).join(' ');
+  const area = `M${x(0)},${pad.t + ih} L${pts.replace(/ /g, ' L')} L${x(data.length - 1)},${pad.t + ih} Z`;
+  // y-axis ticks
+  const ticks = [min, min + span / 2, max].map(v => {
+    const yy = y(v);
+    const lbl = Number.isInteger(v) ? v : v.toFixed(1);
+    return `<line class="grid" x1="${pad.l}" x2="${W - pad.r}" y1="${yy}" y2="${yy}"/>
+      <text class="lbl" x="${pad.l - 6}" y="${yy + 3}" text-anchor="end">${lbl}</text>`;
+  }).join('');
+  // Threshold line (optional, from chart.threshold)
+  const thresh = chart.threshold != null ? (() => {
+    const yy = y(chart.threshold);
+    return `<line x1="${pad.l}" x2="${W - pad.r}" y1="${yy}" y2="${yy}" stroke="${t.accent}" stroke-width="0.8" stroke-dasharray="3 3" opacity="0.6"/>
+      <text class="lbl" x="${W - pad.r}" y="${yy - 4}" text-anchor="end" fill="${t.accent}">threshold ${chart.threshold}</text>`;
+  })() : '';
+  const xlabels = data.map((d, i) => {
+    if (!d.label) return '';
+    const anchor = i === 0 ? 'start' : i === data.length - 1 ? 'end' : 'middle';
+    return `<text class="lbl" x="${x(i)}" y="${H - 8}" text-anchor="${anchor}">${d.label}</text>`;
+  }).join('');
+  const dots = data.map((d, i) => `<circle class="dot" cx="${x(i)}" cy="${y(d.v)}" r="${i === data.length - 1 ? 2.8 : 1.4}"/>`).join('');
+  const lastVal = `<text class="val" x="${W - pad.r}" y="${y(data[data.length - 1].v) - 6}" text-anchor="end">${data[data.length - 1].v}</text>`;
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">
+    ${ticks}
+    <path class="area" d="${area}"/>
+    <polyline class="line" points="${pts}"/>
+    ${thresh}
+    ${dots}
+    ${xlabels}
+    ${lastVal}
+  </svg>`;
+}
+
+function renderBars(chart, W, H, t) {
+  const data = chart.data || [];
+  const pad = { l: 38, r: 14, t: 10, b: 26 };
+  const iw = W - pad.l - pad.r, ih = H - pad.t - pad.b;
+  const vals = data.map(d => d.v);
+  const dmax = Math.max(...vals, 0);
+  const dmin = Math.min(...vals, 0);
+  const span = (dmax - dmin) || 1;
+  const zeroY = pad.t + ih - ((0 - dmin) / span) * ih;
+  const bw = iw / data.length * 0.68;
+  const slotW = iw / data.length;
+  const ticks = [dmin, 0, dmax].filter((v, i, a) => a.indexOf(v) === i).map(v => {
+    const yy = pad.t + ih - ((v - dmin) / span) * ih;
+    return `<line class="grid" x1="${pad.l}" x2="${W - pad.r}" y1="${yy}" y2="${yy}"/>
+      <text class="lbl" x="${pad.l - 6}" y="${yy + 3}" text-anchor="end">${v > 0 ? '+' : ''}${Math.round(v)}%</text>`;
+  }).join('');
+  const bars = data.map((d, i) => {
+    const x = pad.l + slotW * i + (slotW - bw) / 2;
+    const v = d.v;
+    const vy = pad.t + ih - ((v - dmin) / span) * ih;
+    const y = Math.min(vy, zeroY);
+    const h = Math.abs(vy - zeroY);
+    const cls = d.muted ? 'bar muted' : 'bar';
+    return `<rect class="${cls}" x="${x}" y="${y}" width="${bw}" height="${h}" rx="1"/>
+      <text class="lbl" x="${x + bw / 2}" y="${H - 8}" text-anchor="middle">${d.label || ''}</text>`;
+  }).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">
+    ${ticks}${bars}
+  </svg>`;
+}
+
+function renderSpark(chart, W, H, t) {
+  const data = chart.data || [];
+  const vals = data.map(d => d.v);
+  const min = Math.min(...vals);
+  const max = Math.max(...vals);
+  const span = max - min || 1;
+  const x = (i) => (W * i) / Math.max(data.length - 1, 1);
+  const y = (v) => H - ((v - min) / span) * (H - 8) - 4;
+  const pts = data.map((d, i) => `${x(i)},${y(d.v)}`).join(' ');
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+    <polyline class="line" points="${pts}"/>
+    <circle class="dot" cx="${x(data.length - 1)}" cy="${y(vals[vals.length - 1])}" r="2.2"/>
+  </svg>`;
+}
+
+function formatToolArgs(args) {
+  if (!args) return '';
+  if (typeof args === 'string') return args;
+  const parts = Object.entries(args).map(([k, v]) => {
+    const vs = typeof v === 'string' ? v : JSON.stringify(v);
+    return vs.length > 40 ? `${k}=${vs.slice(0,40)}…` : `${k}=${vs}`;
+  });
+  return parts.join(' · ');
+}
+function formatToolResultHint(result) {
+  if (result == null) return '';
+  if (typeof result === 'string') {
+    if (result.length < 24) return '→ ' + result;
+    return '→ ' + result.slice(0, 20) + '…';
+  }
+  if (typeof result === 'number') return '→ ' + result;
+  if (Array.isArray(result)) return '→ ' + result.length + ' items';
+  if (typeof result === 'object') return '→ {' + Object.keys(result).slice(0,2).join(',') + (Object.keys(result).length > 2 ? ',…' : '') + '}';
+  return '';
+}
+function renderToolDetail(detail, t) {
+  detail.innerHTML = '';
+  const addLabel = (text) => {
+    const lab = document.createElement('div');
+    lab.className = 'tool-detail-label';
+    lab.textContent = text;
+    detail.appendChild(lab);
+  };
+  const addBody = (text) => {
+    const d = document.createElement('div');
+    d.textContent = text;
+    detail.appendChild(d);
+  };
+  addLabel('args');
+  addBody(typeof t.args === 'string' ? t.args : JSON.stringify(t.args || {}, null, 2));
+  if (t.status === 'running') {
+    addLabel('status');
+    addBody('running…');
+  } else if (t.status === 'failed') {
+    addLabel('error');
+    addBody(t.error || 'failed');
+  } else {
+    addLabel('result');
+    addBody(typeof t.result === 'string' ? t.result : JSON.stringify(t.result, null, 2));
+  }
+}
+
+function setReplyTarget(m) {
+  replyTo = m.id;
+  const box = document.getElementById('composerReply');
+  document.getElementById('composerReplyWho').textContent = m.role === 'you' ? 'you' : 'Tide';
+  const preview = m.text.length > 80 ? m.text.slice(0, 80).replace(/\n/g, ' ') + '…' : m.text.replace(/\n/g, ' ');
+  document.getElementById('composerReplyPreview').textContent = preview;
+  box.hidden = false;
+  document.getElementById('composerInput').focus();
+}
+function clearReplyTarget() {
+  replyTo = null;
+  document.getElementById('composerReply').hidden = true;
+}
+document.getElementById('composerReplyCancel').addEventListener('click', clearReplyTarget);
+document.getElementById('composerTopicClear').addEventListener('click', () => {
+  const brk = mostRecentBreak();
+  if (brk) removeBreak(brk.id);
+});
+document.getElementById('topicBtn').addEventListener('click', () => {
+  insertBreak();
+});
+
+/* =========================================================
+   Composer
+   ========================================================= */
+const input = document.getElementById('composerInput');
+const sendBtn = document.getElementById('sendBtn');
+
+function autogrow() {
+  input.style.height = 'auto';
+  input.style.height = Math.min(input.scrollHeight, 180) + 'px';
+  sendBtn.classList.toggle('ready', input.value.trim().length > 0);
+}
+input.addEventListener('input', autogrow);
+
+input.addEventListener('keydown', (e) => {
+  // Global-ish: /  enters search mode when field is empty
+  if (searchMode) {
+    if (e.key === 'Escape') { e.preventDefault(); exitSearch(); return; }
+    if (e.key === 'Enter')  { e.preventDefault(); jumpToCurrentHit(); return; }
+    if (e.key === 'ArrowDown') { e.preventDefault(); stepHit(+1); return; }
+    if (e.key === 'ArrowUp')   { e.preventDefault(); stepHit(-1); return; }
+    return; // everything else is just typing the query
+  }
+  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && input.value.trim() === '') {
+    e.preventDefault();
+    insertBreak();
+    return;
+  }
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    submit();
+  } else if (e.key === 'Escape' && replyTo) {
+    e.preventDefault();
+    clearReplyTarget();
+  } else if (e.key === '/' && input.value === '' && !replyTo) {
+    e.preventDefault();
+    enterSearch();
+  }
+});
+sendBtn.addEventListener('click', () => {
+  if (searchMode) exitSearch();
+  else submit();
+});
+
+// Global ⌘K / Ctrl+K to toggle search
+document.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+    e.preventDefault();
+    if (searchMode) exitSearch();
+    else enterSearch();
+  }
+});
+
+input.addEventListener('input', () => {
+  if (searchMode) runSearch(input.value);
+});
+
+/* =========================================================
+   Search
+   ========================================================= */
+let searchMode = false;
+let hits = [];         // array of {msgId, el}
+let currentHit = -1;
+let semanticTimer = null;
+
+const searchStatus = document.getElementById('searchStatus');
+const searchStatusText = document.getElementById('searchStatusText');
+const searchStatusPill = document.getElementById('searchStatusPill');
+const iconSend = document.querySelector('.icon-send');
+const iconClear = document.querySelector('.icon-clear');
+const hintEl = document.getElementById('composerHint');
+const HINT_NORMAL = '<kbd>⏎</kbd> send · <kbd>⇧⏎</kbd> newline · <kbd>/</kbd> or <kbd>⌘K</kbd> find';
+const HINT_SEARCH = '<kbd>↑</kbd><kbd>↓</kbd> step · <kbd>⏎</kbd> jump · <kbd>esc</kbd> exit';
+
+function enterSearch() {
+  if (replyTo) clearReplyTarget();
+  searchMode = true;
+  document.body.classList.add('searching');
+  input.placeholder = 'Find in chat…';
+  input.value = '';
+  iconSend.style.display = 'none';
+  iconClear.style.display = '';
+  hintEl.innerHTML = HINT_SEARCH;
+  searchStatus.style.display = '';
+  runSearch('');
+  input.focus();
+}
+
+function exitSearch() {
+  searchMode = false;
+  document.body.classList.remove('searching');
+  input.placeholder = 'Message Tide…';
+  input.value = '';
+  iconSend.style.display = '';
+  iconClear.style.display = 'none';
+  hintEl.innerHTML = HINT_NORMAL;
+  clearTimeout(semanticTimer);
+  // Restore timeline
+  render();
+  autogrow();
+  input.focus();
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+function highlight(text, q) {
+  if (!q) return escapeHtml(text);
+  const re = new RegExp(escapeRe(q), 'gi');
+  let out = '';
+  let last = 0;
+  const safe = escapeHtml(text);
+  // Re-run regex on safe text (escapeHtml doesn't touch letters/numbers,
+  // so ranges map 1:1 for alphanumeric queries; good enough for this).
+  safe.replace(re, (m, idx) => {
+    out += safe.slice(last, idx) + '<mark class="hit">' + m + '</mark>';
+    last = idx + m.length;
+    return m;
+  });
+  out += safe.slice(last);
+  return out;
+}
+
+function runSearch(query) {
+  clearTimeout(semanticTimer);
+  const q = query.trim();
+
+  // Re-render timeline fresh (clears any prior highlight/current-hit state)
+  render();
+
+  if (!q) {
+    // Empty query: show everything, no hits
+    hits = [];
+    currentHit = -1;
+    searchStatusText.innerHTML = '<strong>type</strong> to find · or ask in plain english';
+    searchStatusPill.classList.remove('semantic');
+    return;
+  }
+
+  // Literal substring pass
+  const qLower = q.toLowerCase();
+  hits = [];
+  const allMsgs = [...document.querySelectorAll('.msg')];
+  allMsgs.forEach(el => {
+    const m = messages.find(x => x.id === el.dataset.id);
+    if (!m) return;
+    if (m.text.toLowerCase().includes(qLower)) {
+      // Highlight matches in body
+      const body = el.querySelector('.msg-body');
+      body.innerHTML = highlight(m.text, q);
+      hits.push({ msgId: m.id, el });
+    } else {
+      el.classList.add('miss');
+    }
+  });
+
+  if (hits.length > 0) {
+    currentHit = 0;
+    markCurrentHit();
+    searchStatusText.innerHTML = `<strong>${hits.length}</strong> ${hits.length === 1 ? 'result' : 'results'}`;
+    searchStatusPill.classList.remove('semantic');
+  } else {
+    currentHit = -1;
+    // Show empty state + offer semantic
+    const empty = document.createElement('div');
+    empty.className = 'search-empty';
+    empty.innerHTML = `
+      <div class="big">no literal match for "${escapeHtml(q)}"</div>
+      <div>looking semantically…</div>
+    `;
+    // Clear timeline and show empty
+    timeline.innerHTML = '';
+    timeline.appendChild(empty);
+    searchStatusText.innerHTML = `<span class="search-thinking"></span> thinking…`;
+    searchStatusPill.classList.add('semantic');
+    // Auto-fire semantic after a short debounce
+    semanticTimer = setTimeout(() => runSemanticSearch(q), 400);
+  }
+}
+
+function markCurrentHit() {
+  document.querySelectorAll('.msg.current-hit').forEach(el => el.classList.remove('current-hit'));
+  if (currentHit < 0 || currentHit >= hits.length) return;
+  const h = hits[currentHit];
+  h.el.classList.add('current-hit');
+  { const r = h.el.getBoundingClientRect(); window.scrollTo({ top: window.scrollY + r.top - window.innerHeight/2 + r.height/2, behavior: 'smooth' }); }
+  searchStatusText.innerHTML = `<strong>${currentHit + 1}</strong> of ${hits.length}`;
+}
+
+function stepHit(delta) {
+  if (hits.length === 0) return;
+  currentHit = (currentHit + delta + hits.length) % hits.length;
+  markCurrentHit();
+}
+
+function jumpToCurrentHit() {
+  if (currentHit < 0 || currentHit >= hits.length) return;
+  const h = hits[currentHit];
+  exitSearch();
+  // After exit + re-render, find the message again and flash it
+  requestAnimationFrame(() => {
+    const el = document.querySelector(`.msg[data-id="${h.msgId}"]`);
+    if (!el) return;
+    { const r = el.getBoundingClientRect(); window.scrollTo({ top: window.scrollY + r.top - window.innerHeight/2 + r.height/2, behavior: 'smooth' }); }
+    el.classList.add('current-hit');
+    setTimeout(() => el.classList.remove('current-hit'), 1400);
+  });
+}
+
+document.getElementById('searchPrev').addEventListener('click', () => stepHit(-1));
+document.getElementById('searchNext').addEventListener('click', () => stepHit(+1));
+document.getElementById('searchExit').addEventListener('click', exitSearch);
+
+/* Semantic fallback — ask Claude to pick relevant message IDs */
+async function runSemanticSearch(q) {
+  if (!searchMode) return;
+  if (!(window.claude && typeof window.claude.complete === 'function')) {
+    renderSemanticEmpty(q);
+    return;
+  }
+  // Build a compact index
+  const index = messages.filter(m => m.type !== 'break').slice(-200).map(m => ({
+    id: m.id,
+    role: m.role,
+    text: m.text.length > 220 ? m.text.slice(0, 220) + '…' : m.text,
+  }));
+  const system =
+    "you help find messages in a chat log by semantic relevance. " +
+    "given a query and a list of messages (id + text), return ONLY a JSON array of the message ids that best match the query, most relevant first, up to 10. " +
+    "if nothing matches well, return []. no prose, no explanation, just the JSON array.";
+  const userMsg =
+    `query: ${q}\n\nmessages:\n` +
+    index.map(m => `${m.id} [${m.role}]: ${m.text}`).join('\n');
+  let ids = [];
+  try {
+    const out = await window.claude.complete({
+      system,
+      messages: [{ role: 'user', content: userMsg }],
+    });
+    const match = out && out.match(/\[[\s\S]*\]/);
+    if (match) ids = JSON.parse(match[0]);
+  } catch (err) {
+    console.warn('semantic search failed', err);
+  }
+  if (!searchMode) return; // user exited while we were thinking
+
+  if (!Array.isArray(ids) || ids.length === 0) {
+    renderSemanticEmpty(q);
+    return;
+  }
+
+  // Render only matching messages, in the order Claude returned
+  timeline.innerHTML = '';
+  const label = document.createElement('div');
+  label.className = 'day';
+  label.textContent = 'related to your question';
+  timeline.appendChild(label);
+  hits = [];
+  ids.forEach(id => {
+    const m = messages.find(x => x.id === id);
+    if (!m) return;
+    const el = buildMsg(m, false);
+    timeline.appendChild(el);
+    hits.push({ msgId: id, el });
+  });
+  if (hits.length > 0) {
+    currentHit = 0;
+    markCurrentHit();
+    searchStatusText.innerHTML = `<strong>${hits.length}</strong> related · semantic`;
+  } else {
+    renderSemanticEmpty(q);
+  }
+}
+
+function renderSemanticEmpty(q) {
+  timeline.innerHTML = '';
+  const empty = document.createElement('div');
+  empty.className = 'search-empty';
+  empty.innerHTML = `
+    <div class="big">nothing matched "${escapeHtml(q)}"</div>
+    <div>try different words, or exit and ask tide directly</div>
+  `;
+  timeline.appendChild(empty);
+  searchStatusText.innerHTML = `<strong>0</strong> results`;
+  searchStatusPill.classList.remove('semantic');
+}
+
+async function submit() {
+  const text = input.value.trim();
+  if (!text) return;
+  const userMsg = {
+    id: 'u' + Date.now(),
+    role: 'you',
+    text,
+    ts: Date.now(),
+    replyTo: replyTo || undefined,
+  };
+  messages.push(userMsg);
+  save();
+  input.value = '';
+  autogrow();
+  const wasReply = !!replyTo;
+  const parentId = replyTo;
+  clearReplyTarget();
+
+  appendRendered(userMsg);
+  scrollToEnd();
+
+  // Decide whether this prompt should trigger tool calls.
+  // When yes, create the agent message now (empty text, tools in 'running' state),
+  // render it, then animate tools to done before streaming the reply text.
+  const plannedTools = planTools(text);
+  const agentMsg = {
+    id: 'a' + Date.now(),
+    role: 'agent',
+    text: '',
+    ts: Date.now(),
+    replyTo: wasReply ? parentId : undefined,
+    tools: plannedTools.length ? plannedTools.map(t => ({name: t.name, args: t.args, result: t.result, status: 'running'})) : undefined,
+  };
+
+  let thinking = null;
+  if (plannedTools.length) {
+    // Render the agent shell with running tools in place of a thinking dot
+    messages.push(agentMsg);
+    appendRendered(agentMsg);
+    scrollToEnd();
+    // Animate tools: each resolves after a short staggered delay
+    await runPlannedTools(agentMsg);
+  } else {
+    thinking = document.createElement('div');
+    thinking.className = 'thinking' + (wasReply ? ' reply' : '');
+    timeline.appendChild(thinking);
+    scrollToEnd();
+  }
+
+  let reply;
+  try {
+    reply = await callAgent(text, wasReply ? parentId : null, plannedTools);
+  } catch(_) {
+    reply = 'sorry — i had trouble with that. say more?';
+  }
+
+  if (thinking) thinking.remove();
+
+  if (plannedTools.length) {
+    // Fill in the text on the existing shell
+    agentMsg.text = reply;
+    agentMsg.ts = Date.now();
+    save();
+    // Update the rendered body in place
+    const el = timeline.querySelector(`.msg[data-id="${agentMsg.id}"]`);
+    if (el) {
+      const body = el.querySelector('.msg-body');
+      if (body) body.textContent = reply;
+      // Update timestamp in footer
+      const time = el.querySelector('.msg-footer span');
+      if (time) time.textContent = timeLabel(agentMsg.ts);
+    }
+    scrollToEnd();
+  } else {
+    agentMsg.text = reply;
+    messages.push(agentMsg);
+    save();
+    appendRendered(agentMsg);
+    scrollToEnd();
+  }
+}
+
+/* =========================================================
+   Tool-call planning & simulation
+   ========================================================= */
+// Pattern-match the prompt to decide which tools the agent would call.
+// Purely heuristic — no real tool execution; results are plausible fakes.
+function planTools(text) {
+  const t = text.toLowerCase();
+  const tools = [];
+  if (/\b(calendar|schedule|meeting|today|tomorrow|this week|cal\b)/.test(t)) {
+    tools.push({ name: 'calendar.read', args: { range: /tomorrow/.test(t) ? 'tomorrow' : /week/.test(t) ? 'this week' : 'today', cal: 'primary' }, result: '3 events' });
+  }
+  if (/\b(email|inbox|message from|reply from|mercy|legal)/.test(t)) {
+    tools.push({ name: 'email.search', args: { since: '24h', query: text.slice(0, 40) }, result: '2 threads' });
+  }
+  if (/\b(slack|dm from|ping|channel)/.test(t)) {
+    tools.push({ name: 'slack.search', args: { query: text.slice(0, 40), since: '24h' }, result: '4 messages' });
+  }
+  if (/\b(deck|slides?|keynote|presentation|doc|document|brochure|draft|file)/.test(t)) {
+    tools.push({ name: 'drive.find', args: { query: text.slice(0, 40) }, result: '1 file' });
+  }
+  if (/\b(flight|book|flights|travel|tokyo|london|paris|tickets|hotel)/.test(t)) {
+    tools.push({ name: 'flights.search', args: { query: text.slice(0, 40) }, result: '12 options' });
+  }
+  if (/\b(linear|ticket|issue|bug|incident|INC-|jira)/i.test(text)) {
+    tools.push({ name: 'linear.search', args: { query: text.slice(0, 40) }, result: '3 tickets' });
+  }
+  if (/\b(search|look up|find|news|latest|who is|what is|when did)/.test(t) && tools.length === 0) {
+    tools.push({ name: 'web.search', args: { q: text.slice(0, 60) }, result: '5 results' });
+  }
+  // cap at 3 for visual breathing room
+  return tools.slice(0, 3);
+}
+
+async function runPlannedTools(agentMsg) {
+  if (!agentMsg.tools) return;
+  const el = timeline.querySelector(`.msg[data-id="${agentMsg.id}"]`);
+  for (let i = 0; i < agentMsg.tools.length; i++) {
+    // Staggered resolution — 400-900ms each
+    await new Promise(r => setTimeout(r, 420 + Math.random() * 480));
+    agentMsg.tools[i].status = 'done';
+    // Re-render just the tools block in place
+    if (el) {
+      const oldTools = el.querySelector('.msg-tools');
+      const newTools = buildTools(agentMsg.tools);
+      if (oldTools) oldTools.replaceWith(newTools);
+      else el.insertBefore(newTools, el.firstChild);
+    }
+  }
+}
+
+function appendRendered(m) {
+  // If this is the first message of a new day, inject a day marker
+  const lastChild = timeline.lastElementChild;
+  let needsDay = true;
+  if (lastChild) {
+    // Walk back to find the previous message ts
+    for (let i = messages.length - 2; i >= 0; i--) {
+      if (dayOf(messages[i].ts) === dayOf(m.ts)) { needsDay = false; break; }
+      break;
+    }
+  } else {
+    needsDay = true;
+  }
+  // Simpler: re-render if things get weird. For incremental adds,
+  // just append; day markers at boundaries are rare mid-session.
+  const el = buildMsg(m, !!m.replyTo);
+  el.classList.add('entering');
+  // If it's a reply, try to insert it right after its parent group
+  if (m.replyTo) {
+    // find last sibling that's either the parent or a reply to the parent
+    const nodes = [...timeline.children];
+    let anchor = null;
+    for (const n of nodes) {
+      if (n.dataset && n.dataset.id === m.replyTo) anchor = n;
+      else if (n.classList && n.classList.contains('reply') && anchor) anchor = n;
+      else if (anchor && !n.classList.contains('reply')) break;
+    }
+    if (anchor && anchor.nextSibling) timeline.insertBefore(el, anchor.nextSibling);
+    else timeline.appendChild(el);
+  } else {
+    timeline.appendChild(el);
+  }
+  el.addEventListener('animationend', () => el.classList.remove('entering'), { once: true });
+}
+
+function scrollToEnd() {
+  requestAnimationFrame(() => {
+    window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+  });
+}
+
+/* =========================================================
+   Agent call
+   ========================================================= */
+async function callAgent(text, replyingToId, plannedTools) {
+  const system =
+    "you are tide — a calm, concise thinking partner in an ongoing one-on-one chat. " +
+    "you reply in lowercase-ish prose, 1 to 3 short sentences, no headers, no bullet lists unless asked. " +
+    "you have persistent context: you remember what the user has told you in this conversation. " +
+    "never introduce yourself again. never announce 'as an AI'. talk like a trusted colleague. " +
+    (plannedTools && plannedTools.length
+      ? "you just ran these tools and got results — weave the outcomes into your reply naturally, don't mention 'tools' or 'i searched': "
+        + plannedTools.map(t => `${t.name}(${JSON.stringify(t.args)}) → ${t.result}`).join('; ')
+      : "");
+
+  // Context window: only messages AFTER the most recent topic break.
+  // Exception: when the user is explicitly replying to an older message,
+  // include that parent — replies pierce through break boundaries on purpose.
+  let startIdx = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].type === 'break') { startIdx = i + 1; break; }
+  }
+  const scoped = messages.slice(startIdx).filter(m => m.type !== 'break');
+  const history = scoped.slice(-14).map(m => ({
+    role: m.role === 'you' ? 'user' : 'assistant',
+    content: m.text,
+  }));
+  if (replyingToId) {
+    const parent = messages.find(x => x.id === replyingToId);
+    if (parent && !scoped.includes(parent)) {
+      history.unshift({
+        role: 'user',
+        content: `[earlier context — the user is replying to this specific message from before the current topic: "${parent.text.slice(0, 240)}"]`,
+      });
+    } else if (parent) {
+      history.unshift({
+        role: 'system',
+        content: `[the user is replying specifically to this earlier message: "${parent.text.slice(0, 240)}"]`,
+      });
+    }
+  }
+  if (window.claude && typeof window.claude.complete === 'function') {
+    try {
+      const out = await window.claude.complete({ system, messages: history });
+      if (out && typeof out === 'string') return out.trim();
+    } catch (err) {
+      console.warn('claude failed, falling back', err);
+    }
+  }
+  // Fallback — just a calm, generic acknowledgement
+  await new Promise(r => setTimeout(r, 700));
+  if (/\?/.test(text)) return 'good question. let me sit with it a moment and get back with something concrete.';
+  if (/^(thanks|thank you|ty)/i.test(text.trim())) return 'anytime.';
+  return 'noted. want me to move on that now, or hold it for your morning review?';
+}
+
+/* =========================================================
+   Theme
+   ========================================================= */
+const THEME_KEY = 'tide-minimal-theme';
+function applyTheme(v) {
+  if (v === 'auto') document.documentElement.removeAttribute('data-theme');
+  else document.documentElement.setAttribute('data-theme', v);
+  localStorage.setItem(THEME_KEY, v);
+}
+applyTheme(localStorage.getItem(THEME_KEY) || 'auto');
+document.getElementById('themeBtn').addEventListener('click', () => {
+  const cur = localStorage.getItem(THEME_KEY) || 'auto';
+  const next = cur === 'auto' ? 'light' : cur === 'light' ? 'dark' : 'auto';
+  applyTheme(next);
+  // Reflect in tweaks if open
+  syncTweaks();
+});
+
+/* =========================================================
+   Font theme — Editorial / Clean / Literary
+   ========================================================= */
+const FONT_KEY = 'tide-minimal-font';
+function applyFont(v) {
+  const valid = ['editorial', 'clean', 'literary'];
+  if (!valid.includes(v)) v = 'editorial';
+  document.body.setAttribute('data-font', v);
+  localStorage.setItem(FONT_KEY, v);
+  // Reflect active state in the menu
+  document.querySelectorAll('.font-opt .font-opt-name').forEach(n => n.classList.remove('active'));
+  const opt = document.querySelector(`.font-opt[data-font="${v}"] .font-opt-name`);
+  if (opt) opt.classList.add('active');
+}
+applyFont(localStorage.getItem(FONT_KEY) || 'editorial');
+
+const fontBtn = document.getElementById('fontBtn');
+const fontMenu = document.getElementById('fontMenu');
+fontBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  fontMenu.classList.toggle('open');
+});
+document.querySelectorAll('.font-opt').forEach(opt => {
+  opt.addEventListener('click', (e) => {
+    e.stopPropagation();
+    applyFont(opt.dataset.font);
+    fontMenu.classList.remove('open');
+  });
+});
+document.addEventListener('click', (e) => {
+  if (!fontMenu.contains(e.target) && e.target !== fontBtn) {
+    fontMenu.classList.remove('open');
+  }
+});
+
+/* =========================================================
+   Tweaks
+   ========================================================= */
+const TIDE_TWEAKS = /*EDITMODE-BEGIN*/{
+  "density": "tight",
+  "voice": "serif",
+  "theme": "auto"
+}/*EDITMODE-END*/;
+
+function applyTweaks() {
+  document.body.setAttribute('data-density', TIDE_TWEAKS.density);
+  document.body.setAttribute('data-voice', TIDE_TWEAKS.voice);
+  applyTheme(TIDE_TWEAKS.theme);
+  syncTweaks();
+}
+function syncTweaks() {
+  document.querySelectorAll('.tweak-seg').forEach(seg => {
+    const key = seg.dataset.tweak;
+    const cur = key === 'theme' ? (localStorage.getItem(THEME_KEY) || 'auto') : TIDE_TWEAKS[key];
+    seg.querySelectorAll('button').forEach(b => b.classList.toggle('current', b.dataset.value === cur));
+  });
+}
+
+document.querySelectorAll('.tweak-seg').forEach(seg => {
+  seg.querySelectorAll('button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const key = seg.dataset.tweak;
+      TIDE_TWEAKS[key] = btn.dataset.value;
+      applyTweaks();
+      try {
+        window.parent.postMessage({ type: '__edit_mode_set_keys', edits: { ...TIDE_TWEAKS } }, '*');
+      } catch(_) {}
+    });
+  });
+});
+
+window.addEventListener('message', (e) => {
+  if (!e.data || typeof e.data !== 'object') return;
+  if (e.data.type === '__activate_edit_mode')   document.getElementById('tweaks').classList.add('visible');
+  if (e.data.type === '__deactivate_edit_mode') document.getElementById('tweaks').classList.remove('visible');
+});
+try { window.parent.postMessage({ type: '__edit_mode_available' }, '*'); } catch(_) {}
+
+applyTweaks();
+render();
+scrollToEnd();
+
+/* =========================================================
+   TIDE LINE — calendar ruler, browse by date
+   ========================================================= */
+const tideLine = document.getElementById('tideLine');
+const tideTrack = document.getElementById('tideTrack');
+const tideCursor = document.getElementById('tideCursor');
+const tideChip = document.getElementById('tideChip');
+const tideChipDate = document.getElementById('tideChipDate');
+const tideChipCount = document.getElementById('tideChipCount');
+const tideChipSummary = document.getElementById('tideChipSummary');
+
+const summaryCache = new Map();
+let tideDays = []; // [{dateKey, date, ts, count, el}]
+
+function buildTideLine() {
+  // Clear
+  [...tideTrack.querySelectorAll('.tide-day, .tide-label')].forEach(e => e.remove());
+
+  // Group messages by day
+  const byDay = new Map();
+  messages.forEach(m => {
+    if (m.type === 'break') return;
+    const k = new Date(m.ts);
+    k.setHours(0, 0, 0, 0);
+    const key = k.getTime();
+    if (!byDay.has(key)) byDay.set(key, []);
+    byDay.get(key).push(m);
+  });
+
+  if (byDay.size === 0) return;
+
+  const keys = [...byDay.keys()].sort((a, b) => a - b);
+  const firstDay = keys[0];
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const lastDay = Math.max(keys[keys.length - 1], today.getTime());
+  const spanDays = Math.max(1, Math.round((lastDay - firstDay) / (24 * 3600 * 1000)));
+
+  tideDays = [];
+  const todayKey = today.getTime();
+
+  // Show a tick for each day in span (even empty ones, but only if we have few days);
+  // for bigger spans, only show days that have activity + month anchors
+  const showAllDays = spanDays <= 60;
+
+  for (let i = 0; i <= spanDays; i++) {
+    const ts = firstDay + i * 24 * 3600 * 1000;
+    const has = byDay.has(ts);
+    if (!showAllDays && !has && ts !== todayKey) continue;
+    const count = has ? byDay.get(ts).length : 0;
+    const pct = (i / spanDays) * 100;
+    const d = new Date(ts);
+
+    const el = document.createElement('div');
+    el.className = 'tide-day';
+    const tier = count === 0 ? 0 : count <= 2 ? 1 : count <= 5 ? 2 : 3;
+    if (count > 0) el.classList.add('d' + tier);
+    else el.classList.add('d0');
+    if (ts === todayKey) el.classList.add('today');
+    el.style.top = `calc(${pct}% - 1px)`;
+    el.style.height = showAllDays ? '3px' : '4px';
+    tideTrack.appendChild(el);
+
+    tideDays.push({ ts, count, el, pct, messages: byDay.get(ts) || [] });
+
+    // Anchor labels: first of month
+    if (d.getDate() === 1 || i === 0) {
+      const lab = document.createElement('div');
+      lab.className = 'tide-label anchor';
+      lab.style.top = `${pct}%`;
+      lab.textContent = d.toLocaleDateString(undefined, { month: 'short' });
+      tideTrack.appendChild(lab);
+    }
+  }
+}
+buildTideLine();
+
+let hoverLabel = null;
+function ensureHoverLabel() {
+  if (!hoverLabel) {
+    hoverLabel = document.createElement('div');
+    hoverLabel.className = 'tide-label';
+    tideTrack.appendChild(hoverLabel);
+  }
+  return hoverLabel;
+}
+
+function onTideMove(clientY) {
+  const rect = tideTrack.getBoundingClientRect();
+  const y = Math.max(0, Math.min(rect.height, clientY - rect.top));
+  const pct = y / rect.height;
+  tideCursor.style.top = `${pct * 100}%`;
+
+  // Find nearest day
+  if (tideDays.length === 0) return null;
+  let nearest = tideDays[0];
+  let bestDist = Infinity;
+  for (const d of tideDays) {
+    const dist = Math.abs(d.pct / 100 - pct);
+    if (dist < bestDist) { bestDist = dist; nearest = d; }
+  }
+
+  // Update chip
+  const date = new Date(nearest.ts);
+  tideChipDate.textContent = dayLabel(nearest.ts);
+  tideChipCount.textContent = nearest.count === 0
+    ? 'quiet · no messages'
+    : `${nearest.count} ${nearest.count === 1 ? 'message' : 'messages'}`;
+
+  // Position chip next to cursor
+  tideChip.style.top = `${clientY}px`;
+  tideChip.classList.add('visible');
+
+  // Hover label showing the nearest date
+  const lab = ensureHoverLabel();
+  lab.textContent = date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  lab.style.top = `${nearest.pct}%`;
+  lab.style.opacity = '0.9';
+
+  // Summary
+  if (nearest.count > 0) {
+    renderSummary(nearest);
+  } else {
+    tideChipSummary.textContent = '';
+    tideChipSummary.classList.remove('loading');
+  }
+  return nearest;
+}
+
+let summaryTimer = null;
+function renderSummary(day) {
+  const key = day.ts;
+  if (summaryCache.has(key)) {
+    tideChipSummary.textContent = summaryCache.get(key);
+    tideChipSummary.classList.remove('loading');
+    return;
+  }
+  tideChipSummary.textContent = '';
+  tideChipSummary.classList.add('loading');
+  clearTimeout(summaryTimer);
+  summaryTimer = setTimeout(() => fetchDaySummary(day), 300);
+}
+
+async function fetchDaySummary(day) {
+  const key = day.ts;
+  // Local fallback: join first-line snippets
+  const quick = day.messages
+    .slice(0, 3)
+    .map(m => (m.text.split('\n')[0] || '').slice(0, 60))
+    .join(' · ');
+
+  if (!(window.claude && typeof window.claude.complete === 'function')) {
+    summaryCache.set(key, quick || '…');
+    if (tideChip.classList.contains('visible')) {
+      tideChipSummary.textContent = summaryCache.get(key);
+      tideChipSummary.classList.remove('loading');
+    }
+    return;
+  }
+
+  const system = 'summarize the following chat messages from a single day in ONE very short phrase, 4-9 words, lowercase, no quotes, no punctuation at the end. it should read like a diary entry topic, not a sentence.';
+  const user = day.messages.map(m => `[${m.role}] ${m.text.slice(0, 240)}`).join('\n');
+  let out = '';
+  try {
+    const reply = await window.claude.complete({ system, messages: [{ role: 'user', content: user }] });
+    if (reply && typeof reply === 'string') out = reply.trim().replace(/^["'\u201c\u2018]|["'\u201d\u2019]$/g, '').slice(0, 80);
+  } catch(_) {}
+  if (!out) out = quick;
+  summaryCache.set(key, out);
+  // Only update if this day is still the hovered one
+  if (tideChip.classList.contains('visible') && tideChipDate.textContent === dayLabel(day.ts)) {
+    tideChipSummary.textContent = out;
+    tideChipSummary.classList.remove('loading');
+  }
+}
+
+tideLine.addEventListener('mousemove', (e) => onTideMove(e.clientY));
+tideLine.addEventListener('mouseleave', () => {
+  tideChip.classList.remove('visible');
+  if (hoverLabel) hoverLabel.style.opacity = '0';
+});
+tideLine.addEventListener('click', (e) => {
+  const day = onTideMove(e.clientY);
+  if (!day) return;
+  // Jump to first message of that day (or nearest if empty)
+  jumpToDay(day.ts);
+});
+
+/* Touch handling for tide-line: tap or drag to scrub; release jumps.
+   We use touchstart/move to preview (like hover) and touchend to commit. */
+let tideTouchActive = false;
+tideLine.addEventListener('touchstart', (e) => {
+  tideTouchActive = true;
+  tideLine.classList.add('pinned');
+  if (e.touches[0]) onTideMove(e.touches[0].clientY);
+}, { passive: true });
+tideLine.addEventListener('touchmove', (e) => {
+  if (!tideTouchActive) return;
+  if (e.touches[0]) onTideMove(e.touches[0].clientY);
+}, { passive: true });
+tideLine.addEventListener('touchend', (e) => {
+  tideTouchActive = false;
+  const touch = e.changedTouches[0];
+  if (touch) {
+    const day = onTideMove(touch.clientY);
+    if (day) jumpToDay(day.ts);
+  }
+  // Small delay so the user sees where they jumped to
+  setTimeout(() => {
+    tideLine.classList.remove('pinned');
+    tideChip.classList.remove('visible');
+    if (hoverLabel) hoverLabel.style.opacity = '0';
+  }, 600);
+});
+
+function jumpToDay(ts) {
+  // Find the first message >= ts
+  const target = messages.find(m => {
+    const d = new Date(m.ts); d.setHours(0,0,0,0);
+    return d.getTime() >= ts;
+  });
+  if (!target) { window.scrollTo({ top: 0, behavior: 'smooth' }); return; }
+  const el = document.querySelector(`.msg[data-id="${target.id}"]`);
+  if (!el) return;
+  const r = el.getBoundingClientRect();
+  const tlRect = document.querySelector('.timeline').getBoundingClientRect();
+  window.scrollTo({ top: window.scrollY + r.top - 80, behavior: 'smooth' });
+  el.classList.add('current-hit');
+  setTimeout(() => el.classList.remove('current-hit'), 1200);
+}
+
+// Rebuild tide line whenever messages change — handled via save() wrapper above
+</script>
+</body>
+</html>

@@ -1,0 +1,109 @@
+- generic [ref=e3]:
+  - complementary [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e7]: tide
+      - button "Collapse sidebar" [expanded] [ref=e8] [cursor=pointer]:
+        - img [ref=e9]
+    - button "new session ⌘N" [ref=e11] [cursor=pointer]:
+      - img [ref=e12]
+      - generic [ref=e14]: new session
+      - generic [ref=e15]: ⌘N
+    - navigation "sessions" [ref=e16]:
+      - generic [ref=e17]:
+        - generic [ref=e18]: today
+        - generic [ref=e19] [cursor=pointer]:
+          - generic [ref=e21]: New Chat
+          - button "more" [ref=e22]: ⋯
+        - generic [ref=e23] [cursor=pointer]:
+          - generic [ref=e25]: New Chat
+          - button "more" [ref=e26]: ⋯
+        - generic [ref=e27] [cursor=pointer]:
+          - generic [ref=e29]: New Chat
+          - button "more" [ref=e30]: ⋯
+        - generic [ref=e31] [cursor=pointer]:
+          - generic [ref=e33]: New Chat
+          - button "more" [ref=e34]: ⋯
+        - generic [ref=e35] [cursor=pointer]:
+          - generic [ref=e37]: New Chat
+          - button "more" [ref=e38]: ⋯
+        - generic [ref=e39] [cursor=pointer]:
+          - generic [ref=e41]: New Chat
+          - button "more" [ref=e42]: ⋯
+        - generic [ref=e43] [cursor=pointer]:
+          - generic [ref=e45]: New Chat
+          - button "more" [ref=e46]: ⋯
+      - generic [ref=e47]:
+        - generic [ref=e48]: yesterday
+        - generic [ref=e49] [cursor=pointer]:
+          - generic [ref=e51]: New Chat
+          - button "more" [ref=e52]: ⋯
+        - generic [ref=e53] [cursor=pointer]:
+          - generic [ref=e55]: New Chat
+          - button "more" [ref=e56]: ⋯
+        - generic [ref=e57] [cursor=pointer]:
+          - generic [ref=e59]: New Chat
+          - button "more" [ref=e60]: ⋯
+        - generic [ref=e61] [cursor=pointer]:
+          - generic [ref=e63]: New Chat
+          - button "more" [ref=e64]: ⋯
+        - generic [ref=e65] [cursor=pointer]:
+          - generic [ref=e67]: New Chat
+          - button "more" [ref=e68]: ⋯
+        - generic [ref=e69] [cursor=pointer]:
+          - generic [ref=e71]: New Chat
+          - button "more" [ref=e72]: ⋯
+        - generic [ref=e73] [cursor=pointer]:
+          - generic [ref=e75]: New Chat
+          - button "more" [ref=e76]: ⋯
+        - generic [ref=e77] [cursor=pointer]:
+          - generic [ref=e79]: New Chat
+          - button "more" [ref=e80]: ⋯
+        - generic [ref=e81] [cursor=pointer]:
+          - generic [ref=e83]: New Chat
+          - button "more" [ref=e84]: ⋯
+        - generic [ref=e85] [cursor=pointer]:
+          - generic [ref=e87]: New Chat
+          - button "more" [ref=e88]: ⋯
+        - generic [ref=e89] [cursor=pointer]:
+          - generic [ref=e91]: New Chat
+          - button "more" [ref=e92]: ⋯
+        - generic [ref=e93] [cursor=pointer]:
+          - generic [ref=e95]: New Chat
+          - button "more" [ref=e96]: ⋯
+        - generic [ref=e97] [cursor=pointer]:
+          - generic [ref=e99]: New Chat
+          - button "more" [ref=e100]: ⋯
+    - button "unnamed" [ref=e102] [cursor=pointer]:
+      - generic [ref=e103]: U
+      - generic [ref=e105]: unnamed
+      - img [ref=e106]
+  - main [ref=e108]:
+    - button "Default Personal Agent" [ref=e113] [cursor=pointer]:
+      - generic [ref=e116]: Default Personal Agent
+      - img [ref=e117]
+    - generic [ref=e120]:
+      - generic [ref=e122]:
+        - generic [ref=e137]:
+          - paragraph [ref=e140]: Run "ls -la /workspace" using the Bash tool and show me the output.
+          - generic [ref=e141]:
+            - generic [ref=e142]: 8:09 am
+            - button "Copy" [ref=e143] [cursor=pointer]:
+              - img [ref=e144]
+            - button "Edit" [ref=e147] [cursor=pointer]:
+              - img [ref=e148]
+        - generic [ref=e152]:
+          - generic [ref=e153]: 8:09 am
+          - button "Copy" [disabled] [ref=e154] [cursor=pointer]:
+            - img [ref=e155]
+          - button "Retry" [disabled] [ref=e158] [cursor=pointer]:
+            - img [ref=e159]
+          - button "Show thinking" [ref=e162] [cursor=pointer]:
+            - img [ref=e163]
+      - generic [ref=e127]:
+        - generic [ref=e128]:
+          - button "Attach" [ref=e130] [cursor=pointer]:
+            - img [ref=e131]
+          - textbox "Message tide…" [active] [ref=e133]
+          - button "Stop" [ref=e173] [cursor=pointer]:
+            - img [ref=e174]
+        - generic: ⏎ send · ⇧⏎ newline

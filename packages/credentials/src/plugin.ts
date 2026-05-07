@@ -192,6 +192,7 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
         'credentials:delete',
         'credentials:list',
         'credentials:list-kinds',
+        'credentials:resolve:setting',
       ],
       // Storage goes through the `credentials:store-blob:*` seam (Phase 1b).
       // The default backend is `@ax/credentials-store-db`; vault / KMS
@@ -583,6 +584,14 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
             }
           }
           return { kinds };
+        },
+      );
+
+      bus.registerService<CredentialsResolveInput, CredentialsResolveOutput>(
+        'credentials:resolve:setting',
+        PLUGIN_NAME,
+        async (_ctx, input) => {
+          return { value: new TextDecoder().decode(input.payload) };
         },
       );
     },

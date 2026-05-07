@@ -1,0 +1,45 @@
+- generic [ref=e3]:
+  - complementary [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e7]: tide
+      - button "Collapse sidebar" [expanded] [ref=e8] [cursor=pointer]:
+        - img [ref=e9]
+    - button "new session ⌘N" [ref=e11] [cursor=pointer]:
+      - img [ref=e12]
+      - generic [ref=e14]: new session
+      - generic [ref=e15]: ⌘N
+    - navigation "sessions" [ref=e16]
+    - button "unnamed" [ref=e18] [cursor=pointer]:
+      - generic [ref=e19]: U
+      - generic [ref=e21]: unnamed
+      - img [ref=e22]
+  - main [ref=e24]:
+    - button "Default Personal Agent" [ref=e29] [cursor=pointer]:
+      - generic [ref=e32]: Default Personal Agent
+      - img [ref=e33]
+    - generic [ref=e36]:
+      - generic [ref=e38]:
+        - generic [ref=e53]:
+          - paragraph [ref=e56]: list the files in /workspace
+          - generic [ref=e57]:
+            - generic [ref=e58]: 9:16 pm
+            - button "Copy" [ref=e59] [cursor=pointer]:
+              - img [ref=e60]
+            - button "Edit" [ref=e63] [cursor=pointer]:
+              - img [ref=e64]
+        - generic [ref=e68]:
+          - generic [ref=e69]: 9:16 pm
+          - button "Copy" [disabled] [ref=e70] [cursor=pointer]:
+            - img [ref=e71]
+          - button "Retry" [ref=e74] [cursor=pointer]:
+            - img [ref=e75]
+          - button "Show thinking" [ref=e78] [cursor=pointer]:
+            - img [ref=e79]
+      - generic [ref=e43]:
+        - generic [ref=e44]:
+          - button "Attach" [ref=e46] [cursor=pointer]:
+            - img [ref=e47]
+          - textbox "Message tide…" [active] [ref=e49]
+          - button "Send" [disabled] [ref=e89] [cursor=pointer]:
+            - img [ref=e90]
+        - generic: ⏎ send · ⇧⏎ newline

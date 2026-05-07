@@ -1,0 +1,65 @@
+- generic [ref=e3]:
+  - complementary [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e7]: tide
+      - button "Collapse sidebar" [expanded] [ref=e8] [cursor=pointer]:
+        - img [ref=e9]
+    - button "new session ⌘N" [ref=e11] [cursor=pointer]:
+      - img [ref=e12]
+      - generic [ref=e14]: new session
+      - generic [ref=e15]: ⌘N
+    - navigation "sessions" [ref=e16]:
+      - generic [ref=e53]:
+        - generic [ref=e54]: today
+        - generic [ref=e55] [cursor=pointer]:
+          - generic [ref=e57]: teset
+          - button "more" [ref=e58]: ⋯
+        - generic [ref=e59] [cursor=pointer]:
+          - generic [ref=e61]: new session
+          - button "more" [ref=e62]: ⋯
+    - generic [ref=e17]:
+      - button "Alice alice@local" [expanded] [active] [ref=e18] [cursor=pointer]:
+        - generic [ref=e19]: A
+        - generic [ref=e20]:
+          - generic [ref=e21]: Alice
+          - generic [ref=e22]: alice@local
+        - img [ref=e23]
+      - menu [ref=e80]:
+        - generic [ref=e81]:
+          - generic [ref=e82]: Alice
+          - generic [ref=e83]: alice@local
+        - menuitem "Account & billing" [disabled] [ref=e84] [cursor=pointer]:
+          - img [ref=e85]
+          - generic [ref=e88]: Account & billing
+        - menuitem "Settings ⌘," [disabled] [ref=e89] [cursor=pointer]:
+          - img [ref=e90]
+          - generic [ref=e93]: Settings
+          - generic [ref=e94]: ⌘,
+        - generic [ref=e96]:
+          - img [ref=e97]
+          - generic [ref=e99]: Theme
+          - radiogroup "Theme" [ref=e100]:
+            - radio "Light" [checked] [ref=e101] [cursor=pointer]:
+              - img [ref=e102]
+            - radio "Dark" [ref=e108] [cursor=pointer]:
+              - img [ref=e109]
+        - menuitem "Sign out" [ref=e112] [cursor=pointer]:
+          - img [ref=e113]
+          - generic [ref=e116]: Sign out
+        - generic [ref=e117]: tide v0.3
+  - main [ref=e25]:
+    - button "engineering" [ref=e63] [cursor=pointer]:
+      - generic [ref=e33]: engineering
+      - img [ref=e34]
+    - generic [ref=e37]:
+      - generic [ref=e39]:
+        - generic [ref=e40]: One conversation.
+        - generic [ref=e41]: Say anything.
+      - generic [ref=e43]:
+        - generic [ref=e44]:
+          - button "Attach" [ref=e46] [cursor=pointer]:
+            - img [ref=e47]
+          - textbox "Message tide…" [ref=e49]
+          - button "Send" [disabled] [ref=e50] [cursor=pointer]:
+            - img [ref=e51]
+        - generic: ⏎ send · ⇧⏎ newline

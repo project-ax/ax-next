@@ -1,0 +1,173 @@
+- generic [ref=e4]:
+  - complementary [ref=e5]:
+    - generic [ref=e6]:
+      - generic [ref=e8]: ax
+      - button "Collapse sidebar" [expanded] [ref=e9] [cursor=pointer]:
+        - img [ref=e10]
+    - button "new session ⌘N" [ref=e12] [cursor=pointer]:
+      - img [ref=e13]
+      - generic [ref=e15]: new session
+      - generic [ref=e16]: ⌘N
+    - navigation "sessions" [ref=e17]:
+      - generic [ref=e18]:
+        - generic [ref=e19]: today
+        - generic [ref=e20] [cursor=pointer]:
+          - generic [ref=e22]: New Chat
+          - button "more" [ref=e23]: ⋯
+        - generic [ref=e24] [cursor=pointer]:
+          - generic [ref=e26]: New Chat
+          - button "more" [ref=e27]: ⋯
+        - generic [ref=e28] [cursor=pointer]:
+          - generic [ref=e30]: New Chat
+          - button "more" [ref=e31]: ⋯
+        - generic [ref=e32] [cursor=pointer]:
+          - generic [ref=e34]: New Chat
+          - button "more" [ref=e35]: ⋯
+        - generic [ref=e36] [cursor=pointer]:
+          - generic [ref=e38]: New Chat
+          - button "more" [ref=e39]: ⋯
+        - generic [ref=e40] [cursor=pointer]:
+          - generic [ref=e42]: New Chat
+          - button "more" [ref=e43]: ⋯
+        - generic [ref=e44] [cursor=pointer]:
+          - generic [ref=e46]: New Chat
+          - button "more" [ref=e47]: ⋯
+        - generic [ref=e48] [cursor=pointer]:
+          - generic [ref=e50]: New Chat
+          - button "more" [ref=e51]: ⋯
+        - generic [ref=e52] [cursor=pointer]:
+          - generic [ref=e54]: New Chat
+          - button "more" [ref=e55]: ⋯
+      - generic [ref=e56]:
+        - generic [ref=e57]: yesterday
+        - generic [ref=e58] [cursor=pointer]:
+          - generic [ref=e60]: New Chat
+          - button "more" [ref=e61]: ⋯
+        - generic [ref=e62] [cursor=pointer]:
+          - generic [ref=e64]: New Chat
+          - button "more" [ref=e65]: ⋯
+        - generic [ref=e66] [cursor=pointer]:
+          - generic [ref=e68]: New Chat
+          - button "more" [ref=e69]: ⋯
+        - generic [ref=e70] [cursor=pointer]:
+          - generic [ref=e72]: New Chat
+          - button "more" [ref=e73]: ⋯
+        - generic [ref=e74] [cursor=pointer]:
+          - generic [ref=e76]: New Chat
+          - button "more" [ref=e77]: ⋯
+        - generic [ref=e78] [cursor=pointer]:
+          - generic [ref=e80]: New Chat
+          - button "more" [ref=e81]: ⋯
+        - generic [ref=e82] [cursor=pointer]:
+          - generic [ref=e84]: New Chat
+          - button "more" [ref=e85]: ⋯
+        - generic [ref=e86] [cursor=pointer]:
+          - generic [ref=e88]: New Chat
+          - button "more" [ref=e89]: ⋯
+        - generic [ref=e90] [cursor=pointer]:
+          - generic [ref=e92]: New Chat
+          - button "more" [ref=e93]: ⋯
+        - generic [ref=e94] [cursor=pointer]:
+          - generic [ref=e96]: New Chat
+          - button "more" [ref=e97]: ⋯
+        - generic [ref=e98] [cursor=pointer]:
+          - generic [ref=e100]: New Chat
+          - button "more" [ref=e101]: ⋯
+        - generic [ref=e102] [cursor=pointer]:
+          - generic [ref=e104]: New Chat
+          - button "more" [ref=e105]: ⋯
+        - generic [ref=e106] [cursor=pointer]:
+          - generic [ref=e108]: New Chat
+          - button "more" [ref=e109]: ⋯
+        - generic [ref=e110] [cursor=pointer]:
+          - generic [ref=e112]: New Chat
+          - button "more" [ref=e113]: ⋯
+        - generic [ref=e114] [cursor=pointer]:
+          - generic [ref=e116]: New Chat
+          - button "more" [ref=e117]: ⋯
+        - generic [ref=e118] [cursor=pointer]:
+          - generic [ref=e120]: New Chat
+          - button "more" [ref=e121]: ⋯
+        - generic [ref=e122] [cursor=pointer]:
+          - generic [ref=e124]: New Chat
+          - button "more" [ref=e125]: ⋯
+        - generic [ref=e126] [cursor=pointer]:
+          - generic [ref=e128]: New Chat
+          - button "more" [ref=e129]: ⋯
+        - generic [ref=e130] [cursor=pointer]:
+          - generic [ref=e132]: New Chat
+          - button "more" [ref=e133]: ⋯
+        - generic [ref=e134] [cursor=pointer]:
+          - generic [ref=e136]: New Chat
+          - button "more" [ref=e137]: ⋯
+        - generic [ref=e138] [cursor=pointer]:
+          - generic [ref=e140]: New Chat
+          - button "more" [ref=e141]: ⋯
+        - generic [ref=e142] [cursor=pointer]:
+          - generic [ref=e144]: New Chat
+          - button "more" [ref=e145]: ⋯
+        - generic [ref=e146] [cursor=pointer]:
+          - generic [ref=e148]: New Chat
+          - button "more" [ref=e149]: ⋯
+        - generic [ref=e150] [cursor=pointer]:
+          - generic [ref=e152]: New Chat
+          - button "more" [ref=e153]: ⋯
+        - generic [ref=e154] [cursor=pointer]:
+          - generic [ref=e156]: New Chat
+          - button "more" [ref=e157]: ⋯
+        - generic [ref=e158] [cursor=pointer]:
+          - generic [ref=e160]: New Chat
+          - button "more" [ref=e161]: ⋯
+        - generic [ref=e162] [cursor=pointer]:
+          - generic [ref=e164]: New Chat
+          - button "more" [ref=e165]: ⋯
+        - generic [ref=e166] [cursor=pointer]:
+          - generic [ref=e168]: New Chat
+          - button "more" [ref=e169]: ⋯
+    - button "unnamed" [ref=e171] [cursor=pointer]:
+      - generic [ref=e172]: U
+      - generic [ref=e174]: unnamed
+      - img [ref=e175]
+  - main [ref=e177]:
+    - button "probe-runner" [ref=e182] [cursor=pointer]:
+      - generic [ref=e185]: probe-runner
+      - img [ref=e186]
+    - generic [ref=e189]:
+      - generic [ref=e192]:
+        - generic [ref=e193]: One conversation.
+        - generic [ref=e194]: Say anything.
+      - generic [ref=e196]:
+        - status
+        - generic [ref=e197]:
+          - button "Attach" [ref=e199] [cursor=pointer]:
+            - img [ref=e200]
+          - textbox "Message ax…" [ref=e202]
+          - button "Send" [disabled] [ref=e203] [cursor=pointer]:
+            - img [ref=e204]
+        - generic: ⏎ send · ⇧⏎ newline
+  - dialog [ref=e250]:
+    - generic [ref=e251]:
+      - heading "Admin · Agents" [level=2] [ref=e252]
+      - button "Close" [ref=e253] [cursor=pointer]: ×
+    - generic [ref=e254]:
+      - status [ref=e255]:
+        - generic [ref=e256]: ⚠
+        - generic [ref=e257]: "Heads up: the canary scanner isn't wired in yet. Until it is, this deployment has no automated secret-leak veto and no LLM-output redaction. We trust ourselves with our internal data, but we wouldn't ship this to outside users yet — and neither should you. Tracked for Week 13+."
+      - generic [ref=e258]:
+        - button "+ New agent" [ref=e300] [cursor=pointer]
+        - list [ref=e301]:
+          - listitem [ref=e302]:
+            - generic [ref=e304]:
+              - generic [ref=e305]: probe-runner
+              - generic [ref=e306]: personal · usr_gJTdkT6UUhq-1el4MSUklg · claude-haiku-4-5-20251001
+            - generic [ref=e307]:
+              - button "edit" [ref=e308] [cursor=pointer]
+              - button "delete" [ref=e309] [cursor=pointer]
+          - listitem [ref=e310]:
+            - generic [ref=e312]:
+              - generic [ref=e313]: tide
+              - generic [ref=e314]: personal · usr_gJTdkT6UUhq-1el4MSUklg · claude-sonnet-4-6
+            - generic [ref=e315]:
+              - button "edit" [ref=e316] [cursor=pointer]
+              - button "delete" [ref=e317] [cursor=pointer]
+  - region

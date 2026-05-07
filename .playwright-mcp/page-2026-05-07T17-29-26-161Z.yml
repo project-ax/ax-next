@@ -1,0 +1,201 @@
+- generic [ref=e4]:
+  - complementary [ref=e5]:
+    - generic [ref=e6]:
+      - generic [ref=e8]: ax
+      - button "Collapse sidebar" [expanded] [ref=e9] [cursor=pointer]:
+        - img [ref=e10]
+    - button "new session ⌘N" [ref=e12] [cursor=pointer]:
+      - img [ref=e13]
+      - generic [ref=e15]: new session
+      - generic [ref=e16]: ⌘N
+    - navigation "sessions" [ref=e17]:
+      - generic [ref=e18]:
+        - generic [ref=e19]: today
+        - generic [ref=e20] [cursor=pointer]:
+          - generic [ref=e22]: New Chat
+          - button "more" [ref=e23]: ⋯
+      - generic [ref=e24]:
+        - generic [ref=e25]: yesterday
+        - generic [ref=e26] [cursor=pointer]:
+          - generic [ref=e28]: New Chat
+          - button "more" [ref=e29]: ⋯
+        - generic [ref=e30] [cursor=pointer]:
+          - generic [ref=e32]: New Chat
+          - button "more" [ref=e33]: ⋯
+        - generic [ref=e34] [cursor=pointer]:
+          - generic [ref=e36]: New Chat
+          - button "more" [ref=e37]: ⋯
+        - generic [ref=e38] [cursor=pointer]:
+          - generic [ref=e40]: New Chat
+          - button "more" [ref=e41]: ⋯
+        - generic [ref=e42] [cursor=pointer]:
+          - generic [ref=e44]: New Chat
+          - button "more" [ref=e45]: ⋯
+        - generic [ref=e46] [cursor=pointer]:
+          - generic [ref=e48]: New Chat
+          - button "more" [ref=e49]: ⋯
+        - generic [ref=e50] [cursor=pointer]:
+          - generic [ref=e52]: New Chat
+          - button "more" [ref=e53]: ⋯
+        - generic [ref=e54] [cursor=pointer]:
+          - generic [ref=e56]: New Chat
+          - button "more" [ref=e57]: ⋯
+        - generic [ref=e58] [cursor=pointer]:
+          - generic [ref=e60]: New Chat
+          - button "more" [ref=e61]: ⋯
+        - generic [ref=e62] [cursor=pointer]:
+          - generic [ref=e64]: New Chat
+          - button "more" [ref=e65]: ⋯
+      - generic [ref=e66]:
+        - generic [ref=e67]: earlier
+        - generic [ref=e68] [cursor=pointer]:
+          - generic [ref=e70]: New Chat
+          - button "more" [ref=e71]: ⋯
+        - generic [ref=e72] [cursor=pointer]:
+          - generic [ref=e74]: New Chat
+          - button "more" [ref=e75]: ⋯
+        - generic [ref=e76] [cursor=pointer]:
+          - generic [ref=e78]: New Chat
+          - button "more" [ref=e79]: ⋯
+        - generic [ref=e80] [cursor=pointer]:
+          - generic [ref=e82]: New Chat
+          - button "more" [ref=e83]: ⋯
+        - generic [ref=e84] [cursor=pointer]:
+          - generic [ref=e86]: New Chat
+          - button "more" [ref=e87]: ⋯
+        - generic [ref=e88] [cursor=pointer]:
+          - generic [ref=e90]: New Chat
+          - button "more" [ref=e91]: ⋯
+        - generic [ref=e92] [cursor=pointer]:
+          - generic [ref=e94]: New Chat
+          - button "more" [ref=e95]: ⋯
+        - generic [ref=e96] [cursor=pointer]:
+          - generic [ref=e98]: New Chat
+          - button "more" [ref=e99]: ⋯
+        - generic [ref=e100] [cursor=pointer]:
+          - generic [ref=e102]: New Chat
+          - button "more" [ref=e103]: ⋯
+        - generic [ref=e104] [cursor=pointer]:
+          - generic [ref=e106]: New Chat
+          - button "more" [ref=e107]: ⋯
+        - generic [ref=e108] [cursor=pointer]:
+          - generic [ref=e110]: New Chat
+          - button "more" [ref=e111]: ⋯
+        - generic [ref=e112] [cursor=pointer]:
+          - generic [ref=e114]: New Chat
+          - button "more" [ref=e115]: ⋯
+        - generic [ref=e116] [cursor=pointer]:
+          - generic [ref=e118]: New Chat
+          - button "more" [ref=e119]: ⋯
+        - generic [ref=e120] [cursor=pointer]:
+          - generic [ref=e122]: New Chat
+          - button "more" [ref=e123]: ⋯
+        - generic [ref=e124] [cursor=pointer]:
+          - generic [ref=e126]: New Chat
+          - button "more" [ref=e127]: ⋯
+        - generic [ref=e128] [cursor=pointer]:
+          - generic [ref=e130]: New Chat
+          - button "more" [ref=e131]: ⋯
+        - generic [ref=e132] [cursor=pointer]:
+          - generic [ref=e134]: New Chat
+          - button "more" [ref=e135]: ⋯
+        - generic [ref=e136] [cursor=pointer]:
+          - generic [ref=e138]: New Chat
+          - button "more" [ref=e139]: ⋯
+        - generic [ref=e140] [cursor=pointer]:
+          - generic [ref=e142]: New Chat
+          - button "more" [ref=e143]: ⋯
+        - generic [ref=e144] [cursor=pointer]:
+          - generic [ref=e146]: New Chat
+          - button "more" [ref=e147]: ⋯
+        - generic [ref=e148] [cursor=pointer]:
+          - generic [ref=e150]: New Chat
+          - button "more" [ref=e151]: ⋯
+        - generic [ref=e152] [cursor=pointer]:
+          - generic [ref=e154]: New Chat
+          - button "more" [ref=e155]: ⋯
+        - generic [ref=e156] [cursor=pointer]:
+          - generic [ref=e158]: New Chat
+          - button "more" [ref=e159]: ⋯
+        - generic [ref=e160] [cursor=pointer]:
+          - generic [ref=e162]: New Chat
+          - button "more" [ref=e163]: ⋯
+        - generic [ref=e164] [cursor=pointer]:
+          - generic [ref=e166]: New Chat
+          - button "more" [ref=e167]: ⋯
+        - generic [ref=e168] [cursor=pointer]:
+          - generic [ref=e170]: New Chat
+          - button "more" [ref=e171]: ⋯
+        - generic [ref=e172] [cursor=pointer]:
+          - generic [ref=e174]: New Chat
+          - button "more" [ref=e175]: ⋯
+        - generic [ref=e176] [cursor=pointer]:
+          - generic [ref=e178]: New Chat
+          - button "more" [ref=e179]: ⋯
+    - button "unnamed" [ref=e181] [cursor=pointer]:
+      - generic [ref=e182]: U
+      - generic [ref=e184]: unnamed
+      - img [ref=e185]
+  - main [ref=e187]:
+    - button "probe-runner" [ref=e192] [cursor=pointer]:
+      - generic [ref=e195]: probe-runner
+      - img [ref=e196]
+    - generic [ref=e199]:
+      - generic [ref=e202]:
+        - generic [ref=e203]: One conversation.
+        - generic [ref=e204]: Say anything.
+      - generic [ref=e206]:
+        - status
+        - generic [ref=e207]:
+          - button "Attach" [ref=e209] [cursor=pointer]:
+            - img [ref=e210]
+          - textbox "Message ax…" [ref=e212]
+          - button "Send" [disabled] [ref=e213] [cursor=pointer]:
+            - img [ref=e214]
+        - generic: ⏎ send · ⇧⏎ newline
+  - dialog "Admin · Credentials" [ref=e357]:
+    - generic [ref=e358]:
+      - heading "Admin · Credentials" [level=2] [ref=e359]
+      - button "Close" [ref=e360] [cursor=pointer]: ×
+    - generic [ref=e361]:
+      - status [ref=e362]:
+        - generic [ref=e363]: ⚠
+        - generic [ref=e364]: "Heads up: the canary scanner isn't wired in yet. Until it is, this deployment has no automated secret-leak veto and no LLM-output redaction. We trust ourselves with our internal data, but we wouldn't ship this to outside users yet — and neither should you. Tracked for Week 13+."
+      - generic [ref=e365]:
+        - generic [ref=e417]:
+          - generic [ref=e418]:
+            - generic [ref=e419]: Scope
+            - combobox "Scope" [ref=e420]:
+              - option "global"
+              - option "user" [selected]
+              - option "agent"
+            - generic [ref=e428]: Owner ID
+            - textbox "Owner ID" [ref=e429]:
+              - /placeholder: e.g. alice
+            - generic [ref=e421]: Ref
+            - textbox "Ref" [ref=e422]:
+              - /placeholder: e.g. anthropic
+            - generic [ref=e423]: API key
+            - textbox "API key" [ref=e424]
+          - generic [ref=e425]:
+            - button "Cancel" [ref=e426] [cursor=pointer]
+            - button "Save" [ref=e427] [cursor=pointer]
+        - table [ref=e368]:
+          - rowgroup [ref=e369]:
+            - row "Scope Owner Ref Kind Created" [ref=e370]:
+              - columnheader "Scope" [ref=e371]
+              - columnheader "Owner" [ref=e372]
+              - columnheader "Ref" [ref=e373]
+              - columnheader "Kind" [ref=e374]
+              - columnheader "Created" [ref=e375]
+              - columnheader [ref=e400]
+          - rowgroup [ref=e376]:
+            - row "global — anthropic-api-key api-key 5/7/2026, 1:28:37 PM Delete anthropic-api-key" [ref=e401]:
+              - cell "global" [ref=e402]
+              - cell "—" [ref=e403]
+              - cell "anthropic-api-key" [ref=e404]
+              - cell "api-key" [ref=e405]
+              - cell "5/7/2026, 1:28:37 PM" [ref=e406]
+              - cell "Delete anthropic-api-key" [ref=e407]:
+                - button "Delete anthropic-api-key" [ref=e408] [cursor=pointer]: Delete
+  - region

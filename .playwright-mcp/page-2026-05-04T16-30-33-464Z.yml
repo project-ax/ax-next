@@ -1,0 +1,57 @@
+- generic [ref=e4]:
+  - complementary [ref=e5]:
+    - generic [ref=e6]:
+      - generic [ref=e8]: tide
+      - button "Collapse sidebar" [expanded] [ref=e9] [cursor=pointer]:
+        - img [ref=e10]
+    - button "new session ⌘N" [ref=e12] [cursor=pointer]:
+      - img [ref=e13]
+      - generic [ref=e15]: new session
+      - generic [ref=e16]: ⌘N
+    - navigation "sessions" [ref=e17]:
+      - generic [ref=e18]:
+        - generic [ref=e19]: today
+        - generic [ref=e20] [cursor=pointer]:
+          - generic [ref=e22]: New Chat
+          - button "more" [ref=e23]: ⋯
+    - button "unnamed" [ref=e25] [cursor=pointer]:
+      - generic [ref=e26]: U
+      - generic [ref=e28]: unnamed
+      - img [ref=e29]
+  - main [ref=e31]:
+    - button "Default Personal Agent" [ref=e36] [cursor=pointer]:
+      - generic [ref=e39]: Default Personal Agent
+      - img [ref=e40]
+    - generic [ref=e43]:
+      - generic [ref=e45]:
+        - generic [ref=e60]:
+          - paragraph [ref=e63]:
+            - text: Use Bash to write the file /permanent/test1.txt with the exact contents "hello-permanent" (no newline). Then use Bash to write the file /ephemeral/test2.txt with the exact contents "hello-ephemeral" (no newline). Confirm both files exist with
+            - code [ref=e64]: ls -la /permanent/ /ephemeral/
+            - text: and show me the cat output of each.
+          - generic [ref=e65]:
+            - generic [ref=e66]: 12:30 pm
+            - button "Copy" [ref=e67] [cursor=pointer]:
+              - img [ref=e68]
+            - button "Edit" [ref=e71] [cursor=pointer]:
+              - img [ref=e72]
+        - generic [ref=e75]:
+          - generic [ref=e76]:
+            - paragraph [ref=e78]: The user wants me to write two files using Bash commands, then confirm they exist and show their contents.
+            - paragraph [ref=e80]: Sure! I'll write both files, confirm they exist, and show their contents — all in one go.
+          - generic [ref=e81]:
+            - generic [ref=e82]: 12:30 pm
+            - button "Copy" [disabled] [ref=e83] [cursor=pointer]:
+              - img [ref=e84]
+            - button "Retry" [disabled] [ref=e87] [cursor=pointer]:
+              - img [ref=e88]
+            - button "Show thinking" [ref=e91] [cursor=pointer]:
+              - img [ref=e92]
+      - generic [ref=e50]:
+        - generic [ref=e51]:
+          - button "Attach" [ref=e53] [cursor=pointer]:
+            - img [ref=e54]
+          - textbox "Message tide…" [active] [ref=e56]
+          - button "Stop" [ref=e102] [cursor=pointer]:
+            - img [ref=e103]
+        - generic: ⏎ send · ⇧⏎ newline

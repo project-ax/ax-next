@@ -1,0 +1,4248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Tide — Minimal</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  /* =========================================================
+     TIDE MINIMAL
+     One column. One chat.
+
+     No rail, no meta, no ruler, no breaks. The chat IS the UI.
+     ========================================================= */
+
+  :root {
+    /* Warm paper, muted teal, brown-ink */
+    --bg:         #f6f6f3;
+    --surface-raised: #fcfbf8; /* near-white card surface (composer, etc.) */
+    --ink:        #17181a;
+    --ink-soft:   #44464b;
+    --ink-mute:   #8a857a;
+    --ink-ghost:  #b8b3a6;
+    --rule:       #dad8cf;
+    --bg-deep:    #eeede8;
+    --accent:     #1e6b6b;           /* muted teal */
+    --accent-soft:#dce9e7;
+    --you-wash:   #ecede6;           /* warm paper wash */
+    --you-ink:    #17181a;
+    --shadow-sm:  0 1px 2px rgba(23, 24, 26, 0.04), 0 1px 1px rgba(23, 24, 26, 0.03);
+    --shadow-md:  0 8px 24px rgba(23, 24, 26, 0.06), 0 1px 2px rgba(23, 24, 26, 0.04);
+    --sans:  'IBM Plex Sans', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    --mono:  'IBM Plex Mono', 'JetBrains Mono', ui-monospace, monospace;
+    --serif: var(--sans); /* legacy alias — Plex Sans handles all body text now */
+    --user-font: var(--sans);
+    --agent-font: var(--sans);
+    --user-size: 15px;
+    --agent-size: 15.5px;
+    --agent-style: normal;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg:         #15171a;
+      --surface-raised: #1f2125;
+      --ink:        #e8e4da;
+      --ink-soft:   #b0ab9f;
+      --ink-mute:   #7e7a72;
+      --ink-ghost:  #4a4842;
+      --rule:       #2b2d32;
+      --bg-deep:    #1c1e22;
+      --accent:     #4ba39e;
+      --accent-soft:#1f2f34;
+      --you-wash:   #22242a;
+      --you-ink:    #e8e4da;
+      --shadow-sm:  0 1px 2px rgba(0, 0, 0, 0.3);
+      --shadow-md:  0 8px 24px rgba(0, 0, 0, 0.4);
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg:         #15171a;
+    --surface-raised: #1f2125;
+    --ink:        #e8e4da;
+    --ink-soft:   #b0ab9f;
+    --ink-mute:   #7e7a72;
+    --ink-ghost:  #4a4842;
+    --rule:       #2b2d32;
+    --bg-deep:    #1c1e22;
+    --accent:     #4ba39e;
+    --accent-soft:#1f2f34;
+    --you-wash:   #22242a;
+    --you-ink:    #e8e4da;
+    --shadow-sm:  0 1px 2px rgba(0, 0, 0, 0.3);
+    --shadow-md:  0 8px 24px rgba(0, 0, 0, 0.4);
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.58;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    letter-spacing: -0.005em;
+    /* Plex Sans humanist alternates: ss02 = single-storey a, ss05 = single-storey g */
+    font-feature-settings: 'ss02', 'ss05';
+  }
+  body {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: row;
+  }
+  .pane {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+    position: relative;
+  }
+
+  /* =========================================================
+     SIDEBAR — left column, sessions list.
+     Quiet rail: a thin column, flush-left, same bg as main.
+     Sessions are the primary unit; click to switch.
+     ========================================================= */
+  .sidebar {
+    width: 240px;
+    flex-shrink: 0;
+    border-right: 1px solid var(--rule);
+    background: var(--bg);
+    display: flex;
+    flex-direction: column;
+    position: sticky;
+    top: 0;
+    align-self: flex-start;
+    height: 100vh;
+    overflow: visible; /* allow popovers to escape */
+    transition: width 220ms cubic-bezier(.2,.7,.2,1);
+  }
+  body.sidebar-collapsed .sidebar { width: 56px; }
+
+  .sidebar-head {
+    padding: 14px 12px 10px;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    position: relative;
+  }
+  body.sidebar-collapsed .sidebar-head {
+    padding: 14px 8px 10px;
+    justify-content: center;
+  }
+
+  /* BRAND — wordmark at top of sidebar */
+  .brand {
+    display: flex;
+    align-items: center;
+    padding: 4px 0 6px;
+    text-decoration: none;
+    color: inherit;
+    min-width: 0;
+  }
+  .brand-word {
+    font-family: var(--serif);
+    font-size: 20px;
+    font-weight: 500;
+    letter-spacing: -0.01em;
+    color: var(--ink);
+    line-height: 1;
+  }
+  body.sidebar-collapsed .brand-word { display: none; }
+  body.sidebar-collapsed .brand { display: none; }
+
+  /* AGENT CHIP — primary identity at top of sidebar */
+  .agent-chip {
+    all: unset;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 10px 7px 8px;
+    border-radius: 8px;
+    transition: background 120ms ease;
+    min-width: 0;
+  }
+  .agent-chip:hover { background: var(--bg-deep); }
+  .agent-chip[aria-expanded="true"] { background: var(--bg-deep); }
+  .agent-chip-avatar {
+    width: 22px; height: 22px;
+    border-radius: 6px;
+    background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 22%, var(--bg-deep)), var(--bg-deep));
+    border: 1px solid var(--rule);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .agent-chip-avatar .dot {
+    width: 5px; height: 5px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+  .agent-chip-name {
+    font-family: var(--serif);
+    font-size: 15px;
+    color: var(--ink);
+    letter-spacing: -0.01em;
+    line-height: 1;
+  }
+  .agent-chip-caret {
+    width: 10px; height: 10px;
+    color: var(--ink-mute);
+    margin-left: auto;
+    flex-shrink: 0;
+    transition: transform 160ms ease;
+  }
+  .agent-chip[aria-expanded="true"] .agent-chip-caret { transform: rotate(180deg); }
+
+  /* AGENT MENU — popover (anchored to header-left) */
+  .agent-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    z-index: 70;
+    background: var(--bg);
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    box-shadow: 0 12px 40px -8px rgba(0,0,0,0.18), 0 2px 6px rgba(0,0,0,0.04);
+    padding: 6px;
+    min-width: 260px;
+    animation: popIn 140ms cubic-bezier(.2,.7,.2,1);
+  }
+  .agent-menu-note {
+    padding: 8px 10px 4px;
+    font-size: 10.5px;
+    color: var(--ink-ghost);
+    letter-spacing: 0.04em;
+    border-top: 1px solid var(--rule);
+    margin-top: 4px;
+    text-align: center;
+  }
+  @keyframes popIn {
+    from { opacity: 0; transform: translateY(-4px) scale(0.98); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+  }
+  .agent-menu-label {
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-ghost);
+    padding: 8px 10px 4px;
+  }
+  .agent-menu-rows { display: flex; flex-direction: column; gap: 1px; }
+  .agent-row {
+    all: unset;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 7px 10px;
+    border-radius: 6px;
+    transition: background 100ms ease;
+  }
+  .agent-row:hover { background: var(--bg-deep); }
+  .agent-row[aria-selected="true"] { background: var(--bg-deep); }
+  .agent-row-avatar {
+    width: 22px; height: 22px;
+    border-radius: 6px;
+    background: var(--bg-deep);
+    border: 1px solid var(--rule);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .agent-row-avatar .dot {
+    width: 5px; height: 5px; border-radius: 50%;
+    background: var(--accent);
+  }
+  .agent-row-meta { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+  .agent-row-name {
+    font-family: var(--serif);
+    font-size: 14px;
+    color: var(--ink);
+    letter-spacing: -0.01em;
+    line-height: 1.1;
+  }
+  .agent-row-desc {
+    font-size: 11px;
+    color: var(--ink-mute);
+    line-height: 1.2;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .agent-row-check {
+    width: 14px; height: 14px;
+    color: var(--accent);
+    flex-shrink: 0;
+    opacity: 0;
+  }
+  .agent-row[aria-selected="true"] .agent-row-check { opacity: 1; }
+  .agent-menu-foot {
+    padding: 4px 0 2px;
+    margin-top: 4px;
+    border-top: 1px solid var(--rule);
+  }
+  .agent-menu-item {
+    all: unset;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    font-size: 12.5px;
+    color: var(--ink-soft);
+    width: calc(100% - 0px);
+    box-sizing: border-box;
+  }
+  .agent-menu-item:hover { background: var(--bg-deep); color: var(--ink); }
+
+  /* NEW SESSION BUTTON — secondary in hierarchy */
+  .new-session-btn {
+    all: unset;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 12.5px;
+    color: var(--ink-soft);
+    letter-spacing: 0.01em;
+    transition: background 120ms ease, color 120ms ease;
+  }
+  .new-session-btn:hover {
+    background: var(--bg-deep);
+    color: var(--ink);
+  }
+  .new-session-btn svg {
+    width: 13px;
+    height: 13px;
+    color: var(--ink-mute);
+    flex-shrink: 0;
+  }
+  .new-session-btn:hover svg { color: var(--ink); }
+  .new-session-btn .label { min-width: 0; }
+  .new-session-btn .kbd {
+    margin-left: auto;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--ink-ghost);
+    letter-spacing: 0.02em;
+    opacity: 0;
+    transition: opacity 140ms ease;
+  }
+  .new-session-btn:hover .kbd,
+  .new-session-btn:focus-visible .kbd { opacity: 1; }
+  body.sidebar-collapsed .new-session-btn .label,
+  body.sidebar-collapsed .new-session-btn .kbd { display: none; }
+  body.sidebar-collapsed .new-session-btn { justify-content: center; padding: 8px; }
+
+  .sessions-scroll {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0 0 12px;
+    scrollbar-width: thin;
+    scrollbar-color: var(--ink-ghost) transparent;
+  }
+  body.sidebar-collapsed .sessions-scroll { visibility: hidden; pointer-events: none; }
+  .sessions-scroll::-webkit-scrollbar { width: 6px; }
+  .sessions-scroll::-webkit-scrollbar-track { background: transparent; }
+  .sessions-scroll::-webkit-scrollbar-thumb { background: var(--ink-ghost); border-radius: 3px; }
+
+  .sessions-group-label {
+    font-size: 10.5px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-ghost);
+    padding: 14px 12px 6px;
+    font-weight: 500;
+  }
+
+  .session-item {
+    all: unset;
+    cursor: pointer;
+    display: flex;
+    flex-direction: row;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 8px 12px;
+    border-radius: 4px;
+    color: var(--ink-soft);
+    transition: background 120ms ease, color 120ms ease;
+    position: relative;
+    box-sizing: border-box;
+    height: 34px;
+  }
+  .session-agent-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    margin-top: 7px;
+    flex-shrink: 0;
+    opacity: 0.8;
+  }
+  .session-item:hover .session-agent-dot,
+  .session-item.active .session-agent-dot { opacity: 1; }
+  .session-item:hover {
+    background: var(--bg-deep);
+    color: var(--ink);
+  }
+  .session-item.active {
+    background: var(--bg-deep);
+    color: var(--ink);
+  }
+  .session-item.active::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 10px;
+    bottom: 10px;
+    width: 2px;
+    background: var(--accent);
+    border-radius: 2px;
+  }
+  .session-title {
+    font-size: 13px;
+    line-height: 1.35;
+    letter-spacing: -0.005em;
+    white-space: nowrap;
+    overflow: hidden;
+    /* Fade out at the right edge instead of …; reads cleaner next to the ⋯ button. */
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent 100%);
+            mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent 100%);
+    flex: 1;
+    min-width: 0;
+  }
+  /* While editing or hovered (⋯ visible), give the fade a wider runway so the
+     caret/last char doesn't disappear under the button. */
+  .session-item:hover .session-title,
+  .session-item.active .session-title {
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent 100%);
+            mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent 100%);
+  }
+  .session-title.editing {
+    -webkit-mask-image: none;
+            mask-image: none;
+  }
+  .session-title.editing {
+    -webkit-line-clamp: unset;
+    display: block;
+    overflow: visible;
+    outline: none;
+    background: var(--bg);
+    box-shadow: 0 0 0 1px var(--border-soft);
+    border-radius: 3px;
+    padding: 1px 4px;
+    margin: -1px -4px;
+    color: var(--ink);
+    cursor: text;
+    -webkit-user-modify: read-write-plaintext-only;
+  }
+  .session-more {
+    all: unset;
+    flex-shrink: 0;
+    width: 18px;
+    height: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 3px;
+    color: var(--ink-ghost);
+    opacity: 0;
+    transition: opacity 120ms ease, background 120ms ease, color 120ms ease;
+    cursor: pointer;
+    margin-top: 1px;
+  }
+  .session-more svg { width: 14px; height: 14px; }
+  .session-item:hover .session-more,
+  .session-item.active .session-more { opacity: 1; }
+  .session-more:hover {
+    background: var(--bg);
+    color: var(--ink);
+  }
+  /* Per-row floating menu (rename / delete) */
+  .session-row-menu[hidden] { display: none; }
+  .session-row-menu {
+    position: absolute;
+    top: 28px;
+    right: 8px;
+    z-index: 30;
+    background: var(--bg);
+    border: 1px solid var(--border-soft);
+    border-radius: 6px;
+    padding: 4px;
+    min-width: 130px;
+    box-shadow: 0 6px 24px rgba(0,0,0,0.35), 0 1px 2px rgba(0,0,0,0.2);
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .session-row-menu-item {
+    all: unset;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    font-size: 12.5px;
+    color: var(--ink);
+    border-radius: 3px;
+    transition: background 100ms ease, color 100ms ease;
+  }
+  .session-row-menu-item svg {
+    width: 12px; height: 12px;
+    color: var(--ink-soft);
+    flex-shrink: 0;
+  }
+  .session-row-menu-item:hover {
+    background: var(--bg-deep);
+  }
+  .session-row-menu-item.danger { color: var(--danger, #c25450); }
+  .session-row-menu-item.danger svg { color: var(--danger, #c25450); }
+  .session-row-menu-item.danger:hover {
+    background: color-mix(in oklch, var(--danger, #c25450) 14%, transparent);
+  }
+  /* Inline delete confirm */
+  .session-item.confirming-delete {
+    background: color-mix(in oklch, var(--danger, #c25450) 10%, transparent);
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px;
+    cursor: default;
+  }
+  .session-item.confirming-delete .confirm-text {
+    flex: 1;
+    font-size: 12px;
+    color: var(--ink);
+    line-height: 1.35;
+    letter-spacing: -0.005em;
+  }
+  .confirm-btn {
+    all: unset;
+    cursor: pointer;
+    font-size: 11.5px;
+    line-height: 1;
+    padding: 3px 7px;
+    border-radius: 3px;
+    transition: background 100ms ease, color 100ms ease;
+  }
+  .confirm-btn.cancel {
+    color: var(--ink-soft);
+  }
+  .confirm-btn.cancel:hover { color: var(--ink); }
+  .confirm-btn.danger {
+    color: var(--danger, #c25450);
+    font-weight: 500;
+  }
+  .confirm-btn.danger:hover {
+    background: var(--danger, #c25450);
+    color: white;
+  }
+  .session-meta {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    font-size: 10.5px;
+    color: var(--ink-ghost);
+    letter-spacing: 0.02em;
+    margin-top: 1px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .session-meta .dot {
+    width: 2px; height: 2px; border-radius: 50%;
+    background: currentColor;
+    display: inline-block;
+  }
+  .session-item.unread .session-title::after {
+    content: '';
+    width: 5px; height: 5px;
+    background: var(--accent);
+    border-radius: 50%;
+    display: inline-block;
+    margin-left: 6px;
+    vertical-align: middle;
+  }
+
+  /* SIDEBAR COLLAPSE TOGGLE — desktop only, sits at top-right of sidebar head */
+  .sidebar-collapse {
+    all: unset;
+    cursor: pointer;
+    width: 22px;
+    height: 22px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--ink-mute);
+    border-radius: 4px;
+    flex-shrink: 0;
+    transition: color 140ms ease, background 140ms ease;
+  }
+  .sidebar-collapse:hover { color: var(--ink); background: var(--bg-deep); }
+  .sidebar-collapse:focus-visible { color: var(--ink); background: var(--bg-deep); }
+  .sidebar-collapse svg { width: 16px; height: 16px; }
+
+  /* USER ROW + MENU at bottom */
+  .user-row-wrap {
+    border-top: 1px solid var(--rule);
+    padding: 8px;
+    position: relative;
+  }
+  .user-row {
+    all: unset;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 7px 8px;
+    border-radius: 8px;
+    width: calc(100% - 16px);
+    transition: background 120ms ease;
+  }
+  .user-row:hover,
+  .user-row[aria-expanded="true"] { background: var(--bg-deep); }
+  .user-avatar {
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 26%, var(--bg-deep)), var(--bg-deep));
+    border: 1px solid var(--rule);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--serif);
+    font-size: 11px;
+    color: var(--ink);
+    letter-spacing: 0.04em;
+    flex-shrink: 0;
+  }
+  .user-avatar.lg { width: 32px; height: 32px; font-size: 12.5px; }
+  .user-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+    flex: 1;
+  }
+  .user-row .user-name {
+    font-size: 12.5px;
+    color: var(--ink);
+    line-height: 1.15;
+    letter-spacing: -0.005em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .user-row .user-email {
+    font-size: 10.5px;
+    color: var(--ink-mute);
+    line-height: 1.15;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .user-caret {
+    width: 10px; height: 10px;
+    color: var(--ink-mute);
+    flex-shrink: 0;
+    transition: transform 160ms ease;
+  }
+  .user-row[aria-expanded="true"] .user-caret { transform: rotate(180deg); }
+  body.sidebar-collapsed .user-meta,
+  body.sidebar-collapsed .user-caret { display: none; }
+  body.sidebar-collapsed .user-row { justify-content: center; padding: 7px; }
+
+  /* USER MENU popover (anchored above the user row) */
+  .user-menu {
+    position: absolute;
+    bottom: calc(100% - 4px);
+    left: 8px;
+    right: 8px;
+    z-index: 70;
+    background: var(--bg);
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    box-shadow: 0 -8px 40px -8px rgba(0,0,0,0.18), 0 -2px 6px rgba(0,0,0,0.04);
+    padding: 6px;
+    animation: popInUp 140ms cubic-bezier(.2,.7,.2,1);
+  }
+  body.sidebar-collapsed .user-menu {
+    left: 56px;
+    right: auto;
+    bottom: 8px;
+    width: 240px;
+  }
+  @keyframes popInUp {
+    from { opacity: 0; transform: translateY(4px) scale(0.98); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+  }
+  .user-menu-head {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 8px 10px 10px;
+    border-bottom: 1px solid var(--rule);
+    margin-bottom: 4px;
+  }
+  .user-menu-head .user-name {
+    font-family: var(--serif);
+    font-size: 14px;
+    color: var(--ink);
+    letter-spacing: -0.01em;
+    line-height: 1.1;
+  }
+  .user-menu-head .user-email {
+    font-size: 11px;
+    color: var(--ink-mute);
+    line-height: 1.2;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .user-menu-item {
+    all: unset;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    font-size: 12.5px;
+    color: var(--ink-soft);
+    transition: background 100ms ease, color 100ms ease;
+  }
+  .user-menu-item:hover { background: var(--bg-deep); color: var(--ink); }
+  .user-menu-item svg { width: 13px; height: 13px; color: var(--ink-mute); flex-shrink: 0; }
+  .user-menu-item:hover svg { color: var(--ink); }
+  .user-menu-item .kbd {
+    margin-left: auto;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--ink-ghost);
+  }
+  .user-menu-divider {
+    height: 1px;
+    background: var(--rule);
+    margin: 4px 0;
+  }
+  .user-menu-row {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 7px 10px;
+    border-radius: 6px;
+    font-size: 12.5px;
+    color: var(--ink-soft);
+  }
+  .user-menu-row svg { width: 13px; height: 13px; color: var(--ink-mute); flex-shrink: 0; }
+  .user-menu-row .label { flex: 1; }
+  .theme-seg {
+    display: inline-flex;
+    background: var(--bg-deep);
+    border-radius: 6px;
+    padding: 2px;
+    border: 1px solid var(--rule);
+  }
+  .theme-seg button {
+    all: unset;
+    cursor: pointer;
+    width: 24px;
+    height: 22px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    color: var(--ink-mute);
+    transition: background 120ms ease, color 120ms ease;
+  }
+  .theme-seg button svg { width: 12px; height: 12px; }
+  .theme-seg button:hover { color: var(--ink); }
+  .theme-seg button[aria-checked="true"] {
+    background: var(--bg);
+    color: var(--ink);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+  }
+  .user-menu-foot {
+    padding: 8px 10px 4px;
+    margin-top: 4px;
+    border-top: 1px solid var(--rule);
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-ghost);
+  }
+
+  /* Mobile-only sidebar overlay toggle (kept) */
+  .sidebar-toggle {
+    all: unset;
+    display: none;
+    cursor: pointer;
+    position: fixed;
+    left: 10px;
+    top: 10px;
+    width: 32px; height: 32px;
+    border-radius: 4px;
+    background: var(--bg);
+    border: 1px solid var(--rule);
+    align-items: center;
+    justify-content: center;
+    z-index: 60;
+    color: var(--ink-soft);
+  }
+  @media (max-width: 720px) {
+    body { flex-direction: column; }
+    .sidebar {
+      position: fixed;
+      top: 0; left: 0;
+      height: 100vh;
+      width: 260px !important; /* override collapsed on mobile */
+      z-index: 55;
+      transform: translateX(-100%);
+      transition: transform 200ms ease;
+      box-shadow: 0 0 40px rgba(0,0,0,0.08);
+    }
+    body.sidebar-open .sidebar { transform: translateX(0); }
+    body.sidebar-collapsed .sidebar { width: 260px !important; }
+    .sidebar-toggle { display: inline-flex; }
+    .sidebar-collapse { display: none; }
+    .pane { min-height: 100vh; }
+  }
+  ::selection { background: color-mix(in srgb, var(--accent) 28%, transparent); color: var(--ink); }
+
+  /* ---- Header: just a wordmark. No counts, no status. ---- */
+  .header {
+    position: sticky;
+    top: 0;
+    background: var(--bg);
+    padding: 22px 24px 18px;
+    display: flex;
+    justify-content: center;
+    z-index: 10;
+  }
+  .header-inner {
+    width: 100%;
+    max-width: 640px;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+  }
+  .session-breadcrumb {
+    font-size: 10.5px;
+    color: var(--ink-ghost);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 360px;
+    align-self: center;
+    margin-left: auto;
+    padding: 4px 8px;
+    margin-right: -8px;
+    border-radius: 4px;
+    cursor: text;
+    transition: background 120ms ease, color 120ms ease;
+  }
+  .session-breadcrumb:hover {
+    background: var(--bg-deep);
+    color: var(--ink-mute);
+  }
+  .session-breadcrumb.editing {
+    background: var(--bg);
+    color: var(--ink);
+    outline: 1px solid var(--rule);
+    overflow: visible;
+    text-overflow: clip;
+    cursor: text;
+  }
+  .session-breadcrumb.editing:focus { outline: 1px solid var(--accent); }
+  .header-left {
+    position: relative;
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+  }
+  .wordmark {
+    font-family: var(--sans);
+    font-size: 19px;
+    font-weight: 500;
+    letter-spacing: -0.015em;
+    color: var(--ink);
+  }
+  .wordmark-dot {
+    display: inline-block;
+    width: 5px; height: 5px;
+    border-radius: 50%;
+    background: var(--accent);
+    margin-right: 8px;
+    transform: translateY(-3px);
+  }
+  .theme-btn {
+    all: unset;
+    cursor: pointer;
+    font-size: 11px;
+    color: var(--ink-mute);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    transition: color 140ms ease;
+  }
+  .theme-btn:hover { color: var(--ink); }
+  .header-actions {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  /* ---- Timeline ---- */
+  .timeline {
+    flex: 1;
+    width: 100%;
+    max-width: 640px;
+    margin: 0 auto;
+    padding: 24px 24px 220px;
+  }
+
+  /* ---- Day marker: just a small centered date. Rarely seen. ---- */
+  .day {
+    text-align: center;
+    margin: 28px 0 20px;
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    color: var(--ink-mute);
+    text-transform: uppercase;
+    font-family: var(--mono);
+  }
+
+  /* ---- Message: no avatar, no meta column. Just text. ---- */
+  .msg {
+    margin-bottom: 22px;
+    position: relative;
+    max-width: 100%;
+  }
+
+  .msg-body {
+    font-family: var(--user-font);
+    font-size: var(--user-size);
+    line-height: 1.6;
+    color: var(--ink);
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+  }
+  .msg-body p { margin-bottom: 0.6em; }
+  .msg-body p:last-child { margin-bottom: 0; }
+
+  /* Subtle role differentiation: user is right-aligned with a
+     warm wash; agent is left-aligned plain prose. No bubbles;
+     the wash is barely visible. Serif for the agent. */
+  .msg.you {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+  }
+  .msg.you .msg-body {
+    background: var(--you-wash);
+    color: var(--you-ink);
+    padding: 7px 12px;
+    border-radius: 6px;
+    max-width: 78%;
+  }
+  .msg.you .msg-footer {
+    justify-content: flex-end;
+  }
+  .msg.agent .msg-body {
+    font-family: var(--agent-font);
+    font-size: var(--agent-size);
+    font-style: var(--agent-style);
+    line-height: 1.55;
+    letter-spacing: -0.008em;
+    max-width: 56ch;
+  }
+
+  /* =========================================================
+     CHART EMBED — an iframe-based chart rendered inline in an
+     agent response. The iframe is sandboxed (no scripts, no
+     same-origin) so it can render arbitrary HTML the model
+     emits without risk. The HOST styles the frame; the CONTENT
+     styles itself to match Tide tokens (passed in via the doc).
+     ========================================================= */
+  .chart-embed {
+    margin: 12px 0 4px;
+    max-width: 56ch;
+    position: relative;
+  }
+  .chart-embed-frame {
+    width: 100%;
+    min-height: 160px;
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    background: var(--bg);
+    display: block;
+    transition: border-color 180ms ease;
+  }
+  .chart-embed:hover .chart-embed-frame {
+    border-color: var(--ink-ghost);
+  }
+  .chart-embed-caption {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--ink-mute);
+    letter-spacing: 0.02em;
+    font-family: var(--mono);
+  }
+  .chart-embed-caption .label {
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  .chart-embed-caption .meta {
+    color: var(--ink-ghost);
+    font-style: normal;
+    font-family: var(--mono);
+    letter-spacing: 0.02em;
+    text-transform: none;
+  }
+  .chart-embed-actions {
+    display: inline-flex;
+    gap: 10px;
+    opacity: 0;
+    transition: opacity 160ms ease;
+  }
+  .chart-embed:hover .chart-embed-actions { opacity: 1; }
+  .chart-embed-action {
+    all: unset;
+    cursor: pointer;
+    color: var(--ink-mute);
+    font-size: 11px;
+    transition: color 120ms ease;
+  }
+  .chart-embed-action:hover { color: var(--ink); }
+
+  /* Loading skeleton */
+  .chart-embed.loading .chart-embed-frame {
+    border-style: dashed;
+    border-color: var(--ink-ghost);
+    background: repeating-linear-gradient(
+      45deg,
+      transparent 0 12px,
+      color-mix(in srgb, var(--ink-ghost) 8%, transparent) 12px 14px
+    );
+  }
+  .chart-embed.loading::before {
+    content: 'drawing…';
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    font-family: var(--serif);
+    font-style: italic;
+    font-size: 13px;
+    color: var(--ink-mute);
+    z-index: 1;
+  }
+
+  /* Hover: show a tiny timestamp + action icons. */
+  .msg-footer {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-top: 4px;
+    font-size: 11px;
+    color: var(--ink-ghost);
+    opacity: 0;
+    transition: opacity 140ms ease;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+    font-family: var(--mono);
+  }
+  .msg-footer .msg-time { padding-right: 4px; }
+  .msg:hover .msg-footer,
+  .msg-footer:focus-within { opacity: 1; }
+  .msg-action {
+    all: unset;
+    cursor: pointer;
+    width: 22px; height: 22px;
+    border-radius: 4px;
+    color: var(--ink-mute);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: color 120ms ease, background 120ms ease;
+  }
+  .msg-action:hover { color: var(--ink); background: var(--bg-deep); }
+  .msg-action svg { width: 13px; height: 13px; display: block; }
+  .msg-action.copied { color: var(--accent); }
+  /* User-message footer aligns right (mirroring the bubble) */
+  .msg.you .msg-footer { justify-content: flex-end; }
+
+  /* Edit-in-place state for user messages */
+  .msg-body.editing {
+    outline: none;
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
+    border-radius: 6px;
+    cursor: text;
+    -webkit-user-modify: read-write-plaintext-only;
+  }
+  /* Retrying placeholder: dim while we wait for the new reply */
+  .msg-body.retrying {
+    color: var(--ink-mute);
+    font-style: italic;
+  }
+
+  /* Entry animation */
+  @keyframes msg-in {
+    from { opacity: 0; transform: translateY(4px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  .msg.entering { animation: msg-in 280ms cubic-bezier(0.2,0.8,0.2,1) both; }
+
+  /* Thinking — one dot that breathes, nothing else */
+  .thinking {
+    margin-bottom: 22px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding-left: 2px;
+  }
+  .thinking::before {
+    content: '';
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    animation: breathe 1.6s ease-in-out infinite;
+  }
+  @keyframes breathe {
+    0%, 100% { opacity: 0.25; transform: scale(0.8); }
+    50%      { opacity: 1;    transform: scale(1.15); }
+  }
+
+  /* ---- Composer: fixed to bottom of the chat pane (not over sidebar) ---- */
+  .composer {
+    position: fixed;
+    bottom: 0; left: 240px; right: 0;
+    transition: left 220ms cubic-bezier(.2,.7,.2,1);
+    padding: 40px 24px 22px;
+    background: linear-gradient(to top,
+      var(--bg) 60%,
+      color-mix(in srgb, var(--bg) 80%, transparent) 85%,
+      transparent 100%);
+    display: flex;
+    justify-content: center;
+    z-index: 20;
+  }
+  .composer-inner {
+    width: 100%;
+    max-width: 640px;
+  }
+  body.sidebar-collapsed .composer { left: 56px; }
+  @media (max-width: 720px) {
+    .composer { left: 0; }
+  }
+
+  .composer-field {
+    display: flex;
+    align-items: flex-end;
+    gap: 10px;
+    background: var(--surface-raised);
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    padding: 10px 12px 10px 14px;
+    box-shadow: var(--shadow-sm);
+    transition: border-color 140ms ease, box-shadow 140ms ease;
+  }
+  .composer-field:focus-within {
+    border-color: color-mix(in srgb, var(--accent) 40%, var(--rule));
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 12%, transparent), var(--shadow-sm);
+  }
+  .composer textarea {
+    all: unset;
+    flex: 1 1 auto;
+    min-width: 0;
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.55;
+    color: var(--ink);
+    resize: none;
+    /* Match the 28px attach-btn / 30px send-btn height when single-line, so
+       align-items: flex-end centers them visually too (bottoms aligned ⇒
+       centers aligned when heights match). */
+    min-height: 28px;
+    max-height: 180px;
+    padding: 2px 0;
+    box-sizing: border-box;
+  }
+  .composer textarea::placeholder { color: var(--ink-mute); }
+  .send-btn {
+    all: unset;
+    cursor: pointer;
+    width: 30px; height: 30px;
+    border-radius: 50%;
+    background: var(--ink-ghost);
+    color: #ffffff;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+    transition: background 140ms ease, transform 140ms ease;
+  }
+  .send-btn.ready { background: var(--accent); }
+  .send-btn:hover.ready { transform: scale(1.05); filter: brightness(1.05); }
+  .send-btn svg { width: 14px; height: 14px; }
+
+  /* Attach (+) button + popup menu */
+  .attach-btn {
+    all: unset;
+    cursor: pointer;
+    width: 28px; height: 28px;
+    border-radius: 50%;
+    color: var(--ink-mute);
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+    margin-right: 4px;
+    transition: background 120ms ease, color 120ms ease;
+  }
+  .attach-btn:hover {
+    background: var(--bg-deep);
+    color: var(--ink);
+  }
+  .attach-btn[aria-expanded="true"] {
+    background: var(--bg-deep);
+    color: var(--ink);
+  }
+  .attach-btn svg { width: 14px; height: 14px; }
+  .attach-menu {
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 0;
+    z-index: 40;
+    background: var(--bg);
+    border: 1px solid var(--border-soft);
+    border-radius: 8px;
+    padding: 4px;
+    min-width: 180px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.35), 0 1px 2px rgba(0,0,0,0.2);
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .attach-menu[hidden] { display: none; }
+  .composer-field { position: relative; }
+  .attach-menu-item {
+    all: unset;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    font-size: 13px;
+    color: var(--ink);
+    border-radius: 4px;
+    transition: background 100ms ease;
+  }
+  .attach-menu-item svg {
+    width: 14px; height: 14px;
+    color: var(--ink-soft);
+    flex-shrink: 0;
+  }
+  .attach-menu-item:hover { background: var(--bg-deep); }
+  /* Hide attach button while in search mode */
+  body.searching .attach-btn { display: none; }
+
+  /* Session title tooltip — singleton, fades in after a short hover delay */
+  .ax-tooltip {
+    position: fixed;
+    z-index: 1000;
+    pointer-events: none;
+    background: var(--ink);
+    color: var(--bg);
+    font-size: 11.5px;
+    line-height: 1.35;
+    letter-spacing: -0.005em;
+    padding: 5px 9px;
+    border-radius: 4px;
+    max-width: 320px;
+    white-space: normal;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+    opacity: 0;
+    transform: translateY(-2px);
+    transition: opacity 120ms ease 220ms, transform 120ms ease 220ms;
+  }
+  .ax-tooltip.visible {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  .ax-tooltip::after {
+    content: '';
+    position: absolute;
+    bottom: -4px;
+    left: var(--arrow-x, 12px);
+    width: 8px; height: 8px;
+    background: var(--ink);
+    transform: rotate(45deg);
+    border-radius: 1px;
+  }
+
+  .composer-hint {
+    margin-top: 8px;
+    font-size: 10.5px;
+    color: var(--ink-ghost);
+    text-align: center;
+    letter-spacing: 0.04em;
+    opacity: 0;
+    transition: opacity 140ms ease;
+    pointer-events: none;
+  }
+  .composer:hover .composer-hint,
+  .composer:focus-within .composer-hint,
+  body.searching .composer-hint {
+    opacity: 1;
+  }
+  .composer-hint kbd {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--ink-mute);
+  }
+
+  /* ---- Search mode ---- */
+  /* When body.searching is set, the composer becomes a search field.
+     Visually: the field gets a subtle accent tint; the send icon
+     flips to a × (clear); the hint changes to search-specific. */
+  body.searching .composer-field {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+  }
+  body.searching .send-btn {
+    background: var(--ink-mute);
+  }
+  body.searching .send-btn.ready {
+    background: var(--ink);
+  }
+  .search-prefix {
+    display: none;
+    color: var(--ink-mute);
+    font-size: 13px;
+    margin-right: -2px;
+    letter-spacing: 0.04em;
+    user-select: none;
+  }
+  body.searching .search-prefix { display: inline-block; }
+
+  /* Highlight matches inside message bodies */
+  mark.hit {
+    background: color-mix(in srgb, var(--accent) 30%, transparent);
+    color: var(--ink);
+    padding: 0 2px;
+    border-radius: 2px;
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+  }
+  body:not(.searching) .msg.miss { display: none; } /* never actually used */
+  body.searching .msg.miss { display: none; }
+  body.searching .day { display: none; }
+  body.searching .msg.current-hit .msg-body {
+    outline: 2px solid var(--accent);
+    outline-offset: 6px;
+    border-radius: 4px;
+    transition: outline-color 160ms ease;
+  }
+
+  /* Search status bar — tiny, above the composer */
+  .search-status {
+    position: fixed;
+    left: 0; right: 0;
+    bottom: 96px;
+    display: none;
+    justify-content: center;
+    pointer-events: none;
+    z-index: 19;
+  }
+  body.searching .search-status { display: flex; }
+  .search-status-pill {
+    pointer-events: auto;
+    background: var(--bg);
+    border: 1px solid var(--rule);
+    border-radius: 99px;
+    padding: 5px 12px;
+    font-size: 11px;
+    color: var(--ink-mute);
+    box-shadow: 0 4px 14px rgba(0,0,0,0.06);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    letter-spacing: 0.02em;
+  }
+  .search-status-pill strong { color: var(--ink); font-weight: 500; }
+  .search-status-pill .dot {
+    width: 4px; height: 4px; border-radius: 50%;
+    background: var(--ink-ghost);
+  }
+  .search-status-pill button {
+    all: unset;
+    cursor: pointer;
+    color: var(--ink-mute);
+    transition: color 120ms ease;
+  }
+  .search-status-pill button:hover { color: var(--ink); }
+  .search-status-pill.semantic { border-color: var(--accent); color: var(--ink-soft); }
+  .search-status-pill.semantic strong { color: var(--accent); }
+
+  /* Empty-state inside timeline when no matches */
+  .search-empty {
+    text-align: center;
+    padding: 80px 0;
+    color: var(--ink-mute);
+    font-size: 13px;
+  }
+  .search-empty .big {
+    font-family: var(--sans);
+    font-size: 18px;
+    color: var(--ink-soft);
+    margin-bottom: 8px;
+    letter-spacing: -0.005em;
+  }
+  .search-empty button {
+    all: unset;
+    cursor: pointer;
+    color: var(--accent);
+    border-bottom: 1px dotted var(--accent);
+    margin-top: 10px;
+    display: inline-block;
+    font-size: 12.5px;
+  }
+  .search-empty button:hover { color: var(--ink); border-color: var(--ink); }
+  .search-thinking {
+    display: inline-block;
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    animation: breathe 1.6s ease-in-out infinite;
+    vertical-align: middle;
+    margin-right: 6px;
+  }
+
+  /* ---- Empty state intro ---- */
+  .intro {
+    text-align: center;
+    color: var(--ink-mute);
+    padding: 64px 0 40px;
+    font-size: 13.5px;
+  }
+  .intro .big {
+    font-family: var(--sans);
+    font-size: 22px;
+    color: var(--ink);
+    margin-bottom: 6px;
+    font-weight: 500;
+    letter-spacing: -0.01em;
+  }
+
+  /* ---- Tweaks panel ---- */
+  .tweaks {
+    position: fixed;
+    right: 16px;
+    top: 64px;
+    width: 220px;
+    background: var(--bg);
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    box-shadow: 0 8px 28px rgba(0,0,0,0.06);
+    padding: 14px;
+    font-size: 12px;
+    z-index: 30;
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(-4px);
+    transition: opacity 180ms ease, transform 180ms ease;
+  }
+  .tweaks.visible {
+    opacity: 1; pointer-events: auto; transform: translateY(0);
+  }
+  .tweaks-title {
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-mute);
+    margin-bottom: 10px;
+  }
+  .tweak-row { margin-bottom: 12px; }
+  .tweak-row:last-child { margin-bottom: 0; }
+  .tweak-label {
+    font-size: 10.5px;
+    color: var(--ink-mute);
+    margin-bottom: 6px;
+    letter-spacing: 0.02em;
+  }
+  .tweak-seg {
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: 1fr;
+    gap: 2px;
+    padding: 2px;
+    background: var(--bg-deep);
+    border-radius: 6px;
+  }
+  .tweak-seg button {
+    all: unset;
+    cursor: pointer;
+    text-align: center;
+    font-size: 11px;
+    padding: 5px 0;
+    border-radius: 4px;
+    color: var(--ink-mute);
+    transition: background 120ms ease, color 120ms ease;
+  }
+  .tweak-seg button:hover { color: var(--ink); }
+  .tweak-seg button.current {
+    background: var(--bg);
+    color: var(--ink);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+  }
+
+  /* --- Density --- */
+  [data-density="tight"] .msg { margin-bottom: 14px; }
+  [data-density="loose"] .msg { margin-bottom: 32px; }
+
+  /* --- Agent voice variant: sans instead of serif --- */
+  [data-voice="sans"] .msg.agent .msg-body {
+    font-family: var(--sans);
+    font-size: 15px;
+    letter-spacing: -0.005em;
+  }
+
+  @media (max-width: 640px) {
+    .tweaks { display: none; }
+    .msg.you .msg-body { max-width: 86%; }
+    .tide-line { display: none; }
+  }
+
+  /* ---- TIDE LINE: calendar ruler, left edge ----
+     A 4px strip that maps to calendar days (not doc position).
+     Hover to scrub. Each tick = 1 day; opacity encodes density. */
+  /* Tide-line is disabled in the sessions variant — the sidebar's session
+     list is the primary way to navigate across time, making the per-session
+     calendar rail redundant and visually noisy. */
+  .tide-line, .tide-chip { display: none !important; }
+
+  .tide-line {
+    width: 20px;
+    z-index: 25;
+    cursor: ns-resize;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 70px 0 120px;
+    gap: 0;
+    transition: background 180ms ease;
+  }
+  .tide-line:hover { background: color-mix(in srgb, var(--bg-deep) 70%, transparent); }
+  .tide-line-track {
+    position: relative;
+    width: 4px;
+    flex: 1;
+    background: transparent;
+  }
+  .tide-day {
+    position: absolute;
+    left: 0; right: 0;
+    background: var(--ink-ghost);
+    transition: background 140ms ease, transform 140ms ease;
+  }
+  .tide-line:hover .tide-day { background: var(--ink-mute); }
+  .tide-day.d0    { opacity: 0.22; }   /* quiet day */
+  .tide-day.d1    { opacity: 0.45; }
+  .tide-day.d2    { opacity: 0.7; }
+  .tide-day.d3    { opacity: 1; }      /* busy day */
+  .tide-day.today { background: var(--accent); opacity: 1; }
+  .tide-label {
+    position: absolute;
+    left: 16px;
+    transform: translateY(-50%);
+    font-size: 9px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-mute);
+    pointer-events: none;
+    white-space: nowrap;
+    opacity: 0;
+    transition: opacity 160ms ease;
+    font-family: var(--mono);
+  }
+  .tide-line:hover .tide-label { opacity: 0.8; }
+  .tide-label.anchor { opacity: 0.55; }
+  .tide-line:hover .tide-label.anchor { opacity: 0.9; }
+
+  .tide-cursor {
+    position: absolute;
+    left: -3px; right: -3px;
+    height: 2px;
+    background: var(--accent);
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 140ms ease;
+    z-index: 2;
+  }
+  .tide-line:hover .tide-cursor,
+  .tide-line.pinned .tide-cursor { opacity: 1; }
+
+  .tide-chip {
+    position: fixed;
+    left: 30px;
+    transform: translateY(-50%);
+    background: var(--bg);
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    box-shadow: 0 6px 24px rgba(0,0,0,0.08);
+    padding: 10px 14px;
+    font-size: 12px;
+    color: var(--ink);
+    max-width: 280px;
+    min-width: 200px;
+    z-index: 26;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 140ms ease, transform 140ms ease;
+  }
+  .tide-chip.visible {
+    opacity: 1;
+    transform: translateY(-50%);
+  }
+  .tide-chip-date {
+    font-family: var(--sans);
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--ink);
+    letter-spacing: -0.01em;
+  }
+  .tide-chip-count {
+    font-size: 10.5px;
+    color: var(--ink-mute);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    margin-top: 2px;
+  }
+  .tide-chip-summary {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--rule);
+    font-size: 12px;
+    color: var(--ink-soft);
+    line-height: 1.5;
+    font-style: italic;
+    min-height: 18px;
+  }
+  .tide-chip-summary.loading::after {
+    content: '';
+    display: inline-block;
+    width: 5px; height: 5px;
+    border-radius: 50%;
+    background: var(--accent);
+    animation: breathe 1.6s ease-in-out infinite;
+    vertical-align: middle;
+  }
+
+  /* ---- (topic-break feature removed) ---- */
+  .brk-removed {
+    /* placeholder so unused selector cleanup doesn't break sandwiched rules */
+    display: none;
+  }
+  .legacy-removed-edit {
+    /* placeholder so unused selector cleanup doesn't break sandwiched rules */
+    display: none;
+    border-radius: 4px;
+    background: var(--bg-deep);
+  }
+  .brk-x {
+    all: unset;
+    font-size: 14px;
+    line-height: 1;
+    color: var(--ink-ghost);
+    padding: 2px 6px;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 160ms ease, color 120ms ease;
+  }
+  .brk:hover .brk-x { opacity: 1; }
+  .brk-x:hover { color: var(--ink); }
+
+  /* Ghost gutter between messages: click to insert a break */
+  /* Dim messages outside the active context window */
+  .msg.stale { opacity: 0.5; transition: opacity 200ms ease; }
+  .msg.stale:hover { opacity: 0.9; }
+
+  /* =========================================================
+     Tool calls — subtle inline-feeling lines above the agent reply.
+     No border, no fill. Header is a comma-joined list of past-
+     tense verbs ("Searched the web, read the file") + chevron.
+     Click to expand a code-y block with raw args + result JSON.
+     ========================================================= */
+  .msg-tools {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 14px;
+    font-family: var(--sans);
+    font-style: normal;
+    max-width: 60ch;
+  }
+
+  .tgroup {
+    /* No card chrome — just stacked text. */
+    color: var(--ink-soft);
+  }
+  .tgroup-head {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    user-select: none;
+    font-size: 14px;
+    line-height: 1.4;
+    color: var(--ink-soft);
+    transition: color 120ms ease;
+  }
+  .tgroup-head:hover { color: var(--ink); }
+  .tgroup-title {
+    /* No truncation — let it wrap if a verb list gets long. */
+    overflow-wrap: anywhere;
+  }
+  .tgroup-chev {
+    flex-shrink: 0;
+    width: 11px; height: 11px;
+    color: var(--ink-ghost);
+    transition: transform 160ms ease, color 120ms ease;
+    margin-top: 1px;
+  }
+  .tgroup.open .tgroup-chev { transform: rotate(90deg); color: var(--ink-soft); }
+  .tgroup.running .tgroup-chev {
+    animation: tspin 1.1s linear infinite;
+    color: var(--accent);
+  }
+  .tgroup.failed .tgroup-chev { color: #b04545; }
+  @keyframes tspin { to { transform: rotate(360deg); } }
+
+  /* Expanded body: thin left rule, mono peek per step. */
+  .tgroup-body {
+    display: none;
+    margin-top: 8px;
+    margin-left: 2px;
+    padding: 2px 0 2px 14px;
+    border-left: 1px solid var(--rule);
+  }
+  .tgroup.open .tgroup-body { display: block; }
+
+  .tstep {
+    padding: 8px 10px;
+    background: var(--bg-deep);
+    border-radius: 6px;
+    font-family: var(--mono);
+    font-size: 11px;
+    line-height: 1.55;
+    color: var(--ink-soft);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .tstep + .tstep { margin-top: 6px; }
+  .tstep-name {
+    color: var(--accent);
+    font-weight: 500;
+    margin-bottom: 4px;
+  }
+  .tstep-name .tstep-status {
+    margin-left: 8px;
+    font-weight: 400;
+    color: var(--ink-ghost);
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    font-size: 9.5px;
+  }
+  .tstep-name .tstep-status.running { color: var(--accent); }
+  .tstep-name .tstep-status.failed { color: #b04545; }
+  .tstep-label {
+    text-transform: uppercase;
+    font-size: 9.5px;
+    letter-spacing: 0.14em;
+    color: var(--ink-ghost);
+    margin: 6px 0 2px 0;
+  }
+
+  /* =========================================================
+     Touch / coarse-pointer adaptations
+     When hover isn't available, replace hover-gated affordances
+     with always-visible (but quiet) alternatives.
+     ========================================================= */
+  @media (hover: none), (pointer: coarse) {
+    /* Message meta: always visible at reduced emphasis. Tapping
+       a message still feels identical but the hint doesn't hide. */
+    .msg-footer { opacity: 0.55; transition: none; }
+    .msg:active .msg-footer { opacity: 1; }
+
+    /* Stale messages: don't fight with touch — just dim, no hover reveal */
+    .msg.stale:hover { opacity: 0.5; }
+    .msg.stale:active { opacity: 0.9; }
+
+    /* Tide line: expand tap target; stay "expressed" so the
+       rail is clearly interactive. Tap scrubs; touchmove scrubs. */
+    .tide-line {
+      width: 28px;
+      background: color-mix(in srgb, var(--bg-deep) 35%, transparent);
+    }
+    .tide-line .tide-day {
+      background: var(--ink-mute);
+    }
+    .tide-line .tide-label { opacity: 0.65; }
+    .tide-line .tide-label.anchor { opacity: 0.8; }
+    /* Active scrubbing shows the cursor */
+    .tide-line.pinned { background: color-mix(in srgb, var(--bg-deep) 55%, transparent); }
+  }
+
+  /* Composer-topic chip removed (topic-break feature gone) */
+  .composer-topic-legacy-removed {
+    display: none;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+    padding: 0 2px;
+    font-size: 11px;
+    color: var(--ink-mute);
+    letter-spacing: 0.02em;
+  }
+  .composer-topic.visible { display: flex; }
+  .composer-topic strong {
+    font-family: var(--sans);
+    font-weight: 500;
+    font-style: normal;
+    color: var(--ink-soft);
+  }
+  .composer-topic-clear {
+    all: unset;
+    cursor: pointer;
+    color: var(--ink-ghost);
+    transition: color 120ms ease;
+  }
+  .composer-topic-clear:hover { color: var(--ink); }
+</style>
+</head>
+<body data-density="comfortable" data-voice="serif">
+
+<button class="sidebar-toggle" id="sidebarToggle" aria-label="Toggle sessions">
+  <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" width="16" height="16">
+    <path d="M3 4 L13 4 M3 8 L13 8 M3 12 L13 12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+  </svg>
+</button>
+
+<aside class="sidebar" id="sidebar">
+  <div class="sidebar-head">
+    <a class="brand" href="#" aria-label="ax">
+      <span class="brand-word">ax</span>
+    </a>
+    <button class="sidebar-collapse" id="sidebarCollapse" aria-label="Collapse sidebar" title="Collapse sidebar (⌘\)">
+      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <rect x="2.7" y="3.5" width="12.6" height="9" rx="1.5" stroke="currentColor" stroke-width="1.3"/>
+        <line x1="6.7" y1="3.5" x2="6.7" y2="12.5" stroke="currentColor" stroke-width="1.3"/>
+      </svg>
+    </button>
+  </div>
+    <button class="new-session-btn" id="newSessionBtn" title="Start a new session">
+      <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M8 3 L8 13 M3 8 L13 8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+      </svg>
+      <span class="label">new session</span>
+      <span class="kbd">⌘N</span>
+    </button>
+  </div>
+  <nav class="sessions-scroll" id="sessionsList" aria-label="Sessions"></nav>
+
+  <!-- User row + popover menu -->
+  <div class="user-row-wrap">
+    <button class="user-row" id="userRow" aria-haspopup="true" aria-expanded="false">
+      <span class="user-avatar">CW</span>
+      <span class="user-meta">
+        <span class="user-name">cass winters</span>
+        <span class="user-email">cass@canopyworks.com</span>
+      </span>
+      <svg class="user-caret" viewBox="0 0 10 10" aria-hidden="true">
+        <path d="M2.5 6 L5 3.5 L7.5 6" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </button>
+    <div class="user-menu" id="userMenu" role="menu" hidden>
+      <div class="user-menu-head">
+        <span class="user-avatar lg">CW</span>
+        <span class="user-meta">
+          <span class="user-name">cass winters</span>
+          <span class="user-email">cass@canopyworks.com</span>
+        </span>
+      </div>
+      <button class="user-menu-item" data-action="account">
+        <svg viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="5" r="2.4" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M2.5 12 C3 9.5 5 8.6 7 8.6 C9 8.6 11 9.5 11.5 12" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg>
+        <span>Account &amp; billing</span>
+      </button>
+      <button class="user-menu-item" data-action="settings">
+        <svg viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="7" r="1.6" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M7 1.5 L7 3 M7 11 L7 12.5 M1.5 7 L3 7 M11 7 L12.5 7 M3 3 L4 4 M10 10 L11 11 M3 11 L4 10 M10 4 L11 3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+        <span>Settings</span>
+        <span class="kbd">⌘,</span>
+      </button>
+      <div class="user-menu-divider"></div>
+      <div class="user-menu-row" data-action="theme">
+        <svg viewBox="0 0 14 14" aria-hidden="true"><path d="M11 8.5 A4.5 4.5 0 0 1 5.5 3 A4.5 4.5 0 1 0 11 8.5 Z" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linejoin="round"/></svg>
+        <span class="label">Theme</span>
+        <div class="theme-seg" id="themeSeg" role="radiogroup" aria-label="Theme">
+          <button data-theme="light" role="radio" aria-checked="false" title="Light">
+            <svg viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="7" r="2.5" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M7 1.5 L7 3 M7 11 L7 12.5 M1.5 7 L3 7 M11 7 L12.5 7 M3 3 L4 4 M10 10 L11 11 M3 11 L4 10 M10 4 L11 3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+          </button>
+          <button data-theme="dark" role="radio" aria-checked="false" title="Dark">
+            <svg viewBox="0 0 14 14" aria-hidden="true"><path d="M11 8.5 A4.5 4.5 0 0 1 5.5 3 A4.5 4.5 0 1 0 11 8.5 Z" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linejoin="round"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="user-menu-divider"></div>
+      <button class="user-menu-item" data-action="logout">
+        <svg viewBox="0 0 14 14" aria-hidden="true"><path d="M8 2 L3 2 L3 12 L8 12" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/><path d="M7 7 L12 7 M9.5 4.5 L12 7 L9.5 9.5" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span>Sign out</span>
+      </button>
+      <div class="user-menu-foot"><span>tide v0.3</span></div>
+    </div>
+  </div>
+</aside>
+
+<div class="pane">
+
+<header class="header">
+  <div class="header-inner">
+    <div class="header-left">
+      <button class="agent-chip" id="agentChip" aria-haspopup="true" aria-expanded="false">
+        <span class="agent-chip-avatar"><span class="dot"></span></span>
+        <span class="agent-chip-name" id="agentChipName">tide</span>
+        <svg class="agent-chip-caret" viewBox="0 0 10 10" aria-hidden="true">
+          <path d="M2.5 4 L5 6.5 L7.5 4" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+      <div class="agent-menu" id="agentMenu" role="menu" hidden>
+        <div class="agent-menu-label">switch agent</div>
+        <div class="agent-menu-rows" id="agentMenuRows"></div>
+        <div class="agent-menu-foot agent-menu-note">a new session starts on your next message</div>
+      </div>
+    </div>
+    <div class="session-breadcrumb" id="sessionHeaderTitle">new session</div>
+    <div class="header-actions">
+    </div>
+  </div>
+</header>
+
+<main class="timeline" id="timeline">
+  <!-- rendered -->
+</main>
+
+<div class="composer">
+  <div class="composer-inner">
+    <div class="composer-field">
+      <span class="search-prefix">find</span>
+      <button class="attach-btn" id="attachBtn" aria-label="Attach" aria-haspopup="menu" aria-expanded="false">
+        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M8 3.5 L8 12.5 M3.5 8 L12.5 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+      </button>
+      <div class="attach-menu" id="attachMenu" role="menu" hidden>
+        <button class="attach-menu-item" role="menuitem" data-action="attach-file">
+          <svg viewBox="0 0 14 14" aria-hidden="true">
+            <path d="M9.5 4 L9.5 9.5 a2.5 2.5 0 0 1 -5 0 L4.5 4.2 a1.6 1.6 0 0 1 3.2 0 L7.7 9.2 a0.8 0.8 0 0 1 -1.6 0 L6.1 5" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <span>Attach file…</span>
+        </button>
+      </div>
+      <input type="file" id="attachFileInput" hidden multiple>
+      <textarea id="composerInput" placeholder="Message Tide…" rows="1"></textarea>
+      <button class="send-btn" id="sendBtn" aria-label="Send">
+        <svg class="icon-send" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M3 8 L12 8 M8 4 L12 8 L8 12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <svg class="icon-clear" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" style="display:none">
+          <path d="M4 4 L12 12 M12 4 L4 12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+        </svg>
+      </button>
+    </div>
+    <div class="composer-hint" id="composerHint">
+      <kbd>⏎</kbd> send · <kbd>⇧⏎</kbd> newline · <kbd>/</kbd> or <kbd>⌘K</kbd> find
+    </div>
+  </div>
+</div>
+
+</div><!-- /.pane -->
+
+<!-- Search status pill -->
+<div class="search-status" id="searchStatus">
+  <div class="search-status-pill" id="searchStatusPill">
+    <span id="searchStatusText"><strong>0</strong> results</span>
+    <span class="dot"></span>
+    <button id="searchPrev">↑</button>
+    <button id="searchNext">↓ next</button>
+    <span class="dot"></span>
+    <button id="searchExit">esc</button>
+  </div>
+</div>
+
+<!-- Tide line — calendar ruler on the left -->
+<div class="tide-line" id="tideLine" aria-label="Browse by date">
+  <div class="tide-line-track" id="tideTrack">
+    <div class="tide-cursor" id="tideCursor"></div>
+  </div>
+</div>
+<div class="tide-chip" id="tideChip">
+  <div class="tide-chip-date" id="tideChipDate"></div>
+  <div class="tide-chip-count" id="tideChipCount"></div>
+  <div class="tide-chip-summary" id="tideChipSummary"></div>
+</div>
+
+<!-- Tweaks panel (hidden until host toggles edit mode) -->
+<div class="tweaks" id="tweaks">
+  <div class="tweaks-title">Tweaks</div>
+  <div class="tweak-row">
+    <div class="tweak-label">Density</div>
+    <div class="tweak-seg" data-tweak="density">
+      <button data-value="tight">Tight</button>
+      <button data-value="comfortable">Comfy</button>
+      <button data-value="loose">Loose</button>
+    </div>
+  </div>
+  <div class="tweak-row">
+    <div class="tweak-label">Agent voice</div>
+    <div class="tweak-seg" data-tweak="voice">
+      <button data-value="serif">Serif</button>
+      <button data-value="sans">Sans</button>
+    </div>
+  </div>
+  <div class="tweak-row">
+    <div class="tweak-label">Theme</div>
+    <div class="tweak-seg" data-tweak="theme">
+      <button data-value="auto">Auto</button>
+      <button data-value="light">Light</button>
+      <button data-value="dark">Dark</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* =========================================================
+   State
+   ========================================================= */
+const STORAGE_KEY = 'tide-sessions-v5';
+const LEGACY_KEY = 'tide-sessions-v4';
+
+/* Sessions layer.
+   { sessions: [{id, title, messages: [...]}], activeId }
+   `messages` below is a live reference to the active session's messages. */
+let store = loadStore();
+let messages = store.sessions.find(s => s.id === store.activeId).messages;
+// Pending agent switch: when the user switches agents from a session that
+// already has messages, we don't create a new session immediately. Instead
+// we enter a "pending" state — chat view renders empty under the new agent,
+// and a real session is only created when the user sends the first message.
+// Cleared by sending a message, switching sessions, or starting a +new session.
+let pendingAgentId = null;
+
+function loadStore() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed.sessions && parsed.sessions.length) {
+        if (!parsed.sessions.find(s => s.id === parsed.activeId)) {
+          parsed.activeId = parsed.sessions[0].id;
+        }
+        return parsed;
+      }
+    }
+  } catch(_) {}
+  return seedStore();
+}
+
+function seedStore() {
+  // Seed — 6 weeks of realistic chat, split across several sessions
+  const now = Date.now();
+  const D = 24 * 3600 * 1000;
+  const H = 3600 * 1000;
+  const M = 60 * 1000;
+
+  // Session seeds — each a cluster of related messages with a clear topic.
+  // Each entry: [daysAgo, hourOffset, role, text, tools?, chart?]
+  const sessionSeeds = [
+    {
+      id: 'sess-dpa',
+      title: "mercy dpa · 7.3 pushback",
+      seeds: [
+    [40, -7,  'you',   "reviewing the mercy dpa. they're pushing back on 7.3. what's our fallback?"],
+    [40, -7,  'agent', "the 7.3 wording was softened once already in october. further softening risks drift from the enterprise template. safer move is to hold and offer a written comfort letter on retention."],
+    [40, -6,  'you',   "comfort letter. draft it."],
+    [1,  -6,  'you',   "morning. dpa redlines — any updates overnight?"],
+    [1,  -6,  'agent', "mercy came back at 3am pt. they accepted 4.2 and 6.1; still pushing on 7.3. want me to draft a response?",
+      [{title: 'caught up on the mercy thread', tools: [
+        {name:'email.search', args:{from:'legal@mercy.health', since:'24h'}, result:'1 thread · 3:02am PT', status:'done'},
+        {name:'email.read', args:{thread:'dpa-redlines-v4'}, result:'3 redlines · 2 accepted, 1 open', status:'done'},
+      ]}]],
+    [0,  -2,  'you',   "morning. can you draft a two-line response to the DPA redlines from mercy? i'll revise."],
+    [0,  -1,  'agent', "sure. something like:\n\n\"thanks for the pass. we're aligned on 4.2 and 6.1; we'd like to hold on 7.3 as drafted. i'll send a clean copy with the two edits this afternoon.\"\n\nwant it warmer, or keep it curt?"],
+    [0,  -1,  'you',   "curt is fine. send it."],
+      ],
+    },
+    {
+      id: 'sess-board',
+      title: "board deck · q4 prep",
+      seeds: [
+    [41, -5,  'you',   "kailash thinks we should push the series c narrative harder in the board deck. thoughts?"],
+    [41, -5,  'agent', "if the ask is a sharper narrative, the q4 traction slide is the obvious lever — the current one leads with expansion revenue; it should lead with net retention and the enterprise logo wins. want me to draft the new version?",
+      [{title: 'pulled up the board deck', tools: [
+        {name:'drive.find', args:{query:'q4 board deck'}, result:'Board Q4 — v7.key', status:'done'},
+        {name:'keynote.read_slide', args:{file:'Board Q4 — v7.key', slide:9}, result:'Q4 traction — 320 words, 2 charts', status:'done'},
+      ]}]],
+    [2,  -5,  'you',   "board deck q4 prep — final review tomorrow"],
+    [2,  -5,  'agent', "three things i'd change before it goes out: slide 4 is too dense, slide 9's chart has a misleading y-axis, and the appendix is missing the q3 cohort retention. want me to mark them up?",
+      [{title: 'reviewed Board Q4 — final.key', tools: [
+        {name:'drive.read', args:{file:'Board Q4 — final.key'}, result:'18 slides', status:'done'},
+        {name:'keynote.analyze', args:{file:'Board Q4 — final.key', checks:['density','charts','coverage']}, result:'3 issues', status:'done'},
+      ]}]],
+    [2,  -5,  'you',   "mark them up"],
+      ],
+    },
+    {
+      id: 'sess-reforecast',
+      title: "q2 reforecast · r&d overrun",
+      seeds: [
+    [8,  -5,  'you',   "q2 reforecast — r&d is tracking 12% over. do we pull back or push through?"],
+    [8,  -5,  'agent', "depends on what the 12% is buying. pi-agent-core is driving most of the overrun — the rest is flat. if it's the bet, push through.",
+      [{title: 'pulled the q2 reforecast', tools: [
+        {name:'finance.read', args:{sheet:'Q2 reforecast', range:'R&D lines'}, result:'6 lines · 12.3% over', status:'done'},
+      ]}],
+      {type:'bars', title:'R&D spend vs plan', meta:'% over plan, by program', big:'+12.3% TOTAL',
+       data:[
+         {label:'pi-agent', v:28},
+         {label:'ax-2p',   v:9},
+         {label:'infra',   v:4, muted:true},
+         {label:'prod',    v:-2, muted:true},
+         {label:'ops',     v:1, muted:true},
+         {label:'ux',      v:0, muted:true},
+       ]}],
+      ],
+    },
+    {
+      id: 'sess-gw',
+      title: "gw-psh-21 · 3am watch fires",
+      seeds: [
+    [21, -3,  'agent', "weekend heads-up: the gw-psh-21 watch fired twice overnight. both self-recovered. no action needed, but the pattern is new — worth a look monday."],
+    [20, -8,  'you',   "pattern on gw-psh-21?"],
+    [20, -8,  'agent', "both fires were within the 3am-4am window. temp sensor in the closet rack crosses the threshold at the same time the building hvac cycles down. it's environmental, not firmware.",
+      null,
+      {type:'line', title:'rack temp · last 14 nights', meta:'°C at sensor 4, 02:00–05:00 window', min:30, max:36, threshold:34,
+       data:[
+         {label:'mon', v:31.2},{label:'',v:31.8},{label:'',v:32.1},{label:'',v:31.6},
+         {label:'',v:32.4},{label:'',v:33.1},{label:'sun',v:33.6},
+         {label:'',v:33.9},{label:'',v:34.2},{label:'',v:34.5},{label:'',v:33.8},
+         {label:'',v:34.1},{label:'',v:34.6},{label:'sun',v:34.3}
+       ]}],
+    [20, -8,  'you',   "so we need better hvac or a better threshold"],
+    [20, -7,  'agent', "better threshold is cheaper. i'd propose an adaptive baseline that learns the nightly dip — i can sketch it if you want."],
+      ],
+    },
+    {
+      id: 'sess-anjanette',
+      title: "anjanette · q3 review",
+      seeds: [
+    [38, -3,  'you',   "anjanette q3 review — tough call on the stretch rating"],
+    [38, -3,  'agent', "she hit every objective but missed on the hiring bar. spec was '2-3 seniors'; she landed one. you told her in august the bar would be the hiring, not the output. i'd say 'exceeds expectations', not 'outstanding'."],
+    [33, -4,  'agent', "daily digest · 9am: anjanette's 360 feedback came in overnight. two flags worth reading before your 1:1 thursday — i'll put them on your morning queue."],
+    [33, -3,  'you',   "send me the flags directly"],
+    [33, -3,  'agent', "first: one of her reports says she reviews PRs unevenly — some get 30 line comments, others sail through. second: a peer said her meeting summaries skip decisions that didn't go her way. neither is a pattern yet — but both are worth naming."],
+      ],
+    },
+    {
+      id: 'sess-tokyo',
+      title: "tokyo · ax conference",
+      seeds: [
+    [35, -8,  'you',   "need to book tokyo for the ax conference. dates?"],
+    [35, -8,  'agent', "june 14-18. jal 061 narita direct is still the obvious one; ¥380k return if you book by may 15. want me to hold it?",
+      [{title: 'priced the tokyo trip', tools: [
+        {name:'web.search', args:{q:'ax conference 2026 tokyo dates'}, result:'ax.tokyo/2026 → Jun 14–18', status:'done'},
+        {name:'calendar.read', args:{range:'Jun 13–19, 2026', cal:'primary'}, result:'no conflicts', status:'done'},
+        {name:'flights.search', args:{from:'SFO', to:'NRT', depart:'2026-06-13', ret:'2026-06-18'}, result:'12 options · best: JAL 061 ¥380k', status:'done'},
+      ]}]],
+    [35, -7,  'you',   "hold it. ryokan in kyoto for the 19-21 after?"],
+    [35, -7,  'agent', "tawaraya is available — pricey but your daughter will lose her mind over the garden. booking the same room you liked in 2023."],
+      ],
+    },
+    {
+      id: 'sess-cowork',
+      title: "cowork · interim phi rules",
+      seeds: [
+    [28, -5,  'you',   "cowork interim PHI rules — are we compliant yet?"],
+    [28, -5,  'agent', "not fully. the BAA template still references the old minimum-necessary wording. karim was supposed to close the loop with legal last week. want me to ping him?",
+      [{title: 'checked compliance status', tools: [
+        {name:'drive.read', args:{file:'cowork/BAA-template-v3.docx'}, result:'§4.2 uses 2019 language', status:'done'},
+        {name:'linear.search', args:{project:'compliance', query:'PHI BAA karim'}, result:'COMP-284 · open · last touched 11d ago', status:'done'},
+      ]}]],
+    [28, -5,  'you',   "ping him. cc me."],
+      ],
+    },
+    {
+      id: 'sess-sourdough',
+      title: "sourdough · tight crumb",
+      seeds: [
+    [18, -5,  'you',   "sourdough hydration is killing me. the crumb is tight"],
+    [18, -5,  'agent', "at 72% you're probably under-fermenting rather than over-hydrating. try extending bulk by 45 minutes and see if the crumb opens. what's your ambient?"],
+      ],
+    },
+    {
+      id: 'sess-reykjavik',
+      title: "reykjavik marathon · pace strategy",
+      seeds: [
+    [30, -6,  'you',   "reykjavik marathon recap — i'm thinking about signing up for next year. pace strategy?"],
+    [30, -6,  'agent', "at your current cda of 4:45 and given the hills from km 18 onward, i'd target 3:45 with a conservative first half. the mistake you made in berlin was going out at 5:10/km and paying for it from 32 on."],
+      ],
+    },
+    {
+      id: 'sess-bonsai',
+      title: "juniper · one-sided yellowing",
+      seeds: [
+    [6,  -4,  'you',   "bonsai — the juniper looks stressed. leaves yellowing on one side."],
+    [6,  -4,  'agent', "one-sided yellowing on a juniper is almost always root issue or light imbalance. when was the last repot? and is the yellow side toward the window or away?"],
+    [6,  -4,  'you',   "away. repotted in november"],
+    [6,  -4,  'agent', "rotate 90° weekly for a month. if it doesn't even out, we'll look at the roots."],
+      ],
+    },
+  ];
+
+  // Map seed sessions to their agent. Reasoning:
+  // - tide handles default work (board deck, reforecast, anjanette review, gw watch).
+  // - mercy handles legal/contracts (mercy dpa, cowork phi rules).
+  // - compass is research-mode (sourdough crumb, juniper bonsai, marathon pace).
+  // - orbit is personal/travel/calendar (tokyo conf).
+  const SESSION_AGENT = {
+    'sess-dpa':       'mercy',
+    'sess-board':     'tide',
+    'sess-reforecast':'tide',
+    'sess-gw':        'tide',
+    'sess-anjanette': 'tide',
+    'sess-tokyo':     'orbit',
+    'sess-cowork':    'mercy',
+    'sess-sourdough': 'compass',
+    'sess-reykjavik': 'compass',
+    'sess-bonsai':    'compass',
+  };
+
+  const sessions = sessionSeeds.map(sseed => ({
+    id: sseed.id,
+    agentId: SESSION_AGENT[sseed.id] || 'tide',
+    title: sseed.title,
+    messages: sseed.seeds.map((s, i) => ({
+      id: sseed.id + '-m' + i,
+      role: s[2],
+      text: s[3],
+      tools: s[4] || undefined,
+      chart: s[5] || undefined,
+      ts: now - s[0] * D + s[1] * H,
+    })),
+  }));
+
+  return { sessions, activeId: sessions[0].id };
+}
+
+function currentSession() {
+  return store.sessions.find(s => s.id === store.activeId);
+}
+
+function save() {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(store)); } catch(_) {}
+  if (typeof buildTideLine === 'function') buildTideLine();
+  if (typeof renderSessions === 'function') renderSessions();
+  if (typeof updateSessionHeader === 'function') updateSessionHeader();
+}
+
+/* =========================================================
+   Rendering
+   ========================================================= */
+const timeline = document.getElementById('timeline');
+
+function render() {
+  timeline.innerHTML = '';
+  if (pendingAgentId || messages.length === 0) {
+    const intro = document.createElement('div');
+    intro.className = 'intro';
+    intro.innerHTML = '<div class="big">One conversation.</div>Say anything.';
+    timeline.appendChild(intro);
+    return;
+  }
+
+  // Group by day — insert a day marker whenever the date changes
+  let lastDay = null;
+
+  messages.forEach((m, idx) => {
+    const day = dayOf(m.ts);
+    if (day !== lastDay) {
+      const d = document.createElement('div');
+      d.className = 'day';
+      d.textContent = dayLabel(m.ts);
+      timeline.appendChild(d);
+      lastDay = day;
+    }
+    const el = buildMsg(m);
+    timeline.appendChild(el);
+  });
+}
+
+function dayOf(ts) { return new Date(ts).toDateString(); }
+function dayLabel(ts) {
+  const d = new Date(ts);
+  const today = new Date();
+  const yesterday = new Date(today); yesterday.setDate(today.getDate() - 1);
+  if (d.toDateString() === today.toDateString()) return 'today';
+  if (d.toDateString() === yesterday.toDateString()) return 'yesterday';
+  return d.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
+}
+function timeLabel(ts) {
+  const d = new Date(ts);
+  let h = d.getHours();
+  const m = String(d.getMinutes()).padStart(2, '0');
+  const ap = h >= 12 ? 'pm' : 'am';
+  h = h % 12; if (h === 0) h = 12;
+  return `${h}:${m} ${ap}`;
+}
+
+function buildMsg(m) {
+  const el = document.createElement('article');
+  el.className = 'msg ' + m.role;
+  el.dataset.id = m.id;
+
+  // Tools — rendered before the body (agent messages only)
+  if (m.role === 'agent' && Array.isArray(m.tools) && m.tools.length) {
+    el.appendChild(buildTools(m.tools));
+  }
+
+  const body = document.createElement('div');
+  body.className = 'msg-body';
+  // Simple paragraph splitting
+  body.textContent = m.text;
+  el.appendChild(body);
+
+  // Chart embed — agent-only, rendered after the text body.
+  if (m.role === 'agent' && m.chart) {
+    el.appendChild(buildChart(m.chart));
+  }
+
+  const footer = document.createElement('div');
+  footer.className = 'msg-footer';
+  const time = document.createElement('span');
+  time.className = 'msg-time';
+  time.textContent = timeLabel(m.ts);
+  footer.appendChild(time);
+  // Action icons. Agent messages get copy + retry; user messages get copy + edit.
+  if (m.role === 'agent') {
+    footer.appendChild(makeMsgAction('copy', m, el));
+    footer.appendChild(makeMsgAction('retry', m, el));
+  } else {
+    footer.appendChild(makeMsgAction('copy', m, el));
+    footer.appendChild(makeMsgAction('edit', m, el));
+  }
+  el.appendChild(footer);
+  return el;
+}
+
+/* Build an action icon button (copy / retry / edit) for a message footer. */
+const ICON_PATHS = {
+  // 13×13 viewBox icons, stroked with currentColor
+  copy: '<rect x="4.5" y="4.5" width="6" height="7" rx="1.2" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M2.5 8.5 L2.5 2.5 a1 1 0 0 1 1 -1 L8.5 1.5" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/>',
+  check: '<path d="M3 7 L5.5 9.5 L10 4.5" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>',
+  retry: '<path d="M11 6.5 a4.5 4.5 0 1 1 -1.3 -3.2" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/><path d="M11 1.5 L11 3.5 L9 3.5" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>',
+  edit: '<path d="M2.5 10.5 L2.5 8.7 L8.4 2.8 a1 1 0 0 1 1.4 0 L10.6 3.6 a1 1 0 0 1 0 1.4 L4.7 10.9 L2.9 10.9 Z" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linejoin="round"/>',
+};
+function makeMsgAction(kind, m, msgEl) {
+  const btn = document.createElement('button');
+  btn.className = 'msg-action';
+  btn.type = 'button';
+  btn.setAttribute('aria-label', kind);
+  btn.title = kind;
+  btn.innerHTML = `<svg viewBox="0 0 13 13" aria-hidden="true">${ICON_PATHS[kind]}</svg>`;
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (kind === 'copy') {
+      navigator.clipboard?.writeText(m.text || '').catch(() => {});
+      btn.classList.add('copied');
+      btn.innerHTML = `<svg viewBox="0 0 13 13" aria-hidden="true">${ICON_PATHS.check}</svg>`;
+      setTimeout(() => {
+        btn.classList.remove('copied');
+        btn.innerHTML = `<svg viewBox="0 0 13 13" aria-hidden="true">${ICON_PATHS.copy}</svg>`;
+      }, 1400);
+    } else if (kind === 'retry') {
+      retryAgentMessage(m);
+    } else if (kind === 'edit') {
+      startEditMessage(m, msgEl);
+    }
+  });
+  return btn;
+}
+
+/* Retry: drop the agent reply (and anything after it), then re-run the
+   prior user prompt as a fresh turn. */
+async function retryAgentMessage(m) {
+  if (m.role !== 'agent') return;
+  const idx = messages.findIndex(x => x.id === m.id);
+  if (idx <= 0) return;
+  // Walk back to the closest preceding user message.
+  let promptIdx = -1;
+  for (let i = idx - 1; i >= 0; i--) {
+    if (messages[i].role === 'you') { promptIdx = i; break; }
+  }
+  if (promptIdx < 0) return;
+  const promptMsg = messages[promptIdx];
+  // Truncate everything after the prompt — agent reply + any later messages.
+  truncateMessagesAfter(promptIdx);
+  save();
+  await runAgentTurn(promptMsg.text);
+}
+
+/* Edit: swap the user message body to a contenteditable. Enter commits, Esc
+   cancels. On commit, update the message text, drop everything after it,
+   and re-run the agent on the new text. */
+function startEditMessage(m, msgEl) {
+  if (m.role !== 'you') return;
+  const body = msgEl.querySelector('.msg-body');
+  if (!body || body.isContentEditable) return;
+  const original = m.text;
+  body.setAttribute('contenteditable', 'plaintext-only');
+  body.classList.add('editing');
+  body.focus();
+  // place caret at end
+  const sel = window.getSelection();
+  const range = document.createRange();
+  range.selectNodeContents(body);
+  range.collapse(false);
+  sel.removeAllRanges();
+  sel.addRange(range);
+
+  let committed = false;
+  function commit() {
+    if (committed) return;
+    committed = true;
+    const next = body.textContent.trim();
+    cleanup();
+    if (next && next !== original) {
+      m.text = next;
+      m.ts = Date.now();
+      // Drop everything after this user message and re-run the agent.
+      const idx = messages.findIndex(x => x.id === m.id);
+      if (idx >= 0) truncateMessagesAfter(idx);
+      save();
+      // Update rendered timestamp on the user message in place.
+      const time = msgEl.querySelector('.msg-time');
+      if (time) time.textContent = timeLabel(m.ts);
+      body.textContent = next;
+      runAgentTurn(next);
+    } else {
+      body.textContent = original;
+    }
+  }
+  function cancel() {
+    if (committed) return;
+    committed = true;
+    body.textContent = original;
+    cleanup();
+  }
+  function cleanup() {
+    body.removeAttribute('contenteditable');
+    body.classList.remove('editing');
+    body.removeEventListener('keydown', onKey);
+    body.removeEventListener('blur', onBlur);
+  }
+  function onKey(e) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commit(); }
+    else if (e.key === 'Escape') { e.preventDefault(); cancel(); }
+  }
+  function onBlur() { commit(); }
+  body.addEventListener('keydown', onKey);
+  body.addEventListener('blur', onBlur);
+}
+
+/* Drop messages[idx+1..end] from the array AND from the DOM. */
+function truncateMessagesAfter(idx) {
+  const removed = messages.splice(idx + 1);
+  for (const r of removed) {
+    const el = timeline.querySelector(`.msg[data-id="${r.id}"]`);
+    if (el) el.remove();
+  }
+  // Also drop any orphan thinking indicators.
+  timeline.querySelectorAll('.thinking').forEach(t => t.remove());
+}
+
+/* =========================================================
+   Tool calls — render as one-or-more grouped "tasks".
+   Subtle inline style: header is a comma-joined list of
+   past-tense verbs ("Searched the web, read the file") plus
+   a small chevron. No card chrome. Click to peek raw JSON.
+   ========================================================= */
+function normalizeTools(tools) {
+  if (!tools || !tools.length) return [];
+  const allGrouped = tools.every(t => t && Array.isArray(t.tools));
+  if (allGrouped) return tools;
+  return [{ tools }];
+}
+
+/* Past-tense verb phrase per tool (no targets, no args). */
+function toolVerb(name) {
+  const map = {
+    'email.search':       'searched email',
+    'email.read':         'read the thread',
+    'email.send':         'sent a reply',
+    'calendar.read':      'checked your calendar',
+    'calendar.create':    'held time on your calendar',
+    'slack.search':       'searched slack',
+    'drive.find':         'found a file',
+    'drive.read':         'read the file',
+    'drive.write':        'updated the file',
+    'keynote.read_slide': 'read the slide',
+    'keynote.analyze':    'analyzed the deck',
+    'web.search':         'searched the web',
+    'web.read':           'read the page',
+    'flights.search':     'priced flights',
+    'finance.read':       'pulled numbers',
+    'linear.search':      'searched linear',
+    'linear.create':      'opened a ticket',
+  };
+  return map[name] || (name.split('.')[1] || 'ran').replace(/_/g, ' ');
+}
+
+/* Build the comma-joined header phrase, dedupe adjacent identical
+   verbs ("read the file, read the file" → "read the file"). First
+   verb is sentence-cased, rest stay lowercase. */
+function groupHeaderPhrase(group) {
+  const verbs = group.tools.map(t => toolVerb(t.name));
+  const dedup = [];
+  for (const v of verbs) if (dedup[dedup.length - 1] !== v) dedup.push(v);
+  if (!dedup.length) return 'thinking';
+  // Sentence-case the first verb only.
+  dedup[0] = dedup[0].charAt(0).toUpperCase() + dedup[0].slice(1);
+  return dedup.join(', ');
+}
+
+/* Group-level status: running > failed > done. */
+function groupStatus(g) {
+  const ts = g.tools;
+  if (ts.some(t => t.status === 'running')) return 'running';
+  if (ts.some(t => t.status === 'failed')) return 'failed';
+  return 'done';
+}
+
+function buildTools(tools) {
+  const wrap = document.createElement('div');
+  wrap.className = 'msg-tools';
+  const groups = normalizeTools(tools);
+
+  groups.forEach(g => {
+    const status = groupStatus(g);
+    const groupEl = document.createElement('div');
+    groupEl.className = 'tgroup ' + status;
+
+    const head = document.createElement('div');
+    head.className = 'tgroup-head';
+    head.innerHTML = `
+      <span class="tgroup-title"></span>
+      <svg class="tgroup-chev" viewBox="0 0 11 11" aria-hidden="true">
+        <path d="M3.5 2 L7.5 5.5 L3.5 9" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    `;
+    head.querySelector('.tgroup-title').textContent = groupHeaderPhrase(g);
+    head.addEventListener('click', () => groupEl.classList.toggle('open'));
+    groupEl.appendChild(head);
+
+    // Body: code-y JSON peek for each step.
+    const body = document.createElement('div');
+    body.className = 'tgroup-body';
+    g.tools.forEach(t => {
+      const step = document.createElement('div');
+      step.className = 'tstep';
+
+      const name = document.createElement('div');
+      name.className = 'tstep-name';
+      name.innerHTML = `${escapeHtml(t.name)}<span class="tstep-status ${t.status || ''}">${t.status || 'done'}</span>`;
+      step.appendChild(name);
+
+      const argsLabel = document.createElement('div');
+      argsLabel.className = 'tstep-label';
+      argsLabel.textContent = 'args';
+      step.appendChild(argsLabel);
+      const argsBody = document.createElement('div');
+      argsBody.textContent = JSON.stringify(t.args || {}, null, 2);
+      step.appendChild(argsBody);
+
+      if (t.status === 'failed') {
+        const errLabel = document.createElement('div');
+        errLabel.className = 'tstep-label';
+        errLabel.textContent = 'error';
+        step.appendChild(errLabel);
+        const errBody = document.createElement('div');
+        errBody.textContent = t.error || 'failed';
+        step.appendChild(errBody);
+      } else if (t.status !== 'running' && t.result != null) {
+        const resLabel = document.createElement('div');
+        resLabel.className = 'tstep-label';
+        resLabel.textContent = 'result';
+        step.appendChild(resLabel);
+        const resBody = document.createElement('div');
+        resBody.textContent = typeof t.result === 'string' ? t.result : JSON.stringify(t.result, null, 2);
+        step.appendChild(resBody);
+      }
+
+      body.appendChild(step);
+    });
+    groupEl.appendChild(body);
+    wrap.appendChild(groupEl);
+  });
+  return wrap;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+}
+
+/* =========================================================
+   CHART EMBED — builds a <figure> containing a sandboxed iframe
+   whose srcdoc is a self-contained HTML chart that inherits
+   Tide's tokens (passed in as CSS custom properties).
+
+   The chart is an SVG rendered in pure HTML; no scripts run in
+   the iframe (sandbox=""). This keeps arbitrary model output
+   safe while still letting it control layout, colors, labels.
+   ========================================================= */
+function buildChart(chart) {
+  const fig = document.createElement('figure');
+  fig.className = 'chart-embed loading';
+
+  const frame = document.createElement('iframe');
+  frame.className = 'chart-embed-frame';
+  frame.setAttribute('sandbox', ''); // no scripts, no same-origin
+  frame.setAttribute('loading', 'lazy');
+  frame.setAttribute('title', chart.title || 'Chart');
+  // Height per chart type
+  const h = chart.type === 'spark' ? 80 : chart.type === 'bars' ? 220 : 200;
+  frame.style.height = h + 'px';
+  frame.srcdoc = chartDoc(chart, tokensFromPage());
+
+  // Reveal when loaded
+  frame.addEventListener('load', () => fig.classList.remove('loading'));
+  // Safety: reveal after 1.2s even if load fires oddly
+  setTimeout(() => fig.classList.remove('loading'), 1200);
+
+  fig.appendChild(frame);
+
+  // Caption below: label · meta, plus hover actions
+  const cap = document.createElement('figcaption');
+  cap.className = 'chart-embed-caption';
+  const left = document.createElement('span');
+  left.className = 'label';
+  left.textContent = (chart.title || 'chart').toLowerCase();
+  cap.appendChild(left);
+  const right = document.createElement('span');
+  right.className = 'meta';
+  right.textContent = chart.meta || '';
+  cap.appendChild(right);
+  fig.appendChild(cap);
+
+  return fig;
+}
+
+/* Read Tide's current design tokens so the iframe can match. */
+function tokensFromPage() {
+  const cs = getComputedStyle(document.body);
+  const get = (k) => cs.getPropertyValue(k).trim();
+  return {
+    bg:       get('--bg')       || '#fbfbf7',
+    ink:      get('--ink')      || '#1d1d1a',
+    inkSoft:  get('--ink-soft') || '#4a4a45',
+    inkMute:  get('--ink-mute') || '#7a7a72',
+    inkGhost: get('--ink-ghost')|| '#aba99f',
+    rule:     get('--rule')     || '#dfded4',
+    accent:   get('--accent')   || '#8b2e1f',
+    youWash:  get('--you-wash') || '#ecede6',
+    sans:     get('--sans')     || "'IBM Plex Sans', system-ui, sans-serif",
+    serif:    get('--sans')     || "'IBM Plex Sans', system-ui, sans-serif",
+    mono:     get('--mono')     || "'IBM Plex Mono', ui-monospace, monospace",
+  };
+}
+
+/* Build the srcdoc HTML for the iframe. */
+function chartDoc(chart, t) {
+  const svg = renderChartSVG(chart, t);
+  return `<!DOCTYPE html><html><head><meta charset="utf-8">
+<style>
+  html, body { margin: 0; padding: 0; background: ${t.bg}; color: ${t.ink};
+    font-family: ${t.sans}; height: 100%; }
+  .wrap { padding: 14px 14px 10px; box-sizing: border-box; height: 100%; }
+  .hd { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 8px; }
+  .hd .t { font-family: ${t.sans}; font-size: 13px; font-weight: 500; font-style: normal; color: ${t.ink}; letter-spacing: -0.005em; }
+  .hd .v { font-family: ${t.mono}; font-size: 10.5px; color: ${t.inkMute}; letter-spacing: 0.04em; text-transform: uppercase; }
+  .chart { position: relative; width: 100%; height: calc(100% - ${(chart.title || chart.big) ? '30px' : '0px'} - ${chart.legend ? '20px' : '0px'}); }
+  .chart svg { width: 100%; height: 100%; display: block; }
+  .axis { stroke: ${t.inkGhost}; stroke-width: 0.5; }
+  .grid { stroke: ${t.inkGhost}; stroke-width: 0.4; stroke-dasharray: 2 4; opacity: 0.5; }
+  .line { fill: none; stroke: ${t.accent}; stroke-width: 1.4; stroke-linejoin: round; }
+  .area { fill: ${t.accent}; opacity: 0.08; }
+  .dot  { fill: ${t.accent}; }
+  .bar  { fill: ${t.accent}; opacity: 0.75; }
+  .bar.muted { fill: ${t.inkGhost}; opacity: 0.5; }
+  .lbl  { fill: ${t.inkMute}; font-family: ${t.mono}; font-size: 9.5px; letter-spacing: 0.04em; text-transform: uppercase; }
+  .val  { fill: ${t.ink}; font-family: ${t.mono}; font-size: 10px; font-weight: 500; }
+  .legend { font-family: ${t.mono}; font-size: 10px; color: ${t.inkMute}; letter-spacing: 0.04em; text-transform: uppercase; margin-top: 6px; }
+  .swatch { display: inline-block; width: 8px; height: 2px; background: ${t.accent}; margin-right: 5px; vertical-align: middle; }
+</style></head>
+<body><div class="wrap">
+  ${(chart.title || chart.big) ? `<div class="hd">
+    <span class="t">${chart.title || ''}</span>
+    <span class="v">${chart.big || ''}</span>
+  </div>` : ''}
+  <div class="chart">${svg}</div>
+  ${chart.legend ? `<div class="legend"><span class="swatch"></span>${chart.legend}</div>` : ''}
+</div></body></html>`;
+}
+
+/* SVG renderers for chart types. Uses viewBox-based layout so
+   the chart scales with the iframe size. */
+function renderChartSVG(chart, t) {
+  const W = 560, H = chart.type === 'spark' ? 60 : 180;
+  if (chart.type === 'line' || !chart.type) return renderLine(chart, W, H, t);
+  if (chart.type === 'bars') return renderBars(chart, W, H, t);
+  if (chart.type === 'spark') return renderSpark(chart, W, H, t);
+  return '';
+}
+
+function renderLine(chart, W, H, t) {
+  const data = chart.data || [];
+  const pad = { l: 34, r: 14, t: 10, b: 26 };
+  const iw = W - pad.l - pad.r, ih = H - pad.t - pad.b;
+  const vals = data.map(d => d.v);
+  const min = chart.min != null ? chart.min : Math.min(...vals, 0);
+  const max = chart.max != null ? chart.max : Math.max(...vals);
+  const span = max - min || 1;
+  const x = (i) => pad.l + (iw * i) / Math.max(data.length - 1, 1);
+  const y = (v) => pad.t + ih - ((v - min) / span) * ih;
+  const pts = data.map((d, i) => `${x(i)},${y(d.v)}`).join(' ');
+  const area = `M${x(0)},${pad.t + ih} L${pts.replace(/ /g, ' L')} L${x(data.length - 1)},${pad.t + ih} Z`;
+  // y-axis ticks
+  const ticks = [min, min + span / 2, max].map(v => {
+    const yy = y(v);
+    const lbl = Number.isInteger(v) ? v : v.toFixed(1);
+    return `<line class="grid" x1="${pad.l}" x2="${W - pad.r}" y1="${yy}" y2="${yy}"/>
+      <text class="lbl" x="${pad.l - 6}" y="${yy + 3}" text-anchor="end">${lbl}</text>`;
+  }).join('');
+  // Threshold line (optional, from chart.threshold)
+  const thresh = chart.threshold != null ? (() => {
+    const yy = y(chart.threshold);
+    return `<line x1="${pad.l}" x2="${W - pad.r}" y1="${yy}" y2="${yy}" stroke="${t.accent}" stroke-width="0.8" stroke-dasharray="3 3" opacity="0.6"/>
+      <text class="lbl" x="${W - pad.r}" y="${yy - 4}" text-anchor="end" fill="${t.accent}">threshold ${chart.threshold}</text>`;
+  })() : '';
+  const xlabels = data.map((d, i) => {
+    if (!d.label) return '';
+    const anchor = i === 0 ? 'start' : i === data.length - 1 ? 'end' : 'middle';
+    return `<text class="lbl" x="${x(i)}" y="${H - 8}" text-anchor="${anchor}">${d.label}</text>`;
+  }).join('');
+  const dots = data.map((d, i) => `<circle class="dot" cx="${x(i)}" cy="${y(d.v)}" r="${i === data.length - 1 ? 2.8 : 1.4}"/>`).join('');
+  const lastVal = `<text class="val" x="${W - pad.r}" y="${y(data[data.length - 1].v) - 6}" text-anchor="end">${data[data.length - 1].v}</text>`;
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">
+    ${ticks}
+    <path class="area" d="${area}"/>
+    <polyline class="line" points="${pts}"/>
+    ${thresh}
+    ${dots}
+    ${xlabels}
+    ${lastVal}
+  </svg>`;
+}
+
+function renderBars(chart, W, H, t) {
+  const data = chart.data || [];
+  const pad = { l: 38, r: 14, t: 10, b: 26 };
+  const iw = W - pad.l - pad.r, ih = H - pad.t - pad.b;
+  const vals = data.map(d => d.v);
+  const dmax = Math.max(...vals, 0);
+  const dmin = Math.min(...vals, 0);
+  const span = (dmax - dmin) || 1;
+  const zeroY = pad.t + ih - ((0 - dmin) / span) * ih;
+  const bw = iw / data.length * 0.68;
+  const slotW = iw / data.length;
+  const ticks = [dmin, 0, dmax].filter((v, i, a) => a.indexOf(v) === i).map(v => {
+    const yy = pad.t + ih - ((v - dmin) / span) * ih;
+    return `<line class="grid" x1="${pad.l}" x2="${W - pad.r}" y1="${yy}" y2="${yy}"/>
+      <text class="lbl" x="${pad.l - 6}" y="${yy + 3}" text-anchor="end">${v > 0 ? '+' : ''}${Math.round(v)}%</text>`;
+  }).join('');
+  const bars = data.map((d, i) => {
+    const x = pad.l + slotW * i + (slotW - bw) / 2;
+    const v = d.v;
+    const vy = pad.t + ih - ((v - dmin) / span) * ih;
+    const y = Math.min(vy, zeroY);
+    const h = Math.abs(vy - zeroY);
+    const cls = d.muted ? 'bar muted' : 'bar';
+    return `<rect class="${cls}" x="${x}" y="${y}" width="${bw}" height="${h}" rx="1"/>
+      <text class="lbl" x="${x + bw / 2}" y="${H - 8}" text-anchor="middle">${d.label || ''}</text>`;
+  }).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">
+    ${ticks}${bars}
+  </svg>`;
+}
+
+function renderSpark(chart, W, H, t) {
+  const data = chart.data || [];
+  const vals = data.map(d => d.v);
+  const min = Math.min(...vals);
+  const max = Math.max(...vals);
+  const span = max - min || 1;
+  const x = (i) => (W * i) / Math.max(data.length - 1, 1);
+  const y = (v) => H - ((v - min) / span) * (H - 8) - 4;
+  const pts = data.map((d, i) => `${x(i)},${y(d.v)}`).join(' ');
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+    <polyline class="line" points="${pts}"/>
+    <circle class="dot" cx="${x(data.length - 1)}" cy="${y(vals[vals.length - 1])}" r="2.2"/>
+  </svg>`;
+}
+
+function formatToolArgs(args) {
+  if (!args) return '';
+  if (typeof args === 'string') return args;
+  const parts = Object.entries(args).map(([k, v]) => {
+    const vs = typeof v === 'string' ? v : JSON.stringify(v);
+    return vs.length > 40 ? `${k}=${vs.slice(0,40)}…` : `${k}=${vs}`;
+  });
+  return parts.join(' · ');
+}
+
+/* =========================================================
+   Composer
+   ========================================================= */
+const input = document.getElementById('composerInput');
+const sendBtn = document.getElementById('sendBtn');
+
+// Attach (+) menu
+const attachBtn = document.getElementById('attachBtn');
+const attachMenu = document.getElementById('attachMenu');
+const attachFileInput = document.getElementById('attachFileInput');
+if (attachBtn && attachMenu) {
+  attachBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const open = !attachMenu.hidden;
+    // Close other menus
+    if (typeof closeAllMenus === 'function') closeAllMenus();
+    attachMenu.hidden = open;
+    attachBtn.setAttribute('aria-expanded', String(!open));
+  });
+  document.addEventListener('click', (e) => {
+    if (!attachMenu.hidden && !e.target.closest('#attachMenu') && !e.target.closest('#attachBtn')) {
+      attachMenu.hidden = true;
+      attachBtn.setAttribute('aria-expanded', 'false');
+    }
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !attachMenu.hidden) {
+      attachMenu.hidden = true;
+      attachBtn.setAttribute('aria-expanded', 'false');
+    }
+  });
+  attachMenu.querySelector('[data-action="attach-file"]').addEventListener('click', () => {
+    attachMenu.hidden = true;
+    attachBtn.setAttribute('aria-expanded', 'false');
+    attachFileInput.click();
+  });
+  attachFileInput.addEventListener('change', () => {
+    // Stub — would normally upload + attach to next message.
+    // For the prototype, just leave the value; real handling is out of scope here.
+    attachFileInput.value = '';
+  });
+}
+
+function autogrow() {
+  input.style.height = 'auto';
+  input.style.height = Math.min(input.scrollHeight, 180) + 'px';
+  sendBtn.classList.toggle('ready', input.value.trim().length > 0);
+}
+input.addEventListener('input', autogrow);
+
+input.addEventListener('keydown', (e) => {
+  // Global-ish: /  enters search mode when field is empty
+  if (searchMode) {
+    if (e.key === 'Escape') { e.preventDefault(); exitSearch(); return; }
+    if (e.key === 'Enter')  { e.preventDefault(); jumpToCurrentHit(); return; }
+    if (e.key === 'ArrowDown') { e.preventDefault(); stepHit(+1); return; }
+    if (e.key === 'ArrowUp')   { e.preventDefault(); stepHit(-1); return; }
+    return; // everything else is just typing the query
+  }
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    submit();
+  } else if (e.key === '/' && input.value === '') {
+    e.preventDefault();
+    enterSearch();
+  }
+});
+sendBtn.addEventListener('click', () => {
+  if (searchMode) exitSearch();
+  else submit();
+});
+
+// Global ⌘K / Ctrl+K to toggle search
+document.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+    e.preventDefault();
+    if (searchMode) exitSearch();
+    else enterSearch();
+  }
+});
+
+input.addEventListener('input', () => {
+  if (searchMode) runSearch(input.value);
+});
+
+/* =========================================================
+   Search
+   ========================================================= */
+let searchMode = false;
+let hits = [];         // array of {msgId, el}
+let currentHit = -1;
+let semanticTimer = null;
+
+const searchStatus = document.getElementById('searchStatus');
+const searchStatusText = document.getElementById('searchStatusText');
+const searchStatusPill = document.getElementById('searchStatusPill');
+const iconSend = document.querySelector('.icon-send');
+const iconClear = document.querySelector('.icon-clear');
+const hintEl = document.getElementById('composerHint');
+const HINT_NORMAL = '<kbd>⏎</kbd> send · <kbd>⇧⏎</kbd> newline · <kbd>/</kbd> or <kbd>⌘K</kbd> find';
+const HINT_SEARCH = '<kbd>↑</kbd><kbd>↓</kbd> step · <kbd>⏎</kbd> jump · <kbd>esc</kbd> exit';
+
+function enterSearch() {
+  searchMode = true;
+  document.body.classList.add('searching');
+  input.placeholder = 'Find in chat…';
+  input.value = '';
+  iconSend.style.display = 'none';
+  iconClear.style.display = '';
+  hintEl.innerHTML = HINT_SEARCH;
+  searchStatus.style.display = '';
+  runSearch('');
+  input.focus();
+}
+
+function exitSearch() {
+  searchMode = false;
+  document.body.classList.remove('searching');
+  input.placeholder = 'Message Tide…';
+  input.value = '';
+  iconSend.style.display = '';
+  iconClear.style.display = 'none';
+  hintEl.innerHTML = HINT_NORMAL;
+  clearTimeout(semanticTimer);
+  // Restore timeline
+  render();
+  autogrow();
+  input.focus();
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+function highlight(text, q) {
+  if (!q) return escapeHtml(text);
+  const re = new RegExp(escapeRe(q), 'gi');
+  let out = '';
+  let last = 0;
+  const safe = escapeHtml(text);
+  // Re-run regex on safe text (escapeHtml doesn't touch letters/numbers,
+  // so ranges map 1:1 for alphanumeric queries; good enough for this).
+  safe.replace(re, (m, idx) => {
+    out += safe.slice(last, idx) + '<mark class="hit">' + m + '</mark>';
+    last = idx + m.length;
+    return m;
+  });
+  out += safe.slice(last);
+  return out;
+}
+
+function runSearch(query) {
+  clearTimeout(semanticTimer);
+  const q = query.trim();
+
+  // Re-render timeline fresh (clears any prior highlight/current-hit state)
+  render();
+
+  if (!q) {
+    // Empty query: show everything, no hits
+    hits = [];
+    currentHit = -1;
+    searchStatusText.innerHTML = '<strong>type</strong> to find · or ask in plain english';
+    searchStatusPill.classList.remove('semantic');
+    return;
+  }
+
+  // Literal substring pass
+  const qLower = q.toLowerCase();
+  hits = [];
+  const allMsgs = [...document.querySelectorAll('.msg')];
+  allMsgs.forEach(el => {
+    const m = messages.find(x => x.id === el.dataset.id);
+    if (!m) return;
+    if (m.text.toLowerCase().includes(qLower)) {
+      // Highlight matches in body
+      const body = el.querySelector('.msg-body');
+      body.innerHTML = highlight(m.text, q);
+      hits.push({ msgId: m.id, el });
+    } else {
+      el.classList.add('miss');
+    }
+  });
+
+  if (hits.length > 0) {
+    currentHit = 0;
+    markCurrentHit();
+    searchStatusText.innerHTML = `<strong>${hits.length}</strong> ${hits.length === 1 ? 'result' : 'results'}`;
+    searchStatusPill.classList.remove('semantic');
+  } else {
+    currentHit = -1;
+    // Show empty state + offer semantic
+    const empty = document.createElement('div');
+    empty.className = 'search-empty';
+    empty.innerHTML = `
+      <div class="big">no literal match for "${escapeHtml(q)}"</div>
+      <div>looking semantically…</div>
+    `;
+    // Clear timeline and show empty
+    timeline.innerHTML = '';
+    timeline.appendChild(empty);
+    searchStatusText.innerHTML = `<span class="search-thinking"></span> thinking…`;
+    searchStatusPill.classList.add('semantic');
+    // Auto-fire semantic after a short debounce
+    semanticTimer = setTimeout(() => runSemanticSearch(q), 400);
+  }
+}
+
+function markCurrentHit() {
+  document.querySelectorAll('.msg.current-hit').forEach(el => el.classList.remove('current-hit'));
+  if (currentHit < 0 || currentHit >= hits.length) return;
+  const h = hits[currentHit];
+  h.el.classList.add('current-hit');
+  { const r = h.el.getBoundingClientRect(); window.scrollTo({ top: window.scrollY + r.top - window.innerHeight/2 + r.height/2, behavior: 'smooth' }); }
+  searchStatusText.innerHTML = `<strong>${currentHit + 1}</strong> of ${hits.length}`;
+}
+
+function stepHit(delta) {
+  if (hits.length === 0) return;
+  currentHit = (currentHit + delta + hits.length) % hits.length;
+  markCurrentHit();
+}
+
+function jumpToCurrentHit() {
+  if (currentHit < 0 || currentHit >= hits.length) return;
+  const h = hits[currentHit];
+  exitSearch();
+  // After exit + re-render, find the message again and flash it
+  requestAnimationFrame(() => {
+    const el = document.querySelector(`.msg[data-id="${h.msgId}"]`);
+    if (!el) return;
+    { const r = el.getBoundingClientRect(); window.scrollTo({ top: window.scrollY + r.top - window.innerHeight/2 + r.height/2, behavior: 'smooth' }); }
+    el.classList.add('current-hit');
+    setTimeout(() => el.classList.remove('current-hit'), 1400);
+  });
+}
+
+document.getElementById('searchPrev').addEventListener('click', () => stepHit(-1));
+document.getElementById('searchNext').addEventListener('click', () => stepHit(+1));
+document.getElementById('searchExit').addEventListener('click', exitSearch);
+
+/* Semantic fallback — ask Claude to pick relevant message IDs */
+async function runSemanticSearch(q) {
+  if (!searchMode) return;
+  if (!(window.claude && typeof window.claude.complete === 'function')) {
+    renderSemanticEmpty(q);
+    return;
+  }
+  // Build a compact index
+  const index = messages.filter(m => m.type !== 'break').slice(-200).map(m => ({
+    id: m.id,
+    role: m.role,
+    text: m.text.length > 220 ? m.text.slice(0, 220) + '…' : m.text,
+  }));
+  const system =
+    "you help find messages in a chat log by semantic relevance. " +
+    "given a query and a list of messages (id + text), return ONLY a JSON array of the message ids that best match the query, most relevant first, up to 10. " +
+    "if nothing matches well, return []. no prose, no explanation, just the JSON array.";
+  const userMsg =
+    `query: ${q}\n\nmessages:\n` +
+    index.map(m => `${m.id} [${m.role}]: ${m.text}`).join('\n');
+  let ids = [];
+  try {
+    const out = await window.claude.complete({
+      system,
+      messages: [{ role: 'user', content: userMsg }],
+    });
+    const match = out && out.match(/\[[\s\S]*\]/);
+    if (match) ids = JSON.parse(match[0]);
+  } catch (err) {
+    console.warn('semantic search failed', err);
+  }
+  if (!searchMode) return; // user exited while we were thinking
+
+  if (!Array.isArray(ids) || ids.length === 0) {
+    renderSemanticEmpty(q);
+    return;
+  }
+
+  // Render only matching messages, in the order Claude returned
+  timeline.innerHTML = '';
+  const label = document.createElement('div');
+  label.className = 'day';
+  label.textContent = 'related to your question';
+  timeline.appendChild(label);
+  hits = [];
+  ids.forEach(id => {
+    const m = messages.find(x => x.id === id);
+    if (!m) return;
+    const el = buildMsg(m, false);
+    timeline.appendChild(el);
+    hits.push({ msgId: id, el });
+  });
+  if (hits.length > 0) {
+    currentHit = 0;
+    markCurrentHit();
+    searchStatusText.innerHTML = `<strong>${hits.length}</strong> related · semantic`;
+  } else {
+    renderSemanticEmpty(q);
+  }
+}
+
+function renderSemanticEmpty(q) {
+  timeline.innerHTML = '';
+  const empty = document.createElement('div');
+  empty.className = 'search-empty';
+  empty.innerHTML = `
+    <div class="big">nothing matched "${escapeHtml(q)}"</div>
+    <div>try different words, or exit and ask tide directly</div>
+  `;
+  timeline.appendChild(empty);
+  searchStatusText.innerHTML = `<strong>0</strong> results`;
+  searchStatusPill.classList.remove('semantic');
+}
+
+async function submit() {
+  const text = input.value.trim();
+  if (!text) return;
+  // If we're in a pending-agent state (user switched agents from a session
+  // with messages but hasn't typed yet), materialize a new session under
+  // the pending agent before pushing the first message.
+  if (pendingAgentId) {
+    const id = pendingAgentId;
+    pendingAgentId = null;
+    // newSession() reads localStorage AGENT_KEY for intendedAgentId, which
+    // setActiveAgent already wrote when the user picked the agent. Safe.
+    newSession();
+    // Belt-and-suspenders: ensure the new session is stamped with `id`.
+    const ns = currentSession();
+    if (ns) ns.agentId = id;
+  }
+  const userMsg = {
+    id: 'u' + Date.now(),
+    role: 'you',
+    text,
+    ts: Date.now(),
+  };
+  messages.push(userMsg);
+  save();
+  input.value = '';
+  autogrow();
+
+  appendRendered(userMsg);
+  scrollToEnd();
+
+  await runAgentTurn(text);
+}
+
+/* Run one agent turn for an already-pushed user prompt.
+   Plans tools, creates the agent message, animates tools, calls the model,
+   updates the rendered DOM. Used by submit(), retry, and edit-commit. */
+async function runAgentTurn(text) {
+  const plannedTools = planTools(text);
+  const agentMsg = {
+    id: 'a' + Date.now(),
+    role: 'agent',
+    text: '',
+    ts: Date.now(),
+    tools: plannedTools.length ? plannedTools.map(g => ({
+      title: g.title,
+      tools: g.tools.map(t => ({ name: t.name, args: t.args, result: t.result, status: 'running' })),
+    })) : undefined,
+  };
+
+  let thinking = null;
+  if (plannedTools.length) {
+    messages.push(agentMsg);
+    appendRendered(agentMsg);
+    scrollToEnd();
+    await runPlannedTools(agentMsg);
+  } else {
+    thinking = document.createElement('div');
+    thinking.className = 'thinking';
+    timeline.appendChild(thinking);
+    scrollToEnd();
+  }
+
+  let reply;
+  try {
+    reply = await callAgent(text, plannedTools);
+  } catch(_) {
+    reply = 'sorry — i had trouble with that. say more?';
+  }
+
+  if (thinking) thinking.remove();
+
+  if (plannedTools.length) {
+    agentMsg.text = reply;
+    agentMsg.ts = Date.now();
+    save();
+    const el = timeline.querySelector(`.msg[data-id="${agentMsg.id}"]`);
+    if (el) {
+      const body = el.querySelector('.msg-body');
+      if (body) body.textContent = reply;
+      const time = el.querySelector('.msg-time');
+      if (time) time.textContent = timeLabel(agentMsg.ts);
+    }
+    scrollToEnd();
+  } else {
+    agentMsg.text = reply;
+    messages.push(agentMsg);
+    save();
+    appendRendered(agentMsg);
+    scrollToEnd();
+  }
+}
+
+/* =========================================================
+   Tool-call planning & simulation
+   ========================================================= */
+// Pattern-match the prompt to decide which tools the agent would call.
+// Purely heuristic — no real tool execution; results are plausible fakes.
+function planTools(text) {
+  const t = text.toLowerCase();
+  const tools = [];
+  let title = null;
+
+  if (/\b(calendar|schedule|meeting|today|tomorrow|this week|cal\b)/.test(t)) {
+    tools.push({ name: 'calendar.read', args: { range: /tomorrow/.test(t) ? 'tomorrow' : /week/.test(t) ? 'this week' : 'today', cal: 'primary' }, result: '3 events' });
+  }
+  if (/\b(email|inbox|message from|reply from|mercy|legal)/.test(t)) {
+    tools.push({ name: 'email.search', args: { since: '24h', query: text.slice(0, 40) }, result: '2 threads' });
+    if (/\b(reply|read|details|what did|what does)/.test(t)) {
+      tools.push({ name: 'email.read', args: { thread: 'top result' }, result: 'opened' });
+    }
+  }
+  if (/\b(slack|dm from|ping|channel)/.test(t)) {
+    tools.push({ name: 'slack.search', args: { query: text.slice(0, 40), since: '24h' }, result: '4 messages' });
+  }
+  if (/\b(deck|slides?|keynote|presentation|doc|document|brochure|draft|file)/.test(t)) {
+    tools.push({ name: 'drive.find', args: { query: text.slice(0, 40) }, result: '1 file' });
+    if (/\b(read|review|check|look at|fix|edit)/.test(t)) {
+      tools.push({ name: 'drive.read', args: { file: 'top result' }, result: 'opened' });
+    }
+  }
+  if (/\b(flight|book|flights|travel|tokyo|london|paris|tickets|hotel)/.test(t)) {
+    tools.push({ name: 'flights.search', args: { query: text.slice(0, 40) }, result: '12 options' });
+  }
+  if (/\b(linear|ticket|issue|bug|incident|INC-|jira)/i.test(text)) {
+    tools.push({ name: 'linear.search', args: { query: text.slice(0, 40) }, result: '3 tickets' });
+  }
+  if (/\b(search|look up|find|news|latest|who is|what is|when did)/.test(t) && tools.length === 0) {
+    tools.push({ name: 'web.search', args: { q: text.slice(0, 60) }, result: '5 results' });
+  }
+
+  if (!tools.length) return [];
+  const capped = tools.slice(0, 3);
+  // Wrap into a single anonymous group; the renderer derives the
+  // "Searched the web, read the file" header from the steps' verbs.
+  return [{ tools: capped }];
+}
+
+// Walk every step inside every group and resolve them sequentially.
+async function runPlannedTools(agentMsg) {
+  if (!agentMsg.tools) return;
+  const el = timeline.querySelector(`.msg[data-id="${agentMsg.id}"]`);
+  const groups = agentMsg.tools;
+  // If they're not grouped (legacy callers), normalize on the fly.
+  const flat = [];
+  groups.forEach(g => {
+    if (g && Array.isArray(g.tools)) g.tools.forEach(t => flat.push(t));
+    else flat.push(g);
+  });
+  for (let i = 0; i < flat.length; i++) {
+    await new Promise(r => setTimeout(r, 420 + Math.random() * 480));
+    flat[i].status = 'done';
+    if (el) {
+      const oldTools = el.querySelector('.msg-tools');
+      const newTools = buildTools(agentMsg.tools);
+      if (oldTools) oldTools.replaceWith(newTools);
+      else el.insertBefore(newTools, el.firstChild);
+    }
+  }
+}
+
+function appendRendered(m) {
+  // If this is the first message of a new day, inject a day marker
+  const lastChild = timeline.lastElementChild;
+  let needsDay = true;
+  if (lastChild) {
+    // Walk back to find the previous message ts
+    for (let i = messages.length - 2; i >= 0; i--) {
+      if (dayOf(messages[i].ts) === dayOf(m.ts)) { needsDay = false; break; }
+      break;
+    }
+  } else {
+    needsDay = true;
+  }
+  // Simpler: re-render if things get weird. For incremental adds,
+  // just append; day markers at boundaries are rare mid-session.
+  const el = buildMsg(m);
+  el.classList.add('entering');
+  timeline.appendChild(el);
+  el.addEventListener('animationend', () => el.classList.remove('entering'), { once: true });
+}
+
+function scrollToEnd() {
+  requestAnimationFrame(() => {
+    window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+  });
+}
+
+/* =========================================================
+   Agent call
+   ========================================================= */
+async function callAgent(text, plannedTools) {
+  const system =
+    "you are tide — a calm, concise thinking partner in an ongoing one-on-one chat. " +
+    "you reply in lowercase-ish prose, 1 to 3 short sentences, no headers, no bullet lists unless asked. " +
+    "you have persistent context: you remember what the user has told you in this conversation. " +
+    "never introduce yourself again. never announce 'as an AI'. talk like a trusted colleague. " +
+    (plannedTools && plannedTools.length
+      ? "you just ran these tools and got results — weave the outcomes into your reply naturally, don't mention 'tools' or 'i searched': "
+        + plannedTools.flatMap(g => Array.isArray(g.tools) ? g.tools : [g])
+            .map(t => `${t.name}(${JSON.stringify(t.args)}) → ${t.result}`).join('; ')
+      : "");
+
+  // Recent context window: just take the last N messages of this session.
+  const history = messages.slice(-14).map(m => ({
+    role: m.role === 'you' ? 'user' : 'assistant',
+    content: m.text,
+  }));
+  if (window.claude && typeof window.claude.complete === 'function') {
+    try {
+      const out = await window.claude.complete({ system, messages: history });
+      if (out && typeof out === 'string') return out.trim();
+    } catch (err) {
+      console.warn('claude failed, falling back', err);
+    }
+  }
+  // Fallback — just a calm, generic acknowledgement
+  await new Promise(r => setTimeout(r, 700));
+  if (/\?/.test(text)) return 'good question. let me sit with it a moment and get back with something concrete.';
+  if (/^(thanks|thank you|ty)/i.test(text.trim())) return 'anytime.';
+  return 'noted. want me to move on that now, or hold it for your morning review?';
+}
+
+/* =========================================================
+   Theme
+   ========================================================= */
+const THEME_KEY = 'tide-minimal-theme';
+function applyTheme(v) {
+  if (v === 'auto') document.documentElement.removeAttribute('data-theme');
+  else document.documentElement.setAttribute('data-theme', v);
+  localStorage.setItem(THEME_KEY, v);
+}
+// Default to light; migrate any legacy 'auto' to 'light'.
+let _storedTheme = localStorage.getItem(THEME_KEY);
+if (!_storedTheme || _storedTheme === 'auto') _storedTheme = 'light';
+applyTheme(_storedTheme);
+
+function syncThemeSeg() {
+  const cur = localStorage.getItem(THEME_KEY) || 'light';
+  document.querySelectorAll('#themeSeg button').forEach(b => {
+    b.setAttribute('aria-checked', b.dataset.theme === cur ? 'true' : 'false');
+  });
+}
+syncThemeSeg();
+document.querySelectorAll('#themeSeg button').forEach(b => {
+  b.addEventListener('click', () => {
+    applyTheme(b.dataset.theme);
+    syncThemeSeg();
+    if (typeof syncTweaks === 'function') syncTweaks();
+  });
+});
+
+/* =========================================================
+   Tweaks
+   ========================================================= */
+const TIDE_TWEAKS = /*EDITMODE-BEGIN*/{
+  "density": "tight",
+  "voice": "serif",
+  "theme": "light"
+}/*EDITMODE-END*/;
+
+function applyTweaks() {
+  document.body.setAttribute('data-density', TIDE_TWEAKS.density);
+  document.body.setAttribute('data-voice', TIDE_TWEAKS.voice);
+  applyTheme(TIDE_TWEAKS.theme);
+  syncTweaks();
+}
+function syncTweaks() {
+  document.querySelectorAll('.tweak-seg').forEach(seg => {
+    const key = seg.dataset.tweak;
+    const cur = key === 'theme' ? (localStorage.getItem(THEME_KEY) || 'light') : TIDE_TWEAKS[key];
+    seg.querySelectorAll('button').forEach(b => b.classList.toggle('current', b.dataset.value === cur));
+  });
+}
+
+document.querySelectorAll('.tweak-seg').forEach(seg => {
+  seg.querySelectorAll('button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const key = seg.dataset.tweak;
+      TIDE_TWEAKS[key] = btn.dataset.value;
+      applyTweaks();
+      try {
+        window.parent.postMessage({ type: '__edit_mode_set_keys', edits: { ...TIDE_TWEAKS } }, '*');
+      } catch(_) {}
+    });
+  });
+});
+
+window.addEventListener('message', (e) => {
+  if (!e.data || typeof e.data !== 'object') return;
+  if (e.data.type === '__activate_edit_mode')   document.getElementById('tweaks').classList.add('visible');
+  if (e.data.type === '__deactivate_edit_mode') document.getElementById('tweaks').classList.remove('visible');
+});
+try { window.parent.postMessage({ type: '__edit_mode_available' }, '*'); } catch(_) {}
+
+applyTweaks();
+render();
+scrollToEnd();
+
+/* =========================================================
+   TIDE LINE — calendar ruler, browse by date
+   ========================================================= */
+const tideLine = document.getElementById('tideLine');
+const tideTrack = document.getElementById('tideTrack');
+const tideCursor = document.getElementById('tideCursor');
+const tideChip = document.getElementById('tideChip');
+const tideChipDate = document.getElementById('tideChipDate');
+const tideChipCount = document.getElementById('tideChipCount');
+const tideChipSummary = document.getElementById('tideChipSummary');
+
+const summaryCache = new Map();
+let tideDays = []; // [{dateKey, date, ts, count, el}]
+
+function buildTideLine() {
+  // Clear
+  [...tideTrack.querySelectorAll('.tide-day, .tide-label')].forEach(e => e.remove());
+
+  // Group messages by day
+  const byDay = new Map();
+  messages.forEach(m => {
+    const k = new Date(m.ts);
+    k.setHours(0, 0, 0, 0);
+    const key = k.getTime();
+    if (!byDay.has(key)) byDay.set(key, []);
+    byDay.get(key).push(m);
+  });
+
+  if (byDay.size === 0) return;
+
+  const keys = [...byDay.keys()].sort((a, b) => a - b);
+  const firstDay = keys[0];
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const lastDay = Math.max(keys[keys.length - 1], today.getTime());
+  const spanDays = Math.max(1, Math.round((lastDay - firstDay) / (24 * 3600 * 1000)));
+
+  tideDays = [];
+  const todayKey = today.getTime();
+
+  // Show a tick for each day in span (even empty ones, but only if we have few days);
+  // for bigger spans, only show days that have activity + month anchors
+  const showAllDays = spanDays <= 60;
+
+  for (let i = 0; i <= spanDays; i++) {
+    const ts = firstDay + i * 24 * 3600 * 1000;
+    const has = byDay.has(ts);
+    if (!showAllDays && !has && ts !== todayKey) continue;
+    const count = has ? byDay.get(ts).length : 0;
+    const pct = (i / spanDays) * 100;
+    const d = new Date(ts);
+
+    const el = document.createElement('div');
+    el.className = 'tide-day';
+    const tier = count === 0 ? 0 : count <= 2 ? 1 : count <= 5 ? 2 : 3;
+    if (count > 0) el.classList.add('d' + tier);
+    else el.classList.add('d0');
+    if (ts === todayKey) el.classList.add('today');
+    el.style.top = `calc(${pct}% - 1px)`;
+    el.style.height = showAllDays ? '3px' : '4px';
+    tideTrack.appendChild(el);
+
+    tideDays.push({ ts, count, el, pct, messages: byDay.get(ts) || [] });
+
+    // Anchor labels: first of month
+    if (d.getDate() === 1 || i === 0) {
+      const lab = document.createElement('div');
+      lab.className = 'tide-label anchor';
+      lab.style.top = `${pct}%`;
+      lab.textContent = d.toLocaleDateString(undefined, { month: 'short' });
+      tideTrack.appendChild(lab);
+    }
+  }
+}
+buildTideLine();
+
+let hoverLabel = null;
+function ensureHoverLabel() {
+  if (!hoverLabel) {
+    hoverLabel = document.createElement('div');
+    hoverLabel.className = 'tide-label';
+    tideTrack.appendChild(hoverLabel);
+  }
+  return hoverLabel;
+}
+
+function onTideMove(clientY) {
+  const rect = tideTrack.getBoundingClientRect();
+  const y = Math.max(0, Math.min(rect.height, clientY - rect.top));
+  const pct = y / rect.height;
+  tideCursor.style.top = `${pct * 100}%`;
+
+  // Find nearest day
+  if (tideDays.length === 0) return null;
+  let nearest = tideDays[0];
+  let bestDist = Infinity;
+  for (const d of tideDays) {
+    const dist = Math.abs(d.pct / 100 - pct);
+    if (dist < bestDist) { bestDist = dist; nearest = d; }
+  }
+
+  // Update chip
+  const date = new Date(nearest.ts);
+  tideChipDate.textContent = dayLabel(nearest.ts);
+  tideChipCount.textContent = nearest.count === 0
+    ? 'quiet · no messages'
+    : `${nearest.count} ${nearest.count === 1 ? 'message' : 'messages'}`;
+
+  // Position chip next to cursor
+  tideChip.style.top = `${clientY}px`;
+  tideChip.classList.add('visible');
+
+  // Hover label showing the nearest date
+  const lab = ensureHoverLabel();
+  lab.textContent = date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  lab.style.top = `${nearest.pct}%`;
+  lab.style.opacity = '0.9';
+
+  // Summary
+  if (nearest.count > 0) {
+    renderSummary(nearest);
+  } else {
+    tideChipSummary.textContent = '';
+    tideChipSummary.classList.remove('loading');
+  }
+  return nearest;
+}
+
+let summaryTimer = null;
+function renderSummary(day) {
+  const key = day.ts;
+  if (summaryCache.has(key)) {
+    tideChipSummary.textContent = summaryCache.get(key);
+    tideChipSummary.classList.remove('loading');
+    return;
+  }
+  tideChipSummary.textContent = '';
+  tideChipSummary.classList.add('loading');
+  clearTimeout(summaryTimer);
+  summaryTimer = setTimeout(() => fetchDaySummary(day), 300);
+}
+
+async function fetchDaySummary(day) {
+  const key = day.ts;
+  // Local fallback: join first-line snippets
+  const quick = day.messages
+    .slice(0, 3)
+    .map(m => (m.text.split('\n')[0] || '').slice(0, 60))
+    .join(' · ');
+
+  if (!(window.claude && typeof window.claude.complete === 'function')) {
+    summaryCache.set(key, quick || '…');
+    if (tideChip.classList.contains('visible')) {
+      tideChipSummary.textContent = summaryCache.get(key);
+      tideChipSummary.classList.remove('loading');
+    }
+    return;
+  }
+
+  const system = 'summarize the following chat messages from a single day in ONE very short phrase, 4-9 words, lowercase, no quotes, no punctuation at the end. it should read like a diary entry topic, not a sentence.';
+  const user = day.messages.map(m => `[${m.role}] ${m.text.slice(0, 240)}`).join('\n');
+  let out = '';
+  try {
+    const reply = await window.claude.complete({ system, messages: [{ role: 'user', content: user }] });
+    if (reply && typeof reply === 'string') out = reply.trim().replace(/^["'\u201c\u2018]|["'\u201d\u2019]$/g, '').slice(0, 80);
+  } catch(_) {}
+  if (!out) out = quick;
+  summaryCache.set(key, out);
+  // Only update if this day is still the hovered one
+  if (tideChip.classList.contains('visible') && tideChipDate.textContent === dayLabel(day.ts)) {
+    tideChipSummary.textContent = out;
+    tideChipSummary.classList.remove('loading');
+  }
+}
+
+tideLine.addEventListener('mousemove', (e) => onTideMove(e.clientY));
+tideLine.addEventListener('mouseleave', () => {
+  tideChip.classList.remove('visible');
+  if (hoverLabel) hoverLabel.style.opacity = '0';
+});
+tideLine.addEventListener('click', (e) => {
+  const day = onTideMove(e.clientY);
+  if (!day) return;
+  // Jump to first message of that day (or nearest if empty)
+  jumpToDay(day.ts);
+});
+
+/* Touch handling for tide-line: tap or drag to scrub; release jumps.
+   We use touchstart/move to preview (like hover) and touchend to commit. */
+let tideTouchActive = false;
+tideLine.addEventListener('touchstart', (e) => {
+  tideTouchActive = true;
+  tideLine.classList.add('pinned');
+  if (e.touches[0]) onTideMove(e.touches[0].clientY);
+}, { passive: true });
+tideLine.addEventListener('touchmove', (e) => {
+  if (!tideTouchActive) return;
+  if (e.touches[0]) onTideMove(e.touches[0].clientY);
+}, { passive: true });
+tideLine.addEventListener('touchend', (e) => {
+  tideTouchActive = false;
+  const touch = e.changedTouches[0];
+  if (touch) {
+    const day = onTideMove(touch.clientY);
+    if (day) jumpToDay(day.ts);
+  }
+  // Small delay so the user sees where they jumped to
+  setTimeout(() => {
+    tideLine.classList.remove('pinned');
+    tideChip.classList.remove('visible');
+    if (hoverLabel) hoverLabel.style.opacity = '0';
+  }, 600);
+});
+
+function jumpToDay(ts) {
+  // Find the first message >= ts
+  const target = messages.find(m => {
+    const d = new Date(m.ts); d.setHours(0,0,0,0);
+    return d.getTime() >= ts;
+  });
+  if (!target) { window.scrollTo({ top: 0, behavior: 'smooth' }); return; }
+  const el = document.querySelector(`.msg[data-id="${target.id}"]`);
+  if (!el) return;
+  const r = el.getBoundingClientRect();
+  const tlRect = document.querySelector('.timeline').getBoundingClientRect();
+  window.scrollTo({ top: window.scrollY + r.top - 80, behavior: 'smooth' });
+  el.classList.add('current-hit');
+  setTimeout(() => el.classList.remove('current-hit'), 1200);
+}
+
+// Rebuild tide line whenever messages change — handled via save() wrapper above
+
+/* =========================================================
+   SESSIONS — sidebar rendering, switching, creating
+   ========================================================= */
+const sessionsListEl = document.getElementById('sessionsList');
+const newSessionBtn = document.getElementById('newSessionBtn');
+const sidebarEl = document.getElementById('sidebar');
+const sidebarToggle = document.getElementById('sidebarToggle');
+const sessionHeaderTitleEl = document.getElementById('sessionHeaderTitle');
+const sessionHeaderMetaEl = document.getElementById('sessionHeaderMeta');
+
+function sessionLastTs(s) {
+  if (!s.messages.length) return Date.now(); // empty / new session → sort to top, group as today
+  return s.messages[s.messages.length - 1].ts;
+}
+
+function sessionRelativeTime(ts) {
+  if (!ts) return 'empty';
+  const now = Date.now();
+  const diff = now - ts;
+  const M = 60 * 1000, H = 60 * M, D = 24 * H;
+  if (diff < 2 * M) return 'just now';
+  if (diff < H) return Math.floor(diff / M) + 'm';
+  if (diff < D) return Math.floor(diff / H) + 'h';
+  if (diff < 7 * D) return Math.floor(diff / D) + 'd';
+  const d = new Date(ts);
+  const mo = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'][d.getMonth()];
+  return mo + ' ' + d.getDate();
+}
+
+function sessionGroup(ts) {
+  if (!ts) return 'earlier';
+  const now = new Date();
+  const d = new Date(ts);
+  const days = Math.floor((now.setHours(0,0,0,0) - new Date(d).setHours(0,0,0,0)) / (24*3600*1000));
+  if (days <= 0) return 'today';
+  if (days === 1) return 'yesterday';
+  if (days < 7) return 'this week';
+  if (days < 30) return 'this month';
+  return 'earlier';
+}
+
+function sessionPreview(s) {
+  if (!s.messages.length) return '';
+  const last = s.messages.filter(m => m.type !== 'break').slice(-1)[0];
+  if (!last) return '';
+  return last.text.split('\n')[0].slice(0, 70);
+}
+
+function renderSessions() {
+  if (!sessionsListEl) return;
+  // Sort sessions by most recent activity
+  const sorted = [...store.sessions].sort((a, b) => sessionLastTs(b) - sessionLastTs(a));
+
+  // Group
+  const groupOrder = ['today','yesterday','this week','this month','earlier'];
+  const groups = {};
+  sorted.forEach(s => {
+    const g = sessionGroup(sessionLastTs(s));
+    (groups[g] ||= []).push(s);
+  });
+
+  sessionsListEl.innerHTML = '';
+  groupOrder.forEach(g => {
+    if (!groups[g]) return;
+    const label = document.createElement('div');
+    label.className = 'sessions-group-label';
+    label.textContent = g;
+    sessionsListEl.appendChild(label);
+    groups[g].forEach(s => {
+      const btn = document.createElement('div');
+      btn.className = 'session-item';
+      if (s.id === store.activeId) btn.classList.add('active');
+      btn.dataset.id = s.id;
+      const agent = getAgentById(s.agentId || 'tide');
+      btn.innerHTML = `
+        <span class="session-agent-dot" style="background:${agent.color}" title="${agent.name}"></span>
+        <div class="session-title" data-role="title">${escapeHtml(s.title)}</div>
+        <button class="session-more" data-role="more" aria-label="Session actions" title="More…">
+          <svg viewBox="0 0 14 14" fill="none" aria-hidden="true">
+            <circle cx="3" cy="7" r="1.1" fill="currentColor"/>
+            <circle cx="7" cy="7" r="1.1" fill="currentColor"/>
+            <circle cx="11" cy="7" r="1.1" fill="currentColor"/>
+          </svg>
+        </button>
+        <div class="session-row-menu" data-role="row-menu" hidden>
+          <button class="session-row-menu-item" data-action="rename">
+            <svg viewBox="0 0 14 14" aria-hidden="true"><path d="M2 12 L4 12 L11 5 L9 3 L2 10 Z" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linejoin="round"/></svg>
+            <span>Rename</span>
+          </button>
+          <button class="session-row-menu-item danger" data-action="delete">
+            <svg viewBox="0 0 14 14" aria-hidden="true"><path d="M3 4 L11 4 M5 4 L5 2 L9 2 L9 4 M4.5 4 L5 12 L9 12 L9.5 4" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linejoin="round" stroke-linecap="round"/></svg>
+            <span>Delete</span>
+          </button>
+        </div>
+      `;
+      // Click row → switch session (but not when clicking title in edit mode, ⋯, or its menu)
+      btn.addEventListener('click', (e) => {
+        if (e.target.closest('[data-role="more"]')) return;
+        if (e.target.closest('[data-role="row-menu"]')) return;
+        if (e.target.closest('[data-role="title"][contenteditable="true"]')) return;
+        if (btn.classList.contains('confirming-delete')) return;
+        switchSession(s.id);
+      });
+      // ⋯ toggles row menu
+      btn.querySelector('[data-role="more"]').addEventListener('click', (e) => {
+        e.stopPropagation();
+        const m = btn.querySelector('[data-role="row-menu"]');
+        // Close any other open row menus first
+        document.querySelectorAll('.session-item .session-row-menu').forEach(other => {
+          if (other !== m) other.hidden = true;
+        });
+        m.hidden = !m.hidden;
+      });
+      // Rename
+      btn.querySelector('[data-action="rename"]').addEventListener('click', (e) => {
+        e.stopPropagation();
+        btn.querySelector('[data-role="row-menu"]').hidden = true;
+        startRename(btn, s);
+      });
+      // Delete (with inline confirm)
+      btn.querySelector('[data-action="delete"]').addEventListener('click', (e) => {
+        e.stopPropagation();
+        btn.querySelector('[data-role="row-menu"]').hidden = true;
+        startDeleteConfirm(btn, s);
+      });
+      // Double-click title → rename
+      btn.querySelector('[data-role="title"]').addEventListener('dblclick', (e) => {
+        e.stopPropagation();
+        startRename(btn, s);
+      });
+      sessionsListEl.appendChild(btn);
+    });
+  });
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function updateSessionHeader() {
+  const s = currentSession();
+  if (!s || !sessionHeaderTitleEl) return;
+  sessionHeaderTitleEl.textContent = s.title;
+  if (sessionHeaderMetaEl) {
+    const count = s.messages.filter(m => m.type !== 'break').length;
+    const last = sessionLastTs(s);
+    sessionHeaderMetaEl.textContent = count
+      ? `${count} message${count === 1 ? '' : 's'} · last ${sessionRelativeTime(last)}`
+      : 'empty';
+  }
+  // Reflect the session's agent in the header chip (without clobbering global pref).
+  if (typeof renderAgentChip === 'function') renderAgentChip();
+}
+
+// Click the header session title to rename inline.
+function startHeaderRename() {
+  const s = currentSession();
+  if (!s || !sessionHeaderTitleEl) return;
+  if (sessionHeaderTitleEl.classList.contains('editing')) return;
+  const el = sessionHeaderTitleEl;
+  el.setAttribute('contenteditable', 'plaintext-only');
+  el.classList.add('editing');
+  // Select all
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+  el.focus();
+  let committed = false;
+  const commit = () => {
+    if (committed) return;
+    committed = true;
+    const newTitle = el.textContent.trim().slice(0, 80);
+    el.removeAttribute('contenteditable');
+    el.classList.remove('editing');
+    if (newTitle && newTitle !== s.title) {
+      s.title = newTitle;
+      s.titleLocked = true;
+      save();
+      renderSessions();
+      updateSessionHeader();
+    } else {
+      el.textContent = s.title;
+    }
+  };
+  const cancel = () => {
+    if (committed) return;
+    committed = true;
+    el.removeAttribute('contenteditable');
+    el.classList.remove('editing');
+    el.textContent = s.title;
+  };
+  el.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); commit(); el.blur(); }
+    else if (e.key === 'Escape') { e.preventDefault(); cancel(); el.blur(); }
+  });
+  el.addEventListener('blur', commit, { once: true });
+}
+if (sessionHeaderTitleEl) {
+  sessionHeaderTitleEl.addEventListener('click', () => {
+    if (!sessionHeaderTitleEl.classList.contains('editing')) startHeaderRename();
+  });
+  sessionHeaderTitleEl.title = 'Click to rename';
+}
+
+function startRename(rowEl, s) {
+  const titleEl = rowEl.querySelector('[data-role="title"]');
+  if (!titleEl) return;
+  titleEl.setAttribute('contenteditable', 'plaintext-only');
+  titleEl.classList.add('editing');
+  // Select all
+  const range = document.createRange();
+  range.selectNodeContents(titleEl);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+  titleEl.focus();
+  let committed = false;
+  const commit = () => {
+    if (committed) return;
+    committed = true;
+    const newTitle = titleEl.textContent.trim().slice(0, 80);
+    titleEl.removeAttribute('contenteditable');
+    titleEl.classList.remove('editing');
+    if (newTitle && newTitle !== s.title) {
+      s.title = newTitle;
+      // Mark as user-renamed so the auto-titler doesn't clobber it.
+      s.titleLocked = true;
+      save();
+      renderSessions();
+      updateSessionHeader();
+    } else {
+      // Restore original (in case they edited and deleted)
+      titleEl.textContent = s.title;
+    }
+  };
+  const cancel = () => {
+    if (committed) return;
+    committed = true;
+    titleEl.removeAttribute('contenteditable');
+    titleEl.classList.remove('editing');
+    titleEl.textContent = s.title;
+  };
+  titleEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); commit(); titleEl.blur(); }
+    else if (e.key === 'Escape') { e.preventDefault(); cancel(); titleEl.blur(); }
+  });
+  titleEl.addEventListener('blur', commit, { once: true });
+}
+
+function startDeleteConfirm(rowEl, s) {
+  // Replace row contents with a confirm UI; auto-revert after 5s if no action.
+  if (rowEl.classList.contains('confirming-delete')) return;
+  rowEl.classList.add('confirming-delete');
+  const original = rowEl.innerHTML;
+  rowEl.innerHTML = `
+    <span class="confirm-text">delete this session?</span>
+    <button class="confirm-btn cancel" data-act="cancel">cancel</button>
+    <button class="confirm-btn danger" data-act="delete">delete</button>
+  `;
+  let timer = setTimeout(revert, 5000);
+  function revert() {
+    clearTimeout(timer);
+    rowEl.classList.remove('confirming-delete');
+    // Re-render whole sidebar to reattach handlers cleanly.
+    renderSessions();
+  }
+  rowEl.querySelector('[data-act="cancel"]').addEventListener('click', (e) => {
+    e.stopPropagation();
+    revert();
+  });
+  rowEl.querySelector('[data-act="delete"]').addEventListener('click', (e) => {
+    e.stopPropagation();
+    clearTimeout(timer);
+    deleteSession(s.id);
+  });
+}
+
+function deleteSession(id) {
+  const idx = store.sessions.findIndex(x => x.id === id);
+  if (idx < 0) return;
+  const wasActive = store.activeId === id;
+  store.sessions.splice(idx, 1);
+  if (wasActive) {
+    if (store.sessions.length) {
+      // Switch to the session that took its slot, or the previous one.
+      const next = store.sessions[idx] || store.sessions[idx - 1] || store.sessions[0];
+      store.activeId = next.id;
+      messages = next.messages;
+    } else {
+      // No sessions left — create a fresh one.
+      newSession();
+      return;
+    }
+  }
+  save();
+  render();
+}
+
+function switchSession(id) {
+  const s = store.sessions.find(x => x.id === id);
+  if (!s) return;
+  store.activeId = id;
+  messages = s.messages;
+  pendingAgentId = null;
+  // Close mobile sidebar after selecting
+  document.body.classList.remove('sidebar-open');
+  save();
+  render();
+  window.scrollTo({ top: document.body.scrollHeight });
+}
+
+function newSession() {
+  const id = 'sess-' + Date.now().toString(36);
+  // Stamp the user's *intended* agent (from global pref), not the current session's agent.
+  const intendedAgentId = localStorage.getItem(AGENT_KEY) || getActiveAgent().id;
+  const s = { id, title: 'new session', messages: [], agentId: intendedAgentId };
+  store.sessions.unshift(s);
+  store.activeId = id;
+  messages = s.messages;
+  pendingAgentId = null;
+  document.body.classList.remove('sidebar-open');
+  save();
+  render();
+  // Focus composer
+  const input = document.getElementById('composerInput');
+  if (input) input.focus();
+}
+
+if (newSessionBtn) newSessionBtn.addEventListener('click', newSession);
+if (sidebarToggle) {
+  sidebarToggle.addEventListener('click', () => {
+    document.body.classList.toggle('sidebar-open');
+  });
+}
+
+/* =========================================================
+   Sidebar collapse (desktop) — persists in localStorage
+   ========================================================= */
+const COLLAPSE_KEY = 'tide-sidebar-collapsed';
+function applyCollapsed() {
+  const collapsed = localStorage.getItem(COLLAPSE_KEY) === '1';
+  document.body.classList.toggle('sidebar-collapsed', collapsed);
+  const btn = document.getElementById('sidebarCollapse');
+  if (btn) btn.setAttribute('aria-label', collapsed ? 'Expand sidebar' : 'Collapse sidebar');
+}
+applyCollapsed();
+const collapseBtn = document.getElementById('sidebarCollapse');
+if (collapseBtn) {
+  collapseBtn.addEventListener('click', () => {
+    const cur = localStorage.getItem(COLLAPSE_KEY) === '1';
+    localStorage.setItem(COLLAPSE_KEY, cur ? '0' : '1');
+    applyCollapsed();
+    closeAllMenus();
+  });
+}
+
+/* =========================================================
+   Agent selector (top of sidebar) + User menu (bottom)
+   ========================================================= */
+const AGENTS = [
+  { id: 'tide',   name: 'tide',    tag: 'work',     desc: 'your default work agent',          color: '#7aa6c9' },
+  { id: 'mercy',  name: 'mercy',   tag: 'legal',    desc: 'contracts, vendors, compliance',   color: '#b08968' },
+  { id: 'compass',name: 'compass', tag: 'research', desc: 'long-form research & synthesis',   color: '#8a7fb3' },
+  { id: 'orbit',  name: 'orbit',   tag: 'personal', desc: 'travel, errands, calendar',        color: '#7fb39f' },
+];
+const AGENT_KEY = 'tide-active-agent';
+
+function getActiveAgent() {
+  // Active agent is the pending agent (during a pending switch), then the
+  // current session's agent, falling back to a global pref.
+  if (pendingAgentId) {
+    return AGENTS.find(a => a.id === pendingAgentId) || AGENTS[0];
+  }
+  const s = currentSession();
+  const id = (s && s.agentId) || localStorage.getItem(AGENT_KEY) || 'tide';
+  return AGENTS.find(a => a.id === id) || AGENTS[0];
+}
+function setActiveAgent(id) {
+  // Stash as the global default for new sessions started via "+ new session".
+  localStorage.setItem(AGENT_KEY, id);
+  renderAgentChip();
+  renderAgentMenu();
+}
+function getAgentById(id) {
+  return AGENTS.find(a => a.id === id) || AGENTS[0];
+}
+function renderAgentChip() {
+  const a = getActiveAgent();
+  const nameEl = document.getElementById('agentChipName');
+  if (nameEl) nameEl.textContent = a.name;
+  const dot = document.querySelector('#agentChip .agent-chip-avatar .dot');
+  if (dot) dot.style.background = a.color;
+}
+function renderAgentMenu() {
+  const rows = document.getElementById('agentMenuRows');
+  if (!rows) return;
+  const active = getActiveAgent();
+  rows.innerHTML = AGENTS.map(a => `
+    <button class="agent-row" role="menuitem" data-agent="${a.id}" aria-selected="${a.id === active.id}">
+      <span class="agent-row-avatar"><span class="dot" style="background:${a.color}"></span></span>
+      <span class="agent-row-meta">
+        <span class="agent-row-name">${a.name}</span>
+        <span class="agent-row-desc">${a.desc}</span>
+      </span>
+      <svg class="agent-row-check" viewBox="0 0 14 14" aria-hidden="true">
+        <path d="M3 7.5 L6 10 L11 4.5" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </button>
+  `).join('');
+  rows.querySelectorAll('.agent-row').forEach(r => {
+    r.addEventListener('click', () => {
+      const id = r.dataset.agent;
+      const cur = getActiveAgent();
+      if (id === cur.id) { closeAllMenus(); return; }
+      const s = currentSession();
+      if (s && s.messages.length === 0) {
+        // Empty session — retag in place. No new session.
+        s.agentId = id;
+        pendingAgentId = null;
+      } else {
+        // Session has messages — enter pending state: blank chat view under
+        // the new agent, but no new session is created until the user sends
+        // the first message (handled in submit()).
+        pendingAgentId = id;
+      }
+      // Order matters: mutate state above before setActiveAgent re-renders
+      // the chip/menu, so getActiveAgent() returns the new selection.
+      setActiveAgent(id);
+      closeAllMenus();
+      save();
+      render();
+    });
+  });
+}
+renderAgentChip();
+renderAgentMenu();
+
+function toggleMenu(triggerId, menuId) {
+  const trigger = document.getElementById(triggerId);
+  const menu = document.getElementById(menuId);
+  if (!trigger || !menu) return;
+  const open = !menu.hidden;
+  closeAllMenus();
+  if (!open) {
+    menu.hidden = false;
+    trigger.setAttribute('aria-expanded', 'true');
+  }
+}
+function closeAllMenus() {
+  ['agentMenu', 'userMenu'].forEach(id => {
+    const m = document.getElementById(id);
+    if (m) m.hidden = true;
+  });
+  ['agentChip', 'userRow'].forEach(id => {
+    const t = document.getElementById(id);
+    if (t) t.setAttribute('aria-expanded', 'false');
+  });
+  document.querySelectorAll('.session-item .session-row-menu').forEach(m => { m.hidden = true; });
+  const am = document.getElementById('attachMenu');
+  if (am && !am.hidden) { am.hidden = true; const ab = document.getElementById('attachBtn'); if (ab) ab.setAttribute('aria-expanded', 'false'); }
+}
+const agentChipBtn = document.getElementById('agentChip');
+if (agentChipBtn) agentChipBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  toggleMenu('agentChip', 'agentMenu');
+});
+const userRowBtn = document.getElementById('userRow');
+if (userRowBtn) userRowBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  toggleMenu('userRow', 'userMenu');
+});
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.agent-menu') && !e.target.closest('#agentChip') &&
+      !e.target.closest('.user-menu') && !e.target.closest('#userRow') &&
+      !e.target.closest('.session-item')) {
+    closeAllMenus();
+  } else if (!e.target.closest('.session-item')) {
+    // Other menu host clicked — leave session row menus alone, they'll be closed by their toggle
+  } else {
+    // Click landed inside a session row — close OTHER row menus.
+    const here = e.target.closest('.session-item');
+    document.querySelectorAll('.session-item .session-row-menu').forEach(m => {
+      if (!here.contains(m)) m.hidden = true;
+    });
+  }
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeAllMenus();
+});
+
+// Keyboard: ⌘N new session, ⌘\ collapse sidebar
+document.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 'n' && !e.shiftKey) {
+    e.preventDefault();
+    newSession();
+  }
+  if ((e.metaKey || e.ctrlKey) && e.key === '\\') {
+    e.preventDefault();
+    if (collapseBtn) collapseBtn.click();
+  }
+});
+
+// Auto-title a new session from the first user message.
+// Patch: wrap buildUserSend etc? Simpler — observe the messages array on save().
+// We intercept by wrapping save once:
+const _origSave = save;
+save = function() {
+  const s = currentSession();
+  if (s && s.title === 'new session') {
+    const firstUser = s.messages.find(m => m.role === 'you' && m.text);
+    if (firstUser) {
+      s.title = firstUser.text.split('\n')[0].slice(0, 48).toLowerCase();
+    }
+  }
+  _origSave();
+};
+
+// Session-title tooltip (only shows when title is truncated by mask/overflow).
+(() => {
+  const tt = document.createElement('div');
+  tt.className = 'ax-tooltip';
+  tt.setAttribute('role', 'tooltip');
+  document.body.appendChild(tt);
+  let showTimer = null;
+  let currentTarget = null;
+  function hide() {
+    clearTimeout(showTimer);
+    tt.classList.remove('visible');
+    currentTarget = null;
+  }
+  function show(targetEl) {
+    if (currentTarget === targetEl) return;
+    currentTarget = targetEl;
+    // Only show if actually truncated.
+    if (targetEl.scrollWidth <= targetEl.clientWidth + 1) { hide(); return; }
+    tt.textContent = targetEl.textContent;
+    // Position above the title, left-aligned to it.
+    const r = targetEl.getBoundingClientRect();
+    // First reveal off-screen to measure
+    tt.style.left = '-9999px';
+    tt.style.top = '0px';
+    requestAnimationFrame(() => {
+      const tw = tt.offsetWidth;
+      const th = tt.offsetHeight;
+      let x = r.left;
+      const maxX = window.innerWidth - tw - 8;
+      if (x > maxX) x = maxX;
+      if (x < 8) x = 8;
+      const arrowX = Math.max(8, Math.min(tw - 16, r.left - x + 12));
+      tt.style.setProperty('--arrow-x', arrowX + 'px');
+      tt.style.left = x + 'px';
+      tt.style.top = (r.top - th - 8) + 'px';
+      tt.classList.add('visible');
+    });
+  }
+  document.addEventListener('mouseover', (e) => {
+    const titleEl = e.target.closest('.session-title');
+    if (!titleEl) return;
+    if (titleEl.classList.contains('editing')) return;
+    clearTimeout(showTimer);
+    showTimer = setTimeout(() => show(titleEl), 240);
+  });
+  document.addEventListener('mouseout', (e) => {
+    const titleEl = e.target.closest('.session-title');
+    if (!titleEl) return;
+    if (e.relatedTarget && titleEl.contains(e.relatedTarget)) return;
+    hide();
+  });
+  // Hide on scroll / click anywhere
+  window.addEventListener('scroll', hide, true);
+  document.addEventListener('click', hide, true);
+})();
+
+renderSessions();
+updateSessionHeader();
+</script>
+</body>
+</html>

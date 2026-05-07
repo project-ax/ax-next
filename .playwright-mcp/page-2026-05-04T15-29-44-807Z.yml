@@ -1,0 +1,184 @@
+- generic [ref=e4]:
+  - complementary [ref=e5]:
+    - generic [ref=e6]:
+      - generic [ref=e8]: tide
+      - button "Collapse sidebar" [expanded] [ref=e9] [cursor=pointer]:
+        - img [ref=e10]
+    - button "new session ⌘N" [ref=e12] [cursor=pointer]:
+      - img [ref=e13]
+      - generic [ref=e15]: new session
+      - generic [ref=e16]: ⌘N
+    - navigation "sessions" [ref=e17]:
+      - generic [ref=e18]:
+        - generic [ref=e19]: today
+        - generic [ref=e20] [cursor=pointer]:
+          - generic [ref=e22]: New Chat
+          - button "more" [ref=e23]: ⋯
+        - generic [ref=e24] [cursor=pointer]:
+          - generic [ref=e26]: New Chat
+          - button "more" [ref=e27]: ⋯
+        - generic [ref=e28] [cursor=pointer]:
+          - generic [ref=e30]: New Chat
+          - button "more" [ref=e31]: ⋯
+        - generic [ref=e32] [cursor=pointer]:
+          - generic [ref=e34]: New Chat
+          - button "more" [ref=e35]: ⋯
+        - generic [ref=e36] [cursor=pointer]:
+          - generic [ref=e38]: New Chat
+          - button "more" [ref=e39]: ⋯
+        - generic [ref=e40] [cursor=pointer]:
+          - generic [ref=e42]: New Chat
+          - button "more" [ref=e43]: ⋯
+        - generic [ref=e44] [cursor=pointer]:
+          - generic [ref=e46]: New Chat
+          - button "more" [ref=e47]: ⋯
+        - generic [ref=e48] [cursor=pointer]:
+          - generic [ref=e50]: New Chat
+          - button "more" [ref=e51]: ⋯
+        - generic [ref=e52] [cursor=pointer]:
+          - generic [ref=e54]: New Chat
+          - button "more" [ref=e55]: ⋯
+        - generic [ref=e56] [cursor=pointer]:
+          - generic [ref=e58]: New Chat
+          - button "more" [ref=e59]: ⋯
+        - generic [ref=e60] [cursor=pointer]:
+          - generic [ref=e62]: New Chat
+          - button "more" [ref=e63]: ⋯
+        - generic [ref=e64] [cursor=pointer]:
+          - generic [ref=e66]: New Chat
+          - button "more" [ref=e67]: ⋯
+        - generic [ref=e68] [cursor=pointer]:
+          - generic [ref=e70]: New Chat
+          - button "more" [ref=e71]: ⋯
+        - generic [ref=e72] [cursor=pointer]:
+          - generic [ref=e74]: New Chat
+          - button "more" [ref=e75]: ⋯
+        - generic [ref=e76] [cursor=pointer]:
+          - generic [ref=e78]: New Chat
+          - button "more" [ref=e79]: ⋯
+      - generic [ref=e80]:
+        - generic [ref=e81]: yesterday
+        - generic [ref=e82] [cursor=pointer]:
+          - generic [ref=e84]: New Chat
+          - button "more" [ref=e85]: ⋯
+        - generic [ref=e86] [cursor=pointer]:
+          - generic [ref=e88]: New Chat
+          - button "more" [ref=e89]: ⋯
+        - generic [ref=e90] [cursor=pointer]:
+          - generic [ref=e92]: New Chat
+          - button "more" [ref=e93]: ⋯
+        - generic [ref=e94] [cursor=pointer]:
+          - generic [ref=e96]: New Chat
+          - button "more" [ref=e97]: ⋯
+        - generic [ref=e98] [cursor=pointer]:
+          - generic [ref=e100]: New Chat
+          - button "more" [ref=e101]: ⋯
+        - generic [ref=e102] [cursor=pointer]:
+          - generic [ref=e104]: New Chat
+          - button "more" [ref=e105]: ⋯
+        - generic [ref=e106] [cursor=pointer]:
+          - generic [ref=e108]: New Chat
+          - button "more" [ref=e109]: ⋯
+        - generic [ref=e110] [cursor=pointer]:
+          - generic [ref=e112]: New Chat
+          - button "more" [ref=e113]: ⋯
+        - generic [ref=e114] [cursor=pointer]:
+          - generic [ref=e116]: New Chat
+          - button "more" [ref=e117]: ⋯
+        - generic [ref=e118] [cursor=pointer]:
+          - generic [ref=e120]: New Chat
+          - button "more" [ref=e121]: ⋯
+        - generic [ref=e122] [cursor=pointer]:
+          - generic [ref=e124]: New Chat
+          - button "more" [ref=e125]: ⋯
+        - generic [ref=e126] [cursor=pointer]:
+          - generic [ref=e128]: New Chat
+          - button "more" [ref=e129]: ⋯
+        - generic [ref=e130] [cursor=pointer]:
+          - generic [ref=e132]: New Chat
+          - button "more" [ref=e133]: ⋯
+    - button "unnamed" [ref=e135] [cursor=pointer]:
+      - generic [ref=e136]: U
+      - generic [ref=e138]: unnamed
+      - img [ref=e139]
+  - main [ref=e141]:
+    - button "Default Personal Agent" [ref=e146] [cursor=pointer]:
+      - generic [ref=e149]: Default Personal Agent
+      - img [ref=e150]
+    - generic [ref=e153]:
+      - generic [ref=e155]:
+        - generic [ref=e170]:
+          - paragraph [ref=e173]: "Use Bash to run: cat /permanent/test1.txt 2>&1 || echo 'NOT FOUND in /permanent'; echo '---'; cat /ephemeral/test2.txt 2>&1 || echo 'NOT FOUND in /ephemeral'. Then tell me exactly what each command output, line by line."
+          - generic [ref=e174]:
+            - generic [ref=e175]: 11:29 am
+            - button "Copy" [ref=e176] [cursor=pointer]:
+              - img [ref=e177]
+            - button "Edit" [ref=e180] [cursor=pointer]:
+              - img [ref=e181]
+        - generic [ref=e184]:
+          - generic [ref=e185]:
+            - paragraph [ref=e187]: The user wants me to run a specific bash command and report the output line by line.
+            - generic [ref=e212]:
+              - paragraph [ref=e213]: "Here is exactly what each part of the command output, line by line:"
+              - list [ref=e214]:
+                - listitem [ref=e215]:
+                  - paragraph [ref=e216]:
+                    - strong [ref=e217]:
+                      - code [ref=e218]: cat /permanent/test1.txt
+                    - text: "— succeeded and printed:"
+                  - code [ref=e220]: hello-permanent---
+                  - paragraph [ref=e221]:
+                    - emphasis [ref=e222]:
+                      - text: "(Note: this appears to be the file's content, which includes"
+                      - code [ref=e223]: "---"
+                      - text: as part of the text itself, all on one line — meaning the file contains
+                      - code [ref=e224]: hello-permanent---
+                      - text: with no trailing newline, so it ran together with the
+                      - code [ref=e225]: echo '---'
+                      - text: output)
+                - listitem [ref=e226]:
+                  - paragraph [ref=e227]:
+                    - strong [ref=e228]:
+                      - code [ref=e229]: echo '---'
+                    - text: — its output was merged onto the same line as the file content above due to the missing newline, so there is no separate line for it.
+                - listitem [ref=e230]:
+                  - paragraph [ref=e231]:
+                    - strong [ref=e232]:
+                      - code [ref=e233]: cat /ephemeral/test2.txt
+                    - text: "— failed with:"
+                  - code [ref=e235]: "cat: /ephemeral/test2.txt: No such file or directory"
+                - listitem [ref=e236]:
+                  - paragraph [ref=e237]:
+                    - strong [ref=e238]:
+                      - code [ref=e239]: echo 'NOT FOUND in /ephemeral'
+                    - text: "— ran because the previous command failed, and printed:"
+                  - code [ref=e241]: NOT FOUND in /ephemeral
+              - paragraph [ref=e242]:
+                - strong [ref=e243]: "Summary:"
+              - list [ref=e244]:
+                - listitem [ref=e245]:
+                  - code [ref=e246]: /permanent/test1.txt
+                  - strong [ref=e247]: exists
+                  - text: and contains the text
+                  - code [ref=e248]: hello-permanent---
+                  - text: (no trailing newline).
+                - listitem [ref=e249]:
+                  - code [ref=e250]: /ephemeral/test2.txt
+                  - strong [ref=e251]: does not exist
+                  - text: .
+          - generic [ref=e188]:
+            - generic [ref=e189]: 11:29 am
+            - button "Copy" [disabled] [ref=e190] [cursor=pointer]:
+              - img [ref=e191]
+            - button "Retry" [disabled] [ref=e194] [cursor=pointer]:
+              - img [ref=e195]
+            - button "Show thinking" [ref=e198] [cursor=pointer]:
+              - img [ref=e199]
+      - generic [ref=e160]:
+        - generic [ref=e161]:
+          - button "Attach" [ref=e163] [cursor=pointer]:
+            - img [ref=e164]
+          - textbox "Message tide…" [active] [ref=e166]
+          - button "Stop" [ref=e209] [cursor=pointer]:
+            - img [ref=e210]
+        - generic: ⏎ send · ⇧⏎ newline

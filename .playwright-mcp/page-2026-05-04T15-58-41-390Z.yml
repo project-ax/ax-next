@@ -1,0 +1,215 @@
+- generic [ref=e4]:
+  - complementary [ref=e5]:
+    - generic [ref=e6]:
+      - generic [ref=e8]: tide
+      - button "Collapse sidebar" [expanded] [ref=e9] [cursor=pointer]:
+        - img [ref=e10]
+    - button "new session ⌘N" [ref=e12] [cursor=pointer]:
+      - img [ref=e13]
+      - generic [ref=e15]: new session
+      - generic [ref=e16]: ⌘N
+    - navigation "sessions" [ref=e17]:
+      - generic [ref=e18]:
+        - generic [ref=e19]: today
+        - generic [ref=e20] [cursor=pointer]:
+          - generic [ref=e22]: New Chat
+          - button "more" [ref=e23]: ⋯
+        - generic [ref=e24] [cursor=pointer]:
+          - generic [ref=e26]: New Chat
+          - button "more" [ref=e27]: ⋯
+        - generic [ref=e28] [cursor=pointer]:
+          - generic [ref=e30]: New Chat
+          - button "more" [ref=e31]: ⋯
+        - generic [ref=e32] [cursor=pointer]:
+          - generic [ref=e34]: New Chat
+          - button "more" [ref=e35]: ⋯
+        - generic [ref=e36] [cursor=pointer]:
+          - generic [ref=e38]: New Chat
+          - button "more" [ref=e39]: ⋯
+        - generic [ref=e40] [cursor=pointer]:
+          - generic [ref=e42]: New Chat
+          - button "more" [ref=e43]: ⋯
+        - generic [ref=e44] [cursor=pointer]:
+          - generic [ref=e46]: New Chat
+          - button "more" [ref=e47]: ⋯
+        - generic [ref=e48] [cursor=pointer]:
+          - generic [ref=e50]: New Chat
+          - button "more" [ref=e51]: ⋯
+        - generic [ref=e52] [cursor=pointer]:
+          - generic [ref=e54]: New Chat
+          - button "more" [ref=e55]: ⋯
+        - generic [ref=e56] [cursor=pointer]:
+          - generic [ref=e58]: New Chat
+          - button "more" [ref=e59]: ⋯
+        - generic [ref=e60] [cursor=pointer]:
+          - generic [ref=e62]: New Chat
+          - button "more" [ref=e63]: ⋯
+        - generic [ref=e64] [cursor=pointer]:
+          - generic [ref=e66]: New Chat
+          - button "more" [ref=e67]: ⋯
+        - generic [ref=e68] [cursor=pointer]:
+          - generic [ref=e70]: New Chat
+          - button "more" [ref=e71]: ⋯
+        - generic [ref=e72] [cursor=pointer]:
+          - generic [ref=e74]: New Chat
+          - button "more" [ref=e75]: ⋯
+        - generic [ref=e76] [cursor=pointer]:
+          - generic [ref=e78]: New Chat
+          - button "more" [ref=e79]: ⋯
+        - generic [ref=e80] [cursor=pointer]:
+          - generic [ref=e82]: New Chat
+          - button "more" [ref=e83]: ⋯
+        - generic [ref=e84] [cursor=pointer]:
+          - generic [ref=e86]: New Chat
+          - button "more" [ref=e87]: ⋯
+        - generic [ref=e88] [cursor=pointer]:
+          - generic [ref=e90]: New Chat
+          - button "more" [ref=e91]: ⋯
+        - generic [ref=e92] [cursor=pointer]:
+          - generic [ref=e94]: New Chat
+          - button "more" [ref=e95]: ⋯
+        - generic [ref=e96] [cursor=pointer]:
+          - generic [ref=e98]: New Chat
+          - button "more" [ref=e99]: ⋯
+        - generic [ref=e100] [cursor=pointer]:
+          - generic [ref=e102]: New Chat
+          - button "more" [ref=e103]: ⋯
+      - generic [ref=e104]:
+        - generic [ref=e105]: yesterday
+        - generic [ref=e106] [cursor=pointer]:
+          - generic [ref=e108]: New Chat
+          - button "more" [ref=e109]: ⋯
+        - generic [ref=e110] [cursor=pointer]:
+          - generic [ref=e112]: New Chat
+          - button "more" [ref=e113]: ⋯
+        - generic [ref=e114] [cursor=pointer]:
+          - generic [ref=e116]: New Chat
+          - button "more" [ref=e117]: ⋯
+        - generic [ref=e118] [cursor=pointer]:
+          - generic [ref=e120]: New Chat
+          - button "more" [ref=e121]: ⋯
+        - generic [ref=e122] [cursor=pointer]:
+          - generic [ref=e124]: New Chat
+          - button "more" [ref=e125]: ⋯
+        - generic [ref=e126] [cursor=pointer]:
+          - generic [ref=e128]: New Chat
+          - button "more" [ref=e129]: ⋯
+        - generic [ref=e130] [cursor=pointer]:
+          - generic [ref=e132]: New Chat
+          - button "more" [ref=e133]: ⋯
+        - generic [ref=e134] [cursor=pointer]:
+          - generic [ref=e136]: New Chat
+          - button "more" [ref=e137]: ⋯
+        - generic [ref=e138] [cursor=pointer]:
+          - generic [ref=e140]: New Chat
+          - button "more" [ref=e141]: ⋯
+        - generic [ref=e142] [cursor=pointer]:
+          - generic [ref=e144]: New Chat
+          - button "more" [ref=e145]: ⋯
+        - generic [ref=e146] [cursor=pointer]:
+          - generic [ref=e148]: New Chat
+          - button "more" [ref=e149]: ⋯
+        - generic [ref=e150] [cursor=pointer]:
+          - generic [ref=e152]: New Chat
+          - button "more" [ref=e153]: ⋯
+        - generic [ref=e154] [cursor=pointer]:
+          - generic [ref=e156]: New Chat
+          - button "more" [ref=e157]: ⋯
+    - button "unnamed" [ref=e159] [cursor=pointer]:
+      - generic [ref=e160]: U
+      - generic [ref=e162]: unnamed
+      - img [ref=e163]
+  - main [ref=e165]:
+    - button "Default Personal Agent" [ref=e170] [cursor=pointer]:
+      - generic [ref=e173]: Default Personal Agent
+      - img [ref=e174]
+    - generic [ref=e177]:
+      - generic [ref=e179]:
+        - generic [ref=e194]:
+          - paragraph [ref=e197]:
+            - text: Use Bash to write the file /permanent/test1.txt with the exact contents "hello-permanent" (no newline). Then use Bash to write the file /ephemeral/test2.txt with the exact contents "hello-ephemeral" (no newline). Confirm both files exist with
+            - code [ref=e198]: ls -la /permanent/ /ephemeral/
+            - text: and show me the cat output of each.
+          - generic [ref=e199]:
+            - generic [ref=e200]: 11:58 am
+            - button "Copy" [ref=e201] [cursor=pointer]:
+              - img [ref=e202]
+            - button "Edit" [ref=e205] [cursor=pointer]:
+              - img [ref=e206]
+        - generic [ref=e209]:
+          - generic [ref=e210]:
+            - generic [ref=e211]:
+              - paragraph [ref=e212]: "The user wants me to:"
+              - list [ref=e213]:
+                - listitem [ref=e214]: Write /permanent/test1.txt with "hello-permanent" (no newline)
+                - listitem [ref=e215]: Write /ephemeral/test2.txt with "hello-ephemeral" (no newline)
+                - listitem [ref=e216]: Confirm both files exist with ls -la
+                - listitem [ref=e217]: Show cat output of each
+              - paragraph [ref=e218]: Let me do all of this with Bash commands.
+            - generic [ref=e243]:
+              - paragraph [ref=e244]: "Both writes completed. Now let's verify:Both files were created successfully. Here's a summary:"
+              - table [ref=e245]:
+                - rowgroup [ref=e246]:
+                  - row "File Path Size Contents" [ref=e247]:
+                    - columnheader "File" [ref=e248]
+                    - columnheader "Path" [ref=e249]
+                    - columnheader "Size" [ref=e250]
+                    - columnheader "Contents" [ref=e251]
+                - rowgroup [ref=e252]:
+                  - row "test1.txt /permanent/test1.txt 15 bytes hello-permanent" [ref=e253]:
+                    - cell "test1.txt" [ref=e254]:
+                      - code [ref=e255]: test1.txt
+                    - cell "/permanent/test1.txt" [ref=e256]:
+                      - code [ref=e257]: /permanent/test1.txt
+                    - cell "15 bytes" [ref=e258]
+                    - cell "hello-permanent" [ref=e259]:
+                      - code [ref=e260]: hello-permanent
+                  - row "test2.txt /ephemeral/test2.txt 15 bytes hello-ephemeral" [ref=e261]:
+                    - cell "test2.txt" [ref=e262]:
+                      - code [ref=e263]: test2.txt
+                    - cell "/ephemeral/test2.txt" [ref=e264]:
+                      - code [ref=e265]: /ephemeral/test2.txt
+                    - cell "15 bytes" [ref=e266]
+                    - cell "hello-ephemeral" [ref=e267]:
+                      - code [ref=e268]: hello-ephemeral
+              - list [ref=e269]:
+                - listitem [ref=e270]:
+                  - text: ✅
+                  - code [ref=e271]: /permanent/test1.txt
+                  - text: — written with
+                  - code [ref=e272]: hello-permanent
+                  - text: (no trailing newline, 15 bytes)
+                - listitem [ref=e273]:
+                  - text: ✅
+                  - code [ref=e274]: /ephemeral/test2.txt
+                  - text: — written with
+                  - code [ref=e275]: hello-ephemeral
+                  - text: (no trailing newline, 15 bytes)
+              - paragraph [ref=e276]:
+                - text: Both files exist and contain exactly the requested content. Note that
+                - code [ref=e277]: /permanent/
+                - text: also contains other agent-related files (
+                - code [ref=e278]: .claude
+                - text: ","
+                - code [ref=e279]: .git
+                - text: ", etc.), while"
+                - code [ref=e280]: /ephemeral/
+                - text: currently only holds the newly created
+                - code [ref=e281]: test2.txt
+                - text: .
+          - generic [ref=e219]:
+            - generic [ref=e220]: 11:58 am
+            - button "Copy" [disabled] [ref=e221] [cursor=pointer]:
+              - img [ref=e222]
+            - button "Retry" [disabled] [ref=e225] [cursor=pointer]:
+              - img [ref=e226]
+            - button "Show thinking" [ref=e229] [cursor=pointer]:
+              - img [ref=e230]
+      - generic [ref=e184]:
+        - generic [ref=e185]:
+          - button "Attach" [ref=e187] [cursor=pointer]:
+            - img [ref=e188]
+          - textbox "Message tide…" [active] [ref=e190]
+          - button "Stop" [ref=e240] [cursor=pointer]:
+            - img [ref=e241]
+        - generic: ⏎ send · ⇧⏎ newline

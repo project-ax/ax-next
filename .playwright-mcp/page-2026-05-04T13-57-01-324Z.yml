@@ -1,0 +1,153 @@
+- generic [ref=e4]:
+  - complementary [ref=e5]:
+    - generic [ref=e6]:
+      - generic [ref=e8]: tide
+      - button "Collapse sidebar" [expanded] [ref=e9] [cursor=pointer]:
+        - img [ref=e10]
+    - button "new session ⌘N" [ref=e12] [cursor=pointer]:
+      - img [ref=e13]
+      - generic [ref=e15]: new session
+      - generic [ref=e16]: ⌘N
+    - navigation "sessions" [ref=e17]:
+      - generic [ref=e18]:
+        - generic [ref=e19]: today
+        - generic [ref=e20] [cursor=pointer]:
+          - generic [ref=e22]: New Chat
+          - button "more" [ref=e23]: ⋯
+        - generic [ref=e24] [cursor=pointer]:
+          - generic [ref=e26]: New Chat
+          - button "more" [ref=e27]: ⋯
+        - generic [ref=e28] [cursor=pointer]:
+          - generic [ref=e30]: New Chat
+          - button "more" [ref=e31]: ⋯
+        - generic [ref=e32] [cursor=pointer]:
+          - generic [ref=e34]: New Chat
+          - button "more" [ref=e35]: ⋯
+        - generic [ref=e36] [cursor=pointer]:
+          - generic [ref=e38]: New Chat
+          - button "more" [ref=e39]: ⋯
+        - generic [ref=e40] [cursor=pointer]:
+          - generic [ref=e42]: New Chat
+          - button "more" [ref=e43]: ⋯
+        - generic [ref=e44] [cursor=pointer]:
+          - generic [ref=e46]: New Chat
+          - button "more" [ref=e47]: ⋯
+        - generic [ref=e48] [cursor=pointer]:
+          - generic [ref=e50]: New Chat
+          - button "more" [ref=e51]: ⋯
+        - generic [ref=e52] [cursor=pointer]:
+          - generic [ref=e54]: New Chat
+          - button "more" [ref=e55]: ⋯
+        - generic [ref=e56] [cursor=pointer]:
+          - generic [ref=e58]: New Chat
+          - button "more" [ref=e59]: ⋯
+        - generic [ref=e60] [cursor=pointer]:
+          - generic [ref=e62]: New Chat
+          - button "more" [ref=e63]: ⋯
+        - generic [ref=e64] [cursor=pointer]:
+          - generic [ref=e66]: New Chat
+          - button "more" [ref=e67]: ⋯
+      - generic [ref=e68]:
+        - generic [ref=e69]: yesterday
+        - generic [ref=e70] [cursor=pointer]:
+          - generic [ref=e72]: New Chat
+          - button "more" [ref=e73]: ⋯
+        - generic [ref=e74] [cursor=pointer]:
+          - generic [ref=e76]: New Chat
+          - button "more" [ref=e77]: ⋯
+        - generic [ref=e78] [cursor=pointer]:
+          - generic [ref=e80]: New Chat
+          - button "more" [ref=e81]: ⋯
+        - generic [ref=e82] [cursor=pointer]:
+          - generic [ref=e84]: New Chat
+          - button "more" [ref=e85]: ⋯
+        - generic [ref=e86] [cursor=pointer]:
+          - generic [ref=e88]: New Chat
+          - button "more" [ref=e89]: ⋯
+        - generic [ref=e90] [cursor=pointer]:
+          - generic [ref=e92]: New Chat
+          - button "more" [ref=e93]: ⋯
+        - generic [ref=e94] [cursor=pointer]:
+          - generic [ref=e96]: New Chat
+          - button "more" [ref=e97]: ⋯
+        - generic [ref=e98] [cursor=pointer]:
+          - generic [ref=e100]: New Chat
+          - button "more" [ref=e101]: ⋯
+        - generic [ref=e102] [cursor=pointer]:
+          - generic [ref=e104]: New Chat
+          - button "more" [ref=e105]: ⋯
+        - generic [ref=e106] [cursor=pointer]:
+          - generic [ref=e108]: New Chat
+          - button "more" [ref=e109]: ⋯
+        - generic [ref=e110] [cursor=pointer]:
+          - generic [ref=e112]: New Chat
+          - button "more" [ref=e113]: ⋯
+        - generic [ref=e114] [cursor=pointer]:
+          - generic [ref=e116]: New Chat
+          - button "more" [ref=e117]: ⋯
+        - generic [ref=e118] [cursor=pointer]:
+          - generic [ref=e120]: New Chat
+          - button "more" [ref=e121]: ⋯
+    - button "unnamed" [ref=e123] [cursor=pointer]:
+      - generic [ref=e124]: U
+      - generic [ref=e126]: unnamed
+      - img [ref=e127]
+  - main [ref=e129]:
+    - button "Default Personal Agent" [ref=e134] [cursor=pointer]:
+      - generic [ref=e137]: Default Personal Agent
+      - img [ref=e138]
+    - generic [ref=e141]:
+      - generic [ref=e143]:
+        - generic [ref=e158]:
+          - paragraph [ref=e161]:
+            - text: Use Bash to write the file /permanent/test1.txt with the exact contents "hello-permanent" (no newline). Then use Bash to write the file /ephemeral/test2.txt with the exact contents "hello-ephemeral" (no newline). Confirm both files exist with
+            - code [ref=e162]: ls -la /permanent/ /ephemeral/
+            - text: and show me the cat output of each.
+          - generic [ref=e163]:
+            - generic [ref=e164]: 9:54 am
+            - button "Copy" [ref=e165] [cursor=pointer]:
+              - img [ref=e166]
+            - button "Edit" [ref=e169] [cursor=pointer]:
+              - img [ref=e170]
+        - generic [ref=e173]:
+          - generic [ref=e174]:
+            - paragraph [ref=e176]: The user wants me to write two files using Bash commands, then verify they exist and show their contents.
+            - generic [ref=e177]:
+              - paragraph [ref=e178]: "Sure! I'll do all of that in sequence.Both files were created successfully! Here's a summary:"
+              - heading "✅ /permanent/test1.txt" [level=3] [ref=e203]:
+                - text: ✅
+                - code [ref=e204]: /permanent/test1.txt
+              - list [ref=e205]:
+                - listitem [ref=e206]:
+                  - strong [ref=e207]: "Size:"
+                  - text: 15 bytes (no newline, as expected)
+                - listitem [ref=e208]:
+                  - strong [ref=e209]: "Contents:"
+                  - code [ref=e210]: hello-permanent
+              - heading "✅ /ephemeral/test2.txt" [level=3] [ref=e211]:
+                - text: ✅
+                - code [ref=e212]: /ephemeral/test2.txt
+              - list [ref=e213]:
+                - listitem [ref=e214]:
+                  - strong [ref=e215]: "Size:"
+                  - text: 15 bytes (no newline, as expected)
+                - listitem [ref=e216]:
+                  - strong [ref=e217]: "Contents:"
+                  - code [ref=e218]: hello-ephemeral
+              - paragraph [ref=e219]: Both files exist in their respective directories and contain exactly the requested content.
+          - generic [ref=e179]:
+            - generic [ref=e180]: 9:54 am
+            - button "Copy" [disabled] [ref=e181] [cursor=pointer]:
+              - img [ref=e182]
+            - button "Retry" [disabled] [ref=e185] [cursor=pointer]:
+              - img [ref=e186]
+            - button "Show thinking" [ref=e189] [cursor=pointer]:
+              - img [ref=e190]
+      - generic [ref=e148]:
+        - generic [ref=e149]:
+          - button "Attach" [ref=e151] [cursor=pointer]:
+            - img [ref=e152]
+          - textbox "Message tide…" [active] [ref=e154]: "Now use Bash to check what's still there. Run `cat /permanent/test1.txt 2>&1 || echo 'NOT FOUND in /permanent'` and then `cat /ephemeral/test2.txt 2>&1 || echo 'NOT FOUND in /ephemeral'`. Tell me exactly what each command output."
+          - button "Stop" [ref=e200] [cursor=pointer]:
+            - img [ref=e201]
+        - generic: ⏎ send · ⇧⏎ newline
