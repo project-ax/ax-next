@@ -94,6 +94,29 @@ export interface CredentialsResolveOutput {
   };
 }
 
+export interface CredentialsListInput {
+  scope?: CredentialScope;
+  ownerId?: string | null;
+}
+
+export interface CredentialMeta {
+  scope: CredentialScope;
+  ownerId: string | null;
+  ref: string;
+  kind: string;
+  createdAt: string;
+  expiresAt?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface CredentialsListOutput {
+  credentials: CredentialMeta[];
+}
+
+export interface CredentialsListKindsOutput {
+  kinds: Array<{ kind: string; flow: 'paste' | 'oauth' }>;
+}
+
 function validateRef(ref: unknown): string {
   if (typeof ref !== 'string' || !REF_RE.test(ref)) {
     throw new PluginError({
@@ -156,7 +179,13 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
     manifest: {
       name: PLUGIN_NAME,
       version: '0.0.0',
-      registers: ['credentials:get', 'credentials:set', 'credentials:delete'],
+      registers: [
+        'credentials:get',
+        'credentials:set',
+        'credentials:delete',
+        'credentials:list',
+        'credentials:list-kinds',
+      ],
       // Storage goes through the `credentials:store-blob:*` seam (Phase 1b).
       // The default backend is `@ax/credentials-store-db`; vault / KMS
       // backends slot in here without touching the facade.
@@ -164,7 +193,11 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
       // Per-kind dispatch (`credentials:resolve:<kind>`) is checked at runtime
       // via bus.hasService — we don't enumerate every kind in the manifest
       // because new kinds slot in by registering a sibling plugin.
-      calls: ['credentials:store-blob:get', 'credentials:store-blob:put'],
+      calls: [
+        'credentials:store-blob:get',
+        'credentials:store-blob:put',
+        'credentials:store-blob:list',
+      ],
       subscribes: [],
     },
     async init({ bus }) {
@@ -206,6 +239,7 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
       function unwrapEnvelope(blob: Uint8Array): {
         kind: string;
         payload: Uint8Array;
+        createdAt?: number;
         expiresAt?: number;
         metadata?: Record<string, unknown>;
         isTombstone: boolean;
@@ -246,12 +280,14 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
         const e = env as {
           kind: string;
           payloadB64: string;
+          createdAt?: number;
           expiresAt?: number;
           metadata?: Record<string, unknown>;
         };
         const out: {
           kind: string;
           payload: Uint8Array;
+          createdAt?: number;
           expiresAt?: number;
           metadata?: Record<string, unknown>;
           isTombstone: boolean;
@@ -260,6 +296,7 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
           payload: new Uint8Array(Buffer.from(e.payloadB64, 'base64')),
           isTombstone: false,
         };
+        if (e.createdAt !== undefined) out.createdAt = e.createdAt;
         if (e.expiresAt !== undefined) out.expiresAt = e.expiresAt;
         if (e.metadata !== undefined) out.metadata = e.metadata;
         return out;
@@ -417,6 +454,78 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
             ref,
             blob: tombstone,
           });
+        },
+      );
+
+      bus.registerService<CredentialsListInput, CredentialsListOutput>(
+        'credentials:list',
+        PLUGIN_NAME,
+        async (ctx, input) => {
+          const filter: { scope?: CredentialScope; ownerId?: string | null } = {};
+          if (input.scope !== undefined) filter.scope = validateScope(input.scope);
+          if (input.ownerId !== undefined && filter.scope !== undefined) {
+            filter.ownerId = validateOwnerIdForScope(filter.scope, input.ownerId);
+          }
+          const out = await bus.call<
+            typeof filter,
+            {
+              entries: Array<{
+                scope: CredentialScope;
+                ownerId: string | null;
+                ref: string;
+                blob: Uint8Array;
+              }>;
+            }
+          >('credentials:store-blob:list', ctx, filter);
+          const meta: CredentialMeta[] = [];
+          for (const e of out.entries) {
+            try {
+              const env = unwrapEnvelope(e.blob);
+              if (env.isTombstone) continue;
+              const m: CredentialMeta = {
+                scope: e.scope,
+                ownerId: e.ownerId,
+                ref: e.ref,
+                kind: env.kind,
+                createdAt:
+                  env.createdAt !== undefined && env.createdAt > 0
+                    ? new Date(env.createdAt).toISOString()
+                    : new Date(0).toISOString(),
+              };
+              if (env.expiresAt !== undefined) {
+                m.expiresAt = new Date(env.expiresAt).toISOString();
+              }
+              if (env.metadata !== undefined) m.metadata = env.metadata;
+              meta.push(m);
+            } catch {
+              // Skip undecryptable blobs (different AX_CREDENTIALS_KEY) silently.
+              // Listing must not 500 on a key-rotation aftermath.
+            }
+          }
+          return { credentials: meta };
+        },
+      );
+
+      bus.registerService<Record<string, never>, CredentialsListKindsOutput>(
+        'credentials:list-kinds',
+        PLUGIN_NAME,
+        async () => {
+          // `api-key` is always available — it's the paste-flow path the facade
+          // handles directly without a sub-service. OAuth-style kinds are
+          // discovered by walking the bus for `credentials:login:*` services;
+          // each oauth plugin (e.g. @ax/credentials-anthropic-oauth) registers
+          // one such hook to drive its login flow.
+          const kinds: Array<{ kind: string; flow: 'paste' | 'oauth' }> = [
+            { kind: 'api-key', flow: 'paste' },
+          ];
+          const svcs = bus.listServices();
+          const prefix = 'credentials:login:';
+          for (const svc of svcs) {
+            if (svc.startsWith(prefix)) {
+              kinds.push({ kind: svc.slice(prefix.length), flow: 'oauth' });
+            }
+          }
+          return { kinds };
         },
       );
     },
