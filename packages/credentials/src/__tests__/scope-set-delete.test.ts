@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { bootstrap, HookBus, makeAgentContext } from '@ax/core';
 import { createStorageSqlitePlugin } from '@ax/storage-sqlite';
 import { createCredentialsStoreDbPlugin } from '@ax/credentials-store-db';
@@ -7,8 +7,14 @@ import { createCredentialsPlugin } from '../plugin.js';
 const KEY = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 
 describe('credentials:set / :delete with scope', () => {
+  let savedKey: string | undefined;
   beforeEach(() => {
+    savedKey = process.env.AX_CREDENTIALS_KEY;
     process.env.AX_CREDENTIALS_KEY = KEY;
+  });
+  afterEach(() => {
+    if (savedKey === undefined) delete process.env.AX_CREDENTIALS_KEY;
+    else process.env.AX_CREDENTIALS_KEY = savedKey;
   });
 
   async function makeBus() {

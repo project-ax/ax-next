@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { bootstrap, HookBus, makeAgentContext } from '@ax/core';
 import { createStorageSqlitePlugin } from '@ax/storage-sqlite';
 import { createCredentialsStoreDbPlugin } from '@ax/credentials-store-db';
@@ -7,8 +7,18 @@ import { createCredentialsPlugin } from '../plugin.js';
 const KEY = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 
 describe('credentials:get scope precedence (user > agent > global)', () => {
+  let savedKey: string | undefined;
+  let savedFallback: string | undefined;
   beforeEach(() => {
+    savedKey = process.env.AX_CREDENTIALS_KEY;
+    savedFallback = process.env.MY_FALLBACK;
     process.env.AX_CREDENTIALS_KEY = KEY;
+  });
+  afterEach(() => {
+    if (savedKey === undefined) delete process.env.AX_CREDENTIALS_KEY;
+    else process.env.AX_CREDENTIALS_KEY = savedKey;
+    if (savedFallback === undefined) delete process.env.MY_FALLBACK;
+    else process.env.MY_FALLBACK = savedFallback;
   });
 
   async function makeBus() {

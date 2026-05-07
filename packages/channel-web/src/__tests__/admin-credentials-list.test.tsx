@@ -16,7 +16,7 @@
  *   3. The delete is gated by `window.confirm` — declining doesn't fire
  *      DELETE.
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { CredentialsList } from '../components/credentials/CredentialsList';
 
@@ -28,6 +28,12 @@ beforeEach(() => {
   // Default: confirm() returns true so delete proceeds. Tests that need
   // the cancellation path stub it explicitly.
   vi.spyOn(window, 'confirm').mockReturnValue(true);
+});
+afterEach(() => {
+  // Drop the window.confirm spy and any other vi.spyOn / vi.stubGlobal
+  // installed by individual tests, so they don't leak into the next
+  // describe block (which mounts the same window object in jsdom).
+  vi.restoreAllMocks();
 });
 
 function jsonOk(body: unknown): Response {
