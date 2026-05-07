@@ -102,7 +102,7 @@ function memStoragePlugin(): Plugin {
     manifest: {
       name: 'mem-storage',
       version: '0.0.0',
-      registers: ['storage:get', 'storage:set'],
+      registers: ['storage:get', 'storage:set', 'storage:list-prefix'],
       calls: [],
       subscribes: [],
     },
@@ -121,6 +121,18 @@ function memStoragePlugin(): Plugin {
         async (_ctx, input) => {
           const { key, value } = input as { key: string; value: Uint8Array };
           store.set(key, value);
+        },
+      );
+      bus.registerService(
+        'storage:list-prefix',
+        'mem-storage',
+        async (_ctx, input) => {
+          const { prefix } = input as { prefix: string };
+          const entries: Array<{ key: string; value: Uint8Array }> = [];
+          for (const [k, v] of store.entries()) {
+            if (k.startsWith(prefix)) entries.push({ key: k, value: v });
+          }
+          return { entries };
         },
       );
     },
@@ -472,8 +484,9 @@ describe('@ax/mcp-client admin routes', () => {
     // value (`super-secret-value`).
     const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' });
     await stack.harness.bus.call('credentials:set', ctx, {
+      scope: 'user',
+      ownerId: 'u',
       ref: 'cred-foo',
-      userId: 'u',
       kind: 'api-key',
       payload: new TextEncoder().encode('super-secret-value'),
     });

@@ -16,7 +16,7 @@ function memStoragePlugin() {
     manifest: {
       name: 'mem-storage',
       version: '0.0.0',
-      registers: ['storage:get', 'storage:set'],
+      registers: ['storage:get', 'storage:set', 'storage:list-prefix'],
       calls: [],
       subscribes: [],
     },
@@ -29,6 +29,17 @@ function memStoragePlugin() {
         'mem-storage',
         async (_ctx, { key, value }: { key: string; value: Uint8Array }) => {
           store.set(key, value);
+        },
+      );
+      bus.registerService(
+        'storage:list-prefix',
+        'mem-storage',
+        async (_ctx, { prefix }: { prefix: string }) => {
+          const entries: Array<{ key: string; value: Uint8Array }> = [];
+          for (const [k, v] of store.entries()) {
+            if (k.startsWith(prefix)) entries.push({ key: k, value: v });
+          }
+          return { entries };
         },
       );
     },
