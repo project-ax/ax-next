@@ -152,24 +152,31 @@ function validateKind(kind: unknown): string {
 
 /**
  * Optional config for `createCredentialsPlugin`. Today this only carries
- * the env-fallback map — `{ ref → ENV_VAR_NAME }` — used when the
- * credentials store has no row for `(userId, ref)` and the operator wants
- * a process-env value to act as the universal fallback.
- *
- * Use case: kind / single-tenant deployments where the operator already
- * supplies `ANTHROPIC_API_KEY` via the chart's Secret. The agent's
- * `requiredCredentials.ANTHROPIC_API_KEY → 'anthropic-api'` would
- * otherwise fail at proxy:open-session time because no admin has called
- * `credentials:set` for this user yet. The fallback closes that gap.
- *
- * SECURITY: env values bypass the per-user credentials store. The same
- * value is returned for EVERY user. This is fine for single-tenant kind
- * dev where there's one admin user, but multi-tenant deployments MUST
- * leave `envFallback` empty and seed credentials per-user via the
- * credentials admin surface. The plugin warns at boot when fallback is
- * configured to make the trade-off impossible to miss.
+ * the `envFallback` map — see the field-level comment below for the
+ * trade-off and recommended usage.
  */
 export interface CredentialsPluginConfig {
+  /**
+   * Optional process-env fallback for credential refs that have no entry
+   * in any of the v2 storage scopes (user / agent / global). Used as the
+   * BOTTOM of the resolution chain — if any v2 row exists for the ref
+   * (in any scope, including a tombstone-fallthrough that resolves to a
+   * lower scope), this map is skipped entirely. Shape: `{ ref → ENV_VAR_NAME }`.
+   *
+   * SECURITY: env values are universal — the same value is returned for
+   * every user. Only safe for single-tenant kind/dev where there's one
+   * admin user. Multi-tenant deployments should leave this empty and use
+   * `POST /admin/credentials` (scope='global') instead, which goes
+   * through the same encryption-at-rest envelope as everything else and
+   * shows up in the admin UI's list. The plugin warns at boot when
+   * fallback is configured to make the trade-off impossible to miss.
+   *
+   * Future: a follow-up may remove this entirely once kind/dev migrates
+   * to the admin-UI flow. Today (2026-05-07) the k8s preset still wires
+   * `AX_CREDENTIALS_KEY` + `ANTHROPIC_API_KEY` →
+   * `envFallback['anthropic-api-key']` for ergonomics, so a fresh kind
+   * cluster talks to Anthropic without a separate seed step.
+   */
   envFallback?: Readonly<Record<string, string>>;
 }
 
