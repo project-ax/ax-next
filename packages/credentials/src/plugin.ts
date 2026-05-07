@@ -216,20 +216,27 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
       // The envelope lets credentials:get dispatch to the right resolve
       // sub-service without an extra storage column for `kind` (Phase 3
       // open question §1: stay schema-light for MVP).
+      //
+      // `createdAt` is stamped by the facade (callers don't supply it).
+      // It rides inside the encrypted blob — same trust boundary as the
+      // payload itself, so we don't need a separate storage column.
       function wrapEnvelope(
         kind: string,
         payload: Uint8Array,
         expiresAt: number | undefined,
         metadata: Record<string, unknown> | undefined,
+        createdAt: number,
       ): Uint8Array {
         const env: {
           kind: string;
           payloadB64: string;
+          createdAt: number;
           expiresAt?: number;
           metadata?: Record<string, unknown>;
         } = {
           kind,
           payloadB64: Buffer.from(payload).toString('base64'),
+          createdAt,
         };
         if (expiresAt !== undefined) env.expiresAt = expiresAt;
         if (metadata !== undefined) env.metadata = metadata;
@@ -317,7 +324,13 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
               message: `credential payload must be a Uint8Array`,
             });
           }
-          const blob = wrapEnvelope(kind, input.payload, input.expiresAt, input.metadata);
+          const blob = wrapEnvelope(
+            kind,
+            input.payload,
+            input.expiresAt,
+            input.metadata,
+            Date.now(),
+          );
           await bus.call('credentials:store-blob:put', ctx, { scope, ownerId, ref, blob });
         },
       );

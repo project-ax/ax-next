@@ -115,6 +115,26 @@ describe('credentials:list + credentials:list-kinds', () => {
     expect(out.kinds.find((k) => k.kind === 'anthropic-oauth')).toBeUndefined();
   });
 
+  it('list returns createdAt from the envelope (round-trips set time)', async () => {
+    const bus = await makeBus();
+    const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'admin' });
+    const before = Date.now();
+    await bus.call('credentials:set', ctx, {
+      scope: 'global',
+      ownerId: null,
+      ref: 'k',
+      kind: 'api-key',
+      payload: new Uint8Array([1]),
+    });
+    const after = Date.now();
+    const out = (await bus.call('credentials:list', ctx, {})) as {
+      credentials: Array<{ createdAt: string }>;
+    };
+    const ts = Date.parse(out.credentials[0].createdAt);
+    expect(ts).toBeGreaterThanOrEqual(before);
+    expect(ts).toBeLessThanOrEqual(after);
+  });
+
   it('list-kinds discovers oauth kinds via credentials:login:* registrations', async () => {
     // A fake oauth plugin that registers credentials:login:fake-oauth — list-kinds
     // should pick it up by walking bus.listServices().
