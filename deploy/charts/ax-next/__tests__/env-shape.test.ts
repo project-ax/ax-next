@@ -128,10 +128,8 @@ const EXTERNAL_READERS: ReadonlySet<string> = new Set([
   'AX_CONFIG_PATH',
   // @ax/credentials reads at init().
   'AX_CREDENTIALS_KEY',
-  // Legacy: chart sets ANTHROPIC_API_KEY but no plugin currently reads it
-  // (Phase 6 deleted the host-side llm-anthropic plugin). Kept set so
-  // operators can re-enable an Anthropic-keyed flow without re-rendering.
-  'ANTHROPIC_API_KEY',
+  // (ANTHROPIC_API_KEY removed: loadK8sConfigFromEnv now reads it directly
+  //  to gate the conditional load of @ax/conversation-titles.)
   // Read by @ax/http-server at init() — silences the empty-allow-list
   // warning when the chart deliberately doesn't pin allowedOrigins.
   'AX_HTTP_ALLOW_NO_ORIGINS',

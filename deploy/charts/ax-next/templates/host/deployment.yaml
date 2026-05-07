@@ -241,6 +241,11 @@ spec:
                   name: {{ include "ax-next.fullname" . }}-secrets
                   key: anthropic-api-key
 
+            # Auto-title model. Only effective when ANTHROPIC_API_KEY
+            # (above) is set — see presets/k8s/src/index.ts loader.
+            - name: AX_TITLE_MODEL
+              value: {{ .Values.titles.model | quote }}
+
             # Database URL — sourced from external secret OR built from
             # the embedded subchart's secret.
             {{- if .Values.postgres.external.enabled }}
