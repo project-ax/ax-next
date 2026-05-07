@@ -1,0 +1,23 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "f0a26c41859b",
+  "session_id": "8a60c6cc-3809-480f-a216-d8dbb3e43622",
+  "strategy": "manual-commit",
+  "created_at": "2026-05-07T13:42:43.765976Z",
+  "branch": "feat/credentials-admin-ui",
+  "checkpoints_count": 1,
+  "files_touched": [],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "4d7d814a8f7e",
+  "token_usage": {
+    "input_tokens": 149,
+    "cache_creation_tokens": 362383,
+    "cache_read_tokens": 13811593,
+    "output_tokens": 73982,
+    "api_call_count": 78
+  },
+  "session_metrics": {
+    "turn_count": 5
+  }
+}
