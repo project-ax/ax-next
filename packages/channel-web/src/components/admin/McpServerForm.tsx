@@ -29,6 +29,12 @@ import {
 } from '../../lib/admin';
 import type { McpServerInput } from '../../lib/admin';
 import type { McpServer } from '../../../mock/admin/mcp-servers';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Card } from '@/components/ui/card';
+import { RoleCard } from './RoleCard';
+import { StatusDot } from './StatusDot';
 
 const TRANSPORTS: McpServerInput['transport'][] = ['http', 'stdio', 'sse'];
 
@@ -54,6 +60,15 @@ const formFromServer = (s: McpServer): FormState => ({
 });
 
 type TestStatus = 'idle' | 'testing' | 'ok' | string;
+
+const testStatusToVariant = (
+  status: TestStatus | undefined,
+): 'empty' | 'ok' | 'bad' | 'pending' => {
+  if (!status || status === 'idle') return 'empty';
+  if (status === 'testing') return 'pending';
+  if (status === 'ok') return 'ok';
+  return 'bad';
+};
 
 export function McpServerForm() {
   const [servers, setServers] = useState<McpServer[]>([]);
@@ -160,78 +175,109 @@ export function McpServerForm() {
     }
   };
 
-  const renderBadge = (status: TestStatus | undefined) => {
+  const renderBadgeText = (status: TestStatus | undefined) => {
     if (!status || status === 'idle') return null;
-    if (status === 'testing') {
-      return <span className="admin-badge admin-badge-pending">testing…</span>;
-    }
-    if (status === 'ok') {
-      return <span className="admin-badge admin-badge-ok">ok</span>;
-    }
-    return <span className="admin-badge admin-badge-error">{status}</span>;
+    if (status === 'testing') return 'testing…';
+    if (status === 'ok') return 'ok';
+    return status;
   };
 
-  return (
-    <div className="admin-form-wrap">
-      {error && <div className="admin-error">{error}</div>}
-
-      {editing === null ? (
-        <>
-          <div className="admin-list-toolbar">
-            <button
-              type="button"
-              className="admin-btn admin-btn-primary"
-              onClick={startNew}
-            >
-              + New MCP server
-            </button>
+  // ── List view ──────────────────────────────────────────────────────────
+  if (editing === null) {
+    return (
+      <div className="max-w-[640px] mx-auto font-sans">
+        <div className="mb-5 flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-2xl font-medium tracking-[-0.018em] mb-1.5">
+              MCP servers
+            </h2>
+            <p className="text-sm leading-[1.55] text-muted-foreground max-w-[56ch]">
+              Configure the MCP servers available to agents in this deployment.
+            </p>
           </div>
-          {servers.length === 0 ? (
-            <div className="admin-empty">No MCP servers yet.</div>
-          ) : (
-            <ul className="admin-list">
-              {servers.map((s) => (
-                <li key={s.id} className="admin-list-row">
-                  <div className="admin-list-text">
-                    <div className="admin-list-name">{s.name}</div>
-                    <div className="admin-list-meta">
-                      {s.transport} · {s.url}
-                    </div>
-                  </div>
-                  <div className="admin-list-actions">
-                    {renderBadge(testStatus[s.id])}
-                    <button
-                      type="button"
-                      className="admin-btn"
-                      onClick={() => void onTest(s.id)}
-                    >
-                      Test
-                    </button>
-                    <button
-                      type="button"
-                      className="admin-btn"
-                      onClick={() => startEdit(s)}
-                    >
-                      edit
-                    </button>
-                    <button
-                      type="button"
-                      className="admin-btn admin-btn-danger"
-                      onClick={() => void remove(s)}
-                    >
-                      delete
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </>
-      ) : (
-        <form className="admin-form" onSubmit={(e) => void submit(e)}>
-          <div className="admin-form-grid">
-            <label htmlFor="mcp-name">Name</label>
-            <input
+          <Button onClick={startNew}>New MCP server</Button>
+        </div>
+
+        {error && (
+          <div
+            role="alert"
+            className="mb-4 px-3 py-2 bg-destructive/10 border border-destructive/25 rounded-md text-[12.5px] text-destructive"
+          >
+            {error}
+          </div>
+        )}
+
+        {servers.length === 0 ? (
+          <div className="text-sm text-muted-foreground">
+            No MCP servers yet.
+          </div>
+        ) : (
+          <div className="flex flex-col gap-3.5">
+            {servers.map((s) => (
+              <RoleCard
+                key={s.id}
+                pill="mcp"
+                title={s.name}
+                caption={`${s.transport} · ${s.url}`}
+              >
+                <div className="flex items-center justify-end gap-2">
+                  {renderBadgeText(testStatus[s.id]) && (
+                    <span className="flex items-center gap-1.5 text-[12.5px] text-muted-foreground">
+                      <StatusDot variant={testStatusToVariant(testStatus[s.id])} />
+                      {renderBadgeText(testStatus[s.id])}
+                    </span>
+                  )}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void onTest(s.id)}
+                  >
+                    Test
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => startEdit(s)}
+                  >
+                    edit
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => void remove(s)}
+                  >
+                    delete
+                  </Button>
+                </div>
+              </RoleCard>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ── Create / edit form view ────────────────────────────────────────────
+  return (
+    <div className="max-w-[640px] mx-auto font-sans">
+      <div className="mb-5 flex items-center gap-3">
+        <Button variant="ghost" size="sm" onClick={cancelForm}>
+          ← Back
+        </Button>
+        <h2 className="text-2xl font-medium tracking-[-0.018em]">
+          {editing === 'new' ? 'New MCP server' : `Edit ${form.name}`}
+        </h2>
+      </div>
+
+      <Card className="p-5">
+        <form
+          className="flex flex-col gap-4"
+          onSubmit={(e) => void submit(e)}
+        >
+          {/* Name */}
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="mcp-name">Name</Label>
+            <Input
               id="mcp-name"
               type="text"
               value={form.name}
@@ -240,9 +286,12 @@ export function McpServerForm() {
               }
               required
             />
+          </div>
 
-            <label htmlFor="mcp-url">URL</label>
-            <input
+          {/* URL */}
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="mcp-url">URL</Label>
+            <Input
               id="mcp-url"
               type="text"
               value={form.url}
@@ -251,10 +300,14 @@ export function McpServerForm() {
               }
               required
             />
+          </div>
 
-            <label htmlFor="mcp-transport">Transport</label>
+          {/* Transport */}
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="mcp-transport">Transport</Label>
             <select
               id="mcp-transport"
+              className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
               value={form.transport}
               onChange={(e) =>
                 setForm((f) => ({
@@ -269,9 +322,12 @@ export function McpServerForm() {
                 </option>
               ))}
             </select>
+          </div>
 
-            <label htmlFor="mcp-credentials">Credentials ID</label>
-            <input
+          {/* Credentials ID */}
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="mcp-credentials">Credentials ID</Label>
+            <Input
               id="mcp-credentials"
               type="text"
               placeholder="optional"
@@ -282,25 +338,30 @@ export function McpServerForm() {
             />
           </div>
 
-          <div className="admin-form-buttons">
-            <button
+          {error && (
+            <div
+              role="alert"
+              className="px-2.5 py-2 bg-destructive/10 border border-destructive/25 rounded-md text-[12.5px] text-destructive"
+            >
+              {error}
+            </div>
+          )}
+
+          <div className="flex items-center gap-2">
+            <Button type="submit" disabled={!!busy}>
+              {busy ? 'Saving…' : 'Save'}
+            </Button>
+            <Button
               type="button"
-              className="admin-btn"
+              variant="ghost"
               onClick={cancelForm}
-              disabled={busy}
+              disabled={!!busy}
             >
               Cancel
-            </button>
-            <button
-              type="submit"
-              className="admin-btn admin-btn-primary"
-              disabled={busy}
-            >
-              {busy ? 'Saving…' : 'Save'}
-            </button>
+            </Button>
           </div>
         </form>
-      )}
+      </Card>
     </div>
   );
 }
