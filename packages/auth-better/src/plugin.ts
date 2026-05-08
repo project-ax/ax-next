@@ -585,11 +585,13 @@ async function forwardToBetterAuth(
     // If better-auth's adapter init failed (handler.ts catches the
     // construction-side rejection but request-time rejections still
     // propagate), surface a 500 without leaking the inner message —
-    // better-auth's errors can echo request fields.
+    // better-auth's errors can echo request-derived fields (state,
+    // email, callback URL params), so we omit `err.message` from the
+    // log line entirely. Method + path is enough to correlate with
+    // upstream http-server access logs.
+    void err;
     process.stderr.write(
-      `[ax/auth-better] handler error on ${req.method} ${req.path}: ${
-        err instanceof Error ? err.message : 'unknown'
-      }\n`,
+      `[ax/auth-better] handler error on ${req.method} ${req.path}\n`,
     );
     res.status(500).json({ error: 'auth-handler-failed' });
     return;

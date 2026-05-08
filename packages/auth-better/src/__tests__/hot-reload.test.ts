@@ -35,6 +35,7 @@ const COOKIE_KEY = randomBytes(32);
 // Pre-generate a 32-byte AX_CREDENTIALS_KEY (64 hex chars) so the
 // credentials plugin can boot. We restore the prior env in afterAll.
 const ORIGINAL_CREDENTIALS_KEY = process.env.AX_CREDENTIALS_KEY;
+const ORIGINAL_ALLOW_NO_ORIGINS = process.env.AX_HTTP_ALLOW_NO_ORIGINS;
 
 let container: StartedPostgreSqlContainer;
 let connectionString: string;
@@ -52,6 +53,11 @@ afterAll(async () => {
     delete process.env.AX_CREDENTIALS_KEY;
   } else {
     process.env.AX_CREDENTIALS_KEY = ORIGINAL_CREDENTIALS_KEY;
+  }
+  if (ORIGINAL_ALLOW_NO_ORIGINS === undefined) {
+    delete process.env.AX_HTTP_ALLOW_NO_ORIGINS;
+  } else {
+    process.env.AX_HTTP_ALLOW_NO_ORIGINS = ORIGINAL_ALLOW_NO_ORIGINS;
   }
 });
 

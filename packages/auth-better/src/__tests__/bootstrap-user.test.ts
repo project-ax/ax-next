@@ -164,11 +164,14 @@ describe('auth:create-bootstrap-user contract', () => {
   it('rejects malformed input (oversize displayName, non-email)', async () => {
     harness = await bootHarness();
     // Oversize displayName — caps at 200 chars.
+    // Pair the oversize displayName with a VALID email so the assertion
+    // isolates the displayName-length check (otherwise we'd be uncertain
+    // whether email validation tripped first).
     await expect(
       harness.bus.call<CreateBootstrapUserInput, CreateBootstrapUserOutput>(
         'auth:create-bootstrap-user',
         harness.ctx(),
-        { displayName: 'x'.repeat(201) },
+        { displayName: 'x'.repeat(201), email: 'admin@example.com' },
       ),
     ).rejects.toBeInstanceOf(PluginError);
 
