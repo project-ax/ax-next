@@ -9,6 +9,7 @@
  * targets them — they're queryable structural names only).
  */
 import type { Agent } from '../../mock/agents';
+import { SidebarSectionLabel } from './SidebarSectionLabel';
 
 export interface AgentMenuProps {
   agents: Agent[];
@@ -35,9 +36,9 @@ export function AgentMenu({ agents, activeId, onPick }: AgentMenuProps) {
         animate-in fade-in-0 zoom-in-95 slide-in-from-top-1 duration-150
       "
     >
-      <div className="px-2.5 pt-2 pb-1 text-[10px] uppercase tracking-[0.14em] text-ink-ghost">
+      <SidebarSectionLabel className="px-2.5 pt-2 pb-1">
         switch agent
-      </div>
+      </SidebarSectionLabel>
       <div className="flex flex-col gap-px">
         {agents.map((agent) => {
           const isActive = activeId === agent.id;
@@ -87,6 +88,8 @@ export function AgentMenu({ agents, activeId, onPick }: AgentMenuProps) {
           a new session starts on your next message
         </div>
       </div>
+      {/* The footnote above keeps its lower-case sentence-style copy and
+         tighter tracking; it isn't a section label. */}
     </div>
   );
 }

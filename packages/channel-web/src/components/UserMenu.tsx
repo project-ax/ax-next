@@ -14,6 +14,7 @@ import { KeyRound, LogOut, Moon, Settings, Sun, UserRound } from 'lucide-react';
 import { useUser } from '../lib/user-context';
 import { signOut } from '../lib/auth';
 import { useTheme, setTheme, type Theme } from '../lib/theme';
+import { SidebarSectionLabel } from './SidebarSectionLabel';
 
 interface ThemeOption {
   value: Theme;
@@ -237,9 +238,9 @@ export function UserMenu({
             <LogOut aria-hidden="true" strokeWidth={1.4} />
             <span>Sign out</span>
           </button>
-          <div className="px-2.5 pt-2 pb-1 mt-1 border-t border-border text-[10px] tracking-[0.12em] uppercase text-ink-ghost">
+          <SidebarSectionLabel className="px-2.5 pt-2 pb-1 mt-1 border-t border-border">
             ax v0.3
-          </div>
+          </SidebarSectionLabel>
         </div>
       )}
     </div>

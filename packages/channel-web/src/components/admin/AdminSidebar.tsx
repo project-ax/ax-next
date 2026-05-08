@@ -1,6 +1,7 @@
 // packages/channel-web/src/components/admin/AdminSidebar.tsx
 import { ChevronLeft, KeyRound, Cpu, User, Server, UsersRound } from 'lucide-react';
 import { BrandMark } from '../BrandMark';
+import { SidebarSectionLabel } from '../SidebarSectionLabel';
 import { AdminNavItem } from './AdminNavItem';
 import { cn } from '@/lib/utils';
 
@@ -45,9 +46,7 @@ export function AdminSidebar({ activeTab, onTabChange, onBackToChat }: AdminSide
         </button>
       </div>
       <div className="flex-1 overflow-hidden pt-2.5 pb-2 flex flex-col">
-        <div className="text-[10.5px] tracking-[0.12em] uppercase text-ink-ghost px-4 py-2 font-medium">
-          Admin
-        </div>
+        <SidebarSectionLabel className="px-4 py-2">Admin</SidebarSectionLabel>
         <ul className="flex flex-col gap-px px-1 list-none m-0 p-0">
           {NAV.map((item) => (
             <li key={item.id}>

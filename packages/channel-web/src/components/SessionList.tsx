@@ -27,6 +27,7 @@ import {
   type WireConversation,
 } from '../lib/session-store';
 import { SessionRow } from './SessionRow';
+import { SidebarSectionLabel } from './SidebarSectionLabel';
 
 interface Group {
   label: 'today' | 'yesterday' | 'earlier';
@@ -109,9 +110,9 @@ export function SessionList() {
     <>
       {groups.map((g) => (
         <div key={g.label}>
-          <div className="px-3 pt-3.5 pb-1.5 text-[10.5px] font-medium uppercase tracking-[0.12em] text-ink-ghost">
+          <SidebarSectionLabel className="px-3 pt-3.5 pb-1.5">
             {g.label}
-          </div>
+          </SidebarSectionLabel>
           {g.rows.map((row) => {
             const agent = agents.find((a) => a.id === row.agent_id);
             const color = agent?.color ?? '#888';
