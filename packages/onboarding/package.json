@@ -13,7 +13,8 @@
   },
   "files": ["dist"],
   "scripts": {
-    "build": "tsc --build",
+    "build": "tsc --build && pnpm run build:spa",
+    "build:spa": "vite build --config src/spa/vite.config.ts",
     "test": "vitest run --passWithNoTests",
     "test:watch": "vitest"
   },
@@ -33,6 +34,8 @@
     "@testcontainers/postgresql": "11.14.0",
     "@types/node": "^25.6.0",
     "@types/pg": "8.20.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.4",
     "pg": "8.20.0",
     "react": "^19.0.0",

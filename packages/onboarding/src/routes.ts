@@ -19,17 +19,22 @@ import { runCompletionTransaction } from './completion-tx.js';
  * non-HTTP adapter could provide it.
  */
 export interface RouteRequest {
+  readonly method: string;
+  readonly path: string;
   readonly headers: Record<string, string>;
   readonly body: Buffer;
   readonly cookies: Record<string, string>;
   readonly query: Record<string, string>;
+  readonly params: Record<string, string>;
   signedCookie(name: string): string | null;
 }
 
 export interface RouteResponse {
   status(n: number): RouteResponse;
+  header(name: string, value: string): RouteResponse;
   json(v: unknown): void;
   text(s: string): void;
+  body(buf: Buffer, contentType?: string): void;
   end(): void;
   redirect(url: string, status?: number): void;
   setSignedCookie(

@@ -6,6 +6,8 @@ import {
   type Plugin,
 } from '@ax/core';
 import type { Kysely } from 'kysely';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { runOnboardingMigration, type OnboardingDatabase } from './migrations.js';
 import { createOnboardingStore, type OnboardingStore } from './store.js';
 import {
@@ -17,22 +19,28 @@ import {
 import { createRateLimiter } from './rate-limit.js';
 import { createBootstrapSessionStore } from './sessions.js';
 import { createOnboardingRouteHandlers, type RouteRequest, type RouteResponse } from './routes.js';
+import { serveSpaIndex, serveSpaAsset, type StaticServeDeps } from './static-handler.js';
 import type { BootstrapCompleteInput, BootstrapStatusOutput, OnboardingConfig } from './types.js';
 
 const PLUGIN_NAME = '@ax/onboarding';
 const DEFAULT_TOKEN_FILE_PATH = '/var/run/ax/bootstrap-token';
 
 interface AnyHttpReq {
+  method: string;
+  path: string;
   headers: Record<string, string>;
   body: Buffer;
   cookies: Record<string, string>;
   query: Record<string, string>;
+  params: Record<string, string>;
   signedCookie(name: string): string | null;
 }
 interface AnyHttpRes {
-  status(n: number): unknown;
+  status(n: number): AnyHttpRes;
+  header(name: string, value: string): AnyHttpRes;
   json(v: unknown): void;
   text(s: string): void;
+  body(buf: Buffer, contentType?: string): void;
   end(): void;
   redirect(url: string, status?: number): void;
   setSignedCookie(name: string, value: string, opts?: unknown): void;
@@ -224,6 +232,65 @@ export function createOnboardingPlugin(config: OnboardingConfig): Plugin {
           path: '/setup/model',
           handler: async (req, res) =>
             handlers.model(asRouteReq(req), asRouteRes(res)),
+        }),
+      );
+
+      // SPA routes ---------------------------------------------------------
+      // dist-spa lives one directory above the compiled plugin (dist/plugin.js
+      // → ../../dist-spa). In ESM we resolve relative to import.meta.url.
+      const pkgRoot = resolve(fileURLToPath(import.meta.url), '..', '..');
+      const spaRoot = resolve(pkgRoot, 'dist-spa');
+      const spaDeps: StaticServeDeps = { spaRoot };
+
+      unregisterRoutes.push(
+        await registerRoute(bus, initCtx, {
+          method: 'GET',
+          path: '/setup',
+          handler: async (_req, res) => {
+            // I11: post-completion 410.
+            const row = await localStore.read();
+            if (row?.status === 'completed') {
+              res.status(410).text('Setup already completed.');
+              return;
+            }
+            let out: Awaited<ReturnType<typeof serveSpaIndex>>;
+            try {
+              out = await serveSpaIndex(spaDeps);
+            } catch {
+              res.status(503).text('Setup UI not available — build may be missing.');
+              return;
+            }
+            res.status(out.status);
+            for (const [k, v] of Object.entries(out.headers)) {
+              res.header(k, v);
+            }
+            res.body(out.body, out.headers['content-type']);
+          },
+        }),
+      );
+
+      unregisterRoutes.push(
+        await registerRoute(bus, initCtx, {
+          method: 'GET',
+          path: '/setup/static/*',
+          handler: async (req, res) => {
+            // I11: post-completion 410.
+            const row = await localStore.read();
+            if (row?.status === 'completed') {
+              res.status(410).text('Setup already completed.');
+              return;
+            }
+            const out = await serveSpaAsset(spaDeps, asRouteReq(req).path);
+            if (out === null) {
+              res.status(404).text('Not found');
+              return;
+            }
+            res.status(out.status);
+            for (const [k, v] of Object.entries(out.headers)) {
+              res.header(k, v);
+            }
+            res.body(out.body, out.headers['content-type']);
+          },
         }),
       );
     },
