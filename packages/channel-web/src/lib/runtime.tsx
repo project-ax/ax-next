@@ -1,4 +1,4 @@
-import { useMemo, useRef, useCallback } from 'react';
+import { useMemo, useRef, useCallback, useEffect } from 'react';
 import {
   type AssistantRuntime,
   useRemoteThreadListRuntime,
@@ -11,6 +11,7 @@ import { axThreadListAdapter } from './thread-list-adapter';
 import { createAxHistoryAdapter } from './history-adapter';
 import { AxChatTransport } from './transport';
 import { useAgentStore } from './agent-store';
+import { useSessionStore } from './session-store';
 import { useThinkingStore } from './thinking-store';
 
 /**
@@ -93,10 +94,20 @@ export const useAxChatRuntime = (
     [user, handleSetConversationId],
   );
 
-  // Agent-switch → new conversation is handled server-side: a different agentId in
-  // the next POST creates a new conversation row. The transport's localConversationId
-  // stays stale until the server returns a new one; we don't read it across agents
-  // on the same turn so the gap is benign.
+  // Whenever the session-store's `activeSessionId` clears (the user
+  // opened a fresh session via "+ new session", or AgentChip dropped
+  // the previous session as part of a mid-chat agent switch), reset
+  // the transport's conversationId so the next POST sends
+  // `conversationId: null`. The server then mints a new conversation
+  // row — without this, the transport would carry the previous id
+  // forward and the new agent's first turn would land in the old
+  // conversation.
+  const activeSessionId = useSessionStore().activeSessionId;
+  useEffect(() => {
+    if (activeSessionId === null) {
+      conversationRef.current = null;
+    }
+  }, [activeSessionId]);
 
   return useRemoteThreadListRuntime({
     runtimeHook: () => useChatThreadRuntime(transport),

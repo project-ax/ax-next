@@ -19,6 +19,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useAui } from '@assistant-ui/react';
 import { agentStoreActions, useAgentStore } from '../lib/agent-store';
+import { sessionStoreActions } from '../lib/session-store';
 import { AgentMenu } from './AgentMenu';
 import { AvatarTile } from './AvatarTile';
 import { cn } from '@/lib/utils';
@@ -50,17 +51,34 @@ export function AgentChip() {
   const handlePick = (agentId: string): void => {
     setOpen(false);
     const wasNonEmpty = activeSessionHasMessages;
-    void agentStoreActions.pickAgent(agentId, {
-      activeSessionId,
-      hasMessages: activeSessionHasMessages,
-    });
+
     if (wasNonEmpty) {
+      // Reset the chat surface so the freshly-picked agent gets a
+      // blank thread to talk into.
       try {
         aui.threads().switchToNewThread();
       } catch (err) {
         console.warn('[agent-chip] switchToNewThread failed', err);
       }
+      // Clear active session in both stores. The sidebar deselects
+      // the previous session, and the next user message POSTs with
+      // conversationId: null so the server creates a fresh
+      // conversation row under the new agent (Invariant I10 — agents
+      // are immutable on existing conversations, so a new row is the
+      // only correct answer).
+      sessionStoreActions.newLocalConversation();
     }
+
+    // Commit the agent immediately. Earlier behaviour kept the prior
+    // selectedAgentId until the next message via a `pendingAgentId`
+    // indirection — we now commit on pick so the chip + the next
+    // message both refer to the freshly picked agent. With
+    // activeSessionId already cleared above, pickAgent's
+    // hasMessages=false branch fires and just records the selection.
+    void agentStoreActions.pickAgent(agentId, {
+      activeSessionId: null,
+      hasMessages: false,
+    });
   };
 
   return (
