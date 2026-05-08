@@ -65,11 +65,24 @@ async function bootHarness(): Promise<TestHarness> {
   // need to spin up @ax/http-server (cookie keys, listening sockets,
   // CSRF wiring) just to exercise the bus surface. Each call returns
   // an idempotent unregister stub. The route handler is captured but
-  // never invoked here — Task 1.5's tests will exercise the routes
-  // end-to-end with a real http-server.
+  // never invoked here — Task 1.5's hot-reload test exercises the
+  // CRUD routes end-to-end with a real http-server.
+  //
+  // Also mock the credentials envelope hooks. Task 1.5 added them to
+  // @ax/auth-better's `calls` because the CRUD routes now go through
+  // them on every insert/list. The bootstrap-user tests don't insert
+  // any provider rows, so the encrypt mock is never reached — but
+  // verifyCalls() runs at boot and refuses to start without the hooks
+  // registered. A no-op pass-through is enough to satisfy the gate.
   return createTestHarness({
     services: {
       'http:register-route': async (_ctx, _input) => ({ unregister: () => {} }),
+      'credentials:envelope-encrypt': async (_ctx, input) => ({
+        ciphertext: Buffer.from((input as { plaintext: string }).plaintext, 'utf8'),
+      }),
+      'credentials:envelope-decrypt': async (_ctx, input) => ({
+        plaintext: Buffer.from((input as { ciphertext: Uint8Array }).ciphertext).toString('utf8'),
+      }),
     },
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),

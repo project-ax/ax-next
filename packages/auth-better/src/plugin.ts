@@ -33,6 +33,11 @@ import {
   type HandlerHandle,
   type ProviderRow,
 } from './handler.js';
+import {
+  createProvidersStore,
+  type CredentialsEnvelope,
+  type ProvidersStore,
+} from './providers-store.js';
 
 const PLUGIN_NAME = '@ax/auth-better';
 const DEFAULT_SESSION_COOKIE_NAME = 'ax_auth_session';
@@ -101,12 +106,19 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
         'auth:get-user',
         'auth:create-bootstrap-user',
       ],
-      // `credentials:envelope-*` join `calls` in Task 1.5 alongside the
-      // first concrete site that uses them (provider CRUD). Declaring
-      // them here would force every host to load @ax/credentials at
-      // boot — premature coupling, and verifyCalls() would fail in
-      // tests that don't need providers (e.g., bootstrap-user.test).
-      calls: ['database:get-instance', 'http:register-route'],
+      // Task 1.5 adds the envelope hooks to `calls` because the admin
+      // provider CRUD routes now wrap/unwrap secrets unconditionally
+      // (they encrypt on insert and decrypt on list). Hosts loading
+      // @ax/auth-better MUST also load @ax/credentials — verifyCalls()
+      // catches the misconfiguration at boot. Bootstrap-user contract
+      // tests that don't need providers mock the envelope hooks via
+      // `services:` on the test harness.
+      calls: [
+        'database:get-instance',
+        'http:register-route',
+        'credentials:envelope-encrypt',
+        'credentials:envelope-decrypt',
+      ],
       subscribes: ['auth:providers-changed'],
     },
 
@@ -128,11 +140,28 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
       await runAuthBetterMigration(db);
       const localDb = db;
 
-      // 2) Initial provider load (empty until Task 1.5 wires CRUD) -------
-      // loadProviders short-circuits the credentials:envelope-decrypt call
-      // when there are no rows — so this works without @ax/credentials in
-      // the test harness. As soon as Task 1.5 inserts a real row, the
-      // bus.call below will require the credentials peer to be loaded.
+      // 2) Initial provider load + store -------------------------------
+      // The store wraps DB access and hides the envelope plumbing. The
+      // envelope closure routes through `credentials:envelope-encrypt`
+      // / `-decrypt`; both live in @ax/credentials, declared in `calls`
+      // so verifyCalls() catches a missing peer at boot.
+      const envelope: CredentialsEnvelope = {
+        async encrypt(plaintext: string): Promise<Uint8Array> {
+          const { ciphertext } = await bus.call<
+            { plaintext: string },
+            { ciphertext: Uint8Array }
+          >('credentials:envelope-encrypt', initCtx, { plaintext });
+          return ciphertext;
+        },
+        async decrypt(ciphertext: Uint8Array): Promise<string> {
+          const { plaintext } = await bus.call<
+            { ciphertext: Uint8Array },
+            { plaintext: string }
+          >('credentials:envelope-decrypt', initCtx, { ciphertext });
+          return plaintext;
+        },
+      };
+      const store = createProvidersStore(localDb, envelope);
       const providers = await loadProviders(localDb, bus, initCtx);
 
       // 3) Build the handler --------------------------------------------
@@ -199,6 +228,29 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
         );
         unregisterRoutes.push(unregister);
       }
+
+      // 7) /admin/auth/providers/* — runtime CRUD (closes I10) ----------
+      // These routes are the FIRER of `auth:providers-changed`. The
+      // subscriber registered above re-reads the table and rebuilds the
+      // handler, so a provider added at runtime is live within the next
+      // HTTP request — no kernel restart.
+      //
+      // SECURITY POSTURE:
+      //   - Admin-only: every route calls `auth:require-user` and rejects
+      //     401 (unauthenticated) / 403 (non-admin).
+      //   - Input is bounded + enum-validated in the store (Invariant I5).
+      //   - GET strips `clientSecret` before responding (Invariant I9 —
+      //     plaintext secrets never leak through hook returns OR the
+      //     wire). The store's `list()` returns secrets for the rebuild
+      //     path; the route is responsible for the wire-side strip.
+      //   - Error messages NEVER echo `clientSecret`. The validators in
+      //     providers-store.ts deliberately omit value echoes.
+      await registerAdminRoutes({
+        bus,
+        initCtx,
+        store,
+        unregisterRoutes,
+      });
     },
 
     async shutdown() {
@@ -613,4 +665,190 @@ function serializeQuery(query: Record<string, string>): string {
     pairs.push(`${encodeURIComponent(k)}=${encodeURIComponent(v)}`);
   }
   return pairs.join('&');
+}
+
+// ---------------------------------------------------------------------------
+// /admin/auth/providers/* — admin-only runtime CRUD.
+//
+// Routes:
+//   GET    /admin/auth/providers      → list (secrets STRIPPED)
+//   POST   /admin/auth/providers      → upsert
+//   PATCH  /admin/auth/providers/:kind → setEnabled
+//   DELETE /admin/auth/providers/:kind → delete
+//
+// Each mutation fires `auth:providers-changed` on success; the subscriber
+// registered in init() rebuilds the handler in place — closing I10.
+// ---------------------------------------------------------------------------
+
+interface RegisterAdminRoutesDeps {
+  bus: HookBus;
+  initCtx: AgentContext;
+  store: ProvidersStore;
+  unregisterRoutes: Array<() => void>;
+}
+
+async function registerAdminRoutes(deps: RegisterAdminRoutesDeps): Promise<void> {
+  const { bus, initCtx, store, unregisterRoutes } = deps;
+
+  const register = async (method: HttpMethod, path: string, handler: (req: HttpRequest, res: HttpResponse) => Promise<void>): Promise<void> => {
+    const { unregister } = await bus.call<HttpRegisterRouteInput, HttpRegisterRouteOutput>(
+      'http:register-route',
+      initCtx,
+      { method, path, handler },
+    );
+    unregisterRoutes.push(unregister);
+  };
+
+  await register('GET', '/admin/auth/providers', async (req, res) => {
+    if (!(await requireAdmin(bus, initCtx, req, res))) return;
+    const rows = await store.list();
+    // Strip clientSecret before going on the wire (Invariant I9). The
+    // route is the LAST line of defense — the store deliberately returns
+    // plaintext for the rebuild path, so we strip explicitly here rather
+    // than overload the store with two read modes.
+    const sanitized = rows.map((r) => ({
+      kind: r.kind,
+      clientId: r.clientId,
+      discoveryUrl: r.discoveryUrl,
+      allowedDomains: r.allowedDomains,
+      enabled: r.enabled,
+      createdAt: r.createdAt.toISOString(),
+      updatedAt: r.updatedAt.toISOString(),
+    }));
+    res.status(200).json({ providers: sanitized });
+  });
+
+  await register('POST', '/admin/auth/providers', async (req, res) => {
+    if (!(await requireAdmin(bus, initCtx, req, res))) return;
+    const body = parseJsonBody(req.body);
+    if (body === null) {
+      res.status(400).json({ error: 'invalid-json' });
+      return;
+    }
+    try {
+      await store.upsert({
+        kind: asString(body.kind),
+        clientId: asString(body.clientId),
+        clientSecret: asString(body.clientSecret),
+        ...(body.discoveryUrl !== undefined
+          ? { discoveryUrl: asString(body.discoveryUrl) }
+          : {}),
+        ...(body.allowedDomains !== undefined
+          ? { allowedDomains: asString(body.allowedDomains) }
+          : {}),
+      });
+    } catch (err) {
+      sendValidationError(res, err);
+      return;
+    }
+    await bus.fire('auth:providers-changed', initCtx, {});
+    res.status(201).json({ ok: true });
+  });
+
+  await register('PATCH', '/admin/auth/providers/:kind', async (req, res) => {
+    if (!(await requireAdmin(bus, initCtx, req, res))) return;
+    const kind = req.params['kind'] ?? '';
+    const body = parseJsonBody(req.body);
+    if (body === null) {
+      res.status(400).json({ error: 'invalid-json' });
+      return;
+    }
+    if (typeof body.enabled !== 'boolean') {
+      res.status(400).json({ error: 'invalid-payload', message: 'enabled must be a boolean' });
+      return;
+    }
+    try {
+      await store.setEnabled(kind, body.enabled);
+    } catch (err) {
+      sendValidationError(res, err);
+      return;
+    }
+    await bus.fire('auth:providers-changed', initCtx, {});
+    res.status(200).json({ ok: true });
+  });
+
+  await register('DELETE', '/admin/auth/providers/:kind', async (req, res) => {
+    if (!(await requireAdmin(bus, initCtx, req, res))) return;
+    const kind = req.params['kind'] ?? '';
+    try {
+      await store.delete(kind);
+    } catch (err) {
+      sendValidationError(res, err);
+      return;
+    }
+    await bus.fire('auth:providers-changed', initCtx, {});
+    res.status(204).end();
+  });
+}
+
+/**
+ * Calls `auth:require-user` against the bus and emits 401/403 directly on
+ * the response. Returns `true` if the caller is an admin (route handler
+ * should continue) or `false` if a response was already sent (handler
+ * should return immediately).
+ *
+ * The hook is OUR own service — calling it via the bus rather than reaching
+ * into the impl directly keeps the helper interchangeable with a future
+ * alternate auth impl that registers the same surface.
+ */
+async function requireAdmin(
+  bus: HookBus,
+  ctx: AgentContext,
+  req: HttpRequest,
+  res: HttpResponse,
+): Promise<boolean> {
+  let user: User;
+  try {
+    const out = await bus.call<{ req: HttpRequestLike }, { user: User }>(
+      'auth:require-user',
+      ctx,
+      { req },
+    );
+    user = out.user;
+  } catch (err) {
+    if (err instanceof PluginError && err.code === 'unauthenticated') {
+      res.status(401).json({ error: 'unauthenticated' });
+      return false;
+    }
+    // Unknown failure — surface a 500 without leaking the cause.
+    res.status(500).json({ error: 'auth-check-failed' });
+    return false;
+  }
+  if (!user.isAdmin) {
+    res.status(403).json({ error: 'forbidden' });
+    return false;
+  }
+  return true;
+}
+
+function parseJsonBody(body: Buffer): Record<string, unknown> | null {
+  if (body.length === 0) return {};
+  try {
+    const parsed = JSON.parse(body.toString('utf8')) as unknown;
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return null;
+    }
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function asString(v: unknown): string {
+  // Cheap normalization for the validators downstream — they re-check
+  // type/length. We only convert here so a missing field surfaces as
+  // empty-string and validation rejects it cleanly.
+  return typeof v === 'string' ? v : '';
+}
+
+function sendValidationError(res: HttpResponse, err: unknown): void {
+  if (err instanceof PluginError && err.code === 'invalid-payload') {
+    // Safe: PluginError messages from providers-store.ts are static,
+    // never include the raw secret value.
+    res.status(400).json({ error: 'invalid-payload', message: err.message });
+    return;
+  }
+  // Anything else — log NOTHING about the body and return a generic 500.
+  // Even an unexpected DB error mustn't echo a payload field.
+  res.status(500).json({ error: 'internal' });
 }

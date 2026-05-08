@@ -147,6 +147,11 @@ export default tseslint.config(
       // are covered.
       'packages/*/src/__tests__/**',
       'packages/*/src/**/__tests__/**',
+      // @ax/test-harness is test infrastructure — its production source
+      // (e.g. signInAsAdmin) needs to import workspace plugin packages
+      // (http-server's signCookieValue, etc.) so test code can drive the
+      // bus surface without re-implementing crypto. Not subject to I2.
+      'packages/test-harness/src/**',
       // The workspace-git wrapper's whole job is to delegate to
       // workspace-git-core; allow it explicitly.
       'packages/workspace-git/src/**',

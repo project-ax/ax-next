@@ -102,6 +102,19 @@ function build(input: HandlerInput): (req: Request) => Promise<Response> {
     // which we don't have here.
     database: { db: input.database, type: 'postgres' },
     emailAndPassword: { enabled: true, minPasswordLength: 12 },
+    // We mount @ax/http-server routes at `/auth/*` (sibling of `/admin/*`,
+    // matching the v1 auth-oidc layout). Better-auth's default basePath is
+    // `/api/auth`; override so its internal router agrees with where we
+    // forward requests.
+    basePath: '/auth',
+    // The OS-assigned port at boot can move between rebuilds; rather
+    // than thread a host into every rebuild, let better-auth resolve
+    // baseURL from the request's `Host` header (its `resolveBaseURL`
+    // does this when `baseURL` is undefined). Set `trustedOrigins` to
+    // a wildcard so any test-time host:port combo is accepted —
+    // production hosts that mount this plugin should pin
+    // trustedOrigins explicitly.
+    trustedOrigins: ['*'],
     socialProviders: socialProviders as Parameters<typeof betterAuth>[0]['socialProviders'],
     session: { expiresIn: 7 * 24 * 60 * 60 },
     user: {
