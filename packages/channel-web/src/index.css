@@ -4,10 +4,7 @@
 
 @layer base {
   :root {
-    /* --background mirrors the chat surface's --bg (#f6f6f3) so admin
-       and chat share the same canvas tone. Cards remain pure white via
-       --card so they read as raised against the cream canvas. */
-    --background: 60 14% 96%;
+    --background: 0 0% 100%;
     --foreground: 240 6% 10%;
     --card: 0 0% 100%;
     --card-foreground: 240 6% 10%;
@@ -37,7 +34,7 @@
   :root[data-theme='dark'],
   :root:not([data-theme='light']) {
     @media (prefers-color-scheme: dark) {
-      --background: 216 11% 9%;
+      --background: 0 0% 0%;
       --foreground: 240 5% 96%;
       --card: 240 3% 11%;
       --card-foreground: 240 5% 96%;
@@ -64,7 +61,7 @@
     }
   }
   :root[data-theme='dark'] {
-    --background: 216 11% 9%;
+    --background: 0 0% 0%;
     --foreground: 240 5% 96%;
     --card: 240 3% 11%;
     --card-foreground: 240 5% 96%;
