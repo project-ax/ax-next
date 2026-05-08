@@ -31,6 +31,12 @@ import {
 } from '../../lib/admin';
 import type { Team } from '../../../mock/admin/teams';
 import type { McpServer } from '../../../mock/admin/mcp-servers';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Card } from '@/components/ui/card';
+import { Textarea } from '@/components/ui/textarea';
+import { RoleCard } from './RoleCard';
 
 const MODELS = [
   'claude-sonnet-4-6',
@@ -196,76 +202,105 @@ export function AgentForm() {
     }
   };
 
-  return (
-    <div className="admin-form-wrap">
-      {error && <div className="admin-error">{error}</div>}
-
-      {editing === null ? (
-        <>
-          <div className="admin-list-toolbar">
-            <button
-              type="button"
-              className="admin-btn admin-btn-primary"
-              onClick={startNew}
-            >
-              + New agent
-            </button>
+  // ── List view ──────────────────────────────────────────────────────────
+  if (editing === null) {
+    return (
+      <div className="max-w-[640px] mx-auto font-sans">
+        <div className="mb-5 flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-2xl font-medium tracking-[-0.018em] mb-1.5">
+              Agents
+            </h2>
+            <p className="text-sm leading-[1.55] text-muted-foreground max-w-[56ch]">
+              Define the agents available across this deployment.
+            </p>
           </div>
-          {agents.length === 0 ? (
-            <div className="admin-empty">No agents yet. Make one.</div>
-          ) : (
-            <ul className="admin-list">
-              {agents.map((a) => (
-                <li key={a.id} className="admin-list-row">
-                  <span
-                    className="admin-list-swatch"
-                    style={{ background: agentColorFor(a.id) }}
-                    aria-hidden="true"
-                  />
-                  <div className="admin-list-text">
-                    <div className="admin-list-name">{a.displayName}</div>
-                    <div className="admin-list-meta">
-                      {a.visibility} · {a.ownerId} · {a.model || '—'}
-                    </div>
-                  </div>
-                  <div className="admin-list-actions">
-                    <button
-                      type="button"
-                      className="admin-btn"
-                      onClick={() => startEdit(a)}
-                    >
-                      edit
-                    </button>
-                    <button
-                      type="button"
-                      className="admin-btn admin-btn-danger"
-                      onClick={() => void remove(a)}
-                    >
-                      delete
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </>
-      ) : (
-        <form className="admin-form" onSubmit={(e) => void submit(e)}>
-          <div className="admin-form-grid">
-            <label htmlFor="agent-name">Name</label>
-            <input
+          <Button onClick={startNew}>New agent</Button>
+        </div>
+
+        {error && (
+          <div
+            role="alert"
+            className="mb-4 px-3 py-2 bg-destructive/10 border border-destructive/25 rounded-md text-[12.5px] text-destructive"
+          >
+            {error}
+          </div>
+        )}
+
+        {agents.length === 0 ? (
+          <div className="text-sm text-muted-foreground">
+            No agents yet. Make one.
+          </div>
+        ) : (
+          <div className="flex flex-col gap-3.5">
+            {agents.map((a) => (
+              <RoleCard
+                key={a.id}
+                pill="agent"
+                title={a.displayName}
+                caption={`${a.visibility} · ${a.ownerId} · ${a.model || '—'}`}
+              >
+                <div className="flex items-center justify-end gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => startEdit(a)}
+                  >
+                    edit
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => void remove(a)}
+                  >
+                    delete
+                  </Button>
+                </div>
+              </RoleCard>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ── Create / edit form view ────────────────────────────────────────────
+  return (
+    <div className="max-w-[640px] mx-auto font-sans">
+      <div className="mb-5 flex items-center gap-3">
+        <Button variant="ghost" size="sm" onClick={cancelForm}>
+          ← Back
+        </Button>
+        <h2 className="text-2xl font-medium tracking-[-0.018em]">
+          {editing === 'new' ? 'New agent' : `Edit ${form.displayName}`}
+        </h2>
+      </div>
+
+      <Card className="p-5">
+        <form
+          className="flex flex-col gap-4"
+          onSubmit={(e) => void submit(e)}
+        >
+          {/* Name */}
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="agent-name">Name</Label>
+            <Input
               id="agent-name"
-              type="text"
               value={form.displayName}
               onChange={(e) =>
                 setForm((f) => ({ ...f, displayName: e.target.value }))
               }
               required
             />
+          </div>
 
-            <span className="admin-form-label">Visibility</span>
-            <div className="admin-form-radios">
-              <label>
+          {/* Visibility */}
+          <div className="flex flex-col gap-2">
+            <span className="text-sm font-medium leading-none">
+              Visibility
+            </span>
+            <div className="flex items-center gap-4">
+              <label className="flex items-center gap-1.5 text-sm">
                 <input
                   type="radio"
                   name="visibility"
@@ -273,12 +308,16 @@ export function AgentForm() {
                   checked={form.visibility === 'personal'}
                   disabled={editing !== 'new'}
                   onChange={() =>
-                    setForm((f) => ({ ...f, visibility: 'personal', teamId: '' }))
+                    setForm((f) => ({
+                      ...f,
+                      visibility: 'personal',
+                      teamId: '',
+                    }))
                   }
-                />{' '}
+                />
                 personal
               </label>
-              <label>
+              <label className="flex items-center gap-1.5 text-sm">
                 <input
                   type="radio"
                   name="visibility"
@@ -296,37 +335,45 @@ export function AgentForm() {
                       teamId: teams?.[0]?.id ?? '',
                     }))
                   }
-                />{' '}
+                />
                 team
                 {editing === 'new' && teams === null && (
-                  <span className="form-hint"> (loading teams…)</span>
+                  <span className="text-xs text-muted-foreground ml-1">
+                    (loading teams…)
+                  </span>
                 )}
               </label>
             </div>
+          </div>
 
-            {form.visibility === 'team' && (
-              <>
-                <label htmlFor="agent-team">Team</label>
-                <select
-                  id="agent-team"
-                  value={form.teamId}
-                  disabled={editing !== 'new'}
-                  onChange={(e) =>
-                    setForm((f) => ({ ...f, teamId: e.target.value }))
-                  }
-                >
-                  {(teams ?? []).map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {t.name}
-                    </option>
-                  ))}
-                </select>
-              </>
-            )}
+          {/* Team picker (conditional) */}
+          {form.visibility === 'team' && (
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="agent-team">Team</Label>
+              <select
+                id="agent-team"
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                value={form.teamId}
+                disabled={editing !== 'new'}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, teamId: e.target.value }))
+                }
+              >
+                {(teams ?? []).map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
 
-            <label htmlFor="agent-model">Model</label>
+          {/* Model */}
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="agent-model">Model</Label>
             <select
               id="agent-model"
+              className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
               value={form.model}
               onChange={(e) =>
                 setForm((f) => ({ ...f, model: e.target.value }))
@@ -338,9 +385,12 @@ export function AgentForm() {
                 </option>
               ))}
             </select>
+          </div>
 
-            <label htmlFor="agent-system-prompt">System prompt</label>
-            <textarea
+          {/* System prompt */}
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="agent-system-prompt">System prompt</Label>
+            <Textarea
               id="agent-system-prompt"
               rows={5}
               value={form.systemPrompt}
@@ -348,22 +398,26 @@ export function AgentForm() {
                 setForm((f) => ({ ...f, systemPrompt: e.target.value }))
               }
             />
+          </div>
 
-            <label htmlFor="agent-tools">Allowed tools</label>
-            <input
+          {/* Allowed tools */}
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="agent-tools">Allowed tools</Label>
+            <Input
               id="agent-tools"
-              type="text"
               placeholder="comma, separated, names"
               value={form.allowedTools}
               onChange={(e) =>
                 setForm((f) => ({ ...f, allowedTools: e.target.value }))
               }
             />
+          </div>
 
-            <label htmlFor="agent-mcps">MCP servers</label>
-            <input
+          {/* MCP servers */}
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="agent-mcps">MCP servers</Label>
+            <Input
               id="agent-mcps"
-              type="text"
               placeholder={
                 mcps.length
                   ? `e.g. ${mcps
@@ -379,37 +433,31 @@ export function AgentForm() {
             />
           </div>
 
-          <div className="admin-form-buttons">
-            <button
+          {error && (
+            <div
+              role="alert"
+              className="px-2.5 py-2 bg-destructive/10 border border-destructive/25 rounded-md text-[12.5px] text-destructive"
+            >
+              {error}
+            </div>
+          )}
+
+          <div className="flex items-center gap-2">
+            <Button type="submit" disabled={!!busy}>
+              {busy ? 'Saving…' : 'Save'}
+            </Button>
+            <Button
               type="button"
-              className="admin-btn"
+              variant="ghost"
               onClick={cancelForm}
-              disabled={busy}
+              disabled={!!busy}
             >
               Cancel
-            </button>
-            <button
-              type="submit"
-              className="admin-btn admin-btn-primary"
-              disabled={busy}
-            >
-              {busy ? 'Saving…' : 'Save'}
-            </button>
+            </Button>
           </div>
         </form>
-      )}
+      </Card>
     </div>
   );
 }
 
-// Stable per-agent color from a small palette. The wire doesn't carry
-// a per-agent color, so we derive one from the id so the list looks
-// consistent across reloads. Same shape as `AgentChip.agentColorFor`.
-function agentColorFor(agentId: string): string {
-  const palette = ['#7aa6c9', '#b08968', '#9c89b8', '#90a955', '#d4a373', '#9b5de5'];
-  let hash = 0;
-  for (let i = 0; i < agentId.length; i++) {
-    hash = (hash * 31 + agentId.charCodeAt(i)) >>> 0;
-  }
-  return palette[hash % palette.length] ?? '#888';
-}

@@ -76,11 +76,13 @@ describe('SettingsPanel — my credentials', () => {
   });
 
   it('renders nothing when open=false', () => {
-    const { container } = render(
+    render(
       <UserProvider value={regularUser}>
         <SettingsPanel open={false} onClose={() => {}} />
       </UserProvider>,
     );
-    expect(container.firstChild).toBeNull();
+    // Radix Dialog uses a portal — when closed, no dialog role is present in
+    // the document (the portal content is not rendered).
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 });

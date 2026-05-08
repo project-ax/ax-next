@@ -17,13 +17,12 @@ import { NewSessionButton } from './NewSessionButton';
 import { SessionList } from './SessionList';
 import { SidebarCollapseToggle } from './SidebarCollapseToggle';
 import { UserMenu } from './UserMenu';
-import type { AdminView } from '../lib/admin';
 
 export function Sidebar({
-  onOpenAdmin,
+  onOpenAdminSettings,
   onOpenSettings,
 }: {
-  onOpenAdmin?: ((view: AdminView) => void) | undefined;
+  onOpenAdminSettings?: (() => void) | undefined;
   onOpenSettings?: (() => void) | undefined;
 } = {}) {
   return (
@@ -38,7 +37,7 @@ export function Sidebar({
       <div className="sessions-scroll" role="navigation" aria-label="sessions">
         <SessionList />
       </div>
-      <UserMenu onOpenAdmin={onOpenAdmin} onOpenSettings={onOpenSettings} />
+      <UserMenu onOpenAdminSettings={onOpenAdminSettings} onOpenSettings={onOpenSettings} />
     </aside>
   );
 }

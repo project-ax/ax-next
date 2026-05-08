@@ -7,7 +7,10 @@
     "module": "ESNext",
     "rootDir": ".",
     "outDir": "./dist",
-    "types": ["node"]
+    "types": ["node"],
+    "paths": {
+      "@/*": ["./src/*"]
+    }
   },
   "include": ["src", "mock"],
   "exclude": ["dist", "node_modules"],

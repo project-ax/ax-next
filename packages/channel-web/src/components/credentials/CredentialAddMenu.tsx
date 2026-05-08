@@ -1,19 +1,24 @@
 /**
  * CredentialAddMenu — kind-picker that mounts the right form.
  *
- * Click the "+ Add credential" button → fetches the kinds catalog from
- * `/admin/credentials/kinds` (shared between admin + settings panels;
- * see `lib/credentials.ts` and `@ax/credentials-admin-routes`). Each
- * supported kind becomes a button:
+ * Click the "+ Add credential" button → a dropdown opens with the
+ * kinds catalog fetched from `/admin/credentials/kinds` (shared between
+ * admin + settings panels; see `lib/credentials.ts`). Each supported
+ * kind becomes a menu item:
  *
  *   - flow='paste'  → click renders `<ApiKeyForm kind={kind} ...>`
  *   - flow='oauth'  → click renders `<OAuthFlowForm kind={kind} ...>`
  *
  * On successful add, the form calls `onAdded` and we collapse back to
- * the menu state — the parent `CredentialsList` listens to `onAdded`
+ * the button state — the parent `CredentialsList` listens to `onAdded`
  * via its `refreshKey` to re-fetch.
+ *
+ * The kinds catalog is fetched lazily on first open to avoid the
+ * round-trip for sessions that never click "+ Add credential".
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { Plus } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 import {
   adminCredentials,
   myCredentials,
@@ -41,6 +46,7 @@ export function CredentialAddMenu({
   const [mode, setMode] = useState<Mode>({ kind: 'closed' });
   const [kinds, setKinds] = useState<CredentialKind[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   // Lazy-load the catalog the first time the menu opens — most sessions
   // never click "+ Add credential", so we don't pay for the round-trip
@@ -69,46 +75,51 @@ export function CredentialAddMenu({
 
   if (mode.kind === 'closed') {
     return (
-      <div className="credentials-add-menu-wrap">
-        <button
-          type="button"
-          className="admin-btn admin-btn-primary"
+      <div className="inline-flex">
+        <Button
           onClick={() => setMode({ kind: 'menu' })}
         >
-          + Add credential
-        </button>
+          <Plus className="h-3.5 w-3.5" /> Add credential
+        </Button>
       </div>
     );
   }
 
   if (mode.kind === 'menu') {
     return (
-      <div className="credentials-add-menu" role="menu">
-        <div className="credentials-add-menu-header">
-          <span>Choose credential type</span>
-          <button
-            type="button"
-            className="admin-btn"
-            onClick={close}
-            aria-label="Close"
-          >
-            Cancel
-          </button>
-        </div>
+      <div className="flex flex-col gap-2">
         {error !== null && (
-          <div className="admin-error" role="alert">
+          <div
+            role="alert"
+            className="px-3 py-2 bg-destructive/10 border border-destructive/25 rounded-md text-[12.5px] text-destructive"
+          >
             {error}
           </div>
         )}
-        {kinds === null && error === null ? (
-          <div className="admin-empty">Loading…</div>
-        ) : (
-          <ul className="credentials-add-menu-list">
-            {(kinds ?? []).map((k) => (
-              <li key={k.kind}>
+        <div className="relative inline-block">
+          <Button onClick={close}>
+            <Plus className="h-3.5 w-3.5" /> Add credential
+          </Button>
+          <div
+            ref={menuRef}
+            role="menu"
+            className="absolute right-0 top-full mt-1 z-50 min-w-[10rem] rounded-md border bg-popover p-1 text-popover-foreground shadow-md"
+          >
+            {kinds === null && error === null ? (
+              <div
+                role="menuitem"
+                aria-disabled="true"
+                className="relative flex cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm text-muted-foreground"
+              >
+                Loading…
+              </div>
+            ) : (
+              (kinds ?? []).map((k) => (
                 <button
+                  key={k.kind}
                   type="button"
-                  className="admin-btn"
+                  role="menuitem"
+                  className="relative flex w-full cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
                   onClick={() =>
                     setMode(
                       k.flow === 'oauth'
@@ -119,11 +130,10 @@ export function CredentialAddMenu({
                 >
                   {k.kind}
                 </button>
-                <span className="credentials-add-menu-flow">{k.flow}</span>
-              </li>
-            ))}
-          </ul>
-        )}
+              ))
+            )}
+          </div>
+        </div>
       </div>
     );
   }

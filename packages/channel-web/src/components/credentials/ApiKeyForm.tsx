@@ -17,6 +17,9 @@
  * form is small enough that the deduplication isn't worth the dep).
  */
 import { useState } from 'react';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import {
   adminCredentials,
   myCredentials,
@@ -96,32 +99,39 @@ export function ApiKeyForm({
 
   return (
     <form
-      className="admin-form credentials-form"
+      className="space-y-4"
       onSubmit={(e) => void submit(e)}
     >
       {error !== null && (
-        <div className="admin-error" role="alert">
+        <div
+          role="alert"
+          className="px-3 py-2 bg-destructive/10 border border-destructive/25 rounded-md text-[12.5px] text-destructive"
+        >
           {error}
         </div>
       )}
-      <div className="admin-form-grid">
+
+      <div className="space-y-3">
         {variant === 'admin' && (
           <>
-            <label htmlFor="cred-scope">Scope</label>
-            <select
-              id="cred-scope"
-              value={scope}
-              onChange={(e) => setScope(e.target.value as Scope)}
-            >
-              <option value="global">global</option>
-              <option value="user">user</option>
-              <option value="agent">agent</option>
-            </select>
+            <div className="grid gap-1.5">
+              <Label htmlFor="cred-scope">Scope</Label>
+              <select
+                id="cred-scope"
+                value={scope}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                onChange={(e) => setScope(e.target.value as Scope)}
+              >
+                <option value="global">global</option>
+                <option value="user">user</option>
+                <option value="agent">agent</option>
+              </select>
+            </div>
 
             {scope !== 'global' && (
-              <>
-                <label htmlFor="cred-owner">Owner ID</label>
-                <input
+              <div className="grid gap-1.5">
+                <Label htmlFor="cred-owner">Owner ID</Label>
+                <Input
                   id="cred-owner"
                   type="text"
                   value={ownerId}
@@ -130,47 +140,51 @@ export function ApiKeyForm({
                     scope === 'user' ? 'e.g. alice' : 'e.g. agt-12345'
                   }
                 />
-              </>
+              </div>
             )}
           </>
         )}
 
-        <label htmlFor="cred-ref">Ref</label>
-        <input
-          id="cred-ref"
-          type="text"
-          value={ref}
-          onChange={(e) => setRef(e.target.value)}
-          placeholder="e.g. anthropic"
-          required
-        />
+        <div className="grid gap-1.5">
+          <Label htmlFor="cred-ref">Ref</Label>
+          <Input
+            id="cred-ref"
+            type="text"
+            value={ref}
+            onChange={(e) => setRef(e.target.value)}
+            placeholder="e.g. anthropic"
+            required
+          />
+        </div>
 
-        <label htmlFor="cred-payload">API key</label>
-        <input
-          id="cred-payload"
-          type="password"
-          autoComplete="off"
-          value={payload}
-          onChange={(e) => setPayload(e.target.value)}
-          required
-        />
+        <div className="grid gap-1.5">
+          <Label htmlFor="cred-payload">API key</Label>
+          <Input
+            id="cred-payload"
+            type="password"
+            autoComplete="off"
+            value={payload}
+            onChange={(e) => setPayload(e.target.value)}
+            required
+          />
+        </div>
       </div>
-      <div className="admin-form-buttons">
-        <button
+
+      <div className="flex justify-end gap-2">
+        <Button
           type="button"
-          className="admin-btn"
+          variant="ghost"
           onClick={onCancel}
           disabled={busy}
         >
           Cancel
-        </button>
-        <button
+        </Button>
+        <Button
           type="submit"
-          className="admin-btn admin-btn-primary"
           disabled={busy}
         >
           {busy ? 'Saving…' : 'Save'}
-        </button>
+        </Button>
       </div>
     </form>
   );

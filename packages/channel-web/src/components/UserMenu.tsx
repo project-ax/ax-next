@@ -19,7 +19,6 @@ import { useEffect, useRef, useState } from 'react';
 import { KeyRound, LogOut, Moon, Settings, Sun, UserRound } from 'lucide-react';
 import { useUser } from '../lib/user-context';
 import { signOut } from '../lib/auth';
-import type { AdminView } from '../lib/admin';
 import { useTheme, setTheme, type Theme } from '../lib/theme';
 
 interface ThemeOption {
@@ -33,10 +32,10 @@ const THEME_OPTIONS: ThemeOption[] = [
 ];
 
 export function UserMenu({
-  onOpenAdmin,
+  onOpenAdminSettings,
   onOpenSettings,
 }: {
-  onOpenAdmin?: ((view: AdminView) => void) | undefined;
+  onOpenAdminSettings?: (() => void) | undefined;
   onOpenSettings?: (() => void) | undefined;
 } = {}) {
   const user = useUser();
@@ -86,14 +85,21 @@ export function UserMenu({
         </svg>
       </button>
       {open && (
-        <div className="user-menu" role="menu">
-          <div className="user-menu-head">
-            <span className="user-avatar lg" aria-hidden="true">
+        <div
+          className="absolute bottom-full left-0 mb-1 w-64 bg-card border border-border rounded-md shadow-md p-1 z-50"
+          role="menu"
+        >
+          {/* Header: avatar + name + email */}
+          <div className="flex items-center gap-3 px-2 py-1.5 border-b border-border mb-1">
+            <span
+              className="flex items-center justify-center w-9 h-9 rounded-full bg-muted text-foreground font-semibold text-sm shrink-0"
+              aria-hidden="true"
+            >
               {user.name[0]?.toUpperCase() ?? 'U'}
             </span>
-            <div className="user-menu-meta">
-              <div className="user-menu-name">{user.name}</div>
-              <div className="user-menu-email">{user.email}</div>
+            <div className="min-w-0">
+              <div className="text-[13px] font-medium text-foreground truncate">{user.name}</div>
+              <div className="text-[11px] text-muted-foreground truncate">{user.email}</div>
             </div>
           </div>
           {/*
@@ -106,32 +112,34 @@ export function UserMenu({
           */}
           <button
             type="button"
-            className="user-menu-item"
+            className="flex items-center gap-2 w-full px-2 py-1.5 rounded-sm text-[13px] text-foreground opacity-50 cursor-not-allowed transition-colors"
             role="menuitem"
             data-action="account"
             disabled
             aria-disabled="true"
             title="Coming soon"
           >
-            <UserRound aria-hidden="true" />
+            <UserRound className="w-4 h-4 shrink-0" aria-hidden="true" />
             <span>Account &amp; billing</span>
           </button>
           <button
             type="button"
-            className="user-menu-item"
+            className="flex items-center gap-2 w-full px-2 py-1.5 rounded-sm text-[13px] text-foreground opacity-50 cursor-not-allowed transition-colors"
             role="menuitem"
             data-action="settings"
             disabled
             aria-disabled="true"
             title="Coming soon"
           >
-            <Settings aria-hidden="true" />
+            <Settings className="w-4 h-4 shrink-0" aria-hidden="true" />
             <span>Settings</span>
-            <span className="kbd">⌘,</span>
+            <span className="ml-auto text-[10px] font-mono text-muted-foreground bg-muted border border-border rounded px-1 py-px">
+              ⌘,
+            </span>
           </button>
           <button
             type="button"
-            className="user-menu-item"
+            className="flex items-center gap-2 w-full px-2 py-1.5 rounded-sm text-[13px] text-foreground hover:bg-muted transition-colors"
             role="menuitem"
             onClick={() => {
               setOpen(false);
@@ -139,67 +147,31 @@ export function UserMenu({
             }}
             data-action="my-credentials"
           >
-            <KeyRound aria-hidden="true" />
+            <KeyRound className="w-4 h-4 shrink-0" aria-hidden="true" />
             <span>My credentials</span>
           </button>
           {isAdmin && (
             <>
-              <div className="user-menu-divider" />
+              <div className="h-px my-1 bg-border" />
               <button
                 type="button"
-                className="user-menu-item"
+                className="flex items-center gap-2 w-full px-2 py-1.5 rounded-sm text-[13px] text-foreground hover:bg-muted transition-colors"
                 role="menuitem"
                 onClick={() => {
                   setOpen(false);
-                  onOpenAdmin?.('agents');
+                  onOpenAdminSettings?.();
                 }}
-                data-action="admin-agents"
+                data-action="admin-settings"
               >
-                Admin · Agents
-              </button>
-              <button
-                type="button"
-                className="user-menu-item"
-                role="menuitem"
-                onClick={() => {
-                  setOpen(false);
-                  onOpenAdmin?.('mcp-servers');
-                }}
-                data-action="admin-mcp"
-              >
-                Admin · MCP Servers
-              </button>
-              <button
-                type="button"
-                className="user-menu-item"
-                role="menuitem"
-                onClick={() => {
-                  setOpen(false);
-                  onOpenAdmin?.('teams');
-                }}
-                data-action="admin-teams"
-              >
-                Admin · Teams
-              </button>
-              <button
-                type="button"
-                className="user-menu-item"
-                role="menuitem"
-                onClick={() => {
-                  setOpen(false);
-                  onOpenAdmin?.('credentials');
-                }}
-                data-action="admin-credentials"
-              >
-                Admin · Credentials
+                Admin Settings
               </button>
             </>
           )}
-          <div className="user-menu-divider" />
-          <div className="user-menu-row" data-action="theme">
-            <Moon aria-hidden="true" />
-            <span className="user-menu-row-label">Theme</span>
-            <div className="theme-seg" role="radiogroup" aria-label="Theme">
+          <div className="h-px my-1 bg-border" />
+          <div className="flex items-center gap-2 px-2 py-1.5" data-action="theme">
+            <Moon className="w-4 h-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+            <span className="text-[13px] text-foreground">Theme</span>
+            <div className="ml-auto flex items-center gap-0.5" role="radiogroup" aria-label="Theme">
               {THEME_OPTIONS.map(({ value, label, Icon }) => (
                 <button
                   key={value}
@@ -211,25 +183,26 @@ export function UserMenu({
                   title={label}
                   data-active={theme === value || undefined}
                   onClick={() => setTheme(value)}
+                  className="inline-flex items-center justify-center w-7 h-7 rounded-sm hover:bg-muted data-[active]:bg-muted data-[active]:text-primary text-muted-foreground transition-colors"
                 >
-                  <Icon aria-hidden="true" />
+                  <Icon className="w-3.5 h-3.5" aria-hidden="true" />
                 </button>
               ))}
             </div>
           </div>
-          <div className="user-menu-divider" />
+          <div className="h-px my-1 bg-border" />
           <button
             type="button"
-            className="user-menu-item"
+            className="flex items-center gap-2 w-full px-2 py-1.5 rounded-sm text-[13px] text-foreground hover:bg-muted transition-colors"
             role="menuitem"
             onClick={() => signOut()}
             data-action="sign-out"
           >
-            <LogOut aria-hidden="true" />
+            <LogOut className="w-4 h-4 shrink-0" aria-hidden="true" />
             <span>Sign out</span>
           </button>
-          <div className="user-menu-foot">
-            <span>ax v0.3</span>
+          <div className="px-2 py-1 border-t border-border mt-1 text-[10.5px] text-muted-foreground">
+            ax v0.3
           </div>
         </div>
       )}

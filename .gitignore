@@ -23,4 +23,9 @@ npm-debug.log*
 .worktrees/
 worktrees/
 
+# Local dev-loop scratch dirs — hostPath mount payload for the kind cluster
+# (see deploy/MANUAL-ACCEPTANCE.md) and Playwright MCP per-step snapshots.
+.dev-mount/
+.playwright-mcp/
+
 docs/plans/

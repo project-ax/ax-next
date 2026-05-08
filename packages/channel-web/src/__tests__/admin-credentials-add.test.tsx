@@ -234,10 +234,10 @@ describe('CredentialAddMenu', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: /add credential/i }));
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: /^api-key$/i })).toBeTruthy(),
+      expect(screen.getByRole('menuitem', { name: /^api-key$/i })).toBeTruthy(),
     );
     expect(
-      screen.getByRole('button', { name: /^anthropic-oauth$/i }),
+      screen.getByRole('menuitem', { name: /^anthropic-oauth$/i }),
     ).toBeTruthy();
   });
 
@@ -253,9 +253,9 @@ describe('CredentialAddMenu', () => {
     render(<CredentialAddMenu variant="admin" onAdded={() => {}} />);
     fireEvent.click(screen.getByRole('button', { name: /add credential/i }));
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: /^api-key$/i })).toBeTruthy(),
+      expect(screen.getByRole('menuitem', { name: /^api-key$/i })).toBeTruthy(),
     );
-    fireEvent.click(screen.getByRole('button', { name: /^api-key$/i }));
+    fireEvent.click(screen.getByRole('menuitem', { name: /^api-key$/i }));
     // The api-key form's distinctive field:
     expect(screen.getByLabelText(/api key/i)).toBeTruthy();
   });
@@ -273,11 +273,11 @@ describe('CredentialAddMenu', () => {
     fireEvent.click(screen.getByRole('button', { name: /add credential/i }));
     await waitFor(() =>
       expect(
-        screen.getByRole('button', { name: /^anthropic-oauth$/i }),
+        screen.getByRole('menuitem', { name: /^anthropic-oauth$/i }),
       ).toBeTruthy(),
     );
     fireEvent.click(
-      screen.getByRole('button', { name: /^anthropic-oauth$/i }),
+      screen.getByRole('menuitem', { name: /^anthropic-oauth$/i }),
     );
     // The oauth form's distinctive button:
     expect(screen.getByRole('button', { name: /open/i })).toBeTruthy();

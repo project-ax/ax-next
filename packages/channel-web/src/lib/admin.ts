@@ -1,11 +1,6 @@
 /**
  * Admin client — typed wrappers around `/admin/*`.
  *
- * Used by `AdminPanel` (chrome) and the per-view forms — agents in
- * Task 22, MCP servers in Task 23, teams placeholder in Task 24. Routes
- * the `AdminView` type through here so `App.tsx` and `AdminPanel.tsx`
- * both import it from a neutral location and don't form an import cycle.
- *
  * Path convention matches `lib/auth.ts` (`/admin/me`, `/admin/sign-out`)
  * and the real backend's route registrations (`@ax/agents`,
  * `@ax/mcp-client`, `@ax/teams` all mount at `/admin/*`, no `/api`
@@ -29,13 +24,6 @@
  */
 import type { McpServer } from '../../mock/admin/mcp-servers';
 import type { Team } from '../../mock/admin/teams';
-
-export type AdminView =
-  | 'agents'
-  | 'mcp-servers'
-  | 'teams'
-  | 'credentials'
-  | null;
 
 const writeHeaders = {
   'content-type': 'application/json',

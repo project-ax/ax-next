@@ -1,19 +1,24 @@
 /**
  * Admin agents form — Task 22.
  *
- * Covers the AdminPanel chrome + AgentForm CRUD flow against the real
- * `/admin/agents` wire shape (camelCase: displayName / systemPrompt /
- * allowedTools / mcpConfigIds / model / visibility / teamId / ...).
+ * Covers AgentForm CRUD flow against the real `/admin/agents` wire shape
+ * (camelCase: displayName / systemPrompt / allowedTools / mcpConfigIds /
+ * model / visibility / teamId / ...).
  *
- *   1. Opening with `view="agents"` lists existing agents from
- *      `/admin/agents` and renders their displayName.
+ * Strategy: render AgentForm directly (no shell wrapper) for all content
+ * tests. AdminShell (wrapped in UserProvider) is used only for the
+ * "Back to chat" shell-behavior test.
+ *
+ *   1. AgentForm lists existing agents from `/admin/agents` and renders
+ *      their displayName.
  *   2. Clicking "+ New agent" reveals the form (name, system prompt, etc.).
  *   3. Filling + submitting the form POSTs to `/admin/agents` with the
  *      camelCase shape AND the `X-Requested-With: ax-admin` CSRF header.
  *   4. Clicking "edit" on a row populates the form WITHOUT throwing —
  *      regression for a TypeError that happened when the form read
  *      snake_case (`a.allowed_tools.join`) against the camelCase wire.
- *   5. Clicking the close (×) button calls `onClose`.
+ *   5. Clicking the "← chat" button in AdminSidebar calls `onClose`
+ *      (AdminShell-level test, not AgentForm-level).
  *
  * The PATCH/DELETE rows share the same fetch round-trip + re-fetch shape
  * as POST, so the "create" + "edit" paths cover most of the wiring. The
@@ -22,16 +27,19 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { AdminPanel } from '../components/admin/AdminPanel';
+import { AgentForm } from '../components/admin/AgentForm';
+import { AdminShell } from '../components/admin/AdminShell';
 import { UserProvider } from '../lib/user-context';
+import type { AuthUser } from '../lib/auth';
 
-const adminUser = {
-  id: 'u1',
-  email: 'admin@local',
-  name: 'Admin',
-  role: 'admin' as const,
-};
 const fetchMock = vi.fn();
+
+const mockUser: AuthUser = {
+  id: 'usr-1',
+  email: 'admin@example.com',
+  name: 'Admin',
+  role: 'admin',
+};
 
 const sampleAgent = (over: Partial<Record<string, unknown>> = {}) => ({
   id: 'agt-1',
@@ -49,41 +57,40 @@ const sampleAgent = (over: Partial<Record<string, unknown>> = {}) => ({
   ...over,
 });
 
+function jsonOk(body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
 beforeEach(() => {
   fetchMock.mockReset();
   globalThis.fetch = fetchMock as unknown as typeof fetch;
+  // Default: stub all fetches with empty responses.
+  fetchMock.mockImplementation(() =>
+    Promise.resolve(jsonOk({ providers: [], agents: [], teams: [], servers: [] })),
+  );
 });
 
-describe('AdminPanel — agents', () => {
+describe('AdminSettings — agents tab', () => {
   it('lists existing agents on open', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ agents: [sampleAgent({ displayName: 'ax' })] }),
-    });
-    render(
-      <UserProvider value={adminUser}>
-        <AdminPanel view="agents" onClose={() => {}} />
-      </UserProvider>,
-    );
+    fetchMock.mockReset();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    fetchMock.mockResolvedValueOnce(jsonOk({ agents: [sampleAgent({ displayName: 'ax' })] }));
+
+    render(<AgentForm />);
     await waitFor(() => {
       expect(screen.getByText('ax')).toBeTruthy();
     });
   });
 
   it('clicking + New agent reveals the form', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ agents: [] }),
-    });
-    fetchMock.mockResolvedValue({
-      ok: true,
-      json: async () => ({ teams: [], servers: [] }),
-    });
-    render(
-      <UserProvider value={adminUser}>
-        <AdminPanel view="agents" onClose={() => {}} />
-      </UserProvider>,
-    );
+    fetchMock.mockReset();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    fetchMock.mockResolvedValue(jsonOk({ agents: [], teams: [], servers: [] }));
+
+    render(<AgentForm />);
     await waitFor(() => screen.getByText(/New agent/i));
     fireEvent.click(screen.getByText(/New agent/i));
     expect(screen.getByLabelText(/name/i)).toBeTruthy();
@@ -91,32 +98,19 @@ describe('AdminPanel — agents', () => {
   });
 
   it('submitting the form POSTs to /admin/agents with camelCase + CSRF header', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ agents: [] }),
-    });
+    fetchMock.mockReset();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    // agents list on mount
+    fetchMock.mockResolvedValueOnce(jsonOk({ agents: [] }));
     // teams + mcp lookup on form open
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ teams: [] }),
-    });
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ servers: [] }),
-    });
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ agent: sampleAgent({ id: 'agent-x' }) }),
-    });
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ agents: [] }),
-    });
-    render(
-      <UserProvider value={adminUser}>
-        <AdminPanel view="agents" onClose={() => {}} />
-      </UserProvider>,
-    );
+    fetchMock.mockResolvedValueOnce(jsonOk({ teams: [] }));
+    fetchMock.mockResolvedValueOnce(jsonOk({ servers: [] }));
+    // POST response
+    fetchMock.mockResolvedValueOnce(jsonOk({ agent: sampleAgent({ id: 'agent-x' }) }));
+    // re-fetch agents after save
+    fetchMock.mockResolvedValueOnce(jsonOk({ agents: [] }));
+
+    render(<AgentForm />);
     await waitFor(() => screen.getByText(/New agent/i));
     fireEvent.click(screen.getByText(/New agent/i));
     fireEvent.change(screen.getByLabelText(/name/i), {
@@ -150,9 +144,10 @@ describe('AdminPanel — agents', () => {
   });
 
   it('clicking edit populates the form from the camelCase wire shape (regression)', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
+    fetchMock.mockReset();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    fetchMock.mockResolvedValueOnce(
+      jsonOk({
         agents: [
           sampleAgent({
             displayName: 'probe',
@@ -162,16 +157,10 @@ describe('AdminPanel — agents', () => {
           }),
         ],
       }),
-    });
-    fetchMock.mockResolvedValue({
-      ok: true,
-      json: async () => ({ teams: [], servers: [] }),
-    });
-    render(
-      <UserProvider value={adminUser}>
-        <AdminPanel view="agents" onClose={() => {}} />
-      </UserProvider>,
     );
+    fetchMock.mockResolvedValue(jsonOk({ teams: [], servers: [] }));
+
+    render(<AgentForm />);
     await waitFor(() => screen.getByText('probe'));
     // Before the fix this threw "Cannot read properties of undefined
     // (reading 'join')" inside formFromAgent because the form read
@@ -186,21 +175,16 @@ describe('AdminPanel — agents', () => {
   });
 
   it('delete sends DELETE with X-Requested-With: ax-admin (CSRF regression)', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ agents: [sampleAgent({ id: 'agt-1', displayName: 'probe' })] }),
-    });
-    fetchMock.mockResolvedValueOnce({ ok: true, status: 204, json: async () => ({}) });
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ agents: [] }),
-    });
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
-    render(
-      <UserProvider value={adminUser}>
-        <AdminPanel view="agents" onClose={() => {}} />
-      </UserProvider>,
+    fetchMock.mockReset();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    fetchMock.mockResolvedValueOnce(
+      jsonOk({ agents: [sampleAgent({ id: 'agt-1', displayName: 'probe' })] }),
     );
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    fetchMock.mockResolvedValueOnce(jsonOk({ agents: [] }));
+
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    render(<AgentForm />);
     await waitFor(() => screen.getByText('probe'));
     fireEvent.click(screen.getByText(/^delete$/i));
     await waitFor(() => {
@@ -216,23 +200,19 @@ describe('AdminPanel — agents', () => {
     confirmSpy.mockRestore();
   });
 
-  it('clicking close calls onClose', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ agents: [] }),
-    });
+  it('clicking Back to chat calls onClose', async () => {
+    fetchMock.mockReset();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    fetchMock.mockImplementation(() => Promise.resolve(jsonOk({ providers: [] })));
+
     const onClose = vi.fn();
     render(
-      <UserProvider value={adminUser}>
-        <AdminPanel view="agents" onClose={onClose} />
+      <UserProvider value={mockUser}>
+        <AdminShell onClose={onClose} />
       </UserProvider>,
     );
-    // Wait for the initial /admin/agents fetch to settle so the list
-    // (or empty state) is in the DOM before we click close. Otherwise we
-    // race the unmount against the pending state update and React logs
-    // an act() warning.
-    await waitFor(() => screen.getByText(/New agent/i));
-    fireEvent.click(screen.getByLabelText(/close/i));
+    // AdminSidebar's back button has text "chat" (with a ChevronLeft icon).
+    fireEvent.click(screen.getByRole('button', { name: /^chat$/i }));
     expect(onClose).toHaveBeenCalled();
   });
 });
