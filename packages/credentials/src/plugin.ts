@@ -117,6 +117,25 @@ export interface CredentialsListKindsOutput {
   kinds: Array<{ kind: string; flow: 'paste' | 'oauth' }>;
 }
 
+// Raw envelope primitive — `(plaintext: string) → ciphertext: Uint8Array` and
+// the inverse. NOT the same shape as the credential-set envelope (which
+// JSON-wraps `kind` + `payloadB64` + metadata). Other plugins want a
+// general-purpose AEAD primitive that reuses the single AX_CREDENTIALS_KEY,
+// not a credential-row workflow. See registration site for boundary-review note.
+export interface CredentialsEnvelopeEncryptInput {
+  plaintext: string;
+}
+export interface CredentialsEnvelopeEncryptOutput {
+  ciphertext: Uint8Array;
+}
+
+export interface CredentialsEnvelopeDecryptInput {
+  ciphertext: Uint8Array;
+}
+export interface CredentialsEnvelopeDecryptOutput {
+  plaintext: string;
+}
+
 function validateRef(ref: unknown): string {
   if (typeof ref !== 'string' || !REF_RE.test(ref)) {
     throw new PluginError({
@@ -193,6 +212,8 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
         'credentials:list',
         'credentials:list-kinds',
         'credentials:resolve:setting',
+        'credentials:envelope-encrypt',
+        'credentials:envelope-decrypt',
       ],
       // Storage goes through the `credentials:store-blob:*` seam (Phase 1b).
       // The default backend is `@ax/credentials-store-db`; vault / KMS
@@ -594,6 +615,45 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
           return { value: new TextDecoder().decode(input.payload) };
         },
       );
+
+      // General-purpose AEAD primitive for cross-plugin reuse of the single
+      // AX_CREDENTIALS_KEY (Invariant I4: one source of truth for at-rest
+      // envelopes; I5: only @ax/credentials reads the key).
+      //
+      // Boundary review: alternate impl is an HSM/KMS-backed plugin
+      // (`@ax/credentials-kms`) with the same `(plaintext: string) →
+      // ciphertext: Uint8Array` shape but the key never leaves the HSM.
+      // No backend vocabulary leaks in either direction — `plaintext` /
+      // `ciphertext` are crypto primitives, not aes/gcm/iv/kms_arn.
+      bus.registerService<
+        CredentialsEnvelopeEncryptInput,
+        CredentialsEnvelopeEncryptOutput
+      >('credentials:envelope-encrypt', PLUGIN_NAME, async (_ctx, input) => {
+        if (typeof input.plaintext !== 'string') {
+          throw new PluginError({
+            code: 'invalid-payload',
+            plugin: PLUGIN_NAME,
+            message: 'plaintext must be a string',
+          });
+        }
+        return { ciphertext: encryptWithKey(key, input.plaintext) };
+      });
+
+      bus.registerService<
+        CredentialsEnvelopeDecryptInput,
+        CredentialsEnvelopeDecryptOutput
+      >('credentials:envelope-decrypt', PLUGIN_NAME, async (_ctx, input) => {
+        if (!(input.ciphertext instanceof Uint8Array)) {
+          throw new PluginError({
+            code: 'invalid-payload',
+            plugin: PLUGIN_NAME,
+            message: 'ciphertext must be a Uint8Array',
+          });
+        }
+        // decryptWithKey throws PluginError({code:'decrypt-failed'|'invalid-ciphertext'})
+        // — propagate as-is.
+        return { plaintext: decryptWithKey(key, input.ciphertext) };
+      });
     },
   };
 }

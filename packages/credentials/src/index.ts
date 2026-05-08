@@ -19,4 +19,8 @@ export type {
   CredentialsListKindsOutput,
   CredentialMeta,
   CredentialsPluginConfig,
+  CredentialsEnvelopeEncryptInput,
+  CredentialsEnvelopeEncryptOutput,
+  CredentialsEnvelopeDecryptInput,
+  CredentialsEnvelopeDecryptOutput,
 } from './plugin.js';
