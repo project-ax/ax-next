@@ -168,4 +168,53 @@ describe('auth:create-bootstrap-user contract', () => {
       ),
     ).rejects.toBeInstanceOf(PluginError);
   });
+
+  it('rolls back the user insert if the session insert fails', async () => {
+    // Regression test for the CR follow-up to f52f5bd. Without the
+    // transaction wrap, a session-insert failure leaves an orphan
+    // admin row that blocks every subsequent bootstrap attempt
+    // (admin-already-exists). With the wrap, the user insert rolls
+    // back too and the operator can retry cleanly.
+    harness = await bootHarness();
+
+    // Force the session insert to fail by dropping the sessions table
+    // out from under the running plugin. The user insert will succeed,
+    // the session insert will throw (relation does not exist), and the
+    // transaction must roll back the user row.
+    const k = new Kysely<AuthBetterDatabase>({
+      dialect: new PostgresDialect({
+        pool: new pg.Pool({ connectionString, max: 1 }),
+      }),
+    });
+    try {
+      await k.schema.dropTable('auth_better_v1_sessions').execute();
+    } finally {
+      await k.destroy().catch(() => {});
+    }
+
+    await expect(
+      harness.bus.call<CreateBootstrapUserInput, CreateBootstrapUserOutput>(
+        'auth:create-bootstrap-user',
+        harness.ctx(),
+        { displayName: 'Vinay', email: 'vinay@example.com' },
+      ),
+    ).rejects.toThrow();
+
+    // Verify rollback: the users table must be empty. If the orphan
+    // existed, this count would be 1.
+    const verify = new Kysely<AuthBetterDatabase>({
+      dialect: new PostgresDialect({
+        pool: new pg.Pool({ connectionString, max: 1 }),
+      }),
+    });
+    try {
+      const rows = await verify
+        .selectFrom('auth_better_v1_users')
+        .selectAll()
+        .execute();
+      expect(rows).toHaveLength(0);
+    } finally {
+      await verify.destroy().catch(() => {});
+    }
+  });
 });

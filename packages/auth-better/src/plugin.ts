@@ -413,19 +413,6 @@ async function createBootstrapUser(
       : `bootstrap+${id}@local.invalid`;
   const displayName = input.displayName.length > 0 ? input.displayName : null;
   const now = new Date();
-  await db
-    .insertInto('auth_better_v1_users')
-    .values({
-      id,
-      email,
-      email_verified: false,
-      name: displayName,
-      image: null,
-      role: 'admin',
-      created_at: now,
-      updated_at: now,
-    })
-    .execute();
 
   // Mint a 32-byte token; store it as the session row. The token IS the
   // session cookie value — Task 2 (onboarding flow) hands the bootstrap
@@ -433,22 +420,46 @@ async function createBootstrapUser(
   const oneTimeToken = randomBytes(32).toString('base64url');
   const sessionId = `sess_${randomBytes(16).toString('hex')}`;
   const expiresAt = new Date(Date.now() + sessionLifetimeSeconds * 1000);
-  await db
-    .insertInto('auth_better_v1_sessions')
-    .values({
-      id: sessionId,
-      user_id: id,
-      token: oneTimeToken,
-      expires_at: expiresAt,
-      ip_address: null,
-      user_agent: null,
-      created_at: now,
-      updated_at: now,
-    })
-    .execute();
 
-  const userRow = { id, email, name: displayName, role: 'admin' as const };
-  return { user: rowToUser(userRow), oneTimeToken };
+  // Wrap both inserts in a transaction so a session-insert failure
+  // (constraint violation, transient pg error, etc.) rolls back the
+  // user insert too. Without this, an orphaned admin row would block
+  // every subsequent bootstrap call with `admin-already-exists` —
+  // recovery would require a DB reset. With the transaction, a failed
+  // bootstrap leaves the table in its pre-call state and the operator
+  // can simply retry.
+  return await db.transaction().execute(async (trx) => {
+    await trx
+      .insertInto('auth_better_v1_users')
+      .values({
+        id,
+        email,
+        email_verified: false,
+        name: displayName,
+        image: null,
+        role: 'admin',
+        created_at: now,
+        updated_at: now,
+      })
+      .execute();
+
+    await trx
+      .insertInto('auth_better_v1_sessions')
+      .values({
+        id: sessionId,
+        user_id: id,
+        token: oneTimeToken,
+        expires_at: expiresAt,
+        ip_address: null,
+        user_agent: null,
+        created_at: now,
+        updated_at: now,
+      })
+      .execute();
+
+    const userRow = { id, email, name: displayName, role: 'admin' as const };
+    return { user: rowToUser(userRow), oneTimeToken };
+  });
 }
 
 function rowToUser(row: {
@@ -481,10 +492,11 @@ function rowToUser(row: {
 //      multi-value Set-Cookie), and the raw body bytes.
 //
 // Cookies: better-auth's session cookies ride on the standard Set-Cookie
-// header. We pass them through verbatim — the http-server adapter
-// supports multi-value Set-Cookie via writeHead() (router.ts), and we
-// append each as a separate header line so node serializes them
-// correctly.
+// header. http-server's response writer stores headers in a Map, so we
+// can only set one Set-Cookie value at a time — we collect every
+// Set-Cookie better-auth emits and join them with ', ' before calling
+// res.header('set-cookie', …) ONCE. See the dedicated comment near the
+// join below for the RFC/UA-compatibility rationale.
 // ---------------------------------------------------------------------------
 
 async function forwardToBetterAuth(
@@ -543,21 +555,21 @@ async function forwardToBetterAuth(
     // better-auth doesn't always set one; we forward whatever it gave us.
     res.header(name, value);
   }
-  for (const cookie of setCookies) {
-    // We can't use res.setSignedCookie here — better-auth signs its own
-    // cookies via its session adapter. Use the raw `Set-Cookie` header
-    // instead. Multiple Set-Cookie values are appended as separate
-    // header lines via res.header() — since http-server's response
-    // writer stores headers in a Map (last-write-wins), repeated
-    // res.header('set-cookie', …) WOULD clobber each other. So we
-    // join with comma — RFC 7230 §3.2.2 forbids this for Set-Cookie
-    // specifically, BUT in practice browsers parse comma-separated
-    // Set-Cookie values when the cookie values themselves don't
-    // contain unquoted commas (better-auth's don't). The robust fix
-    // would be to expose a multi-value header API on HttpResponse;
-    // for Task 1.4 the join-on-comma path is fine. Tracked as a
-    // follow-up if Task 1.5/2 hits a multi-cookie response.
-    res.header('set-cookie', cookie);
+  if (setCookies.length > 0) {
+    // http-server's response writer stores headers in a Map
+    // (last-write-wins), so calling res.header('set-cookie', …) once
+    // per cookie would silently drop all but the last value. Until
+    // http-server gains a multi-value header API, we collapse every
+    // Set-Cookie into a single comma-joined header. Per RFC 6265 §3
+    // and the de-facto behavior of all major user agents, comma-joined
+    // Set-Cookie values are parsed correctly when the individual
+    // cookie attributes don't contain unquoted commas — which
+    // better-auth's emitted cookies do not. A future http-server
+    // change to support multi-value headers would let us emit one
+    // Set-Cookie per cookie; until then, this preserves all cookies
+    // in one header line so session + CSRF (and clear-old + set-new
+    // on rotation) both reach the browser.
+    res.header('set-cookie', setCookies.join(', '));
   }
 
   const buf = Buffer.from(await webResponse.arrayBuffer());
