@@ -555,15 +555,6 @@ body.sidebar-collapsed .user-menu {
    same height, so the list doesn't reflow on confirm/cancel.
    ============================================================= */
 
-.sessions-group-label {
-  font-size: 10.5px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--ink-ghost);
-  padding: 14px 12px 6px;
-  font-weight: 500;
-}
-
 .session-row {
   all: unset;
   cursor: pointer;

@@ -109,7 +109,9 @@ export function SessionList() {
     <>
       {groups.map((g) => (
         <div key={g.label}>
-          <div className="sessions-group-label">{g.label}</div>
+          <div className="px-3 pt-3.5 pb-1.5 text-[10.5px] font-medium uppercase tracking-[0.12em] text-ink-ghost">
+            {g.label}
+          </div>
           {g.rows.map((row) => {
             const agent = agents.find((a) => a.id === row.agent_id);
             const color = agent?.color ?? '#888';
