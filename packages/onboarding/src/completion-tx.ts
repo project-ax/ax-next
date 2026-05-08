@@ -35,6 +35,8 @@ export interface CompletionInput {
   defaultModel: string;
   /** Test seam — defaults to global fetch. */
   fetchImpl?: typeof fetch;
+  /** Test seam — defaults to VALIDATION_TIMEOUT_MS (10 s). Pass a small value in tests to skip real wall-clock waits. */
+  timeoutMs?: number;
 }
 
 export async function runCompletionTransaction(
@@ -44,7 +46,7 @@ export async function runCompletionTransaction(
   // Algorithm lifted from credentials-admin-routes/src/providers-routes.ts:218-235.
   const fetchFn = input.fetchImpl ?? fetch;
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), VALIDATION_TIMEOUT_MS);
+  const timer = setTimeout(() => ctrl.abort(), input.timeoutMs ?? VALIDATION_TIMEOUT_MS);
   let valid = false;
   try {
     const r = await fetchFn(ANTHROPIC_VALIDATION_URL, {
@@ -100,10 +102,18 @@ export async function runCompletionTransaction(
   });
 
   // Step 3: Fast-model setting (post-tx; recoverable, not atomic with above).
-  await input.bus.call('storage:set', input.ctx, {
-    key: 'settings:fast-model',
-    value: new TextEncoder().encode(input.fastModel),
-  });
+  // Swallowed on failure: bootstrap is already committed, and a missing
+  // fast-model setting can be set manually later. Returning 500 here would
+  // leave the wizard wedged behind the post-completion 410 gate.
+  try {
+    await input.bus.call('storage:set', input.ctx, {
+      key: 'settings:fast-model',
+      value: new TextEncoder().encode(input.fastModel),
+    });
+  } catch (err) {
+    // Best-effort log to stderr; don't propagate.
+    console.error('[ax-onboarding] failed to persist fast-model setting (recoverable):', err);
+  }
 
   return { ok: true };
 }

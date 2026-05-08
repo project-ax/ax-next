@@ -14,6 +14,11 @@ export interface OnboardingConfig {
   tokenFileWriter?: (path: string, token: string) => Promise<void>;
   /** Read AX_BOOTSTRAP_TOKEN from this map instead of process.env. Tests only. */
   envOverride?: Record<string, string | undefined>;
+  /**
+   * Override the Anthropic validation timeout (ms). Defaults to 10 000.
+   * Pass a small value (e.g. 100) in tests to avoid burning real wall time.
+   */
+  validationTimeoutMs?: number;
 }
 
 /**

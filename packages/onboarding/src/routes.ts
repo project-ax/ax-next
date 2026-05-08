@@ -66,6 +66,8 @@ export interface OnboardingRouteHandlerDeps {
   rateLimit: RateLimiter;
   bus: HookBus;
   initCtx: AgentContext;
+  /** Test seam — forwarded to runCompletionTransaction. Omit in production. */
+  validationTimeoutMs?: number;
 }
 
 function isValidEmail(s: string): boolean {
@@ -234,6 +236,9 @@ export function createOnboardingRouteHandlers(deps: OnboardingRouteHandlerDeps) 
         apiKey,
         fastModel,
         defaultModel,
+        ...(deps.validationTimeoutMs !== undefined
+          ? { timeoutMs: deps.validationTimeoutMs }
+          : {}),
       });
 
       if (!result.ok) {

@@ -195,6 +195,9 @@ export function createOnboardingPlugin(config: OnboardingConfig): Plugin {
         rateLimit,
         bus,
         initCtx,
+        ...(config.validationTimeoutMs !== undefined
+          ? { validationTimeoutMs: config.validationTimeoutMs }
+          : {}),
       });
 
       unregisterRoutes.push(

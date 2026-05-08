@@ -98,6 +98,7 @@ async function bootStack(): Promise<BootedStack> {
       createOnboardingPlugin({
         baseUrl: 'http://127.0.0.1',
         envOverride: { AX_BOOTSTRAP_TOKEN: TEST_TOKEN },
+        validationTimeoutMs: 100,
       }),
     ],
   });
@@ -379,5 +380,5 @@ describe('@ax/onboarding POST /setup/model', () => {
       {},
     );
     expect(status.status).not.toBe('completed');
-  }, 30_000);
+  }, 5_000);
 });
