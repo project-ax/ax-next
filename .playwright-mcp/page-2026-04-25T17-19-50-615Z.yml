@@ -1,4 +1,0 @@
-- generic [ref=e4]:
-  - generic [ref=e5]: tide
-  - paragraph [ref=e6]: Sign in to start chatting
-  - button "Sign in with Google" [active] [ref=e7] [cursor=pointer]
