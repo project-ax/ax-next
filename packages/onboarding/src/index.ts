@@ -10,3 +10,4 @@ export {
   writeTokenFile,
   printTokenToStdout,
 } from './token.js';
+export type { OnboardingConfig, BootstrapStatusOutput } from './types.js';
