@@ -1,3 +1,93 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 240 6% 10%;
+    --card: 0 0% 100%;
+    --card-foreground: 240 6% 10%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 240 6% 10%;
+    --primary: 211 100% 44%;
+    --primary-foreground: 0 0% 100%;
+    --primary-soft: 214 100% 95%;
+    --secondary: 240 5% 96%;
+    --secondary-foreground: 240 6% 10%;
+    --muted: 240 5% 96%;
+    --muted-foreground: 240 4% 46%;
+    --accent: 240 5% 96%;
+    --accent-foreground: 240 6% 10%;
+    --destructive: 0 60% 55%;
+    --destructive-foreground: 0 0% 100%;
+    --destructive-soft: 0 60% 96%;
+    --border: 240 6% 91%;
+    --input: 240 6% 91%;
+    --ring: 211 100% 44%;
+    --radius: 0.5rem;
+    --rule-soft: 240 6% 95%;
+    --ink-ghost: 240 4% 78%;
+  }
+
+  /* Dark tokens scoped to existing data-theme mechanism + system fallback. */
+  :root[data-theme='dark'],
+  :root:not([data-theme='light']) {
+    @media (prefers-color-scheme: dark) {
+      --background: 0 0% 0%;
+      --foreground: 240 5% 96%;
+      --card: 240 3% 11%;
+      --card-foreground: 240 5% 96%;
+      --popover: 240 3% 11%;
+      --popover-foreground: 240 5% 96%;
+      --primary: 211 100% 52%;
+      --primary-foreground: 0 0% 100%;
+      --primary-soft: 212 100% 14%;
+      --secondary: 240 3% 9%;
+      --secondary-foreground: 240 5% 96%;
+      --muted: 240 3% 9%;
+      --muted-foreground: 240 4% 56%;
+      --accent: 240 3% 9%;
+      --accent-foreground: 240 5% 96%;
+      --destructive: 4 86% 62%;
+      --destructive-foreground: 0 0% 100%;
+      --destructive-soft: 4 60% 16%;
+      --border: 240 4% 17%;
+      --input: 240 4% 17%;
+      --ring: 211 100% 52%;
+      --rule-soft: 240 4% 13%;
+      --ink-ghost: 240 4% 26%;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme='dark'] {
+    --background: 0 0% 0%;
+    --foreground: 240 5% 96%;
+    --card: 240 3% 11%;
+    --card-foreground: 240 5% 96%;
+    --popover: 240 3% 11%;
+    --popover-foreground: 240 5% 96%;
+    --primary: 211 100% 52%;
+    --primary-foreground: 0 0% 100%;
+    --primary-soft: 212 100% 14%;
+    --secondary: 240 3% 9%;
+    --secondary-foreground: 240 5% 96%;
+    --muted: 240 3% 9%;
+    --muted-foreground: 240 4% 56%;
+    --accent: 240 3% 9%;
+    --accent-foreground: 240 5% 96%;
+    --destructive: 4 86% 62%;
+    --destructive-foreground: 0 0% 100%;
+    --destructive-soft: 4 60% 16%;
+    --border: 240 4% 17%;
+    --input: 240 4% 17%;
+    --ring: 211 100% 52%;
+    --rule-soft: 240 4% 13%;
+    --ink-ghost: 240 4% 26%;
+    color-scheme: dark;
+  }
+}
+
 :root {
   --bg: #f6f6f3;
   --surface-raised: #fcfbf8;
