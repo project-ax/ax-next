@@ -500,91 +500,15 @@ body.sidebar-collapsed .user-menu {
   to   { opacity: 1; transform: translateY(0); }
 }
 
-/* ---- Toast: top-right slide-in, session-level errors ---- */
-.toast-stack {
-  position: fixed;
-  top: 20px;
-  right: 20px;
-  z-index: 200;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  pointer-events: none;
-}
-.toast {
-  pointer-events: auto;
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  min-width: 240px;
-  max-width: 360px;
-  padding: 10px 12px 10px 14px;
-  background: var(--surface-raised);
-  border: 1px solid var(--rule);
-  border-radius: 8px;
-  box-shadow: var(--shadow-md);
-  font-size: 12.5px;
-  color: var(--ink);
-  letter-spacing: -0.005em;
-  animation: toast-in 220ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
-}
-.toast.leaving { animation: toast-out 180ms ease forwards; }
+/* `toast-in` / `toast-out` are referenced by Toast via Tailwind
+   arbitrary `animate-[toast-in_220ms_cubic-bezier(0.2,0.8,0.2,1)_both]`
+   and `animate-[toast-out_180ms_ease_forwards]`. */
 @keyframes toast-in {
   from { opacity: 0; transform: translateX(8px); }
   to   { opacity: 1; transform: translateX(0); }
 }
 @keyframes toast-out {
   to { opacity: 0; transform: translateX(8px); }
-}
-.toast-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--ink-mute);
-  margin-top: 5px;
-  flex-shrink: 0;
-}
-.toast.error .toast-dot { background: var(--danger); }
-.toast-body {
-  flex: 1;
-  min-width: 0;
-  line-height: 1.4;
-}
-.toast-title {
-  font-weight: 500;
-  margin-bottom: 1px;
-}
-.toast-detail {
-  color: var(--ink-mute);
-  font-size: 11.5px;
-}
-.toast-close {
-  all: unset;
-  cursor: pointer;
-  width: 18px;
-  height: 18px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 3px;
-  color: var(--ink-ghost);
-  flex-shrink: 0;
-  transition: color 120ms ease, background 120ms ease;
-}
-.toast-close:hover {
-  color: var(--ink);
-  background: var(--bg-deep);
-}
-/* Keyboard focus — same reason as `.agent-status-cancel:focus-visible`. */
-.toast-close:focus-visible {
-  color: var(--ink);
-  background: var(--bg-deep);
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-.toast-close svg {
-  width: 10px;
-  height: 10px;
 }
 
 /* SEARCH MODE residue — search-results-banner (rendered by Thread) and

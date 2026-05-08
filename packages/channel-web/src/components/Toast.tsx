@@ -12,26 +12,21 @@
  * **Two-phase dismiss** (auto + manual):
  *
  *   1. The duration timeout fires (info) OR the user clicks the close
- *      button. We flip a local `leaving` flag — the CSS rule
- *      `.toast.leaving` runs the 180 ms `toast-out` slide-out animation.
- *   2. After 180 ms (matching the CSS keyframe), we actually remove the
+ *      button. We flip a local `leaving` flag — the Tailwind animation
+ *      (toast-out keyframes in index.css) runs the slide-out.
+ *   2. After 180 ms (matching the keyframe), we actually remove the
  *      toast from the store, which unmounts the node.
- *
- *   Without phase 1 the React unmount races ahead of the CSS animation
- *   and the slide-out is invisible — `.toast.leaving` was dead CSS
- *   before this split.
  *
  * Accessibility:
  *
  *   - Stack region uses `aria-live="polite"` for ambient info toasts.
  *   - Error items also carry `role="alert"` (which implies
  *     `aria-live="assertive"`) so screen readers announce errors
- *     immediately rather than waiting for the current utterance.
- *
- * Mirrors `.toast-stack` / `.toast` markup from the the design.
+ *     immediately.
  */
 import { useCallback, useEffect, useState } from 'react';
 import { type Toast as ToastModel, toastActions, useToastStore } from '../lib/toast-store';
+import { cn } from '@/lib/utils';
 
 /** Must match the duration of the `toast-out` keyframe in `index.css`. */
 const TOAST_LEAVE_MS = 180;
@@ -39,7 +34,11 @@ const TOAST_LEAVE_MS = 180;
 export const ToastStack = () => {
   const { toasts } = useToastStore();
   return (
-    <div className="toast-stack" role="region" aria-live="polite">
+    <div
+      className="fixed top-5 right-5 z-[200] flex flex-col gap-2 pointer-events-none"
+      role="region"
+      aria-live="polite"
+    >
       {toasts.map((t) => (
         <ToastItem key={t.id} toast={t} />
       ))}
@@ -51,15 +50,12 @@ const ToastItem = ({ toast }: { toast: ToastModel }) => {
   const [leaving, setLeaving] = useState(false);
   const startLeave = useCallback(() => setLeaving(true), []);
 
-  // Phase 1: auto-dismiss timer flips the leaving flag.
   useEffect(() => {
     if (toast.duration <= 0) return;
     const timer = window.setTimeout(startLeave, toast.duration);
     return () => window.clearTimeout(timer);
   }, [toast.id, toast.duration, startLeave]);
 
-  // Phase 2: once leaving, wait for the CSS animation to finish, then
-  // remove from the store so React unmounts the node.
   useEffect(() => {
     if (!leaving) return;
     const timer = window.setTimeout(
@@ -70,23 +66,46 @@ const ToastItem = ({ toast }: { toast: ToastModel }) => {
   }, [leaving, toast.id]);
 
   const isError = toast.kind === 'error';
-  const className =
-    'toast' + (isError ? ' error' : '') + (leaving ? ' leaving' : '');
 
   return (
-    <div className={className} role={isError ? 'alert' : undefined}>
-      <span className="toast-dot" />
-      <div className="toast-body">
-        <div className="toast-title">{toast.title}</div>
-        {toast.detail && <div className="toast-detail">{toast.detail}</div>}
+    <div
+      className={cn(
+        'toast pointer-events-auto flex items-start gap-2.5',
+        'min-w-[240px] max-w-[360px] py-2.5 pl-3.5 pr-3',
+        'bg-card border border-border rounded-lg shadow-md',
+        'text-[12.5px] tracking-[-0.005em] text-foreground',
+        leaving
+          ? 'leaving animate-[toast-out_180ms_ease_forwards]'
+          : 'animate-[toast-in_220ms_cubic-bezier(0.2,0.8,0.2,1)_both]',
+        isError && 'error',
+      )}
+      role={isError ? 'alert' : undefined}
+    >
+      <span
+        className={cn(
+          'toast-dot mt-1.5 h-2 w-2 rounded-full shrink-0',
+          isError ? 'bg-destructive' : 'bg-muted-foreground',
+        )}
+      />
+      <div className="flex-1 min-w-0 leading-[1.4]">
+        <div className="font-medium mb-px">{toast.title}</div>
+        {toast.detail && (
+          <div className="text-muted-foreground text-[11.5px]">{toast.detail}</div>
+        )}
       </div>
       <button
         type="button"
-        className="toast-close"
+        className="
+          inline-flex items-center justify-center shrink-0
+          h-[18px] w-[18px] rounded text-ink-ghost transition-colors
+          hover:text-foreground hover:bg-muted
+          focus-visible:text-foreground focus-visible:bg-muted
+          focus-visible:outline-2 focus-visible:outline-primary focus-visible:outline-offset-2
+        "
         aria-label="Dismiss"
         onClick={startLeave}
       >
-        <svg viewBox="0 0 10 10" aria-hidden="true">
+        <svg viewBox="0 0 10 10" aria-hidden="true" className="h-2.5 w-2.5">
           <path
             d="M2 2 L8 8 M8 2 L2 8"
             stroke="currentColor"
