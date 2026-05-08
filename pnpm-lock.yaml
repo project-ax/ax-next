@@ -1508,6 +1508,9 @@ importers:
       '@ax/mcp-client':
         specifier: workspace:*
         version: link:../../packages/mcp-client
+      '@ax/onboarding':
+        specifier: workspace:*
+        version: link:../../packages/onboarding
       '@ax/sandbox-k8s':
         specifier: workspace:*
         version: link:../../packages/sandbox-k8s

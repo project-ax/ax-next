@@ -142,6 +142,11 @@ const PLUGINS_TO_DROP = new Set<string>([
   // auth:require-user. We just dropped both — replace with a non-admin
   // version below so the chat-path coverage stays.
   '@ax/mcp-client',
+  // First-run wizard: postgres-backed (database:get-instance) and http-server
+  // dependent (http:register-route). Both are dropped above. The static hook
+  // wiring is already pinned in preset.test.ts; drop here so these sub-tests
+  // don't need a postgres testcontainer.
+  '@ax/onboarding',
 ]);
 
 // Stub `agents:resolve` — production presets register `@ax/agents` (postgres-

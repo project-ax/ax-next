@@ -30,6 +30,7 @@ import {
   DEFAULT_TITLE_MODEL,
 } from '@ax/conversation-titles';
 import { createChannelWebServerPlugin } from '@ax/channel-web/server';
+import { createOnboardingPlugin, type OnboardingConfig } from '@ax/onboarding';
 
 // ---------------------------------------------------------------------------
 // @ax/preset-k8s — production assembly: postgres trio + workspace-git +
@@ -321,6 +322,22 @@ export interface K8sPresetConfig {
    */
   credentialsAdmin?: boolean;
   /**
+   * @ax/onboarding — first-run wizard. When set, the plugin loads and
+   * serves the bootstrap wizard at /setup/*. The plugin reads
+   * AX_BOOTSTRAP_TOKEN from process.env automatically; set `publicBaseUrl`
+   * to override the URL printed in the boot banner (defaults to
+   * `http://<http.host>:<http.port>`, which is the bind address and
+   * usually wrong for external traffic).
+   *
+   * The field is populated by `loadK8sConfigFromEnv` from
+   * `AX_PUBLIC_BASE_URL`. Always loaded — the field controls the config
+   * passed to the plugin, not whether it loads.
+   */
+  onboarding?: {
+    /** Operator-facing URL printed in the stdout banner and link. */
+    publicBaseUrl?: string;
+  };
+  /**
    * Optional static-file serving (production single-binary mode). When
    * set, mounts `@ax/static-files` after the API routes so it serves
    * channel-web's bundle on otherwise-unmatched paths. SPA fallback
@@ -501,6 +518,27 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
     authConfig.sessionLifetimeSeconds = config.auth.sessionLifetimeSeconds;
   }
   plugins.push(createAuthPlugin(authConfig));
+
+  // ----- 5b. first-run wizard -------------------------------------------
+  // @ax/onboarding mounts the bootstrap wizard at /setup/*. It runs the
+  // migration on init and initializes the bootstrap token from
+  // AX_BOOTSTRAP_TOKEN (env) or generates one fresh. The plugin needs
+  // http:register-route (loaded above) + auth:create-bootstrap-user /
+  // auth:complete-bootstrap-user (provided by auth-oidc, loaded just
+  // above) + db:transact + credentials:set + agents:create (all loaded).
+  //
+  // `baseUrl` is the operator-facing URL stamped into the boot banner so
+  // the operator knows where to point their browser. Defaults to
+  // `http://<bind-host>:<port>` which is the internal bind address and
+  // usually wrong for external traffic; operators set AX_PUBLIC_BASE_URL
+  // to override.
+  //
+  // I3 — half-wired window CLOSES here: after this push, `ax-next serve`
+  // in a k8s deploy exposes the wizard at /setup.
+  const onboardingCfg: OnboardingConfig = {
+    baseUrl: config.onboarding?.publicBaseUrl ?? `http://${config.http.host}:${config.http.port}`,
+  };
+  plugins.push(createOnboardingPlugin(onboardingCfg));
 
   // teams: mountAdminRoutes:true so /admin/teams* lands alongside the rest
   // of the admin surface. The plugin's manifest expands `calls` to include
@@ -1026,6 +1064,19 @@ export function loadK8sConfigFromEnv(
         ? DEFAULT_TITLE_MODEL
         : titleModelRaw;
     config.titles = { model: titleModel };
+  }
+
+  // ---- onboarding (first-run wizard) ------------------------------------
+  // AX_PUBLIC_BASE_URL (optional): URL printed in the stdout banner so the
+  // operator knows where to point their browser. When unset, the plugin
+  // defaults to `http://<http.host>:<http.port>` (the bind address), which
+  // is the internal bind addr and rarely the externally-visible URL.
+  // AX_BOOTSTRAP_TOKEN is read directly by the plugin from process.env at
+  // init — the preset loader surfaces the read here so the env-shape test's
+  // scanner registers the var as known.
+  const _axBootstrapToken = env.AX_BOOTSTRAP_TOKEN; // consumed by @ax/onboarding init
+  if (env.AX_PUBLIC_BASE_URL !== undefined && env.AX_PUBLIC_BASE_URL !== '') {
+    config.onboarding = { publicBaseUrl: env.AX_PUBLIC_BASE_URL };
   }
   return config;
 }

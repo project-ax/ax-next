@@ -160,6 +160,7 @@ describe('@ax/preset-k8s wiring', () => {
         '@ax/http-server',
         '@ax/ipc-http',
         '@ax/mcp-client',
+        '@ax/onboarding',
         '@ax/sandbox-k8s',
         '@ax/session-postgres',
         '@ax/storage-postgres',
@@ -188,6 +189,80 @@ describe('@ax/preset-k8s wiring', () => {
     ]) {
       expect(names.has(forbidden)).toBe(false);
     }
+  });
+});
+
+describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', () => {
+  // Proves @ax/onboarding is present in the assembled plugin list and
+  // that its service hooks are registered. This test closes Phase 2's
+  // half-wired window — after this commit, `ax-next serve` in a k8s
+  // deploy exposes the wizard at /setup.
+  it('includes @ax/onboarding in the default plugin set', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const names = plugins.map((p) => p.manifest.name);
+    expect(names).toContain('@ax/onboarding');
+  });
+
+  it('@ax/onboarding registers bootstrap:status and bootstrap:complete', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const onboarding = plugins.find((p) => p.manifest.name === '@ax/onboarding');
+    expect(onboarding, '@ax/onboarding plugin').toBeDefined();
+    expect(onboarding!.manifest.registers).toContain('bootstrap:status');
+    expect(onboarding!.manifest.registers).toContain('bootstrap:complete');
+  });
+
+  it('@ax/onboarding calls are all satisfied by other plugins in the preset', () => {
+    // The onboarding plugin calls database:get-instance, http:register-route,
+    // auth:create-bootstrap-user, auth:complete-bootstrap-user,
+    // auth:require-user, db:transact, credentials:set, agents:create,
+    // bootstrap:complete, storage:set — all registered by the other
+    // plugins already in the preset. This is the load-bearing assertion.
+    const plugins = createK8sPlugins(stubConfig);
+    const allRegistered = new Set<string>(
+      plugins.flatMap((p) => p.manifest.registers),
+    );
+    const onboarding = plugins.find((p) => p.manifest.name === '@ax/onboarding');
+    const unsatisfied = (onboarding!.manifest.calls).filter(
+      (c) => !allRegistered.has(c),
+    );
+    expect(unsatisfied, `@ax/onboarding calls with no registrant: ${unsatisfied.join(', ')}`).toEqual([]);
+  });
+
+  it('loadK8sConfigFromEnv reads AX_PUBLIC_BASE_URL into onboarding.publicBaseUrl', () => {
+    const HEX_KEY = '0'.repeat(64);
+    const env: NodeJS.ProcessEnv = {
+      DATABASE_URL: 'postgres://u:p@db:5432/ax_next',
+      AX_K8S_HOST_IPC_URL: 'http://ax-next-host.ax-next.svc:80',
+      AX_WORKSPACE_BACKEND: 'git-protocol',
+      AX_WORKSPACE_GIT_SERVER_URL: 'http://git-server:7780',
+      AX_WORKSPACE_GIT_SERVER_TOKEN: 't',
+      AX_HTTP_HOST: '0.0.0.0',
+      AX_HTTP_PORT: '9090',
+      AX_HTTP_COOKIE_KEY: HEX_KEY,
+      AX_HTTP_ALLOWED_ORIGINS: '',
+      AX_DEV_BOOTSTRAP_TOKEN: 'bootstrap-secret',
+      AX_PUBLIC_BASE_URL: 'https://ax.example.com',
+    };
+    const cfg = loadK8sConfigFromEnv(env);
+    expect(cfg.onboarding?.publicBaseUrl).toBe('https://ax.example.com');
+  });
+
+  it('loadK8sConfigFromEnv leaves onboarding.publicBaseUrl unset when AX_PUBLIC_BASE_URL is absent', () => {
+    const HEX_KEY = '0'.repeat(64);
+    const env: NodeJS.ProcessEnv = {
+      DATABASE_URL: 'postgres://u:p@db:5432/ax_next',
+      AX_K8S_HOST_IPC_URL: 'http://ax-next-host.ax-next.svc:80',
+      AX_WORKSPACE_BACKEND: 'git-protocol',
+      AX_WORKSPACE_GIT_SERVER_URL: 'http://git-server:7780',
+      AX_WORKSPACE_GIT_SERVER_TOKEN: 't',
+      AX_HTTP_HOST: '0.0.0.0',
+      AX_HTTP_PORT: '9090',
+      AX_HTTP_COOKIE_KEY: HEX_KEY,
+      AX_HTTP_ALLOWED_ORIGINS: '',
+      AX_DEV_BOOTSTRAP_TOKEN: 'bootstrap-secret',
+    };
+    const cfg = loadK8sConfigFromEnv(env);
+    expect(cfg.onboarding).toBeUndefined();
   });
 });
 

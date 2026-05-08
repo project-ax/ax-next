@@ -35,6 +35,7 @@
     { "path": "../../packages/auth-oidc" },
     { "path": "../../packages/teams" },
     { "path": "../../packages/static-files" },
+    { "path": "../../packages/onboarding" },
     { "path": "../../packages/validator-skill" }
   ]
 }
