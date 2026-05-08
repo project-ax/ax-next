@@ -137,7 +137,16 @@ export function createOnboardingRouteHandlers(deps: OnboardingRouteHandlerDeps) 
     },
 
     async admin(req: RouteRequest, res: RouteResponse): Promise<void> {
-      // 1) Verify bootstrap-session cookie (minted by /setup/claim).
+      // 1) Pre-completion gate (I11). Must precede the session-cookie
+      // check: a post-completion request needs to see "wizard done" (410),
+      // not "session expired" (401), or operators get a misleading signal.
+      const row = await deps.store.read();
+      if (row?.status === 'completed') {
+        res.status(410).json({ error: 'wizard-complete' });
+        return;
+      }
+
+      // 2) Verify bootstrap-session cookie (minted by /setup/claim).
       const sessionId = req.signedCookie(BOOTSTRAP_SESSION_COOKIE);
       if (sessionId === null || !deps.sessions.verify(sessionId)) {
         res.status(401).json({ error: 'no-bootstrap-session' });
