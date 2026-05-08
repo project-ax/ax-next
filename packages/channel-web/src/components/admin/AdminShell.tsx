@@ -4,6 +4,7 @@ import { AdminPane } from './AdminPane';
 import { AdminPaneHeader } from './AdminPaneHeader';
 import { ProviderKeysTab } from './ProviderKeysTab';
 import { ModelConfigTab } from './ModelConfigTab';
+import { AuthProvidersTab } from './AuthProvidersTab';
 import { AgentForm } from './AgentForm';
 import { McpServerForm } from './McpServerForm';
 import { TeamList } from './TeamList';
@@ -20,6 +21,7 @@ interface TabMeta {
 const TAB_META: Record<AdminTabId, TabMeta> = {
   'provider-keys': { eyebrow: 'Admin', title: 'Provider keys' },
   'model-config': { eyebrow: 'Admin', title: 'Model config' },
+  'auth-providers': { eyebrow: 'Admin', title: 'Auth providers' },
   agents: { eyebrow: 'Admin', title: 'Agents' },
   'mcp-servers': { eyebrow: 'Admin', title: 'MCP servers' },
   teams: { eyebrow: 'Admin', title: 'Teams' },
@@ -41,6 +43,7 @@ export function AdminShell({ onClose }: AdminShellProps) {
       >
         {activeTab === 'provider-keys' && <ProviderKeysTab />}
         {activeTab === 'model-config' && <ModelConfigTab />}
+        {activeTab === 'auth-providers' && <AuthProvidersTab />}
         {activeTab === 'agents' && <AgentForm />}
         {activeTab === 'mcp-servers' && <McpServerForm />}
         {activeTab === 'teams' && <TeamList />}
