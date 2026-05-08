@@ -1,0 +1,109 @@
+import { promises as fs } from 'node:fs';
+import { extname, normalize, resolve, sep } from 'node:path';
+
+// ---------------------------------------------------------------------------
+// Inline static-file server for the onboarding SPA.
+//
+// Intentionally NOT importing @ax/static-files (Invariant I2 — no cross-plugin
+// imports). The key difference is that callers apply the I11 post-completion
+// gate (410) BEFORE calling these helpers — this module is pure file serving.
+// ---------------------------------------------------------------------------
+
+const MIME_BY_EXT: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'application/javascript; charset=utf-8',
+  '.mjs': 'application/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.map': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+};
+
+// Vite stamps content-hashes into asset filenames (`foo-C9BLoJwu.js`).
+// Vite uses base64url-encoded hashes (alphanumeric, A-Z permitted), NOT
+// base64url alphabet (alphanumerics + `_` and `-`). Vite emits exactly
+// 8 hash characters, so we anchor to exactly 8 to avoid false positives
+// on any longer run (e.g. a future `polyfills.js` chunk would otherwise
+// be wrongly tagged immutable). Earlier `[a-zA-Z0-9]` was too narrow:
+// vite's hashes can contain `_` (observed `DYyI3j_D`).
+// Files matching this pattern get long-lived cache headers; everything else
+// (notably index.html) gets `no-cache` so SPA updates propagate.
+const HASHED_FILENAME = /[-_.][a-zA-Z0-9_-]{8}\./;
+
+export interface StaticServeDeps {
+  /** Absolute path to the dist-spa root. */
+  spaRoot: string;
+}
+
+export interface StaticServeResult {
+  status: number;
+  headers: Record<string, string>;
+  body: Buffer;
+}
+
+/**
+ * Serve dist-spa/index.html. The path argument is unused (always serves the
+ * root index); it's kept for symmetry with serveSpaAsset.
+ */
+export async function serveSpaIndex(deps: StaticServeDeps): Promise<StaticServeResult> {
+  const indexPath = resolve(deps.spaRoot, 'index.html');
+  const body = await fs.readFile(indexPath);
+  return {
+    status: 200,
+    headers: {
+      'content-type': 'text/html; charset=utf-8',
+      'cache-control': 'no-cache', // SPA shell is never cached.
+    },
+    body,
+  };
+}
+
+/**
+ * Serve a static asset from dist-spa/. The requestPath should be the full
+ * URL path (e.g. `/setup/static/wizard-abc123.js`). Returns null on unknown
+ * extension, path traversal attempt, or missing file — caller emits 404.
+ */
+export async function serveSpaAsset(
+  deps: StaticServeDeps,
+  requestPath: string,
+): Promise<StaticServeResult | null> {
+  // Strip the /setup/ prefix. Vite emits `/setup/static/<file>` in the
+  // built index.html, so the on-disk path is `<spaRoot>/static/<file>`.
+  const stripped = requestPath.replace(/^\/setup\//, '');
+
+  const ext = extname(stripped).toLowerCase();
+  const contentType = MIME_BY_EXT[ext];
+  if (contentType === undefined) return null; // unknown extension → 404
+
+  // Defense-in-depth before resolve: strip leading separator/dot sequences
+  // that normalize() may have floated to the front of the path. The
+  // primary guard is the startsWith check below — even without this strip,
+  // resolve('../etc/passwd') escapes spaRoot and would fail startsWith.
+  const normalized = normalize(stripped).replace(/^([./\\])+/, '');
+  const full = resolve(deps.spaRoot, normalized);
+  const rootWithSep = resolve(deps.spaRoot) + sep;
+
+  // Path traversal guard (primary): resolved path must stay inside spaRoot.
+  if (!full.startsWith(rootWithSep) && full !== resolve(deps.spaRoot)) {
+    return null;
+  }
+
+  let body: Buffer;
+  try {
+    body = await fs.readFile(full);
+  } catch {
+    return null;
+  }
+
+  return {
+    status: 200,
+    headers: {
+      'content-type': contentType,
+      'cache-control': HASHED_FILENAME.test(stripped)
+        ? 'public, max-age=31536000, immutable'
+        : 'no-cache',
+    },
+    body,
+  };
+}

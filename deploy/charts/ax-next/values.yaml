@@ -298,6 +298,27 @@ http:
   cookieKey: ""
   allowedOrigins: []
 
+# ----- Onboarding ------------------------------------------------------
+# First-run wizard. The plugin auto-generates a bootstrap token at first
+# boot if `bootstrapToken` is empty AND no row exists in `bootstrap_state`
+# yet. The token is printed to the host pod's stdout — extract via
+#   kubectl -n <ns> logs deploy/<release>-host | grep ax_bs_
+# Once the wizard completes, all `/setup/*` paths return 410 (I11).
+#
+# `bootstrapToken` (optional, escape-hatch): pre-shared token that
+# operators can bake into a Secret so they don't need to scrape stdout.
+# When set, the plugin hashes this value and uses it as the bootstrap
+# token; nothing is printed to stdout. Use this for canary deploys where
+# stdout-grep is awkward.
+#
+# `publicBaseUrl` (optional): URL printed in the stdout banner so the
+# operator knows where to point their browser. Defaults to
+# http://<bind-host>:<port> which is rarely the externally-visible URL.
+# Set this to the operator-facing URL (https://ax.example.com).
+onboarding:
+  bootstrapToken: ""    # AX_BOOTSTRAP_TOKEN
+  publicBaseUrl: ""     # AX_PUBLIC_BASE_URL
+
 # ─── Auth providers ──────────────────────────────────────────────
 # At least one provider must be configured (the auth plugin throws
 # `no-auth-providers` at init otherwise).

@@ -126,6 +126,10 @@ const PLUGINS_TO_DROP = new Set<string>([
   '@ax/credentials-anthropic-oauth',
   '@ax/ipc-http',
   '@ax/mcp-client',
+  // First-run wizard: postgres-backed (database:get-instance) and http-server
+  // dependent (http:register-route). Both are dropped above. Static wiring is
+  // pinned in preset.test.ts; drop here so these sub-tests don't need postgres.
+  '@ax/onboarding',
 ]);
 
 const AGENTS_RESOLVE_PLUGIN_NAME = '@ax/preset-k8s/test/discriminating-agents-resolve';

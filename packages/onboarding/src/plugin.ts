@@ -1,0 +1,306 @@
+import {
+  createLogger,
+  makeAgentContext,
+  PluginError,
+  type AgentContext,
+  type HookBus,
+  type Plugin,
+} from '@ax/core';
+import type { Kysely } from 'kysely';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { runOnboardingMigration, type OnboardingDatabase } from './migrations.js';
+import { createOnboardingStore, type OnboardingStore } from './store.js';
+import {
+  generateToken,
+  hashToken,
+  printTokenToStdout,
+  writeTokenFile,
+} from './token.js';
+import { createRateLimiter } from './rate-limit.js';
+import { createBootstrapSessionStore } from './sessions.js';
+import { createOnboardingRouteHandlers, type RouteRequest, type RouteResponse } from './routes.js';
+import { serveSpaIndex, serveSpaAsset, type StaticServeDeps } from './static-handler.js';
+import type { BootstrapCompleteInput, BootstrapStatusOutput, OnboardingConfig } from './types.js';
+
+const PLUGIN_NAME = '@ax/onboarding';
+const DEFAULT_TOKEN_FILE_PATH = '/var/run/ax/bootstrap-token';
+
+interface AnyHttpReq {
+  method: string;
+  path: string;
+  headers: Record<string, string>;
+  body: Buffer;
+  cookies: Record<string, string>;
+  query: Record<string, string>;
+  params: Record<string, string>;
+  signedCookie(name: string): string | null;
+}
+interface AnyHttpRes {
+  status(n: number): AnyHttpRes;
+  header(name: string, value: string): AnyHttpRes;
+  json(v: unknown): void;
+  text(s: string): void;
+  body(buf: Buffer, contentType?: string): void;
+  end(): void;
+  redirect(url: string, status?: number): void;
+  setSignedCookie(name: string, value: string, opts?: unknown): void;
+  clearCookie(name: string, opts?: unknown): void;
+}
+
+function asRouteReq(req: AnyHttpReq): RouteRequest {
+  return req as RouteRequest;
+}
+function asRouteRes(res: AnyHttpRes): RouteResponse {
+  return res as RouteResponse;
+}
+
+async function registerRoute(
+  bus: HookBus,
+  initCtx: AgentContext,
+  input: {
+    method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+    path: string;
+    handler: (req: AnyHttpReq, res: AnyHttpRes) => Promise<void>;
+  },
+): Promise<() => void> {
+  const result = await bus.call<unknown, { unregister: () => void }>(
+    'http:register-route',
+    initCtx,
+    input,
+  );
+  return result.unregister;
+}
+
+export function createOnboardingPlugin(config: OnboardingConfig): Plugin {
+  let store: OnboardingStore | undefined;
+  const unregisterRoutes: Array<() => void> = [];
+
+  return {
+    manifest: {
+      name: PLUGIN_NAME,
+      version: '0.0.0',
+      registers: ['bootstrap:status', 'bootstrap:complete'],
+      calls: [
+        'database:get-instance',
+        'http:register-route',
+        'auth:create-bootstrap-user',
+        'auth:complete-bootstrap-user',
+        'auth:require-user',
+        'db:transact',
+        'credentials:set',
+        'agents:create',
+        'bootstrap:complete',
+        'storage:set',
+      ],
+      subscribes: [],
+    },
+
+    async init({ bus }) {
+      const initCtx = makeAgentContext({
+        sessionId: 'init',
+        agentId: PLUGIN_NAME,
+        userId: 'system',
+      });
+      const log = createLogger({ reqId: PLUGIN_NAME });
+
+      const { db: shared } = await bus.call<unknown, { db: Kysely<unknown> }>(
+        'database:get-instance',
+        initCtx,
+        {},
+      );
+      const db = shared as Kysely<OnboardingDatabase>;
+      await runOnboardingMigration(db);
+      store = createOnboardingStore(db);
+      const localStore = store;
+
+      // bootstrap:initialize logic ----------------------------------------
+      const existing = await localStore.read();
+      if (existing?.status === 'completed') {
+        log.info('bootstrap already completed; skipping');
+      } else {
+        const env = config.envOverride ?? process.env;
+        const envToken = env['AX_BOOTSTRAP_TOKEN'];
+        if (envToken !== undefined && envToken.length > 0) {
+          const hash = await hashToken(envToken);
+          await localStore.initializeWithHash(hash);
+          // No print: the operator already knows the token (they set it).
+        } else if (existing === null) {
+          // First boot, no env override → generate fresh.
+          const token = generateToken();
+          const hash = await hashToken(token);
+          await localStore.initializeWithHash(hash);
+
+          let stdoutOk = true;
+          let fileOk = true;
+
+          const stdoutFn =
+            config.stdoutWriter ??
+            ((line: string) => {
+              process.stdout.write(line + '\n');
+            });
+          try {
+            printTokenToStdout(token, config.baseUrl, stdoutFn);
+          } catch {
+            stdoutOk = false;
+          }
+
+          const fileFn = config.tokenFileWriter ?? writeTokenFile;
+          const filePath = config.tokenFilePath ?? DEFAULT_TOKEN_FILE_PATH;
+          try {
+            await fileFn(filePath, token);
+          } catch {
+            fileOk = false;
+          }
+
+          if (!stdoutOk && !fileOk) {
+            throw new PluginError({
+              code: 'bootstrap-token-unreachable',
+              plugin: PLUGIN_NAME,
+              message:
+                'cannot expose bootstrap token: both stdout and token file write failed',
+            });
+          }
+        }
+        // else: existing row with status pending|claimed, no env override → leave alone.
+      }
+
+      // bootstrap:status service hook -------------------------------------
+      bus.registerService<unknown, BootstrapStatusOutput>(
+        'bootstrap:status',
+        PLUGIN_NAME,
+        async () => {
+          const row = await localStore.read();
+          if (row === null) return { status: 'uninitialized' };
+          if (row.status === 'completed') {
+            const out: BootstrapStatusOutput = { status: 'completed' };
+            if (row.completed_at !== null) out.completedAt = row.completed_at;
+            return out;
+          }
+          return { status: row.status };
+        },
+      );
+
+      // bootstrap:complete service hook -----------------------------------
+      bus.registerService<BootstrapCompleteInput, void>(
+        'bootstrap:complete',
+        PLUGIN_NAME,
+        async (_ctx, input) => {
+          const opts: { tx?: import('kysely').Transaction<unknown> } = {};
+          if (input.tx !== undefined) opts.tx = input.tx;
+          await localStore.complete(opts);
+        },
+      );
+
+      // /setup/claim route -----------------------------------------------
+      const rateLimit = createRateLimiter({
+        tokensPerWindow: 5,
+        windowMs: 60_000,
+        matchPath: (path) => path === '/setup/claim',
+      });
+      const sessions = createBootstrapSessionStore();
+      const handlers = createOnboardingRouteHandlers({
+        store: localStore,
+        sessions,
+        rateLimit,
+        bus,
+        initCtx,
+        ...(config.validationTimeoutMs !== undefined
+          ? { validationTimeoutMs: config.validationTimeoutMs }
+          : {}),
+      });
+
+      unregisterRoutes.push(
+        await registerRoute(bus, initCtx, {
+          method: 'POST',
+          path: '/setup/claim',
+          handler: async (req, res) =>
+            handlers.claim(asRouteReq(req), asRouteRes(res)),
+        }),
+      );
+
+      unregisterRoutes.push(
+        await registerRoute(bus, initCtx, {
+          method: 'POST',
+          path: '/setup/admin',
+          handler: async (req, res) =>
+            handlers.admin(asRouteReq(req), asRouteRes(res)),
+        }),
+      );
+
+      unregisterRoutes.push(
+        await registerRoute(bus, initCtx, {
+          method: 'POST',
+          path: '/setup/model',
+          handler: async (req, res) =>
+            handlers.model(asRouteReq(req), asRouteRes(res)),
+        }),
+      );
+
+      // SPA routes ---------------------------------------------------------
+      // dist-spa lives one directory above the compiled plugin (dist/plugin.js
+      // → ../../dist-spa). In ESM we resolve relative to import.meta.url.
+      const pkgRoot = resolve(fileURLToPath(import.meta.url), '..', '..');
+      const spaRoot = resolve(pkgRoot, 'dist-spa');
+      const spaDeps: StaticServeDeps = { spaRoot };
+
+      unregisterRoutes.push(
+        await registerRoute(bus, initCtx, {
+          method: 'GET',
+          path: '/setup',
+          handler: async (_req, res) => {
+            // I11: post-completion 410.
+            const row = await localStore.read();
+            if (row?.status === 'completed') {
+              res.status(410).text('Setup already completed.');
+              return;
+            }
+            let out: Awaited<ReturnType<typeof serveSpaIndex>>;
+            try {
+              out = await serveSpaIndex(spaDeps);
+            } catch {
+              res.status(503).text('Setup UI not available — build may be missing.');
+              return;
+            }
+            res.status(out.status);
+            for (const [k, v] of Object.entries(out.headers)) {
+              res.header(k, v);
+            }
+            res.body(out.body, out.headers['content-type']);
+          },
+        }),
+      );
+
+      unregisterRoutes.push(
+        await registerRoute(bus, initCtx, {
+          method: 'GET',
+          path: '/setup/static/*',
+          handler: async (req, res) => {
+            // I11: post-completion 410.
+            const row = await localStore.read();
+            if (row?.status === 'completed') {
+              res.status(410).text('Setup already completed.');
+              return;
+            }
+            const out = await serveSpaAsset(spaDeps, asRouteReq(req).path);
+            if (out === null) {
+              res.status(404).text('Not found');
+              return;
+            }
+            res.status(out.status);
+            for (const [k, v] of Object.entries(out.headers)) {
+              res.header(k, v);
+            }
+            res.body(out.body, out.headers['content-type']);
+          },
+        }),
+      );
+    },
+
+    async shutdown() {
+      for (const unregister of unregisterRoutes) unregister();
+      unregisterRoutes.length = 0;
+      store = undefined;
+    },
+  };
+}

@@ -251,7 +251,9 @@ async function createAgent(
     ownerId = validated.teamId;
     ownerType = 'team';
   }
-  const agent = await store.create({ ownerId, ownerType, validated });
+  const createArgs: Parameters<AgentStore['create']>[0] = { ownerId, ownerType, validated };
+  if (input.tx !== undefined) createArgs.tx = input.tx;
+  const agent = await store.create(createArgs);
   return { agent };
 }
 

@@ -42,6 +42,7 @@
     { "path": "packages/credential-proxy" },
     { "path": "packages/credential-proxy-bridge" },
     { "path": "packages/llm-anthropic" },
-    { "path": "presets/k8s" }
+    { "path": "presets/k8s" },
+    { "path": "packages/onboarding" }
   ]
 }

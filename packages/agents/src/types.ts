@@ -7,6 +7,7 @@
  * here mentions postgres, ULIDs, or rows. `workspaceRef` is opaque to
  * subscribers; only the registering plugin's ACL gate parses it.
  */
+import type { Transaction } from 'kysely';
 
 export interface Agent {
   id: string;
@@ -88,6 +89,8 @@ export interface ListForUserOutput {
 export interface CreateInput {
   actor: Actor;
   input: AgentInput;
+  /** Optional transaction handle from db:transact's run callback. */
+  tx?: Transaction<unknown>;
 }
 
 export interface CreateOutput {

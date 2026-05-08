@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { PluginError } from '@ax/core';
-import type { Kysely } from 'kysely';
+import type { Kysely, Transaction } from 'kysely';
 import type { AgentsDatabase, AgentsRow } from './migrations.js';
 import { scopedAgents, type AgentScope } from './scope.js';
 import type { Agent, AgentInput } from './types.js';
@@ -331,6 +331,7 @@ export interface AgentStoreCreateArgs {
   ownerId: string;
   ownerType: 'user' | 'team';
   validated: ValidatedAgentInput;
+  tx?: Transaction<unknown>;
 }
 
 export interface AgentStore {
@@ -364,10 +365,11 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
       return rows.map(rowToAgent);
     },
 
-    async create({ ownerId, ownerType, validated }) {
+    async create({ ownerId, ownerType, validated, tx }) {
       const id = mintAgentId();
       const now = new Date();
-      const row = await db
+      const exec = (tx ?? db) as Kysely<AgentsDatabase>;
+      const row = await exec
         .insertInto('agents_v1_agents')
         .values({
           agent_id: id,

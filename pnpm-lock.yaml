@@ -629,6 +629,9 @@ importers:
       '@ax/core':
         specifier: workspace:*
         version: link:../core
+      kysely:
+        specifier: 0.28.16
+        version: 0.28.16
     devDependencies:
       '@ax/credentials-store-db':
         specifier: workspace:*
@@ -714,6 +717,9 @@ importers:
       '@ax/core':
         specifier: workspace:*
         version: link:../core
+      kysely:
+        specifier: 0.28.16
+        version: 0.28.16
     devDependencies:
       '@ax/storage-sqlite':
         specifier: workspace:*
@@ -995,6 +1001,76 @@ importers:
       vitest:
         specifier: ^4.1.4
         version: 4.1.5(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(jsdom@26.1.0)(vite@8.0.10(@types/node@25.6.0)(jiti@1.21.7)(yaml@2.8.3))
+
+  packages/onboarding:
+    dependencies:
+      '@ax/core':
+        specifier: workspace:*
+        version: link:../core
+      kysely:
+        specifier: 0.28.16
+        version: 0.28.16
+    devDependencies:
+      '@ax/agents':
+        specifier: workspace:*
+        version: link:../agents
+      '@ax/auth-oidc':
+        specifier: workspace:*
+        version: link:../auth-oidc
+      '@ax/credentials':
+        specifier: workspace:*
+        version: link:../credentials
+      '@ax/credentials-store-db':
+        specifier: workspace:*
+        version: link:../credentials-store-db
+      '@ax/database-postgres':
+        specifier: workspace:*
+        version: link:../database-postgres
+      '@ax/http-server':
+        specifier: workspace:*
+        version: link:../http-server
+      '@ax/storage-postgres':
+        specifier: workspace:*
+        version: link:../storage-postgres
+      '@ax/test-harness':
+        specifier: workspace:*
+        version: link:../test-harness
+      '@testcontainers/postgresql':
+        specifier: 11.14.0
+        version: 11.14.0
+      '@types/node':
+        specifier: ^25.6.0
+        version: 25.6.0
+      '@types/pg':
+        specifier: 8.20.0
+        version: 8.20.0
+      '@types/react':
+        specifier: ^19.0.0
+        version: 19.2.14
+      '@types/react-dom':
+        specifier: ^19.0.0
+        version: 19.2.3(@types/react@19.2.14)
+      '@vitejs/plugin-react':
+        specifier: ^4.3.4
+        version: 4.7.0(vite@6.4.2(@types/node@25.6.0)(jiti@1.21.7)(lightningcss@1.32.0)(yaml@2.8.3))
+      pg:
+        specifier: 8.20.0
+        version: 8.20.0
+      react:
+        specifier: ^19.0.0
+        version: 19.2.5
+      react-dom:
+        specifier: ^19.0.0
+        version: 19.2.5(react@19.2.5)
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vite:
+        specifier: ^6.4.2
+        version: 6.4.2(@types/node@25.6.0)(jiti@1.21.7)(lightningcss@1.32.0)(yaml@2.8.3)
+      vitest:
+        specifier: ^4.1.4
+        version: 4.1.5(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(jsdom@26.1.0)(vite@6.4.2(@types/node@25.6.0)(jiti@1.21.7)(lightningcss@1.32.0)(yaml@2.8.3))
 
   packages/sandbox-k8s:
     dependencies:
@@ -1432,6 +1508,9 @@ importers:
       '@ax/mcp-client':
         specifier: workspace:*
         version: link:../../packages/mcp-client
+      '@ax/onboarding':
+        specifier: workspace:*
+        version: link:../../packages/onboarding
       '@ax/sandbox-k8s':
         specifier: workspace:*
         version: link:../../packages/sandbox-k8s

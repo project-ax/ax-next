@@ -1,4 +1,5 @@
 import { PluginError, type Plugin } from '@ax/core';
+import type { Transaction } from 'kysely';
 
 /**
  * @ax/credentials-store-db — default storage backend for @ax/credentials.
@@ -41,6 +42,12 @@ export interface StoreBlobPutInput {
   ownerId: string | null;
   ref: string;
   blob: Uint8Array;
+  /**
+   * Optional transaction handle from db:transact's run callback. Threaded
+   * down to storage:set. I1 relaxation — see @ax/storage-postgres's
+   * `db:transact` registration site for the rationale.
+   */
+  tx?: Transaction<unknown>;
 }
 
 export interface StoreBlobGetInput {
@@ -152,6 +159,7 @@ export function createCredentialsStoreDbPlugin(): Plugin {
           await bus.call('storage:set', ctx, {
             key: v2StorageKey(scope, ownerId, ref),
             value: input.blob,
+            tx: input.tx,
           });
         },
       );

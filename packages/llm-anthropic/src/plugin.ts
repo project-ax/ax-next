@@ -5,6 +5,15 @@ import { fromAnthropicResponse, toAnthropicRequest } from './translate.js';
 const PLUGIN_NAME = '@ax/llm-anthropic';
 const PLUGIN_VERSION = '0.0.0';
 
+export interface ModelsListSupportedOutput {
+  models: Array<{
+    id: string;
+    label: string;
+    /** 'fast' = title generation / cheap loops; 'default' = chat. 'either' = both work. */
+    kind: 'fast' | 'default' | 'either';
+  }>;
+}
+
 // Statuses we consider transient — a 1-shot retry buys us resilience without
 // turning the plugin into a backoff library. Anything else — auth, validation,
 // persistent quota — is the orchestrator's problem.
@@ -48,7 +57,7 @@ export function createLlmAnthropicPlugin(cfg: LlmAnthropicConfig = {}): Plugin {
     manifest: {
       name: PLUGIN_NAME,
       version: PLUGIN_VERSION,
-      registers: ['llm:call:anthropic'],
+      registers: ['llm:call:anthropic', 'models:list-supported'],
       calls: [],
       subscribes: [],
     },
@@ -74,6 +83,18 @@ export function createLlmAnthropicPlugin(cfg: LlmAnthropicConfig = {}): Plugin {
         'llm:call:anthropic',
         PLUGIN_NAME,
         async (_ctx, input) => callWithRetry(client, input, cfg),
+      );
+
+      bus.registerService<unknown, ModelsListSupportedOutput>(
+        'models:list-supported',
+        PLUGIN_NAME,
+        async () => ({
+          models: [
+            { id: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5', kind: 'fast' },
+            { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6', kind: 'either' },
+            { id: 'claude-opus-4-7', label: 'Claude Opus 4.7', kind: 'default' },
+          ],
+        }),
       );
     },
   };
