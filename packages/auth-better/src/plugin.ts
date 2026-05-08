@@ -23,6 +23,8 @@ import type {
 // (a future @ax/auth-better is an alternate impl of the same hook surface).
 // Same I2 escape hatch: types-only.
 import type {
+  CompleteBootstrapUserInput,
+  CompleteBootstrapUserOutput,
   CreateBootstrapUserInput,
   CreateBootstrapUserOutput,
   User,
@@ -105,6 +107,7 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
         'auth:require-user',
         'auth:get-user',
         'auth:create-bootstrap-user',
+        'auth:complete-bootstrap-user',
       ],
       // Task 1.5 adds the envelope hooks to `calls` because the admin
       // provider CRUD routes now wrap/unwrap secrets unconditionally
@@ -202,6 +205,33 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
         PLUGIN_NAME,
         async (_ctx, input) =>
           createBootstrapUser(localDb, sessionLifetimeSeconds, input),
+      );
+
+      bus.registerService<CompleteBootstrapUserInput, CompleteBootstrapUserOutput>(
+        'auth:complete-bootstrap-user',
+        PLUGIN_NAME,
+        async (_ctx, input) => {
+          // The oneTimeToken IS a sessionId pre-minted by the create hook.
+          // We just package it as a cookie. We do NOT validate it here — the
+          // route layer is the auth gate (mirrors auth-oidc's impl).
+          // `password` is accepted in the input type for forward-compat with
+          // Phase 3 local-auth plans but is silently ignored for now (no
+          // local password support yet; deferred per YAGNI guard in plan).
+          return {
+            sessionCookie: {
+              name: sessionCookieName,
+              value: input.oneTimeToken,
+              opts: {
+                path: '/',
+                sameSite: 'Lax',
+                // Production: cookie only over HTTPS. Dev/test: omit so kind
+                // and local docker work over plain HTTP.
+                ...(process.env['NODE_ENV'] === 'production' ? { secure: true } : {}),
+                maxAge: sessionLifetimeSeconds,
+              },
+            },
+          };
+        },
       );
 
       // 6) Mount /auth/* via http:register-route -------------------------
