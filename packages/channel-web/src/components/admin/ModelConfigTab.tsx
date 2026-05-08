@@ -14,7 +14,7 @@
  *
  * Empty selections are silently skipped on save.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { listProviders, type ProviderEntry } from '../../lib/providers';
 import { adminCredentials } from '../../lib/credentials';
 
@@ -35,13 +35,35 @@ const ROLES = [
 
 export function ModelConfigTab() {
   const [providers, setProviders] = useState<ProviderEntry[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedModels, setSelectedModels] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedOk, setSavedOk] = useState(false);
+  // Tracks the pending "Saved" indicator clear so unmount during the 2s
+  // window doesn't trigger a setState-on-unmounted warning.
+  const savedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    void listProviders().then((list) => setProviders(list));
+    let cancelled = false;
+    void (async () => {
+      try {
+        const list = await listProviders();
+        if (cancelled) return;
+        setProviders(list);
+        setLoadError(null);
+      } catch (err) {
+        if (cancelled) return;
+        setLoadError(err instanceof Error ? err.message : String(err));
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (savedTimeoutRef.current !== null) {
+        clearTimeout(savedTimeoutRef.current);
+        savedTimeoutRef.current = null;
+      }
+    };
   }, []);
 
   const configuredProviders = providers.filter((p) => p.configured);
@@ -50,6 +72,10 @@ export function ModelConfigTab() {
     setSaving(true);
     setSaveError(null);
     setSavedOk(false);
+    if (savedTimeoutRef.current !== null) {
+      clearTimeout(savedTimeoutRef.current);
+      savedTimeoutRef.current = null;
+    }
     try {
       for (const role of ROLES) {
         const selectedModel = selectedModels[role.ref];
@@ -63,8 +89,11 @@ export function ModelConfigTab() {
         });
       }
       setSavedOk(true);
-      // Reset "Saved" indicator after a brief moment.
-      setTimeout(() => setSavedOk(false), 2000);
+      // Reset "Saved" indicator after a brief moment; cleared on unmount.
+      savedTimeoutRef.current = setTimeout(() => {
+        setSavedOk(false);
+        savedTimeoutRef.current = null;
+      }, 2000);
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -73,6 +102,14 @@ export function ModelConfigTab() {
   };
 
   const hasAnySelection = ROLES.some((r) => selectedModels[r.ref]);
+
+  if (loadError !== null) {
+    return (
+      <div className="model-config-load-error" role="alert">
+        Couldn't load providers: {loadError}
+      </div>
+    );
+  }
 
   return (
     <div className="model-config-tab">

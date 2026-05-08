@@ -21,6 +21,7 @@ import { ProviderKeyForm } from './ProviderKeyForm';
 export function ProviderKeysTab() {
   const [providers, setProviders] = useState<ProviderEntry[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [validating, setValidating] = useState(false);
   const [rowError, setRowError] = useState<Record<string, string>>({});
@@ -30,6 +31,9 @@ export function ProviderKeysTab() {
     try {
       const list = await listProviders();
       setProviders(list);
+      setLoadError(null);
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
@@ -82,6 +86,14 @@ export function ProviderKeysTab() {
 
   if (loading) {
     return <div className="provider-keys-loading">Loading providers…</div>;
+  }
+
+  if (loadError !== null) {
+    return (
+      <div className="provider-keys-error" role="alert">
+        Couldn't load providers: {loadError}
+      </div>
+    );
   }
 
   return (

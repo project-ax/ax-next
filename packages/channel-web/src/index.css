@@ -1851,6 +1851,285 @@ body.searching .attach-btn { display: none; }
   padding: 24px;
 }
 
+/* Provider Keys tab — list of providers with inline edit-in-place. */
+.provider-keys-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 640px;
+}
+
+.provider-keys-loading,
+.provider-keys-error {
+  font-size: 13px;
+  color: var(--ink-mute);
+  padding: 16px 0;
+}
+.provider-keys-error {
+  color: var(--danger);
+}
+
+.provider-row {
+  background: var(--surface-raised);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  padding: 14px 16px;
+  transition: border-color 140ms ease;
+}
+.provider-row.editing {
+  border-color: var(--accent);
+}
+.provider-row.error {
+  border-color: var(--danger);
+}
+
+.provider-row-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.provider-name {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--ink);
+  flex: 0 0 auto;
+}
+
+.provider-badge {
+  font-size: 11px;
+  font-family: var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  flex: 0 0 auto;
+}
+.provider-badge-configured {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.provider-key-masked {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--ink-mute);
+  letter-spacing: 0.08em;
+  flex: 0 0 auto;
+}
+
+.provider-unconfigured {
+  font-size: 13px;
+  color: var(--ink-mute);
+  flex: 1;
+}
+
+.provider-btn-edit,
+.provider-btn-add {
+  all: unset;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: var(--mono);
+  letter-spacing: 0.02em;
+  padding: 5px 12px;
+  border-radius: 4px;
+  margin-left: auto;
+  transition: background 120ms ease, color 120ms ease, filter 120ms ease;
+}
+.provider-btn-edit {
+  color: var(--ink-soft);
+  background: var(--bg-deep);
+  border: 1px solid var(--rule);
+}
+.provider-btn-edit:hover {
+  color: var(--ink);
+  background: var(--bg);
+}
+.provider-btn-add {
+  color: var(--bg);
+  background: var(--accent);
+  border: 1px solid var(--accent);
+}
+.provider-btn-add:hover {
+  filter: brightness(1.05);
+}
+
+/* ProviderKeyForm — inline below the row header when editing. */
+.provider-key-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--rule);
+}
+
+.provider-key-input {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--ink);
+  outline: none;
+  box-sizing: border-box;
+  transition: border-color 140ms ease;
+}
+.provider-key-input:focus {
+  border-color: var(--accent);
+}
+.provider-key-input[disabled] {
+  opacity: 0.6;
+}
+
+.provider-key-error {
+  background: color-mix(in oklch, var(--danger) 10%, transparent);
+  border: 1px solid color-mix(in oklch, var(--danger) 40%, transparent);
+  color: var(--danger);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 12.5px;
+}
+
+.provider-key-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.provider-key-save,
+.provider-key-cancel {
+  all: unset;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: var(--mono);
+  letter-spacing: 0.02em;
+  padding: 6px 14px;
+  border-radius: 4px;
+  transition: background 120ms ease, color 120ms ease, filter 120ms ease;
+}
+.provider-key-save {
+  color: var(--bg);
+  background: var(--accent);
+  border: 1px solid var(--accent);
+}
+.provider-key-save:hover:not([disabled]) {
+  filter: brightness(1.05);
+}
+.provider-key-save[disabled] {
+  cursor: default;
+  opacity: 0.5;
+}
+.provider-key-cancel {
+  color: var(--ink-soft);
+  background: var(--bg-deep);
+  border: 1px solid var(--rule);
+}
+.provider-key-cancel:hover:not([disabled]) {
+  color: var(--ink);
+  background: var(--bg);
+}
+.provider-key-cancel[disabled] {
+  cursor: default;
+  opacity: 0.6;
+}
+
+/* Model Config tab — searchable model pickers per role. */
+.model-config-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  max-width: 640px;
+}
+
+.model-config-loading,
+.model-config-load-error {
+  font-size: 13px;
+  color: var(--ink-mute);
+  padding: 16px 0;
+}
+.model-config-load-error {
+  color: var(--danger);
+}
+
+.model-config-role {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 16px;
+  background: var(--surface-raised);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+}
+
+.model-config-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.model-config-description {
+  font-size: 12.5px;
+  color: var(--ink-mute);
+  margin: 0;
+}
+
+.model-config-role select {
+  margin-top: 6px;
+  background: var(--bg);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-family: var(--sans);
+  font-size: 13.5px;
+  color: var(--ink);
+  outline: none;
+  transition: border-color 140ms ease;
+  width: 100%;
+  box-sizing: border-box;
+}
+.model-config-role select:focus {
+  border-color: var(--accent);
+}
+
+.model-config-footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.model-config-save {
+  all: unset;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: var(--mono);
+  letter-spacing: 0.02em;
+  padding: 8px 16px;
+  border-radius: 4px;
+  color: var(--bg);
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  transition: filter 120ms ease, opacity 120ms ease;
+}
+.model-config-save:hover:not([disabled]) {
+  filter: brightness(1.05);
+}
+.model-config-save[disabled] {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.model-config-error {
+  background: color-mix(in oklch, var(--danger) 10%, transparent);
+  border: 1px solid color-mix(in oklch, var(--danger) 40%, transparent);
+  color: var(--danger);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 12.5px;
+}
+
 /* SettingsPanel — same overlay/panel/header/
    close/body shape, just a different surface. Aliased rather than
    duplicated so future tweaks to the modal frame stay in one place. */
