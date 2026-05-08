@@ -145,7 +145,7 @@ export function ProviderKeysTab() {
               name={provider.name}
               status={status}
               statusLabel={statusLabel}
-              keyStub={provider.configured && !isEditing ? 'key ••••••••' : undefined}
+              {...(provider.configured && !isEditing && { keyStub: 'key ••••••••' })}
               editing={isEditing}
               {...(!isEditing && { onEdit: () => handleEdit(provider.id) })}
               body={
@@ -153,7 +153,7 @@ export function ProviderKeysTab() {
                   <KeyForm
                     placeholder={`Paste your ${provider.name} API key`}
                     inputLabel={`${provider.name} API key`}
-                    error={error || undefined}
+                    {...(error && { error })}
                     saving={validating}
                     helperRight={
                       PROVIDER_HELPER[provider.id] ? (
