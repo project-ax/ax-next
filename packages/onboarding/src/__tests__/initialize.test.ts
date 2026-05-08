@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import {
   PostgreSqlContainer,
@@ -7,8 +8,11 @@ import { Kysely, PostgresDialect, sql } from 'kysely';
 import pg from 'pg';
 import { createTestHarness, type TestHarness } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
+import { createHttpServerPlugin } from '@ax/http-server';
 import { createOnboardingPlugin } from '../plugin.js';
 import type { BootstrapStatusOutput } from '../types.js';
+
+const COOKIE_KEY = randomBytes(32);
 
 let container: StartedPostgreSqlContainer;
 let connectionString: string;
@@ -28,9 +32,17 @@ async function bootHarness(opts: {
   const stdoutLines: string[] = [];
   const fileWrites: Array<{ path: string; token: string }> = [];
 
+  process.env.AX_HTTP_ALLOW_NO_ORIGINS = '1';
+  const http = createHttpServerPlugin({
+    host: '127.0.0.1',
+    port: 0,
+    cookieKey: COOKIE_KEY,
+    allowedOrigins: [],
+  });
   const harness = await createTestHarness({
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),
+      http,
       createOnboardingPlugin({
         baseUrl: 'http://localhost:8080',
         tokenFilePath: opts.tokenFilePath ?? '/dev/null/never-used',

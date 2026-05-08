@@ -11,3 +11,9 @@ export {
   printTokenToStdout,
 } from './token.js';
 export type { OnboardingConfig, BootstrapStatusOutput } from './types.js';
+export { createRateLimiter } from './rate-limit.js';
+export type { RateLimitConfig, RateLimiter } from './rate-limit.js';
+export { createBootstrapSessionStore } from './sessions.js';
+export type { BootstrapSessionStore } from './sessions.js';
+export { createOnboardingRouteHandlers } from './routes.js';
+export type { OnboardingRouteHandlerDeps, RouteRequest, RouteResponse } from './routes.js';

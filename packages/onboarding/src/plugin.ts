@@ -1,6 +1,8 @@
 import {
   makeAgentContext,
   PluginError,
+  type AgentContext,
+  type HookBus,
   type Plugin,
 } from '@ax/core';
 import type { Kysely } from 'kysely';
@@ -12,20 +14,65 @@ import {
   printTokenToStdout,
   writeTokenFile,
 } from './token.js';
+import { createRateLimiter } from './rate-limit.js';
+import { createBootstrapSessionStore } from './sessions.js';
+import { createOnboardingRouteHandlers, type RouteRequest, type RouteResponse } from './routes.js';
 import type { BootstrapStatusOutput, OnboardingConfig } from './types.js';
 
 const PLUGIN_NAME = '@ax/onboarding';
 const DEFAULT_TOKEN_FILE_PATH = '/var/run/ax/bootstrap-token';
 
+interface AnyHttpReq {
+  headers: Record<string, string>;
+  body: Buffer;
+  cookies: Record<string, string>;
+  query: Record<string, string>;
+  signedCookie(name: string): string | null;
+}
+interface AnyHttpRes {
+  status(n: number): unknown;
+  json(v: unknown): void;
+  text(s: string): void;
+  end(): void;
+  redirect(url: string, status?: number): void;
+  setSignedCookie(name: string, value: string, opts?: unknown): void;
+  clearCookie(name: string, opts?: unknown): void;
+}
+
+function asRouteReq(req: AnyHttpReq): RouteRequest {
+  return req as RouteRequest;
+}
+function asRouteRes(res: AnyHttpRes): RouteResponse {
+  return res as RouteResponse;
+}
+
+async function registerRoute(
+  bus: HookBus,
+  initCtx: AgentContext,
+  input: {
+    method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+    path: string;
+    handler: (req: AnyHttpReq, res: AnyHttpRes) => Promise<void>;
+  },
+): Promise<() => void> {
+  const result = await bus.call<unknown, { unregister: () => void }>(
+    'http:register-route',
+    initCtx,
+    input,
+  );
+  return result.unregister;
+}
+
 export function createOnboardingPlugin(config: OnboardingConfig): Plugin {
   let store: OnboardingStore | undefined;
+  const unregisterRoutes: Array<() => void> = [];
 
   return {
     manifest: {
       name: PLUGIN_NAME,
       version: '0.0.0',
       registers: ['bootstrap:status'],
-      calls: ['database:get-instance'],
+      calls: ['database:get-instance', 'http:register-route'],
       subscribes: [],
     },
 
@@ -112,9 +159,29 @@ export function createOnboardingPlugin(config: OnboardingConfig): Plugin {
           return { status: row.status };
         },
       );
+
+      // /setup/claim route -----------------------------------------------
+      const rateLimit = createRateLimiter({
+        tokensPerWindow: 5,
+        windowMs: 60_000,
+        matchPath: (path) => path === '/setup/claim',
+      });
+      const sessions = createBootstrapSessionStore();
+      const handlers = createOnboardingRouteHandlers({ store: localStore, sessions, rateLimit });
+
+      unregisterRoutes.push(
+        await registerRoute(bus, initCtx, {
+          method: 'POST',
+          path: '/setup/claim',
+          handler: async (req, res) =>
+            handlers.claim(asRouteReq(req), asRouteRes(res)),
+        }),
+      );
     },
 
     async shutdown() {
+      for (const unregister of unregisterRoutes) unregister();
+      unregisterRoutes.length = 0;
       store = undefined;
     },
   };
