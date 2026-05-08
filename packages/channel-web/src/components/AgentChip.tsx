@@ -6,20 +6,21 @@
  * which decides between defer (non-empty session) or just-record (no
  * session yet) per the deferred-switch contract.
  *
- * Display priority for the chip name: `pendingAgentId` > `selectedAgentId`
- * > first agent. The pending agent wins so the chip immediately reflects
- * a deferred switch even though no session exists for it yet.
+ * Display priority for the chip name: `pendingAgentId` >
+ * `selectedAgentId` > first agent. The pending agent wins so the chip
+ * immediately reflects a deferred switch even though no session exists
+ * for it yet.
  *
- * Switching agents on a non-empty session also drives assistant-ui to a
- * fresh local thread so the chat pane goes blank (the welcome empty
+ * Switching agents on a non-empty session also drives assistant-ui to
+ * a fresh local thread so the chat pane goes blank (the welcome empty
  * state). Without this, the previous session's history would remain
- * visible until the user typed something — confusing because the chip
- * already shows the new agent.
+ * visible until the user typed something.
  */
 import { useEffect, useRef, useState } from 'react';
 import { useAui } from '@assistant-ui/react';
 import { agentStoreActions, useAgentStore } from '../lib/agent-store';
 import { AgentMenu } from './AgentMenu';
+import { cn } from '@/lib/utils';
 
 export function AgentChip() {
   const [open, setOpen] = useState(false);
@@ -36,7 +37,6 @@ export function AgentChip() {
   const activeId = pendingAgentId ?? selectedAgentId;
   const active = agents.find((a) => a.id === activeId) ?? agents[0];
 
-  // Outside-click closes the menu — same pattern as UserMenu.
   useEffect(() => {
     if (!open) return;
     const onDocClick = (e: MouseEvent) => {
@@ -54,10 +54,6 @@ export function AgentChip() {
       hasMessages: activeSessionHasMessages,
     });
     if (wasNonEmpty) {
-      // Match the user-visible promise of the deferred-switch contract:
-      // "the chat view goes blank". Without this the pending agent
-      // shows in the chip but the previous thread's history stays on
-      // screen until the next message.
       try {
         aui.threads().switchToNewThread();
       } catch (err) {
@@ -67,22 +63,45 @@ export function AgentChip() {
   };
 
   return (
-    <div ref={wrapRef} className="agent-chip-wrap" style={{ position: 'relative' }}>
+    <div ref={wrapRef} className="relative">
       <button
-        className="agent-chip"
+        className={cn(
+          'agent-chip group flex items-center gap-2 min-w-0 cursor-pointer',
+          'pl-2 pr-2.5 py-[7px] rounded-lg transition-colors',
+          'hover:bg-muted aria-expanded:bg-muted',
+        )}
         aria-haspopup="true"
         aria-expanded={open ? 'true' : 'false'}
         type="button"
         onClick={() => setOpen((v) => !v)}
       >
-        <span className="agent-chip-avatar" aria-hidden="true">
+        <span
+          aria-hidden="true"
+          className="
+            inline-flex items-center justify-center shrink-0
+            h-[22px] w-[22px] rounded-md border border-border
+          "
+          style={{
+            background:
+              'linear-gradient(135deg, color-mix(in srgb, hsl(var(--primary)) 22%, hsl(var(--muted))), hsl(var(--muted)))',
+          }}
+        >
           <span
-            className="dot"
+            className="h-[5px] w-[5px] rounded-full bg-primary"
             style={active?.color ? { background: active.color } : undefined}
           />
         </span>
-        <span className="agent-chip-name">{active?.name ?? '—'}</span>
-        <svg className="agent-chip-caret" viewBox="0 0 10 10" aria-hidden="true">
+        <span className="text-[15px] tracking-[-0.01em] leading-none text-foreground">
+          {active?.name ?? '—'}
+        </span>
+        <svg
+          viewBox="0 0 10 10"
+          aria-hidden="true"
+          className="
+            ml-auto shrink-0 h-2.5 w-2.5 text-muted-foreground
+            transition-transform duration-150 group-aria-expanded:rotate-180
+          "
+        >
           <path
             d="M2.5 4 L5 6.5 L7.5 4"
             stroke="currentColor"
@@ -98,19 +117,6 @@ export function AgentChip() {
   );
 }
 
-/**
- * Hook that hydrates the agent list from `/api/chat/agents` (Task 18) on
- * mount. Split from the chip so a parent (Sidebar) can mount it exactly
- * once without coupling hydration to the chip's render tree.
- *
- * The chat-flow `GET /api/chat/agents` returns a display-relevant subset
- * `{ agentId, displayName, visibility }`. The internal Agent shape used
- * by the chip + menu carries presentation-only fields (color, desc, tag)
- * the wire deliberately drops (Invariant I5 — capabilities minimized).
- * We synthesize stable defaults here: a deterministic color per agentId,
- * an empty desc, and `''` for tag. The chip's name + active highlighting
- * is the only thing the user actually reads in MVP.
- */
 export function useHydrateAgents(): void {
   useEffect(() => {
     let cancelled = false;
@@ -128,8 +134,6 @@ export function useHydrateAgents(): void {
           displayName: string;
           visibility: 'personal' | 'team';
         }>;
-        // Map wire → internal Agent shape. Fields the wire drops (color,
-        // desc, tag, model, etc.) are filled with neutral defaults.
         const mapped = wireAgents.map((a) => ({
           id: a.agentId,
           owner_id: '',
@@ -156,11 +160,6 @@ export function useHydrateAgents(): void {
   }, []);
 }
 
-/**
- * Deterministic color from a small palette so the same agentId always
- * gets the same chip dot — keeps the sidebar visually stable across
- * reloads even though the wire doesn't carry color.
- */
 function agentColorFor(agentId: string): string {
   const palette = ['#7aa6c9', '#b08968', '#9c89b8', '#90a955', '#d4a373', '#9b5de5'];
   let hash = 0;
