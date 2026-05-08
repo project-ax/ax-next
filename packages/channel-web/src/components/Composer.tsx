@@ -128,6 +128,7 @@ export function Composer() {
         composer composer-fade group/composer
         fixed bottom-0 right-[var(--scrollbar-gutter,15px)] left-[240px]
         [body.sidebar-collapsed_&]:left-[56px]
+        max-[720px]:!left-0
         flex justify-center px-6 pt-10 pb-[22px] z-20
         transition-[left] duration-200
       "

@@ -21,14 +21,16 @@ export function Sidebar({
     <aside
       data-testid="sidebar"
       id="sidebar"
-      // `sidebar` class is a structural hook for mobile slide-over rules in
-      // index.css; it carries no styling. Phase 18 inlines those rules here.
       className="
-        sidebar
         sticky top-0 self-start h-screen overflow-visible
         w-[240px] shrink-0 border-r border-border bg-background
         flex flex-col font-sans
         transition-[width] duration-200 [body.sidebar-collapsed_&]:w-[56px]
+        max-[720px]:fixed max-[720px]:inset-y-0 max-[720px]:left-0 max-[720px]:z-50
+        max-[720px]:!w-[280px] max-[720px]:-translate-x-full
+        max-[720px]:transition-transform max-[720px]:duration-200
+        [body.sidebar-open_&]:max-[720px]:translate-x-0
+        max-[720px]:shadow-[0_0_40px_rgba(0,0,0,0.08)]
       "
     >
       <div

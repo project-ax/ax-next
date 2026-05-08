@@ -20,6 +20,9 @@ export function SidebarCollapseToggle({ className }: { className?: string } = {}
         'text-muted-foreground hover:text-foreground hover:bg-muted',
         'focus-visible:text-foreground focus-visible:bg-muted focus-visible:outline-none',
         'transition-colors',
+        // Mobile uses the slide-over hamburger instead; hide the desktop
+        // collapse toggle below 720px.
+        'max-[720px]:hidden',
         className,
       )}
       aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
