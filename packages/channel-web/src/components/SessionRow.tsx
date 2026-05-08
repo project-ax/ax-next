@@ -37,6 +37,11 @@ import {
 } from 'react';
 import { sessionStoreActions } from '../lib/session-store';
 import { cn } from '@/lib/utils';
+import {
+  sidebarRowActiveClass,
+  sidebarRowBaseClass,
+  sidebarRowInactiveClass,
+} from './SidebarRow';
 
 export interface SessionRowProps {
   id: string;
@@ -193,7 +198,7 @@ export function SessionRow({
       <div
         className="
           session-row confirming-delete
-          flex items-center gap-1.5 h-[34px] px-3
+          flex items-center gap-1.5 h-[34px] px-2.5
           rounded-sm bg-destructive/10 cursor-default
         "
         data-session-id={id}
@@ -249,15 +254,20 @@ export function SessionRow({
         } as const)
       : {};
 
-  const dotStyle: CSSProperties = { background: agentColor };
+  const accentStyle: CSSProperties = { background: agentColor };
   const isRenaming = rowState === 'renaming';
 
   return (
     <div
       className={cn(
-        'session-row group relative flex items-start gap-2 h-[34px] px-3 py-2 rounded-sm cursor-pointer w-full',
-        'text-muted-foreground hover:bg-muted hover:text-foreground transition-colors',
-        active && 'active bg-muted text-foreground',
+        // Mirror the SidebarRow frame so chat session rows are visually
+        // identical to admin nav items (same paddings, gap, text size,
+        // hover wash). h-[34px] is the only chat-specific override —
+        // load-bearing for inline delete-confirm "no reflow" parity.
+        'session-row',
+        sidebarRowBaseClass,
+        'h-[34px]',
+        active ? cn('active', sidebarRowActiveClass) : sidebarRowInactiveClass,
       )}
       data-session-id={id}
       data-active={active ? 'true' : undefined}
@@ -272,21 +282,18 @@ export function SessionRow({
         onSelect(id);
       }}
     >
-      {active ? (
-        <span
-          aria-hidden="true"
-          className="absolute left-0 top-2.5 bottom-2.5 w-0.5 rounded-sm bg-primary"
-        />
-      ) : null}
+      {/* Per-agent accent bar — same shape as AdminNavItem's primary
+          active bar, but always visible and coloured by the session's
+          agent so the sidebar doubles as an at-a-glance agent legend. */}
       <span
-        className="session-row-dot mt-[7px] h-1.5 w-1.5 rounded-full shrink-0 opacity-80 group-hover:opacity-100 [.active>&]:opacity-100"
-        style={dotStyle}
+        className="session-row-dot absolute left-0 top-2.5 bottom-2.5 w-0.5 rounded-full"
+        style={accentStyle}
         aria-hidden="true"
       />
       <span
         ref={titleRef}
         className={cn(
-          'session-row-title flex-1 min-w-0 text-[13px] leading-[1.35] tracking-[-0.005em] whitespace-nowrap overflow-hidden',
+          'session-row-title flex-1 min-w-0 leading-[1.35] tracking-[-0.005em] whitespace-nowrap overflow-hidden',
           // Right-edge fade so trailing chars sit cleanly under the ⋯ button.
           // Mask widens slightly on hover/active so the runway stays clear.
           !isRenaming &&
