@@ -33,7 +33,7 @@ import { Sidebar } from './components/Sidebar';
 import { SessionHeader } from './components/SessionHeader';
 import { Thread } from './components/Thread';
 import { ToastStack } from './components/Toast';
-import { AdminSettings } from './components/admin/AdminSettings';
+import { AdminShell } from './components/admin/AdminShell';
 import { SettingsPanel } from './components/settings/SettingsPanel';
 import { UserProvider } from './lib/user-context';
 
@@ -137,26 +137,27 @@ const AppContent = ({ user }: { user: AuthUser }) => {
     <UserProvider value={user}>
       <AssistantRuntimeProvider runtime={runtime}>
         <div className="app-layout">
-          <Sidebar
-            onOpenAdminSettings={() => setAdminSettingsOpen(true)}
-            onOpenSettings={() => setSettingsOpen(true)}
-          />
-          {sidebarOpen && (
-            <div
-              className="sidebar-scrim"
-              onClick={() => setSidebarOpen(false)}
-              aria-hidden="true"
-            />
+          {adminSettingsOpen ? (
+            <AdminShell onClose={() => setAdminSettingsOpen(false)} />
+          ) : (
+            <>
+              <Sidebar
+                onOpenAdminSettings={() => setAdminSettingsOpen(true)}
+                onOpenSettings={() => setSettingsOpen(true)}
+              />
+              {sidebarOpen && (
+                <div
+                  className="sidebar-scrim"
+                  onClick={() => setSidebarOpen(false)}
+                  aria-hidden="true"
+                />
+              )}
+              <main className="pane">
+                <SessionHeader />
+                <Thread />
+              </main>
+            </>
           )}
-          <main className="pane">
-            {adminSettingsOpen
-              ? <AdminSettings onClose={() => setAdminSettingsOpen(false)} />
-              : <>
-                  <SessionHeader />
-                  <Thread />
-                </>
-            }
-          </main>
           <SettingsPanel
             open={settingsOpen}
             onClose={() => setSettingsOpen(false)}
