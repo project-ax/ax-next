@@ -20,6 +20,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useAui } from '@assistant-ui/react';
 import { agentStoreActions, useAgentStore } from '../lib/agent-store';
 import { AgentMenu } from './AgentMenu';
+import { AvatarTile } from './AvatarTile';
 import { cn } from '@/lib/utils';
 
 export function AgentChip() {
@@ -75,22 +76,12 @@ export function AgentChip() {
         type="button"
         onClick={() => setOpen((v) => !v)}
       >
-        <span
-          aria-hidden="true"
-          className="
-            inline-flex items-center justify-center shrink-0
-            h-[22px] w-[22px] rounded-md border border-border
-          "
-          style={{
-            background:
-              'linear-gradient(135deg, color-mix(in srgb, hsl(var(--primary)) 22%, hsl(var(--muted))), hsl(var(--muted)))',
-          }}
-        >
+        <AvatarTile size={22}>
           <span
             className="h-[5px] w-[5px] rounded-full bg-primary"
             style={active?.color ? { background: active.color } : undefined}
           />
-        </span>
+        </AvatarTile>
         <span className="text-[15px] tracking-[-0.01em] leading-none text-foreground">
           {active?.name ?? '—'}
         </span>

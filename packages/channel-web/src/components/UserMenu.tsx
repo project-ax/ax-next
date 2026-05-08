@@ -14,6 +14,7 @@ import { KeyRound, LogOut, Moon, Settings, Sun, UserRound } from 'lucide-react';
 import { useUser } from '../lib/user-context';
 import { signOut } from '../lib/auth';
 import { useTheme, setTheme, type Theme } from '../lib/theme';
+import { AvatarTile } from './AvatarTile';
 import { SidebarSectionLabel } from './SidebarSectionLabel';
 
 interface ThemeOption {
@@ -67,20 +68,14 @@ export function UserMenu({
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
       >
-        <span
-          aria-hidden="true"
-          className="
-            user-avatar inline-flex items-center justify-center shrink-0
-            h-[26px] w-[26px] rounded-full border border-border
-            text-[11px] tracking-[0.04em] text-foreground
-          "
-          style={{
-            background:
-              'linear-gradient(135deg, color-mix(in srgb, hsl(var(--primary)) 26%, hsl(var(--muted))), hsl(var(--muted)))',
-          }}
+        <AvatarTile
+          shape="round"
+          size={26}
+          gradientStrength={26}
+          className="user-avatar text-[11px] tracking-[0.04em] text-foreground"
         >
           {user.name[0]?.toUpperCase() ?? 'U'}
-        </span>
+        </AvatarTile>
         <span className="flex flex-col gap-px min-w-0 flex-1 [body.sidebar-collapsed_&]:hidden">
           <span className="user-name text-[12.5px] leading-[1.15] tracking-[-0.005em] text-foreground truncate">
             {user.name}
@@ -120,16 +115,14 @@ export function UserMenu({
           role="menu"
         >
           <div className="flex items-center gap-2.5 px-2.5 pb-2 mb-1 border-b border-border">
-            <span
-              aria-hidden="true"
-              className="
-                inline-flex items-center justify-center shrink-0
-                h-9 w-9 rounded-full border border-border bg-muted
-                text-foreground font-semibold text-sm
-              "
+            <AvatarTile
+              shape="round"
+              size={36}
+              background="muted"
+              className="text-foreground font-semibold text-sm"
             >
               {user.name[0]?.toUpperCase() ?? 'U'}
-            </span>
+            </AvatarTile>
             <div className="min-w-0">
               <div className="text-[14px] tracking-[-0.01em] leading-[1.1] text-foreground truncate">
                 {user.name}

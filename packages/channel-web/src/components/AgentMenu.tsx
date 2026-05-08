@@ -9,6 +9,7 @@
  * targets them — they're queryable structural names only).
  */
 import type { Agent } from '../../mock/agents';
+import { AvatarTile } from './AvatarTile';
 import { SidebarSectionLabel } from './SidebarSectionLabel';
 
 export interface AgentMenuProps {
@@ -54,18 +55,12 @@ export function AgentMenu({ agents, activeId, onPick }: AgentMenuProps) {
               {...(isActive ? { 'aria-current': 'true' as const } : {})}
               onClick={() => onPick(agent.id)}
             >
-              <span
-                aria-hidden="true"
-                className="
-                  inline-flex items-center justify-center shrink-0
-                  h-[22px] w-[22px] rounded-md bg-muted border border-border
-                "
-              >
+              <AvatarTile size={22} background="muted">
                 <span
                   className="h-[5px] w-[5px] rounded-full bg-primary"
                   style={agent.color ? { background: agent.color } : undefined}
                 />
-              </span>
+              </AvatarTile>
               <div className="flex flex-col gap-px min-w-0 flex-1">
                 <div className="text-[14px] tracking-[-0.01em] leading-[1.1] text-foreground">
                   {agent.name}
