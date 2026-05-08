@@ -6,9 +6,5 @@
   },
   "include": ["src/**/*"],
   "exclude": ["src/__tests__/**", "dist", "node_modules"],
-  "references": [
-    { "path": "../core" },
-    { "path": "../http-server" },
-    { "path": "../ipc-protocol" }
-  ]
+  "references": [{ "path": "../core" }]
 }

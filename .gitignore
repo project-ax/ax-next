@@ -29,3 +29,6 @@ worktrees/
 .playwright-mcp/
 
 docs/plans/
+
+# Brainstorming session scratch (mockups, state) — kept local
+.superpowers/
