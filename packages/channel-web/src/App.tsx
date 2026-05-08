@@ -67,7 +67,11 @@ export const App = () => {
   }, []);
 
   if (authState === 'loading') {
-    return <div className="app-loading">connecting…</div>;
+    return (
+      <div className="flex items-center justify-center min-h-screen text-muted-foreground font-mono text-xs tracking-[0.04em]">
+        connecting…
+      </div>
+    );
   }
   if (authState === 'unauthenticated') {
     return <LoginPage />;
@@ -136,7 +140,7 @@ const AppContent = ({ user }: { user: AuthUser }) => {
   return (
     <UserProvider value={user}>
       <AssistantRuntimeProvider runtime={runtime}>
-        <div className="app-layout">
+        <div className="flex h-screen bg-background text-foreground font-sans">
           {adminSettingsOpen ? (
             <AdminShell onClose={() => setAdminSettingsOpen(false)} />
           ) : (
@@ -147,12 +151,12 @@ const AppContent = ({ user }: { user: AuthUser }) => {
               />
               {sidebarOpen && (
                 <div
-                  className="sidebar-scrim"
+                  className="hidden max-[720px]:block fixed inset-0 bg-black/40 z-40"
                   onClick={() => setSidebarOpen(false)}
                   aria-hidden="true"
                 />
               )}
-              <main className="pane">
+              <main className="flex flex-1 flex-col min-w-0 min-h-0 h-full">
                 <SessionHeader />
                 <Thread />
               </main>

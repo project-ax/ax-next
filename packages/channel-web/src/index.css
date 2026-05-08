@@ -363,12 +363,6 @@ body.sidebar-collapsed .sessions-scroll { visibility: hidden; pointer-events: no
 .sidebar-toggle:focus-visible { color: var(--ink); background: var(--bg-deep); }
 .sidebar-toggle svg { width: 16px; height: 16px; }
 
-/* SIDEBAR SCRIM — mobile-only overlay rendered when body.sidebar-open.
-   Tapping it closes the sidebar. We render the element from React (in
-   App.tsx) rather than via ::after so the click lands on a real DOM
-   node with its own handler. */
-.sidebar-scrim { display: none; }
-
 /* USER ROW at bottom — popover (.user-menu) styles arrive in Task 21 */
 .user-row-wrap {
   border-top: 1px solid var(--rule);
@@ -1760,41 +1754,6 @@ body.searching .attach-btn { display: none; }
   letter-spacing: 0.14em;
   color: var(--ink-ghost);
   margin: 6px 0 2px 0;
-}
-
-/* =============================================================
-   APP SHELL — root layout for the authenticated state, plus the
-   short-lived loading state shown while `/api/auth/get-session`
-   is in flight.
-   ============================================================= */
-
-.app-layout {
-  display: flex;
-  height: 100vh;
-}
-
-.pane {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  /* Cap pane height so the inner viewport (.timeline) actually scrolls
-     instead of letting the document grow. Without this, flex:1 timeline
-     also grows, scrollHeight tracks clientHeight, and auto-scroll has
-     nothing to scroll into. */
-  min-height: 0;
-  height: 100%;
-}
-
-.app-loading {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 100vh;
-  color: var(--ink-mute);
-  font-family: var(--mono);
-  font-size: 12px;
-  letter-spacing: 0.04em;
 }
 
 /* =============================================================
