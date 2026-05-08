@@ -70,6 +70,7 @@ const config: Config = {
       boxShadow: {
         sm: '0 1px 2px hsl(0 0% 0% / 0.04), 0 1px 1px hsl(0 0% 0% / 0.03)',
         md: '0 8px 24px hsl(0 0% 0% / 0.06), 0 1px 2px hsl(0 0% 0% / 0.04)',
+        popover: '0 12px 40px -8px hsl(0 0% 0% / 0.18), 0 2px 6px hsl(0 0% 0% / 0.04)',
       },
       keyframes: {
         'form-in': {
