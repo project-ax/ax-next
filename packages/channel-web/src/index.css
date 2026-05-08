@@ -808,92 +808,10 @@ body.sidebar-collapsed .composer { left: 56px; }
   color: var(--ink-mute);
 }
 
-/* =============================================================
-   AGENT STATUS ROW — slim, ephemeral status surface above the
-   composer. Reflects transient agent state ("Thinking…", "Starting
-   sandbox…", "Searching the web…") and recoverable errors. NOT part
-   of chat history (lives in `.composer-inner`, outside `.timeline`).
-   Markup + CSS mirror `design_handoff_tide/Tide Sessions.html`.
-   See `lib/agent-status-store.ts` and `components/AgentStatus.tsx`.
-   ============================================================= */
-
-.agent-status {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 22px;                 /* reserve space so layout doesn't jump */
-  margin-bottom: 8px;
-  padding: 0 4px;
-  font-size: 12.5px;
-  color: var(--ink-mute);
-  letter-spacing: -0.005em;
-  opacity: 0;
-  transform: translateY(2px);
-  transition: opacity 200ms ease, transform 200ms ease;
-  pointer-events: none;
-}
-.agent-status.visible {
-  opacity: 1;
-  transform: translateY(0);
-  pointer-events: auto;
-}
-.agent-status::before {
-  content: '';
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--accent);
-  flex-shrink: 0;
-  animation: breathe 1.6s ease-in-out infinite;
-}
-.agent-status-text {
-  /* Crossfade label swaps so "Thinking…" → "Starting sandbox…" feels smooth. */
-  transition: opacity 140ms ease;
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.agent-status-text.swapping { opacity: 0; }
-.agent-status-cancel {
-  all: unset;
-  cursor: pointer;
-  margin-left: 4px;
-  padding: 1px 6px;
-  border-radius: 3px;
-  font-size: 11px;
-  color: var(--ink-ghost);
-  letter-spacing: 0.02em;
-  opacity: 0;
-  transition: opacity 140ms ease, color 120ms ease, background 120ms ease;
-}
-.agent-status:hover .agent-status-cancel,
-.agent-status:focus-within .agent-status-cancel { opacity: 1; }
-.agent-status-cancel:hover {
-  color: var(--ink);
-  background: var(--bg-deep);
-}
-/* Keyboard focus — `all: unset` above strips the native ring; this
-   restores a visible focus indicator only for keyboard users. */
-.agent-status-cancel:focus-visible {
-  opacity: 1;
-  color: var(--ink);
-  background: var(--bg-deep);
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
-/* Error variant: red dot, danger-tinted text. Persistent (no auto-hide)
-   and the action button is always visible (retry/dismiss). */
-.agent-status.error::before {
-  background: var(--danger);
-  animation: none;
-  opacity: 1;
-  transform: scale(1);
-}
-.agent-status.error { color: var(--danger); }
-.agent-status.error .agent-status-cancel { opacity: 1; }
-
+/* `breathe` is referenced by AgentStatus via Tailwind's
+   `animate-[breathe_1.6s_ease-in-out_infinite]`. Keep the keyframes
+   here as a global so both Tailwind utilities and any future named
+   `animation:` references resolve them. */
 @keyframes breathe {
   0%, 100% { opacity: 0.25; transform: scale(0.8); }
   50%      { opacity: 1;    transform: scale(1.15); }
@@ -1044,65 +962,9 @@ body.sidebar-collapsed .composer { left: 56px; }
   height: 10px;
 }
 
-/* =============================================================
-   SEARCH MODE — Task 26. The bar sits above the timeline (inside the
-   thread root, above the viewport) when search is open. The body class
-   `.searching` activates the CSS rule that hides the composer's attach
-   button — per the design spec, search mode and attach are mutually
-   exclusive affordances.
-   ============================================================= */
-
-.search-bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 24px;
-  border-bottom: 1px solid var(--rule);
-  background: var(--surface-raised);
-}
-.search-input {
-  flex: 1;
-  background: transparent;
-  border: 0;
-  outline: 0;
-  font: inherit;
-  color: inherit;
-  padding: 0;
-}
-.search-input::placeholder { color: var(--ink-mute); }
-.search-clear {
-  all: unset;
-  cursor: pointer;
-  width: 22px;
-  height: 22px;
-  border-radius: 4px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--ink-mute);
-  font-size: 16px;
-  line-height: 1;
-  transition: color 120ms ease, background 120ms ease;
-}
-.search-clear:hover,
-.search-clear:focus-visible {
-  color: var(--ink);
-  background: var(--bg-deep);
-}
-.search-semantic {
-  all: unset;
-  cursor: pointer;
-  font-family: var(--mono);
-  font-size: 11px;
-  letter-spacing: 0.02em;
-  color: var(--ink-mute);
-  padding: 4px 8px;
-  border-radius: 4px;
-  border: 1px solid var(--rule);
-  transition: color 120ms ease, background 120ms ease;
-}
-.search-semantic:hover { color: var(--ink); background: var(--bg-deep); }
-
+/* SEARCH MODE residue — search-results-banner (rendered by Thread) and
+   the body.searching attach-btn rule below live here until those
+   owners migrate (Phase 12 composer, Phase 13 thread). */
 .search-results-banner {
   padding: 8px 24px;
   font-size: 12px;
