@@ -29,6 +29,11 @@ export default defineConfig({
   build: {
     outDir: 'dist-web',
   },
+  resolve: {
+    alias: {
+      '@': resolve(__dirname, './src'),
+    },
+  },
   plugins: [
     react(),
     ...(backendUrl
