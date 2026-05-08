@@ -51,7 +51,12 @@ export interface RouteResponse {
 }
 
 const BOOTSTRAP_SESSION_COOKIE = 'ax_bootstrap_session';
-const BOOTSTRAP_SESSION_TTL_MS = 10 * 60_000;
+const BOOTSTRAP_SESSION_TTL_MS = 10 * 60_000;        // 10 minutes — wizard completion budget.
+// 30s shorter than the in-memory record so the browser stops sending the
+// cookie before the server expires it. Avoids the dead-cookie window where
+// the client thinks it's authenticated but the next /setup/* request sees
+// expired session.
+const BOOTSTRAP_COOKIE_MAX_AGE_S = (10 * 60) - 30;   // 570 seconds.
 
 export interface OnboardingRouteHandlerDeps {
   store: OnboardingStore;
@@ -70,6 +75,12 @@ export function createOnboardingRouteHandlers(deps: OnboardingRouteHandlerDeps) 
       }
 
       // 2) Per-IP rate-limit.
+      // Token-bucket consumes on every matched request, including the
+      // successful claim. That's intentional on a single-use surface: after
+      // the first successful claim, every subsequent /setup/claim returns 410
+      // from the pre-completion gate (step 1) anyway, so the consumed-on-
+      // success token has no observable effect. Keeps the rate-limit code
+      // path simple — no conditional record-on-failure ceremony needed.
       const rl = deps.rateLimit.check(req.headers, '/setup/claim');
       if (rl !== null) {
         res.status(429).json({ error: 'rate-limited' });
@@ -105,10 +116,7 @@ export function createOnboardingRouteHandlers(deps: OnboardingRouteHandlerDeps) 
       res.setSignedCookie(BOOTSTRAP_SESSION_COOKIE, sessionId, {
         path: '/setup',
         sameSite: 'Strict',
-        // Set Max-Age slightly less than TTL so the browser drops it
-        // before the in-memory record expires — avoids serving an
-        // expired cookie.
-        maxAge: Math.floor(BOOTSTRAP_SESSION_TTL_MS / 1000),
+        maxAge: BOOTSTRAP_COOKIE_MAX_AGE_S,
       });
       res.status(200).json({ next: '/setup/admin' });
     },
