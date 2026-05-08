@@ -58,11 +58,15 @@ export function UserMenu({
       <button
         type="button"
         // Keep `user-row` as a structural test hook — no CSS targets it.
+        // The wrap (`user-row-wrap`) already has `p-2`, so the trigger
+        // takes `w-full` and fills the wrap's content area exactly —
+        // earlier `w-[calc(100%-16px)]` left an extra 16px gap on the
+        // right edge and pushed the avatar off-centre when collapsed.
         className="
-          user-row group flex items-center gap-2.5 cursor-pointer w-[calc(100%-16px)]
+          user-row group flex items-center gap-2.5 cursor-pointer w-full
           px-2 py-[7px] rounded-lg transition-colors
           hover:bg-muted aria-expanded:bg-muted
-          [body.sidebar-collapsed_&]:justify-center [body.sidebar-collapsed_&]:px-[7px]
+          [body.sidebar-collapsed_&]:justify-center [body.sidebar-collapsed_&]:px-0
         "
         aria-haspopup="true"
         aria-expanded={open}

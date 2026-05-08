@@ -36,7 +36,7 @@ export function Sidebar({
     >
       <div
         className="
-          flex items-center justify-between gap-2 px-3 pt-3.5 pb-2.5
+          flex items-center justify-between gap-2 px-3 pt-3.5 pb-2 min-h-[48px]
           [body.sidebar-collapsed_&]:justify-center [body.sidebar-collapsed_&]:px-2
         "
       >
@@ -46,7 +46,7 @@ export function Sidebar({
       <NewSessionButton />
       <div
         className="
-          flex-1 overflow-y-auto pb-3
+          flex-1 overflow-y-auto pb-3 px-1
           [body.sidebar-collapsed_&]:invisible [body.sidebar-collapsed_&]:pointer-events-none
           [scrollbar-width:thin]
         "

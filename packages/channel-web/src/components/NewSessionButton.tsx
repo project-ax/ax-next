@@ -28,12 +28,17 @@ export function NewSessionButton() {
     sessionStoreActions.newLocalConversation();
   };
 
+  // Visually mirrors a SidebarRow (admin nav item / chat session row) so
+  // the rail reads as one consistent stack. Doesn't *use* SidebarRow
+  // directly because SidebarRow assumes a px-1 wrapper around it; this
+  // button sits as a direct child of <aside>, so it carries its own
+  // 4px outer margin (mx-1) instead.
   return (
     <button
       className="
-        new-session-btn group mx-2 mb-1.5
-        flex items-center gap-2 px-3 py-2 rounded-md
-        text-[12.5px] tracking-[0.01em] text-muted-foreground
+        new-session-btn group mx-1 mb-1.5
+        flex items-center gap-2.5 px-2.5 py-2 rounded-sm
+        text-[13px] text-foreground/75
         hover:bg-muted hover:text-foreground
         focus-visible:bg-muted focus-visible:text-foreground focus-visible:outline-none
         transition-colors
@@ -46,7 +51,7 @@ export function NewSessionButton() {
         viewBox="0 0 16 16"
         fill="none"
         aria-hidden="true"
-        className="w-[13px] h-[13px] shrink-0 text-muted-foreground group-hover:text-foreground transition-colors"
+        className="w-3.5 h-3.5 shrink-0 text-muted-foreground group-hover:text-foreground/75 transition-colors"
       >
         <path
           d="M8 3 L8 13 M3 8 L13 8"
@@ -55,10 +60,10 @@ export function NewSessionButton() {
           strokeLinecap="round"
         />
       </svg>
-      <span className="min-w-0 [body.sidebar-collapsed_&]:hidden">new session</span>
+      <span className="flex-1 min-w-0 text-left [body.sidebar-collapsed_&]:hidden">new session</span>
       <span
         className="
-          ml-auto font-mono text-[10.5px] tracking-[0.02em] text-ink-ghost
+          font-mono text-[10.5px] tracking-[0.02em] text-ink-ghost
           opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100
           transition-opacity
           [body.sidebar-collapsed_&]:hidden

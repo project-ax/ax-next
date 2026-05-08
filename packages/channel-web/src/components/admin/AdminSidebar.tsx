@@ -30,7 +30,7 @@ export interface AdminSidebarProps {
 export function AdminSidebar({ activeTab, onTabChange, onBackToChat }: AdminSidebarProps) {
   return (
     <aside className="w-[240px] shrink-0 border-r border-border bg-background flex flex-col font-sans">
-      <div className="px-3 pt-3.5 pb-2 flex items-center justify-between gap-2">
+      <div className="px-3 pt-3.5 pb-2 min-h-[48px] flex items-center justify-between gap-2">
         <BrandMark word="ax" />
         <button
           type="button"
