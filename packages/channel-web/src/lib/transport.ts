@@ -225,8 +225,15 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
       return makeEmptyFinishStream();
     }
 
-    const conversationId =
-      this.getConversationIdFn?.() ?? this.localConversationId;
+    // When a resolver is wired, it owns the answer — `null` from the
+    // resolver explicitly means "no active conversation, server should
+    // mint a new one" and must NOT fall through to the stale
+    // localConversationId backup. The `?? localConversationId`
+    // short-circuit only kicks in when no resolver is configured at
+    // all (transport used standalone, e.g. in unit tests).
+    const conversationId = this.getConversationIdFn
+      ? this.getConversationIdFn()
+      : this.localConversationId;
     const agentId = this.getAgentIdFn?.() ?? '';
     if (!agentId) {
       throw new Error('AxChatTransport: agentId is required');

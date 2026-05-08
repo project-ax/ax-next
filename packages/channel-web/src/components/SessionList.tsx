@@ -18,7 +18,7 @@
  */
 import { useEffect } from 'react';
 import { useAui } from '@assistant-ui/react';
-import { useAgentStore } from '../lib/agent-store';
+import { agentStoreActions, useAgentStore } from '../lib/agent-store';
 import {
   conversationToSessionRow,
   sessionStoreActions,
@@ -98,11 +98,19 @@ export function SessionList() {
     // see session-store for why). If we later track per-row metadata
     // we can refine this.
     sessionStoreActions.setActiveSession(id, true);
+    // Sync the chip to the session's agent so the dropdown reflects
+    // who the user is currently talking to. Without this the chip
+    // would still show whichever agent was last selected, even though
+    // the loaded conversation belongs to a different agent (and the
+    // next message would then go to the chip's agent, not this
+    // session's — server would refuse the agent switch on an
+    // existing conversationId per Invariant I10).
+    const session = sorted.find((s) => s.id === id);
+    if (session) agentStoreActions.setSelectedAgent(session.agent_id);
     // Bridge into assistant-ui's RemoteThreadList so the active thread
     // (and its history-adapter load) actually changes. Without this the
     // sidebar selection is purely cosmetic and the chat pane stays on
-    // whatever thread the runtime started with. (Return type is void —
-    // any async work happens inside assistant-ui; we can't catch here.)
+    // whatever thread the runtime started with.
     aui.threads().switchToThread(id);
   };
 

@@ -11,7 +11,7 @@ import { axThreadListAdapter } from './thread-list-adapter';
 import { createAxHistoryAdapter } from './history-adapter';
 import { AxChatTransport } from './transport';
 import { useAgentStore } from './agent-store';
-import { useSessionStore } from './session-store';
+import { sessionStoreActions, useSessionStore } from './session-store';
 import { useThinkingStore } from './thinking-store';
 
 /**
@@ -73,6 +73,14 @@ export const useAxChatRuntime = (
 
   const handleSetConversationId = useCallback((id: string) => {
     conversationRef.current = id;
+    // The server just minted a fresh conversation row (typical first
+    // message after a "+ new session" click or an agent switch).
+    // Promote it to the sidebar's active session immediately so the
+    // row that's about to appear in the list lights up its accent
+    // bar, and bump the list version so SessionList re-fetches and
+    // surfaces the new row in the next render.
+    sessionStoreActions.setActiveSession(id, true);
+    sessionStoreActions.bumpVersion();
   }, []);
 
   const transport = useMemo(
