@@ -1,35 +1,37 @@
 /**
  * ModelConfigTab — searchable model pickers per role.
  *
- * Fetches listProviders() on mount. Shows only configured providers'
- * models in the pickers (grouped by provider in <optgroup>).
- *
- * MVP: starts with empty selections — no read endpoint exists for
- * previously-saved selections. The admin selects fresh and hits
- * "Save changes" to write settings via adminCredentials.create().
- *
- * Each role's selected model is written as a credential with:
- *   scope='global', ownerId=null, ref=role.ref, kind='setting',
- *   payload=selectedModel
- *
- * Empty selections are silently skipped on save.
+ * Behavior contract preserved from the legacy implementation:
+ *   - Fetch listProviders() on mount.
+ *   - Show only configured providers.
+ *   - On Save, write each non-empty selection as a credential
+ *     (scope='global', ownerId=null, ref=role.ref, kind='setting',
+ *     payload=selectedModel).
+ *   - Empty selections are silently skipped.
  */
 import { useEffect, useRef, useState } from 'react';
-import { listProviders, type ProviderEntry } from '../../lib/providers';
-import { adminCredentials } from '../../lib/credentials';
+import { Info } from 'lucide-react';
+import { listProviders, type ProviderEntry } from '@/lib/providers';
+import { adminCredentials } from '@/lib/credentials';
+import { Button } from '@/components/ui/button';
+import { RoleCard } from './RoleCard';
+import { ModelCombobox, type ModelComboboxGroup } from './ModelCombobox';
 
 const ROLES = [
   {
     id: 'fast-model',
+    pill: 'fast',
     label: 'Fast / cheap model',
     ref: 'setting.fast-model',
-    description: 'Used for conversation titles, quick classification, low-latency tasks',
+    description:
+      'Used for conversation titles, quick classification, low-latency tasks.',
   },
   {
     id: 'runner-model',
+    pill: 'runner',
     label: 'Agent runner model',
     ref: 'setting.runner-model',
-    description: 'Used for all agent sessions via the Claude SDK runner',
+    description: 'Used for all agent sessions via the Claude SDK runner.',
   },
 ] as const;
 
@@ -40,8 +42,6 @@ export function ModelConfigTab() {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedOk, setSavedOk] = useState(false);
-  // Tracks the pending "Saved" indicator clear so unmount during the 2s
-  // window doesn't trigger a setState-on-unmounted warning.
   const savedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -66,7 +66,12 @@ export function ModelConfigTab() {
     };
   }, []);
 
-  const configuredProviders = providers.filter((p) => p.configured);
+  const configured = providers.filter((p) => p.configured);
+  const noProviders = configured.length === 0;
+  const groups: ModelComboboxGroup[] = configured.map((p) => ({
+    providerName: p.name,
+    models: p.models,
+  }));
 
   const handleSave = async () => {
     setSaving(true);
@@ -89,7 +94,6 @@ export function ModelConfigTab() {
         });
       }
       setSavedOk(true);
-      // Reset "Saved" indicator after a brief moment; cleared on unmount.
       savedTimeoutRef.current = setTimeout(() => {
         setSavedOk(false);
         savedTimeoutRef.current = null;
@@ -105,92 +109,94 @@ export function ModelConfigTab() {
 
   if (loadError !== null) {
     return (
-      <div className="model-config-load-error" role="alert">
+      <div
+        role="alert"
+        className="px-3 py-2 bg-destructive-soft border border-destructive/25 rounded-md text-[12.5px] text-destructive max-w-[640px] mx-auto"
+      >
         Couldn't load providers: {loadError}
       </div>
     );
   }
 
-  const noProviders = configuredProviders.length === 0;
-
   return (
-    <div className="model-config-tab">
-      {noProviders && (
-        <div className="model-config-hint">
-          Configure a provider key first, then come back here to choose models.
-        </div>
-      )}
-      <div className="model-config-list">
-        {ROLES.map((role, idx) => {
-          const selected = selectedModels[role.ref] ?? '';
-          return (
-            <div
-              key={role.id}
-              className="model-config-row"
-              data-role={role.id}
-              style={{ animationDelay: `${idx * 60}ms` }}
-            >
-              <div className="model-config-row-meta">
-                <span className="model-config-eyebrow">Role · {role.id}</span>
-                <label
-                  htmlFor={`model-select-${role.id}`}
-                  className="model-config-label"
-                >
-                  {role.label}
-                </label>
-                <p className="model-config-description">{role.description}</p>
-              </div>
-              <div className="model-config-row-control">
-                <select
-                  id={`model-select-${role.id}`}
-                  value={selected}
-                  onChange={(e) =>
-                    setSelectedModels((prev) => ({
-                      ...prev,
-                      [role.ref]: e.target.value,
-                    }))
-                  }
-                  aria-label={role.label}
-                  disabled={noProviders}
-                >
-                  <option value="">— Select a model —</option>
-                  {configuredProviders.map((provider) => (
-                    <optgroup key={provider.id} label={provider.name}>
-                      {provider.models.map((model) => (
-                        <option key={model} value={model}>
-                          {model}
-                        </option>
-                      ))}
-                    </optgroup>
-                  ))}
-                </select>
-                {selected && (
-                  <span className="model-config-current">
-                    Current selection · <code>{selected}</code>
-                  </span>
-                )}
-              </div>
-            </div>
-          );
-        })}
+    <div className="max-w-[640px] mx-auto font-sans">
+      <div className="mb-5">
+        <h2 className="text-2xl font-medium tracking-[-0.018em] mb-1.5">
+          Model configuration
+        </h2>
+        <p className="text-sm leading-[1.55] text-muted-foreground max-w-[56ch]">
+          Pick which model handles each role. Only providers with a configured key
+          appear here.
+        </p>
       </div>
 
-      <div className="model-config-footer">
-        <button
+      {noProviders && (
+        <div className="flex items-start gap-2.5 p-3.5 bg-primary-soft border border-primary/20 rounded-lg text-[13px] leading-[1.5] text-foreground/80 mb-4">
+          <Info
+            className="w-4 h-4 rounded-full bg-primary text-primary-foreground p-px shrink-0 mt-px"
+            strokeWidth={3}
+          />
+          <span>
+            Configure a provider key first, then come back here to choose models.
+          </span>
+        </div>
+      )}
+
+      <div className="flex flex-col gap-3.5">
+        {ROLES.map((role) => (
+          <RoleCard
+            key={role.id}
+            pill={role.pill}
+            title={role.label}
+            caption={role.description}
+          >
+            <ModelCombobox
+              ariaLabel={role.label}
+              groups={groups}
+              value={selectedModels[role.ref] ?? ''}
+              onChange={(model) =>
+                setSelectedModels((prev) => ({ ...prev, [role.ref]: model }))
+              }
+              disabled={noProviders}
+              placeholder={
+                noProviders ? '— Configure a provider first —' : '— Select a model —'
+              }
+            />
+            {selectedModels[role.ref] && (
+              <span className="flex items-center gap-1.5 mt-2 text-[11.5px] text-muted-foreground">
+                Currently ·{' '}
+                <code className="font-mono text-[11.5px] text-primary tracking-[0.02em]">
+                  {selectedModels[role.ref]}
+                </code>
+              </span>
+            )}
+          </RoleCard>
+        ))}
+      </div>
+
+      <div className="mt-6 pt-4 border-t border-rule-soft flex items-center gap-3">
+        <Button
           type="button"
-          className="model-config-save"
           onClick={() => void handleSave()}
           disabled={saving || !hasAnySelection}
         >
           {saving ? 'Saving…' : savedOk ? '✓ Saved' : 'Save changes'}
-        </button>
+        </Button>
         {!hasAnySelection && !saving && !savedOk && !saveError && (
-          <span className="model-config-hint-inline">
+          <span className="text-[12.5px] text-muted-foreground">
             Pick a model above to enable save.
           </span>
         )}
+        {savedOk && (
+          <span className="text-[12.5px] text-muted-foreground">
+            Changes apply on the next session start.
+          </span>
+        )}
         {saveError && (
-          <div className="model-config-error" role="alert">
+          <div
+            role="alert"
+            className="px-2.5 py-1.5 bg-destructive-soft border border-destructive/25 rounded-md text-[12.5px] text-destructive"
+          >
             {saveError}
           </div>
         )}

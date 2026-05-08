@@ -2,13 +2,18 @@
  * ModelConfigTab tests.
  *
  * Pinned behaviors:
- *   1. Unconfigured provider models don't appear in select.
- *   2. Configured provider models appear under provider optgroup.
+ *   1. Unconfigured provider models don't appear in the combobox.
+ *   2. Configured provider models appear in the combobox groups.
  *   3. Selecting a model and clicking Save calls adminCredentials.create
  *      with the correct args.
  *   4. Save error shown near button.
  *   5. Empty selection is skipped (Save button disabled until a model is
  *      selected).
+ *
+ * Interaction pattern for ModelCombobox (Radix Popover + cmdk):
+ *   1. fireEvent.click(comboboxButton) — opens the popover.
+ *   2. fireEvent.click(screen.getByText('model-name')) — selects the model.
+ *      cmdk calls onSelect with the item value, which triggers onChange.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
@@ -44,8 +49,18 @@ const unconfiguredProvider = {
   configured: false,
 };
 
+/** Open a combobox popover and select a model by its display text. */
+async function selectModel(comboboxButton: HTMLElement, modelName: string) {
+  fireEvent.click(comboboxButton);
+  // After clicking the trigger, the popover content is in the DOM (portal).
+  await waitFor(() => {
+    expect(screen.getByText(modelName)).toBeTruthy();
+  });
+  fireEvent.click(screen.getByText(modelName));
+}
+
 describe('ModelConfigTab', () => {
-  it('unconfigured provider models do not appear in select', async () => {
+  it('unconfigured provider models do not appear in combobox', async () => {
     fetchMock.mockResolvedValueOnce(
       jsonOk({ providers: [unconfiguredProvider] }),
     );
@@ -56,17 +71,20 @@ describe('ModelConfigTab', () => {
     expect(screen.queryByText('gpt-4o-mini')).toBeNull();
   });
 
-  it('configured provider models appear under provider optgroup', async () => {
+  it('configured provider models appear in combobox groups', async () => {
     fetchMock.mockResolvedValueOnce(
       jsonOk({ providers: [configuredProvider] }),
     );
     render(<ModelConfigTab />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+
+    // Open the first combobox to verify models are present.
+    const comboboxes = screen.getAllByRole('combobox');
+    fireEvent.click(comboboxes[0]!);
+
     await waitFor(() => {
-      expect(screen.getAllByText('claude-sonnet-4-6')).toBeTruthy();
+      expect(screen.getAllByText('claude-sonnet-4-6').length).toBeGreaterThan(0);
     });
-    // Both models from the configured provider should be present.
-    // (getAllByText returns at least one element each for the two selects.)
-    expect(screen.getAllByText('claude-sonnet-4-6').length).toBeGreaterThan(0);
     expect(screen.getAllByText('claude-opus-4-7').length).toBeGreaterThan(0);
   });
 
@@ -80,13 +98,14 @@ describe('ModelConfigTab', () => {
     );
 
     render(<ModelConfigTab />);
-    await waitFor(() => expect(screen.getAllByText('claude-sonnet-4-6').length).toBeGreaterThan(0));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
 
-    // Select the runner-model picker (second role) and choose a model.
-    const selects = screen.getAllByRole('combobox');
     // ROLES order: fast-model (index 0), runner-model (index 1).
-    const runnerSelect = selects[1]!;
-    fireEvent.change(runnerSelect, { target: { value: 'claude-sonnet-4-6' } });
+    const comboboxes = screen.getAllByRole('combobox');
+    const runnerCombobox = comboboxes[1]!;
+
+    // Open the runner-model combobox and select a model.
+    await selectModel(runnerCombobox, 'claude-sonnet-4-6');
 
     fireEvent.click(screen.getByRole('button', { name: /Save changes/i }));
 
@@ -119,10 +138,10 @@ describe('ModelConfigTab', () => {
     fetchMock.mockResolvedValueOnce(new Response(null, { status: 500 }));
 
     render(<ModelConfigTab />);
-    await waitFor(() => expect(screen.getAllByText('claude-sonnet-4-6').length).toBeGreaterThan(0));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
 
-    const selects = screen.getAllByRole('combobox');
-    fireEvent.change(selects[0]!, { target: { value: 'claude-sonnet-4-6' } });
+    const comboboxes = screen.getAllByRole('combobox');
+    await selectModel(comboboxes[0]!, 'claude-sonnet-4-6');
 
     fireEvent.click(screen.getByRole('button', { name: /Save changes/i }));
 
@@ -152,11 +171,11 @@ describe('ModelConfigTab', () => {
     );
 
     render(<ModelConfigTab />);
-    await waitFor(() => expect(screen.getAllByText('claude-sonnet-4-6').length).toBeGreaterThan(0));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
 
     // Only select fast-model (index 0); leave runner-model empty.
-    const selects = screen.getAllByRole('combobox');
-    fireEvent.change(selects[0]!, { target: { value: 'claude-opus-4-7' } });
+    const comboboxes = screen.getAllByRole('combobox');
+    await selectModel(comboboxes[0]!, 'claude-opus-4-7');
 
     fireEvent.click(screen.getByRole('button', { name: /Save changes/i }));
 
