@@ -13,6 +13,7 @@
 import { useEffect, useState } from 'react';
 import { listTeams } from '../../lib/admin';
 import type { Team } from '../../../mock/admin/teams';
+import { PaneStatus } from '../PaneStatus';
 import { RoleCard } from './RoleCard';
 
 export function TeamList() {
@@ -49,18 +50,14 @@ export function TeamList() {
         </p>
       </div>
 
-      {error && (
-        <div role="alert" className="px-3 py-2 bg-destructive-soft border border-destructive/25 rounded-md text-[12.5px] text-destructive">
-          {error}
-        </div>
-      )}
+      {error && <PaneStatus variant="error">{error}</PaneStatus>}
 
       {teams === null && !error && (
-        <div className="text-sm text-muted-foreground">Loading teams…</div>
+        <PaneStatus variant="loading">Loading teams…</PaneStatus>
       )}
 
       {teams !== null && teams.length === 0 && (
-        <div className="text-sm text-muted-foreground">No teams yet.</div>
+        <PaneStatus variant="empty">No teams yet.</PaneStatus>
       )}
 
       <div className="flex flex-col gap-3.5">

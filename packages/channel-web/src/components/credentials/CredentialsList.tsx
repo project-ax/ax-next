@@ -19,6 +19,7 @@
  */
 import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
+import { PaneStatus } from '../PaneStatus';
 import {
   adminCredentials,
   myCredentials,
@@ -92,16 +93,10 @@ export function CredentialsList({
   // Initial-load error (no list yet) takes over the whole panel — there's
   // nothing else to show.
   if (list === null && error === null) {
-    return (
-      <div className="text-sm text-muted-foreground">Loading…</div>
-    );
+    return <PaneStatus variant="loading">Loading…</PaneStatus>;
   }
   if (list === null && error !== null) {
-    return (
-      <div className="text-sm text-destructive" role="alert">
-        Error: {error}
-      </div>
-    );
+    return <PaneStatus variant="error">Error: {error}</PaneStatus>;
   }
 
   // After the first successful load, errors render inline with a dismiss
@@ -126,7 +121,7 @@ export function CredentialsList({
       )}
 
       {list!.length === 0 ? (
-        <div className="text-sm text-muted-foreground">No credentials yet.</div>
+        <PaneStatus variant="empty">No credentials yet.</PaneStatus>
       ) : (
         <div className="flex flex-col">
           {list!.map((c) => {

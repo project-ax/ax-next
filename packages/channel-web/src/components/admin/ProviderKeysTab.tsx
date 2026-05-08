@@ -11,6 +11,7 @@ import { useEffect, useRef, useState } from 'react';
 import { listProviders, validateProviderKey, type ProviderEntry } from '@/lib/providers';
 import { ProviderRow } from './ProviderRow';
 import { KeyForm } from './KeyForm';
+import { PaneStatus } from '../PaneStatus';
 import type { StatusDotVariant } from './StatusDot';
 
 const PROVIDER_HELPER: Record<string, string> = {
@@ -99,25 +100,20 @@ export function ProviderKeysTab() {
         </p>
       </div>
 
-      {loading && <div className="text-sm text-muted-foreground">Loading providers…</div>}
+      {loading && <PaneStatus variant="loading">Loading providers…</PaneStatus>}
 
       {loadError && (
-        <div
-          role="alert"
-          className="px-3 py-2 bg-destructive-soft border border-destructive/25 rounded-md text-[12.5px] text-destructive"
-        >
-          Couldn't load providers: {loadError}
-        </div>
+        <PaneStatus variant="error">Couldn't load providers: {loadError}</PaneStatus>
       )}
 
       {!loading && !loadError && providers.length === 0 && (
-        <div className="text-sm text-muted-foreground">
+        <PaneStatus variant="empty">
           No providers registered. Wire one in via{' '}
           <code className="font-mono text-xs bg-muted px-1.5 py-0.5 rounded">
             credentials:list-providers
           </code>
           .
-        </div>
+        </PaneStatus>
       )}
 
       <div className="flex flex-col">
