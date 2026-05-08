@@ -3,6 +3,7 @@ import type { BootstrapSessionStore } from './sessions.js';
 import type { RateLimiter } from './rate-limit.js';
 import { verifyToken } from './token.js';
 import type { AgentContext, HookBus } from '@ax/core';
+import { runCompletionTransaction } from './completion-tx.js';
 
 // ---------------------------------------------------------------------------
 // HTTP route handlers for /setup/*.
@@ -181,6 +182,67 @@ export function createOnboardingRouteHandlers(deps: OnboardingRouteHandlerDeps) 
       res.clearCookie(BOOTSTRAP_SESSION_COOKIE, { path: '/setup', sameSite: 'Strict' });
       res.setSignedCookie(sessionCookie.name, sessionCookie.value, sessionCookie.opts);
       res.status(200).json({ next: '/setup/model' });
+    },
+
+    async model(req: RouteRequest, res: RouteResponse): Promise<void> {
+      // 1) Pre-completion gate (I11). Mirrors the claim handler.
+      const row = await deps.store.read();
+      if (row?.status === 'completed') {
+        res.status(410).json({ error: 'wizard-complete' });
+        return;
+      }
+
+      // 2) Auth gate via auth:require-user. The admin step minted an auth
+      // session cookie; this route is no longer behind the bootstrap-session
+      // cookie. Use the bus to fetch the user without re-implementing the
+      // session validation.
+      let user: { id: string; isAdmin: boolean };
+      try {
+        const out = await deps.bus.call(
+          'auth:require-user',
+          deps.initCtx,
+          { req: req as unknown as { headers: Record<string, string>; signedCookie(n: string): string | null } },
+        ) as { user: { id: string; isAdmin: boolean } };
+        user = out.user;
+      } catch {
+        res.status(401).json({ error: 'unauthenticated' });
+        return;
+      }
+
+      // 3) Body parse.
+      let parsed: unknown;
+      try { parsed = JSON.parse(req.body.toString('utf8')); }
+      catch { res.status(400).json({ error: 'invalid-json' }); return; }
+      const { apiKey, models } = (parsed ?? {}) as {
+        apiKey?: unknown;
+        models?: { fast?: unknown; default?: unknown };
+      };
+      if (typeof apiKey !== 'string' || apiKey.length === 0) {
+        res.status(400).json({ error: 'missing-apiKey' });
+        return;
+      }
+      const fastModel =
+        typeof models?.fast === 'string' ? models.fast : 'claude-haiku-4-5-20251001';
+      const defaultModel =
+        typeof models?.default === 'string' ? models.default : 'claude-sonnet-4-6';
+
+      // 4) Run the completion transaction.
+      const result = await runCompletionTransaction({
+        bus: deps.bus,
+        ctx: deps.initCtx,
+        adminUserId: user.id,
+        apiKey,
+        fastModel,
+        defaultModel,
+      });
+
+      if (!result.ok) {
+        // 200 with ok:false — preserves the wizard's UX where validation
+        // failures are recoverable (operator can retry with a different key).
+        res.status(200).json({ ok: false, reason: result.reason });
+        return;
+      }
+      res.status(200).json({ ok: true, next: '/' });
     },
   };
 }

@@ -76,6 +76,16 @@ async function bootStack(): Promise<BootedStack> {
     allowedOrigins: [],
   });
   const harness = await createTestHarness({
+    // Stub the tx/credential/agent/storage hooks that onboarding declares in
+    // its `calls`. admin-route.test.ts doesn't load storage-postgres,
+    // credentials, or agents; POST /setup/model is not exercised here, so
+    // stubs satisfy verifyCalls without weakening any assertion.
+    services: {
+      'db:transact': async () => { throw new Error('db:transact not expected in admin-route tests'); },
+      'credentials:set': async () => { throw new Error('credentials:set not expected in admin-route tests'); },
+      'agents:create': async () => { throw new Error('agents:create not expected in admin-route tests'); },
+      'storage:set': async () => { throw new Error('storage:set not expected in admin-route tests'); },
+    },
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),
       http,

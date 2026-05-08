@@ -1,4 +1,6 @@
 export { createOnboardingPlugin } from './plugin.js';
+export { runCompletionTransaction } from './completion-tx.js';
+export type { CompletionResult, CompletionInput } from './completion-tx.js';
 export { runOnboardingMigration } from './migrations.js';
 export type { BootstrapStateRow, OnboardingDatabase } from './migrations.js';
 export { createOnboardingStore } from './store.js';

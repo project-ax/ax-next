@@ -40,12 +40,18 @@ async function bootHarness(opts: {
     allowedOrigins: [],
   });
   const harness = await createTestHarness({
-    // Stub the auth hooks that onboarding now declares in its `calls`.
-    // initialize.test.ts doesn't load auth-oidc; the /setup/admin route
-    // is not exercised here, so stubs are sufficient.
+    // Stub the auth/tx/credential/agent hooks that onboarding declares in its
+    // `calls`. initialize.test.ts doesn't load auth-oidc, storage-postgres,
+    // credentials, or agents; those routes are not exercised here, so stubs
+    // satisfy verifyCalls without weakening any assertion.
     services: {
       'auth:create-bootstrap-user': async () => ({ user: { id: 'stub', email: null, displayName: null, isAdmin: true }, oneTimeToken: 'stub-token' }),
       'auth:complete-bootstrap-user': async () => ({ sessionCookie: { name: 'ax_auth_session', value: 'stub', opts: { path: '/', sameSite: 'Lax', maxAge: 60 } } }),
+      'auth:require-user': async () => { throw new Error('auth:require-user not expected in initialize tests'); },
+      'db:transact': async () => { throw new Error('db:transact not expected in initialize tests'); },
+      'credentials:set': async () => { throw new Error('credentials:set not expected in initialize tests'); },
+      'agents:create': async () => { throw new Error('agents:create not expected in initialize tests'); },
+      'storage:set': async () => { throw new Error('storage:set not expected in initialize tests'); },
     },
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),

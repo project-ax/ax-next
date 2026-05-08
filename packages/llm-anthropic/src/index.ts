@@ -1,1 +1,1 @@
-export { createLlmAnthropicPlugin, type LlmAnthropicConfig } from './plugin.js';
+export { createLlmAnthropicPlugin, type LlmAnthropicConfig, type ModelsListSupportedOutput } from './plugin.js';

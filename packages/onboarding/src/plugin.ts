@@ -77,6 +77,12 @@ export function createOnboardingPlugin(config: OnboardingConfig): Plugin {
         'http:register-route',
         'auth:create-bootstrap-user',
         'auth:complete-bootstrap-user',
+        'auth:require-user',
+        'db:transact',
+        'credentials:set',
+        'agents:create',
+        'bootstrap:complete',
+        'storage:set',
       ],
       subscribes: [],
     },
@@ -206,6 +212,15 @@ export function createOnboardingPlugin(config: OnboardingConfig): Plugin {
           path: '/setup/admin',
           handler: async (req, res) =>
             handlers.admin(asRouteReq(req), asRouteRes(res)),
+        }),
+      );
+
+      unregisterRoutes.push(
+        await registerRoute(bus, initCtx, {
+          method: 'POST',
+          path: '/setup/model',
+          handler: async (req, res) =>
+            handlers.model(asRouteReq(req), asRouteRes(res)),
         }),
       );
     },

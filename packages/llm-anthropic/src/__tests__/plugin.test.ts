@@ -49,12 +49,12 @@ class FakeApiError extends Error {
 const ORIGINAL_ENV_KEY = process.env.ANTHROPIC_API_KEY;
 
 describe('@ax/llm-anthropic plugin manifest', () => {
-  it('declares registers: ["llm:call:anthropic"], no calls, no subscribes', () => {
+  it('declares registers: ["llm:call:anthropic", "models:list-supported"], no calls, no subscribes', () => {
     const plugin = createLlmAnthropicPlugin({ apiKey: 'test-key' });
     expect(plugin.manifest).toEqual({
       name: '@ax/llm-anthropic',
       version: '0.0.0',
-      registers: ['llm:call:anthropic'],
+      registers: ['llm:call:anthropic', 'models:list-supported'],
       calls: [],
       subscribes: [],
     });
