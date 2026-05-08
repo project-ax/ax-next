@@ -22,10 +22,13 @@ const MIME_BY_EXT: Record<string, string> = {
 
 // Vite stamps content-hashes into asset filenames (`foo-C9BLoJwu.js`).
 // Vite uses base64url-encoded hashes (alphanumeric, A-Z permitted), NOT
-// pure hex — so the pattern must accept the full alphanumeric range.
+// pure hex — so the pattern must accept the full alphanumeric range. Vite
+// emits exactly 8 hash characters, so we anchor to exactly 8 to avoid
+// false positives on any longer alphanumeric run (e.g. a future
+// `polyfills.js` chunk would otherwise be wrongly tagged immutable).
 // Files matching this pattern get long-lived cache headers; everything else
 // (notably index.html) gets `no-cache` so SPA updates propagate.
-const HASHED_FILENAME = /[-_.][a-zA-Z0-9]{8,}\./;
+const HASHED_FILENAME = /[-_.][a-zA-Z0-9]{8}\./;
 
 export interface StaticServeDeps {
   /** Absolute path to the dist-spa root. */
@@ -72,12 +75,15 @@ export async function serveSpaAsset(
   const contentType = MIME_BY_EXT[ext];
   if (contentType === undefined) return null; // unknown extension → 404
 
-  // Strip any leading slashes/dots after normalization to prevent path traversal.
+  // Defense-in-depth before resolve: strip leading separator/dot sequences
+  // that normalize() may have floated to the front of the path. The
+  // primary guard is the startsWith check below — even without this strip,
+  // resolve('../etc/passwd') escapes spaRoot and would fail startsWith.
   const normalized = normalize(stripped).replace(/^([./\\])+/, '');
   const full = resolve(deps.spaRoot, normalized);
   const rootWithSep = resolve(deps.spaRoot) + sep;
 
-  // Path traversal guard: resolved path must stay inside spaRoot.
+  // Path traversal guard (primary): resolved path must stay inside spaRoot.
   if (!full.startsWith(rootWithSep) && full !== resolve(deps.spaRoot)) {
     return null;
   }
