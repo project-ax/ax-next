@@ -60,8 +60,10 @@ describe('CredentialsList — admin variant', () => {
     );
     render(<CredentialsList variant="admin" />);
     await waitFor(() => expect(screen.getByText('anthropic')).toBeTruthy());
-    expect(screen.getByText('global')).toBeTruthy();
-    expect(screen.getByText('api-key')).toBeTruthy();
+    // In the redesigned row layout, scope and kind appear together in the
+    // subtitle span (e.g. "global · api-key"). Use a substring match.
+    expect(screen.getByText(/global/)).toBeTruthy();
+    expect(screen.getByText(/api-key/)).toBeTruthy();
   });
 
   it('clicking delete fires a DELETE then re-fetches', async () => {

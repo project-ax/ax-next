@@ -17,6 +17,9 @@
  * deployment topology.
  */
 import { useState } from 'react';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import {
   adminCredentials,
   myCredentials,
@@ -126,33 +129,40 @@ export function OAuthFlowForm({
 
   return (
     <form
-      className="admin-form credentials-form"
+      className="space-y-4"
       onSubmit={(e) => void finish(e)}
     >
       {error !== null && (
-        <div className="admin-error" role="alert">
+        <div
+          role="alert"
+          className="px-3 py-2 bg-destructive/10 border border-destructive/25 rounded-md text-[12.5px] text-destructive"
+        >
           {error}
         </div>
       )}
-      <div className="admin-form-grid">
+
+      <div className="space-y-3">
         {variant === 'admin' && (
           <>
-            <label htmlFor="oauth-scope">Scope</label>
-            <select
-              id="oauth-scope"
-              value={scope}
-              disabled={pending !== null}
-              onChange={(e) => setScope(e.target.value as Scope)}
-            >
-              <option value="global">global</option>
-              <option value="user">user</option>
-              <option value="agent">agent</option>
-            </select>
+            <div className="grid gap-1.5">
+              <Label htmlFor="oauth-scope">Scope</Label>
+              <select
+                id="oauth-scope"
+                value={scope}
+                disabled={pending !== null}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                onChange={(e) => setScope(e.target.value as Scope)}
+              >
+                <option value="global">global</option>
+                <option value="user">user</option>
+                <option value="agent">agent</option>
+              </select>
+            </div>
 
             {scope !== 'global' && (
-              <>
-                <label htmlFor="oauth-owner">Owner ID</label>
-                <input
+              <div className="grid gap-1.5">
+                <Label htmlFor="oauth-owner">Owner ID</Label>
+                <Input
                   id="oauth-owner"
                   type="text"
                   value={ownerId}
@@ -165,71 +175,75 @@ export function OAuthFlowForm({
                   aria-invalid={ownerIdRequired}
                   required
                 />
-                <span id="oauth-owner-hint" className="admin-form-hint">
+                <span id="oauth-owner-hint" className="text-xs text-muted-foreground">
                   Required when scope is {scope}.
                 </span>
-              </>
+              </div>
             )}
           </>
         )}
 
-        <label htmlFor="oauth-ref">Ref</label>
-        <input
-          id="oauth-ref"
-          type="text"
-          value={ref}
-          disabled={pending !== null}
-          onChange={(e) => setRef(e.target.value)}
-          placeholder="e.g. anthropic"
-          required
-        />
+        <div className="grid gap-1.5">
+          <Label htmlFor="oauth-ref">Ref</Label>
+          <Input
+            id="oauth-ref"
+            type="text"
+            value={ref}
+            disabled={pending !== null}
+            onChange={(e) => setRef(e.target.value)}
+            placeholder="e.g. anthropic"
+            required
+          />
+        </div>
 
         {pending !== null && (
           <>
-            <label htmlFor="oauth-code">Code</label>
-            <input
-              id="oauth-code"
-              type="text"
-              autoComplete="off"
-              value={code}
-              onChange={(e) => setCode(e.target.value)}
-              placeholder="paste the code from the provider page"
-              required
-            />
+            {pending.instructions && (
+              <div className="px-3 py-2 bg-muted rounded-md text-sm text-muted-foreground">
+                {pending.instructions}
+              </div>
+            )}
+            <div className="grid gap-1.5">
+              <Label htmlFor="oauth-code">Code</Label>
+              <Input
+                id="oauth-code"
+                type="text"
+                autoComplete="off"
+                value={code}
+                onChange={(e) => setCode(e.target.value)}
+                placeholder="paste the code from the provider page"
+                className="font-mono"
+                required
+              />
+            </div>
           </>
         )}
       </div>
 
-      {pending !== null && (
-        <p className="admin-form-hint">{pending.instructions}</p>
-      )}
-
-      <div className="admin-form-buttons">
-        <button
+      <div className="flex justify-end gap-2">
+        <Button
           type="button"
-          className="admin-btn"
+          variant="ghost"
           onClick={onCancel}
           disabled={busy}
         >
           Cancel
-        </button>
+        </Button>
         {pending === null ? (
-          <button
+          <Button
             type="button"
-            className="admin-btn admin-btn-primary"
             onClick={() => void start()}
             disabled={busy || ownerIdRequired || ref.trim().length === 0}
           >
             {busy ? 'Opening…' : 'Open'}
-          </button>
+          </Button>
         ) : (
-          <button
+          <Button
             type="submit"
-            className="admin-btn admin-btn-primary"
             disabled={busy}
           >
             {busy ? 'Saving…' : 'Finish'}
-          </button>
+          </Button>
         )}
       </div>
     </form>
