@@ -25,9 +25,7 @@ const baseCfg: K8sPresetConfig = {
     cookieKey: '0'.repeat(64),
     allowedOrigins: [],
   },
-  auth: {
-    devBootstrap: { token: 'stub-bootstrap-token' },
-  },
+  // auth-better is DB-driven; no providers config at boot.
 };
 
 describe('credentials-admin-routes loaded conditionally', () => {
@@ -99,7 +97,6 @@ describe('AX_CREDENTIALS_ADMIN_ENABLED env var', () => {
       AX_HTTP_HOST: '0.0.0.0',
       AX_HTTP_PORT: '8080',
       AX_HTTP_COOKIE_KEY: '0'.repeat(64),
-      AX_DEV_BOOTSTRAP_TOKEN: 'tok',
       AX_WORKSPACE_BACKEND: 'local',
       AX_WORKSPACE_ROOT: '/tmp/ws',
       AX_CREDENTIALS_ADMIN_ENABLED: 'true',
@@ -115,7 +112,6 @@ describe('AX_CREDENTIALS_ADMIN_ENABLED env var', () => {
       AX_HTTP_HOST: '0.0.0.0',
       AX_HTTP_PORT: '8080',
       AX_HTTP_COOKIE_KEY: '0'.repeat(64),
-      AX_DEV_BOOTSTRAP_TOKEN: 'tok',
       AX_WORKSPACE_BACKEND: 'local',
       AX_WORKSPACE_ROOT: '/tmp/ws',
     });

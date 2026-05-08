@@ -24,7 +24,7 @@
     "@ax/agent-claude-sdk-runner": "workspace:*",
     "@ax/agents": "workspace:*",
     "@ax/audit-log": "workspace:*",
-    "@ax/auth-oidc": "workspace:*",
+    "@ax/auth-better": "workspace:*",
     "@ax/channel-web": "workspace:*",
     "@ax/chat-orchestrator": "workspace:*",
     "@ax/conversation-titles": "workspace:*",

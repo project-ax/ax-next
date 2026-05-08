@@ -61,9 +61,10 @@ const stubConfig: K8sPresetConfig = {
     cookieKey: '0'.repeat(64),
     allowedOrigins: [],
   },
-  auth: {
-    devBootstrap: { token: 'stub-bootstrap-token' },
-  },
+  // auth-better is DB-driven — no providers config at boot. Leave the
+  // auth field unset (or empty) and the preset hands an empty config to
+  // createAuthBetterPlugin; the operator adds providers via the admin UI
+  // after walking the onboarding wizard.
 };
 
 describe('@ax/preset-k8s wiring', () => {
@@ -147,7 +148,7 @@ describe('@ax/preset-k8s wiring', () => {
       [
         '@ax/agents',
         '@ax/audit-log',
-        '@ax/auth-oidc',
+        '@ax/auth-better',
         '@ax/channel-web',
         '@ax/chat-orchestrator',
         '@ax/conversations',
@@ -242,7 +243,6 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
       AX_HTTP_PORT: '9090',
       AX_HTTP_COOKIE_KEY: HEX_KEY,
       AX_HTTP_ALLOWED_ORIGINS: '',
-      AX_DEV_BOOTSTRAP_TOKEN: 'bootstrap-secret',
       AX_PUBLIC_BASE_URL: 'https://ax.example.com',
     };
     const cfg = loadK8sConfigFromEnv(env);
@@ -261,7 +261,6 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
       AX_HTTP_PORT: '9090',
       AX_HTTP_COOKIE_KEY: HEX_KEY,
       AX_HTTP_ALLOWED_ORIGINS: '',
-      AX_DEV_BOOTSTRAP_TOKEN: 'bootstrap-secret',
     };
     const cfg = loadK8sConfigFromEnv(env);
     expect(cfg.onboarding).toBeUndefined();
@@ -463,8 +462,10 @@ describe('workspaceConfigFromEnv', () => {
 
 describe('loadK8sConfigFromEnv', () => {
   // Required minimum env: DATABASE_URL, AX_K8S_HOST_IPC_URL, the workspace
-  // vars (delegated to workspaceConfigFromEnv), the public-facing http
-  // listener vars, and at least one auth provider.
+  // vars (delegated to workspaceConfigFromEnv), and the public-facing http
+  // listener vars. Auth providers are NOT env-driven — auth-better reads
+  // from the auth_providers DB table at runtime, so no auth env is needed
+  // at boot.
   const HEX_KEY = '0'.repeat(64);
   const minRequired = (extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv => ({
     DATABASE_URL: 'postgres://u:p@db:5432/ax_next',
@@ -476,7 +477,6 @@ describe('loadK8sConfigFromEnv', () => {
     AX_HTTP_PORT: '8080',
     AX_HTTP_COOKIE_KEY: HEX_KEY,
     AX_HTTP_ALLOWED_ORIGINS: 'https://admin.ax-next.example',
-    AX_DEV_BOOTSTRAP_TOKEN: 'bootstrap-secret',
     ...extra,
   });
 
@@ -499,11 +499,21 @@ describe('loadK8sConfigFromEnv', () => {
       cookieKey: HEX_KEY,
       allowedOrigins: ['https://admin.ax-next.example'],
     });
-    expect(cfg.auth).toEqual({
-      devBootstrap: { token: 'bootstrap-secret' },
-    });
+    // auth-better needs nothing at boot — providers come from DB at runtime.
+    expect(cfg.auth).toBeUndefined();
     expect(cfg.sandbox).toBeUndefined();
     expect(cfg.chat).toBeUndefined();
+  });
+
+  it('succeeds with no auth env at all (auth-better is DB-driven)', () => {
+    // Regression guard: the prior shape (auth-oidc) required at least one
+    // of AX_AUTH_GOOGLE_* or AX_DEV_BOOTSTRAP_TOKEN, and the loader threw
+    // a `no-auth-providers`-shaped error otherwise. Auth-better reads
+    // providers from the `auth_providers` table at runtime, so a fresh
+    // boot must succeed without any auth env. The operator walks the
+    // /setup wizard and adds providers from the admin UI afterward.
+    const cfg = loadK8sConfigFromEnv(minRequired());
+    expect(cfg.auth).toBeUndefined();
   });
 
   it('throws when DATABASE_URL is missing', () => {
@@ -662,44 +672,11 @@ describe('loadK8sConfigFromEnv', () => {
     expect(cfg.http.allowedOrigins).toEqual(['a', 'b', 'c']);
   });
 
-  it('throws when no auth provider env is configured', () => {
-    const env = minRequired();
-    delete env.AX_DEV_BOOTSTRAP_TOKEN;
-    expect(() => loadK8sConfigFromEnv(env)).toThrowError(
-      /AX_AUTH_GOOGLE_.*AX_DEV_BOOTSTRAP_TOKEN/,
-    );
-  });
-
-  it('reads google OIDC config when all four AX_AUTH_GOOGLE_* are set', () => {
-    const cfg = loadK8sConfigFromEnv(
-      minRequired({
-        AX_AUTH_GOOGLE_CLIENT_ID: 'gid',
-        AX_AUTH_GOOGLE_CLIENT_SECRET: 'gsec',
-        AX_AUTH_GOOGLE_REDIRECT_URI: 'https://h/callback',
-        AX_AUTH_GOOGLE_ISSUER: 'https://accounts.google.com',
-      }),
-    );
-    expect(cfg.auth.google).toEqual({
-      clientId: 'gid',
-      clientSecret: 'gsec',
-      redirectUri: 'https://h/callback',
-      issuer: 'https://accounts.google.com',
-    });
-  });
-
-  it('rejects partial google OIDC config', () => {
-    // Setting only CLIENT_ID without the other three is a deploy-time bug
-    // that the loader catches before the auth plugin's network discovery.
-    expect(() =>
-      loadK8sConfigFromEnv(minRequired({ AX_AUTH_GOOGLE_CLIENT_ID: 'gid' })),
-    ).toThrowError(/AX_AUTH_GOOGLE_CLIENT_SECRET/);
-  });
-
   it('reads AX_AUTH_SESSION_LIFETIME_SECONDS', () => {
     const cfg = loadK8sConfigFromEnv(
       minRequired({ AX_AUTH_SESSION_LIFETIME_SECONDS: '3600' }),
     );
-    expect(cfg.auth.sessionLifetimeSeconds).toBe(3600);
+    expect(cfg.auth?.sessionLifetimeSeconds).toBe(3600);
   });
 
   it('rejects invalid AX_AUTH_SESSION_LIFETIME_SECONDS', () => {

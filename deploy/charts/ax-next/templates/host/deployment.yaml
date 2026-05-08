@@ -122,33 +122,12 @@ spec:
               value: "1"
             {{- end }}
 
-            # Auth providers — at least one must be configured (the auth
-            # plugin throws no-auth-providers otherwise). Both gates use
-            # the shared helpers so deployment + secret stay in sync; the
-            # devBootstrap gate is lookup-stable (existing-secret keeps
-            # the env across upgrades that don't re-pass the token).
-            {{- if eq (include "ax-next.devBootstrapEnabled" .) "true" }}
-            - name: AX_DEV_BOOTSTRAP_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "ax-next.fullname" . }}-secrets
-                  key: dev-bootstrap-token
-            {{- end }}
-            {{- if eq (include "ax-next.googleAuthEnabled" .) "true" }}
-            - name: AX_AUTH_GOOGLE_CLIENT_ID
-              value: {{ .Values.auth.google.clientId | quote }}
-            # clientSecret via Secret — never inline in the rendered Deployment
-            # so anyone with `get deployments` RBAC can't read it.
-            - name: AX_AUTH_GOOGLE_CLIENT_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "ax-next.fullname" . }}-secrets
-                  key: google-client-secret
-            - name: AX_AUTH_GOOGLE_ISSUER
-              value: {{ .Values.auth.google.issuer | quote }}
-            - name: AX_AUTH_GOOGLE_REDIRECT_URI
-              value: {{ .Values.auth.google.redirectUri | quote }}
-            {{- end }}
+            # Auth providers are DB-driven via @ax/auth-better — the
+            # operator walks /setup/* (Phase 2 onboarding wizard) once,
+            # then adds providers from /admin/auth/providers/* at runtime.
+            # No env vars stamp provider config onto the host pod anymore;
+            # rows live in the `auth_providers` table and hot-reload on
+            # change.
 
             # @ax/onboarding — first-run wizard env vars.
             # Both are optional; the plugin generates+prints a token at

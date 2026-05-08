@@ -1,5 +1,14 @@
 # Manual acceptance — Week 7–9 (k8s deployment shape)
 
+> **Note (Phase 3, 2026-05-08):** This walkthrough still references the
+> legacy `/auth/dev-bootstrap` endpoint, which is removed by Phase 3
+> (k8s preset switched from `@ax/auth-oidc` to `@ax/auth-better` — the
+> latter has no dev-bootstrap surface). The first-run flow is now the
+> `@ax/onboarding` wizard at `/setup/*`. Phase 5 (Task 5.3) replaces
+> this file with the wizard-based walkthrough; until then, this doc is
+> stale for the auth/login section.
+
+
 Automated CI exercises the postgres + workspace + session + eventbus plugin
 chain via testcontainers (`presets/k8s/src/__tests__/acceptance.test.ts`). It
 does NOT exercise a real runner pod. This file is the manual procedure for

@@ -282,7 +282,7 @@ channelWeb:
   bundleDir: /opt/ax-next/host/web
 
 # ─── HTTP-server config (public surface — issue #39) ─────────────
-# `cookieKey` signs auth-oidc's session cookie. 32 bytes; provide
+# `cookieKey` signs auth-better's session cookie. 32 bytes; provide
 # via `--set http.cookieKey=$(openssl rand -hex 32)` (or 44 base64
 # chars). When empty AND no existing Secret carries one, the chart
 # falls through to `required` and `helm install` fails loudly.
@@ -320,31 +320,23 @@ onboarding:
   publicBaseUrl: ""     # AX_PUBLIC_BASE_URL
 
 # ─── Auth providers ──────────────────────────────────────────────
-# At least one provider must be configured (the auth plugin throws
-# `no-auth-providers` at init otherwise).
+# Auth providers are DB-driven via @ax/auth-better — there is NO
+# `auth:` config block in values.yaml anymore. Provider rows live in
+# the `auth_providers` table and are managed at runtime via
+# `/admin/auth/providers/*` (Phase 1 CRUD; Phase 3.5 admin UI).
 #
-# `devBootstrap.token`: pre-shared bearer token for dev / canary /
-# kind. Mints a single shared `is_admin` user via
-# `POST /auth/dev-bootstrap`. The auth plugin REFUSES this when
-# NODE_ENV=production; flip to Google OIDC for prod.
+# First-run flow:
+#   1. Operator installs the chart.
+#   2. They scrape the bootstrap token from host pod stdout (or pre-
+#      seed it via `onboarding.bootstrapToken` above).
+#   3. They walk `/setup/*` (the @ax/onboarding wizard) to mint the
+#      first admin user.
+#   4. From the admin UI, they add OIDC providers (Google, GitHub,
+#      generic) — those rows hot-reload into the live auth handler
+#      without a kernel restart.
 #
-# When `devBootstrap.token` is empty AND no existing Secret carries
-# one, the chart falls through to `required` and `helm install`
-# fails loudly. The Secret is `lookup`-stable like `credentials.key`
-# — the operator's pre-shared token isn't rotated by `helm upgrade`.
-#
-# `google`: OIDC config for production. `clientSecret` is plain text
-# in values today (operators that care override via `--set` from a
-# vault). When ALL google fields are unset, the google provider
-# isn't registered.
-auth:
-  devBootstrap:
-    token: ""
-  google:
-    clientId: ""
-    clientSecret: ""
-    issuer: ""
-    redirectUri: ""
+# The legacy `auth.devBootstrap` and `auth.google` blocks were retired
+# in Phase 3 (commit history: deploy/charts/ax-next/values.yaml).
 
 # ─── Network policies ────────────────────────────────────────────
 # `enabled: true` is the safe default. Disabling is supported only for

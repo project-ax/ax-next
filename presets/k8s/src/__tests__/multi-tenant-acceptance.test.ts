@@ -111,7 +111,7 @@ const PLUGINS_TO_DROP = new Set<string>([
   '@ax/sandbox-k8s',
   '@ax/credential-proxy',
   '@ax/http-server',
-  '@ax/auth-oidc',
+  '@ax/auth-better',
   '@ax/teams',
   '@ax/static-files',
   // channel-web's REST surface depends on the http-server we just dropped;
@@ -296,7 +296,6 @@ describe('@ax/preset-k8s multi-tenant ACL gate (stub runner)', () => {
           cookieKey: '0'.repeat(64),
           allowedOrigins: [],
         },
-        auth: { devBootstrap: { token: 'preset-mt-test-bootstrap' } },
       };
 
       const presetPlugins = createK8sPlugins(presetConfig);

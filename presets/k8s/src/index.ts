@@ -20,7 +20,7 @@ import { createCredentialsOauthPendingPlugin } from '@ax/credentials-oauth-pendi
 import { createIpcHttpPlugin } from '@ax/ipc-http';
 import { createAgentsPlugin } from '@ax/agents';
 import { createHttpServerPlugin } from '@ax/http-server';
-import { createAuthPlugin, type AuthConfig } from '@ax/auth-oidc';
+import { createAuthBetterPlugin, type AuthBetterConfig } from '@ax/auth-better';
 import { createTeamsPlugin } from '@ax/teams';
 import { createStaticFilesPlugin } from '@ax/static-files';
 import { createConversationsPlugin } from '@ax/conversations';
@@ -268,27 +268,17 @@ export interface K8sPresetConfig {
     allowedOrigins: string[];
   };
   /**
-   * @ax/auth config. At least one of `google` (OIDC) or `devBootstrap`
-   * MUST be set; the plugin throws `no-auth-providers` otherwise.
+   * @ax/auth-better config. Auth-better is config-light by design — providers
+   * (google / github / generic OIDC) live exclusively in the `auth_providers`
+   * DB table managed by Phase 1's `/admin/auth/providers/*` CRUD. There is no
+   * env-driven provider config; the operator walks the onboarding wizard at
+   * `/setup/*` (Phase 2) and adds providers from the admin UI (Phase 3.5).
    *
-   * Production deploys typically set `google` only. Dev / canary / kind
-   * deploys set `devBootstrap` only. Both can coexist for staging-like
-   * environments — the auth plugin won't refuse it.
+   * `sessionLifetimeSeconds` is the only field worth surfacing here — it
+   * controls the Set-Cookie `max-age` on completed bootstrap sessions.
    */
-  auth: {
-    google?: {
-      clientId: string;
-      clientSecret: string;
-      issuer: string;
-      redirectUri: string;
-    };
-    /**
-     * If present, mints a single shared `is_admin` user from the pre-shared
-     * token via `POST /auth/dev-bootstrap`. Refused outright when
-     * `NODE_ENV=production` (the auth plugin throws at init).
-     */
-    devBootstrap?: { token: string };
-    /** Session cookie lifetime. Default 7 days (in @ax/auth). */
+  auth?: {
+    /** Session cookie lifetime. Default 7 days (auth-better default). */
     sessionLifetimeSeconds?: number;
   };
   /**
@@ -502,29 +492,23 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
     }),
   );
 
-  const authConfig: AuthConfig = { providers: {} };
-  if (config.auth.google !== undefined) {
-    authConfig.providers.google = {
-      clientId: config.auth.google.clientId,
-      clientSecret: config.auth.google.clientSecret,
-      issuer: config.auth.google.issuer,
-      redirectUri: config.auth.google.redirectUri,
-    };
+  // @ax/auth-better — DB-driven providers, no env config. The admin walks
+  // the onboarding wizard once (Phase 2 → /setup/*) to mint the bootstrap
+  // user, then adds providers via the admin UI (Phase 3.5 → /admin/auth/*).
+  // The `auth_providers` table is hot-reloaded — adds / edits / disables
+  // are live within a request without a kernel restart.
+  const authBetterCfg: AuthBetterConfig = {};
+  if (config.auth?.sessionLifetimeSeconds !== undefined) {
+    authBetterCfg.sessionLifetimeSeconds = config.auth.sessionLifetimeSeconds;
   }
-  if (config.auth.devBootstrap !== undefined) {
-    authConfig.devBootstrap = { token: config.auth.devBootstrap.token };
-  }
-  if (config.auth.sessionLifetimeSeconds !== undefined) {
-    authConfig.sessionLifetimeSeconds = config.auth.sessionLifetimeSeconds;
-  }
-  plugins.push(createAuthPlugin(authConfig));
+  plugins.push(createAuthBetterPlugin(authBetterCfg));
 
   // ----- 5b. first-run wizard -------------------------------------------
   // @ax/onboarding mounts the bootstrap wizard at /setup/*. It runs the
   // migration on init and initializes the bootstrap token from
   // AX_BOOTSTRAP_TOKEN (env) or generates one fresh. The plugin needs
   // http:register-route (loaded above) + auth:create-bootstrap-user /
-  // auth:complete-bootstrap-user (provided by auth-oidc, loaded just
+  // auth:complete-bootstrap-user (provided by auth-better, loaded just
   // above) + db:transact + credentials:set + agents:create (all loaded).
   //
   // `baseUrl` is the operator-facing URL stamped into the boot banner so
@@ -690,7 +674,7 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // ----- 10. channel-web HTTP surface -----------------------------------
   // Mounts /api/chat/messages, /api/chat/conversations[/:id],
   // /api/chat/agents, /api/chat/stream/:reqId. Hard-depends on
-  // http-server, auth-oidc, agents, conversations, chat-orchestrator
+  // http-server, auth-better, agents, conversations, chat-orchestrator
   // (agent:invoke). All registrants are loaded above; the kernel's
   // topo-sort blocks init until each call has a registrant.
   //
@@ -815,9 +799,12 @@ export function workspaceConfigFromEnv(
 //   - AX_HTTP_HOST / AX_HTTP_PORT  — public-facing http listener
 //   - AX_HTTP_COOKIE_KEY           — 32-byte signing key (hex / base64)
 //   - AX_HTTP_ALLOWED_ORIGINS      — CSRF allow-list (comma-separated)
-//   - At least one of:
-//       AX_AUTH_GOOGLE_{CLIENT_ID,CLIENT_SECRET,REDIRECT_URI,ISSUER}
-//       AX_DEV_BOOTSTRAP_TOKEN
+//
+// Auth providers are NOT env-driven anymore: @ax/auth-better reads from
+// the `auth_providers` DB table, populated by `/admin/auth/providers/*`
+// at runtime. The first-run flow is the onboarding wizard (Phase 2):
+// operator sets AX_BOOTSTRAP_TOKEN, walks /setup/*, and adds providers
+// from the admin UI afterward.
 //
 // Optional env:
 //   - K8S_NAMESPACE / K8S_POD_IMAGE / K8S_RUNTIME_CLASS / K8S_IMAGE_PULL_SECRETS
@@ -938,58 +925,25 @@ export function loadK8sConfigFromEnv(
           .map((s) => s.trim())
           .filter((s) => s.length > 0);
 
-  // ---- auth providers --------------------------------------------------
-  // At least one of `google` or `devBootstrap` must be present; the auth
-  // plugin throws `no-auth-providers` at init otherwise. We re-validate
-  // here so the operator gets a startup error pointing at the env vars
-  // they actually set, not at the auth plugin's internal config name.
-  const auth: K8sPresetConfig['auth'] = {};
-  const gClientId = env.AX_AUTH_GOOGLE_CLIENT_ID;
-  const gClientSecret = env.AX_AUTH_GOOGLE_CLIENT_SECRET;
-  const gRedirectUri = env.AX_AUTH_GOOGLE_REDIRECT_URI;
-  const gIssuer = env.AX_AUTH_GOOGLE_ISSUER;
-  const anyGoogle =
-    (gClientId !== undefined && gClientId !== '') ||
-    (gClientSecret !== undefined && gClientSecret !== '') ||
-    (gRedirectUri !== undefined && gRedirectUri !== '') ||
-    (gIssuer !== undefined && gIssuer !== '');
-  if (anyGoogle) {
-    // Partial google config is a deploy-time bug; fail loudly. The auth
-    // plugin would also catch this (Issuer.discover throws on a bogus
-    // issuer URL), but a clear startup error beats a network-shaped
-    // failure deep inside init.
-    if (gClientId === undefined || gClientId === '') {
-      throw new Error('AX_AUTH_GOOGLE_CLIENT_ID is required when any AX_AUTH_GOOGLE_* var is set');
-    }
-    if (gClientSecret === undefined || gClientSecret === '') {
-      throw new Error('AX_AUTH_GOOGLE_CLIENT_SECRET is required when any AX_AUTH_GOOGLE_* var is set');
-    }
-    if (gRedirectUri === undefined || gRedirectUri === '') {
-      throw new Error('AX_AUTH_GOOGLE_REDIRECT_URI is required when any AX_AUTH_GOOGLE_* var is set');
-    }
-    if (gIssuer === undefined || gIssuer === '') {
-      throw new Error('AX_AUTH_GOOGLE_ISSUER is required when any AX_AUTH_GOOGLE_* var is set');
-    }
-    auth.google = {
-      clientId: gClientId,
-      clientSecret: gClientSecret,
-      redirectUri: gRedirectUri,
-      issuer: gIssuer,
-    };
-  }
-  const devToken = env.AX_DEV_BOOTSTRAP_TOKEN;
-  if (devToken !== undefined && devToken !== '') {
-    auth.devBootstrap = { token: devToken };
-  }
-  if (auth.google === undefined && auth.devBootstrap === undefined) {
-    throw new Error(
-      'auth requires at least one of AX_AUTH_GOOGLE_* (clientId/clientSecret/redirectUri/issuer) or AX_DEV_BOOTSTRAP_TOKEN',
-    );
-  }
-  if (env.AX_AUTH_SESSION_LIFETIME_SECONDS !== undefined && env.AX_AUTH_SESSION_LIFETIME_SECONDS !== '') {
+  // ---- auth (auth-better is DB-driven) --------------------------------
+  // Providers (google / github / generic OIDC) come from the
+  // `auth_providers` table managed by Phase 1's /admin/auth/providers/*
+  // CRUD. First boot is the onboarding wizard (Phase 2): operator sets
+  // AX_BOOTSTRAP_TOKEN (read directly by @ax/onboarding from process.env),
+  // walks /setup/*, then adds providers from the admin UI.
+  //
+  // The only knob worth surfacing here is session-cookie lifetime. Empty
+  // cfg is fine — auth-better falls through to its default (7 days).
+  const auth: NonNullable<K8sPresetConfig['auth']> = {};
+  if (
+    env.AX_AUTH_SESSION_LIFETIME_SECONDS !== undefined &&
+    env.AX_AUTH_SESSION_LIFETIME_SECONDS !== ''
+  ) {
     const n = Number(env.AX_AUTH_SESSION_LIFETIME_SECONDS);
     if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
-      throw new Error(`invalid AX_AUTH_SESSION_LIFETIME_SECONDS=${env.AX_AUTH_SESSION_LIFETIME_SECONDS}; expected a positive integer`);
+      throw new Error(
+        `invalid AX_AUTH_SESSION_LIFETIME_SECONDS=${env.AX_AUTH_SESSION_LIFETIME_SECONDS}; expected a positive integer`,
+      );
     }
     auth.sessionLifetimeSeconds = n;
   }
@@ -1006,8 +960,13 @@ export function loadK8sConfigFromEnv(
       cookieKey,
       allowedOrigins,
     },
-    auth,
   };
+  // Only attach `auth` when something was set. Empty `auth: {}` is harmless,
+  // but the loader's "optional unless populated" pattern keeps the rendered
+  // shape minimal and matches the rest of the file (sandbox, chat, etc).
+  if (Object.keys(auth).length > 0) {
+    config.auth = auth;
+  }
   if (Object.keys(sandbox).length > 0) config.sandbox = sandbox;
   if (Object.keys(chat).length > 0) config.chat = chat;
   if (env.AX_PROXY_SOCKET_PATH !== undefined && env.AX_PROXY_SOCKET_PATH !== '') {

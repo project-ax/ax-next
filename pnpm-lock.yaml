@@ -1454,9 +1454,9 @@ importers:
       '@ax/audit-log':
         specifier: workspace:*
         version: link:../../packages/audit-log
-      '@ax/auth-oidc':
+      '@ax/auth-better':
         specifier: workspace:*
-        version: link:../../packages/auth-oidc
+        version: link:../../packages/auth-better
       '@ax/channel-web':
         specifier: workspace:*
         version: link:../../packages/channel-web
