@@ -60,6 +60,13 @@ async function bootStack(): Promise<BootedStack> {
     allowedOrigins: [],
   });
   const harness = await createTestHarness({
+    // Stub the auth hooks that onboarding now declares in its `calls`.
+    // claim-route.test.ts doesn't load auth-oidc; the /setup/admin route
+    // is not exercised here, so stubs are sufficient.
+    services: {
+      'auth:create-bootstrap-user': async () => ({ user: { id: 'stub', email: null, displayName: null, isAdmin: true }, oneTimeToken: 'stub-token' }),
+      'auth:complete-bootstrap-user': async () => ({ sessionCookie: { name: 'ax_auth_session', value: 'stub', opts: { path: '/', sameSite: 'Lax', maxAge: 60 } } }),
+    },
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),
       http,

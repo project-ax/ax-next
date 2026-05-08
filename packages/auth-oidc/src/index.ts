@@ -13,6 +13,8 @@ export {
 } from './store.js';
 export type {
   AuthConfig,
+  CompleteBootstrapUserInput,
+  CompleteBootstrapUserOutput,
   CreateBootstrapUserInput,
   CreateBootstrapUserOutput,
   GetUserInput,

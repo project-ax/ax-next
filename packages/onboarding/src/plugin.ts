@@ -72,7 +72,12 @@ export function createOnboardingPlugin(config: OnboardingConfig): Plugin {
       name: PLUGIN_NAME,
       version: '0.0.0',
       registers: ['bootstrap:status'],
-      calls: ['database:get-instance', 'http:register-route'],
+      calls: [
+        'database:get-instance',
+        'http:register-route',
+        'auth:create-bootstrap-user',
+        'auth:complete-bootstrap-user',
+      ],
       subscribes: [],
     },
 
@@ -167,7 +172,13 @@ export function createOnboardingPlugin(config: OnboardingConfig): Plugin {
         matchPath: (path) => path === '/setup/claim',
       });
       const sessions = createBootstrapSessionStore();
-      const handlers = createOnboardingRouteHandlers({ store: localStore, sessions, rateLimit });
+      const handlers = createOnboardingRouteHandlers({
+        store: localStore,
+        sessions,
+        rateLimit,
+        bus,
+        initCtx,
+      });
 
       unregisterRoutes.push(
         await registerRoute(bus, initCtx, {
@@ -175,6 +186,15 @@ export function createOnboardingPlugin(config: OnboardingConfig): Plugin {
           path: '/setup/claim',
           handler: async (req, res) =>
             handlers.claim(asRouteReq(req), asRouteRes(res)),
+        }),
+      );
+
+      unregisterRoutes.push(
+        await registerRoute(bus, initCtx, {
+          method: 'POST',
+          path: '/setup/admin',
+          handler: async (req, res) =>
+            handlers.admin(asRouteReq(req), asRouteRes(res)),
         }),
       );
     },

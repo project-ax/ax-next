@@ -83,6 +83,40 @@ export interface CreateBootstrapUserOutput {
   oneTimeToken: string;
 }
 
+export interface CompleteBootstrapUserInput {
+  /**
+   * The single-use token returned by `auth:create-bootstrap-user`. The
+   * impl maps this to a session cookie WITHOUT consuming the token's
+   * single-use semantics — the same token can be exchanged once for a
+   * cookie. Subsequent calls fail (no session exists for the id).
+   *
+   * Phase 1's auth-better impl will accept an optional `password` field
+   * here; this Phase 2 impl ignores it (auth-oidc has no local password).
+   */
+  oneTimeToken: string;
+  /** Forward-compat for Phase 1; ignored by auth-oidc. */
+  password?: string;
+}
+
+export interface CompleteBootstrapUserOutput {
+  /**
+   * Cookie payload for the wizard route to set on its response. Cookie
+   * shape is HTTP-universal (not transport-specific to auth-oidc), so
+   * passing it through the bus does not violate Invariant I1. The
+   * onboarding plugin sets this verbatim via `res.setSignedCookie`.
+   */
+  sessionCookie: {
+    name: string;
+    value: string;
+    opts: {
+      path: string;
+      sameSite: 'Lax' | 'Strict' | 'None';
+      secure?: boolean;
+      maxAge: number;
+    };
+  };
+}
+
 /**
  * Plugin config. Pass at least one of `providers.google` or `devBootstrap`;
  * init throws `no-auth-providers` otherwise. The CLI's `serve` boot path

@@ -2,6 +2,7 @@ import type { OnboardingStore } from './store.js';
 import type { BootstrapSessionStore } from './sessions.js';
 import type { RateLimiter } from './rate-limit.js';
 import { verifyToken } from './token.js';
+import type { AgentContext, HookBus } from '@ax/core';
 
 // ---------------------------------------------------------------------------
 // HTTP route handlers for /setup/*.
@@ -62,6 +63,12 @@ export interface OnboardingRouteHandlerDeps {
   store: OnboardingStore;
   sessions: BootstrapSessionStore;
   rateLimit: RateLimiter;
+  bus: HookBus;
+  initCtx: AgentContext;
+}
+
+function isValidEmail(s: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
 }
 
 export function createOnboardingRouteHandlers(deps: OnboardingRouteHandlerDeps) {
@@ -119,6 +126,61 @@ export function createOnboardingRouteHandlers(deps: OnboardingRouteHandlerDeps) 
         maxAge: BOOTSTRAP_COOKIE_MAX_AGE_S,
       });
       res.status(200).json({ next: '/setup/admin' });
+    },
+
+    async admin(req: RouteRequest, res: RouteResponse): Promise<void> {
+      // 1) Verify bootstrap-session cookie (minted by /setup/claim).
+      const sessionId = req.signedCookie(BOOTSTRAP_SESSION_COOKIE);
+      if (sessionId === null || !deps.sessions.verify(sessionId)) {
+        res.status(401).json({ error: 'no-bootstrap-session' });
+        return;
+      }
+
+      // 2) Parse body. Phase 2 captures only { name, email } — password is
+      // a Phase 3 concern (auth-better lands the local sign-in path).
+      let parsed: unknown;
+      try { parsed = JSON.parse(req.body.toString('utf8')); }
+      catch { res.status(400).json({ error: 'invalid-json' }); return; }
+      const { name, email } = (parsed ?? {}) as { name?: unknown; email?: unknown };
+      if (typeof name !== 'string' || name.length === 0) {
+        res.status(400).json({ error: 'missing-name' });
+        return;
+      }
+      if (typeof email !== 'string' || !isValidEmail(email)) {
+        res.status(400).json({ error: 'invalid-email' });
+        return;
+      }
+
+      // 3) Call auth:create-bootstrap-user → oneTimeToken.
+      const { oneTimeToken } = await deps.bus.call(
+        'auth:create-bootstrap-user',
+        deps.initCtx,
+        { displayName: name, email },
+      ) as { oneTimeToken: string };
+
+      // 4) Call auth:complete-bootstrap-user → cookie payload.
+      const { sessionCookie } = await deps.bus.call(
+        'auth:complete-bootstrap-user',
+        deps.initCtx,
+        { oneTimeToken },
+      ) as {
+        sessionCookie: {
+          name: string;
+          value: string;
+          opts: {
+            path: string;
+            sameSite: 'Lax' | 'Strict' | 'None';
+            secure?: boolean;
+            maxAge: number;
+          };
+        };
+      };
+
+      // 5) Swap cookies: clear bootstrap-session, set auth-session.
+      deps.sessions.destroy(sessionId);
+      res.clearCookie(BOOTSTRAP_SESSION_COOKIE, { path: '/setup', sameSite: 'Strict' });
+      res.setSignedCookie(sessionCookie.name, sessionCookie.value, sessionCookie.opts);
+      res.status(200).json({ next: '/setup/model' });
     },
   };
 }

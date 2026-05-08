@@ -6,7 +6,12 @@ import {
 import { createTestHarness } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createAuthPlugin } from '../plugin.js';
-import type { HttpRequestLike, User } from '../types.js';
+import type {
+  CompleteBootstrapUserInput,
+  CompleteBootstrapUserOutput,
+  HttpRequestLike,
+  User,
+} from '../types.js';
 
 let container: StartedPostgreSqlContainer;
 let connectionString: string;
@@ -88,13 +93,25 @@ describe('@ax/auth types + manifest + stubs', () => {
     expect(fake.signedCookie('whatever')).toBeNull();
   });
 
-  it('manifest registers exactly the three service hooks', async () => {
+  it('manifest registers the four service hooks', async () => {
     const h = await makeHarness();
     expect(h.bus.hasService('auth:require-user')).toBe(true);
     expect(h.bus.hasService('auth:get-user')).toBe(true);
     expect(h.bus.hasService('auth:create-bootstrap-user')).toBe(true);
+    // Task 2.6 — bootstrap wizard admin step.
+    expect(h.bus.hasService('auth:complete-bootstrap-user')).toBe(true);
     // Spot-check we didn't accidentally register a Task-4-only hook here.
     expect(h.bus.hasService('auth:sign-out')).toBe(false);
+  });
+
+  it('exports CompleteBootstrapUserInput / CompleteBootstrapUserOutput', () => {
+    // type-only — just ensures imports resolve.
+    const _i: CompleteBootstrapUserInput = { oneTimeToken: 'x' };
+    const _o: CompleteBootstrapUserOutput = {
+      sessionCookie: { name: 'x', value: 'y', opts: { path: '/', sameSite: 'Lax', maxAge: 60 } },
+    };
+    expect(_i.oneTimeToken).toBe('x');
+    expect(_o.sessionCookie.name).toBe('x');
   });
 
   it('init runs the migration so auth_v1_* tables are reachable', async () => {

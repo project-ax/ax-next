@@ -23,6 +23,8 @@ import { isProduction } from './dev-bootstrap.js';
 import { createAuthStore, type AuthStore } from './store.js';
 import type {
   AuthConfig,
+  CompleteBootstrapUserInput,
+  CompleteBootstrapUserOutput,
   CreateBootstrapUserInput,
   CreateBootstrapUserOutput,
   GetUserInput,
@@ -91,6 +93,7 @@ export function createAuthPlugin(config: AuthConfig = { providers: {} }): Plugin
         'auth:require-user',
         'auth:get-user',
         'auth:create-bootstrap-user',
+        'auth:complete-bootstrap-user',
       ],
       calls: ['database:get-instance', 'http:register-route'],
       // We FIRE auth:user-signed-in / auth:user-signed-out (subscriber
@@ -257,6 +260,28 @@ export function createAuthPlugin(config: AuthConfig = { providers: {} }): Plugin
         PLUGIN_NAME,
         async (_ctx, input) =>
           bootstrapUserViaHook(localStore, sessionLifetimeSeconds, input),
+      );
+
+      bus.registerService<CompleteBootstrapUserInput, CompleteBootstrapUserOutput>(
+        'auth:complete-bootstrap-user',
+        PLUGIN_NAME,
+        async (_ctx, input) => {
+          // The oneTimeToken IS a sessionId pre-minted by the create hook.
+          // We just package it as a cookie. We do NOT validate it here — the
+          // route layer is the auth gate (mirrors how auth-oidc's existing
+          // /admin/me route works without an auth:require-user round-trip).
+          return {
+            sessionCookie: {
+              name: sessionCookieName,
+              value: input.oneTimeToken,
+              opts: {
+                path: '/',
+                sameSite: 'Lax',
+                maxAge: sessionLifetimeSeconds,
+              },
+            },
+          };
+        },
       );
     },
 
