@@ -263,44 +263,6 @@ body.sidebar-collapsed .new-session-btn .label,
 body.sidebar-collapsed .new-session-btn .kbd { display: none; }
 body.sidebar-collapsed .new-session-btn { justify-content: center; padding: 8px; }
 
-/* SIDEBAR COLLAPSE TOGGLE — desktop only, sits at top-right of sidebar head */
-.sidebar-collapse {
-  all: unset;
-  cursor: pointer;
-  width: 22px;
-  height: 22px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--ink-mute);
-  border-radius: 4px;
-  flex-shrink: 0;
-  transition: color 140ms ease, background 140ms ease;
-}
-.sidebar-collapse:hover { color: var(--ink); background: var(--bg-deep); }
-.sidebar-collapse:focus-visible { color: var(--ink); background: var(--bg-deep); }
-.sidebar-collapse svg { width: 16px; height: 16px; }
-
-/* SIDEBAR MOBILE TOGGLE — mobile only (hamburger). Hidden by default;
-   the @media (max-width: 720px) block at the bottom of this file flips
-   it to inline-flex. Lives in the session header's left slot. */
-.sidebar-toggle {
-  all: unset;
-  cursor: pointer;
-  display: none;
-  width: 28px;
-  height: 28px;
-  align-items: center;
-  justify-content: center;
-  border-radius: 4px;
-  color: var(--ink-mute);
-  flex-shrink: 0;
-  transition: color 120ms ease, background 120ms ease;
-}
-.sidebar-toggle:hover,
-.sidebar-toggle:focus-visible { color: var(--ink); background: var(--bg-deep); }
-.sidebar-toggle svg { width: 16px; height: 16px; }
-
 /* USER ROW at bottom — popover (.user-menu) styles arrive in Task 21 */
 .user-row-wrap {
   border-top: 1px solid var(--rule);

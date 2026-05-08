@@ -20,7 +20,7 @@ describe('Sidebar', () => {
     const sidebar = screen.getByTestId('sidebar');
     expect(sidebar.tagName).toBe('ASIDE');
     expect(screen.getByText('ax')).toBeTruthy();
-    expect(container.querySelector('.sidebar-collapse')).toBeTruthy();
+    expect(screen.getByTestId('sidebar-collapse')).toBeTruthy();
     expect(container.querySelector('.new-session-btn')).toBeTruthy();
     expect(sidebar.querySelector('[role="navigation"][aria-label="sessions"]')).toBeTruthy();
     expect(container.querySelector('.user-row-wrap')).toBeTruthy();
