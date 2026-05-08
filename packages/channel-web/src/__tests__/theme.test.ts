@@ -6,19 +6,41 @@ import { dirname, join } from 'node:path';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 describe('design tokens', () => {
-  it('declares palette on :root', () => {
+  it('declares the shadcn HSL palette on :root', () => {
     const src = readFileSync(join(__dirname, '../index.css'), 'utf-8');
-    for (const tok of ['--bg', '--ink', '--accent', '--rule', '--surface-raised',
-                       '--bg-deep', '--ink-soft', '--ink-mute', '--ink-ghost',
-                       '--accent-soft', '--you-wash', '--you-ink', '--danger',
-                       '--shadow-sm', '--shadow-md', '--sans', '--mono', '--serif']) {
-      // Match the token immediately followed by `:` (a CSS declaration)
-      // — defeats prefix matching where e.g. `--bg` would be satisfied
-      // by `--bg-deep` even if `--bg` itself were missing.
+    // The chat UI now shares the shadcn HSL token surface admin uses.
+    // Tide raw tokens (--bg, --ink, --accent, ...) were retired during
+    // the Tailwind migration in favor of these.
+    for (const tok of [
+      '--background',
+      '--foreground',
+      '--card',
+      '--card-foreground',
+      '--popover',
+      '--popover-foreground',
+      '--primary',
+      '--primary-foreground',
+      '--primary-soft',
+      '--secondary',
+      '--secondary-foreground',
+      '--muted',
+      '--muted-foreground',
+      '--accent',
+      '--accent-foreground',
+      '--destructive',
+      '--destructive-foreground',
+      '--destructive-soft',
+      '--border',
+      '--input',
+      '--ring',
+      '--radius',
+      '--rule-soft',
+      '--ink-ghost',
+    ]) {
       const escaped = tok.replace(/-/g, '\\-');
       expect(src).toMatch(new RegExp(`${escaped}\\s*:`));
     }
-    expect(src).toContain('[data-theme="dark"]');
+    expect(src).toContain('[data-theme=\'dark\']');
     expect(src).toContain('prefers-color-scheme: dark');
   });
 });

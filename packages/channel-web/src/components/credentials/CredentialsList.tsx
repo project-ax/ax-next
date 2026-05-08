@@ -98,7 +98,7 @@ export function CredentialsList({
   }
   if (list === null && error !== null) {
     return (
-      <div className="admin-error" role="alert">
+      <div className="text-sm text-destructive" role="alert">
         Error: {error}
       </div>
     );

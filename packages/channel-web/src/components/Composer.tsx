@@ -48,17 +48,15 @@ function AttachMenu() {
     <div ref={wrapRef} className="relative">
       <button
         type="button"
-        // `attach-btn` class is a structural hook for the body.searching
-        // hide rule in index.css until Phase 13 wires search<->composer
-        // exclusion through the search store directly.
         className="
-          attach-btn group inline-flex items-center justify-center shrink-0
+          group inline-flex items-center justify-center shrink-0
           h-7 w-7 mr-1 rounded-full
           text-muted-foreground transition-colors
           hover:enabled:bg-muted hover:enabled:text-foreground
           aria-expanded:bg-muted aria-expanded:text-foreground
           disabled:cursor-default disabled:opacity-60
           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2
+          [body.searching_&]:hidden
         "
         aria-label="Attach"
         aria-haspopup="menu"
