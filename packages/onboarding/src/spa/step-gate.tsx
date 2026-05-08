@@ -16,7 +16,7 @@ export function StepGate({ autoToken, onClaimed }: Props) {
     try {
       const r = await fetch('/setup/claim', {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', 'x-requested-with': 'ax-admin' },
         body: JSON.stringify({ token: t }),
       });
       if (r.ok) onClaimed();

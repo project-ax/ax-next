@@ -15,7 +15,7 @@ export function StepAdmin({ onCreated }: Props) {
     try {
       const r = await fetch('/setup/admin', {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', 'x-requested-with': 'ax-admin' },
         body: JSON.stringify({ name, email }),
       });
       if (r.ok) onCreated();

@@ -22,7 +22,7 @@ export function StepModel({ onComplete }: Props) {
     try {
       const r = await fetch('/setup/model', {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', 'x-requested-with': 'ax-admin' },
         body: JSON.stringify({ apiKey, models: { fast: fastModel, default: defaultModel } }),
       });
       const body = await r.json().catch(() => ({})) as Record<string, unknown>;
