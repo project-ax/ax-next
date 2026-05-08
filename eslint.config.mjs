@@ -87,7 +87,14 @@ export default tseslint.config(
 
   {
     rules: {
-      'no-restricted-imports': [
+      // Use the @typescript-eslint variant so we can opt-in to
+      // `allowTypeImports: true`. Type-only imports across plugins are
+      // allowed because they're erased at compile time and don't create
+      // runtime coupling — they're how plugins agree on a shared boundary
+      // contract (e.g. `User` from auth-oidc, `HttpRequest` from http-server)
+      // without one plugin depending on another's runtime. Runtime imports
+      // across plugins remain forbidden everywhere; that's invariant I2.
+      '@typescript-eslint/no-restricted-imports': [
         'error',
         {
           patterns: [
@@ -101,8 +108,9 @@ export default tseslint.config(
                 '!@ax/ipc-core',
                 '!@ax/agent-claude-sdk-runner-host',
               ],
+              allowTypeImports: true,
               message:
-                'Cross-plugin imports are forbidden. Plugins communicate through the hook bus only. See CLAUDE.md invariant 2. The only @ax/* imports allowed in plugin code are @ax/core, @ax/test-harness, @ax/ipc-protocol + @ax/workspace-protocol (wire schemas), @ax/ipc-core (transport-agnostic IPC library), and @ax/agent-claude-sdk-runner-host (pure-function jsonl→Turn[] parser).',
+                'Cross-plugin runtime imports are forbidden. Plugins communicate through the hook bus only. See CLAUDE.md invariant 2. Type-only imports (`import type {...}` / `export type {...}`) are allowed — boundary types are how plugins agree on a shared contract without runtime coupling. The only @ax/* runtime imports allowed in plugin code are @ax/core, @ax/test-harness, @ax/ipc-protocol + @ax/workspace-protocol (wire schemas), @ax/ipc-core (transport-agnostic IPC library), and @ax/agent-claude-sdk-runner-host (pure-function jsonl→Turn[] parser).',
             },
           ],
         },
@@ -162,7 +170,7 @@ export default tseslint.config(
       'packages/workspace-git-http/src/server/**',
     ],
     rules: {
-      'no-restricted-imports': 'off',
+      '@typescript-eslint/no-restricted-imports': 'off',
     },
   },
 );
