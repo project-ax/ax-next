@@ -17,7 +17,7 @@ import {
 import { createRateLimiter } from './rate-limit.js';
 import { createBootstrapSessionStore } from './sessions.js';
 import { createOnboardingRouteHandlers, type RouteRequest, type RouteResponse } from './routes.js';
-import type { BootstrapStatusOutput, OnboardingConfig } from './types.js';
+import type { BootstrapCompleteInput, BootstrapStatusOutput, OnboardingConfig } from './types.js';
 
 const PLUGIN_NAME = '@ax/onboarding';
 const DEFAULT_TOKEN_FILE_PATH = '/var/run/ax/bootstrap-token';
@@ -71,7 +71,7 @@ export function createOnboardingPlugin(config: OnboardingConfig): Plugin {
     manifest: {
       name: PLUGIN_NAME,
       version: '0.0.0',
-      registers: ['bootstrap:status'],
+      registers: ['bootstrap:status', 'bootstrap:complete'],
       calls: [
         'database:get-instance',
         'http:register-route',
@@ -162,6 +162,17 @@ export function createOnboardingPlugin(config: OnboardingConfig): Plugin {
             return out;
           }
           return { status: row.status };
+        },
+      );
+
+      // bootstrap:complete service hook -----------------------------------
+      bus.registerService<BootstrapCompleteInput, void>(
+        'bootstrap:complete',
+        PLUGIN_NAME,
+        async (_ctx, input) => {
+          const opts: { tx?: import('kysely').Transaction<unknown> } = {};
+          if (input.tx !== undefined) opts.tx = input.tx;
+          await localStore.complete(opts);
         },
       );
 

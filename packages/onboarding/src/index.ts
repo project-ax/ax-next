@@ -10,7 +10,7 @@ export {
   writeTokenFile,
   printTokenToStdout,
 } from './token.js';
-export type { OnboardingConfig, BootstrapStatusOutput } from './types.js';
+export type { OnboardingConfig, BootstrapStatusOutput, BootstrapCompleteInput } from './types.js';
 export { createRateLimiter } from './rate-limit.js';
 export type { RateLimitConfig, RateLimiter } from './rate-limit.js';
 export { createBootstrapSessionStore } from './sessions.js';

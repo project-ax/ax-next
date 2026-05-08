@@ -1,3 +1,5 @@
+import type { Transaction } from 'kysely';
+
 export interface OnboardingConfig {
   /** Base URL printed in the stdout banner. e.g. 'http://localhost:8080'. */
   baseUrl: string;
@@ -22,4 +24,9 @@ export interface OnboardingConfig {
 export interface BootstrapStatusOutput {
   status: 'pending' | 'claimed' | 'completed' | 'uninitialized';
   completedAt?: Date;
+}
+
+export interface BootstrapCompleteInput {
+  /** Optional transaction handle from db:transact's run callback. */
+  tx?: Transaction<unknown>;
 }

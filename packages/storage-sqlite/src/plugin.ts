@@ -1,11 +1,23 @@
 import { PluginError, type Plugin } from '@ax/core';
 import { openDatabase, type Database } from './schema.js';
-import { sql, type Kysely } from 'kysely';
+import { sql, type Kysely, type Transaction } from 'kysely';
 
 const PLUGIN_NAME = '@ax/storage-sqlite';
 
 export interface StorageSqliteConfig {
   databasePath: string;
+}
+
+export interface DbTransactInput {
+  run: (args: { tx: Transaction<unknown> }) => Promise<void>;
+}
+export type DbTransactOutput = void;
+
+export interface StorageSetInput {
+  key: string;
+  value: Uint8Array;
+  /** Optional transaction handle from db:transact's run callback. */
+  tx?: Transaction<unknown>;
 }
 
 export function createStorageSqlitePlugin(config: StorageSqliteConfig): Plugin {
@@ -15,7 +27,7 @@ export function createStorageSqlitePlugin(config: StorageSqliteConfig): Plugin {
     manifest: {
       name: PLUGIN_NAME,
       version: '0.0.0',
-      registers: ['storage:get', 'storage:set', 'storage:list-prefix'],
+      registers: ['storage:get', 'storage:set', 'storage:list-prefix', 'db:transact'],
       calls: [],
       subscribes: [],
     },
@@ -36,11 +48,13 @@ export function createStorageSqlitePlugin(config: StorageSqliteConfig): Plugin {
         },
       );
 
-      bus.registerService<{ key: string; value: Uint8Array }, void>(
+      bus.registerService<StorageSetInput, void>(
         'storage:set',
         PLUGIN_NAME,
-        async (_ctx, { key, value }) => {
-          await db!
+        async (_ctx, input) => {
+          const { key, value } = input;
+          const exec = (input.tx ?? db!) as Kysely<Database>;
+          await exec
             .insertInto('kv')
             .values({ key, value: Buffer.from(value) })
             .onConflict((oc) =>
@@ -50,6 +64,21 @@ export function createStorageSqlitePlugin(config: StorageSqliteConfig): Plugin {
               }),
             )
             .execute();
+        },
+      );
+
+      // I1 caveat: this hook leaks Kysely's `Transaction` shape into
+      // payloads. Accepted because the alternatives (async-local-storage
+      // magic; opaque tx tokens) are either implicit or require a registry
+      // that itself has cross-plugin coordination. Used by Phase 2's
+      // wizard completion transaction (credential + agent + bootstrap).
+      bus.registerService<DbTransactInput, DbTransactOutput>(
+        'db:transact',
+        PLUGIN_NAME,
+        async (_ctx, input) => {
+          await db!.transaction().execute(async (trx) => {
+            await input.run({ tx: trx as Transaction<unknown> });
+          });
         },
       );
 

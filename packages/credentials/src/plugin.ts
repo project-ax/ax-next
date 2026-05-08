@@ -1,4 +1,5 @@
 import { PluginError, type Plugin } from '@ax/core';
+import type { Transaction } from 'kysely';
 import { encryptWithKey, decryptWithKey, parseKeyFromEnv } from './crypto.js';
 
 const PLUGIN_NAME = '@ax/credentials';
@@ -67,6 +68,8 @@ export interface CredentialsSetInput {
   payload: Uint8Array;
   expiresAt?: number;
   metadata?: Record<string, unknown>;
+  /** Optional transaction handle from db:transact's run callback. */
+  tx?: Transaction<unknown>;
 }
 
 export type CredentialsSetOutput = void;
@@ -360,7 +363,13 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
             input.metadata,
             Date.now(),
           );
-          await bus.call('credentials:store-blob:put', ctx, { scope, ownerId, ref, blob });
+          await bus.call('credentials:store-blob:put', ctx, {
+            scope,
+            ownerId,
+            ref,
+            blob,
+            tx: input.tx,
+          });
         },
       );
 

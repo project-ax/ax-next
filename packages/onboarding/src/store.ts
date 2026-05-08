@@ -1,4 +1,4 @@
-import type { Kysely } from 'kysely';
+import type { Kysely, Transaction } from 'kysely';
 import type { BootstrapStateRow, OnboardingDatabase } from './migrations.js';
 
 // Re-export for consumers that only import from store.
@@ -12,7 +12,7 @@ export interface OnboardingStore {
   read(): Promise<BootstrapStateRow | null>;
   initializeWithHash(tokenHash: string): Promise<void>;
   claim(): Promise<ClaimResult>;
-  complete(): Promise<void>;
+  complete(opts?: { tx?: Transaction<unknown> }): Promise<void>;
 }
 
 /**
@@ -80,8 +80,9 @@ export function createOnboardingStore(
     // can be completed. Already-completed rows are not re-stamped (idempotent),
     // and missing rows are a silent no-op. This enforces "never backwards" at
     // the SQL level rather than relying solely on route-layer ordering.
-    async complete(): Promise<void> {
-      await db
+    async complete(opts?: { tx?: Transaction<unknown> }): Promise<void> {
+      const exec = (opts?.tx ?? db) as Kysely<OnboardingDatabase>;
+      await exec
         .updateTable(table)
         .set({ status: 'completed', completed_at: new Date(), updated_at: new Date() })
         .where('id', '=', 1)

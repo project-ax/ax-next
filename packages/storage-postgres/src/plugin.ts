@@ -1,5 +1,5 @@
 import { makeAgentContext, PluginError, type Plugin } from '@ax/core';
-import { sql, type Kysely } from 'kysely';
+import { sql, type Kysely, type Transaction } from 'kysely';
 import { runStorageMigration, type StorageDatabase } from './migrations.js';
 
 /**
@@ -13,6 +13,18 @@ import { runStorageMigration, type StorageDatabase } from './migrations.js';
 
 const PLUGIN_NAME = '@ax/storage-postgres';
 
+export interface DbTransactInput {
+  run: (args: { tx: Transaction<unknown> }) => Promise<void>;
+}
+export type DbTransactOutput = void;
+
+export interface StorageSetInput {
+  key: string;
+  value: Uint8Array;
+  /** Optional transaction handle from db:transact's run callback. */
+  tx?: Transaction<unknown>;
+}
+
 export function createStoragePostgresPlugin(): Plugin {
   let db: Kysely<StorageDatabase> | undefined;
 
@@ -20,7 +32,7 @@ export function createStoragePostgresPlugin(): Plugin {
     manifest: {
       name: PLUGIN_NAME,
       version: '0.0.0',
-      registers: ['storage:get', 'storage:set', 'storage:list-prefix'],
+      registers: ['storage:get', 'storage:set', 'storage:list-prefix', 'db:transact'],
       calls: ['database:get-instance'],
       subscribes: [],
     },
@@ -63,14 +75,16 @@ export function createStoragePostgresPlugin(): Plugin {
         },
       );
 
-      bus.registerService<{ key: string; value: Uint8Array }, void>(
+      bus.registerService<StorageSetInput, void>(
         'storage:set',
         PLUGIN_NAME,
-        async (_ctx, { key, value }) => {
+        async (_ctx, input) => {
+          const { key, value } = input;
           // Buffer.from(Uint8Array) shares the underlying memory, so this
           // doesn't copy. Kysely's pg dialect serializes Buffer → BYTEA.
           const buf = Buffer.from(value);
-          await db!
+          const exec = (input.tx ?? db!) as Kysely<StorageDatabase>;
+          await exec
             .insertInto('storage_postgres_v1_kv')
             .values({ key, value: buf, updated_at: new Date() })
             .onConflict((oc) =>
@@ -80,6 +94,21 @@ export function createStoragePostgresPlugin(): Plugin {
               }),
             )
             .execute();
+        },
+      );
+
+      // I1 caveat: this hook leaks Kysely's `Transaction` shape into
+      // payloads. Accepted because the alternatives (async-local-storage
+      // magic; opaque tx tokens) are either implicit or require a registry
+      // that itself has cross-plugin coordination. Used by Phase 2's
+      // wizard completion transaction (credential + agent + bootstrap).
+      bus.registerService<DbTransactInput, DbTransactOutput>(
+        'db:transact',
+        PLUGIN_NAME,
+        async (_ctx, input) => {
+          await db!.transaction().execute(async (trx) => {
+            await input.run({ tx: trx as Transaction<unknown> });
+          });
         },
       );
 
