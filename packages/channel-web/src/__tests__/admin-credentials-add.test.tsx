@@ -1,17 +1,15 @@
 /**
- * ApiKeyForm + OAuthFlowForm + CredentialAddMenu tests — Task 4.3.
+ * ApiKeyForm + CredentialAddMenu tests.
  *
  * Pinned behaviors:
  *
  *   - ApiKeyForm: shows scope picker IFF variant='admin'; submit POSTs
  *     with base64-encoded payload; success calls `onAdded` then resets
  *     state. Settings variant omits scope/ownerId from the body.
- *   - OAuthFlowForm: clicking "Open" calls `oauthStart`, opens a window
- *     with `noopener,noreferrer`, stashes pendingId in component state.
- *     Submitting the code calls `oauthFinish` with the stashed pendingId.
- *   - CredentialAddMenu: opens a kind-picker (api-key, anthropic-oauth,
- *     etc.); selecting api-key renders ApiKeyForm; selecting an oauth
- *     kind renders OAuthFlowForm.
+ *   - CredentialAddMenu: opens a kind-picker; only kinds with
+ *     `flow === 'paste'` render as menu items (I12 — provider
+ *     credentials are API-key-only, enforced client-side as defense
+ *     in depth). Selecting a kind renders ApiKeyForm.
  *
  * The wire-client surface is mocked via global fetch — we don't bring up
  * a real bus here. The handlers under test in @ax/credentials-admin-routes
@@ -25,7 +23,6 @@ import {
   waitFor,
 } from '@testing-library/react';
 import { ApiKeyForm } from '../components/credentials/ApiKeyForm';
-import { OAuthFlowForm } from '../components/credentials/OAuthFlowForm';
 import { CredentialAddMenu } from '../components/credentials/CredentialAddMenu';
 
 const fetchMock = vi.fn();
@@ -136,91 +133,8 @@ describe('ApiKeyForm', () => {
   });
 });
 
-describe('OAuthFlowForm', () => {
-  it('clicking Open POSTs oauth/start, opens window with noopener+noreferrer', async () => {
-    fetchMock.mockResolvedValueOnce(
-      jsonOk({
-        pendingId: 'pend-12345678901234567890',
-        authorizeUrl: 'https://provider/authorize?x=1',
-        instructions: 'paste',
-      }),
-    );
-    const openSpy = vi
-      .spyOn(window, 'open')
-      .mockImplementation(() => null);
-
-    render(
-      <OAuthFlowForm
-        variant="admin"
-        kind="anthropic-oauth"
-        onAdded={() => {}}
-        onCancel={() => {}}
-      />,
-    );
-    fireEvent.change(screen.getByLabelText(/^ref$/i), {
-      target: { value: 'a' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: /open/i }));
-
-    await waitFor(() => expect(openSpy).toHaveBeenCalled());
-    expect(fetchMock.mock.calls[0]![0]).toBe('/admin/credentials/oauth/start');
-    // window.open args: url, target, features
-    expect(openSpy.mock.calls[0]![0]).toBe('https://provider/authorize?x=1');
-    expect(openSpy.mock.calls[0]![2]).toMatch(/noopener/);
-    expect(openSpy.mock.calls[0]![2]).toMatch(/noreferrer/);
-  });
-
-  it('submitting the code POSTs oauth/finish with the stashed pendingId', async () => {
-    // Step 1: start.
-    fetchMock.mockResolvedValueOnce(
-      jsonOk({
-        pendingId: 'pend-12345678901234567890',
-        authorizeUrl: 'https://provider/authorize',
-        instructions: 'paste',
-      }),
-    );
-    // Step 2: finish.
-    fetchMock.mockResolvedValueOnce(
-      jsonOk({ credential: { ref: 'a', kind: 'anthropic-oauth' } }, 201),
-    );
-    vi.spyOn(window, 'open').mockImplementation(() => null);
-
-    const onAdded = vi.fn();
-    render(
-      <OAuthFlowForm
-        variant="admin"
-        kind="anthropic-oauth"
-        onAdded={onAdded}
-        onCancel={() => {}}
-      />,
-    );
-    fireEvent.change(screen.getByLabelText(/^ref$/i), {
-      target: { value: 'a' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: /open/i }));
-    // After start resolves, code field appears.
-    await waitFor(() => expect(screen.getByLabelText(/code/i)).toBeTruthy());
-
-    fireEvent.change(screen.getByLabelText(/code/i), {
-      target: { value: 'auth-code-xyz' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: /finish/i }));
-
-    await waitFor(() => expect(onAdded).toHaveBeenCalled());
-    const finishCall = fetchMock.mock.calls[1]!;
-    expect(finishCall[0]).toBe('/admin/credentials/oauth/finish');
-    const body = JSON.parse(
-      (finishCall[1] as RequestInit).body as string,
-    ) as Record<string, unknown>;
-    expect(body).toEqual({
-      pendingId: 'pend-12345678901234567890',
-      code: 'auth-code-xyz',
-    });
-  });
-});
-
 describe('CredentialAddMenu', () => {
-  it('opens with kind options after listKinds resolves', async () => {
+  it('renders only paste kinds; oauth kinds are filtered out (I12)', async () => {
     fetchMock.mockResolvedValueOnce(
       jsonOk({
         kinds: [
@@ -237,8 +151,8 @@ describe('CredentialAddMenu', () => {
       expect(screen.getByRole('menuitem', { name: /^api-key$/i })).toBeTruthy(),
     );
     expect(
-      screen.getByRole('menuitem', { name: /^anthropic-oauth$/i }),
-    ).toBeTruthy();
+      screen.queryByRole('menuitem', { name: /^anthropic-oauth$/i }),
+    ).toBeNull();
   });
 
   it('selecting api-key opens the ApiKeyForm', async () => {
@@ -258,28 +172,5 @@ describe('CredentialAddMenu', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: /^api-key$/i }));
     // The api-key form's distinctive field:
     expect(screen.getByLabelText(/api key/i)).toBeTruthy();
-  });
-
-  it('selecting an oauth kind opens the OAuthFlowForm', async () => {
-    fetchMock.mockResolvedValueOnce(
-      jsonOk({
-        kinds: [
-          { kind: 'api-key', flow: 'paste' },
-          { kind: 'anthropic-oauth', flow: 'oauth' },
-        ],
-      }),
-    );
-    render(<CredentialAddMenu variant="admin" onAdded={() => {}} />);
-    fireEvent.click(screen.getByRole('button', { name: /add credential/i }));
-    await waitFor(() =>
-      expect(
-        screen.getByRole('menuitem', { name: /^anthropic-oauth$/i }),
-      ).toBeTruthy(),
-    );
-    fireEvent.click(
-      screen.getByRole('menuitem', { name: /^anthropic-oauth$/i }),
-    );
-    // The oauth form's distinctive button:
-    expect(screen.getByRole('button', { name: /open/i })).toBeTruthy();
   });
 });
