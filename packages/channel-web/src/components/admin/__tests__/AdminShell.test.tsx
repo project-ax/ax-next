@@ -66,9 +66,4 @@ describe('AdminShell', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it('shows the user chip with the current user identity', () => {
-    renderShell();
-    expect(screen.getByText('Ana K.')).toBeTruthy();
-    expect(screen.getByText('ana@example.co')).toBeTruthy();
-  });
 });

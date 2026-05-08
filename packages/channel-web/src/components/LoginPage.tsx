@@ -11,15 +11,13 @@
  * passkeys, local email+password) are deferred until earned.
  */
 import { signInWithGoogle } from '../lib/auth';
+import { BrandMark } from './BrandMark';
 
 export function LoginPage() {
   return (
     <div className="flex items-center justify-center min-h-screen p-6 bg-background">
       <div className="w-full max-w-[360px] flex flex-col items-center gap-3.5 text-center px-8 pt-9 pb-7 rounded-[14px] bg-card border border-border shadow-md">
-        <div className="flex items-center text-[28px] font-medium tracking-[-0.015em] leading-none text-foreground">
-          <span aria-hidden="true" className="inline-block h-[7px] w-[7px] rounded-full bg-primary mr-2 -translate-y-[3px]" />
-          ax
-        </div>
+        <BrandMark word="ax" size="xl" />
         <p className="text-[13px] tracking-[-0.005em] leading-[1.4] text-muted-foreground mb-1.5">
           Sign in to start chatting
         </p>

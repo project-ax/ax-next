@@ -5,6 +5,7 @@
  * surface tone, brand mark, and rail width. Inner contents (agent chip,
  * sessions list, user menu) keep their existing wiring.
  */
+import { BrandMark } from './BrandMark';
 import { NewSessionButton } from './NewSessionButton';
 import { SessionList } from './SessionList';
 import { SidebarCollapseToggle } from './SidebarCollapseToggle';
@@ -39,10 +40,7 @@ export function Sidebar({
           [body.sidebar-collapsed_&]:justify-center [body.sidebar-collapsed_&]:px-2
         "
       >
-        <span className="flex items-center [body.sidebar-collapsed_&]:hidden">
-          <span className="inline-block w-[5px] h-[5px] rounded-full bg-primary mr-2 -translate-y-[3px]" />
-          <span className="text-[19px] font-medium tracking-[-0.015em] leading-none">ax</span>
-        </span>
+        <BrandMark word="ax" className="[body.sidebar-collapsed_&]:hidden" />
         <SidebarCollapseToggle />
       </div>
       <NewSessionButton />
