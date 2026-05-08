@@ -26,14 +26,14 @@ export interface OnboardingStore {
  * Only this file may query `bootstrap_state` directly (mirrors auth-oidc's
  * store-scoped access pattern, enforced by convention and future lint rule).
  */
-export function createOnboardingStore<DB extends OnboardingDatabase>(
-  db: Kysely<DB>,
+export function createOnboardingStore(
+  db: Kysely<OnboardingDatabase>,
 ): OnboardingStore {
   const table = 'bootstrap_state' as const;
 
   return {
     async read(): Promise<BootstrapStateRow | null> {
-      const row = await (db as unknown as Kysely<OnboardingDatabase>)
+      const row = await db
         .selectFrom(table)
         .selectAll()
         .where('id', '=', 1)
@@ -47,7 +47,7 @@ export function createOnboardingStore<DB extends OnboardingDatabase>(
       // replaced on re-init (a partial-state restart must not silently swap in
       // a stale token). Task 2.4's hook handles env-var-changed restarts by
       // checking the hash before calling this.
-      await (db as unknown as Kysely<OnboardingDatabase>)
+      await db
         .insertInto(table)
         .values({
           id: 1,
@@ -65,7 +65,7 @@ export function createOnboardingStore<DB extends OnboardingDatabase>(
       // Atomic CAS: UPDATE ... WHERE status='pending' RETURNING *.
       // Only the first concurrent caller matches the WHERE predicate — the rest
       // see zero rows and return the not-pending result. No TOCTOU window.
-      const result = await (db as unknown as Kysely<OnboardingDatabase>)
+      const result = await db
         .updateTable(table)
         .set({ status: 'claimed', updated_at: new Date() })
         .where('status', '=', 'pending')
@@ -76,14 +76,16 @@ export function createOnboardingStore<DB extends OnboardingDatabase>(
         : { ok: false, reason: 'already-claimed-or-completed' };
     },
 
+    // I6 backward-transition guard: only rows in 'pending' or 'claimed' state
+    // can be completed. Already-completed rows are not re-stamped (idempotent),
+    // and missing rows are a silent no-op. This enforces "never backwards" at
+    // the SQL level rather than relying solely on route-layer ordering.
     async complete(): Promise<void> {
-      // The route layer enforces that claim() was called first; the store does
-      // not re-check because that check would create a TOCTOU of its own. Just
-      // write the terminal state.
-      await (db as unknown as Kysely<OnboardingDatabase>)
+      await db
         .updateTable(table)
         .set({ status: 'completed', completed_at: new Date(), updated_at: new Date() })
         .where('id', '=', 1)
+        .where('status', 'in', ['pending', 'claimed'])
         .execute();
     },
   };

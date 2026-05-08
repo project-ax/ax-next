@@ -108,4 +108,24 @@ describe('bootstrap_state store — Invariant I6', () => {
     const row = await store.read();
     expect(row?.status).toBe('pending');
   });
+
+  it('complete on uninitialized store is a no-op (I6 backward-transition guard)', async () => {
+    const store = await setup();
+    await store.complete();
+    expect(await store.read()).toBeNull();
+  });
+
+  it('complete is idempotent — calling twice does not re-stamp completed_at (I6)', async () => {
+    const store = await setup();
+    await store.initializeWithHash('hash-A');
+    await store.claim();
+    await store.complete();
+    const first = await store.read();
+    const firstStamp = first!.completed_at;
+    // Wait long enough that NOW() would be observably different.
+    await new Promise((r) => setTimeout(r, 50));
+    await store.complete();
+    const second = await store.read();
+    expect(second!.completed_at?.getTime()).toBe(firstStamp?.getTime());
+  });
 });
