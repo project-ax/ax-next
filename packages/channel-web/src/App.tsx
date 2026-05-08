@@ -82,10 +82,10 @@ export const App = () => {
 const AppContent = ({ user }: { user: AuthUser }) => {
   const { agents, selectedAgentId, pendingAgentId } = useAgentStore();
   const runtime = useAxChatRuntime(user.id);
-  // `adminSettingsOpen` is set by the user menu's "Admin Settings" entry.
-  // AdminSettings renders in the main pane when true.
+  // `adminSettingsOpen` is set by the user menu's "Settings" entry
+  // (admin-gated). AdminSettings renders in the main pane when true.
   const [adminSettingsOpen, setAdminSettingsOpen] = useState(false);
-  // `settingsOpen` is set by the user menu's "My credentials" entry.
+  // `settingsOpen` is set by the user menu's "Credentials" entry.
   // SettingsPanel renders below when true. Available to every signed-in
   // user (no isAdmin gate — server-side scope='user' enforces ownership).
   const [settingsOpen, setSettingsOpen] = useState(false);

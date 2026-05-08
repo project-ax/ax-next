@@ -47,9 +47,15 @@ function toAuthUser(u: BackendUser): AuthUser {
   return {
     id: u.id,
     email: u.email ?? '',
-    // displayName falls back to email's local-part, then to a generic
-    // label. The avatar/initial in UserMenu derives from this string.
-    name: u.displayName ?? u.email?.split('@')[0] ?? 'unnamed',
+    // displayName falls back to email's local-part, then to a role-aware
+    // generic label. Bootstrap admins (created via dev-bootstrap or the
+    // auth:create-bootstrap-user hook with no body fields) have neither
+    // displayName nor email, so they show as "Administrator" rather than
+    // the meaningless "unnamed".
+    name:
+      u.displayName ??
+      u.email?.split('@')[0] ??
+      (u.isAdmin ? 'Administrator' : 'unnamed'),
     role: u.isAdmin ? 'admin' : 'user',
   };
 }

@@ -1,5 +1,5 @@
 /**
- * SettingsPanel — modal chrome for the per-user "My credentials" view.
+ * SettingsPanel — modal chrome for the per-user "Credentials" view.
  *
  * The body is fixed to user-scope credentials (no view router — for now
  * there's only one settings surface). Reuses the shared
@@ -31,7 +31,7 @@ export function SettingsPanel({
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
       <DialogContent className="max-w-[640px] font-sans">
         <DialogHeader>
-          <DialogTitle id="settings-panel-title">My credentials</DialogTitle>
+          <DialogTitle id="settings-panel-title">Credentials</DialogTitle>
         </DialogHeader>
         <div className="flex flex-col gap-4 mt-2">
           <CredentialAddMenu
