@@ -128,13 +128,10 @@ async function walkToModel(
   }
   const claimSetCookies =
     claimRes.headers.getSetCookie?.() ?? [claimRes.headers.get('set-cookie') ?? ''];
-  const bootstrapSetCookie = claimSetCookies.find((c) =>
-    c.startsWith(`${BOOTSTRAP_SESSION_COOKIE}=`),
-  );
-  if (!bootstrapSetCookie) {
-    throw new Error(`expected ${BOOTSTRAP_SESSION_COOKIE} in Set-Cookie after claim`);
-  }
-  const bootstrapCookie = bootstrapSetCookie.split(';')[0]!;
+  const bootstrapCookie = claimSetCookies
+    .find((c) => c.startsWith(`${BOOTSTRAP_SESSION_COOKIE}=`))
+    ?.split(';')[0];
+  expect(bootstrapCookie, `claim should set ${BOOTSTRAP_SESSION_COOKIE}`).toBeDefined();
 
   // Step 2: admin
   const adminRes = await fetch(`http://127.0.0.1:${port}/setup/admin`, {
@@ -151,13 +148,12 @@ async function walkToModel(
   }
   const adminSetCookies =
     adminRes.headers.getSetCookie?.() ?? [adminRes.headers.get('set-cookie') ?? ''];
-  const authSetCookie = adminSetCookies.find((c) => c.startsWith('ax_auth_session='));
-  if (!authSetCookie) {
-    throw new Error(`expected ax_auth_session in Set-Cookie after admin`);
-  }
-  const authCookie = authSetCookie.split(';')[0]!;
+  const authCookie = adminSetCookies
+    .find((c) => c.startsWith('ax_auth_session='))
+    ?.split(';')[0];
+  expect(authCookie, 'admin should set ax_auth_session').toBeDefined();
 
-  return { authCookie, adminEmail };
+  return { authCookie: authCookie!, adminEmail };
 }
 
 describe('@ax/onboarding POST /setup/model', () => {

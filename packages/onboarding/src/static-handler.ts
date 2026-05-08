@@ -22,13 +22,14 @@ const MIME_BY_EXT: Record<string, string> = {
 
 // Vite stamps content-hashes into asset filenames (`foo-C9BLoJwu.js`).
 // Vite uses base64url-encoded hashes (alphanumeric, A-Z permitted), NOT
-// pure hex — so the pattern must accept the full alphanumeric range. Vite
-// emits exactly 8 hash characters, so we anchor to exactly 8 to avoid
-// false positives on any longer alphanumeric run (e.g. a future
-// `polyfills.js` chunk would otherwise be wrongly tagged immutable).
+// base64url alphabet (alphanumerics + `_` and `-`). Vite emits exactly
+// 8 hash characters, so we anchor to exactly 8 to avoid false positives
+// on any longer run (e.g. a future `polyfills.js` chunk would otherwise
+// be wrongly tagged immutable). Earlier `[a-zA-Z0-9]` was too narrow:
+// vite's hashes can contain `_` (observed `DYyI3j_D`).
 // Files matching this pattern get long-lived cache headers; everything else
 // (notably index.html) gets `no-cache` so SPA updates propagate.
-const HASHED_FILENAME = /[-_.][a-zA-Z0-9]{8}\./;
+const HASHED_FILENAME = /[-_.][a-zA-Z0-9_-]{8}\./;
 
 export interface StaticServeDeps {
   /** Absolute path to the dist-spa root. */

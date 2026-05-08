@@ -176,11 +176,10 @@ describe('Onboarding wizard — end-to-end happy path canary', () => {
 
       const claimSetCookies =
         claimRes.headers.getSetCookie?.() ?? [claimRes.headers.get('set-cookie') ?? ''];
-      const bootstrapSetCookie = claimSetCookies.find((c) =>
-        c.startsWith('ax_bootstrap_session='),
-      );
-      expect(bootstrapSetCookie, 'claim should set ax_bootstrap_session cookie').toBeDefined();
-      const bootstrapCookie = bootstrapSetCookie!.split(';')[0];
+      const bootstrapCookie = claimSetCookies
+        .find((c) => c.startsWith('ax_bootstrap_session='))
+        ?.split(';')[0];
+      expect(bootstrapCookie, 'claim should set ax_bootstrap_session cookie').toBeDefined();
 
       // -----------------------------------------------------------------------
       // Step 2 — admin
@@ -199,9 +198,10 @@ describe('Onboarding wizard — end-to-end happy path canary', () => {
 
       const adminSetCookies =
         adminRes.headers.getSetCookie?.() ?? [adminRes.headers.get('set-cookie') ?? ''];
-      const authSetCookie = adminSetCookies.find((c) => c.startsWith('ax_auth_session='));
-      expect(authSetCookie, 'admin should set ax_auth_session cookie').toBeDefined();
-      const authCookie = authSetCookie!.split(';')[0];
+      const authCookie = adminSetCookies
+        .find((c) => c.startsWith('ax_auth_session='))
+        ?.split(';')[0];
+      expect(authCookie, 'admin should set ax_auth_session cookie').toBeDefined();
 
       // -----------------------------------------------------------------------
       // Step 3 — model

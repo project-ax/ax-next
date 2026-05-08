@@ -122,15 +122,13 @@ async function claimAndExtract(
   }
   const setCookies =
     res.headers.getSetCookie?.() ?? [res.headers.get('set-cookie') ?? ''];
-  const bootstrapSetCookie = setCookies.find((c) =>
-    c.startsWith(`${BOOTSTRAP_SESSION_COOKIE}=`),
-  );
-  if (bootstrapSetCookie === undefined) {
-    throw new Error(`expected ${BOOTSTRAP_SESSION_COOKIE} in Set-Cookie`);
-  }
-  // Strip attributes — keep just `name=value`.
-  const bootstrapCookie = bootstrapSetCookie.split(';')[0]!;
-  return { bootstrapCookie };
+  // ?.split(';')[0] keeps a missing Set-Cookie a clean assertion failure
+  // instead of a TypeError on undefined.split. Strip attributes — name=value only.
+  const bootstrapCookie = setCookies
+    .find((c) => c.startsWith(`${BOOTSTRAP_SESSION_COOKIE}=`))
+    ?.split(';')[0];
+  expect(bootstrapCookie, `claim should set ${BOOTSTRAP_SESSION_COOKIE}`).toBeDefined();
+  return { bootstrapCookie: bootstrapCookie! };
 }
 
 describe('@ax/onboarding POST /setup/admin', () => {
