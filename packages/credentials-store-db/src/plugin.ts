@@ -42,7 +42,11 @@ export interface StoreBlobPutInput {
   ownerId: string | null;
   ref: string;
   blob: Uint8Array;
-  /** Optional transaction handle from db:transact's run callback. */
+  /**
+   * Optional transaction handle from db:transact's run callback. Threaded
+   * down to storage:set. I1 relaxation — see @ax/storage-postgres's
+   * `db:transact` registration site for the rationale.
+   */
   tx?: Transaction<unknown>;
 }
 

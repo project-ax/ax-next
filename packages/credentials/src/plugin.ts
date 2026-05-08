@@ -68,7 +68,16 @@ export interface CredentialsSetInput {
   payload: Uint8Array;
   expiresAt?: number;
   metadata?: Record<string, unknown>;
-  /** Optional transaction handle from db:transact's run callback. */
+  /**
+   * Optional transaction handle from db:transact's run callback. Threaded
+   * through to credentials:store-blob:put → storage:set so the credential
+   * write rolls back atomically on caller throw.
+   *
+   * I1 relaxation: this leaks Kysely's `Transaction` shape into the public
+   * `@ax/credentials` type surface (visible in published `.d.ts`). Accepted
+   * for Phase 2's wizard atomicity (I9). See registration site of
+   * `db:transact` in @ax/storage-postgres for the rationale.
+   */
   tx?: Transaction<unknown>;
 }
 
