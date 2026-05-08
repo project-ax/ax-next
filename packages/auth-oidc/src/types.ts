@@ -86,9 +86,12 @@ export interface CreateBootstrapUserOutput {
 export interface CompleteBootstrapUserInput {
   /**
    * The single-use token returned by `auth:create-bootstrap-user`. The
-   * impl maps this to a session cookie WITHOUT consuming the token's
-   * single-use semantics — the same token can be exchanged once for a
-   * cookie. Subsequent calls fail (no session exists for the id).
+   * impl wraps this token into a cookie payload without touching
+   * session state — the session was already persisted by
+   * `auth:create-bootstrap-user` and stays valid until normal session
+   * expiry. Single-use enforcement is the caller's responsibility: the
+   * onboarding wizard's `/setup/admin` route destroys the bootstrap
+   * session before/after this call so the token can't be replayed.
    *
    * Phase 1's auth-better impl will accept an optional `password` field
    * here; this Phase 2 impl ignores it (auth-oidc has no local password).

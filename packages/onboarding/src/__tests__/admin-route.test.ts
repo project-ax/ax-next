@@ -165,6 +165,9 @@ describe('@ax/onboarding POST /setup/admin', () => {
     // Auth session cookie issued.
     const authCookie = setCookies.find((c) => c.startsWith('ax_auth_session='));
     expect(authCookie).toBeDefined();
+    expect(authCookie).toMatch(/Path=\//);
+    expect(authCookie).toMatch(/SameSite=Lax/);
+    expect(authCookie).toMatch(/HttpOnly/);
   });
 
   it('without bootstrap cookie → 401', async () => {
