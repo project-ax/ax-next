@@ -111,35 +111,69 @@ export function ModelConfigTab() {
     );
   }
 
+  const noProviders = configuredProviders.length === 0;
+
   return (
     <div className="model-config-tab">
-      {ROLES.map((role) => (
-        <div key={role.id} className="model-config-role">
-          <label htmlFor={`model-select-${role.id}`} className="model-config-label">
-            {role.label}
-          </label>
-          <p className="model-config-description">{role.description}</p>
-          <select
-            id={`model-select-${role.id}`}
-            value={selectedModels[role.ref] ?? ''}
-            onChange={(e) =>
-              setSelectedModels((prev) => ({ ...prev, [role.ref]: e.target.value }))
-            }
-            aria-label={role.label}
-          >
-            <option value="">— Select a model —</option>
-            {configuredProviders.map((provider) => (
-              <optgroup key={provider.id} label={provider.name}>
-                {provider.models.map((model) => (
-                  <option key={model} value={model}>
-                    {model}
-                  </option>
-                ))}
-              </optgroup>
-            ))}
-          </select>
+      {noProviders && (
+        <div className="model-config-hint">
+          Configure a provider key first, then come back here to choose models.
         </div>
-      ))}
+      )}
+      <div className="model-config-list">
+        {ROLES.map((role, idx) => {
+          const selected = selectedModels[role.ref] ?? '';
+          return (
+            <div
+              key={role.id}
+              className="model-config-row"
+              data-role={role.id}
+              style={{ animationDelay: `${idx * 60}ms` }}
+            >
+              <div className="model-config-row-meta">
+                <span className="model-config-eyebrow">Role · {role.id}</span>
+                <label
+                  htmlFor={`model-select-${role.id}`}
+                  className="model-config-label"
+                >
+                  {role.label}
+                </label>
+                <p className="model-config-description">{role.description}</p>
+              </div>
+              <div className="model-config-row-control">
+                <select
+                  id={`model-select-${role.id}`}
+                  value={selected}
+                  onChange={(e) =>
+                    setSelectedModels((prev) => ({
+                      ...prev,
+                      [role.ref]: e.target.value,
+                    }))
+                  }
+                  aria-label={role.label}
+                  disabled={noProviders}
+                >
+                  <option value="">— Select a model —</option>
+                  {configuredProviders.map((provider) => (
+                    <optgroup key={provider.id} label={provider.name}>
+                      {provider.models.map((model) => (
+                        <option key={model} value={model}>
+                          {model}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </select>
+                {selected && (
+                  <span className="model-config-current">
+                    Current selection · <code>{selected}</code>
+                  </span>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
 
       <div className="model-config-footer">
         <button
@@ -148,8 +182,13 @@ export function ModelConfigTab() {
           onClick={() => void handleSave()}
           disabled={saving || !hasAnySelection}
         >
-          {saving ? 'Saving…' : savedOk ? 'Saved' : 'Save changes'}
+          {saving ? 'Saving…' : savedOk ? '✓ Saved' : 'Save changes'}
         </button>
+        {!hasAnySelection && !saving && !savedOk && !saveError && (
+          <span className="model-config-hint-inline">
+            Pick a model above to enable save.
+          </span>
+        )}
         {saveError && (
           <div className="model-config-error" role="alert">
             {saveError}

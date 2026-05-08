@@ -96,6 +96,15 @@ export function ProviderKeysTab() {
     );
   }
 
+  if (providers.length === 0) {
+    return (
+      <div className="provider-keys-empty">
+        No providers registered. Wire one in via{' '}
+        <code>credentials:list-providers</code>.
+      </div>
+    );
+  }
+
   return (
     <div className="provider-keys-tab">
       {providers.map((provider) => {
@@ -112,22 +121,39 @@ export function ProviderKeysTab() {
         return (
           <div key={provider.id} className={rowClass} data-provider-id={provider.id}>
             <div className="provider-row-header">
-              <span className="provider-name">{provider.name}</span>
-              {provider.configured ? (
-                <>
-                  <span className="provider-badge provider-badge-configured">Configured</span>
-                  <span className="provider-key-masked">••••••••</span>
-                </>
-              ) : (
-                <span className="provider-unconfigured">Not configured</span>
-              )}
+              <div className="provider-row-identity">
+                <span className="provider-name">{provider.name}</span>
+                <span className="provider-row-meta">
+                  {provider.configured ? (
+                    <>
+                      <span
+                        className="provider-status provider-status-configured"
+                        aria-hidden="true"
+                      />
+                      <span className="provider-status-label">Configured</span>
+                      <span className="provider-status-sep" aria-hidden="true">
+                        ·
+                      </span>
+                      <span className="provider-key-masked">key ••••••••</span>
+                    </>
+                  ) : (
+                    <>
+                      <span
+                        className="provider-status provider-status-empty"
+                        aria-hidden="true"
+                      />
+                      <span className="provider-status-label">Not configured</span>
+                    </>
+                  )}
+                </span>
+              </div>
               {!isEditing && (
                 <button
                   type="button"
                   className={provider.configured ? 'provider-btn-edit' : 'provider-btn-add'}
                   onClick={() => handleEdit(provider.id)}
                 >
-                  {provider.configured ? 'Edit' : 'Add key'}
+                  {provider.configured ? 'Edit key' : 'Add key →'}
                 </button>
               )}
             </div>

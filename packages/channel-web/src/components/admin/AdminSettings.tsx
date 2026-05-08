@@ -19,14 +19,45 @@ type TabId = 'provider-keys' | 'model-config' | 'agents' | 'mcp-servers' | 'team
 interface Tab {
   id: TabId;
   label: string;
+  /** Editorial title shown above the tab content. */
+  title: string;
+  /** Short caption explaining what the tab is for. */
+  caption: string;
 }
 
 const TABS: Tab[] = [
-  { id: 'provider-keys', label: 'Provider Keys' },
-  { id: 'model-config', label: 'Model Config' },
-  { id: 'agents', label: 'Agents' },
-  { id: 'mcp-servers', label: 'MCP Servers' },
-  { id: 'teams', label: 'Teams' },
+  {
+    id: 'provider-keys',
+    label: 'Provider Keys',
+    title: 'Provider keys',
+    caption:
+      'Manage shared API keys for the model providers wired into this deployment.',
+  },
+  {
+    id: 'model-config',
+    label: 'Model Config',
+    title: 'Model configuration',
+    caption:
+      'Pick which model handles each role. Only providers with a configured key appear.',
+  },
+  {
+    id: 'agents',
+    label: 'Agents',
+    title: 'Agents',
+    caption: 'Define the agents available across this deployment.',
+  },
+  {
+    id: 'mcp-servers',
+    label: 'MCP Servers',
+    title: 'MCP servers',
+    caption: 'Register Model Context Protocol servers that agents can call into.',
+  },
+  {
+    id: 'teams',
+    label: 'Teams',
+    title: 'Teams',
+    caption: 'Group users so an agent can be scoped to a team rather than a person.',
+  },
 ];
 
 export interface AdminSettingsProps {
@@ -35,6 +66,7 @@ export interface AdminSettingsProps {
 
 export function AdminSettings({ onClose }: AdminSettingsProps) {
   const [activeTab, setActiveTab] = useState<TabId>('provider-keys');
+  const active = TABS.find((t) => t.id === activeTab) ?? TABS[0]!;
 
   return (
     <div className="admin-settings">
@@ -61,20 +93,29 @@ export function AdminSettings({ onClose }: AdminSettingsProps) {
       </nav>
       <div className="admin-settings-content" role="tabpanel">
         <div className="admin-canary-banner" role="status">
-          <span aria-hidden="true" className="admin-canary-banner-icon">⚠</span>
-          <span>
-            Heads up: the canary scanner isn't wired in yet. Until it
-            is, this deployment has no automated secret-leak veto and
-            no LLM-output redaction. We trust ourselves with our
-            internal data, but we wouldn't ship this to outside users
-            yet — and neither should you. Tracked for Week 13+.
+          <span className="admin-canary-banner-tag">Advisory</span>
+          <span className="admin-canary-banner-text">
+            The canary scanner isn't wired in yet. Until it is, this deployment
+            has no automated secret-leak veto and no LLM-output redaction. We
+            trust ourselves with our internal data, but we wouldn't ship this to
+            outside users yet — and neither should you. Tracked for Week&nbsp;13+.
           </span>
         </div>
-        {activeTab === 'provider-keys' && <ProviderKeysTab />}
-        {activeTab === 'model-config' && <ModelConfigTab />}
-        {activeTab === 'agents' && <AgentForm />}
-        {activeTab === 'mcp-servers' && <McpServerForm />}
-        {activeTab === 'teams' && <TeamList />}
+        <header className="admin-section-head" key={active.id}>
+          <div className="admin-section-eyebrow">
+            <span className="admin-section-eyebrow-mark" aria-hidden="true" />
+            Admin · {active.label}
+          </div>
+          <h1 className="admin-section-title">{active.title}</h1>
+          <p className="admin-section-caption">{active.caption}</p>
+        </header>
+        <div className="admin-section-body" key={`body-${active.id}`}>
+          {activeTab === 'provider-keys' && <ProviderKeysTab />}
+          {activeTab === 'model-config' && <ModelConfigTab />}
+          {activeTab === 'agents' && <AgentForm />}
+          {activeTab === 'mcp-servers' && <McpServerForm />}
+          {activeTab === 'teams' && <TeamList />}
+        </div>
       </div>
     </div>
   );

@@ -71,7 +71,7 @@ describe('ProviderKeysTab', () => {
     render(<ProviderKeysTab />);
     await waitFor(() => expect(screen.getByText('Anthropic')).toBeTruthy());
     expect(screen.getByText('Configured')).toBeTruthy();
-    expect(screen.getByRole('button', { name: /^Edit$/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^Edit key$/i })).toBeTruthy();
   });
 
   it('clicking "Add key" opens ProviderKeyForm for that row', async () => {
@@ -85,8 +85,8 @@ describe('ProviderKeysTab', () => {
   it('clicking "Edit" opens ProviderKeyForm for that row', async () => {
     fetchMock.mockResolvedValueOnce(jsonOk({ providers: [configuredProvider] }));
     render(<ProviderKeysTab />);
-    await waitFor(() => screen.getByRole('button', { name: /^Edit$/i }));
-    fireEvent.click(screen.getByRole('button', { name: /^Edit$/i }));
+    await waitFor(() => screen.getByRole('button', { name: /^Edit key$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Edit key$/i }));
     expect(screen.getByLabelText(/API key/i)).toBeTruthy();
   });
 
@@ -97,7 +97,7 @@ describe('ProviderKeysTab', () => {
     render(<ProviderKeysTab />);
     await waitFor(() => {
       expect(screen.getByRole('button', { name: /Add key/i })).toBeTruthy();
-      expect(screen.getByRole('button', { name: /^Edit$/i })).toBeTruthy();
+      expect(screen.getByRole('button', { name: /^Edit key$/i })).toBeTruthy();
     });
 
     // Open first row (unconfigured → Add key).
@@ -107,7 +107,7 @@ describe('ProviderKeysTab', () => {
 
     // Open second row (configured → Edit).
     // After the first row opens, its button is hidden; the Edit button remains for the other row.
-    fireEvent.click(screen.getByRole('button', { name: /^Edit$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Edit key$/i }));
     // Still only one input — first row collapsed, second row opened.
     expect(screen.getAllByLabelText(/API key/i)).toHaveLength(1);
   });
