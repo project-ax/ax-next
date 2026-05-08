@@ -1885,3 +1885,124 @@ Execution options:
 2. **Inline Execution** — Execute tasks in this session using `superpowers:executing-plans`, batch execution with checkpoints.
 
 Which approach do you want — and which phase first? My recommendation: start with Phase 1 (auth-better plugin) under subagent-driven mode, since it's the substrate the rest of the plan rests on.
+
+---
+
+## Resuming this plan in a new session
+
+One phase per session. Open a new Claude Code session in `/Users/vpulim/dev/ai/ax-next`, then paste the prompt for the phase you want to run.
+
+### Phase 1 — `@ax/auth-better` plugin
+
+```
+Execute Phase 1 of docs/plans/2026-05-08-first-use-onboarding-impl.md
+using superpowers:subagent-driven-development.
+
+Before dispatching the first subagent, verify these assumptions called out in
+the plan:
+- ctx.transaction() exists on AgentContext (used in Task 2.7's
+  completion-tx.ts; if it doesn't exist, design a workaround in Phase 2,
+  not Phase 1)
+- harness.signInAsAdmin() in @ax/test-harness (load-bearing for Tasks 1.4,
+  1.5; if missing, add it as a test-harness companion task)
+- credentials:envelope-encrypt / envelope-decrypt hooks exist (PR #51 should
+  have them; used in Task 1.5)
+
+If any assumption fails, halt and report rather than improvise.
+
+Half-wired window for Phase 1: OPEN — closed in Phase 3. PR notes must say so.
+```
+
+### Phase 2 — `@ax/onboarding` plugin + wizard
+
+```
+Execute Phase 2 of docs/plans/2026-05-08-first-use-onboarding-impl.md
+using superpowers:subagent-driven-development.
+
+Phase 2 ships against the existing @ax/auth-oidc — does NOT depend on
+Phase 1. If Phase 1 has not merged yet, the new auth:complete-bootstrap-user
+hook (Task 2.6) goes into auth-oidc only; Phase 1 will mirror it in
+auth-better.
+
+Before dispatching, verify:
+- agents:create payload shape (currently set in @ax/agents per PR #51) —
+  Task 2.7's completion-tx assumes { name, ownerType, ownerId, runner,
+  fastModel, defaultModel, credentialId }. If the real shape differs,
+  adjust the task before running it
+- credentials:create payload shape — Task 2.7 assumes { kind, scope, value }
+- llm:probe-credential — likely does NOT exist; Task 2.7 step 1 adds it to
+  @ax/llm-anthropic
+
+Half-wired window: OPEN — closed in Phase 3.
+```
+
+### Phase 3 — preset switch + /admin/auth UI + Admin entry
+
+```
+Execute Phase 3 of docs/plans/2026-05-08-first-use-onboarding-impl.md
+using superpowers:subagent-driven-development.
+
+Prerequisite: Phases 1 AND 2 must be merged.
+
+This phase CLOSES two half-wired windows (Phase 1's auth-better not loaded;
+Phase 2's wizard ends with no UI path to OAuth provider config). PR notes
+must say "I3 half-wired windows from Phase 1 and Phase 2: CLOSED".
+
+After this phase ships, the canonical first-use flow is fully in place:
+operator runs ax → walks wizard → admin clicks Admin → /admin/auth → adds
+Google → signs in via Google.
+```
+
+### Phase 4 — credentials cleanup
+
+```
+Execute Phase 4 of docs/plans/2026-05-08-first-use-onboarding-impl.md
+using superpowers:subagent-driven-development.
+
+This phase enforces I12 (provider creds API-key-only). Independent of
+Phases 1-3 except in the sense that the wizard already takes API keys
+only — Phase 4 just removes the OAuth web-paste path that PR #51 left
+in /admin/credentials.
+
+PR notes must say "I12 — provider credentials API-key-only: CLOSED".
+```
+
+### Phase 5 — CLI tools + manual acceptance
+
+```
+Execute Phase 5 of docs/plans/2026-05-08-first-use-onboarding-impl.md
+using superpowers:subagent-driven-development.
+
+Prerequisite: Phase 3 merged (reset-password depends on auth-better's
+session minting).
+
+This phase includes a manual k8s-acceptance walkthrough. Use the
+k8s-acceptance-loop skill for the walkthroughs in Task 5.3. Do NOT mark
+the phase done without the Playwright walks passing.
+
+After this phase: all I1-I12 invariants closed.
+```
+
+### Optional: isolate phases in worktrees
+
+If you want a phase in its own branch+directory while it bakes:
+
+```
+Use superpowers:using-git-worktrees to spawn a worktree for Phase N
+of docs/plans/2026-05-08-first-use-onboarding-impl.md, then dispatch
+the phase via subagent-driven-development.
+```
+
+This creates `worktrees/phase-N-<topic>/` with a fresh branch. PR is opened
+from that branch when the phase is done. Useful if you want to run Phases 1
+and 2 in parallel terminals — each in its own worktree.
+
+### Things NOT to do
+
+- **Don't** run the whole plan in one session via `executing-plans`. 1,887 lines
+  of plan + tool output blows context budget mid-Phase-2.
+- **Don't** start Phase 3 before Phases 1 and 2 are both merged. The phase
+  switches presets; partial state leaves the system unbootable.
+- **Don't** skip the assumption-verification step in Phase 1 / Phase 2. The
+  plan calls these out for a reason — they're the spots where I had to
+  guess at API surfaces I couldn't verify cheaply during planning.
