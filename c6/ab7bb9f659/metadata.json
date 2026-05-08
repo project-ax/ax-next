@@ -1,0 +1,23 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "c6ab7bb9f659",
+  "strategy": "manual-commit",
+  "branch": "worktree-feat+phase-3-onboarding",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "packages/channel-web/src/App.tsx",
+    "packages/channel-web/src/__tests__/settings-panel.test.tsx",
+    "packages/channel-web/src/__tests__/user-menu.test.tsx",
+    "packages/channel-web/src/components/UserMenu.tsx",
+    "packages/channel-web/src/components/settings/SettingsPanel.tsx",
+    "packages/channel-web/src/lib/auth.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/c6/ab7bb9f659/0/metadata.json",
+      "transcript": "/c6/ab7bb9f659/0/full.jsonl",
+      "content_hash": "/c6/ab7bb9f659/0/content_hash.txt",
+      "prompt": ""
+    }
+  ]
+}
