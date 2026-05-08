@@ -222,47 +222,6 @@ body {
 }
 .agent-chip[aria-expanded="true"] .agent-chip-caret { transform: rotate(180deg); }
 
-/* NEW SESSION BUTTON — secondary in hierarchy */
-.new-session-btn {
-  all: unset;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  border-radius: 6px;
-  font-size: 12.5px;
-  color: var(--ink-soft);
-  letter-spacing: 0.01em;
-  transition: background 120ms ease, color 120ms ease;
-}
-.new-session-btn:hover {
-  background: var(--bg-deep);
-  color: var(--ink);
-}
-.new-session-btn svg {
-  width: 13px;
-  height: 13px;
-  color: var(--ink-mute);
-  flex-shrink: 0;
-}
-.new-session-btn:hover svg { color: var(--ink); }
-.new-session-btn .label { min-width: 0; }
-.new-session-btn .kbd {
-  margin-left: auto;
-  font-family: var(--mono);
-  font-size: 10.5px;
-  color: var(--ink-ghost);
-  letter-spacing: 0.02em;
-  opacity: 0;
-  transition: opacity 140ms ease;
-}
-.new-session-btn:hover .kbd,
-.new-session-btn:focus-visible .kbd { opacity: 1; }
-body.sidebar-collapsed .new-session-btn .label,
-body.sidebar-collapsed .new-session-btn .kbd { display: none; }
-body.sidebar-collapsed .new-session-btn { justify-content: center; padding: 8px; }
-
 /* USER ROW at bottom — popover (.user-menu) styles arrive in Task 21 */
 .user-row-wrap {
   border-top: 1px solid var(--rule);
