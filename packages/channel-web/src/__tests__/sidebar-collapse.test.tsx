@@ -62,7 +62,7 @@ describe('Sidebar collapse', () => {
     // racy "fire keydown before listener attaches" miss. Yielding one
     // macrotask after waitFor lets the effect flush deterministically.
     await waitFor(() => {
-      expect(container.querySelector('aside.sidebar')).toBeTruthy();
+      expect(container.querySelector('aside[data-testid="sidebar"]')).toBeTruthy();
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
