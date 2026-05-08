@@ -30,7 +30,7 @@ export function AdminShell({ onClose }: AdminShellProps) {
   const meta = TAB_META[activeTab];
 
   return (
-    <div className="flex h-full bg-background">
+    <div className="flex flex-1 min-w-0 h-full bg-background">
       <AdminSidebar
         activeTab={activeTab}
         onTabChange={setActiveTab}
