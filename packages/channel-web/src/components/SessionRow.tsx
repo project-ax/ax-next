@@ -8,30 +8,25 @@
  * Inline rename:
  *   - Trigger: double-click the title, OR click the "rename" item in the
  *     row-menu opened by the `⋯` button.
- *   - The `.session-row-title` becomes `contenteditable="plaintext-only"`.
- *     Focus + select-all happens on entering rename mode.
+ *   - The title becomes `contenteditable="plaintext-only"`. Focus +
+ *     select-all happens on entering rename mode.
  *   - Enter or blur commits via `PATCH /api/chat/sessions/:id { title }`,
  *     followed by `bumpVersion()` so the list re-fetches.
  *   - Esc cancels: original title restored, no PATCH, no version bump.
  *
  * Inline delete confirm:
  *   - Trigger: click the "delete" item in the row-menu.
- *   - Row contents swap in place to a confirm UI (`.confirming-delete`).
- *     Background is `color-mix(in oklch, var(--danger) 10%, transparent)`,
- *     row stays 34px tall.
- *   - Confirm `delete` -> `DELETE /api/chat/sessions/:id` + `bumpVersion()`.
+ *   - Row contents swap in place to a confirm UI. Background tints to
+ *     bg-destructive/10, row stays 34px tall.
+ *   - Confirm `delete` -> `DELETE /api/chat/conversations/:id` + bump.
  *   - Confirm `cancel` or no action within 5s -> revert to idle.
- *   - The 5s timer is cleared on cancel/delete via the `useEffect` cleanup
- *     so a row that was just deleted doesn't fire a late revert on a
- *     stale ref.
  *
- * jsdom note: `contenteditable="plaintext-only"` is partially supported.
- * Reading the value via `textContent` works either way, so we set
- * `plaintext-only` (the right semantic) and read with `textContent`.
+ * Class names like `session-row`, `session-row-title`, `session-row-more`,
+ * `confirming-delete` are kept as structural hooks that the component
+ * tests query by; they carry no CSS rules of their own anymore.
  *
- * The fixed `34px` height is **load-bearing** — `index.css` enforces it,
- * including for `.confirming-delete`. Don't add padding/min-height that
- * would break it.
+ * The fixed `34px` height is **load-bearing**. Don't add padding or
+ * min-height that would break it.
  */
 import {
   useCallback,
@@ -41,6 +36,7 @@ import {
   type CSSProperties,
 } from 'react';
 import { sessionStoreActions } from '../lib/session-store';
+import { cn } from '@/lib/utils';
 
 export interface SessionRowProps {
   id: string;
@@ -65,12 +61,7 @@ export function SessionRow({
   const titleRef = useRef<HTMLSpanElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const moreRef = useRef<HTMLSpanElement | null>(null);
-  // Track whether the rename committed (Enter / blur after typing) vs.
-  // cancelled (Escape) so the blur handler doesn't double-commit a
-  // cancellation.
   const renameCommittedRef = useRef(false);
-  // Track whether we have a delete in flight so the auto-revert timer
-  // doesn't fire after the row is gone.
   const deleteFiredRef = useRef(false);
 
   // ---------- rename ----------
@@ -85,9 +76,6 @@ export function SessionRow({
     setRowState('idle');
   }, []);
 
-  // When entering rename mode, seed the textContent imperatively (we don't
-  // render `{title}` while renaming so a parent re-render can't clobber the
-  // user's in-progress edits), focus the title, and select all text.
   useEffect(() => {
     if (rowState !== 'renaming') return;
     const el = titleRef.current;
@@ -103,8 +91,6 @@ export function SessionRow({
     } catch {
       // jsdom may not implement Range fully; ignore.
     }
-    // Deliberately exclude `title` from deps — re-seeding on a parent-driven
-    // title prop change would erase mid-edit text.
   }, [rowState]);
 
   const commitRename = useCallback(async () => {
@@ -113,18 +99,12 @@ export function SessionRow({
     const el = titleRef.current;
     const next = (el?.textContent ?? '').trim();
     exitRename();
-    // Empty or unchanged → restore the original title in the DOM. React
-    // will skip reconciling the text node because the `title` prop hasn't
-    // changed, so without an imperative restore the user's typed text
-    // would persist visually.
     if (!next || next === title) {
       if (el) el.textContent = title;
       return;
     }
     let ok = false;
     try {
-      // TODO(week-10-12 follow-up): backend has no PATCH endpoint for conversations
-      // yet — rename is silently no-op against real AX backend. Tracking in PR notes.
       const res = await fetch(`/api/chat/sessions/${id}`, {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
@@ -139,7 +119,6 @@ export function SessionRow({
       console.warn('[session-row] rename PATCH failed', err);
     }
     if (!ok && el) {
-      // Server rejected — undo the visual change so the DOM matches truth.
       el.textContent = title;
     }
     sessionStoreActions.bumpVersion();
@@ -172,9 +151,6 @@ export function SessionRow({
     try {
       await fetch(`/api/chat/conversations/${encodeURIComponent(id)}`, {
         method: 'DELETE',
-        // CSRF: same posture as the chat-flow POST. The host's CSRF
-        // subscriber accepts the literal `ax-admin` value (see
-        // @ax/http-server csrf.ts) OR a same-Origin request.
         headers: { 'x-requested-with': 'ax-admin' },
         credentials: 'include',
       });
@@ -184,8 +160,6 @@ export function SessionRow({
     sessionStoreActions.bumpVersion();
   }, [id]);
 
-  // 5s auto-revert. Cleared on state change so cancel/delete don't see
-  // a late revert; cleared on unmount too.
   useEffect(() => {
     if (rowState !== 'confirming-delete') return;
     const t = setTimeout(() => {
@@ -197,8 +171,7 @@ export function SessionRow({
     };
   }, [rowState]);
 
-  // ---------- row menu (rename / delete popover) ----------
-  // Outside-click closes the menu.
+  // ---------- row menu ----------
   useEffect(() => {
     if (!menuOpen) return;
     const onDocClick = (e: MouseEvent) => {
@@ -218,14 +191,30 @@ export function SessionRow({
   if (rowState === 'confirming-delete') {
     return (
       <div
-        className="session-row confirming-delete"
+        className="
+          session-row confirming-delete
+          flex items-center gap-1.5 h-[34px] px-3
+          rounded-sm bg-destructive/10 cursor-default
+        "
         data-session-id={id}
         role="group"
       >
-        <span className="session-row-confirm-text">delete this session?</span>
+        <span
+          className="
+            session-row-confirm-text flex-1
+            text-[12px] leading-[1.35] tracking-[-0.005em] text-foreground
+            whitespace-nowrap overflow-hidden text-ellipsis
+          "
+        >
+          delete this session?
+        </span>
         <button
           type="button"
-          className="session-row-confirm-cancel"
+          className="
+            session-row-confirm-cancel
+            text-[11.5px] leading-none px-1.5 py-[3px] rounded-sm
+            text-muted-foreground hover:text-foreground transition-colors
+          "
           onClick={(e) => {
             e.stopPropagation();
             cancelConfirmDelete();
@@ -235,7 +224,12 @@ export function SessionRow({
         </button>
         <button
           type="button"
-          className="session-row-confirm-delete"
+          className="
+            session-row-confirm-delete
+            text-[11.5px] leading-none px-1.5 py-[3px] rounded-sm font-medium
+            text-destructive hover:bg-destructive hover:text-destructive-foreground
+            transition-colors
+          "
           onClick={(e) => {
             e.stopPropagation();
             void confirmDelete();
@@ -247,8 +241,6 @@ export function SessionRow({
     );
   }
 
-  // contenteditable's React typing differs slightly across versions;
-  // setting via attribute style sidesteps the union narrowing.
   const titleEditableProps =
     rowState === 'renaming'
       ? ({
@@ -257,17 +249,19 @@ export function SessionRow({
         } as const)
       : {};
 
-  // Static dot style; pulled out so re-renders don't churn the inline
-  // style object (CSS engines memoize on identity in some browsers).
   const dotStyle: CSSProperties = { background: agentColor };
+  const isRenaming = rowState === 'renaming';
 
   return (
     <div
-      className={`session-row${active ? ' active' : ''}`}
+      className={cn(
+        'session-row group relative flex items-start gap-2 h-[34px] px-3 py-2 rounded-sm cursor-pointer w-full',
+        'text-muted-foreground hover:bg-muted hover:text-foreground transition-colors',
+        active && 'active bg-muted text-foreground',
+      )}
       data-session-id={id}
+      data-active={active ? 'true' : undefined}
       onClick={(e) => {
-        // Clicks on the more-button, menu, or editable title shouldn't
-        // count as a row select. The row itself acts as the select target.
         if (rowState === 'renaming') return;
         const t = e.target as HTMLElement;
         if (t.closest('.session-row-more')) return;
@@ -277,16 +271,29 @@ export function SessionRow({
         }
         onSelect(id);
       }}
-      style={{ position: 'relative' }}
     >
+      {active ? (
+        <span
+          aria-hidden="true"
+          className="absolute left-0 top-2.5 bottom-2.5 w-0.5 rounded-sm bg-primary"
+        />
+      ) : null}
       <span
-        className="session-row-dot"
+        className="session-row-dot mt-[7px] h-1.5 w-1.5 rounded-full shrink-0 opacity-80 group-hover:opacity-100 [.active>&]:opacity-100"
         style={dotStyle}
         aria-hidden="true"
       />
       <span
         ref={titleRef}
-        className="session-row-title"
+        className={cn(
+          'session-row-title flex-1 min-w-0 text-[13px] leading-[1.35] tracking-[-0.005em] whitespace-nowrap overflow-hidden',
+          // Right-edge fade so trailing chars sit cleanly under the ⋯ button.
+          // Mask widens slightly on hover/active so the runway stays clear.
+          !isRenaming &&
+            '[mask-image:linear-gradient(to_right,#000_calc(100%-18px),transparent_100%)] group-hover:[mask-image:linear-gradient(to_right,#000_calc(100%-28px),transparent_100%)] [.active>&]:[mask-image:linear-gradient(to_right,#000_calc(100%-28px),transparent_100%)]',
+          isRenaming &&
+            'overflow-visible cursor-text bg-muted rounded-sm px-1 -mx-1 outline-none',
+        )}
         onDoubleClick={(e) => {
           e.stopPropagation();
           enterRename();
@@ -307,14 +314,17 @@ export function SessionRow({
         }}
         {...titleEditableProps}
       >
-        {/* Don't render `{title}` while renaming — the imperative effect
-            seeds it on entry, and React reconciling the prop would
-            clobber any in-progress edit on a parent re-render. */}
-        {rowState === 'renaming' ? null : title}
+        {isRenaming ? null : title}
       </span>
       <span
         ref={moreRef}
-        className="session-row-more"
+        className="
+          session-row-more shrink-0 h-[18px] w-[18px] mt-px
+          inline-flex items-center justify-center rounded-sm
+          text-ink-ghost hover:bg-background hover:text-foreground
+          opacity-0 group-hover:opacity-100 [.active>&]:opacity-100
+          transition-opacity transition-colors cursor-pointer
+        "
         aria-label="more"
         role="button"
         tabIndex={-1}
@@ -328,18 +338,31 @@ export function SessionRow({
       {menuOpen ? (
         <div
           ref={menuRef}
-          className="session-row-menu"
+          className="
+            session-row-menu absolute top-7 right-2 z-30 min-w-[130px]
+            flex flex-col gap-px p-1
+            rounded-md border border-border bg-background shadow-md
+          "
           role="menu"
           onClick={(e) => e.stopPropagation()}
         >
           <button
             type="button"
-            className="session-row-menu-item"
+            className="
+              session-row-menu-item
+              flex items-center gap-2 px-2 py-1.5 rounded-sm
+              text-[12.5px] text-foreground
+              hover:bg-muted transition-colors cursor-pointer
+            "
             data-testid="row-menu-rename"
             role="menuitem"
             onClick={() => enterRename()}
           >
-            <svg viewBox="0 0 14 14" aria-hidden="true">
+            <svg
+              viewBox="0 0 14 14"
+              aria-hidden="true"
+              className="h-3 w-3 shrink-0 text-muted-foreground"
+            >
               <path
                 d="M2 12 L4 12 L11 5 L9 3 L2 10 Z"
                 stroke="currentColor"
@@ -352,12 +375,21 @@ export function SessionRow({
           </button>
           <button
             type="button"
-            className="session-row-menu-item danger"
+            className="
+              session-row-menu-item danger
+              flex items-center gap-2 px-2 py-1.5 rounded-sm
+              text-[12.5px] text-destructive font-normal
+              hover:bg-destructive/15 transition-colors cursor-pointer
+            "
             data-testid="row-menu-delete"
             role="menuitem"
             onClick={() => enterConfirmDelete()}
           >
-            <svg viewBox="0 0 14 14" aria-hidden="true">
+            <svg
+              viewBox="0 0 14 14"
+              aria-hidden="true"
+              className="h-3 w-3 shrink-0 text-destructive"
+            >
               <path
                 d="M3 4 L11 4 M5 4 L5 2 L9 2 L9 4 M4.5 4 L5 12 L9 12 L9.5 4"
                 stroke="currentColor"
