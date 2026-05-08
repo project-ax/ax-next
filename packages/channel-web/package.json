@@ -9,7 +9,10 @@
       "default": "./dist/src/server/index.js"
     }
   },
-  "files": ["dist", "dist-web"],
+  "files": [
+    "dist",
+    "dist-web"
+  ],
   "scripts": {
     "dev": "vite",
     "build": "tsc --build && vite build",
@@ -46,8 +49,12 @@
     "@types/react": "^19.0.8",
     "@types/react-dom": "^19.0.3",
     "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.5.0",
     "jsdom": "^26.0.0",
     "pg": "8.20.0",
+    "postcss": "^8.5.10",
+    "tailwindcss": "^3.4.19",
+    "tailwindcss-animate": "^1.0.7",
     "typescript": "^6.0.3",
     "vite": "^6.4.2",
     "vitest": "^4.1.4"
