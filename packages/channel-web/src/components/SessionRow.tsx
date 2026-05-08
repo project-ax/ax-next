@@ -283,10 +283,12 @@ export function SessionRow({
       }}
     >
       {/* Per-agent accent bar — same shape as AdminNavItem's primary
-          active bar, but always visible and coloured by the session's
-          agent so the sidebar doubles as an at-a-glance agent legend. */}
+          active bar, coloured by the session's agent. Visible only on
+          hover or when the row is active so the rail stays calm at
+          rest; the bar functions as a hover/selection affordance, not
+          a per-row legend stripe. */}
       <span
-        className="session-row-dot absolute left-0 top-2.5 bottom-2.5 w-0.5 rounded-full"
+        className="session-row-dot absolute left-0 top-2.5 bottom-2.5 w-0.5 rounded-full opacity-0 group-hover:opacity-100 [.active>&]:opacity-100 transition-opacity"
         style={accentStyle}
         aria-hidden="true"
       />
