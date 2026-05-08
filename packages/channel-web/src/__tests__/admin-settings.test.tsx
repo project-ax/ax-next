@@ -14,10 +14,9 @@
  * AdminSidebar requires a UserProvider (it calls useUser() and returns null
  * when no provider is mounted). We wrap every render in a UserProvider.
  *
- * NOTE: The canary banner was previously rendered in the old AdminSettings
- * body. That component was deleted in Task 1.4. The banner will be relocated
- * into ProviderKeysTab in Task 2.3. Until then, the canary banner tests are
- * skipped — see TODO(Task 2.3).
+ * NOTE: The canary banner (CanaryAdvisory) lives inside ProviderKeysTab and
+ * is rendered synchronously on the default tab. Tests verify its presence via
+ * data-testid="canary-advisory" and text content.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
@@ -71,12 +70,10 @@ describe('AdminShell', () => {
     });
   });
 
-  // TODO(Task 2.3): Re-enable when CanaryAdvisory moves into ProviderKeysTab.
-  // The canary banner was in the deleted AdminSettings body and is not yet
-  // rendered by AdminShell or ProviderKeysTab. Re-enable + update selector
-  // in Task 2.3 when the banner is relocated.
-  it.skip('canary banner is present on default tab', async () => {
+  it('canary banner is present on default tab', () => {
     renderShell();
+    // CanaryAdvisory is rendered synchronously inside ProviderKeysTab (default tab).
+    expect(screen.getByTestId('canary-advisory')).toBeTruthy();
     expect(screen.getByText(/canary scanner isn't wired in yet/i)).toBeTruthy();
     expect(screen.getByText(/no automated secret-leak veto/i)).toBeTruthy();
   });
