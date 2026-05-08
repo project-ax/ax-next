@@ -109,7 +109,7 @@ export const ToolGroup: FC<GroupProps> = ({ startIndex, endIndex, children }) =>
           tgroup-head inline-flex items-center gap-1.5 cursor-pointer
           text-[14px] leading-[1.4] text-muted-foreground transition-colors
           hover:text-foreground
-          focus-visible:outline-2 focus-visible:outline-primary/50 focus-visible:outline-offset-2 focus-visible:rounded-sm
+          focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary/50 focus-visible:outline-offset-2 focus-visible:rounded-sm
         "
         aria-expanded={open}
         aria-controls={bodyId}
@@ -124,7 +124,7 @@ export const ToolGroup: FC<GroupProps> = ({ startIndex, endIndex, children }) =>
           className={cn(
             'shrink-0 mt-px transition-[transform,color] duration-150',
             'text-ink-ghost',
-            open && 'rotate-90 text-muted-foreground',
+            open && status !== 'running' && 'rotate-90 text-muted-foreground',
             status === 'running' && 'animate-spin text-primary',
             status === 'failed' && 'text-destructive',
           )}

@@ -25,6 +25,7 @@ export function SearchBar() {
         type="search"
         value={query}
         placeholder="search messages…"
+        aria-label="Search messages"
         className="
           flex-1 bg-transparent border-0 outline-none p-0
           text-[15px] text-foreground placeholder:text-muted-foreground

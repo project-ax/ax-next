@@ -106,7 +106,7 @@ export const AgentStatus = () => {
               'transition-[opacity,color,background-color] duration-150',
               'hover:text-foreground hover:bg-muted',
               'focus-visible:opacity-100 focus-visible:text-foreground focus-visible:bg-muted',
-              'focus-visible:outline-2 focus-visible:outline-primary focus-visible:outline-offset-2',
+              'focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary focus-visible:outline-offset-2',
               isError
                 ? 'opacity-100'
                 : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100',

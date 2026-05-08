@@ -100,7 +100,7 @@ const ToastItem = ({ toast }: { toast: ToastModel }) => {
           h-[18px] w-[18px] rounded text-ink-ghost transition-colors
           hover:text-foreground hover:bg-muted
           focus-visible:text-foreground focus-visible:bg-muted
-          focus-visible:outline-2 focus-visible:outline-primary focus-visible:outline-offset-2
+          focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary focus-visible:outline-offset-2
         "
         aria-label="Dismiss"
         onClick={startLeave}

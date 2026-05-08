@@ -1,20 +1,16 @@
 /**
- * AgentChip — the identity pill at the top of the sidebar.
+ * AgentChip — the identity pill in the session header.
  *
  * Reads agent state from `agent-store`. Click toggles the menu open;
- * the menu's row-click forwards through `agentStoreActions.pickAgent`,
- * which decides between defer (non-empty session) or just-record (no
- * session yet) per the deferred-switch contract.
+ * picking a row commits the agent immediately. On a non-empty session
+ * the chat surface is reset (assistant-ui new thread + cleared active
+ * session) so the freshly picked agent gets a blank thread to talk
+ * into — Invariant I10: agents are immutable on existing conversations,
+ * so a new conversation row is the only correct outcome.
  *
- * Display priority for the chip name: `pendingAgentId` >
- * `selectedAgentId` > first agent. The pending agent wins so the chip
- * immediately reflects a deferred switch even though no session exists
- * for it yet.
- *
- * Switching agents on a non-empty session also drives assistant-ui to
- * a fresh local thread so the chat pane goes blank (the welcome empty
- * state). Without this, the previous session's history would remain
- * visible until the user typed something.
+ * Display priority for the chip name: `pendingAgentId` (legacy field
+ * retained while migration finishes; always null in the current flow)
+ * > `selectedAgentId` > first agent.
  */
 import { useEffect, useRef, useState } from 'react';
 import { useAui } from '@assistant-ui/react';
@@ -32,7 +28,6 @@ export function AgentChip() {
     agents,
     selectedAgentId,
     pendingAgentId,
-    activeSessionId,
     activeSessionHasMessages,
   } = useAgentStore();
 
@@ -85,7 +80,7 @@ export function AgentChip() {
     <div ref={wrapRef} className="relative">
       <button
         className={cn(
-          'agent-chip group flex items-center gap-2 min-w-0 cursor-pointer',
+          'agent-chip group flex max-w-full items-center gap-2 min-w-0 cursor-pointer',
           'pl-2 pr-2.5 py-[7px] rounded-lg transition-colors',
           'hover:bg-muted aria-expanded:bg-muted',
         )}
@@ -100,7 +95,7 @@ export function AgentChip() {
             style={active?.color ? { background: active.color } : undefined}
           />
         </AvatarTile>
-        <span className="text-[15px] tracking-[-0.01em] leading-none text-foreground">
+        <span className="min-w-0 flex-1 truncate text-[15px] tracking-[-0.01em] leading-none text-foreground">
           {active?.name ?? '—'}
         </span>
         <svg

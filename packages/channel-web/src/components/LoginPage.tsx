@@ -30,7 +30,7 @@ export function LoginPage() {
             text-[13.5px] font-medium tracking-[-0.005em]
             transition-[transform,filter,box-shadow] duration-150
             hover:-translate-y-px hover:brightness-105 hover:shadow-md
-            focus-visible:outline-2 focus-visible:outline-primary/50 focus-visible:outline-offset-2
+            focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary/50 focus-visible:outline-offset-2
           "
         >
           Sign in with Google
