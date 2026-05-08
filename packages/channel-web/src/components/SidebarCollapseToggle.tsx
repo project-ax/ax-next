@@ -1,26 +1,33 @@
 /**
  * SidebarCollapseToggle — small button that flips
- * `body.sidebar-collapsed` on/off. CSS rules in `index.css` (copied from
- * the design handoff) own the actual width transitions.
- *
- * Lives in `.sidebar-head` for now; Task 16 may move/duplicate it into
- * the session header. Kept as its own component so the move is a
- * one-line import change.
+ * `body.sidebar-collapsed` on/off. Sidebar width transitions are driven
+ * by a Tailwind arbitrary selector on the sidebar element.
  *
  * Glyph is a panel-with-rail SVG. It does NOT rotate on collapse — the
  * design treats the icon as a stable affordance rather than a state arrow.
  */
 import { setSidebarCollapsed, useSidebarCollapsed } from '../lib/sidebar-collapse';
+import { cn } from '@/lib/utils';
 
-export function SidebarCollapseToggle() {
+export function SidebarCollapseToggle({ className }: { className?: string } = {}) {
   const collapsed = useSidebarCollapsed();
   return (
     <button
       type="button"
-      className="sidebar-collapse"
+      data-testid="sidebar-collapse"
+      className={cn(
+        'inline-flex items-center justify-center h-[22px] w-[22px] rounded shrink-0',
+        'text-muted-foreground hover:text-foreground hover:bg-muted',
+        'focus-visible:text-foreground focus-visible:bg-muted focus-visible:outline-none',
+        'transition-colors',
+        // Mobile uses the slide-over hamburger instead; hide the desktop
+        // collapse toggle below 720px.
+        'max-[720px]:hidden',
+        className,
+      )}
       aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
       aria-expanded={!collapsed}
-      title="Toggle sidebar (⌘\)"
+      title="Toggle sidebar (⌘\\)"
       onClick={() => setSidebarCollapsed(!collapsed)}
     >
       <svg

@@ -116,18 +116,22 @@ export function SessionHeader() {
     : {};
 
   return (
-    <header className="header">
-      <div className="header-inner">
-        <div className="header-left">
-          {/* Mobile hamburger — hidden on desktop via CSS. */}
+    <header className="sticky top-0 z-10 flex justify-center bg-background px-6 pt-[22px] pb-[18px]">
+      <div className="w-full max-w-[640px] flex items-baseline justify-between">
+        <div className="relative flex items-center shrink-0">
+          {/* Mobile hamburger — hidden on desktop via Tailwind responsive classes. */}
           <SidebarMobileToggle />
-          {/* Agent chip: identity + agent switcher, left-aligned per the design (Tide Sessions.html). */}
+          {/* Agent chip: identity + agent switcher, left-aligned per the design. */}
           <AgentChip />
         </div>
         <div
           ref={titleRef}
-          className="session-breadcrumb"
           data-testid="session-header-title"
+          className={
+            isRenaming
+              ? 'whitespace-nowrap max-w-[360px] self-center ml-auto -mr-2 px-2 py-1 rounded-sm cursor-text text-[10.5px] uppercase tracking-[0.08em] outline outline-1 outline-border bg-background text-foreground overflow-visible focus:outline-primary'
+              : 'whitespace-nowrap overflow-hidden text-ellipsis max-w-[360px] self-center ml-auto -mr-2 px-2 py-1 rounded-sm cursor-text text-[10.5px] uppercase tracking-[0.08em] text-ink-ghost transition-colors hover:bg-muted hover:text-muted-foreground'
+          }
           onClick={() => {
             if (!isRenaming) enterRename();
           }}
@@ -149,7 +153,6 @@ export function SessionHeader() {
         >
           {!isRenaming ? title : null}
         </div>
-        <div className="header-actions" />
       </div>
     </header>
   );

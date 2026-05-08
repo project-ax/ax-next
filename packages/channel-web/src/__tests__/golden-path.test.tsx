@@ -66,7 +66,7 @@ describe('golden-path acceptance', () => {
 
     // Auth gate releases → sidebar mounts.
     await waitFor(() => {
-      expect(container.querySelector('aside.sidebar')).toBeTruthy();
+      expect(container.querySelector('aside[data-testid="sidebar"]')).toBeTruthy();
     });
 
     // Composer renders → runtime context is established. If the

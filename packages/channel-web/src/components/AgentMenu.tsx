@@ -5,12 +5,12 @@
  * store and forwards picks back to the parent. The deferred-switch
  * decision lives in `agent-store.ts`'s `pickAgent`, not here.
  *
- * Class names track `design_handoff_tide/Tide Sessions.html` for the
- * `.agent-menu` popover. Row-level class names use the
- * `agent-menu-row*` namespace (vs. the design's `.agent-row`) so the
- * menu's row CSS lives in one obvious naming family.
+ * Class names like `agent-menu-row` are kept as test hooks (no CSS
+ * targets them — they're queryable structural names only).
  */
 import type { Agent } from '../../mock/agents';
+import { AvatarTile } from './AvatarTile';
+import { SidebarSectionLabel } from './SidebarSectionLabel';
 
 export interface AgentMenuProps {
   agents: Agent[];
@@ -29,31 +29,48 @@ export function AgentMenu({ agents, activeId, onPick }: AgentMenuProps) {
   // the active row gives screen readers the "this is the selected one"
   // signal without false-promising menu keyboard nav.
   return (
-    <div className="agent-menu">
-      <div className="agent-menu-label">switch agent</div>
-      <div className="agent-menu-rows">
+    <div
+      className="
+        absolute left-0 top-[calc(100%+4px)] z-[70] min-w-[260px]
+        rounded-[10px] border border-border bg-background shadow-popover
+        p-1.5
+        animate-in fade-in-0 zoom-in-95 slide-in-from-top-1 duration-150
+      "
+    >
+      <SidebarSectionLabel className="px-2.5 pt-2 pb-1">
+        switch agent
+      </SidebarSectionLabel>
+      <div className="flex flex-col gap-px">
         {agents.map((agent) => {
           const isActive = activeId === agent.id;
           return (
             <button
               key={agent.id}
-              className="agent-menu-row"
+              className="
+                agent-menu-row group flex items-center gap-2.5 cursor-pointer
+                px-2.5 py-[7px] rounded-md transition-colors
+                hover:bg-muted aria-current:bg-muted text-left
+              "
               type="button"
               {...(isActive ? { 'aria-current': 'true' as const } : {})}
               onClick={() => onPick(agent.id)}
             >
-              <span className="agent-menu-row-avatar" aria-hidden="true">
+              <AvatarTile size={22} background="muted">
                 <span
-                  className="dot"
+                  className="h-[5px] w-[5px] rounded-full bg-primary"
                   style={agent.color ? { background: agent.color } : undefined}
                 />
-              </span>
-              <div className="agent-menu-row-text">
-                <div className="agent-menu-row-name">{agent.name}</div>
-                <div className="agent-menu-row-desc">{agent.desc}</div>
+              </AvatarTile>
+              <div className="flex flex-col gap-px min-w-0 flex-1">
+                <div className="text-[14px] tracking-[-0.01em] leading-[1.1] text-foreground">
+                  {agent.name}
+                </div>
+                <div className="text-[11px] leading-[1.2] text-muted-foreground truncate">
+                  {agent.desc}
+                </div>
               </div>
               {isActive && (
-                <span className="agent-menu-row-check" aria-hidden="true">
+                <span aria-hidden="true" className="shrink-0 h-3.5 w-3.5 text-primary text-[12px] leading-none">
                   ✓
                 </span>
               )}
@@ -61,9 +78,13 @@ export function AgentMenu({ agents, activeId, onPick }: AgentMenuProps) {
           );
         })}
       </div>
-      <div className="agent-menu-foot agent-menu-note">
-        a new session starts on your next message
+      <div className="mt-1 pt-1 border-t border-border">
+        <div className="px-2.5 pt-2 pb-1 text-[10.5px] tracking-[0.04em] text-ink-ghost text-center">
+          a new session starts on your next message
+        </div>
       </div>
+      {/* The footnote above keeps its lower-case sentence-style copy and
+         tighter tracking; it isn't a section label. */}
     </div>
   );
 }

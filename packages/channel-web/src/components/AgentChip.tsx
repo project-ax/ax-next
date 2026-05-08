@@ -1,25 +1,24 @@
 /**
- * AgentChip — the identity pill at the top of the sidebar.
+ * AgentChip — the identity pill in the session header.
  *
  * Reads agent state from `agent-store`. Click toggles the menu open;
- * the menu's row-click forwards through `agentStoreActions.pickAgent`,
- * which decides between defer (non-empty session) or just-record (no
- * session yet) per the deferred-switch contract.
+ * picking a row commits the agent immediately. On a non-empty session
+ * the chat surface is reset (assistant-ui new thread + cleared active
+ * session) so the freshly picked agent gets a blank thread to talk
+ * into — Invariant I10: agents are immutable on existing conversations,
+ * so a new conversation row is the only correct outcome.
  *
- * Display priority for the chip name: `pendingAgentId` > `selectedAgentId`
- * > first agent. The pending agent wins so the chip immediately reflects
- * a deferred switch even though no session exists for it yet.
- *
- * Switching agents on a non-empty session also drives assistant-ui to a
- * fresh local thread so the chat pane goes blank (the welcome empty
- * state). Without this, the previous session's history would remain
- * visible until the user typed something — confusing because the chip
- * already shows the new agent.
+ * Display priority for the chip name: `pendingAgentId` (legacy field
+ * retained while migration finishes; always null in the current flow)
+ * > `selectedAgentId` > first agent.
  */
 import { useEffect, useRef, useState } from 'react';
 import { useAui } from '@assistant-ui/react';
 import { agentStoreActions, useAgentStore } from '../lib/agent-store';
+import { sessionStoreActions } from '../lib/session-store';
 import { AgentMenu } from './AgentMenu';
+import { AvatarTile } from './AvatarTile';
+import { cn } from '@/lib/utils';
 
 export function AgentChip() {
   const [open, setOpen] = useState(false);
@@ -29,14 +28,12 @@ export function AgentChip() {
     agents,
     selectedAgentId,
     pendingAgentId,
-    activeSessionId,
     activeSessionHasMessages,
   } = useAgentStore();
 
   const activeId = pendingAgentId ?? selectedAgentId;
   const active = agents.find((a) => a.id === activeId) ?? agents[0];
 
-  // Outside-click closes the menu — same pattern as UserMenu.
   useEffect(() => {
     if (!open) return;
     const onDocClick = (e: MouseEvent) => {
@@ -49,40 +46,66 @@ export function AgentChip() {
   const handlePick = (agentId: string): void => {
     setOpen(false);
     const wasNonEmpty = activeSessionHasMessages;
-    void agentStoreActions.pickAgent(agentId, {
-      activeSessionId,
-      hasMessages: activeSessionHasMessages,
-    });
+
     if (wasNonEmpty) {
-      // Match the user-visible promise of the deferred-switch contract:
-      // "the chat view goes blank". Without this the pending agent
-      // shows in the chip but the previous thread's history stays on
-      // screen until the next message.
+      // Reset the chat surface so the freshly-picked agent gets a
+      // blank thread to talk into.
       try {
         aui.threads().switchToNewThread();
       } catch (err) {
         console.warn('[agent-chip] switchToNewThread failed', err);
       }
+      // Clear active session in both stores. The sidebar deselects
+      // the previous session, and the next user message POSTs with
+      // conversationId: null so the server creates a fresh
+      // conversation row under the new agent (Invariant I10 — agents
+      // are immutable on existing conversations, so a new row is the
+      // only correct answer).
+      sessionStoreActions.newLocalConversation();
     }
+
+    // Commit the agent immediately. Earlier behaviour kept the prior
+    // selectedAgentId until the next message via a `pendingAgentId`
+    // indirection — we now commit on pick so the chip + the next
+    // message both refer to the freshly picked agent. With
+    // activeSessionId already cleared above, pickAgent's
+    // hasMessages=false branch fires and just records the selection.
+    void agentStoreActions.pickAgent(agentId, {
+      activeSessionId: null,
+      hasMessages: false,
+    });
   };
 
   return (
-    <div ref={wrapRef} className="agent-chip-wrap" style={{ position: 'relative' }}>
+    <div ref={wrapRef} className="relative">
       <button
-        className="agent-chip"
+        className={cn(
+          'agent-chip group flex max-w-full items-center gap-2 min-w-0 cursor-pointer',
+          'pl-2 pr-2.5 py-[7px] rounded-lg transition-colors',
+          'hover:bg-muted aria-expanded:bg-muted',
+        )}
         aria-haspopup="true"
         aria-expanded={open ? 'true' : 'false'}
         type="button"
         onClick={() => setOpen((v) => !v)}
       >
-        <span className="agent-chip-avatar" aria-hidden="true">
+        <AvatarTile size={22}>
           <span
-            className="dot"
+            className="h-[5px] w-[5px] rounded-full bg-primary"
             style={active?.color ? { background: active.color } : undefined}
           />
+        </AvatarTile>
+        <span className="min-w-0 flex-1 truncate text-[15px] tracking-[-0.01em] leading-none text-foreground">
+          {active?.name ?? '—'}
         </span>
-        <span className="agent-chip-name">{active?.name ?? '—'}</span>
-        <svg className="agent-chip-caret" viewBox="0 0 10 10" aria-hidden="true">
+        <svg
+          viewBox="0 0 10 10"
+          aria-hidden="true"
+          className="
+            ml-auto shrink-0 h-2.5 w-2.5 text-muted-foreground
+            transition-transform duration-150 group-aria-expanded:rotate-180
+          "
+        >
           <path
             d="M2.5 4 L5 6.5 L7.5 4"
             stroke="currentColor"
@@ -98,19 +121,6 @@ export function AgentChip() {
   );
 }
 
-/**
- * Hook that hydrates the agent list from `/api/chat/agents` (Task 18) on
- * mount. Split from the chip so a parent (Sidebar) can mount it exactly
- * once without coupling hydration to the chip's render tree.
- *
- * The chat-flow `GET /api/chat/agents` returns a display-relevant subset
- * `{ agentId, displayName, visibility }`. The internal Agent shape used
- * by the chip + menu carries presentation-only fields (color, desc, tag)
- * the wire deliberately drops (Invariant I5 — capabilities minimized).
- * We synthesize stable defaults here: a deterministic color per agentId,
- * an empty desc, and `''` for tag. The chip's name + active highlighting
- * is the only thing the user actually reads in MVP.
- */
 export function useHydrateAgents(): void {
   useEffect(() => {
     let cancelled = false;
@@ -128,8 +138,6 @@ export function useHydrateAgents(): void {
           displayName: string;
           visibility: 'personal' | 'team';
         }>;
-        // Map wire → internal Agent shape. Fields the wire drops (color,
-        // desc, tag, model, etc.) are filled with neutral defaults.
         const mapped = wireAgents.map((a) => ({
           id: a.agentId,
           owner_id: '',
@@ -156,11 +164,6 @@ export function useHydrateAgents(): void {
   }, []);
 }
 
-/**
- * Deterministic color from a small palette so the same agentId always
- * gets the same chip dot — keeps the sidebar visually stable across
- * reloads even though the wire doesn't carry color.
- */
 function agentColorFor(agentId: string): string {
   const palette = ['#7aa6c9', '#b08968', '#9c89b8', '#90a955', '#d4a373', '#9b5de5'];
   let hash = 0;

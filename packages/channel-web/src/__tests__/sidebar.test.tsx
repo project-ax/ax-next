@@ -11,7 +11,7 @@ const testUser = {
 };
 
 describe('Sidebar', () => {
-  it('renders the sidebar structure with all required class hooks', () => {
+  it('renders the sidebar structure with all required slots', () => {
     const { container } = render(
       <UserProvider value={testUser}>
         <Sidebar />
@@ -19,11 +19,10 @@ describe('Sidebar', () => {
     );
     const sidebar = screen.getByTestId('sidebar');
     expect(sidebar.tagName).toBe('ASIDE');
-    expect(sidebar.className).toContain('sidebar');
-    expect(container.querySelector('.brand-word')?.textContent).toBe('ax');
-    expect(container.querySelector('.sidebar-collapse')).toBeTruthy();
+    expect(screen.getByText('ax')).toBeTruthy();
+    expect(screen.getByTestId('sidebar-collapse')).toBeTruthy();
     expect(container.querySelector('.new-session-btn')).toBeTruthy();
-    expect(container.querySelector('.sessions-scroll')).toBeTruthy();
+    expect(sidebar.querySelector('[role="navigation"][aria-label="sessions"]')).toBeTruthy();
     expect(container.querySelector('.user-row-wrap')).toBeTruthy();
     expect(container.querySelector('.user-row .user-avatar')).toBeTruthy();
   });

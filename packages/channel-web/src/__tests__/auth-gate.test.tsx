@@ -31,7 +31,7 @@ describe('Auth gate', () => {
 
     const { container } = render(<App />);
     await waitFor(() => {
-      expect(container.querySelector('aside.sidebar')).toBeTruthy();
+      expect(container.querySelector('aside[data-testid="sidebar"]')).toBeTruthy();
     });
   });
 

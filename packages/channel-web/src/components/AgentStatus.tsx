@@ -1,28 +1,26 @@
 /**
  * AgentStatus — slim status row above the composer.
  *
- * Mirrors the design in `design_handoff_tide/Tide Sessions.html`
- * (.agent-status markup + CSS): a breathing dot, a label, and a
- * hover-revealed action button (stop/retry/dismiss). Sits OUTSIDE the
- * timeline so it isn't persisted to chat history — it reflects only
- * the live state of the agent for the current turn.
+ * A breathing dot, a label, and a hover-revealed action button
+ * (stop/retry/dismiss). Sits OUTSIDE the timeline so it isn't
+ * persisted to chat history — it reflects only the live state of the
+ * agent for the current turn.
  *
  * Behavior matrix (driven by `agent-status-store`):
- *   - mode='hidden'  → row is `opacity: 0`, `pointer-events: none`.
- *   - mode='working' → blue dot, breathing; "stop" button shows on hover
- *                      iff a cancel handler is registered.
- *   - mode='error'   → red dot, no breathing, persistent; primary button
- *                      says "retry" (when a retry handler is set) or
- *                      "dismiss" otherwise.
+ *   - mode='hidden'  → row collapsed (opacity-0, pointer-events-none).
+ *   - mode='working' → primary dot, breathing; "stop" button shows on
+ *                      hover iff a cancel handler is registered.
+ *   - mode='error'   → destructive dot, no breathing, persistent;
+ *                      primary button says "retry" (when a retry
+ *                      handler is set) or "dismiss" otherwise.
  *
- * Crossfade: when the label changes while visible, we briefly add
- * `swapping` (140ms `opacity: 0`), update the text, and remove it. This
- * avoids the "Thinking…" → "Starting sandbox…" jump.
+ * Crossfade: when the label changes while visible, we briefly set
+ * `data-swapping=true` (140ms opacity-0), update the text, and clear
+ * it. Avoids the "Thinking…" → "Starting sandbox…" jump.
  *
- * Auto-pump: a `running` boolean is forwarded by `<RunningHook />` from
- * `ThreadPrimitive.If running` so the row shows "Thinking…" while a turn
- * is in flight and hides on finish. Test triggers (/status, /error …)
- * override this for manual UI checks.
+ * Auto-pump: a `running` boolean is forwarded by `<RunningHook />` so
+ * the row shows "Thinking…" while a turn is in flight and hides on
+ * finish. Test triggers (/status, /error …) override this.
  */
 import { useEffect, useRef } from 'react';
 import { ThreadPrimitive } from '@assistant-ui/react';
@@ -31,12 +29,11 @@ import {
   getAgentStatusSnapshot,
   useAgentStatusStore,
 } from '../lib/agent-status-store';
+import { cn } from '@/lib/utils';
 
 export const AgentStatus = () => {
   const { mode, text, cancel, retry, dismiss } = useAgentStatusStore();
 
-  // Crossfade label swaps. Track displayed text in a ref so we can
-  // briefly flip the `swapping` class, then commit the new text.
   const textRef = useRef<HTMLSpanElement>(null);
   const lastText = useRef(text);
   useEffect(() => {
@@ -46,9 +43,9 @@ export const AgentStatus = () => {
       lastText.current = text;
       return;
     }
-    el.classList.add('swapping');
+    el.setAttribute('data-swapping', 'true');
     const t = window.setTimeout(() => {
-      el.classList.remove('swapping');
+      el.removeAttribute('data-swapping');
       lastText.current = text;
     }, 140);
     return () => window.clearTimeout(t);
@@ -61,12 +58,6 @@ export const AgentStatus = () => {
 
   const onAction = () => {
     if (isError) {
-      // Retry is fundamentally different from dismiss: a retry handler
-      // commonly transitions the row to a follow-up working state
-      // ("Reconnecting…", "Retrying…"). If we hide right after the
-      // callback, that follow-up flashes invisibly. So: retry → call
-      // and let the handler decide what state the row should land in;
-      // dismiss → hide (the user's intent was "make this go away").
       if (retry) {
         retry();
         return;
@@ -83,22 +74,43 @@ export const AgentStatus = () => {
     <>
       <RunningHook />
       <div
-        className={
-          'agent-status' +
-          (isVisible ? ' visible' : '') +
-          (isError ? ' error' : '')
-        }
+        className={cn(
+          'agent-status group relative flex items-center gap-2 h-[22px] mb-2 px-1',
+          'text-[12.5px] tracking-[-0.005em] text-muted-foreground',
+          'transition-[opacity,transform] duration-200 pointer-events-none opacity-0 translate-y-0.5',
+          'before:content-[""] before:w-1.5 before:h-1.5 before:rounded-full before:shrink-0',
+          'before:bg-primary before:animate-[breathe_1.6s_ease-in-out_infinite]',
+          isVisible && 'visible opacity-100 translate-y-0 pointer-events-auto',
+          isError &&
+            'error text-destructive before:bg-destructive before:animate-none before:opacity-100',
+        )}
         role="status"
         aria-live="polite"
         aria-atomic="true"
       >
-        <span ref={textRef} className="agent-status-text">
+        <span
+          ref={textRef}
+          className="
+            agent-status-text min-w-0 whitespace-nowrap overflow-hidden text-ellipsis
+            transition-opacity duration-150 data-[swapping=true]:opacity-0
+          "
+        >
           {text}
         </span>
         {showButton && (
           <button
             type="button"
-            className="agent-status-cancel"
+            className={cn(
+              'agent-status-cancel ml-1 px-1.5 py-px rounded-sm',
+              'text-[11px] tracking-[0.02em] text-ink-ghost',
+              'transition-[opacity,color,background-color] duration-150',
+              'hover:text-foreground hover:bg-muted',
+              'focus-visible:opacity-100 focus-visible:text-foreground focus-visible:bg-muted',
+              'focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary focus-visible:outline-offset-2',
+              isError
+                ? 'opacity-100'
+                : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100',
+            )}
             onClick={onAction}
           >
             {buttonLabel}
@@ -109,13 +121,6 @@ export const AgentStatus = () => {
   );
 };
 
-/**
- * RunningHook — bridge assistant-ui's `running` state to the agent-status
- * store. Renders nothing; uses `ThreadPrimitive.If` as a free reactivity
- * hook (the primitive is the project's existing pattern — see Composer's
- * Send/Cancel swap — and avoids reaching into runtime-state hooks that
- * haven't been stable across assistant-ui versions).
- */
 const RunningHook = () => (
   <ThreadPrimitive.If running>
     <RunningEffect />
@@ -124,17 +129,10 @@ const RunningHook = () => (
 
 const RunningEffect = () => {
   useEffect(() => {
-    // Only auto-show "Thinking…" if nothing else is occupying the row.
     if (getAgentStatusSnapshot().mode === 'hidden') {
       agentStatusActions.show('Thinking…');
     }
     return () => {
-      // On unmount (running flipped to false): hide any working state.
-      // Error mode is sticky by design — the user must dismiss/retry.
-      // Manual /status fires already self-hide via their own timers,
-      // so this cleanup also closes those if they overlap a run end —
-      // which is the right call: /status was a dev tool, not a state
-      // the row should keep across the next user turn.
       const snap = getAgentStatusSnapshot();
       if (snap.mode === 'working') {
         agentStatusActions.hide();

@@ -1,35 +1,30 @@
 /**
  * Thread — assistant-ui Thread root + welcome empty state + message
- * styling per the design (Task 18).
+ * styling per the Tide design.
  *
- * Wraps `ThreadPrimitive.Root` / `Viewport` / `Messages` and provides the
- * design-styled welcome empty state, user/assistant message variants, and
- * the inline edit composer for user-message edit-in-place. The Composer
- * is mounted as a sibling of `.timeline` so it can be `position: fixed`
- * over the viewport and reveal scroll-fade behavior in front of it.
+ * Wraps `ThreadPrimitive.Root` / `Viewport` / `Messages` and provides
+ * the welcome empty state, user/assistant message variants, and the
+ * inline edit composer for user-message edit-in-place. The Composer is
+ * mounted as a sibling of the timeline so it can be `position: fixed`
+ * over the viewport.
  *
  * Notes:
  *
- *   - User messages get a `you-wash` background bubble (`.msg.you
- *     .msg-body`); assistant messages flow inline as plain prose
- *     (`.msg.agent .msg-body`). This is the design — no avatars, no meta
- *     column, no "Assistant:" labels. Just text.
+ *   - User messages get a muted-bubble background (`msg.you .msg-body`);
+ *     assistant messages flow inline as plain prose. No avatars, no
+ *     meta column.
  *
- *   - Action bars (`.msg-actions`) live at the bottom of each message
- *     and autohide unless the message is the last in the thread. User
- *     messages have copy + edit; assistant messages have copy + retry.
+ *   - Action bars autohide unless the message is hovered or focused.
+ *     User messages have copy + edit; assistant messages have copy +
+ *     retry + thinking-toggle.
  *
- *   - `EditComposer` renders the inline edit-in-place UI (cancel +
- *     update buttons) when a user clicks the edit action. It replaces
- *     the user message in the message list while editing.
+ *   - `EditComposer` renders the inline edit-in-place UI when a user
+ *     clicks the edit action. Replaces the user message in the message
+ *     list while editing.
  *
- *   - `ThreadPrimitive.If empty` is the welcome branch — once any
- *     message exists, the welcome is hidden and `Messages` renders the
- *     timeline.
- *
- * Reference: v1's `~/dev/ai/ax/ui/chat/src/components/thread.tsx`. We
- * borrow the structure (root → viewport → if-empty welcome → messages →
- * composer) but the design's design replaces v1's tailwind chrome wholesale.
+ *   - Class names like `msg`, `msg.you`, `msg-error`, `timeline` are
+ *     kept as test hooks (no CSS targets them — Tailwind drives the
+ *     styling).
  */
 import {
   ActionBarPrimitive,
@@ -48,55 +43,38 @@ import { Composer } from './Composer';
 import { SearchBar } from './SearchBar';
 import { ToolFallback, ToolGroup } from './ToolUse';
 
-/**
- * MessageTime — renders the message createdAt as a lowercase clock-time
- * label (e.g., "9:12 am") in the message footer. Mirrors the design (Tide Sessions.html).
- */
+const MSG_ACTION_CLASS =
+  'msg-action inline-flex items-center justify-center cursor-pointer h-[22px] w-[22px] rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors data-[copied=true]:text-primary [&_svg]:h-3.5 [&_svg]:w-3.5 [&_svg]:block [&[data-copied=true]_.msg-action-icon-copy]:hidden [&:not([data-copied])_.msg-action-icon-check]:hidden';
+
 const MessageTime: FC = () => {
   const ts = useMessage((m) => m.createdAt);
   if (!ts) return null;
   const text = ts
     .toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
     .toLowerCase();
-  return <span className="msg-time">{text}</span>;
+  return <span className="msg-time pr-1">{text}</span>;
 };
 
-// Empty-state predicate. Hooked to messages.length rather than
-// `thread.isEmpty` because the latter returns `false` while the
-// runtime is still in `isLoading=true` (init state). For the welcome
-// copy we want "no messages yet" to be true from the very first
-// frame, not "the runtime has finished loading and there's nothing".
 const isThreadEmpty = (s: {
   thread: { messages?: readonly unknown[] };
 }): boolean => (s.thread.messages?.length ?? 0) === 0;
 
 export const Thread: FC = () => {
-  // Search bar lives above the timeline rather than inside the composer.
-  // Plan suggested either placement; banner above the viewport is the
-  // less-invasive choice — the composer doesn't need to know about
-  // search state, and CSS hides .attach-btn via body.searching anyway.
-  //
-  // TODO(assistant-ui): wire actual message-text filtering here when
-  // assistant-ui exposes a stable message-iteration API. Today there's
-  // no clean way to read+filter messages from the runtime store without
-  // reaching into private internals, so we show a "filter active" banner
-  // and defer the substring match until we can do it without leakage.
   const { open: searchOpen, query } = useSearchStore();
   return (
-    <ThreadPrimitive.Root className="thread-root">
+    <ThreadPrimitive.Root className="thread-root flex flex-col flex-1 min-h-0">
       {searchOpen && <SearchBar />}
       {searchOpen && query.length > 0 && (
-        <div className="search-results-banner" role="status">
+        <div
+          role="status"
+          className="px-6 py-2 text-xs font-mono tracking-[0.01em] text-muted-foreground bg-muted border-b border-border"
+        >
           Showing all messages — text filtering will land when assistant-ui
           exposes a stable message-iteration API.
         </div>
       )}
-      <ThreadPrimitive.Viewport className="timeline-scroll">
-        {/* The Viewport is the full-pane-width scroll container so the
-            scrollbar sits flush with the right edge of the pane (matches
-            the design). The inner `.timeline` keeps the messages centered
-            within a 640px column. */}
-        <div className="timeline">
+      <ThreadPrimitive.Viewport className="flex-1 w-full min-h-0 overflow-y-auto [scrollbar-gutter:stable]">
+        <div className="timeline w-full max-w-[640px] mx-auto px-6 pt-6 pb-[220px]">
           <AuiIf condition={isThreadEmpty}>
             <ThreadWelcome />
           </AuiIf>
@@ -111,29 +89,43 @@ export const Thread: FC = () => {
 };
 
 const ThreadWelcome: FC = () => (
-  <div className="thread-welcome">
-    <div className="thread-welcome-big">One conversation.</div>
-    <div className="thread-welcome-sub">Say anything.</div>
+  <div className="text-center pt-16 pb-10 text-[13.5px] text-muted-foreground">
+    <div className="text-[22px] font-medium tracking-[-0.01em] text-foreground mb-1.5">
+      One conversation.
+    </div>
+    <div className="text-muted-foreground">Say anything.</div>
   </div>
 );
 
 const UserMessage: FC = () => (
   <MessagePrimitive.Root asChild>
-    <div className="msg you" data-role="user">
-      <div className="msg-body">
+    <div className="msg you mb-[22px] flex flex-col items-end relative max-w-full" data-role="user">
+      <div
+        className="
+          msg-body bg-muted text-foreground px-3 py-[7px] rounded-md max-w-[78%]
+          font-sans text-[15px] leading-[1.6] whitespace-pre-wrap break-words
+        "
+      >
         <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
       </div>
-      <ActionBarPrimitive.Root className="msg-actions">
+      <ActionBarPrimitive.Root
+        className="
+          msg-actions justify-end flex items-center gap-2 mt-1
+          font-mono text-[11px] tracking-[0.02em] text-ink-ghost whitespace-nowrap
+          opacity-0 transition-opacity duration-150
+          [.msg:hover_&]:opacity-100 has-[:focus-visible]:opacity-100
+        "
+      >
         <MessageTime />
         <ActionBarPrimitive.Copy asChild copiedDuration={1000}>
-          <button type="button" className="msg-action" aria-label="Copy" title="Copy">
-            <Copy size={13} aria-hidden="true" className="msg-action-icon-copy" />
-            <Check size={13} aria-hidden="true" className="msg-action-icon-check" />
+          <button type="button" className={MSG_ACTION_CLASS} aria-label="Copy" title="Copy">
+            <Copy size={13} aria-hidden="true" className="msg-action-icon-copy" strokeWidth={1.4} />
+            <Check size={13} aria-hidden="true" className="msg-action-icon-check" strokeWidth={1.4} />
           </button>
         </ActionBarPrimitive.Copy>
         <ActionBarPrimitive.Edit asChild>
-          <button type="button" className="msg-action" aria-label="Edit" title="Edit">
-            <Pencil size={13} aria-hidden="true" />
+          <button type="button" className={MSG_ACTION_CLASS} aria-label="Edit" title="Edit">
+            <Pencil size={13} aria-hidden="true" strokeWidth={1.4} />
           </button>
         </ActionBarPrimitive.Edit>
       </ActionBarPrimitive.Root>
@@ -141,46 +133,34 @@ const UserMessage: FC = () => (
   </MessagePrimitive.Root>
 );
 
-/**
- * ThinkingToggle — small per-message-action-bar button that flips the
- * global "show thinking" flag (Task 21 / J4).
- *
- * Default state is OFF. When ON:
- *   - The history adapter is reconstructed with `includeThinking: true`
- *     in `runtime.tsx`, so a thread reload pulls historical thinking
- *     blocks from `GET /api/chat/conversations/:id?includeThinking=true`.
- *   - The body-level `thinking-visible` class flips on; CSS shows
- *     thinking-tagged text parts that were hidden by default.
- *
- * The button intentionally lives on every assistant message even when
- * the message has no thinking content — the UI doesn't know up front
- * which messages have hidden thinking, and showing the affordance
- * uniformly is cheaper than reading-into-parts. It's a per-message
- * action surface; the *state* it controls is global by design (see
- * `lib/thinking-store.ts` for the rationale).
- */
 const ThinkingToggle: FC = () => {
   const { visible } = useThinkingStore();
   const label = visible ? 'Hide thinking' : 'Show thinking';
   return (
     <button
       type="button"
-      className={`msg-action${visible ? ' msg-action-active' : ''}`}
+      className={`${MSG_ACTION_CLASS} ${visible ? 'text-foreground bg-muted' : ''}`}
       data-testid="thinking-toggle"
       aria-pressed={visible ? 'true' : 'false'}
       aria-label={label}
       title={label}
       onClick={() => thinkingStoreActions.toggle()}
     >
-      <Brain size={13} aria-hidden="true" />
+      <Brain size={13} aria-hidden="true" strokeWidth={1.4} />
     </button>
   );
 };
 
 const AssistantMessage: FC = () => (
   <MessagePrimitive.Root asChild>
-    <div className="msg agent" data-role="assistant">
-      <div className="msg-body">
+    <div className="msg agent mb-[22px] relative max-w-full" data-role="assistant">
+      <div
+        className="
+          msg-body font-sans text-[15px] leading-[1.55] tracking-[-0.008em]
+          text-foreground max-w-[56ch]
+          whitespace-pre-wrap break-words
+        "
+      >
         <MessagePrimitive.Parts
           components={{
             Text: MarkdownText,
@@ -189,17 +169,24 @@ const AssistantMessage: FC = () => (
           }}
         />
       </div>
-      <ActionBarPrimitive.Root className="msg-actions">
+      <ActionBarPrimitive.Root
+        className="
+          msg-actions flex items-center gap-2 mt-1
+          font-mono text-[11px] tracking-[0.02em] text-ink-ghost whitespace-nowrap
+          opacity-0 transition-opacity duration-150
+          [.msg:hover_&]:opacity-100 has-[:focus-visible]:opacity-100
+        "
+      >
         <MessageTime />
         <ActionBarPrimitive.Copy asChild copiedDuration={1000}>
-          <button type="button" className="msg-action" aria-label="Copy" title="Copy">
-            <Copy size={13} aria-hidden="true" className="msg-action-icon-copy" />
-            <Check size={13} aria-hidden="true" className="msg-action-icon-check" />
+          <button type="button" className={MSG_ACTION_CLASS} aria-label="Copy" title="Copy">
+            <Copy size={13} aria-hidden="true" className="msg-action-icon-copy" strokeWidth={1.4} />
+            <Check size={13} aria-hidden="true" className="msg-action-icon-check" strokeWidth={1.4} />
           </button>
         </ActionBarPrimitive.Copy>
         <ActionBarPrimitive.Reload asChild>
-          <button type="button" className="msg-action" aria-label="Retry" title="Retry">
-            <RotateCcw size={13} aria-hidden="true" />
+          <button type="button" className={MSG_ACTION_CLASS} aria-label="Retry" title="Retry">
+            <RotateCcw size={13} aria-hidden="true" strokeWidth={1.4} />
           </button>
         </ActionBarPrimitive.Reload>
         <ThinkingToggle />
@@ -208,18 +195,18 @@ const AssistantMessage: FC = () => (
   </MessagePrimitive.Root>
 );
 
-/**
- * EditComposer — in-place edit for user messages.
- *
- * Visually mirrors the user message bubble (right-aligned, you-wash background)
- * with an accent halo to signal edit mode. No visible cancel/update buttons —
- * Enter commits (ComposerPrimitive default), Escape cancels (cancelOnEscape).
- * Mirrors the design's `.msg-body.editing` in-place edit pattern.
- */
 const EditComposer: FC = () => (
-  <ComposerPrimitive.Root className="msg you msg-edit">
+  <ComposerPrimitive.Root className="msg you msg-edit mb-[22px] flex flex-col items-end relative">
     <ComposerPrimitive.Input
-      className="msg-edit-input"
+      className="
+        msg-edit-input resize-none border-0 outline-none
+        bg-muted text-foreground font-sans text-[15px] leading-[1.6]
+        px-3 py-[7px] rounded-md
+        max-w-[78%] min-w-0 box-border
+        [field-sizing:content] w-auto
+        placeholder:text-muted-foreground
+        shadow-[0_0_0_2px_hsl(var(--primary)/0.35)]
+      "
       autoFocus
       rows={1}
     />

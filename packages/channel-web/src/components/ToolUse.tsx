@@ -13,17 +13,15 @@
  *     JSON, and either a result or error block. Used as the
  *     `tools.Fallback` for unknown tool names.
  *
- * The header verb-mapping is best-effort. Known tool ids from the design
- * mock get a hand-tuned phrase; anything else falls back to the tool
- * name's last segment ("github.search_issues" → "ran search issues").
- *
- * Reference: design_handoff_tide/Tide Sessions.html, `.msg-tools` /
- * `.tgroup` / `.tstep` block.
+ * Class names like `tgroup`, `tgroup-body`, `tgroup-title`, `tstep` are
+ * kept as test hooks — no CSS targets them anymore; Tailwind drives
+ * the styling.
  */
 import type { FC, PropsWithChildren } from 'react';
 import { useMemo, useState } from 'react';
 import { useMessage } from '@assistant-ui/react';
 import type { ToolCallMessagePartProps } from '@assistant-ui/react';
+import { cn } from '@/lib/utils';
 
 const VERB_MAP: Record<string, string> = {
   'email.search': 'searched email',
@@ -49,7 +47,6 @@ const toolVerb = (name: string): string => {
   return `ran ${tail.replace(/_/g, ' ')}`;
 };
 
-/** "searched email, read the thread" — first verb sentence-cased, dedupe adjacent. */
 const headerPhrase = (toolNames: readonly string[]): string => {
   const verbs = toolNames.map(toolVerb);
   const dedup: string[] = [];
@@ -85,11 +82,6 @@ const EMPTY_PARTS: readonly unknown[] = Object.freeze([]);
 export const ToolGroup: FC<GroupProps> = ({ startIndex, endIndex, children }) => {
   const [open, setOpen] = useState(false);
   const bodyId = `tgroup-body-${startIndex}-${endIndex}`;
-  // useMessage selectors must return stable references — useSyncExternalStore
-  // bails out when the previous and next snapshots are not identical (===),
-  // so `m.parts ?? []` would allocate a new empty array on every call and
-  // loop forever. The frozen singleton keeps that path stable; the live
-  // `m.parts` reference is stable across renders when content doesn't change.
   const parts = useMessage(
     (m) => (m as { content?: readonly unknown[] }).content ?? EMPTY_PARTS,
   );
@@ -102,21 +94,40 @@ export const ToolGroup: FC<GroupProps> = ({ startIndex, endIndex, children }) =>
   const phrase = headerPhrase(slice.map((p) => p.toolName));
 
   return (
-    <div className={`tgroup ${status}${open ? ' open' : ''}`} data-testid="tool-group">
+    <div
+      className={cn(
+        'tgroup flex flex-col mb-3.5 max-w-[60ch] font-sans text-muted-foreground',
+        '[&+.tgroup]:-mt-2',
+        status,
+        open && 'open',
+      )}
+      data-testid="tool-group"
+    >
       <button
         type="button"
-        className="tgroup-head"
+        className="
+          tgroup-head inline-flex items-center gap-1.5 cursor-pointer
+          text-[14px] leading-[1.4] text-muted-foreground transition-colors
+          hover:text-foreground
+          focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary/50 focus-visible:outline-offset-2 focus-visible:rounded-sm
+        "
         aria-expanded={open}
         aria-controls={bodyId}
         onClick={() => setOpen((v) => !v)}
       >
-        <span className="tgroup-title">{phrase}</span>
+        <span className="tgroup-title break-words">{phrase}</span>
         <svg
-          className="tgroup-chev"
           viewBox="0 0 11 11"
           aria-hidden="true"
           width="11"
           height="11"
+          className={cn(
+            'shrink-0 mt-px transition-[transform,color] duration-150',
+            'text-ink-ghost',
+            open && status !== 'running' && 'rotate-90 text-muted-foreground',
+            status === 'running' && 'animate-spin text-primary',
+            status === 'failed' && 'text-destructive',
+          )}
         >
           <path
             d="M3.5 2 L7.5 5.5 L3.5 9"
@@ -128,7 +139,12 @@ export const ToolGroup: FC<GroupProps> = ({ startIndex, endIndex, children }) =>
           />
         </svg>
       </button>
-      <div id={bodyId} className="tgroup-body" role="region" hidden={!open}>
+      <div
+        id={bodyId}
+        className="tgroup-body mt-2 ml-0.5 pl-3.5 border-l border-border"
+        role="region"
+        hidden={!open}
+      >
         {children}
       </div>
     </div>
@@ -151,26 +167,43 @@ const stepStatus = (p: ToolCallMessagePartProps): 'running' | 'failed' | 'done' 
   return 'done';
 };
 
+const STEP_LABEL_CLASS =
+  'uppercase text-[9.5px] tracking-[0.14em] text-ink-ghost mt-1.5 mb-0.5';
+
 export const ToolFallback: FC<ToolCallMessagePartProps> = (p) => {
   const status = stepStatus(p);
   return (
-    <div className="tstep" data-testid="tool-step">
-      <div className="tstep-name">
+    <div
+      className="
+        tstep px-2.5 py-2 rounded-md bg-muted
+        font-mono text-[11px] leading-[1.55] text-muted-foreground
+        whitespace-pre-wrap break-words
+        [&+.tstep]:mt-1.5
+      "
+      data-testid="tool-step"
+    >
+      <div className="tstep-name text-primary font-medium mb-1">
         {p.toolName}
-        <span className={`tstep-status ${status}`}>{status}</span>
+        <span
+          className={cn(
+            'tstep-status ml-2 font-normal text-ink-ghost uppercase tracking-[0.12em] text-[9.5px]',
+            status === 'running' && 'text-primary',
+            status === 'failed' && 'text-destructive',
+          )}
+        >
+          {status}
+        </span>
       </div>
-      <div className="tstep-label">args</div>
+      <div className={STEP_LABEL_CLASS}>args</div>
       <div className="tstep-args">{formatJSON(p.args)}</div>
       {status === 'failed' ? (
         <>
-          <div className="tstep-label">error</div>
-          <div className="tstep-error">
-            {formatJSON(p.result) || 'failed'}
-          </div>
+          <div className={STEP_LABEL_CLASS}>error</div>
+          <div className="tstep-error">{formatJSON(p.result) || 'failed'}</div>
         </>
       ) : status === 'done' && p.result !== undefined ? (
         <>
-          <div className="tstep-label">result</div>
+          <div className={STEP_LABEL_CLASS}>result</div>
           <div className="tstep-result">{formatJSON(p.result)}</div>
         </>
       ) : null}
