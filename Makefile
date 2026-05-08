@@ -47,12 +47,13 @@ SPA_DIST         := packages/channel-web/dist-web
 SHELL := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
 
-.PHONY: help dev-fast image dev-mount-up dev-mount-down rollout build-spa
+.PHONY: help dev-fast image dev-mount-up dev-mount-down rollout build-spa kind-prune
 
 help:
 	@echo "Targets:"
 	@echo "  dev-fast        Rebuild SPA + push to kind dev-mount + restart pod (~10s)."
 	@echo "  image           Full docker rebuild + reload, drops fast mount (~90s)."
+	@echo "  kind-prune      Remove dangling image layers from the kind node."
 	@echo "  dev-mount-up    Patch the deployment to add the dev-web mount."
 	@echo "  dev-mount-down  Remove the dev-web mount from the deployment."
 	@echo "  rollout         Restart the host deployment and wait for it."
@@ -84,9 +85,34 @@ image:
 	kind load docker-image $(IMAGE) --name $(KIND_CLUSTER)
 	@$(MAKE) --no-print-directory dev-mount-down
 	@$(MAKE) --no-print-directory rollout
+	@$(MAKE) --no-print-directory kind-prune
 	@echo "==> Image deployed. Bundle hash baked into the image:"
 	@docker run --rm --entrypoint cat $(IMAGE) /opt/ax-next/host/web/index.html \
 	  | grep 'assets/index' || true
+
+# ----------------------------------------------------------------------------
+# kind-prune — drop dangling image layers from the kind node
+#
+# Every `kind load docker-image` overwrites the tagged image, leaving
+# the previous version behind as an untagged `<none>` image. The layers
+# stick around in containerd's content store until pruned. After ~15
+# rebuild cycles the node accumulates ~10 GB of stale agent-image
+# layers and starts hitting "no space left on device" during
+# `docker cp` to /mnt/ax-dev. `make image` calls this automatically;
+# run it manually if the node fills up between rebuilds.
+# ----------------------------------------------------------------------------
+kind-prune:
+	@echo "==> Pruning untagged images on $(KIND_NODE)"
+	@DANGLING=$$(docker exec $(KIND_NODE) crictl images --output json \
+	  | jq -r '.images[] | select((.repoTags // []) | length == 0) | .id'); \
+	if [ -z "$$DANGLING" ]; then \
+	  echo "==> Nothing to prune"; \
+	else \
+	  echo "$$DANGLING" | xargs -I{} docker exec $(KIND_NODE) crictl rmi {} >/dev/null; \
+	  COUNT=$$(echo "$$DANGLING" | wc -l | tr -d ' '); \
+	  echo "==> Pruned $$COUNT untagged image(s)"; \
+	fi
+	@docker exec $(KIND_NODE) df -h / | tail -1
 
 # ----------------------------------------------------------------------------
 # dev-mount-up / dev-mount-down — toggle the dev-web hostPath mount
