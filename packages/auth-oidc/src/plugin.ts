@@ -277,6 +277,9 @@ export function createAuthPlugin(config: AuthConfig = { providers: {} }): Plugin
               opts: {
                 path: '/',
                 sameSite: 'Lax',
+                // Production: cookie only over HTTPS. Dev/test: omit so kind
+                // and local docker work over plain HTTP.
+                ...(isProduction() ? { secure: true } : {}),
                 maxAge: sessionLifetimeSeconds,
               },
             },

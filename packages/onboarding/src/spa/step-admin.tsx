@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type FormEvent } from 'react';
 
 interface Props { onCreated: () => void; }
 
@@ -8,7 +8,7 @@ export function StepAdmin({ onCreated }: Props) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  async function submit(e: React.FormEvent) {
+  async function submit(e: FormEvent) {
     e.preventDefault();
     setBusy(true);
     setErr(null);
@@ -44,7 +44,7 @@ export function StepAdmin({ onCreated }: Props) {
         <button type="submit" disabled={busy || name.length === 0 || email.length === 0} style={{ marginTop: '1rem', padding: '0.5rem 1rem' }}>
           {busy ? 'Creating…' : 'Continue'}
         </button>
-        {err !== null && <p style={{ color: 'crimson' }}>{err}</p>}
+        {err !== null && <p role="alert" style={{ color: 'crimson' }}>{err}</p>}
       </form>
     </main>
   );

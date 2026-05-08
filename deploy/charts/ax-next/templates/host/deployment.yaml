@@ -155,7 +155,10 @@ spec:
             # first boot when neither is set.
             {{- if .Values.onboarding.bootstrapToken }}
             - name: AX_BOOTSTRAP_TOKEN
-              value: {{ .Values.onboarding.bootstrapToken | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ax-next.fullname" . }}-secrets
+                  key: bootstrap-token
             {{- end }}
             {{- if .Values.onboarding.publicBaseUrl }}
             - name: AX_PUBLIC_BASE_URL

@@ -1,5 +1,7 @@
 import type { Transaction } from 'kysely';
-import type { AgentContext, HookBus } from '@ax/core';
+import { createLogger, type AgentContext, type HookBus } from '@ax/core';
+
+const PLUGIN_NAME = '@ax/onboarding';
 
 // ---------------------------------------------------------------------------
 // Wizard completion transaction — Task 2.7 (I8, I9)
@@ -64,7 +66,7 @@ export async function runCompletionTransaction(
     } else {
       return { ok: false, reason: 'credential-validation-error' };
     }
-  } catch (err) {
+  } catch {
     if (ctrl.signal.aborted) {
       return { ok: false, reason: 'credential-validation-timeout' };
     }
@@ -111,8 +113,12 @@ export async function runCompletionTransaction(
       value: new TextEncoder().encode(input.fastModel),
     });
   } catch (err) {
-    // Best-effort log to stderr; don't propagate.
-    console.error('[ax-onboarding] failed to persist fast-model setting (recoverable):', err);
+    // Best-effort log; don't propagate. Bootstrap is already committed
+    // and a missing fast-model setting is set-able later.
+    createLogger({ reqId: PLUGIN_NAME }).warn(
+      'failed to persist fast-model setting (recoverable)',
+      { err: err instanceof Error ? err.message : String(err) },
+    );
   }
 
   return { ok: true };

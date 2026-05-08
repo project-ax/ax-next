@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type FormEvent } from 'react';
 
 interface Props { onComplete: () => void; }
 
@@ -15,7 +15,7 @@ export function StepModel({ onComplete }: Props) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  async function submit(e: React.FormEvent) {
+  async function submit(e: FormEvent) {
     e.preventDefault();
     setBusy(true);
     setErr(null);
@@ -70,7 +70,7 @@ export function StepModel({ onComplete }: Props) {
         <button type="submit" disabled={busy || apiKey.length === 0} style={{ marginTop: '1rem', padding: '0.5rem 1rem' }}>
           {busy ? 'Validating…' : 'Finish setup'}
         </button>
-        {err !== null && <p style={{ color: 'crimson' }}>{err}</p>}
+        {err !== null && <p role="alert" style={{ color: 'crimson' }}>{err}</p>}
       </form>
     </main>
   );

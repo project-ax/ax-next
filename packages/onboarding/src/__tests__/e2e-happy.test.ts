@@ -290,14 +290,10 @@ describe('Onboarding wizard — end-to-end happy path canary', () => {
       });
       expect(lockedClaim.status).toBe(410);
 
-      // /setup/admin: the admin handler checks the bootstrap-session cookie
-      // FIRST (step 1 in routes.ts admin()) — the bootstrap cookie was
-      // destroyed/expired after the admin step, so this returns 401 rather
-      // than 410. That is still correct for I11: no new admin can be created
-      // (the route rejects before reaching any state-mutation code). The
-      // I11: the post-completion gate sits at step 1 of every /setup/* handler
-      // (claim, admin, model) so the operator gets a "wizard done" signal,
-      // not a "session expired" or "auth required" red herring.
+      // I11: every /setup/* handler (claim, admin, model) runs the
+      // completion gate at step 1, before any auth/cookie check, so the
+      // operator gets a "wizard done" signal (410) instead of a "session
+      // expired" red herring (401).
       const lockedAdmin = await fetch(`http://127.0.0.1:${port}/setup/admin`, {
         method: 'POST',
         headers: {

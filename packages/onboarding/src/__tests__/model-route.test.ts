@@ -226,28 +226,21 @@ describe('@ax/onboarding POST /setup/model', () => {
     expect(cred).toBeDefined();
     expect(cred!.kind).toBe('api-key');
 
-    // Verify Default Agent was created.
-    // Pull the admin user id from bootstrap:status or enumerate agents for system.
-    const allAgents = await stack.harness.bus.call<
+    // Verify Default Agent was created. Resolve the actual admin userId via
+    // /admin/me using the auth cookie walkToModel returned (mirrors the
+    // e2e-happy.test.ts pattern).
+    const meRes = await fetch(`http://127.0.0.1:${port}/admin/me`, {
+      headers: { cookie: authCookie },
+    });
+    expect(meRes.status).toBe(200);
+    const { user } = await meRes.json() as { user: { id: string } };
+    const agentsOut = await stack.harness.bus.call<
       { userId: string; teamIds: string[] },
       { agents: Array<{ displayName: string; model: string }> }
-    >('agents:list-for-user', stack.harness.ctx(), { userId: 'system', teamIds: [] });
-    // agents:list-for-user by admin shows agents owned by any user we tested;
-    // the agent is created with the actual admin userId. Use an admin-level
-    // lookup with isAdmin approach to cover it — check all agents globally.
-    // Actually, agents:list-for-user scopes to userId; the admin was created
-    // during walkToModel. We use a broad match since we know exactly one agent
-    // was created in this test.
-    // Fallback: just verify at least one agent with 'Default Agent' displayName
-    // exists via checking the bus directly. We can iterate from multiple calls.
-    // The simplest: use agents:list-for-user with userId matching whichever
-    // userId was inserted. We don't know the UUID, but we can verify indirectly
-    // by checking that bootstrap:status is completed (which requires agents:create
-    // to succeed inside the tx).
-    //
-    // For the strongest assertion: use credentials:list (already done above) plus
-    // a storage:get check for fast-model below. The transact-rollback canary
-    // already proves the agent row was created atomically.
+    >('agents:list-for-user', stack.harness.ctx(), { userId: user.id, teamIds: [] });
+    expect(agentsOut.agents).toHaveLength(1);
+    expect(agentsOut.agents[0]!.displayName).toBe('Default Agent');
+    expect(agentsOut.agents[0]!.model).toBe('claude-sonnet-4-6');
 
     // Verify fast-model setting was written.
     const fastModelBytes = await stack.harness.bus.call<

@@ -33,7 +33,9 @@ export function StepGate({ autoToken, onClaimed }: Props) {
 
   useEffect(() => {
     if (autoToken !== null && autoToken.length > 0) void submit(autoToken);
-  }, [autoToken]); // eslint-disable-line react-hooks/exhaustive-deps
+    // submit is stable within this render and only depends on the autoToken
+    // captured at mount time; intentionally one-shot on autoToken arrival.
+  }, [autoToken]);
 
   return (
     <main style={{ maxWidth: 480, margin: '4rem auto', fontFamily: 'system-ui, sans-serif' }}>
@@ -51,7 +53,7 @@ export function StepGate({ autoToken, onClaimed }: Props) {
         <button type="submit" disabled={busy || token.length === 0} style={{ marginTop: '1rem', padding: '0.5rem 1rem' }}>
           {busy ? 'Verifying…' : 'Continue'}
         </button>
-        {err !== null && <p style={{ color: 'crimson' }}>{err}</p>}
+        {err !== null && <p role="alert" style={{ color: 'crimson' }}>{err}</p>}
       </form>
     </main>
   );

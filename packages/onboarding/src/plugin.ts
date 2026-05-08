@@ -1,4 +1,5 @@
 import {
+  createLogger,
   makeAgentContext,
   PluginError,
   type AgentContext,
@@ -101,6 +102,7 @@ export function createOnboardingPlugin(config: OnboardingConfig): Plugin {
         agentId: PLUGIN_NAME,
         userId: 'system',
       });
+      const log = createLogger({ reqId: PLUGIN_NAME });
 
       const { db: shared } = await bus.call<unknown, { db: Kysely<unknown> }>(
         'database:get-instance',
@@ -115,7 +117,7 @@ export function createOnboardingPlugin(config: OnboardingConfig): Plugin {
       // bootstrap:initialize logic ----------------------------------------
       const existing = await localStore.read();
       if (existing?.status === 'completed') {
-        console.log('[ax-onboarding] bootstrap already completed; skipping');
+        log.info('bootstrap already completed; skipping');
       } else {
         const env = config.envOverride ?? process.env;
         const envToken = env['AX_BOOTSTRAP_TOKEN'];

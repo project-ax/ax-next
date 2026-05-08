@@ -222,7 +222,9 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
       plugins.flatMap((p) => p.manifest.registers),
     );
     const onboarding = plugins.find((p) => p.manifest.name === '@ax/onboarding');
-    const unsatisfied = (onboarding!.manifest.calls).filter(
+    expect(onboarding, '@ax/onboarding plugin not found in preset').toBeDefined();
+    if (!onboarding) return;
+    const unsatisfied = onboarding.manifest.calls.filter(
       (c) => !allRegistered.has(c),
     );
     expect(unsatisfied, `@ax/onboarding calls with no registrant: ${unsatisfied.join(', ')}`).toEqual([]);
