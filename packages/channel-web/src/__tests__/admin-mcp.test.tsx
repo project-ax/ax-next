@@ -1,8 +1,9 @@
 /**
  * Admin MCP servers form — Task 23.
  *
- * Mirrors the agents test (Task 22): navigate to MCP Servers tab → reveal
- * form → POST → re-fetch. Adds two cases that don't exist on the agents path:
+ * Mirrors the agents test (Task 22): render McpServerForm directly →
+ * reveal form → POST → re-fetch. Adds two cases that don't exist on the
+ * agents path:
  *
  *   - The Test button calls `/admin/mcp-servers/:id/test` and
  *     surfaces "ok" inline on success.
@@ -11,10 +12,14 @@
  *
  * The mock middleware always returns `{ ok: true }`, so the failure
  * test fakes a non-OK response directly.
+ *
+ * Strategy: render McpServerForm directly (no shell wrapper). The
+ * AdminSettings shell was deleted in Task 1.4 and replaced by AdminShell;
+ * the tab content components are unchanged and can be tested in isolation.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { AdminSettings } from '../components/admin/AdminSettings';
+import { McpServerForm } from '../components/admin/McpServerForm';
 
 const fetchMock = vi.fn();
 
@@ -28,7 +33,7 @@ function jsonOk(body: unknown): Response {
 beforeEach(() => {
   fetchMock.mockReset();
   globalThis.fetch = fetchMock as unknown as typeof fetch;
-  // Default: stub all fetches with empty responses so ProviderKeysTab settles.
+  // Default: stub all fetches with empty responses.
   fetchMock.mockImplementation(() =>
     Promise.resolve(jsonOk({ providers: [], agents: [], teams: [], servers: [] })),
   );
@@ -47,22 +52,18 @@ describe('AdminSettings — MCP Servers tab', () => {
   it('lists mcp servers', async () => {
     fetchMock.mockReset();
     globalThis.fetch = fetchMock as unknown as typeof fetch;
-    fetchMock.mockResolvedValueOnce(jsonOk({ providers: [] }));
     fetchMock.mockResolvedValueOnce(jsonOk({ servers: [sampleServer] }));
 
-    render(<AdminSettings onClose={() => {}} />);
-    fireEvent.click(screen.getByRole('tab', { name: /MCP Servers/i }));
+    render(<McpServerForm />);
     await waitFor(() => expect(screen.getByText('fs')).toBeTruthy());
   });
 
   it('+ New MCP server reveals the form', async () => {
     fetchMock.mockReset();
     globalThis.fetch = fetchMock as unknown as typeof fetch;
-    fetchMock.mockResolvedValueOnce(jsonOk({ providers: [] }));
     fetchMock.mockResolvedValueOnce(jsonOk({ servers: [] }));
 
-    render(<AdminSettings onClose={() => {}} />);
-    fireEvent.click(screen.getByRole('tab', { name: /MCP Servers/i }));
+    render(<McpServerForm />);
     await waitFor(() => screen.getByText(/New MCP server/i));
     fireEvent.click(screen.getByText(/New MCP server/i));
     expect(screen.getByLabelText(/^name/i)).toBeTruthy();
@@ -73,13 +74,11 @@ describe('AdminSettings — MCP Servers tab', () => {
   it('POST creates a new server', async () => {
     fetchMock.mockReset();
     globalThis.fetch = fetchMock as unknown as typeof fetch;
-    fetchMock.mockResolvedValueOnce(jsonOk({ providers: [] }));
     fetchMock.mockResolvedValueOnce(jsonOk({ servers: [] }));
     fetchMock.mockResolvedValueOnce(jsonOk({ id: 'mcp-x' }));
     fetchMock.mockResolvedValueOnce(jsonOk({ servers: [] }));
 
-    render(<AdminSettings onClose={() => {}} />);
-    fireEvent.click(screen.getByRole('tab', { name: /MCP Servers/i }));
+    render(<McpServerForm />);
     await waitFor(() => screen.getByText(/New MCP server/i));
     fireEvent.click(screen.getByText(/New MCP server/i));
     fireEvent.change(screen.getByLabelText(/^name/i), {
@@ -102,12 +101,10 @@ describe('AdminSettings — MCP Servers tab', () => {
   it('Test button surfaces success', async () => {
     fetchMock.mockReset();
     globalThis.fetch = fetchMock as unknown as typeof fetch;
-    fetchMock.mockResolvedValueOnce(jsonOk({ providers: [] }));
     fetchMock.mockResolvedValueOnce(jsonOk({ servers: [sampleServer] }));
     fetchMock.mockResolvedValueOnce(jsonOk({ ok: true }));
 
-    render(<AdminSettings onClose={() => {}} />);
-    fireEvent.click(screen.getByRole('tab', { name: /MCP Servers/i }));
+    render(<McpServerForm />);
     await waitFor(() => screen.getByText('fs'));
     fireEvent.click(screen.getByText(/Test/i));
     await waitFor(() => {
@@ -118,12 +115,10 @@ describe('AdminSettings — MCP Servers tab', () => {
   it('Test button surfaces failure', async () => {
     fetchMock.mockReset();
     globalThis.fetch = fetchMock as unknown as typeof fetch;
-    fetchMock.mockResolvedValueOnce(jsonOk({ providers: [] }));
     fetchMock.mockResolvedValueOnce(jsonOk({ servers: [sampleServer] }));
     fetchMock.mockResolvedValueOnce(new Response(null, { status: 500 }));
 
-    render(<AdminSettings onClose={() => {}} />);
-    fireEvent.click(screen.getByRole('tab', { name: /MCP Servers/i }));
+    render(<McpServerForm />);
     await waitFor(() => screen.getByText('fs'));
     fireEvent.click(screen.getByText(/Test/i));
     await waitFor(() => {
@@ -134,15 +129,13 @@ describe('AdminSettings — MCP Servers tab', () => {
   it('Test button surfaces error if fetch throws (defensive try/catch)', async () => {
     fetchMock.mockReset();
     globalThis.fetch = fetchMock as unknown as typeof fetch;
-    fetchMock.mockResolvedValueOnce(jsonOk({ providers: [] }));
     fetchMock.mockResolvedValueOnce(jsonOk({ servers: [sampleServer] }));
     // Network failure — the helper today catches this internally, but
     // this test guards against a future refactor that lets a throw
     // escape `testMcpServer`. The badge must move out of "testing…".
     fetchMock.mockRejectedValueOnce(new Error('network'));
 
-    render(<AdminSettings onClose={() => {}} />);
-    fireEvent.click(screen.getByRole('tab', { name: /MCP Servers/i }));
+    render(<McpServerForm />);
     await waitFor(() => screen.getByText('fs'));
     fireEvent.click(screen.getByText(/Test/i));
     await waitFor(() => {

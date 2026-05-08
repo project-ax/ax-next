@@ -1,22 +1,24 @@
 /**
  * Admin agents form — Task 22.
  *
- * Covers the AdminSettings shell + AgentForm CRUD flow against the real
- * `/admin/agents` wire shape (camelCase: displayName / systemPrompt /
- * allowedTools / mcpConfigIds / model / visibility / teamId / ...).
+ * Covers AgentForm CRUD flow against the real `/admin/agents` wire shape
+ * (camelCase: displayName / systemPrompt / allowedTools / mcpConfigIds /
+ * model / visibility / teamId / ...).
  *
- * Strategy: render AdminSettings, navigate to the Agents tab, then assert
- * the same behavioral coverage as before.
+ * Strategy: render AgentForm directly (no shell wrapper) for all content
+ * tests. AdminShell (wrapped in UserProvider) is used only for the
+ * "Back to chat" shell-behavior test.
  *
- *   1. Navigating to the "Agents" tab lists existing agents from
- *      `/admin/agents` and renders their displayName.
+ *   1. AgentForm lists existing agents from `/admin/agents` and renders
+ *      their displayName.
  *   2. Clicking "+ New agent" reveals the form (name, system prompt, etc.).
  *   3. Filling + submitting the form POSTs to `/admin/agents` with the
  *      camelCase shape AND the `X-Requested-With: ax-admin` CSRF header.
  *   4. Clicking "edit" on a row populates the form WITHOUT throwing —
  *      regression for a TypeError that happened when the form read
  *      snake_case (`a.allowed_tools.join`) against the camelCase wire.
- *   5. Clicking the "← Back to chat" button calls `onClose`.
+ *   5. Clicking the "← chat" button in AdminSidebar calls `onClose`
+ *      (AdminShell-level test, not AgentForm-level).
  *
  * The PATCH/DELETE rows share the same fetch round-trip + re-fetch shape
  * as POST, so the "create" + "edit" paths cover most of the wiring. The
@@ -25,9 +27,19 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { AdminSettings } from '../components/admin/AdminSettings';
+import { AgentForm } from '../components/admin/AgentForm';
+import { AdminShell } from '../components/admin/AdminShell';
+import { UserProvider } from '../lib/user-context';
+import type { AuthUser } from '../lib/auth';
 
 const fetchMock = vi.fn();
+
+const mockUser: AuthUser = {
+  id: 'usr-1',
+  email: 'admin@example.com',
+  name: 'Admin',
+  role: 'admin',
+};
 
 const sampleAgent = (over: Partial<Record<string, unknown>> = {}) => ({
   id: 'agt-1',
@@ -55,31 +67,19 @@ function jsonOk(body: unknown): Response {
 beforeEach(() => {
   fetchMock.mockReset();
   globalThis.fetch = fetchMock as unknown as typeof fetch;
-  // Default: providers list returns empty (for ProviderKeysTab which loads first)
+  // Default: stub all fetches with empty responses.
   fetchMock.mockImplementation(() =>
     Promise.resolve(jsonOk({ providers: [], agents: [], teams: [], servers: [] })),
   );
 });
 
-/** Helper: render AdminSettings and navigate to the Agents tab. */
-async function renderAtAgentsTab(overrides?: () => void) {
-  if (overrides) overrides();
-  render(<AdminSettings onClose={() => {}} />);
-  // Click the Agents tab to navigate away from the default provider-keys tab.
-  fireEvent.click(screen.getByRole('tab', { name: /^Agents$/i }));
-}
-
 describe('AdminSettings — agents tab', () => {
   it('lists existing agents on open', async () => {
     fetchMock.mockReset();
     globalThis.fetch = fetchMock as unknown as typeof fetch;
-    // providers fetch (default tab)
-    fetchMock.mockResolvedValueOnce(jsonOk({ providers: [] }));
-    // agents fetch (on Agents tab mount)
     fetchMock.mockResolvedValueOnce(jsonOk({ agents: [sampleAgent({ displayName: 'ax' })] }));
 
-    render(<AdminSettings onClose={() => {}} />);
-    fireEvent.click(screen.getByRole('tab', { name: /^Agents$/i }));
+    render(<AgentForm />);
     await waitFor(() => {
       expect(screen.getByText('ax')).toBeTruthy();
     });
@@ -88,11 +88,9 @@ describe('AdminSettings — agents tab', () => {
   it('clicking + New agent reveals the form', async () => {
     fetchMock.mockReset();
     globalThis.fetch = fetchMock as unknown as typeof fetch;
-    fetchMock.mockResolvedValueOnce(jsonOk({ providers: [] }));
     fetchMock.mockResolvedValue(jsonOk({ agents: [], teams: [], servers: [] }));
 
-    render(<AdminSettings onClose={() => {}} />);
-    fireEvent.click(screen.getByRole('tab', { name: /^Agents$/i }));
+    render(<AgentForm />);
     await waitFor(() => screen.getByText(/New agent/i));
     fireEvent.click(screen.getByText(/New agent/i));
     expect(screen.getByLabelText(/name/i)).toBeTruthy();
@@ -102,9 +100,7 @@ describe('AdminSettings — agents tab', () => {
   it('submitting the form POSTs to /admin/agents with camelCase + CSRF header', async () => {
     fetchMock.mockReset();
     globalThis.fetch = fetchMock as unknown as typeof fetch;
-    // providers fetch (default tab)
-    fetchMock.mockResolvedValueOnce(jsonOk({ providers: [] }));
-    // agents list on tab mount
+    // agents list on mount
     fetchMock.mockResolvedValueOnce(jsonOk({ agents: [] }));
     // teams + mcp lookup on form open
     fetchMock.mockResolvedValueOnce(jsonOk({ teams: [] }));
@@ -114,8 +110,7 @@ describe('AdminSettings — agents tab', () => {
     // re-fetch agents after save
     fetchMock.mockResolvedValueOnce(jsonOk({ agents: [] }));
 
-    render(<AdminSettings onClose={() => {}} />);
-    fireEvent.click(screen.getByRole('tab', { name: /^Agents$/i }));
+    render(<AgentForm />);
     await waitFor(() => screen.getByText(/New agent/i));
     fireEvent.click(screen.getByText(/New agent/i));
     fireEvent.change(screen.getByLabelText(/name/i), {
@@ -151,7 +146,6 @@ describe('AdminSettings — agents tab', () => {
   it('clicking edit populates the form from the camelCase wire shape (regression)', async () => {
     fetchMock.mockReset();
     globalThis.fetch = fetchMock as unknown as typeof fetch;
-    fetchMock.mockResolvedValueOnce(jsonOk({ providers: [] }));
     fetchMock.mockResolvedValueOnce(
       jsonOk({
         agents: [
@@ -166,8 +160,7 @@ describe('AdminSettings — agents tab', () => {
     );
     fetchMock.mockResolvedValue(jsonOk({ teams: [], servers: [] }));
 
-    render(<AdminSettings onClose={() => {}} />);
-    fireEvent.click(screen.getByRole('tab', { name: /^Agents$/i }));
+    render(<AgentForm />);
     await waitFor(() => screen.getByText('probe'));
     // Before the fix this threw "Cannot read properties of undefined
     // (reading 'join')" inside formFromAgent because the form read
@@ -184,7 +177,6 @@ describe('AdminSettings — agents tab', () => {
   it('delete sends DELETE with X-Requested-With: ax-admin (CSRF regression)', async () => {
     fetchMock.mockReset();
     globalThis.fetch = fetchMock as unknown as typeof fetch;
-    fetchMock.mockResolvedValueOnce(jsonOk({ providers: [] }));
     fetchMock.mockResolvedValueOnce(
       jsonOk({ agents: [sampleAgent({ id: 'agt-1', displayName: 'probe' })] }),
     );
@@ -192,8 +184,7 @@ describe('AdminSettings — agents tab', () => {
     fetchMock.mockResolvedValueOnce(jsonOk({ agents: [] }));
 
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
-    render(<AdminSettings onClose={() => {}} />);
-    fireEvent.click(screen.getByRole('tab', { name: /^Agents$/i }));
+    render(<AgentForm />);
     await waitFor(() => screen.getByText('probe'));
     fireEvent.click(screen.getByText(/^delete$/i));
     await waitFor(() => {
@@ -215,8 +206,13 @@ describe('AdminSettings — agents tab', () => {
     fetchMock.mockImplementation(() => Promise.resolve(jsonOk({ providers: [] })));
 
     const onClose = vi.fn();
-    render(<AdminSettings onClose={onClose} />);
-    fireEvent.click(screen.getByRole('button', { name: /Back to chat/i }));
+    render(
+      <UserProvider value={mockUser}>
+        <AdminShell onClose={onClose} />
+      </UserProvider>,
+    );
+    // AdminSidebar's back button has text "chat" (with a ChevronLeft icon).
+    fireEvent.click(screen.getByRole('button', { name: /^chat$/i }));
     expect(onClose).toHaveBeenCalled();
   });
 });

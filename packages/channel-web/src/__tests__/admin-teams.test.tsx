@@ -11,12 +11,13 @@
  *     the panel is broken).
  *   - The shared error path renders when the API trips.
  *
- * Updated to use AdminSettings shell (renders via the Teams tab) after
- * AdminPanel was removed in Task 5 of the Admin Settings Redesign.
+ * Strategy: render TeamList directly (no shell wrapper). The AdminSettings
+ * shell was deleted in Task 1.4 and replaced by AdminShell; the tab content
+ * components are unchanged and can be tested in isolation.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { AdminSettings } from '../components/admin/AdminSettings';
+import { render, screen, waitFor } from '@testing-library/react';
+import { TeamList } from '../components/admin/TeamList';
 
 const fetchMock = vi.fn();
 
@@ -40,13 +41,11 @@ describe('AdminSettings — Teams tab', () => {
   it('lists seeded teams (read-only)', async () => {
     fetchMock.mockReset();
     globalThis.fetch = fetchMock as unknown as typeof fetch;
-    fetchMock.mockResolvedValueOnce(jsonOk({ providers: [] }));
     fetchMock.mockResolvedValueOnce(
       jsonOk({ teams: [{ id: 't1', name: 'Engineering', members: ['u1', 'u2'] }] }),
     );
 
-    render(<AdminSettings onClose={() => {}} />);
-    fireEvent.click(screen.getByRole('tab', { name: /^Teams$/i }));
+    render(<TeamList />);
     await waitFor(() => expect(screen.getByText('Engineering')).toBeTruthy());
     expect(screen.getByText('2 members')).toBeTruthy();
   });
@@ -54,11 +53,9 @@ describe('AdminSettings — Teams tab', () => {
   it('shows the deferred-feature note', async () => {
     fetchMock.mockReset();
     globalThis.fetch = fetchMock as unknown as typeof fetch;
-    fetchMock.mockResolvedValueOnce(jsonOk({ providers: [] }));
     fetchMock.mockResolvedValueOnce(jsonOk({ teams: [] }));
 
-    render(<AdminSettings onClose={() => {}} />);
-    fireEvent.click(screen.getByRole('tab', { name: /^Teams$/i }));
+    render(<TeamList />);
     await waitFor(() => expect(screen.getByText(/Read-only/i)).toBeTruthy());
     expect(screen.getByText(/Week 9\.5/i)).toBeTruthy();
   });
@@ -66,11 +63,9 @@ describe('AdminSettings — Teams tab', () => {
   it('handles error', async () => {
     fetchMock.mockReset();
     globalThis.fetch = fetchMock as unknown as typeof fetch;
-    fetchMock.mockResolvedValueOnce(jsonOk({ providers: [] }));
     fetchMock.mockResolvedValueOnce(new Response(null, { status: 500 }));
 
-    render(<AdminSettings onClose={() => {}} />);
-    fireEvent.click(screen.getByRole('tab', { name: /^Teams$/i }));
+    render(<TeamList />);
     await waitFor(() =>
       expect(screen.getByText(/list teams/i)).toBeTruthy(),
     );
