@@ -317,10 +317,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         process.exit(2);
       });
   } else if (argv[0] === 'admin') {
-    // One-shot admin tooling. Today: `bootstrap` (first-admin against
-    // /auth/dev-bootstrap). Like credentials/mcp this intercepts BEFORE
-    // the chat path so we don't bootstrap the LLM/sandbox/orchestrator
-    // plugin set for what's a thin HTTP client.
+    // One-shot admin tooling. Today: `reset-bootstrap` (operator escape
+    // hatch — re-mints the bootstrap token used by the @ax/onboarding
+    // wizard). Like credentials/mcp this intercepts BEFORE the chat path
+    // so we don't bootstrap the LLM/sandbox/orchestrator plugin set.
     runAdminCommand({ argv: argv.slice(1) })
       .then((code) => process.exit(code))
       .catch((e) => {
