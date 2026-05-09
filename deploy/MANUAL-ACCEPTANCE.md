@@ -203,10 +203,11 @@ small HTTP front door:
    knobs flipped on:
 
    ```bash
-   # http.cookieKey + an auth provider are now required since issue #39 —
-   # without them the host pod crash-loops on AX_HTTP_COOKIE_KEY required /
-   # no-auth-providers. devBootstrap is the simplest path for the canary;
-   # production deploys swap it for the auth.google.* set.
+   # http.cookieKey is required since issue #39 — without it the host
+   # pod crash-loops on AX_HTTP_COOKIE_KEY required. Auth providers are
+   # added at runtime via /admin/auth (Phase 3) — no helm flag needed.
+   # onboarding.bootstrapToken pre-shares the wizard's claim token; if
+   # omitted, @ax/onboarding generates one on first boot and prints it.
    helm upgrade --install ax-next deploy/charts/ax-next \
      --namespace ax-next --create-namespace \
      --set replicas=2 \
@@ -217,7 +218,7 @@ small HTTP front door:
      --set credentials.key="$(openssl rand -base64 32)" \
      --set anthropic.apiKey="$ANTHROPIC_API_KEY" \
      --set http.cookieKey="$(openssl rand -hex 32)" \
-     --set auth.devBootstrap.token="$(openssl rand -hex 16)"
+     --set onboarding.bootstrapToken="$(openssl rand -hex 16)"
    ```
 
 2. Wait for both host pods, the git-server pod, and postgres to be Ready:
@@ -436,24 +437,24 @@ see it (because they list any scope), but a non-admin user only sees
 their own.
 
 Caveat: the dev-bootstrap auth path mints a single shared user with
-`is_admin=true`. There's no way to be a non-admin via dev-bootstrap.
+`role='admin'`. There's no way to be a non-admin via the wizard.
 Two real-cluster options to actually test the non-admin path:
 
 - **Google OIDC.** Sign in as a second Google account that the chart
-  hasn't promoted to admin. New users default to `is_admin=false`.
+  hasn't promoted to admin. New users default to `role='user'`.
 - **Manual SQL flip.** As admin, sign in once as a second account
   (still via Google or another provider), then
   `kubectl exec -n ax-next deploy/ax-next-host -- psql -U ax-next
-  -d ax-next -c "UPDATE auth_oidc_v1_users SET is_admin=false
+  -d ax-next -c "UPDATE auth_better_v1_users SET role='user'
   WHERE email='other@example.com';"`. Sign out + back in as that user.
 
 Once signed in as a non-admin:
 
-1. Click the avatar → user menu. Confirm the "Admin · …" entries are
+1. Click the avatar → user menu. Confirm the admin "Settings" entry is
    absent (UI affordance only — the server enforces ACL too, see
    below).
-2. Click "My credentials". A settings panel opens with a credentials
-   list scoped to this user.
+2. Click "Credentials". A settings panel opens with a credentials list
+   scoped to this user.
 3. Add an api-key with `ref: my-personal-key` and any payload.
 
 Expected:

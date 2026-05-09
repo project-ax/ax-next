@@ -1,5 +1,6 @@
 /**
- * Auth client — wraps the @ax/auth-oidc wire surface.
+ * Auth client — wraps the auth-plugin wire surface (default impl is
+ * @ax/auth-better since Phase 3; @ax/auth-oidc is the alternate impl).
  *
  * Endpoints (host: ax-next serve, mounted via @ax/http-server):
  *   GET  /auth/sign-in/google  — server 302-redirects to Google OIDC
@@ -8,11 +9,13 @@
  *   POST /admin/sign-out       — clears cookie (idempotent)
  *
  * Wire-shape mapping: the backend's `User` (`{id, email, displayName,
- * isAdmin}`) is the boundary contract owned by `@ax/auth-oidc`. We
- * translate to the UI's local `AuthUser` (`{id, email, name, role}`)
- * here at the wire boundary so the rest of channel-web doesn't have to
- * track changes to the backend type. If the backend adds a field, this
- * file is the only place that needs to know.
+ * isAdmin}`) is the shared boundary contract — both auth-oidc and
+ * auth-better register against this exact shape (see
+ * packages/auth-oidc/src/types.ts:1-113). We translate to the UI's
+ * local `AuthUser` (`{id, email, name, role}`) here at the wire
+ * boundary so the rest of channel-web doesn't have to track changes
+ * to the backend type. If the backend adds a field, this file is the
+ * only place that needs to know.
  *
  * CSRF: state-changing requests (POST/PUT/PATCH/DELETE) need either an
  * allow-listed Origin header or `X-Requested-With: ax-admin`. We send
@@ -48,7 +51,7 @@ function toAuthUser(u: BackendUser): AuthUser {
     id: u.id,
     email: u.email ?? '',
     // displayName falls back to email's local-part, then to a role-aware
-    // generic label. Bootstrap admins (created via dev-bootstrap or the
+    // generic label. Bootstrap admins (created via the
     // auth:create-bootstrap-user hook with no body fields) have neither
     // displayName nor email, so they show as "Administrator" rather than
     // the meaningless "unnamed".
