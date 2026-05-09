@@ -1,13 +1,15 @@
 /**
- * CredentialAddMenu — kind-picker that mounts the right form.
+ * CredentialAddMenu — kind-picker that mounts the API-key form.
  *
  * Click the "+ Add credential" button → a dropdown opens with the
- * kinds catalog fetched from `/admin/credentials/kinds` (shared between
- * admin + settings panels; see `lib/credentials.ts`). Each supported
- * kind becomes a menu item:
+ * kinds catalog fetched from `/admin/credentials/kinds`. Each kind
+ * with `flow === 'paste'` becomes a menu item; clicking it renders
+ * `<ApiKeyForm kind={kind} ...>`.
  *
- *   - flow='paste'  → click renders `<ApiKeyForm kind={kind} ...>`
- *   - flow='oauth'  → click renders `<OAuthFlowForm kind={kind} ...>`
+ * I12 (provider credentials are API-key-only) is enforced here as
+ * defense-in-depth: kinds with `flow !== 'paste'` are filtered out
+ * client-side even if a custom preset loads an OAuth credential
+ * plugin and the server returns them.
  *
  * On successful add, the form calls `onAdded` and we collapse back to
  * the button state — the parent `CredentialsList` listens to `onAdded`
@@ -25,7 +27,6 @@ import {
   type CredentialKind,
 } from '../../lib/credentials';
 import { ApiKeyForm } from './ApiKeyForm';
-import { OAuthFlowForm } from './OAuthFlowForm';
 
 export interface CredentialAddMenuProps {
   variant: 'admin' | 'user';
@@ -36,8 +37,7 @@ export interface CredentialAddMenuProps {
 type Mode =
   | { kind: 'closed' }
   | { kind: 'menu' }
-  | { kind: 'paste'; credentialKind: string }
-  | { kind: 'oauth'; credentialKind: string };
+  | { kind: 'paste'; credentialKind: string };
 
 export function CredentialAddMenu({
   variant,
@@ -86,6 +86,7 @@ export function CredentialAddMenu({
   }
 
   if (mode.kind === 'menu') {
+    const pasteKinds = (kinds ?? []).filter((k) => k.flow === 'paste');
     return (
       <div className="flex flex-col gap-2">
         {error !== null && (
@@ -113,19 +114,23 @@ export function CredentialAddMenu({
               >
                 Loading…
               </div>
+            ) : pasteKinds.length === 0 ? (
+              <div
+                role="menuitem"
+                aria-disabled="true"
+                className="relative flex cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm text-muted-foreground"
+              >
+                No API-key credential kinds available
+              </div>
             ) : (
-              (kinds ?? []).map((k) => (
+              pasteKinds.map((k) => (
                 <button
                   key={k.kind}
                   type="button"
                   role="menuitem"
                   className="relative flex w-full cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
                   onClick={() =>
-                    setMode(
-                      k.flow === 'oauth'
-                        ? { kind: 'oauth', credentialKind: k.kind }
-                        : { kind: 'paste', credentialKind: k.kind },
-                    )
+                    setMode({ kind: 'paste', credentialKind: k.kind })
                   }
                 >
                   {k.kind}
@@ -138,20 +143,9 @@ export function CredentialAddMenu({
     );
   }
 
-  if (mode.kind === 'paste') {
-    return (
-      <ApiKeyForm
-        variant={variant}
-        kind={mode.credentialKind}
-        onAdded={handleAdded}
-        onCancel={close}
-      />
-    );
-  }
-
-  // mode.kind === 'oauth'
+  // mode.kind === 'paste'
   return (
-    <OAuthFlowForm
+    <ApiKeyForm
       variant={variant}
       kind={mode.credentialKind}
       onAdded={handleAdded}

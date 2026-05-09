@@ -154,7 +154,6 @@ describe('@ax/preset-k8s wiring', () => {
         '@ax/conversations',
         '@ax/credential-proxy',
         '@ax/credentials',
-        '@ax/credentials-anthropic-oauth',
         '@ax/credentials-store-db',
         '@ax/database-postgres',
         '@ax/eventbus-postgres',

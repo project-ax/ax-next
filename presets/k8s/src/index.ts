@@ -14,7 +14,6 @@ import { createMcpClientPlugin, createToolDispatcherPlugin } from '@ax/mcp-clien
 import { createCredentialProxyPlugin } from '@ax/credential-proxy';
 import { createCredentialsPlugin } from '@ax/credentials';
 import { createCredentialsStoreDbPlugin } from '@ax/credentials-store-db';
-import { createCredentialsAnthropicOauthPlugin } from '@ax/credentials-anthropic-oauth';
 import { createCredentialsAdminRoutesPlugin } from '@ax/credentials-admin-routes';
 import { createCredentialsOauthPendingPlugin } from '@ax/credentials-oauth-pending';
 import { createIpcHttpPlugin } from '@ax/ipc-http';
@@ -393,11 +392,13 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
     }),
   );
 
-  // Phase 3 — Anthropic OAuth per-kind sub-services. Same load reasoning
-  // as the CLI preset: purely additive, only dispatches when an agent
-  // actually carries a kind: 'anthropic-oauth' credential. Web-chat OAuth
-  // routes (Phase 10–12) will register HTTP handlers from this plugin.
-  plugins.push(createCredentialsAnthropicOauthPlugin());
+  // I12 — provider credentials are API-key-only across the default UI/preset.
+  // `@ax/credentials-anthropic-oauth` is intentionally NOT loaded here. The
+  // package stays in the tree (the legacy `ax credentials login` CLI path
+  // loads it explicitly) but the default k8s preset advertises only
+  // `kind: api-key` to /admin/credentials/kinds. To re-enable OAuth, an
+  // operator would compose a custom preset that pushes
+  // `createCredentialsAnthropicOauthPlugin()` after createCredentialsPlugin.
 
   // Phase 2 — credential-proxy on a Unix socket. The host pod mounts an
   // emptyDir at /var/run/ax (helm template); the proxy listens on

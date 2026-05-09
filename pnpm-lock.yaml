@@ -1481,9 +1481,6 @@ importers:
       '@ax/credentials-admin-routes':
         specifier: workspace:*
         version: link:../../packages/credentials-admin-routes
-      '@ax/credentials-anthropic-oauth':
-        specifier: workspace:*
-        version: link:../../packages/credentials-anthropic-oauth
       '@ax/credentials-oauth-pending':
         specifier: workspace:*
         version: link:../../packages/credentials-oauth-pending

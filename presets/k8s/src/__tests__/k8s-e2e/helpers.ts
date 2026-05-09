@@ -306,48 +306,6 @@ export async function deleteSettingsCredential(
   }
 }
 
-/**
- * POST /admin/credentials/oauth/start — admin-only kick off of the
- * web-paste OAuth flow. Returns `{ pendingId, authorizeUrl }`.
- *
- * We deliberately DON'T provide a `/finish` helper for the live-cluster
- * suite: completing the flow requires either (a) a fake-oauth provider
- * loaded into the production preset (constraint violation — test-only
- * code in production) or (b) a real Anthropic OAuth consent (impossible
- * in CI). The unit-level oauth-flow.test.ts covers the full round-trip
- * with a fake-oauth stub kind.
- */
-export async function startAdminOauth(
-  cookie: string,
-  input: {
-    scope: 'global' | 'user' | 'agent';
-    ownerId: string | null;
-    ref: string;
-    kind: string;
-  },
-): Promise<{ pendingId: string; authorizeUrl: string }> {
-  const res = await fetch(`${HOST_BASE_URL}/admin/credentials/oauth/start`, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'x-requested-with': 'ax-admin',
-      cookie,
-    },
-    body: JSON.stringify({
-      scope: input.scope,
-      ownerId: input.ownerId,
-      ref: input.ref,
-      kind: input.kind,
-    }),
-  });
-  if (!res.ok) {
-    throw new Error(
-      `POST /admin/credentials/oauth/start failed: ${res.status} ${await res.text().catch(() => '')}`,
-    );
-  }
-  return (await res.json()) as { pendingId: string; authorizeUrl: string };
-}
-
 export async function deleteAgent(
   cookie: string,
   agentId: string,
