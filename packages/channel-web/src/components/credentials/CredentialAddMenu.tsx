@@ -114,6 +114,14 @@ export function CredentialAddMenu({
               >
                 Loading…
               </div>
+            ) : pasteKinds.length === 0 ? (
+              <div
+                role="menuitem"
+                aria-disabled="true"
+                className="relative flex cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm text-muted-foreground"
+              >
+                No API-key credential kinds available
+              </div>
             ) : (
               pasteKinds.map((k) => (
                 <button

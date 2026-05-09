@@ -155,6 +155,24 @@ describe('CredentialAddMenu', () => {
     ).toBeNull();
   });
 
+  it('shows an empty-state row when every kind is filtered out', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonOk({
+        kinds: [{ kind: 'anthropic-oauth', flow: 'oauth' }],
+      }),
+    );
+    render(<CredentialAddMenu variant="admin" onAdded={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: /add credential/i }));
+    await waitFor(() =>
+      expect(
+        screen.getByRole('menuitem', { name: /no api-key credential kinds available/i }),
+      ).toBeTruthy(),
+    );
+    expect(
+      screen.queryByRole('menuitem', { name: /^anthropic-oauth$/i }),
+    ).toBeNull();
+  });
+
   it('selecting api-key opens the ApiKeyForm', async () => {
     fetchMock.mockResolvedValueOnce(
       jsonOk({

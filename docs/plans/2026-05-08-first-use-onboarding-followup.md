@@ -16,7 +16,12 @@ Tracker for cleanup work deliberately deferred out of the onboarding implementat
 - `@ax/credentials-anthropic-oauth`
 - `@ax/credentials-oauth-pending`
 
-**One nuance worth being honest about.** The task stub said "Phase 4 unloads `@ax/credentials-anthropic-oauth` and `@ax/credentials-oauth-pending` from default presets." That's only half true. `@ax/credentials-anthropic-oauth` is fully unloaded from both default presets. `@ax/credentials-oauth-pending` is still loaded in `presets/k8s/src/index.ts`, conditionally on `credentialsAdmin`, because `@ax/credentials-admin-routes` declares its hooks (`credentials:oauth:stash-pending`, `credentials:oauth:claim-pending`) as hard `calls` in its manifest. Removing the plugin while the routes still call those hooks would fail manifest validation at startup. So really: the Anthropic-OAuth credential kind is gone from default flows; the pending-credential intermediate plugin sticks around server-side until the admin OAuth routes also retire.
+**One nuance worth being honest about.** The task stub said "Phase 4 unloads `@ax/credentials-anthropic-oauth` and `@ax/credentials-oauth-pending` from default presets." That's only half true.
+
+- `@ax/credentials-anthropic-oauth` is fully unloaded from both default presets.
+- `@ax/credentials-oauth-pending` is still loaded in `presets/k8s/src/index.ts`, conditionally on `credentialsAdmin`. The reason: `@ax/credentials-admin-routes` declares its hooks (`credentials:oauth:stash-pending`, `credentials:oauth:claim-pending`) as hard `calls` in its manifest. Removing the plugin while the routes still call those hooks would fail manifest validation at startup.
+
+So really: the Anthropic-OAuth credential kind is gone from default flows; the pending-credential intermediate plugin sticks around server-side until the admin OAuth routes also retire.
 
 **Why deferred:** code remains in tree because legacy paths still depend on it.
 
