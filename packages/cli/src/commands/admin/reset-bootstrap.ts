@@ -32,9 +32,13 @@ import {
   bootstrap,
   makeAgentContext,
   PluginError,
-  type ServiceHandler,
 } from '@ax/core';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
+import { createStoragePostgresPlugin } from '@ax/storage-postgres';
+import { createCredentialsPlugin } from '@ax/credentials';
+import { createCredentialsStoreDbPlugin } from '@ax/credentials-store-db';
+import { createAuthBetterPlugin } from '@ax/auth-better';
+import { createAgentsPlugin } from '@ax/agents';
 import {
   createOnboardingPlugin,
   printTokenToStdout,
@@ -133,46 +137,42 @@ export async function runAdminResetBootstrapCommand(
 
   const bus = new HookBus();
 
-  // Stub the service hooks @ax/onboarding declares in its `calls` but that
-  // are only invoked from the (HTTP-driven) wizard paths, never from the
-  // bootstrap:reset flow. Registering them as throwing handlers means
-  // verifyCalls passes without actually standing up an http-server, an
-  // auth provider, an agents plugin, or a credentials store. If any of
-  // these fire during reset, the throw surfaces as a real error rather
-  // than a silent success — which is what we want, because that would
-  // mean someone wired a code path through the CLI that shouldn't be
-  // there.
-  const stubThrow: ServiceHandler<unknown, unknown> = async (_, _input) => {
-    throw new Error(
-      'admin reset-bootstrap: unexpected hook call — CLI runtime should not invoke wizard hooks',
-    );
-  };
-  // http:register-route must NOT throw — onboarding's init unconditionally
-  // registers its /setup routes. We accept the registration and discard
-  // the handler. The CLI is never going to receive a request anyway.
+  // http:register-route must not throw — auth-better, agents, and
+  // onboarding all unconditionally register routes. Stub it so they
+  // can boot without standing up an http-server (the CLI never receives
+  // an HTTP request anyway).
   bus.registerService(
     'http:register-route',
     'admin-reset-bootstrap-stub',
     async () => ({ unregister: () => {} }),
   );
-  bus.registerService('auth:create-bootstrap-user', 'admin-reset-bootstrap-stub', stubThrow);
-  bus.registerService('auth:complete-bootstrap-user', 'admin-reset-bootstrap-stub', stubThrow);
-  bus.registerService('auth:require-user', 'admin-reset-bootstrap-stub', stubThrow);
-  bus.registerService('db:transact', 'admin-reset-bootstrap-stub', stubThrow);
-  bus.registerService('credentials:set', 'admin-reset-bootstrap-stub', stubThrow);
-  bus.registerService('agents:create', 'admin-reset-bootstrap-stub', stubThrow);
-  bus.registerService('storage:set', 'admin-reset-bootstrap-stub', stubThrow);
 
   let handle;
   try {
     handle = await bootstrap({
       bus,
+      // The full plugin set is loaded so each subscriber to
+      // `bootstrap:reset-cleanup` is present on this bus when the hook
+      // fires. Without auth-better/agents/credentials-store-db here, the
+      // cascade would no-op (it fires, but nothing's listening) and the
+      // operator would still see "admin already exists; bootstrap
+      // refused" on the next wizard run — exactly the bug this CLI
+      // exists to recover from.
+      //
+      // Order is implementation-irrelevant (kernel topo-sorts on
+      // declared calls/registers) but follows the host pod's order for
+      // readability.
       plugins: [
         createDatabasePostgresPlugin({ connectionString }),
-        // Silent writers: the onboarding plugin's first-boot init prints
-        // a token + writes a token file when the row is missing. We're
-        // about to OVERWRITE that token via bootstrap:reset, so suppress
-        // the init-time noise. The reset-hook's caller (this CLI) prints
+        createStoragePostgresPlugin(),
+        createCredentialsPlugin(),
+        createCredentialsStoreDbPlugin(),
+        createAuthBetterPlugin(),
+        createAgentsPlugin(),
+        // Silent writers: onboarding's first-boot init prints a token +
+        // writes a token file when the row is missing. We're about to
+        // OVERWRITE that token via bootstrap:reset, so suppress the
+        // init-time noise. The reset-hook's caller (this CLI) prints
         // the real token below.
         createOnboardingPlugin({
           baseUrl,

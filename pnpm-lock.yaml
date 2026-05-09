@@ -437,9 +437,15 @@ importers:
       '@ax/agent-claude-sdk-runner':
         specifier: workspace:*
         version: link:../agent-claude-sdk-runner
+      '@ax/agents':
+        specifier: workspace:*
+        version: link:../agents
       '@ax/audit-log':
         specifier: workspace:*
         version: link:../audit-log
+      '@ax/auth-better':
+        specifier: workspace:*
+        version: link:../auth-better
       '@ax/chat-orchestrator':
         specifier: workspace:*
         version: link:../chat-orchestrator
@@ -482,6 +488,9 @@ importers:
       '@ax/session-inmemory':
         specifier: workspace:*
         version: link:../session-inmemory
+      '@ax/storage-postgres':
+        specifier: workspace:*
+        version: link:../storage-postgres
       '@ax/storage-sqlite':
         specifier: workspace:*
         version: link:../storage-sqlite
