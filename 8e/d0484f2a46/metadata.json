@@ -1,0 +1,16 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "8ed0484f2a46",
+  "strategy": "manual-commit",
+  "branch": "worktree-feat+phase-3-onboarding",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/8e/d0484f2a46/0/metadata.json",
+      "transcript": "/8e/d0484f2a46/0/full.jsonl",
+      "content_hash": "/8e/d0484f2a46/0/content_hash.txt",
+      "prompt": ""
+    }
+  ]
+}

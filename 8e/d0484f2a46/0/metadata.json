@@ -1,0 +1,25 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "8ed0484f2a46",
+  "session_id": "c6846e22-4fa9-4271-9b5a-a3f4ac9eeff4",
+  "strategy": "manual-commit",
+  "created_at": "2026-05-09T00:28:32.45284Z",
+  "branch": "worktree-feat+phase-3-onboarding",
+  "checkpoints_count": 1,
+  "files_touched": [],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "dc6ed7f23bf4",
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 8,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claude/settings.local.json": 8
+      }
+    }
+  ]
+}
