@@ -47,6 +47,72 @@ When that PR ships, drop this entry and reference its commit SHA from a "complet
 
 ---
 
+## Phase 5 — CLI tools + manual acceptance
+
+**Deferred from:** Phase 5 (Tasks 5.1–5.4 of the impl plan). The CLI
+tools, MANUAL-ACCEPTANCE walkthroughs, and final integration smoke all
+shipped — but two of the originally-planned items got punted in flight
+once their load-bearing premises didn't hold up under inspection.
+
+### Deferred 1 — `ax admin reset-password` CLI
+
+**What was deferred:** the `ax admin reset-password --email <e>` CLI
+(plan Task 5.2) plus its companion `/auth/reset-password` route in
+`@ax/auth-better`.
+
+**Why deferred:** the canonical first-use flow doesn't actually use
+local password sign-in. The wizard's admin step (`step-admin.tsx`)
+captures only `name` + `email` — Phase 2 dropped the password field
+when shipping against `@ax/auth-oidc` (which has no local password),
+and Phase 3 said "add it back when auth-better becomes the preset
+default" but never did. `@ax/auth-better/handler.ts:104` enables
+better-auth's `emailAndPassword` flow, but no UI surface sets a
+password and no preset writes a password row, so the feature is
+effectively dormant. Building `reset-password` against a sign-in
+flow nobody uses would be solving the wrong problem.
+
+**Trigger to pick up:** when local password sign-in becomes a
+real product surface — either the wizard re-adds the password
+field, or a separate "Settings → Password" panel lands. At that
+point `reset-password` becomes load-bearing recovery and the CLI
++ `/auth/reset-password` route make sense to build.
+
+**Explicit cleanup targets** (so a future maintainer knows where
+to look):
+
+- The plan in `docs/plans/2026-05-08-first-use-onboarding-impl.md`
+  Task 5.2 has the full spec we drafted.
+- The existing `auth:complete-bootstrap-user` hook (Phase 2/3) is
+  the natural template — `reset-password` would mirror its
+  oneTimeToken / sessionCookie shape.
+
+### Deferred 2 — full `ax admin bootstrap` deletion
+
+**What's deferred:** outright deletion of the legacy `/auth/dev-bootstrap`
+endpoint in `@ax/auth-oidc`. Phase 5's FU-1 commit (`b49e6db`) deleted
+the *client-side* `ax admin bootstrap` CLI and its tests; the *server-side*
+endpoint is intact in the auth-oidc plugin (along with `auth.devBootstrap.token`
+config on `K8sPresetConfig`'s plumbing path, although `loadK8sConfigFromEnv`
+no longer populates it).
+
+**Why deferred:** `@ax/auth-oidc` is still in tree as the documented
+fallback alternate-impl. Deleting `/auth/dev-bootstrap` from auth-oidc
+would silently break any operator who has chosen to load auth-oidc
+explicitly. Phase 3's PR #57 explicitly preserved that.
+
+**Trigger to pick up:** when `@ax/auth-oidc` is itself retired (a
+separate, larger cleanup that touches the boundary types in
+`packages/auth-oidc/src/types.ts` which `@ax/auth-better` still
+type-imports).
+
+**Explicit cleanup targets:**
+
+- `packages/auth-oidc/src/dev-bootstrap.ts`
+- `/auth/dev-bootstrap` route in `packages/auth-oidc/src/admin-routes.ts`
+- The `dev-bootstrap` provider rows the route inserts into
+  `auth_oidc_v1_*` tables (none in default presets).
+- `packages/auth-oidc/src/__tests__/dev-bootstrap.test.ts`.
+
 ## Future entries
 
 ### Phase N — TBD

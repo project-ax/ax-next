@@ -24,6 +24,13 @@ export interface ProviderRow {
 export interface HandlerInput {
   database: Kysely<AuthBetterDatabase>;
   providers: ProviderRow[];
+  /**
+   * Origins better-auth treats as trusted for sign-in / OAuth callback /
+   * CSRF protection. When undefined, falls back to `['*']` for
+   * test/dev-friendliness — production callers SHOULD pass a concrete
+   * allow-list. Plumbed from `AuthBetterConfig.trustedOrigins`.
+   */
+  trustedOrigins?: string[];
 }
 
 /**
@@ -110,11 +117,13 @@ function build(input: HandlerInput): (req: Request) => Promise<Response> {
     // The OS-assigned port at boot can move between rebuilds; rather
     // than thread a host into every rebuild, let better-auth resolve
     // baseURL from the request's `Host` header (its `resolveBaseURL`
-    // does this when `baseURL` is undefined). Set `trustedOrigins` to
-    // a wildcard so any test-time host:port combo is accepted —
-    // production hosts that mount this plugin should pin
-    // trustedOrigins explicitly.
-    trustedOrigins: ['*'],
+    // does this when `baseURL` is undefined). `trustedOrigins` defaults
+    // to `['*']` so any test-time host:port combo is accepted —
+    // production hosts that mount this plugin SHOULD pass a concrete
+    // allow-list via `AuthBetterConfig.trustedOrigins` (e.g.,
+    // ['https://ax.example.com']). The `@ax/preset-k8s` wires this from
+    // AX_PUBLIC_BASE_URL when set.
+    trustedOrigins: input.trustedOrigins ?? ['*'],
     socialProviders: socialProviders as Parameters<typeof betterAuth>[0]['socialProviders'],
     session: { expiresIn: 7 * 24 * 60 * 60 },
     user: {

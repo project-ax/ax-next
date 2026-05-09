@@ -275,10 +275,22 @@ export interface K8sPresetConfig {
    *
    * `sessionLifetimeSeconds` is the only field worth surfacing here — it
    * controls the Set-Cookie `max-age` on completed bootstrap sessions.
+   *
+   * `trustedOrigins` bounds which origins better-auth will honor for
+   * sign-in / OAuth callback / CSRF-token-bearing forms. Default is
+   * `['*']` (test-friendly); production should pin to the canonical
+   * public base URL. When `loadK8sConfigFromEnv` sees `AX_PUBLIC_BASE_URL`
+   * set, it defaults `trustedOrigins` to `[AX_PUBLIC_BASE_URL]`.
    */
   auth?: {
     /** Session cookie lifetime. Default 7 days (auth-better default). */
     sessionLifetimeSeconds?: number;
+    /**
+     * Origins better-auth treats as trusted for CSRF/OAuth callback
+     * gating. Default `['*']` — production hosts SHOULD pin (the env
+     * loader does this automatically when AX_PUBLIC_BASE_URL is set).
+     */
+    trustedOrigins?: string[];
   };
   /**
    * Phase 2 — credential-proxy socket override. Defaults to
@@ -501,6 +513,9 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   const authBetterCfg: AuthBetterConfig = {};
   if (config.auth?.sessionLifetimeSeconds !== undefined) {
     authBetterCfg.sessionLifetimeSeconds = config.auth.sessionLifetimeSeconds;
+  }
+  if (config.auth?.trustedOrigins !== undefined) {
+    authBetterCfg.trustedOrigins = config.auth.trustedOrigins;
   }
   plugins.push(createAuthBetterPlugin(authBetterCfg));
 
@@ -933,8 +948,18 @@ export function loadK8sConfigFromEnv(
   // AX_BOOTSTRAP_TOKEN (read directly by @ax/onboarding from process.env),
   // walks /setup/*, then adds providers from the admin UI.
   //
-  // The only knob worth surfacing here is session-cookie lifetime. Empty
-  // cfg is fine — auth-better falls through to its default (7 days).
+  // Knobs surfaced here:
+  //   - session-cookie lifetime (AX_AUTH_SESSION_LIFETIME_SECONDS)
+  //   - trustedOrigins — defaults to [AX_PUBLIC_BASE_URL] when set; no
+  //     separate env var. The public base URL is already the source of
+  //     truth for "where users hit this server", so trustedOrigins
+  //     inherits from it. If an operator legitimately needs multiple
+  //     origins (canonical URL + localhost for debugging), they can
+  //     construct config in code or set a future AX_AUTH_TRUSTED_ORIGINS
+  //     env var when the need actually arises (YAGNI for now).
+  //
+  // Empty cfg is fine — auth-better falls through to its defaults
+  // (7-day session, ['*'] trustedOrigins).
   const auth: NonNullable<K8sPresetConfig['auth']> = {};
   if (
     env.AX_AUTH_SESSION_LIFETIME_SECONDS !== undefined &&
@@ -947,6 +972,31 @@ export function loadK8sConfigFromEnv(
       );
     }
     auth.sessionLifetimeSeconds = n;
+  }
+  // AX_PUBLIC_BASE_URL is consumed by both auth.trustedOrigins (here) and
+  // onboarding.publicBaseUrl (further down). Parse once, fail fast on
+  // garbage, and feed the normalized value to both — better-auth wants a
+  // bare origin (scheme://host[:port]) for trustedOrigins, NOT a URL with
+  // path/query/hash, so we strip those via `.origin`.
+  const rawPublicBaseUrl = env.AX_PUBLIC_BASE_URL?.trim();
+  let parsedPublicBaseUrl: URL | undefined;
+  if (rawPublicBaseUrl !== undefined && rawPublicBaseUrl !== '') {
+    try {
+      parsedPublicBaseUrl = new URL(rawPublicBaseUrl);
+    } catch {
+      throw new Error(
+        `invalid AX_PUBLIC_BASE_URL=${rawPublicBaseUrl}; expected an absolute URL like https://ax.example.com`,
+      );
+    }
+    if (
+      parsedPublicBaseUrl.protocol !== 'http:' &&
+      parsedPublicBaseUrl.protocol !== 'https:'
+    ) {
+      throw new Error(
+        `invalid AX_PUBLIC_BASE_URL=${rawPublicBaseUrl}; expected http:// or https:// scheme`,
+      );
+    }
+    auth.trustedOrigins = [parsedPublicBaseUrl.origin];
   }
 
   const config: K8sPresetConfig = {
@@ -1035,8 +1085,14 @@ export function loadK8sConfigFromEnv(
   // init — the preset loader surfaces the read here so the env-shape test's
   // scanner registers the var as known.
   const _axBootstrapToken = env.AX_BOOTSTRAP_TOKEN; // consumed by @ax/onboarding init
-  if (env.AX_PUBLIC_BASE_URL !== undefined && env.AX_PUBLIC_BASE_URL !== '') {
-    config.onboarding = { publicBaseUrl: env.AX_PUBLIC_BASE_URL };
+  if (parsedPublicBaseUrl !== undefined && rawPublicBaseUrl !== undefined) {
+    // Use the validated raw string here (already trimmed). We deliberately
+    // don't round-trip through URL.toString() because that would append a
+    // trailing slash to a bare-host URL, and the onboarding banner does
+    // `${baseUrl}/setup?token=...` — a trailing slash would yield `//setup`.
+    // trustedOrigins above stripped to `.origin` because better-auth wants
+    // a bare origin; the banner is happier with the operator's literal.
+    config.onboarding = { publicBaseUrl: rawPublicBaseUrl };
   }
   return config;
 }

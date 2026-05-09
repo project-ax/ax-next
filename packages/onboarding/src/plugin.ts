@@ -21,7 +21,13 @@ import { createRateLimiter } from './rate-limit.js';
 import { createBootstrapSessionStore } from './sessions.js';
 import { createOnboardingRouteHandlers, type RouteRequest, type RouteResponse } from './routes.js';
 import { serveSpaIndex, serveSpaAsset, type StaticServeDeps } from './static-handler.js';
-import type { BootstrapCompleteInput, BootstrapStatusOutput, OnboardingConfig } from './types.js';
+import type {
+  BootstrapCompleteInput,
+  BootstrapResetInput,
+  BootstrapResetOutput,
+  BootstrapStatusOutput,
+  OnboardingConfig,
+} from './types.js';
 
 const PLUGIN_NAME = '@ax/onboarding';
 const DEFAULT_TOKEN_FILE_PATH = '/var/run/ax/bootstrap-token';
@@ -80,7 +86,7 @@ export function createOnboardingPlugin(config: OnboardingConfig): Plugin {
     manifest: {
       name: PLUGIN_NAME,
       version: '0.0.0',
-      registers: ['bootstrap:status', 'bootstrap:complete'],
+      registers: ['bootstrap:status', 'bootstrap:complete', 'bootstrap:reset'],
       calls: [
         'database:get-instance',
         'http:register-route',
@@ -189,6 +195,33 @@ export function createOnboardingPlugin(config: OnboardingConfig): Plugin {
           const opts: { tx?: import('kysely').Transaction<unknown> } = {};
           if (input.tx !== undefined) opts.tx = input.tx;
           await localStore.complete(opts);
+        },
+      );
+
+      // bootstrap:reset service hook --------------------------------------
+      // Operator-driven escape hatch from I6's one-way state machine. The
+      // CLI (`ax admin reset-bootstrap`) calls this; the hook does not
+      // print or write a token file — that's the caller's job, so a CLI
+      // tool can decide where the token goes (stdout vs. file vs. neither).
+      // `force=true` is required to overwrite a `completed` row.
+      bus.registerService<BootstrapResetInput, BootstrapResetOutput>(
+        'bootstrap:reset',
+        PLUGIN_NAME,
+        async (_ctx, input) => {
+          const token = generateToken();
+          const hash = await hashToken(token);
+          const result = await localStore.resetToPending(hash, {
+            allowCompletedReset: input.force === true,
+          });
+          if (!result.ok) {
+            return { ok: false, reason: result.reason };
+          }
+          return {
+            ok: true,
+            token,
+            baseUrl: config.baseUrl,
+            previousStatus: result.previousStatus,
+          };
         },
       );
 

@@ -1,21 +1,19 @@
-# Manual acceptance — Week 7–9 (k8s deployment shape)
-
-> **Note (Phase 3, 2026-05-08):** This walkthrough still references the
-> legacy `/auth/dev-bootstrap` endpoint, which is removed by Phase 3
-> (k8s preset switched from `@ax/auth-oidc` to `@ax/auth-better` — the
-> latter has no dev-bootstrap surface). The first-run flow is now the
-> `@ax/onboarding` wizard at `/setup/*`. Phase 5 (Task 5.3) replaces
-> this file with the wizard-based walkthrough; until then, this doc is
-> stale for the auth/login section.
-
+# Manual acceptance — k8s deployment shape
 
 Automated CI exercises the postgres + workspace + session + eventbus plugin
 chain via testcontainers (`presets/k8s/src/__tests__/acceptance.test.ts`). It
-does NOT exercise a real runner pod. This file is the manual procedure for
-proving the k8s preset can actually run a chat in a real cluster — kind for
-dev verification, a real cluster for full acceptance.
+does NOT exercise a real runner pod, the wizard, or the chat UI. This file
+is the manual procedure for proving the k8s preset can actually run a chat
+in a real cluster — kind for dev verification, a real cluster for full
+acceptance.
 
 We're a nervous crab. Don't ship without doing this.
+
+The canonical first-run flow is the `@ax/onboarding` wizard at `/setup/*`.
+The "Goldenpath: kind" section below is the bare-minimum infra bring-up;
+the **First-use wizard** scenario further down is the operator-facing
+walkthrough you should run at least once whenever the wizard, auth-better,
+or the host's bootstrap path changes.
 
 ## Prerequisites
 
@@ -51,31 +49,38 @@ kubectl create namespace ax-next-runners
 #    any encrypted secrets in the database. That's fine for a from-
 #    scratch kind run, but if you've seeded credentials and want to keep
 #    them, pin the key once (e.g., to a file) and reuse it across runs.
+# `http.cookieKey` is required (issue #39). Bootstrap token is optional —
+# if omitted, @ax/onboarding generates one and prints it to host stdout
+# on first boot.
 helm upgrade --install ax-next deploy/charts/ax-next \
   --namespace ax-next --create-namespace \
   -f deploy/charts/ax-next/kind-dev-values.yaml \
   --set image.repository=ax-next/agent \
   --set image.tag=dev \
   --set credentials.key="$(openssl rand -base64 32)" \
-  --set anthropic.apiKey="$ANTHROPIC_API_KEY"
+  --set http.cookieKey="$(openssl rand -hex 32)"
 
 # 5. Wait for the host pod to be Ready (postgres init job runs first; the
 #    host Deployment waits on it).
 kubectl wait -n ax-next --for=condition=Ready pod \
   -l app.kubernetes.io/component=ax-next-host --timeout=180s
 
-# 6. Port-forward the host's public-http port (where /chat + /health live).
-#    The host Service also exposes :80 for the runner-IPC back-channel —
-#    that's not for human use, runner pods reach it cluster-internally.
+# 6. Port-forward the host's public-http port (where /chat + /setup + /health
+#    + /admin/* + /auth/* live). The host Service also exposes :80 for the
+#    runner-IPC back-channel — that's not for human use, runner pods reach
+#    it cluster-internally.
 kubectl port-forward -n ax-next svc/ax-next-host 9090:9090 &
 
-# 7. Send a chat from the local CLI pointing at the cluster
-ax-next chat --endpoint http://localhost:9090 "list the files in /workspace"
+# 7. Walk the first-use wizard at http://localhost:9090/setup. See the
+#    "First-use wizard" scenario below for the full operator-facing
+#    procedure (token scrape, 3-step wizard, first chat).
 ```
 
 ## Acceptance criteria
 
-Any failure here blocks merge.
+Any failure here blocks merge. These criteria assume the **First-use wizard
+scenario** below has been completed end-to-end, since the wizard is the only
+path to a chat-capable state on a fresh cluster.
 
 ### Functional
 - [ ] Chat returns a response. The response references a bash tool execution
@@ -131,6 +136,291 @@ Same procedure as kind, but:
 - Bring an external postgres (`--set postgres.embedded.enabled=false --set
   postgres.external.connectionString=...`) or accept the embedded subchart
   for first-pass verification only.
+
+## Scenario: First-use wizard (canonical)
+
+This is the canonical first-use flow. After `helm install` the host pod
+boots into a `bootstrap_state.status = pending` posture and exposes the
+wizard at `/setup/*`. The operator follows a one-time URL, picks an admin
+identity, supplies an Anthropic API key, and lands ready to chat with a
+Default Agent. After completion, every `/setup/*` path returns 410 Gone (I11)
+— the wizard is one-shot.
+
+### Prerequisites
+
+- Goldenpath bring-up complete: kind cluster + image loaded + chart installed +
+  port-forward `9090:9090` is live.
+- A real Anthropic API key (export `ANTHROPIC_API_KEY` for convenience — the
+  wizard validates it synchronously with a 10s timeout per I8).
+- A browser pointed at `http://localhost:9090`. The wizard SPA is a small
+  Vite-built React bundle served from the host pod itself; no external
+  build step.
+
+### Steps
+
+1. **Scrape the bootstrap token from host pod stdout.**
+
+   ```bash
+   kubectl -n ax-next logs deploy/ax-next-host | grep -E 'token: ax_bs_|open:  http' | head -2
+   # [ax-onboarding] First-run bootstrap:
+   #   token: ax_bs_<base64url>
+   #   open:  http://0.0.0.0:9090/setup?token=ax_bs_<...>
+   ```
+
+   The "open" URL stamps the bind address (`0.0.0.0:9090`). For browser use
+   substitute `localhost` (or set `--set onboarding.publicBaseUrl=https://<your-host>`
+   on `helm install` to bake the right URL into the banner).
+
+2. **Open the magic link** in the browser:
+
+   ```
+   http://localhost:9090/setup?token=ax_bs_<...>
+   ```
+
+   The SPA auto-claims on mount: it POSTs `{ token }` to `/setup/claim`,
+   the backend atomically transitions `bootstrap_state` from `pending`
+   to `claimed`, sets a short-lived `ax_bootstrap_session` cookie, and
+   the SPA navigates to Step 2 (admin). The token is stripped from the
+   URL bar via `history.replaceState` so a refresh doesn't re-leak it.
+
+3. **Step "Create your admin account":** fill in name + email and submit.
+   The SPA POSTs `/setup/admin`, the backend calls
+   `auth:create-bootstrap-user` on `@ax/auth-better`, and the SPA
+   navigates to Step 3.
+
+   Expected:
+   - The form accepts plain ASCII names. Email is validated structurally
+     (`/^[^@\s]+@[^@\s]+$/`).
+   - On HTTP 401 the SPA shows "Bootstrap session expired" — that means the
+     bootstrap-session cookie was lost (e.g., the operator opened a new
+     incognito window mid-flow). Restart from Step 1.
+
+4. **Step "Connect Anthropic":** paste the API key, accept the default
+   model selections (Haiku for fast, Sonnet for default), submit.
+
+   This is the load-bearing step. The backend:
+   - Calls `llm:probe-credential` — a real `Authorization: x-api-key …`
+     hit against `https://api.anthropic.com/v1/models` with a 10s
+     `AbortController` timeout (Invariant I8).
+   - On success, runs ONE `db:transact` that creates the credential row,
+     creates the Default Agent, stores the fast-model selection, and
+     fires `bootstrap:complete` (Invariant I9 — credential + agent +
+     completion are atomic).
+   - On bad key: HTTP 200 with `{ ok: false, reason: 'credential-invalid' }`.
+     SPA shows "That API key was rejected." No DB writes happen.
+   - On timeout: HTTP 200 with `{ reason: 'credential-validation-timeout' }`.
+
+   Expected:
+   - With a valid key, the SPA navigates to "You're all set."
+   - The "Open chat →" button takes the operator to `/`.
+
+5. **Send the first chat.** From `http://localhost:9090/`, the chat UI
+   should be reachable as the freshly-minted admin. Type any prompt that
+   triggers a tool call — `list the files in /workspace` is the canonical
+   probe.
+
+### Acceptance criteria
+
+- [ ] Stdout scrape returns a token shaped `ax_bs_<base64url>`.
+- [ ] Loading `/setup?token=...` advances past Step 1 within ~2s without an
+      "Invalid token" error.
+- [ ] Step "Create admin" succeeds; the post-step network log shows
+      `POST /setup/admin → 200`.
+- [ ] Step "Connect Anthropic" with a valid key succeeds; the network log
+      shows `POST /setup/model → 200` with `{ ok: true }`.
+- [ ] Reloading `/setup` after the wizard returns HTTP 410 Gone
+      (Invariant I11). Probe:
+
+      ```bash
+      curl -i http://localhost:9090/setup
+      # HTTP/1.1 410 Gone
+      ```
+
+- [ ] The chat UI at `/` returns a response that references the bash tool
+      execution. Runner pod lifecycle matches the goldenpath acceptance
+      criteria (one runner spawned, terminated within ~60s).
+
+### Common failures
+
+- **`token: ax_bs_…` line is missing from stdout.** The plugin generates a
+  token only when `bootstrap_state` is empty AND `AX_BOOTSTRAP_TOKEN` is
+  not set. If the chart was installed with `onboarding.bootstrapToken=...`
+  the operator already knows the token (it was supplied from outside).
+  If the table has a stale `pending` or `claimed` row from a previous
+  install, restart with a clean DB — see "Recovery" scenario below.
+- **`/setup` returns 410 immediately on a fresh install.** Means
+  `bootstrap_state.status = completed` already. Either the chart was
+  reinstalled over a non-empty PVC, or someone walked the wizard already.
+  Use `ax admin reset-bootstrap --force` (recovery scenario below) to
+  re-mint a token, OR wipe the bootstrap_state row in postgres.
+- **Step 4 hangs for ~10s and shows "Validation timed out".** The host pod
+  cannot reach `api.anthropic.com` — egress NetworkPolicy or DNS issue. On
+  kind, this usually means the cluster lost outbound networking; recreate
+  the cluster.
+- **Step 4 shows "credential-invalid" with a key the operator believes is
+  good.** The probe hits `/v1/models` — confirm the key has model-list
+  scope and is not revoked. The cleanest probe outside the wizard:
+  `curl https://api.anthropic.com/v1/models -H 'x-api-key: <key>' -H 'anthropic-version: 2023-06-01'`.
+
+### Cleanup
+
+The wizard is one-shot. To re-walk it on the same cluster, either:
+
+- Use `ax admin reset-bootstrap --force` from the operator host (recovery
+  scenario below), OR
+- Wipe the row directly:
+
+  ```bash
+  PGPASS=$(kubectl get secret -n ax-next ax-next-postgresql \
+    -o jsonpath='{.data.postgres-password}' | base64 -d)
+  kubectl -n ax-next exec ax-next-postgresql-0 -- env PGPASSWORD="$PGPASS" \
+    psql -U postgres -d ax_next -c "DELETE FROM bootstrap_state;"
+  kubectl -n ax-next rollout restart deployment/ax-next-host
+  # New token printed in fresh stdout.
+  ```
+
+Note: the second path nukes the row outright; on next boot, the plugin
+treats the cluster as never-onboarded and re-mints a token. The first
+path (`reset-bootstrap`) is idempotent and safer when there are existing
+admin users you want to keep — it only flips `bootstrap_state` to
+`pending`, leaving `auth_better_v1_users` intact.
+
+## Scenario: Recovery — lost bootstrap token
+
+This is the operator-facing escape hatch when the bootstrap token has been
+lost (e.g., the host pod restarted before the operator scraped stdout, or
+the token-file mount disappeared). The CLI re-mints a fresh token and
+flips `bootstrap_state` back to `pending` so the wizard works again.
+
+The default `--force`-less form respects Invariant I6 (one-way state
+machine): it refuses to reset a `completed` row. `--force` is the
+explicit override for "we want to redo the wizard even though there's
+already an admin".
+
+### Prerequisites
+
+- Goldenpath bring-up complete; the host pod is Ready.
+- Database is reachable from wherever you're running `ax-next`. Either
+  `DATABASE_URL` is exported in your shell pointing at the in-cluster
+  postgres (via port-forward) or you're running the CLI inside the host
+  pod itself.
+
+### Steps — bootstrap pending, token lost
+
+This is the common case. You ran `helm install`, the host pod printed the
+token, but you never recorded it. `bootstrap_state.status` is still
+`pending`, no admin exists yet.
+
+1. **Confirm the lost-token scenario.**
+
+   ```bash
+   PGPASS=$(kubectl get secret -n ax-next ax-next-postgresql \
+     -o jsonpath='{.data.postgres-password}' | base64 -d)
+   kubectl -n ax-next exec ax-next-postgresql-0 -- env PGPASSWORD="$PGPASS" \
+     psql -U postgres -d ax_next \
+     -c "SELECT id, status FROM bootstrap_state;"
+   # id | status
+   # ---+---------
+   #  1 | pending
+   ```
+
+   If `status` is `completed`, this isn't the lost-token scenario —
+   you already have an admin. Use the `--force` variant below if you
+   genuinely want to redo the wizard.
+
+2. **Port-forward the postgres pod** so the local CLI can reach it
+   (skip if you already have one, e.g., via a bastion):
+
+   ```bash
+   kubectl -n ax-next port-forward pod/ax-next-postgresql-0 5432:5432 &
+   ```
+
+3. **Run the recovery CLI.** From the ax-next checkout:
+
+   ```bash
+   PGPASS=$(kubectl get secret -n ax-next ax-next-postgresql \
+     -o jsonpath='{.data.postgres-password}' | base64 -d)
+   DATABASE_URL="postgres://postgres:${PGPASS}@127.0.0.1:5432/ax_next" \
+   AX_PUBLIC_BASE_URL="http://localhost:9090" \
+     pnpm --filter @ax/cli exec ax-next admin reset-bootstrap
+   ```
+
+   Expected stdout (matches the first-boot banner exactly):
+
+   ```
+   [ax-onboarding] First-run bootstrap:
+     token: ax_bs_<base64url>
+     open:  http://localhost:9090/setup?token=ax_bs_<...>
+   ```
+
+4. **Walk the wizard** at the printed URL. Same flow as the canonical
+   first-use scenario.
+
+### Steps — bootstrap completed, want to redo
+
+For when an admin already exists but you'd like to re-run the wizard
+(e.g., on a dev cluster you want to reset without dropping the DB).
+
+`auth:create-bootstrap-user` rejects unconditionally if any admin row
+exists (`packages/auth-better/src/plugin.ts` — the guard fires on
+`role = 'admin'` regardless of how that row got there). So a
+`--force` reset on its own is NOT enough — you must clear out the
+existing admin first.
+
+```bash
+# 1. Drop existing admin users so the wizard's create-bootstrap-user
+#    guard doesn't reject the second walk.
+PGPASS=$(kubectl get secret -n ax-next ax-next-postgresql \
+  -o jsonpath='{.data.postgres-password}' | base64 -d)
+kubectl -n ax-next exec ax-next-postgresql-0 -- env PGPASSWORD="$PGPASS" \
+  psql -U postgres -d ax_next \
+  -c "DELETE FROM auth_better_v1_users WHERE role = 'admin';"
+
+# 2. Mint a fresh bootstrap token.
+DATABASE_URL=... AX_PUBLIC_BASE_URL=... \
+  pnpm --filter @ax/cli exec ax-next admin reset-bootstrap --force
+
+# 3. Walk the wizard at the printed URL.
+```
+
+The CLI prints the same banner as a first-boot. `bootstrap_state.status`
+flips from `completed` back to `pending`, and the wizard's admin step
+will succeed because there's no longer an admin row to collide with.
+
+If you skip step 1, the wizard's "Create admin" step fails with HTTP
+500 / `admin-already-exists` and the wizard stalls. The CLI itself
+still succeeds — it has no view into `auth_better_v1_users` and isn't
+the right layer to enforce that.
+
+### Acceptance criteria
+
+- [ ] Without `--force`, against a `completed` row, the CLI exits 1 with
+      `error: bootstrap already completed; use --force to reset anyway`.
+      The DB row is unchanged.
+- [ ] Without `--force`, against a `pending` or `claimed` row, the CLI
+      exits 0, prints the banner, and `bootstrap_state.token_hash` has
+      a new value.
+- [ ] With `--force`, against a `completed` row, the CLI exits 0, prints
+      the banner, and `bootstrap_state.status` is now `pending`.
+- [ ] After the CLI exits, opening the printed URL in the browser
+      advances past the gate step within ~2s.
+
+### Common failures
+
+- **`admin reset-bootstrap: DATABASE_URL is unset.`** The CLI is
+  postgres-only; there's no sqlite fallback. Set `DATABASE_URL` to
+  your postgres connection string and try again.
+- **`admin reset-bootstrap: unexpected init failure: …`** (or any
+  `PluginError` message bubbling up from `@ax/database-postgres`).
+  The CLI couldn't reach the postgres URL. Confirm the port-forward
+  is alive (`ps -p $(cat /tmp/pf.pid)` if you set one), the password
+  in `DATABASE_URL` matches the secret, and the user has access to
+  the `ax_next` database.
+- **Browser still shows "Setup already completed" after `reset-bootstrap`.**
+  Almost always a stale browser cookie or a cached SPA bundle. Hard-refresh
+  the page (`Cmd+Shift+R` / `Ctrl+Shift+R`) and re-open the new magic link.
+  The plugin reads `bootstrap_state` per request — no kernel restart is
+  needed for the CLI's effect to take.
 
 ## Known gotchas
 

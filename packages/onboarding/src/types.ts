@@ -35,3 +35,26 @@ export interface BootstrapCompleteInput {
   /** Optional transaction handle from db:transact's run callback. */
   tx?: Transaction<unknown>;
 }
+
+/**
+ * Input for `bootstrap:reset`. Setting `force: true` is the explicit
+ * operator override of the I6 "never backwards" invariant — required to
+ * re-open a `completed` install.
+ */
+export interface BootstrapResetInput {
+  force?: boolean;
+}
+
+/**
+ * Output of `bootstrap:reset`. Success carries the freshly minted token
+ * (printed once to STDOUT by the CLI; never written to disk by the
+ * hook itself) and `previousStatus` for diagnostics.
+ */
+export type BootstrapResetOutput =
+  | {
+      ok: true;
+      token: string;
+      baseUrl: string;
+      previousStatus: 'pending' | 'claimed' | 'completed' | null;
+    }
+  | { ok: false; reason: 'completed-without-force' };

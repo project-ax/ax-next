@@ -112,6 +112,21 @@ async function bootStack(): Promise<BootedStack> {
   return { harness, http, port: http.boundPort() };
 }
 
+describe('@ax/onboarding package.json packs the SPA bundle', () => {
+  // Regression for Phase 5 acceptance: the production agent image was
+  // rendering "Setup UI not available — build may be missing." because
+  // package.json's `files` field was `["dist"]` only — pnpm deploy and
+  // npm pack honor that field, so the built `dist-spa/` was excluded
+  // from the deployed tree even though the build step produced it.
+  it('lists both dist and dist-spa in package.json files', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const raw = await readFile(resolve(PKG_ROOT, 'package.json'), 'utf8');
+    const pkg = JSON.parse(raw) as { files?: string[] };
+    expect(pkg.files).toContain('dist');
+    expect(pkg.files).toContain('dist-spa');
+  });
+});
+
 describe('@ax/onboarding GET /setup + GET /setup/static/*', () => {
   let stack: BootedStack;
 
