@@ -5,7 +5,7 @@ import {
   type HookBus,
   type Plugin,
 } from '@ax/core';
-import type { Kysely } from 'kysely';
+import { sql, type Kysely } from 'kysely';
 import { checkAccess } from './acl.js';
 import { registerAdminAgentRoutes } from './admin-routes.js';
 import { runAgentsMigration, type AgentsDatabase } from './migrations.js';
@@ -52,12 +52,15 @@ const PLUGIN_NAME = '@ax/agents';
 //     subscribe at their end. We listen to nothing.
 // ---------------------------------------------------------------------------
 
+const RESET_CLEANUP_KEY = `${PLUGIN_NAME}/bootstrap-reset-cleanup`;
+
 export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
   let db: Kysely<AgentsDatabase> | undefined;
   // store ref is kept for shutdown symmetry only; the actual closure
   // capture is `localStore` inside init(). Prefixed with `_` so lint
   // doesn't flag it; re-init reassigns it via init().
   let _store: AgentStore | undefined;
+  let busRef: HookBus | undefined;
   const allowedModels = resolveAllowedModels(config.allowedModels);
   const unregisterRoutes: Array<() => void> = [];
 
@@ -78,10 +81,11 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
       // (handled inside checkAccess via try/catch) and intentionally NOT
       // declared.
       calls: ['database:get-instance', 'http:register-route', 'auth:require-user'],
-      subscribes: [],
+      subscribes: ['bootstrap:reset-cleanup'],
     },
 
     async init({ bus }) {
+      busRef = bus;
       const initCtx = makeAgentContext({
         sessionId: 'init',
         agentId: PLUGIN_NAME,
@@ -136,6 +140,21 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
       // re-init in tests doesn't trip duplicate-route on the http-server.
       const unregisters = await registerAdminAgentRoutes(bus, initCtx);
       unregisterRoutes.push(...unregisters);
+
+      // Bootstrap-reset cleanup: when an operator runs `ax admin
+      // reset-bootstrap --force`, drop every agent row so the wizard's
+      // model step can re-create the default chat agent without
+      // tripping any uniqueness constraints. The reset is a deliberate
+      // "redo from scratch" — operator paid the I6 escape hatch.
+      const localDb = db;
+      bus.subscribe(
+        'bootstrap:reset-cleanup',
+        RESET_CLEANUP_KEY,
+        async () => {
+          await sql`TRUNCATE agents_v1_agents`.execute(localDb);
+          return undefined;
+        },
+      );
     },
 
     async shutdown() {
@@ -151,6 +170,8 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
           // best-effort
         }
       }
+      busRef?.unsubscribe('bootstrap:reset-cleanup', RESET_CLEANUP_KEY);
+      busRef = undefined;
       // The shared db handle is owned by @ax/database-postgres; don't close
       // it here. Just drop our references so a re-init doesn't read a
       // stale store.

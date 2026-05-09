@@ -204,7 +204,7 @@ export function createOnboardingPlugin(config: OnboardingConfig): Plugin {
       bus.registerService<BootstrapResetInput, BootstrapResetOutput>(
         'bootstrap:reset',
         PLUGIN_NAME,
-        async (_ctx, input) => {
+        async (ctx, input) => {
           const token = generateToken();
           const hash = await hashToken(token);
           const result = await localStore.resetToPending(hash, {
@@ -213,6 +213,13 @@ export function createOnboardingPlugin(config: OnboardingConfig): Plugin {
           if (!result.ok) {
             return { ok: false, reason: result.reason };
           }
+          // Best-effort fan-out so plugins owning bootstrap-installed state
+          // (auth users/sessions, the default agent, the Anthropic API key,
+          // …) can wipe their own rows. Subscribers that throw get logged
+          // by HookBus.fire but do not fail the reset — operator already
+          // paid the I6 escape-hatch (`--force`) and a half-cleaned state
+          // is still recoverable by re-running reset-bootstrap.
+          await bus.fire('bootstrap:reset-cleanup', ctx, {});
           return {
             ok: true,
             token,

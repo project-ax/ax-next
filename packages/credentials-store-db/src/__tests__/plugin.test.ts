@@ -6,25 +6,30 @@ import { createCredentialsStoreDbPlugin } from '../plugin.js';
 // Minimal in-memory storage:get / storage:set / storage:list-prefix plugin.
 // Mirrors the helper in @ax/credentials's tests; lets us assert the underlying
 // KV layout directly without standing up sqlite.
-function memStoragePlugin(): Plugin {
-  const store = new Map<string, Uint8Array>();
+function memStoragePlugin(store?: Map<string, Uint8Array>): Plugin {
+  const kv = store ?? new Map<string, Uint8Array>();
   return {
     manifest: {
       name: 'mem-storage',
       version: '0.0.0',
-      registers: ['storage:get', 'storage:set', 'storage:list-prefix'],
+      registers: [
+        'storage:get',
+        'storage:set',
+        'storage:list-prefix',
+        'storage:delete-prefix',
+      ],
       calls: [],
       subscribes: [],
     },
     async init({ bus }) {
       bus.registerService('storage:get', 'mem-storage', async (_ctx, { key }: { key: string }) => ({
-        value: store.get(key),
+        value: kv.get(key),
       }));
       bus.registerService(
         'storage:set',
         'mem-storage',
         async (_ctx, { key, value }: { key: string; value: Uint8Array }) => {
-          store.set(key, value);
+          kv.set(key, value);
         },
       );
       bus.registerService(
@@ -32,10 +37,24 @@ function memStoragePlugin(): Plugin {
         'mem-storage',
         async (_ctx, { prefix }: { prefix: string }) => {
           const entries: Array<{ key: string; value: Uint8Array }> = [];
-          for (const [k, v] of store.entries()) {
+          for (const [k, v] of kv.entries()) {
             if (k.startsWith(prefix)) entries.push({ key: k, value: v });
           }
           return { entries };
+        },
+      );
+      bus.registerService(
+        'storage:delete-prefix',
+        'mem-storage',
+        async (_ctx, { prefix }: { prefix: string }) => {
+          let deleted = 0;
+          for (const k of [...kv.keys()]) {
+            if (k.startsWith(prefix)) {
+              kv.delete(k);
+              deleted++;
+            }
+          }
+          return { deleted };
         },
       );
     },
@@ -250,5 +269,41 @@ describe('@ax/credentials-store-db plugin', () => {
       { blob: Uint8Array | undefined }
     >('credentials:store-blob:get', ctx(), { scope: 'user', ownerId: 'u', ref: 'r1' });
     expect(Array.from(got.blob!)).toEqual([0xde, 0xad, 0xbe, 0xef]);
+  });
+
+  it('bootstrap:reset-cleanup wipes every credential row (v1 + v2 prefixes)', async () => {
+    const store = new Map<string, Uint8Array>();
+    const bus = new HookBus();
+    await bootstrap({
+      bus,
+      plugins: [memStoragePlugin(store), createCredentialsStoreDbPlugin()],
+      config: {},
+    });
+    // Seed three rows: a v2 user-scoped, a v2 global-scoped, and a v1
+    // legacy row (different prefix shape).
+    await bus.call('credentials:store-blob:put', ctx(), {
+      scope: 'user',
+      ownerId: 'u',
+      ref: 'anthropic-api',
+      blob: new Uint8Array([1, 2, 3]),
+    });
+    await bus.call('credentials:store-blob:put', ctx(), {
+      scope: 'global',
+      ownerId: null,
+      ref: 'anthropic-api',
+      blob: new Uint8Array([4, 5, 6]),
+    });
+    // Direct write to simulate a v1 row left over from before the v2 cutover.
+    store.set('credential:legacy-user:legacy-ref', new Uint8Array([7, 8, 9]));
+    expect(store.size).toBe(3);
+
+    const fired = await bus.fire('bootstrap:reset-cleanup', ctx(), {});
+    expect(fired.rejected).toBe(false);
+
+    // All credential keys gone; non-credential keys (none here) survive.
+    for (const k of store.keys()) {
+      expect(k.startsWith('credential:')).toBe(false);
+    }
+    expect(store.size).toBe(0);
   });
 });

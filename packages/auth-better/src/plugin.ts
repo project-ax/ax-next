@@ -6,7 +6,7 @@ import {
   type HookBus,
   type Plugin,
 } from '@ax/core';
-import type { Kysely } from 'kysely';
+import { sql, type Kysely } from 'kysely';
 // Type-only import from `@ax/http-server` — we never import a runtime value
 // from a peer plugin (Invariant I2 — no cross-plugin imports). TypeScript's
 // `verbatimModuleSyntax: true` plus `import type {...}` guarantees the
@@ -114,6 +114,7 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
   const trustedOrigins = config.trustedOrigins;
 
   const PROVIDERS_CHANGED_KEY = `${PLUGIN_NAME}/providers-changed`;
+  const RESET_CLEANUP_KEY = `${PLUGIN_NAME}/bootstrap-reset-cleanup`;
 
   return {
     manifest: {
@@ -138,7 +139,7 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
         'credentials:envelope-encrypt',
         'credentials:envelope-decrypt',
       ],
-      subscribes: ['auth:providers-changed'],
+      subscribes: ['auth:providers-changed', 'bootstrap:reset-cleanup'],
     },
 
     async init({ bus }) {
@@ -207,6 +208,25 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
             providers: next,
             ...(trustedOrigins !== undefined ? { trustedOrigins } : {}),
           });
+          return undefined;
+        },
+      );
+
+      // Bootstrap-reset cleanup: when an operator runs `ax admin
+      // reset-bootstrap --force`, wipe the leftover admin user + sessions
+      // so the next wizard run can complete (auth:create-bootstrap-user
+      // refuses to mint a second admin while one exists — see I6 gate).
+      // The handler keeps its in-memory provider catalog; only user/
+      // session rows are dropped. Runs on the same Kysely instance the
+      // handler uses, so a wipe-while-handler-serves race is bounded by
+      // the table-level lock TRUNCATE takes.
+      bus.subscribe(
+        'bootstrap:reset-cleanup',
+        RESET_CLEANUP_KEY,
+        async () => {
+          await sql`TRUNCATE auth_better_v1_sessions, auth_better_v1_users CASCADE`.execute(
+            localDb,
+          );
           return undefined;
         },
       );
@@ -317,6 +337,7 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
         }
       }
       busRef?.unsubscribe('auth:providers-changed', PROVIDERS_CHANGED_KEY);
+      busRef?.unsubscribe('bootstrap:reset-cleanup', RESET_CLEANUP_KEY);
       busRef = undefined;
       handle = undefined;
       db = undefined;

@@ -119,7 +119,7 @@ describe('@ax/agents plugin manifest + lifecycle', () => {
       // hard. teams:is-member is graceful (handled inside checkAccess via
       // try/catch) and intentionally NOT declared in calls.
       calls: ['database:get-instance', 'http:register-route', 'auth:require-user'],
-      subscribes: [],
+      subscribes: ['bootstrap:reset-cleanup'],
     });
   });
 
@@ -135,6 +135,38 @@ describe('@ax/agents plugin manifest + lifecycle', () => {
       SELECT count(*)::text AS count FROM agents_v1_agents
     `.execute(db);
     expect(result.rows[0]?.count).toBe('0');
+  });
+
+  it('bootstrap:reset-cleanup wipes every agent row so the wizard can re-seed', async () => {
+    const h = await makeHarness();
+    const ctx = h.ctx({ userId: 'u1' });
+    await h.bus.call<CreateInput, CreateOutput>('agents:create', ctx, {
+      actor: { userId: 'u1', isAdmin: false },
+      input: makeInput(),
+    });
+    await h.bus.call<CreateInput, CreateOutput>('agents:create', ctx, {
+      actor: { userId: 'u1', isAdmin: false },
+      input: makeInput({ displayName: 'Second' }),
+    });
+
+    const { sql } = await import('kysely');
+    const { db } = await h.bus.call<unknown, { db: import('kysely').Kysely<unknown> }>(
+      'database:get-instance',
+      h.ctx(),
+      {},
+    );
+    let count = await sql<{ count: string }>`
+      SELECT count(*)::text AS count FROM agents_v1_agents
+    `.execute(db);
+    expect(count.rows[0]?.count).toBe('2');
+
+    const fired = await h.bus.fire('bootstrap:reset-cleanup', h.ctx(), {});
+    expect(fired.rejected).toBe(false);
+
+    count = await sql<{ count: string }>`
+      SELECT count(*)::text AS count FROM agents_v1_agents
+    `.execute(db);
+    expect(count.rows[0]?.count).toBe('0');
   });
 });
 
