@@ -91,7 +91,11 @@ export async function runCompletionTransaction(
         actor: { userId: input.adminUserId, isAdmin: true },
         input: {
           displayName: 'Default Agent',
-          systemPrompt: '',
+          // Generic placeholder so the runner's
+          // owner.agentConfig.systemPrompt validator (requireString,
+          // non-empty) doesn't reject the very first chat. Operator
+          // can edit via /admin/agents after onboarding.
+          systemPrompt: 'You are a helpful assistant.',
           allowedTools: [],
           mcpConfigIds: [],
           model: input.defaultModel,

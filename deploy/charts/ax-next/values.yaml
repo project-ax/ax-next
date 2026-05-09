@@ -233,10 +233,13 @@ credentials:
     #   /admin/credentials*    — admin-only CRUD (full scope axis)
     #   /settings/credentials* — per-user CRUD (scope='user', actor-bound)
     #
-    # OAuth start/finish endpoints are NOT here — they land in Phase 3.
-    # Off by default so the admin surface stays minimal until the UI is
-    # wired up; flip on with `--set credentials.admin.enabled=true`.
-    enabled: false
+    # On by default since the channel-web Settings UI (Provider keys +
+    # Model config tabs) depends on these routes. Without them, those
+    # tabs hit static-files's SPA fallback, get HTML where they expect
+    # JSON, and surface a parser error to the user. Flip off only if
+    # you're shipping a deployment that intentionally hides the admin
+    # surface (and a custom UI that doesn't reach for /admin/credentials*).
+    enabled: true
 
 # When credentials.admin.enabled=true, ANTHROPIC_API_KEY is optional —
 # operators can seed it via POST /admin/credentials with scope=global instead
