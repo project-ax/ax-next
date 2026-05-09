@@ -45,9 +45,9 @@ const REQUIRED = [
   // sets this too, but renders without kind-dev need it explicitly.
   '--set',
   'http.cookieKey=0000000000000000000000000000000000000000000000000000000000000000',
-  // auth provider gate — chart fails template if no provider is set.
-  '--set',
-  'auth.devBootstrap.token=test-bootstrap',
+  // No auth provider flag — auth-better is DB-driven (Phase 3). The
+  // chart no longer fails template on missing auth env; the operator
+  // walks /setup/* after install to mint the first admin user.
 ];
 
 type K8sDoc = {

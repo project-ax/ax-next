@@ -64,8 +64,10 @@ export default tseslint.config(
       '**/dist/**',
       // channel-web ships TWO build outputs: dist/ (tsc, server-side) and
       // dist-web/ (vite, SPA bundle — the minified JS would otherwise drown
-      // lint runs in thousands of unrelated errors).
+      // lint runs in thousands of unrelated errors). @ax/onboarding does the
+      // same thing under dist-spa/ for its wizard bundle.
       '**/dist-web/**',
+      '**/dist-spa/**',
       '**/node_modules/**',
       '**/*.tsbuildinfo',
       '**/coverage/**',

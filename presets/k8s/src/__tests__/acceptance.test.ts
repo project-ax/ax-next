@@ -113,7 +113,7 @@ const PLUGINS_TO_DROP = new Set<string>([
   // HTTP control plane — out of scope; there's no public listener in this
   // test, so the auth/teams/static-files chain comes off too.
   '@ax/http-server',
-  '@ax/auth-oidc',
+  '@ax/auth-better',
   '@ax/teams',
   '@ax/static-files',
   // channel-web's HTTP surface (POST /api/chat/messages, etc.) hard-depends
@@ -282,7 +282,6 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           cookieKey: '0'.repeat(64),
           allowedOrigins: [],
         },
-        auth: { devBootstrap: { token: 'preset-test-bootstrap' } },
       };
 
       // Build the preset's plugin list, drop the production-only ones, and
@@ -476,8 +475,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
             cookieKey: '0'.repeat(64),
             allowedOrigins: [],
           },
-          auth: { devBootstrap: { token: 'preset-test-bootstrap' } },
-        };
+          };
 
         // Same filter as the local test. PLUGINS_TO_DROP doesn't list
         // `@ax/workspace-git-server`, so the new workspace plugin is kept and
@@ -763,7 +761,6 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           cookieKey: '0'.repeat(64),
           allowedOrigins: [],
         },
-        auth: { devBootstrap: { token: 'preset-test-bootstrap' } },
       };
       const presetPlugins = createK8sPlugins(presetConfig);
       const kept = presetPlugins.filter(
@@ -1112,8 +1109,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
             cookieKey: '0'.repeat(64),
             allowedOrigins: [],
           },
-          auth: { devBootstrap: { token: 'preset-test-bootstrap' } },
-        };
+          };
 
         // We use the existing PLUGINS_TO_DROP filter — it strips the
         // postgres trio (database/storage/eventbus/session) from the
@@ -1359,8 +1355,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
             cookieKey: '0'.repeat(64),
             allowedOrigins: [],
           },
-          auth: { devBootstrap: { token: 'preset-test-bootstrap' } },
-        };
+          };
 
         const presetPlugins = createK8sPlugins(presetConfig);
         const kept = presetPlugins.filter(

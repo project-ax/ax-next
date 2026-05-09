@@ -1,11 +1,11 @@
 /**
- * SettingsPanel — My credentials (Task 5.1).
+ * SettingsPanel — Credentials (Task 5.1).
  *
- * Asserts the wiring that makes the user-facing "My credentials" panel
+ * Asserts the wiring that makes the user-facing "Credentials" panel
  * reachable from the running UI in the same PR (no half-wired
  * components):
  *
- *   1. Opening SettingsPanel renders the "My credentials" header and
+ *   1. Opening SettingsPanel renders the "Credentials" header and
  *      mounts CredentialsList in 'user' variant — the list calls
  *      /settings/credentials.
  *   2. The Add menu is mounted alongside.
@@ -37,8 +37,8 @@ function jsonOk(body: unknown): Response {
   });
 }
 
-describe('SettingsPanel — my credentials', () => {
-  it('renders the "My credentials" heading and lists user credentials', async () => {
+describe('SettingsPanel — credentials', () => {
+  it('renders the "Credentials" heading and lists user credentials', async () => {
     fetchMock.mockResolvedValueOnce(
       jsonOk({
         credentials: [
@@ -57,7 +57,7 @@ describe('SettingsPanel — my credentials', () => {
         <SettingsPanel open={true} onClose={() => {}} />
       </UserProvider>,
     );
-    expect(screen.getByText(/My credentials/i)).toBeTruthy();
+    expect(screen.getByText(/Credentials/i)).toBeTruthy();
     await waitFor(() => expect(screen.getByText('my-anthropic')).toBeTruthy());
     // The user variant talks to /settings/credentials, not /admin/credentials.
     expect(fetchMock.mock.calls[0]?.[0]).toBe('/settings/credentials');

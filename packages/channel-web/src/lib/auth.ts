@@ -1,5 +1,6 @@
 /**
- * Auth client — wraps the @ax/auth-oidc wire surface.
+ * Auth client — wraps the auth-plugin wire surface (default impl is
+ * @ax/auth-better since Phase 3; @ax/auth-oidc is the alternate impl).
  *
  * Endpoints (host: ax-next serve, mounted via @ax/http-server):
  *   GET  /auth/sign-in/google  — server 302-redirects to Google OIDC
@@ -8,11 +9,13 @@
  *   POST /admin/sign-out       — clears cookie (idempotent)
  *
  * Wire-shape mapping: the backend's `User` (`{id, email, displayName,
- * isAdmin}`) is the boundary contract owned by `@ax/auth-oidc`. We
- * translate to the UI's local `AuthUser` (`{id, email, name, role}`)
- * here at the wire boundary so the rest of channel-web doesn't have to
- * track changes to the backend type. If the backend adds a field, this
- * file is the only place that needs to know.
+ * isAdmin}`) is the shared boundary contract — both auth-oidc and
+ * auth-better register against this exact shape (see
+ * packages/auth-oidc/src/types.ts:1-113). We translate to the UI's
+ * local `AuthUser` (`{id, email, name, role}`) here at the wire
+ * boundary so the rest of channel-web doesn't have to track changes
+ * to the backend type. If the backend adds a field, this file is the
+ * only place that needs to know.
  *
  * CSRF: state-changing requests (POST/PUT/PATCH/DELETE) need either an
  * allow-listed Origin header or `X-Requested-With: ax-admin`. We send
@@ -44,12 +47,23 @@ interface BackendUser {
 }
 
 function toAuthUser(u: BackendUser): AuthUser {
+  // Treat empty/whitespace-only strings as missing — `??` would keep them
+  // and render a blank avatar/menu name (e.g., empty displayName, or an
+  // email like '@example.com' yielding an empty local-part). Trim first
+  // so a cosmetic space doesn't slip through; `||` then walks past empty
+  // strings and undefined alike.
+  const displayName = u.displayName?.trim();
+  const localPart = u.email?.split('@')[0]?.trim();
   return {
     id: u.id,
     email: u.email ?? '',
-    // displayName falls back to email's local-part, then to a generic
-    // label. The avatar/initial in UserMenu derives from this string.
-    name: u.displayName ?? u.email?.split('@')[0] ?? 'unnamed',
+    // Bootstrap admins (created via the auth:create-bootstrap-user hook
+    // with no body fields) have neither displayName nor email, so they
+    // show as "Administrator" rather than the meaningless "unnamed".
+    name:
+      displayName ||
+      localPart ||
+      (u.isAdmin ? 'Administrator' : 'unnamed'),
     role: u.isAdmin ? 'admin' : 'user',
   };
 }

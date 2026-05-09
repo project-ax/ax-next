@@ -11,6 +11,8 @@ import { PluginError } from '@ax/core';
 import { createAuthBetterPlugin } from '../plugin.js';
 import type { AuthBetterDatabase } from '../migrations.js';
 import type {
+  CompleteBootstrapUserInput,
+  CompleteBootstrapUserOutput,
   CreateBootstrapUserInput,
   CreateBootstrapUserOutput,
   User,
@@ -232,5 +234,102 @@ describe('auth:create-bootstrap-user contract', () => {
     } finally {
       await verify.destroy().catch(() => {});
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// auth:complete-bootstrap-user contract.
+//
+// Covers Task 3.1 of `docs/plans/2026-05-08-first-use-onboarding-impl.md`.
+// The hook packages the oneTimeToken from create as a session cookie.
+// ---------------------------------------------------------------------------
+
+describe('auth:complete-bootstrap-user contract', () => {
+  it('happy path: returned cookie value matches oneTimeToken and opts are correct', async () => {
+    harness = await bootHarness();
+    const created = await harness.bus.call<
+      CreateBootstrapUserInput,
+      CreateBootstrapUserOutput
+    >('auth:create-bootstrap-user', harness.ctx(), {
+      displayName: 'Vinay',
+      email: 'vinay@example.com',
+    });
+
+    const completed = await harness.bus.call<
+      CompleteBootstrapUserInput,
+      CompleteBootstrapUserOutput
+    >('auth:complete-bootstrap-user', harness.ctx(), {
+      oneTimeToken: created.oneTimeToken,
+    });
+
+    const { sessionCookie } = completed;
+    // Cookie value IS the one-time token.
+    expect(sessionCookie.value).toBe(created.oneTimeToken);
+    // Name matches the configured cookie name.
+    expect(sessionCookie.name).toBe('ax_auth_session');
+    // Required opts.
+    expect(sessionCookie.opts.sameSite).toBe('Lax');
+    expect(sessionCookie.opts.path).toBe('/');
+    // maxAge matches the default session lifetime (7 days in seconds).
+    expect(sessionCookie.opts.maxAge).toBe(7 * 24 * 60 * 60);
+    // In the test environment NODE_ENV is not 'production', so secure should
+    // be absent (undefined or false). We assert it is NOT `true`.
+    expect(sessionCookie.opts.secure).not.toBe(true);
+  });
+
+  it('the returned cookie IS a valid session: auth:require-user resolves the admin', async () => {
+    harness = await bootHarness();
+    const created = await harness.bus.call<
+      CreateBootstrapUserInput,
+      CreateBootstrapUserOutput
+    >('auth:create-bootstrap-user', harness.ctx(), {
+      displayName: 'Vinay',
+      email: 'vinay@example.com',
+    });
+
+    const { sessionCookie } = await harness.bus.call<
+      CompleteBootstrapUserInput,
+      CompleteBootstrapUserOutput
+    >('auth:complete-bootstrap-user', harness.ctx(), {
+      oneTimeToken: created.oneTimeToken,
+    });
+
+    // Build a fake request that carries the session cookie.
+    const fakeReq = {
+      headers: {} as Record<string, string>,
+      signedCookie(name: string): string | null {
+        return name === sessionCookie.name ? sessionCookie.value : null;
+      },
+    };
+
+    const { user } = await harness.bus.call<
+      { req: typeof fakeReq },
+      { user: User }
+    >('auth:require-user', harness.ctx(), { req: fakeReq });
+
+    expect(user.id).toBe(created.user.id);
+    expect(user.isAdmin).toBe(true);
+    expect(user.email).toBe('vinay@example.com');
+  });
+
+  it('ignores the password field — does not throw when password is provided', async () => {
+    harness = await bootHarness();
+    const created = await harness.bus.call<
+      CreateBootstrapUserInput,
+      CreateBootstrapUserOutput
+    >('auth:create-bootstrap-user', harness.ctx(), {
+      displayName: 'Vinay',
+      email: 'vinay@example.com',
+    });
+
+    // Phase 3 defers local password support; providing a password field
+    // must be silently ignored, not cause a throw.
+    await expect(
+      harness.bus.call<CompleteBootstrapUserInput, CompleteBootstrapUserOutput>(
+        'auth:complete-bootstrap-user',
+        harness.ctx(),
+        { oneTimeToken: created.oneTimeToken, password: 'supersecret' },
+      ),
+    ).resolves.toBeDefined();
   });
 });

@@ -1,16 +1,16 @@
 /**
  * UserMenu — popover at the bottom of the sidebar.
  *
- * Click the user row → opens a popover with: Account, Settings, My
- * credentials, role-gated Admin Settings, theme tri-toggle, Sign out.
+ * Click the user row → opens a popover with: Credentials, role-gated
+ * Settings (admin), theme tri-toggle, Sign out.
  *
- * SECURITY NOTE — UI affordance only. Hiding the Admin entries from
- * non-admins is a UX nicety, not a security boundary. The real access
- * control sits on the server: every `/api/admin/*` endpoint checks
- * `role === 'admin'` regardless of menu visibility.
+ * SECURITY NOTE — UI affordance only. Hiding the admin Settings entry
+ * from non-admins is a UX nicety, not a security boundary. The real
+ * access control sits on the server: every `/api/admin/*` endpoint
+ * checks `role === 'admin'` regardless of menu visibility.
  */
 import { useEffect, useRef, useState } from 'react';
-import { KeyRound, LogOut, Moon, Settings, Sun, UserRound } from 'lucide-react';
+import { KeyRound, LogOut, Moon, Settings, Sun } from 'lucide-react';
 import { useUser } from '../lib/user-context';
 import { signOut } from '../lib/auth';
 import { useTheme, setTheme, type Theme } from '../lib/theme';
@@ -80,7 +80,7 @@ export function UserMenu({
         >
           {user.name[0]?.toUpperCase() ?? 'U'}
         </AvatarTile>
-        <span className="flex flex-col gap-px min-w-0 flex-1 [body.sidebar-collapsed_&]:hidden">
+        <span className="flex flex-col gap-px min-w-0 flex-1 text-left [body.sidebar-collapsed_&]:hidden">
           <span className="user-name text-[12.5px] leading-[1.15] tracking-[-0.005em] text-foreground truncate">
             {user.name}
           </span>
@@ -138,60 +138,31 @@ export function UserMenu({
           </div>
           <button
             type="button"
-            className="flex items-center gap-2.5 w-full px-2.5 py-2 rounded-md text-[12.5px] text-muted-foreground opacity-50 cursor-not-allowed transition-colors [&_svg]:h-3.5 [&_svg]:w-3.5 [&_svg]:shrink-0"
-            role="menuitem"
-            data-action="account"
-            disabled
-            aria-disabled="true"
-            title="Coming soon"
-          >
-            <UserRound aria-hidden="true" strokeWidth={1.4} />
-            <span>Account &amp; billing</span>
-          </button>
-          <button
-            type="button"
-            className="flex items-center gap-2.5 w-full px-2.5 py-2 rounded-md text-[12.5px] text-muted-foreground opacity-50 cursor-not-allowed transition-colors [&_svg]:h-3.5 [&_svg]:w-3.5 [&_svg]:shrink-0"
-            role="menuitem"
-            data-action="settings"
-            disabled
-            aria-disabled="true"
-            title="Coming soon"
-          >
-            <Settings aria-hidden="true" strokeWidth={1.4} />
-            <span>Settings</span>
-            <span className="ml-auto text-[10px] font-mono text-ink-ghost tracking-[0.02em]">
-              ⌘,
-            </span>
-          </button>
-          <button
-            type="button"
             className="flex items-center gap-2.5 w-full px-2.5 py-2 rounded-md text-[12.5px] text-foreground hover:bg-muted transition-colors [&_svg]:h-3.5 [&_svg]:w-3.5 [&_svg]:shrink-0 [&_svg]:text-muted-foreground"
             role="menuitem"
             onClick={() => {
               setOpen(false);
               onOpenSettings?.();
             }}
-            data-action="my-credentials"
+            data-action="credentials"
           >
             <KeyRound aria-hidden="true" strokeWidth={1.4} />
-            <span>My credentials</span>
+            <span>Credentials</span>
           </button>
           {isAdmin && (
-            <>
-              <div className="h-px my-1 bg-border" />
-              <button
-                type="button"
-                className="flex items-center gap-2.5 w-full px-2.5 py-2 rounded-md text-[12.5px] text-foreground hover:bg-muted transition-colors"
-                role="menuitem"
-                onClick={() => {
-                  setOpen(false);
-                  onOpenAdminSettings?.();
-                }}
-                data-action="admin-settings"
-              >
-                Admin Settings
-              </button>
-            </>
+            <button
+              type="button"
+              className="flex items-center gap-2.5 w-full px-2.5 py-2 rounded-md text-[12.5px] text-foreground hover:bg-muted transition-colors [&_svg]:h-3.5 [&_svg]:w-3.5 [&_svg]:shrink-0 [&_svg]:text-muted-foreground"
+              role="menuitem"
+              onClick={() => {
+                setOpen(false);
+                onOpenAdminSettings?.();
+              }}
+              data-action="settings"
+            >
+              <Settings aria-hidden="true" strokeWidth={1.4} />
+              <span>Settings</span>
+            </button>
           )}
           <div className="h-px my-1 bg-border" />
           <div className="flex items-center gap-2.5 px-2.5 py-1.5" data-action="theme">

@@ -17,14 +17,17 @@ const regularUser = {
 };
 
 describe('UserMenu', () => {
-  it('admin sees single "Admin Settings" entry when menu is open', () => {
+  it('admin sees a single "Settings" entry when menu is open', () => {
     render(
       <UserProvider value={adminUser}>
         <UserMenu />
       </UserProvider>,
     );
     fireEvent.click(screen.getByRole('button', { name: /Admin/i }));
-    expect(screen.getByText('Admin Settings')).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: 'Settings' })).toBeTruthy();
+    // Removed entries must be gone.
+    expect(screen.queryByText('Admin Settings')).toBeNull();
+    expect(screen.queryByText(/Account & billing/i)).toBeNull();
     // Old per-view entries must be gone.
     expect(screen.queryByText(/Admin · Agents/)).toBeNull();
     expect(screen.queryByText(/Admin · MCP Servers/)).toBeNull();
@@ -32,7 +35,7 @@ describe('UserMenu', () => {
     expect(screen.queryByText(/Admin · Credentials/)).toBeNull();
   });
 
-  it('"Admin Settings" entry calls onOpenAdminSettings', () => {
+  it('"Settings" entry calls onOpenAdminSettings', () => {
     const onOpenAdminSettings = vi.fn();
     render(
       <UserProvider value={adminUser}>
@@ -40,31 +43,32 @@ describe('UserMenu', () => {
       </UserProvider>,
     );
     fireEvent.click(screen.getByRole('button', { name: /Admin/i }));
-    fireEvent.click(screen.getByText('Admin Settings'));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Settings' }));
     expect(onOpenAdminSettings).toHaveBeenCalledTimes(1);
   });
 
-  it('regular user does not see admin entries', () => {
+  it('regular user does not see the Settings entry', () => {
     render(
       <UserProvider value={regularUser}>
         <UserMenu />
       </UserProvider>,
     );
     fireEvent.click(screen.getByRole('button', { name: /Alice/i }));
+    expect(screen.queryByRole('menuitem', { name: 'Settings' })).toBeNull();
     expect(screen.queryByText('Admin Settings')).toBeNull();
   });
 
-  it('regular user sees "My credentials" entry', () => {
+  it('regular user sees "Credentials" entry', () => {
     render(
       <UserProvider value={regularUser}>
         <UserMenu />
       </UserProvider>,
     );
     fireEvent.click(screen.getByRole('button', { name: /Alice/i }));
-    expect(screen.getByText(/My credentials/i)).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: 'Credentials' })).toBeTruthy();
   });
 
-  it('"My credentials" entry calls onOpenSettings', () => {
+  it('"Credentials" entry calls onOpenSettings', () => {
     const onOpenSettings = vi.fn();
     render(
       <UserProvider value={regularUser}>
@@ -72,7 +76,7 @@ describe('UserMenu', () => {
       </UserProvider>,
     );
     fireEvent.click(screen.getByRole('button', { name: /Alice/i }));
-    fireEvent.click(screen.getByText(/My credentials/i));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Credentials' }));
     expect(onOpenSettings).toHaveBeenCalled();
   });
 
