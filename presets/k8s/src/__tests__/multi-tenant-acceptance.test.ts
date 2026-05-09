@@ -123,7 +123,6 @@ const PLUGINS_TO_DROP = new Set<string>([
   '@ax/conversations',
   '@ax/agents',
   '@ax/workspace-git',
-  '@ax/credentials-anthropic-oauth',
   '@ax/ipc-http',
   '@ax/mcp-client',
   // First-run wizard: postgres-backed (database:get-instance) and http-server

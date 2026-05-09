@@ -391,35 +391,6 @@ Expected:
 - [ ] No `level >= warn` lines about credentials in
       `kubectl logs -n ax-next deploy/ax-next-host`.
 
-### Steps — admin: OAuth (anthropic-oauth)
-
-Skip this if `@ax/credentials-anthropic-oauth` isn't loaded in the host
-pod (it's optional — the kinds menu won't show "anthropic-oauth" unless
-the plugin registered). The flow uses the web-paste pattern: the host
-opens the Anthropic sign-in tab; we complete the flow there; we
-copy-paste the resulting code back. We don't take a callback URL —
-that keeps the host's network surface smaller.
-
-1. From the Credentials admin tab, click "Add credential" →
-   "anthropic-oauth".
-2. The form shows an "Open Anthropic sign-in" button. Click it. A new
-   tab opens to Anthropic's OAuth start URL with a PKCE challenge baked
-   in.
-3. In the new tab: complete the Anthropic flow (sign in, approve).
-4. Anthropic shows a code on the final page. Copy it.
-5. Back in the original tab, paste the code into the form and click
-   **Submit**.
-
-Expected:
-
-- [ ] The new entry shows up in the list with `kind: anthropic-oauth`.
-- [ ] Sending a chat that hits `anthropic` resolves through the OAuth
-      credential rather than the api-key (verifiable from the host
-      pod's logs — it'll log which kind resolved). If the api-key is
-      also present at the same scope, the api-key wins (one-row-per-
-      ref means the admin should delete the api-key first if they want
-      OAuth to take over).
-
 ### Steps — non-admin: My credentials
 
 This proves the per-user surface is actually per-user — admin reads can

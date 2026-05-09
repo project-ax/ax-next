@@ -18,11 +18,13 @@
  *      the route still pins ownerId=actor.id on the row. An admin
  *      GET /admin/credentials sees the result tagged scope=user with
  *      the right ownerId.
- *   4. OAuth /start — POST /admin/credentials/oauth/start with kind
- *      = 'anthropic-oauth' returns `{pendingId, authorizeUrl}`. Proves
- *      @ax/credentials-anthropic-oauth + @ax/credentials-oauth-pending
- *      are loaded, admin gate works on the OAuth subroutes, and the
- *      authorize-URL chain is wired end-to-end on the cluster.
+ *
+ * (A previous OAuth /start canary lived here. Removed when I12 — provider
+ * credentials are API-key-only — landed: the default preset no longer
+ * loads @ax/credentials-anthropic-oauth, so kind='anthropic-oauth' has
+ * nothing to dispatch to. The unit-level oauth-flow.test.ts in
+ * @ax/credentials-admin-routes covers the /start → /finish HTTP contract
+ * with a fake-oauth stub kind.)
  *
  * NOT COVERED here (deferred to follow-ups):
  *   - Chat-turn-resolution proof: that a credential seeded via the admin
@@ -34,11 +36,6 @@
  *     unit-level scope-precedence.test.ts covers the resolution chain
  *     (user > agent > global) on the same plugin set; this canary's job
  *     is the wire layer + ACL, not the chat turn.
- *   - OAuth /finish on the live cluster: completing the paste flow
- *     requires either a fake-oauth provider loaded into production
- *     (same constraint violation) or a real Anthropic OAuth consent
- *     (impossible in CI). The unit-level oauth-flow.test.ts covers the
- *     full round-trip with a fake-oauth stub kind.
  *
  * Single-user dev-bootstrap limitation: the dev-bootstrap auth surface
  * always returns the same admin id. So scenario (3) effectively becomes
@@ -58,7 +55,6 @@ import {
   seedSettingsCredential,
   listSettingsCredentials,
   deleteSettingsCredential,
-  startAdminOauth,
 } from './helpers.js';
 
 const SHOULD_RUN = process.env.AX_K8S_E2E === '1';
@@ -351,63 +347,11 @@ describeIfE2E('Phase F: credentials-admin canaries', () => {
     }
   });
 
-  // -------------------------------------------------------------------------
-  // (d) OAuth web-paste /start canary — kind=anthropic-oauth.
-  //
-  // What this proves on the live cluster:
-  //   - @ax/credentials-anthropic-oauth is loaded (registers
-  //     credentials:login:anthropic-oauth).
-  //   - @ax/credentials-oauth-pending is loaded (registers
-  //     credentials:oauth:stash-pending — admin start handler calls into it).
-  //   - The /admin/credentials/oauth/start route is mounted and its admin
-  //     gate accepts a dev-bootstrap admin session.
-  //   - The PKCE authorize URL gets built end-to-end (provider URL
-  //     constants + state + code_challenge are wired correctly).
-  //
-  // What we do NOT do here: call /finish. Completing the paste flow
-  // requires either (a) a fake-oauth provider in the production preset
-  // (Phase 6 constraint forbids test-only code in production) or (b) a
-  // real Anthropic OAuth consent (impossible in CI). The unit-level
-  // oauth-flow.test.ts covers the full /start → /finish round-trip with a
-  // fake-oauth stub kind.
-  //
-  // The pending entry will sit in the in-memory holder until its 5-minute
-  // TTL expires. That's a deliberate trade-off for not having a /finish
-  // hook on this cluster: we're not creating a stray credential row, just
-  // a transient pending state, and the holder caps the entry count anyway.
-  // -------------------------------------------------------------------------
-  it('OAuth /start with kind=anthropic-oauth returns pendingId + authorizeUrl', async () => {
-    const { cookie } = await signIn();
-    const ref = `phase-f-oauth-${Date.now()}`;
-
-    const out = await startAdminOauth(cookie, {
-      scope: 'global',
-      ownerId: null,
-      ref,
-      kind: 'anthropic-oauth',
-    });
-
-    // pendingId — opaque token, but the holder mints it as 32 random bytes
-    // base64url-encoded → 43 chars. The route handler enforces ≥20 in its
-    // /finish zod schema, so anything that long here is fine.
-    expect(typeof out.pendingId).toBe('string');
-    expect(out.pendingId.length).toBeGreaterThanOrEqual(20);
-
-    // authorizeUrl — must be the Anthropic OAuth authorize endpoint, with
-    // a state param (proves PKCE state was threaded through) and a
-    // code_challenge param (proves PKCE was actually computed, not just
-    // a stub URL).
-    expect(typeof out.authorizeUrl).toBe('string');
-    const url = new URL(out.authorizeUrl);
-    // Anthropic-hosted authorize URL — `claude.ai` per the plugin's
-    // constants module. We assert the host class rather than pinning the
-    // exact subdomain so a future move (e.g. console.anthropic.com) is a
-    // single-line update.
-    expect(url.hostname).toMatch(/anthropic|claude\.ai/);
-    expect(url.searchParams.get('state')).not.toBeNull();
-    expect(url.searchParams.get('code_challenge')).not.toBeNull();
-    expect(url.searchParams.get('code_challenge_method')).toBe('S256');
-    // No need to clean up — the pending entry self-evicts on TTL, and we
-    // never wrote a credential row.
-  });
+  // The OAuth web-paste canary that previously lived here was removed when
+  // I12 (provider credentials are API-key-only) landed: the default k8s
+  // preset no longer loads @ax/credentials-anthropic-oauth, so
+  // /admin/credentials/oauth/start with kind='anthropic-oauth' has nothing
+  // to dispatch to. The unit-level oauth-flow.test.ts in
+  // @ax/credentials-admin-routes still covers the /start → /finish HTTP
+  // contract end-to-end with a fake-oauth stub kind.
 });

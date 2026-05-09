@@ -13,7 +13,6 @@ import {
 import { createStorageSqlitePlugin } from '@ax/storage-sqlite';
 import { createCredentialsStoreDbPlugin } from '@ax/credentials-store-db';
 import { createCredentialsPlugin } from '@ax/credentials';
-import { createCredentialsAnthropicOauthPlugin } from '@ax/credentials-anthropic-oauth';
 import { createCredentialProxyPlugin } from '@ax/credential-proxy';
 import { auditLogPlugin } from '@ax/audit-log';
 import { createValidatorSkillPlugin } from '@ax/validator-skill';
@@ -142,15 +141,13 @@ export async function main(opts: MainOptions): Promise<number> {
   plugins.push(createCredentialsStoreDbPlugin());
   plugins.push(createCredentialsPlugin());
 
-  // Phase 3 — Anthropic OAuth (per-kind credentials sub-services). Loaded
-  // unconditionally because it's purely additive: it registers
-  // `credentials:resolve:anthropic-oauth` etc. without forcing any agent
-  // to use OAuth. An agent whose requiredCredentials are all `kind: 'api-key'`
-  // gets the Phase 2 fast path; only OAuth-keyed credentials dispatch into
-  // this plugin. Loading it everywhere also enables `ax-next credentials
-  // login anthropic` to work without a separate "are we using OAuth?"
-  // config flag.
-  plugins.push(createCredentialsAnthropicOauthPlugin());
+  // I12 — provider credentials are API-key-only across the default UI/preset.
+  // `@ax/credentials-anthropic-oauth` is intentionally NOT loaded here. The
+  // package stays in the tree and is loaded explicitly by the legacy
+  // `ax credentials login` CLI path (see commands/credentials.ts) so that
+  // OAuth flow keeps working for users who opt into it on the command line.
+  // Default-preset hosts (CLI + k8s chart) advertise only `kind: api-key`
+  // via /admin/credentials/kinds.
 
   // Phase 2 — credential-proxy. The SDK runner is the only runtime now, and
   // it always reaches Anthropic via HTTPS_PROXY into this plugin (which
