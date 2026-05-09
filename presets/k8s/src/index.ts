@@ -973,8 +973,30 @@ export function loadK8sConfigFromEnv(
     }
     auth.sessionLifetimeSeconds = n;
   }
-  if (env.AX_PUBLIC_BASE_URL !== undefined && env.AX_PUBLIC_BASE_URL !== '') {
-    auth.trustedOrigins = [env.AX_PUBLIC_BASE_URL];
+  // AX_PUBLIC_BASE_URL is consumed by both auth.trustedOrigins (here) and
+  // onboarding.publicBaseUrl (further down). Parse once, fail fast on
+  // garbage, and feed the normalized value to both — better-auth wants a
+  // bare origin (scheme://host[:port]) for trustedOrigins, NOT a URL with
+  // path/query/hash, so we strip those via `.origin`.
+  const rawPublicBaseUrl = env.AX_PUBLIC_BASE_URL?.trim();
+  let parsedPublicBaseUrl: URL | undefined;
+  if (rawPublicBaseUrl !== undefined && rawPublicBaseUrl !== '') {
+    try {
+      parsedPublicBaseUrl = new URL(rawPublicBaseUrl);
+    } catch {
+      throw new Error(
+        `invalid AX_PUBLIC_BASE_URL=${rawPublicBaseUrl}; expected an absolute URL like https://ax.example.com`,
+      );
+    }
+    if (
+      parsedPublicBaseUrl.protocol !== 'http:' &&
+      parsedPublicBaseUrl.protocol !== 'https:'
+    ) {
+      throw new Error(
+        `invalid AX_PUBLIC_BASE_URL=${rawPublicBaseUrl}; expected http:// or https:// scheme`,
+      );
+    }
+    auth.trustedOrigins = [parsedPublicBaseUrl.origin];
   }
 
   const config: K8sPresetConfig = {
@@ -1063,8 +1085,14 @@ export function loadK8sConfigFromEnv(
   // init — the preset loader surfaces the read here so the env-shape test's
   // scanner registers the var as known.
   const _axBootstrapToken = env.AX_BOOTSTRAP_TOKEN; // consumed by @ax/onboarding init
-  if (env.AX_PUBLIC_BASE_URL !== undefined && env.AX_PUBLIC_BASE_URL !== '') {
-    config.onboarding = { publicBaseUrl: env.AX_PUBLIC_BASE_URL };
+  if (parsedPublicBaseUrl !== undefined && rawPublicBaseUrl !== undefined) {
+    // Use the validated raw string here (already trimmed). We deliberately
+    // don't round-trip through URL.toString() because that would append a
+    // trailing slash to a bare-host URL, and the onboarding banner does
+    // `${baseUrl}/setup?token=...` — a trailing slash would yield `//setup`.
+    // trustedOrigins above stripped to `.origin` because better-auth wants
+    // a bare origin; the banner is happier with the operator's literal.
+    config.onboarding = { publicBaseUrl: rawPublicBaseUrl };
   }
   return config;
 }

@@ -114,45 +114,54 @@ export function createOnboardingStore(
       tokenHash: string,
       opts?: { allowCompletedReset?: boolean },
     ): Promise<ResetResult> {
-      const existing = await db
-        .selectFrom(table)
-        .selectAll()
-        .where('id', '=', 1)
-        .executeTakeFirst();
+      // Wrap the read + write in a single transaction with a row-level
+      // lock (`FOR UPDATE`) so a concurrent transition into `completed`
+      // can't slip past the `allowCompletedReset` gate. In practice the
+      // CLI is the only caller and runs serially, but I6's "no backward
+      // transition without explicit override" deserves a real DB-level
+      // guarantee — the transaction makes the guard atomic.
+      return db.transaction().execute(async (tx) => {
+        const existing = await tx
+          .selectFrom(table)
+          .selectAll()
+          .where('id', '=', 1)
+          .forUpdate()
+          .executeTakeFirst();
 
-      if (
-        existing !== undefined &&
-        existing.status === 'completed' &&
-        opts?.allowCompletedReset !== true
-      ) {
-        return { ok: false, reason: 'completed-without-force' };
-      }
+        if (
+          existing !== undefined &&
+          existing.status === 'completed' &&
+          opts?.allowCompletedReset !== true
+        ) {
+          return { ok: false, reason: 'completed-without-force' };
+        }
 
-      const previousStatus: 'pending' | 'claimed' | 'completed' | null =
-        existing === undefined ? null : existing.status;
+        const previousStatus: 'pending' | 'claimed' | 'completed' | null =
+          existing === undefined ? null : existing.status;
 
-      const now = new Date();
-      await db
-        .insertInto(table)
-        .values({
-          id: 1,
-          status: 'pending',
-          token_hash: tokenHash,
-          completed_at: null,
-          created_at: now,
-          updated_at: now,
-        })
-        .onConflict((oc) =>
-          oc.column('id').doUpdateSet({
+        const now = new Date();
+        await tx
+          .insertInto(table)
+          .values({
+            id: 1,
             status: 'pending',
             token_hash: tokenHash,
             completed_at: null,
+            created_at: now,
             updated_at: now,
-          }),
-        )
-        .execute();
+          })
+          .onConflict((oc) =>
+            oc.column('id').doUpdateSet({
+              status: 'pending',
+              token_hash: tokenHash,
+              completed_at: null,
+              updated_at: now,
+            }),
+          )
+          .execute();
 
-      return { ok: true, previousStatus };
+        return { ok: true, previousStatus };
+      });
     },
   };
 }

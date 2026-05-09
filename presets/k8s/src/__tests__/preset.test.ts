@@ -305,6 +305,88 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
     const cfg = loadK8sConfigFromEnv(env);
     expect(cfg.auth?.trustedOrigins).toBeUndefined();
   });
+
+  // CodeRabbit feedback on PR #59: AX_PUBLIC_BASE_URL was used raw without
+  // validation, so a typo'd value or one with whitespace/path would silently
+  // misconfigure the better-auth CSRF allow-list. Now we URL.parse it,
+  // strip to `.origin` for trustedOrigins, and fail fast on garbage.
+  it('loadK8sConfigFromEnv strips AX_PUBLIC_BASE_URL path/query down to origin for trustedOrigins', () => {
+    const HEX_KEY = '0'.repeat(64);
+    const env: NodeJS.ProcessEnv = {
+      DATABASE_URL: 'postgres://u:p@db:5432/ax_next',
+      AX_K8S_HOST_IPC_URL: 'http://ax-next-host.ax-next.svc:80',
+      AX_WORKSPACE_BACKEND: 'git-protocol',
+      AX_WORKSPACE_GIT_SERVER_URL: 'http://git-server:7780',
+      AX_WORKSPACE_GIT_SERVER_TOKEN: 't',
+      AX_HTTP_HOST: '0.0.0.0',
+      AX_HTTP_PORT: '9090',
+      AX_HTTP_COOKIE_KEY: HEX_KEY,
+      AX_HTTP_ALLOWED_ORIGINS: '',
+      AX_PUBLIC_BASE_URL: 'https://ax.example.com/some/path?query=1',
+    };
+    const cfg = loadK8sConfigFromEnv(env);
+    // trustedOrigins gets the origin only — better-auth's CSRF allow-list
+    // doesn't accept paths.
+    expect(cfg.auth?.trustedOrigins).toEqual(['https://ax.example.com']);
+    // publicBaseUrl preserves the operator's literal so the banner shows
+    // what they actually intended.
+    expect(cfg.onboarding?.publicBaseUrl).toBe(
+      'https://ax.example.com/some/path?query=1',
+    );
+  });
+
+  it('loadK8sConfigFromEnv trims surrounding whitespace from AX_PUBLIC_BASE_URL', () => {
+    const HEX_KEY = '0'.repeat(64);
+    const env: NodeJS.ProcessEnv = {
+      DATABASE_URL: 'postgres://u:p@db:5432/ax_next',
+      AX_K8S_HOST_IPC_URL: 'http://ax-next-host.ax-next.svc:80',
+      AX_WORKSPACE_BACKEND: 'git-protocol',
+      AX_WORKSPACE_GIT_SERVER_URL: 'http://git-server:7780',
+      AX_WORKSPACE_GIT_SERVER_TOKEN: 't',
+      AX_HTTP_HOST: '0.0.0.0',
+      AX_HTTP_PORT: '9090',
+      AX_HTTP_COOKIE_KEY: HEX_KEY,
+      AX_HTTP_ALLOWED_ORIGINS: '',
+      AX_PUBLIC_BASE_URL: '  https://ax.example.com  ',
+    };
+    const cfg = loadK8sConfigFromEnv(env);
+    expect(cfg.auth?.trustedOrigins).toEqual(['https://ax.example.com']);
+    expect(cfg.onboarding?.publicBaseUrl).toBe('https://ax.example.com');
+  });
+
+  it('loadK8sConfigFromEnv throws on a malformed AX_PUBLIC_BASE_URL', () => {
+    const HEX_KEY = '0'.repeat(64);
+    const env: NodeJS.ProcessEnv = {
+      DATABASE_URL: 'postgres://u:p@db:5432/ax_next',
+      AX_K8S_HOST_IPC_URL: 'http://ax-next-host.ax-next.svc:80',
+      AX_WORKSPACE_BACKEND: 'git-protocol',
+      AX_WORKSPACE_GIT_SERVER_URL: 'http://git-server:7780',
+      AX_WORKSPACE_GIT_SERVER_TOKEN: 't',
+      AX_HTTP_HOST: '0.0.0.0',
+      AX_HTTP_PORT: '9090',
+      AX_HTTP_COOKIE_KEY: HEX_KEY,
+      AX_HTTP_ALLOWED_ORIGINS: '',
+      AX_PUBLIC_BASE_URL: 'not a url',
+    };
+    expect(() => loadK8sConfigFromEnv(env)).toThrow(/invalid AX_PUBLIC_BASE_URL/);
+  });
+
+  it('loadK8sConfigFromEnv throws on a non-http(s) AX_PUBLIC_BASE_URL', () => {
+    const HEX_KEY = '0'.repeat(64);
+    const env: NodeJS.ProcessEnv = {
+      DATABASE_URL: 'postgres://u:p@db:5432/ax_next',
+      AX_K8S_HOST_IPC_URL: 'http://ax-next-host.ax-next.svc:80',
+      AX_WORKSPACE_BACKEND: 'git-protocol',
+      AX_WORKSPACE_GIT_SERVER_URL: 'http://git-server:7780',
+      AX_WORKSPACE_GIT_SERVER_TOKEN: 't',
+      AX_HTTP_HOST: '0.0.0.0',
+      AX_HTTP_PORT: '9090',
+      AX_HTTP_COOKIE_KEY: HEX_KEY,
+      AX_HTTP_ALLOWED_ORIGINS: '',
+      AX_PUBLIC_BASE_URL: 'file:///etc/passwd',
+    };
+    expect(() => loadK8sConfigFromEnv(env)).toThrow(/expected http:\/\/ or https:\/\//);
+  });
 });
 
 describe('@ax/preset-k8s workspace backend selection', () => {

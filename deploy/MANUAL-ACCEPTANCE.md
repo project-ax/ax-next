@@ -358,21 +358,39 @@ token, but you never recorded it. `bootstrap_state.status` is still
 
 ### Steps — bootstrap completed, want to redo
 
-For when an admin already exists but you want to re-run the wizard
+For when an admin already exists but you'd like to re-run the wizard
 (e.g., on a dev cluster you want to reset without dropping the DB).
 
+`auth:create-bootstrap-user` rejects unconditionally if any admin row
+exists (`packages/auth-better/src/plugin.ts` — the guard fires on
+`role = 'admin'` regardless of how that row got there). So a
+`--force` reset on its own is NOT enough — you must clear out the
+existing admin first.
+
 ```bash
+# 1. Drop existing admin users so the wizard's create-bootstrap-user
+#    guard doesn't reject the second walk.
+PGPASS=$(kubectl get secret -n ax-next ax-next-postgresql \
+  -o jsonpath='{.data.postgres-password}' | base64 -d)
+kubectl -n ax-next exec ax-next-postgresql-0 -- env PGPASSWORD="$PGPASS" \
+  psql -U postgres -d ax_next \
+  -c "DELETE FROM auth_better_v1_users WHERE role = 'admin';"
+
+# 2. Mint a fresh bootstrap token.
 DATABASE_URL=... AX_PUBLIC_BASE_URL=... \
   pnpm --filter @ax/cli exec ax-next admin reset-bootstrap --force
+
+# 3. Walk the wizard at the printed URL.
 ```
 
-The CLI prints the same banner. `bootstrap_state.status` flips from
-`completed` back to `pending`. **Existing admin users in
-`auth_better_v1_users` are NOT deleted** — re-walking the wizard
-creates an additional admin row alongside any existing ones (or
-fails with `admin-already-exists` if `auth:create-bootstrap-user`'s
-guard kicks in; in practice, on a `--force` reset where you want a
-clean wizard walk, also DELETE from `auth_better_v1_users` first).
+The CLI prints the same banner as a first-boot. `bootstrap_state.status`
+flips from `completed` back to `pending`, and the wizard's admin step
+will succeed because there's no longer an admin row to collide with.
+
+If you skip step 1, the wizard's "Create admin" step fails with HTTP
+500 / `admin-already-exists` and the wizard stalls. The CLI itself
+still succeeds — it has no view into `auth_better_v1_users` and isn't
+the right layer to enforce that.
 
 ### Acceptance criteria
 
@@ -389,11 +407,15 @@ clean wizard walk, also DELETE from `auth_better_v1_users` first).
 
 ### Common failures
 
-- **`error: DATABASE_URL is not set`.** The CLI is postgres-only; there's
-  no sqlite fallback. Set `DATABASE_URL` and try again.
-- **`error: bootstrap-token-unreachable: …`.** The CLI couldn't reach
-  the postgres URL. Confirm the port-forward is alive and the password
-  in the env matches the secret.
+- **`admin reset-bootstrap: DATABASE_URL is unset.`** The CLI is
+  postgres-only; there's no sqlite fallback. Set `DATABASE_URL` to
+  your postgres connection string and try again.
+- **`admin reset-bootstrap: unexpected init failure: …`** (or any
+  `PluginError` message bubbling up from `@ax/database-postgres`).
+  The CLI couldn't reach the postgres URL. Confirm the port-forward
+  is alive (`ps -p $(cat /tmp/pf.pid)` if you set one), the password
+  in `DATABASE_URL` matches the secret, and the user has access to
+  the `ax_next` database.
 - **Browser still shows "Setup already completed" after `reset-bootstrap`.**
   Almost always a stale browser cookie or a cached SPA bundle. Hard-refresh
   the page (`Cmd+Shift+R` / `Ctrl+Shift+R`) and re-open the new magic link.
