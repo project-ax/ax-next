@@ -11,7 +11,7 @@
       "default": "./dist/index.js"
     }
   },
-  "files": ["dist"],
+  "files": ["dist", "dist-spa"],
   "scripts": {
     "build": "tsc --build && pnpm run build:spa",
     "build:spa": "vite build --config src/spa/vite.config.ts",
