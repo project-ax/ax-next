@@ -27,7 +27,7 @@ pnpm test --filter @ax/<plugin>
 
 (Tooling lands in Week 1–2 per architecture doc Section 10.)
 
-## The five invariants (read before touching code)
+## The invariants (read before touching code)
 
 1. **Hook surface is transport-agnostic and storage-agnostic.** No git/sqlite/k8s vocabulary in hook payloads. If a payload field name only makes sense for one backend, it leaks. (See workspace abstraction — architecture doc Section 4.5.)
 
@@ -42,6 +42,12 @@ pnpm test --filter @ax/<plugin>
    Untrusted content (model output, tool output, user input crossing a trust boundary, third-party plugin code) is treated as untrusted at every hop. The whole point of v2 over openclaw is that we're the secure one — if a hook surface, IPC action, or plugin grants more reach than it strictly requires, that's the bug.
 
    When touching sandbox boundaries, IPC transport, plugin loading, or any code path that handles untrusted content, invoke the `security-checklist` skill.
+
+6. **One UI design language: shadcn primitives + semantic tokens.** Every user-facing surface (chat, admin, settings, onboarding wizard, error pages) shares the shadcn install in `packages/channel-web` — that's the source of truth. New components compose existing shadcn primitives (`Button`, `Input`, `FieldGroup`/`Field`, `Card`, `Alert`, etc.) with the project's semantic color tokens (`bg-background`, `text-muted-foreground`, `border-border`, …); they don't reinvent styled `<div>`s, hand-roll forms, or use raw color values like `bg-blue-500` or `#000`.
+
+   If a needed primitive isn't installed yet, add it via the shadcn CLI (`pnpm dlx shadcn@latest add <name> -c packages/channel-web`) — don't hand-write a one-off. If a new SPA surface needs UI, host it inside `channel-web` rather than spinning up a separate Vite build with its own design system. The whole point of standardizing on shadcn was that we stop having three different versions of "what does a button look like."
+
+   When building or modifying any UI, invoke the `shadcn` skill — it loads the installed-component list, the rule files, and the monorepo workspace flag (`-c packages/channel-web`).
 
 ## Boundary review (required for new hooks)
 

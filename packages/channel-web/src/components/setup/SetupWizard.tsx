@@ -1,13 +1,12 @@
 import { useEffect, useState } from 'react';
-import { createRoot } from 'react-dom/client';
-import { StepGate } from './step-gate.js';
-import { StepAdmin } from './step-admin.js';
-import { StepModel } from './step-model.js';
-import { StepDone } from './step-done.js';
+import { StepGate } from './StepGate';
+import { StepAdmin } from './StepAdmin';
+import { StepModel } from './StepModel';
+import { StepDone } from './StepDone';
 
 type Step = 'gate' | 'admin' | 'model' | 'done';
 
-function Wizard() {
+export function SetupWizard() {
   const [step, setStep] = useState<Step>('gate');
   const [autoToken, setAutoToken] = useState<string | null>(null);
 
@@ -27,7 +26,3 @@ function Wizard() {
   if (step === 'model') return <StepModel onComplete={() => setStep('done')} />;
   return <StepDone />;
 }
-
-const root = document.getElementById('root');
-if (root === null) throw new Error('root element missing');
-createRoot(root).render(<Wizard />);

@@ -317,9 +317,16 @@ describe('Onboarding wizard — end-to-end happy path canary', () => {
       });
       expect(lockedModel.status).toBe(410);
 
-      // GET /setup (SPA) → 410: completion gate checked before serving HTML.
-      const lockedSpa = await fetch(`http://127.0.0.1:${port}/setup`);
-      expect(lockedSpa.status).toBe(410);
+      // GET /admin/bootstrap-status → 200 with status='completed'. This is
+      // the signal the relocated channel-web wizard uses to know it should
+      // redirect /setup → / instead of rendering the dead form. (The HTML
+      // for /setup itself is now served by @ax/static-files in
+      // production — no separate plugin route, so we assert on the
+      // status echo rather than on a 410 from the SPA.)
+      const statusRes = await fetch(`http://127.0.0.1:${port}/admin/bootstrap-status`);
+      expect(statusRes.status).toBe(200);
+      const statusBody = await statusRes.json() as { status: string };
+      expect(statusBody.status).toBe('completed');
     } finally {
       global.fetch = originalFetch;
     }

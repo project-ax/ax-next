@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { App } from '../App';
 import { SidebarCollapseToggle } from '../components/SidebarCollapseToggle';
@@ -39,19 +39,30 @@ describe('Sidebar collapse', () => {
   });
 
   it('⌘\\ keyboard shortcut toggles when App is mounted (authenticated)', async () => {
-    // Auth gate (Task 20) hides the keyboard shortcuts behind an
-    // authenticated state — mock the session fetch so AppContent mounts.
-    const fetchMock = vi.fn();
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: async () => ({
-        // BackendUser shape (from @ax/auth-oidc); lib/auth.ts maps to AuthUser.
-        user: { id: 'u1', email: 'alice@local', displayName: 'Alice', isAdmin: false },
-      }),
-    });
-    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ agents: [] }) });
-    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    // Auth gate hides the keyboard shortcuts behind an authenticated
+    // state — mock the bootstrap-status + session fetches so AppContent
+    // mounts. App.tsx now fetches `/admin/bootstrap-status` first; if
+    // we don't reply with `completed`, App treats the install as
+    // pre-onboarding and redirects to `/setup` instead of showing the
+    // chat shell.
+    const fetchImpl = async (input: RequestInfo | URL): Promise<unknown> => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.includes('/admin/bootstrap-status')) {
+        return { ok: true, status: 200, json: async () => ({ status: 'completed' }) };
+      }
+      if (url.includes('/admin/me')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            // BackendUser shape (from @ax/auth-oidc); lib/auth.ts maps to AuthUser.
+            user: { id: 'u1', email: 'alice@local', displayName: 'Alice', isAdmin: false },
+          }),
+        };
+      }
+      return { ok: true, status: 200, json: async () => ({ agents: [] }) };
+    };
+    globalThis.fetch = fetchImpl as unknown as typeof fetch;
 
     const { container } = render(<App />);
     // Wait for AppContent (and thus the keyboard handler) to mount.
