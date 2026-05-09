@@ -346,12 +346,4 @@ describeIfE2E('Phase F: credentials-admin canaries', () => {
       }
     }
   });
-
-  // The OAuth web-paste canary that previously lived here was removed when
-  // I12 (provider credentials are API-key-only) landed: the default k8s
-  // preset no longer loads @ax/credentials-anthropic-oauth, so
-  // /admin/credentials/oauth/start with kind='anthropic-oauth' has nothing
-  // to dispatch to. The unit-level oauth-flow.test.ts in
-  // @ax/credentials-admin-routes still covers the /start → /finish HTTP
-  // contract end-to-end with a fake-oauth stub kind.
 });

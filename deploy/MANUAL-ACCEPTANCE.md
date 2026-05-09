@@ -448,8 +448,6 @@ shipping.
 - [ ] Admin api-key seed → list shows the row, no plaintext.
 - [ ] Chat returns a response after the seed, proving end-to-end
       resolution.
-- [ ] Admin OAuth seed (when the plugin is loaded) → list shows the
-      row with `kind: anthropic-oauth`.
 - [ ] Non-admin "My credentials" creates a `scope: user` row that's
       visible to the admin's full list and invisible to other
       non-admin users.
