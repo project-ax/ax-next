@@ -129,3 +129,90 @@ describe('bootstrap_state store — Invariant I6', () => {
     expect(second!.completed_at?.getTime()).toBe(firstStamp?.getTime());
   });
 });
+
+describe('bootstrap_state store — resetToPending (operator escape hatch)', () => {
+  async function setup(): Promise<OnboardingStore> {
+    const db = makeKysely();
+    await runOnboardingMigration(db);
+    return createOnboardingStore(db);
+  }
+
+  it('on empty DB: inserts a pending row with the new hash; previousStatus=null', async () => {
+    const store = await setup();
+    const result = await store.resetToPending('hash-A');
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.previousStatus).toBeNull();
+    const row = await store.read();
+    expect(row?.status).toBe('pending');
+    expect(row?.token_hash).toBe('hash-A');
+    expect(row?.completed_at).toBeNull();
+  });
+
+  it('overwrites a pending row with a fresh hash; previousStatus=pending', async () => {
+    const store = await setup();
+    await store.initializeWithHash('hash-A');
+    const result = await store.resetToPending('hash-B');
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.previousStatus).toBe('pending');
+    const row = await store.read();
+    expect(row?.status).toBe('pending');
+    expect(row?.token_hash).toBe('hash-B');
+  });
+
+  it('overwrites a claimed row with a fresh hash; previousStatus=claimed', async () => {
+    const store = await setup();
+    await store.initializeWithHash('hash-A');
+    await store.claim();
+    const result = await store.resetToPending('hash-B');
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.previousStatus).toBe('claimed');
+    const row = await store.read();
+    expect(row?.status).toBe('pending');
+    expect(row?.token_hash).toBe('hash-B');
+    expect(row?.completed_at).toBeNull();
+  });
+
+  it('refuses to overwrite a completed row without allowCompletedReset; row unchanged', async () => {
+    const store = await setup();
+    await store.initializeWithHash('hash-A');
+    await store.claim();
+    await store.complete();
+    const before = await store.read();
+
+    const result = await store.resetToPending('hash-B');
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe('completed-without-force');
+
+    // Row must be unchanged: still completed, still hash-A.
+    const after = await store.read();
+    expect(after?.status).toBe('completed');
+    expect(after?.token_hash).toBe('hash-A');
+    expect(after?.completed_at?.getTime()).toBe(before?.completed_at?.getTime());
+  });
+
+  it('with allowCompletedReset: resets a completed row to pending; previousStatus=completed', async () => {
+    const store = await setup();
+    await store.initializeWithHash('hash-A');
+    await store.claim();
+    await store.complete();
+
+    const result = await store.resetToPending('hash-B', { allowCompletedReset: true });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.previousStatus).toBe('completed');
+
+    const after = await store.read();
+    expect(after?.status).toBe('pending');
+    expect(after?.token_hash).toBe('hash-B');
+    expect(after?.completed_at).toBeNull();
+  });
+
+  it('after reset, a fresh claim() succeeds (door is reopened)', async () => {
+    const store = await setup();
+    await store.initializeWithHash('hash-A');
+    await store.claim();
+    await store.complete();
+    await store.resetToPending('hash-B', { allowCompletedReset: true });
+    const c = await store.claim();
+    expect(c.ok).toBe(true);
+  });
+});

@@ -4,7 +4,7 @@ export type { CompletionResult, CompletionInput } from './completion-tx.js';
 export { runOnboardingMigration } from './migrations.js';
 export type { BootstrapStateRow, OnboardingDatabase } from './migrations.js';
 export { createOnboardingStore } from './store.js';
-export type { ClaimResult, OnboardingStore } from './store.js';
+export type { ClaimResult, OnboardingStore, ResetResult } from './store.js';
 export {
   generateToken,
   hashToken,
@@ -12,7 +12,13 @@ export {
   writeTokenFile,
   printTokenToStdout,
 } from './token.js';
-export type { OnboardingConfig, BootstrapStatusOutput, BootstrapCompleteInput } from './types.js';
+export type {
+  OnboardingConfig,
+  BootstrapStatusOutput,
+  BootstrapCompleteInput,
+  BootstrapResetInput,
+  BootstrapResetOutput,
+} from './types.js';
 export { createRateLimiter } from './rate-limit.js';
 export type { RateLimitConfig, RateLimiter } from './rate-limit.js';
 export { createBootstrapSessionStore } from './sessions.js';
