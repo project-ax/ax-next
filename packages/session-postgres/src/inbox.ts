@@ -132,10 +132,19 @@ export function createInbox(opts: InboxOptions): Inbox {
   const waitersByChannel = new Map<string, Set<PerSessionWaiter>>();
   // channel -> count of LISTEN refs (for UNLISTEN bookkeeping)
   const listenedChannels = new Map<string, number>();
+  // Once shutdown() runs, the kysely instance + listen client are about
+  // to be destroyed by the plugin. Any in-flight wakeWaiter that's
+  // mid-await would otherwise see "driver has already been destroyed"
+  // and surface as an unhandled rejection (we void-fire wakeWaiter so
+  // multiple concurrent wakes can run without serializing). The flag
+  // lets the notification handler refuse to start new wakes and the
+  // wake itself bail out instead of throwing into the void.
+  let shuttingDown = false;
 
   // Single notification handler — fans out to every waiter on the
   // notified channel. Each waiter carries its own real sessionId.
   listenClient.on('notification', (msg) => {
+    if (shuttingDown) return;
     const waiters = waitersByChannel.get(msg.channel);
     if (waiters === undefined || waiters.size === 0) return;
     // Snapshot — wake() can mutate the set.
@@ -145,18 +154,28 @@ export function createInbox(opts: InboxOptions): Inbox {
   });
 
   async function wakeWaiter(w: PerSessionWaiter): Promise<void> {
+    if (shuttingDown) return;
     // Re-check SQL: did the awaited entry land? `fetchEntry` may THROW on
     // a corrupt-inbox-row — propagate that to the awaiting claim promise
     // so the corruption surfaces as a terminal error (the runner exits 1
     // and the orchestrator records terminated chat-end). A silent
     // swallow here would put us right back in the original hang scenario.
+    // Same eager-.catch + try/catch pattern as below — fetchEntry runs
+    // through kysely too, so it's vulnerable to the same destroy race.
+    const fetchP = fetchEntry(db, w.sessionId, w.cursor);
+    fetchP.catch(() => {});
     let row: InboxEntry | null;
     try {
-      row = await fetchEntry(db, w.sessionId, w.cursor);
+      row = await fetchP;
     } catch (err) {
+      // Post-shutdown driver errors aren't a real "corrupt row" — they
+      // mean the plugin tore down underneath us. The waiter has already
+      // been resolved-as-timeout by shutdown(), so silently bail.
+      if (shuttingDown) return;
       rejectWaiter(w, err);
       return;
     }
+    if (shuttingDown) return;
     if (row !== null) {
       finishWaiter(w, deliver(row, w.cursor));
       return;
@@ -164,7 +183,29 @@ export function createInbox(opts: InboxOptions): Inbox {
     // No entry — check if the session was terminated. If so, resolve as
     // timeout with echo cursor (matches session-inmemory semantics on a
     // terminate during a blocked claim).
-    if (await isTerminated(w.sessionId)) {
+    //
+    // Shutdown-race guard: the kysely instance underlying isTerminated may
+    // be destroyed between when this awaits and when it resumes. We do
+    // two things to make that safe:
+    //   1) Attach a no-op `.catch` to the Promise BEFORE awaiting so Node's
+    //      unhandled-rejection tracker never sees the rejection as unhandled
+    //      (await alone is not always sufficient — V8's await machinery can
+    //      leave a single tick where the Promise has no observable handler).
+    //   2) Wrap the await in try/catch and check `shuttingDown` so the
+    //      rejection bails out cleanly rather than firing rejectWaiter
+    //      against an already-resolved waiter.
+    const terminatedP = isTerminated(w.sessionId);
+    terminatedP.catch(() => {});
+    let terminated: boolean;
+    try {
+      terminated = await terminatedP;
+    } catch (err) {
+      if (shuttingDown) return;
+      rejectWaiter(w, err);
+      return;
+    }
+    if (shuttingDown) return;
+    if (terminated) {
       finishWaiter(w, { type: 'timeout', cursor: w.cursor });
     }
     // Otherwise: spurious wake. Stay parked until the timer or another
@@ -371,6 +412,11 @@ export function createInbox(opts: InboxOptions): Inbox {
     },
 
     async shutdown() {
+      // Flip the flag BEFORE clearing waiters: a NOTIFY arriving in the
+      // narrow window between iteration start and end of this method
+      // shouldn't kick off a wakeWaiter that races the kysely.destroy()
+      // queued behind this call.
+      shuttingDown = true;
       // Resolve every outstanding waiter as timeout so callers don't hang.
       for (const [, set] of waitersByChannel) {
         for (const w of [...set]) {
