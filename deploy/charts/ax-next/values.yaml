@@ -322,8 +322,11 @@ onboarding:
 # ─── Auth providers ──────────────────────────────────────────────
 # Auth providers are DB-driven via @ax/auth-better — there is NO
 # `auth:` config block in values.yaml anymore. Provider rows live in
-# the `auth_providers` table and are managed at runtime via
-# `/admin/auth/providers/*` (Phase 1 CRUD; Phase 3.5 admin UI).
+# the `auth_providers` table and are managed at runtime from the
+# admin UI at `/admin/auth` (sign in → Settings → Auth providers).
+# That UI persists changes through the providers CRUD endpoints
+# (`/admin/auth/providers/*`) and hot-reloads them into the live auth
+# handler without a kernel restart.
 #
 # First-run flow:
 #   1. Operator installs the chart.
@@ -331,9 +334,8 @@ onboarding:
 #      seed it via `onboarding.bootstrapToken` above).
 #   3. They walk `/setup/*` (the @ax/onboarding wizard) to mint the
 #      first admin user.
-#   4. From the admin UI, they add OIDC providers (Google, GitHub,
-#      generic) — those rows hot-reload into the live auth handler
-#      without a kernel restart.
+#   4. As the new admin, they open Settings → Auth providers and add
+#      OIDC providers (Google, GitHub, generic).
 #
 # The legacy `auth.devBootstrap` and `auth.google` blocks were retired
 # in Phase 3 (commit history: deploy/charts/ax-next/values.yaml).

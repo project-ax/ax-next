@@ -33,6 +33,7 @@ export function AuthProvidersTab() {
   const [actionError, setActionError] = useState<string | null>(null);
 
   const fetchProviders = async () => {
+    setLoading(true);
     try {
       const list = await listAuthProviders();
       setProviders(list);
@@ -84,8 +85,16 @@ export function AuthProvidersTab() {
       {loading && <PaneStatus variant="loading">Loading providers…</PaneStatus>}
 
       {loadError && (
-        <PaneStatus variant="error">
-          Couldn't load providers: {loadError}
+        <PaneStatus variant="error" className="mb-3 flex items-center justify-between gap-3">
+          <span>Couldn't load providers: {loadError}</span>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => void fetchProviders()}
+          >
+            Retry
+          </Button>
         </PaneStatus>
       )}
 
@@ -154,8 +163,7 @@ export function AuthProvidersTab() {
           onCancel={() => setAdding(false)}
         />
       ) : (
-        !loading &&
-        !loadError && (
+        !loading && (
           <div className="mt-4">
             <Button type="button" onClick={() => setAdding(true)}>
               Add provider

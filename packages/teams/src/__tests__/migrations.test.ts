@@ -24,7 +24,7 @@ function makeKysely(): Kysely<TeamsDatabase> {
 beforeAll(async () => {
   container = await new PostgreSqlContainer('postgres:16-alpine').start();
   connectionString = container.getConnectionUri();
-});
+}, 60_000);
 
 afterEach(async () => {
   while (opened.length > 0) {

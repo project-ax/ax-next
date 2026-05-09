@@ -169,14 +169,16 @@ Same procedure as kind, but:
   must run on a CNI that enforces NPs (Calico, Cilium, etc.) — verify before
   enabling in prod.
 
-## Scenario: multi-replica chat (workspace.backend=http)
+## Scenario: multi-replica chat (workspace.backend=git-protocol)
 
 This scenario proves that two host replicas can serve concurrent chat
 requests against a shared workspace, and that the resulting git history
 is linear with both sessions' writes visible. It exists to validate the
-`workspace-git-http` slice — the dedicated git-server pod that owns the
-bare repo, with each host replica forwarding workspace ops over HTTP so
-we never have two writers racing on the same `.git`.
+`@ax/workspace-git-server` slice — the dedicated git-server pod that
+owns the bare repo, with each host replica forwarding workspace ops
+over the standard git wire protocol so we never have two writers
+racing on the same `.git`. (The legacy `http` backend was retired
+2026-05-04; `git-protocol` is the supported multi-replica backend.)
 
 The `serve` CLI subcommand boots the k8s preset (postgres trio + workspace
 + sandbox-k8s + chat orchestrator + ipc-http + tools + LLM) and exposes a
@@ -211,7 +213,7 @@ small HTTP front door:
    helm upgrade --install ax-next deploy/charts/ax-next \
      --namespace ax-next --create-namespace \
      --set replicas=2 \
-     --set workspace.backend=http \
+     --set workspace.backend=git-protocol \
      --set gitServer.enabled=true \
      --set image.repository=<your-registry>/ax-next/agent \
      --set image.tag=<your-tag> \

@@ -47,17 +47,22 @@ interface BackendUser {
 }
 
 function toAuthUser(u: BackendUser): AuthUser {
+  // Treat empty/whitespace-only strings as missing — `??` would keep them
+  // and render a blank avatar/menu name (e.g., empty displayName, or an
+  // email like '@example.com' yielding an empty local-part). Trim first
+  // so a cosmetic space doesn't slip through; `||` then walks past empty
+  // strings and undefined alike.
+  const displayName = u.displayName?.trim();
+  const localPart = u.email?.split('@')[0]?.trim();
   return {
     id: u.id,
     email: u.email ?? '',
-    // displayName falls back to email's local-part, then to a role-aware
-    // generic label. Bootstrap admins (created via the
-    // auth:create-bootstrap-user hook with no body fields) have neither
-    // displayName nor email, so they show as "Administrator" rather than
-    // the meaningless "unnamed".
+    // Bootstrap admins (created via the auth:create-bootstrap-user hook
+    // with no body fields) have neither displayName nor email, so they
+    // show as "Administrator" rather than the meaningless "unnamed".
     name:
-      u.displayName ??
-      u.email?.split('@')[0] ??
+      displayName ||
+      localPart ||
       (u.isAdmin ? 'Administrator' : 'unnamed'),
     role: u.isAdmin ? 'admin' : 'user',
   };
