@@ -79,4 +79,27 @@ describe('better-auth handler wrapper', () => {
       expect(typeof handle.current()).toBe('function');
     }
   });
+
+  // FU-2: trustedOrigins is configurable. Two smoke checks: the explicit
+  // path (a concrete allow-list builds without throwing) and the default
+  // path (omitting the field still works — backwards-compatible). The
+  // structural assertion that better-auth received the expected value is
+  // covered by `trusted-origins.test.ts` which mocks the betterAuth import
+  // module-globally; a global mock would interfere with the rebuild-error
+  // test above, so we keep the assertions split across two files.
+  it('builds with an explicit trustedOrigins list', () => {
+    expect(() =>
+      createBetterAuthHandler({
+        database: stubDb,
+        providers: [],
+        trustedOrigins: ['https://ax.example.com'],
+      }),
+    ).not.toThrow();
+  });
+
+  it('builds without a trustedOrigins field (legacy default)', () => {
+    expect(() =>
+      createBetterAuthHandler({ database: stubDb, providers: [] }),
+    ).not.toThrow();
+  });
 });

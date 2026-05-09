@@ -264,6 +264,47 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
     const cfg = loadK8sConfigFromEnv(env);
     expect(cfg.onboarding).toBeUndefined();
   });
+
+  // FU-2 — auth.trustedOrigins inherits from AX_PUBLIC_BASE_URL.
+  // No separate env var: the public base URL is the source of truth for
+  // "where users hit this server", and that's exactly what better-auth's
+  // CSRF allow-list wants. If an operator needs more origins (canonical +
+  // localhost), they can pass config in code today, or we add
+  // AX_AUTH_TRUSTED_ORIGINS when the need actually arises.
+  it('loadK8sConfigFromEnv defaults auth.trustedOrigins to [AX_PUBLIC_BASE_URL] when set', () => {
+    const HEX_KEY = '0'.repeat(64);
+    const env: NodeJS.ProcessEnv = {
+      DATABASE_URL: 'postgres://u:p@db:5432/ax_next',
+      AX_K8S_HOST_IPC_URL: 'http://ax-next-host.ax-next.svc:80',
+      AX_WORKSPACE_BACKEND: 'git-protocol',
+      AX_WORKSPACE_GIT_SERVER_URL: 'http://git-server:7780',
+      AX_WORKSPACE_GIT_SERVER_TOKEN: 't',
+      AX_HTTP_HOST: '0.0.0.0',
+      AX_HTTP_PORT: '9090',
+      AX_HTTP_COOKIE_KEY: HEX_KEY,
+      AX_HTTP_ALLOWED_ORIGINS: '',
+      AX_PUBLIC_BASE_URL: 'https://ax.example.com',
+    };
+    const cfg = loadK8sConfigFromEnv(env);
+    expect(cfg.auth?.trustedOrigins).toEqual(['https://ax.example.com']);
+  });
+
+  it('loadK8sConfigFromEnv leaves auth.trustedOrigins unset when AX_PUBLIC_BASE_URL is absent', () => {
+    const HEX_KEY = '0'.repeat(64);
+    const env: NodeJS.ProcessEnv = {
+      DATABASE_URL: 'postgres://u:p@db:5432/ax_next',
+      AX_K8S_HOST_IPC_URL: 'http://ax-next-host.ax-next.svc:80',
+      AX_WORKSPACE_BACKEND: 'git-protocol',
+      AX_WORKSPACE_GIT_SERVER_URL: 'http://git-server:7780',
+      AX_WORKSPACE_GIT_SERVER_TOKEN: 't',
+      AX_HTTP_HOST: '0.0.0.0',
+      AX_HTTP_PORT: '9090',
+      AX_HTTP_COOKIE_KEY: HEX_KEY,
+      AX_HTTP_ALLOWED_ORIGINS: '',
+    };
+    const cfg = loadK8sConfigFromEnv(env);
+    expect(cfg.auth?.trustedOrigins).toBeUndefined();
+  });
 });
 
 describe('@ax/preset-k8s workspace backend selection', () => {

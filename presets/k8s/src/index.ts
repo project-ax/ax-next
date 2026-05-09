@@ -275,10 +275,22 @@ export interface K8sPresetConfig {
    *
    * `sessionLifetimeSeconds` is the only field worth surfacing here — it
    * controls the Set-Cookie `max-age` on completed bootstrap sessions.
+   *
+   * `trustedOrigins` bounds which origins better-auth will honor for
+   * sign-in / OAuth callback / CSRF-token-bearing forms. Default is
+   * `['*']` (test-friendly); production should pin to the canonical
+   * public base URL. When `loadK8sConfigFromEnv` sees `AX_PUBLIC_BASE_URL`
+   * set, it defaults `trustedOrigins` to `[AX_PUBLIC_BASE_URL]`.
    */
   auth?: {
     /** Session cookie lifetime. Default 7 days (auth-better default). */
     sessionLifetimeSeconds?: number;
+    /**
+     * Origins better-auth treats as trusted for CSRF/OAuth callback
+     * gating. Default `['*']` — production hosts SHOULD pin (the env
+     * loader does this automatically when AX_PUBLIC_BASE_URL is set).
+     */
+    trustedOrigins?: string[];
   };
   /**
    * Phase 2 — credential-proxy socket override. Defaults to
@@ -501,6 +513,9 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   const authBetterCfg: AuthBetterConfig = {};
   if (config.auth?.sessionLifetimeSeconds !== undefined) {
     authBetterCfg.sessionLifetimeSeconds = config.auth.sessionLifetimeSeconds;
+  }
+  if (config.auth?.trustedOrigins !== undefined) {
+    authBetterCfg.trustedOrigins = config.auth.trustedOrigins;
   }
   plugins.push(createAuthBetterPlugin(authBetterCfg));
 
@@ -933,8 +948,18 @@ export function loadK8sConfigFromEnv(
   // AX_BOOTSTRAP_TOKEN (read directly by @ax/onboarding from process.env),
   // walks /setup/*, then adds providers from the admin UI.
   //
-  // The only knob worth surfacing here is session-cookie lifetime. Empty
-  // cfg is fine — auth-better falls through to its default (7 days).
+  // Knobs surfaced here:
+  //   - session-cookie lifetime (AX_AUTH_SESSION_LIFETIME_SECONDS)
+  //   - trustedOrigins — defaults to [AX_PUBLIC_BASE_URL] when set; no
+  //     separate env var. The public base URL is already the source of
+  //     truth for "where users hit this server", so trustedOrigins
+  //     inherits from it. If an operator legitimately needs multiple
+  //     origins (canonical URL + localhost for debugging), they can
+  //     construct config in code or set a future AX_AUTH_TRUSTED_ORIGINS
+  //     env var when the need actually arises (YAGNI for now).
+  //
+  // Empty cfg is fine — auth-better falls through to its defaults
+  // (7-day session, ['*'] trustedOrigins).
   const auth: NonNullable<K8sPresetConfig['auth']> = {};
   if (
     env.AX_AUTH_SESSION_LIFETIME_SECONDS !== undefined &&
@@ -947,6 +972,9 @@ export function loadK8sConfigFromEnv(
       );
     }
     auth.sessionLifetimeSeconds = n;
+  }
+  if (env.AX_PUBLIC_BASE_URL !== undefined && env.AX_PUBLIC_BASE_URL !== '') {
+    auth.trustedOrigins = [env.AX_PUBLIC_BASE_URL];
   }
 
   const config: K8sPresetConfig = {

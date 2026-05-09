@@ -64,6 +64,17 @@ export interface AuthBetterConfig {
   sessionCookieName?: string;
   /** Session lifetime in seconds. Default 7 days. */
   sessionLifetimeSeconds?: number;
+  /**
+   * Origins better-auth considers trusted for sign-in / OAuth callback / CSRF
+   * protection. Each entry is a full origin like `https://ax.example.com` or
+   * `http://localhost:8080`.
+   *
+   * Default: `['*']` (test-friendly; production hosts SHOULD pin). Pass a
+   * concrete list to lock down better-auth's CSRF gate. Multiple origins are
+   * fine — common pattern is one canonical public URL plus localhost for
+   * port-forward debugging.
+   */
+  trustedOrigins?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -96,6 +107,11 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
   const sessionCookieName = config.sessionCookieName ?? DEFAULT_SESSION_COOKIE_NAME;
   const sessionLifetimeSeconds =
     config.sessionLifetimeSeconds ?? DEFAULT_SESSION_LIFETIME_SECS;
+  // Capture trustedOrigins at construction so the providers-changed
+  // subscriber doesn't have to re-read config on every fire — config is
+  // already captured by the closure, but pinning it here is one less
+  // hop and makes the rebuild call site read straight.
+  const trustedOrigins = config.trustedOrigins;
 
   const PROVIDERS_CHANGED_KEY = `${PLUGIN_NAME}/providers-changed`;
 
@@ -168,7 +184,11 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
       const providers = await loadProviders(localDb, bus, initCtx);
 
       // 3) Build the handler --------------------------------------------
-      handle = createBetterAuthHandler({ database: localDb, providers });
+      handle = createBetterAuthHandler({
+        database: localDb,
+        providers,
+        ...(trustedOrigins !== undefined ? { trustedOrigins } : {}),
+      });
       const localHandle = handle;
 
       // 4) Subscribe to providers-changed for hot-reload -----------------
@@ -182,7 +202,11 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
         PROVIDERS_CHANGED_KEY,
         async (subCtx: AgentContext) => {
           const next = await loadProviders(localDb, bus, subCtx);
-          localHandle.rebuild({ database: localDb, providers: next });
+          localHandle.rebuild({
+            database: localDb,
+            providers: next,
+            ...(trustedOrigins !== undefined ? { trustedOrigins } : {}),
+          });
           return undefined;
         },
       );
