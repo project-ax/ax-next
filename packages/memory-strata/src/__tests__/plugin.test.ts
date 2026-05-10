@@ -1,11 +1,10 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { HookBus, makeAgentContext, type AgentOutcome, type LlmCallInput, type LlmCallOutput } from '@ax/core';
 import { createMemoryStrataPlugin } from '../plugin.js';
 import { systemFile, INBOX_DIR } from '../paths.js';
-import { readdir } from 'node:fs/promises';
 
 let workspaceRoot: string;
 

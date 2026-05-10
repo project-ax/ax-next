@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // I9 from the plan: Phase 1 ships ONLY Level 0 (hot tier markdown) +
 // Level 1 (Observer to inbox/). Explicitly NOT shipping: the
@@ -26,7 +27,10 @@ const FORBIDDEN: ReadonlyArray<{ token: string; reason: string }> = [
   { token: 'recent.md', reason: 'Phase 2 — system/recent.md regeneration not yet shipped' },
 ];
 
-const SRC_DIR = new URL('..', import.meta.url).pathname;
+// fileURLToPath, not URL.pathname: the latter prefixes a leading `/`
+// to drive letters on Windows (`/C:/...`), which breaks fs ops. The
+// rest of the codebase uses fileURLToPath everywhere — match that.
+const SRC_DIR = fileURLToPath(new URL('..', import.meta.url));
 
 async function* walkSource(dir: string): AsyncGenerator<string> {
   const entries = await readdir(dir);
