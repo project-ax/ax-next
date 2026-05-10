@@ -7,10 +7,14 @@
 // a typo can't accidentally undo a real bootstrap.
 //
 // Architecturally this CLI is the kernel host (same pattern as
-// `credentials.ts`): it bootstraps a minimal kernel with @ax/database-postgres
-// + @ax/onboarding, calls the `bootstrap:reset` service hook, and shuts down.
-// All onboarding state shape lives inside @ax/onboarding (Invariant I4 —
-// one source of truth per concept). The CLI only knows that the hook
+// `credentials.ts`): it bootstraps the same plugin set that owns
+// bootstrap-installed state — database-postgres, storage-postgres,
+// credentials, credentials-store-db, auth-better, agents, onboarding —
+// so subscribers to `bootstrap:reset-cleanup` are active when the hook
+// fires. Without those subscribers on the bus, the cascade no-ops and
+// the next wizard run trips over leftover admin/agent/credential rows.
+// All onboarding state shape lives inside @ax/onboarding (Invariant I4
+// — one source of truth per concept). The CLI only knows that the hook
 // returns a `{ token, baseUrl }` envelope on success.
 //
 // Output discipline:
@@ -23,9 +27,9 @@
 //
 // Wire surface:
 //   No HTTP. The CLI talks directly to the database via @ax/database-postgres.
-//   The onboarding plugin's HTTP routes (which would normally need an
-//   http-server) are stubbed out via in-process service registration so
-//   verifyCalls passes without standing up a real listener.
+//   Each loaded plugin still calls http:register-route for its routes; the
+//   CLI registers a no-op stub for that hook so verifyCalls passes without
+//   standing up a real listener.
 
 import {
   HookBus,
@@ -58,6 +62,10 @@ const USAGE = `usage: ax-next admin reset-bootstrap [--force]
 env:
   DATABASE_URL          required. Postgres connection string.
                         Format: postgres://user:pass@host:port/db
+  AX_CREDENTIALS_KEY    required. The key used to encrypt credentials at
+                        rest (32 bytes — 64 hex chars or 44 base64 chars).
+                        Must match the key the host pod was launched with;
+                        rotating it bricks every stored credential.
   AX_PUBLIC_BASE_URL    base URL printed in the banner (default: ${DEFAULT_BASE_URL})
 
 The command mints a fresh bootstrap token, stores its hash in

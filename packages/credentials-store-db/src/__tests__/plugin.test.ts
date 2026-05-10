@@ -92,6 +92,10 @@ describe('@ax/credentials-store-db plugin', () => {
     expect(p.manifest.calls).toContain('storage:get');
     expect(p.manifest.calls).toContain('storage:set');
     expect(p.manifest.calls).toContain('storage:list-prefix');
+    // Wired in for bootstrap:reset-cleanup; both storage backends
+    // (storage-postgres + storage-sqlite) register this hook.
+    expect(p.manifest.calls).toContain('storage:delete-prefix');
+    expect(p.manifest.subscribes).toContain('bootstrap:reset-cleanup');
   });
 
   it('put then get round-trips a blob (scope=user)', async () => {
@@ -295,15 +299,19 @@ describe('@ax/credentials-store-db plugin', () => {
     });
     // Direct write to simulate a v1 row left over from before the v2 cutover.
     store.set('credential:legacy-user:legacy-ref', new Uint8Array([7, 8, 9]));
-    expect(store.size).toBe(3);
+    // Neutral key that must survive — guards against an accidental
+    // widening of the prefix sweep beyond `credential:*`.
+    store.set('settings:fast-model', new Uint8Array([0]));
+    expect(store.size).toBe(4);
 
     const fired = await bus.fire('bootstrap:reset-cleanup', ctx(), {});
     expect(fired.rejected).toBe(false);
 
-    // All credential keys gone; non-credential keys (none here) survive.
+    // All credential keys gone; the neutral key survives.
     for (const k of store.keys()) {
       expect(k.startsWith('credential:')).toBe(false);
     }
-    expect(store.size).toBe(0);
+    expect(store.has('settings:fast-model')).toBe(true);
+    expect(store.size).toBe(1);
   });
 });

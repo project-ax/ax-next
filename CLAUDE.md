@@ -81,7 +81,7 @@ Skills are NOT written for documentation of what the code does, conventions that
 
 Day-1 skills:
 
-- `ax-conventions` — the five invariants, plugin manifest format, hook bus mechanics, boundary-review checklist.
+- `ax-conventions` — the six invariants, plugin manifest format, hook bus mechanics, boundary-review checklist.
 - `claude-memory` — per-project working memory in `.claude/memory/` (gitignored). Captures project facts, decisions, patterns, mistakes, and self-observations across sessions. See `docs/plans/2026-04-23-claude-memory-skill-design.md`.
 - `security-checklist` — three-threat-model walk (sandbox escape, prompt injection, supply chain) producing a structured PR security note. Fires on sandbox / IPC / plugin loading / untrusted content / new-dependency changes. See `docs/plans/2026-04-23-security-checklist-skill-design.md`.
 

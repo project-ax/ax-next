@@ -61,6 +61,7 @@ afterEach(async () => {
     }),
   });
   try {
+    // Note: auth_better_v1_sessions has no FK to users; both stand alone.
     await sql`DROP TABLE IF EXISTS bootstrap_state`.execute(k);
     await sql`DROP TABLE IF EXISTS auth_better_v1_sessions`.execute(k);
     await sql`DROP TABLE IF EXISTS auth_better_v1_users`.execute(k);
@@ -317,13 +318,17 @@ describe('admin reset-bootstrap — happy paths', () => {
     // migration creates auth_better_v1_users, agents'  creates
     // agents_v1_agents, storage-postgres' creates storage_postgres_v1_kv).
     const seedCap = captureStreams();
-    await runAdminResetBootstrapCommand({
+    const seedCode = await runAdminResetBootstrapCommand({
       argv: [],
       env: {},
       stdout: seedCap.stdout,
       stderr: seedCap.stderr,
       databaseOverride: { connectionString },
     });
+    // If schema provisioning fails, every assertion below fires a
+    // confusing "relation does not exist" — assert exit 0 here so the
+    // failure points at the seed step instead.
+    expect(seedCode).toBe(0);
 
     // Now seed test rows.
     const k = new Kysely<unknown>({
@@ -354,6 +359,15 @@ describe('admin reset-bootstrap — happy paths', () => {
         INSERT INTO storage_postgres_v1_kv (key, value, updated_at)
         VALUES ('credential:v2:user:usr_test:anthropic-api', 'cipher'::bytea, NOW())
       `.execute(k);
+      // Note: we deliberately don't seed an auth_providers row here as a
+      // "survivor" guard. auth-better's loadProviders runs at boot and
+      // AES-GCM-decrypts every row's client_secret_encrypted; a fake
+      // ciphertext fails decrypt and aborts kernel init before the
+      // reset hook can fire. A proper survivor test would need to seed
+      // a row through the real envelope, which means a one-shot kernel
+      // boot just for the encryption — separate scope. For now the
+      // cleanup contract is asserted by what gets wiped, not what
+      // survives.
     } finally {
       await k.destroy().catch(() => {});
     }

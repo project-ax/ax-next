@@ -27,7 +27,7 @@ import { useEffect, useState } from 'react';
 import { AssistantRuntimeProvider } from '@assistant-ui/react';
 import { useAxChatRuntime } from './lib/runtime';
 import { getSession, type AuthUser } from './lib/auth';
-import { fetchBootstrapStatus } from './lib/bootstrap-status';
+import { fetchBootstrapStatus, type BootstrapStatus } from './lib/bootstrap-status';
 import {
   hydrateSidebarCollapsed,
   setSidebarCollapsed,
@@ -64,7 +64,16 @@ export const App = () => {
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const status = await fetchBootstrapStatus();
+      // Defensive: lib/bootstrap-status.ts already swallows network and
+      // parse errors, but a future refactor could let one escape. A
+      // throw here would leave the SPA stuck on "connecting…" forever
+      // — same posture as the getSession() try/catch below.
+      let status: BootstrapStatus;
+      try {
+        status = await fetchBootstrapStatus();
+      } catch {
+        status = 'completed';
+      }
       if (cancelled) return;
 
       const onSetup = isSetupPath();
