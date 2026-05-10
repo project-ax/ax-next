@@ -47,13 +47,14 @@ SPA_DIST         := packages/channel-web/dist-web
 SHELL := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
 
-.PHONY: help dev-fast image dev-mount-up dev-mount-down rollout build-spa kind-prune
+.PHONY: help dev-fast image dev-mount-up dev-mount-down rollout build-spa kind-prune reset-bootstrap
 
 help:
 	@echo "Targets:"
 	@echo "  dev-fast        Rebuild SPA + push to kind dev-mount + restart pod (~10s)."
 	@echo "  image           Full docker rebuild + reload, drops fast mount (~90s)."
 	@echo "  kind-prune      Remove dangling image layers from the kind node."
+	@echo "  reset-bootstrap Wipe bootstrap + admin/agent/credential rows; print fresh token."
 	@echo "  dev-mount-up    Patch the deployment to add the dev-web mount."
 	@echo "  dev-mount-down  Remove the dev-web mount from the deployment."
 	@echo "  rollout         Restart the host deployment and wait for it."
@@ -156,3 +157,24 @@ dev-mount-down:
 rollout:
 	kubectl -n $(NAMESPACE) rollout restart deployment/$(DEPLOYMENT)
 	kubectl -n $(NAMESPACE) rollout status  deployment/$(DEPLOYMENT) --timeout=120s
+
+# ----------------------------------------------------------------------------
+# reset-bootstrap — execute `ax-next admin reset-bootstrap --force` inside
+# the running host pod.
+#
+# Why exec-in-pod and not the local CLI binary: the cleanup-cascade fires
+# `bootstrap:reset-cleanup` on the running pod's HookBus; the auth /
+# agents / credentials subscribers that wipe their tables only exist
+# in-process inside that pod. Running the CLI locally against the kind
+# postgres would reset bootstrap_state but leave the admin user, the
+# default agent, and the Anthropic credential intact.
+#
+# Requires the new image (post `make image`). On an old image the
+# fan-out hook isn't fired and you get the half-cleaned state that
+# triggered this target's existence.
+# ----------------------------------------------------------------------------
+reset-bootstrap:
+	@echo "==> Resetting bootstrap inside $(DEPLOYMENT)"
+	kubectl -n $(NAMESPACE) exec deploy/$(DEPLOYMENT) -- \
+	  node /opt/ax-next/host/dist/main.js admin reset-bootstrap --force
+	@echo "==> Open the printed claim URL OR refresh https://localhost:9090 — App.tsx will redirect to /setup."

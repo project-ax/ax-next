@@ -10,7 +10,12 @@ function memStoragePlugin() {
     manifest: {
       name: 'mem-storage',
       version: '0.0.0',
-      registers: ['storage:get', 'storage:set', 'storage:list-prefix'],
+      registers: [
+        'storage:get',
+        'storage:set',
+        'storage:list-prefix',
+        'storage:delete-prefix',
+      ],
       calls: [],
       subscribes: [],
     },
@@ -34,6 +39,20 @@ function memStoragePlugin() {
             if (k.startsWith(prefix)) entries.push({ key: k, value: v });
           }
           return { entries };
+        },
+      );
+      bus.registerService(
+        'storage:delete-prefix',
+        'mem-storage',
+        async (_ctx, { prefix }: { prefix: string }) => {
+          let deleted = 0;
+          for (const k of [...store.keys()]) {
+            if (k.startsWith(prefix)) {
+              store.delete(k);
+              deleted++;
+            }
+          }
+          return { deleted };
         },
       );
     },

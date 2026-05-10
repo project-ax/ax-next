@@ -1,4 +1,4 @@
-import { PluginError, type Plugin } from '@ax/core';
+import { PluginError, type HookBus, type Plugin } from '@ax/core';
 import type { Transaction } from 'kysely';
 
 /**
@@ -128,7 +128,10 @@ function validateRef(ref: unknown): string {
   return ref;
 }
 
+const RESET_CLEANUP_KEY = `${PLUGIN_NAME}/bootstrap-reset-cleanup`;
+
 export function createCredentialsStoreDbPlugin(): Plugin {
+  let busRef: HookBus | undefined;
   return {
     manifest: {
       name: PLUGIN_NAME,
@@ -138,10 +141,16 @@ export function createCredentialsStoreDbPlugin(): Plugin {
         'credentials:store-blob:get',
         'credentials:store-blob:list',
       ],
-      calls: ['storage:get', 'storage:set', 'storage:list-prefix'],
-      subscribes: [],
+      calls: [
+        'storage:get',
+        'storage:set',
+        'storage:list-prefix',
+        'storage:delete-prefix',
+      ],
+      subscribes: ['bootstrap:reset-cleanup'],
     },
     async init({ bus }) {
+      busRef = bus;
       bus.registerService<StoreBlobPutInput, void>(
         'credentials:store-blob:put',
         PLUGIN_NAME,
@@ -190,6 +199,36 @@ export function createCredentialsStoreDbPlugin(): Plugin {
         },
       );
 
+      // Bootstrap-reset cleanup: when an operator runs `ax admin
+      // reset-bootstrap --force`, drop every credential row (both v1 and
+      // v2 prefixes) so the wizard's model step can re-seed the
+      // Anthropic API key against the new admin user without orphaning
+      // rows under deleted user_ids. Storage backends own deletion via
+      // the storage:delete-prefix hook (storage-postgres + storage-sqlite
+      // both register it).
+      bus.subscribe(
+        'bootstrap:reset-cleanup',
+        RESET_CLEANUP_KEY,
+        async (subCtx) => {
+          await bus.call<{ prefix: string }, { deleted: number }>(
+            'storage:delete-prefix',
+            subCtx,
+            { prefix: KEY_PREFIX_V2 },
+          );
+          // KEY_PREFIX_V1 ('credential:') is a strict superset of V2
+          // ('credential:v2:') — wipe-by-prefix on V1 also clobbers
+          // anything still on V2, so the V2 call above is technically
+          // redundant. Kept for symmetry: if a future v3 prefix lands,
+          // v2 will deserve its own explicit wipe.
+          await bus.call<{ prefix: string }, { deleted: number }>(
+            'storage:delete-prefix',
+            subCtx,
+            { prefix: KEY_PREFIX_V1 },
+          );
+          return undefined;
+        },
+      );
+
       bus.registerService<StoreBlobListInput, StoreBlobListOutput>(
         'credentials:store-blob:list',
         PLUGIN_NAME,
@@ -227,6 +266,10 @@ export function createCredentialsStoreDbPlugin(): Plugin {
           return { entries };
         },
       );
+    },
+    async shutdown() {
+      busRef?.unsubscribe('bootstrap:reset-cleanup', RESET_CLEANUP_KEY);
+      busRef = undefined;
     },
   };
 }

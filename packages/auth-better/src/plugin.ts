@@ -6,7 +6,7 @@ import {
   type HookBus,
   type Plugin,
 } from '@ax/core';
-import type { Kysely } from 'kysely';
+import { sql, type Kysely } from 'kysely';
 // Type-only import from `@ax/http-server` — we never import a runtime value
 // from a peer plugin (Invariant I2 — no cross-plugin imports). TypeScript's
 // `verbatimModuleSyntax: true` plus `import type {...}` guarantees the
@@ -114,6 +114,7 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
   const trustedOrigins = config.trustedOrigins;
 
   const PROVIDERS_CHANGED_KEY = `${PLUGIN_NAME}/providers-changed`;
+  const RESET_CLEANUP_KEY = `${PLUGIN_NAME}/bootstrap-reset-cleanup`;
 
   return {
     manifest: {
@@ -138,7 +139,7 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
         'credentials:envelope-encrypt',
         'credentials:envelope-decrypt',
       ],
-      subscribes: ['auth:providers-changed'],
+      subscribes: ['auth:providers-changed', 'bootstrap:reset-cleanup'],
     },
 
     async init({ bus }) {
@@ -207,6 +208,25 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
             providers: next,
             ...(trustedOrigins !== undefined ? { trustedOrigins } : {}),
           });
+          return undefined;
+        },
+      );
+
+      // Bootstrap-reset cleanup: when an operator runs `ax admin
+      // reset-bootstrap --force`, wipe the leftover admin user + sessions
+      // so the next wizard run can complete (auth:create-bootstrap-user
+      // refuses to mint a second admin while one exists — see I6 gate).
+      // The handler keeps its in-memory provider catalog; only user/
+      // session rows are dropped. Runs on the same Kysely instance the
+      // handler uses, so a wipe-while-handler-serves race is bounded by
+      // the table-level lock TRUNCATE takes.
+      bus.subscribe(
+        'bootstrap:reset-cleanup',
+        RESET_CLEANUP_KEY,
+        async () => {
+          await sql`TRUNCATE auth_better_v1_sessions, auth_better_v1_users CASCADE`.execute(
+            localDb,
+          );
           return undefined;
         },
       );
@@ -283,6 +303,53 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
         unregisterRoutes.push(unregister);
       }
 
+      // 6.5) /admin/me + /admin/sign-out — same wire shape as the
+      // @ax/auth-oidc routes so channel-web's `lib/auth.ts` doesn't
+      // need to know which auth backend is loaded. Without these,
+      // static-files's SPA fallback would catch /admin/me and return
+      // index.html — the SPA's getSession() would then see no user
+      // field and treat every fresh sign-in as unauthenticated, which
+      // is the bug Phase 3 introduced when it swapped the default to
+      // auth-better but didn't port the /admin namespace alias.
+      {
+        const meHandler = async (req: HttpRequest, res: HttpResponse): Promise<void> => {
+          try {
+            const { user } = await requireUser(localDb, sessionCookieName, req);
+            res.status(200).json({ user });
+          } catch {
+            res.status(401).json({ error: 'unauthenticated' });
+          }
+        };
+        const { unregister } = await bus.call<HttpRegisterRouteInput, HttpRegisterRouteOutput>(
+          'http:register-route',
+          initCtx,
+          { method: 'GET', path: '/admin/me', handler: meHandler },
+        );
+        unregisterRoutes.push(unregister);
+      }
+
+      {
+        const signOutHandler = async (req: HttpRequest, res: HttpResponse): Promise<void> => {
+          // Idempotent — absent / forged cookie still returns 200 so the
+          // endpoint isn't a session-existence oracle. Best-effort delete.
+          const sessionId = req.signedCookie(sessionCookieName);
+          if (sessionId !== null) {
+            await localDb
+              .deleteFrom('auth_better_v1_sessions')
+              .where('token', '=', sessionId)
+              .execute();
+          }
+          res.clearCookie(sessionCookieName, { path: '/', sameSite: 'Lax' });
+          res.status(200).json({ ok: true });
+        };
+        const { unregister } = await bus.call<HttpRegisterRouteInput, HttpRegisterRouteOutput>(
+          'http:register-route',
+          initCtx,
+          { method: 'POST', path: '/admin/sign-out', handler: signOutHandler },
+        );
+        unregisterRoutes.push(unregister);
+      }
+
       // 7) /admin/auth/providers/* — runtime CRUD (closes I10) ----------
       // These routes are the FIRER of `auth:providers-changed`. The
       // subscriber registered above re-reads the table and rebuilds the
@@ -317,6 +384,7 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
         }
       }
       busRef?.unsubscribe('auth:providers-changed', PROVIDERS_CHANGED_KEY);
+      busRef?.unsubscribe('bootstrap:reset-cleanup', RESET_CLEANUP_KEY);
       busRef = undefined;
       handle = undefined;
       db = undefined;

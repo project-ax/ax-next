@@ -1,4 +1,9 @@
 import { useEffect, useState } from 'react';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { SetupShell } from './SetupShell';
 
 interface Props {
   autoToken: string | null;
@@ -38,23 +43,38 @@ export function StepGate({ autoToken, onClaimed }: Props) {
   }, [autoToken]);
 
   return (
-    <main style={{ maxWidth: 480, margin: '4rem auto', fontFamily: 'system-ui, sans-serif' }}>
-      <h1>Welcome to ax</h1>
-      <p>Paste the bootstrap token from your terminal to continue.</p>
-      <form onSubmit={(e) => { e.preventDefault(); void submit(token); }}>
-        <input
-          type="text"
-          value={token}
-          onChange={(e) => setToken(e.target.value)}
-          placeholder="ax_bs_..."
-          autoFocus
-          style={{ width: '100%', padding: '0.5rem', fontFamily: 'monospace' }}
-        />
-        <button type="submit" disabled={busy || token.length === 0} style={{ marginTop: '1rem', padding: '0.5rem 1rem' }}>
+    <SetupShell
+      title="Welcome to ax"
+      description="Paste the bootstrap token from your terminal to continue."
+    >
+      <form
+        className="flex flex-col gap-4"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void submit(token);
+        }}
+      >
+        <div className="flex flex-col gap-2">
+          <Label htmlFor="setup-token">Bootstrap token</Label>
+          <Input
+            id="setup-token"
+            type="text"
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+            placeholder="ax_bs_..."
+            autoFocus
+            className="font-mono"
+          />
+        </div>
+        {err !== null && (
+          <Alert variant="destructive">
+            <AlertDescription>{err}</AlertDescription>
+          </Alert>
+        )}
+        <Button type="submit" disabled={busy || token.length === 0}>
           {busy ? 'Verifying…' : 'Continue'}
-        </button>
-        {err !== null && <p role="alert" style={{ color: 'crimson' }}>{err}</p>}
+        </Button>
       </form>
-    </main>
+    </SetupShell>
   );
 }

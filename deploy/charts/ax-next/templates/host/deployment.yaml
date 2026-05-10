@@ -236,8 +236,13 @@ spec:
               value: "true"
             {{- end }}
 
-            # Anthropic API key — required (see plan note: openrouter is
-            # deferred to MVP follow-up).
+            # Anthropic API key — optional. The first-run wizard collects
+            # one and stores it in the credentials table; this env-var is
+            # only the bottom-of-precedence fallback (and the gate that
+            # enables auto-titling on the host pod). When unset, the
+            # preset's loadK8sConfigFromEnv simply omits cfg.titles.
+            {{- $existingHostSecret := lookup "v1" "Secret" (include "ax-next.hostNamespace" .) (printf "%s-secrets" (include "ax-next.fullname" .)) }}
+            {{- if or .Values.anthropic.apiKey (and $existingHostSecret $existingHostSecret.data (index $existingHostSecret.data "anthropic-api-key")) }}
             - name: ANTHROPIC_API_KEY
               valueFrom:
                 secretKeyRef:
@@ -248,6 +253,7 @@ spec:
             # (above) is set — see presets/k8s/src/index.ts loader.
             - name: AX_TITLE_MODEL
               value: {{ .Values.titles.model | quote }}
+            {{- end }}
 
             # Database URL — sourced from external secret OR built from
             # the embedded subchart's secret.

@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { randomBytes } from 'node:crypto';
 import {
   PostgreSqlContainer,
   type StartedPostgreSqlContainer,
@@ -28,18 +29,31 @@ import { runAdminCommand } from '../commands/admin.js';
 let container: StartedPostgreSqlContainer;
 let connectionString: string;
 
+const ORIGINAL_CREDENTIALS_KEY = process.env.AX_CREDENTIALS_KEY;
+
 beforeAll(async () => {
   container = await new PostgreSqlContainer('postgres:16-alpine').start();
   connectionString = container.getConnectionUri();
+  // The reset-bootstrap CLI now loads @ax/credentials so its
+  // bootstrap:reset-cleanup subscriber chain runs end-to-end. The
+  // credentials plugin refuses to boot without AX_CREDENTIALS_KEY —
+  // mirror what the host pod injects via the helm secret.
+  process.env.AX_CREDENTIALS_KEY = randomBytes(32).toString('hex');
 }, 60_000);
 
 afterAll(async () => {
   if (container) await container.stop();
+  if (ORIGINAL_CREDENTIALS_KEY === undefined) {
+    delete process.env.AX_CREDENTIALS_KEY;
+  } else {
+    process.env.AX_CREDENTIALS_KEY = ORIGINAL_CREDENTIALS_KEY;
+  }
 });
 
-// Each test gets a fresh schema. The onboarding migration is idempotent
-// (CREATE TABLE IF NOT EXISTS) but tests rely on starting state, so we
-// drop between tests.
+// Each test gets a fresh schema. Migrations are idempotent (CREATE TABLE
+// IF NOT EXISTS) but tests rely on starting state, so we drop between
+// tests. We also drop the auth/agent/storage tables that the new full
+// plugin set creates so the cleanup-cascade assertions stay deterministic.
 afterEach(async () => {
   const k = new Kysely<unknown>({
     dialect: new PostgresDialect({
@@ -47,7 +61,13 @@ afterEach(async () => {
     }),
   });
   try {
+    // Note: auth_better_v1_sessions has no FK to users; both stand alone.
     await sql`DROP TABLE IF EXISTS bootstrap_state`.execute(k);
+    await sql`DROP TABLE IF EXISTS auth_better_v1_sessions`.execute(k);
+    await sql`DROP TABLE IF EXISTS auth_better_v1_users`.execute(k);
+    await sql`DROP TABLE IF EXISTS auth_providers`.execute(k);
+    await sql`DROP TABLE IF EXISTS agents_v1_agents`.execute(k);
+    await sql`DROP TABLE IF EXISTS storage_postgres_v1_kv`.execute(k);
   } finally {
     await k.destroy().catch(() => {});
   }
@@ -281,6 +301,113 @@ describe('admin reset-bootstrap — happy paths', () => {
     const secondTokenLine = cap.out.find((l) => l.startsWith('  token: '));
     expect(secondTokenLine).toBeDefined();
     expect(secondTokenLine).not.toBe(firstTokenLine);
+  });
+
+  it('cleanup-cascade wipes admin/agent/credential rows on --force reset', async () => {
+    // Regression for the fan-out-fired-on-empty-bus bug: a previous CLI
+    // build only loaded @ax/database-postgres + @ax/onboarding, so when
+    // bootstrap:reset fired bootstrap:reset-cleanup the auth/agent/
+    // credentials subscribers weren't on the bus and never wiped their
+    // tables. The next wizard run would then hit
+    // "admin already exists; bootstrap refused".
+    //
+    // Pre-seed the three table sets the cascade is supposed to wipe,
+    // run reset-bootstrap --force, and assert all three are empty.
+
+    // Run a no-op reset first to provision schemas (auth-better's
+    // migration creates auth_better_v1_users, agents'  creates
+    // agents_v1_agents, storage-postgres' creates storage_postgres_v1_kv).
+    const seedCap = captureStreams();
+    const seedCode = await runAdminResetBootstrapCommand({
+      argv: [],
+      env: {},
+      stdout: seedCap.stdout,
+      stderr: seedCap.stderr,
+      databaseOverride: { connectionString },
+    });
+    // If schema provisioning fails, every assertion below fires a
+    // confusing "relation does not exist" — assert exit 0 here so the
+    // failure points at the seed step instead.
+    expect(seedCode).toBe(0);
+
+    // Now seed test rows.
+    const k = new Kysely<unknown>({
+      dialect: new PostgresDialect({
+        pool: new pg.Pool({ connectionString, max: 1 }),
+      }),
+    });
+    try {
+      await sql`
+        INSERT INTO auth_better_v1_users (id, email, name, role, created_at, updated_at)
+        VALUES ('usr_test', 'test@local', 'Test', 'admin', NOW(), NOW())
+      `.execute(k);
+      await sql`
+        INSERT INTO auth_better_v1_sessions (id, user_id, token, expires_at, created_at, updated_at)
+        VALUES ('sess_test', 'usr_test', 'tok_test', NOW() + INTERVAL '1 hour', NOW(), NOW())
+      `.execute(k);
+      await sql`
+        INSERT INTO agents_v1_agents (
+          agent_id, owner_type, owner_id, visibility, display_name, model,
+          system_prompt, allowed_tools, mcp_config_ids, created_at, updated_at
+        )
+        VALUES (
+          'agt_test', 'user', 'usr_test', 'personal', 'Test Agent',
+          'claude-sonnet-4-6', 'You are helpful.', '[]', '[]', NOW(), NOW()
+        )
+      `.execute(k);
+      await sql`
+        INSERT INTO storage_postgres_v1_kv (key, value, updated_at)
+        VALUES ('credential:v2:user:usr_test:anthropic-api', 'cipher'::bytea, NOW())
+      `.execute(k);
+      // Note: we deliberately don't seed an auth_providers row here as a
+      // "survivor" guard. auth-better's loadProviders runs at boot and
+      // AES-GCM-decrypts every row's client_secret_encrypted; a fake
+      // ciphertext fails decrypt and aborts kernel init before the
+      // reset hook can fire. A proper survivor test would need to seed
+      // a row through the real envelope, which means a one-shot kernel
+      // boot just for the encryption — separate scope. For now the
+      // cleanup contract is asserted by what gets wiped, not what
+      // survives.
+    } finally {
+      await k.destroy().catch(() => {});
+    }
+
+    // Force-reset.
+    const cap = captureStreams();
+    const code = await runAdminResetBootstrapCommand({
+      argv: ['--force'],
+      env: {},
+      stdout: cap.stdout,
+      stderr: cap.stderr,
+      databaseOverride: { connectionString },
+    });
+    expect(code).toBe(0);
+
+    // Verify every seeded row is gone.
+    const k2 = new Kysely<{
+      auth_better_v1_users: { id: string };
+      auth_better_v1_sessions: { id: string };
+      agents_v1_agents: { agent_id: string };
+      storage_postgres_v1_kv: { key: string };
+    }>({
+      dialect: new PostgresDialect({
+        pool: new pg.Pool({ connectionString, max: 1 }),
+      }),
+    });
+    try {
+      const users = await k2.selectFrom('auth_better_v1_users').selectAll().execute();
+      const sessions = await k2.selectFrom('auth_better_v1_sessions').selectAll().execute();
+      const agents = await k2.selectFrom('agents_v1_agents').selectAll().execute();
+      const credentialKeys = await sql<{ key: string }>`
+        SELECT key FROM storage_postgres_v1_kv WHERE key LIKE 'credential:%'
+      `.execute(k2);
+      expect(users).toEqual([]);
+      expect(sessions).toEqual([]);
+      expect(agents).toEqual([]);
+      expect(credentialKeys.rows).toEqual([]);
+    } finally {
+      await k2.destroy().catch(() => {});
+    }
   });
 });
 

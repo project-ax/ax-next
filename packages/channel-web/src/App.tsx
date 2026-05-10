@@ -1,24 +1,33 @@
 /**
- * App — auth-gated root component.
+ * App — bootstrap-aware, auth-gated root component.
  *
  * Boot flow:
- *   1. `loading` — fetch `/admin/me` on mount (see `lib/auth.ts`).
- *   2. `unauthenticated` — render `<LoginPage />` (single Google CTA).
- *   3. `authenticated` — render `<AppContent />` with the assistant-ui
- *      runtime, sidebar, session header, and thread.
+ *   1. `loading` — fetch `/admin/bootstrap-status` first.
+ *   2. If status is pending/claimed/uninitialized:
+ *        - on `/setup*` → render `<SetupWizard />`
+ *        - elsewhere   → `window.location.replace('/setup')` (avoids
+ *          trapping a fresh-install user on the sign-in screen they
+ *          can't satisfy because no auth provider is configured yet)
+ *   3. If status is completed:
+ *        - on `/setup*` → `window.location.replace('/')` (the wizard's
+ *          POST routes already 410 after completion; redirect rather
+ *          than show a dead form)
+ *        - elsewhere   → fetch `/admin/me`, then render `<LoginPage />`
+ *          or `<AppContent />`.
  *
  * Global keyboard shortcuts (⌘\, ⌘N) live inside `<AppContent>` so they
  * only bind once the user is signed in. Unauthenticated state can't
  * accidentally trigger a session create against an unknown user.
  *
  * Per-test-file note: components in `components/` render in isolation and
- * bypass the auth gate. Only `App.tsx` is gated; downstream tests don't
- * need to mock the auth wire.
+ * bypass the gate. Only `App.tsx` is gated; downstream tests don't need
+ * to mock the bootstrap or auth wire.
  */
 import { useEffect, useState } from 'react';
 import { AssistantRuntimeProvider } from '@assistant-ui/react';
 import { useAxChatRuntime } from './lib/runtime';
 import { getSession, type AuthUser } from './lib/auth';
+import { fetchBootstrapStatus, type BootstrapStatus } from './lib/bootstrap-status';
 import {
   hydrateSidebarCollapsed,
   setSidebarCollapsed,
@@ -35,30 +44,67 @@ import { Thread } from './components/Thread';
 import { ToastStack } from './components/Toast';
 import { AdminShell } from './components/admin/AdminShell';
 import { SettingsPanel } from './components/settings/SettingsPanel';
+import { SetupWizard } from './components/setup/SetupWizard';
 import { UserProvider } from './lib/user-context';
 
-type AuthState = 'loading' | 'authenticated' | 'unauthenticated';
+type AppMode =
+  | { kind: 'loading' }
+  | { kind: 'wizard' }
+  | { kind: 'authenticated'; user: AuthUser }
+  | { kind: 'unauthenticated' };
+
+function isSetupPath(): boolean {
+  const p = window.location.pathname;
+  return p === '/setup' || p.startsWith('/setup/');
+}
 
 export const App = () => {
-  const [authState, setAuthState] = useState<AuthState>('loading');
-  const [user, setUser] = useState<AuthUser | null>(null);
+  const [mode, setMode] = useState<AppMode>({ kind: 'loading' });
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
+      // Defensive: lib/bootstrap-status.ts already swallows network and
+      // parse errors, but a future refactor could let one escape. A
+      // throw here would leave the SPA stuck on "connecting…" forever
+      // — same posture as the getSession() try/catch below.
+      let status: BootstrapStatus;
+      try {
+        status = await fetchBootstrapStatus();
+      } catch {
+        status = 'completed';
+      }
+      if (cancelled) return;
+
+      const onSetup = isSetupPath();
+
+      if (status !== 'completed') {
+        if (!onSetup) {
+          window.location.replace('/setup');
+          return;
+        }
+        setMode({ kind: 'wizard' });
+        return;
+      }
+
+      // status === 'completed'
+      if (onSetup) {
+        window.location.replace('/');
+        return;
+      }
+
       try {
         const session = await getSession();
         if (cancelled) return;
         if (session?.user) {
-          setUser(session.user);
-          setAuthState('authenticated');
+          setMode({ kind: 'authenticated', user: session.user });
         } else {
-          setAuthState('unauthenticated');
+          setMode({ kind: 'unauthenticated' });
         }
       } catch {
         // Network/DNS/offline — treat as unauthenticated so the user
         // sees the sign-in CTA instead of "connecting…" forever.
-        if (!cancelled) setAuthState('unauthenticated');
+        if (!cancelled) setMode({ kind: 'unauthenticated' });
       }
     })();
     return () => {
@@ -66,17 +112,20 @@ export const App = () => {
     };
   }, []);
 
-  if (authState === 'loading') {
+  if (mode.kind === 'loading') {
     return (
       <div className="flex items-center justify-center min-h-screen text-muted-foreground font-mono text-xs tracking-[0.04em]">
         connecting…
       </div>
     );
   }
-  if (authState === 'unauthenticated') {
+  if (mode.kind === 'wizard') {
+    return <SetupWizard />;
+  }
+  if (mode.kind === 'unauthenticated') {
     return <LoginPage />;
   }
-  return <AppContent user={user!} />;
+  return <AppContent user={mode.user} />;
 };
 
 const AppContent = ({ user }: { user: AuthUser }) => {

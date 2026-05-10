@@ -7,8 +7,6 @@ import {
   type Plugin,
 } from '@ax/core';
 import type { Kysely } from 'kysely';
-import { resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { runOnboardingMigration, type OnboardingDatabase } from './migrations.js';
 import { createOnboardingStore, type OnboardingStore } from './store.js';
 import {
@@ -20,7 +18,6 @@ import {
 import { createRateLimiter } from './rate-limit.js';
 import { createBootstrapSessionStore } from './sessions.js';
 import { createOnboardingRouteHandlers, type RouteRequest, type RouteResponse } from './routes.js';
-import { serveSpaIndex, serveSpaAsset, type StaticServeDeps } from './static-handler.js';
 import type {
   BootstrapCompleteInput,
   BootstrapResetInput,
@@ -207,7 +204,7 @@ export function createOnboardingPlugin(config: OnboardingConfig): Plugin {
       bus.registerService<BootstrapResetInput, BootstrapResetOutput>(
         'bootstrap:reset',
         PLUGIN_NAME,
-        async (_ctx, input) => {
+        async (ctx, input) => {
           const token = generateToken();
           const hash = await hashToken(token);
           const result = await localStore.resetToPending(hash, {
@@ -216,6 +213,13 @@ export function createOnboardingPlugin(config: OnboardingConfig): Plugin {
           if (!result.ok) {
             return { ok: false, reason: result.reason };
           }
+          // Best-effort fan-out so plugins owning bootstrap-installed state
+          // (auth users/sessions, the default agent, the Anthropic API key,
+          // …) can wipe their own rows. Subscribers that throw get logged
+          // by HookBus.fire but do not fail the reset — operator already
+          // paid the I6 escape-hatch (`--force`) and a half-cleaned state
+          // is still recoverable by re-running reset-bootstrap.
+          await bus.fire('bootstrap:reset-cleanup', ctx, {});
           return {
             ok: true,
             token,
@@ -242,6 +246,29 @@ export function createOnboardingPlugin(config: OnboardingConfig): Plugin {
           ? { validationTimeoutMs: config.validationTimeoutMs }
           : {}),
       });
+
+      // GET /admin/bootstrap-status — public read-only status echo so
+      // unauthenticated channel-web (and the relocated wizard) can decide
+      // whether to redirect / → /setup or vice-versa. Never gated by I11:
+      // every state including 'completed' is a legitimate answer.
+      unregisterRoutes.push(
+        await registerRoute(bus, initCtx, {
+          method: 'GET',
+          path: '/admin/bootstrap-status',
+          handler: async (_req, res) => {
+            const row = await localStore.read();
+            const out: BootstrapStatusOutput =
+              row === null
+                ? { status: 'uninitialized' }
+                : row.status === 'completed'
+                  ? row.completed_at !== null
+                    ? { status: 'completed', completedAt: row.completed_at }
+                    : { status: 'completed' }
+                  : { status: row.status };
+            res.status(200).json(out);
+          },
+        }),
+      );
 
       unregisterRoutes.push(
         await registerRoute(bus, initCtx, {
@@ -270,64 +297,13 @@ export function createOnboardingPlugin(config: OnboardingConfig): Plugin {
         }),
       );
 
-      // SPA routes ---------------------------------------------------------
-      // dist-spa lives one directory above the compiled plugin (dist/plugin.js
-      // → ../../dist-spa). In ESM we resolve relative to import.meta.url.
-      const pkgRoot = resolve(fileURLToPath(import.meta.url), '..', '..');
-      const spaRoot = resolve(pkgRoot, 'dist-spa');
-      const spaDeps: StaticServeDeps = { spaRoot };
-
-      unregisterRoutes.push(
-        await registerRoute(bus, initCtx, {
-          method: 'GET',
-          path: '/setup',
-          handler: async (_req, res) => {
-            // I11: post-completion 410.
-            const row = await localStore.read();
-            if (row?.status === 'completed') {
-              res.status(410).text('Setup already completed.');
-              return;
-            }
-            let out: Awaited<ReturnType<typeof serveSpaIndex>>;
-            try {
-              out = await serveSpaIndex(spaDeps);
-            } catch {
-              res.status(503).text('Setup UI not available — build may be missing.');
-              return;
-            }
-            res.status(out.status);
-            for (const [k, v] of Object.entries(out.headers)) {
-              res.header(k, v);
-            }
-            res.body(out.body, out.headers['content-type']);
-          },
-        }),
-      );
-
-      unregisterRoutes.push(
-        await registerRoute(bus, initCtx, {
-          method: 'GET',
-          path: '/setup/static/*',
-          handler: async (req, res) => {
-            // I11: post-completion 410.
-            const row = await localStore.read();
-            if (row?.status === 'completed') {
-              res.status(410).text('Setup already completed.');
-              return;
-            }
-            const out = await serveSpaAsset(spaDeps, asRouteReq(req).path);
-            if (out === null) {
-              res.status(404).text('Not found');
-              return;
-            }
-            res.status(out.status);
-            for (const [k, v] of Object.entries(out.headers)) {
-              res.header(k, v);
-            }
-            res.body(out.body, out.headers['content-type']);
-          },
-        }),
-      );
+      // SPA routes are NOT registered here. The wizard now lives inside
+      // @ax/channel-web (single design language, single shadcn install —
+      // see CLAUDE.md invariant #6) and is served by @ax/static-files'
+      // SPA fallback at /setup. The wizard hits /admin/bootstrap-status
+      // (above) to know whether to render or redirect, and the existing
+      // /setup/{claim,admin,model} POSTs continue to handle the real
+      // state transitions with I11 lockdown after completion.
     },
 
     async shutdown() {

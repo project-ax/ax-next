@@ -82,7 +82,13 @@ export async function runCompletionTransaction(
       await input.bus.call('credentials:set', input.ctx, {
         scope: 'global',
         ownerId: null,
-        ref: 'anthropic-default',
+        // Single shared ref for the Anthropic credential: chat-orchestrator
+        // looks it up here, the k8s preset's envFallback maps the same ref
+        // to ANTHROPIC_API_KEY, and the admin Provider keys tab reads the
+        // same row to render "Configured". Drift on this string means
+        // (a) the wizard credential is orphaned data, and (b) the admin UI
+        // shows "Not configured" right after a successful wizard run.
+        ref: 'anthropic-api',
         kind: 'api-key',
         payload: new TextEncoder().encode(input.apiKey),
         tx,
@@ -91,7 +97,11 @@ export async function runCompletionTransaction(
         actor: { userId: input.adminUserId, isAdmin: true },
         input: {
           displayName: 'Default Agent',
-          systemPrompt: '',
+          // Generic placeholder so the runner's
+          // owner.agentConfig.systemPrompt validator (requireString,
+          // non-empty) doesn't reject the very first chat. Operator
+          // can edit via /admin/agents after onboarding.
+          systemPrompt: 'You are a helpful assistant.',
           allowedTools: [],
           mcpConfigIds: [],
           model: input.defaultModel,

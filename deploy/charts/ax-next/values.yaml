@@ -233,19 +233,23 @@ credentials:
     #   /admin/credentials*    — admin-only CRUD (full scope axis)
     #   /settings/credentials* — per-user CRUD (scope='user', actor-bound)
     #
-    # OAuth start/finish endpoints are NOT here — they land in Phase 3.
-    # Off by default so the admin surface stays minimal until the UI is
-    # wired up; flip on with `--set credentials.admin.enabled=true`.
-    enabled: false
+    # On by default since the channel-web Settings UI (Provider keys +
+    # Model config tabs) depends on these routes. Without them, those
+    # tabs hit static-files's SPA fallback, get HTML where they expect
+    # JSON, and surface a parser error to the user. Flip off only if
+    # you're shipping a deployment that intentionally hides the admin
+    # surface (and a custom UI that doesn't reach for /admin/credentials*).
+    enabled: true
 
-# When credentials.admin.enabled=true, ANTHROPIC_API_KEY is optional —
-# operators can seed it via POST /admin/credentials with scope=global instead
-# (or click "Add credential" → "api-key" in the admin UI). The env-fallback
-# shim (process.env.ANTHROPIC_API_KEY) still works as a bottom-of-precedence-
-# chain default for kind/dev. Today the chart still `required`s anthropic.apiKey
-# at the Secret-render step for backwards compatibility; that gate may relax
-# in a follow-up once admin-seeded global credentials become the primary path.
-# See docs/plans/2026-05-06-credentials-admin-ui-design.md §3.2.
+# Anthropic API key — OPTIONAL. The first-run wizard collects an API key
+# from the operator and stores it in the credentials table; the chat
+# orchestrator reads from there at runtime. This env-var path is the
+# bottom-of-precedence fallback (and the gate that enables auto-titling on
+# the host pod). Set it only if you want a host-wide shared key in env, or
+# if you want auto-titling without going through the admin UI.
+#
+# When set, the secret is lookup-stable: an upgrade that doesn't re-pass
+# `--set anthropic.apiKey=...` keeps the existing value.
 anthropic:
   apiKey: ""
 

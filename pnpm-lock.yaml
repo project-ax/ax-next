@@ -437,9 +437,15 @@ importers:
       '@ax/agent-claude-sdk-runner':
         specifier: workspace:*
         version: link:../agent-claude-sdk-runner
+      '@ax/agents':
+        specifier: workspace:*
+        version: link:../agents
       '@ax/audit-log':
         specifier: workspace:*
         version: link:../audit-log
+      '@ax/auth-better':
+        specifier: workspace:*
+        version: link:../auth-better
       '@ax/chat-orchestrator':
         specifier: workspace:*
         version: link:../chat-orchestrator
@@ -482,6 +488,9 @@ importers:
       '@ax/session-inmemory':
         specifier: workspace:*
         version: link:../session-inmemory
+      '@ax/storage-postgres':
+        specifier: workspace:*
+        version: link:../storage-postgres
       '@ax/storage-sqlite':
         specifier: workspace:*
         version: link:../storage-sqlite
@@ -1062,33 +1071,15 @@ importers:
       '@types/pg':
         specifier: 8.20.0
         version: 8.20.0
-      '@types/react':
-        specifier: ^19.0.0
-        version: 19.2.14
-      '@types/react-dom':
-        specifier: ^19.0.0
-        version: 19.2.3(@types/react@19.2.14)
-      '@vitejs/plugin-react':
-        specifier: ^4.3.4
-        version: 4.7.0(vite@6.4.2(@types/node@25.6.0)(jiti@1.21.7)(lightningcss@1.32.0)(yaml@2.8.3))
       pg:
         specifier: 8.20.0
         version: 8.20.0
-      react:
-        specifier: ^19.0.0
-        version: 19.2.5
-      react-dom:
-        specifier: ^19.0.0
-        version: 19.2.5(react@19.2.5)
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
-      vite:
-        specifier: ^6.4.2
-        version: 6.4.2(@types/node@25.6.0)(jiti@1.21.7)(lightningcss@1.32.0)(yaml@2.8.3)
       vitest:
         specifier: ^4.1.4
-        version: 4.1.5(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(jsdom@26.1.0)(vite@6.4.2(@types/node@25.6.0)(jiti@1.21.7)(lightningcss@1.32.0)(yaml@2.8.3))
+        version: 4.1.5(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(jsdom@26.1.0)(vite@8.0.10(@types/node@25.6.0)(jiti@1.21.7)(yaml@2.8.3))
 
   packages/sandbox-k8s:
     dependencies:

@@ -43,7 +43,11 @@ covered in [`MANUAL-ACCEPTANCE.md`](MANUAL-ACCEPTANCE.md) once Task 21 lands.
 #    - docker
 #    - kind: https://kind.sigs.k8s.io/docs/user/quick-start/
 #    - helm 3: https://helm.sh/docs/intro/install/
-#    - an Anthropic API key in $ANTHROPIC_API_KEY
+#
+# Anthropic API key: NOT needed at install time. The first-run wizard
+# collects one from you and stores it in the credentials table. Set
+# anthropic.apiKey only if you want a host-wide shared key in env (which
+# also enables auto-titling on the host pod).
 
 # 1. Spin up a kind cluster.
 kind create cluster --name ax-next-dev
@@ -61,12 +65,16 @@ helm dependency update deploy/charts/ax-next
 #    pod's RBAC binding scopes there.
 kubectl create namespace ax-next-runners
 
-# 5. Install. Generate the credentials key fresh — it encrypts secrets at
-#    rest. Don't reuse keys across environments.
+# 5. Install. Generate the keys fresh — they encrypt secrets / sign
+#    cookies. SAVE the values somewhere safe; reusing them on every
+#    upgrade is required (regenerating credentials.key bricks every
+#    stored credential — see "Credentials key rotation" below).
+export AX_CREDENTIALS_KEY=$(openssl rand -base64 32)
+export AX_HTTP_COOKIE_KEY=$(openssl rand -hex 32)
 helm install ax-next deploy/charts/ax-next \
   -f deploy/charts/ax-next/kind-dev-values.yaml \
-  --set credentials.key=$(openssl rand -base64 32) \
-  --set anthropic.apiKey=$ANTHROPIC_API_KEY
+  --set credentials.key="$AX_CREDENTIALS_KEY" \
+  --set http.cookieKey="$AX_HTTP_COOKIE_KEY"
 
 # 6. Wait for the host pod and the postgres pod to come up.
 kubectl rollout status deployment/ax-next-host
@@ -93,7 +101,7 @@ helm lint deploy/charts/ax-next
 # or the runner namespace fences.
 helm template ax-next deploy/charts/ax-next \
   -f deploy/charts/ax-next/kind-dev-values.yaml \
-  --set credentials.key=dGVzdA== --set anthropic.apiKey=test
+  --set credentials.key=dGVzdA== --set http.cookieKey=$(printf '0%.0s' {1..64})
 ```
 
 Schema validation (`kubeconform` or `kubeval`) is recommended but not bundled
@@ -102,7 +110,7 @@ in this repo's tooling yet. If you have either installed locally:
 ```bash
 helm template ax-next deploy/charts/ax-next \
   -f deploy/charts/ax-next/kind-dev-values.yaml \
-  --set credentials.key=dGVzdA== --set anthropic.apiKey=test \
+  --set credentials.key=dGVzdA== --set http.cookieKey=$(printf '0%.0s' {1..64}) \
   | kubeconform -strict
 ```
 
@@ -141,17 +149,27 @@ every upgrade silently bricks all stored credentials.
 ```bash
 # DO THIS once, at install time, and save the output somewhere safe:
 export AX_CREDENTIALS_KEY=$(openssl rand -base64 32)
+export AX_HTTP_COOKIE_KEY=$(openssl rand -hex 32)
 helm install ax-next deploy/charts/ax-next \
   --set credentials.key="$AX_CREDENTIALS_KEY" \
-  --set anthropic.apiKey=$ANTHROPIC_API_KEY \
+  --set http.cookieKey="$AX_HTTP_COOKIE_KEY" \
   ...
 
-# DO THIS for every upgrade — same key, every time:
+# DO THIS for every upgrade — same keys, every time:
 helm upgrade ax-next deploy/charts/ax-next \
   --set credentials.key="$AX_CREDENTIALS_KEY" \
-  --set anthropic.apiKey=$ANTHROPIC_API_KEY \
+  --set http.cookieKey="$AX_HTTP_COOKIE_KEY" \
   ...
 ```
+
+Both keys are lookup-stable in the chart: if you forget to pass them on
+upgrade and the secret already exists, the existing values get reused.
+But that's a safety net, not the primary contract — pass them explicitly
+so the upgrade still works after the secret is recreated for any reason.
+
+`anthropic.apiKey` is also lookup-stable now (and optional in the first
+place, since the wizard collects one). Set it only if you wanted a
+host-wide shared key in env.
 
 The chart's `hook-secret.yaml` template has a belt-and-suspenders guard: if
 the Secret already exists with a `credentials-key`, we keep that value and

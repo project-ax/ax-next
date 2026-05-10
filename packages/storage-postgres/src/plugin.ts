@@ -32,7 +32,13 @@ export function createStoragePostgresPlugin(): Plugin {
     manifest: {
       name: PLUGIN_NAME,
       version: '0.0.0',
-      registers: ['storage:get', 'storage:set', 'storage:list-prefix', 'db:transact'],
+      registers: [
+        'storage:get',
+        'storage:set',
+        'storage:list-prefix',
+        'storage:delete-prefix',
+        'db:transact',
+      ],
       calls: ['database:get-instance'],
       subscribes: [],
     },
@@ -138,6 +144,29 @@ export function createStoragePostgresPlugin(): Plugin {
           entries: rows.map((r) => ({ key: r.key, value: new Uint8Array(r.value) })),
         };
       });
+
+      bus.registerService<{ prefix: string }, { deleted: number }>(
+        'storage:delete-prefix',
+        PLUGIN_NAME,
+        async (_ctx, { prefix }) => {
+          if (typeof prefix !== 'string' || prefix.length === 0) {
+            throw new PluginError({
+              code: 'invalid-payload',
+              plugin: PLUGIN_NAME,
+              message: 'prefix is required',
+            });
+          }
+          const escaped = prefix
+            .replace(/\\/g, '\\\\')
+            .replace(/%/g, '\\%')
+            .replace(/_/g, '\\_');
+          const result = await db!
+            .deleteFrom('storage_postgres_v1_kv')
+            .where(sql<boolean>`key LIKE ${escaped + '%'} ESCAPE '\\'`)
+            .executeTakeFirst();
+          return { deleted: Number(result.numDeletedRows ?? 0) };
+        },
+      );
     },
   };
 }
