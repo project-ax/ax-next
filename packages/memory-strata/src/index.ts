@@ -1,10 +1,7 @@
 // Public surface of @ax/memory-strata. Phase 1 = Level 0 hot tier
 // (system/{agent,user,session}.md) + Level 1 Observer (inbox/<ISO>.md
-// extraction with sensitive-content gate).
-//
-// Phase 2+ adds the Consolidator (inbox→docs merge), the Retriever
-// (FTS5 + optional vector + RRF), system/recent.md regeneration, and
-// the eval harness. None of those land here.
+// extraction with sensitive-content gate). Future phases land in
+// follow-up PRs; see docs/plans/memory-strata-design.md for the roadmap.
 
 export { createMemoryStrataPlugin } from './plugin.js';
 export type { MemoryStrataConfig } from './plugin.js';

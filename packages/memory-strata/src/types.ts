@@ -2,9 +2,9 @@
 //
 // Frontmatter shape mirrors the design doc's "Document Format" section,
 // trimmed to fields the Observer + bootstrap actually populate. Later
-// phases (Consolidator, Retriever) will add `supersedes`, `superseded_by`,
-// `last_accessed`, `access_count`, `importance`, etc. as those processes
-// land — they're not load-bearing today.
+// phases will add `supersedes`, `superseded_by`, `last_accessed`,
+// `access_count`, `importance`, etc. as those processes land — they're
+// not load-bearing today.
 
 export type MemoryFileType =
   | 'system/agent'
@@ -28,7 +28,7 @@ export interface MemoryFrontmatter {
   confidence: number;
   /** Hot-tier files are pinned; inbox observations are not. */
   pinned: boolean;
-  /** One-sentence summary; the Retriever will key off this in Phase 2. */
+  /** One-sentence summary; future retrieval will key off this. */
   summary: string;
   /** Free-form classification used by the Observer to bucket facts. */
   subject?: string;

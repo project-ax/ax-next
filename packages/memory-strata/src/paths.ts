@@ -15,7 +15,7 @@
 //     inbox/<ISO-8601>.md
 //
 // Phase 1 only writes system/* and inbox/*. The full layout (docs/, .strata/)
-// arrives with the Consolidator + Retriever in Phase 2.
+// arrives in a future phase — see docs/plans/memory-strata-design.md.
 
 export const MEMORY_ROOT = 'permanent/memory';
 export const SYSTEM_DIR = `${MEMORY_ROOT}/system`;
