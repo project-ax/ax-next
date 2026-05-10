@@ -473,9 +473,15 @@ importers:
       '@ax/ipc-server':
         specifier: workspace:*
         version: link:../ipc-server
+      '@ax/llm-anthropic':
+        specifier: workspace:*
+        version: link:../llm-anthropic
       '@ax/mcp-client':
         specifier: workspace:*
         version: link:../mcp-client
+      '@ax/memory-strata':
+        specifier: workspace:*
+        version: link:../memory-strata
       '@ax/onboarding':
         specifier: workspace:*
         version: link:../onboarding
@@ -1029,6 +1035,28 @@ importers:
         specifier: ^4.1.4
         version: 4.1.5(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(jsdom@26.1.0)(vite@8.0.10(@types/node@25.6.0)(jiti@1.21.7)(yaml@2.8.3))
 
+  packages/memory-strata:
+    dependencies:
+      '@ax/core':
+        specifier: workspace:*
+        version: link:../core
+      js-yaml:
+        specifier: ^4.1.0
+        version: 4.1.1
+    devDependencies:
+      '@types/js-yaml':
+        specifier: ^4.0.9
+        version: 4.0.9
+      '@types/node':
+        specifier: ^25.6.0
+        version: 25.6.0
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^4.1.4
+        version: 4.1.5(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(jsdom@26.1.0)(vite@8.0.10(@types/node@25.6.0)(jiti@1.21.7)(yaml@2.8.3))
+
   packages/onboarding:
     dependencies:
       '@ax/core':
@@ -1514,6 +1542,9 @@ importers:
       '@ax/mcp-client':
         specifier: workspace:*
         version: link:../../packages/mcp-client
+      '@ax/memory-strata':
+        specifier: workspace:*
+        version: link:../../packages/memory-strata
       '@ax/onboarding':
         specifier: workspace:*
         version: link:../../packages/onboarding

@@ -41,6 +41,7 @@
     "@ax/ipc-http": "workspace:*",
     "@ax/llm-anthropic": "workspace:*",
     "@ax/mcp-client": "workspace:*",
+    "@ax/memory-strata": "workspace:*",
     "@ax/onboarding": "workspace:*",
     "@ax/sandbox-k8s": "workspace:*",
     "@ax/session-postgres": "workspace:*",

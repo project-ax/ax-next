@@ -41,6 +41,8 @@
     "@ax/chat-orchestrator": "workspace:*",
     "@ax/agent-claude-sdk-runner": "workspace:*",
     "@ax/mcp-client": "workspace:*",
+    "@ax/llm-anthropic": "workspace:*",
+    "@ax/memory-strata": "workspace:*",
     "@ax/preset-k8s": "workspace:*",
     "@ax/test-harness": "workspace:*",
     "@ax/validator-skill": "workspace:*",
