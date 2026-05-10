@@ -28,6 +28,7 @@ import {
   createConversationTitlesPlugin,
   DEFAULT_TITLE_MODEL,
 } from '@ax/conversation-titles';
+import { createMemoryStrataPlugin } from '@ax/memory-strata';
 import { createChannelWebServerPlugin } from '@ax/channel-web/server';
 import { createOnboardingPlugin, type OnboardingConfig } from '@ax/onboarding';
 
@@ -685,6 +686,11 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
     }
     plugins.push(createLlmAnthropicPlugin());
     plugins.push(createConversationTitlesPlugin({ model: titleModel }));
+    // @ax/memory-strata Phase 1: hot-tier markdown + Observer extracting
+    // facts to permanent/memory/inbox/. Piggybacks on the same env gate
+    // because the Observer needs `llm:call:anthropic` (registered above).
+    // Splitting the gate into separate config knobs is a Phase 2 concern.
+    plugins.push(createMemoryStrataPlugin());
   }
 
   // ----- 10. channel-web HTTP surface -----------------------------------

@@ -21,6 +21,8 @@ import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
 import { createIpcServerPlugin } from '@ax/ipc-server';
 import { createChatOrchestratorPlugin } from '@ax/chat-orchestrator';
 import { createToolDispatcherPlugin, createMcpClientPlugin } from '@ax/mcp-client';
+import { createLlmAnthropicPlugin } from '@ax/llm-anthropic';
+import { createMemoryStrataPlugin } from '@ax/memory-strata';
 import { createDevAgentsStubPlugin } from './dev-agents-stub.js';
 import { AxConfigSchema, type AxConfig, type AxConfigInput } from './config/schema.js';
 import { loadAxConfig } from './config/load.js';
@@ -236,6 +238,23 @@ export async function main(opts: MainOptions): Promise<number> {
   // Bootstrap's topological sort handles this either way, but keeping the
   // push order aligned with the call graph keeps readers grounded.
   plugins.push(createMcpClientPlugin());
+
+  // Memory-strata (@ax/memory-strata) — Phase 1: hot-tier markdown +
+  // Observer extracting facts to permanent/memory/inbox/. The Observer
+  // calls llm:call:anthropic, so we load both as a set behind the
+  // ANTHROPIC_API_KEY env gate. CLI users without the env var get the
+  // pre-Phase-1 behavior (no host-side LLM, no memory writes); users
+  // with it get auto-extraction. This mirrors the k8s preset's pattern
+  // for @ax/conversation-titles + @ax/llm-anthropic — both load behind
+  // the same env condition or neither does.
+  //
+  // The runner still reaches Anthropic via the credential-proxy for
+  // chat itself; this env-driven LLM plugin is a SEPARATE host-side
+  // capability used only by host plugins (titles, memory observer).
+  if (process.env.ANTHROPIC_API_KEY !== undefined && process.env.ANTHROPIC_API_KEY.length > 0) {
+    plugins.push(createLlmAnthropicPlugin());
+    plugins.push(createMemoryStrataPlugin());
+  }
 
   // Library-mode test-only: extra plugins appended last so they can add
   // subscribers that observe the full plugin set.
