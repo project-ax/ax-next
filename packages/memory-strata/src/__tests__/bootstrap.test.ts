@@ -1,0 +1,102 @@
+import { describe, expect, it, beforeEach, afterEach } from 'vitest';
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { load as yamlLoad } from 'js-yaml';
+import { bootstrapMemoryTree } from '../bootstrap.js';
+import { workspaceMemoryRoot, systemFile, MEMORY_ROOT } from '../paths.js';
+
+let workspaceRoot: string;
+
+beforeEach(async () => {
+  workspaceRoot = await mkdtemp(join(tmpdir(), 'memory-strata-bootstrap-'));
+});
+
+afterEach(async () => {
+  await rm(workspaceRoot, { recursive: true, force: true });
+});
+
+function splitFrontmatter(text: string): { fm: Record<string, unknown>; body: string } {
+  const m = /^---\n([\s\S]*?)\n---\n([\s\S]*)$/.exec(text);
+  if (m === null) throw new Error('no frontmatter found');
+  const fm = yamlLoad(m[1] ?? '') as Record<string, unknown>;
+  return { fm, body: m[2] ?? '' };
+}
+
+describe('bootstrapMemoryTree', () => {
+  it('seeds system/{agent,user,session}.md with valid frontmatter', async () => {
+    await bootstrapMemoryTree({
+      workspaceRoot,
+      agentSystemPrompt: 'You are a helpful assistant who likes long walks.',
+    });
+
+    const root = join(workspaceRoot, MEMORY_ROOT);
+    expect((await stat(root)).isDirectory()).toBe(true);
+
+    for (const name of ['agent', 'user', 'session'] as const) {
+      const path = join(workspaceRoot, systemFile(name));
+      const raw = await readFile(path, 'utf8');
+      const { fm } = splitFrontmatter(raw);
+
+      expect(fm['id']).toBe(name);
+      expect(fm['type']).toBe(`system/${name}`);
+      expect(typeof fm['created']).toBe('string');
+      expect(Number.isNaN(Date.parse(fm['created'] as string))).toBe(false);
+      expect(fm['confidence']).toBe(1.0);
+      expect(fm['pinned']).toBe(true);
+      expect(typeof fm['summary']).toBe('string');
+    }
+  });
+
+  it("seeds agent.md body from the agent's system prompt", async () => {
+    const prompt = 'You are Atlas, a friendly research assistant.';
+    await bootstrapMemoryTree({ workspaceRoot, agentSystemPrompt: prompt });
+
+    const raw = await readFile(join(workspaceRoot, systemFile('agent')), 'utf8');
+    const { body } = splitFrontmatter(raw);
+    expect(body).toContain(prompt);
+  });
+
+  it('is idempotent — second call leaves existing files untouched', async () => {
+    await bootstrapMemoryTree({ workspaceRoot, agentSystemPrompt: 'first' });
+    const path = join(workspaceRoot, systemFile('agent'));
+    const before = await readFile(path, 'utf8');
+
+    await bootstrapMemoryTree({ workspaceRoot, agentSystemPrompt: 'second' });
+    const after = await readFile(path, 'utf8');
+
+    expect(after).toBe(before);
+  });
+
+  it('isolates per agent inside the same workspace root', async () => {
+    const second = join(workspaceRoot, 'second-agent-workspace');
+    await bootstrapMemoryTree({
+      workspaceRoot,
+      agentSystemPrompt: 'agent A',
+    });
+    await bootstrapMemoryTree({
+      workspaceRoot: second,
+      agentSystemPrompt: 'agent B',
+    });
+
+    const a = await readFile(join(workspaceRoot, systemFile('agent')), 'utf8');
+    const b = await readFile(join(second, systemFile('agent')), 'utf8');
+    expect(a).toContain('agent A');
+    expect(b).toContain('agent B');
+  });
+});
+
+describe('paths', () => {
+  it('workspaceMemoryRoot returns "permanent/memory" with no leading slash', () => {
+    const p = workspaceMemoryRoot();
+    expect(p.startsWith('/')).toBe(false);
+    expect(p).toBe(MEMORY_ROOT);
+    expect(p).toBe('permanent/memory');
+  });
+
+  it('systemFile builds the correct relative path for each fixed name', () => {
+    expect(systemFile('agent')).toBe('permanent/memory/system/agent.md');
+    expect(systemFile('user')).toBe('permanent/memory/system/user.md');
+    expect(systemFile('session')).toBe('permanent/memory/system/session.md');
+  });
+});
