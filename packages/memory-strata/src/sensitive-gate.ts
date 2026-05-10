@@ -26,7 +26,7 @@ export type RejectionKind =
 
 export interface RejectedFact {
   kind: RejectionKind;
-  /** Truncated match excerpt — never the full credential. Up to 12 chars. */
+  /** Truncated match excerpt — never the full credential. Up to 4 chars + ellipsis. */
   excerpt: string;
 }
 
@@ -83,7 +83,12 @@ const PATTERNS: Pattern[] = [
   { kind: 'secret-assignment', re: /\bsecret\s*[:=]\s*\S+/gi },
 ];
 
-const EXCERPT_MAX = 12;
+// Excerpt length for log lines. Short enough that even a fully-leaked
+// match wouldn't disclose a working credential — 4 chars of an
+// `sk-ant-…` key, AKIA prefix, or `bob@` is enough to disambiguate
+// pattern hits visually without giving an attacker reading the audit
+// log usable material.
+const EXCERPT_PREFIX_LEN = 4;
 
 export function filterSensitive(text: string): FilterResult {
   const rejections: RejectedFact[] = [];
@@ -104,9 +109,15 @@ export function filterSensitive(text: string): FilterResult {
 /**
  * Truncate a match for logging. We never want the full credential in any
  * audit trail — even an "I rejected this" log line shouldn't carry it.
- * Twelve chars is enough to disambiguate visually without leaking.
+ *
+ * ALWAYS truncates, even for short inputs. An earlier version returned
+ * the raw match when length was below the threshold, which leaked
+ * complete short secrets (a 6-char email, an 8-char `secret=a`, a
+ * 10-char `password=a`) verbatim into operator logs. Per CLAUDE.md
+ * invariant 5, untrusted content must not survive into operator-visible
+ * surfaces in usable form.
  */
 function redactExcerpt(raw: string): string {
-  if (raw.length <= EXCERPT_MAX) return raw;
-  return `${raw.slice(0, EXCERPT_MAX)}…`;
+  if (raw.length <= EXCERPT_PREFIX_LEN) return '…';
+  return `${raw.slice(0, EXCERPT_PREFIX_LEN)}…`;
 }

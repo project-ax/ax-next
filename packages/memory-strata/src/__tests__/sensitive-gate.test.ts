@@ -61,6 +61,28 @@ describe('filterSensitive', () => {
     expect(result.rejections).toEqual([]);
   });
 
+  it('redacts short secrets in the excerpt — never returns the full match', () => {
+    // Regression for PR #61 review: redactExcerpt used to return the raw
+    // match if it was ≤ 12 chars, which leaked complete short
+    // credentials into operator logs (a 6-char email, an 8-char
+    // `secret=a`, a 10-char `password=a`). The fix always truncates.
+    const samples = [
+      { input: 'a@b.co', kind: 'email' as const },
+      { input: 'secret=x', kind: 'secret-assignment' as const },
+      { input: 'password=y', kind: 'password-assignment' as const },
+    ];
+    for (const { input, kind } of samples) {
+      const result = filterSensitive(input);
+      expect(result.kept).toBe(false);
+      const hit = result.rejections.find((r) => r.kind === kind);
+      expect(hit).toBeDefined();
+      // The excerpt MUST NOT echo the full short input back.
+      expect(hit!.excerpt).not.toBe(input);
+      // ... and the bytes after the first 4 chars must not appear.
+      expect(hit!.excerpt.slice(4)).toBe('…');
+    }
+  });
+
   it('reports every distinct violation in a single fact', () => {
     // I7 audit trail: the gate should not stop at the first match; we want
     // to see every category that fired so the rejection log is complete.
