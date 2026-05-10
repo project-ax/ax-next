@@ -13,18 +13,23 @@ import { fileURLToPath } from 'node:url';
 // is on src/, not src/__tests__/ — the test file itself necessarily
 // names these strings to assert their absence.
 //
-// Phase 2's PR will delete the matching entries from FORBIDDEN at the
-// same time it lands the real implementation, so the audit trail in
-// git history shows exactly when each capability shipped.
+// Entries are removed from FORBIDDEN at the same time their real
+// implementation lands, so the audit trail in git history shows exactly
+// when each capability shipped.
+//
+// Phase 2A (Task 2A.2) landed: docs/ + recent.md path helpers + doc types.
+// `recent.md` was removed from FORBIDDEN because recentFile() necessarily
+// exposes that literal path. All other Phase 2A+ subsystems remain FORBIDDEN
+// until their real implementations ship.
+// Phase 2B will remove Retriever / FTS5 / RRF when the retrieval interface ships.
 
 const FORBIDDEN: ReadonlyArray<{ token: string; reason: string }> = [
-  { token: 'FTS5', reason: 'Phase 2 Retriever — keyword index not yet shipped' },
-  { token: 'RRF', reason: 'Phase 2 Retriever — reciprocal rank fusion not yet shipped' },
-  { token: 'Consolidator', reason: 'Phase 2 — inbox→docs merge not yet shipped' },
-  { token: 'Retriever', reason: 'Phase 2 — retrieval interface not yet shipped' },
+  { token: 'Consolidator', reason: 'Phase 2A — inbox→docs merge not yet shipped' },
+  { token: 'FTS5', reason: 'Phase 2B Retriever — keyword index not yet shipped' },
+  { token: 'RRF', reason: 'Phase 2B Retriever — reciprocal rank fusion not yet shipped' },
+  { token: 'Retriever', reason: 'Phase 2B — retrieval interface not yet shipped' },
   { token: 'hnswlib', reason: 'Phase 3 — vector index not yet shipped' },
   { token: 'embeddings', reason: 'Phase 3 — vector index not yet shipped' },
-  { token: 'recent.md', reason: 'Phase 2 — system/recent.md regeneration not yet shipped' },
 ];
 
 // fileURLToPath, not URL.pathname: the latter prefixes a leading `/`
