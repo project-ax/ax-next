@@ -236,14 +236,14 @@ describe('Onboarding wizard — end-to-end happy path canary', () => {
       expect(statusOut.status).toBe('completed');
 
       // b) credentials:list (scope: global) — exactly one entry, kind 'api-key',
-      //    ref 'anthropic-default'
+      //    ref 'anthropic-api'
       const credsOut = await harness.bus.call<
         { scope: string; ownerId: null },
         { credentials: Array<{ ref: string; kind: string }> }
       >('credentials:list', harness.ctx(), { scope: 'global', ownerId: null });
       expect(credsOut.credentials).toHaveLength(1);
       expect(credsOut.credentials[0].kind).toBe('api-key');
-      expect(credsOut.credentials[0].ref).toBe('anthropic-default');
+      expect(credsOut.credentials[0].ref).toBe('anthropic-api');
 
       // c) GET /admin/me — returns the admin user with isAdmin: true.
       //    Also gives us the adminUserId needed for agents:list-for-user.
