@@ -1,4 +1,4 @@
-import { mkdir, stat, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { buildMarkdownFile } from './frontmatter.js';
 import { systemFile, type SystemFileName } from './paths.js';
@@ -37,27 +37,28 @@ export async function bootstrapMemoryTree(
   for (const name of ['agent', 'user', 'session'] as const) {
     const rel = systemFile(name);
     const abs = join(input.workspaceRoot, rel);
-    if (await fileExists(abs)) continue;
 
     await mkdir(dirname(abs), { recursive: true });
 
     const fm = systemFrontmatter(name, nowIso);
     const body = systemBody(name, input.agentSystemPrompt);
-    await writeFile(abs, buildMarkdownFile(fm, body), 'utf8');
-    created.push(rel);
+
+    // Atomic create-if-not-exists. `wx` is `O_CREAT | O_EXCL` — exactly
+    // one writer wins on a race; the rest get EEXIST. Prevents the
+    // TOCTOU between a stat-then-write pattern, which would let two
+    // concurrent bootstrapMemoryTree calls both pass the existence
+    // check and stomp on each other.
+    try {
+      await writeFile(abs, buildMarkdownFile(fm, body), { encoding: 'utf8', flag: 'wx' });
+      created.push(rel);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+      // Another caller (or a previous chat) seeded this file. That's
+      // the idempotent path — leave their content alone.
+    }
   }
 
   return { created };
-}
-
-async function fileExists(abs: string): Promise<boolean> {
-  try {
-    await stat(abs);
-    return true;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false;
-    throw err;
-  }
 }
 
 function systemFrontmatter(name: SystemFileName, nowIso: string): MemoryFrontmatter {

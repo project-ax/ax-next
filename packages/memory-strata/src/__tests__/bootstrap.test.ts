@@ -68,6 +68,30 @@ describe('bootstrapMemoryTree', () => {
     expect(after).toBe(before);
   });
 
+  it('serializes concurrent bootstraps without corrupting agent.md', async () => {
+    // Regression: a stat-then-write fileExists guard let two concurrent
+    // callers both pass the check and race on the write, producing a file
+    // whose content was a torn mix or whose mtime jumped backwards. The
+    // fix is `writeFile(..., { flag: 'wx' })` — exactly one writer wins.
+    // Each parallel call uses a distinct prompt; the file must end up
+    // containing exactly one of them, never a mixture.
+    const prompts = Array.from({ length: 20 }, (_, i) => `prompt-${i}`);
+    const results = await Promise.allSettled(
+      prompts.map((p) =>
+        bootstrapMemoryTree({ workspaceRoot, agentSystemPrompt: p }),
+      ),
+    );
+
+    // Every call must resolve cleanly — EEXIST is swallowed inside.
+    for (const r of results) {
+      expect(r.status).toBe('fulfilled');
+    }
+
+    const raw = await readFile(join(workspaceRoot, systemFile('agent')), 'utf8');
+    const winners = prompts.filter((p) => raw.includes(p));
+    expect(winners).toHaveLength(1);
+  });
+
   it('isolates per agent inside the same workspace root', async () => {
     const second = join(workspaceRoot, 'second-agent-workspace');
     await bootstrapMemoryTree({
