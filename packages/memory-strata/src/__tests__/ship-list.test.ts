@@ -19,12 +19,12 @@ import { fileURLToPath } from 'node:url';
 //
 // Phase 2A (Task 2A.2) landed: docs/ + recent.md path helpers + doc types.
 // `recent.md` was removed from FORBIDDEN because recentFile() necessarily
-// exposes that literal path. All other Phase 2A+ subsystems remain FORBIDDEN
-// until their real implementations ship.
+// exposes that literal path.
+// Phase 2A (Task 2A.5) landed: cluster.ts — `Consolidator` removed from
+// FORBIDDEN because the Phase 2A inbox→docs pipeline is now actively shipping.
 // Phase 2B will remove Retriever / FTS5 / RRF when the retrieval interface ships.
 
 const FORBIDDEN: ReadonlyArray<{ token: string; reason: string }> = [
-  { token: 'Consolidator', reason: 'Phase 2A — inbox→docs merge not yet shipped' },
   { token: 'FTS5', reason: 'Phase 2B Retriever — keyword index not yet shipped' },
   { token: 'RRF', reason: 'Phase 2B Retriever — reciprocal rank fusion not yet shipped' },
   { token: 'Retriever', reason: 'Phase 2B — retrieval interface not yet shipped' },
