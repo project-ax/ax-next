@@ -1,12 +1,17 @@
 import type { AgentContext, AgentOutcome, HookBus, Plugin } from '@ax/core';
 import { bootstrapMemoryTree } from './bootstrap.js';
+import { runConsolidation } from './consolidator.js';
+import { createDebouncer, type Debouncer } from './debounce.js';
 import { runObserver, type LlmCallFn } from './observer.js';
+import { raceTimeout } from './timeout.js';
 
 const PLUGIN_NAME = '@ax/memory-strata';
 const PLUGIN_VERSION = '0.0.0';
 
 const DEFAULT_OBSERVER_TIMEOUT_MS = 30_000;
 const DEFAULT_LLM_HOOK = 'llm:call:anthropic';
+const DEFAULT_CONSOLIDATOR_DEBOUNCE_MS = 5_000;
+const DEFAULT_CONSOLIDATOR_TIMEOUT_MS = 60_000;
 
 export interface MemoryStrataConfig {
   /**
@@ -21,6 +26,25 @@ export interface MemoryStrataConfig {
    * drops the run cleanly with no inbox writes. Defaults to 30 s.
    */
   observerTimeoutMs?: number;
+  /**
+   * Per-agent debounce window for the Consolidator (ms). Multiple chat:end
+   * events within this window coalesce into a single consolidation pass.
+   * Default 5 000 ms (I10).
+   */
+  consolidatorDebounceMs?: number;
+  /**
+   * Hard ceiling on a single consolidation pass (ms). A pass that exceeds
+   * this is abandoned cleanly — no partial writes because every doc write
+   * is atomic (write-to-temp + rename). Default 60 000 ms (I10).
+   */
+  consolidatorTimeoutMs?: number;
+  /**
+   * Test-only seam — captures the per-plugin Debouncer so tests can
+   * call `flush()` deterministically. NOT for production use.
+   */
+  testHooks?: {
+    onDebouncerCreated?(debouncer: Debouncer): void;
+  };
 }
 
 interface AgentResolveResponse {
@@ -53,6 +77,21 @@ interface ChatEndPayload {
 export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
   const llmCallHook = cfg.llmCallHook ?? DEFAULT_LLM_HOOK;
   const observerTimeoutMs = cfg.observerTimeoutMs ?? DEFAULT_OBSERVER_TIMEOUT_MS;
+  const consolidatorDebounceMs = cfg.consolidatorDebounceMs ?? DEFAULT_CONSOLIDATOR_DEBOUNCE_MS;
+  const consolidatorTimeoutMs = cfg.consolidatorTimeoutMs ?? DEFAULT_CONSOLIDATOR_TIMEOUT_MS;
+
+  // Per-agent debouncer for the Consolidator (I10). Created at plugin
+  // construction so it is shared across all chat:end firings for this
+  // plugin instance.
+  //
+  // No `shutdown()` flush of pending debouncer timers — Plugin.shutdown
+  // is resource-release only (per @ax/core contract). The debouncer's
+  // `timer.unref?.()` ensures pending passes don't keep Node alive on
+  // SIGINT; if a pass is in-flight at shutdown it gets the OS termination,
+  // which is fine because inbox state is canonical and the next chat:end
+  // after restart will re-cluster + re-promote anything that was pending.
+  const debouncer = createDebouncer(consolidatorDebounceMs);
+  cfg.testHooks?.onDebouncerCreated?.(debouncer);
 
   return {
     manifest: {
@@ -89,6 +128,7 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
         },
       );
 
+      // Observer subscriber (Phase 1). Fire-and-forget per I6. Unchanged.
       bus.subscribe<ChatEndPayload>('chat:end', PLUGIN_NAME, async (ctx, payload) => {
         // Fire-and-forget per I6. We DELIBERATELY don't await the
         // Observer — chat:end's other subscribers shouldn't wait on a
@@ -104,7 +144,39 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
         );
         return undefined;
       });
+
+      // Consolidator subscriber (Phase 2A, I10). Returns immediately —
+      // the debouncer schedules the actual consolidation pass to run
+      // after the debounce window, coalescing rapid back-to-back chats
+      // for the same agent into a single pass. The pass is bounded by
+      // consolidatorTimeoutMs (default 60 s); exceeded passes are
+      // abandoned cleanly (atomic writes guarantee no partial state).
+      bus.subscribe<ChatEndPayload>('chat:end', PLUGIN_NAME, async (ctx) => {
+        debouncer.schedule(ctx.agentId, async () => {
+          try {
+            await raceTimeout(
+              runConsolidation({
+                workspaceRoot: ctx.workspace.rootPath,
+                now: new Date(),
+                logger: {
+                  info: (event, fields) => ctx.logger.info(event, fields),
+                  warn: (event, fields) => ctx.logger.warn(event, fields),
+                },
+              }),
+              consolidatorTimeoutMs,
+              'consolidator',
+            );
+          } catch (err) {
+            ctx.logger.warn('memory_strata_consolidator_failed', {
+              err: err instanceof Error ? err : new Error(String(err)),
+              agentId: ctx.agentId,
+            });
+          }
+        });
+        return undefined;
+      });
     },
+
   };
 }
 
