@@ -93,6 +93,13 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
   const debouncer = createDebouncer(consolidatorDebounceMs);
   cfg.testHooks?.onDebouncerCreated?.(debouncer);
 
+  // I10 serialization: track the underlying runConsolidation Promise for each
+  // agent so that a new pass can wait for the prior pass's actual fs work to
+  // settle before starting. Without this, raceTimeout abandons the caller but
+  // the underlying work keeps mutating inbox/ and docs/; if a new chat:end
+  // arrives before that work settles, two passes race on the same files.
+  const inflightWork = new Map<string, Promise<unknown>>();
+
   return {
     manifest: {
       name: PLUGIN_NAME,
@@ -151,21 +158,42 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
       // for the same agent into a single pass. The pass is bounded by
       // consolidatorTimeoutMs (default 60 s); exceeded passes are
       // abandoned cleanly (atomic writes guarantee no partial state).
+      //
+      // I10 serialization (C4 fix): before starting a new pass we wait for
+      // the prior pass's underlying runConsolidation promise to settle, even
+      // if raceTimeout already gave up on it. Without this, a slow pass that
+      // times out keeps mutating inbox/ and docs/ in the background; the next
+      // chat:end then starts a second pass that races on the same files.
       bus.subscribe<ChatEndPayload>('chat:end', PLUGIN_NAME, async (ctx) => {
         debouncer.schedule(ctx.agentId, async () => {
+          // Wait for any prior pass's actual fs work to complete before starting
+          // a new one — even if our caller already gave up via raceTimeout.
+          const prior = inflightWork.get(ctx.agentId);
+          if (prior !== undefined) {
+            try { await prior; } catch { /* prior pass errors already logged */ }
+          }
+
+          const work = runConsolidation({
+            workspaceRoot: ctx.workspace.rootPath,
+            now: new Date(),
+            logger: {
+              info: (event, fields) => ctx.logger.info(event, fields),
+              warn: (event, fields) => ctx.logger.warn(event, fields),
+            },
+          });
+          inflightWork.set(ctx.agentId, work);
+          // Detach: the inflight slot is cleared when the underlying work settles,
+          // independent of when our caller stops awaiting (via raceTimeout).
+          void work
+            .catch(() => {})
+            .finally(() => {
+              if (inflightWork.get(ctx.agentId) === work) {
+                inflightWork.delete(ctx.agentId);
+              }
+            });
+
           try {
-            await raceTimeout(
-              runConsolidation({
-                workspaceRoot: ctx.workspace.rootPath,
-                now: new Date(),
-                logger: {
-                  info: (event, fields) => ctx.logger.info(event, fields),
-                  warn: (event, fields) => ctx.logger.warn(event, fields),
-                },
-              }),
-              consolidatorTimeoutMs,
-              'consolidator',
-            );
+            await raceTimeout(work, consolidatorTimeoutMs, 'consolidator');
           } catch (err) {
             ctx.logger.warn('memory_strata_consolidator_failed', {
               err: err instanceof Error ? err : new Error(String(err)),

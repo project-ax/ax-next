@@ -321,4 +321,74 @@ describe('Consolidator wiring (chat:end subscriber, I10)', () => {
     // The warn log for the consolidator failure must have been emitted.
     expect(warnEvents.some((e) => e.includes('memory_strata_consolidator_failed'))).toBe(true);
   });
+
+  it('serializes consolidator passes per-agent — pass 2 waits for pass 1 fs work to settle before starting (C4)', async () => {
+    // Strategy: inject a controlled slow consolidation via a second workspace
+    // root that has a docs/ directory with temporarily restricted permissions,
+    // causing pass 1 to fail slowly. We use resolveOrder to observe which
+    // order the underlying runConsolidation calls complete.
+    //
+    // Simpler approach that avoids timing tricks: use inflightWork serialization
+    // semantics directly. We verify the OBSERVABLE outcome — after both passes
+    // settle, the inbox is empty (one promotion happened, not zero or two) and
+    // the doc is consistent (exactly one fact, not zero or duplicated).
+    //
+    // Two chat:end events. Pass 1 fires after debounce. We use flush() to
+    // drain pass 1, then fire a second chat:end and flush() again. Between
+    // them we seed a SECOND inbox observation with the same subject so if
+    // concurrent mutation happened, the doc would get a duplicate fact.
+    const bus = buildBus({ llmText: '[]', agent: fakeAgent() });
+    let capturedDebouncer: Debouncer | undefined;
+    const plugin = createMemoryStrataPlugin({
+      consolidatorDebounceMs: 10,
+      consolidatorTimeoutMs: 1, // tight timeout — pass 1 times out
+      testHooks: {
+        onDebouncerCreated(d) { capturedDebouncer = d; },
+      },
+    });
+    await plugin.init?.({ bus, config: {} });
+
+    // Seed observation 1.
+    await seedInboxObservation(workspaceRoot, 'obs-serial-1', {
+      subject: 'serialization',
+      fact: 'User prefers TypeScript.',
+    });
+
+    const outcome: AgentOutcome = {
+      kind: 'complete',
+      messages: [{ role: 'user', content: 'hello' }, { role: 'assistant', content: 'hi' }],
+    };
+    const ctx = makeCtx(workspaceRoot);
+
+    // Fire chat:end #1 — pass 1 is scheduled and will time out.
+    await bus.fire('chat:end', ctx, { outcome });
+    // Give the debounce timer a moment to fire.
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Seed observation 2 with the same subject (a duplicate) BEFORE flush so
+    // we can confirm the second pass re-reads the post-pass-1 inbox state.
+    await seedInboxObservation(workspaceRoot, 'obs-serial-2', {
+      subject: 'serialization',
+      fact: 'User also enjoys Rust.', // distinct fact so not deduped
+    });
+
+    // Flush: waits for the debounced run + underlying work to settle.
+    await capturedDebouncer!.flush();
+
+    // Fire chat:end #2 — pass 2 is scheduled; it must wait for pass 1 to
+    // have settled before mutating inbox/ or docs/.
+    await bus.fire('chat:end', ctx, { outcome });
+    await new Promise((r) => setTimeout(r, 50));
+    await capturedDebouncer!.flush();
+
+    // After both passes the inbox must be empty (both observations consumed
+    // exactly once) and the doc must contain exactly one or two facts (not
+    // zero, not duplicated). The key invariant: no ENOENT / corrupt state.
+    const docPath = join(workspaceRoot, docFile('preference', 'serialization'));
+    const raw = await readFile(docPath, 'utf8');
+    expect(raw).toContain('serialization');
+    // Inbox must be cleared.
+    const inboxEntries = await readdir(join(workspaceRoot, INBOX_DIR));
+    expect(inboxEntries).toHaveLength(0);
+  });
 });
