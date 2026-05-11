@@ -5,6 +5,7 @@ import { createDebouncer, type Debouncer } from './debounce.js';
 import { runObserver, type LlmCallFn } from './observer.js';
 import { registerReindexer } from './reindex.js';
 import { raceTimeout } from './timeout.js';
+import { registerMemorySearch } from './tools/memory-search.js';
 
 const PLUGIN_NAME = '@ax/memory-strata';
 const PLUGIN_VERSION = '0.0.0';
@@ -105,7 +106,7 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
     manifest: {
       name: PLUGIN_NAME,
       version: PLUGIN_VERSION,
-      registers: ['memory:doc:written'],
+      registers: ['memory:doc:written', 'tool:execute:memory_search'],
       // I5: minimal capability list. We `agents:resolve` to read the
       // agent's systemPrompt + model; we call llmCallHook for extraction.
       // No filesystem capability is declared at the manifest level
@@ -123,11 +124,20 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
       // If a test harness loads memory-strata in isolation it must either
       // register a no-op service for 'memory:index:upsert' or skip
       // bootstrap() and drive bus.subscribe/fire directly.
-      calls: ['agents:resolve', llmCallHook, 'memory:index:upsert'],
+      //
+      // `tool:register` is called at init time to register the
+      // memory_search agent tool with the tool catalog (tool-dispatcher).
+      calls: ['agents:resolve', llmCallHook, 'memory:index:upsert', 'tool:register'],
       subscribes: ['chat:start', 'chat:end', 'memory:doc:written'],
     },
 
-    init({ bus }) {
+    async init({ bus }) {
+      // Register the memory_search agent tool with the tool catalog.
+      // tool:register is a service hook provided by @ax/tool-dispatcher;
+      // we await it here so the tool is visible in the catalog before
+      // any tool:list call arrives.
+      await registerMemorySearch(bus);
+
       bus.subscribe<ChatStartPayload>(
         'chat:start',
         PLUGIN_NAME,
