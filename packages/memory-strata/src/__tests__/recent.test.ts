@@ -111,8 +111,13 @@ describe('regenerateRecent', () => {
     // Active Projects: entity docs updated within 7 days of NOW (2026-05-10)
     // project-5 updated 2026-05-05, project-4 updated 2026-05-04 — both within window
     // project-1 updated 2026-05-01 — 9 days ago, outside 7-day window
-    expect(content).toContain('project-5');
-    expect(content).toContain('project-4');
+    const activeProjectsSection = content.slice(
+      content.indexOf('## Active Projects'),
+      content.indexOf('## Recent Changes'),
+    );
+    expect(activeProjectsSection).toContain('project-5');
+    expect(activeProjectsSection).toContain('project-4');
+    expect(activeProjectsSection).not.toContain('project-1');
 
     // Recent Changes: top 5 most recently updated docs
     expect(content).toContain('entity/project-5');
@@ -274,12 +279,17 @@ describe('regenerateRecent', () => {
     const content = await readFile(join(workspaceRoot, result.path), 'utf8');
 
     const recentSection = content.slice(content.indexOf('## Recent Changes'));
-    // Should contain items 2-6 (newest), not item 1 (oldest — 6th slot dropped)
-    expect(recentSection).toContain('preference/item-6');
-    expect(recentSection).toContain('preference/item-5');
-    expect(recentSection).toContain('preference/item-4');
-    expect(recentSection).toContain('preference/item-3');
-    expect(recentSection).toContain('preference/item-2');
+    // Should contain items 2-6 (newest), not item 1 (oldest — 6th slot dropped),
+    // and must appear in newest-first order (item-6 before item-5 before … item-2).
+    const positions = [
+      'preference/item-6',
+      'preference/item-5',
+      'preference/item-4',
+      'preference/item-3',
+      'preference/item-2',
+    ].map((token) => recentSection.indexOf(token));
+    expect(positions.every((p) => p >= 0)).toBe(true);
+    expect(positions).toEqual([...positions].sort((a, b) => a - b));
     expect(recentSection).not.toContain('preference/item-1');
   });
 });
