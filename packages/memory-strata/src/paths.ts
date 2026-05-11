@@ -12,16 +12,26 @@
 //     system/agent.md
 //     system/user.md
 //     system/session.md
+//     system/recent.md          ← Phase 2A: cached consolidation view
 //     inbox/<ISO-8601>.md
+//     docs/<category>/<slug>.md ← Phase 2A: promoted fact pages
 //
-// Phase 1 only writes system/* and inbox/*. The full layout (docs/, .strata/)
-// arrives in a future phase — see docs/plans/memory-strata-design.md.
+// Phase 1 wrote system/* and inbox/*. Phase 2A adds docs/ and recent.md.
+// See docs/plans/memory-strata-design.md and the Phase 2A plan.
 
 export const MEMORY_ROOT = 'permanent/memory';
 export const SYSTEM_DIR = `${MEMORY_ROOT}/system`;
 export const INBOX_DIR = `${MEMORY_ROOT}/inbox`;
+export const DOCS_DIR = `${MEMORY_ROOT}/docs`;
 
 export type SystemFileName = 'agent' | 'user' | 'session';
+
+export type DocCategory =
+  | 'entity'
+  | 'preference'
+  | 'decision'
+  | 'episode'
+  | 'general';
 
 export function workspaceMemoryRoot(): string {
   return MEMORY_ROOT;
@@ -40,4 +50,22 @@ export function inboxFile(timestamp: Date, suffix?: string): string {
   const iso = timestamp.toISOString().replace(/:/g, '-');
   const tail = suffix !== undefined ? `-${suffix}` : '';
   return `${INBOX_DIR}/${iso}${tail}.md`;
+}
+
+/**
+ * `docs/<category>/<slug>.md`. Caller is responsible for slugifying the
+ * subject; `slugify()` enforces no path traversal so a malformed slug
+ * here is a programming error, not a security one.
+ */
+export function docFile(category: DocCategory, slug: string): string {
+  return `${DOCS_DIR}/${category}/${slug}.md`;
+}
+
+export function categoryDir(category: DocCategory): string {
+  return `${DOCS_DIR}/${category}`;
+}
+
+/** Cached view; regenerated end-to-end on every consolidation pass. */
+export function recentFile(): string {
+  return `${SYSTEM_DIR}/recent.md`;
 }

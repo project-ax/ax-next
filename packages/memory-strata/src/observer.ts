@@ -5,6 +5,7 @@ import type { AgentMessage, LlmCallInput, LlmCallOutput } from '@ax/core';
 import { buildMarkdownFile } from './frontmatter.js';
 import { inboxFile } from './paths.js';
 import { filterSensitive, type RejectionKind } from './sensitive-gate.js';
+import { raceTimeout, TimeoutError } from './timeout.js';
 import type { MemoryFrontmatter, Observation } from './types.js';
 
 // Observer (design § "1. Observer"). Pure async function on
@@ -212,26 +213,3 @@ async function writeInboxObservation(
   return rel;
 }
 
-class TimeoutError extends Error {
-  constructor() {
-    super('observer-llm-timeout');
-    this.name = 'TimeoutError';
-  }
-}
-
-function raceTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new TimeoutError()), ms);
-    timer.unref?.();
-    promise.then(
-      (v) => {
-        clearTimeout(timer);
-        resolve(v);
-      },
-      (e) => {
-        clearTimeout(timer);
-        reject(e);
-      },
-    );
-  });
-}
