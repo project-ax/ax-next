@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "fac8952def76",
+  "session_id": "0ffdf6ba-915a-41c0-85e5-75796207a9d5",
+  "strategy": "manual-commit",
+  "created_at": "2026-05-11T13:11:52.100393Z",
+  "branch": "worktree-memory-strata-phase-2b-retriever",
+  "checkpoints_count": 0,
+  "files_touched": [],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "d2cd8cddb652",
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 13,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claude/memory/mistakes.md": 2,
+        ".claude/memory/patterns.md": 3,
+        ".claude/settings.local.json": 8
+      }
+    }
+  ]
+}
