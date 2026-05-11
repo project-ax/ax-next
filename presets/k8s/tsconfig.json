@@ -24,6 +24,7 @@
     { "path": "../../packages/llm-anthropic" },
     { "path": "../../packages/mcp-client" },
     { "path": "../../packages/memory-strata" },
+    { "path": "../../packages/memory-strata-index-postgres" },
     { "path": "../../packages/credential-proxy" },
     { "path": "../../packages/credentials" },
     { "path": "../../packages/credentials-store-db" },
