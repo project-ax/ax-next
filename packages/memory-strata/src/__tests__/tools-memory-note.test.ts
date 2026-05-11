@@ -141,6 +141,62 @@ describe('tools/memory-note', () => {
       expect(inboxFiles).toHaveLength(0);
     });
 
+    // 3b. Regression: subject is ALSO gated through filterSensitive (PR #63 review).
+    // A credential placed in `subject` was previously bypassing the gate
+    // because only `content` was screened — yet `subject` is persisted as
+    // part of the Observation frontmatter and would still hit disk + the
+    // index.
+
+    it('sensitive rejection: rejects credential in subject and writes nothing', async () => {
+      const { bus } = makeWiredBus();
+      await registerMemoryNote(bus);
+
+      const ctx = makeCtx(workspaceRoot);
+      const out = await bus.call('tool:execute:memory_note', ctx, {
+        subject: 'sk-ant-XXXXXXXXXXXXXXXXXXXXX',
+        content: 'A perfectly innocuous-looking fact body.',
+      });
+
+      expect(out).toEqual({
+        rejected: true,
+        reason: 'sensitive',
+        kinds: expect.arrayContaining(['anthropic-api-key']),
+      });
+
+      const inboxFiles = await readdir(join(workspaceRoot, INBOX_DIR)).catch(
+        () => [],
+      );
+      expect(inboxFiles).toHaveLength(0);
+    });
+
+    // 3c. Both subject AND content trigger rejection: kinds merge across
+    // both gates, deduplicated.
+
+    it('sensitive rejection: merges kinds across both gates', async () => {
+      const { bus } = makeWiredBus();
+      await registerMemoryNote(bus);
+
+      const ctx = makeCtx(workspaceRoot);
+      const out = await bus.call('tool:execute:memory_note', ctx, {
+        // subject hits anthropic-api-key; content hits email — both kinds
+        // must surface so the agent can see exactly what the gate rejected.
+        subject: 'sk-ant-XXXXXXXXXXXXXXXXXXXXX',
+        content: 'My address is alice@example.com',
+      });
+
+      expect(out).toMatchObject({
+        rejected: true,
+        reason: 'sensitive',
+      });
+      const kinds = (out as { kinds: string[] }).kinds;
+      expect(kinds).toEqual(expect.arrayContaining(['anthropic-api-key', 'email']));
+
+      const inboxFiles = await readdir(join(workspaceRoot, INBOX_DIR)).catch(
+        () => [],
+      );
+      expect(inboxFiles).toHaveLength(0);
+    });
+
     // 4. Invalid factType coerced to 'general'
 
     it('invalid factType is coerced to "general"', async () => {

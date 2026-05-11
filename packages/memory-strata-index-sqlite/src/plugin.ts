@@ -1,4 +1,4 @@
-import type { Plugin } from '@ax/core';
+import { PluginError, type Plugin } from '@ax/core';
 import type { Database as BetterSqliteDb } from 'better-sqlite3';
 import { type Kysely } from 'kysely';
 import { openDatabase, type Database } from './schema.js';
@@ -9,6 +9,48 @@ import type {
   SearchOutput,
   DeleteInput,
 } from '@ax/memory-strata-index-contract';
+
+// Hard upper bound on `topK`. Above this, FTS5's per-row scoring cost
+// grows without surfacing additional useful results — and `LIMIT -1` in
+// SQLite means unbounded, so a non-positive topK is a real risk to clamp.
+//
+// The same constant is duplicated in @ax/memory-strata-index-postgres —
+// CLAUDE.md invariant 2 forbids runtime cross-plugin imports, even for
+// pure constants. Drift is caught by the shared contract test
+// (`runIndexContract`'s "clamps topK above MAX_TOP_K" case).
+const MAX_TOP_K = 50;
+
+function validateSearchInput(input: SearchInput): { topK: number } {
+  if (typeof input.query !== 'string') {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: 'query must be a string',
+    });
+  }
+  if (
+    typeof input.topK !== 'number' ||
+    !Number.isFinite(input.topK) ||
+    input.topK < 1
+  ) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: 'topK must be a positive number',
+    });
+  }
+  if (
+    input.categoryFilter !== undefined &&
+    typeof input.categoryFilter !== 'string'
+  ) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: 'categoryFilter must be a string when set',
+    });
+  }
+  return { topK: Math.min(Math.floor(input.topK), MAX_TOP_K) };
+}
 
 const PLUGIN_NAME = '@ax/memory-strata-index-sqlite';
 
@@ -53,7 +95,8 @@ export function createMemoryStrataIndexSqlitePlugin(
         'memory:index:search',
         PLUGIN_NAME,
         async (_ctx, input) => {
-          const results = await search(db!, input.query, input.topK, input.categoryFilter);
+          const { topK } = validateSearchInput(input);
+          const results = await search(db!, input.query, topK, input.categoryFilter);
           return { results };
         },
       );

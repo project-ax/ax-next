@@ -5,8 +5,8 @@
 // would test only the wiring, not the I18 guarantee (index reflects disk).
 // All tests use mkdtemp workspaces and a fresh HookBus per test.
 
-import { describe, it, expect, beforeEach } from 'vitest';
-import { mkdtemp } from 'node:fs/promises';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { HookBus, makeAgentContext } from '@ax/core';
@@ -21,6 +21,10 @@ let workspaceRoot: string;
 
 beforeEach(async () => {
   workspaceRoot = await mkdtemp(join(tmpdir(), 'memstr-reindex-'));
+});
+
+afterEach(async () => {
+  await rm(workspaceRoot, { recursive: true, force: true });
 });
 
 /** Build an AgentContext wired to the temp workspace. */

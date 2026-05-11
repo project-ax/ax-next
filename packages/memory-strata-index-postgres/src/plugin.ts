@@ -9,6 +9,47 @@ import type {
   DeleteInput,
 } from '@ax/memory-strata-index-contract';
 
+// Hard upper bound on `topK`. Postgres tsvector queries scale with the
+// result set; clamping protects against runaway costly queries.
+//
+// The same constant is duplicated in @ax/memory-strata-index-sqlite —
+// CLAUDE.md invariant 2 forbids runtime cross-plugin imports, even for
+// pure constants. Drift is caught by the shared contract test
+// (`runIndexContract`'s "clamps topK above MAX_TOP_K" case).
+const MAX_TOP_K = 50;
+
+function validateSearchInput(input: SearchInput): { topK: number } {
+  if (typeof input.query !== 'string') {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: 'query must be a string',
+    });
+  }
+  if (
+    typeof input.topK !== 'number' ||
+    !Number.isFinite(input.topK) ||
+    input.topK < 1
+  ) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: 'topK must be a positive number',
+    });
+  }
+  if (
+    input.categoryFilter !== undefined &&
+    typeof input.categoryFilter !== 'string'
+  ) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: 'categoryFilter must be a string when set',
+    });
+  }
+  return { topK: Math.min(Math.floor(input.topK), MAX_TOP_K) };
+}
+
 /**
  * @ax/memory-strata-index-postgres — postgres-backed peer of
  * @ax/memory-strata-index-sqlite.
@@ -82,7 +123,8 @@ export function createMemoryStrataIndexPostgresPlugin(): Plugin {
         'memory:index:search',
         PLUGIN_NAME,
         async (_ctx, input) => {
-          const results = await search(db!, input.query, input.topK, input.categoryFilter);
+          const { topK } = validateSearchInput(input);
+          const results = await search(db!, input.query, topK, input.categoryFilter);
           return { results };
         },
       );

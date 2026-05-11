@@ -161,6 +161,11 @@ describe('buildMemoryBlock — with lastUserMessage', () => {
     const aIdx = block.indexOf('[doc-a]');
     const bIdx = block.indexOf('[doc-b]');
     const cIdx = block.indexOf('[doc-c]');
+    // Guard against silent indexOf=-1 — a missing doc would otherwise make
+    // the ordering checks pass vacuously (since -1 < anything).
+    expect(aIdx).toBeGreaterThanOrEqual(0);
+    expect(bIdx).toBeGreaterThanOrEqual(0);
+    expect(cIdx).toBeGreaterThanOrEqual(0);
     // highest score first
     expect(aIdx).toBeLessThan(bIdx);
     expect(bIdx).toBeLessThan(cIdx);

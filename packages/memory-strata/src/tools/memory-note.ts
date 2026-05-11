@@ -87,18 +87,20 @@ export async function registerMemoryNote(bus: HookBus): Promise<void> {
           ? Math.max(0, Math.min(1, confRaw))
           : 0.8;
 
-      // Gate content through the sensitive-content filter (I20).
-      // A note containing what looks like a credential MUST be rejected
-      // BEFORE any disk write. Subject is metadata and is not gated —
-      // the design doc specifies gating only on content.
-      const gate = filterSensitive(content);
-      if (!gate.kept) {
-        // Deduplicate kinds in pattern-declaration order (rejections are already
-        // in that order, but a single pattern can fire multiple times for different
-        // matches — deduplicate while preserving first-seen order).
+      // Gate BOTH subject and content through the sensitive-content filter
+      // (I20). Subject is also persisted as part of the Observation
+      // frontmatter, so a credential placed there would still hit disk +
+      // get indexed. CLAUDE.md invariant 5: untrusted content at every hop.
+      const subjectGate = filterSensitive(subject);
+      const contentGate = filterSensitive(content);
+      if (!subjectGate.kept || !contentGate.kept) {
+        // Deduplicate kinds across both gates in first-seen order. Each
+        // pattern can fire multiple times per input; the merged list lets
+        // the caller see every distinct kind that triggered without
+        // disclosing the matched substring.
         const seen = new Set<string>();
         const kinds: string[] = [];
-        for (const r of gate.rejections) {
+        for (const r of [...subjectGate.rejections, ...contentGate.rejections]) {
           if (!seen.has(r.kind)) {
             seen.add(r.kind);
             kinds.push(r.kind);

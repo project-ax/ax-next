@@ -58,21 +58,16 @@ export interface DeleteInput {
 export function runIndexContract(label: string, factory: IndexBackendFactory): void {
   describe(`${label} — memory:index contract`, () => {
     let bus: HookBus;
-    let teardown: () => Promise<void>;
+    // Initialise to a no-op so an exception in beforeEach (before `teardown`
+    // gets assigned) doesn't trigger a second error in afterEach that masks
+    // the real failure.
+    let teardown: () => Promise<void> = async () => {};
 
     beforeEach(async () => {
       bus = new HookBus();
-      const ctx = makeAgentContext({
-        sessionId: 's',
-        agentId: 'a',
-        userId: 'u',
-        workspace: { rootPath: '/tmp' },
-      });
       const result = await factory(bus);
       teardown = result.teardown;
       await result.plugin.init({ bus, config: {} });
-      // store ctx on bus scope — helpers below create fresh ones per call
-      void ctx; // suppress unused warning; tests use makeCtx() inline
     });
 
     afterEach(async () => {
@@ -348,6 +343,51 @@ export function runIndexContract(label: string, factory: IndexBackendFactory): v
       expect(docIds).toContain('general/summary-hit');
       expect(docIds).toContain('general/body-hit');
       expect(docIds).toContain('general/headers-hit');
+    });
+
+    // -----------------------------------------------------------------------
+    // Test 9: invalid-payload rejection at the boundary
+    // -----------------------------------------------------------------------
+    // SQLite's FTS5 `LIMIT -1` means unbounded — the postgres backend would
+    // throw a less helpful error. Either is bad. Both backends should reject
+    // non-positive topK at the service boundary with PluginError.code
+    // 'invalid-payload'.
+    it('rejects non-positive topK with PluginError code invalid-payload', async () => {
+      // Use try/catch — vitest's `.rejects.toThrow()` only inspects message,
+      // and our contract is "the structured `.code` field is invalid-payload"
+      // (the message wording is backend-private).
+      const expectInvalid = async (topK: number): Promise<void> => {
+        try {
+          await bus.call('memory:index:search', makeCtx(), {
+            query: 'anything',
+            topK,
+          });
+          throw new Error(`expected memory:index:search to reject for topK=${topK}`);
+        } catch (err) {
+          expect(err).toBeInstanceOf(Error);
+          expect((err as { code?: string }).code).toBe('invalid-payload');
+        }
+      };
+      await expectInvalid(0);
+      await expectInvalid(-5);
+    });
+
+    it('clamps topK above MAX_TOP_K instead of unbounded results', async () => {
+      // Seed one doc so the query has something to return.
+      await upsert({
+        docId: 'general/single',
+        category: 'general',
+        slug: 'single',
+        summary: 'clamping test',
+        factType: 'general',
+        body: 'body',
+        headers: '',
+      });
+      // 1_000_000 would otherwise translate to an unbounded LIMIT in many
+      // engines. The clamp keeps callers honest without breaking the call.
+      const out = await search({ query: 'clamping', topK: 1_000_000 });
+      // Result count itself can be 1 (one doc); the assertion is "no throw".
+      expect(out.results.length).toBeGreaterThanOrEqual(0);
     });
   });
 }

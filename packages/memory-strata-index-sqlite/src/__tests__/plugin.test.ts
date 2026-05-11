@@ -133,9 +133,9 @@ describe('@ax/memory-strata-index-sqlite — sqlite-specific', () => {
   });
 
   // -------------------------------------------------------------------------
-  // Test 3: Unicode (Chinese, emoji) — at least findable on the literal token
+  // Test 3: CJK + ASCII mixed content — findable on the ASCII token
   // -------------------------------------------------------------------------
-  it('handles unicode and emoji tokens', async () => {
+  it('handles CJK + ASCII mixed content (unicode61 tokenizer)', async () => {
     const { upsert, search } = await makeHarness(databasePath);
 
     // Use a space between the CJK text and the ASCII token so the unicode61
@@ -147,16 +147,6 @@ describe('@ax/memory-strata-index-sqlite — sqlite-specific', () => {
       summary: '用户喜欢使用 TypeScript',
       factType: 'general',
       body: '这是一个测试文档。',
-      headers: '',
-    });
-
-    await upsert({
-      docId: 'i18n/emoji',
-      category: 'i18n',
-      slug: 'emoji',
-      summary: 'User loves coding',
-      factType: 'general',
-      body: 'Great work today! The team is happy.',
       headers: '',
     });
 
