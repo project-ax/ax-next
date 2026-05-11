@@ -3,6 +3,7 @@ import { bootstrapMemoryTree } from './bootstrap.js';
 import { runConsolidation } from './consolidator.js';
 import { createDebouncer, type Debouncer } from './debounce.js';
 import { runObserver, type LlmCallFn } from './observer.js';
+import { registerReindexer } from './reindex.js';
 import { raceTimeout } from './timeout.js';
 
 const PLUGIN_NAME = '@ax/memory-strata';
@@ -111,8 +112,19 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
       // because the plugin manifest schema only carries hook names —
       // FS access is by-process today (a future capability declaration
       // would name `<workspace>/permanent/memory/` here).
-      calls: ['agents:resolve', llmCallHook],
-      subscribes: ['chat:start', 'chat:end'],
+      //
+      // `memory:index:upsert` is a HARD dependency: the kernel's
+      // verifyCalls() throws missing-service if no indexer plugin is
+      // loaded alongside memory-strata. This is intentional — the preset
+      // wiring task (2B.13) ensures both the CLI preset (sqlite) and the
+      // k8s preset (postgres) load an indexer. A configuration without
+      // any indexer is misconfigured, and failing fast at bootstrap is
+      // better than silently accumulating reindex warn logs at runtime.
+      // If a test harness loads memory-strata in isolation it must either
+      // register a no-op service for 'memory:index:upsert' or skip
+      // bootstrap() and drive bus.subscribe/fire directly.
+      calls: ['agents:resolve', llmCallHook, 'memory:index:upsert'],
+      subscribes: ['chat:start', 'chat:end', 'memory:doc:written'],
     },
 
     init({ bus }) {
@@ -151,6 +163,15 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
         );
         return undefined;
       });
+
+      // Re-indexer subscriber (Phase 2B, I18). Listens for
+      // `memory:doc:written` (emitted by the Consolidator after every
+      // doc write) and calls `memory:index:upsert` with the canonical
+      // on-disk content. Re-reading from disk (rather than trusting the
+      // event payload) prevents index drift if any upstream transform
+      // raced the event. Non-fatal: errors are caught + logged; the
+      // subscriber never throws out.
+      registerReindexer(bus);
 
       // Consolidator subscriber (Phase 2A, I10). Returns immediately —
       // the debouncer schedules the actual consolidation pass to run

@@ -87,9 +87,12 @@ describe('createMemoryStrataPlugin', () => {
     const plugin = createMemoryStrataPlugin();
     expect(plugin.manifest.name).toBe('@ax/memory-strata');
     expect(plugin.manifest.registers).toEqual(['memory:doc:written']);
-    expect(plugin.manifest.subscribes).toEqual(['chat:start', 'chat:end']);
+    expect(plugin.manifest.subscribes).toContain('chat:start');
+    expect(plugin.manifest.subscribes).toContain('chat:end');
+    expect(plugin.manifest.subscribes).toContain('memory:doc:written');
     expect(plugin.manifest.calls).toContain('agents:resolve');
     expect(plugin.manifest.calls).toContain('llm:call:anthropic');
+    expect(plugin.manifest.calls).toContain('memory:index:upsert');
   });
 
   it('bootstraps the memory tree on chat:start', async () => {
