@@ -1,4 +1,4 @@
-// Read and delete inbox observations written by Phase 1's Observer.
+// Read, write, and delete inbox observations for the memory-strata plugin.
 //
 // WHY skip-on-malformed rather than throw: Phase 1's Observer is the sole
 // producer of inbox files — it always writes canonical YAML frontmatter via
@@ -19,11 +19,13 @@
 // non-string, we treat the file as malformed and skip it silently — the same
 // policy as the YAML-fence check above.
 
-import { readdir, readFile, unlink } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdir, readdir, readFile, unlink, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { load as yamlLoad } from 'js-yaml';
-import { INBOX_DIR } from './paths.js';
-import type { MemoryFrontmatter } from './types.js';
+import { buildMarkdownFile } from './frontmatter.js';
+import { INBOX_DIR, inboxFile } from './paths.js';
+import type { MemoryFrontmatter, Observation } from './types.js';
 
 export interface InboxFile {
   /** Workspace-relative path, e.g. `permanent/memory/inbox/<ISO>.md`. */
@@ -82,4 +84,55 @@ export async function deleteInboxFile(
   inboxPath: string,
 ): Promise<void> {
   await unlink(join(workspaceRoot, inboxPath));
+}
+
+/**
+ * Write a single Observation to the inbox directory.
+ *
+ * Shared by the Observer (Phase 1) and the `memory_note` agent tool (Phase 2B).
+ * Both paths must go through this function to keep the on-disk format
+ * consistent and to enforce a single code path for frontmatter assembly.
+ *
+ * `index` disambiguates multiple observations sharing the same `now` timestamp
+ * (e.g., a single Observer run that extracts several facts). For agent-authored
+ * notes (from `memory_note`) pass `0` — a single note per call, no batch ordering.
+ *
+ * `sourceMessages` is the number of transcript messages the observation was
+ * extracted from. Pass `0` for agent-authored notes (honest: no transcript).
+ *
+ * Returns the workspace-relative path of the written file.
+ */
+export async function writeInboxObservation(
+  workspaceRoot: string,
+  obs: Observation,
+  now: Date,
+  index: number,
+  sourceMessages: number,
+): Promise<string> {
+  // index disambiguates multiple observations sharing the same now.toISO().
+  // randomUUID is cryptographically unique per call but the filename
+  // index keeps lexicographic ordering stable inside a single Observer run.
+  const id = randomUUID();
+  const rel = inboxFile(now, `${String(index).padStart(2, '0')}-${id.slice(0, 8)}`);
+  const abs = join(workspaceRoot, rel);
+  await mkdir(dirname(abs), { recursive: true });
+
+  const nowIso = now.toISOString();
+  const fm: MemoryFrontmatter = {
+    id,
+    type: 'inbox/observation',
+    created: nowIso,
+    confidence: obs.confidence,
+    pinned: false,
+    summary: obs.fact,
+    subject: obs.subject,
+    factType: obs.factType,
+    source_messages: sourceMessages,
+    event_time: nowIso,
+    recorded_at: nowIso,
+  };
+
+  const body = `# Observation\n\n${obs.fact}\n`;
+  await writeFile(abs, buildMarkdownFile(fm, body), 'utf8');
+  return rel;
 }
