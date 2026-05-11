@@ -21,7 +21,7 @@
     "@ax/core": "workspace:*",
     "better-auth": "^1.0.0",
     "jose": "5.10.0",
-    "kysely": "0.28.16"
+    "kysely": "0.28.17"
   },
   "devDependencies": {
     "@ax/auth-oidc": "workspace:*",
