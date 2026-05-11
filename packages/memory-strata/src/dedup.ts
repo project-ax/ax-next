@@ -1,9 +1,9 @@
 // Token-set Jaccard similarity (Decision A1 from Phase 2A plan).
 //
 // WHY this approach: the Consolidator needs to skip observations that
-// restate an already-recorded fact. A full embedding / vector-similarity
-// comparison would be accurate but costs a round-trip to a model and
-// adds latency on every chat:end event. Token-set Jaccard is deterministic,
+// restate an already-recorded fact. A semantic similarity comparison
+// would be more accurate but costs a round-trip to a model and adds
+// latency on every chat:end event. Token-set Jaccard is deterministic,
 // runs in <1 ms per pair, needs no network, and has zero failure modes
 // beyond the bag-of-words blindspot.
 //
