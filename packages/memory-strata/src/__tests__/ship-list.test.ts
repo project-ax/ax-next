@@ -22,7 +22,12 @@ import { fileURLToPath } from 'node:url';
 // exposes that literal path.
 // Phase 2A (Task 2A.5) landed: cluster.ts — `Consolidator` removed from
 // FORBIDDEN because the Phase 2A inbox→docs pipeline is now actively shipping.
-// Phase 2B will remove Retriever / FTS5 / RRF when the retrieval interface ships.
+// Phase 2A (Task 2A.13) added: four Phase 2B tool-surface tokens as belt-and-braces
+// protection against premature wiring of the agent tool layer. `memory_search`,
+// `memory_read_section`, `memory_note` are the Phase 2B agent tool names;
+// `tool:register` is the hook Phase 2B uses to register them. None of these
+// belong in Phase 2A src/. They are removed from FORBIDDEN when Phase 2B ships.
+// Phase 2B will also remove Retriever / FTS5 / RRF when the retrieval interface ships.
 
 const FORBIDDEN: ReadonlyArray<{ token: string; reason: string }> = [
   { token: 'FTS5', reason: 'Phase 2B Retriever — keyword index not yet shipped' },
@@ -30,6 +35,10 @@ const FORBIDDEN: ReadonlyArray<{ token: string; reason: string }> = [
   { token: 'Retriever', reason: 'Phase 2B — retrieval interface not yet shipped' },
   { token: 'hnswlib', reason: 'Phase 3 — vector index not yet shipped' },
   { token: 'embeddings', reason: 'Phase 3 — vector index not yet shipped' },
+  { token: 'memory_search', reason: 'Phase 2B — agent tool not yet shipped' },
+  { token: 'memory_read_section', reason: 'Phase 2B — agent tool not yet shipped' },
+  { token: 'memory_note', reason: 'Phase 2B — agent tool not yet shipped' },
+  { token: 'tool:register', reason: 'Phase 2B — tool registration hook not yet wired' },
 ];
 
 // fileURLToPath, not URL.pathname: the latter prefixes a leading `/`
