@@ -482,6 +482,9 @@ importers:
       '@ax/memory-strata':
         specifier: workspace:*
         version: link:../memory-strata
+      '@ax/memory-strata-index-sqlite':
+        specifier: workspace:*
+        version: link:../memory-strata-index-sqlite
       '@ax/onboarding':
         specifier: workspace:*
         version: link:../onboarding
@@ -1629,6 +1632,9 @@ importers:
       '@ax/memory-strata':
         specifier: workspace:*
         version: link:../../packages/memory-strata
+      '@ax/memory-strata-index-postgres':
+        specifier: workspace:*
+        version: link:../../packages/memory-strata-index-postgres
       '@ax/onboarding':
         specifier: workspace:*
         version: link:../../packages/onboarding

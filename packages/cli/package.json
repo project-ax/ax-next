@@ -43,6 +43,7 @@
     "@ax/mcp-client": "workspace:*",
     "@ax/llm-anthropic": "workspace:*",
     "@ax/memory-strata": "workspace:*",
+    "@ax/memory-strata-index-sqlite": "workspace:*",
     "@ax/preset-k8s": "workspace:*",
     "@ax/test-harness": "workspace:*",
     "@ax/validator-skill": "workspace:*",
