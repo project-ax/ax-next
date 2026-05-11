@@ -20,7 +20,7 @@
   "dependencies": {
     "@ax/core": "workspace:*",
     "better-sqlite3": "^11.3.0",
-    "kysely": "^0.28.14"
+    "kysely": "^0.28.17"
   },
   "devDependencies": {
     "@ax/test-harness": "workspace:*",

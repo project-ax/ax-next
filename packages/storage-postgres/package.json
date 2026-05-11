@@ -19,7 +19,7 @@
   },
   "dependencies": {
     "@ax/core": "workspace:*",
-    "kysely": "0.28.16"
+    "kysely": "0.28.17"
   },
   "devDependencies": {
     "@ax/database-postgres": "workspace:*",

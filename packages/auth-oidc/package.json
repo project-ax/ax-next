@@ -20,7 +20,7 @@
   "dependencies": {
     "@ax/core": "workspace:*",
     "jose": "5.10.0",
-    "kysely": "0.28.16",
+    "kysely": "0.28.17",
     "openid-client": "5.7.0"
   },
   "devDependencies": {
