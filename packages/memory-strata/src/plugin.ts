@@ -104,7 +104,7 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
     manifest: {
       name: PLUGIN_NAME,
       version: PLUGIN_VERSION,
-      registers: [],
+      registers: ['memory:doc:written'],
       // I5: minimal capability list. We `agents:resolve` to read the
       // agent's systemPrompt + model; we call llmCallHook for extraction.
       // No filesystem capability is declared at the manifest level
@@ -180,6 +180,8 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
               info: (event, fields) => ctx.logger.info(event, fields),
               warn: (event, fields) => ctx.logger.warn(event, fields),
             },
+            bus,
+            ctx,
           });
           inflightWork.set(ctx.agentId, work);
           // Detach: the inflight slot is cleared when the underlying work settles,

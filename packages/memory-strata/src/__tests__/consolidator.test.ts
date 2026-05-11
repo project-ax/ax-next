@@ -11,6 +11,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { mkdtemp, mkdir, writeFile, stat, readFile, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { HookBus, makeAgentContext } from '@ax/core';
 import { runConsolidation, type ConsolidationLogger } from '../consolidator.js';
 import { buildMarkdownFile } from '../frontmatter.js';
 import { INBOX_DIR, MEMORY_ROOT } from '../paths.js';
@@ -325,6 +326,175 @@ describe('consolidator', () => {
     });
     // The success event must NOT have been emitted.
     expect(logger.infoCalls.some((c) => c.event === 'memory_strata_consolidation_complete')).toBe(false);
+  });
+
+  it('emits memory:doc:written events via bus — created for first obs, updated for subsequent', async () => {
+    const now = new Date('2026-05-10T12:00:00.000Z');
+
+    // Two observations for the same subject: first creates the doc, second appends.
+    await writeInboxFixture(
+      '2026-05-10T12-00-00.000Z-ts-1.md',
+      {
+        id: 'obs-ts-1',
+        type: 'inbox/observation',
+        created: now.toISOString(),
+        confidence: 0.85,
+        pinned: false,
+        summary: 'User prefers TypeScript',
+        subject: 'typescript',
+        factType: 'preference',
+        event_time: now.toISOString(),
+        recorded_at: now.toISOString(),
+      },
+      '# Observation\n\nUser prefers TypeScript\n',
+    );
+
+    await writeInboxFixture(
+      '2026-05-10T12-00-01.000Z-ts-2.md',
+      {
+        id: 'obs-ts-2',
+        type: 'inbox/observation',
+        created: now.toISOString(),
+        confidence: 0.85,
+        pinned: false,
+        summary: 'User has used TypeScript for 3+ years',
+        subject: 'typescript',
+        factType: 'preference',
+        event_time: now.toISOString(),
+        recorded_at: now.toISOString(),
+      },
+      '# Observation\n\nUser has used TypeScript for 3+ years\n',
+    );
+
+    const bus = new HookBus();
+    const ctx = makeAgentContext({
+      sessionId: 'sess-test',
+      agentId: 'agent-test',
+      userId: 'user-test',
+      workspace: { rootPath: workspaceRoot },
+    });
+
+    const receivedEvents: Array<{
+      docId: string;
+      category: string;
+      slug: string;
+      kind: string;
+      summary: string;
+    }> = [];
+
+    bus.subscribe('memory:doc:written', 'test-subscriber', async (_ctx, payload) => {
+      receivedEvents.push(
+        payload as {
+          docId: string;
+          category: string;
+          slug: string;
+          kind: string;
+          summary: string;
+        },
+      );
+      return undefined;
+    });
+
+    const result = await runConsolidation({ workspaceRoot, now, bus, ctx });
+
+    // Both observations promoted.
+    expect(result.promoted).toBe(2);
+
+    // Two events fired.
+    expect(receivedEvents).toHaveLength(2);
+
+    // First event: kind:'created' for the new doc.
+    expect(receivedEvents[0]).toMatchObject({
+      docId: 'preference/typescript',
+      category: 'preference',
+      slug: 'typescript',
+      kind: 'created',
+      summary: 'User prefers TypeScript',
+    });
+
+    // Second event: kind:'updated' for the appendFact.
+    expect(receivedEvents[1]).toMatchObject({
+      docId: 'preference/typescript',
+      category: 'preference',
+      slug: 'typescript',
+      kind: 'updated',
+      summary: 'User has used TypeScript for 3+ years',
+    });
+  });
+
+  it('no-bus path: runConsolidation works without bus/ctx — no events, no errors', async () => {
+    const now = new Date('2026-05-10T12:00:00.000Z');
+
+    await writeInboxFixture(
+      '2026-05-10T12-00-00.000Z-nobus.md',
+      {
+        id: 'obs-nobus',
+        type: 'inbox/observation',
+        created: now.toISOString(),
+        confidence: 0.85,
+        pinned: false,
+        summary: 'User prefers Vim',
+        subject: 'editor',
+        factType: 'preference',
+        event_time: now.toISOString(),
+        recorded_at: now.toISOString(),
+      },
+      '# Observation\n\nUser prefers Vim\n',
+    );
+
+    // No bus or ctx provided — should succeed without errors.
+    const result = await runConsolidation({ workspaceRoot, now });
+    expect(result.promoted).toBe(1);
+    expect(result.dupesMerged).toBe(0);
+    expect(result.quarantined).toBe(0);
+    expect(result.leftInInbox).toBe(0);
+    expect(result.decayed).toBe(0);
+  });
+
+  it('subscriber failure is non-fatal — consolidation completes successfully', async () => {
+    const now = new Date('2026-05-10T12:00:00.000Z');
+
+    await writeInboxFixture(
+      '2026-05-10T12-00-00.000Z-subfail.md',
+      {
+        id: 'obs-subfail',
+        type: 'inbox/observation',
+        created: now.toISOString(),
+        confidence: 0.85,
+        pinned: false,
+        summary: 'User uses Neovim',
+        subject: 'neovim',
+        factType: 'preference',
+        event_time: now.toISOString(),
+        recorded_at: now.toISOString(),
+      },
+      '# Observation\n\nUser uses Neovim\n',
+    );
+
+    const bus = new HookBus();
+    const ctx = makeAgentContext({
+      sessionId: 'sess-subfail',
+      agentId: 'agent-subfail',
+      userId: 'user-subfail',
+      workspace: { rootPath: workspaceRoot },
+    });
+
+    // Register a subscriber that always throws.
+    bus.subscribe('memory:doc:written', 'throwing-subscriber', async () => {
+      throw new Error('subscriber kaboom');
+    });
+
+    // HookBus itself swallows subscriber errors — consolidation must still complete.
+    const result = await runConsolidation({ workspaceRoot, now, bus, ctx });
+    expect(result.promoted).toBe(1);
+    expect(result.dupesMerged).toBe(0);
+    expect(result.quarantined).toBe(0);
+    expect(result.leftInInbox).toBe(0);
+    expect(result.decayed).toBe(0);
+
+    // Doc should exist on disk.
+    const docPath = join(workspaceRoot, 'permanent/memory/docs/preference/neovim.md');
+    await expect(stat(docPath)).resolves.toBeTruthy();
   });
 
   it('warns on invalid created timestamp during decay (C3)', async () => {

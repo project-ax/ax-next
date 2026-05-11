@@ -86,7 +86,7 @@ describe('createMemoryStrataPlugin', () => {
   it('declares a minimal manifest', () => {
     const plugin = createMemoryStrataPlugin();
     expect(plugin.manifest.name).toBe('@ax/memory-strata');
-    expect(plugin.manifest.registers).toEqual([]);
+    expect(plugin.manifest.registers).toEqual(['memory:doc:written']);
     expect(plugin.manifest.subscribes).toEqual(['chat:start', 'chat:end']);
     expect(plugin.manifest.calls).toContain('agents:resolve');
     expect(plugin.manifest.calls).toContain('llm:call:anthropic');
