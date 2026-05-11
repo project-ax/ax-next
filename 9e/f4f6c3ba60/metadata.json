@@ -1,0 +1,16 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "9ef4f6c3ba60",
+  "strategy": "manual-commit",
+  "branch": "worktree-memory-strata-phase-2b-retriever",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/9e/f4f6c3ba60/0/metadata.json",
+      "transcript": "/9e/f4f6c3ba60/0/full.jsonl",
+      "content_hash": "/9e/f4f6c3ba60/0/content_hash.txt",
+      "prompt": ""
+    }
+  ]
+}
