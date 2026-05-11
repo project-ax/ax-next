@@ -25,7 +25,7 @@ function makeFile(
 }
 
 describe('clusterBySubject', () => {
-  it('groups 5 observations into 2 clusters by slug(subject)', () => {
+  it('groups observations by slug normalization (3 distinct slugs)', () => {
     const inbox: InboxFile[] = [
       makeFile('react', 'preference', 'obs-1'),
       makeFile('React', 'preference', 'obs-2'),   // same slug as 'react'
@@ -91,5 +91,27 @@ describe('clusterBySubject', () => {
 
   it('returns empty array for empty inbox', () => {
     expect(clusterBySubject([])).toEqual([]);
+  });
+
+  it('breaks ties in category by first-encountered factType', () => {
+    const inbox: InboxFile[] = [
+      makeFile('react', 'preference', 't1'),
+      makeFile('react', 'entity', 't2'),
+    ];
+    const [cluster] = clusterBySubject(inbox);
+    // 1 preference vs 1 entity — preference was first, so it wins
+    expect(cluster!.category).toBe('preference');
+  });
+
+  it('treats unknown factType values as "general"', () => {
+    const inbox: InboxFile[] = [
+      makeFile('react', 'habit' as never, 't1'),  // not in the known union
+      makeFile('react', 'preference', 't2'),
+    ];
+    const [cluster] = clusterBySubject(inbox);
+    // 1 unknown (-> general) vs 1 preference. Both bucket at 1; first-seen wins:
+    // 'general' was inserted first so it wins the tie. Verify the unknown
+    // value did NOT survive into category.
+    expect(cluster!.category).toBe('general');
   });
 });

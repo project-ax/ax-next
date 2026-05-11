@@ -61,6 +61,17 @@ export function clusterBySubject(inbox: InboxFile[]): Cluster[] {
   return out;
 }
 
+const KNOWN_CATEGORIES: ReadonlySet<ClusterCategory> = new Set([
+  'entity', 'preference', 'decision', 'episode', 'general',
+]);
+
+function normalizeCategory(raw: string | undefined): ClusterCategory {
+  const candidate = raw ?? 'general';
+  return KNOWN_CATEGORIES.has(candidate as ClusterCategory)
+    ? (candidate as ClusterCategory)
+    : 'general';
+}
+
 /**
  * Pick the most common `factType` across a group of observations.
  *
@@ -72,7 +83,7 @@ export function clusterBySubject(inbox: InboxFile[]): Cluster[] {
 function pickCategory(obs: InboxFile[]): ClusterCategory {
   const counts = new Map<ClusterCategory, number>();
   for (const o of obs) {
-    const cat = (o.frontmatter.factType ?? 'general') as ClusterCategory;
+    const cat = normalizeCategory(o.frontmatter.factType);
     counts.set(cat, (counts.get(cat) ?? 0) + 1);
   }
   let best: ClusterCategory = 'general';

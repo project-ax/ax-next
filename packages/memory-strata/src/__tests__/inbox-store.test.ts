@@ -130,12 +130,4 @@ describe('inbox-store', () => {
     expect(files).toEqual([]);
   });
 
-  it('non-ENOENT errors from readdir propagate', async () => {
-    // We test that ENOENT is the only swallowed error by observing that
-    // a valid inbox directory IS read correctly — exercised in (a) above.
-    // Non-ENOENT errors come from the OS and are not easily reproduced in
-    // a unit test without mocking; this note documents the intent.
-    // The implementation re-throws any err.code !== 'ENOENT'.
-    expect(true).toBe(true); // intent-documenting assertion
-  });
 });
