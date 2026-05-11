@@ -43,6 +43,9 @@
     { "path": "packages/credential-proxy-bridge" },
     { "path": "packages/llm-anthropic" },
     { "path": "presets/k8s" },
-    { "path": "packages/onboarding" }
+    { "path": "packages/onboarding" },
+    { "path": "packages/memory-strata-index-contract" },
+    { "path": "packages/memory-strata-index-sqlite" },
+    { "path": "packages/memory-strata-index-postgres" }
   ]
 }

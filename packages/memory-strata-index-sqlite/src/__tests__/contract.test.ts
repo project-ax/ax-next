@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { runIndexContract, type IndexBackendFactory } from '@ax/memory-strata-index-contract';
 import { createMemoryStrataIndexSqlitePlugin } from '../plugin.js';
 
-const factory: IndexBackendFactory = async () => {
+const factory: IndexBackendFactory = async (_bus) => {
   const dir = await mkdtemp(join(tmpdir(), 'memory-strata-index-sqlite-'));
   const databasePath = join(dir, 'index.db');
   const plugin = createMemoryStrataIndexSqlitePlugin({ databasePath });

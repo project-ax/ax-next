@@ -12,7 +12,7 @@ import { HookBus, makeAgentContext } from '@ax/core';
 import type { Plugin } from '@ax/core';
 
 export interface IndexBackendFactory {
-  (): Promise<{ plugin: Plugin; teardown: () => Promise<void> }>;
+  (bus: HookBus): Promise<{ plugin: Plugin; teardown: () => Promise<void> }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -68,7 +68,7 @@ export function runIndexContract(label: string, factory: IndexBackendFactory): v
         userId: 'u',
         workspace: { rootPath: '/tmp' },
       });
-      const result = await factory();
+      const result = await factory(bus);
       teardown = result.teardown;
       await result.plugin.init({ bus, config: {} });
       // store ctx on bus scope — helpers below create fresh ones per call
@@ -264,7 +264,7 @@ export function runIndexContract(label: string, factory: IndexBackendFactory): v
         slug: 'meeting-2024',
         summary: 'Team meeting notes from 2024',
         factType: 'episode',
-        body: 'During the meeting we briefly mentioned TypeScript once.',
+        body: 'The discussion covered TypeScript as the preferred language for development.',
         headers: '',
       });
 

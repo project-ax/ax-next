@@ -77,8 +77,8 @@ export async function search(
 
   // Build query with optional category filter.
   // bm25() returns negative values (more-negative = better match).
-  // We convert to a positive score with score = 1 / (1 - rawBm25).
-  // Since rawBm25 <= 0, the denominator is always >= 1, giving scores in (0, 1].
+  // We negate at the row-mapping step so the surfaced score has the same
+  // contract orientation as the postgres backend (higher = better).
   let rawRows: Array<{
     doc_id: string;
     category: string;
