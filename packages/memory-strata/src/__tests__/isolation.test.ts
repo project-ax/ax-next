@@ -47,6 +47,8 @@ function buildBus(agents: Record<string, AgentSpec>, llmText: string): HookBus {
     stopReason: 'end_turn',
     usage: { inputTokens: 5, outputTokens: 5 },
   }));
+  // Stub tool:register — required by plugin.init() for memory_search registration.
+  bus.registerService('tool:register', 'test-tool-dispatcher', async () => ({ ok: true as const }));
   return bus;
 }
 

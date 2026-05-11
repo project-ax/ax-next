@@ -64,6 +64,9 @@ function buildBus(opts: {
     stopReason: 'end_turn',
     usage: { inputTokens: 10, outputTokens: 10 },
   }));
+  // Stub tool:register — normally provided by @ax/tool-dispatcher; required
+  // now that plugin.init() registers the memory_search tool at startup.
+  bus.registerService('tool:register', 'test-tool-dispatcher', async () => ({ ok: true as const }));
   return bus;
 }
 
@@ -86,10 +89,15 @@ describe('createMemoryStrataPlugin', () => {
   it('declares a minimal manifest', () => {
     const plugin = createMemoryStrataPlugin();
     expect(plugin.manifest.name).toBe('@ax/memory-strata');
-    expect(plugin.manifest.registers).toEqual([]);
-    expect(plugin.manifest.subscribes).toEqual(['chat:start', 'chat:end']);
+    expect(plugin.manifest.registers).toContain('memory:doc:written');
+    expect(plugin.manifest.registers).toContain('tool:execute:memory_search');
+    expect(plugin.manifest.subscribes).toContain('chat:start');
+    expect(plugin.manifest.subscribes).toContain('chat:end');
+    expect(plugin.manifest.subscribes).toContain('memory:doc:written');
     expect(plugin.manifest.calls).toContain('agents:resolve');
     expect(plugin.manifest.calls).toContain('llm:call:anthropic');
+    expect(plugin.manifest.calls).toContain('memory:index:upsert');
+    expect(plugin.manifest.calls).toContain('tool:register');
   });
 
   it('bootstraps the memory tree on chat:start', async () => {
@@ -145,6 +153,8 @@ describe('createMemoryStrataPlugin', () => {
   it('chat:end returns immediately even when the LLM is slow', async () => {
     const bus = new HookBus();
     bus.registerService('agents:resolve', 'test-agents', async () => ({ agent: fakeAgent() }));
+    // Stub tool:register — required by plugin.init() for memory_search registration.
+    bus.registerService('tool:register', 'test-tool-dispatcher', async () => ({ ok: true as const }));
     let llmStarted = false;
     bus.registerService<LlmCallInput, LlmCallOutput>(
       'llm:call:anthropic',
@@ -274,6 +284,8 @@ describe('Consolidator wiring (chat:end subscriber, I10)', () => {
 
     const bus = new HookBus();
     bus.registerService('agents:resolve', 'test-agents', async () => ({ agent: fakeAgent() }));
+    // Stub tool:register — required by plugin.init() for memory_search registration.
+    bus.registerService('tool:register', 'test-tool-dispatcher', async () => ({ ok: true as const }));
     bus.registerService<LlmCallInput, LlmCallOutput>('llm:call:anthropic', 'test-llm', async () => ({
       text: '[]',
       stopReason: 'end_turn',

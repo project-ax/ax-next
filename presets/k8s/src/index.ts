@@ -29,6 +29,7 @@ import {
   DEFAULT_TITLE_MODEL,
 } from '@ax/conversation-titles';
 import { createMemoryStrataPlugin } from '@ax/memory-strata';
+import { createMemoryStrataIndexPostgresPlugin } from '@ax/memory-strata-index-postgres';
 import { createChannelWebServerPlugin } from '@ax/channel-web/server';
 import { createOnboardingPlugin, type OnboardingConfig } from '@ax/onboarding';
 
@@ -691,6 +692,10 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
     // because the Observer needs `llm:call:anthropic` (registered above).
     // Splitting the gate into separate config knobs is a Phase 2 concern.
     plugins.push(createMemoryStrataPlugin());
+    // I24 — indexer loads as a pair with memory-strata (same gate). The
+    // postgres indexer resolves the shared Kysely pool via database:get-instance
+    // (registered above by createDatabasePostgresPlugin). No separate DSN needed.
+    plugins.push(createMemoryStrataIndexPostgresPlugin());
   }
 
   // ----- 10. channel-web HTTP surface -----------------------------------

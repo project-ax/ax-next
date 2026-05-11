@@ -21,6 +21,7 @@
 
 import { mkdir, rename } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import type { AgentContext, HookBus } from '@ax/core';
 import { clusterBySubject } from './cluster.js';
 import { isDupe } from './dedup.js';
 import {
@@ -46,6 +47,14 @@ export interface ConsolidationInput {
   workspaceRoot: string;
   now: Date;
   logger?: ConsolidationLogger;
+  /**
+   * Optional bus + ctx for publishing memory:doc:written events. When
+   * absent, no events fire (test-driveable without a bus). When present,
+   * a memory:doc:written event fires after each successful writeNewDoc
+   * (kind:'created') and appendFact (kind:'updated').
+   */
+  bus?: HookBus;
+  ctx?: AgentContext;
 }
 
 export interface ConsolidationResult {
@@ -155,6 +164,23 @@ export async function runConsolidation(
             facts: [obs.frontmatter.summary ?? ''],
           });
           docCreated = true;
+          if (input.bus !== undefined && input.ctx !== undefined) {
+            try {
+              await input.bus.fire('memory:doc:written', input.ctx, {
+                docId: `${cluster.category}/${cluster.slug}`,
+                category: cluster.category,
+                slug: cluster.slug,
+                kind: 'created' as const,
+                summary: obs.frontmatter.summary ?? '',
+              });
+            } catch (err) {
+              log.warn('memory_strata_doc_written_publish_failed', {
+                err: err instanceof Error ? err : new Error(String(err)),
+                docId: `${cluster.category}/${cluster.slug}`,
+                kind: 'created',
+              });
+            }
+          }
         } else {
           await appendFact({
             workspaceRoot: input.workspaceRoot,
@@ -165,6 +191,23 @@ export async function runConsolidation(
             confidence: obs.frontmatter.confidence ?? 0,
             now: input.now,
           });
+          if (input.bus !== undefined && input.ctx !== undefined) {
+            try {
+              await input.bus.fire('memory:doc:written', input.ctx, {
+                docId: `${cluster.category}/${cluster.slug}`,
+                category: cluster.category,
+                slug: cluster.slug,
+                kind: 'updated' as const,
+                summary: obs.frontmatter.summary ?? '',
+              });
+            } catch (err) {
+              log.warn('memory_strata_doc_written_publish_failed', {
+                err: err instanceof Error ? err : new Error(String(err)),
+                docId: `${cluster.category}/${cluster.slug}`,
+                kind: 'updated',
+              });
+            }
+          }
         }
 
         factsInDoc.push(obs.frontmatter.summary ?? '');

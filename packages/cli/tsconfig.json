@@ -28,6 +28,7 @@
     { "path": "../mcp-client" },
     { "path": "../llm-anthropic" },
     { "path": "../memory-strata" },
+    { "path": "../memory-strata-index-sqlite" },
     { "path": "../test-harness" },
     { "path": "../validator-skill" },
     { "path": "../../presets/k8s" }

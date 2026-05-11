@@ -1,12 +1,8 @@
-import { mkdir, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
-import { randomUUID } from 'node:crypto';
 import type { AgentMessage, LlmCallInput, LlmCallOutput } from '@ax/core';
-import { buildMarkdownFile } from './frontmatter.js';
-import { inboxFile } from './paths.js';
+import { writeInboxObservation } from './inbox-store.js';
 import { filterSensitive, type RejectionKind } from './sensitive-gate.js';
 import { raceTimeout, TimeoutError } from './timeout.js';
-import type { MemoryFrontmatter, Observation } from './types.js';
+import type { Observation } from './types.js';
 
 // Observer (design § "1. Observer"). Pure async function on
 // (transcript, llmCall, fsWriter, now). The plugin wires this up
@@ -178,38 +174,4 @@ function parseObservations(text: string): Observation[] | null {
   return out;
 }
 
-async function writeInboxObservation(
-  workspaceRoot: string,
-  obs: Observation,
-  now: Date,
-  index: number,
-  sourceMessages: number,
-): Promise<string> {
-  // index disambiguates multiple observations sharing the same now.toISO().
-  // randomUUID is cryptographically unique per call but the filename
-  // index keeps lexicographic ordering stable inside a single Observer run.
-  const id = randomUUID();
-  const rel = inboxFile(now, `${String(index).padStart(2, '0')}-${id.slice(0, 8)}`);
-  const abs = join(workspaceRoot, rel);
-  await mkdir(dirname(abs), { recursive: true });
-
-  const nowIso = now.toISOString();
-  const fm: MemoryFrontmatter = {
-    id,
-    type: 'inbox/observation',
-    created: nowIso,
-    confidence: obs.confidence,
-    pinned: false,
-    summary: obs.fact,
-    subject: obs.subject,
-    factType: obs.factType,
-    source_messages: sourceMessages,
-    event_time: nowIso,
-    recorded_at: nowIso,
-  };
-
-  const body = `# Observation\n\n${obs.fact}\n`;
-  await writeFile(abs, buildMarkdownFile(fm, body), 'utf8');
-  return rel;
-}
 

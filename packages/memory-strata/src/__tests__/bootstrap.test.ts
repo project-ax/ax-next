@@ -75,7 +75,12 @@ describe('bootstrapMemoryTree', () => {
     // fix is `writeFile(..., { flag: 'wx' })` — exactly one writer wins.
     // Each parallel call uses a distinct prompt; the file must end up
     // containing exactly one of them, never a mixture.
-    const prompts = Array.from({ length: 20 }, (_, i) => `prompt-${i}`);
+    //
+    // Prompts must NOT be substrings of each other: e.g. "prompt-1" is a
+    // substring of "prompt-17", which would cause `raw.includes("prompt-1")`
+    // to fire spuriously when "prompt-17" won the race. Use 2-digit
+    // zero-padded suffixes so every prompt is a distinct fixed-width token.
+    const prompts = Array.from({ length: 20 }, (_, i) => `prompt-${String(i).padStart(2, '0')}`);
     const results = await Promise.allSettled(
       prompts.map((p) =>
         bootstrapMemoryTree({ workspaceRoot, agentSystemPrompt: p }),

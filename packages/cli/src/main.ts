@@ -23,6 +23,7 @@ import { createChatOrchestratorPlugin } from '@ax/chat-orchestrator';
 import { createToolDispatcherPlugin, createMcpClientPlugin } from '@ax/mcp-client';
 import { createLlmAnthropicPlugin } from '@ax/llm-anthropic';
 import { createMemoryStrataPlugin } from '@ax/memory-strata';
+import { createMemoryStrataIndexSqlitePlugin } from '@ax/memory-strata-index-sqlite';
 import { createDevAgentsStubPlugin } from './dev-agents-stub.js';
 import { AxConfigSchema, type AxConfig, type AxConfigInput } from './config/schema.js';
 import { loadAxConfig } from './config/load.js';
@@ -254,6 +255,10 @@ export async function main(opts: MainOptions): Promise<number> {
   if (process.env.ANTHROPIC_API_KEY !== undefined && process.env.ANTHROPIC_API_KEY.length > 0) {
     plugins.push(createLlmAnthropicPlugin());
     plugins.push(createMemoryStrataPlugin());
+    // I24 — indexer loads as a pair with memory-strata (same gate). The sqlite
+    // indexer shares the same DB file as storage-sqlite; each plugin owns its
+    // own table (kv vs memory_strata_index_v1_docs) — no collision.
+    plugins.push(createMemoryStrataIndexSqlitePlugin({ databasePath: opts.sqlitePath ?? DEFAULT_SQLITE_PATH }));
   }
 
   // Library-mode test-only: extra plugins appended last so they can add

@@ -2,8 +2,13 @@ import type { AgentContext, AgentOutcome, HookBus, Plugin } from '@ax/core';
 import { bootstrapMemoryTree } from './bootstrap.js';
 import { runConsolidation } from './consolidator.js';
 import { createDebouncer, type Debouncer } from './debounce.js';
+import { registerInject } from './inject.js';
 import { runObserver, type LlmCallFn } from './observer.js';
+import { registerReindexer } from './reindex.js';
 import { raceTimeout } from './timeout.js';
+import { registerMemorySearch } from './tools/memory-search.js';
+import { registerMemoryReadSection } from './tools/memory-read-section.js';
+import { registerMemoryNote } from './tools/memory-note.js';
 
 const PLUGIN_NAME = '@ax/memory-strata';
 const PLUGIN_VERSION = '0.0.0';
@@ -104,18 +109,41 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
     manifest: {
       name: PLUGIN_NAME,
       version: PLUGIN_VERSION,
-      registers: [],
+      registers: ['memory:doc:written', 'tool:execute:memory_search', 'tool:execute:memory_read_section', 'tool:execute:memory_note', 'system-prompt:augment'],
       // I5: minimal capability list. We `agents:resolve` to read the
       // agent's systemPrompt + model; we call llmCallHook for extraction.
       // No filesystem capability is declared at the manifest level
       // because the plugin manifest schema only carries hook names —
       // FS access is by-process today (a future capability declaration
       // would name `<workspace>/permanent/memory/` here).
-      calls: ['agents:resolve', llmCallHook],
-      subscribes: ['chat:start', 'chat:end'],
+      //
+      // `memory:index:upsert` is a HARD dependency: the kernel's
+      // verifyCalls() throws missing-service if no indexer plugin is
+      // loaded alongside memory-strata. This is intentional — the preset
+      // wiring task (2B.13) ensures both the CLI preset (sqlite) and the
+      // k8s preset (postgres) load an indexer. A configuration without
+      // any indexer is misconfigured, and failing fast at bootstrap is
+      // better than silently accumulating reindex warn logs at runtime.
+      // If a test harness loads memory-strata in isolation it must either
+      // register a no-op service for 'memory:index:upsert' or skip
+      // bootstrap() and drive bus.subscribe/fire directly.
+      //
+      // `tool:register` is called at init time to register the
+      // memory_search agent tool with the tool catalog (tool-dispatcher).
+      calls: ['agents:resolve', llmCallHook, 'memory:index:upsert', 'tool:register'],
+      subscribes: ['chat:start', 'chat:end', 'memory:doc:written'],
     },
 
-    init({ bus }) {
+    async init({ bus }) {
+      // Register the memory_search agent tool with the tool catalog.
+      // tool:register is a service hook provided by @ax/tool-dispatcher;
+      // we await it here so the tool is visible in the catalog before
+      // any tool:list call arrives.
+      await registerMemorySearch(bus);
+      await registerMemoryReadSection(bus);
+      await registerMemoryNote(bus);
+      registerInject(bus);
+
       bus.subscribe<ChatStartPayload>(
         'chat:start',
         PLUGIN_NAME,
@@ -152,6 +180,15 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
         return undefined;
       });
 
+      // Re-indexer subscriber (Phase 2B, I18). Listens for
+      // `memory:doc:written` (emitted by the Consolidator after every
+      // doc write) and calls `memory:index:upsert` with the canonical
+      // on-disk content. Re-reading from disk (rather than trusting the
+      // event payload) prevents index drift if any upstream transform
+      // raced the event. Non-fatal: errors are caught + logged; the
+      // subscriber never throws out.
+      registerReindexer(bus);
+
       // Consolidator subscriber (Phase 2A, I10). Returns immediately —
       // the debouncer schedules the actual consolidation pass to run
       // after the debounce window, coalescing rapid back-to-back chats
@@ -180,6 +217,8 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
               info: (event, fields) => ctx.logger.info(event, fields),
               warn: (event, fields) => ctx.logger.warn(event, fields),
             },
+            bus,
+            ctx,
           });
           inflightWork.set(ctx.agentId, work);
           // Detach: the inflight slot is cleared when the underlying work settles,

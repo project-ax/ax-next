@@ -206,6 +206,27 @@ interface SessionIsAliveOutput {
   alive: boolean;
 }
 
+// system-prompt:augment — registered by @ax/memory-strata (Phase 2B), and
+// potentially other plugins in the future (personalization, tenant policy).
+// Returns markdown contributions that the orchestrator prepends to the
+// system prompt envelope before fresh-spawning the sandbox.
+//
+// Single-provider service hook (one registration); the orchestrator dispatches
+// only when `bus.hasService('system-prompt:augment')`. When absent, the
+// orchestrator is a no-op — no augmentation, identical to today.
+//
+// Note: augmentation applies ONLY on the fresh-spawn path. The routed-into-
+// existing-sandbox path reuses the originally-frozen `agentConfig.systemPrompt`
+// that was baked into the runner's session at first spawn — re-augmenting
+// mid-conversation would silently shift the prompt under the running agent,
+// which neither matches caller expectations nor improves anything (the
+// runner already has its prompt context).
+// Provider reads from ctx (userId, agentId, sessionId, etc.) — payload is empty.
+type SystemPromptAugmentInput = Record<string, never>;
+interface SystemPromptAugmentOutput {
+  contributions: Array<{ source: string; body: string }>;
+}
+
 /**
  * Proxy-session blob threaded from the orchestrator into the sandbox plugin.
  * The orchestrator opens a `proxy:open-session` BEFORE `sandbox:open-session`
@@ -614,6 +635,43 @@ export function createOrchestrator(
       }
       // No handle.kill() — we did not open this sandbox.
       return outcome;
+    }
+
+    // Phase 2B — system-prompt:augment. Fresh-spawn path only: a routed
+    // agent:invoke reuses an existing live sandbox whose systemPrompt was
+    // baked into the runner at first spawn; re-augmenting mid-conversation
+    // would silently shift the prompt under the running agent (and the
+    // runner doesn't reload it anyway).
+    //
+    // Single-provider service hook (one registration at MVP; promoted to
+    // a subscriber chain in Phase 5+ if a second provider lands). When
+    // unregistered: no-op — identical to pre-Phase-2B behavior.
+    //
+    // Failure-mode: augmentation is fire-and-degrade. A throw doesn't abort
+    // the chat; we log and fall through with the un-augmented prompt. The
+    // alternative — surfacing as `terminated` — would couple the chat's
+    // success to a soft-dep auxiliary, which is the wrong shape.
+    if (bus.hasService('system-prompt:augment')) {
+      try {
+        const out = await bus.call<
+          SystemPromptAugmentInput,
+          SystemPromptAugmentOutput
+        >('system-prompt:augment', ctx, {});
+        const extra = out.contributions
+          .map((c) => c.body)
+          .filter((b) => b.length > 0)
+          .join('\n\n');
+        if (extra.length > 0) {
+          // Mutate the struct's field, not the binding. agentConfig is still
+          // a const reference to the same object; only the systemPrompt
+          // property changes before it gets frozen on the new session.
+          agentConfig.systemPrompt = `${extra}\n\n${agentConfig.systemPrompt}`;
+        }
+      } catch (err) {
+        ctx.logger.warn('system_prompt_augment_failed', {
+          err: err instanceof Error ? err : new Error(String(err)),
+        });
+      }
     }
 
     // 4.5 — proxy:open-session. Fresh-spawn path only: a routed

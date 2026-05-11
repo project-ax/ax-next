@@ -3,42 +3,46 @@ import { readdir, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// I9 from the plan: Phase 1 ships ONLY Level 0 (hot tier markdown) +
-// Level 1 (Observer to inbox/). Explicitly NOT shipping: the
-// Consolidator (inbox→docs merge), the Retriever (FTS5 / vector / RRF),
-// recent.md regeneration, the eval harness.
+// I23 from the Phase 2B plan: the ship-list test now defends the
+// Phase 2B perimeter. Phase 1 + Phase 2A + Phase 2B have all landed —
+// Level 0 hot tier, Observer→inbox, Consolidator inbox→docs, BM25
+// retrieval interface, three agent tools, and auto-injected memory
+// block. Explicitly NOT shipping in 2B: dense/vector retrieval, RRF
+// fusion, LLM rerank, the eval harness.
 //
-// This test fails loudly if a future change accidentally pulls one of
-// those subsystems in via a copy-paste or premature wiring. The check
-// is on src/, not src/__tests__/ — the test file itself necessarily
-// names these strings to assert their absence.
+// This test fails loudly if a future change accidentally pulls one
+// of those subsystems in via a copy-paste or premature wiring. The
+// check is on src/, not src/__tests__/ — the test file itself
+// necessarily names these strings to assert their absence.
 //
 // Entries are removed from FORBIDDEN at the same time their real
-// implementation lands, so the audit trail in git history shows exactly
-// when each capability shipped.
+// implementation lands, so the audit trail in git history shows
+// exactly when each capability shipped.
 //
 // Phase 2A (Task 2A.2) landed: docs/ + recent.md path helpers + doc types.
-// `recent.md` was removed from FORBIDDEN because recentFile() necessarily
-// exposes that literal path.
-// Phase 2A (Task 2A.5) landed: cluster.ts — `Consolidator` removed from
-// FORBIDDEN because the Phase 2A inbox→docs pipeline is now actively shipping.
-// Phase 2A (Task 2A.13) added: four Phase 2B tool-surface tokens as belt-and-braces
-// protection against premature wiring of the agent tool layer. `memory_search`,
-// `memory_read_section`, `memory_note` are the Phase 2B agent tool names;
-// `tool:register` is the hook Phase 2B uses to register them. None of these
-// belong in Phase 2A src/. They are removed from FORBIDDEN when Phase 2B ships.
-// Phase 2B will also remove Retriever / FTS5 / RRF when the retrieval interface ships.
+// Phase 2A (Task 2A.5) landed: cluster.ts — `Consolidator` cleared.
+// Phase 2A (Task 2A.13) added four Phase 2B tool-surface guards.
+// Phase 2B (Task 2B.6) landed: re-indexer subscriber — `Retriever` cleared
+//   (the retriever helper ships as the retrieve() function).
+// Phase 2B (Tasks 2B.8/9/10) landed: three agent tools + tool:register cleared.
+// FTS5 stays forbidden in @ax/memory-strata src/ even after Phase 2B because
+// FTS5 lives in @ax/memory-strata-index-sqlite, not here — keeping it
+// forbidden in this package's src enforces the abstraction boundary (I17).
+//
+// Phase 3+ tokens (dense/vector/embeddings/rerank) stay forbidden as a
+// belt-and-braces guard against premature wiring.
 
 const FORBIDDEN: ReadonlyArray<{ token: string; reason: string }> = [
-  { token: 'FTS5', reason: 'Phase 2B Retriever — keyword index not yet shipped' },
-  { token: 'RRF', reason: 'Phase 2B Retriever — reciprocal rank fusion not yet shipped' },
-  { token: 'Retriever', reason: 'Phase 2B — retrieval interface not yet shipped' },
+  {
+    token: 'FTS5',
+    reason:
+      'Phase 2B abstraction boundary — FTS5 lives in @ax/memory-strata-index-sqlite, not in @ax/memory-strata src/',
+  },
   { token: 'hnswlib', reason: 'Phase 3 — vector index not yet shipped' },
   { token: 'embeddings', reason: 'Phase 3 — vector index not yet shipped' },
-  { token: 'memory_search', reason: 'Phase 2B — agent tool not yet shipped' },
-  { token: 'memory_read_section', reason: 'Phase 2B — agent tool not yet shipped' },
-  { token: 'memory_note', reason: 'Phase 2B — agent tool not yet shipped' },
-  { token: 'tool:register', reason: 'Phase 2B — tool registration hook not yet wired' },
+  { token: 'vector', reason: 'Phase 3 — vector / dense retrieval not yet shipped' },
+  { token: 'dense', reason: 'Phase 3 — vector / dense retrieval not yet shipped' },
+  { token: 'rerank', reason: 'Phase 3 / Phase 4 — LLM reranker not yet shipped' },
 ];
 
 // fileURLToPath, not URL.pathname: the latter prefixes a leading `/`
@@ -60,8 +64,8 @@ async function* walkSource(dir: string): AsyncGenerator<string> {
   }
 }
 
-describe('Phase 1 ship-list (I9)', () => {
-  it('does not reference Phase 2+ subsystems anywhere in src/', async () => {
+describe('Phase 2B ship-list (I23)', () => {
+  it('does not reference Phase 3+ subsystems anywhere in src/', async () => {
     const offenses: string[] = [];
     for await (const file of walkSource(SRC_DIR)) {
       const content = await readFile(file, 'utf8');

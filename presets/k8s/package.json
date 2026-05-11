@@ -42,6 +42,7 @@
     "@ax/llm-anthropic": "workspace:*",
     "@ax/mcp-client": "workspace:*",
     "@ax/memory-strata": "workspace:*",
+    "@ax/memory-strata-index-postgres": "workspace:*",
     "@ax/onboarding": "workspace:*",
     "@ax/sandbox-k8s": "workspace:*",
     "@ax/session-postgres": "workspace:*",
