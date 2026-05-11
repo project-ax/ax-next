@@ -6,6 +6,7 @@ import { runObserver, type LlmCallFn } from './observer.js';
 import { registerReindexer } from './reindex.js';
 import { raceTimeout } from './timeout.js';
 import { registerMemorySearch } from './tools/memory-search.js';
+import { registerMemoryReadSection } from './tools/memory-read-section.js';
 
 const PLUGIN_NAME = '@ax/memory-strata';
 const PLUGIN_VERSION = '0.0.0';
@@ -106,7 +107,7 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
     manifest: {
       name: PLUGIN_NAME,
       version: PLUGIN_VERSION,
-      registers: ['memory:doc:written', 'tool:execute:memory_search'],
+      registers: ['memory:doc:written', 'tool:execute:memory_search', 'tool:execute:memory_read_section'],
       // I5: minimal capability list. We `agents:resolve` to read the
       // agent's systemPrompt + model; we call llmCallHook for extraction.
       // No filesystem capability is declared at the manifest level
@@ -137,6 +138,7 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
       // we await it here so the tool is visible in the catalog before
       // any tool:list call arrives.
       await registerMemorySearch(bus);
+      await registerMemoryReadSection(bus);
 
       bus.subscribe<ChatStartPayload>(
         'chat:start',
