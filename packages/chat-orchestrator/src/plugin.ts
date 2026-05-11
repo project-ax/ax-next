@@ -56,6 +56,15 @@ export function createChatOrchestratorPlugin(
       // orchestrator without a conversation context, so they don't need
       // the peers loaded.
       //
+      // Phase 2B adds `system-prompt:augment` to this same category. The
+      // hook is registered by @ax/memory-strata (auto-inject path) and any
+      // future personalization / tenant-policy provider. Listing it in
+      // `calls` would force every preset wiring the orchestrator to also
+      // wire a provider — but the CLI canary, the single-tenant preset,
+      // and any deploy that doesn't load memory-strata MUST stay functional
+      // without one. The orchestrator gates with `bus.hasService(...)` and
+      // no-ops when absent.
+      //
       // We gate each call with `bus.hasService(...)` at runtime to keep
       // the orchestrator usable in those non-channel-web presets. Failing
       // closed (no routing, no bind) is the correct degraded behavior —
