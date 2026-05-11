@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "757b29cee7aa",
+  "session_id": "050d09f0-2418-4ff5-9e38-b95db713fae6",
+  "strategy": "manual-commit",
+  "created_at": "2026-05-11T01:25:40.216909Z",
+  "branch": "worktree-memory-strata-phase-2a-consolidator",
+  "checkpoints_count": 0,
+  "files_touched": [],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "9a9684353c7d",
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 8,
+      "user_lines_removed": 8,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claude/settings.local.json": 8
+      },
+      "user_removed_per_file": {
+        "packages/memory-strata/src/__tests__/inbox-store.test.ts": 8
+      }
+    }
+  ]
+}

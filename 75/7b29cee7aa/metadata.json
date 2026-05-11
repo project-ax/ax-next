@@ -1,0 +1,16 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "757b29cee7aa",
+  "strategy": "manual-commit",
+  "branch": "worktree-memory-strata-phase-2a-consolidator",
+  "checkpoints_count": 0,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/75/7b29cee7aa/0/metadata.json",
+      "transcript": "/75/7b29cee7aa/0/full.jsonl",
+      "content_hash": "/75/7b29cee7aa/0/content_hash.txt",
+      "prompt": ""
+    }
+  ]
+}
