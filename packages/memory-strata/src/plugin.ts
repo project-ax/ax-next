@@ -2,6 +2,7 @@ import type { AgentContext, AgentOutcome, HookBus, Plugin } from '@ax/core';
 import { bootstrapMemoryTree } from './bootstrap.js';
 import { runConsolidation } from './consolidator.js';
 import { createDebouncer, type Debouncer } from './debounce.js';
+import { registerInject } from './inject.js';
 import { runObserver, type LlmCallFn } from './observer.js';
 import { registerReindexer } from './reindex.js';
 import { raceTimeout } from './timeout.js';
@@ -108,7 +109,7 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
     manifest: {
       name: PLUGIN_NAME,
       version: PLUGIN_VERSION,
-      registers: ['memory:doc:written', 'tool:execute:memory_search', 'tool:execute:memory_read_section', 'tool:execute:memory_note'],
+      registers: ['memory:doc:written', 'tool:execute:memory_search', 'tool:execute:memory_read_section', 'tool:execute:memory_note', 'system-prompt:augment'],
       // I5: minimal capability list. We `agents:resolve` to read the
       // agent's systemPrompt + model; we call llmCallHook for extraction.
       // No filesystem capability is declared at the manifest level
@@ -141,6 +142,7 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
       await registerMemorySearch(bus);
       await registerMemoryReadSection(bus);
       await registerMemoryNote(bus);
+      registerInject(bus);
 
       bus.subscribe<ChatStartPayload>(
         'chat:start',
