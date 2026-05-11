@@ -83,93 +83,111 @@ export async function runConsolidation(
   input: ConsolidationInput,
 ): Promise<ConsolidationResult> {
   const log = input.logger ?? noopLogger();
-  const { decayed } = await decayInbox(input.workspaceRoot, input.now, log);
 
-  const inbox = await listInbox(input.workspaceRoot);
-  const clusters = clusterBySubject(inbox);
-
+  // Declare counters at function scope so the failure-path catch can
+  // include the partial audit context (C2 fix).
   let promoted = 0;
   let dupesMerged = 0;
   let quarantined = 0;
   let leftInInbox = 0;
+  let decayed = 0;
 
-  for (const cluster of clusters) {
-    const existing = await readDoc({
-      workspaceRoot: input.workspaceRoot,
-      category: cluster.category,
-      slug: cluster.slug,
-    });
-    const existingFacts = existing ? extractFactsFromBody(existing.body) : [];
+  try {
+    ({ decayed } = await decayInbox(input.workspaceRoot, input.now, log));
 
-    // Track whether we've created the doc during this cluster pass so we
-    // know whether to call writeNewDoc (first observation) or appendFact
-    // (subsequent observations).
-    let docCreated = existing !== null;
-    const factsInDoc = [...existingFacts];
+    const inbox = await listInbox(input.workspaceRoot);
+    const clusters = clusterBySubject(inbox);
 
-    for (const obs of cluster.observations) {
-      const decision = decidePromotion(obs);
+    for (const cluster of clusters) {
+      const existing = await readDoc({
+        workspaceRoot: input.workspaceRoot,
+        category: cluster.category,
+        slug: cluster.slug,
+      });
+      const existingFacts = existing ? extractFactsFromBody(existing.body) : [];
 
-      // Non-promote: two cases — low-confidence (leave in inbox for next pass)
-      // or sensitive (quarantine, I11). The decision discriminator picks which.
-      if (!decision.promote) {
-        if (decision.reason === 'low-confidence') {
-          // Not yet ready — leave it in the inbox for the next pass.
-          leftInInbox += 1;
+      // Track whether we've created the doc during this cluster pass so we
+      // know whether to call writeNewDoc (first observation) or appendFact
+      // (subsequent observations).
+      let docCreated = existing !== null;
+      const factsInDoc = [...existingFacts];
+
+      for (const obs of cluster.observations) {
+        const decision = decidePromotion(obs);
+
+        // Non-promote: two cases — low-confidence (leave in inbox for next pass)
+        // or sensitive (quarantine, I11). The decision discriminator picks which.
+        if (!decision.promote) {
+          if (decision.reason === 'low-confidence') {
+            // Not yet ready — leave it in the inbox for the next pass.
+            leftInInbox += 1;
+            continue;
+          }
+          // I11: sensitive at promotion-time → quarantine, not delete.
+          await quarantineFile(input.workspaceRoot, obs.path);
+          log.warn('memory_strata_promotion_quarantined', {
+            inboxPath: obs.path,
+            kinds: decision.kinds,
+          });
+          quarantined += 1;
           continue;
         }
-        // I11: sensitive at promotion-time → quarantine, not delete.
-        await quarantineFile(input.workspaceRoot, obs.path);
-        log.warn('memory_strata_promotion_quarantined', {
-          inboxPath: obs.path,
-          kinds: decision.kinds,
-        });
-        quarantined += 1;
-        continue;
-      }
 
-      // I12: dedup against facts already in the doc (or accumulated this pass).
-      if (isDupe(obs.frontmatter.summary ?? '', factsInDoc)) {
-        dupesMerged += 1;
+        // I12: dedup against facts already in the doc (or accumulated this pass).
+        if (isDupe(obs.frontmatter.summary ?? '', factsInDoc)) {
+          dupesMerged += 1;
+          await deleteInboxFile(input.workspaceRoot, obs.path);
+          continue;
+        }
+
+        // Promote: write or append, then delete the inbox source file (I12).
+        if (!docCreated) {
+          await writeNewDoc({
+            workspaceRoot: input.workspaceRoot,
+            category: cluster.category,
+            slug: cluster.slug,
+            summary: obs.frontmatter.summary ?? '',
+            subject: obs.frontmatter.subject ?? cluster.slug,
+            factType: obs.frontmatter.factType ?? 'general',
+            confidence: obs.frontmatter.confidence ?? 0,
+            sourceObservationIds: [obs.frontmatter.id],
+            now: input.now,
+            facts: [obs.frontmatter.summary ?? ''],
+          });
+          docCreated = true;
+        } else {
+          await appendFact({
+            workspaceRoot: input.workspaceRoot,
+            category: cluster.category,
+            slug: cluster.slug,
+            newFact: obs.frontmatter.summary ?? '',
+            observationId: obs.frontmatter.id,
+            confidence: obs.frontmatter.confidence ?? 0,
+            now: input.now,
+          });
+        }
+
+        factsInDoc.push(obs.frontmatter.summary ?? '');
         await deleteInboxFile(input.workspaceRoot, obs.path);
-        continue;
+        promoted += 1;
       }
-
-      // Promote: write or append, then delete the inbox source file (I12).
-      if (!docCreated) {
-        await writeNewDoc({
-          workspaceRoot: input.workspaceRoot,
-          category: cluster.category,
-          slug: cluster.slug,
-          summary: obs.frontmatter.summary ?? '',
-          subject: obs.frontmatter.subject ?? cluster.slug,
-          factType: obs.frontmatter.factType ?? 'general',
-          confidence: obs.frontmatter.confidence ?? 0,
-          sourceObservationIds: [obs.frontmatter.id],
-          now: input.now,
-          facts: [obs.frontmatter.summary ?? ''],
-        });
-        docCreated = true;
-      } else {
-        await appendFact({
-          workspaceRoot: input.workspaceRoot,
-          category: cluster.category,
-          slug: cluster.slug,
-          newFact: obs.frontmatter.summary ?? '',
-          observationId: obs.frontmatter.id,
-          confidence: obs.frontmatter.confidence ?? 0,
-          now: input.now,
-        });
-      }
-
-      factsInDoc.push(obs.frontmatter.summary ?? '');
-      await deleteInboxFile(input.workspaceRoot, obs.path);
-      promoted += 1;
     }
-  }
 
-  // I13: regenerate the cached view last, after all promotions are committed.
-  await regenerateRecent({ workspaceRoot: input.workspaceRoot, now: input.now });
+    // I13: regenerate the cached view last, after all promotions are committed.
+    await regenerateRecent({ workspaceRoot: input.workspaceRoot, now: input.now });
+  } catch (err) {
+    // C2 fix: emit the audit event with partial counters so operators can
+    // see how far the pass progressed before the failure.
+    log.warn('memory_strata_consolidator_failed', {
+      err: err instanceof Error ? err : new Error(String(err)),
+      promoted,
+      dupesMerged,
+      quarantined,
+      leftInInbox,
+      decayed,
+    });
+    throw err;
+  }
 
   log.info('memory_strata_consolidation_complete', {
     promoted, dupesMerged, quarantined, leftInInbox, decayed,
@@ -196,7 +214,16 @@ async function decayInbox(
   let decayed = 0;
   for (const f of inbox) {
     const ts = new Date(f.frontmatter.created).getTime();
-    if (Number.isNaN(ts)) continue;
+    if (Number.isNaN(ts)) {
+      // C3 fix: warn so operators can identify observations with corrupt
+      // frontmatter rather than silently skipping them forever.
+      log.warn('memory_strata_inbox_decay_invalid_created', {
+        id: f.frontmatter.id,
+        created: f.frontmatter.created,
+        inboxPath: f.path,
+      });
+      continue;
+    }
     if (ts > cutoffMs) continue;
     await deleteInboxFile(workspaceRoot, f.path);
     log.info('memory_strata_inbox_decayed', {

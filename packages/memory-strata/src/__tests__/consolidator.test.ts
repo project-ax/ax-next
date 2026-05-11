@@ -8,7 +8,7 @@
 // the only way to exercise the I11/I12/I13 invariants together.
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { mkdtemp, mkdir, writeFile, stat, readFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, stat, readFile, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runConsolidation, type ConsolidationLogger } from '../consolidator.js';
@@ -263,5 +263,104 @@ describe('consolidator', () => {
     // Only one fact line — the second was a dupe.
     const factLines = doc.split('\n').filter((l) => l.startsWith('- '));
     expect(factLines).toHaveLength(1);
+  });
+
+  it('emits memory_strata_consolidator_failed audit event with partial counters when a step throws (C2)', async () => {
+    const now = new Date('2026-05-10T12:00:00.000Z');
+
+    // Seed one promotable inbox observation so the consolidator enters the
+    // cluster loop and tries to write a doc before hitting the injected failure.
+    await writeInboxFixture(
+      'obs-fail-test.md',
+      {
+        id: 'obs-fail-test',
+        type: 'inbox/observation',
+        created: now.toISOString(),
+        confidence: 0.9,
+        pinned: false,
+        summary: 'User uses Vim as their editor',
+        subject: 'editor',
+        factType: 'preference',
+        event_time: now.toISOString(),
+        recorded_at: now.toISOString(),
+      },
+      '# Observation\n\nUser uses Vim as their editor\n',
+    );
+
+    // Inject failure via an unwritable docs/ directory: pre-create the docs
+    // root with mode 0o000 so that mkdir(docs/preference/, {recursive:true})
+    // throws EACCES when the consolidator attempts to write the new doc.
+    // This approach avoids ESM-incompatible vi.spyOn on node:fs/promises.
+    const docsRoot = join(workspaceRoot, 'permanent/memory/docs');
+    await mkdir(docsRoot, { recursive: true });
+    await chmod(docsRoot, 0o000);
+
+    const logger = makeLoggerSpy();
+    let threw = false;
+    try {
+      await runConsolidation({ workspaceRoot, now, logger });
+    } catch {
+      threw = true;
+    } finally {
+      // Restore permissions so afterEach can rm the temp dir.
+      await chmod(docsRoot, 0o755);
+    }
+
+    expect(threw).toBe(true);
+
+    // The catch block must have emitted memory_strata_consolidator_failed.
+    const failedEvents = logger.warnCalls.filter(
+      (c) => c.event === 'memory_strata_consolidator_failed',
+    );
+    expect(failedEvents).toHaveLength(1);
+    const fields = failedEvents[0]!.fields;
+    expect(fields['err']).toBeInstanceOf(Error);
+    // Counters are present in fields (partial audit context).
+    expect(fields).toMatchObject({
+      promoted: expect.any(Number),
+      dupesMerged: expect.any(Number),
+      quarantined: expect.any(Number),
+      leftInInbox: expect.any(Number),
+      decayed: expect.any(Number),
+    });
+    // The success event must NOT have been emitted.
+    expect(logger.infoCalls.some((c) => c.event === 'memory_strata_consolidation_complete')).toBe(false);
+  });
+
+  it('warns on invalid created timestamp during decay (C3)', async () => {
+    const now = new Date('2026-05-10T12:00:00.000Z');
+
+    // Seed an inbox file with a non-date `created` field.
+    await writeInboxFixture(
+      'obs-bad-date.md',
+      {
+        id: 'obs-bad-date',
+        type: 'inbox/observation',
+        created: 'not-a-date',
+        confidence: 0.9,
+        pinned: false,
+        summary: 'Observation with corrupt timestamp',
+        subject: 'corrupt',
+        factType: 'general',
+        event_time: now.toISOString(),
+        recorded_at: now.toISOString(),
+      },
+      '# Observation\n\nObservation with corrupt timestamp\n',
+    );
+
+    const logger = makeLoggerSpy();
+    // Consolidation must succeed even with a corrupt timestamp.
+    await runConsolidation({ workspaceRoot, now, logger });
+
+    // A warn entry must have been emitted for the invalid created field.
+    const invalidCreatedWarns = logger.warnCalls.filter(
+      (c) => c.event === 'memory_strata_inbox_decay_invalid_created',
+    );
+    expect(invalidCreatedWarns).toHaveLength(1);
+    expect(invalidCreatedWarns[0]!.fields).toMatchObject({
+      id: 'obs-bad-date',
+      created: 'not-a-date',
+      inboxPath: expect.stringContaining('obs-bad-date.md'),
+    });
   });
 });
