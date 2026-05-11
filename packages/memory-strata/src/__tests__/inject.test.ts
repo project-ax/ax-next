@@ -351,8 +351,6 @@ describe('registerInject — error degradation', () => {
     // a non-existent parent directory (permission denied path is OS-specific),
     // so instead mock fs/promises readFile for this specific test.
 
-    const originalReadFile = (await import('node:fs/promises')).readFile;
-
     // We simulate the error by giving a ctx with a workspace.rootPath that has
     // an unusual character that causes a path error. The cleanest approach is
     // to use vi.spyOn on the fs module imported by inject.ts.

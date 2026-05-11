@@ -22,7 +22,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { HookBus, AgentContext } from '@ax/core';
 import { systemFile, recentFile } from './paths.js';
-import { retrieve, type RetrievalResult } from './retriever.js';
+import { retrieve } from './retriever.js';
 
 const PLUGIN_NAME = '@ax/memory-strata';
 
@@ -169,7 +169,7 @@ function assembleUnderCap({
   // We track this separately so we can compute how many body chars fit.
   const maxChars = maxTokens * 4;
 
-  let docs = [...docsLines];
+  const docs = [...docsLines];
 
   // Step 1 & 2: drop lowest-rank docs until under cap.
   while (true) {

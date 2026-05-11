@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { HookBus, makeAgentContext } from '@ax/core';
-import { retrieve, type RetrieveInput, type RetrievalResult } from '../retriever.js';
+import { retrieve, type RetrievalResult } from '../retriever.js';
 
 describe('retriever', () => {
   it('happy path: returns results from the indexer', async () => {

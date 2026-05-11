@@ -24,7 +24,7 @@ beforeEach(async () => {
 });
 
 /** Build an AgentContext wired to the temp workspace. */
-function makeCtx(bus: HookBus) {
+function makeCtx(_bus: HookBus) {
   return makeAgentContext({
     sessionId: 'sess-reindex',
     agentId: 'agent-reindex',

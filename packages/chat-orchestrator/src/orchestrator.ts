@@ -221,9 +221,8 @@ interface SessionIsAliveOutput {
 // mid-conversation would silently shift the prompt under the running agent,
 // which neither matches caller expectations nor improves anything (the
 // runner already has its prompt context).
-interface SystemPromptAugmentInput {
-  /* empty — provider reads from ctx (userId, agentId, sessionId, etc.) */
-}
+// Provider reads from ctx (userId, agentId, sessionId, etc.) — payload is empty.
+type SystemPromptAugmentInput = Record<string, never>;
 interface SystemPromptAugmentOutput {
   contributions: Array<{ source: string; body: string }>;
 }
