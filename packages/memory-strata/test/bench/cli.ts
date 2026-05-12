@@ -107,7 +107,8 @@ async function main(): Promise<number> {
   });
 
   const cache = new BenchCache();
-  const meter = new CostMeter({ capDollars: args.liveSmoke ? 0.5 : 50, pricing: PRICING });
+  const cap = args.liveSmoke ? 0.5 : 50;
+  const meter = new CostMeter({ capDollars: cap, pricing: PRICING });
   const tempDir = mkdtempSync(join(tmpdir(), 'ax-bench-'));
 
   const agentClient: AgentClient = makeAnthropicAgentClient(env.ANTHROPIC_API_KEY);
@@ -144,6 +145,7 @@ async function main(): Promise<number> {
             capExceeded = true;
             break outer;
           }
+          const before = meter.totalDollars();
           const retrieval = await driver.retrieve(question, args.topK, new AbortController().signal);
           if (retrieval.embeddingTokens > 0) meter.record('zembed-1', { in: retrieval.embeddingTokens, out: 0 });
           if (retrieval.rerankTokens > 0) meter.record('zerank-2', { in: retrieval.rerankTokens, out: 0 });
@@ -161,7 +163,7 @@ async function main(): Promise<number> {
             judgeReason: verdict.reason,
             agentTokens: agentResp.usage,
             judgeTokens: verdict.usage,
-            totalDollars: 0,
+            totalDollars: meter.totalDollars() - before,
           });
           if (results.length % 50 === 0) {
             console.log(`Progress: ${results.length} questions evaluated, $${meter.totalDollars().toFixed(2)} spent.`);
@@ -176,7 +178,7 @@ async function main(): Promise<number> {
   const date = new Date();
   const md = renderReport({
     results,
-    cap: 50,
+    cap,
     totalSpent: meter.totalDollars(),
     capExceeded,
     runDate: date,
