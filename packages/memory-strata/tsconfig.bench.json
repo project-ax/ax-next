@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": true
+  },
+  "include": ["src/**/*", "test/bench/**/*"],
+  "exclude": ["src/**/__tests__/**", "dist", "node_modules"],
+  "references": [{ "path": "../core" }]
+}
