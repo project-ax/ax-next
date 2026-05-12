@@ -53,3 +53,36 @@ describe('LoCoMo transform', () => {
     expect(out.questions[0]!.goldAnswer).toBe('March 5');
   });
 });
+
+import { loadInternalCorpusFromJson } from '../corpora/internal.js';
+
+describe('internal corpus loader', () => {
+  it('reads the committed internal-corpus.json into a BenchCorpus', () => {
+    const json = JSON.stringify({
+      docs: [
+        {
+          path: 'knowledge/architecture/plugin-bus',
+          category: 'knowledge',
+          slug: 'plugin-bus',
+          summary: 'How the hook bus works',
+          factType: 'knowledge',
+          headers: '## Overview',
+          body: '# Plugin bus\n## Overview\nplugins talk through the bus.',
+        },
+      ],
+      questions: [
+        {
+          id: 'q1',
+          text: 'How do plugins communicate?',
+          goldAnswer: 'Through the hook bus.',
+          goldDocIds: ['knowledge/architecture/plugin-bus'],
+        },
+      ],
+    });
+    const corpus = loadInternalCorpusFromJson(json);
+    expect(corpus.name).toBe('internal');
+    expect(corpus.memoryTree.size).toBe(1);
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    expect(corpus.questions[0]!.id).toBe('q1');
+  });
+});
