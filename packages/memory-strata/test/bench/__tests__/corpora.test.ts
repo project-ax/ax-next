@@ -32,3 +32,24 @@ describe('LongMemEval-S transform', () => {
     expect(doc!.slug).toBe('s0');
   });
 });
+
+import { transformLoCoMoSample } from '../corpora/locomo.js';
+
+describe('LoCoMo transform', () => {
+  it('emits a Strata-shaped memory tree from a sample row', () => {
+    const sample = {
+      sample_id: 'lc-1',
+      conversation: [
+        { speaker: 'Alice', text: 'My birthday is March 5.' },
+        { speaker: 'Bob', text: 'Got it.' },
+      ],
+      qa: [{ question: "What is Alice's birthday?", answer: 'March 5' }],
+    };
+    const out = transformLoCoMoSample(sample);
+    expect(out.docs.size).toBeGreaterThan(0);
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    expect(out.questions[0]!.text).toContain('birthday');
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    expect(out.questions[0]!.goldAnswer).toBe('March 5');
+  });
+});
