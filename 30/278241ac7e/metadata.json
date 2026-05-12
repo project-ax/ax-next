@@ -1,0 +1,16 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "30278241ac7e",
+  "strategy": "manual-commit",
+  "branch": "worktree-memory-strata-phase-3a-eval-harness",
+  "checkpoints_count": 0,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/30/278241ac7e/0/metadata.json",
+      "transcript": "/30/278241ac7e/0/full.jsonl",
+      "content_hash": "/30/278241ac7e/0/content_hash.txt",
+      "prompt": ""
+    }
+  ]
+}
