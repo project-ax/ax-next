@@ -13,6 +13,7 @@
   },
   "files": ["dist"],
   "scripts": {
+    "bench": "tsx test/bench/cli.ts",
     "build": "tsc --build",
     "test": "vitest run",
     "test:watch": "vitest"
@@ -22,9 +23,14 @@
     "js-yaml": "^4.1.0"
   },
   "devDependencies": {
+    "@ax/memory-strata-index-sqlite": "workspace:*",
+    "@huggingface/hub": "^0.20.0",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^25.6.0",
+    "openai": "^4.68.0",
+    "sqlite-vec": "^0.1.6",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.4"
+    "vitest": "^4.1.4",
+    "zeroentropy": "0.1.0-alpha.10"
   }
 }

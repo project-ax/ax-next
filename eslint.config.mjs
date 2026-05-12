@@ -170,6 +170,12 @@ export default tseslint.config(
       // ./src/server/) is still subject to the rule and must NOT import
       // core — that's invariant I2 in this slice.
       'packages/workspace-git-http/src/server/**',
+      // The Strata Phase 3 eval harness lives under test/bench/ and must
+      // instantiate @ax/memory-strata-index-sqlite directly to drive Config A
+      // (BM25 baseline) through the genuine production hook surface. Re-implementing
+      // FTS5 locally would defeat the spike's whole point. Not subject to I2.
+      // See docs/plans/2026-05-12-memory-strata-phase-3-design.md § D1.
+      'packages/memory-strata/test/bench/**',
     ],
     rules: {
       '@typescript-eslint/no-restricted-imports': 'off',
