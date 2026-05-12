@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createConfigA } from '../configs/a-bm25.js';
 import { createConfigB } from '../configs/b-rerank.js';
+import { createConfigC, rrfFuse } from '../configs/c-rrf.js';
 import type { BenchCorpus } from '../types.js';
 import { makeDoc } from '../corpora/shared.js';
 
@@ -60,6 +61,46 @@ describe('Config B (BM25 + rerank)', () => {
     );
     expect(r.retrievedDocs.length).toBe(2);
     expect(r.rerankTokens).toBe(50);
+    rmSync(dir, { recursive: true, force: true });
+    await driver.teardown();
+  });
+});
+
+describe('rrfFuse', () => {
+  it('combines two ranked lists with reciprocal rank fusion', () => {
+    const bm = [{ path: 'a', score: 1 }, { path: 'b', score: 0.5 }];
+    const vec = [{ path: 'b', score: 0.9 }, { path: 'c', score: 0.8 }];
+    const fused = rrfFuse(bm, vec, { k: 60, topK: 3 });
+    expect(fused[0]!.path).toBe('b');  // appears in both lists → top
+  });
+});
+
+describe('Config C (BM25 + dense + RRF)', () => {
+  it('returns a fused list and accounts embedding tokens', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bench-cfg-c-'));
+    const corpus: BenchCorpus = { name: 'internal', memoryTree: new Map(), questions: [] };
+    const d1 = makeDoc({ category: 'knowledge', slug: 'd1', summary: 'first', body: 'apple banana' });
+    const d2 = makeDoc({ category: 'knowledge', slug: 'd2', summary: 'second', body: 'orange grape' });
+    corpus.memoryTree.set(d1.path, d1);
+    corpus.memoryTree.set(d2.path, d2);
+
+    const driver = createConfigC({
+      tempDir: dir,
+      embedClient: {
+        async embed(texts) {
+          return { vectors: texts.map((t) => [t.length, 0, 0, 0]), tokens: texts.length * 10 };
+        },
+      },
+      embeddingDim: 4,
+    });
+    await driver.build(corpus);
+    const r = await driver.retrieve(
+      { id: 'q', text: 'apple', goldAnswer: 'fruit' },
+      2,
+      new AbortController().signal,
+    );
+    expect(r.retrievedDocs.length).toBeGreaterThan(0);
+    expect(r.embeddingTokens).toBeGreaterThan(0);
     rmSync(dir, { recursive: true, force: true });
     await driver.teardown();
   });
