@@ -41,6 +41,9 @@ interface SourceFile {
 const SOURCE_GLOBS = [
   'docs/plans/*-design.md',
   'docs/plans/*-impl.md',
+  'docs/plans/*-plan.md',
+  'docs/plans/*-pr-notes.md',
+  'docs/plans/*-followup.md',
   '.claude/memory/*.md',
   'README.md',
   'CLAUDE.md',
