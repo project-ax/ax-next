@@ -1,0 +1,39 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "c1835529cf10",
+  "session_id": "9c10f0ad-b20e-42a1-97a6-d3ff5213e0ef",
+  "strategy": "manual-commit",
+  "created_at": "2026-05-12T20:15:12.471032Z",
+  "branch": "worktree-memory-strata-phase-3a-eval-harness",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "packages/memory-strata/test/bench/cli.ts"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "cb53af2a75b5",
+  "initial_attribution": {
+    "calculated_at": "2026-05-12T20:15:12.470221Z",
+    "agent_lines": 0,
+    "agent_removed": 1,
+    "human_added": 1,
+    "human_modified": 2,
+    "human_removed": 0,
+    "total_committed": 3,
+    "total_lines_changed": 4,
+    "agent_percentage": 25,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 8,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claude/settings.local.json": 8
+      }
+    }
+  ]
+}
