@@ -125,14 +125,14 @@ export function makeZeroEntropyEmbedClient(apiKey: string, model = 'zembed-1'): 
   const z = new ZeroEntropy({ apiKey });
   return {
     async embed(texts, inputType) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const resp = await (z as any).models.embed({ model, input: texts, input_type: inputType });
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const items = (resp as any).data as Array<{ embedding: number[] }>;
-      const vectors = items.map((i) => i.embedding);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const tokens = (resp as any).usage?.total_tokens ?? 0;
-      return { vectors, tokens };
+      const resp = await z.models.embed({ model, input: texts, input_type: inputType });
+      const vectors = resp.results.map((r) => {
+        if (typeof r.embedding === 'string') {
+          throw new Error('zembed-1 returned a base64 embedding; this client expects float arrays');
+        }
+        return r.embedding;
+      });
+      return { vectors, tokens: resp.usage.total_tokens };
     },
   };
 }

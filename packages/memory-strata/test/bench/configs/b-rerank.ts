@@ -74,21 +74,16 @@ export function makeZeroEntropyRerankClient(apiKey: string, model = 'zerank-2'):
   const z = new ZeroEntropy({ apiKey });
   return {
     async rerank(query, docs) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const resp = await (z as any).models.rerank({
+      const resp = await z.models.rerank({
         model,
         query,
         documents: docs.map((d) => d.text),
       });
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const items = (resp as any).results as Array<{ index: number; relevance_score: number }>;
-      const reranked = items.map((it) => ({
+      const reranked = resp.results.map((it) => ({
         docId: docs[it.index]!.docId,
         score: it.relevance_score,
       }));
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const tokens = (resp as any).usage?.total_tokens ?? 0;
-      return { reranked, tokens };
+      return { reranked, tokens: resp.total_tokens };
     },
   };
 }
