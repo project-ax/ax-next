@@ -20,6 +20,7 @@ interface Aggregate {
   totalAgentInTokens: number;
   totalAgentOutTokens: number;
   recallAt5: number;
+  recallAt5Eligible: number;
 }
 
 function aggregateByConfig(
@@ -40,6 +41,7 @@ function aggregateByConfig(
         totalAgentInTokens: 0,
         totalAgentOutTokens: 0,
         recallAt5: 0,
+        recallAt5Eligible: 0,
       });
     const a = cm.get(r.config)!;
     a.total += 1;
@@ -49,6 +51,7 @@ function aggregateByConfig(
     a.totalAgentInTokens += r.agentTokens.in;
     a.totalAgentOutTokens += r.agentTokens.out;
     if (r.question.goldDocIds && r.question.goldDocIds.length > 0) {
+      a.recallAt5Eligible += 1;
       const top5 = r.retrieval.retrievedDocs.slice(0, 5).map((d) => d.path);
       const hit = r.question.goldDocIds.some((g) => top5.includes(g));
       if (hit) a.recallAt5 += 1;
@@ -62,7 +65,7 @@ function aggregateByConfig(
         .sort((x, y) => x - y);
       a.latencyP50 = percentile(latencies, 0.5);
       a.latencyP95 = percentile(latencies, 0.95);
-      a.recallAt5 = a.recallAt5 / Math.max(a.total, 1);
+      a.recallAt5 = a.recallAt5Eligible > 0 ? a.recallAt5 / a.recallAt5Eligible : 0;
     }
   }
   return byCorpus;
