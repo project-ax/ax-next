@@ -59,22 +59,25 @@ describe('Smoke: all configs × 3 corpora × 10 Qs with stubbed LLMs', () => {
       createConfigB({ tempDir: dir, rerankClient }),
       createConfigC({ tempDir: dir, embedClient, embeddingDim: 4 }),
     ];
-    for (const corpus of corpora) {
-      for (const driver of drivers) {
-        await driver.build(corpus);
-        try {
-          for (const q of corpus.questions) {
-            const r = await driver.retrieve(q, 5, new AbortController().signal);
-            const a = await runAgent(agentClient, q, r.retrievedDocs);
-            const v = await judgeAnswer(judgeClient, q.text, q.goldAnswer, a.text);
-            expect(v.verdict).toBe('correct');
+    try {
+      for (const corpus of corpora) {
+        for (const driver of drivers) {
+          await driver.build(corpus);
+          try {
+            for (const q of corpus.questions) {
+              const r = await driver.retrieve(q, 5, new AbortController().signal);
+              const a = await runAgent(agentClient, q, r.retrievedDocs);
+              const v = await judgeAnswer(judgeClient, q.text, q.goldAnswer, a.text);
+              expect(v.verdict).toBe('correct');
+            }
+          } finally {
+            await driver.teardown();
           }
-        } finally {
-          await driver.teardown();
         }
       }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
-    rmSync(dir, { recursive: true, force: true });
   });
 });
 
@@ -106,21 +109,25 @@ describe.skipIf(process.env.BENCH_LIVE !== '1')('Live smoke (BENCH_LIVE=1, hard-
 
     const dir = mkdtempSync(join(tmpdir(), 'bench-live-'));
     const driver = createConfigC({ tempDir: dir, embedClient: makeZeroEntropyEmbedClient(env.ZEROENTROPY_API_KEY) });
-    await driver.build(corpus);
-    const question = corpus.questions[0]!;
-    const r = await driver.retrieve(question, 5, new AbortController().signal);
-    meter.record('zembed-1', { in: r.embeddingTokens, out: 0 });
+    let spent: number;
+    try {
+      await driver.build(corpus);
+      const question = corpus.questions[0]!;
+      const r = await driver.retrieve(question, 5, new AbortController().signal);
+      meter.record('zembed-1', { in: r.embeddingTokens, out: 0 });
 
-    const a = await runAgent(makeAnthropicAgentClient(env.ANTHROPIC_API_KEY), question, r.retrievedDocs);
-    meter.record('claude-sonnet-4-6', a.usage);
+      const a = await runAgent(makeAnthropicAgentClient(env.ANTHROPIC_API_KEY), question, r.retrievedDocs);
+      meter.record('claude-sonnet-4-6', a.usage);
 
-    const v = await judgeAnswer(makeOpenRouterJudgeClient(env.OPENROUTER_API_KEY), question.text, question.goldAnswer, a.text);
-    meter.record('x-ai/grok-4.3', v.usage);
+      const v = await judgeAnswer(makeOpenRouterJudgeClient(env.OPENROUTER_API_KEY), question.text, question.goldAnswer, a.text);
+      meter.record('x-ai/grok-4.3', v.usage);
 
-    await driver.teardown();
-    rmSync(dir, { recursive: true, force: true });
+      spent = meter.totalDollars();
+    } finally {
+      await driver.teardown();
+      rmSync(dir, { recursive: true, force: true });
+    }
 
-    const spent = meter.totalDollars();
     console.log(
       `[live-smoke] spent $${spent.toFixed(4)} across ${Object.keys(meter.snapshot()).length} models:`,
       meter.snapshot(),

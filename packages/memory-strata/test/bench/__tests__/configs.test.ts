@@ -54,15 +54,18 @@ describe('Config B (BM25 + rerank)', () => {
       },
     });
     await driver.build(corpus);
-    const r = await driver.retrieve(
-      { id: 'q', text: 'cortado', goldAnswer: 'x' },
-      2,
-      new AbortController().signal,
-    );
-    expect(r.retrievedDocs.length).toBe(2);
-    expect(r.rerankTokens).toBe(50);
-    rmSync(dir, { recursive: true, force: true });
-    await driver.teardown();
+    try {
+      const r = await driver.retrieve(
+        { id: 'q', text: 'cortado', goldAnswer: 'x' },
+        2,
+        new AbortController().signal,
+      );
+      expect(r.retrievedDocs.length).toBe(2);
+      expect(r.rerankTokens).toBe(50);
+    } finally {
+      await driver.teardown();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -94,14 +97,17 @@ describe('Config C (BM25 + dense + RRF)', () => {
       embeddingDim: 4,
     });
     await driver.build(corpus);
-    const r = await driver.retrieve(
-      { id: 'q', text: 'apple', goldAnswer: 'fruit' },
-      2,
-      new AbortController().signal,
-    );
-    expect(r.retrievedDocs.length).toBeGreaterThan(0);
-    expect(r.embeddingTokens).toBeGreaterThan(0);
-    rmSync(dir, { recursive: true, force: true });
-    await driver.teardown();
+    try {
+      const r = await driver.retrieve(
+        { id: 'q', text: 'apple', goldAnswer: 'fruit' },
+        2,
+        new AbortController().signal,
+      );
+      expect(r.retrievedDocs.length).toBeGreaterThan(0);
+      expect(r.embeddingTokens).toBeGreaterThan(0);
+    } finally {
+      await driver.teardown();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
