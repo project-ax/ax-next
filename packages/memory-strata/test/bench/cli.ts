@@ -1,8 +1,15 @@
 #!/usr/bin/env tsx
 import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { parseArgs } from 'node:util';
+
+// pnpm runs scripts with cwd set to the package dir, but the regen globs
+// and the report output path are relative to the workspace root. Derive
+// it from this file's location: cli.ts is at packages/memory-strata/test/bench/cli.ts,
+// so the workspace root is four levels up.
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 import { requireKeys } from './env.js';
 import { CostMeter, type Pricing } from './meter.js';
 import { BenchCache } from './cache.js';
@@ -80,7 +87,7 @@ async function main(): Promise<number> {
     }
     const result = await internal.regenerateInternalCorpus({
       agentClient: makeAnthropicAgentClient(env2.ANTHROPIC_API_KEY),
-      repoRoot: process.cwd(),
+      repoRoot: REPO_ROOT,
     }) as { docCount: number; questionCount: number; outputPath: string };
     console.log(`Regenerated internal corpus: ${result.docCount} docs, ${result.questionCount} questions -> ${result.outputPath}`);
     return 0;
@@ -174,7 +181,7 @@ async function main(): Promise<number> {
     capExceeded,
     runDate: date,
   });
-  const outPath = `docs/plans/${date.toISOString().slice(0, 10)}-memory-strata-vector-spike-report.md`;
+  const outPath = join(REPO_ROOT, 'docs/plans', `${date.toISOString().slice(0, 10)}-memory-strata-vector-spike-report.md`);
   writeFileSync(outPath, md);
   console.log(`Report written to ${outPath}. Total spend: $${meter.totalDollars().toFixed(2)}.`);
   rmSync(tempDir, { recursive: true, force: true });
