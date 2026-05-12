@@ -89,13 +89,15 @@ async function collectSources(repoRoot: string): Promise<SourceFile[]> {
   for (const pattern of SOURCE_GLOBS) {
     for await (const entry of fsGlob(pattern, { cwd: repoRoot })) {
       const full = `${repoRoot}/${entry}`;
-      try {
-        found.push({ path: entry, content: readFileSync(full, 'utf8') });
-      } catch {
-        // ignore unreadable
-      }
+      // Let readFileSync throw — a glob match that can't be read is a real
+      // problem the caller needs to know about, not a silent drop.
+      found.push({ path: entry, content: readFileSync(full, 'utf8') });
     }
   }
+  // I31: regen must be deterministic. fsGlob's iteration order is not
+  // guaranteed stable across runs (or platforms), so sort the collected
+  // sources by path before returning.
+  found.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
   return found;
 }
 
