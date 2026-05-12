@@ -120,6 +120,11 @@ describe.skipIf(process.env.BENCH_LIVE !== '1')('Live smoke (BENCH_LIVE=1, hard-
     await driver.teardown();
     rmSync(dir, { recursive: true, force: true });
 
-    expect(meter.totalDollars()).toBeLessThan(0.5);
+    const spent = meter.totalDollars();
+    console.log(
+      `[live-smoke] spent $${spent.toFixed(4)} across ${Object.keys(meter.snapshot()).length} models:`,
+      meter.snapshot(),
+    );
+    expect(spent).toBeLessThan(0.5);
   });
 });
