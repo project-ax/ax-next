@@ -28,7 +28,6 @@ function aggregateByConfig(
   const byCorpus = new Map<CorpusName, Map<ConfigName, Aggregate>>();
   for (const r of results) {
     if (!byCorpus.has(r.corpus)) byCorpus.set(r.corpus, new Map());
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
     const cm = byCorpus.get(r.corpus)!;
     if (!cm.has(r.config))
       cm.set(r.config, {
@@ -42,7 +41,6 @@ function aggregateByConfig(
         totalAgentOutTokens: 0,
         recallAt5: 0,
       });
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
     const a = cm.get(r.config)!;
     a.total += 1;
     if (r.verdict === 'correct') a.correct += 1;
@@ -73,7 +71,6 @@ function aggregateByConfig(
 function percentile(sorted: number[], p: number): number {
   if (sorted.length === 0) return 0;
   const i = Math.min(sorted.length - 1, Math.floor(p * sorted.length));
-  // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
   return sorted[i]!;
 }
 

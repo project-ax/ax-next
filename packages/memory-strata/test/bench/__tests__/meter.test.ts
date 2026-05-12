@@ -31,9 +31,7 @@ describe('CostMeter', () => {
     m.record('claude-sonnet-4-6', { in: 1_000_000, out: 0 });
     m.record('x-ai/grok-4.3', { in: 1_000_000, out: 0 });
     const snap = m.snapshot();
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
     expect(snap['claude-sonnet-4-6']!.dollars).toBeCloseTo(3, 5);
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
     expect(snap['x-ai/grok-4.3']!.dollars).toBeCloseTo(1.25, 5);
   });
 });

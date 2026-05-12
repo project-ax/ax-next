@@ -13,7 +13,6 @@ describe('runAgent', () => {
     );
     expect(result.text).toBe('The answer is 42.');
     expect(stub.complete).toHaveBeenCalledOnce();
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
     const [args] = vi.mocked(stub.complete).mock.calls[0]!;
     expect(args.system).toContain('The number 42 is special');
     expect(args.user).toContain('What is the answer?');

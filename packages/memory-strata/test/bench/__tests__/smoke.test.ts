@@ -107,7 +107,6 @@ describe.skipIf(process.env.BENCH_LIVE !== '1')('Live smoke (BENCH_LIVE=1, hard-
     const dir = mkdtempSync(join(tmpdir(), 'bench-live-'));
     const driver = createConfigC({ tempDir: dir, embedClient: makeZeroEntropyEmbedClient(env.ZEROENTROPY_API_KEY) });
     await driver.build(corpus);
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
     const question = corpus.questions[0]!;
     const r = await driver.retrieve(question, 5, new AbortController().signal);
     meter.record('zembed-1', { in: r.embeddingTokens, out: 0 });

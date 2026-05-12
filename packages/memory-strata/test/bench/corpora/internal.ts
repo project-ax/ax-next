@@ -16,7 +16,6 @@ export function loadInternalCorpusFromJson(json: string): BenchCorpus {
   return { name: 'internal', memoryTree, questions: parsed.questions };
 }
 
-// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
 const THIS_DIR = dirname(fileURLToPath(import.meta.url!));
 export const INTERNAL_CORPUS_PATH = join(THIS_DIR, '..', 'internal-corpus.json');
 
@@ -60,7 +59,6 @@ export async function regenerateInternalCorpus(opts: {
   for (const src of sources.slice(0, MAX_DOCS_FOR_REGEN)) {
     const slug = src.path.replace(/[^a-z0-9]+/gi, '-').toLowerCase().replace(/^-|-$/g, '');
     const headers = src.content.split('\n').filter((l) => /^#{1,6}\s+/.test(l)).join('\n');
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
     const summary = headers.split('\n')[0]?.replace(/^#+\s*/, '').slice(0, 200) ?? '';
     docs.push({
       path: `knowledge/${slug}`,
@@ -120,9 +118,7 @@ If the documents are insufficient to ground a precise question/answer pair, outp
   if (!qm || !am) return null;
   return {
     id: `internal-${docs.map((d) => d.slug).join('+')}`,
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
     text: qm[1]!.trim(),
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
     goldAnswer: am[1]!.trim(),
     goldDocIds: docs.map((d) => d.path),
   };

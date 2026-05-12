@@ -61,7 +61,6 @@ export function createConfigC(opts: ConfigCOptions): ConfigDriver {
       const insertMap = db.prepare(`INSERT INTO doc_map(rowid, path) VALUES (?, ?)`);
       const paths = [...corpus.memoryTree.keys()];
       const texts = paths.map((p) => {
-        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
         const d = corpus.memoryTree.get(p)!;
         return `${d.summary}\n${d.headers}`;
       });
@@ -69,9 +68,7 @@ export function createConfigC(opts: ConfigCOptions): ConfigDriver {
       totalEmbedTokens += embed.tokens;
       const txn = db.transaction(() => {
         for (let i = 0; i < paths.length; i++) {
-          // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
           const { lastInsertRowid } = insertVec.run(Buffer.from(new Float32Array(embed.vectors[i]!).buffer));
-          // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
           insertMap.run(lastInsertRowid, paths[i]!);
         }
       });
@@ -94,7 +91,6 @@ export function createConfigC(opts: ConfigCOptions): ConfigDriver {
         opts.embedClient.embed([question.text]),
       ]);
       totalEmbedTokens += qEmbed.tokens;
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
       const qVecBuf = Buffer.from(new Float32Array(qEmbed.vectors[0]!).buffer);
       const vecHits = db.prepare(
         `SELECT m.path AS path, d.distance AS distance

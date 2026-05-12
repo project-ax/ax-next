@@ -47,9 +47,7 @@ describe('LoCoMo transform', () => {
     };
     const out = transformLoCoMoSample(sample);
     expect(out.docs.size).toBeGreaterThan(0);
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
     expect(out.questions[0]!.text).toContain('birthday');
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
     expect(out.questions[0]!.goldAnswer).toBe('March 5');
   });
 });
@@ -82,7 +80,6 @@ describe('internal corpus loader', () => {
     const corpus = loadInternalCorpusFromJson(json);
     expect(corpus.name).toBe('internal');
     expect(corpus.memoryTree.size).toBe(1);
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
     expect(corpus.questions[0]!.id).toBe('q1');
   });
 });

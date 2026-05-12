@@ -7,7 +7,6 @@ const THIS_DIR = dirname(fileURLToPath(import.meta.url));
 // __tests__ is two levels below packages/memory-strata/
 const PKG_ROOT = join(THIS_DIR, '..', '..', '..');
 const SRC_DIR = join(PKG_ROOT, 'src');
-// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
 const PKG_JSON = JSON.parse(readFileSync(join(PKG_ROOT, 'package.json'), 'utf8')) as {
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
