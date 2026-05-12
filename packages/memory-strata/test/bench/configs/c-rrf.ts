@@ -46,7 +46,10 @@ export function createConfigC(opts: ConfigCOptions): ConfigDriver {
   const bm = createConfigA(opts);
   let db: Database.Database | null = null;
   let corpusRef: BenchCorpus | null = null;
-  const dim = opts.embeddingDim ?? 1024;
+  // zembed-1 default output is 2560-dim. Allowed values per the SDK:
+  // [2560, 1280, 640, 320, 160, 80, 40]. Override via embeddingDim if you
+  // want a smaller index (and pass `dimensions: N` to the embed factory).
+  const dim = opts.embeddingDim ?? 2560;
   const rrfK = opts.rrfK ?? 60;
   const candidateK = opts.candidateK ?? 30;
   let totalEmbedTokens = 0;
