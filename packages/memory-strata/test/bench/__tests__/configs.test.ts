@@ -87,7 +87,7 @@ describe('Config C (BM25 + dense + RRF)', () => {
     const driver = createConfigC({
       tempDir: dir,
       embedClient: {
-        async embed(texts) {
+        async embed(texts, _inputType) {
           return { vectors: texts.map((t) => [t.length, 0, 0, 0]), tokens: texts.length * 10 };
         },
       },

@@ -12,8 +12,13 @@ import type {
 } from '../types.js';
 import type { ConfigFactoryOptions } from './shared.js';
 
+export type EmbedInputType = 'document' | 'query';
+
 export interface EmbedClient {
-  embed(texts: string[]): Promise<{ vectors: number[][]; tokens: number }>;
+  embed(
+    texts: string[],
+    inputType: EmbedInputType,
+  ): Promise<{ vectors: number[][]; tokens: number }>;
 }
 
 export interface ConfigCOptions extends ConfigFactoryOptions {
@@ -64,7 +69,7 @@ export function createConfigC(opts: ConfigCOptions): ConfigDriver {
         const d = corpus.memoryTree.get(p)!;
         return `${d.summary}\n${d.headers}`;
       });
-      const embed = await opts.embedClient.embed(texts);
+      const embed = await opts.embedClient.embed(texts, 'document');
       totalEmbedTokens += embed.tokens;
       const txn = db.transaction(() => {
         for (let i = 0; i < paths.length; i++) {
@@ -88,7 +93,7 @@ export function createConfigC(opts: ConfigCOptions): ConfigDriver {
       const t0 = Date.now();
       const [bmResult, qEmbed] = await Promise.all([
         bm.retrieve(question, candidateK, signal),
-        opts.embedClient.embed([question.text]),
+        opts.embedClient.embed([question.text], 'query'),
       ]);
       totalEmbedTokens += qEmbed.tokens;
       const qVecBuf = Buffer.from(new Float32Array(qEmbed.vectors[0]!).buffer);
@@ -119,9 +124,9 @@ export function createConfigC(opts: ConfigCOptions): ConfigDriver {
 export function makeZeroEntropyEmbedClient(apiKey: string, model = 'zembed-1'): EmbedClient {
   const z = new ZeroEntropy({ apiKey });
   return {
-    async embed(texts) {
+    async embed(texts, inputType) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const resp = await (z as any).models.embed({ model, input: texts });
+      const resp = await (z as any).models.embed({ model, input: texts, input_type: inputType });
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const items = (resp as any).data as Array<{ embedding: number[] }>;
       const vectors = items.map((i) => i.embedding);

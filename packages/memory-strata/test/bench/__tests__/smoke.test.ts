@@ -50,7 +50,7 @@ describe('Smoke: all configs × 3 corpora × 10 Qs with stubbed LLMs', () => {
       },
     };
     const embedClient = {
-      async embed(texts: string[]) {
+      async embed(texts: string[], _inputType: 'document' | 'query') {
         return { vectors: texts.map((t) => Array.from({ length: 4 }, (_, i) => (t.length + i) % 100 / 100)), tokens: texts.length * 10 };
       },
     };
