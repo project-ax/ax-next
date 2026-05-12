@@ -18,6 +18,10 @@ export class CostMeter {
   record(model: string, usage: ModelUsage): void {
     const price = this.opts.pricing[model];
     if (!price) throw new Error(`No pricing entry for model: ${model}`);
+    if (!Number.isFinite(usage.in) || usage.in < 0)
+      throw new Error(`Invalid usage.in for model ${model}: ${usage.in}`);
+    if (!Number.isFinite(usage.out) || usage.out < 0)
+      throw new Error(`Invalid usage.out for model ${model}: ${usage.out}`);
     const current = this.totals.get(model) ?? { tokensIn: 0, tokensOut: 0, dollars: 0 };
     current.tokensIn += usage.in;
     current.tokensOut += usage.out;
@@ -34,6 +38,10 @@ export class CostMeter {
   projectWouldExceedCap(model: string, projected: ModelUsage): boolean {
     const price = this.opts.pricing[model];
     if (!price) throw new Error(`No pricing entry for model: ${model}`);
+    if (!Number.isFinite(projected.in) || projected.in < 0)
+      throw new Error(`Invalid projected.in for model ${model}: ${projected.in}`);
+    if (!Number.isFinite(projected.out) || projected.out < 0)
+      throw new Error(`Invalid projected.out for model ${model}: ${projected.out}`);
     const projectedDollars = projected.in * price.in + projected.out * price.out;
     return this.totalDollars() + projectedDollars > this.opts.capDollars;
   }

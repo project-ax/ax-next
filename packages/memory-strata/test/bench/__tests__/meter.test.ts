@@ -34,4 +34,46 @@ describe('CostMeter', () => {
     expect(snap['claude-sonnet-4-6']!.dollars).toBeCloseTo(3, 5);
     expect(snap['x-ai/grok-4.3']!.dollars).toBeCloseTo(1.25, 5);
   });
+
+  it('record throws on negative in tokens', () => {
+    const m = new CostMeter({ capDollars: 50, pricing });
+    expect(() => m.record('claude-sonnet-4-6', { in: -1, out: 0 })).toThrow(
+      /Invalid usage\.in for model claude-sonnet-4-6/,
+    );
+  });
+
+  it('record throws on NaN out tokens', () => {
+    const m = new CostMeter({ capDollars: 50, pricing });
+    expect(() => m.record('claude-sonnet-4-6', { in: 0, out: NaN })).toThrow(
+      /Invalid usage\.out for model claude-sonnet-4-6/,
+    );
+  });
+
+  it('record throws on Infinity out tokens', () => {
+    const m = new CostMeter({ capDollars: 50, pricing });
+    expect(() => m.record('claude-sonnet-4-6', { in: 0, out: Infinity })).toThrow(
+      /Invalid usage\.out for model claude-sonnet-4-6/,
+    );
+  });
+
+  it('projectWouldExceedCap throws on negative projected in', () => {
+    const m = new CostMeter({ capDollars: 50, pricing });
+    expect(() => m.projectWouldExceedCap('claude-sonnet-4-6', { in: -5, out: 0 })).toThrow(
+      /Invalid projected\.in for model claude-sonnet-4-6/,
+    );
+  });
+
+  it('projectWouldExceedCap throws on NaN projected out', () => {
+    const m = new CostMeter({ capDollars: 50, pricing });
+    expect(() => m.projectWouldExceedCap('claude-sonnet-4-6', { in: 0, out: NaN })).toThrow(
+      /Invalid projected\.out for model claude-sonnet-4-6/,
+    );
+  });
+
+  it('projectWouldExceedCap throws on Infinity projected in', () => {
+    const m = new CostMeter({ capDollars: 50, pricing });
+    expect(() => m.projectWouldExceedCap('claude-sonnet-4-6', { in: Infinity, out: 0 })).toThrow(
+      /Invalid projected\.in for model claude-sonnet-4-6/,
+    );
+  });
 });
