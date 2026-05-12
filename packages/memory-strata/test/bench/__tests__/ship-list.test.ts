@@ -12,13 +12,15 @@ const PKG_JSON = JSON.parse(readFileSync(join(PKG_ROOT, 'package.json'), 'utf8')
   devDependencies?: Record<string, string>;
 };
 
+const SCANNABLE_EXTENSIONS = ['.ts', '.tsx', '.js', '.mjs', '.cjs'];
+
 function walk(dir: string): string[] {
   const files: string[] = [];
   for (const entry of readdirSync(dir)) {
     const full = join(dir, entry);
     const stat = statSync(full);
     if (stat.isDirectory()) files.push(...walk(full));
-    else if (entry.endsWith('.ts')) files.push(full);
+    else if (SCANNABLE_EXTENSIONS.some((ext) => entry.endsWith(ext))) files.push(full);
   }
   return files;
 }
