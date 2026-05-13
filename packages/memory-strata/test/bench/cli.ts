@@ -165,7 +165,13 @@ async function main(): Promise<number> {
               if (retrieval.rerankTokens > 0) meter.record('zerank-2', { in: retrieval.rerankTokens, out: 0 });
               const agentResp = await runAgent(agentClient, question, retrieval.retrievedDocs, corpus.memoryTree);
               meter.record('claude-sonnet-4-6', agentResp.usage);
-              const verdict = await judgeAnswer(judgeClient, question.text, question.goldAnswer, agentResp.text);
+              const verdict = await judgeAnswer(
+                judgeClient,
+                question.text,
+                question.goldAnswer,
+                agentResp.text,
+                { unanswerable: question.metadata?.unanswerable === true },
+              );
               meter.record('x-ai/grok-4.3', verdict.usage);
               results.push({
                 corpus: corpus.name,

@@ -25,7 +25,7 @@ export interface BenchCorpus {
   questions: BenchQuestion[];
 }
 
-export type ConfigName = 'a-bm25' | 'b-rerank' | 'c-rrf';
+export type ConfigName = 'a-bm25' | 'b-rerank' | 'c-rrf' | 'd-map' | 'e-map-fts';
 
 export interface RetrievedDoc {
   path: string;
@@ -47,7 +47,12 @@ export interface ConfigDriver {
   retrieve(question: BenchQuestion, topK: number, signal: AbortSignal): Promise<RetrievalResult>;
 }
 
-export type Verdict = 'correct' | 'incorrect' | 'uncertain';
+export type Verdict =
+  | 'correct'
+  | 'incorrect'
+  | 'abstained-correctly'
+  | 'abstained-incorrectly'
+  | 'uncertain';
 
 export interface QuestionResult {
   corpus: BenchCorpus['name'];

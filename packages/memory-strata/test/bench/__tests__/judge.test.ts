@@ -24,4 +24,46 @@ describe('judgeAnswer', () => {
     const r = await judgeAnswer(stub, 'q?', 'gold', 'answer');
     expect(r.verdict).toBe('uncertain');
   });
+
+  it('returns abstained-correctly when question is unanswerable and answer is "I don\'t know"', async () => {
+    const stub: JudgeClient = {
+      async complete() {
+        return { text: 'VERDICT: abstained-correctly\nREASON: agent abstained on unanswerable q', usage: { in: 5, out: 5 } };
+      },
+    };
+    const r = await judgeAnswer(stub, 'q', 'You did not mention this information.', "I don't know.", { unanswerable: true });
+    expect(r.verdict).toBe('abstained-correctly');
+  });
+
+  it('returns abstained-incorrectly when question is answerable but agent abstains', async () => {
+    const stub: JudgeClient = {
+      async complete() {
+        return { text: 'VERDICT: abstained-incorrectly\nREASON: agent declined answerable q', usage: { in: 5, out: 5 } };
+      },
+    };
+    const r = await judgeAnswer(stub, 'q', 'Business Administration', "I don't know.", { unanswerable: false });
+    expect(r.verdict).toBe('abstained-incorrectly');
+  });
+
+  it('still parses correct/incorrect/uncertain (back-compat)', async () => {
+    const stub: JudgeClient = {
+      async complete() {
+        return { text: 'VERDICT: correct\nREASON: ok', usage: { in: 5, out: 5 } };
+      },
+    };
+    const r = await judgeAnswer(stub, 'q', 'a', 'a', { unanswerable: false });
+    expect(r.verdict).toBe('correct');
+  });
+
+  it('passes unanswerable signal to the judge prompt', async () => {
+    let capturedUser: string | null = null;
+    const stub: JudgeClient = {
+      async complete({ user }) {
+        capturedUser = user;
+        return { text: 'VERDICT: uncertain\nREASON: x', usage: { in: 1, out: 1 } };
+      },
+    };
+    await judgeAnswer(stub, 'q', 'gold', 'a', { unanswerable: true });
+    expect(capturedUser).toContain('Unanswerable: true');
+  });
 });
