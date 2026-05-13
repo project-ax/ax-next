@@ -38,6 +38,8 @@ export interface RetrievalResult {
   latencyMs: number;
   embeddingTokens: number;
   rerankTokens: number;
+  orchestratorTokens?: { in: number; out: number };
+  followupNeeded?: boolean;
 }
 
 export interface ConfigDriver {
