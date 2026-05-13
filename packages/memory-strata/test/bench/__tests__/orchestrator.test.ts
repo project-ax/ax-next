@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { parseOrchestratorXml, runOrchestrator, runOps } from '../orchestrator.js';
+import {
+  parseOrchestratorXml,
+  runOrchestrator,
+  runOps,
+  makeOpenRouterOrchestratorClient,
+} from '../orchestrator.js';
 import { makeDoc } from '../corpora/shared.js';
 import type { BenchCorpus } from '../types.js';
 import type { OrchestratorClient } from '../orchestrator.js';
@@ -115,5 +120,12 @@ describe('runOps', () => {
       { corpus, ftsSearch: async () => [], topK: 3 },
     );
     expect(docs.length).toBe(3);
+  });
+});
+
+describe('makeOpenRouterOrchestratorClient', () => {
+  it('returns an OrchestratorClient with the right shape', () => {
+    const client = makeOpenRouterOrchestratorClient('test-key');
+    expect(typeof client.complete).toBe('function');
   });
 });

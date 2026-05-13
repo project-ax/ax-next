@@ -21,7 +21,7 @@ import { createConfigB, makeZeroEntropyRerankClient } from './configs/b-rerank.j
 import { createConfigC, makeZeroEntropyEmbedClient } from './configs/c-rrf.js';
 import { createConfigD } from './configs/d-map.js';
 import { createConfigE } from './configs/e-map-fts.js';
-import { makeAnthropicOrchestratorClient } from './orchestrator.js';
+import { makeAnthropicOrchestratorClient, makeOpenRouterOrchestratorClient } from './orchestrator.js';
 import { runAgent, makeAnthropicAgentClient, type AgentClient } from './agent.js';
 import { judgeAnswer, makeOpenRouterJudgeClient, type JudgeClient } from './judge.js';
 import { renderReport } from './report.js';
@@ -31,6 +31,7 @@ const PRICING: Pricing = {
   'claude-sonnet-4-6': { in: 3 / 1_000_000, out: 15 / 1_000_000 },
   'claude-haiku-4-5-20251001': { in: 1 / 1_000_000, out: 5 / 1_000_000 },
   'x-ai/grok-4.3': { in: 1.25 / 1_000_000, out: 2.5 / 1_000_000 },
+  'x-ai/grok-4.1-fast': { in: 0.2 / 1_000_000, out: 0.5 / 1_000_000 },
   'zembed-1': { in: 0.05 / 1_000_000, out: 0 },
   'zerank-2': { in: 0.1 / 1_000_000, out: 0 },
 };
@@ -43,6 +44,7 @@ interface CliArgs {
   liveSmoke: boolean;
   regenInternal: boolean;
   topK: number;
+  orchestratorModel: 'haiku' | 'grok';
 }
 
 function parseCliArgs(argv: string[]): CliArgs {
@@ -56,6 +58,7 @@ function parseCliArgs(argv: string[]): CliArgs {
       'live-smoke': { type: 'boolean', default: false },
       'regen-internal': { type: 'boolean', default: false },
       'top-k': { type: 'string', default: '10' },
+      'orchestrator-model': { type: 'string', default: 'haiku' },
     },
   });
   const base = {
@@ -65,6 +68,7 @@ function parseCliArgs(argv: string[]): CliArgs {
     liveSmoke: values['live-smoke'] === true,
     regenInternal: values['regen-internal'] === true,
     topK: Number(values['top-k']),
+    orchestratorModel: (values['orchestrator-model'] === 'grok' ? 'grok' : 'haiku') as 'haiku' | 'grok',
   };
   return values.sample
     ? { ...base, sample: Number(values.sample) }
@@ -115,7 +119,12 @@ async function main(): Promise<number> {
   const meter = new CostMeter({ capDollars: cap, pricing: PRICING });
   const tempDir = mkdtempSync(join(tmpdir(), 'ax-bench-'));
   const mapCacheDir = join(tempDir, 'maps');
-  const orchestratorClient = makeAnthropicOrchestratorClient(env.ANTHROPIC_API_KEY);
+  const orchestratorModelKey = args.orchestratorModel === 'grok'
+    ? 'x-ai/grok-4.1-fast'
+    : 'claude-haiku-4-5-20251001';
+  const orchestratorClient = args.orchestratorModel === 'grok'
+    ? makeOpenRouterOrchestratorClient(env.OPENROUTER_API_KEY)
+    : makeAnthropicOrchestratorClient(env.ANTHROPIC_API_KEY);
 
   const agentClient: AgentClient = makeAnthropicAgentClient(env.ANTHROPIC_API_KEY);
   const judgeClient: JudgeClient = makeOpenRouterJudgeClient(env.OPENROUTER_API_KEY);
@@ -171,7 +180,7 @@ async function main(): Promise<number> {
               const retrieval = await driver.retrieve(question, args.topK, new AbortController().signal);
               if (retrieval.embeddingTokens > 0) meter.record('zembed-1', { in: retrieval.embeddingTokens, out: 0 });
               if (retrieval.rerankTokens > 0) meter.record('zerank-2', { in: retrieval.rerankTokens, out: 0 });
-              if (retrieval.orchestratorTokens) meter.record('claude-haiku-4-5-20251001', retrieval.orchestratorTokens);
+              if (retrieval.orchestratorTokens) meter.record(orchestratorModelKey, retrieval.orchestratorTokens);
               const agentResp = await runAgent(agentClient, question, retrieval.retrievedDocs, corpus.memoryTree);
               meter.record('claude-sonnet-4-6', agentResp.usage);
               const verdict = await judgeAnswer(
