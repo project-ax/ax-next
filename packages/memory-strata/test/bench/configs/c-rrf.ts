@@ -3,6 +3,7 @@ import * as sqliteVec from 'sqlite-vec';
 import { join } from 'node:path';
 import { createConfigA } from './a-bm25.js';
 import { ZeroEntropy } from 'zeroentropy';
+import { withRetry } from '../retry.js';
 import type {
   BenchCorpus,
   BenchQuestion,
@@ -124,18 +125,29 @@ export function createConfigC(opts: ConfigCOptions): ConfigDriver {
   };
 }
 
+const EMBED_BATCH_SIZE = 100;
+
 export function makeZeroEntropyEmbedClient(apiKey: string, model = 'zembed-1'): EmbedClient {
   const z = new ZeroEntropy({ apiKey });
   return {
     async embed(texts, inputType) {
-      const resp = await z.models.embed({ model, input: texts, input_type: inputType });
-      const vectors = resp.results.map((r) => {
-        if (typeof r.embedding === 'string') {
-          throw new Error('zembed-1 returned a base64 embedding; this client expects float arrays');
+      const allVectors: number[][] = [];
+      let totalTokens = 0;
+      for (let i = 0; i < texts.length; i += EMBED_BATCH_SIZE) {
+        const chunk = texts.slice(i, i + EMBED_BATCH_SIZE);
+        const resp = await withRetry(
+          () => z.models.embed({ model, input: chunk, input_type: inputType }),
+          { attempts: 6, baseDelayMs: 4000, label: 'zeroentropy-embed' },
+        );
+        for (const r of resp.results) {
+          if (typeof r.embedding === 'string') {
+            throw new Error('zembed-1 returned a base64 embedding; this client expects float arrays');
+          }
+          allVectors.push(r.embedding);
         }
-        return r.embedding;
-      });
-      return { vectors, tokens: resp.usage.total_tokens };
+        totalTokens += resp.usage.total_tokens;
+      }
+      return { vectors: allVectors, tokens: totalTokens };
     },
   };
 }

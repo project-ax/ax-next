@@ -2,15 +2,21 @@ import type { MarkdownDoc, BenchQuestion, BenchCorpus } from '../types.js';
 import { makeDoc } from './shared.js';
 import { BenchCache } from '../cache.js';
 
+export interface LongMemEvalTurn {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
 export interface LongMemEvalSample {
   question_id: string;
+  question_type?: string;
   question: string;
+  question_date?: string;
   answer: string;
-  haystack_sessions: Array<{
-    session_id: string;
-    turns: Array<{ role: 'user' | 'assistant'; content: string }>;
-  }>;
-  relevant_session_ids?: string[];
+  answer_session_ids?: string[];
+  haystack_dates?: string[];
+  haystack_session_ids: string[];
+  haystack_sessions: LongMemEvalTurn[][];
 }
 
 export function transformLongMemEvalSample(s: LongMemEvalSample): {
@@ -18,14 +24,18 @@ export function transformLongMemEvalSample(s: LongMemEvalSample): {
   question: BenchQuestion;
 } {
   const docs = new Map<string, MarkdownDoc>();
-  for (const session of s.haystack_sessions) {
-    const body = session.turns
+  const ids = s.haystack_session_ids;
+  const sessions = s.haystack_sessions;
+  for (let i = 0; i < sessions.length; i++) {
+    const sessionId = ids[i] ?? `session-${i}`;
+    const turns = sessions[i] ?? [];
+    const body = turns
       .map((t) => `## ${t.role}\n${t.content}`)
       .join('\n\n');
-    const summary = firstSentence(session.turns.map((t) => t.content).join(' '));
+    const summary = firstSentence(turns.map((t) => t.content).join(' '));
     const doc = makeDoc({
       category: 'episodes',
-      slug: session.session_id,
+      slug: sessionId,
       summary,
       body,
     });
@@ -37,7 +47,8 @@ export function transformLongMemEvalSample(s: LongMemEvalSample): {
       id: s.question_id,
       text: s.question,
       goldAnswer: s.answer,
-      goldDocIds: (s.relevant_session_ids ?? []).map((id) => `episodes/${id}`),
+      goldDocIds: (s.answer_session_ids ?? []).map((id) => `episodes/${id}`),
+      metadata: s.question_type ? { question_type: s.question_type } : undefined,
     },
   };
 }
@@ -49,10 +60,11 @@ function firstSentence(s: string): string {
 
 const DATASET_NAME = 'longmemeval-s';
 const HF_DOWNLOAD_URL =
-  'https://huggingface.co/datasets/xiaowu0162/LongMemEval/resolve/main/longmemeval_s.json';
+  'https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_s_cleaned.json';
+const CACHE_FILE = 'longmemeval_s_cleaned.json';
 
 export async function loadLongMemEvalS(cache: BenchCache): Promise<BenchCorpus> {
-  const hit = await cache.readIfHit(DATASET_NAME, 'longmemeval_s.json');
+  const hit = await cache.readIfHit(DATASET_NAME, CACHE_FILE);
   let raw: Buffer;
   if (hit) {
     raw = hit;
@@ -61,11 +73,11 @@ export async function loadLongMemEvalS(cache: BenchCache): Promise<BenchCorpus> 
     if (!res.ok) {
       throw new Error(
         `Failed to fetch LongMemEval-S from ${HF_DOWNLOAD_URL}: ${res.status}. ` +
-          `Cache miss with no network. Manually download into ~/.cache/ax-memory-bench/${DATASET_NAME}/longmemeval_s.json.`,
+          `Cache miss with no network. Manually download into ~/.cache/ax-memory-bench/${DATASET_NAME}/${CACHE_FILE}.`,
       );
     }
     raw = Buffer.from(await res.arrayBuffer());
-    await cache.write(DATASET_NAME, 'longmemeval_s.json', raw);
+    await cache.write(DATASET_NAME, CACHE_FILE, raw);
   }
   const samples = JSON.parse(raw.toString()) as LongMemEvalSample[];
   const corpus: BenchCorpus = { name: 'longmemeval-s', memoryTree: new Map(), questions: [] };

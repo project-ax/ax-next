@@ -2,53 +2,116 @@ import { describe, it, expect } from 'vitest';
 import { transformLongMemEvalSample } from '../corpora/longmemeval-s.js';
 
 describe('LongMemEval-S transform', () => {
-  it('emits a Strata-shaped memory tree from a sample row', () => {
+  it('emits one doc per haystack session with parallel session ids', () => {
     const sample = {
       question_id: 'q1',
+      question_type: 'single-session-user',
       question: 'What did the user say about coffee?',
       answer: 'They like cortados.',
+      answer_session_ids: ['sess-0'],
+      haystack_session_ids: ['sess-0', 'sess-1'],
       haystack_sessions: [
-        {
-          session_id: 's0',
-          turns: [
-            { role: 'user' as const, content: 'I love cortados.' },
-            { role: 'assistant' as const, content: 'Noted.' },
-          ],
-        },
+        [
+          { role: 'user' as const, content: 'I love cortados.' },
+          { role: 'assistant' as const, content: 'Noted.' },
+        ],
+        [
+          { role: 'user' as const, content: 'Unrelated chatter.' },
+        ],
       ],
-      relevant_session_ids: ['s0'],
     };
     const out = transformLongMemEvalSample(sample);
     expect(out.question).toMatchObject({
       id: 'q1',
       text: expect.stringContaining('coffee'),
       goldAnswer: 'They like cortados.',
-      goldDocIds: ['episodes/s0'],
+      goldDocIds: ['episodes/sess-0'],
+      metadata: { question_type: 'single-session-user' },
     });
-    const doc = out.docs.get('episodes/s0');
-    expect(doc).toBeDefined();
-    expect(doc!.body).toMatch(/cortado/);
-    expect(doc!.category).toBe('episodes');
-    expect(doc!.slug).toBe('s0');
+    expect(out.docs.size).toBe(2);
+    const gold = out.docs.get('episodes/sess-0');
+    expect(gold).toBeDefined();
+    expect(gold!.body).toMatch(/cortado/);
+    expect(gold!.category).toBe('episodes');
+    expect(gold!.slug).toBe('sess-0');
+    const distractor = out.docs.get('episodes/sess-1');
+    expect(distractor).toBeDefined();
+    expect(distractor!.body).toMatch(/Unrelated/);
+  });
+
+  it('tolerates missing answer_session_ids by producing empty goldDocIds', () => {
+    const sample = {
+      question_id: 'q2',
+      question: 'anything?',
+      answer: 'something',
+      haystack_session_ids: ['s0'],
+      haystack_sessions: [[{ role: 'user' as const, content: 'hi' }]],
+    };
+    const out = transformLongMemEvalSample(sample);
+    expect(out.question.goldDocIds).toEqual([]);
   });
 });
 
 import { transformLoCoMoSample } from '../corpora/locomo.js';
 
 describe('LoCoMo transform', () => {
-  it('emits a Strata-shaped memory tree from a sample row', () => {
+  it('emits one doc per session and resolves evidence dia_ids to session paths', () => {
     const sample = {
-      sample_id: 'lc-1',
-      conversation: [
-        { speaker: 'Alice', text: 'My birthday is March 5.' },
-        { speaker: 'Bob', text: 'Got it.' },
+      sample_id: 'conv-26',
+      conversation: {
+        session_1_date_time: '2:00pm on 1 May, 2023',
+        session_1: [
+          { speaker: 'Alice', dia_id: 'D1:1', text: 'My birthday is March 5.' },
+          { speaker: 'Bob', dia_id: 'D1:2', text: 'Got it.' },
+        ],
+        session_2_date_time: '3:00pm on 2 May, 2023',
+        session_2: [
+          { speaker: 'Alice', dia_id: 'D2:1', text: 'I love hiking.' },
+        ],
+      },
+      qa: [
+        {
+          question: "What is Alice's birthday?",
+          answer: 'March 5',
+          evidence: ['D1:1'],
+          category: 1,
+        },
+        {
+          question: 'When was each session?',
+          answer: 'session 1 and session 2',
+          evidence: ['D1:2', 'D2:1'],
+          category: 3,
+        },
       ],
-      qa: [{ question: "What is Alice's birthday?", answer: 'March 5' }],
     };
     const out = transformLoCoMoSample(sample);
-    expect(out.docs.size).toBeGreaterThan(0);
-    expect(out.questions[0]!.text).toContain('birthday');
-    expect(out.questions[0]!.goldAnswer).toBe('March 5');
+    expect(out.docs.size).toBe(2);
+    expect(out.docs.get('episodes/conv-26-s1')).toBeDefined();
+    expect(out.docs.get('episodes/conv-26-s2')).toBeDefined();
+    expect(out.docs.get('episodes/conv-26-s1')!.body).toMatch(/birthday is March 5/);
+    expect(out.questions).toHaveLength(2);
+    expect(out.questions[0]).toMatchObject({
+      id: 'conv-26-q0',
+      text: expect.stringContaining('birthday'),
+      goldAnswer: 'March 5',
+      goldDocIds: ['episodes/conv-26-s1'],
+      metadata: { category: 1 },
+    });
+    expect(new Set(out.questions[1]!.goldDocIds)).toEqual(
+      new Set(['episodes/conv-26-s1', 'episodes/conv-26-s2']),
+    );
+  });
+
+  it('coerces numeric answer fields to string', () => {
+    const sample = {
+      sample_id: 'conv-x',
+      conversation: {
+        session_1: [{ speaker: 'A', text: 'painted in 2022' }],
+      },
+      qa: [{ question: 'When?', answer: 2022, evidence: [] }],
+    };
+    const out = transformLoCoMoSample(sample);
+    expect(out.questions[0]!.goldAnswer).toBe('2022');
   });
 });
 
