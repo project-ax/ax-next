@@ -1316,6 +1316,8 @@ If D outperforms A/B/C on either metric, the design moves further toward c137: v
 
 **Phase 3B partial result (2026-05-13).** A/B/C were exercised on 100-Q LongMemEval-S; **D was not yet built and remains the next spike.** Numbers: A (BM25-only) = 22.0%, B (BM25 + zerank-2) = 19.6%, C (BM25 + zembed-1 + RRF) = 13.0%. **C loses to A by 9 points** — comfortably outside the ≥5-point band, so the vector option is OUT. B also underperforms A by 2.4 points; the reranker doesn't earn its cost on this corpus either. Config D (Retrieval Orchestrator + `system/map.md`), the c137-style config, is the open question — a follow-up spike implements the map generator and the cheap-LLM orchestration stage, then re-runs against the same sample. Full report: `docs/plans/2026-05-13-memory-strata-vector-spike-report.md`.
 
+**Phase 3C result (2026-05-13).** Config D (Retrieval Orchestrator) and Config E (D + BM25 fallback) ran on the same 100-Q slice with an abstention-aware judge. Numbers: **D = 18.0%, E = 22.0%** (vs A's 22.0%). **D loses to A by 4 points; E ties A.** Per the c137-tightened ≥5-point bar, the orchestrator does not earn production wiring on headline accuracy. **However**, both D and E achieved **83.3% correct-refusal** on the 6 unanswerable questions — within the bottom of c137's reported 86.7–96.7% range, and meaningfully better than retrieve-first/ask-later configurations would manage. The orchestrator's failure mode is precision (the top 1–2 `<load>` ops it emits are often wrong-but-confident, leading to 60/94 false-refusal on answerable Qs in D, 52/94 in E). **Decision: keep the orchestrator OUT of the production hot path**, same as vectors. A re-spike is justified later if the design prioritizes abstention quality — but that requires LLM-rewritten map summaries (this spike reused the LongMemEval `firstSentence` extracts) and tuning the orchestrator's `<load>` count. Full report: `docs/plans/2026-05-13-memory-strata-phase-3c-config-d-report.md`.
+
 ### Harness location
 
 The eval harness lives in `packages/memory-strata/test/bench/` once the plugin exists. It runs on demand (during phase transitions, vendor-version changes, or before publishing benchmark numbers), **not on every CI build** — running LongMemEval-S in CI would burn LLM cost on every commit.
@@ -1341,6 +1343,13 @@ LEVEL 2: Add SQLite FTS5 index for keyword search
               ▼
 LEVEL 3: Add Retrieval Orchestrator (one-hop XML planner)
          (Cheap-model LLM call before main agent; c137-style)
+         Phase 3C spike (2026-05-13): D scored 18.0% vs A's 22.0% on
+         LongMemEval-S — does not clear the ≥5-point bar. But the
+         orchestrator achieved 83.3% correct-refusal on unanswerable
+         questions (within c137's reported 86.7–96.7% range), so the
+         architecture is a candidate to revisit when abstention
+         quality matters more than headline accuracy. See
+         docs/plans/2026-05-13-memory-strata-phase-3c-config-d-report.md.
               │
               ▼
 LEVEL 4: Add Consolidator for periodic maintenance

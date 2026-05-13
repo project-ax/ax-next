@@ -31,6 +31,7 @@ worktrees/
 
 docs/plans/*
 !docs/plans/2026-05-*-memory-strata-vector-spike-report.md
+!docs/plans/2026-05-*-memory-strata-phase-3c-config-d-report.md
 !docs/plans/memory-strata-design.md
 !docs/plans/2026-05-10-memory-strata-roadmap.md
 
