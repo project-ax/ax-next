@@ -48,7 +48,7 @@ function aggregateByConfig(
       });
     const a = cm.get(r.config)!;
     a.total += 1;
-    if (r.verdict === 'correct') a.correct += 1;
+    if (r.verdict === 'correct' || r.verdict === 'abstained-correctly') a.correct += 1;
     if (r.verdict === 'uncertain') a.uncertain += 1;
     a.totalDollars += r.totalDollars;
     a.totalAgentInTokens += r.agentTokens.in;
@@ -84,6 +84,8 @@ const CONFIG_LABELS: Record<ConfigName, string> = {
   'a-bm25': 'A: BM25-only',
   'b-rerank': 'B: BM25 + zerank-2',
   'c-rrf': 'C: BM25 + zembed-1 + RRF',
+  'd-map': 'D: Retrieval Orchestrator (c137-style)',
+  'e-map-fts': 'E: Orchestrator + BM25 fallback',
 };
 
 export function renderReport(input: ReportInput): string {
@@ -116,6 +118,61 @@ export function renderReport(input: ReportInput): string {
     }
   }
   lines.push(``);
+
+  interface AbsAgg {
+    unanswerableTotal: number;
+    correctRefusal: number;
+    incorrectRefusal: number;
+    hallucinatedOnUnanswerable: number;
+    falseRefusalOnAnswerable: number;
+    answerableTotal: number;
+  }
+  const abs = new Map<CorpusName, Map<ConfigName, AbsAgg>>();
+  for (const r of input.results) {
+    if (!abs.has(r.corpus)) abs.set(r.corpus, new Map());
+    const cm = abs.get(r.corpus)!;
+    if (!cm.has(r.config))
+      cm.set(r.config, {
+        unanswerableTotal: 0,
+        correctRefusal: 0,
+        incorrectRefusal: 0,
+        hallucinatedOnUnanswerable: 0,
+        falseRefusalOnAnswerable: 0,
+        answerableTotal: 0,
+      });
+    const a = cm.get(r.config)!;
+    const unanswerable = r.question.metadata?.unanswerable === true;
+    if (unanswerable) {
+      a.unanswerableTotal += 1;
+      if (r.verdict === 'abstained-correctly') a.correctRefusal += 1;
+      else if (r.verdict === 'abstained-incorrectly') a.incorrectRefusal += 1;
+      else if (r.verdict === 'incorrect' || r.verdict === 'correct') a.hallucinatedOnUnanswerable += 1;
+    } else {
+      a.answerableTotal += 1;
+      if (r.verdict === 'abstained-incorrectly') a.falseRefusalOnAnswerable += 1;
+    }
+  }
+  const hasAbs = [...abs.values()].some((m) =>
+    [...m.values()].some((a) => a.unanswerableTotal > 0 || a.falseRefusalOnAnswerable > 0),
+  );
+  if (hasAbs) {
+    lines.push(`## Abstention`);
+    lines.push(``);
+    lines.push(`| corpus | Config | unanswerable n | correct-refusal | incorrect-refusal | hallucinated | false-refusal (on answerable) |`);
+    lines.push(`|---|---|---|---|---|---|---|`);
+    for (const [corpus, cm] of abs) {
+      for (const [config, a] of cm) {
+        const rate = a.unanswerableTotal > 0
+          ? `${((100 * a.correctRefusal) / a.unanswerableTotal).toFixed(1)}%`
+          : 'n/a';
+        lines.push(
+          `| ${corpus} | ${CONFIG_LABELS[config]} | ${a.unanswerableTotal} | ${a.correctRefusal} (${rate}) | ${a.incorrectRefusal} | ${a.hallucinatedOnUnanswerable} | ${a.falseRefusalOnAnswerable} / ${a.answerableTotal} |`,
+        );
+      }
+    }
+    lines.push(``);
+  }
+
   lines.push(`## Binding decision`);
   lines.push(``);
   lines.push(`Apply the roadmap's >= 3-point LongMemEval-S accuracy threshold:`);
