@@ -55,16 +55,19 @@ Phase 5+ items are *independent of each other* and pulled in by friction, not pr
 
 ---
 
-## Phase 3 — Eval harness + vector-vs-no-vector spike — **SHIPPED 2026-05-13**
+## Phase 3 — Eval harness + vector-vs-no-vector spike — **PARTIAL 2026-05-13** (A/B/C done; Config D queued)
 
-**Levels:** 3 — **OUT**.
+**Levels:** **7 — OUT** (vectors). The c137-revised design (May 2026) renumbered the levels: what the original roadmap called "Level 3 = vectors" is now Level 7. The c137-revised design also added a **Config D (structured / map-only, c137-style)** to the spike configurations; Config D is *not* exercised in this round and is the open work for the follow-up spike. Level 3 in the new numbering is the Retrieval Orchestrator (the engine behind Config D).
 
-**Shipped:**
-- LongMemEval-S harness in `packages/memory-strata/test/bench/` (Phase 3A, PR #65)
+**Shipped (A/B/C only):**
+- LongMemEval-S harness in `packages/memory-strata/test/bench/` (Phase 3A, PR #65; Phase 3B harness polish in PR #66)
 - LoCoMo loader fixed in Phase 3B; not exercised in the binding run (queued as cross-corpus corroboration follow-up — see Phase 5+).
 - Internal project-memory eval scaffolded; not exercised in the binding run (synthetic-derived; directional only).
 - Three-config head-to-head: BM25-only (A) vs BM25+zerank-2 (B) vs BM25+zembed-1+RRF (C).
-- **Decision: Level 3 OUT.** On 100-Q LongMemEval-S (Sonnet 4.6 agent, Grok 4.3 judge): A = **22.0%**, B = 19.6%, C = **13.0%**. C loses to A by 9 points — outside the ±3-point binding band by a comfortable margin. B *also* loses to A by 2.4 points, which alters Phase 4's reranker priority (see below). Report: `docs/plans/2026-05-13-memory-strata-vector-spike-report.md`.
+- **Decision on vectors (Config C / Level 7): OUT.** On 100-Q LongMemEval-S (Sonnet 4.6 agent, Grok 4.3 judge): A = **22.0%**, B = 19.6%, C = **13.0%**. C loses to A by 9 points — outside the design's ≥5-point binding band (tightened from ≥3 by the c137 prior) by 4 points. B *also* loses to A by 2.4 points, which alters Phase 4's reranker priority (see below). Report: `docs/plans/2026-05-13-memory-strata-vector-spike-report.md`.
+
+**Deferred (Config D + abstention metric):**
+- Config D (Retrieval Orchestrator + `system/map.md`, c137-style) was added to the spike configurations after the c137 revision (also 2026-05-13). It needs a per-sample map generator, a cheap-LLM orchestration stage, an XML-op executor, and an abstention-aware judge prompt. Filed as a separate spike; not in PR #66.
 
 **Originally-stated trigger:** Phase 2 retrieval has been running for ≥1 week. The actual binding run happened sooner (Phase 2 had only just shipped) — authorized as a deviation, with the understanding that the public benchmarks are not gated on dogfooding. Internal-corpus runs are queued for when real dogfooded memory data is available.
 

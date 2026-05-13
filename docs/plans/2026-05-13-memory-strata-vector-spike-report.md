@@ -24,6 +24,16 @@ The cleanest BM25-only configuration won the spike on every dimension that matte
 
 A nuance the table doesn't fully convey: this 22% absolute accuracy on Config A is well below the LongMemEval-S literature range (30–50% on Sonnet+RAG configs). The gap reflects Strata's intentionally lightweight retrieval+injection: the BM25 index is over the full body but the retrieved snippets are truncated bodies (2000 chars), and the vector index is summary+headers only — both consistent with the Strata design doc's "lightweight indexing" intent. **Inside that lightweight regime, BM25 is the right answer.** A separate evaluation comparing Strata's lightweight regime against a heavyweight reference RAG is out of scope here.
 
+### Cross-reference: c137 prior art (added after the run)
+
+After the bench run completed, the Strata design doc was revised to incorporate [c137 Mapped Memory](https://www.c137.ai/research) — a closed-source single-developer system that reportedly hits **90.4% on LongMemEval-S with zero embeddings**, using a compact always-in-context "memory map" + a cheap-LLM retrieval orchestrator. Two implications for this binding decision:
+
+1. **The Level 3 OUT conclusion is strengthened.** c137 is a second independent signal (alongside ByteRover's BM25-only LoCoMo numbers) that vector retrieval isn't load-bearing for agent memory. The design doc's c137 revision also tightened the spike's acceptance threshold from "≥3 points" to "**≥5 points**" — our observed 9-point margin against vectors clears the new threshold by 4 points, so the decision survives the tighter standard.
+
+2. **A new Config D — Retrieval Orchestrator + `system/map.md` — was added to the spike configurations.** It is *not* exercised in this round. Config D is structurally different from A/B/C — instead of running a retrieval index, it generates a per-corpus map at build time and uses a cheap LLM stage at query time to emit XML retrieval ops. Whether Config D outperforms BM25-only is the next open question on the binding axis, but it doesn't change the existing **C vs A** verdict. A follow-up spike implements Config D + an abstention-aware judge (c137 reports 86.7–96.7% correct-refusal rates, which is now a primary eval axis per the c137-revised design).
+
+In short: this PR's binding decision against vectors stands. The c137-revised design doc renumbers the level (vectors are now Level 7, formerly Level 3) and raises the bar; both reinforce the OUT conclusion.
+
 ## Caveats
 
 - **Single-corpus run.** LoCoMo and the internal synthetic corpus were not exercised in this round. LongMemEval-S is the authoritative axis per the roadmap, so the binding decision applies, but a cross-corpus corroboration on LoCoMo is queued as a follow-up once the harness gains per-question concurrency (the sequential ~1.5h cost per corpus is the gating factor).
