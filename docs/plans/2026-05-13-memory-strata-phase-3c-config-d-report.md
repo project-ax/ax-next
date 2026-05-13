@@ -20,10 +20,10 @@ A note on the accuracy column: for D and E the headline figure folds correct-ref
 
 ## Abstention
 
-| corpus | Config | unanswerable n | correct-refusal | incorrect-refusal | hallucinated | false-refusal (on answerable) |
-|---|---|---|---|---|---|---|
-| longmemeval-s | D: Retrieval Orchestrator (c137-style) | 6 | 5 (83.3%) | 0 | 1 | **60 / 94** |
-| longmemeval-s | E: Orchestrator + BM25 fallback | 6 | 5 (83.3%) | 0 | 1 | **52 / 94** |
+| corpus | Config | unanswerable n | correct-refusal | hallucinated | false-refusal (on answerable) |
+|---|---|---|---|---|---|
+| longmemeval-s | D: Retrieval Orchestrator (c137-style) | 6 | 5 (83.3%) | 1 | **60 / 94** |
+| longmemeval-s | E: Orchestrator + BM25 fallback | 6 | 5 (83.3%) | 1 | **52 / 94** |
 
 A/B/C abstention numbers are not available — the abstention judge landed in this phase. Re-running the prior configs against the new judge is a cheap follow-up if anyone wants to compare, but the binding decision below doesn't hinge on it.
 

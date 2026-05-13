@@ -41,6 +41,8 @@ export function transformLongMemEvalSample(s: LongMemEvalSample): {
     });
     docs.set(doc.path, doc);
   }
+  // LongMemEval-S marks unanswerable questions with an `_abs` suffix on question_id;
+  // their gold answer is shaped like "You did not mention this information…".
   const unanswerable = s.question_id.endsWith('_abs');
   const haystackPaths = (s.haystack_session_ids ?? []).map((id) => `episodes/${id}`);
   const metaParts: Record<string, unknown> = {};

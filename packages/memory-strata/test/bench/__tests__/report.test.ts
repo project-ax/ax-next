@@ -145,7 +145,6 @@ describe('renderReport', () => {
     });
     const results: QuestionResult[] = [
       mk('a_abs', 'abstained-correctly', true),
-      mk('b_abs', 'abstained-incorrectly', true),
       mk('c_abs', 'incorrect', true),
       mk('d', 'correct', false),
       mk('e', 'abstained-incorrectly', false),
@@ -153,9 +152,9 @@ describe('renderReport', () => {
     const md = renderReport({ results, cap: 50, totalSpent: 0, capExceeded: false, runDate: new Date('2026-05-14') });
     expect(md).toContain('## Abstention');
     expect(md).toContain('D: Retrieval Orchestrator');
-    // 1 of 3 unanswerable questions correctly refused -> 33.3%
+    // 1 of 2 unanswerable questions correctly refused -> 50.0%
     expect(md).toContain('correct-refusal');
-    expect(md).toContain('33.3%');
+    expect(md).toContain('50.0%');
   });
 
   it('renders d-map and e-map-fts labels', () => {

@@ -122,7 +122,6 @@ export function renderReport(input: ReportInput): string {
   interface AbsAgg {
     unanswerableTotal: number;
     correctRefusal: number;
-    incorrectRefusal: number;
     hallucinatedOnUnanswerable: number;
     falseRefusalOnAnswerable: number;
     answerableTotal: number;
@@ -135,7 +134,6 @@ export function renderReport(input: ReportInput): string {
       cm.set(r.config, {
         unanswerableTotal: 0,
         correctRefusal: 0,
-        incorrectRefusal: 0,
         hallucinatedOnUnanswerable: 0,
         falseRefusalOnAnswerable: 0,
         answerableTotal: 0,
@@ -145,7 +143,6 @@ export function renderReport(input: ReportInput): string {
     if (unanswerable) {
       a.unanswerableTotal += 1;
       if (r.verdict === 'abstained-correctly') a.correctRefusal += 1;
-      else if (r.verdict === 'abstained-incorrectly') a.incorrectRefusal += 1;
       else if (r.verdict === 'incorrect' || r.verdict === 'correct') a.hallucinatedOnUnanswerable += 1;
     } else {
       a.answerableTotal += 1;
@@ -158,15 +155,15 @@ export function renderReport(input: ReportInput): string {
   if (hasAbs) {
     lines.push(`## Abstention`);
     lines.push(``);
-    lines.push(`| corpus | Config | unanswerable n | correct-refusal | incorrect-refusal | hallucinated | false-refusal (on answerable) |`);
-    lines.push(`|---|---|---|---|---|---|---|`);
+    lines.push(`| corpus | Config | unanswerable n | correct-refusal | hallucinated | false-refusal (on answerable) |`);
+    lines.push(`|---|---|---|---|---|---|`);
     for (const [corpus, cm] of abs) {
       for (const [config, a] of cm) {
         const rate = a.unanswerableTotal > 0
           ? `${((100 * a.correctRefusal) / a.unanswerableTotal).toFixed(1)}%`
           : 'n/a';
         lines.push(
-          `| ${corpus} | ${CONFIG_LABELS[config]} | ${a.unanswerableTotal} | ${a.correctRefusal} (${rate}) | ${a.incorrectRefusal} | ${a.hallucinatedOnUnanswerable} | ${a.falseRefusalOnAnswerable} / ${a.answerableTotal} |`,
+          `| ${corpus} | ${CONFIG_LABELS[config]} | ${a.unanswerableTotal} | ${a.correctRefusal} (${rate}) | ${a.hallucinatedOnUnanswerable} | ${a.falseRefusalOnAnswerable} / ${a.answerableTotal} |`,
         );
       }
     }
