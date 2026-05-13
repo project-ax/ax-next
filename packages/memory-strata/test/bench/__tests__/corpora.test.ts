@@ -50,6 +50,34 @@ describe('LongMemEval-S transform', () => {
     const out = transformLongMemEvalSample(sample);
     expect(out.question.goldDocIds).toEqual([]);
   });
+
+  it('flags _abs question_id as metadata.unanswerable', () => {
+    const sample = {
+      question_id: 'abc123_abs',
+      question_type: 'single-session-user',
+      question: 'What did I name my hamster?',
+      answer: 'You did not mention this information. You mentioned your cat Luna but not your hamster.',
+      haystack_session_ids: ['s1'],
+      haystack_sessions: [[{ role: 'user', content: 'I love my cat Luna' } as const]],
+      answer_session_ids: ['s1'],
+    };
+    const { question } = transformLongMemEvalSample(sample);
+    expect(question.metadata?.unanswerable).toBe(true);
+  });
+
+  it('leaves answerable questions without an unanswerable flag', () => {
+    const sample = {
+      question_id: 'abc123',
+      question_type: 'single-session-user',
+      question: 'What degree did I graduate with?',
+      answer: 'Business Administration',
+      haystack_session_ids: ['s1'],
+      haystack_sessions: [[{ role: 'user', content: 'I graduated with a BBA' } as const]],
+      answer_session_ids: ['s1'],
+    };
+    const { question } = transformLongMemEvalSample(sample);
+    expect(question.metadata?.unanswerable).toBeUndefined();
+  });
 });
 
 import { transformLoCoMoSample } from '../corpora/locomo.js';

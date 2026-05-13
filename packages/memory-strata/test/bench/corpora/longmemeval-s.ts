@@ -41,6 +41,10 @@ export function transformLongMemEvalSample(s: LongMemEvalSample): {
     });
     docs.set(doc.path, doc);
   }
+  const unanswerable = s.question_id.endsWith('_abs');
+  const metaParts: Record<string, unknown> = {};
+  if (s.question_type) metaParts.question_type = s.question_type;
+  if (unanswerable) metaParts.unanswerable = true;
   return {
     docs,
     question: {
@@ -48,7 +52,7 @@ export function transformLongMemEvalSample(s: LongMemEvalSample): {
       text: s.question,
       goldAnswer: s.answer,
       goldDocIds: (s.answer_session_ids ?? []).map((id) => `episodes/${id}`),
-      metadata: s.question_type ? { question_type: s.question_type } : undefined,
+      metadata: Object.keys(metaParts).length > 0 ? metaParts : undefined,
     },
   };
 }
