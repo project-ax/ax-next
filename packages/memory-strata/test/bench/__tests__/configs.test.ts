@@ -37,7 +37,7 @@ describe('Config A (BM25)', () => {
 });
 
 describe('Config B (BM25 + rerank)', () => {
-  it('reorders Config A results via stubbed reranker', async () => {
+  it('reorders Config A results via stubbed reranker and feeds it doc bodies', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'bench-cfg-b-'));
     const corpus: BenchCorpus = { name: 'internal', memoryTree: new Map(), questions: [] };
     const d1 = makeDoc({ category: 'knowledge', slug: 'd1', summary: 'first', body: 'cortado milk espresso' });
@@ -45,10 +45,12 @@ describe('Config B (BM25 + rerank)', () => {
     corpus.memoryTree.set(d1.path, d1);
     corpus.memoryTree.set(d2.path, d2);
 
+    const capturedDocs: Array<Array<{ docId: string; text: string }>> = [];
     const driver = createConfigB({
       tempDir: dir,
       rerankClient: {
         async rerank(_query, docs) {
+          capturedDocs.push(docs);
           return { reranked: [...docs].reverse().map((d, i) => ({ docId: d.docId, score: 1 - i * 0.1 })), tokens: 50 };
         },
       },
@@ -62,6 +64,40 @@ describe('Config B (BM25 + rerank)', () => {
       );
       expect(r.retrievedDocs.length).toBe(2);
       expect(r.rerankTokens).toBe(50);
+      expect(capturedDocs.length).toBe(1);
+      // Reranker should receive BODY text, not summary. The bodies are distinct ("cortado milk espresso" vs "cortado is great"); summaries are "first" / "second".
+      const texts = capturedDocs[0]!.map((d) => d.text).sort();
+      expect(texts).toContain('cortado milk espresso');
+      expect(texts).toContain('cortado is great');
+      expect(texts).not.toContain('first');
+      expect(texts).not.toContain('second');
+    } finally {
+      await driver.teardown();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('truncates oversized rerank inputs to keep API payloads bounded', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bench-cfg-b-trunc-'));
+    const corpus: BenchCorpus = { name: 'internal', memoryTree: new Map(), questions: [] };
+    const big = 'apple '.repeat(1000); // ~6000 chars
+    const d1 = makeDoc({ category: 'knowledge', slug: 'big', summary: 'huge', body: big });
+    corpus.memoryTree.set(d1.path, d1);
+
+    const captured: Array<Array<{ docId: string; text: string }>> = [];
+    const driver = createConfigB({
+      tempDir: dir,
+      rerankClient: {
+        async rerank(_query, docs) {
+          captured.push(docs);
+          return { reranked: docs.map((d, i) => ({ docId: d.docId, score: 1 - i * 0.1 })), tokens: 5 };
+        },
+      },
+    });
+    await driver.build(corpus);
+    try {
+      await driver.retrieve({ id: 'q', text: 'apple', goldAnswer: 'x' }, 1, new AbortController().signal);
+      expect(captured[0]![0]!.text.length).toBeLessThanOrEqual(2000);
     } finally {
       await driver.teardown();
       rmSync(dir, { recursive: true, force: true });

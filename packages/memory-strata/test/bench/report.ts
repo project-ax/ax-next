@@ -6,6 +6,9 @@ export interface ReportInput {
   totalSpent: number;
   capExceeded: boolean;
   runDate: Date;
+  abortError?: string | null;
+  skipped?: Array<{ corpus: string; config: string; questionId: string; reason: string }>;
+  configFailures?: Array<{ corpus: string; config: string; phase: 'build' | 'unknown'; reason: string }>;
 }
 
 type CorpusName = BenchCorpus['name'];
@@ -95,6 +98,10 @@ export function renderReport(input: ReportInput): string {
     lines.push(``);
     lines.push(`> **Aborted: cost cap exceeded.** Report reflects partial results.`);
   }
+  if (input.abortError) {
+    lines.push(``);
+    lines.push(`> **Aborted: ${input.abortError}.** Report reflects partial results captured before the abort.`);
+  }
   lines.push(``);
   const agg = aggregateByConfig(input.results);
   lines.push(`## Results`);
@@ -117,6 +124,32 @@ export function renderReport(input: ReportInput): string {
   lines.push(`- If B beats A by a clear margin but C does not beat B -> Level 3 OUT, prioritise reranker (Level 6) in Phase 4.`);
   lines.push(``);
   lines.push(`> _Phase 3B PR author fills in the explicit decision based on the LongMemEval-S row above._`);
+  const configFailures = input.configFailures ?? [];
+  if (configFailures.length > 0) {
+    lines.push(``);
+    lines.push(`## Config build failures (${configFailures.length})`);
+    lines.push(``);
+    for (const f of configFailures) {
+      lines.push(`- **${f.corpus} / ${f.config}** (${f.phase}): ${f.reason.split('\n')[0]!.slice(0, 200)}`);
+    }
+  }
+
+  const skipped = input.skipped ?? [];
+  if (skipped.length > 0) {
+    lines.push(``);
+    lines.push(`## Skipped questions (${skipped.length})`);
+    lines.push(``);
+    const byReason = new Map<string, number>();
+    for (const s of skipped) {
+      const head = s.reason.split('\n')[0]!.slice(0, 120);
+      byReason.set(head, (byReason.get(head) ?? 0) + 1);
+    }
+    lines.push(`Reason buckets:`);
+    for (const [reason, count] of [...byReason.entries()].sort((a, b) => b[1] - a[1])) {
+      lines.push(`- ${count}× — ${reason}`);
+    }
+  }
+
   lines.push(``);
   lines.push(`## Caveats`);
   lines.push(``);

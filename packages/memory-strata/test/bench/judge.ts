@@ -1,5 +1,6 @@
 import type { Verdict } from './types.js';
 import OpenAI from 'openai';
+import { withRetry } from './retry.js';
 
 export interface JudgeClient {
   complete(args: { system: string; user: string }): Promise<{ text: string; usage: { in: number; out: number } }>;
@@ -35,20 +36,25 @@ export async function judgeAnswer(
 }
 
 export function makeOpenRouterJudgeClient(apiKey: string, model = 'x-ai/grok-4.3'): JudgeClient {
-  const o = new OpenAI({ apiKey, baseURL: 'https://openrouter.ai/api/v1' });
+  const o = new OpenAI({ apiKey, baseURL: 'https://openrouter.ai/api/v1', timeout: 60_000 });
   return {
     async complete({ system, user }) {
-      const resp = await o.chat.completions.create({
-        model,
-        max_tokens: 120,
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: user },
-        ],
-      });
-      const text = resp.choices[0]?.message?.content ?? '';
-      const usage = resp.usage ?? { prompt_tokens: 0, completion_tokens: 0 };
-      return { text, usage: { in: usage.prompt_tokens, out: usage.completion_tokens } };
+      return withRetry(
+        async () => {
+          const resp = await o.chat.completions.create({
+            model,
+            max_tokens: 120,
+            messages: [
+              { role: 'system', content: system },
+              { role: 'user', content: user },
+            ],
+          });
+          const text = resp.choices[0]?.message?.content ?? '';
+          const usage = resp.usage ?? { prompt_tokens: 0, completion_tokens: 0 };
+          return { text, usage: { in: usage.prompt_tokens, out: usage.completion_tokens } };
+        },
+        { attempts: 4, baseDelayMs: 1000, label: 'openrouter-judge' },
+      );
     },
   };
 }

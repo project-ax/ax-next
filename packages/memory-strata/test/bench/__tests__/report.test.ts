@@ -72,6 +72,52 @@ describe('renderReport', () => {
     expect(md).not.toContain('50.0%');
   });
 
+  it('marks the report as aborted when an abortError is set', () => {
+    const md = renderReport({
+      results: [sampleResult],
+      cap: 50,
+      totalSpent: 0.5,
+      capExceeded: false,
+      abortError: 'read ETIMEDOUT',
+      runDate: new Date('2026-05-12T00:00:00Z'),
+    });
+    expect(md).toMatch(/Aborted: read ETIMEDOUT/);
+    expect(md).toMatch(/partial results captured before the abort/);
+  });
+
+  it('lists config build failures distinct from per-question skips', () => {
+    const md = renderReport({
+      results: [sampleResult],
+      cap: 50,
+      totalSpent: 0.01,
+      capExceeded: false,
+      runDate: new Date('2026-05-12T00:00:00Z'),
+      configFailures: [
+        { corpus: 'longmemeval-s', config: 'c-rrf', phase: 'build', reason: '500 Internal Server Error' },
+      ],
+    });
+    expect(md).toContain('Config build failures (1)');
+    expect(md).toMatch(/longmemeval-s \/ c-rrf.*build.*500 Internal Server Error/);
+  });
+
+  it('lists skipped questions bucketed by reason', () => {
+    const md = renderReport({
+      results: [sampleResult],
+      cap: 50,
+      totalSpent: 0.01,
+      capExceeded: false,
+      runDate: new Date('2026-05-12T00:00:00Z'),
+      skipped: [
+        { corpus: 'longmemeval-s', config: 'a-bm25', questionId: 'q1', reason: '400 content filtering policy' },
+        { corpus: 'longmemeval-s', config: 'a-bm25', questionId: 'q2', reason: '400 content filtering policy' },
+        { corpus: 'longmemeval-s', config: 'b-rerank', questionId: 'q5', reason: 'rerank timeout' },
+      ],
+    });
+    expect(md).toContain('Skipped questions (3)');
+    expect(md).toMatch(/2× — 400 content filtering policy/);
+    expect(md).toMatch(/1× — rerank timeout/);
+  });
+
   it('recall@5 is 0 when no eligible questions', () => {
     const noGold = makeResult({ question: { id: 'q1', text: 'x?', goldAnswer: 'y' } });
     const md = renderReport({

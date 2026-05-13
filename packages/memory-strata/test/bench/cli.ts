@@ -133,46 +133,69 @@ async function main(): Promise<number> {
   if (wantCfg('c-rrf')) driverFactories.push(() => createConfigC({ tempDir, embedClient }));
 
   const results: QuestionResult[] = [];
+  const skipped: Array<{ corpus: string; config: string; questionId: string; reason: string }> = [];
+  const configFailures: Array<{ corpus: string; config: string; phase: 'build' | 'unknown'; reason: string }> = [];
   let capExceeded = false;
+  let abortError: unknown = null;
 
-  outer: for (const corpus of corpora) {
-    for (const factory of driverFactories) {
-      const driver = factory();
-      await driver.build(corpus);
-      try {
-        for (const question of corpus.questions) {
-          if (meter.projectWouldExceedCap('claude-sonnet-4-6', { in: 4000, out: 512 })) {
-            capExceeded = true;
-            break outer;
+  try {
+    outer: for (const corpus of corpora) {
+      for (const factory of driverFactories) {
+        const driver = factory();
+        let buildOk = false;
+        try {
+          try {
+            await driver.build(corpus);
+            buildOk = true;
+          } catch (err) {
+            const reason = (err as Error)?.message ?? String(err);
+            configFailures.push({ corpus: corpus.name, config: driver.name, phase: 'build', reason });
+            console.warn(`Build failed for ${corpus.name}/${driver.name}; skipping config. Reason: ${reason}`);
+            continue;
           }
-          const before = meter.totalDollars();
-          const retrieval = await driver.retrieve(question, args.topK, new AbortController().signal);
-          if (retrieval.embeddingTokens > 0) meter.record('zembed-1', { in: retrieval.embeddingTokens, out: 0 });
-          if (retrieval.rerankTokens > 0) meter.record('zerank-2', { in: retrieval.rerankTokens, out: 0 });
-          const agentResp = await runAgent(agentClient, question, retrieval.retrievedDocs);
-          meter.record('claude-sonnet-4-6', agentResp.usage);
-          const verdict = await judgeAnswer(judgeClient, question.text, question.goldAnswer, agentResp.text);
-          meter.record('x-ai/grok-4.3', verdict.usage);
-          results.push({
-            corpus: corpus.name,
-            config: driver.name,
-            question,
-            retrieval,
-            agentAnswer: agentResp.text,
-            verdict: verdict.verdict,
-            judgeReason: verdict.reason,
-            agentTokens: agentResp.usage,
-            judgeTokens: verdict.usage,
-            totalDollars: meter.totalDollars() - before,
-          });
-          if (results.length % 50 === 0) {
-            console.log(`Progress: ${results.length} questions evaluated, $${meter.totalDollars().toFixed(2)} spent.`);
+          for (const question of corpus.questions) {
+            if (meter.projectWouldExceedCap('claude-sonnet-4-6', { in: 4000, out: 512 })) {
+              capExceeded = true;
+              break outer;
+            }
+            try {
+              const before = meter.totalDollars();
+              const retrieval = await driver.retrieve(question, args.topK, new AbortController().signal);
+              if (retrieval.embeddingTokens > 0) meter.record('zembed-1', { in: retrieval.embeddingTokens, out: 0 });
+              if (retrieval.rerankTokens > 0) meter.record('zerank-2', { in: retrieval.rerankTokens, out: 0 });
+              const agentResp = await runAgent(agentClient, question, retrieval.retrievedDocs, corpus.memoryTree);
+              meter.record('claude-sonnet-4-6', agentResp.usage);
+              const verdict = await judgeAnswer(judgeClient, question.text, question.goldAnswer, agentResp.text);
+              meter.record('x-ai/grok-4.3', verdict.usage);
+              results.push({
+                corpus: corpus.name,
+                config: driver.name,
+                question,
+                retrieval,
+                agentAnswer: agentResp.text,
+                verdict: verdict.verdict,
+                judgeReason: verdict.reason,
+                agentTokens: agentResp.usage,
+                judgeTokens: verdict.usage,
+                totalDollars: meter.totalDollars() - before,
+              });
+              if (results.length % 50 === 0) {
+                console.log(`Progress: ${results.length} questions evaluated, $${meter.totalDollars().toFixed(2)} spent.`);
+              }
+            } catch (err) {
+              const reason = (err as Error)?.message ?? String(err);
+              skipped.push({ corpus: corpus.name, config: driver.name, questionId: question.id, reason });
+              console.warn(`Skipped ${corpus.name}/${driver.name}/${question.id}: ${reason}`);
+            }
           }
+        } finally {
+          if (buildOk) await driver.teardown();
         }
-      } finally {
-        await driver.teardown();
       }
     }
+  } catch (err) {
+    abortError = err;
+    console.error(`Aborted after ${results.length} results; writing partial report. Reason: ${(err as Error)?.message ?? String(err)}`);
   }
 
   const date = new Date();
@@ -182,12 +205,15 @@ async function main(): Promise<number> {
     totalSpent: meter.totalDollars(),
     capExceeded,
     runDate: date,
+    abortError: abortError ? ((abortError as Error)?.message ?? String(abortError)) : null,
+    skipped,
+    configFailures,
   });
   const outPath = join(REPO_ROOT, 'docs/plans', `${date.toISOString().slice(0, 10)}-memory-strata-vector-spike-report.md`);
   writeFileSync(outPath, md);
   console.log(`Report written to ${outPath}. Total spend: $${meter.totalDollars().toFixed(2)}.`);
   rmSync(tempDir, { recursive: true, force: true });
-  return capExceeded ? 1 : 0;
+  return capExceeded || abortError ? 1 : 0;
 }
 
 main().then((code) => process.exit(code)).catch((err) => {
