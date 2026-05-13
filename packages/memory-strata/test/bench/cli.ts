@@ -19,6 +19,9 @@ import { loadInternalCorpus } from './corpora/internal.js';
 import { createConfigA } from './configs/a-bm25.js';
 import { createConfigB, makeZeroEntropyRerankClient } from './configs/b-rerank.js';
 import { createConfigC, makeZeroEntropyEmbedClient } from './configs/c-rrf.js';
+import { createConfigD } from './configs/d-map.js';
+import { createConfigE } from './configs/e-map-fts.js';
+import { makeAnthropicOrchestratorClient } from './orchestrator.js';
 import { runAgent, makeAnthropicAgentClient, type AgentClient } from './agent.js';
 import { judgeAnswer, makeOpenRouterJudgeClient, type JudgeClient } from './judge.js';
 import { renderReport } from './report.js';
@@ -26,6 +29,7 @@ import type { BenchCorpus, ConfigName, ConfigDriver, QuestionResult } from './ty
 
 const PRICING: Pricing = {
   'claude-sonnet-4-6': { in: 3 / 1_000_000, out: 15 / 1_000_000 },
+  'claude-haiku-4-5-20251001': { in: 1 / 1_000_000, out: 5 / 1_000_000 },
   'x-ai/grok-4.3': { in: 1.25 / 1_000_000, out: 2.5 / 1_000_000 },
   'zembed-1': { in: 0.05 / 1_000_000, out: 0 },
   'zerank-2': { in: 0.1 / 1_000_000, out: 0 },
@@ -110,6 +114,8 @@ async function main(): Promise<number> {
   const cap = args.liveSmoke ? 0.5 : 50;
   const meter = new CostMeter({ capDollars: cap, pricing: PRICING });
   const tempDir = mkdtempSync(join(tmpdir(), 'ax-bench-'));
+  const mapCacheDir = join(tempDir, 'maps');
+  const orchestratorClient = makeAnthropicOrchestratorClient(env.ANTHROPIC_API_KEY);
 
   const agentClient: AgentClient = makeAnthropicAgentClient(env.ANTHROPIC_API_KEY);
   const judgeClient: JudgeClient = makeOpenRouterJudgeClient(env.OPENROUTER_API_KEY);
@@ -131,6 +137,8 @@ async function main(): Promise<number> {
   if (wantCfg('a-bm25')) driverFactories.push(() => createConfigA({ tempDir }));
   if (wantCfg('b-rerank')) driverFactories.push(() => createConfigB({ tempDir, rerankClient }));
   if (wantCfg('c-rrf')) driverFactories.push(() => createConfigC({ tempDir, embedClient }));
+  if (wantCfg('d-map')) driverFactories.push(() => createConfigD({ tempDir, orchestratorClient, mapCacheDir }));
+  if (wantCfg('e-map-fts')) driverFactories.push(() => createConfigE({ tempDir, orchestratorClient, mapCacheDir }));
 
   const results: QuestionResult[] = [];
   const skipped: Array<{ corpus: string; config: string; questionId: string; reason: string }> = [];
@@ -163,9 +171,16 @@ async function main(): Promise<number> {
               const retrieval = await driver.retrieve(question, args.topK, new AbortController().signal);
               if (retrieval.embeddingTokens > 0) meter.record('zembed-1', { in: retrieval.embeddingTokens, out: 0 });
               if (retrieval.rerankTokens > 0) meter.record('zerank-2', { in: retrieval.rerankTokens, out: 0 });
+              if (retrieval.orchestratorTokens) meter.record('claude-haiku-4-5-20251001', retrieval.orchestratorTokens);
               const agentResp = await runAgent(agentClient, question, retrieval.retrievedDocs, corpus.memoryTree);
               meter.record('claude-sonnet-4-6', agentResp.usage);
-              const verdict = await judgeAnswer(judgeClient, question.text, question.goldAnswer, agentResp.text);
+              const verdict = await judgeAnswer(
+                judgeClient,
+                question.text,
+                question.goldAnswer,
+                agentResp.text,
+                { unanswerable: question.metadata?.unanswerable === true },
+              );
               meter.record('x-ai/grok-4.3', verdict.usage);
               results.push({
                 corpus: corpus.name,

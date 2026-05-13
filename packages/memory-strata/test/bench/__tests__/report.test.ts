@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { renderReport } from '../report.js';
-import type { QuestionResult } from '../types.js';
+import type { QuestionResult, Verdict, ConfigName } from '../types.js';
 
 function makeResult(overrides: Partial<QuestionResult> = {}): QuestionResult {
   return {
@@ -128,5 +128,69 @@ describe('renderReport', () => {
       runDate: new Date('2026-05-12T00:00:00Z'),
     });
     expect(md).toContain('0.0%');
+  });
+
+  it('renders an abstention table with correct-refusal rate', () => {
+    const mk = (id: string, verdict: Verdict, unanswerable: boolean): QuestionResult => ({
+      corpus: 'longmemeval-s',
+      config: 'd-map',
+      question: { id, text: 'q', goldAnswer: 'g', ...(unanswerable ? { metadata: { unanswerable: true } } : {}) },
+      retrieval: { retrievedDocs: [], latencyMs: 0, embeddingTokens: 0, rerankTokens: 0 },
+      agentAnswer: 'a',
+      verdict,
+      judgeReason: '',
+      agentTokens: { in: 0, out: 0 },
+      judgeTokens: { in: 0, out: 0 },
+      totalDollars: 0,
+    });
+    const results: QuestionResult[] = [
+      mk('a_abs', 'abstained-correctly', true),
+      mk('c_abs', 'incorrect', true),
+      mk('d', 'correct', false),
+      mk('e', 'abstained-incorrectly', false),
+    ];
+    const md = renderReport({ results, cap: 50, totalSpent: 0, capExceeded: false, runDate: new Date('2026-05-14') });
+    expect(md).toContain('## Abstention');
+    expect(md).toContain('D: Retrieval Orchestrator');
+    // 1 of 2 unanswerable questions correctly refused -> 50.0%
+    expect(md).toContain('correct-refusal');
+    expect(md).toContain('50.0%');
+  });
+
+  it('renders d-map and e-map-fts labels', () => {
+    const mk = (config: ConfigName): QuestionResult => ({
+      corpus: 'longmemeval-s',
+      config,
+      question: { id: 'q', text: 'q', goldAnswer: 'g' },
+      retrieval: { retrievedDocs: [], latencyMs: 0, embeddingTokens: 0, rerankTokens: 0 },
+      agentAnswer: 'a',
+      verdict: 'correct',
+      judgeReason: '',
+      agentTokens: { in: 0, out: 0 },
+      judgeTokens: { in: 0, out: 0 },
+      totalDollars: 0,
+    });
+    const md = renderReport({
+      results: [mk('d-map'), mk('e-map-fts')],
+      cap: 50, totalSpent: 0, capExceeded: false, runDate: new Date('2026-05-14'),
+    });
+    expect(md).toContain('D: Retrieval Orchestrator');
+    expect(md).toContain('E: Orchestrator + BM25 fallback');
+  });
+
+  it('counts abstained-correctly toward headline accuracy', () => {
+    const mk = (id: string, verdict: Verdict): QuestionResult => ({
+      corpus: 'longmemeval-s', config: 'd-map',
+      question: { id, text: 'q', goldAnswer: 'g', metadata: { unanswerable: true } },
+      retrieval: { retrievedDocs: [], latencyMs: 0, embeddingTokens: 0, rerankTokens: 0 },
+      agentAnswer: 'a', verdict, judgeReason: '',
+      agentTokens: { in: 0, out: 0 }, judgeTokens: { in: 0, out: 0 }, totalDollars: 0,
+    });
+    const md = renderReport({
+      results: [mk('1', 'correct'), mk('2', 'abstained-correctly')],
+      cap: 50, totalSpent: 0, capExceeded: false, runDate: new Date('2026-05-14'),
+    });
+    // 2 of 2 are "correct" in the headline aggregation
+    expect(md).toMatch(/D: Retrieval Orchestrator[^\n]*\|\s*2\s*\|\s*100\.0%/i);
   });
 });

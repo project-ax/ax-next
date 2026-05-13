@@ -15,20 +15,28 @@ export interface JudgeResult {
 const SYSTEM = `You are an evaluation judge. Score whether an answer matches the gold answer.
 
 Respond in EXACTLY this format on two lines:
-VERDICT: <correct|incorrect|uncertain>
+VERDICT: <correct|incorrect|abstained-correctly|abstained-incorrectly|uncertain>
 REASON: <one short sentence>
 
-Use "correct" only if the answer's meaning matches the gold answer. Use "incorrect" if the answer contradicts gold. Use "uncertain" if you cannot tell from the gold whether the answer is right (e.g., partial answers, ambiguous gold).`;
+Scoring rules:
+- "correct": the agent's answer matches the gold answer.
+- "incorrect": the agent's answer contradicts the gold or is materially wrong.
+- "abstained-correctly": the question is marked Unanswerable (gold is an "I don't know"-style refusal) AND the agent refused to answer (e.g., "I don't know" or "the memory does not contain this").
+- "abstained-incorrectly": the agent refused to answer ("I don't know"-style) but the question is answerable (Unanswerable: false) — a missed retrieval.
+- "uncertain": you cannot tell from the gold whether the agent is right (partial answers, ambiguous gold).`;
+
+const VERDICT_RE = /VERDICT:\s*(correct|incorrect|abstained-correctly|abstained-incorrectly|uncertain)/i;
 
 export async function judgeAnswer(
   client: JudgeClient,
   question: string,
   goldAnswer: string,
   agentAnswer: string,
+  opts: { unanswerable: boolean } = { unanswerable: false },
 ): Promise<JudgeResult> {
-  const user = `Question: ${question}\nGold answer: ${goldAnswer}\nAgent answer: ${agentAnswer}`;
+  const user = `Unanswerable: ${opts.unanswerable}\nQuestion: ${question}\nGold answer: ${goldAnswer}\nAgent answer: ${agentAnswer}`;
   const resp = await client.complete({ system: SYSTEM, user });
-  const verdictMatch = resp.text.match(/VERDICT:\s*(correct|incorrect|uncertain)/i);
+  const verdictMatch = resp.text.match(VERDICT_RE);
   const reasonMatch = resp.text.match(/REASON:\s*(.+)/i);
   const verdict: Verdict = verdictMatch ? (verdictMatch[1]!.toLowerCase() as Verdict) : 'uncertain';
   const reason = reasonMatch ? reasonMatch[1]!.trim() : resp.text.trim();
