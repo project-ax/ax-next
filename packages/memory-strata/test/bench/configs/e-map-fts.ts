@@ -19,18 +19,15 @@ export interface ConfigEOptions extends ConfigFactoryOptions {
 export function createConfigE(opts: ConfigEOptions): ConfigDriver {
   const bm = createConfigA(opts);
   let corpusRef: BenchCorpus | null = null;
-  let map: string | null = null;
 
   return {
     name: 'e-map-fts',
     async build(corpus: BenchCorpus) {
       corpusRef = corpus;
       await bm.build(corpus);
-      map = await generateMap(corpus, { cacheDir: opts.mapCacheDir });
     },
     async teardown() {
       corpusRef = null;
-      map = null;
       await bm.teardown();
     },
     async retrieve(
@@ -38,9 +35,16 @@ export function createConfigE(opts: ConfigEOptions): ConfigDriver {
       topK: number,
       signal: AbortSignal,
     ): Promise<RetrievalResult> {
-      if (!corpusRef || !map) throw new Error('Config E: build() not called');
+      if (!corpusRef) throw new Error('Config E: build() not called');
       const t0 = Date.now();
-      const plan = await runOrchestrator(opts.orchestratorClient, map, question.text);
+      const subsetPaths = question.metadata?.haystackPaths as
+        | ReadonlyArray<string>
+        | undefined;
+      const mapForThisQ = await generateMap(corpusRef, {
+        cacheDir: opts.mapCacheDir,
+        ...(subsetPaths ? { subsetPaths } : {}),
+      });
+      const plan = await runOrchestrator(opts.orchestratorClient, mapForThisQ, question.text);
       const primary = await runOps(plan, {
         corpus: corpusRef,
         ftsSearch: async (query, k) => {

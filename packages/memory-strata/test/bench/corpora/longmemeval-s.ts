@@ -42,9 +42,11 @@ export function transformLongMemEvalSample(s: LongMemEvalSample): {
     docs.set(doc.path, doc);
   }
   const unanswerable = s.question_id.endsWith('_abs');
+  const haystackPaths = (s.haystack_session_ids ?? []).map((id) => `episodes/${id}`);
   const metaParts: Record<string, unknown> = {};
   if (s.question_type) metaParts.question_type = s.question_type;
   if (unanswerable) metaParts.unanswerable = true;
+  if (haystackPaths.length > 0) metaParts.haystackPaths = haystackPaths;
   return {
     docs,
     question: {

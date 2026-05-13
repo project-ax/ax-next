@@ -6,6 +6,7 @@ import type { BenchCorpus } from './types.js';
 interface MapOptions {
   cacheDir: string;
   summaryMaxChars?: number;
+  subsetPaths?: ReadonlyArray<string>;
 }
 
 const DEFAULT_SUMMARY_MAX = 120;
@@ -14,12 +15,15 @@ export async function generateMap(corpus: BenchCorpus, opts: MapOptions): Promis
   mkdirSync(opts.cacheDir, { recursive: true });
   const summaryMax = opts.summaryMaxChars ?? DEFAULT_SUMMARY_MAX;
 
-  const hash = computeCorpusHash(corpus);
+  const hash = computeCorpusHash(corpus, opts.subsetPaths);
   const cachePath = join(opts.cacheDir, `${corpus.name}-${hash}.md`);
   if (existsSync(cachePath)) return readFileSync(cachePath, 'utf8');
 
+  const paths = opts.subsetPaths ?? [...corpus.memoryTree.keys()];
   const byCategory = new Map<string, Array<{ slug: string; summary: string }>>();
-  for (const doc of corpus.memoryTree.values()) {
+  for (const p of paths) {
+    const doc = corpus.memoryTree.get(p);
+    if (!doc) continue;
     if (!byCategory.has(doc.category)) byCategory.set(doc.category, []);
     byCategory.get(doc.category)!.push({
       slug: doc.slug,
@@ -46,12 +50,18 @@ function truncate(s: string, n: number): string {
   return s.slice(0, n - 1) + '…';
 }
 
-function computeCorpusHash(corpus: BenchCorpus): string {
+function computeCorpusHash(
+  corpus: BenchCorpus,
+  subsetPaths: ReadonlyArray<string> | undefined,
+): string {
   const h = createHash('sha256');
-  const paths = [...corpus.memoryTree.keys()].sort();
+  const paths = subsetPaths
+    ? [...subsetPaths].sort()
+    : [...corpus.memoryTree.keys()].sort();
   h.update(corpus.name);
   for (const p of paths) {
-    const d = corpus.memoryTree.get(p)!;
+    const d = corpus.memoryTree.get(p);
+    if (!d) continue;
     h.update(p);
     h.update(d.summary);
   }

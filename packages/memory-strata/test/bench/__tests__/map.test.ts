@@ -49,6 +49,19 @@ describe('generateMap', () => {
     expect(map1).toBe(map2);
   });
 
+  it('filters to subsetPaths when provided', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bench-map-subset-'));
+    const corpus = corpusOf([
+      makeDoc({ category: 'episodes', slug: 'a', summary: 'A', body: '' }),
+      makeDoc({ category: 'episodes', slug: 'b', summary: 'B', body: '' }),
+      makeDoc({ category: 'episodes', slug: 'c', summary: 'C', body: '' }),
+    ]);
+    const map = await generateMap(corpus, { cacheDir: dir, subsetPaths: ['episodes/a', 'episodes/c'] });
+    expect(map).toContain('- a: A');
+    expect(map).toContain('- c: C');
+    expect(map).not.toContain('- b: B');
+  });
+
   it('returns a map under the ~2k-token soft cap for 50 sessions', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'bench-map-budget-'));
     const docs = Array.from({ length: 50 }, (_, i) =>
