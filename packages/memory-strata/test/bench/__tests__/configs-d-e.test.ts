@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createConfigD } from '../configs/d-map.js';
+import { createConfigE } from '../configs/e-map-fts.js';
 import { makeDoc } from '../corpora/shared.js';
 import type { BenchCorpus } from '../types.js';
 import type { OrchestratorClient } from '../orchestrator.js';
@@ -84,6 +85,83 @@ describe('Config D (d-map)', () => {
     try {
       const r = await driver.retrieve(
         { id: 'q', text: 'what is a cortado', goldAnswer: 'milk + espresso' },
+        5,
+        new AbortController().signal,
+      );
+      expect(r.retrievedDocs[0]!.path).toBe('episodes/coffee');
+    } finally {
+      await driver.teardown();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('Config E (e-map-fts)', () => {
+  it('falls back to BM25 when orchestrator emits followup=true', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bench-cfg-e-'));
+    const corpus: BenchCorpus = { name: 'internal', memoryTree: new Map(), questions: [] };
+    const d1 = makeDoc({ category: 'episodes', slug: 'coffee', summary: 'coffee', body: 'cortado is espresso with milk' });
+    corpus.memoryTree.set(d1.path, d1);
+    const driver = createConfigE({
+      tempDir: dir,
+      orchestratorClient: fixedClient(`<followup needed="true"/>`),
+      mapCacheDir: dir,
+    });
+    await driver.build(corpus);
+    try {
+      const r = await driver.retrieve(
+        { id: 'q', text: 'what is a cortado', goldAnswer: 'x' },
+        5,
+        new AbortController().signal,
+      );
+      expect(r.retrievedDocs[0]!.path).toBe('episodes/coffee');
+      expect(r.followupNeeded).toBe(true);
+    } finally {
+      await driver.teardown();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not run BM25 fallback when orchestrator returned load ops', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bench-cfg-e-no-fb-'));
+    const corpus: BenchCorpus = { name: 'internal', memoryTree: new Map(), questions: [] };
+    const d1 = makeDoc({ category: 'episodes', slug: 's-1', summary: 'a', body: 'cortado here' });
+    const d2 = makeDoc({ category: 'episodes', slug: 's-2', summary: 'b', body: 'unrelated' });
+    corpus.memoryTree.set(d1.path, d1);
+    corpus.memoryTree.set(d2.path, d2);
+    const driver = createConfigE({
+      tempDir: dir,
+      orchestratorClient: fixedClient(`<load doc="episodes/s-2"/>`),
+      mapCacheDir: dir,
+    });
+    await driver.build(corpus);
+    try {
+      const r = await driver.retrieve(
+        { id: 'q', text: 'cortado', goldAnswer: 'x' },
+        5,
+        new AbortController().signal,
+      );
+      expect(r.retrievedDocs.map((d) => d.path)).toEqual(['episodes/s-2']);
+    } finally {
+      await driver.teardown();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back when orchestrator emits zero ops', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bench-cfg-e-zero-'));
+    const corpus: BenchCorpus = { name: 'internal', memoryTree: new Map(), questions: [] };
+    const d1 = makeDoc({ category: 'episodes', slug: 'coffee', summary: 'coffee', body: 'cortado is espresso with milk' });
+    corpus.memoryTree.set(d1.path, d1);
+    const driver = createConfigE({
+      tempDir: dir,
+      orchestratorClient: fixedClient(`(no xml here)`),
+      mapCacheDir: dir,
+    });
+    await driver.build(corpus);
+    try {
+      const r = await driver.retrieve(
+        { id: 'q', text: 'cortado', goldAnswer: 'x' },
         5,
         new AbortController().signal,
       );
