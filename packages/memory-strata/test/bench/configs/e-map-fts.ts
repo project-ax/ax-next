@@ -14,6 +14,12 @@ import type { ConfigFactoryOptions } from './shared.js';
 export interface ConfigEOptions extends ConfigFactoryOptions {
   orchestratorClient: OrchestratorClient;
   mapCacheDir: string;
+  /**
+   * Optional pre-computed (e.g. LLM-rewritten) per-doc summaries. When passed,
+   * `generateMap` uses these in place of `doc.summary` for the orchestrator's
+   * memory map. See `map-rewrite.ts`.
+   */
+  mapSummaryOverrides?: ReadonlyMap<string, string>;
 }
 
 export function createConfigE(opts: ConfigEOptions): ConfigDriver {
@@ -43,6 +49,7 @@ export function createConfigE(opts: ConfigEOptions): ConfigDriver {
       const mapForThisQ = await generateMap(corpusRef, {
         cacheDir: opts.mapCacheDir,
         ...(subsetPaths ? { subsetPaths } : {}),
+        ...(opts.mapSummaryOverrides ? { overrideSummaries: opts.mapSummaryOverrides } : {}),
       });
       const plan = await runOrchestrator(opts.orchestratorClient, mapForThisQ, question.text);
       const primary = await runOps(plan, {

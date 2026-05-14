@@ -62,6 +62,44 @@ describe('generateMap', () => {
     expect(map).not.toContain('- b: B');
   });
 
+  it('uses overrideSummaries when provided', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bench-map-override-'));
+    const corpus = corpusOf([
+      makeDoc({ category: 'episodes', slug: 's-1', summary: 'original', body: 'body' }),
+    ]);
+    const overrides = new Map([['episodes/s-1', 'rewritten one-liner']]);
+    const map = await generateMap(corpus, { cacheDir: dir, overrideSummaries: overrides });
+    expect(map).toContain('- s-1: rewritten one-liner');
+    expect(map).not.toContain('original');
+  });
+
+  it('caches override and non-override variants under distinct hashes', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bench-map-override-cache-'));
+    const corpus = corpusOf([
+      makeDoc({ category: 'episodes', slug: 's-1', summary: 'original', body: 'body' }),
+    ]);
+    const plain = await generateMap(corpus, { cacheDir: dir });
+    const overridden = await generateMap(corpus, {
+      cacheDir: dir,
+      overrideSummaries: new Map([['episodes/s-1', 'rewritten one-liner']]),
+    });
+    expect(plain).toContain('original');
+    expect(overridden).toContain('rewritten one-liner');
+    expect(plain).not.toBe(overridden);
+  });
+
+  it('falls back to doc.summary for paths absent from overrideSummaries', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bench-map-override-partial-'));
+    const corpus = corpusOf([
+      makeDoc({ category: 'episodes', slug: 's-1', summary: 'orig-1', body: 'b1' }),
+      makeDoc({ category: 'episodes', slug: 's-2', summary: 'orig-2', body: 'b2' }),
+    ]);
+    const overrides = new Map([['episodes/s-1', 'rw-1']]);
+    const map = await generateMap(corpus, { cacheDir: dir, overrideSummaries: overrides });
+    expect(map).toContain('- s-1: rw-1');
+    expect(map).toContain('- s-2: orig-2');
+  });
+
   it('returns a map under the ~2k-token soft cap for 50 sessions', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'bench-map-budget-'));
     const docs = Array.from({ length: 50 }, (_, i) =>

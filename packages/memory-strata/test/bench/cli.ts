@@ -1,8 +1,8 @@
 #!/usr/bin/env tsx
-import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { writeFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { parseArgs } from 'node:util';
 
 // pnpm runs scripts with cwd set to the package dir, but the regen globs
@@ -25,7 +25,18 @@ import { makeAnthropicOrchestratorClient, makeOpenRouterOrchestratorClient } fro
 import { runAgent, makeAnthropicAgentClient, type AgentClient } from './agent.js';
 import { judgeAnswer, makeOpenRouterJudgeClient, type JudgeClient } from './judge.js';
 import { renderReport } from './report.js';
+import {
+  rewriteMapSummaries,
+  loadMapRewriteCache,
+  cacheToOverrideMap,
+} from './map-rewrite.js';
 import type { BenchCorpus, ConfigName, ConfigDriver, QuestionResult } from './types.js';
+
+const BENCH_CACHE_ROOT = join(homedir(), '.cache', 'ax-memory-bench');
+
+function mapRewriteCachePath(corpusName: BenchCorpus['name']): string {
+  return join(BENCH_CACHE_ROOT, corpusName, 'map-rewrites.json');
+}
 
 const PRICING: Pricing = {
   'claude-sonnet-4-6': { in: 3 / 1_000_000, out: 15 / 1_000_000 },
@@ -43,6 +54,7 @@ interface CliArgs {
   smoke: boolean;
   liveSmoke: boolean;
   regenInternal: boolean;
+  rewriteMap: boolean;
   topK: number;
   orchestratorModel: 'haiku' | 'grok';
 }
@@ -57,6 +69,7 @@ function parseCliArgs(argv: string[]): CliArgs {
       smoke: { type: 'boolean', default: false },
       'live-smoke': { type: 'boolean', default: false },
       'regen-internal': { type: 'boolean', default: false },
+      'rewrite-map': { type: 'boolean', default: false },
       'top-k': { type: 'string', default: '10' },
       'orchestrator-model': { type: 'string', default: 'haiku' },
     },
@@ -67,6 +80,7 @@ function parseCliArgs(argv: string[]): CliArgs {
     smoke: values.smoke === true,
     liveSmoke: values['live-smoke'] === true,
     regenInternal: values['regen-internal'] === true,
+    rewriteMap: values['rewrite-map'] === true,
     topK: Number(values['top-k']),
     orchestratorModel: (values['orchestrator-model'] === 'grok' ? 'grok' : 'haiku') as 'haiku' | 'grok',
   };
@@ -108,6 +122,43 @@ async function main(): Promise<number> {
     }
   }
 
+  if (args.rewriteMap) {
+    const env3 = requireKeys({ OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY });
+    if (args.corpus === 'all') {
+      console.error('--rewrite-map requires a specific --corpus (e.g. longmemeval-s).');
+      return 2;
+    }
+    const cache3 = new BenchCache();
+    let corpusForRewrite: BenchCorpus;
+    if (args.corpus === 'longmemeval-s') corpusForRewrite = await loadLongMemEvalS(cache3);
+    else if (args.corpus === 'locomo') corpusForRewrite = await loadLoCoMo(cache3);
+    else if (args.corpus === 'internal') corpusForRewrite = loadInternalCorpus();
+    else {
+      console.error(`Unknown corpus: ${args.corpus as string}`);
+      return 2;
+    }
+    const grokClient = makeOpenRouterOrchestratorClient(env3.OPENROUTER_API_KEY);
+    const cachePath = mapRewriteCachePath(corpusForRewrite.name);
+    console.log(
+      `Rewriting map summaries for ${corpusForRewrite.name} (${corpusForRewrite.memoryTree.size} docs) -> ${cachePath}`,
+    );
+    let lastLogged = 0;
+    const result = await rewriteMapSummaries({
+      corpus: corpusForRewrite,
+      grokClient,
+      cachePath,
+      concurrency: 10,
+      onProgress: (done, total) => {
+        if (done - lastLogged >= 100 || done === total) {
+          lastLogged = done;
+          console.log(`  rewrite progress: ${done}/${total}`);
+        }
+      },
+    });
+    console.log(`Done. ${result.size} summaries in cache at ${cachePath}.`);
+    return 0;
+  }
+
   const env = requireKeys({
     ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
     ZEROENTROPY_API_KEY: process.env.ZEROENTROPY_API_KEY,
@@ -141,13 +192,51 @@ async function main(): Promise<number> {
     for (const c of corpora) c.questions = c.questions.slice(0, args.sample);
   }
 
+  // Per-corpus map-summary rewrite cache: if a `--rewrite-map` pass has been
+  // run for this corpus, load it and feed it into configs D + E so the
+  // orchestrator sees the denser one-liners. Falls back to `doc.summary` when
+  // absent. Opt-in: A's behavior is unchanged in either case.
+  const rewriteOverridesByCorpus = new Map<BenchCorpus['name'], ReadonlyMap<string, string>>();
+  for (const c of corpora) {
+    const p = mapRewriteCachePath(c.name);
+    if (existsSync(p)) {
+      const cache = loadMapRewriteCache(p);
+      const overrides = cacheToOverrideMap(cache);
+      if (overrides.size > 0) {
+        rewriteOverridesByCorpus.set(c.name, overrides);
+        console.log(`Loaded ${overrides.size} map-rewrite overrides for ${c.name} from ${p}.`);
+      }
+    }
+  }
+
   const wantCfg = (n: ConfigName) => args.config === 'all' || args.config === n;
-  const driverFactories: Array<() => ConfigDriver> = [];
+  type DriverFactory = (corpus: BenchCorpus) => ConfigDriver;
+  const driverFactories: DriverFactory[] = [];
   if (wantCfg('a-bm25')) driverFactories.push(() => createConfigA({ tempDir }));
   if (wantCfg('b-rerank')) driverFactories.push(() => createConfigB({ tempDir, rerankClient }));
   if (wantCfg('c-rrf')) driverFactories.push(() => createConfigC({ tempDir, embedClient }));
-  if (wantCfg('d-map')) driverFactories.push(() => createConfigD({ tempDir, orchestratorClient, mapCacheDir }));
-  if (wantCfg('e-map-fts')) driverFactories.push(() => createConfigE({ tempDir, orchestratorClient, mapCacheDir }));
+  if (wantCfg('d-map')) {
+    driverFactories.push((corpus) => {
+      const overrides = rewriteOverridesByCorpus.get(corpus.name);
+      return createConfigD({
+        tempDir,
+        orchestratorClient,
+        mapCacheDir,
+        ...(overrides ? { mapSummaryOverrides: overrides } : {}),
+      });
+    });
+  }
+  if (wantCfg('e-map-fts')) {
+    driverFactories.push((corpus) => {
+      const overrides = rewriteOverridesByCorpus.get(corpus.name);
+      return createConfigE({
+        tempDir,
+        orchestratorClient,
+        mapCacheDir,
+        ...(overrides ? { mapSummaryOverrides: overrides } : {}),
+      });
+    });
+  }
 
   const results: QuestionResult[] = [];
   const skipped: Array<{ corpus: string; config: string; questionId: string; reason: string }> = [];
@@ -158,7 +247,7 @@ async function main(): Promise<number> {
   try {
     outer: for (const corpus of corpora) {
       for (const factory of driverFactories) {
-        const driver = factory();
+        const driver = factory(corpus);
         let buildOk = false;
         try {
           try {
