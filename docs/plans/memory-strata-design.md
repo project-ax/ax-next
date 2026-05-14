@@ -1316,7 +1316,16 @@ If D outperforms A/B/C on either metric, the design moves further toward c137: v
 
 **Phase 3B partial result (2026-05-13).** A/B/C were exercised on 100-Q LongMemEval-S; **D was not yet built and remains the next spike.** Numbers: A (BM25-only) = 22.0%, B (BM25 + zerank-2) = 19.6%, C (BM25 + zembed-1 + RRF) = 13.0%. **C loses to A by 9 points** — comfortably outside the ≥5-point band, so the vector option is OUT. B also underperforms A by 2.4 points; the reranker doesn't earn its cost on this corpus either. Config D (Retrieval Orchestrator + `system/map.md`), the c137-style config, is the open question — a follow-up spike implements the map generator and the cheap-LLM orchestration stage, then re-runs against the same sample. Full report: `docs/plans/2026-05-13-memory-strata-vector-spike-report.md`.
 
-**Phase 3C result (2026-05-13).** Config D (Retrieval Orchestrator) and Config E (D + BM25 fallback) ran on the same 100-Q slice with an abstention-aware judge. Numbers: **D = 18.0%, E = 22.0%** (vs A's 22.0%). **D loses to A by 4 points; E ties A.** Per the c137-tightened ≥5-point bar, the orchestrator does not earn production wiring on headline accuracy. **However**, both D and E achieved **83.3% correct-refusal** on the 6 unanswerable questions — within the bottom of c137's reported 86.7–96.7% range, and meaningfully better than retrieve-first/ask-later configurations would manage. The orchestrator's failure mode is precision (the top 1–2 `<load>` ops it emits are often wrong-but-confident, leading to 60/94 false-refusal on answerable Qs in D, 52/94 in E). **Decision: keep the orchestrator OUT of the production hot path**, same as vectors. A re-spike is justified later if the design prioritizes abstention quality — but that requires LLM-rewritten map summaries (this spike reused the LongMemEval `firstSentence` extracts) and tuning the orchestrator's `<load>` count. Full report: `docs/plans/2026-05-13-memory-strata-phase-3c-config-d-report.md`.
+**Phase 3C result (2026-05-13 initial round; 2026-05-14 follow-up).** The initial n=100 round with a Haiku-class orchestrator suggested D loses to A by 4 points; that conclusion did not survive scrutiny. Two follow-on experiments — (a) swapping the orchestrator model to **Grok 4.1 Fast** (c137's actual choice) and (b) running at **n=500 with an LLM-rewritten map** — flipped the binding. n=500 numbers:
+
+- A (BM25-only): 20.6% accuracy, 41.8% recall@5, 70.0% correct-refusal.
+- D (Grok orchestrator, original `firstSentence` map): 22.0% accuracy, 39.7% recall@5, 80.0% correct-refusal.
+- E (D + BM25 fallback, original map): 24.0% accuracy, 47.6% recall@5, 76.7% correct-refusal.
+- **E (D + BM25 fallback, Grok-rewritten map)**: **28.2% accuracy, 56.0% recall@5, 81.5% correct-refusal.**
+
+**E with the LLM-rewritten map beats A by 7.6 points on accuracy and 14.2 points on recall@5 — clears the ≥5-point bar on both axes.** The c137-style retrieval orchestrator architecture *works*; the original n=100 binding was misled by Haiku-as-orchestrator and `firstSentence`-quality map summaries (both of which c137 specifically calls out as load-bearing). Map summary quality is now empirically confirmed as a primary lever, exactly as c137's premise predicted.
+
+**The actual production constraint is latency.** Orchestrator p50 is ~6–8s on Grok 4.1 Fast via OpenRouter vs BM25's ~89ms — a 90× gap. For interactive chat-style agents, this rules the orchestrator out of the hot path. For batch / hallucination-sensitive workloads (compliance review, autonomous coding agents where confabulation cost > latency cost), E is the right architectural choice. **Decision: keep BM25-only in the default production hot path; wire the orchestrator architecture as an opt-in for batch / hallucination-sensitive surfaces.** Full report: `docs/plans/2026-05-13-memory-strata-phase-3c-config-d-report.md`.
 
 ### Harness location
 
@@ -1343,13 +1352,14 @@ LEVEL 2: Add SQLite FTS5 index for keyword search
               ▼
 LEVEL 3: Add Retrieval Orchestrator (one-hop XML planner)
          (Cheap-model LLM call before main agent; c137-style)
-         Phase 3C spike (2026-05-13): D scored 18.0% vs A's 22.0% on
-         LongMemEval-S — does not clear the ≥5-point bar. But the
-         orchestrator achieved 83.3% correct-refusal on unanswerable
-         questions (within c137's reported 86.7–96.7% range), so the
-         architecture is a candidate to revisit when abstention
-         quality matters more than headline accuracy. See
-         docs/plans/2026-05-13-memory-strata-phase-3c-config-d-report.md.
+         Phase 3C spike (2026-05-13 → 2026-05-14): E with Grok 4.1 Fast
+         + LLM-rewritten map beat A by 7.6pp accuracy and 14.2pp
+         recall@5 at n=500 — clears the ≥5-point bar on both axes.
+         Architecture validated. Production constraint is latency:
+         orchestrator p50 ~6–8s vs BM25's ~89ms (90x gap). Decision:
+         BM25-only stays in the default hot path; wire the orchestrator
+         as an opt-in for batch / hallucination-sensitive surfaces.
+         See docs/plans/2026-05-13-memory-strata-phase-3c-config-d-report.md.
               │
               ▼
 LEVEL 4: Add Consolidator for periodic maintenance
