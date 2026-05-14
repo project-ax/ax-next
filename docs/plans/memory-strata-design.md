@@ -1325,7 +1325,7 @@ If D outperforms A/B/C on either metric, the design moves further toward c137: v
 
 **E with the LLM-rewritten map beats A by 7.6 points on accuracy and 14.2 points on recall@5 — clears the ≥5-point bar on both axes.** The c137-style retrieval orchestrator architecture *works*; the original n=100 binding was misled by Haiku-as-orchestrator and `firstSentence`-quality map summaries (both of which c137 specifically calls out as load-bearing). Map summary quality is now empirically confirmed as a primary lever, exactly as c137's premise predicted.
 
-**The actual production constraint is latency.** Orchestrator p50 is ~6–8s on Grok 4.1 Fast via OpenRouter vs BM25's ~89ms — a 90× gap. For interactive chat-style agents, this rules the orchestrator out of the hot path. For batch / hallucination-sensitive workloads (compliance review, autonomous coding agents where confabulation cost > latency cost), E is the right architectural choice. **Decision: keep BM25-only in the default production hot path; wire the orchestrator architecture as an opt-in for batch / hallucination-sensitive surfaces.** Full report: `docs/plans/2026-05-13-memory-strata-phase-3c-config-d-report.md`.
+**Latency follow-up (2026-05-14).** A small `bench:latency` probe found the n=500 runs' ~7-8s p50 was an OpenRouter routing artifact, not Grok's actual latency. Direct xAI API access for the same model lands at p50 404ms / p95 646ms — ~27× faster than OpenRouter and faster than Haiku-via-Anthropic. The real orchestrator-vs-BM25 latency gap is **~5×, not 90×** (404ms vs 89ms). **The orchestrator architecture is viable as a default retrieval path**, provided production uses direct xAI access (or another low-latency provider) rather than OpenRouter's default routing. BM25-only remains a valid lower-latency fallback for surfaces where 300ms additional p50 latency is unacceptable. Full report: `docs/plans/2026-05-13-memory-strata-phase-3c-config-d-report.md`.
 
 ### Harness location
 
@@ -1355,10 +1355,12 @@ LEVEL 3: Add Retrieval Orchestrator (one-hop XML planner)
          Phase 3C spike (2026-05-13 → 2026-05-14): E with Grok 4.1 Fast
          + LLM-rewritten map beat A by 7.6pp accuracy and 14.2pp
          recall@5 at n=500 — clears the ≥5-point bar on both axes.
-         Architecture validated. Production constraint is latency:
-         orchestrator p50 ~6–8s vs BM25's ~89ms (90x gap). Decision:
-         BM25-only stays in the default hot path; wire the orchestrator
-         as an opt-in for batch / hallucination-sensitive surfaces.
+         Architecture validated. Latency probe revealed OpenRouter's
+         default routing was pathological (~11s p50); direct xAI runs
+         the same model at ~404ms p50, a 5x gap vs BM25 (not 90x as
+         the n=500 numbers suggested). Decision: orchestrator + LLM-
+         rewritten map is a viable default retrieval path with direct
+         xAI access; BM25-only remains a valid lower-latency fallback.
          See docs/plans/2026-05-13-memory-strata-phase-3c-config-d-report.md.
               │
               ▼

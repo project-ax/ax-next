@@ -62,17 +62,34 @@ This empirically confirms c137's premise that **map summary quality is load-bear
 ### Cost & time
 - Total live spend across all runs: **$44.46** (within the $50 cap).
 - The LLM-rewrite pass itself: **$4.50** for 19,195 sessions (~$0.0002/session), cached and reusable across all future runs.
-- Per-question latency for orchestrator configs: p50 ~6–8s on Grok 4.1 Fast through OpenRouter. Comparison: BM25-only p50 = 89ms — **90× faster**. This is the load-bearing tradeoff for production wiring decisions.
+
+### Latency probe (2026-05-14, after the main n=500 round)
+
+The orchestrator's p50 ~7–8s in the n=500 runs was striking — c137 reports ~1.6s for the same role. A follow-up probe (`bench:latency`, 20 sequential calls per config, same prompt) found the explanation: **OpenRouter's default routing for `x-ai/grok-4.1-fast` was pathological**.
+
+| config | p50 | mean | p95 | max |
+|---|---|---|---|---|
+| haiku-anthropic-direct | 778ms | 1184ms | 2493ms | 4035ms |
+| **grok-openrouter-default** | **11017ms** | 11712ms | 16555ms | 16623ms |
+| grok-openrouter-force-xai | FAILED (Grok 4.1 Fast deprecated on OpenRouter; redirects to Grok 4.3) | | | |
+| **grok-xai-direct** | **404ms** | 427ms | 646ms | 726ms |
+
+**Direct xAI is ~27× faster than OpenRouter** for the same model — and faster than Haiku-via-Anthropic. The 7s/turn measured in the n=500 runs was a routing artifact, not Grok's actual latency.
+
+This changes the binding tradeoff substantially:
+- Orchestrator real p50 latency: **~404ms** (not ~7s).
+- BM25 p50 latency: ~89ms.
+- Gap: **~5×, not 90×** — well within "interactive workload acceptable for higher quality" territory.
 
 ## Binding decision
 
-The original PR #68 decision — "orchestrator OUT for now, abstention as the finding" — was right that the orchestrator stays out of the production hot path, but wrong about *why*. The corrected framing:
+The original PR #68 framing — "orchestrator OUT, abstention as the finding" — was wrong about both the conclusion and the *why*. The corrected framing:
 
-- **The orchestrator architecture works.** E with Grok 4.1 Fast and LLM-rewritten map beats A by 7.6 points on accuracy and 14.2 points on recall@5, clearing the ≥5-point bar on both axes. The c137-style design is validated.
-- **Latency is the real production constraint.** ~7s/turn vs BM25's ~90ms is unacceptable for interactive workloads. Even if the orchestrator answered every question correctly, an 80× slower retrieval stage breaks the user-facing perf budget for chat-style agents.
-- **Therefore: keep BM25-only in the production hot path** for the default agent surface; **wire the orchestrator architecture as an opt-in for batch / hallucination-sensitive workloads** (e.g., compliance review, autonomous coding agents where confabulation cost dominates latency cost).
+- **The orchestrator architecture works.** E with Grok 4.1 Fast + LLM-rewritten map beats A by 7.6 points on accuracy and 14.2 points on recall@5, clearing the ≥5-point bar on both axes. The c137-style design is validated.
+- **Latency is acceptable** when routed via direct xAI rather than OpenRouter. ~400ms p50 / ~650ms p95 vs BM25's ~89ms / ~315ms — a 5× gap that buys ~7pp accuracy and ~14pp recall@5. Reasonable production tradeoff for chat-style agents.
+- **Therefore: the orchestrator + LLM-rewritten map is a viable default retrieval path**, with the explicit requirement that production uses direct xAI API access (or another equivalently-fast provider), not OpenRouter's default routing. BM25-only remains a valid lower-latency fallback for surfaces where 300ms of extra latency is unacceptable.
 
-This is a "kept out for *different* reasons than the spike originally claimed" disposition, and the design doc gets a corresponding annotation.
+A note on production wiring: the bench harness uses `makeOpenRouterOrchestratorClient` by default. The production plugin should default to `makeXaiOrchestratorClient` and use OpenRouter only as a fallback if xAI access is unavailable. Follow-up: harden the bench's default orchestrator client to match (small, mechanical change).
 
 ## One-hop coverage
 
