@@ -1,4 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
 import { withRetry } from './retry.js';
 import type { BenchCorpus, RetrievedDoc } from './types.js';
 
@@ -152,6 +153,70 @@ export function makeAnthropicOrchestratorClient(
           return { text, usage: { in: resp.usage.input_tokens, out: resp.usage.output_tokens } };
         },
         { attempts: 4, baseDelayMs: 1000, label: 'anthropic-orchestrator' },
+      );
+    },
+  };
+}
+
+export function makeOpenRouterOrchestratorClient(
+  apiKey: string,
+  model = 'x-ai/grok-4.1-fast',
+  forceProvider?: string,
+): OrchestratorClient {
+  const o = new OpenAI({ apiKey, baseURL: 'https://openrouter.ai/api/v1', timeout: 60_000 });
+  return {
+    async complete({ system, user }) {
+      return withRetry(
+        async () => {
+          // OpenRouter-specific routing override; the openai SDK types don't
+          // include `provider`, but the underlying HTTP API passes it through.
+          // See https://openrouter.ai/docs/features/provider-routing.
+          // We cast the routing extension through `unknown` so the create()
+          // overload still resolves to the non-streaming variant.
+          const providerExt = forceProvider
+            ? ({ provider: { order: [forceProvider], allow_fallbacks: false } } as unknown as Record<string, never>)
+            : ({} as Record<string, never>);
+          const resp = await o.chat.completions.create({
+            model,
+            max_tokens: 512,
+            messages: [
+              { role: 'system', content: system },
+              { role: 'user', content: user },
+            ],
+            ...providerExt,
+          });
+          const text = resp.choices?.[0]?.message?.content ?? '';
+          const usage = resp.usage ?? { prompt_tokens: 0, completion_tokens: 0 };
+          return { text, usage: { in: usage.prompt_tokens, out: usage.completion_tokens } };
+        },
+        { attempts: 4, baseDelayMs: 1000, label: 'openrouter-orchestrator' },
+      );
+    },
+  };
+}
+
+export function makeXaiOrchestratorClient(
+  apiKey: string,
+  model = 'grok-4-fast-non-reasoning',
+): OrchestratorClient {
+  const o = new OpenAI({ apiKey, baseURL: 'https://api.x.ai/v1', timeout: 60_000 });
+  return {
+    async complete({ system, user }) {
+      return withRetry(
+        async () => {
+          const resp = await o.chat.completions.create({
+            model,
+            max_tokens: 512,
+            messages: [
+              { role: 'system', content: system },
+              { role: 'user', content: user },
+            ],
+          });
+          const text = resp.choices?.[0]?.message?.content ?? '';
+          const usage = resp.usage ?? { prompt_tokens: 0, completion_tokens: 0 };
+          return { text, usage: { in: usage.prompt_tokens, out: usage.completion_tokens } };
+        },
+        { attempts: 4, baseDelayMs: 1000, label: 'xai-orchestrator' },
       );
     },
   };

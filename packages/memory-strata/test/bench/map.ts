@@ -7,6 +7,14 @@ interface MapOptions {
   cacheDir: string;
   summaryMaxChars?: number;
   subsetPaths?: ReadonlyArray<string>;
+  /**
+   * Optional map from doc.path to a pre-computed (e.g. LLM-rewritten) summary.
+   * When present, this entry is used in place of `doc.summary`. Falls back to
+   * `doc.summary` for any path not in the map. The override set is folded into
+   * the cache hash so a corpus rendered with/without overrides does not
+   * collide.
+   */
+  overrideSummaries?: ReadonlyMap<string, string>;
 }
 
 const DEFAULT_SUMMARY_MAX = 120;
@@ -15,7 +23,7 @@ export async function generateMap(corpus: BenchCorpus, opts: MapOptions): Promis
   mkdirSync(opts.cacheDir, { recursive: true });
   const summaryMax = opts.summaryMaxChars ?? DEFAULT_SUMMARY_MAX;
 
-  const hash = computeCorpusHash(corpus, opts.subsetPaths);
+  const hash = computeCorpusHash(corpus, opts.subsetPaths, opts.overrideSummaries);
   const cachePath = join(opts.cacheDir, `${corpus.name}-${hash}.md`);
   if (existsSync(cachePath)) return readFileSync(cachePath, 'utf8');
 
@@ -25,9 +33,10 @@ export async function generateMap(corpus: BenchCorpus, opts: MapOptions): Promis
     const doc = corpus.memoryTree.get(p);
     if (!doc) continue;
     if (!byCategory.has(doc.category)) byCategory.set(doc.category, []);
+    const summary = opts.overrideSummaries?.get(doc.path) ?? doc.summary;
     byCategory.get(doc.category)!.push({
       slug: doc.slug,
-      summary: truncate(doc.summary, summaryMax),
+      summary: truncate(summary, summaryMax),
     });
   }
   for (const arr of byCategory.values()) arr.sort((a, b) => a.slug.localeCompare(b.slug));
@@ -53,6 +62,7 @@ function truncate(s: string, n: number): string {
 function computeCorpusHash(
   corpus: BenchCorpus,
   subsetPaths: ReadonlyArray<string> | undefined,
+  overrideSummaries: ReadonlyMap<string, string> | undefined,
 ): string {
   const h = createHash('sha256');
   const paths = subsetPaths
@@ -64,6 +74,15 @@ function computeCorpusHash(
     if (!d) continue;
     h.update(p);
     h.update(d.summary);
+  }
+  if (overrideSummaries && overrideSummaries.size > 0) {
+    h.update('|overrides|');
+    const keys = [...overrideSummaries.keys()].sort();
+    for (const k of keys) {
+      h.update(k);
+      h.update('=');
+      h.update(overrideSummaries.get(k) ?? '');
+    }
   }
   return h.digest('hex').slice(0, 16);
 }
