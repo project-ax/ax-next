@@ -175,7 +175,7 @@ export function makeOpenRouterOrchestratorClient(
               { role: 'user', content: user },
             ],
           });
-          const text = resp.choices[0]?.message?.content ?? '';
+          const text = resp.choices?.[0]?.message?.content ?? '';
           const usage = resp.usage ?? { prompt_tokens: 0, completion_tokens: 0 };
           return { text, usage: { in: usage.prompt_tokens, out: usage.completion_tokens } };
         },
