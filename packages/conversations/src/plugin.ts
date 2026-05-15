@@ -22,7 +22,6 @@ import {
   validateTitle,
   validateWorkspaceRefForFreeze,
   type ConversationStore,
-  type FindOrCreateResult,
 } from './store.js';
 import type {
   BindSessionInput,

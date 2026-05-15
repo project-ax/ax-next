@@ -5,8 +5,6 @@ import { PluginError } from '@ax/core';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createConversationsPlugin } from '../plugin.js';
 import type {
-  CreateInput,
-  CreateOutput,
   DeleteInput,
   FindOrCreateInput,
   FindOrCreateOutput,

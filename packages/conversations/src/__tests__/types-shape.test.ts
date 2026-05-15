@@ -8,26 +8,35 @@ import { rowToConversation } from '../store.js';
 // row-mapping contract honest without spinning up a postgres container.
 // ---------------------------------------------------------------------------
 
-describe('rowToConversation Phase A field', () => {
+describe('rowToConversation Phase A fields', () => {
+  const now = new Date('2026-05-14T12:00:00Z');
+  const base = {
+    conversation_id: 'cnv_h1',
+    user_id: 'u1',
+    agent_id: 'a1',
+    title: null,
+    active_session_id: null,
+    active_req_id: null,
+    runner_type: null,
+    runner_session_id: null,
+    workspace_ref: null,
+    last_activity_at: null,
+    external_key: null,
+    deleted_at: null,
+    created_at: now,
+    updated_at: now,
+  };
+
   it('maps hidden=true and hidden=false', () => {
-    const now = new Date('2026-05-14T12:00:00Z');
-    const base = {
-      conversation_id: 'cnv_h1',
-      user_id: 'u1',
-      agent_id: 'a1',
-      title: null,
-      active_session_id: null,
-      active_req_id: null,
-      runner_type: null,
-      runner_session_id: null,
-      workspace_ref: null,
-      last_activity_at: null,
-      deleted_at: null,
-      created_at: now,
-      updated_at: now,
-    };
     expect(rowToConversation({ ...base, hidden: true }).hidden).toBe(true);
     expect(rowToConversation({ ...base, hidden: false }).hidden).toBe(false);
+  });
+
+  it('maps external_key string and null', () => {
+    expect(
+      rowToConversation({ ...base, hidden: false, external_key: 'routine:.ax/routines/heartbeat.md' }).externalKey,
+    ).toBe('routine:.ax/routines/heartbeat.md');
+    expect(rowToConversation({ ...base, hidden: false, external_key: null }).externalKey).toBeNull();
   });
 });
 
@@ -46,6 +55,7 @@ describe('rowToConversation Phase B fields', () => {
       workspace_ref: 'wsp_local',
       last_activity_at: now,
       hidden: false,
+      external_key: null,
       deleted_at: null,
       created_at: now,
       updated_at: now,
@@ -70,6 +80,7 @@ describe('rowToConversation Phase B fields', () => {
       workspace_ref: null,
       last_activity_at: null,
       hidden: false,
+      external_key: null,
       deleted_at: null,
       created_at: now,
       updated_at: now,
