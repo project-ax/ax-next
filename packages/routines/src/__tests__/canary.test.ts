@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { createTestHarness, type TestHarness } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
@@ -143,9 +143,25 @@ describe('Phase B canary — routine creates → fires → silence path closes w
       agentId: 'agt_a', path: '.ax/routines/r.md',
     });
 
-    // Flush microtasks so the chat:turn-end one-shot completes its
-    // recordFire before we read the table.
-    await new Promise((r) => setImmediate(r));
+    // routines:fire-now returns as soon as fireRoutine has dispatched
+    // agent:invoke (fire-and-forget, see fire.ts). The chat:turn-end
+    // subscriber chain (drop-turn → hide → recordFire(silenced)) runs
+    // in the background. Poll for the side effect instead of fixing a
+    // microtask count — Phase 2 added another await to that chain
+    // which made a single setImmediate flush insufficient on CI.
+    const k = new Kysely<RoutinesDatabase>({
+      dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString }) }),
+    });
+    let silenced: { status: string } | undefined;
+    try {
+      await vi.waitFor(async () => {
+        const fires = await k.selectFrom('routines_v1_fires').selectAll().execute();
+        silenced = fires.find((f) => f.status === 'silenced');
+        expect(silenced, 'expected a silenced fire row').toBeDefined();
+      }, { timeout: 5_000, interval: 25 });
+    } finally {
+      await k.destroy();
+    }
 
     expect(captured.invokes).toHaveLength(1);
     expect(captured.invokes[0]!.message.content).toBe('check in');
@@ -155,14 +171,6 @@ describe('Phase B canary — routine creates → fires → silence path closes w
     expect(captured.drops).toHaveLength(1);
     expect(captured.drops[0]!.turnId).toBe('fake-uuid-1');
     expect(captured.hides).toHaveLength(1);
-
-    const k = new Kysely<RoutinesDatabase>({
-      dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString }) }),
-    });
-    const fires = await k.selectFrom('routines_v1_fires').selectAll().execute();
-    await k.destroy();
-    const silenced = fires.find((f) => f.status === 'silenced');
-    expect(silenced, 'expected a silenced fire row').toBeDefined();
 
     void out;
   });
