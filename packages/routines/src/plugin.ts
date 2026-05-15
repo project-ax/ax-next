@@ -7,6 +7,7 @@ import { handleWorkspaceApplied } from './sync.js';
 import { systemClock, type Clock } from './clock.js';
 import { runTickLoop } from './tick.js';
 import { createFireRoutine, type PendingFires } from './fire.js';
+import { applySilenceLogic } from './silence.js';
 import type { RoutinesConfig } from './types.js';
 
 const PLUGIN_NAME = '@ax/routines';
@@ -57,6 +58,71 @@ export function createRoutinesPlugin(
           return undefined;
         },
       );
+
+      bus.subscribe<{
+        reqId?: string;
+        contentBlocks?: unknown[];
+        turnId?: string;
+      }>('chat:turn-end', PLUGIN_NAME, async (ctx, payload) => {
+        const reqId = payload.reqId ?? ctx.reqId;
+        if (typeof reqId !== 'string' || reqId.length === 0) return undefined;
+        const pf = pending.get(reqId);
+        if (pf === undefined) return undefined;
+        pending.delete(reqId);
+        try {
+          const blocks = payload.contentBlocks ?? [];
+          const decision = applySilenceLogic(blocks, {
+            silenceToken: pf.row.silenceToken,
+            silenceMaxChars: pf.row.silenceMaxChars,
+          });
+          if (decision.silenced) {
+            const turnId = payload.turnId;
+            try {
+              await bus.call('conversations:drop-turn', ctx, {
+                conversationId: pf.conversationId,
+                userId: pf.row.authorUserId,
+                turnId: turnId ?? '',
+              });
+            } catch (err) {
+              ctx.logger.warn('routines_drop_turn_failed', {
+                conversationId: pf.conversationId,
+                err: err instanceof Error ? err.message : String(err),
+              });
+            }
+            if (pf.row.conversation === 'per-fire') {
+              try {
+                await bus.call('conversations:hide', ctx, {
+                  conversationId: pf.conversationId,
+                  userId: pf.row.authorUserId,
+                });
+              } catch (err) {
+                ctx.logger.warn('routines_hide_failed', {
+                  conversationId: pf.conversationId,
+                  err: err instanceof Error ? err.message : String(err),
+                });
+              }
+            }
+            await localStore.recordFire({
+              agentId: pf.row.agentId, path: pf.row.path,
+              triggerSource: pf.source,
+              conversationId: pf.conversationId,
+              status: 'silenced', error: null,
+            });
+          } else {
+            await localStore.recordFire({
+              agentId: pf.row.agentId, path: pf.row.path,
+              triggerSource: pf.source,
+              conversationId: pf.conversationId,
+              status: 'ok', error: null,
+            });
+          }
+        } catch (err) {
+          ctx.logger.warn('routines_turn_end_handler_failed', {
+            reqId, err: err instanceof Error ? err.message : String(err),
+          });
+        }
+        return undefined;
+      });
 
       const tickIntervalMs = config.tickIntervalMs ?? 5_000;
       const tickConfig = {
