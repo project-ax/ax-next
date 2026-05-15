@@ -318,6 +318,31 @@ export interface HideInput {
 }
 export type HideOutput = void;
 
+/**
+ * Phase A (routines foundation, 2026-05-14). Drop a single turn from a
+ * conversation's runner-native transcript. Used by the routines plugin's
+ * silence-token logic in Phase B to remove the agent's HEARTBEAT_OK
+ * reply before it lands in the user-visible conversation.
+ *
+ * Phase A SHIPS THE HOOK SURFACE ONLY — calling it throws
+ * `PluginError({ code: 'not-implemented' })`. The runner-native jsonl
+ * rewrite path lands in Phase B alongside its first caller; the
+ * half-wired window for this one hook stays OPEN through Phase B.
+ *
+ * ACL posture (when Phase B implements it): same as `conversations:get`
+ * — user_id pre-filter, then agents:resolve. `userId` is included in
+ * the input shape now (rather than the simpler `{ conversationId,
+ * turnId }`) because the eventual Phase B impl needs it for the ACL
+ * gate (J1). Locking the type now avoids reshaping it later (which
+ * would be a wire break for any caller landed in between).
+ */
+export interface DropTurnInput {
+  conversationId: string;
+  userId: string;
+  turnId: string;
+}
+export type DropTurnOutput = void;
+
 // ---------------------------------------------------------------------------
 // Plugin config
 // ---------------------------------------------------------------------------

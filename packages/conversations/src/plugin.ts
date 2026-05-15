@@ -31,6 +31,8 @@ import type {
   CreateOutput,
   DeleteInput,
   DeleteOutput,
+  DropTurnInput,
+  DropTurnOutput,
   GetByReqIdInput,
   GetByReqIdOutput,
   GetInput,
@@ -134,6 +136,12 @@ export function createConversationsPlugin(
         // by id. Half-wired window OPEN: caller lands in Phase B
         // (@ax/routines plugin).
         'conversations:hide',
+        // Phase A (routines foundation, 2026-05-14): drop a single turn
+        // from a conversation's runner-native transcript. Ships as a stub
+        // — the runner-native jsonl rewrite path lands in Phase B
+        // alongside its first caller (the routines plugin's silence-token
+        // logic). Half-wired window OPEN through Phase B.
+        'conversations:drop-turn',
       ],
       calls: [
         'agents:resolve',
@@ -258,6 +266,23 @@ export function createConversationsPlugin(
         'conversations:hide',
         PLUGIN_NAME,
         async (ctx, input) => hideConversation(localStore, bus, ctx, input),
+      );
+
+      // Phase A (routines foundation, 2026-05-14). Stub — Phase B lands the
+      // runner-native jsonl rewrite path with its first caller. Half-wired
+      // window for this hook stays OPEN through Phase B.
+      bus.registerService<DropTurnInput, DropTurnOutput>(
+        'conversations:drop-turn',
+        PLUGIN_NAME,
+        async (_ctx, _input) => {
+          throw new PluginError({
+            code: 'not-implemented',
+            plugin: PLUGIN_NAME,
+            hookName: 'conversations:drop-turn',
+            message:
+              'conversations:drop-turn ships as a Phase A stub; runner-native jsonl rewrite lands in Phase B alongside its first caller',
+          });
+        },
       );
 
       // chat:turn-end subscriber.
