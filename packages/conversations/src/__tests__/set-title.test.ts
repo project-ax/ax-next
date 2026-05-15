@@ -92,9 +92,11 @@ async function makeHarness(policy: MockResolvePolicy): Promise<{
           message: `agent '${call.agentId}' not accessible to '${call.userId}'`,
         });
       },
-      // Phase D — workspace reads aren't exercised here.
+      // Phase D — workspace reads aren't exercised here. Phase B adds
+      // workspace:apply for drop-turn; stub for bootstrap.
       'workspace:list': async () => ({ paths: [] as string[] }),
       'workspace:read': async () => ({ found: false }) as const,
+      'workspace:apply': async () => ({ version: 'v-stub', delta: { before: null, after: 'v-stub', changes: [] } }),
     },
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),

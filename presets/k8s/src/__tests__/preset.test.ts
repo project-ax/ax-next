@@ -161,11 +161,13 @@ describe('@ax/preset-k8s wiring', () => {
         '@ax/ipc-http',
         '@ax/mcp-client',
         '@ax/onboarding',
+        '@ax/routines',
         '@ax/sandbox-k8s',
         '@ax/session-postgres',
         '@ax/storage-postgres',
         '@ax/teams',
         '@ax/tool-dispatcher',
+        '@ax/validator-routine',
         '@ax/validator-skill',
         '@ax/workspace-git',
       ].sort(),
@@ -405,6 +407,46 @@ describe('@ax/preset-k8s — conversations Phase A routines hooks (half-wired wi
     expect(conversations!.manifest.registers).toContain('conversations:hide');
     expect(conversations!.manifest.registers).toContain('conversations:drop-turn');
     expect(conversations!.manifest.registers).toContain('conversations:find-or-create');
+  });
+});
+
+// Phase B routines core (2026-05-14). Both new plugins (@ax/routines +
+// @ax/validator-routine) load in the production preset, register their
+// service hooks, and have all their declared calls satisfied by other
+// plugins in the preset.
+describe('@ax/preset-k8s — routines Phase B core (half-wired window closes here)', () => {
+  it('@ax/routines and @ax/validator-routine are present in the default plugin set', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const names = plugins.map((p) => p.manifest.name);
+    expect(names).toContain('@ax/routines');
+    expect(names).toContain('@ax/validator-routine');
+  });
+
+  it('@ax/routines registers routines:fire-now and routines:list', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const routines = plugins.find((p) => p.manifest.name === '@ax/routines');
+    expect(routines, '@ax/routines plugin').toBeDefined();
+    expect(routines!.manifest.registers).toContain('routines:fire-now');
+    expect(routines!.manifest.registers).toContain('routines:list');
+  });
+
+  it('@ax/routines calls are all satisfied by other plugins in the preset', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const allRegistered = new Set<string>(
+      plugins.flatMap((p) => p.manifest.registers),
+    );
+    const routines = plugins.find((p) => p.manifest.name === '@ax/routines');
+    expect(routines, '@ax/routines plugin not found').toBeDefined();
+    if (!routines) return;
+    const unsatisfied = routines.manifest.calls.filter((c) => !allRegistered.has(c));
+    expect(unsatisfied, `@ax/routines calls with no registrant: ${unsatisfied.join(', ')}`).toEqual([]);
+  });
+
+  it('@ax/validator-routine subscribes to workspace:pre-apply', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const v = plugins.find((p) => p.manifest.name === '@ax/validator-routine');
+    expect(v, '@ax/validator-routine plugin').toBeDefined();
+    expect(v!.manifest.subscribes).toContain('workspace:pre-apply');
   });
 });
 

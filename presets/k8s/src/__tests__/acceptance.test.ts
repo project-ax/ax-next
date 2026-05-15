@@ -143,6 +143,11 @@ const PLUGINS_TO_DROP = new Set<string>([
   // wiring is already pinned in preset.test.ts; drop here so these sub-tests
   // don't need a postgres testcontainer.
   '@ax/onboarding',
+  // Routines core: postgres-backed (calls database:get-instance in init).
+  // The tick engine and canary fire path are exercised by the Phase B
+  // canary test in routines/__tests__ against a real testcontainer; drop
+  // here so the chat-path canaries don't need postgres.
+  '@ax/routines',
 ]);
 
 // Stub `agents:resolve` — production presets register `@ax/agents` (postgres-

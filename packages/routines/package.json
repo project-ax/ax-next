@@ -1,0 +1,33 @@
+{
+  "name": "@ax/routines",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@ax/core": "workspace:*",
+    "@ax/validator-routine": "workspace:*",
+    "croner": "^8.0.0",
+    "kysely": "0.28.17"
+  },
+  "devDependencies": {
+    "@ax/database-postgres": "workspace:*",
+    "@ax/test-harness": "workspace:*",
+    "@testcontainers/postgresql": "11.14.0",
+    "@types/pg": "8.20.0",
+    "pg": "8.20.0",
+    "typescript": "^5.4.0",
+    "vitest": "^4.1.4"
+  }
+}

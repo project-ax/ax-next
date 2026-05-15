@@ -53,9 +53,11 @@ async function makeHarness(args: {
         return { agent };
       },
       // Phase D — manifest declares calls on workspace:list /
-      // workspace:read; bootstrap verifies them at boot.
+      // workspace:read; bootstrap verifies them at boot. Phase B adds
+      // workspace:apply for drop-turn; stub for bootstrap.
       'workspace:list': async () => ({ paths: [] as string[] }),
       'workspace:read': async () => ({ found: false }) as const,
+      'workspace:apply': async () => ({ version: 'v-stub', delta: { before: null, after: 'v-stub', changes: [] } }),
     },
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),

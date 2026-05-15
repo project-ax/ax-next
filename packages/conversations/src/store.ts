@@ -675,3 +675,83 @@ export function createConversationStore(
   };
 }
 
+// ---------------------------------------------------------------------------
+// dropTurnFromJsonl — pure byte-rewrite helper (no I/O).
+//
+// Parses `bytes` as a newline-delimited JSON stream, drops the line whose
+// `uuid` equals `turnId` plus any later assistant lines that share the same
+// `message.id` (coalesced streaming chunks from the same model response).
+// Empty `turnId` means "drop the most recent user-or-assistant turn."
+//
+// Returns the rewritten bytes, or null when:
+//   - the file is empty,
+//   - turnId is empty and no turn-bearing line exists, OR
+//   - turnId is non-empty and no line matches it.
+//
+// Null is a signal to the caller to skip the `workspace:apply` call
+// (best-effort semantics — the file may have already been rewritten by
+// a concurrent caller or the runner).
+// ---------------------------------------------------------------------------
+
+export function dropTurnFromJsonl(
+  bytes: Uint8Array,
+  turnId: string,
+): Uint8Array | null {
+  const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+  if (text.length === 0) return null;
+  const rawLines = text.split('\n');
+  interface Parsed {
+    line: string;
+    uuid?: string;
+    messageId?: string;
+    isAssistant: boolean;
+    isTurnBearing: boolean;
+  }
+  const parsed: Parsed[] = rawLines.map((line) => {
+    if (line.trim().length === 0) return { line, isAssistant: false, isTurnBearing: false };
+    try {
+      const o = JSON.parse(line) as { type?: string; uuid?: string; message?: { id?: string } };
+      const isAssistant = o.type === 'assistant';
+      const isTurnBearing = o.type === 'assistant' || o.type === 'user';
+      const result: Parsed = { line, isAssistant, isTurnBearing };
+      if (typeof o.uuid === 'string') result.uuid = o.uuid;
+      if (isAssistant && typeof o.message?.id === 'string') result.messageId = o.message.id;
+      return result;
+    } catch {
+      return { line, isAssistant: false, isTurnBearing: false };
+    }
+  });
+
+  let dropUuid = turnId;
+  if (dropUuid === '') {
+    for (let i = parsed.length - 1; i >= 0; i--) {
+      if (parsed[i]!.isTurnBearing && parsed[i]!.uuid !== undefined) {
+        dropUuid = parsed[i]!.uuid!;
+        break;
+      }
+    }
+    if (dropUuid === '') return null;
+  }
+
+  const targetIdx = parsed.findIndex((p) => p.uuid === dropUuid);
+  if (targetIdx < 0) return null;
+  const target = parsed[targetIdx]!;
+  const dropMessageId = target.messageId;
+
+  const survivors = parsed.filter((p, i) => {
+    if (i === targetIdx) return false;
+    if (
+      dropMessageId !== undefined &&
+      i > targetIdx &&
+      p.isAssistant &&
+      p.messageId === dropMessageId
+    ) return false;
+    return true;
+  }).map((p) => p.line);
+
+  const rewritten = survivors.join('\n');
+  return new TextEncoder().encode(
+    rewritten.endsWith('\n') || rewritten.length === 0 ? rewritten : rewritten + '\n',
+  );
+}
+

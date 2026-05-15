@@ -26,6 +26,7 @@ async function makeHarness({ resolveOk = true }: { resolveOk?: boolean } = {}): 
       },
       'workspace:list': async () => ({ paths: [] as string[] }),
       'workspace:read': async () => ({ found: false }) as const,
+      'workspace:apply': async () => ({ version: 'v-stub', delta: { before: null, after: 'v-stub', changes: [] } }),
     },
     plugins: [createDatabasePostgresPlugin({ connectionString }), createConversationsPlugin()],
   });

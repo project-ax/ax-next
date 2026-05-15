@@ -44,11 +44,13 @@
     "@ax/memory-strata": "workspace:*",
     "@ax/memory-strata-index-postgres": "workspace:*",
     "@ax/onboarding": "workspace:*",
+    "@ax/routines": "workspace:*",
     "@ax/sandbox-k8s": "workspace:*",
     "@ax/session-postgres": "workspace:*",
     "@ax/static-files": "workspace:*",
     "@ax/storage-postgres": "workspace:*",
     "@ax/teams": "workspace:*",
+    "@ax/validator-routine": "workspace:*",
     "@ax/validator-skill": "workspace:*",
     "@ax/workspace-git": "workspace:*",
     "@ax/workspace-git-server": "workspace:*"
