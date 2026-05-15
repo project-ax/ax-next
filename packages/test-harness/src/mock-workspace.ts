@@ -203,7 +203,7 @@ export function createMockWorkspacePlugin(): Plugin {
           if (snap === undefined) return { found: false };
           const bytes = snap.get(input.path);
           if (bytes === undefined) return { found: false };
-          return { found: true, bytes: copyBytes(bytes) };
+          return { found: true, bytes: copyBytes(bytes), version };
         },
       );
 
