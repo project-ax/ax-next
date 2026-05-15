@@ -2,6 +2,7 @@ import { spawn, type SpawnOptions, type ChildProcess } from 'node:child_process'
 import { existsSync } from 'node:fs';
 import { mkdir, rm } from 'node:fs/promises';
 import * as http from 'node:http';
+import { join } from 'node:path';
 import { z } from 'zod';
 import {
   InvalidWorkspaceIdError,
@@ -213,7 +214,22 @@ export async function handleCreateRepo(
     }
   }
 
-  // 7. Done.
+  // 7. Provision the LFS objects directory for this workspace so PUTs
+  // /info/lfs/storage/<oid> land in an existing parent. Subdirectories
+  // (<oid[0:2]>/<oid[2:4]>/) are created lazily by the upload handler.
+  // Failure here is non-fatal — the upload handler also mkdirs its dirname
+  // with recursive:true — but log so an operator can spot persistent issues.
+  try {
+    await mkdir(join(opts.repoRoot, `${workspaceId}.lfs`, 'objects'), {
+      recursive: true,
+    });
+  } catch (err) {
+    process.stderr.write(
+      `workspace-git-server: lfs mkdir failed for '${workspaceId}': ${(err as Error).message}\n`,
+    );
+  }
+
+  // 8. Done.
   return writeJson(res, 201, {
     workspaceId,
     createdAt: new Date().toISOString(),
