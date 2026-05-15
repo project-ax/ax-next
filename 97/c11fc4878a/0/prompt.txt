@@ -1,0 +1,38 @@
+There is still a failing test:  FAIL  src/__tests__/bundle-hooks.test.ts > @ax/workspace-git bundle hooks (Phase 3) > apply-bundle: round-trip a multi-turn sequence (the actual broken path)
+packages/workspace-git test: PluginError: service hook 'workspace:apply-bundle' threw: Cannot read properties of null (reading 'slice')
+packages/workspace-git test:  ❯ HookBus.call ../core/src/hook-bus.ts:68:13
+packages/workspace-git test:  ❯ src/__tests__/bundle-hooks.test.ts:373:16
+packages/workspace-git test:     371|     }
+packages/workspace-git test:     372|
+packages/workspace-git test:     373|     const r2 = await h.bus.call<
+packages/workspace-git test:        |                ^
+packages/workspace-git test:     374|       WorkspaceApplyBundleInput,
+packages/workspace-git test:     375|       WorkspaceApplyBundleOutput
+packages/workspace-git test: Caused by: TypeError: Cannot read properties of null (reading 'slice')
+packages/workspace-git test:  ❯ BufferCursor.slice ../../node_modules/.pnpm/isomorphic-git@1.37.5/node_modules/isomorphic-git/index.cjs:448:27
+packages/workspace-git test:  ❯ GitPackIndex.fromIdx ../../node_modules/.pnpm/isomorphic-git@1.37.5/node_modules/isomorphic-git/index.cjs:3037:26
+packages/workspace-git test:  ❯ loadPackIndex ../../node_modules/.pnpm/isomorphic-git@1.37.5/node_modules/isomorphic-git/index.cjs:3345:23
+packages/workspace-git test:  ❯ readObjectPacked ../../node_modules/.pnpm/isomorphic-git@1.37.5/node_modules/isomorphic-git/index.cjs:3399:15
+packages/workspace-git test:  ❯ _readObject ../../node_modules/.pnpm/isomorphic-git@1.37.5/node_modules/isomorphic-git/index.cjs:3496:14
+packages/workspace-git test:  ❯ resolveTree ../../node_modules/.pnpm/isomorphic-git@1.37.5/node_modules/isomorphic-git/index.cjs:4350:28
+packages/workspace-git test:  ❯ _readTree ../../node_modules/.pnpm/isomorphic-git@1.37.5/node_modules/isomorphic-git/index.cjs:6168:34
+packages/workspace-git test:  ❯ accumulateFilesFromOid ../../node_modules/.pnpm/isomorphic-git@1.37.5/node_modules/isomorphic-git/index.cjs:12327:20
+packages/workspace-git test:  ❯ _listFiles ../../node_modules/.pnpm/isomorphic-git@1.37.5/node_modules/isomorphic-git/index.cjs:12300:5
+packages/workspace-git test:  ❯ Object.listFiles ../../node_modules/.pnpm/isomorphic-git@1.37.5/node_modules/isomorphic-git/index.cjs:12384:12
+packages/workspace-git test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+packages/workspace-git test: Serialized Error: { caller: 'git.listFiles' }
+packages/workspace-git test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+packages/workspace-git test:  Test Files  1 failed | 2 passed (3)
+packages/workspace-git test:       Tests  1 failed | 21 passed (22)
+packages/workspace-git test:    Start at  13:25:33
+packages/workspace-git test:    Duration  10.56s (transform 2.01s, setup 0ms, import 4.78s, tests 8.26s, environment 0ms)
+packages/workspace-git test: ::error file=/home/runner/work/ax-next/ax-next/packages/workspace-git/src/__tests__/bundle-hooks.test.ts,title=src/__tests__/bundle-hooks.test.ts > @ax/workspace-git bundle hooks (Phase 3) > apply-bundle%3A round-trip a multi-turn sequence (the actual broken path),line=373,column=16::PluginError: service hook 'workspace:apply-bundle' threw: Cannot read properties of null (reading 'slice')%0A ❯ HookBus.call ../core/src/hook-bus.ts:68:13%0A ❯ src/__tests__/bundle-hooks.test.ts:373:16%0A%0A⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯%0ASerialized Error: { code: 'unknown', plugin: '@ax/workspace-git-core', hookName: 'workspace:apply-bundle' }%0ACaused by: Caused by: TypeError: Cannot read properties of null (reading 'slice')%0A ❯ BufferCursor.slice ../../node_modules/.pnpm/isomorphic-git@1.37.5/node_modules/isomorphic-git/index.cjs:448:27%0A ❯ GitPackIndex.fromIdx ../../node_modules/.pnpm/isomorphic-git@1.37.5/node_modules/isomorphic-git/index.cjs:3037:26%0A ❯ loadPackIndex ../../node_modules/.pnpm/isomorphic-git@1.37.5/node_modules/isomorphic-git/index.cjs:3345:23%0A ❯ readObjectPacked ../../node_modules/.pnpm/isomorphic-git@1.37.5/node_modules/isomorphic-git/index.cjs:3399:15%0A ❯ _readObject ../../node_modules/.pnpm/isomorphic-git@1.37.5/node_modules/isomorphic-git/index.cjs:3496:14%0A ❯ resolveTree ../../node_modules/.pnpm/isomorphic-git@1.37.5/node_modules/isomorphic-git/index.cjs:4350:28%0A ❯ _readTree ../../node_modules/.pnpm/isomorphic-git@1.37.5/node_modules/isomorphic-git/index.cjs:6168:34%0A ❯ accumulateFilesFromOid ../../node_modules/.pnpm/isomorphic-git@1.37.5/node_modules/isomorphic-git/index.cjs:12327:20%0A ❯ _listFiles ../../node_modules/.pnpm/isomorphic-git@1.37.5/node_modules/isomorphic-git/index.cjs:12300:5%0A ❯ Object.listFiles ../../node_modules/.pnpm/isomorphic-git@1.37.5/node_modules/isomorphic-git/index.cjs:12384:12%0A%0A⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯%0ASerialized Error: { caller: 'git.listFiles' }%0A
+packages/workspace-git test: Failed
+/home/runner/work/ax-next/ax-next/packages/workspace-git:
+ ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @ax/workspace-git@0.0.0 test: `vitest run`
+
+This seems to happen on almost every PR (one or more failing tests). Why aren't we able to get all tests to pass BEFORE submitting the PR?
+
+---
+
+just fix the flake
