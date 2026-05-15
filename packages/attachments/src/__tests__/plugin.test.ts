@@ -3,7 +3,7 @@ import {
   PostgreSqlContainer,
   type StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
-import { sql } from 'kysely';
+import { sql, type Kysely } from 'kysely';
 import { createTestHarness, type TestHarness } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createAttachmentsPlugin } from '../plugin.js';
@@ -92,7 +92,7 @@ describe('@ax/attachments plugin init / shutdown', () => {
   it('runs the attachments_v1_temps migration on init', async () => {
     const harness = await makeHarness();
     const ctx = harness.ctx();
-    const { db } = await harness.bus.call<unknown, { db: any }>(
+    const { db } = await harness.bus.call<unknown, { db: Kysely<unknown> }>(
       'database:get-instance',
       ctx,
       {},
@@ -112,7 +112,7 @@ describe('@ax/attachments plugin init / shutdown', () => {
       tempTtlSeconds: 600,
     });
     const ctx = harness.ctx();
-    const { db } = await harness.bus.call<unknown, { db: any }>(
+    const { db } = await harness.bus.call<unknown, { db: Kysely<unknown> }>(
       'database:get-instance',
       ctx,
       {},

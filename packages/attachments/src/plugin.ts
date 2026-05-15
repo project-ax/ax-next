@@ -1,8 +1,4 @@
-import {
-  makeAgentContext,
-  type Plugin,
-  type HookBus,
-} from '@ax/core';
+import { makeAgentContext, type Plugin } from '@ax/core';
 import type { Kysely } from 'kysely';
 import { runAttachmentsMigration, type AttachmentsDatabase } from './migrations.js';
 import { createAttachmentsStore, type AttachmentsStore } from './store.js';
@@ -89,10 +85,16 @@ export function createAttachmentsPlugin(
       const commitHandler = createCommitHandler({ store, bus });
       const downloadHandler = createDownloadHandler({ bus });
 
-      // 4) Register the hooks.
-      registerService(bus, 'attachments:store-temp', storeTempHandler);
-      registerService(bus, 'attachments:commit', commitHandler);
-      registerService(bus, 'attachments:download', downloadHandler);
+      // 4) Register the hooks. `bus.registerService` is generic in I/O;
+      //    each handler factory above returned a correctly-typed closure,
+      //    so inference picks up the right shape per call.
+      bus.registerService(
+        'attachments:store-temp',
+        PLUGIN_NAME,
+        storeTempHandler,
+      );
+      bus.registerService('attachments:commit', PLUGIN_NAME, commitHandler);
+      bus.registerService('attachments:download', PLUGIN_NAME, downloadHandler);
 
       // 5) Start the janitor. The interval defaults to 5 minutes; tests
       //    can override via `janitorIntervalSeconds`.
@@ -119,15 +121,3 @@ export function createAttachmentsPlugin(
   };
 }
 
-// ---------------------------------------------------------------------------
-// Helper to keep the init() body readable. registerService is generic in I/O
-// but we throw away the types here because the handler factories already
-// returned correctly-typed closures.
-// ---------------------------------------------------------------------------
-function registerService(
-  bus: HookBus,
-  hookName: string,
-  handler: (ctx: any, input: any) => Promise<any>,
-): void {
-  bus.registerService(hookName, PLUGIN_NAME, handler);
-}

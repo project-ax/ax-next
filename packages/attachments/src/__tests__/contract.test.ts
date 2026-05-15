@@ -7,6 +7,18 @@ import { createTestHarness, type TestHarness } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createConversationsPlugin } from '@ax/conversations';
 import { createAttachmentsPlugin } from '../plugin.js';
+import type {
+  StoreTempOutput,
+  CommitOutput,
+  DownloadOutput,
+} from '../types.js';
+
+// Narrow projection of `conversations:create` output — we only read
+// `conversationId` in this test, so we avoid coupling to the full
+// Conversation shape from `@ax/conversations`.
+interface ConversationsCreateMin {
+  conversationId: string;
+}
 
 // ---------------------------------------------------------------------------
 // End-to-end contract test (Task 11).
@@ -112,7 +124,7 @@ describe('@ax/attachments bus contract', () => {
     const ctx = harness.ctx({ userId: 'u-1', agentId: 'a-1' });
 
     // 1) Stage a temp upload.
-    const tempResult = await harness.bus.call<unknown, any>(
+    const tempResult = await harness.bus.call<unknown, StoreTempOutput>(
       'attachments:store-temp',
       ctx,
       {
@@ -125,7 +137,7 @@ describe('@ax/attachments bus contract', () => {
     expect(tempResult.sizeBytes).toBe('hello attachments'.length);
 
     // 2) Create a conversation to scope this attachment.
-    const convResult = await harness.bus.call<unknown, any>(
+    const convResult = await harness.bus.call<unknown, ConversationsCreateMin>(
       'conversations:create',
       ctx,
       { userId: 'u-1', agentId: 'a-1' },
@@ -135,7 +147,7 @@ describe('@ax/attachments bus contract', () => {
     const turnId = `t-${Date.now()}`;
 
     // 3) Commit the temp into the workspace.
-    const commitResult = await harness.bus.call<unknown, any>(
+    const commitResult = await harness.bus.call<unknown, CommitOutput>(
       'attachments:commit',
       ctx,
       { attachmentId: tempResult.attachmentId, conversationId, turnId },
@@ -151,7 +163,7 @@ describe('@ax/attachments bus contract', () => {
 
     // 4) Download — should succeed via the .ax/uploads/<conv>/ prefix
     //    branch of path-scope. No transcript entry needed.
-    const downloaded = await harness.bus.call<unknown, any>(
+    const downloaded = await harness.bus.call<unknown, DownloadOutput>(
       'attachments:download',
       ctx,
       { path: commitResult.path, conversationId, userId: 'u-1' },
@@ -168,7 +180,7 @@ describe('@ax/attachments bus contract', () => {
     const ownerCtx = harness.ctx({ userId: 'u-owner', agentId: 'a-1' });
 
     // Owner creates + commits.
-    const tempResult = await harness.bus.call<unknown, any>(
+    const tempResult = await harness.bus.call<unknown, StoreTempOutput>(
       'attachments:store-temp',
       ownerCtx,
       {
@@ -177,12 +189,12 @@ describe('@ax/attachments bus contract', () => {
         mediaType: 'text/plain',
       },
     );
-    const conv = await harness.bus.call<unknown, any>(
+    const conv = await harness.bus.call<unknown, ConversationsCreateMin>(
       'conversations:create',
       ownerCtx,
       { userId: 'u-owner', agentId: 'a-1' },
     );
-    const commitResult = await harness.bus.call<unknown, any>(
+    const commitResult = await harness.bus.call<unknown, CommitOutput>(
       'attachments:commit',
       ownerCtx,
       {
@@ -206,7 +218,7 @@ describe('@ax/attachments bus contract', () => {
   it('rejects out-of-scope path with forbidden', async () => {
     const { harness } = await makeHarness();
     const ctx = harness.ctx({ userId: 'u-1', agentId: 'a-1' });
-    const conv = await harness.bus.call<unknown, any>(
+    const conv = await harness.bus.call<unknown, ConversationsCreateMin>(
       'conversations:create',
       ctx,
       { userId: 'u-1', agentId: 'a-1' },
@@ -228,7 +240,7 @@ describe('@ax/attachments bus contract', () => {
     const victim = harness.ctx({ userId: 'u-victim', agentId: 'a-1' });
     const attacker = harness.ctx({ userId: 'u-attacker', agentId: 'a-1' });
 
-    const tempResult = await harness.bus.call<unknown, any>(
+    const tempResult = await harness.bus.call<unknown, StoreTempOutput>(
       'attachments:store-temp',
       victim,
       {
@@ -238,7 +250,7 @@ describe('@ax/attachments bus contract', () => {
       },
     );
 
-    const attackerConv = await harness.bus.call<unknown, any>(
+    const attackerConv = await harness.bus.call<unknown, ConversationsCreateMin>(
       'conversations:create',
       attacker,
       { userId: 'u-attacker', agentId: 'a-1' },
