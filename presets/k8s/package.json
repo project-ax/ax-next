@@ -23,6 +23,7 @@
   "dependencies": {
     "@ax/agent-claude-sdk-runner": "workspace:*",
     "@ax/agents": "workspace:*",
+    "@ax/attachments": "workspace:*",
     "@ax/audit-log": "workspace:*",
     "@ax/auth-better": "workspace:*",
     "@ax/channel-web": "workspace:*",

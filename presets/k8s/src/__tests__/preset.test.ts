@@ -147,6 +147,7 @@ describe('@ax/preset-k8s wiring', () => {
     expect(names).toEqual(
       [
         '@ax/agents',
+        '@ax/attachments',
         '@ax/audit-log',
         '@ax/auth-better',
         '@ax/channel-web',

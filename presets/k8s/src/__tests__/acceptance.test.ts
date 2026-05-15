@@ -148,6 +148,12 @@ const PLUGINS_TO_DROP = new Set<string>([
   // canary test in routines/__tests__ against a real testcontainer; drop
   // here so the chat-path canaries don't need postgres.
   '@ax/routines',
+  // Attachments: postgres-backed (database:get-instance) and not exercised
+  // by any of these canaries — Phase 1 of the attachments subsystem has no
+  // caller yet (half-wired window open through Phase 3). The static hook
+  // wiring is pinned in preset.test.ts; drop here so these sub-tests don't
+  // need a postgres testcontainer.
+  '@ax/attachments',
 ]);
 
 // Stub `agents:resolve` — production presets register `@ax/agents` (postgres-

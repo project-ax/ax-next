@@ -134,6 +134,10 @@ const PLUGINS_TO_DROP = new Set<string>([
   // canary test in routines/__tests__; drop here so multi-tenant chat-path
   // canaries don't need postgres.
   '@ax/routines',
+  // Attachments: postgres-backed (database:get-instance); no caller in
+  // Phase 1 of the attachments subsystem (half-wired window open through
+  // Phase 3). Static wiring pinned in preset.test.ts.
+  '@ax/attachments',
 ]);
 
 const AGENTS_RESOLVE_PLUGIN_NAME = '@ax/preset-k8s/test/discriminating-agents-resolve';
