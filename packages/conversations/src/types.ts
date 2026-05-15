@@ -83,6 +83,14 @@ export interface Conversation {
   lastActivityAt: string | null;
   /** Phase A (2026-05-14). True for routine fire-log conversations that are not user-visible. */
   hidden: boolean;
+  /**
+   * Phase A (routines foundation, 2026-05-14). Stable per-(user, agent,
+   * key) lookup handle for `conversations:find-or-create`. The routines
+   * plugin passes external_key = routine_path for `conversation: shared`
+   * routines; non-routine callers leave it null. Indexed via a partial
+   * unique index — see migrations.ts.
+   */
+  externalKey: string | null;
   /** ISO-8601 string. */
   createdAt: string;
   /** ISO-8601 string. */
@@ -342,6 +350,37 @@ export interface DropTurnInput {
   turnId: string;
 }
 export type DropTurnOutput = void;
+
+/**
+ * Phase A (routines foundation, 2026-05-14). Find a conversation by
+ * stable `(userId, agentId, externalKey)` or create one if none exists.
+ * Used by the routines plugin for `conversation: shared` routines —
+ * every fire of the same routine reuses the same conversation row.
+ *
+ * Race-safe under concurrent callers via the partial unique index
+ * (user_id, agent_id, external_key) WHERE external_key IS NOT NULL
+ * AND deleted_at IS NULL.
+ *
+ * ACL posture: caller passes `userId` AND `agentId` directly. The hook
+ * runs `agents:resolve(agentId, userId)` (J1 gate) BEFORE the SELECT —
+ * a foreign caller can't probe for a routine's externalKey.
+ *
+ * `fallback` carries the fields used when creating a new row. Reuses
+ * `CreateInput`'s optional shape, minus `externalKey` (which is the
+ * lookup key, supplied at the top level).
+ */
+export interface FindOrCreateInput {
+  userId: string;
+  agentId: string;
+  externalKey: string;
+  fallback: {
+    title?: string | null;
+  };
+}
+export interface FindOrCreateOutput {
+  conversation: Conversation;
+  created: boolean;
+}
 
 // ---------------------------------------------------------------------------
 // Plugin config

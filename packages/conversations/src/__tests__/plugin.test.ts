@@ -40,6 +40,10 @@ describe('@ax/conversations plugin manifest', () => {
         // — runner-native jsonl rewrite lands in Phase B alongside its
         // first caller. Half-wired window OPEN through Phase B.
         'conversations:drop-turn',
+        // Phase A (routines foundation, 2026-05-14): stable per-(user,
+        // agent, key) conversation lookup for `conversation: shared`
+        // routines. Half-wired window OPEN: caller lands in Phase B.
+        'conversations:find-or-create',
       ],
       // database:get-instance is hard — we run our own migration on init.
       // agents:resolve is hard — every hook gates through it (Invariant J1).

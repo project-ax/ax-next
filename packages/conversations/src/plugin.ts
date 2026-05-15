@@ -22,6 +22,7 @@ import {
   validateTitle,
   validateWorkspaceRefForFreeze,
   type ConversationStore,
+  type FindOrCreateResult,
 } from './store.js';
 import type {
   BindSessionInput,
@@ -33,6 +34,8 @@ import type {
   DeleteOutput,
   DropTurnInput,
   DropTurnOutput,
+  FindOrCreateInput,
+  FindOrCreateOutput,
   GetByReqIdInput,
   GetByReqIdOutput,
   GetInput,
@@ -142,6 +145,13 @@ export function createConversationsPlugin(
         // alongside its first caller (the routines plugin's silence-token
         // logic). Half-wired window OPEN through Phase B.
         'conversations:drop-turn',
+        // Phase A (routines foundation, 2026-05-14): stable per-(user,
+        // agent, key) conversation lookup for `conversation: shared`
+        // routines. Returns { conversation, created } so callers know
+        // which path ran. ACL gate (J1) runs BEFORE the SELECT to
+        // prevent foreign callers from probing for a routine's
+        // externalKey. Half-wired window OPEN: caller lands in Phase B.
+        'conversations:find-or-create',
       ],
       calls: [
         'agents:resolve',
@@ -283,6 +293,17 @@ export function createConversationsPlugin(
               'conversations:drop-turn ships as a Phase A stub; runner-native jsonl rewrite lands in Phase B alongside its first caller',
           });
         },
+      );
+
+      // Phase A (routines foundation, 2026-05-14). Stable per-(user, agent,
+      // key) conversation lookup for `conversation: shared` routines. ACL
+      // gate (J1) runs BEFORE the SELECT to prevent foreign callers from
+      // probing for the existence of a routine's externalKey. Half-wired
+      // window OPEN: caller lands in Phase B.
+      bus.registerService<FindOrCreateInput, FindOrCreateOutput>(
+        'conversations:find-or-create',
+        PLUGIN_NAME,
+        async (ctx, input) => findOrCreateConversation(localStore, bus, ctx, input, resolvedConfig),
       );
 
       // chat:turn-end subscriber.
@@ -930,6 +951,36 @@ async function deleteConversation(
     'conversations:delete',
   );
   await store.softDelete(input.conversationId);
+}
+
+async function findOrCreateConversation(
+  store: ConversationStore,
+  bus: HookBus,
+  ctx: AgentContext,
+  input: FindOrCreateInput,
+  cfg: ResolvedConversationsConfig,
+): Promise<FindOrCreateOutput> {
+  const hookName = 'conversations:find-or-create';
+  // J1: ACL gate BEFORE any SELECT. Existence-leak prevention —
+  // a foreign caller cannot probe for a routine's externalKey.
+  const agent = await assertAgentReachable(
+    bus, ctx, input.agentId, input.userId, hookName,
+  );
+  const title = validateTitle(input.fallback.title ?? null);
+  const workspaceRef = validateWorkspaceRefForFreeze(agent.workspaceRef);
+  const result = await store.findOrCreate({
+    userId: input.userId,
+    agentId: input.agentId,
+    externalKey: input.externalKey,
+    fallback: {
+      userId: input.userId,
+      agentId: input.agentId,
+      title,
+      runnerType: cfg.defaultRunnerType,
+      workspaceRef,
+    },
+  });
+  return result;
 }
 
 async function hideConversation(

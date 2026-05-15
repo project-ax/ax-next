@@ -92,6 +92,24 @@ export async function runConversationsMigration<DB>(
       ADD COLUMN IF NOT EXISTS hidden BOOLEAN NOT NULL DEFAULT FALSE
   `.execute(db);
 
+  // Phase A routines foundation (2026-05-14). Stable per-(user, agent, key)
+  // conversation lookup for routines with `conversation: shared`. The
+  // routines plugin passes external_key = routine_path; non-routine
+  // callers leave it null. Partial unique index excludes NULL keys
+  // (so the column is genuinely optional) AND tombstones (so a
+  // soft-deleted row doesn't pin its key forever — re-create after
+  // delete is allowed).
+  await sql`
+    ALTER TABLE conversations_v1_conversations
+      ADD COLUMN IF NOT EXISTS external_key TEXT
+  `.execute(db);
+
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS conversations_v1_external_key_unique
+      ON conversations_v1_conversations (user_id, agent_id, external_key)
+      WHERE external_key IS NOT NULL AND deleted_at IS NULL
+  `.execute(db);
+
   // Phase E (2026-05-09): drop the now-dead transcript table. Phase D
   // migrated readers to the workspace's runner-native jsonl; Phase E
   // drops the writer + the table. Idempotent (`IF EXISTS`) so a fresh
@@ -118,6 +136,10 @@ export interface ConversationsRow {
   workspace_ref: string | null;
   last_activity_at: Date | null;
   hidden: boolean;
+  // Phase A (routines foundation, 2026-05-14). Stable per-(user, agent, key)
+  // lookup handle. See migration block above for semantics. NULL for
+  // non-routine conversations.
+  external_key: string | null;
   deleted_at: Date | null;
   created_at: Date;
   updated_at: Date;

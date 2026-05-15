@@ -141,6 +141,7 @@ export function rowToConversation(row: ConversationsRow): Conversation {
     lastActivityAt:
       row.last_activity_at === null ? null : row.last_activity_at.toISOString(),
     hidden: row.hidden,
+    externalKey: row.external_key,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
   };
@@ -170,6 +171,11 @@ export interface ConversationStoreCreateArgs {
    * for the same reason as runnerType — pre-Phase-B test rows.
    */
   workspaceRef?: string | null;
+  /**
+   * Phase A (routines foundation, 2026-05-14). Stable per-(user, agent,
+   * key) lookup handle. NULL for non-routine conversations.
+   */
+  externalKey?: string | null;
 }
 
 /**
@@ -205,6 +211,28 @@ export type StoreRunnerSessionResult =
   | 'already-bound-same'
   | 'conflict'
   | 'not-found';
+
+/**
+ * Phase A (routines foundation, 2026-05-14). Input for the store-level
+ * find-or-create operation. `fallback` holds the fields used when
+ * creating a new row — all optional (defaults applied in the handler).
+ */
+export interface ConversationStoreFindOrCreateArgs {
+  userId: string;
+  agentId: string;
+  externalKey: string;
+  fallback: Omit<ConversationStoreCreateArgs, 'externalKey'>;
+}
+
+/**
+ * Phase A. Result of `store.findOrCreate` — `created` distinguishes a
+ * new row from a found one so callers (and test assertions) can tell
+ * which path ran.
+ */
+export interface FindOrCreateResult {
+  conversation: Conversation;
+  created: boolean;
+}
 
 export interface ConversationStore {
   /** Single-row lookup; skips tombstones. Used in hook handlers after agents:resolve. */
@@ -318,6 +346,15 @@ export interface ConversationStore {
    * layer; this method does NOT take userId.
    */
   hide(conversationId: string): Promise<boolean>;
+  /**
+   * Phase A (routines foundation, 2026-05-14). Find-or-create by stable
+   * `(userId, agentId, externalKey)` tuple. Race-safe via the partial
+   * unique index + INSERT ... ON CONFLICT DO NOTHING + re-SELECT.
+   *
+   * The partial unique index excludes NULL keys (so non-routine callers
+   * can coexist) AND tombstones (re-create after delete is allowed).
+   */
+  findOrCreate(args: ConversationStoreFindOrCreateArgs): Promise<FindOrCreateResult>;
 }
 
 export function createConversationStore(
@@ -360,7 +397,7 @@ export function createConversationStore(
       return rows.map(rowToConversation);
     },
 
-    async create({ userId, agentId, title, runnerType, workspaceRef }) {
+    async create({ userId, agentId, title, runnerType, workspaceRef, externalKey }) {
       const id = mintConversationId();
       const now = new Date();
       const row = await db
@@ -379,6 +416,11 @@ export function createConversationStore(
           runner_session_id: null,
           workspace_ref: workspaceRef ?? null,
           last_activity_at: null,
+          // Phase A: external_key for routines find-or-create lookup.
+          external_key: externalKey ?? null,
+          // hidden defaults to false via the column DEFAULT; supply it
+          // explicitly so Kysely's non-nullable type check is satisfied.
+          hidden: false,
           deleted_at: null,
           created_at: now,
           updated_at: now,
@@ -566,6 +608,69 @@ export function createConversationStore(
         .where('deleted_at', 'is', null)
         .executeTakeFirst();
       return Number(result.numUpdatedRows ?? 0n) > 0;
+    },
+
+    async findOrCreate({ userId, agentId, externalKey, fallback }) {
+      // SELECT first — partial unique index makes this safe under concurrent
+      // INSERTs because the failing-race INSERT will throw, and we re-SELECT.
+      const existing = await db
+        .selectFrom('conversations_v1_conversations')
+        .selectAll('conversations_v1_conversations')
+        .where('user_id', '=', userId)
+        .where('agent_id', '=', agentId)
+        .where('external_key', '=', externalKey)
+        .where('deleted_at', 'is', null)
+        .executeTakeFirst();
+
+      if (existing !== undefined) {
+        return { conversation: rowToConversation(existing), created: false };
+      }
+
+      // No existing row. Try to insert. The partial unique index
+      // (user_id, agent_id, external_key) WHERE deleted_at IS NULL +
+      // ON CONFLICT DO NOTHING handles the race where another concurrent
+      // caller raced us to insert.
+      const id = mintConversationId();
+      const now = new Date();
+      const inserted = await db
+        .insertInto('conversations_v1_conversations')
+        .values({
+          conversation_id: id,
+          user_id: userId,
+          agent_id: agentId,
+          title: fallback.title ?? null,
+          active_session_id: null,
+          active_req_id: null,
+          runner_type: fallback.runnerType ?? null,
+          runner_session_id: null,
+          workspace_ref: fallback.workspaceRef ?? null,
+          last_activity_at: null,
+          external_key: externalKey,
+          // hidden defaults to false via the column DEFAULT; supply it
+          // explicitly so Kysely's non-nullable type check is satisfied.
+          hidden: false,
+          deleted_at: null,
+          created_at: now,
+          updated_at: now,
+        })
+        .onConflict((oc) => oc.doNothing())
+        .returningAll()
+        .executeTakeFirst();
+
+      if (inserted !== undefined) {
+        return { conversation: rowToConversation(inserted as ConversationsRow), created: true };
+      }
+
+      // Lost the race. The conflicting row exists; re-SELECT.
+      const winner = await db
+        .selectFrom('conversations_v1_conversations')
+        .selectAll('conversations_v1_conversations')
+        .where('user_id', '=', userId)
+        .where('agent_id', '=', agentId)
+        .where('external_key', '=', externalKey)
+        .where('deleted_at', 'is', null)
+        .executeTakeFirstOrThrow();
+      return { conversation: rowToConversation(winner), created: false };
     },
   };
 }

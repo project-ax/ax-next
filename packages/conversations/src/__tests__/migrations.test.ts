@@ -224,4 +224,53 @@ describe('Phase B migration', () => {
       last_activity_at: null,
     });
   });
+
+  it('adds external_key column and the partial unique index excludes NULL keys (Phase A)', async () => {
+    const db = makeKysely();
+    await runConversationsMigration(db);
+
+    // Two rows with the same external_key but different users — allowed.
+    await db.insertInto('conversations_v1_conversations').values({
+      conversation_id: 'cnv_1', user_id: 'u1', agent_id: 'a1', external_key: 'k1',
+    }).execute();
+    await db.insertInto('conversations_v1_conversations').values({
+      conversation_id: 'cnv_2', user_id: 'u2', agent_id: 'a1', external_key: 'k1',
+    }).execute();
+
+    // Same (user_id, agent_id, external_key) — must throw.
+    await expect(
+      db.insertInto('conversations_v1_conversations').values({
+        conversation_id: 'cnv_3', user_id: 'u1', agent_id: 'a1', external_key: 'k1',
+      }).execute(),
+    ).rejects.toThrow();
+
+    // NULL external_key is excluded from the unique index — multiple
+    // NULL-key rows for the same (user, agent) must coexist.
+    await db.insertInto('conversations_v1_conversations').values({
+      conversation_id: 'cnv_4', user_id: 'u1', agent_id: 'a1', external_key: null,
+    }).execute();
+    await db.insertInto('conversations_v1_conversations').values({
+      conversation_id: 'cnv_5', user_id: 'u1', agent_id: 'a1', external_key: null,
+    }).execute();
+  });
+
+  it('soft-deleted rows are excluded from the external_key unique index (re-create allowed)', async () => {
+    const db = makeKysely();
+    await runConversationsMigration(db);
+
+    await db.insertInto('conversations_v1_conversations').values({
+      conversation_id: 'cnv_a', user_id: 'u1', agent_id: 'a1', external_key: 'k1',
+    }).execute();
+
+    // Soft-delete the first row.
+    await db.updateTable('conversations_v1_conversations')
+      .set({ deleted_at: new Date() })
+      .where('conversation_id', '=', 'cnv_a')
+      .execute();
+
+    // A fresh row with the same key must be allowed.
+    await db.insertInto('conversations_v1_conversations').values({
+      conversation_id: 'cnv_b', user_id: 'u1', agent_id: 'a1', external_key: 'k1',
+    }).execute();
+  });
 });
