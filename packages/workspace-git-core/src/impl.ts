@@ -861,7 +861,11 @@ export function registerWorkspaceGitHooks(
           oid: commitOid,
           filepath: input.path,
         });
-        return { found: true, bytes: copyBytes(blob) };
+        return {
+          found: true,
+          bytes: copyBytes(blob),
+          version: asWorkspaceVersion(commitOid),
+        };
       } catch (err) {
         if (isNotFoundError(err)) return { found: false };
         throw err;
