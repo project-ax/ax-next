@@ -1,0 +1,25 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "10f0fad2599d",
+  "strategy": "manual-commit",
+  "branch": "worktree-routines-phase-b",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "pnpm-lock.yaml"
+  ],
+  "sessions": [
+    {
+      "metadata": "/10/f0fad2599d/0/metadata.json",
+      "transcript": "/10/f0fad2599d/0/full.jsonl",
+      "content_hash": "/10/f0fad2599d/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 75,
+    "cache_creation_tokens": 482351,
+    "cache_read_tokens": 8248999,
+    "output_tokens": 80134,
+    "api_call_count": 51
+  }
+}
