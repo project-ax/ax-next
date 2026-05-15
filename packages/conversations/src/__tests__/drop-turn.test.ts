@@ -128,15 +128,18 @@ describe('conversations:drop-turn (Phase B — runner-native jsonl rewrite)', ()
 
   it('is a no-op when the conversation has no runnerSessionId', async () => {
     const data = new Map<string, Uint8Array>();
-    const { h } = await makeHarnessWithWorkspace(data);
+    const { h, getLastApplied } = await makeHarnessWithWorkspace(data);
     const conv = await h.bus.call<CreateInput, CreateOutput>(
       'conversations:create', h.ctx({ userId: 'u1' }),
       { userId: 'u1', agentId: 'a1' },
     );
-    // No store-runner-session call — drop-turn just returns.
+    // No store-runner-session call — drop-turn just returns. Assert that
+    // workspace:apply was NOT called: without runnerSessionId there's no
+    // jsonl to rewrite, so any apply would be a logic bug.
     await h.bus.call('conversations:drop-turn', h.ctx({ userId: 'u1' }), {
       conversationId: conv.conversationId, userId: 'u1', turnId: 't1',
     });
+    expect(getLastApplied()).toBeUndefined();
   });
 
   it('throws not-found for an unknown conversation_id', async () => {

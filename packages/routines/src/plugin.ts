@@ -76,17 +76,28 @@ export function createRoutinesPlugin(
             silenceMaxChars: pf.row.silenceMaxChars,
           });
           if (decision.silenced) {
+            // Only drop when we have an explicit turnId. An empty/missing
+            // turnId would trigger the "drop most recent" path, which can
+            // remove an unrelated turn if chat:turn-end fired without
+            // surfacing the turnId (e.g., runner-side bug or non-routine
+            // event piggy-backing on the same reqId).
             const turnId = payload.turnId;
-            try {
-              await bus.call('conversations:drop-turn', ctx, {
+            if (typeof turnId === 'string' && turnId.length > 0) {
+              try {
+                await bus.call('conversations:drop-turn', ctx, {
+                  conversationId: pf.conversationId,
+                  userId: pf.row.authorUserId,
+                  turnId,
+                });
+              } catch (err) {
+                ctx.logger.warn('routines_drop_turn_failed', {
+                  conversationId: pf.conversationId,
+                  err: err instanceof Error ? err.message : String(err),
+                });
+              }
+            } else {
+              ctx.logger.warn('routines_drop_turn_skipped_no_turn_id', {
                 conversationId: pf.conversationId,
-                userId: pf.row.authorUserId,
-                turnId: turnId ?? '',
-              });
-            } catch (err) {
-              ctx.logger.warn('routines_drop_turn_failed', {
-                conversationId: pf.conversationId,
-                err: err instanceof Error ? err.message : String(err),
               });
             }
             if (pf.row.conversation === 'per-fire') {

@@ -1021,14 +1021,22 @@ async function dropTurn(
   const rewritten = dropTurnFromJsonl(read.bytes, input.turnId);
   if (rewritten === null) return;
 
-  // `workspace:read` does not return the current workspace version, so we
-  // pass `parent: null` — the git workspace plugin interprets null as "empty
-  // repo only." For a best-effort single-file rewrite like drop-turn this is
-  // intentional: if a concurrent apply races us (unlikely for silence-token
-  // logic), we let the `parent-mismatch` error propagate to the caller as a
-  // signal to retry or ignore. The call site (@ax/routines silence-token) is
-  // fire-and-forget and will surface the error in logs without crashing the
-  // routine run.
+  // KNOWN LIMITATION: `workspace:read` does not surface the current
+  // workspace version, so we pass `parent: null`. Against the git workspace
+  // backend this will fail with `parent-mismatch` whenever the workspace
+  // already has a commit history (i.e., always, since the routine file
+  // necessarily lives at a non-empty version). The mismatch propagates to
+  // the caller; the @ax/routines silence-token call site is fire-and-forget
+  // and surfaces the error in logs without crashing the routine run.
+  //
+  // The correct fix is a workspace contract change: either extend
+  // `WorkspaceReadOutput` with the resolved version, or add a
+  // `workspace:get-current-version` hook. Both touch multiple workspace
+  // implementations (git, git-server client, test-only mock) and the wire
+  // protocol, so they're deferred to a follow-up PR. Until then, drop-turn
+  // succeeds only against the in-memory test mock (which ignores the CAS
+  // check) — the silence-token "drop" is best-effort in production while
+  // the conversation hide remains authoritative.
   await bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>(
     'workspace:apply', workspaceCtx,
     {

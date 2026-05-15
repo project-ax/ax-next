@@ -47,8 +47,10 @@ afterEach(async () => {
   const cleanup = new pg.Client({ connectionString });
   await cleanup.connect();
   try {
-    await cleanup.query('TRUNCATE routines_v1_definitions, routines_v1_fires').catch(() => {});
-  } finally { await cleanup.end().catch(() => {}); }
+    await cleanup.query('TRUNCATE routines_v1_definitions, routines_v1_fires');
+  } finally {
+    await cleanup.end();
+  }
 });
 
 afterAll(async () => { if (container) await container.stop(); });

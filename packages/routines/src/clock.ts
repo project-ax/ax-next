@@ -7,6 +7,10 @@ export const systemClock: Clock = {
   now: () => new Date(),
   sleep(ms, signal) {
     return new Promise<void>((resolve) => {
+      if (signal.aborted) {
+        resolve();
+        return;
+      }
       const t = setTimeout(resolve, ms);
       signal.addEventListener('abort', () => {
         clearTimeout(t);

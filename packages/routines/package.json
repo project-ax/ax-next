@@ -19,7 +19,7 @@
     "@ax/core": "workspace:*",
     "@ax/validator-routine": "workspace:*",
     "croner": "^8.0.0",
-    "kysely": "^0.27.0"
+    "kysely": "0.28.17"
   },
   "devDependencies": {
     "@ax/database-postgres": "workspace:*",

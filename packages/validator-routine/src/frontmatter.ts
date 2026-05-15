@@ -3,7 +3,9 @@ import { Cron } from 'croner';
 
 const FRONTMATTER_FENCE = /^---\n([\s\S]*?)\n---(\n([\s\S]*))?$/;
 const DURATION_RE = /^(\d+)(s|m|h|d)$/;
-const TIME_OF_DAY_RE = /^([01]\d|2[0-4]):([0-5]\d)$/;
+// 00:00–23:59, plus 24:00 as the "midnight at end-of-day" sentinel used
+// by activeHours.end (see Task 8). Reject 24:01..24:59 as malformed.
+const TIME_OF_DAY_RE = /^(?:([01]\d|2[0-3]):([0-5]\d)|24:00)$/;
 
 export type TriggerSpec =
   | { kind: 'interval'; every: string }
