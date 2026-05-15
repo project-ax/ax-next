@@ -1,5 +1,5 @@
 import type { Plugin, WorkspaceDelta } from '@ax/core';
-import { makeAgentContext } from '@ax/core';
+import { makeAgentContext, PluginError } from '@ax/core';
 import type { Kysely } from 'kysely';
 import { runRoutinesMigration, type RoutinesDatabase } from './migrations.js';
 import { createRoutinesStore, type RoutinesStore } from './store.js';
@@ -8,7 +8,7 @@ import { systemClock, type Clock } from './clock.js';
 import { runTickLoop } from './tick.js';
 import { createFireRoutine, type PendingFires } from './fire.js';
 import { applySilenceLogic } from './silence.js';
-import type { RoutinesConfig } from './types.js';
+import type { RoutinesConfig, FireNowInput, FireNowOutput, ListInput, ListOutput } from './types.js';
 
 const PLUGIN_NAME = '@ax/routines';
 
@@ -123,6 +123,45 @@ export function createRoutinesPlugin(
         }
         return undefined;
       });
+
+      bus.registerService<ListInput, ListOutput>(
+        'routines:list', PLUGIN_NAME,
+        async (_ctx, input) => {
+          const filter: { agentId?: string } = {};
+          if (input.agentId !== undefined) filter.agentId = input.agentId;
+          const routines = await localStore.list(filter);
+          return { routines };
+        },
+      );
+
+      bus.registerService<FireNowInput, FireNowOutput>(
+        'routines:fire-now', PLUGIN_NAME,
+        async (_ctx, input) => {
+          const all = await localStore.list({ agentId: input.agentId });
+          const row = all.find((r) => r.path === input.path);
+          if (row === undefined) {
+            throw new PluginError({
+              code: 'not-found', plugin: PLUGIN_NAME,
+              hookName: 'routines:fire-now',
+              message: `routine ${input.agentId}/${input.path} not found`,
+            });
+          }
+          const source = input.source ?? 'manual';
+          const result = await fireRoutine(row, source === 'tick' ? 'tick' : 'manual');
+          const fireId = await localStore.recordFire({
+            agentId: row.agentId, path: row.path,
+            triggerSource: source,
+            conversationId: result.conversationId ?? null,
+            status: result.status,
+            error: result.error,
+          });
+          return {
+            fireId,
+            status: result.status,
+            conversationId: result.conversationId ?? null,
+          };
+        },
+      );
 
       const tickIntervalMs = config.tickIntervalMs ?? 5_000;
       const tickConfig = {
