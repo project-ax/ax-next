@@ -94,6 +94,12 @@ export const EventTurnEndSchema = z.object({
   contentBlocks: z.array(ContentBlockSchema).optional(),
   /** The role the runner emitted this turn under. Optional until Task 3. */
   role: z.enum(['user', 'assistant', 'tool']).optional(),
+  /** Stable identifier for the turn the runner just emitted, used by
+   * subscribers (e.g., @ax/routines silence-token logic) that need to
+   * refer back to this specific turn — usually the jsonl line's uuid
+   * for the assistant turn this event closes. Optional until producers
+   * adopt it (see @ax/agent-claude-sdk-runner Phase 2 task). */
+  turnId: z.string().optional(),
 });
 export type EventTurnEnd = z.infer<typeof EventTurnEndSchema>;
 

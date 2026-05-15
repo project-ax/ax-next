@@ -376,6 +376,23 @@ describe('events', () => {
     expect(r.success).toBe(false);
   });
 
+  it('EventTurnEnd accepts optional turnId', () => {
+    expect(
+      EventTurnEndSchema.safeParse({
+        reason: 'user-message-wait',
+        role: 'assistant',
+        turnId: 'uuid-1',
+      }).success,
+    ).toBe(true);
+    // Missing turnId still valid.
+    expect(
+      EventTurnEndSchema.safeParse({
+        reason: 'user-message-wait',
+        role: 'assistant',
+      }).success,
+    ).toBe(true);
+  });
+
   it('EventChatEnd round-trips a complete outcome', () => {
     const parsed = EventChatEndSchema.parse({
       outcome: {
