@@ -51,9 +51,11 @@ async function makeHarness(): Promise<TestHarness> {
       // Phase D — conversations:get reads from workspace jsonl. The
       // session-lifecycle tests use conversations:get to inspect row
       // state (active_session_id / active_req_id) but don't care
-      // about turns. Default to "no jsonl" → empty turns.
+      // about turns. Default to "no jsonl" → empty turns. Phase B
+      // adds workspace:apply for drop-turn; stub for bootstrap.
       'workspace:list': async () => ({ paths: [] as string[] }),
       'workspace:read': async () => ({ found: false }) as const,
+      'workspace:apply': async () => ({ version: 'v-stub', delta: { before: null, after: 'v-stub', changes: [] } }),
     },
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),

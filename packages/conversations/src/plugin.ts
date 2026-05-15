@@ -4,6 +4,8 @@ import {
   type AgentContext,
   type HookBus,
   type Plugin,
+  type WorkspaceApplyInput,
+  type WorkspaceApplyOutput,
   type WorkspaceListInput,
   type WorkspaceListOutput,
   type WorkspaceReadInput,
@@ -18,6 +20,7 @@ import {
 } from './migrations.js';
 import {
   createConversationStore,
+  dropTurnFromJsonl,
   validateRunnerType,
   validateTitle,
   validateWorkspaceRefForFreeze,
@@ -138,11 +141,9 @@ export function createConversationsPlugin(
         // by id. Half-wired window OPEN: caller lands in Phase B
         // (@ax/routines plugin).
         'conversations:hide',
-        // Phase A (routines foundation, 2026-05-14): drop a single turn
-        // from a conversation's runner-native transcript. Ships as a stub
-        // — the runner-native jsonl rewrite path lands in Phase B
-        // alongside its first caller (the routines plugin's silence-token
-        // logic). Half-wired window OPEN through Phase B.
+        // Phase B (2026-05-14): runner-native jsonl rewrite shipped here;
+        // first caller is @ax/routines silence-token logic. Half-wired
+        // window CLOSED.
         'conversations:drop-turn',
         // Phase A (routines foundation, 2026-05-14): stable per-(user,
         // agent, key) conversation lookup for `conversation: shared`
@@ -161,6 +162,10 @@ export function createConversationsPlugin(
         // shape is unchanged; only the source-of-truth shifted.
         'workspace:list',
         'workspace:read',
+        // Phase B (routines, 2026-05-14): conversations:drop-turn rewrites
+        // the jsonl file in-place via workspace:apply. Added alongside the
+        // full drop-turn implementation (I7 closure).
+        'workspace:apply',
       ],
       // Task 14 (Week 10–12): subscribe to session:terminate so a sandbox
       // teardown clears active_session_id on every bound conversation row.
@@ -277,21 +282,15 @@ export function createConversationsPlugin(
         async (ctx, input) => hideConversation(localStore, bus, ctx, input),
       );
 
-      // Phase A (routines foundation, 2026-05-14). Stub — Phase B lands the
-      // runner-native jsonl rewrite path with its first caller. Half-wired
-      // window for this hook stays OPEN through Phase B.
+      // Phase B (2026-05-14): runner-native jsonl rewrite. Drops the line
+      // whose uuid matches turnId (or the most recent turn if turnId is
+      // empty), then workspace:apply's the rewritten bytes. Half-wired
+      // window CLOSED — first caller is @ax/routines silence-token logic
+      // (Task 13).
       bus.registerService<DropTurnInput, DropTurnOutput>(
         'conversations:drop-turn',
         PLUGIN_NAME,
-        async (_ctx, _input) => {
-          throw new PluginError({
-            code: 'not-implemented',
-            plugin: PLUGIN_NAME,
-            hookName: 'conversations:drop-turn',
-            message:
-              'conversations:drop-turn ships as a Phase A stub; runner-native jsonl rewrite lands in Phase B alongside its first caller',
-          });
-        },
+        async (ctx, input) => dropTurn(localStore, bus, ctx, input),
       );
 
       // Phase A (routines foundation, 2026-05-14). Stable per-(user, agent,
@@ -980,6 +979,64 @@ async function findOrCreateConversation(
     },
   });
   return result;
+}
+
+async function dropTurn(
+  store: ConversationStore,
+  bus: HookBus,
+  ctx: AgentContext,
+  input: DropTurnInput,
+): Promise<DropTurnOutput> {
+  const hookName = 'conversations:drop-turn';
+  const conv = await store.getByIdNotDeleted(input.conversationId);
+  if (conv === null || conv.userId !== input.userId) {
+    throw new PluginError({
+      code: 'not-found', plugin: PLUGIN_NAME, hookName,
+      message: `conversation '${input.conversationId}' not found`,
+    });
+  }
+  await assertAgentReachable(bus, ctx, conv.agentId, input.userId, hookName);
+
+  if (conv.runnerSessionId === null) {
+    return;
+  }
+
+  const workspaceCtx = makeAgentContext({
+    reqId: ctx.reqId, sessionId: ctx.sessionId,
+    userId: conv.userId, agentId: conv.agentId,
+    logger: ctx.logger, workspace: ctx.workspace,
+  });
+
+  const list = await bus.call<WorkspaceListInput, WorkspaceListOutput>(
+    'workspace:list', workspaceCtx,
+    { pathGlob: `.claude/projects/**/${conv.runnerSessionId}.jsonl` },
+  );
+  if (list.paths.length === 0) return;
+  const path = list.paths[0]!;
+  const read = await bus.call<WorkspaceReadInput, WorkspaceReadOutput>(
+    'workspace:read', workspaceCtx, { path },
+  );
+  if (!read.found) return;
+
+  const rewritten = dropTurnFromJsonl(read.bytes, input.turnId);
+  if (rewritten === null) return;
+
+  // `workspace:read` does not return the current workspace version, so we
+  // pass `parent: null` — the git workspace plugin interprets null as "empty
+  // repo only." For a best-effort single-file rewrite like drop-turn this is
+  // intentional: if a concurrent apply races us (unlikely for silence-token
+  // logic), we let the `parent-mismatch` error propagate to the caller as a
+  // signal to retry or ignore. The call site (@ax/routines silence-token) is
+  // fire-and-forget and will surface the error in logs without crashing the
+  // routine run.
+  await bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>(
+    'workspace:apply', workspaceCtx,
+    {
+      changes: [{ path, kind: 'put', content: rewritten }],
+      parent: null,
+      reason: `routines:drop-turn ${input.conversationId} ${input.turnId}`,
+    },
+  );
 }
 
 async function hideConversation(

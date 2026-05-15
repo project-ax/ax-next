@@ -35,10 +35,8 @@ describe('@ax/conversations plugin manifest', () => {
         // by id. Half-wired window OPEN: caller lands in Phase B
         // (@ax/routines plugin).
         'conversations:hide',
-        // Phase A (routines foundation, 2026-05-14): drop a single turn
-        // from a conversation's runner-native transcript. Ships as a stub
-        // — runner-native jsonl rewrite lands in Phase B alongside its
-        // first caller. Half-wired window OPEN through Phase B.
+        // Phase B (2026-05-14): runner-native jsonl rewrite. Half-wired
+        // window CLOSED — first caller is @ax/routines silence-token logic.
         'conversations:drop-turn',
         // Phase A (routines foundation, 2026-05-14): stable per-(user,
         // agent, key) conversation lookup for `conversation: shared`
@@ -49,11 +47,14 @@ describe('@ax/conversations plugin manifest', () => {
       // agents:resolve is hard — every hook gates through it (Invariant J1).
       // workspace:list + workspace:read are hard — Phase D conversations:get
       // reads transcripts from the runner-native jsonl in the workspace.
+      // workspace:apply is hard — Phase B conversations:drop-turn rewrites
+      // the jsonl file in-place via workspace:apply.
       calls: [
         'agents:resolve',
         'database:get-instance',
         'workspace:list',
         'workspace:read',
+        'workspace:apply',
       ],
       // chat:turn-end subscriber bumps last_activity_at only (Phase D
       // dropped the conversation_turns auto-append).

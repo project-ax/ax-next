@@ -90,6 +90,9 @@ async function makeHarness(opts: {
         list(input as { pathGlob?: string }),
       'workspace:read': async (_ctx, input: unknown) =>
         read(input as { path: string }),
+      // Phase B: workspace:apply is in the manifest calls; stub for bootstrap
+      // (get-from-workspace tests don't exercise drop-turn).
+      'workspace:apply': async () => ({ version: 'v-stub', delta: { before: null, after: 'v-stub', changes: [] } }),
     },
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),
@@ -288,6 +291,8 @@ describe('@ax/conversations conversations:get reads from workspace jsonl', () =>
           });
           return { found: true as const, bytes: makeJsonlBytes() };
         },
+        // Phase B: workspace:apply is in the manifest calls; stub for bootstrap.
+        'workspace:apply': async () => ({ version: 'v-stub', delta: { before: null, after: 'v-stub', changes: [] } }),
       },
       plugins: [
         createDatabasePostgresPlugin({ connectionString }),

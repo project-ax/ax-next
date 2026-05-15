@@ -45,9 +45,11 @@ async function makeHarness(args: {
       // Phase D — conversations:get reads transcripts from the
       // workspace's runner-native jsonl. These tests don't exercise
       // that path, so default both hooks to "no jsonl found" → empty
-      // turns. Tests that need turns wire up real bytes.
+      // turns. Tests that need turns wire up real bytes. Phase B adds
+      // workspace:apply for drop-turn; stub for bootstrap.
       'workspace:list': async () => ({ paths: [] as string[] }),
       'workspace:read': async () => ({ found: false }) as const,
+      'workspace:apply': async () => ({ version: 'v-stub', delta: { before: null, after: 'v-stub', changes: [] } }),
     },
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),
