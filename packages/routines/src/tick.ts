@@ -1,7 +1,7 @@
 import type { Kysely } from 'kysely';
 import { sql } from 'kysely';
 import type { RoutinesDatabase } from './migrations.js';
-import type { RoutinesStore } from './store.js';
+import { createRoutinesStore, type RoutinesStore } from './store.js';
 import type { RoutineRow, FireStatus } from './types.js';
 import { engineFor } from './engines/index.js';
 import { advanceToNextActiveWindow } from './active-hours.js';
@@ -102,7 +102,6 @@ function computeNextRunAt(row: RoutineRow, originalNextRunAt: Date | null, now: 
 
 export interface TickLoopInput {
   db: Kysely<RoutinesDatabase>;
-  store: RoutinesStore;
   fire: FireRoutineFn;
   clock: Clock;
   signal: AbortSignal;
@@ -116,29 +115,43 @@ const ADVISORY_LOCK_KEY = 'ax/routines.tick';
 
 export async function runTickLoop(input: TickLoopInput): Promise<void> {
   while (!input.signal.aborted) {
-    const acquired = await tryAcquireAdvisoryLock(input.db);
+    // Connection-pin the elected ticker's whole lifetime. Both the advisory
+    // lock and the store ops it gates must run on the same backend session
+    // (pg_try_advisory_lock is session-scoped, and routing store ops to
+    // other pool connections would self-deadlock when pool.max === 1 since
+    // the only free connection is the one we just pinned).
+    //
+    // Losing replicas DO NOT sleep inside execute() — they return early so
+    // the connection rejoins the pool during electionRetryMs backoff,
+    // keeping idle backend count = (active tickers), not (replica count).
+    const acquired = await input.db.connection().execute(async (pinned) => {
+      const locked = await tryAcquireAdvisoryLock(pinned);
+      if (!locked) return false;
+      const pinnedStore = createRoutinesStore(pinned);
+      try {
+        while (!input.signal.aborted) {
+          try {
+            await runTickOnce({
+              store: pinnedStore, fire: input.fire,
+              now: input.clock.now(),
+              claimBatchSize: input.claimBatchSize,
+              claimWindowMinutes: input.claimWindowMinutes,
+            });
+          } catch (err) {
+            process.stderr.write(
+              `[ax/routines] tick error: ${err instanceof Error ? err.message : String(err)}\n`,
+            );
+          }
+          await input.clock.sleep(input.tickIntervalMs, input.signal);
+        }
+      } finally {
+        await releaseAdvisoryLock(pinned);
+      }
+      return true;
+    });
+
     if (!acquired) {
       await input.clock.sleep(input.electionRetryMs, input.signal);
-      continue;
-    }
-    try {
-      while (!input.signal.aborted) {
-        try {
-          await runTickOnce({
-            store: input.store, fire: input.fire,
-            now: input.clock.now(),
-            claimBatchSize: input.claimBatchSize,
-            claimWindowMinutes: input.claimWindowMinutes,
-          });
-        } catch (err) {
-          process.stderr.write(
-            `[ax/routines] tick error: ${err instanceof Error ? err.message : String(err)}\n`,
-          );
-        }
-        await input.clock.sleep(input.tickIntervalMs, input.signal);
-      }
-    } finally {
-      await releaseAdvisoryLock(input.db);
     }
   }
 }

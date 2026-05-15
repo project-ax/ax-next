@@ -4,7 +4,8 @@ import { Kysely, PostgresDialect, sql } from 'kysely';
 import pg from 'pg';
 import { runRoutinesMigration, type RoutinesDatabase } from '../migrations.js';
 import { createRoutinesStore, type RoutinesStore } from '../store.js';
-import { runTickOnce, type FireRoutineFn } from '../tick.js';
+import { runTickLoop, runTickOnce, type FireRoutineFn } from '../tick.js';
+import type { Clock } from '../clock.js';
 
 pg.types.setTypeParser(20, (v) => Number(v));
 
@@ -109,5 +110,62 @@ describe('runTickOnce', () => {
     expect(fires[0]!.error).toMatch(/agent crashed/);
     const row = await db.selectFrom('routines_v1_definitions').selectAll().executeTakeFirstOrThrow();
     expect(row.last_status).toBe('error');
+  });
+
+  it('only one runTickLoop instance holds the advisory lock at a time, and a fresh loop can acquire it after shutdown', async () => {
+    // Two concurrent runTickLoops against the same DB. Both should not
+    // claim the same row (correctness already guaranteed by FOR UPDATE
+    // SKIP LOCKED). The advisory lock should additionally prevent the
+    // second loop from even entering its inner tick — proven by
+    // observing that only ONE of fireA/fireB was invoked.
+    //
+    // After both loops abort, a FRESH runTickLoop (runC) against the
+    // same DB must be able to acquire the lock and fire on a freshly-
+    // seeded row. This is the release-path assertion: if the original
+    // pool-unpinned pg_advisory_unlock had no-op'd (the bug this PR
+    // fixes), the leaked lock would survive shutdown and block runC.
+    //
+    // We use a 24h "every" so the winner fires exactly ONCE per row
+    // within the test window (a fixed fake clock + short every would
+    // otherwise re-claim the same row across inner-loop iterations).
+    const store = createRoutinesStore(db);
+    await seedInterval(store, 'agt_a', '24h', new Date('2026-05-14T12:00:00Z'));
+    let fireA = 0, fireB = 0;
+    const fakeClock: Clock = {
+      now: () => new Date('2026-05-14T12:01:00Z'),
+      sleep: async () => {},
+    };
+    const ctlA = new AbortController();
+    const ctlB = new AbortController();
+    const runA = runTickLoop({
+      db, fire: async () => { fireA++; return { status: 'ok', error: null }; },
+      clock: fakeClock, signal: ctlA.signal,
+      tickIntervalMs: 1, electionRetryMs: 1, claimBatchSize: 10, claimWindowMinutes: 5,
+    });
+    const runB = runTickLoop({
+      db, fire: async () => { fireB++; return { status: 'ok', error: null }; },
+      clock: fakeClock, signal: ctlB.signal,
+      tickIntervalMs: 1, electionRetryMs: 1, claimBatchSize: 10, claimWindowMinutes: 5,
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    ctlA.abort(); ctlB.abort();
+    await Promise.all([runA, runB]);
+    expect(fireA + fireB).toBe(1);
+
+    // Release-path: seed a second routine that's due, then spin up a
+    // fresh loop. If the advisory lock was actually released on
+    // runA/runB shutdown, runC acquires it cleanly and fires.
+    await seedInterval(store, 'agt_b', '24h', new Date('2026-05-14T12:00:00Z'));
+    let fireC = 0;
+    const ctlC = new AbortController();
+    const runC = runTickLoop({
+      db, fire: async () => { fireC++; return { status: 'ok', error: null }; },
+      clock: fakeClock, signal: ctlC.signal,
+      tickIntervalMs: 1, electionRetryMs: 1, claimBatchSize: 10, claimWindowMinutes: 5,
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    ctlC.abort();
+    await runC;
+    expect(fireC).toBe(1);
   });
 });

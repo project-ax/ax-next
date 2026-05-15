@@ -184,7 +184,7 @@ export function createRoutinesPlugin(
 
       abortCtl = new AbortController();
       void runTickLoop({
-        db: localDb, store: localStore, fire: fireRoutine, clock,
+        db: localDb, fire: fireRoutine, clock,
         signal: abortCtl.signal,
         ...tickConfig,
       }).catch((err) => {
