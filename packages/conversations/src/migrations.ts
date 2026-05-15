@@ -83,6 +83,15 @@ export async function runConversationsMigration<DB>(
       ADD COLUMN IF NOT EXISTS last_activity_at TIMESTAMPTZ
   `.execute(db);
 
+  // Phase A routines foundation (2026-05-14). Adds the `hidden` column so
+  // silenced routine fires can hide their conversation from the sidebar
+  // without deleting it. Default FALSE keeps every existing row visible.
+  // Idempotent ADD COLUMN IF NOT EXISTS — re-runs are safe (I11).
+  await sql`
+    ALTER TABLE conversations_v1_conversations
+      ADD COLUMN IF NOT EXISTS hidden BOOLEAN NOT NULL DEFAULT FALSE
+  `.execute(db);
+
   // Phase E (2026-05-09): drop the now-dead transcript table. Phase D
   // migrated readers to the workspace's runner-native jsonl; Phase E
   // drops the writer + the table. Idempotent (`IF EXISTS`) so a fresh
@@ -108,6 +117,7 @@ export interface ConversationsRow {
   runner_session_id: string | null;
   workspace_ref: string | null;
   last_activity_at: Date | null;
+  hidden: boolean;
   deleted_at: Date | null;
   created_at: Date;
   updated_at: Date;

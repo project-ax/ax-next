@@ -161,6 +161,27 @@ describe('Phase B migration', () => {
     expect(after.rows[0]?.exists).toBe(false);
   });
 
+  it('adds a hidden column defaulting to false (Phase A routines foundation)', async () => {
+    const db = makeKysely();
+    await runConversationsMigration(db);
+    // Insert a fresh row and confirm `hidden` is false by default.
+    await db
+      .insertInto('conversations_v1_conversations')
+      .values({
+        conversation_id: 'c-hidden-default',
+        user_id: 'u1',
+        agent_id: 'a1',
+        // The other NOT NULL columns have defaults (created_at, updated_at, hidden).
+      })
+      .execute();
+    const row = await db
+      .selectFrom('conversations_v1_conversations')
+      .select(['hidden'])
+      .where('conversation_id', '=', 'c-hidden-default')
+      .executeTakeFirstOrThrow();
+    expect(row.hidden).toBe(false);
+  });
+
   it('existing rows survive the migration with NULL Phase B columns (no backfill)', async () => {
     const db = makeKysely();
     // Simulate a pre-Phase-B row by running the original CREATE TABLE,
