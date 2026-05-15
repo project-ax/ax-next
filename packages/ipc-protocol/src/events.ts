@@ -98,8 +98,10 @@ export const EventTurnEndSchema = z.object({
    * subscribers (e.g., @ax/routines silence-token logic) that need to
    * refer back to this specific turn — usually the jsonl line's uuid
    * for the assistant turn this event closes. Optional until producers
-   * adopt it (see @ax/agent-claude-sdk-runner Phase 2 task). */
-  turnId: z.string().optional(),
+   * adopt it (see @ax/agent-claude-sdk-runner Phase 2 task). Empty
+   * strings are rejected so a misbehaving producer can't trip the
+   * downstream "drop most recent turn" fallback. */
+  turnId: z.string().min(1).optional(),
 });
 export type EventTurnEnd = z.infer<typeof EventTurnEndSchema>;
 

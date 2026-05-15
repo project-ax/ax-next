@@ -40,7 +40,11 @@ export async function readLastTurnUuid(
         return o.uuid;
       }
     } catch {
-      continue;
+      // Fail closed: a malformed line we encounter before finding a
+      // match could be the very turn we're looking for (e.g., the SDK
+      // wrote a partial line at the tail). Returning an older UUID
+      // from further back would target the WRONG turn for drop-turn.
+      return undefined;
     }
   }
   return undefined;
