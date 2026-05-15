@@ -5,7 +5,8 @@ import { runRoutinesMigration, type RoutinesDatabase } from './migrations.js';
 import { createRoutinesStore, type RoutinesStore } from './store.js';
 import { handleWorkspaceApplied } from './sync.js';
 import { systemClock, type Clock } from './clock.js';
-import { runTickLoop, type FireRoutineFn } from './tick.js';
+import { runTickLoop } from './tick.js';
+import { createFireRoutine, type PendingFires } from './fire.js';
 import type { RoutinesConfig } from './types.js';
 
 const PLUGIN_NAME = '@ax/routines';
@@ -46,6 +47,8 @@ export function createRoutinesPlugin(
       store = createRoutinesStore(db);
       const localStore = store;
       const localDb = db;
+      const pending: PendingFires = new Map();
+      const fireRoutine = createFireRoutine({ bus, pending });
 
       bus.subscribe<WorkspaceDelta>(
         'workspace:applied', PLUGIN_NAME,
@@ -63,15 +66,9 @@ export function createRoutinesPlugin(
         electionRetryMs: config.electionRetryMs ?? tickIntervalMs * 10,
       };
 
-      const stubFire: FireRoutineFn = async () => ({
-        status: 'error',
-        error: 'fireRoutine not yet implemented (Task 12)',
-        conversationId: null,
-      });
-
       abortCtl = new AbortController();
       void runTickLoop({
-        db: localDb, store: localStore, fire: stubFire, clock,
+        db: localDb, store: localStore, fire: fireRoutine, clock,
         signal: abortCtl.signal,
         ...tickConfig,
       }).catch((err) => {
