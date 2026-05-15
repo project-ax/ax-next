@@ -140,6 +140,7 @@ export function rowToConversation(row: ConversationsRow): Conversation {
     workspaceRef: row.workspace_ref,
     lastActivityAt:
       row.last_activity_at === null ? null : row.last_activity_at.toISOString(),
+    hidden: row.hidden,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
   };

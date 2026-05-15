@@ -81,6 +81,8 @@ export interface Conversation {
    * only. Null for pre-Phase-B rows or rows that haven't seen a turn.
    */
   lastActivityAt: string | null;
+  /** Phase A (2026-05-14). True for routine fire-log conversations that are not user-visible. */
+  hidden: boolean;
   /** ISO-8601 string. */
   createdAt: string;
   /** ISO-8601 string. */

@@ -35,5 +35,6 @@ export function scopedConversations(
     .selectFrom('conversations_v1_conversations')
     .selectAll('conversations_v1_conversations')
     .where('user_id', '=', scope.userId)
-    .where('deleted_at', 'is', null);
+    .where('deleted_at', 'is', null)
+    .where('hidden', '=', false);
 }

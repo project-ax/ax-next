@@ -8,6 +8,29 @@ import { rowToConversation } from '../store.js';
 // row-mapping contract honest without spinning up a postgres container.
 // ---------------------------------------------------------------------------
 
+describe('rowToConversation Phase A field', () => {
+  it('maps hidden=true and hidden=false', () => {
+    const now = new Date('2026-05-14T12:00:00Z');
+    const base = {
+      conversation_id: 'cnv_h1',
+      user_id: 'u1',
+      agent_id: 'a1',
+      title: null,
+      active_session_id: null,
+      active_req_id: null,
+      runner_type: null,
+      runner_session_id: null,
+      workspace_ref: null,
+      last_activity_at: null,
+      deleted_at: null,
+      created_at: now,
+      updated_at: now,
+    };
+    expect(rowToConversation({ ...base, hidden: true }).hidden).toBe(true);
+    expect(rowToConversation({ ...base, hidden: false }).hidden).toBe(false);
+  });
+});
+
 describe('rowToConversation Phase B fields', () => {
   it('maps runner_type / runner_session_id / workspace_ref / last_activity_at', () => {
     const now = new Date('2026-04-29T12:00:00Z');
@@ -22,6 +45,7 @@ describe('rowToConversation Phase B fields', () => {
       runner_session_id: 'sess_xyz',
       workspace_ref: 'wsp_local',
       last_activity_at: now,
+      hidden: false,
       deleted_at: null,
       created_at: now,
       updated_at: now,
@@ -45,6 +69,7 @@ describe('rowToConversation Phase B fields', () => {
       runner_session_id: null,
       workspace_ref: null,
       last_activity_at: null,
+      hidden: false,
       deleted_at: null,
       created_at: now,
       updated_at: now,
