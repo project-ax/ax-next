@@ -69,6 +69,35 @@ describe('workspace wire schemas', () => {
     ).toBe(false);
   });
 
+  it('read response: version is optional and round-trips when present', () => {
+    // Older backends omit version — still parses.
+    const noVersion = WorkspaceReadResponseSchema.safeParse({
+      found: true,
+      bytesBase64: 'aGVsbG8=',
+    });
+    expect(noVersion.success).toBe(true);
+    if (noVersion.success) {
+      // success branch carries no `version` key when omitted
+      expect((noVersion.data as { version?: string }).version).toBeUndefined();
+    }
+
+    // Newer backends include version — round-trips intact.
+    const withVersion = WorkspaceReadResponseSchema.safeParse({
+      found: true,
+      bytesBase64: 'aGVsbG8=',
+      version: 'abc123',
+    });
+    expect(withVersion.success).toBe(true);
+    if (withVersion.success && withVersion.data.found) {
+      expect((withVersion.data as { version?: string }).version).toBe('abc123');
+    }
+
+    // version on the not-found branch is still rejected (strict)
+    expect(
+      WorkspaceReadResponseSchema.safeParse({ found: false, version: 'v1' }).success,
+    ).toBe(false);
+  });
+
   it('list request: all fields optional but extras rejected', () => {
     expect(WorkspaceListRequestSchema.safeParse({}).success).toBe(true);
     expect(
