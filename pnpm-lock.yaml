@@ -165,6 +165,9 @@ importers:
         specifier: ^3.23.8
         version: 3.25.76
     devDependencies:
+      '@ax/conversations':
+        specifier: workspace:*
+        version: link:../conversations
       '@ax/database-postgres':
         specifier: workspace:*
         version: link:../database-postgres

@@ -24,6 +24,7 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@ax/conversations": "workspace:*",
     "@ax/database-postgres": "workspace:*",
     "@ax/test-harness": "workspace:*",
     "@testcontainers/postgresql": "11.14.0",
