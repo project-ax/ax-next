@@ -144,6 +144,37 @@ function runGit(
   });
 }
 
+interface GitResultBinary {
+  code: number | null;
+  stdout: Buffer;
+  stderr: string;
+}
+
+// Binary-safe variant of runGit used when stdout carries blob bytes
+// (e.g., `git cat-file blob`) — `runGit` lossily utf8-decodes stdout
+// which corrupts non-text content.
+function runGitBinary(
+  args: readonly string[],
+  extraEnv?: NodeJS.ProcessEnv,
+): Promise<GitResultBinary> {
+  return new Promise((resolve, reject) => {
+    const env: NodeJS.ProcessEnv = { ...GIT_PROCESS_ENV, ...(extraEnv ?? {}) };
+    const child = spawn('git', [...args], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const out: Buffer[] = [];
+    const err: Buffer[] = [];
+    child.stdout.on('data', (c: Buffer) => out.push(c));
+    child.stderr.on('data', (c: Buffer) => err.push(c));
+    child.once('error', reject);
+    child.once('close', (code) =>
+      resolve({
+        code,
+        stdout: Buffer.concat(out),
+        stderr: Buffer.concat(err).toString('utf8'),
+      }),
+    );
+  });
+}
+
 /**
  * Build a self-contained git bundle of an empty-tree baseline commit
  * with deterministic OID. Used when the workspace has no commits yet
@@ -516,11 +547,29 @@ async function readSnapshotAt(
   gitdir: string,
   commitOid: string,
 ): Promise<Snapshot> {
+  // We use real git (ls-tree + cat-file) rather than isomorphic-git's
+  // listFiles + readBlob. isomorphic-git's `fs.read` adapter coalesces
+  // every I/O error — ENOENT, EAGAIN, EMFILE, partial reads — into
+  // `null`, and its `loadPackIndex` then calls `BufferCursor.slice` on
+  // that null, throwing the unhelpful "Cannot read properties of null
+  // (reading 'slice')" we kept seeing flake in CI under load (see PR #71).
+  // Real git knows how to handle its own pack files atomically.
+  const lsTree = await runGit([
+    '-C', gitdir, 'ls-tree', '-r', '-z', '--name-only', commitOid,
+  ]);
+  if (lsTree.code !== 0) {
+    throw new Error(`ls-tree at ${commitOid} failed: ${lsTree.stderr}`);
+  }
+  const paths = lsTree.stdout.split('\0').filter((p) => p.length > 0);
   const snap: Snapshot = new Map();
-  const files = await git.listFiles({ fs, gitdir, ref: commitOid });
-  for (const path of files) {
-    const { blob } = await git.readBlob({ fs, gitdir, oid: commitOid, filepath: path });
-    snap.set(path, blob);
+  for (const path of paths) {
+    const blob = await runGitBinary([
+      '-C', gitdir, 'cat-file', 'blob', `${commitOid}:${path}`,
+    ]);
+    if (blob.code !== 0) {
+      throw new Error(`cat-file ${commitOid}:${path} failed: ${blob.stderr}`);
+    }
+    snap.set(path, new Uint8Array(blob.stdout));
   }
   return snap;
 }
