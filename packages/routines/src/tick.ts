@@ -116,30 +116,41 @@ const ADVISORY_LOCK_KEY = 'ax/routines.tick';
 
 export async function runTickLoop(input: TickLoopInput): Promise<void> {
   while (!input.signal.aborted) {
-    const acquired = await tryAcquireAdvisoryLock(input.db);
-    if (!acquired) {
-      await input.clock.sleep(input.electionRetryMs, input.signal);
-      continue;
-    }
-    try {
-      while (!input.signal.aborted) {
-        try {
-          await runTickOnce({
-            store: input.store, fire: input.fire,
-            now: input.clock.now(),
-            claimBatchSize: input.claimBatchSize,
-            claimWindowMinutes: input.claimWindowMinutes,
-          });
-        } catch (err) {
-          process.stderr.write(
-            `[ax/routines] tick error: ${err instanceof Error ? err.message : String(err)}\n`,
-          );
-        }
-        await input.clock.sleep(input.tickIntervalMs, input.signal);
+    // Connection-pin the entire lifetime of one election attempt + tick
+    // burst. pg_try_advisory_lock is session-scoped; the lock acquired
+    // here is held only for the duration of the callback (Kysely returns
+    // the connection to the pool on exit, which also releases the lock).
+    //
+    // Note: store operations inside runTickOnce still go through the pool
+    // (not the pinned connection). That's fine — claimDue's correctness
+    // comes from FOR UPDATE SKIP LOCKED (row-level, not session-level).
+    // The advisory lock just gates which replica is the active "ticker."
+    await input.db.connection().execute(async (pinned) => {
+      const acquired = await tryAcquireAdvisoryLock(pinned);
+      if (!acquired) {
+        await input.clock.sleep(input.electionRetryMs, input.signal);
+        return;
       }
-    } finally {
-      await releaseAdvisoryLock(input.db);
-    }
+      try {
+        while (!input.signal.aborted) {
+          try {
+            await runTickOnce({
+              store: input.store, fire: input.fire,
+              now: input.clock.now(),
+              claimBatchSize: input.claimBatchSize,
+              claimWindowMinutes: input.claimWindowMinutes,
+            });
+          } catch (err) {
+            process.stderr.write(
+              `[ax/routines] tick error: ${err instanceof Error ? err.message : String(err)}\n`,
+            );
+          }
+          await input.clock.sleep(input.tickIntervalMs, input.signal);
+        }
+      } finally {
+        await releaseAdvisoryLock(pinned);
+      }
+    });
   }
 }
 
