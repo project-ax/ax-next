@@ -187,8 +187,14 @@ export interface WorkspaceReadInput {
 }
 // `workspace:read` returns a discriminated result, not a thrown error, so
 // subscribers can branch on absence without try/catch every time.
+//
+// `version` is the storage-agnostic identifier of the snapshot the bytes
+// were read from. Opaque to subscribers — pass it back as `parent` on a
+// subsequent `workspace:apply` to keep CAS aligned with the read.
+// Backends that don't populate it (older versions, alternative impls)
+// leave it undefined and callers fall back to null.
 export type WorkspaceReadOutput =
-  | { found: true; bytes: Bytes }
+  | { found: true; bytes: Bytes; version?: WorkspaceVersion }
   | { found: false };
 
 export interface WorkspaceListInput {

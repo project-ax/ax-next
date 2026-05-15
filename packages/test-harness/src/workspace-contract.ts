@@ -90,6 +90,23 @@ export function runWorkspaceContract(label: string, makePlugin: () => Plugin): v
       expect(r.found).toBe(false);
     });
 
+    it('read returns the version at which the bytes were stored', async () => {
+      const h = await load();
+      const v1 = await h.bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>(
+        'workspace:apply',
+        h.ctx(),
+        { changes: [{ path: 'a', kind: 'put', content: enc.encode('x') }], parent: null },
+      );
+      const r = await h.bus.call<WorkspaceReadInput, WorkspaceReadOutput>(
+        'workspace:read',
+        h.ctx(),
+        { path: 'a' },
+      );
+      expect(r.found).toBe(true);
+      if (!r.found) return;
+      expect(r.version).toBe(v1.version);
+    });
+
     it('list with pathGlob honors the glob', async () => {
       const h = await load();
       await h.bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>('workspace:apply', h.ctx(), {

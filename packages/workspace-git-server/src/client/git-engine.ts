@@ -1320,7 +1320,7 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
         ]);
         if (exists.code !== 0) return { found: false };
         const bytes = await readBlobBytes(handle.dir, target, input.path);
-        return { found: true, bytes };
+        return { found: true, bytes, version: asWorkspaceVersion(target) };
       });
     });
   };

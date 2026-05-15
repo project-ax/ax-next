@@ -69,7 +69,11 @@ export const WorkspaceReadRequestSchema = z.object({
 }).strict();
 
 export const WorkspaceReadResponseSchema = z.discriminatedUnion('found', [
-  z.object({ found: z.literal(true), bytesBase64: z.string() }).strict(),
+  z.object({
+    found: z.literal(true),
+    bytesBase64: z.string(),
+    version: z.string().optional(),
+  }).strict(),
   z.object({ found: z.literal(false) }).strict(),
 ]);
 

@@ -285,7 +285,7 @@ describe('@ax/workspace-git bundle hooks (Phase 3)', () => {
       h.ctx(),
       { path: sim.turnPath },
     );
-    expect(read).toEqual({
+    expect(read).toMatchObject({
       found: true,
       bytes: new TextEncoder().encode(sim.turnContent),
     });
@@ -397,7 +397,7 @@ describe('@ax/workspace-git bundle hooks (Phase 3)', () => {
       h.ctx(),
       { path: 'permanent/test1.txt' },
     );
-    expect(r1Read).toEqual({
+    expect(r1Read).toMatchObject({
       found: true,
       bytes: new TextEncoder().encode('hello-permanent'),
     });

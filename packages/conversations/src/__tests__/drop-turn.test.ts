@@ -20,7 +20,10 @@ function jsonlLine(over: Record<string, unknown>): string {
 }
 
 async function makeHarnessWithWorkspace(workspaceData: Map<string, Uint8Array>) {
-  let lastApplied: { changes: Array<{ path: string; kind: string; content?: Uint8Array }> } | undefined;
+  let lastApplied: {
+    changes: Array<{ path: string; kind: string; content?: Uint8Array }>;
+    parent: string | null;
+  } | undefined;
   const h = await createTestHarness({
     services: {
       'agents:resolve': async (_c, input: unknown) => ({
@@ -97,6 +100,9 @@ describe('conversations:drop-turn (Phase B — runner-native jsonl rewrite)', ()
     const written = new TextDecoder().decode(applied.changes[0]!.content);
     expect(written).not.toContain('t1');
     expect(written).toContain('t2');
+    // drop-turn threads workspace:read's `version` through as the apply
+    // `parent` so CAS stays aligned against the git workspace backend.
+    expect(applied.parent).toBe('v1');
   });
 
   it('drops the most recent turn when turnId is empty', async () => {

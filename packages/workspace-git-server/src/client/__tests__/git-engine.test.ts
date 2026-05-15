@@ -115,7 +115,7 @@ describe('git-engine — basic apply', () => {
 
 describe('git-engine — distinct workspaceIds isolate to distinct bare repos', () => {
   it('apply on two ids creates two .git directories under repoRoot', async () => {
-    await harness.engine.apply('wsengineb001', {
+    const applyA = await harness.engine.apply('wsengineb001', {
       changes: [
         {
           path: 'a.txt',
@@ -125,7 +125,7 @@ describe('git-engine — distinct workspaceIds isolate to distinct bare repos', 
       ],
       parent: null,
     });
-    await harness.engine.apply('wsengineb002', {
+    const applyB = await harness.engine.apply('wsengineb002', {
       changes: [
         {
           path: 'b.txt',
@@ -144,6 +144,10 @@ describe('git-engine — distinct workspaceIds isolate to distinct bare repos', 
     expect(readA.found).toBe(true);
     if (readA.found) {
       expect(new TextDecoder().decode(readA.bytes)).toBe('A');
+      // The read response carries the commit version it was read at.
+      // This is what downstream subscribers pass back as `parent` on a
+      // CAS-aware workspace:apply.
+      expect(readA.version).toBe(applyA.version);
     }
     const missingFromA = await harness.engine.read('wsengineb001', {
       path: 'b.txt',
@@ -154,6 +158,7 @@ describe('git-engine — distinct workspaceIds isolate to distinct bare repos', 
     expect(readB.found).toBe(true);
     if (readB.found) {
       expect(new TextDecoder().decode(readB.bytes)).toBe('B');
+      expect(readB.version).toBe(applyB.version);
     }
   });
 });
