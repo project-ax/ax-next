@@ -310,6 +310,14 @@ export interface ConversationStore {
     title: string;
     ifNull?: boolean;
   }): Promise<boolean>;
+  /**
+   * Phase A (routines foundation, 2026-05-14). Set `hidden = true`. Filtered
+   * by `deleted_at IS NULL` so tombstoned rows can't be re-hidden into
+   * limbo. Returns true if a row matched (idempotent for already-hidden
+   * rows). Caller has already validated user ownership at the plugin
+   * layer; this method does NOT take userId.
+   */
+  hide(conversationId: string): Promise<boolean>;
 }
 
 export function createConversationStore(
@@ -547,6 +555,16 @@ export function createConversationStore(
         q = q.where('title', 'is', null);
       }
       const result = await q.executeTakeFirst();
+      return Number(result.numUpdatedRows ?? 0n) > 0;
+    },
+
+    async hide(conversationId) {
+      const result = await db
+        .updateTable('conversations_v1_conversations')
+        .set({ hidden: true, updated_at: new Date() })
+        .where('conversation_id', '=', conversationId)
+        .where('deleted_at', 'is', null)
+        .executeTakeFirst();
       return Number(result.numUpdatedRows ?? 0n) > 0;
     },
   };

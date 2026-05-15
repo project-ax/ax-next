@@ -37,6 +37,8 @@ import type {
   GetMetadataInput,
   GetMetadataOutput,
   GetOutput,
+  HideInput,
+  HideOutput,
   ListInput,
   ListOutput,
   SetTitleInput,
@@ -127,6 +129,11 @@ export function createConversationsPlugin(
         // auto-title pipeline (caller is @ax/conversation-titles' Phase
         // F chat:turn-end subscriber) plus future user-driven rename UI.
         'conversations:set-title',
+        // Phase A (routines foundation, 2026-05-14): mark a conversation
+        // hidden so it disappears from list queries but remains readable
+        // by id. Half-wired window OPEN: caller lands in Phase B
+        // (@ax/routines plugin).
+        'conversations:hide',
       ],
       calls: [
         'agents:resolve',
@@ -242,6 +249,15 @@ export function createConversationsPlugin(
         PLUGIN_NAME,
         async (ctx, input) =>
           setConversationTitle(localStore, bus, ctx, input),
+      );
+
+      // Phase A (routines foundation, 2026-05-14). Same ACL posture as
+      // conversations:get — user_id pre-filter, then agents:resolve. Half-
+      // wired window OPEN: caller lands in Phase B (the @ax/routines plugin).
+      bus.registerService<HideInput, HideOutput>(
+        'conversations:hide',
+        PLUGIN_NAME,
+        async (ctx, input) => hideConversation(localStore, bus, ctx, input),
       );
 
       // chat:turn-end subscriber.
@@ -889,5 +905,36 @@ async function deleteConversation(
     'conversations:delete',
   );
   await store.softDelete(input.conversationId);
+}
+
+async function hideConversation(
+  store: ConversationStore,
+  bus: HookBus,
+  ctx: AgentContext,
+  input: HideInput,
+): Promise<void> {
+  const hookName = 'conversations:hide';
+  const conv = await store.getByIdNotDeleted(input.conversationId);
+  if (conv === null || conv.userId !== input.userId) {
+    throw new PluginError({
+      code: 'not-found',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `conversation '${input.conversationId}' not found`,
+    });
+  }
+  await assertAgentReachable(bus, ctx, conv.agentId, input.userId, hookName);
+  const ok = await store.hide(input.conversationId);
+  if (!ok) {
+    // Row vanished between the existence check and the UPDATE (race with
+    // a concurrent soft-delete). Surface as not-found rather than silently
+    // succeeding.
+    throw new PluginError({
+      code: 'not-found',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `conversation '${input.conversationId}' not found`,
+    });
+  }
 }
 

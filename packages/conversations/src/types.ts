@@ -304,6 +304,20 @@ export interface SetTitleOutput {
   updated: boolean;
 }
 
+/**
+ * Phase A (routines foundation, 2026-05-14). Mark a conversation hidden
+ * so it disappears from list-style queries but remains readable by id.
+ * Used by the routines plugin to suppress silenced routine fires without
+ * losing the fire-log row. Idempotent — hiding an already-hidden row is
+ * a no-op success. ACL: same posture as `conversations:get` (user_id
+ * pre-filter, then agents:resolve).
+ */
+export interface HideInput {
+  conversationId: string;
+  userId: string;
+}
+export type HideOutput = void;
+
 // ---------------------------------------------------------------------------
 // Plugin config
 // ---------------------------------------------------------------------------
