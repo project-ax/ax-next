@@ -2,6 +2,7 @@ import { spawn, type SpawnOptions, type ChildProcess } from 'node:child_process'
 import { existsSync } from 'node:fs';
 import { mkdir, rm } from 'node:fs/promises';
 import * as http from 'node:http';
+import { join } from 'node:path';
 import { z } from 'zod';
 import {
   InvalidWorkspaceIdError,
@@ -213,7 +214,22 @@ export async function handleCreateRepo(
     }
   }
 
-  // 7. Done.
+  // 7. Provision the LFS objects directory for this workspace so PUTs
+  // /info/lfs/storage/<oid> land in an existing parent. Subdirectories
+  // (<oid[0:2]>/<oid[2:4]>/) are created lazily by the upload handler.
+  // Failure here is non-fatal — the upload handler also mkdirs its dirname
+  // with recursive:true — but log so an operator can spot persistent issues.
+  try {
+    await mkdir(join(opts.repoRoot, `${workspaceId}.lfs`, 'objects'), {
+      recursive: true,
+    });
+  } catch (err) {
+    process.stderr.write(
+      `workspace-git-server: lfs mkdir failed for '${workspaceId}': ${(err as Error).message}\n`,
+    );
+  }
+
+  // 8. Done.
   return writeJson(res, 201, {
     workspaceId,
     createdAt: new Date().toISOString(),
@@ -320,6 +336,22 @@ export async function handleDeleteRepo(
       `workspace-git-server: rm failed for '${workspaceId}': ${(err as Error).message}\n`,
     );
     return writeError(res, 500, 'internal_error', 'delete failed');
+  }
+
+  // Also remove the workspace's LFS object store so a later recreate with
+  // the same workspaceId doesn't inherit stale blobs (which would leak
+  // storage and could expose old attachment bytes to the new repo).
+  // Failure is non-fatal — the .git tree is gone, which is what the
+  // client actually asked for; log so an operator can spot persistent issues.
+  try {
+    await rm(join(opts.repoRoot, `${workspaceId}.lfs`), {
+      recursive: true,
+      force: true,
+    });
+  } catch (err) {
+    process.stderr.write(
+      `workspace-git-server: lfs rm failed for '${workspaceId}': ${(err as Error).message}\n`,
+    );
   }
 
   if (res.headersSent || res.writableEnded) return;

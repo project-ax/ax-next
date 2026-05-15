@@ -91,7 +91,18 @@ export async function prepareScratchRepo(
   const dispose = async (): Promise<void> => {
     if (disposed) return;
     disposed = true;
-    await rm(tmp, { recursive: true, force: true });
+    // CI on Linux occasionally races our rm against git's deferred close
+    // of pack/index files inside `work.git/objects/`, surfacing as
+    // ENOTEMPTY. Node's `rm` retries on EBUSY/ENOTEMPTY/EPERM when
+    // `maxRetries` is set — 5 × 100ms gives ~500ms of catch-up before
+    // failing for real, well under any test timeout and invisible on
+    // the happy path.
+    await rm(tmp, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100,
+    });
   };
 
   try {

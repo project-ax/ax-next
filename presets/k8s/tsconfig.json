@@ -21,6 +21,7 @@
     { "path": "../../packages/channel-web" },
     { "path": "../../packages/conversation-titles" },
     { "path": "../../packages/conversations" },
+    { "path": "../../packages/attachments" },
     { "path": "../../packages/llm-anthropic" },
     { "path": "../../packages/mcp-client" },
     { "path": "../../packages/memory-strata" },

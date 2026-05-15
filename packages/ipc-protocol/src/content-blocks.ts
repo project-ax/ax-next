@@ -92,6 +92,67 @@ export const ToolResultBlockSchema = z.object({
 });
 export type ToolResultBlock = z.infer<typeof ToolResultBlockSchema>;
 
+/**
+ * Phase 1 (attachments & artifacts, 2026-05-15). Transient reference to a
+ * pending upload staged in `@ax/attachments`'s temp store.
+ *
+ * Lives only on the POST /api/chat/messages request body. The chat-messages
+ * handler resolves `attachmentId` → workspace path via `attachments:commit`
+ * and rewrites this block as an `attachment` block BEFORE the message reaches
+ * conversation storage or any subscriber. Never appears in stored transcripts.
+ *
+ * Boundary review (I1): `attachmentId` is workspace-vocab — opaque server-
+ * minted identifier, no backend leak (no `lfs_oid`, no `bucket`).
+ */
+export const AttachmentRefBlockSchema = z.object({
+  type: z.literal('attachment_ref'),
+  attachmentId: z.string().min(1),
+});
+export type AttachmentRefBlock = z.infer<typeof AttachmentRefBlockSchema>;
+
+/**
+ * Phase 1 (attachments & artifacts, 2026-05-15). User-attached file OR
+ * agent-published artifact as it appears in a stored conversation turn.
+ *
+ * The runner translates this variant to Anthropic-compatible types before
+ * the LLM call (image/* → `image` block; PDF → `document` if SDK supports;
+ * else text mention). This block is the canonical stored form (I4 — single
+ * source of truth); the Anthropic shape is derived per LLM call.
+ *
+ * `path` is workspace-relative (e.g. ".ax/uploads/<conv>/<turn>/file.pdf"),
+ * not sandbox-absolute. Resolution: workspace:read(path) at current HEAD.
+ */
+/**
+ * `path` is workspace-relative — defense-in-depth refusal of absolute
+ * paths, `..` traversal segments, Windows drive roots, and NUL bytes at
+ * the wire boundary so a malformed value can't reach storage or
+ * `attachments:download` and bypass the path-scope ACL.
+ */
+function isWorkspaceRelativePath(value: string): boolean {
+  if (value.startsWith('/') || value.startsWith('\\')) return false;
+  if (value.includes('\0')) return false;
+  if (/^[A-Za-z]:[\\/]/.test(value)) return false;
+  for (const seg of value.split(/[\\/]/)) {
+    if (seg === '..') return false;
+  }
+  return true;
+}
+
+export const AttachmentBlockSchema = z.object({
+  type: z.literal('attachment'),
+  path: z
+    .string()
+    .min(1)
+    .refine(
+      isWorkspaceRelativePath,
+      'path must be workspace-relative (no leading slash, no "..", no drive root, no NUL)',
+    ),
+  displayName: z.string().min(1),
+  mediaType: z.string().min(1),
+  sizeBytes: z.number().int().nonnegative(),
+});
+export type AttachmentBlock = z.infer<typeof AttachmentBlockSchema>;
+
 export const ContentBlockSchema = z.discriminatedUnion('type', [
   TextBlockSchema,
   ThinkingBlockSchema,
@@ -99,5 +160,7 @@ export const ContentBlockSchema = z.discriminatedUnion('type', [
   ToolUseBlockSchema,
   ToolResultBlockSchema,
   ImageBlockSchema,
+  AttachmentRefBlockSchema,
+  AttachmentBlockSchema,
 ]);
 export type ContentBlock = z.infer<typeof ContentBlockSchema>;

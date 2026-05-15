@@ -117,4 +117,71 @@ describe('ContentBlock schema', () => {
       ContentBlockSchema.parse({ type: 'thinking', text: 'hmm' }),
     ).toThrow();
   });
+
+  describe('attachment_ref variant', () => {
+    it('parses a valid attachment_ref block', () => {
+      const block = { type: 'attachment_ref', attachmentId: 'a-123' };
+      const parsed = ContentBlockSchema.parse(block);
+      expect(parsed).toEqual(block);
+    });
+
+    it('rejects attachment_ref without attachmentId', () => {
+      const block = { type: 'attachment_ref' };
+      expect(() => ContentBlockSchema.parse(block)).toThrow();
+    });
+  });
+
+  describe('attachment variant', () => {
+    it('parses a valid attachment block', () => {
+      const block = {
+        type: 'attachment',
+        path: '.ax/uploads/c1/t1/report.pdf',
+        displayName: 'Q4 Report.pdf',
+        mediaType: 'application/pdf',
+        sizeBytes: 482113,
+      };
+      const parsed = ContentBlockSchema.parse(block);
+      expect(parsed).toEqual(block);
+    });
+
+    it('rejects attachment with negative sizeBytes', () => {
+      const block = {
+        type: 'attachment',
+        path: '.ax/uploads/c1/t1/report.pdf',
+        displayName: 'Q4 Report.pdf',
+        mediaType: 'application/pdf',
+        sizeBytes: -1,
+      };
+      expect(() => ContentBlockSchema.parse(block)).toThrow();
+    });
+
+    it('rejects attachment missing displayName', () => {
+      const block = {
+        type: 'attachment',
+        path: '.ax/uploads/c1/t1/report.pdf',
+        mediaType: 'application/pdf',
+        sizeBytes: 100,
+      };
+      expect(() => ContentBlockSchema.parse(block)).toThrow();
+    });
+
+    it.each([
+      '/etc/passwd',
+      '\\windows\\system32',
+      'C:\\Users\\foo.txt',
+      '../escape',
+      'a/../b',
+      'a/b/..',
+      'foo\0bar',
+    ])('rejects non-workspace-relative path %j', (badPath) => {
+      const block = {
+        type: 'attachment',
+        path: badPath,
+        displayName: 'x',
+        mediaType: 'application/octet-stream',
+        sizeBytes: 1,
+      };
+      expect(() => ContentBlockSchema.parse(block)).toThrow();
+    });
+  });
 });

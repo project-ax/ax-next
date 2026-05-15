@@ -20,6 +20,7 @@ import { createCredentialsAdminRoutesPlugin } from '@ax/credentials-admin-routes
 import { createCredentialsOauthPendingPlugin } from '@ax/credentials-oauth-pending';
 import { createIpcHttpPlugin } from '@ax/ipc-http';
 import { createAgentsPlugin } from '@ax/agents';
+import { createAttachmentsPlugin } from '@ax/attachments';
 import { createHttpServerPlugin } from '@ax/http-server';
 import { createAuthBetterPlugin, type AuthBetterConfig } from '@ax/auth-better';
 import { createTeamsPlugin } from '@ax/teams';
@@ -669,6 +670,15 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // shared host key opt out cleanly (cfg.titles undefined → both
   // plugins skipped → conversations stay `title: null`, same as today).
   plugins.push(createConversationsPlugin());
+
+  // ----- 9a. attachments ----------------------------------------------------
+  // Phase 1 of the attachments & artifacts subsystem (2026-05-15). Three
+  // service hooks (attachments:store-temp / commit / download) with a
+  // Postgres-backed temp store and the path-scope ACL inside the download
+  // hook. Half-wired window OPEN through Phase 3 — no caller in Phase 1
+  // invokes these hooks. Phase 2 wires up the agent-side artifact_publish
+  // tool; Phase 3 wires up channel-web's upload + download routes + UI.
+  plugins.push(createAttachmentsPlugin());
 
   // Auto-titling: @ax/llm-anthropic registers `llm:call:anthropic`,
   // @ax/conversation-titles subscribes to `chat:turn-end` and dispatches

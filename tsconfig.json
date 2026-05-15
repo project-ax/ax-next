@@ -39,6 +39,7 @@
     { "path": "packages/teams" },
     { "path": "packages/conversation-titles" },
     { "path": "packages/conversations" },
+    { "path": "packages/attachments" },
     { "path": "packages/credential-proxy" },
     { "path": "packages/credential-proxy-bridge" },
     { "path": "packages/llm-anthropic" },

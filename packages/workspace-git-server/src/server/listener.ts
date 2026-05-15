@@ -15,6 +15,12 @@ import {
   handleReceivePack,
   handleUploadPack,
 } from './smart-http.js';
+import {
+  handleLfsBatch,
+  handleLfsStorageDownload,
+  handleLfsStorageUpload,
+  handleLfsVerify,
+} from './lfs.js';
 
 // ---------------------------------------------------------------------------
 // HTTP listener — TCP front for @ax/workspace-git-server.
@@ -123,6 +129,10 @@ export type RouteMatch =
   | { kind: 'smart-http-discovery'; workspaceId: string; service: string }
   | { kind: 'smart-http-upload-pack'; workspaceId: string }
   | { kind: 'smart-http-receive-pack'; workspaceId: string }
+  | { kind: 'lfs-batch'; workspaceId: string }
+  | { kind: 'lfs-storage-upload'; workspaceId: string; oid: string }
+  | { kind: 'lfs-storage-download'; workspaceId: string; oid: string }
+  | { kind: 'lfs-verify'; workspaceId: string }
   // "/repos/<bad-id>" — path shape recognized but the id segment fails the
   // regex. Listener emits 400 invalid_workspace_id for these (distinguishes
   // a malformed id from a totally-unknown path).
@@ -143,6 +153,15 @@ const SMART_HTTP_UPLOAD_PACK_RE =
   /^\/([a-z0-9][a-z0-9_-]{0,62})\.git\/git-upload-pack$/;
 const SMART_HTTP_RECEIVE_PACK_RE =
   /^\/([a-z0-9][a-z0-9_-]{0,62})\.git\/git-receive-pack$/;
+// LFS endpoints — strict regexes for valid workspace ids, loose for surfacing
+// 400 invalid_workspace_id on bad ids instead of falling through to 503.
+const LFS_BATCH_RE =
+  /^\/([a-z0-9][a-z0-9_-]{0,62})\.git\/info\/lfs\/objects\/batch$/;
+const LFS_STORAGE_RE =
+  /^\/([a-z0-9][a-z0-9_-]{0,62})\.git\/info\/lfs\/storage\/([^/]+)$/;
+const LFS_VERIFY_RE =
+  /^\/([a-z0-9][a-z0-9_-]{0,62})\.git\/info\/lfs\/verify$/;
+const LFS_LOOSE_RE = /^\/[^/]+\/info\/lfs\//;
 
 export function matchRoute(method: string, url: string): RouteMatch {
   // Strip query string for path matching; preserve it for service= parsing.
@@ -176,13 +195,6 @@ export function matchRoute(method: string, url: string): RouteMatch {
       return { kind: 'invalid-repo-id', method: 'DELETE' };
     }
   }
-  if (method === 'PUT' || method === 'PATCH') {
-    // Method gate already rejects PUT/PATCH (only GET/POST/DELETE allowed),
-    // but if we ever loosen that, surface a method-aware response.
-    if (REPO_ID_LOOSE_RE.test(pathname) || REPO_ID_RE.test(pathname)) {
-      return { kind: 'invalid-repo-id', method: 'PUT' };
-    }
-  }
   if (method === 'POST') {
     const up = SMART_HTTP_UPLOAD_PACK_RE.exec(pathname);
     if (up !== null) {
@@ -191,6 +203,53 @@ export function matchRoute(method: string, url: string): RouteMatch {
     const rp = SMART_HTTP_RECEIVE_PACK_RE.exec(pathname);
     if (rp !== null) {
       return { kind: 'smart-http-receive-pack', workspaceId: rp[1]! };
+    }
+    const lb = LFS_BATCH_RE.exec(pathname);
+    if (lb !== null) return { kind: 'lfs-batch', workspaceId: lb[1]! };
+    const lv = LFS_VERIFY_RE.exec(pathname);
+    if (lv !== null) return { kind: 'lfs-verify', workspaceId: lv[1]! };
+    // POST against an LFS-shaped path with an invalid workspaceId surfaces
+    // 400 invalid_workspace_id rather than the generic 503 unknown.
+    if (LFS_LOOSE_RE.test(pathname)) {
+      return { kind: 'invalid-repo-id', method: 'OTHER' };
+    }
+  }
+  if (method === 'PUT') {
+    const ls = LFS_STORAGE_RE.exec(pathname);
+    if (ls !== null) {
+      return {
+        kind: 'lfs-storage-upload',
+        workspaceId: ls[1]!,
+        oid: ls[2]!,
+      };
+    }
+    // PUT against an LFS-shaped path with an invalid workspaceId surfaces
+    // 400 invalid_workspace_id rather than the generic 503.
+    if (LFS_LOOSE_RE.test(pathname)) {
+      return { kind: 'invalid-repo-id', method: 'PUT' };
+    }
+    if (REPO_ID_LOOSE_RE.test(pathname) || REPO_ID_RE.test(pathname)) {
+      return { kind: 'invalid-repo-id', method: 'PUT' };
+    }
+  }
+  if (method === 'PATCH') {
+    if (REPO_ID_LOOSE_RE.test(pathname) || REPO_ID_RE.test(pathname)) {
+      return { kind: 'invalid-repo-id', method: 'PUT' };
+    }
+  }
+  if (method === 'GET') {
+    const ls = LFS_STORAGE_RE.exec(pathname);
+    if (ls !== null) {
+      return {
+        kind: 'lfs-storage-download',
+        workspaceId: ls[1]!,
+        oid: ls[2]!,
+      };
+    }
+    // GET against an LFS-shaped path with an invalid workspaceId surfaces
+    // 400 invalid_workspace_id rather than the generic 503 unknown.
+    if (LFS_LOOSE_RE.test(pathname)) {
+      return { kind: 'invalid-repo-id', method: 'GET' };
     }
   }
   return { kind: 'unknown' };
@@ -307,6 +366,24 @@ function allowedPostContentTypes(match: RouteMatch): readonly string[] {
       return ['application/x-git-upload-pack-request'];
     case 'smart-http-receive-pack':
       return ['application/x-git-receive-pack-request'];
+    case 'lfs-batch':
+    case 'lfs-verify':
+      // Some LFS clients send application/json instead of the standard
+      // application/vnd.git-lfs+json; accept both.
+      return ['application/vnd.git-lfs+json', 'application/json'];
+    case 'invalid-repo-id':
+      // The path is malformed — surface 400 invalid_workspace_id regardless
+      // of body content-type. Path errors take precedence over body errors,
+      // and rejecting the same path as 415 vs 400 depending on what the
+      // client happened to send leaks no useful info but does confuse
+      // diagnostics. Accept the union of every CT we'd accept for valid
+      // routes so dispatch can produce the 400.
+      return [
+        'application/json',
+        'application/vnd.git-lfs+json',
+        'application/x-git-upload-pack-request',
+        'application/x-git-receive-pack-request',
+      ];
     default:
       return ['application/json'];
   }
@@ -321,6 +398,8 @@ function routeUsesJsonBody(match: RouteMatch): boolean {
     case 'smart-http-upload-pack':
     case 'smart-http-receive-pack':
       return false;
+    // lfs-storage-upload is a PUT, not POST — body parser is POST-only so
+    // it can't reach this anyway, but be explicit. Batch + verify are JSON.
     default:
       return true;
   }
@@ -408,8 +487,15 @@ export async function createWorkspaceGitServer(
     const method = req.method ?? '';
     const url = req.url ?? '/';
 
-    // 1. method gate
-    if (method !== 'GET' && method !== 'POST' && method !== 'DELETE') {
+    // 1. method gate — PUT is allowed for LFS storage uploads; matchRoute
+    //    rejects PUTs against any other path with 400 invalid_workspace_id
+    //    or 503 unknown.
+    if (
+      method !== 'GET' &&
+      method !== 'POST' &&
+      method !== 'DELETE' &&
+      method !== 'PUT'
+    ) {
       return writeError(res, 405, 'unsupported_method', 'method not allowed');
     }
 
@@ -624,6 +710,43 @@ async function dispatch(ctx: DispatchContext): Promise<void> {
         repoRoot: ctx.opts.repoRoot,
         registerChild: ctx.registerChild,
       });
+    case 'lfs-batch':
+      return handleLfsBatch(
+        ctx.match.workspaceId,
+        ctx.body,
+        ctx.req,
+        ctx.res,
+        {
+          repoRoot: ctx.opts.repoRoot,
+          baseUrl: lfsBaseUrl(ctx.req, ctx.opts),
+        },
+      );
+    case 'lfs-verify':
+      return handleLfsVerify(ctx.match.workspaceId, ctx.body, ctx.res, {
+        repoRoot: ctx.opts.repoRoot,
+        baseUrl: lfsBaseUrl(ctx.req, ctx.opts),
+      });
+    case 'lfs-storage-upload':
+      return handleLfsStorageUpload(
+        ctx.match.workspaceId,
+        ctx.match.oid,
+        ctx.req,
+        ctx.res,
+        {
+          repoRoot: ctx.opts.repoRoot,
+          baseUrl: lfsBaseUrl(ctx.req, ctx.opts),
+        },
+      );
+    case 'lfs-storage-download':
+      return handleLfsStorageDownload(
+        ctx.match.workspaceId,
+        ctx.match.oid,
+        ctx.res,
+        {
+          repoRoot: ctx.opts.repoRoot,
+          baseUrl: lfsBaseUrl(ctx.req, ctx.opts),
+        },
+      );
     case 'unknown':
       return writeError(
         ctx.res,
@@ -632,4 +755,44 @@ async function dispatch(ctx: DispatchContext): Promise<void> {
         'route not implemented in this slice',
       );
   }
+}
+
+/**
+ * Derive the LFS origin from the inbound request. LFS batch advertises
+ * absolute hrefs for upload/download/verify back to the client, AND the
+ * batch payload includes the bearer header the client will resend on the
+ * follow-up call. Hardcoding `http://` here would downgrade HTTPS
+ * deployments and could leak the token over plaintext on the next hop.
+ *
+ * Scheme resolution, in order:
+ *   1. `X-Forwarded-Proto` (set by the ingress / load balancer that did
+ *      the TLS termination; first value wins if the header is a list).
+ *   2. `req.socket.encrypted` for direct HTTPS (we don't run that today,
+ *      but the check costs nothing).
+ *   3. `http` as the dev/test default.
+ *
+ * Host falls back to `${opts.host}:${opts.port}` if no Host header is
+ * present (defensive — modern HTTP/1.1 + HTTP/2 clients always send it).
+ */
+function lfsBaseUrl(
+  req: http.IncomingMessage,
+  opts: CreateWorkspaceGitServerOptions,
+): string {
+  const host = req.headers.host ?? `${opts.host}:${opts.port}`;
+  const fwd = req.headers['x-forwarded-proto'];
+  const fwdScheme =
+    typeof fwd === 'string'
+      ? fwd.split(',')[0]?.trim().toLowerCase()
+      : Array.isArray(fwd)
+        ? fwd[0]?.toLowerCase()
+        : undefined;
+  const tlsTerminated =
+    (req.socket as { encrypted?: boolean }).encrypted === true;
+  const scheme =
+    fwdScheme === 'https' || fwdScheme === 'http'
+      ? fwdScheme
+      : tlsTerminated
+        ? 'https'
+        : 'http';
+  return `${scheme}://${host}`;
 }
