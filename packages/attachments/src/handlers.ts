@@ -1,8 +1,16 @@
-import { randomUUID } from 'node:crypto';
-import { PluginError, type AgentContext } from '@ax/core';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import {
+  PluginError,
+  type AgentContext,
+  type HookBus,
+  type WorkspaceApplyInput,
+  type WorkspaceApplyOutput,
+} from '@ax/core';
 import type { AttachmentsStore } from './store.js';
 import type {
   AttachmentsConfig,
+  CommitInput,
+  CommitOutput,
   StoreTempInput,
   StoreTempOutput,
 } from './types.js';
@@ -103,6 +111,92 @@ export function createStoreTempHandler(deps: StoreTempDeps) {
       attachmentId,
       sizeBytes: input.bytes.length,
       expiresAt: expiresAt.toISOString(),
+    };
+  };
+}
+
+export interface CommitDeps {
+  store: AttachmentsStore;
+  bus: HookBus;
+}
+
+/**
+ * Collapse a user-supplied filename to a path-safe component. Preserves the
+ * extension; everything outside [A-Za-z0-9._-] collapses to `_`. Prefixed
+ * with 8 random hex chars to prevent collisions inside the same
+ * (conversationId, turnId) tuple — two uploads named "foo.pdf" don't clash.
+ *
+ * Leading dots are stripped so the file never becomes "hidden".
+ */
+function sanitizeFilenameComponent(displayName: string): string {
+  const sanitized = displayName.replace(/[^A-Za-z0-9._-]/g, '_');
+  const collapsedUnderscores = sanitized.replace(/_+/g, '_');
+  // Collapse any run of two-or-more dots to a single dot. This kills the
+  // `..` path-traversal vocabulary while preserving the file extension.
+  const collapsedDots = collapsedUnderscores.replace(/\.{2,}/g, '.');
+  const noDotLead = collapsedDots.replace(/^\.+/, '');
+  const prefix = randomBytes(4).toString('hex'); // 8 hex chars
+  return `${prefix}__${noDotLead}`;
+}
+
+export function createCommitHandler(deps: CommitDeps) {
+  return async function commit(
+    ctx: AgentContext,
+    input: CommitInput,
+  ): Promise<CommitOutput> {
+    const row = await deps.store.getTemp(input.attachmentId);
+    if (!row) {
+      throw new PluginError({
+        code: 'not-found',
+        plugin: PLUGIN_NAME,
+        hookName: 'attachments:commit',
+        message: `attachmentId '${input.attachmentId}' not found or expired`,
+      });
+    }
+    if (row.userId !== ctx.userId) {
+      // I1: leave the temp row intact so the victim's later legitimate
+      // redemption isn't disrupted by a hostile probe.
+      throw new PluginError({
+        code: 'forbidden',
+        plugin: PLUGIN_NAME,
+        hookName: 'attachments:commit',
+        message: 'attachment owned by a different user',
+      });
+    }
+
+    const filenameComponent = sanitizeFilenameComponent(row.displayName);
+    const path = `.ax/uploads/${input.conversationId}/${input.turnId}/${filenameComponent}`;
+    const sha256 = createHash('sha256').update(row.bytes).digest('hex');
+
+    await deps.bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>(
+      'workspace:apply',
+      ctx,
+      {
+        changes: [{ path, kind: 'put', content: row.bytes }],
+        // parent: null — no CAS check. workspace:apply applies on top of
+        // current HEAD. CAS belongs to flows that need optimistic locking
+        // (e.g. parallel agent edits); attachments are write-once-on-commit.
+        parent: null,
+        reason: `attachments:commit ${input.attachmentId}`,
+      },
+    );
+
+    // Best-effort delete; janitor reaps any leftovers.
+    try {
+      await deps.store.deleteTemp(input.attachmentId);
+    } catch (err) {
+      ctx.logger.warn('attachments_commit_temp_delete_failed', {
+        attachmentId: input.attachmentId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    return {
+      path,
+      sha256,
+      mediaType: row.mediaType,
+      sizeBytes: row.sizeBytes,
+      displayName: row.displayName,
     };
   };
 }
