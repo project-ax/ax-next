@@ -75,6 +75,7 @@ async function makeHarness(captured: Captured, replyOnInvoke: { contentBlocks: u
         // one-shot router runs in the same tick.
         await busRef.current!.bus.fire('chat:turn-end', ctx, {
           reqId: ctx.reqId,
+          turnId: 'fake-uuid-1',
           contentBlocks: replyOnInvoke.contentBlocks,
         });
         return { kind: 'complete', messages: [] };
@@ -148,11 +149,11 @@ describe('Phase B canary — routine creates → fires → silence path closes w
 
     expect(captured.invokes).toHaveLength(1);
     expect(captured.invokes[0]!.message.content).toBe('check in');
-    // chat:turn-end currently has no `turnId` in its wire schema
-    // (ipc-protocol `EventTurnEndSchema`), so drop-turn is safely skipped
-    // — see plugin.ts. Hide still runs because per-fire conversations get
-    // hidden regardless of whether the silenced turn could be removed.
-    expect(captured.drops).toHaveLength(0);
+    // chat:turn-end now carries turnId (Phase 2), so the silence path
+    // drops the turn via conversations:drop-turn before hiding the
+    // conversation.
+    expect(captured.drops).toHaveLength(1);
+    expect(captured.drops[0]!.turnId).toBe('fake-uuid-1');
     expect(captured.hides).toHaveLength(1);
 
     const k = new Kysely<RoutinesDatabase>({
