@@ -138,6 +138,9 @@ describe('attachments:store-temp handler', () => {
     ).rejects.toMatchObject({ code: 'invalid-payload' });
   });
 
+  // Pre-seeds a 200 MB Buffer + bytea insert before the assertion runs. On
+  // resource-constrained CI runners that takes longer than vitest's 5s
+  // default; bump to 30s. The test itself is correct.
   it('rejects when over per-user quota with too-many-pending', async () => {
     const { handler, store } = await freshSetup();
     const ctx = makeCtx('u-overlimit');
@@ -156,7 +159,7 @@ describe('attachments:store-temp handler', () => {
         mediaType: 'application/octet-stream',
       }),
     ).rejects.toMatchObject({ code: 'too-many-pending' });
-  });
+  }, 30_000);
 
   it('honors image/* wildcard in the allowlist', async () => {
     const { store } = await freshSetup();
