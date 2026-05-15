@@ -16,6 +16,8 @@ import { createCredentialsPlugin } from '@ax/credentials';
 import { createCredentialProxyPlugin } from '@ax/credential-proxy';
 import { auditLogPlugin } from '@ax/audit-log';
 import { createValidatorSkillPlugin } from '@ax/validator-skill';
+import { createValidatorRoutinePlugin } from '@ax/validator-routine';
+import { createRoutinesPlugin } from '@ax/routines';
 import { createSandboxSubprocessPlugin } from '@ax/sandbox-subprocess';
 import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
 import { createIpcServerPlugin } from '@ax/ipc-server';
@@ -193,6 +195,12 @@ export async function main(opts: MainOptions): Promise<number> {
   // parity — same plugin set so dev runs catch the same SKILL.md
   // shape failures production would.
   plugins.push(createValidatorSkillPlugin());
+
+  // Phase B (2026-05-14). Routines core — interval/cron scheduling, plus
+  // silence-token logic via Phase A's conversations:hide / drop-turn /
+  // find-or-create hooks.
+  plugins.push(createValidatorRoutinePlugin());
+  plugins.push(createRoutinesPlugin());
 
   // Sandbox. Config only admits 'subprocess' today; the switch is future-
   // proofing for when alternate sandbox providers land.

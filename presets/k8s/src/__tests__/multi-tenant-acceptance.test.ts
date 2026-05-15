@@ -129,6 +129,11 @@ const PLUGINS_TO_DROP = new Set<string>([
   // dependent (http:register-route). Both are dropped above. Static wiring is
   // pinned in preset.test.ts; drop here so these sub-tests don't need postgres.
   '@ax/onboarding',
+  // Routines core: postgres-backed (calls database:get-instance in init).
+  // The tick engine and canary fire path are exercised by the Phase B
+  // canary test in routines/__tests__; drop here so multi-tenant chat-path
+  // canaries don't need postgres.
+  '@ax/routines',
 ]);
 
 const AGENTS_RESOLVE_PLUGIN_NAME = '@ax/preset-k8s/test/discriminating-agents-resolve';

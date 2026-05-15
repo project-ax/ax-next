@@ -496,6 +496,9 @@ importers:
       '@ax/preset-k8s':
         specifier: workspace:*
         version: link:../../presets/k8s
+      '@ax/routines':
+        specifier: workspace:*
+        version: link:../routines
       '@ax/sandbox-subprocess':
         specifier: workspace:*
         version: link:../sandbox-subprocess
@@ -511,6 +514,9 @@ importers:
       '@ax/test-harness':
         specifier: workspace:*
         version: link:../test-harness
+      '@ax/validator-routine':
+        specifier: workspace:*
+        version: link:../validator-routine
       '@ax/validator-skill':
         specifier: workspace:*
         version: link:../validator-skill
@@ -1249,6 +1255,12 @@ importers:
       '@testcontainers/postgresql':
         specifier: ^10.10.0
         version: 10.28.0
+      '@types/pg':
+        specifier: 8.20.0
+        version: 8.20.0
+      pg:
+        specifier: 8.20.0
+        version: 8.20.0
       typescript:
         specifier: ^5.4.0
         version: 5.9.3
@@ -1720,6 +1732,9 @@ importers:
       '@ax/onboarding':
         specifier: workspace:*
         version: link:../../packages/onboarding
+      '@ax/routines':
+        specifier: workspace:*
+        version: link:../../packages/routines
       '@ax/sandbox-k8s':
         specifier: workspace:*
         version: link:../../packages/sandbox-k8s
@@ -1735,6 +1750,9 @@ importers:
       '@ax/teams':
         specifier: workspace:*
         version: link:../../packages/teams
+      '@ax/validator-routine':
+        specifier: workspace:*
+        version: link:../../packages/validator-routine
       '@ax/validator-skill':
         specifier: workspace:*
         version: link:../../packages/validator-skill

@@ -12,16 +12,21 @@ function localParts(d: Date, tz: string): LocalHm {
     year: 'numeric', month: '2-digit', day: '2-digit',
     hour: '2-digit', minute: '2-digit', hour12: false,
   });
-  const parts = Object.fromEntries(
+  const rawParts = Object.fromEntries(
     fmt.formatToParts(d).map((p) => [p.type, p.value]),
   ) as Record<string, string>;
+  const hour = rawParts['hour'] ?? '0';
+  const minute = rawParts['minute'] ?? '0';
+  const year = rawParts['year'] ?? '0';
+  const month = rawParts['month'] ?? '0';
+  const day = rawParts['day'] ?? '0';
   return {
-    hour: parts.hour === '24' ? 0 : Number.parseInt(parts.hour, 10),
-    minute: Number.parseInt(parts.minute, 10),
+    hour: hour === '24' ? 0 : Number.parseInt(hour, 10),
+    minute: Number.parseInt(minute, 10),
     ymd: {
-      y: Number.parseInt(parts.year, 10),
-      m: Number.parseInt(parts.month, 10),
-      d: Number.parseInt(parts.day, 10),
+      y: Number.parseInt(year, 10),
+      m: Number.parseInt(month, 10),
+      d: Number.parseInt(day, 10),
     },
   };
 }

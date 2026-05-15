@@ -45,7 +45,9 @@
     "@ax/memory-strata": "workspace:*",
     "@ax/memory-strata-index-sqlite": "workspace:*",
     "@ax/preset-k8s": "workspace:*",
+    "@ax/routines": "workspace:*",
     "@ax/test-harness": "workspace:*",
+    "@ax/validator-routine": "workspace:*",
     "@ax/validator-skill": "workspace:*",
     "zod": "^3.23.8"
   },

@@ -30,7 +30,9 @@
     { "path": "../memory-strata" },
     { "path": "../memory-strata-index-sqlite" },
     { "path": "../test-harness" },
+    { "path": "../validator-routine" },
     { "path": "../validator-skill" },
+    { "path": "../routines" },
     { "path": "../../presets/k8s" }
   ]
 }
