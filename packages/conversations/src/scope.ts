@@ -11,7 +11,12 @@ import type { ConversationDatabase } from './migrations.js';
  *
  * Returns a Kysely query builder pre-filtered to:
  *   - rows owned by `scope.userId` (user_id matches),
- *   - non-tombstoned rows (deleted_at IS NULL).
+ *   - non-tombstoned rows (deleted_at IS NULL),
+ *   - visible rows (hidden = false). Routine fire-log conversations
+ *     marked hidden by `conversations:hide` are excluded from every
+ *     user-facing list path; they remain readable by id via
+ *     `getByIdNotDeleted` so the routines plugin can still write
+ *     fire-log rows that reference them.
  *
  * Why a builder rather than `executeAll(...)`: callers need to chain
  * `.orderBy`, `.limit`, `.where('agent_id', '=', …)` etc. without
@@ -35,5 +40,6 @@ export function scopedConversations(
     .selectFrom('conversations_v1_conversations')
     .selectAll('conversations_v1_conversations')
     .where('user_id', '=', scope.userId)
-    .where('deleted_at', 'is', null);
+    .where('deleted_at', 'is', null)
+    .where('hidden', '=', false);
 }

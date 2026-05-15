@@ -30,6 +30,20 @@ describe('@ax/conversations plugin manifest', () => {
         // Phase F (2026-05-03): post-creation title update for the
         // auto-title pipeline + future user-driven rename UI.
         'conversations:set-title',
+        // Phase A (routines foundation, 2026-05-14): mark a conversation
+        // hidden so it disappears from list queries but remains readable
+        // by id. Half-wired window OPEN: caller lands in Phase B
+        // (@ax/routines plugin).
+        'conversations:hide',
+        // Phase A (routines foundation, 2026-05-14): drop a single turn
+        // from a conversation's runner-native transcript. Ships as a stub
+        // — runner-native jsonl rewrite lands in Phase B alongside its
+        // first caller. Half-wired window OPEN through Phase B.
+        'conversations:drop-turn',
+        // Phase A (routines foundation, 2026-05-14): stable per-(user,
+        // agent, key) conversation lookup for `conversation: shared`
+        // routines. Half-wired window OPEN: caller lands in Phase B.
+        'conversations:find-or-create',
       ],
       // database:get-instance is hard — we run our own migration on init.
       // agents:resolve is hard — every hook gates through it (Invariant J1).

@@ -389,6 +389,25 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
   });
 });
 
+// Phase A routines foundation (2026-05-14). Closes the manifest-level
+// half-wired window for the three new conversations hooks. The
+// drop-turn hook is a stub (throws not-implemented); its full impl
+// lands in Phase B alongside its first caller (the @ax/routines
+// plugin). The hide + find-or-create hooks have no caller in Phase A
+// either, but they're production-ready — their callers also land in
+// Phase B. The manifest assertion below confirms all three are
+// declared by the loaded @ax/conversations plugin in the k8s preset.
+describe('@ax/preset-k8s — conversations Phase A routines hooks (half-wired window declared)', () => {
+  it('@ax/conversations registers conversations:hide, conversations:drop-turn, conversations:find-or-create', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const conversations = plugins.find((p) => p.manifest.name === '@ax/conversations');
+    expect(conversations, '@ax/conversations plugin').toBeDefined();
+    expect(conversations!.manifest.registers).toContain('conversations:hide');
+    expect(conversations!.manifest.registers).toContain('conversations:drop-turn');
+    expect(conversations!.manifest.registers).toContain('conversations:find-or-create');
+  });
+});
+
 describe('@ax/preset-k8s workspace backend selection', () => {
   // Catches the wiring gap that motivated Task 19. Before this slice, the
   // preset always pushed @ax/workspace-git regardless of config; the http

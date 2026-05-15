@@ -31,12 +31,18 @@ import type {
   CreateOutput,
   DeleteInput,
   DeleteOutput,
+  DropTurnInput,
+  DropTurnOutput,
+  FindOrCreateInput,
+  FindOrCreateOutput,
   GetByReqIdInput,
   GetByReqIdOutput,
   GetInput,
   GetMetadataInput,
   GetMetadataOutput,
   GetOutput,
+  HideInput,
+  HideOutput,
   ListInput,
   ListOutput,
   SetTitleInput,
@@ -127,6 +133,24 @@ export function createConversationsPlugin(
         // auto-title pipeline (caller is @ax/conversation-titles' Phase
         // F chat:turn-end subscriber) plus future user-driven rename UI.
         'conversations:set-title',
+        // Phase A (routines foundation, 2026-05-14): mark a conversation
+        // hidden so it disappears from list queries but remains readable
+        // by id. Half-wired window OPEN: caller lands in Phase B
+        // (@ax/routines plugin).
+        'conversations:hide',
+        // Phase A (routines foundation, 2026-05-14): drop a single turn
+        // from a conversation's runner-native transcript. Ships as a stub
+        // — the runner-native jsonl rewrite path lands in Phase B
+        // alongside its first caller (the routines plugin's silence-token
+        // logic). Half-wired window OPEN through Phase B.
+        'conversations:drop-turn',
+        // Phase A (routines foundation, 2026-05-14): stable per-(user,
+        // agent, key) conversation lookup for `conversation: shared`
+        // routines. Returns { conversation, created } so callers know
+        // which path ran. ACL gate (J1) runs BEFORE the SELECT to
+        // prevent foreign callers from probing for a routine's
+        // externalKey. Half-wired window OPEN: caller lands in Phase B.
+        'conversations:find-or-create',
       ],
       calls: [
         'agents:resolve',
@@ -242,6 +266,43 @@ export function createConversationsPlugin(
         PLUGIN_NAME,
         async (ctx, input) =>
           setConversationTitle(localStore, bus, ctx, input),
+      );
+
+      // Phase A (routines foundation, 2026-05-14). Same ACL posture as
+      // conversations:get — user_id pre-filter, then agents:resolve. Half-
+      // wired window OPEN: caller lands in Phase B (the @ax/routines plugin).
+      bus.registerService<HideInput, HideOutput>(
+        'conversations:hide',
+        PLUGIN_NAME,
+        async (ctx, input) => hideConversation(localStore, bus, ctx, input),
+      );
+
+      // Phase A (routines foundation, 2026-05-14). Stub — Phase B lands the
+      // runner-native jsonl rewrite path with its first caller. Half-wired
+      // window for this hook stays OPEN through Phase B.
+      bus.registerService<DropTurnInput, DropTurnOutput>(
+        'conversations:drop-turn',
+        PLUGIN_NAME,
+        async (_ctx, _input) => {
+          throw new PluginError({
+            code: 'not-implemented',
+            plugin: PLUGIN_NAME,
+            hookName: 'conversations:drop-turn',
+            message:
+              'conversations:drop-turn ships as a Phase A stub; runner-native jsonl rewrite lands in Phase B alongside its first caller',
+          });
+        },
+      );
+
+      // Phase A (routines foundation, 2026-05-14). Stable per-(user, agent,
+      // key) conversation lookup for `conversation: shared` routines. ACL
+      // gate (J1) runs BEFORE the SELECT to prevent foreign callers from
+      // probing for the existence of a routine's externalKey. Half-wired
+      // window OPEN: caller lands in Phase B.
+      bus.registerService<FindOrCreateInput, FindOrCreateOutput>(
+        'conversations:find-or-create',
+        PLUGIN_NAME,
+        async (ctx, input) => findOrCreateConversation(localStore, bus, ctx, input, resolvedConfig),
       );
 
       // chat:turn-end subscriber.
@@ -889,5 +950,66 @@ async function deleteConversation(
     'conversations:delete',
   );
   await store.softDelete(input.conversationId);
+}
+
+async function findOrCreateConversation(
+  store: ConversationStore,
+  bus: HookBus,
+  ctx: AgentContext,
+  input: FindOrCreateInput,
+  cfg: ResolvedConversationsConfig,
+): Promise<FindOrCreateOutput> {
+  const hookName = 'conversations:find-or-create';
+  // J1: ACL gate BEFORE any SELECT. Existence-leak prevention —
+  // a foreign caller cannot probe for a routine's externalKey.
+  const agent = await assertAgentReachable(
+    bus, ctx, input.agentId, input.userId, hookName,
+  );
+  const title = validateTitle(input.fallback.title ?? null);
+  const workspaceRef = validateWorkspaceRefForFreeze(agent.workspaceRef);
+  const result = await store.findOrCreate({
+    userId: input.userId,
+    agentId: input.agentId,
+    externalKey: input.externalKey,
+    fallback: {
+      userId: input.userId,
+      agentId: input.agentId,
+      title,
+      runnerType: cfg.defaultRunnerType,
+      workspaceRef,
+    },
+  });
+  return result;
+}
+
+async function hideConversation(
+  store: ConversationStore,
+  bus: HookBus,
+  ctx: AgentContext,
+  input: HideInput,
+): Promise<void> {
+  const hookName = 'conversations:hide';
+  const conv = await store.getByIdNotDeleted(input.conversationId);
+  if (conv === null || conv.userId !== input.userId) {
+    throw new PluginError({
+      code: 'not-found',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `conversation '${input.conversationId}' not found`,
+    });
+  }
+  await assertAgentReachable(bus, ctx, conv.agentId, input.userId, hookName);
+  const ok = await store.hide(input.conversationId);
+  if (!ok) {
+    // Row vanished between the existence check and the UPDATE (race with
+    // a concurrent soft-delete). Surface as not-found rather than silently
+    // succeeding.
+    throw new PluginError({
+      code: 'not-found',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `conversation '${input.conversationId}' not found`,
+    });
+  }
 }
 
