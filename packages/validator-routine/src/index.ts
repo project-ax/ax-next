@@ -3,6 +3,7 @@ export {
   parseRoutineFrontmatter,
   parseRoutineFrontmatterBytes,
   durationToSeconds,
+  type ActiveHours,
   type RoutineFrontmatterFields,
   type RoutineFrontmatterResult,
   type TriggerSpec,
