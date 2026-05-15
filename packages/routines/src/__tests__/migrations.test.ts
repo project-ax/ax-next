@@ -63,7 +63,6 @@ describe('runRoutinesMigration', () => {
 
   it('routines_v1_due index excludes null next_run_at', async () => {
     await runRoutinesMigration(db);
-    const def = await db.introspection.getTables();
     const idxes = await sql<{ indexname: string }>`
       SELECT indexname FROM pg_indexes WHERE tablename = 'routines_v1_definitions'
     `.execute(db);

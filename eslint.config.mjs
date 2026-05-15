@@ -28,8 +28,17 @@
 //                           manifest, no hooks, no kernel dependency — same
 //                           library-not-plugin shape as the other allow-listed
 //                           packages above.
+//   @ax/validator-routine — pure-function routine frontmatter parser
+//                           (parseRoutineFrontmatter/Bytes + durationToSeconds)
+//                           shared between the validator plugin (workspace:
+//                           pre-apply veto) and the @ax/routines plugin
+//                           (spec_hash + initial next_run_at). The parser IS
+//                           the boundary contract; the validator's plugin
+//                           manifest is one consumer of that contract among
+//                           several. Routines imports only the parser; no
+//                           plugin runtime is reached.
 //
-// These last four are shared-import expansions of the kernel-only allowlist
+// These last five are shared-import expansions of the kernel-only allowlist
 // and form the documented one-way boundary between host-side plugins and
 // sandbox-side code.
 //
@@ -109,10 +118,11 @@ export default tseslint.config(
                 '!@ax/workspace-protocol',
                 '!@ax/ipc-core',
                 '!@ax/agent-claude-sdk-runner-host',
+                '!@ax/validator-routine',
               ],
               allowTypeImports: true,
               message:
-                'Cross-plugin runtime imports are forbidden. Plugins communicate through the hook bus only. See CLAUDE.md invariant 2. Type-only imports (`import type {...}` / `export type {...}`) are allowed — boundary types are how plugins agree on a shared contract without runtime coupling. The only @ax/* runtime imports allowed in plugin code are @ax/core, @ax/test-harness, @ax/ipc-protocol + @ax/workspace-protocol (wire schemas), @ax/ipc-core (transport-agnostic IPC library), and @ax/agent-claude-sdk-runner-host (pure-function jsonl→Turn[] parser).',
+                'Cross-plugin runtime imports are forbidden. Plugins communicate through the hook bus only. See CLAUDE.md invariant 2. Type-only imports (`import type {...}` / `export type {...}`) are allowed — boundary types are how plugins agree on a shared contract without runtime coupling. The only @ax/* runtime imports allowed in plugin code are @ax/core, @ax/test-harness, @ax/ipc-protocol + @ax/workspace-protocol (wire schemas), @ax/ipc-core (transport-agnostic IPC library), @ax/agent-claude-sdk-runner-host (pure-function jsonl→Turn[] parser), and @ax/validator-routine (pure-function routine frontmatter parser shared between the validator and the routines plugin).',
             },
           ],
         },

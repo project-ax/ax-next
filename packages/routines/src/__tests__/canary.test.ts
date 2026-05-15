@@ -36,7 +36,7 @@ interface Captured {
 
 async function makeHarness(captured: Captured, replyOnInvoke: { contentBlocks: unknown[] }) {
   let nextConvId = 1;
-  let busRef: TestHarness | undefined;
+  const busRef: { current: TestHarness | undefined } = { current: undefined };
   const h = await createTestHarness({
     services: {
       'agents:resolve': async (_ctx, input: unknown) => ({
@@ -57,7 +57,7 @@ async function makeHarness(captured: Captured, replyOnInvoke: { contentBlocks: u
         captured.invokes.push({ message: msg, reqId: ctx.reqId ?? '' });
         // Synchronously fire chat:turn-end so the routines plugin's
         // one-shot router runs in the same tick.
-        await busRef!.bus.fire('chat:turn-end', ctx, {
+        await busRef.current!.bus.fire('chat:turn-end', ctx, {
           reqId: ctx.reqId,
           contentBlocks: replyOnInvoke.contentBlocks,
         });
@@ -69,7 +69,7 @@ async function makeHarness(captured: Captured, replyOnInvoke: { contentBlocks: u
       createRoutinesPlugin({ tickIntervalMs: 60_000 /* loop effectively idle */ }),
     ],
   });
-  busRef = h;
+  busRef.current = h;
   harnesses.push(h);
   return h;
 }

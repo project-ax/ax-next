@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { HookBus, makeAgentContext, PluginError, type AgentContext } from '@ax/core';
+import { HookBus, PluginError, type AgentContext } from '@ax/core';
 import { createFireRoutine, type FireDeps, type PendingFires } from '../fire.js';
 import type { RoutineRow } from '../types.js';
 
