@@ -210,4 +210,73 @@ describe('AttachmentsStore', () => {
       expect(count).toBe(0);
     });
   });
+
+  describe('insertTempIfWithinQuota', () => {
+    it('inserts when room is available', async () => {
+      const { store } = await freshDbAndStore();
+      const result = await store.insertTempIfWithinQuota(
+        {
+          attachmentId: 'a-1', userId: 'u-1',
+          bytes: Buffer.from('hi'), displayName: 'x',
+          mediaType: 'text/plain', sizeBytes: 2,
+          expiresAt: new Date(Date.now() + 60_000),
+        },
+        100,
+      );
+      expect(result).toEqual({ ok: true });
+      const row = await store.getTemp('a-1');
+      expect(row).not.toBeNull();
+    });
+
+    it('returns quota-exceeded and inserts nothing when over the limit', async () => {
+      const { store } = await freshDbAndStore();
+      await store.insertTemp({
+        attachmentId: 'a-pre', userId: 'u-q',
+        bytes: Buffer.alloc(90), displayName: 'pre',
+        mediaType: 'application/octet-stream', sizeBytes: 90,
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+      const result = await store.insertTempIfWithinQuota(
+        {
+          attachmentId: 'a-over', userId: 'u-q',
+          bytes: Buffer.alloc(20), displayName: 'over',
+          mediaType: 'application/octet-stream', sizeBytes: 20,
+          expiresAt: new Date(Date.now() + 60_000),
+        },
+        100,
+      );
+      expect(result).toEqual({ ok: false, reason: 'quota-exceeded' });
+      expect(await store.getTemp('a-over')).toBeNull();
+    });
+
+    it('serializes concurrent inserts so the second goes over and rolls back', async () => {
+      const { store } = await freshDbAndStore();
+      // Each insert is 60 bytes; quota is 100. Sequentially the first fits,
+      // the second should not. Running both concurrently must NOT result in
+      // both committing — exactly one wins.
+      const [a, b] = await Promise.all([
+        store.insertTempIfWithinQuota(
+          {
+            attachmentId: 'a-conc1', userId: 'u-c',
+            bytes: Buffer.alloc(60), displayName: '1',
+            mediaType: 'application/octet-stream', sizeBytes: 60,
+            expiresAt: new Date(Date.now() + 60_000),
+          },
+          100,
+        ),
+        store.insertTempIfWithinQuota(
+          {
+            attachmentId: 'a-conc2', userId: 'u-c',
+            bytes: Buffer.alloc(60), displayName: '2',
+            mediaType: 'application/octet-stream', sizeBytes: 60,
+            expiresAt: new Date(Date.now() + 60_000),
+          },
+          100,
+        ),
+      ]);
+      const okCount = [a, b].filter((r) => r.ok).length;
+      expect(okCount).toBe(1);
+      expect(await store.sumPendingBytesForUser('u-c')).toBe(60);
+    });
+  });
 });

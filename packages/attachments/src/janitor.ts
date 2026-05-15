@@ -25,6 +25,15 @@ export interface JanitorHandle {
  * sweep so teardown is clean.
  */
 export function startJanitor(deps: JanitorDeps): JanitorHandle {
+  // Reject non-positive intervals up front — `setInterval` with 0 or a
+  // non-finite ms value will pin a CPU and (with our `sweep` body)
+  // hammer the DB, so fail fast on misconfiguration.
+  if (!Number.isFinite(deps.intervalSeconds) || deps.intervalSeconds <= 0) {
+    throw new Error(
+      `attachments janitor intervalSeconds must be > 0 (got ${String(deps.intervalSeconds)})`,
+    );
+  }
+
   let inFlight: Promise<void> | null = null;
   let stopped = false;
 

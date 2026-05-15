@@ -164,5 +164,24 @@ describe('ContentBlock schema', () => {
       };
       expect(() => ContentBlockSchema.parse(block)).toThrow();
     });
+
+    it.each([
+      '/etc/passwd',
+      '\\windows\\system32',
+      'C:\\Users\\foo.txt',
+      '../escape',
+      'a/../b',
+      'a/b/..',
+      'foo\0bar',
+    ])('rejects non-workspace-relative path %j', (badPath) => {
+      const block = {
+        type: 'attachment',
+        path: badPath,
+        displayName: 'x',
+        mediaType: 'application/octet-stream',
+        sizeBytes: 1,
+      };
+      expect(() => ContentBlockSchema.parse(block)).toThrow();
+    });
   });
 });

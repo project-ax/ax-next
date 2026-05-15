@@ -186,7 +186,7 @@ describe('LFS endpoints', () => {
     expect(res.status).toBe(404);
   });
 
-  it('rejects unknown workspaceId with 400', async () => {
+  it('rejects unknown workspaceId with 400 on PUT storage', async () => {
     const oid = 'a'.repeat(64);
     const res = await fetch(
       `${baseUrl}/INVALID..ID/info/lfs/storage/${oid}`,
@@ -197,5 +197,110 @@ describe('LFS endpoints', () => {
       },
     );
     expect(res.status).toBe(400);
+  });
+
+  it('rejects unknown workspaceId with 400 on POST batch', async () => {
+    const res = await fetch(
+      `${baseUrl}/INVALID..ID/info/lfs/objects/batch`,
+      {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${TEST_TOKEN}`,
+          'content-type': 'application/vnd.git-lfs+json',
+        },
+        body: JSON.stringify({ operation: 'download', transfers: ['basic'], objects: [] }),
+      },
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects unknown workspaceId with 400 on POST verify', async () => {
+    const res = await fetch(
+      `${baseUrl}/INVALID..ID/info/lfs/verify`,
+      {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${TEST_TOKEN}`,
+          'content-type': 'application/vnd.git-lfs+json',
+        },
+        body: JSON.stringify({ oid: 'a'.repeat(64), size: 1 }),
+      },
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects unknown workspaceId with 400 on GET storage', async () => {
+    const oid = 'a'.repeat(64);
+    const res = await fetch(
+      `${baseUrl}/INVALID..ID/info/lfs/storage/${oid}`,
+      { headers: { authorization: `Bearer ${TEST_TOKEN}` } },
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('honors X-Forwarded-Proto: https for the advertised batch hrefs', async () => {
+    const blob = Buffer.from('https batch');
+    const oid = createHash('sha256').update(blob).digest('hex');
+    const res = await fetch(
+      `${baseUrl}/${workspaceId}.git/info/lfs/objects/batch`,
+      {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${TEST_TOKEN}`,
+          'content-type': 'application/vnd.git-lfs+json',
+          'x-forwarded-proto': 'https',
+        },
+        body: JSON.stringify({
+          operation: 'upload',
+          transfers: ['basic'],
+          objects: [{ oid, size: blob.length }],
+        }),
+      },
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.objects[0].actions.upload.href).toMatch(/^https:\/\//);
+    expect(body.objects[0].actions.verify.href).toMatch(/^https:\/\//);
+  });
+
+  it('removes the .lfs object store when the repo is deleted', async () => {
+    const blob = Buffer.from('to-be-deleted');
+    const oid = createHash('sha256').update(blob).digest('hex');
+    const delWorkspace = 'wsdel';
+    await fetch(`${baseUrl}/repos`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${TEST_TOKEN}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ workspaceId: delWorkspace }),
+    });
+    const uploadRes = await fetch(
+      `${baseUrl}/${delWorkspace}.git/info/lfs/storage/${oid}`,
+      {
+        method: 'PUT',
+        headers: { authorization: `Bearer ${TEST_TOKEN}` },
+        body: blob,
+      },
+    );
+    expect(uploadRes.status).toBe(200);
+
+    const delRes = await fetch(`${baseUrl}/repos/${delWorkspace}`, {
+      method: 'DELETE',
+      headers: { authorization: `Bearer ${TEST_TOKEN}` },
+    });
+    expect(delRes.status).toBe(204);
+
+    // .lfs directory is gone, so a download for the previously-uploaded OID
+    // now 404s.
+    const downloadRes = await fetch(
+      `${baseUrl}/${delWorkspace}.git/info/lfs/storage/${oid}`,
+      { headers: { authorization: `Bearer ${TEST_TOKEN}` } },
+    );
+    expect(downloadRes.status).toBe(404);
+
+    // And the on-disk .lfs directory is removed.
+    const { existsSync } = await import('node:fs');
+    expect(existsSync(join(repoRoot, `${delWorkspace}.lfs`))).toBe(false);
   });
 });

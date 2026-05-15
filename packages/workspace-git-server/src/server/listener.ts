@@ -208,6 +208,11 @@ export function matchRoute(method: string, url: string): RouteMatch {
     if (lb !== null) return { kind: 'lfs-batch', workspaceId: lb[1]! };
     const lv = LFS_VERIFY_RE.exec(pathname);
     if (lv !== null) return { kind: 'lfs-verify', workspaceId: lv[1]! };
+    // POST against an LFS-shaped path with an invalid workspaceId surfaces
+    // 400 invalid_workspace_id rather than the generic 503 unknown.
+    if (LFS_LOOSE_RE.test(pathname)) {
+      return { kind: 'invalid-repo-id', method: 'OTHER' };
+    }
   }
   if (method === 'PUT') {
     const ls = LFS_STORAGE_RE.exec(pathname);
@@ -240,6 +245,11 @@ export function matchRoute(method: string, url: string): RouteMatch {
         workspaceId: ls[1]!,
         oid: ls[2]!,
       };
+    }
+    // GET against an LFS-shaped path with an invalid workspaceId surfaces
+    // 400 invalid_workspace_id rather than the generic 503 unknown.
+    if (LFS_LOOSE_RE.test(pathname)) {
+      return { kind: 'invalid-repo-id', method: 'GET' };
     }
   }
   return { kind: 'unknown' };
@@ -361,6 +371,19 @@ function allowedPostContentTypes(match: RouteMatch): readonly string[] {
       // Some LFS clients send application/json instead of the standard
       // application/vnd.git-lfs+json; accept both.
       return ['application/vnd.git-lfs+json', 'application/json'];
+    case 'invalid-repo-id':
+      // The path is malformed — surface 400 invalid_workspace_id regardless
+      // of body content-type. Path errors take precedence over body errors,
+      // and rejecting the same path as 415 vs 400 depending on what the
+      // client happened to send leaks no useful info but does confuse
+      // diagnostics. Accept the union of every CT we'd accept for valid
+      // routes so dispatch can produce the 400.
+      return [
+        'application/json',
+        'application/vnd.git-lfs+json',
+        'application/x-git-upload-pack-request',
+        'application/x-git-receive-pack-request',
+      ];
     default:
       return ['application/json'];
   }
@@ -735,16 +758,41 @@ async function dispatch(ctx: DispatchContext): Promise<void> {
 }
 
 /**
- * Derive the LFS origin from the inbound request's Host header. LFS batch
- * advertises absolute hrefs for upload/download/verify back to the client;
- * deriving from `req.headers.host` keeps them resolvable wherever the client
- * called us (works for tests bound to 127.0.0.1:randomPort and for
- * production cluster-internal hosts).
+ * Derive the LFS origin from the inbound request. LFS batch advertises
+ * absolute hrefs for upload/download/verify back to the client, AND the
+ * batch payload includes the bearer header the client will resend on the
+ * follow-up call. Hardcoding `http://` here would downgrade HTTPS
+ * deployments and could leak the token over plaintext on the next hop.
+ *
+ * Scheme resolution, in order:
+ *   1. `X-Forwarded-Proto` (set by the ingress / load balancer that did
+ *      the TLS termination; first value wins if the header is a list).
+ *   2. `req.socket.encrypted` for direct HTTPS (we don't run that today,
+ *      but the check costs nothing).
+ *   3. `http` as the dev/test default.
+ *
+ * Host falls back to `${opts.host}:${opts.port}` if no Host header is
+ * present (defensive — modern HTTP/1.1 + HTTP/2 clients always send it).
  */
 function lfsBaseUrl(
   req: http.IncomingMessage,
   opts: CreateWorkspaceGitServerOptions,
 ): string {
   const host = req.headers.host ?? `${opts.host}:${opts.port}`;
-  return `http://${host}`;
+  const fwd = req.headers['x-forwarded-proto'];
+  const fwdScheme =
+    typeof fwd === 'string'
+      ? fwd.split(',')[0]?.trim().toLowerCase()
+      : Array.isArray(fwd)
+        ? fwd[0]?.toLowerCase()
+        : undefined;
+  const tlsTerminated =
+    (req.socket as { encrypted?: boolean }).encrypted === true;
+  const scheme =
+    fwdScheme === 'https' || fwdScheme === 'http'
+      ? fwdScheme
+      : tlsTerminated
+        ? 'https'
+        : 'http';
+  return `${scheme}://${host}`;
 }

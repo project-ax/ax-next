@@ -81,9 +81,13 @@ export interface AttachmentsConfig {
   janitorIntervalSeconds?: number;
 
   /**
-   * Allowed MIME types (exact match or wildcard `image/*`). Default covers
-   * image/*, application/pdf, text/*, application/json, application/zip,
-   * application/octet-stream.
+   * Allowed MIME types (exact match or `<top>/*` wildcard like `image/*`).
+   * Default is an explicit narrow list — image/png, image/jpeg, image/gif,
+   * image/webp, application/pdf, text/plain, text/csv, text/markdown,
+   * application/json, application/zip, application/octet-stream — chosen
+   * over `image/*` / `text/*` wildcards so that `image/svg+xml` (which can
+   * carry script) and other long-tail subtypes don't admit by accident.
+   * Override via `allowedMediaTypes` if you want broader admission.
    */
   allowedMediaTypes?: string[];
 }

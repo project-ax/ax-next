@@ -9,6 +9,7 @@ function makeMockStore(purgeImpl?: () => Promise<number>): AttachmentsStore & {
   let purgeCalls = 0;
   const store = {
     insertTemp: async () => {},
+    insertTempIfWithinQuota: async () => ({ ok: true as const }),
     getTemp: async () => null,
     sumPendingBytesForUser: async () => 0,
     deleteTemp: async () => {},
@@ -89,4 +90,14 @@ describe('startJanitor', () => {
     await handle.stop();
     await handle.stop(); // second call must not throw
   });
+
+  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])(
+    'throws on non-positive intervalSeconds (%j)',
+    (value) => {
+      const store = makeMockStore();
+      expect(() =>
+        startJanitor({ store, intervalSeconds: value, ctx: makeCtx() }),
+      ).toThrow(/intervalSeconds must be > 0/);
+    },
+  );
 });

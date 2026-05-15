@@ -143,6 +143,20 @@ describe('attachments:download handler', () => {
         }),
       ).rejects.toMatchObject({ code: 'not-found' });
     });
+
+    it('rejects input.userId !== ctx.userId with not-found (spoof attempt)', async () => {
+      // A caller asserting they're acting as someone else than ctx.userId
+      // is either confused or probing — collapse to not-found so the
+      // response is indistinguishable from a missing conversation.
+      const handler = createDownloadHandler({ bus: makeBus() });
+      await expect(
+        handler(makeCtx('u-attacker'), {
+          path: '.ax/uploads/c-1/t-1/abc__file.pdf',
+          conversationId: 'c-1',
+          userId: 'u-1', // claims to be the legitimate owner
+        }),
+      ).rejects.toMatchObject({ code: 'not-found' });
+    });
   });
 
   describe('path-scope check', () => {

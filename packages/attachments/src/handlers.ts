@@ -90,8 +90,25 @@ export function createStoreTempHandler(deps: StoreTempDeps) {
         message: `mediaType '${input.mediaType}' not in allowlist`,
       });
     }
-    const existing = await deps.store.sumPendingBytesForUser(ctx.userId);
-    if (existing + input.bytes.length > config.maxPendingBytesPerUser) {
+    const attachmentId = randomUUID();
+    const expiresAt = new Date(Date.now() + config.tempTtlSeconds * 1000);
+    // Atomic quota + insert: concurrent uploads for the same user can't
+    // both pass the sum-check and double-insert past the quota — the
+    // store layer re-checks the sum inside the same transaction and
+    // rolls back if the new row pushes total bytes over the limit.
+    const result = await deps.store.insertTempIfWithinQuota(
+      {
+        attachmentId,
+        userId: ctx.userId,
+        bytes: input.bytes,
+        displayName: input.displayName,
+        mediaType: input.mediaType,
+        sizeBytes: input.bytes.length,
+        expiresAt,
+      },
+      config.maxPendingBytesPerUser,
+    );
+    if (!result.ok) {
       throw new PluginError({
         code: 'too-many-pending',
         plugin: PLUGIN_NAME,
@@ -99,18 +116,6 @@ export function createStoreTempHandler(deps: StoreTempDeps) {
         message: `user pending-attachment quota exceeded (${config.maxPendingBytesPerUser} bytes)`,
       });
     }
-
-    const attachmentId = randomUUID();
-    const expiresAt = new Date(Date.now() + config.tempTtlSeconds * 1000);
-    await deps.store.insertTemp({
-      attachmentId,
-      userId: ctx.userId,
-      bytes: input.bytes,
-      displayName: input.displayName,
-      mediaType: input.mediaType,
-      sizeBytes: input.bytes.length,
-      expiresAt,
-    });
 
     return {
       attachmentId,
@@ -344,8 +349,19 @@ export function createDownloadHandler(deps: DownloadDeps) {
       });
     }
 
-    // 2) Owner gate via conversations:get. Foreign / not-found / forbidden
-    //    all collapse to not-found from the caller's perspective.
+    // 2) Owner gate via conversations:get. The hook input declares the
+    //    user identity but ctx.userId is the auth boundary — if a caller
+    //    passes a mismatched input.userId they're either confused or
+    //    probing, so collapse to the same not-found we'd return for any
+    //    other foreign access (uniform existence-leak prevention).
+    if (input.userId !== ctx.userId) {
+      throw new PluginError({
+        code: 'not-found',
+        plugin: PLUGIN_NAME,
+        hookName: 'attachments:download',
+        message: 'conversation not found',
+      });
+    }
     let turns: Array<{ contentBlocks: ContentBlock[] }>;
     try {
       const got = await deps.bus.call<
@@ -353,7 +369,7 @@ export function createDownloadHandler(deps: DownloadDeps) {
         ConversationsGetOutput
       >('conversations:get', ctx, {
         conversationId: input.conversationId,
-        userId: input.userId,
+        userId: ctx.userId,
       });
       turns = got.turns;
     } catch (err) {

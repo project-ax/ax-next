@@ -122,9 +122,31 @@ export type AttachmentRefBlock = z.infer<typeof AttachmentRefBlockSchema>;
  * `path` is workspace-relative (e.g. ".ax/uploads/<conv>/<turn>/file.pdf"),
  * not sandbox-absolute. Resolution: workspace:read(path) at current HEAD.
  */
+/**
+ * `path` is workspace-relative — defense-in-depth refusal of absolute
+ * paths, `..` traversal segments, Windows drive roots, and NUL bytes at
+ * the wire boundary so a malformed value can't reach storage or
+ * `attachments:download` and bypass the path-scope ACL.
+ */
+function isWorkspaceRelativePath(value: string): boolean {
+  if (value.startsWith('/') || value.startsWith('\\')) return false;
+  if (value.includes('\0')) return false;
+  if (/^[A-Za-z]:[\\/]/.test(value)) return false;
+  for (const seg of value.split(/[\\/]/)) {
+    if (seg === '..') return false;
+  }
+  return true;
+}
+
 export const AttachmentBlockSchema = z.object({
   type: z.literal('attachment'),
-  path: z.string().min(1),
+  path: z
+    .string()
+    .min(1)
+    .refine(
+      isWorkspaceRelativePath,
+      'path must be workspace-relative (no leading slash, no "..", no drive root, no NUL)',
+    ),
   displayName: z.string().min(1),
   mediaType: z.string().min(1),
   sizeBytes: z.number().int().nonnegative(),

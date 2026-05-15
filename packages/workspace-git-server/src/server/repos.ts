@@ -338,6 +338,22 @@ export async function handleDeleteRepo(
     return writeError(res, 500, 'internal_error', 'delete failed');
   }
 
+  // Also remove the workspace's LFS object store so a later recreate with
+  // the same workspaceId doesn't inherit stale blobs (which would leak
+  // storage and could expose old attachment bytes to the new repo).
+  // Failure is non-fatal — the .git tree is gone, which is what the
+  // client actually asked for; log so an operator can spot persistent issues.
+  try {
+    await rm(join(opts.repoRoot, `${workspaceId}.lfs`), {
+      recursive: true,
+      force: true,
+    });
+  } catch (err) {
+    process.stderr.write(
+      `workspace-git-server: lfs rm failed for '${workspaceId}': ${(err as Error).message}\n`,
+    );
+  }
+
   if (res.headersSent || res.writableEnded) return;
   res.writeHead(204);
   res.end();

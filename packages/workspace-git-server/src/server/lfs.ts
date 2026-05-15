@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { promises as fs, createReadStream, createWriteStream } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -116,7 +116,11 @@ export async function handleLfsStorageUpload(
   const finalPath = lfsBlobPath(opts.repoRoot, workspaceId, oid);
   await fs.mkdir(dirname(finalPath), { recursive: true });
 
-  const tempPath = `${finalPath}.tmp.${process.pid}.${Date.now()}`;
+  // Collision-safe per-request suffix — process.pid + Date.now() can
+  // collide for two concurrent PUTs of the same OID landing in the same
+  // millisecond, which would let both writers mutate the same temp file
+  // before either rename and corrupt the upload.
+  const tempPath = `${finalPath}.tmp.${process.pid}.${randomUUID()}`;
   const writeStream = createWriteStream(tempPath);
   const hash = createHash('sha256');
 
