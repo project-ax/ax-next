@@ -64,20 +64,19 @@ describe('@ax/validator-routine — workspace:pre-apply', () => {
     expect(r.reason).toMatch(/\.ax\/routines\/bad\.md/);
   });
 
-  it('vetoes webhook routine (Phase B I3)', async () => {
+  it('accepts webhook routine with valid path (Phase C K1 reject-flip)', async () => {
     const bus = await bootBus();
     const body = [
       '---',
       'name: r', 'description: d',
       'trigger:', '  kind: webhook', '  path: "/r/x"',
       '---',
+      '# Prompt body', 'hello',
     ].join('\n') + '\n';
     const r = await bus.fire('workspace:pre-apply', ctx(), preApply([
       { path: '.ax/routines/r.md', kind: 'put', content: ENC.encode(body) },
     ]));
-    expect(r.rejected).toBe(true);
-    if (!r.rejected) return;
-    expect(r.reason).toMatch(/webhook/);
+    expect(r.rejected).toBe(false);
   });
 
   it('passes through nested paths under .ax/routines/ (validator regex is anchored)', async () => {

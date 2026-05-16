@@ -108,3 +108,77 @@ describe('fireRoutine', () => {
     await invokePromise;
   });
 });
+
+describe('createFireRoutine — webhook payload templating (Phase C)', () => {
+  it('substitutes {{payload.x}} into the agent:invoke content when source=webhook', async () => {
+    const captured: Array<{ content: string }> = [];
+    const bus = await makeBus({
+      invoke: async (_ctx, input) => {
+        captured.push((input as { message: { content: string } }).message);
+        return { kind: 'complete', messages: [] };
+      },
+    });
+    const fire = createFireRoutine({ bus, pending: new Map() });
+    const r = row({
+      trigger: { kind: 'webhook', path: '/r' },
+      promptBody: 'PR {{payload.pr.title}}',
+    });
+    await fire(r, 'webhook', { pr: { title: 'fix bug' } });
+    await new Promise(r => setImmediate(r));
+    expect(captured).toHaveLength(1);
+    expect(captured[0]!.content).toBe('PR fix bug');
+  });
+
+  it('passes promptBody verbatim when source=tick (no templating)', async () => {
+    const captured: Array<{ content: string }> = [];
+    const bus = await makeBus({
+      invoke: async (_ctx, input) => {
+        captured.push((input as { message: { content: string } }).message);
+        return { kind: 'complete', messages: [] };
+      },
+    });
+    const fire = createFireRoutine({ bus, pending: new Map() });
+    const r = row({ promptBody: 'literal {{payload.x}}' });
+    await fire(r, 'tick');
+    await new Promise(r => setImmediate(r));
+    expect(captured).toHaveLength(1);
+    expect(captured[0]!.content).toBe('literal {{payload.x}}');
+  });
+
+  it('passes promptBody verbatim when source=webhook but payload is undefined', async () => {
+    const captured: Array<{ content: string }> = [];
+    const bus = await makeBus({
+      invoke: async (_ctx, input) => {
+        captured.push((input as { message: { content: string } }).message);
+        return { kind: 'complete', messages: [] };
+      },
+    });
+    const fire = createFireRoutine({ bus, pending: new Map() });
+    const r = row({
+      trigger: { kind: 'webhook', path: '/r' },
+      promptBody: 'no payload {{payload.x}}',
+    });
+    await fire(r, 'webhook'); // 3rd arg omitted
+    await new Promise(r => setImmediate(r));
+    expect(captured).toHaveLength(1);
+    expect(captured[0]!.content).toBe('no payload {{payload.x}}');
+  });
+
+  it('templating handles missing field by substituting empty string', async () => {
+    const captured: Array<{ content: string }> = [];
+    const bus = await makeBus({
+      invoke: async (_ctx, input) => {
+        captured.push((input as { message: { content: string } }).message);
+        return { kind: 'complete', messages: [] };
+      },
+    });
+    const fire = createFireRoutine({ bus, pending: new Map() });
+    const r = row({
+      trigger: { kind: 'webhook', path: '/r' },
+      promptBody: 'event=[{{payload.missing}}]',
+    });
+    await fire(r, 'webhook', { other: 'value' });
+    await new Promise(r => setImmediate(r));
+    expect(captured[0]!.content).toBe('event=[]');
+  });
+});

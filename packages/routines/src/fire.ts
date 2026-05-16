@@ -1,6 +1,7 @@
 import { makeAgentContext, PluginError, type HookBus } from '@ax/core';
 import type { RoutineRow, FireSource } from './types.js';
 import type { FireResult } from './tick.js';
+import { renderTemplate } from './template.js';
 
 export interface PendingFire {
   row: RoutineRow;
@@ -22,7 +23,11 @@ function makeReqId(): string {
 }
 
 export function createFireRoutine(deps: FireDeps) {
-  return async (row: RoutineRow, source: FireSource): Promise<FireResult> => {
+  return async (
+    row: RoutineRow,
+    source: FireSource,
+    payload?: unknown,
+  ): Promise<FireResult> => {
     const baseCtx = makeAgentContext({
       sessionId: `routine-${row.agentId}-${row.path}`,
       agentId: row.agentId,
@@ -86,8 +91,13 @@ export function createFireRoutine(deps: FireDeps) {
       onTurnEnd: async () => {},
     });
 
+    const prompt =
+      source === 'webhook' && payload !== undefined
+        ? renderTemplate(row.promptBody, { payload })
+        : row.promptBody;
+
     void deps.bus.call('agent:invoke', fireCtx, {
-      message: { role: 'user', content: row.promptBody },
+      message: { role: 'user', content: prompt },
     }).catch((err) => {
       const pf = deps.pending.get(reqId);
       if (pf !== undefined) {

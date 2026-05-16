@@ -6,11 +6,22 @@ const DURATION_RE = /^(\d+)(s|m|h|d)$/;
 // 00:00–23:59, plus 24:00 as the "midnight at end-of-day" sentinel used
 // by activeHours.end (see Task 8). Reject 24:01..24:59 as malformed.
 const TIME_OF_DAY_RE = /^(?:([01]\d|2[0-3]):([0-5]\d)|24:00)$/;
+const WEBHOOK_PATH_RE = /^\/[A-Za-z0-9._\-/]+$/;
+const EVENT_NAME_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const WEBHOOK_PATH_MAX = 128;
+const WEBHOOK_EVENTS_MAX = 32;
+
+export interface WebhookHmacSpec {
+  secretRef: string;
+  header: string;
+  algorithm: 'sha256' | 'sha1';
+  prefix?: string;
+}
 
 export type TriggerSpec =
   | { kind: 'interval'; every: string }
   | { kind: 'cron'; expr: string; tz: string }
-  | { kind: 'webhook'; path: string };
+  | { kind: 'webhook'; path: string; events?: string[]; hmac?: WebhookHmacSpec };
 
 export interface ActiveHours {
   start: string;
@@ -107,11 +118,92 @@ export function parseRoutineFrontmatter(text: string): RoutineFrontmatterResult 
       trigger = { kind: 'cron', expr: cronExpr, tz };
       break;
     }
-    case 'webhook':
-      // I3: webhook lands in Phase C.
-      return fail('trigger.kind: webhook is not yet supported (lands in Phase C)');
+    case 'webhook': {
+      const pathRaw = trigObj['path'];
+      if (typeof pathRaw !== 'string' || pathRaw.length === 0) {
+        return fail('webhook trigger missing required field: path');
+      }
+      if (pathRaw.length > WEBHOOK_PATH_MAX) {
+        return fail(`webhook.path: ${pathRaw.length} > max ${WEBHOOK_PATH_MAX}`);
+      }
+      if (!WEBHOOK_PATH_RE.test(pathRaw)) {
+        return fail('webhook.path: must start with / and contain only letters, digits, dots, hyphens, underscores, and /');
+      }
+      if (pathRaw.startsWith('/webhooks/')) {
+        return fail('webhook.path: must not start with /webhooks/');
+      }
+      if (pathRaw.includes('..')) {
+        return fail('webhook.path: must not contain ..');
+      }
+      if (pathRaw.includes('//')) {
+        return fail('webhook.path: must not contain //');
+      }
+
+      const webhook: { kind: 'webhook'; path: string; events?: string[]; hmac?: WebhookHmacSpec } = {
+        kind: 'webhook',
+        path: pathRaw,
+      };
+
+      const eventsRaw = trigObj['events'];
+      if (eventsRaw !== undefined && eventsRaw !== null) {
+        if (!Array.isArray(eventsRaw)) {
+          return fail('webhook.events must be an array');
+        }
+        if (eventsRaw.length > WEBHOOK_EVENTS_MAX) {
+          return fail(`webhook.events: ${eventsRaw.length} > max ${WEBHOOK_EVENTS_MAX}`);
+        }
+        const events: string[] = [];
+        for (const v of eventsRaw) {
+          if (typeof v !== 'string' || !EVENT_NAME_RE.test(v)) {
+            return fail(`webhook.events: invalid item ${JSON.stringify(v)}`);
+          }
+          events.push(v);
+        }
+        webhook.events = events;
+      }
+
+      const hmacRaw = trigObj['hmac'];
+      if (hmacRaw !== undefined && hmacRaw !== null) {
+        if (typeof hmacRaw !== 'object' || Array.isArray(hmacRaw)) {
+          return fail('webhook.hmac must be a mapping');
+        }
+        const hObj = hmacRaw as Record<string, unknown>;
+        const secretRef = hObj['secretRef'];
+        const header = hObj['header'];
+        if (typeof secretRef !== 'string' || secretRef.length === 0) {
+          return fail('webhook.hmac.secretRef is required');
+        }
+        if (typeof header !== 'string' || header.length === 0) {
+          return fail('webhook.hmac.header is required');
+        }
+        let algorithm: 'sha256' | 'sha1' = 'sha256';
+        const algRaw = hObj['algorithm'];
+        if (algRaw !== undefined && algRaw !== null) {
+          if (algRaw !== 'sha256' && algRaw !== 'sha1') {
+            return fail(`webhook.hmac.algorithm: must be sha256 or sha1 (got ${JSON.stringify(algRaw)})`);
+          }
+          algorithm = algRaw;
+        }
+        const hmac: WebhookHmacSpec = { secretRef, header, algorithm };
+        const prefix = hObj['prefix'];
+        if (prefix !== undefined && prefix !== null) {
+          if (typeof prefix !== 'string') {
+            return fail('webhook.hmac.prefix must be a string');
+          }
+          hmac.prefix = prefix;
+        }
+        webhook.hmac = hmac;
+      }
+
+      trigger = webhook;
+      break;
+    }
     default:
-      return fail(`trigger.kind: unknown value ${JSON.stringify(kind)} (expected interval | cron)`);
+      return fail(`trigger.kind: unknown value ${JSON.stringify(kind)} (expected interval | cron | webhook)`);
+  }
+
+  if (trigger.kind === 'webhook' && obj['activeHours'] !== undefined && obj['activeHours'] !== null) {
+    return fail('activeHours is not supported on webhook routines');
   }
 
   let activeHours: ActiveHours | undefined;

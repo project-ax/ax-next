@@ -772,6 +772,139 @@ The encryption key (`AX_CREDENTIALS_KEY` in the host Secret) is
 that ciphertext we left behind is still decryptable. Delete the
 Secret by hand if a true clean slate is wanted.
 
+## Scenario: Receive a webhook (Routines Phase C)
+
+Phase C ships the third routine trigger kind — webhooks. Phase D will
+add a Routines tab to the admin UI; for now, URL discovery is via a
+direct DB query.
+
+### Prerequisites
+
+- Goldenpath cluster is up; `ax` chat works end-to-end.
+- An agent exists (the wizard's default chat agent is fine).
+- Encryption: `AX_CREDENTIALS_KEY` is set in the host Secret (already
+  the case for any goldenpath cluster).
+
+### Steps — no-HMAC route
+
+1. Open a chat with the default agent. Tell it to create a routine
+   file. Suggested prompt:
+
+   > Create `.ax/routines/notify.md` with frontmatter
+   > `trigger.kind: webhook`, `trigger.path: "/test"`, and a prompt
+   > body that says `received: {{payload.foo}}`. Use conversation
+   > per-fire. Don't add HMAC.
+
+   Confirm the agent committed the file via the chat output
+   (workspace apply landed).
+
+2. Read the agent's webhook token directly from postgres:
+
+   ```bash
+   kubectl exec -n ax-next deploy/ax-next-host -- \
+     psql -U ax-next -d ax-next -c \
+     "SELECT agent_id, webhook_token FROM agents_v1_agents WHERE webhook_token IS NOT NULL;"
+   ```
+
+   Expected: one row with a non-NULL `webhook_token` (~43-char URL-safe
+   base64).
+
+3. POST to the route:
+
+   ```bash
+   TOKEN=...   # value from step 2
+   curl -i -X POST \
+     -H 'Content-Type: application/json' \
+     -d '{"foo":"bar"}' \
+     http://localhost:9090/webhooks/$TOKEN/test
+   ```
+
+   Expected: `HTTP/1.1 202` immediately. (The agent run is
+   fire-and-forget.)
+
+4. Refresh the chat sidebar. A new per-fire conversation appears
+   within ~1 second titled `test @ <ISO timestamp>`. Open it.
+   The first user turn contains `received: bar` (the `{{payload.foo}}`
+   substitution).
+
+### Steps — HMAC variant
+
+1. Store a webhook secret via the credentials admin UI:
+   - scope: global
+   - kind: api-key
+   - ref: `gh-webhook-secret`
+   - value: `shhh-test-secret`
+
+2. Edit `.ax/routines/notify.md` (chat with the agent or `git push`)
+   to add an `hmac` block:
+
+   ```yaml
+   trigger:
+     kind: webhook
+     path: "/test"
+     hmac:
+       secretRef: gh-webhook-secret
+       header: "X-Hub-Signature-256"
+       algorithm: sha256
+       prefix: "sha256="
+   ```
+
+3. Re-curl WITHOUT a signature:
+
+   ```bash
+   curl -i -X POST \
+     -H 'Content-Type: application/json' \
+     -d '{"foo":"bar"}' \
+     http://localhost:9090/webhooks/$TOKEN/test
+   ```
+
+   Expected: `HTTP/1.1 401`. No new conversation appears.
+
+4. Re-curl WITH a wrong signature:
+
+   ```bash
+   curl -i -X POST \
+     -H 'Content-Type: application/json' \
+     -H 'X-Hub-Signature-256: sha256=deadbeef' \
+     -d '{"foo":"bar"}' \
+     http://localhost:9090/webhooks/$TOKEN/test
+   ```
+
+   Expected: `HTTP/1.1 401`. No new conversation.
+
+5. Re-curl WITH a correct signature:
+
+   ```bash
+   SECRET=shhh-test-secret
+   BODY='{"foo":"bar"}'
+   SIG="sha256=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$SECRET" | awk '{print $2}')"
+   curl -i -X POST \
+     -H 'Content-Type: application/json' \
+     -H "X-Hub-Signature-256: $SIG" \
+     -d "$BODY" \
+     http://localhost:9090/webhooks/$TOKEN/test
+   ```
+
+   Expected: `HTTP/1.1 202`, new conversation appears with the
+   templated prompt.
+
+### Acceptance criteria
+
+- Without HMAC: 202 + new conversation with substituted prompt.
+- HMAC missing header → 401, no conversation.
+- HMAC wrong signature → 401, no conversation.
+- HMAC correct signature → 202, new conversation.
+- All four cases observable via `kubectl logs -n ax-next deploy/ax-next-host | grep routines` (routines plugin logs each fire with status).
+
+### Cleanup
+
+```bash
+# Remove the test routine via chat or git push.
+# The agent's webhook_token persists (it's lazy-generated, not
+# scoped to this routine). Leave it in place unless rotating;
+# a future admin UI will provide a rotate button.
+```
+
 ## When this passes, do
 1. Update the PR description's acceptance section with the date + cluster
    used + a copy of the `psql` count outputs.

@@ -176,21 +176,155 @@ describe('parseRoutineFrontmatter — vetoes', () => {
     expect(r.reason).toMatch(/cron/i);
   });
 
-  it('rejects webhook trigger kind in Phase B (Phase C ships it)', () => {
-    const r = parseRoutineFrontmatter(fm([
-      'name: r', 'description: d',
-      'trigger:', '  kind: webhook', '  path: "/r/x"',
-    ].join('\n')));
-    expect(r.ok).toBe(false);
-    if (r.ok) return;
-    expect(r.reason).toMatch(/webhook/i);
-    expect(r.reason).toMatch(/Phase C|not yet supported/i);
-  });
-
   it('rejects non-UTF-8 bytes', () => {
     const r = parseRoutineFrontmatterBytes(new Uint8Array([0xff, 0xfe, 0xfd]));
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(r.reason).toMatch(/UTF-8/);
+  });
+});
+
+describe('parseRoutineFrontmatter — webhook trigger', () => {
+  it('parses a minimal webhook routine (no events, no hmac)', () => {
+    const r = parseRoutineFrontmatter(fm([
+      'name: pr-triage',
+      'description: PR triage',
+      'trigger:',
+      '  kind: webhook',
+      '  path: "/r/github"',
+      'conversation: per-fire',
+    ].join('\n')));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.fields.trigger).toEqual({
+      kind: 'webhook', path: '/r/github',
+    });
+  });
+
+  it('parses webhook with events filter', () => {
+    const r = parseRoutineFrontmatter(fm([
+      'name: pr', 'description: d',
+      'trigger:', '  kind: webhook', '  path: "/r/gh"',
+      '  events: ["pull_request", "issues"]',
+      'conversation: per-fire',
+    ].join('\n')));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.fields.trigger).toEqual({
+      kind: 'webhook', path: '/r/gh', events: ['pull_request', 'issues'],
+    });
+  });
+
+  it('parses webhook with full hmac config', () => {
+    const r = parseRoutineFrontmatter(fm([
+      'name: pr', 'description: d',
+      'trigger:', '  kind: webhook', '  path: "/r/gh"',
+      '  hmac:',
+      '    secretRef: gh-secret',
+      '    header: "X-Hub-Signature-256"',
+      '    algorithm: sha256',
+      '    prefix: "sha256="',
+      'conversation: per-fire',
+    ].join('\n')));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.fields.trigger).toEqual({
+      kind: 'webhook', path: '/r/gh',
+      hmac: {
+        secretRef: 'gh-secret',
+        header: 'X-Hub-Signature-256',
+        algorithm: 'sha256',
+        prefix: 'sha256=',
+      },
+    });
+  });
+
+  it('defaults hmac.algorithm to sha256 when omitted', () => {
+    const r = parseRoutineFrontmatter(fm([
+      'name: pr', 'description: d',
+      'trigger:', '  kind: webhook', '  path: "/r"',
+      '  hmac:', '    secretRef: s', '    header: "X-Sig"',
+      'conversation: per-fire',
+    ].join('\n')));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    if (r.fields.trigger.kind !== 'webhook') throw new Error('kind');
+    expect(r.fields.trigger.hmac?.algorithm).toBe('sha256');
+  });
+
+  it.each([
+    ['missing path', ['name: a', 'description: d', 'trigger:', '  kind: webhook', 'conversation: per-fire']],
+    ['empty path', ['name: a', 'description: d', 'trigger:', '  kind: webhook', '  path: ""', 'conversation: per-fire']],
+    ['path missing leading slash', ['name: a', 'description: d', 'trigger:', '  kind: webhook', '  path: "r/x"', 'conversation: per-fire']],
+    ['path starts with /webhooks/', ['name: a', 'description: d', 'trigger:', '  kind: webhook', '  path: "/webhooks/leak"', 'conversation: per-fire']],
+    ['path contains ..', ['name: a', 'description: d', 'trigger:', '  kind: webhook', '  path: "/r/../etc"', 'conversation: per-fire']],
+    ['path contains //', ['name: a', 'description: d', 'trigger:', '  kind: webhook', '  path: "/r//x"', 'conversation: per-fire']],
+    ['path too long', ['name: a', 'description: d', 'trigger:', '  kind: webhook', `  path: "/${'a'.repeat(128)}"`, 'conversation: per-fire']],
+  ])('rejects webhook %s', (_label, lines) => {
+    const r = parseRoutineFrontmatter(fm(lines.join('\n')));
+    expect(r.ok).toBe(false);
+  });
+
+  it('rejects events item with illegal characters', () => {
+    const r = parseRoutineFrontmatter(fm([
+      'name: a', 'description: d',
+      'trigger:', '  kind: webhook', '  path: "/r"',
+      '  events: ["has space"]',
+      'conversation: per-fire',
+    ].join('\n')));
+    expect(r.ok).toBe(false);
+  });
+
+  it('rejects more than 32 events', () => {
+    const events = Array.from({ length: 33 }, (_, i) => `evt${i}`);
+    const r = parseRoutineFrontmatter(fm([
+      'name: a', 'description: d',
+      'trigger:', '  kind: webhook', '  path: "/r"',
+      `  events: ${JSON.stringify(events)}`,
+      'conversation: per-fire',
+    ].join('\n')));
+    expect(r.ok).toBe(false);
+  });
+
+  it('rejects hmac missing secretRef', () => {
+    const r = parseRoutineFrontmatter(fm([
+      'name: a', 'description: d',
+      'trigger:', '  kind: webhook', '  path: "/r"',
+      '  hmac:', '    header: "X-Sig"',
+      'conversation: per-fire',
+    ].join('\n')));
+    expect(r.ok).toBe(false);
+  });
+
+  it('rejects hmac missing header', () => {
+    const r = parseRoutineFrontmatter(fm([
+      'name: a', 'description: d',
+      'trigger:', '  kind: webhook', '  path: "/r"',
+      '  hmac:', '    secretRef: s',
+      'conversation: per-fire',
+    ].join('\n')));
+    expect(r.ok).toBe(false);
+  });
+
+  it('rejects hmac.algorithm not in sha256/sha1', () => {
+    const r = parseRoutineFrontmatter(fm([
+      'name: a', 'description: d',
+      'trigger:', '  kind: webhook', '  path: "/r"',
+      '  hmac:', '    secretRef: s', '    header: "X-Sig"',
+      '    algorithm: md5',
+      'conversation: per-fire',
+    ].join('\n')));
+    expect(r.ok).toBe(false);
+  });
+
+  it('rejects activeHours on webhook routines', () => {
+    const r = parseRoutineFrontmatter(fm([
+      'name: a', 'description: d',
+      'trigger:', '  kind: webhook', '  path: "/r"',
+      'activeHours:',
+      '  start: "08:00"', '  end: "18:00"', '  tz: "UTC"',
+      'conversation: per-fire',
+    ].join('\n')));
+    expect(r.ok).toBe(false);
   });
 });

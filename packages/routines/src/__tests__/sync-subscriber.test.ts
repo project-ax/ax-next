@@ -2,7 +2,7 @@ import { describe, expect, it, beforeAll, afterAll, afterEach } from 'vitest';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { Kysely, PostgresDialect, sql } from 'kysely';
 import pg from 'pg';
-import { makeAgentContext, asWorkspaceVersion, type WorkspaceDelta } from '@ax/core';
+import { HookBus, makeAgentContext, asWorkspaceVersion, type WorkspaceDelta } from '@ax/core';
 import { runRoutinesMigration, type RoutinesDatabase } from '../migrations.js';
 import { createRoutinesStore } from '../store.js';
 import { handleWorkspaceApplied } from '../sync.js';
@@ -49,12 +49,22 @@ function intervalBody(every = '60s'): Uint8Array {
   ].join('\n') + '\n');
 }
 
+// Minimal deps for non-webhook tests: empty bus is fine (webhook arm won't fire for interval routines)
+function makeDeps(store: ReturnType<typeof createRoutinesStore>) {
+  return {
+    store,
+    bus: new HookBus(),
+    webhookRoutes: new Map<string, () => void>(),
+    fireRoutine: async () => ({ status: 'ok' as const, conversationId: 'c1', error: null }),
+  };
+}
+
 describe('handleWorkspaceApplied', () => {
   it('upserts on added', async () => {
     const store = createRoutinesStore(db);
     const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u', logger: console as never });
     const now = new Date('2026-05-14T12:00:00Z');
-    await handleWorkspaceApplied(store, ctx, delta([
+    await handleWorkspaceApplied(makeDeps(store), ctx, delta([
       {
         path: '.ax/routines/r.md', kind: 'added',
         contentAfter: async () => intervalBody('60s'),
@@ -75,7 +85,7 @@ describe('handleWorkspaceApplied', () => {
       promptBody: '# x', nextRunAt: new Date(),
     });
     const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u', logger: console as never });
-    await handleWorkspaceApplied(store, ctx, delta([
+    await handleWorkspaceApplied(makeDeps(store), ctx, delta([
       { path: '.ax/routines/r.md', kind: 'deleted' },
     ], { agentId: 'agt_a', userId: 'u1' }), new Date());
     expect(await db.selectFrom('routines_v1_definitions').selectAll().execute()).toHaveLength(0);
@@ -84,7 +94,7 @@ describe('handleWorkspaceApplied', () => {
   it('ignores changes outside .ax/routines/', async () => {
     const store = createRoutinesStore(db);
     const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u', logger: console as never });
-    await handleWorkspaceApplied(store, ctx, delta([
+    await handleWorkspaceApplied(makeDeps(store), ctx, delta([
       { path: 'README.md', kind: 'added', contentAfter: async () => ENC.encode('# hi') },
     ], { agentId: 'agt_a', userId: 'u1' }), new Date());
     expect(await db.selectFrom('routines_v1_definitions').selectAll().execute()).toHaveLength(0);
@@ -94,7 +104,7 @@ describe('handleWorkspaceApplied', () => {
     const store = createRoutinesStore(db);
     const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u', logger: console as never });
     await handleWorkspaceApplied(
-      store, ctx,
+      makeDeps(store), ctx,
       { before: null, after: asWorkspaceVersion('v'), changes: [{ path: '.ax/routines/r.md', kind: 'added', contentAfter: async () => intervalBody() }] } as WorkspaceDelta,
       new Date(),
     );
@@ -104,7 +114,7 @@ describe('handleWorkspaceApplied', () => {
   it('does not throw on a malformed routine (I8 — log + skip)', async () => {
     const store = createRoutinesStore(db);
     const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u', logger: console as never });
-    await handleWorkspaceApplied(store, ctx, delta([
+    await handleWorkspaceApplied(makeDeps(store), ctx, delta([
       { path: '.ax/routines/bad.md', kind: 'added', contentAfter: async () => ENC.encode('no frontmatter') },
     ], { agentId: 'agt_a', userId: 'u1' }), new Date());
     expect(await db.selectFrom('routines_v1_definitions').selectAll().execute()).toHaveLength(0);
@@ -113,7 +123,7 @@ describe('handleWorkspaceApplied', () => {
   it('skips nested routine paths (.ax/routines/sub/x.md)', async () => {
     const store = createRoutinesStore(db);
     const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u', logger: console as never });
-    await handleWorkspaceApplied(store, ctx, delta([
+    await handleWorkspaceApplied(makeDeps(store), ctx, delta([
       { path: '.ax/routines/sub/x.md', kind: 'added', contentAfter: async () => intervalBody() },
     ], { agentId: 'agt_a', userId: 'u1' }), new Date());
     expect(await db.selectFrom('routines_v1_definitions').selectAll().execute()).toHaveLength(0);

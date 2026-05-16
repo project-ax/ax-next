@@ -114,6 +114,42 @@ export interface DeleteInput {
 
 export type DeleteOutput = void;
 
+export interface ResolveByWebhookTokenInput {
+  token: string;
+}
+
+/**
+ * Null on miss. Deliberately no `PluginError` — callers map null → 404
+ * and we avoid distinguishing "wrong token" from "no agent" (no
+ * oracle).
+ */
+export type ResolveByWebhookTokenOutput = { agent: Agent } | null;
+
+export interface RotateWebhookTokenInput {
+  actor: Actor;
+  agentId: string;
+}
+
+export interface RotateWebhookTokenOutput {
+  token: string;
+}
+
+/**
+ * Idempotent token access: returns the existing token if one is already set,
+ * generates + stores + returns a fresh one if null. Same ACL as
+ * `agents:rotate-webhook-token` (owner OR admin). Used by privileged
+ * in-process callers (e.g., the routines sync subscriber) that need a stable
+ * token without forcing a rotation.
+ */
+export interface EnsureWebhookTokenInput {
+  actor: Actor;
+  agentId: string;
+}
+
+export interface EnsureWebhookTokenOutput {
+  token: string;
+}
+
 // --- Subscriber payloads -----------------------------------------------------
 
 /**
@@ -126,6 +162,17 @@ export interface AgentsResolvedEvent {
   agentId: string;
   userId: string;
   visibility: 'personal' | 'team';
+}
+
+/**
+ * FIRED by `agents:rotate-webhook-token` after the new token is persisted.
+ * Payload is intentionally opaque — only `agentId`, never the token itself.
+ * Subscribers (e.g., @ax/routines) re-resolve the token via
+ * `agents:ensure-webhook-token` so the agents plugin remains the single
+ * source of truth.
+ */
+export interface AgentsWebhookTokenRotatedEvent {
+  agentId: string;
 }
 
 // --- Plugin config -----------------------------------------------------------

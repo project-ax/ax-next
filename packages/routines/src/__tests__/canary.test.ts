@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
+import { createHmac } from 'node:crypto';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { createTestHarness, type TestHarness } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
@@ -7,6 +8,7 @@ import { asWorkspaceVersion, type WorkspaceDelta } from '@ax/core';
 import { Kysely, PostgresDialect } from 'kysely';
 import pg from 'pg';
 import type { RoutinesDatabase } from '../migrations.js';
+import type { HttpRequest, HttpResponse, HttpRouteHandler, HttpRegisterRouteInput } from '@ax/http-server';
 
 pg.types.setTypeParser(20, (v) => Number(v));
 
@@ -46,6 +48,12 @@ async function makeHarness(captured: Captured, replyOnInvoke: { contentBlocks: u
       'agents:resolve': async (_ctx, input: unknown) => ({
         agent: { id: (input as { agentId: string }).agentId, ownerId: 'u1', workspaceRef: null },
       }),
+      'agents:ensure-webhook-token': async (_ctx, input: unknown) => ({
+        token: `tok-${(input as { agentId: string }).agentId}`,
+      }),
+      'agents:resolve-by-webhook-token': async () => ({ agent: null }),
+      'credentials:get': async () => 'secret',
+      'http:register-route': async () => ({ unregister: () => {} }),
       'conversations:find-or-create': async (_ctx, input: unknown) => {
         const i = input as { externalKey: string };
         captured.findOrCreateCalls.push({ externalKey: i.externalKey });
@@ -235,5 +243,231 @@ describe('Phase B canary — routine creates → fires → silence path closes w
     expect(captured.invokes).toHaveLength(2);
     expect(captured.invokes[0]!.conversationId).toBeDefined();
     expect(captured.invokes[0]!.conversationId).toBe(captured.invokes[1]!.conversationId);
+  });
+});
+
+describe('Phase C webhook canary — half-wired window closure', () => {
+  function webhookBody(over: { secretRef?: string; path?: string } = {}): Uint8Array {
+    const triggerPath = over.path ?? '/r/x';
+    const lines = [
+      '---',
+      'name: r', 'description: d',
+      'trigger:', '  kind: webhook', `  path: "${triggerPath}"`,
+    ];
+    if (over.secretRef !== undefined) {
+      lines.push('  hmac:', `    secretRef: ${over.secretRef}`,
+                 '    header: "X-Sig"', '    algorithm: sha256',
+                 '    prefix: "sha256="');
+    }
+    lines.push('conversation: per-fire', '---', 'PR: {{payload.pr.title}}');
+    return ENC.encode(lines.join('\n') + '\n');
+  }
+
+  interface WebCaptured {
+    invokes: Array<{ message: { content: string }; reqId: string; conversationId: string | undefined }>;
+    routes: Array<{ method: string; path: string }>;
+    handlers: Map<string, HttpRouteHandler>;
+    unregisters: string[];
+    ensures: number;
+  }
+
+  async function makeWebHarness(): Promise<{ h: TestHarness; captured: WebCaptured }> {
+    const captured: WebCaptured = {
+      invokes: [], routes: [], handlers: new Map(), unregisters: [], ensures: 0,
+    };
+    let nextConvId = 1;
+    const tokens = new Map<string, string>();
+    const busRef: { current: TestHarness | undefined } = { current: undefined };
+
+    const h = await createTestHarness({
+      services: {
+        'agents:resolve': async (_c, input: unknown) => {
+          const i = input as { agentId: string };
+          return { agent: { id: i.agentId, ownerId: 'u1', workspaceRef: null } };
+        },
+        // agents:ensure-webhook-token: idempotent — generates a token on first
+        // call per agent, returns the same one on subsequent calls (no rotation).
+        'agents:ensure-webhook-token': async (_c, input: unknown) => {
+          const i = input as { agentId: string };
+          captured.ensures += 1;
+          let tok = tokens.get(i.agentId);
+          if (tok === undefined) {
+            tok = `tok-${captured.ensures}`;
+            tokens.set(i.agentId, tok);
+          }
+          return { token: tok };
+        },
+        'agents:resolve-by-webhook-token': async (_c, input: unknown) => {
+          const t = (input as { token: string }).token;
+          for (const [id, tok] of tokens.entries()) {
+            if (tok === t) return { agent: { id, ownerId: 'u1' } };
+          }
+          return null;
+        },
+        'credentials:get': async (_c, input: unknown) => {
+          const ref = (input as { ref: string }).ref;
+          if (ref === 'gh-secret') return 'shhh';
+          throw new Error('no-such-credential');
+        },
+        'http:register-route': async (_c, input: unknown) => {
+          const i = input as HttpRegisterRouteInput;
+          captured.routes.push({ method: i.method, path: i.path });
+          captured.handlers.set(i.path, i.handler);
+          return {
+            unregister: () => {
+              captured.unregisters.push(i.path);
+              captured.handlers.delete(i.path);
+            },
+          };
+        },
+        'conversations:create': async () => ({ conversationId: `cnv_${nextConvId++}` }),
+        'conversations:find-or-create': async () => ({
+          conversation: { conversationId: 'shared' }, created: false,
+        }),
+        'conversations:drop-turn': async () => undefined,
+        'conversations:hide': async () => undefined,
+        'agent:invoke': async (ctx, input: unknown) => {
+          const i = input as { message: { content: string } };
+          captured.invokes.push({
+            message: i.message, reqId: ctx.reqId ?? '',
+            conversationId: ctx.conversationId,
+          });
+          await busRef.current!.bus.fire('chat:turn-end', ctx, {
+            reqId: ctx.reqId, turnId: 'fake-uuid-1',
+            contentBlocks: [{ type: 'text', text: 'ack' }],
+          });
+          return { kind: 'complete', messages: [] };
+        },
+      },
+      plugins: [
+        createDatabasePostgresPlugin({ connectionString }),
+        createRoutinesPlugin({ tickIntervalMs: 60_000 }),
+      ],
+    });
+    busRef.current = h;
+    harnesses.push(h);
+    return { h, captured };
+  }
+
+  function makeReq(over: Partial<{ headers: Record<string, string>; body: Buffer }> = {}): HttpRequest {
+    return {
+      method: 'POST',
+      path: '/webhooks/tok-1/r/x',
+      query: {}, params: {},
+      headers: { 'content-type': 'application/json', ...(over.headers ?? {}) },
+      body: over.body ?? Buffer.from('{}'),
+      cookies: {},
+      signedCookie: () => null,
+    } as unknown as HttpRequest;
+  }
+
+  interface SyntheticRes extends HttpResponse {
+    _calls: { status?: number; ended?: boolean };
+  }
+
+  function makeRes(): SyntheticRes {
+    const calls: { status?: number; ended?: boolean } = {};
+    const r: SyntheticRes = {
+      status(n: number) { calls.status = n; return r; },
+      header() { return r; },
+      end() { calls.ended = true; },
+      text() { calls.ended = true; },
+      json() { calls.ended = true; },
+      body() { calls.ended = true; },
+      redirect() { calls.ended = true; },
+      setSignedCookie() {}, clearCookie() {},
+      stream() { throw new Error('not used'); },
+      _calls: calls,
+    };
+    return r;
+  }
+
+  it('case 1: route mounts on first webhook routine indexing', async () => {
+    const { h, captured } = await makeWebHarness();
+    await h.bus.fire('workspace:applied', h.ctx({ userId: 'u1' }), {
+      before: null, after: asWorkspaceVersion('v1'),
+      author: { agentId: 'agt_a', userId: 'u1' },
+      changes: [{ path: '.ax/routines/r.md', kind: 'added',
+        contentAfter: async () => webhookBody() }],
+    });
+    expect(captured.routes).toEqual([{ method: 'POST', path: '/webhooks/tok-1/r/x' }]);
+    expect(captured.ensures).toBe(1);
+    expect(captured.handlers.size).toBe(1);
+  });
+
+  it('case 2: lazy token generation is idempotent across two webhook routines for the same agent', async () => {
+    const { h, captured } = await makeWebHarness();
+    await h.bus.fire('workspace:applied', h.ctx({ userId: 'u1' }), {
+      before: null, after: asWorkspaceVersion('v1'),
+      author: { agentId: 'agt_a', userId: 'u1' },
+      changes: [
+        { path: '.ax/routines/a.md', kind: 'added', contentAfter: async () => webhookBody({ path: '/r/a' }) },
+        { path: '.ax/routines/b.md', kind: 'added', contentAfter: async () => webhookBody({ path: '/r/b' }) },
+      ],
+    });
+    // ensure is called once per routine (2 calls total) but returns the SAME
+    // token both times (idempotent — ensures does not rotate).
+    expect(captured.ensures).toBe(2);
+    expect(captured.routes.map((r) => r.path).sort()).toEqual([
+      '/webhooks/tok-1/r/a', '/webhooks/tok-1/r/b',
+    ]);
+  });
+
+  it('case 3: HMAC mismatch returns 401 and does not fire agent:invoke', async () => {
+    const { h, captured } = await makeWebHarness();
+    await h.bus.fire('workspace:applied', h.ctx({ userId: 'u1' }), {
+      before: null, after: asWorkspaceVersion('v1'),
+      author: { agentId: 'agt_a', userId: 'u1' },
+      changes: [{ path: '.ax/routines/r.md', kind: 'added',
+        contentAfter: async () => webhookBody({ secretRef: 'gh-secret' }) }],
+    });
+    const handler = captured.handlers.get('/webhooks/tok-1/r/x')!;
+    expect(handler).toBeDefined();
+    const res = makeRes();
+    await handler(makeReq({
+      headers: { 'content-type': 'application/json', 'x-sig': 'sha256=deadbeef' },
+      body: Buffer.from('{"pr":{"title":"x"}}'),
+    }), res);
+    expect(res._calls.status).toBe(401);
+    expect(captured.invokes).toHaveLength(0);
+  });
+
+  it('case 4: valid POST → templated agent:invoke with substituted prompt', async () => {
+    const { h, captured } = await makeWebHarness();
+    await h.bus.fire('workspace:applied', h.ctx({ userId: 'u1' }), {
+      before: null, after: asWorkspaceVersion('v1'),
+      author: { agentId: 'agt_a', userId: 'u1' },
+      changes: [{ path: '.ax/routines/r.md', kind: 'added',
+        contentAfter: async () => webhookBody({ secretRef: 'gh-secret' }) }],
+    });
+    const handler = captured.handlers.get('/webhooks/tok-1/r/x')!;
+    const body = Buffer.from('{"pr":{"title":"fix bug"}}');
+    const sig = 'sha256=' + createHmac('sha256', 'shhh').update(body).digest('hex');
+    const res = makeRes();
+    await handler(makeReq({
+      headers: { 'content-type': 'application/json', 'x-sig': sig },
+      body,
+    }), res);
+    await vi.waitFor(() => expect(captured.invokes).toHaveLength(1),
+      { timeout: 5_000, interval: 25 });
+    expect(res._calls.status).toBe(202);
+    expect(captured.invokes[0]!.message.content).toBe('PR: fix bug');
+  });
+
+  it('case 5: routine deletion calls the stashed unregister closure', async () => {
+    const { h, captured } = await makeWebHarness();
+    await h.bus.fire('workspace:applied', h.ctx({ userId: 'u1' }), {
+      before: null, after: asWorkspaceVersion('v1'),
+      author: { agentId: 'agt_a', userId: 'u1' },
+      changes: [{ path: '.ax/routines/r.md', kind: 'added',
+        contentAfter: async () => webhookBody() }],
+    });
+    await h.bus.fire('workspace:applied', h.ctx({ userId: 'u1' }), {
+      before: asWorkspaceVersion('v1'), after: asWorkspaceVersion('v2'),
+      author: { agentId: 'agt_a', userId: 'u1' },
+      changes: [{ path: '.ax/routines/r.md', kind: 'deleted' }],
+    });
+    expect(captured.unregisters).toEqual(['/webhooks/tok-1/r/x']);
+    expect(captured.handlers.size).toBe(0);
   });
 });

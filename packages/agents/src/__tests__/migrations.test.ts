@@ -193,6 +193,30 @@ describe('runAgentsMigration', () => {
     ]);
   });
 
+  it('adds webhook_token column with partial unique index', async () => {
+    const k = makeKysely();
+    await runAgentsMigration(k);
+    const cols = await sql<{ column_name: string; data_type: string; is_nullable: 'YES' | 'NO' }>`
+      SELECT column_name, data_type, is_nullable
+        FROM information_schema.columns
+       WHERE table_name = 'agents_v1_agents'
+         AND column_name = 'webhook_token'
+    `.execute(k);
+    expect(cols.rows).toHaveLength(1);
+    expect(cols.rows[0]).toMatchObject({ data_type: 'text', is_nullable: 'YES' });
+
+    const ix = await sql<{ indexname: string; indexdef: string }>`
+      SELECT indexname, indexdef FROM pg_indexes
+       WHERE tablename = 'agents_v1_agents'
+         AND indexname = 'agents_v1_agents_webhook_token'
+    `.execute(k);
+    expect(ix.rows).toHaveLength(1);
+    // Partial index gated on NOT NULL — both prevents NULL collisions
+    // (UNIQUE allows multiple NULLs) and keeps the index lean.
+    expect(ix.rows[0]!.indexdef).toContain('WHERE');
+    expect(ix.rows[0]!.indexdef.toLowerCase()).toContain('webhook_token is not null');
+  });
+
   it('is idempotent — running twice does not throw', async () => {
     const db = makeKysely();
     await runAgentsMigration(db);

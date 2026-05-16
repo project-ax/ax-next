@@ -16,18 +16,26 @@ import {
   validateUpdatePatch,
   type AgentStore,
 } from './store.js';
+import { randomBytes } from 'node:crypto';
 import type {
   Agent,
   AgentsConfig,
   AgentsResolvedEvent,
+  AgentsWebhookTokenRotatedEvent,
   CreateInput,
   CreateOutput,
   DeleteInput,
   DeleteOutput,
+  EnsureWebhookTokenInput,
+  EnsureWebhookTokenOutput,
   ListForUserInput,
   ListForUserOutput,
+  ResolveByWebhookTokenInput,
+  ResolveByWebhookTokenOutput,
   ResolveInput,
   ResolveOutput,
+  RotateWebhookTokenInput,
+  RotateWebhookTokenOutput,
   UpdateInput,
   UpdateOutput,
 } from './types.js';
@@ -74,6 +82,9 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
         'agents:create',
         'agents:update',
         'agents:delete',
+        'agents:resolve-by-webhook-token',
+        'agents:rotate-webhook-token',
+        'agents:ensure-webhook-token',
       ],
       // database:get-instance is hard. http:register-route + auth:require-user
       // are hard NOW because we mount admin routes; the plugin won't boot
@@ -132,6 +143,90 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
         'agents:delete',
         PLUGIN_NAME,
         async (ctx, input) => deleteAgent(localStore, bus, ctx, input),
+      );
+
+      bus.registerService<ResolveByWebhookTokenInput, ResolveByWebhookTokenOutput>(
+        'agents:resolve-by-webhook-token',
+        PLUGIN_NAME,
+        async (_ctx, input) => {
+          if (typeof input.token !== 'string' || input.token.length === 0) {
+            return null;
+          }
+          const agent = await localStore.getByWebhookToken(input.token);
+          if (agent === null) return null;
+          return { agent };
+        },
+      );
+
+      bus.registerService<RotateWebhookTokenInput, RotateWebhookTokenOutput>(
+        'agents:rotate-webhook-token',
+        PLUGIN_NAME,
+        async (ctx, input) => {
+          const existing = await localStore.getById(input.agentId);
+          if (existing === null) {
+            throw new PluginError({
+              code: 'not-found',
+              plugin: PLUGIN_NAME,
+              hookName: 'agents:rotate-webhook-token',
+              message: `agent '${input.agentId}' not found`,
+            });
+          }
+          // ACL: owner OR admin (mirrors agents:update access path).
+          const isOwner = existing.ownerType === 'user'
+            && existing.ownerId === input.actor.userId;
+          if (!isOwner && !input.actor.isAdmin) {
+            throw new PluginError({
+              code: 'forbidden',
+              plugin: PLUGIN_NAME,
+              hookName: 'agents:rotate-webhook-token',
+              message: `forbidden: actor '${input.actor.userId}' cannot rotate webhook token for agent '${input.agentId}'`,
+            });
+          }
+          const token = randomBytes(32).toString('base64url');
+          await localStore.setWebhookToken(input.agentId, token);
+          // Fire subscriber event so that callers (e.g., @ax/routines) can
+          // re-bind webhook routes for this agent. Payload is opaque —
+          // agentId only, never the token itself. Subscriber failures are
+          // isolated by HookBus.fire (logged, not propagated).
+          const rotatedEvent: AgentsWebhookTokenRotatedEvent = { agentId: input.agentId };
+          await bus.fire('agents:webhook-token-rotated', ctx, rotatedEvent);
+          return { token };
+        },
+      );
+
+      bus.registerService<EnsureWebhookTokenInput, EnsureWebhookTokenOutput>(
+        'agents:ensure-webhook-token',
+        PLUGIN_NAME,
+        async (_ctx, input) => {
+          const existing = await localStore.getById(input.agentId);
+          if (existing === null) {
+            throw new PluginError({
+              code: 'not-found',
+              plugin: PLUGIN_NAME,
+              hookName: 'agents:ensure-webhook-token',
+              message: `agent '${input.agentId}' not found`,
+            });
+          }
+          // ACL: owner OR admin (mirrors agents:rotate-webhook-token access path).
+          const isOwner = existing.ownerType === 'user'
+            && existing.ownerId === input.actor.userId;
+          if (!isOwner && !input.actor.isAdmin) {
+            throw new PluginError({
+              code: 'forbidden',
+              plugin: PLUGIN_NAME,
+              hookName: 'agents:ensure-webhook-token',
+              message: `forbidden: actor '${input.actor.userId}' cannot access webhook token for agent '${input.agentId}'`,
+            });
+          }
+          // Return existing token if present; generate a new one if null.
+          const currentToken = await localStore.getWebhookToken(input.agentId);
+          if (typeof currentToken === 'string' && currentToken.length > 0) {
+            return { token: currentToken };
+          }
+          const token = randomBytes(32).toString('base64url');
+          await localStore.setWebhookToken(input.agentId, token);
+          return { token };
+        },
       );
 
       // Mount /admin/agents[/:id]. Routes are registered LAST so the bus
