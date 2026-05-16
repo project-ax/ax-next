@@ -8,6 +8,7 @@ import { asWorkspaceVersion, type WorkspaceDelta } from '@ax/core';
 import { Kysely, PostgresDialect } from 'kysely';
 import pg from 'pg';
 import type { RoutinesDatabase } from '../migrations.js';
+import type { HttpRequest, HttpResponse, HttpRouteHandler, HttpRegisterRouteInput } from '@ax/http-server';
 
 pg.types.setTypeParser(20, (v) => Number(v));
 
@@ -264,7 +265,7 @@ describe('Phase C webhook canary — half-wired window closure', () => {
   interface WebCaptured {
     invokes: Array<{ message: { content: string }; reqId: string; conversationId: string | undefined }>;
     routes: Array<{ method: string; path: string }>;
-    handlers: Map<string, (req: any, res: any) => Promise<void>>;
+    handlers: Map<string, HttpRouteHandler>;
     unregisters: string[];
     rotates: number;
   }
@@ -307,7 +308,7 @@ describe('Phase C webhook canary — half-wired window closure', () => {
           throw new Error('no-such-credential');
         },
         'http:register-route': async (_c, input: unknown) => {
-          const i = input as { method: string; path: string; handler: (req: any, res: any) => Promise<void> };
+          const i = input as HttpRegisterRouteInput;
           captured.routes.push({ method: i.method, path: i.path });
           captured.handlers.set(i.path, i.handler);
           return {
@@ -346,7 +347,7 @@ describe('Phase C webhook canary — half-wired window closure', () => {
     return { h, captured };
   }
 
-  function makeReq(over: Partial<{ headers: Record<string, string>; body: Buffer }> = {}) {
+  function makeReq(over: Partial<{ headers: Record<string, string>; body: Buffer }> = {}): HttpRequest {
     return {
       method: 'POST',
       path: '/webhooks/tok-1/r',
@@ -355,12 +356,16 @@ describe('Phase C webhook canary — half-wired window closure', () => {
       body: over.body ?? Buffer.from('{}'),
       cookies: {},
       signedCookie: () => null,
-    } as any;
+    } as unknown as HttpRequest;
   }
 
-  function makeRes() {
+  interface SyntheticRes extends HttpResponse {
+    _calls: { status?: number; ended?: boolean };
+  }
+
+  function makeRes(): SyntheticRes {
     const calls: { status?: number; ended?: boolean } = {};
-    const r: any = {
+    const r: SyntheticRes = {
       status(n: number) { calls.status = n; return r; },
       header() { return r; },
       end() { calls.ended = true; },
@@ -369,6 +374,7 @@ describe('Phase C webhook canary — half-wired window closure', () => {
       body() { calls.ended = true; },
       redirect() { calls.ended = true; },
       setSignedCookie() {}, clearCookie() {},
+      stream() { throw new Error('not used'); },
       _calls: calls,
     };
     return r;

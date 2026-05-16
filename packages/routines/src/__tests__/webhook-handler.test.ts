@@ -4,6 +4,7 @@ import { makeWebhookHandler } from '../webhook-handler.js';
 import { HookBus } from '@ax/core';
 import type { RoutineRow } from '../types.js';
 import type { HttpRequest, HttpResponse } from '@ax/http-server';
+import type { RoutinesStore } from '../store.js';
 
 function makeRow(over: Partial<RoutineRow> = {}): RoutineRow {
   return {
@@ -29,9 +30,13 @@ function makeReq(over: Partial<{ headers: Record<string, string>; body: Buffer }
   } as HttpRequest;
 }
 
-function makeRes() {
+interface SyntheticRes extends HttpResponse {
+  _calls: { status?: number; ended?: boolean };
+}
+
+function makeRes(): SyntheticRes {
   const calls: { status?: number; ended?: boolean } = {};
-  const res: any = {
+  const res: SyntheticRes = {
     status(n: number) { calls.status = n; return res; },
     header() { return res; },
     text() { calls.ended = true; },
@@ -43,13 +48,13 @@ function makeRes() {
     stream() { throw new Error('not used'); },
     _calls: calls,
   };
-  return res as HttpResponse & { _calls: typeof calls };
+  return res;
 }
 
 function makeBus(credentialsGet?: (ref: string) => Promise<string>): HookBus {
   const bus = new HookBus();
   if (credentialsGet) {
-    bus.registerService('credentials:get', 'test', async (_ctx, input: any) =>
+    bus.registerService('credentials:get', 'test', async (_ctx, input: { ref: string; userId: string }) =>
       credentialsGet(input.ref));
   }
   return bus;
@@ -65,7 +70,7 @@ describe('makeWebhookHandler', () => {
     });
     const store = { findOne: async () => row };
     const handler = makeWebhookHandler({
-      bus: makeBus(), store: store as any, agentId: 'agt_a',
+      bus: makeBus(), store: store as Pick<RoutinesStore, 'findOne'>, agentId: 'agt_a',
       routinePath: row.path, fire,
     });
     const res = makeRes();
@@ -81,7 +86,7 @@ describe('makeWebhookHandler', () => {
     const fire = vi.fn();
     const store = { findOne: async () => null };
     const handler = makeWebhookHandler({
-      bus: makeBus(), store: store as any, agentId: 'agt_a',
+      bus: makeBus(), store: store as Pick<RoutinesStore, 'findOne'>, agentId: 'agt_a',
       routinePath: '.ax/routines/r.md', fire,
     });
     const res = makeRes();
@@ -95,7 +100,7 @@ describe('makeWebhookHandler', () => {
     const row = makeRow({ trigger: { kind: 'interval', every: '60s' } });
     const store = { findOne: async () => row };
     const handler = makeWebhookHandler({
-      bus: makeBus(), store: store as any, agentId: 'agt_a',
+      bus: makeBus(), store: store as Pick<RoutinesStore, 'findOne'>, agentId: 'agt_a',
       routinePath: row.path, fire,
     });
     const res = makeRes();
@@ -112,7 +117,7 @@ describe('makeWebhookHandler', () => {
     });
     const store = { findOne: async () => row };
     const handler = makeWebhookHandler({
-      bus: makeBus(async () => 'shhh'), store: store as any,
+      bus: makeBus(async () => 'shhh'), store: store as Pick<RoutinesStore, 'findOne'>,
       agentId: 'agt_a', routinePath: row.path, fire,
     });
     const res = makeRes();
@@ -132,7 +137,7 @@ describe('makeWebhookHandler', () => {
     });
     const store = { findOne: async () => row };
     const handler = makeWebhookHandler({
-      bus: makeBus(async () => 'shhh'), store: store as any,
+      bus: makeBus(async () => 'shhh'), store: store as Pick<RoutinesStore, 'findOne'>,
       agentId: 'agt_a', routinePath: row.path, fire,
     });
     const res = makeRes();
@@ -150,7 +155,7 @@ describe('makeWebhookHandler', () => {
     const store = { findOne: async () => row };
     const handler = makeWebhookHandler({
       bus: makeBus(async () => { throw new Error('no'); }),
-      store: store as any, agentId: 'agt_a', routinePath: row.path, fire,
+      store: store as Pick<RoutinesStore, 'findOne'>, agentId: 'agt_a', routinePath: row.path, fire,
     });
     const res = makeRes();
     await handler(makeReq({
@@ -169,7 +174,7 @@ describe('makeWebhookHandler', () => {
     });
     const store = { findOne: async () => row };
     const handler = makeWebhookHandler({
-      bus: makeBus(async () => 'shhh'), store: store as any,
+      bus: makeBus(async () => 'shhh'), store: store as Pick<RoutinesStore, 'findOne'>,
       agentId: 'agt_a', routinePath: row.path, fire,
     });
     const body = Buffer.from('{"x":1}');
@@ -192,7 +197,7 @@ describe('makeWebhookHandler', () => {
     });
     const store = { findOne: async () => row };
     const handler = makeWebhookHandler({
-      bus: makeBus(async () => 'shhh'), store: store as any,
+      bus: makeBus(async () => 'shhh'), store: store as Pick<RoutinesStore, 'findOne'>,
       agentId: 'agt_a', routinePath: row.path, fire,
     });
     const body = Buffer.from('{}');
@@ -211,7 +216,7 @@ describe('makeWebhookHandler', () => {
     const row = makeRow();
     const store = { findOne: async () => row };
     const handler = makeWebhookHandler({
-      bus: makeBus(), store: store as any, agentId: 'agt_a',
+      bus: makeBus(), store: store as Pick<RoutinesStore, 'findOne'>, agentId: 'agt_a',
       routinePath: row.path, fire,
     });
     const res = makeRes();
@@ -225,7 +230,7 @@ describe('makeWebhookHandler', () => {
     const row = makeRow();
     const store = { findOne: async () => row };
     const handler = makeWebhookHandler({
-      bus: makeBus(), store: store as any, agentId: 'agt_a',
+      bus: makeBus(), store: store as Pick<RoutinesStore, 'findOne'>, agentId: 'agt_a',
       routinePath: row.path, fire,
     });
     const res = makeRes();
@@ -245,7 +250,7 @@ describe('makeWebhookHandler', () => {
     const row = makeRow();
     const store = { findOne: async () => row };
     const handler = makeWebhookHandler({
-      bus: makeBus(), store: store as any, agentId: 'agt_a',
+      bus: makeBus(), store: store as Pick<RoutinesStore, 'findOne'>, agentId: 'agt_a',
       routinePath: row.path, fire,
     });
     const res = makeRes();
@@ -265,7 +270,7 @@ describe('makeWebhookHandler', () => {
     });
     const store = { findOne: async () => row };
     const handler = makeWebhookHandler({
-      bus: makeBus(), store: store as any, agentId: 'agt_a',
+      bus: makeBus(), store: store as Pick<RoutinesStore, 'findOne'>, agentId: 'agt_a',
       routinePath: row.path, fire,
     });
     const res = makeRes();
@@ -284,7 +289,7 @@ describe('makeWebhookHandler', () => {
     });
     const store = { findOne: async () => row };
     const handler = makeWebhookHandler({
-      bus: makeBus(), store: store as any, agentId: 'agt_a',
+      bus: makeBus(), store: store as Pick<RoutinesStore, 'findOne'>, agentId: 'agt_a',
       routinePath: row.path, fire,
     });
     const res = makeRes();
@@ -301,7 +306,7 @@ describe('makeWebhookHandler', () => {
     });
     const store = { findOne: async () => row };
     const handler = makeWebhookHandler({
-      bus: makeBus(async () => 'shhh'), store: store as any,
+      bus: makeBus(async () => 'shhh'), store: store as Pick<RoutinesStore, 'findOne'>,
       agentId: 'agt_a', routinePath: row.path, fire,
     });
     const body = Buffer.from('{}');
