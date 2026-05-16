@@ -142,7 +142,10 @@ export function createHttpServerPlugin(
       bus.subscribe(
         'http:request',
         `${PLUGIN_NAME}/csrf`,
-        createCsrfSubscriber({ allowedOrigins }),
+        createCsrfSubscriber({ allowedOrigins }, (method, path) => {
+          const matched = router.match(method, path);
+          return matched?.bypassCsrf === true;
+        }),
       );
 
       bus.registerService<HttpRegisterRouteInput, HttpRegisterRouteOutput>(
@@ -172,7 +175,9 @@ export function createHttpServerPlugin(
           }
           let unregister: () => void;
           try {
-            unregister = router.register(input.method, input.path, input.handler);
+            unregister = router.register(input.method, input.path, input.handler, {
+              bypassCsrf: input.bypassCsrf === true,
+            });
           } catch (err) {
             throw new PluginError({
               code: 'duplicate-route',

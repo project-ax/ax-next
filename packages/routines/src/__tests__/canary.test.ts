@@ -265,7 +265,7 @@ describe('Phase C webhook canary — half-wired window closure', () => {
 
   interface WebCaptured {
     invokes: Array<{ message: { content: string }; reqId: string; conversationId: string | undefined }>;
-    routes: Array<{ method: string; path: string }>;
+    routes: Array<{ method: string; path: string; bypassCsrf: boolean | undefined }>;
     handlers: Map<string, HttpRouteHandler>;
     unregisters: string[];
     ensures: number;
@@ -315,7 +315,11 @@ describe('Phase C webhook canary — half-wired window closure', () => {
         },
         'http:register-route': async (_c, input: unknown) => {
           const i = input as HttpRegisterRouteInput;
-          captured.routes.push({ method: i.method, path: i.path });
+          captured.routes.push({
+            method: i.method,
+            path: i.path,
+            bypassCsrf: i.bypassCsrf,
+          });
           captured.handlers.set(i.path, i.handler);
           return {
             unregister: () => {
@@ -394,7 +398,9 @@ describe('Phase C webhook canary — half-wired window closure', () => {
       changes: [{ path: '.ax/routines/r.md', kind: 'added',
         contentAfter: async () => webhookBody() }],
     });
-    expect(captured.routes).toEqual([{ method: 'POST', path: '/webhooks/tok-1/r/x' }]);
+    expect(captured.routes).toEqual([
+      { method: 'POST', path: '/webhooks/tok-1/r/x', bypassCsrf: true },
+    ]);
     expect(captured.ensures).toBe(1);
     expect(captured.handlers.size).toBe(1);
   });
@@ -475,6 +481,28 @@ describe('Phase C webhook canary — half-wired window closure', () => {
     expect(captured.handlers.size).toBe(0);
   });
 
+  it('case 7: webhook routes register with bypassCsrf: true (initial + rebind)', async () => {
+    // #82 pin: webhook receivers are external by design — the token in the
+    // URL is the auth (Phase C design §5). Both the initial registration
+    // and the post-rotation rebind MUST opt out of CSRF; without this,
+    // every plain external POST hits the http-server CSRF subscriber and
+    // 403s before the handler runs.
+    const { h, captured, tokens } = await makeWebHarness();
+    await h.bus.fire('workspace:applied', h.ctx({ userId: 'u1' }), {
+      before: null, after: asWorkspaceVersion('v1'),
+      author: { agentId: 'agt_a', userId: 'u1' },
+      changes: [{ path: '.ax/routines/r.md', kind: 'added',
+        contentAfter: async () => webhookBody() }],
+    });
+    expect(captured.routes[0]?.bypassCsrf).toBe(true);
+
+    tokens.set('agt_a', 'tok-2');
+    await h.bus.fire('agents:webhook-token-rotated', h.ctx({ userId: 'u1' }),
+      { agentId: 'agt_a' });
+    const rebound = captured.routes.find((r) => r.path === '/webhooks/tok-2/r/x');
+    expect(rebound?.bypassCsrf).toBe(true);
+  });
+
   it('case 6: agents:webhook-token-rotated unmounts old route and registers fresh route (K5 e2e)', async () => {
     const { h, captured, tokens } = await makeWebHarness();
     await h.bus.fire('workspace:applied', h.ctx({ userId: 'u1' }), {
@@ -483,7 +511,9 @@ describe('Phase C webhook canary — half-wired window closure', () => {
       changes: [{ path: '.ax/routines/r.md', kind: 'added',
         contentAfter: async () => webhookBody() }],
     });
-    expect(captured.routes).toEqual([{ method: 'POST', path: '/webhooks/tok-1/r/x' }]);
+    expect(captured.routes).toEqual([
+      { method: 'POST', path: '/webhooks/tok-1/r/x', bypassCsrf: true },
+    ]);
     expect(captured.handlers.size).toBe(1);
 
     // Simulate @ax/agents rotating the token: mutate the harness map so the

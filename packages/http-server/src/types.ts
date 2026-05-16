@@ -129,6 +129,18 @@ export interface HttpRegisterRouteInput {
   method: HttpMethod;
   path: string;
   handler: HttpRouteHandler;
+  /**
+   * When true, the built-in CSRF subscriber skips this route. Use ONLY
+   * for endpoints whose authentication is carried in the request path
+   * itself (e.g. `/webhooks/<token>/...`) and where browser-origin
+   * checks are inapplicable because the caller is an external service
+   * that won't send an `Origin` header or `X-Requested-With: ax-admin`.
+   *
+   * The flag affects the matched (method, path) only; routes that omit
+   * it stay CSRF-protected even when registered by the same plugin.
+   * Defaults to `false`.
+   */
+  bypassCsrf?: boolean;
 }
 
 export interface HttpRegisterRouteOutput {
