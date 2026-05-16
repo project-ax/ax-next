@@ -44,12 +44,13 @@ export interface RecordFireInput {
 }
 
 export interface RoutinesStore {
-  upsert(input: UpsertInput): Promise<void>;
+  upsert(input: UpsertInput): Promise<{ changed: boolean }>;
   delete(input: { agentId: string; path: string }): Promise<void>;
   claimDue(input: ClaimInput): Promise<RoutineRow[]>;
   advance(input: AdvanceInput): Promise<void>;
   recordFire(input: RecordFireInput): Promise<number>;
   list(input: { agentId?: string }): Promise<RoutineRow[]>;
+  findOne(input: { agentId: string; path: string }): Promise<RoutineRow | null>;
 }
 
 function rowToRoutine(row: {
@@ -85,43 +86,55 @@ function rowToRoutine(row: {
 export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore {
   return {
     async upsert(input) {
-      await db.insertInto('routines_v1_definitions').values({
-        agent_id: input.agentId,
-        path: input.path,
-        author_user_id: input.authorUserId,
-        name: input.name,
-        description: input.description,
-        spec_hash: input.specHash,
-        trigger_kind: input.trigger.kind,
-        trigger_spec: input.trigger as unknown,
-        active_hours: input.activeHours as unknown,
-        silence_token: input.silenceToken,
-        silence_max: input.silenceMax,
-        conversation: input.conversation,
-        prompt_body: input.promptBody,
-        next_run_at: input.nextRunAt,
-      }).onConflict((oc) => oc
-        .columns(['agent_id', 'path'])
-        .doUpdateSet((eb) => ({
-          author_user_id: eb.ref('excluded.author_user_id'),
-          name: eb.ref('excluded.name'),
-          description: eb.ref('excluded.description'),
-          trigger_kind: eb.ref('excluded.trigger_kind'),
-          trigger_spec: eb.ref('excluded.trigger_spec'),
-          active_hours: eb.ref('excluded.active_hours'),
-          silence_token: eb.ref('excluded.silence_token'),
-          silence_max: eb.ref('excluded.silence_max'),
-          conversation: eb.ref('excluded.conversation'),
-          prompt_body: eb.ref('excluded.prompt_body'),
-          next_run_at: sql`CASE
-            WHEN routines_v1_definitions.spec_hash IS DISTINCT FROM excluded.spec_hash
-            THEN excluded.next_run_at
-            ELSE routines_v1_definitions.next_run_at
-          END`,
-          spec_hash: eb.ref('excluded.spec_hash'),
-          updated_at: sql`now()`,
-        }))
-      ).execute();
+      return db.transaction().execute(async (trx) => {
+        const prior = await trx
+          .selectFrom('routines_v1_definitions')
+          .select(['spec_hash'])
+          .where('agent_id', '=', input.agentId)
+          .where('path', '=', input.path)
+          .executeTakeFirst();
+
+        await trx.insertInto('routines_v1_definitions').values({
+          agent_id: input.agentId,
+          path: input.path,
+          author_user_id: input.authorUserId,
+          name: input.name,
+          description: input.description,
+          spec_hash: input.specHash,
+          trigger_kind: input.trigger.kind,
+          trigger_spec: input.trigger as unknown,
+          active_hours: input.activeHours as unknown,
+          silence_token: input.silenceToken,
+          silence_max: input.silenceMax,
+          conversation: input.conversation,
+          prompt_body: input.promptBody,
+          next_run_at: input.nextRunAt,
+        }).onConflict((oc) => oc
+          .columns(['agent_id', 'path'])
+          .doUpdateSet((eb) => ({
+            author_user_id: eb.ref('excluded.author_user_id'),
+            name: eb.ref('excluded.name'),
+            description: eb.ref('excluded.description'),
+            trigger_kind: eb.ref('excluded.trigger_kind'),
+            trigger_spec: eb.ref('excluded.trigger_spec'),
+            active_hours: eb.ref('excluded.active_hours'),
+            silence_token: eb.ref('excluded.silence_token'),
+            silence_max: eb.ref('excluded.silence_max'),
+            conversation: eb.ref('excluded.conversation'),
+            prompt_body: eb.ref('excluded.prompt_body'),
+            next_run_at: sql`CASE
+              WHEN routines_v1_definitions.spec_hash IS DISTINCT FROM excluded.spec_hash
+              THEN excluded.next_run_at
+              ELSE routines_v1_definitions.next_run_at
+            END`,
+            spec_hash: eb.ref('excluded.spec_hash'),
+            updated_at: sql`now()`,
+          }))
+        ).execute();
+
+        const changed = prior === undefined || prior.spec_hash !== input.specHash;
+        return { changed };
+      });
     },
 
     async delete(input) {
@@ -192,6 +205,16 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
       if (input.agentId !== undefined) q = q.where('agent_id', '=', input.agentId);
       const rows = await q.orderBy('agent_id').orderBy('path').execute();
       return rows.map(rowToRoutine);
+    },
+
+    async findOne(input) {
+      const row = await db
+        .selectFrom('routines_v1_definitions')
+        .selectAll()
+        .where('agent_id', '=', input.agentId)
+        .where('path', '=', input.path)
+        .executeTakeFirst();
+      return row === undefined ? null : rowToRoutine(row as Parameters<typeof rowToRoutine>[0]);
     },
   };
 }
