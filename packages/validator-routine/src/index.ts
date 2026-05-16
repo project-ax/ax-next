@@ -7,4 +7,5 @@ export {
   type RoutineFrontmatterFields,
   type RoutineFrontmatterResult,
   type TriggerSpec,
+  type WebhookHmacSpec,
 } from './frontmatter.js';
