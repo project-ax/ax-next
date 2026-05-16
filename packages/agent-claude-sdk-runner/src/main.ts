@@ -747,6 +747,12 @@ export async function main(): Promise<number> {
               reason: 'user-message-wait',
               role: 'tool',
               contentBlocks: toolBlocks,
+              // Forward the inbox message's reqId so host-side per-request
+              // subscribers (e.g., @ax/routines `pending.get(reqId)`) can
+              // correlate this turn-end back to the originating request.
+              // Without this the host fires `chat:turn-end` with the IPC
+              // request's freshly-minted reqId, dead to those subscribers.
+              ...(currentReqId !== undefined ? { reqId: currentReqId } : {}),
               ...(turnId !== undefined ? { turnId } : {}),
             })
             .catch(() => {
@@ -774,6 +780,8 @@ export async function main(): Promise<number> {
             ...(assistantBlocks.length > 0
               ? { contentBlocks: assistantBlocks }
               : {}),
+            // See reqId rationale on the tool turn-end above.
+            ...(currentReqId !== undefined ? { reqId: currentReqId } : {}),
             ...(assistantTurnId !== undefined ? { turnId: assistantTurnId } : {}),
           })
           .catch(() => {

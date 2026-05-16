@@ -388,6 +388,11 @@ describe('main()', () => {
     expect(turnEnds[0]?.[1]).toEqual({
       reason: 'user-message-wait',
       role: 'assistant',
+      // reqId carries the inbox message's reqId so host-side per-request
+      // subscribers (e.g., @ax/routines `pending.get(reqId)`) can correlate
+      // back. Without this, fire rows never write and silence-token /
+      // hide-conversation logic dies on the floor. See #90.
+      reqId: 'req-test',
       contentBlocks: [{ type: 'text', text: 'hello world' }],
     });
 
@@ -846,6 +851,7 @@ describe('main()', () => {
     expect(turnEnds[0]?.[1]).toEqual({
       reason: 'user-message-wait',
       role: 'assistant',
+      reqId: 'req-test',
       contentBlocks: [
         { type: 'thinking', thinking: 'plan', signature: 'sig-1' },
         { type: 'redacted_thinking', data: 'opaque-blob-1' },
@@ -921,6 +927,7 @@ describe('main()', () => {
     expect(turnEnds[0]?.[1]).toEqual({
       reason: 'user-message-wait',
       role: 'tool',
+      reqId: 'req-test',
       contentBlocks: [
         {
           type: 'tool_result',
@@ -933,6 +940,7 @@ describe('main()', () => {
     expect(turnEnds[1]?.[1]).toEqual({
       reason: 'user-message-wait',
       role: 'assistant',
+      reqId: 'req-test',
       contentBlocks: [
         {
           type: 'tool_use',
@@ -1064,6 +1072,7 @@ describe('main()', () => {
     expect(turnEnds[0]?.[1]).toEqual({
       reason: 'user-message-wait',
       role: 'tool',
+      reqId: 'req-test',
       contentBlocks: [
         {
           type: 'tool_result',
@@ -1132,6 +1141,7 @@ describe('main()', () => {
     expect(turnEnds[0]?.[1]).toEqual({
       reason: 'user-message-wait',
       role: 'assistant',
+      reqId: 'req-test',
     });
   });
 
@@ -1239,6 +1249,7 @@ describe('main()', () => {
     expect(turnEnds[0]?.[1]).toEqual({
       reason: 'user-message-wait',
       role: 'assistant',
+      reqId: 'r42',
       contentBlocks: [
         { type: 'thinking', thinking: 'pondering', signature: 'sig-1' },
         { type: 'text', text: 'hello' },
