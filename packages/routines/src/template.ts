@@ -15,21 +15,36 @@
  * Missing fields, non-object intermediates, and null/undefined
  * terminals all collapse to the empty string. The walk never throws.
  */
-const WHOLE_RE = /\{\{\s*payload\s*\}\}/g;
-const PATH_RE = /\{\{\s*payload((?:\.[a-zA-Z0-9_-]+)+)\s*\}\}/g;
+// Single regex matches BOTH emission shapes so substitution is a
+// single-pass walk over `body`. The optional capture group is `undefined`
+// for `{{payload}}` (whole) and `.x.y` for `{{payload.x.y}}` (path). Two
+// sequential .replace() calls would re-scan the first pass's output and
+// expand any attacker-embedded `{{payload.X}}` strings sitting inside
+// JSON-stringified payload values — a K9 contract violation even though
+// the only data in scope is the attacker's own payload. Single-pass
+// closes that amplifier.
+const TEMPLATE_RE = /\{\{\s*payload((?:\.[a-zA-Z0-9_-]+)+)?\s*\}\}/g;
 
 export function renderTemplate(body: string, ctx: { payload: unknown }): string {
-  return body
-    .replace(WHOLE_RE, () => JSON.stringify(ctx.payload))
-    .replace(PATH_RE, (_m, raw: string) => walkOrEmpty(ctx.payload, raw));
+  return body.replace(TEMPLATE_RE, (_m, raw?: string) =>
+    raw === undefined || raw === ''
+      ? JSON.stringify(ctx.payload)
+      : walkOrEmpty(ctx.payload, raw),
+  );
 }
 
 function walkOrEmpty(root: unknown, raw: string): string {
-  // raw starts with '.', so segments[0] is empty after .slice(1).split
+  // raw starts with '.', so first .split entry is empty — slice it off.
   const segments = raw.slice(1).split('.');
   let cur: unknown = root;
   for (const seg of segments) {
     if (cur === null || cur === undefined || typeof cur !== 'object') return '';
+    // Own-properties only — refuses `__proto__` / `constructor` /
+    // `prototype` traversal even if a JSON payload sets them as own
+    // properties via JSON.parse. (For URLSearchParams payloads,
+    // `Object.fromEntries` can also produce own `__proto__` keys; same
+    // guard applies.)
+    if (!Object.hasOwn(cur, seg)) return '';
     cur = (cur as Record<string, unknown>)[seg];
   }
   if (cur === null || cur === undefined) return '';

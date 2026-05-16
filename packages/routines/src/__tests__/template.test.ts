@@ -90,4 +90,55 @@ describe('renderTemplate', () => {
       { payload: { a: 1, b: 2, sum: 3 } },
     )).toBe('1+2=3');
   });
+
+  // K9 regression: a two-pass substitution would re-scan the JSON output
+  // of {{payload}} and expand attacker-embedded {{payload.X}} strings.
+  // Single-pass means the regex sees `body` once; expansion outputs are
+  // never re-matched.
+  it('does not re-expand {{payload.X}} strings embedded in payload values', () => {
+    const out = renderTemplate('full = {{payload}}', {
+      payload: { msg: '{{payload.token}}', token: 'real-token-value' },
+    });
+    // The literal `{{payload.token}}` survives JSON.stringify (it's
+    // valid JSON content) — the assertion is that the `msg` field still
+    // contains the LITERAL placeholder, not the token's value. A two-pass
+    // implementation would replace the placeholder substring inside the
+    // dumped JSON, mutating the `msg` field's value to 'real-token-value'.
+    expect(out).toContain('"msg":"{{payload.token}}"');
+    expect(out).not.toContain('"msg":"real-token-value"');
+    // (The token value itself appears as the `token` field — that's the
+    // whole-payload escape hatch behaving correctly; it's the dump of
+    // an attacker-supplied field, fully under their control.)
+  });
+
+  it('does not re-expand {{payload}} embedded inside the body output either', () => {
+    const out = renderTemplate('{{payload.escape}}', {
+      payload: { escape: '{{payload.real}}', real: 'should-not-appear' },
+    });
+    expect(out).toBe('{{payload.real}}');
+    expect(out).not.toContain('should-not-appear');
+  });
+
+  // K9 regression: prototype-chain segments are treated as missing fields,
+  // not as a way to reach Object.prototype methods/properties.
+  it('refuses prototype-chain traversal via __proto__', () => {
+    // A regular object literal — __proto__ is the prototype-chain entry,
+    // not an own property. Old impl returned JSON.stringify(Object.prototype)
+    // (`'{}'`); new impl returns '' because Object.hasOwn(obj, '__proto__')
+    // is false.
+    expect(renderTemplate('{{payload.__proto__}}', { payload: { x: 1 } }))
+      .toBe('');
+    expect(renderTemplate('{{payload.constructor}}', { payload: { x: 1 } }))
+      .toBe('');
+  });
+
+  it('still walks own __proto__ key when present (URLSearchParams shape)', () => {
+    // Object.fromEntries(new URLSearchParams('__proto__=v')) sets
+    // __proto__ as an OWN property — attacker controls both key and
+    // value, so this is benign self-disclosure. Confirm the guard
+    // doesn't block legitimate own-property reads.
+    const payload = Object.fromEntries(new URLSearchParams('__proto__=attacker'));
+    expect(renderTemplate('{{payload.__proto__}}', { payload }))
+      .toBe('attacker');
+  });
 });
