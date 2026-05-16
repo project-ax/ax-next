@@ -46,9 +46,9 @@ async function makeHarness(captured: Captured, replyOnInvoke: { contentBlocks: u
   const h = await createTestHarness({
     services: {
       'agents:resolve': async (_ctx, input: unknown) => ({
-        agent: { id: (input as { agentId: string }).agentId, ownerId: 'u1', workspaceRef: null, webhookToken: null },
+        agent: { id: (input as { agentId: string }).agentId, ownerId: 'u1', workspaceRef: null },
       }),
-      'agents:rotate-webhook-token': async (_ctx, input: unknown) => ({
+      'agents:ensure-webhook-token': async (_ctx, input: unknown) => ({
         token: `tok-${(input as { agentId: string }).agentId}`,
       }),
       'agents:resolve-by-webhook-token': async () => ({ agent: null }),
@@ -268,12 +268,12 @@ describe('Phase C webhook canary — half-wired window closure', () => {
     routes: Array<{ method: string; path: string }>;
     handlers: Map<string, HttpRouteHandler>;
     unregisters: string[];
-    rotates: number;
+    ensures: number;
   }
 
   async function makeWebHarness(): Promise<{ h: TestHarness; captured: WebCaptured }> {
     const captured: WebCaptured = {
-      invokes: [], routes: [], handlers: new Map(), unregisters: [], rotates: 0,
+      invokes: [], routes: [], handlers: new Map(), unregisters: [], ensures: 0,
     };
     let nextConvId = 1;
     const tokens = new Map<string, string>();
@@ -283,17 +283,18 @@ describe('Phase C webhook canary — half-wired window closure', () => {
       services: {
         'agents:resolve': async (_c, input: unknown) => {
           const i = input as { agentId: string };
-          return {
-            agent: {
-              id: i.agentId, ownerId: 'u1', workspaceRef: null,
-              webhookToken: tokens.get(i.agentId) ?? null,
-            },
-          };
+          return { agent: { id: i.agentId, ownerId: 'u1', workspaceRef: null } };
         },
-        'agents:rotate-webhook-token': async (_c, input: unknown) => {
-          captured.rotates += 1;
-          const tok = `tok-${captured.rotates}`;
-          tokens.set((input as { agentId: string }).agentId, tok);
+        // agents:ensure-webhook-token: idempotent — generates a token on first
+        // call per agent, returns the same one on subsequent calls (no rotation).
+        'agents:ensure-webhook-token': async (_c, input: unknown) => {
+          const i = input as { agentId: string };
+          captured.ensures += 1;
+          let tok = tokens.get(i.agentId);
+          if (tok === undefined) {
+            tok = `tok-${captured.ensures}`;
+            tokens.set(i.agentId, tok);
+          }
           return { token: tok };
         },
         'agents:resolve-by-webhook-token': async (_c, input: unknown) => {
@@ -390,7 +391,7 @@ describe('Phase C webhook canary — half-wired window closure', () => {
         contentAfter: async () => webhookBody() }],
     });
     expect(captured.routes).toEqual([{ method: 'POST', path: '/webhooks/tok-1/r/x' }]);
-    expect(captured.rotates).toBe(1);
+    expect(captured.ensures).toBe(1);
     expect(captured.handlers.size).toBe(1);
   });
 
@@ -404,7 +405,9 @@ describe('Phase C webhook canary — half-wired window closure', () => {
         { path: '.ax/routines/b.md', kind: 'added', contentAfter: async () => webhookBody({ path: '/r/b' }) },
       ],
     });
-    expect(captured.rotates).toBe(1);
+    // ensure is called once per routine (2 calls total) but returns the SAME
+    // token both times (idempotent — ensures does not rotate).
+    expect(captured.ensures).toBe(2);
     expect(captured.routes.map((r) => r.path).sort()).toEqual([
       '/webhooks/tok-1/r/a', '/webhooks/tok-1/r/b',
     ]);

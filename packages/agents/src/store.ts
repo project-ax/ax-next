@@ -322,7 +322,6 @@ function rowToAgent(row: AgentsRow): Agent {
     mcpConfigIds,
     model: row.model,
     workspaceRef: row.workspace_ref,
-    webhookToken: row.webhook_token,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -351,6 +350,13 @@ export interface AgentStore {
    * the caller maps null to 404).
    */
   getByWebhookToken(token: string): Promise<Agent | null>;
+  /**
+   * Returns the raw `webhook_token` column value for an agent. Returns
+   * null when no token has been set yet. Used internally by the plugin
+   * to implement `agents:ensure-webhook-token` without surfacing the
+   * token on the public `Agent` DTO.
+   */
+  getWebhookToken(agentId: string): Promise<string | null>;
   /**
    * Atomic write of `webhook_token`. Throws `PluginError` with code
    * `not-found` when no row matched. The UNIQUE partial index prevents
@@ -480,6 +486,15 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
         .where('webhook_token', '=', token)
         .executeTakeFirst();
       return row === undefined ? null : rowToAgent(row);
+    },
+
+    async getWebhookToken(agentId) {
+      const row = await db
+        .selectFrom('agents_v1_agents')
+        .select(['webhook_token'])
+        .where('agent_id', '=', agentId)
+        .executeTakeFirst();
+      return row === undefined ? null : (row.webhook_token ?? null);
     },
 
     async setWebhookToken(agentId, token) {

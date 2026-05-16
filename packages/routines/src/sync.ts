@@ -98,19 +98,12 @@ export async function handleWorkspaceApplied(
       if (!upsertResult.changed && deps.webhookRoutes.has(key)) continue;
 
       try {
-        const resolved = await deps.bus.call<
-          { agentId: string; userId: string },
-          { agent: { id: string; ownerId: string; webhookToken: string | null } }
-        >('agents:resolve', ctx, { agentId, userId });
-        let token = resolved.agent.webhookToken;
-        if (typeof token !== 'string' || token.length === 0) {
-          const rot = await deps.bus.call<
-            { actor: { userId: string; isAdmin: boolean }; agentId: string },
-            { token: string }
-          >('agents:rotate-webhook-token', ctx,
-            { actor: { userId, isAdmin: false }, agentId });
-          token = rot.token;
-        }
+        const ensured = await deps.bus.call<
+          { actor: { userId: string; isAdmin: boolean }; agentId: string },
+          { token: string }
+        >('agents:ensure-webhook-token', ctx,
+          { actor: { userId, isAdmin: false }, agentId });
+        const token = ensured.token;
         // Unregister prior closure before binding the fresh path.
         const stale = deps.webhookRoutes.get(key);
         if (stale !== undefined) {
@@ -147,6 +140,62 @@ export async function handleWorkspaceApplied(
     } catch (err) {
       ctx.logger.warn('routines_sync_upsert_failed', {
         agentId, path: change.path,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+}
+
+/**
+ * Re-binds every webhook routine for the given agent against the current
+ * token. Called by the `agents:webhook-token-rotated` subscriber in plugin.ts
+ * so that stale routes (pointing at the old token URL) are torn down and fresh
+ * ones registered before the next inbound request arrives.
+ *
+ * Per-routine failures are caught, logged, and skipped (K10). A failure on one
+ * routine does NOT stop rebinding the remaining routines for the same agent.
+ */
+export async function rebindWebhooksForAgent(
+  deps: HandleWorkspaceAppliedDeps,
+  ctx: AgentContext,
+  agentId: string,
+): Promise<void> {
+  const rows = await deps.store.list({ agentId });
+  for (const row of rows) {
+    if (row.trigger.kind !== 'webhook') continue;
+    const key = webhookKey(agentId, row.path);
+    // Tear down the stale closure (the one registered with the old token).
+    const stale = deps.webhookRoutes.get(key);
+    if (stale !== undefined) {
+      try { stale(); } catch { /* idempotent */ }
+    }
+    try {
+      // Re-resolve the (now-rotated) token. ensure-webhook-token is the
+      // canonical read path — the token is never stored in this plugin.
+      const ensured = await deps.bus.call<
+        { actor: { userId: string; isAdmin: boolean }; agentId: string },
+        { token: string }
+      >('agents:ensure-webhook-token', ctx,
+        { actor: { userId: row.authorUserId, isAdmin: false }, agentId });
+      const out = await deps.bus.call<
+        { method: 'POST'; path: string; handler: unknown },
+        { unregister: () => void }
+      >('http:register-route', ctx,
+        {
+          method: 'POST',
+          path: `/webhooks/${ensured.token}${(row.trigger as { path: string }).path}`,
+          handler: makeWebhookHandler({
+            bus: deps.bus, store: deps.store,
+            agentId, routinePath: row.path, fire: deps.fireRoutine,
+          }),
+        },
+      );
+      deps.webhookRoutes.set(key, out.unregister);
+    } catch (err) {
+      // K10: remove the stale entry (no longer valid) and log; don't throw.
+      deps.webhookRoutes.delete(key);
+      ctx.logger.warn('routines_rebind_one_webhook_failed', {
+        agentId, path: row.path,
         err: err instanceof Error ? err.message : String(err),
       });
     }

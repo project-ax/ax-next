@@ -48,7 +48,9 @@ describe('AgentStore webhook helpers', () => {
     const agent = await store.getByWebhookToken('tok123');
     expect(agent).not.toBeNull();
     expect(agent!.id).toBe('agt_a');
-    expect(agent!.webhookToken).toBe('tok123');
+    // webhookToken is NOT on the public Agent DTO — verify via getWebhookToken.
+    const rawToken = await store.getWebhookToken('agt_a');
+    expect(rawToken).toBe('tok123');
   });
 
   it('setWebhookToken on unknown agent throws PluginError(not-found)', async () => {
@@ -56,19 +58,27 @@ describe('AgentStore webhook helpers', () => {
     await expect(store.setWebhookToken('agt_missing', 'tok')).rejects.toThrow(/not-found|not found/i);
   });
 
-  it('getById surfaces webhookToken when set', async () => {
+  it('getWebhookToken returns the token after setWebhookToken', async () => {
+    await seedAgent('agt_a');
+    const store = createAgentStore(db);
+    await store.setWebhookToken('agt_a', 'tok');
+    expect(await store.getWebhookToken('agt_a')).toBe('tok');
+  });
+
+  it('getWebhookToken returns null for a fresh agent (no token set)', async () => {
+    await seedAgent('agt_a');
+    const store = createAgentStore(db);
+    expect(await store.getWebhookToken('agt_a')).toBeNull();
+  });
+
+  it('webhookToken is NOT present on the public Agent DTO from getById', async () => {
     await seedAgent('agt_a');
     const store = createAgentStore(db);
     await store.setWebhookToken('agt_a', 'tok');
     const agent = await store.getById('agt_a');
-    expect(agent?.webhookToken).toBe('tok');
-  });
-
-  it('getById returns webhookToken: null for a fresh agent', async () => {
-    await seedAgent('agt_a');
-    const store = createAgentStore(db);
-    const agent = await store.getById('agt_a');
-    expect(agent?.webhookToken).toBeNull();
+    expect(agent).not.toBeNull();
+    // webhookToken must not appear on the public DTO (Finding #3 regression pin).
+    expect(Object.keys(agent!)).not.toContain('webhookToken');
   });
 
   it('setWebhookToken rotates — second call replaces prior token', async () => {

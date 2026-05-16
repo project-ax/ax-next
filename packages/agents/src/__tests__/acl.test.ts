@@ -38,7 +38,6 @@ function makePersonalAgent(overrides: Partial<Agent> = {}): Agent {
     mcpConfigIds: [],
     model: 'claude-opus-4-7',
     workspaceRef: null,
-    webhookToken: null,
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,

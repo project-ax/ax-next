@@ -3,7 +3,7 @@ import { makeAgentContext, PluginError } from '@ax/core';
 import type { Kysely } from 'kysely';
 import { runRoutinesMigration, type RoutinesDatabase } from './migrations.js';
 import { createRoutinesStore, type RoutinesStore } from './store.js';
-import { handleWorkspaceApplied } from './sync.js';
+import { handleWorkspaceApplied, rebindWebhooksForAgent } from './sync.js';
 import { systemClock, type Clock } from './clock.js';
 import { runTickLoop } from './tick.js';
 import { createFireRoutine, type PendingFires } from './fire.js';
@@ -38,7 +38,7 @@ export function createRoutinesPlugin(
       calls: [
         'database:get-instance',
         'agents:resolve',
-        'agents:rotate-webhook-token',
+        'agents:ensure-webhook-token',
         'agents:resolve-by-webhook-token',
         'conversations:find-or-create',
         'conversations:create',
@@ -48,7 +48,7 @@ export function createRoutinesPlugin(
         'credentials:get',
         'http:register-route',
       ],
-      subscribes: ['workspace:applied', 'chat:turn-end'],
+      subscribes: ['workspace:applied', 'chat:turn-end', 'agents:webhook-token-rotated'],
     },
     async init({ bus }) {
       const initCtx = makeAgentContext({
@@ -72,6 +72,25 @@ export function createRoutinesPlugin(
             { store: localStore, bus, webhookRoutes, fireRoutine },
             ctx, delta, clock.now(),
           );
+          return undefined;
+        },
+      );
+
+      bus.subscribe<{ agentId: string }>(
+        'agents:webhook-token-rotated', PLUGIN_NAME,
+        async (ctx, payload) => {
+          try {
+            await rebindWebhooksForAgent(
+              { store: localStore, bus, webhookRoutes, fireRoutine },
+              ctx, payload.agentId,
+            );
+          } catch (err) {
+            // K10: subscriber must not propagate — log and swallow.
+            ctx.logger.warn('routines_rebind_after_rotation_failed', {
+              agentId: payload.agentId,
+              err: err instanceof Error ? err.message : String(err),
+            });
+          }
           return undefined;
         },
       );

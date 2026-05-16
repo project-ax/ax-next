@@ -18,9 +18,9 @@ async function harness(): Promise<TestHarness> {
     services: {
       'agents:resolve': async (_ctx, input: unknown) => {
         const i = input as { agentId: string };
-        return { agent: { id: i.agentId, ownerId: 'u1', workspaceRef: null, webhookToken: null } };
+        return { agent: { id: i.agentId, ownerId: 'u1', workspaceRef: null } };
       },
-      'agents:rotate-webhook-token': async (_ctx, input: unknown) => {
+      'agents:ensure-webhook-token': async (_ctx, input: unknown) => {
         const i = input as { agentId: string };
         return { token: `tok-${i.agentId}` };
       },
