@@ -18,8 +18,13 @@ async function harness(): Promise<TestHarness> {
     services: {
       'agents:resolve': async (_ctx, input: unknown) => {
         const i = input as { agentId: string };
-        return { agent: { id: i.agentId, ownerId: 'u1', workspaceRef: null } };
+        return { agent: { id: i.agentId, ownerId: 'u1', workspaceRef: null, webhookToken: null } };
       },
+      'agents:rotate-webhook-token': async (_ctx, input: unknown) => {
+        const i = input as { agentId: string };
+        return { token: `tok-${i.agentId}` };
+      },
+      'agents:resolve-by-webhook-token': async () => ({ agent: null }),
       'conversations:find-or-create': async () => ({
         conversation: { conversationId: 'cnv_x' }, created: true,
       }),
@@ -27,6 +32,8 @@ async function harness(): Promise<TestHarness> {
       'conversations:drop-turn': async () => undefined,
       'conversations:hide': async () => undefined,
       'agent:invoke': async () => ({ kind: 'complete', messages: [] }),
+      'credentials:get': async () => 'secret',
+      'http:register-route': async () => ({ unregister: () => {} }),
     },
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),

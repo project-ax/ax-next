@@ -12,6 +12,15 @@ import type { RoutinesConfig, FireNowInput, FireNowOutput, ListInput, ListOutput
 
 const PLUGIN_NAME = '@ax/routines';
 
+/**
+ * Single-replica only at v1: `workspace:applied` is a local in-process
+ * hook (no LISTEN/NOTIFY broadcast), so webhook route registrations
+ * are local to the replica that received the apply. Multi-replica
+ * fan-out lands when the rest of the preset lifts out of
+ * single-replica (presets/k8s/src/index.ts:51,650-723 — multiple
+ * plugins already declare this). See K3 in
+ * docs/plans/2026-05-15-routines-phase-c-design.md.
+ */
 export function createRoutinesPlugin(
   config: RoutinesConfig = {},
   clock: Clock = systemClock,
@@ -19,6 +28,7 @@ export function createRoutinesPlugin(
   let db: Kysely<RoutinesDatabase> | undefined;
   let store: RoutinesStore | undefined;
   let abortCtl: AbortController | undefined;
+  const webhookRoutes = new Map<string, () => void>();
 
   return {
     manifest: {
@@ -28,11 +38,15 @@ export function createRoutinesPlugin(
       calls: [
         'database:get-instance',
         'agents:resolve',
+        'agents:rotate-webhook-token',
+        'agents:resolve-by-webhook-token',
         'conversations:find-or-create',
         'conversations:create',
         'conversations:drop-turn',
         'conversations:hide',
         'agent:invoke',
+        'credentials:get',
+        'http:register-route',
       ],
       subscribes: ['workspace:applied', 'chat:turn-end'],
     },
@@ -54,7 +68,10 @@ export function createRoutinesPlugin(
       bus.subscribe<WorkspaceDelta>(
         'workspace:applied', PLUGIN_NAME,
         async (ctx, delta) => {
-          await handleWorkspaceApplied(localStore, ctx, delta, clock.now());
+          await handleWorkspaceApplied(
+            { store: localStore, bus, webhookRoutes, fireRoutine },
+            ctx, delta, clock.now(),
+          );
           return undefined;
         },
       );
@@ -196,6 +213,10 @@ export function createRoutinesPlugin(
       });
     },
     async shutdown() {
+      for (const unreg of webhookRoutes.values()) {
+        try { unreg(); } catch { /* idempotent */ }
+      }
+      webhookRoutes.clear();
       abortCtl?.abort();
       abortCtl = undefined;
       db = undefined;

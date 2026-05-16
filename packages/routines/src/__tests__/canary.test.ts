@@ -44,8 +44,14 @@ async function makeHarness(captured: Captured, replyOnInvoke: { contentBlocks: u
   const h = await createTestHarness({
     services: {
       'agents:resolve': async (_ctx, input: unknown) => ({
-        agent: { id: (input as { agentId: string }).agentId, ownerId: 'u1', workspaceRef: null },
+        agent: { id: (input as { agentId: string }).agentId, ownerId: 'u1', workspaceRef: null, webhookToken: null },
       }),
+      'agents:rotate-webhook-token': async (_ctx, input: unknown) => ({
+        token: `tok-${(input as { agentId: string }).agentId}`,
+      }),
+      'agents:resolve-by-webhook-token': async () => ({ agent: null }),
+      'credentials:get': async () => 'secret',
+      'http:register-route': async () => ({ unregister: () => {} }),
       'conversations:find-or-create': async (_ctx, input: unknown) => {
         const i = input as { externalKey: string };
         captured.findOrCreateCalls.push({ externalKey: i.externalKey });
