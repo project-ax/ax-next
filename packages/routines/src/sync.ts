@@ -153,13 +153,62 @@ export async function handleWorkspaceApplied(
 }
 
 /**
+ * Tear down any prior closure for this routine and (re)register a fresh
+ * webhook route against the current token. Used by both the post-rotation
+ * rebind path and the on-init startup scan, which would otherwise drift.
+ *
+ * Per-row failures are caught, logged with the caller-supplied key, and
+ * leave the Map entry deleted (K10). Non-webhook rows short-circuit so the
+ * caller doesn't need to pre-filter.
+ */
+async function bindWebhookRouteFor(
+  deps: HandleWorkspaceAppliedDeps,
+  ctx: AgentContext,
+  row: RoutineRow,
+  errLogKey: string,
+): Promise<void> {
+  if (row.trigger.kind !== 'webhook') return;
+  const key = webhookKey(row.agentId, row.path);
+  const stale = deps.webhookRoutes.get(key);
+  if (stale !== undefined) {
+    try { stale(); } catch { /* idempotent per http-server */ }
+  }
+  try {
+    const ensured = await deps.bus.call<
+      { actor: { userId: string; isAdmin: boolean }; agentId: string },
+      { token: string }
+    >('agents:ensure-webhook-token', ctx,
+      { actor: { userId: row.authorUserId, isAdmin: false }, agentId: row.agentId });
+    const out = await deps.bus.call<
+      { method: 'POST'; path: string; handler: unknown; bypassCsrf: boolean },
+      { unregister: () => void }
+    >('http:register-route', ctx,
+      {
+        method: 'POST',
+        path: `/webhooks/${ensured.token}${(row.trigger as { path: string }).path}`,
+        handler: makeWebhookHandler({
+          bus: deps.bus, store: deps.store,
+          agentId: row.agentId, routinePath: row.path, fire: deps.fireRoutine,
+        }),
+        // See bypassCsrf rationale in handleWorkspaceApplied above.
+        bypassCsrf: true,
+      },
+    );
+    deps.webhookRoutes.set(key, out.unregister);
+  } catch (err) {
+    deps.webhookRoutes.delete(key);
+    ctx.logger.warn(errLogKey, {
+      agentId: row.agentId, path: row.path,
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+/**
  * Re-binds every webhook routine for the given agent against the current
  * token. Called by the `agents:webhook-token-rotated` subscriber in plugin.ts
  * so that stale routes (pointing at the old token URL) are torn down and fresh
  * ones registered before the next inbound request arrives.
- *
- * Per-routine failures are caught, logged, and skipped (K10). A failure on one
- * routine does NOT stop rebinding the remaining routines for the same agent.
  */
 export async function rebindWebhooksForAgent(
   deps: HandleWorkspaceAppliedDeps,
@@ -168,44 +217,23 @@ export async function rebindWebhooksForAgent(
 ): Promise<void> {
   const rows = await deps.store.list({ agentId });
   for (const row of rows) {
-    if (row.trigger.kind !== 'webhook') continue;
-    const key = webhookKey(agentId, row.path);
-    // Tear down the stale closure (the one registered with the old token).
-    const stale = deps.webhookRoutes.get(key);
-    if (stale !== undefined) {
-      try { stale(); } catch { /* idempotent */ }
-    }
-    try {
-      // Re-resolve the (now-rotated) token. ensure-webhook-token is the
-      // canonical read path — the token is never stored in this plugin.
-      const ensured = await deps.bus.call<
-        { actor: { userId: string; isAdmin: boolean }; agentId: string },
-        { token: string }
-      >('agents:ensure-webhook-token', ctx,
-        { actor: { userId: row.authorUserId, isAdmin: false }, agentId });
-      const out = await deps.bus.call<
-        { method: 'POST'; path: string; handler: unknown; bypassCsrf: boolean },
-        { unregister: () => void }
-      >('http:register-route', ctx,
-        {
-          method: 'POST',
-          path: `/webhooks/${ensured.token}${(row.trigger as { path: string }).path}`,
-          handler: makeWebhookHandler({
-            bus: deps.bus, store: deps.store,
-            agentId, routinePath: row.path, fire: deps.fireRoutine,
-          }),
-          // See bypassCsrf rationale in handleWorkspaceApplied above.
-          bypassCsrf: true,
-        },
-      );
-      deps.webhookRoutes.set(key, out.unregister);
-    } catch (err) {
-      // K10: remove the stale entry (no longer valid) and log; don't throw.
-      deps.webhookRoutes.delete(key);
-      ctx.logger.warn('routines_rebind_one_webhook_failed', {
-        agentId, path: row.path,
-        err: err instanceof Error ? err.message : String(err),
-      });
-    }
+    await bindWebhookRouteFor(deps, ctx, row, 'routines_rebind_one_webhook_failed');
+  }
+}
+
+/**
+ * Scan every webhook routine in storage and bind its HTTP route. Called by
+ * plugin init so that webhook URLs survive a host pod restart — the
+ * in-memory `webhookRoutes` Map is empty after restart but the rows in
+ * `routines_v1_definitions` are not. Without this, webhook URLs return 403
+ * until something else nudges `workspace:applied` for the routine file.
+ */
+export async function mountAllWebhookRoutesOnStartup(
+  deps: HandleWorkspaceAppliedDeps,
+  ctx: AgentContext,
+): Promise<void> {
+  const rows = await deps.store.list({});
+  for (const row of rows) {
+    await bindWebhookRouteFor(deps, ctx, row, 'routines_startup_mount_webhook_failed');
   }
 }
