@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
+import { createHmac } from 'node:crypto';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { createTestHarness, type TestHarness } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
@@ -241,5 +242,222 @@ describe('Phase B canary — routine creates → fires → silence path closes w
     expect(captured.invokes).toHaveLength(2);
     expect(captured.invokes[0]!.conversationId).toBeDefined();
     expect(captured.invokes[0]!.conversationId).toBe(captured.invokes[1]!.conversationId);
+  });
+});
+
+describe('Phase C webhook canary — half-wired window closure', () => {
+  function webhookBody(over: { secretRef?: string } = {}): Uint8Array {
+    const lines = [
+      '---',
+      'name: r', 'description: d',
+      'trigger:', '  kind: webhook', '  path: "/r/x"',
+    ];
+    if (over.secretRef !== undefined) {
+      lines.push('  hmac:', `    secretRef: ${over.secretRef}`,
+                 '    header: "X-Sig"', '    algorithm: sha256',
+                 '    prefix: "sha256="');
+    }
+    lines.push('conversation: per-fire', '---', 'PR: {{payload.pr.title}}');
+    return ENC.encode(lines.join('\n') + '\n');
+  }
+
+  interface WebCaptured {
+    invokes: Array<{ message: { content: string }; reqId: string; conversationId: string | undefined }>;
+    routes: Array<{ method: string; path: string }>;
+    handlers: Map<string, (req: any, res: any) => Promise<void>>;
+    unregisters: string[];
+    rotates: number;
+  }
+
+  async function makeWebHarness(): Promise<{ h: TestHarness; captured: WebCaptured }> {
+    const captured: WebCaptured = {
+      invokes: [], routes: [], handlers: new Map(), unregisters: [], rotates: 0,
+    };
+    let nextConvId = 1;
+    const tokens = new Map<string, string>();
+    const busRef: { current: TestHarness | undefined } = { current: undefined };
+
+    const h = await createTestHarness({
+      services: {
+        'agents:resolve': async (_c, input: unknown) => {
+          const i = input as { agentId: string };
+          return {
+            agent: {
+              id: i.agentId, ownerId: 'u1', workspaceRef: null,
+              webhookToken: tokens.get(i.agentId) ?? null,
+            },
+          };
+        },
+        'agents:rotate-webhook-token': async (_c, input: unknown) => {
+          captured.rotates += 1;
+          const tok = `tok-${captured.rotates}`;
+          tokens.set((input as { agentId: string }).agentId, tok);
+          return { token: tok };
+        },
+        'agents:resolve-by-webhook-token': async (_c, input: unknown) => {
+          const t = (input as { token: string }).token;
+          for (const [id, tok] of tokens.entries()) {
+            if (tok === t) return { agent: { id, ownerId: 'u1' } };
+          }
+          return null;
+        },
+        'credentials:get': async (_c, input: unknown) => {
+          const ref = (input as { ref: string }).ref;
+          if (ref === 'gh-secret') return 'shhh';
+          throw new Error('no-such-credential');
+        },
+        'http:register-route': async (_c, input: unknown) => {
+          const i = input as { method: string; path: string; handler: (req: any, res: any) => Promise<void> };
+          captured.routes.push({ method: i.method, path: i.path });
+          captured.handlers.set(i.path, i.handler);
+          return {
+            unregister: () => {
+              captured.unregisters.push(i.path);
+              captured.handlers.delete(i.path);
+            },
+          };
+        },
+        'conversations:create': async () => ({ conversationId: `cnv_${nextConvId++}` }),
+        'conversations:find-or-create': async () => ({
+          conversation: { conversationId: 'shared' }, created: false,
+        }),
+        'conversations:drop-turn': async () => undefined,
+        'conversations:hide': async () => undefined,
+        'agent:invoke': async (ctx, input: unknown) => {
+          const i = input as { message: { content: string } };
+          captured.invokes.push({
+            message: i.message, reqId: ctx.reqId ?? '',
+            conversationId: ctx.conversationId,
+          });
+          await busRef.current!.bus.fire('chat:turn-end', ctx, {
+            reqId: ctx.reqId, turnId: 'fake-uuid-1',
+            contentBlocks: [{ type: 'text', text: 'ack' }],
+          });
+          return { kind: 'complete', messages: [] };
+        },
+      },
+      plugins: [
+        createDatabasePostgresPlugin({ connectionString }),
+        createRoutinesPlugin({ tickIntervalMs: 60_000 }),
+      ],
+    });
+    busRef.current = h;
+    harnesses.push(h);
+    return { h, captured };
+  }
+
+  function makeReq(over: Partial<{ headers: Record<string, string>; body: Buffer }> = {}) {
+    return {
+      method: 'POST',
+      path: '/webhooks/tok-1/r',
+      query: {}, params: {},
+      headers: { 'content-type': 'application/json', ...(over.headers ?? {}) },
+      body: over.body ?? Buffer.from('{}'),
+      cookies: {},
+      signedCookie: () => null,
+    } as any;
+  }
+
+  function makeRes() {
+    const calls: { status?: number; ended?: boolean } = {};
+    const r: any = {
+      status(n: number) { calls.status = n; return r; },
+      header() { return r; },
+      end() { calls.ended = true; },
+      text() { calls.ended = true; },
+      json() { calls.ended = true; },
+      body() { calls.ended = true; },
+      redirect() { calls.ended = true; },
+      setSignedCookie() {}, clearCookie() {},
+      _calls: calls,
+    };
+    return r;
+  }
+
+  it('case 1: route mounts on first webhook routine indexing', async () => {
+    const { h, captured } = await makeWebHarness();
+    await h.bus.fire('workspace:applied', h.ctx({ userId: 'u1' }), {
+      before: null, after: asWorkspaceVersion('v1'),
+      author: { agentId: 'agt_a', userId: 'u1' },
+      changes: [{ path: '.ax/routines/r.md', kind: 'added',
+        contentAfter: async () => webhookBody() }],
+    });
+    expect(captured.routes).toEqual([{ method: 'POST', path: '/webhooks/tok-1/r' }]);
+    expect(captured.rotates).toBe(1);
+    expect(captured.handlers.size).toBe(1);
+  });
+
+  it('case 2: lazy token generation is idempotent across two webhook routines for the same agent', async () => {
+    const { h, captured } = await makeWebHarness();
+    await h.bus.fire('workspace:applied', h.ctx({ userId: 'u1' }), {
+      before: null, after: asWorkspaceVersion('v1'),
+      author: { agentId: 'agt_a', userId: 'u1' },
+      changes: [
+        { path: '.ax/routines/a.md', kind: 'added', contentAfter: async () => webhookBody() },
+        { path: '.ax/routines/b.md', kind: 'added', contentAfter: async () => webhookBody() },
+      ],
+    });
+    expect(captured.rotates).toBe(1);
+    expect(captured.routes.map((r) => r.path).sort()).toEqual([
+      '/webhooks/tok-1/a', '/webhooks/tok-1/b',
+    ]);
+  });
+
+  it('case 3: HMAC mismatch returns 401 and does not fire agent:invoke', async () => {
+    const { h, captured } = await makeWebHarness();
+    await h.bus.fire('workspace:applied', h.ctx({ userId: 'u1' }), {
+      before: null, after: asWorkspaceVersion('v1'),
+      author: { agentId: 'agt_a', userId: 'u1' },
+      changes: [{ path: '.ax/routines/r.md', kind: 'added',
+        contentAfter: async () => webhookBody({ secretRef: 'gh-secret' }) }],
+    });
+    const handler = captured.handlers.get('/webhooks/tok-1/r')!;
+    expect(handler).toBeDefined();
+    const res = makeRes();
+    await handler(makeReq({
+      headers: { 'content-type': 'application/json', 'x-sig': 'sha256=deadbeef' },
+      body: Buffer.from('{"pr":{"title":"x"}}'),
+    }), res);
+    expect(res._calls.status).toBe(401);
+    expect(captured.invokes).toHaveLength(0);
+  });
+
+  it('case 4: valid POST → templated agent:invoke with substituted prompt', async () => {
+    const { h, captured } = await makeWebHarness();
+    await h.bus.fire('workspace:applied', h.ctx({ userId: 'u1' }), {
+      before: null, after: asWorkspaceVersion('v1'),
+      author: { agentId: 'agt_a', userId: 'u1' },
+      changes: [{ path: '.ax/routines/r.md', kind: 'added',
+        contentAfter: async () => webhookBody({ secretRef: 'gh-secret' }) }],
+    });
+    const handler = captured.handlers.get('/webhooks/tok-1/r')!;
+    const body = Buffer.from('{"pr":{"title":"fix bug"}}');
+    const sig = 'sha256=' + createHmac('sha256', 'shhh').update(body).digest('hex');
+    const res = makeRes();
+    await handler(makeReq({
+      headers: { 'content-type': 'application/json', 'x-sig': sig },
+      body,
+    }), res);
+    await vi.waitFor(() => expect(captured.invokes).toHaveLength(1),
+      { timeout: 5_000, interval: 25 });
+    expect(res._calls.status).toBe(202);
+    expect(captured.invokes[0]!.message.content).toBe('PR: fix bug');
+  });
+
+  it('case 5: routine deletion calls the stashed unregister closure', async () => {
+    const { h, captured } = await makeWebHarness();
+    await h.bus.fire('workspace:applied', h.ctx({ userId: 'u1' }), {
+      before: null, after: asWorkspaceVersion('v1'),
+      author: { agentId: 'agt_a', userId: 'u1' },
+      changes: [{ path: '.ax/routines/r.md', kind: 'added',
+        contentAfter: async () => webhookBody() }],
+    });
+    await h.bus.fire('workspace:applied', h.ctx({ userId: 'u1' }), {
+      before: asWorkspaceVersion('v1'), after: asWorkspaceVersion('v2'),
+      author: { agentId: 'agt_a', userId: 'u1' },
+      changes: [{ path: '.ax/routines/r.md', kind: 'deleted' }],
+    });
+    expect(captured.unregisters).toEqual(['/webhooks/tok-1/r']);
+    expect(captured.handlers.size).toBe(0);
   });
 });
