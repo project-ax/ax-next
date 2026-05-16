@@ -115,27 +115,43 @@ const STS_NAME = 'ax-test-ax-next-git-server-experimental';
 // Module-level so both describe blocks share one setup; without this the
 // subprocess overhead doubles (each `helm dependency build` walks the
 // chart tree even when it's a no-op).
-beforeAll(() => {
-  if (!HELM) return;
+//
+// Bitnami's chart repo intermittently returns an empty index.yaml on CI
+// (Bitnami's migration in late 2025 left their public endpoint flaky), so
+// `helm dependency build` fails with "error loading bitnami-index.yaml:
+// empty index.yaml file". Wrap the add+build sequence in a small retry —
+// a fresh `--force-update` re-pull usually returns a populated index on
+// the second attempt.
+function helmRepoSync(): { ok: true } | { ok: false; reason: string } {
+  if (HELM === null) return { ok: true };
   const repoAdd = spawnSync(
     HELM,
     ['repo', 'add', '--force-update', 'bitnami', 'https://charts.bitnami.com/bitnami'],
     { encoding: 'utf8', stdio: ['ignore', 'ignore', 'pipe'] },
   );
   if (repoAdd.status !== 0) {
-    throw new Error(
-      `helm repo add bitnami failed (exit ${repoAdd.status}): ${repoAdd.stderr ?? ''}`,
-    );
+    return { ok: false, reason: `helm repo add bitnami exit ${repoAdd.status}: ${repoAdd.stderr ?? ''}` };
   }
   const r = spawnSync(HELM, ['dependency', 'build', chartDir], {
     encoding: 'utf8',
     stdio: ['ignore', 'ignore', 'pipe'],
   });
   if (r.status !== 0) {
-    throw new Error(
-      `helm dependency build failed (exit ${r.status}): ${r.stderr ?? ''}`,
-    );
+    return { ok: false, reason: `helm dependency build exit ${r.status}: ${r.stderr ?? ''}` };
   }
+  return { ok: true };
+}
+
+beforeAll(() => {
+  if (!HELM) return;
+  const attempts = 3;
+  let lastReason = '';
+  for (let i = 0; i < attempts; i += 1) {
+    const out = helmRepoSync();
+    if (out.ok) return;
+    lastReason = out.reason;
+  }
+  throw new Error(`helm dependency build failed after ${attempts} attempts: ${lastReason}`);
 });
 
 describeIfHelm('ax-next chart: git-server StatefulSet', () => {
