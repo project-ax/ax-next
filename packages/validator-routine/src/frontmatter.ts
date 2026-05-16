@@ -127,7 +127,7 @@ export function parseRoutineFrontmatter(text: string): RoutineFrontmatterResult 
         return fail(`webhook.path: ${pathRaw.length} > max ${WEBHOOK_PATH_MAX}`);
       }
       if (!WEBHOOK_PATH_RE.test(pathRaw)) {
-        return fail(`webhook.path: must match ${WEBHOOK_PATH_RE.source}`);
+        return fail('webhook.path: must start with / and contain only letters, digits, dots, hyphens, underscores, and /');
       }
       if (pathRaw.startsWith('/webhooks/')) {
         return fail('webhook.path: must not start with /webhooks/');

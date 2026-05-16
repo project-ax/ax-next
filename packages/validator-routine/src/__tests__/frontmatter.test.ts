@@ -296,6 +296,16 @@ describe('parseRoutineFrontmatter — webhook trigger', () => {
     expect(r.ok).toBe(false);
   });
 
+  it('rejects hmac missing header', () => {
+    const r = parseRoutineFrontmatter(fm([
+      'name: a', 'description: d',
+      'trigger:', '  kind: webhook', '  path: "/r"',
+      '  hmac:', '    secretRef: s',
+      'conversation: per-fire',
+    ].join('\n')));
+    expect(r.ok).toBe(false);
+  });
+
   it('rejects hmac.algorithm not in sha256/sha1', () => {
     const r = parseRoutineFrontmatter(fm([
       'name: a', 'description: d',
