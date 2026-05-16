@@ -78,8 +78,8 @@ describe('agents:rotate-webhook-token', () => {
       { actor: { userId: 'u1', isAdmin: false }, agentId: id },
     );
     expect(typeof out.token).toBe('string');
-    // base64url-encoded 32 bytes → 43 chars (no padding); allow 40+ to be safe
-    expect(out.token).toMatch(/^[A-Za-z0-9_-]{40,}$/);
+    // base64url-encoded 32 bytes → exactly 43 chars (no padding)
+    expect(out.token).toMatch(/^[A-Za-z0-9_-]{43}$/);
   });
 
   it('replaces the prior token on second call (true rotation)', async () => {

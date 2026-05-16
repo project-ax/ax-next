@@ -107,7 +107,7 @@ describe('handleWorkspaceApplied — webhook arm', () => {
       new Date(),
     );
     expect(captured.rotates).toBe(1);
-    expect(captured.routes).toEqual([{ path: '/webhooks/tok-1/r' }]);
+    expect(captured.routes).toEqual([{ path: '/webhooks/tok-1/r/x' }]);
     expect(webhookRoutes.size).toBe(1);
   });
 
@@ -128,7 +128,7 @@ describe('handleWorkspaceApplied — webhook arm', () => {
       new Date(),
     );
     expect(captured.rotates).toBe(0);
-    expect(captured.routes).toEqual([{ path: '/webhooks/existing/r' }]);
+    expect(captured.routes).toEqual([{ path: '/webhooks/existing/r/x' }]);
   });
 
   it('unregisters and removes the closure on deleted', async () => {
@@ -161,7 +161,7 @@ describe('handleWorkspaceApplied — webhook arm', () => {
       },
       new Date(),
     );
-    expect(captured.unregisters).toEqual(['/webhooks/tok/r']);
+    expect(captured.unregisters).toEqual(['/webhooks/tok/r/x']);
     expect(webhookRoutes.size).toBe(0);
   });
 
@@ -229,7 +229,7 @@ describe('handleWorkspaceApplied — webhook arm', () => {
       },
       new Date(),
     );
-    expect(captured.unregisters).toEqual(['/webhooks/tok/r']);
+    expect(captured.unregisters).toEqual(['/webhooks/tok/r/x']);
     expect(webhookRoutes.size).toBe(0);
   });
 

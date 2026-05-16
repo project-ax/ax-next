@@ -247,11 +247,12 @@ describe('Phase B canary — routine creates → fires → silence path closes w
 });
 
 describe('Phase C webhook canary — half-wired window closure', () => {
-  function webhookBody(over: { secretRef?: string } = {}): Uint8Array {
+  function webhookBody(over: { secretRef?: string; path?: string } = {}): Uint8Array {
+    const triggerPath = over.path ?? '/r/x';
     const lines = [
       '---',
       'name: r', 'description: d',
-      'trigger:', '  kind: webhook', '  path: "/r/x"',
+      'trigger:', '  kind: webhook', `  path: "${triggerPath}"`,
     ];
     if (over.secretRef !== undefined) {
       lines.push('  hmac:', `    secretRef: ${over.secretRef}`,
@@ -350,7 +351,7 @@ describe('Phase C webhook canary — half-wired window closure', () => {
   function makeReq(over: Partial<{ headers: Record<string, string>; body: Buffer }> = {}): HttpRequest {
     return {
       method: 'POST',
-      path: '/webhooks/tok-1/r',
+      path: '/webhooks/tok-1/r/x',
       query: {}, params: {},
       headers: { 'content-type': 'application/json', ...(over.headers ?? {}) },
       body: over.body ?? Buffer.from('{}'),
@@ -388,7 +389,7 @@ describe('Phase C webhook canary — half-wired window closure', () => {
       changes: [{ path: '.ax/routines/r.md', kind: 'added',
         contentAfter: async () => webhookBody() }],
     });
-    expect(captured.routes).toEqual([{ method: 'POST', path: '/webhooks/tok-1/r' }]);
+    expect(captured.routes).toEqual([{ method: 'POST', path: '/webhooks/tok-1/r/x' }]);
     expect(captured.rotates).toBe(1);
     expect(captured.handlers.size).toBe(1);
   });
@@ -399,13 +400,13 @@ describe('Phase C webhook canary — half-wired window closure', () => {
       before: null, after: asWorkspaceVersion('v1'),
       author: { agentId: 'agt_a', userId: 'u1' },
       changes: [
-        { path: '.ax/routines/a.md', kind: 'added', contentAfter: async () => webhookBody() },
-        { path: '.ax/routines/b.md', kind: 'added', contentAfter: async () => webhookBody() },
+        { path: '.ax/routines/a.md', kind: 'added', contentAfter: async () => webhookBody({ path: '/r/a' }) },
+        { path: '.ax/routines/b.md', kind: 'added', contentAfter: async () => webhookBody({ path: '/r/b' }) },
       ],
     });
     expect(captured.rotates).toBe(1);
     expect(captured.routes.map((r) => r.path).sort()).toEqual([
-      '/webhooks/tok-1/a', '/webhooks/tok-1/b',
+      '/webhooks/tok-1/r/a', '/webhooks/tok-1/r/b',
     ]);
   });
 
@@ -417,7 +418,7 @@ describe('Phase C webhook canary — half-wired window closure', () => {
       changes: [{ path: '.ax/routines/r.md', kind: 'added',
         contentAfter: async () => webhookBody({ secretRef: 'gh-secret' }) }],
     });
-    const handler = captured.handlers.get('/webhooks/tok-1/r')!;
+    const handler = captured.handlers.get('/webhooks/tok-1/r/x')!;
     expect(handler).toBeDefined();
     const res = makeRes();
     await handler(makeReq({
@@ -436,7 +437,7 @@ describe('Phase C webhook canary — half-wired window closure', () => {
       changes: [{ path: '.ax/routines/r.md', kind: 'added',
         contentAfter: async () => webhookBody({ secretRef: 'gh-secret' }) }],
     });
-    const handler = captured.handlers.get('/webhooks/tok-1/r')!;
+    const handler = captured.handlers.get('/webhooks/tok-1/r/x')!;
     const body = Buffer.from('{"pr":{"title":"fix bug"}}');
     const sig = 'sha256=' + createHmac('sha256', 'shhh').update(body).digest('hex');
     const res = makeRes();
@@ -463,7 +464,7 @@ describe('Phase C webhook canary — half-wired window closure', () => {
       author: { agentId: 'agt_a', userId: 'u1' },
       changes: [{ path: '.ax/routines/r.md', kind: 'deleted' }],
     });
-    expect(captured.unregisters).toEqual(['/webhooks/tok-1/r']);
+    expect(captured.unregisters).toEqual(['/webhooks/tok-1/r/x']);
     expect(captured.handlers.size).toBe(0);
   });
 });

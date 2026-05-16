@@ -116,14 +116,13 @@ export async function handleWorkspaceApplied(
         if (stale !== undefined) {
           try { stale(); } catch { /* swallow */ }
         }
-        const slug = change.path.replace(/^\.ax\/routines\//, '').replace(/\.md$/, '');
         const out = await deps.bus.call<
           { method: 'POST'; path: string; handler: unknown },
           { unregister: () => void }
         >('http:register-route', ctx,
           {
             method: 'POST',
-            path: `/webhooks/${token}/${slug}`,
+            path: `/webhooks/${token}${parsed.fields.trigger.path}`,
             handler: makeWebhookHandler({
               bus: deps.bus, store: deps.store,
               agentId, routinePath: change.path, fire: deps.fireRoutine,

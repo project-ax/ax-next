@@ -801,8 +801,8 @@ direct DB query.
 2. Read the agent's webhook token directly from postgres:
 
    ```bash
-   kubectl exec -n ax-next-dev deploy/ax-next-pg -- \
-     psql -U ax_next -d ax_next -c \
+   kubectl exec -n ax-next deploy/ax-next-host -- \
+     psql -U ax-next -d ax-next -c \
      "SELECT agent_id, webhook_token FROM agents_v1_agents WHERE webhook_token IS NOT NULL;"
    ```
 
@@ -816,14 +816,14 @@ direct DB query.
    curl -i -X POST \
      -H 'Content-Type: application/json' \
      -d '{"foo":"bar"}' \
-     http://localhost:8080/webhooks/$TOKEN/notify
+     http://localhost:9090/webhooks/$TOKEN/test
    ```
 
    Expected: `HTTP/1.1 202` immediately. (The agent run is
    fire-and-forget.)
 
 4. Refresh the chat sidebar. A new per-fire conversation appears
-   within ~1 second titled `notify @ <ISO timestamp>`. Open it.
+   within ~1 second titled `test @ <ISO timestamp>`. Open it.
    The first user turn contains `received: bar` (the `{{payload.foo}}`
    substitution).
 
@@ -855,7 +855,7 @@ direct DB query.
    curl -i -X POST \
      -H 'Content-Type: application/json' \
      -d '{"foo":"bar"}' \
-     http://localhost:8080/webhooks/$TOKEN/notify
+     http://localhost:9090/webhooks/$TOKEN/test
    ```
 
    Expected: `HTTP/1.1 401`. No new conversation appears.
@@ -867,7 +867,7 @@ direct DB query.
      -H 'Content-Type: application/json' \
      -H 'X-Hub-Signature-256: sha256=deadbeef' \
      -d '{"foo":"bar"}' \
-     http://localhost:8080/webhooks/$TOKEN/notify
+     http://localhost:9090/webhooks/$TOKEN/test
    ```
 
    Expected: `HTTP/1.1 401`. No new conversation.
@@ -882,7 +882,7 @@ direct DB query.
      -H 'Content-Type: application/json' \
      -H "X-Hub-Signature-256: $SIG" \
      -d "$BODY" \
-     http://localhost:8080/webhooks/$TOKEN/notify
+     http://localhost:9090/webhooks/$TOKEN/test
    ```
 
    Expected: `HTTP/1.1 202`, new conversation appears with the
@@ -894,7 +894,7 @@ direct DB query.
 - HMAC missing header → 401, no conversation.
 - HMAC wrong signature → 401, no conversation.
 - HMAC correct signature → 202, new conversation.
-- All four cases observable via `kubectl logs -n ax-next-dev deploy/ax-next-host | grep routines` (routines plugin logs each fire with status).
+- All four cases observable via `kubectl logs -n ax-next deploy/ax-next-host | grep routines` (routines plugin logs each fire with status).
 
 ### Cleanup
 
