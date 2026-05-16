@@ -55,6 +55,20 @@ export async function runAgentsMigration<DB>(db: Kysely<DB>): Promise<void> {
     CREATE INDEX IF NOT EXISTS agents_v1_agents_owner
       ON agents_v1_agents (owner_type, owner_id)
   `.execute(db);
+
+  // Phase C: lazy-generated webhook bearer token. Nullable so the
+  // column is harmless for agents that never grow a webhook routine.
+  // Partial unique index avoids burning index space on NULL rows and
+  // makes `agents:resolve-by-webhook-token` an indexed equality lookup.
+  await sql`
+    ALTER TABLE agents_v1_agents
+      ADD COLUMN IF NOT EXISTS webhook_token TEXT
+  `.execute(db);
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS agents_v1_agents_webhook_token
+      ON agents_v1_agents (webhook_token)
+     WHERE webhook_token IS NOT NULL
+  `.execute(db);
 }
 
 /**
@@ -72,6 +86,7 @@ export interface AgentsRow {
   mcp_config_ids: unknown;
   model: string;
   workspace_ref: string | null;
+  webhook_token: string | null;
   created_at: Date;
   updated_at: Date;
 }
