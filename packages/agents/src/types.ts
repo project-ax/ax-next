@@ -20,6 +20,12 @@ export interface Agent {
   mcpConfigIds: string[];
   model: string;
   workspaceRef: string | null;
+  /**
+   * Opaque per-agent webhook bearer token; null until first webhook
+   * routine indexes for this agent. URL-safe base64; rotated via
+   * `agents:rotate-webhook-token`.
+   */
+  webhookToken: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
