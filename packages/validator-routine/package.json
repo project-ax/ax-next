@@ -17,7 +17,7 @@
   },
   "dependencies": {
     "@ax/core": "workspace:*",
-    "croner": "^8.0.0",
+    "croner": "8.1.2",
     "js-yaml": "^4.1.0"
   },
   "devDependencies": {
