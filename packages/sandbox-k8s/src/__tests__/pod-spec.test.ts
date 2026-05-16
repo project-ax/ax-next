@@ -142,6 +142,116 @@ describe('buildPodSpec', () => {
     expect(spec.metadata.labels['ax.io/plane']).toBe('execution');
   });
 
+  it('sanitizes the session-id label for k8s constraints (regression for #83)', () => {
+    // The routines plugin builds sessionIds like
+    // `routine-<agentId>-<routinePath>`. `/` is invalid in label values,
+    // and these strings routinely blow the 63-byte cap. Before #83's
+    // fix, pod create failed 422. The original sessionId must still
+    // land in AX_SESSION_ID — only the label surface gets sanitized.
+    const longRoutineSessionId =
+      'routine-agt_RpigE1XjEzmgwGHB34QcHA-.ax/routines/fixed-1778930880.md';
+    const spec = buildPodSpec(
+      'pod-x',
+      { ...baseInput, sessionId: longRoutineSessionId },
+      baseResolved(),
+    );
+    const label = spec.metadata.labels['ax.io/session-id'];
+    expect(label).toBeDefined();
+    // Constraint 1: ≤ 63 bytes.
+    expect(Buffer.byteLength(label!, 'utf8')).toBeLessThanOrEqual(63);
+    // Constraint 2: matches the k8s label-value regex.
+    expect(label).toMatch(/^(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])?$/);
+    // Constraint 3: no `/` chars (the original failure mode).
+    expect(label).not.toContain('/');
+    // The AX_SESSION_ID env keeps the FULL original sessionId — runner
+    // identity, transcript correlation, and logs all key off that value
+    // and must not see the truncated/sanitized form.
+    const env = (
+      spec.spec as { containers: Array<{ env: Array<{ name: string; value: string }> }> }
+    ).containers[0]!.env;
+    const sid = env.find((e) => e.name === 'AX_SESSION_ID')?.value;
+    expect(sid).toBe(longRoutineSessionId);
+  });
+
+  it('sanitization is deterministic and collision-resistant on long inputs', () => {
+    // Two sessionIds that share a long prefix but differ in the tail
+    // get DIFFERENT labels. Without a hash suffix, naive truncation
+    // would collide here and the same label would attach to pods from
+    // distinct routines.
+    const prefix = 'routine-agt_RpigE1XjEzmgwGHB34QcHA-.ax/routines/very-long-routine-name';
+    const a = buildPodSpec(
+      'pa',
+      { ...baseInput, sessionId: `${prefix}-A.md` },
+      baseResolved(),
+    );
+    const b = buildPodSpec(
+      'pb',
+      { ...baseInput, sessionId: `${prefix}-B.md` },
+      baseResolved(),
+    );
+    const labelA = a.metadata.labels['ax.io/session-id'];
+    const labelB = b.metadata.labels['ax.io/session-id'];
+    expect(labelA).not.toBe(labelB);
+    // Deterministic: rebuilding the same sessionId gives the same label.
+    const aAgain = buildPodSpec(
+      'pa2',
+      { ...baseInput, sessionId: `${prefix}-A.md` },
+      baseResolved(),
+    );
+    expect(aAgain.metadata.labels['ax.io/session-id']).toBe(labelA);
+  });
+
+  it('leaves short, already-valid sessionIds untouched', () => {
+    // The common case (UUIDs, short ids) must round-trip through
+    // sanitizeLabel without modification.
+    const spec = buildPodSpec(
+      'p',
+      { ...baseInput, sessionId: 'session-01HW1ZA9TQK4N6B8X9V2YZ' },
+      baseResolved(),
+    );
+    expect(spec.metadata.labels['ax.io/session-id']).toBe(
+      'session-01HW1ZA9TQK4N6B8X9V2YZ',
+    );
+  });
+
+  it('falls back to sha1 prefix when sanitization leaves no alphanumerics', () => {
+    // Defensive: a sessionId of all-non-alphanumerics would slugify to a
+    // string that fails the k8s `[A-Za-z0-9]` start/end constraint. The
+    // helper returns a sha1[:16] in that case so the label is still
+    // valid and deterministic (instead of empty, which the API rejects).
+    const spec = buildPodSpec(
+      'p1',
+      { ...baseInput, sessionId: '/////' },
+      baseResolved(),
+    );
+    const label = spec.metadata.labels['ax.io/session-id'];
+    expect(label).toMatch(/^[a-f0-9]{16}$/);
+    expect(label).toMatch(/^(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])?$/);
+  });
+
+  it('passes through inputs exactly at the 63-byte cap, hashes one byte over', () => {
+    // Boundary check: 63 alphanumerics round-trips verbatim; 64 forces
+    // the truncate+hash branch. Without this, an off-by-one in
+    // K8S_LABEL_MAX_BYTES would only surface in production.
+    const sixtyThree = 'a'.repeat(63);
+    const sixtyFour = 'a'.repeat(64);
+    const fits = buildPodSpec(
+      'pcap',
+      { ...baseInput, sessionId: sixtyThree },
+      baseResolved(),
+    );
+    expect(fits.metadata.labels['ax.io/session-id']).toBe(sixtyThree);
+
+    const over = buildPodSpec(
+      'pover',
+      { ...baseInput, sessionId: sixtyFour },
+      baseResolved(),
+    );
+    const overLabel = over.metadata.labels['ax.io/session-id'];
+    expect(Buffer.byteLength(overLabel!, 'utf8')).toBeLessThanOrEqual(63);
+    expect(overLabel).toMatch(/^a{54}-[a-f0-9]{8}$/);
+  });
+
   it('mounts /permanent (workspace) and /ephemeral (scratch) emptyDirs', () => {
     // Phase 3: the legacy single /workspace mount is replaced by two
     // emptyDirs. /permanent holds the git working tree (materialize source,

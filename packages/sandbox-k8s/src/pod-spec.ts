@@ -12,7 +12,50 @@
 // onto AX_RUNNER_ENDPOINT here.
 // ---------------------------------------------------------------------------
 
+import { createHash } from 'node:crypto';
 import type { ResolvedSandboxK8sConfig } from './config.js';
+
+const K8S_LABEL_MAX_BYTES = 63;
+const K8S_LABEL_HASH_SUFFIX_BYTES = 8;
+
+/**
+ * Coerce an arbitrary string into a valid k8s label VALUE that satisfies
+ * `(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])?` and ≤ 63 bytes.
+ *
+ * Rules:
+ * 1. Replace any char outside `[A-Za-z0-9._-]` with `-` (so e.g. `/`
+ *    inside a routine path stops being a validation error).
+ * 2. Trim leading/trailing non-alphanumerics — the regex pins the first
+ *    AND last char to `[A-Za-z0-9]`.
+ * 3. If the result still exceeds 63 bytes, truncate to 54 chars and
+ *    append `-<sha1(original)[:8]>`. The hash makes the truncation
+ *    deterministic AND collision-resistant: two distinct inputs that
+ *    happen to share a 54-char prefix get different label values.
+ * 4. If sanitization leaves an empty string (caller passed all
+ *    non-alphanumerics), fall back to the first 16 chars of sha1 — a
+ *    valid label, deterministic, and unique per input.
+ *
+ * Used for `ax.io/session-id` which carries `input.sessionId`. The
+ * underlying `AX_SESSION_ID` env keeps the ORIGINAL value — only the
+ * k8s label surface is sanitized.
+ */
+function sanitizeLabel(value: string): string {
+  const slug = value
+    .replace(/[^A-Za-z0-9._-]/g, '-')
+    .replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g, '');
+  if (slug.length === 0) {
+    return createHash('sha1').update(value).digest('hex').slice(0, 16);
+  }
+  if (slug.length <= K8S_LABEL_MAX_BYTES) return slug;
+  const hash = createHash('sha1')
+    .update(value)
+    .digest('hex')
+    .slice(0, K8S_LABEL_HASH_SUFFIX_BYTES);
+  // -1 reserves a byte for the `-` that joins head + hash.
+  const headBudget = K8S_LABEL_MAX_BYTES - K8S_LABEL_HASH_SUFFIX_BYTES - 1;
+  const head = slug.slice(0, headBudget).replace(/[^A-Za-z0-9]+$/, '');
+  return `${head}-${hash}`;
+}
 
 /**
  * Per-session credential-proxy blob (structurally — see
@@ -322,13 +365,16 @@ export function buildPodSpec(
         // the host under enforced policy. See
         // deploy/charts/ax-next/templates/networkpolicies/.
         'ax.io/plane': 'execution',
-        // sessionId is a label so a future operator using `kubectl get pod
-        // -l ax.io/session-id=...` can find a pod by session. Labels have
-        // a 63-char limit; AgentContext.sessionId is freeform but is
-        // typically a UUID or short id — if it ever exceeds 63 chars,
-        // k8s will reject the pod create with a clear validation error
-        // (we don't pre-truncate; truncation would risk collisions).
-        'ax.io/session-id': input.sessionId,
+        // sessionId surfaces as a label so a future operator can run
+        // `kubectl get pod -l ax.io/session-id=...` to find a pod by
+        // session. Labels are constrained to `[A-Za-z0-9._-]`, must start
+        // and end with `[A-Za-z0-9]`, and cap at 63 bytes. The routines
+        // plugin builds sessionIds like `routine-<agentId>-<routinePath>`
+        // — both `/` and over-length are guaranteed to hit. `sanitizeLabel`
+        // slugifies + truncates with a sha1 suffix so the label remains a
+        // deterministic, collision-resistant function of the sessionId.
+        // The original sessionId still rides in the `AX_SESSION_ID` env.
+        'ax.io/session-id': sanitizeLabel(input.sessionId),
       },
     },
     spec,
