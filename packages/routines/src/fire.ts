@@ -28,8 +28,17 @@ export function createFireRoutine(deps: FireDeps) {
     source: FireSource,
     payload?: unknown,
   ): Promise<FireResult> => {
+    // sessionId must be unique per fire: session:create rejects duplicates
+    // (even when the prior session is terminated), so reusing a stable
+    // `routine-<agentId>-<path>` id makes every fire after the first fail
+    // downstream. Mint reqId first and fold it into sessionId — keeps the
+    // routine-scoped prefix for log readability while guaranteeing
+    // uniqueness. See #86.
+    const reqId = makeReqId();
+    const sessionId = `routine-${row.agentId}-${row.path}-${reqId}`;
     const baseCtx = makeAgentContext({
-      sessionId: `routine-${row.agentId}-${row.path}`,
+      reqId,
+      sessionId,
       agentId: row.agentId,
       userId: row.authorUserId,
     });
@@ -77,10 +86,9 @@ export function createFireRoutine(deps: FireDeps) {
       throw err;
     }
 
-    const reqId = makeReqId();
     const fireCtx = makeAgentContext({
       reqId,
-      sessionId: baseCtx.sessionId,
+      sessionId,
       agentId: row.agentId,
       userId: row.authorUserId,
       conversationId,

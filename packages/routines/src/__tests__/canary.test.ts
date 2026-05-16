@@ -264,7 +264,7 @@ describe('Phase C webhook canary — half-wired window closure', () => {
   }
 
   interface WebCaptured {
-    invokes: Array<{ message: { content: string }; reqId: string; conversationId: string | undefined }>;
+    invokes: Array<{ message: { content: string }; reqId: string; sessionId: string; conversationId: string | undefined }>;
     routes: Array<{ method: string; path: string; bypassCsrf: boolean | undefined }>;
     handlers: Map<string, HttpRouteHandler>;
     unregisters: string[];
@@ -338,6 +338,7 @@ describe('Phase C webhook canary — half-wired window closure', () => {
           const i = input as { message: { content: string } };
           captured.invokes.push({
             message: i.message, reqId: ctx.reqId ?? '',
+            sessionId: ctx.sessionId,
             conversationId: ctx.conversationId,
           });
           await busRef.current!.bus.fire('chat:turn-end', ctx, {
@@ -501,6 +502,34 @@ describe('Phase C webhook canary — half-wired window closure', () => {
       { agentId: 'agt_a' });
     const rebound = captured.routes.find((r) => r.path === '/webhooks/tok-2/r/x');
     expect(rebound?.bypassCsrf).toBe(true);
+  });
+
+  it('case 8: repeated webhook fires of the same routine produce distinct sessionIds (#86)', async () => {
+    // The host-side session store rejects duplicate sessionIds even after the
+    // prior session has terminated. If the routines plugin reuses the same
+    // `routine-<agentId>-<path>` sessionId across fires, every fire after the
+    // first will fail at session:create with `session 'X' already exists`.
+    // Each fire MUST mint a unique sessionId so downstream session:create can
+    // succeed every time.
+    const { h, captured } = await makeWebHarness();
+    await h.bus.fire('workspace:applied', h.ctx({ userId: 'u1' }), {
+      before: null, after: asWorkspaceVersion('v1'),
+      author: { agentId: 'agt_a', userId: 'u1' },
+      changes: [{ path: '.ax/routines/r.md', kind: 'added',
+        contentAfter: async () => webhookBody() }],
+    });
+    const handler = captured.handlers.get('/webhooks/tok-1/r/x')!;
+    expect(handler).toBeDefined();
+
+    await handler(makeReq({ body: Buffer.from('{"pr":{"title":"first"}}') }), makeRes());
+    await handler(makeReq({ body: Buffer.from('{"pr":{"title":"second"}}') }), makeRes());
+
+    await vi.waitFor(() => expect(captured.invokes).toHaveLength(2),
+      { timeout: 5_000, interval: 25 });
+    const [a, b] = captured.invokes;
+    expect(a!.sessionId).not.toBe(b!.sessionId);
+    expect(a!.sessionId).toMatch(/^routine-agt_a-\.ax\/routines\/r\.md-/);
+    expect(b!.sessionId).toMatch(/^routine-agt_a-\.ax\/routines\/r\.md-/);
   });
 
   it('case 6: agents:webhook-token-rotated unmounts old route and registers fresh route (K5 e2e)', async () => {
