@@ -696,3 +696,73 @@ describe('git-engine — shutdown rejects subsequent operations', () => {
     await expect(harness.engine.shutdown()).resolves.toBeUndefined();
   });
 });
+
+describe('git-engine — delta.author plumbing (issue #80)', () => {
+  // Subscribers like @ax/routines (Phase B+) key off delta.author.agentId
+  // to decide whether to process a workspace:applied event. The local
+  // backend (@ax/workspace-git via @ax/workspace-git-core) sets author
+  // from the AgentContext; the multi-replica backend must do the same.
+  // Without this, every subscriber that needs author silently no-ops on
+  // git-protocol clusters.
+
+  it('apply: author passed in is reflected on the returned delta', async () => {
+    const author = {
+      agentId: 'agt_test_engine',
+      userId: 'usr_test_engine',
+      sessionId: 'req-engine-001',
+    };
+    const result = await harness.engine.apply(
+      'wsengineauthor001',
+      {
+        changes: [
+          {
+            path: 'README.md',
+            kind: 'put',
+            content: new TextEncoder().encode('hello'),
+          },
+        ],
+        parent: null,
+        reason: 'author-smoke',
+      },
+      author,
+    );
+    expect(result.delta.author).toEqual(author);
+  });
+
+  it('apply: no author argument leaves delta.author undefined (back-compat)', async () => {
+    const result = await harness.engine.apply('wsengineauthor002', {
+      changes: [
+        {
+          path: 'README.md',
+          kind: 'put',
+          content: new TextEncoder().encode('hello'),
+        },
+      ],
+      parent: null,
+    });
+    expect(result.delta.author).toBeUndefined();
+  });
+
+  it('applyBundle: author passed in is reflected on the returned delta', async () => {
+    const sim = await simulateTurn({
+      baselineFiles: [],
+      turnFiles: { 'a.txt': 'a' },
+    });
+    const author = {
+      agentId: 'agt_bundle_author',
+      userId: 'usr_bundle_author',
+      sessionId: 'req-bundle-001',
+    };
+    const result = await harness.engine.applyBundle(
+      'wsengineauthor003',
+      {
+        bundleBytes: sim.bundleB64,
+        baselineCommit: sim.baselineCommit,
+        parent: null,
+        reason: 'bundle-author-smoke',
+      },
+      author,
+    );
+    expect(result.delta.author).toEqual(author);
+  });
+});

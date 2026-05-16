@@ -172,6 +172,49 @@ describe('createWorkspaceGitServerPlugin — end-to-end apply', () => {
     expect(change?.path).toBe('README.md');
     expect(change?.kind).toBe('added');
   });
+
+  // Issue #80: subscribers like @ax/routines key off `delta.author.agentId`
+  // to decide whether to process a workspace:applied event. The plugin
+  // boundary extracts author from ctx and threads it through the engine
+  // so the multi-replica backend matches what the local backend
+  // (@ax/workspace-git-core) does.
+  it('delta.author is populated from ctx.agentId/userId/sessionId (issue #80)', async () => {
+    const booted = await bootServer();
+    harness = await createTestHarness({
+      plugins: [
+        createWorkspaceGitServerPlugin({
+          baseUrl: booted.baseUrl,
+          token: TOKEN,
+          cacheRoot: freshCacheRoot(),
+        }),
+      ],
+    });
+
+    const ctx = harness.ctx({
+      agentId: 'agt_test_author',
+      userId: 'usr_test_author',
+      sessionId: 'req-test-author',
+    });
+    const result = await harness.bus.call<
+      WorkspaceApplyInput,
+      WorkspaceApplyOutput
+    >('workspace:apply', ctx, {
+      changes: [
+        {
+          path: 'a.md',
+          kind: 'put',
+          content: new TextEncoder().encode('hello'),
+        },
+      ],
+      parent: null,
+    });
+
+    expect(result.delta.author).toEqual({
+      agentId: 'agt_test_author',
+      userId: 'usr_test_author',
+      sessionId: 'req-test-author',
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

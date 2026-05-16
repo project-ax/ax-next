@@ -39,7 +39,7 @@
 // scrubber catches it before it reaches the kernel's error logger.
 // ---------------------------------------------------------------------------
 
-import type { Plugin } from '@ax/core';
+import type { AgentContext, Plugin, WorkspaceDelta } from '@ax/core';
 import type {
   WorkspaceApplyBundleInput,
   WorkspaceApplyBundleOutput,
@@ -131,6 +131,22 @@ function withRetryClient(
  * Production callers go through the hook handlers below; nothing outside
  * this package should import it.
  */
+/**
+ * Issue #80: extract `WorkspaceDelta['author']` from the bus-supplied
+ * `AgentContext`. The local backend (`@ax/workspace-git-core`) populates
+ * the same shape from ctx at its registerService boundary; this backend
+ * must do likewise so subscribers that key off `delta.author.agentId`
+ * (notably `@ax/routines`) actually see the author when running against
+ * the multi-replica `git-protocol` backend.
+ */
+function authorFromCtx(ctx: AgentContext): WorkspaceDelta['author'] {
+  return {
+    agentId: ctx.agentId,
+    userId: ctx.userId,
+    sessionId: ctx.sessionId,
+  };
+}
+
 export function _sanitizeTokenLeak(err: unknown, token: string): unknown {
   if (!(err instanceof Error)) return err;
   if (token.length === 0) return err;
@@ -221,7 +237,7 @@ export function createWorkspaceGitServerPlugin(
         async (ctx, input) => {
           const workspaceId = resolveWorkspaceId(ctx);
           try {
-            return await engine.apply(workspaceId, input);
+            return await engine.apply(workspaceId, input, authorFromCtx(ctx));
           } catch (err) {
             throw _sanitizeTokenLeak(err, opts.token);
           }
@@ -234,7 +250,7 @@ export function createWorkspaceGitServerPlugin(
         async (ctx, input) => {
           const workspaceId = resolveWorkspaceId(ctx);
           try {
-            return await engine.applyBundle(workspaceId, input);
+            return await engine.applyBundle(workspaceId, input, authorFromCtx(ctx));
           } catch (err) {
             throw _sanitizeTokenLeak(err, opts.token);
           }

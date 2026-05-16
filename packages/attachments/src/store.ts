@@ -1,20 +1,5 @@
-import { type Kysely } from 'kysely';
+import { sql, type Kysely } from 'kysely';
 import type { AttachmentsDatabase } from './migrations.js';
-
-/**
- * Internal rollback signal for `insertTempIfWithinQuota`'s post-insert
- * re-check. We throw to abort the Kysely transaction and convert to the
- * typed `{ ok: false, reason }` result in the outer catch — this keeps
- * the transaction body symmetric (no escape-hatch return) and ensures
- * the partial insert is undone even if a future edit forgets to mirror
- * the rollback.
- */
-class QuotaExceededRollback extends Error {
-  constructor() {
-    super('quota-exceeded');
-    this.name = 'QuotaExceededRollback';
-  }
-}
 
 export interface TempInsert {
   attachmentId: string;
@@ -93,16 +78,20 @@ export function createAttachmentsStore(
     },
 
     async insertTempIfWithinQuota(input, maxPendingBytes) {
-      // INSERT ... SELECT ... WHERE collapses the sum-check and insert into
-      // a single SQL statement. Postgres evaluates the WHERE against the
-      // statement's snapshot, so two concurrent statements could still both
-      // see the same sum. The defense-in-depth here is the second
-      // sum-and-reject pass: we insert, then re-read the sum in the SAME
-      // transaction, and roll back if the post-insert sum exceeds the
-      // quota. Read-committed serializes the writes, so whichever insert
-      // commits second will see the first one's bytes in the sum and roll
-      // back.
+      // Quota check needs per-user serialization. Read-committed does NOT
+      // serialize inserts across different rows — two concurrent transactions
+      // inserting different `attachment_id`s for the same user don't block
+      // each other, and each post-check `sum()` sees the other transaction's
+      // row as uncommitted (invisible). Both can pass and commit, blowing
+      // the quota. The earlier comment here was wrong about that.
+      //
+      // Fix: take a Postgres transaction-scoped advisory lock keyed on
+      // `hashtext(user_id)`. The second concurrent tx for the same user
+      // waits until the first commits, then its pre-check sum() sees the
+      // first row and returns `quota-exceeded`. Different users still run
+      // concurrently. Auto-released on COMMIT/ROLLBACK; no retry loop.
       const result = await db.transaction().execute(async (trx) => {
+        await sql`SELECT pg_advisory_xact_lock(hashtext(${input.userId}))`.execute(trx);
         const sumBefore = await trx
           .selectFrom('attachments_v1_temps')
           .select((eb) => eb.fn.sum<number>('size_bytes').as('sum'))
@@ -125,27 +114,7 @@ export function createAttachmentsStore(
             created_at: new Date(),
           })
           .execute();
-        // Re-check inside the same transaction. A concurrent committed
-        // insert lands here as visible rows (read-committed), so the
-        // recheck catches the over-quota case the initial check missed.
-        const sumAfter = await trx
-          .selectFrom('attachments_v1_temps')
-          .select((eb) => eb.fn.sum<number>('size_bytes').as('sum'))
-          .where('user_id', '=', input.userId)
-          .where('expires_at', '>', new Date())
-          .executeTakeFirst();
-        if (Number(sumAfter?.sum ?? 0) > maxPendingBytes) {
-          // Roll back by throwing — Kysely surfaces the rollback to the
-          // outer await. We catch it just outside this block and surface
-          // the typed result.
-          throw new QuotaExceededRollback();
-        }
         return { ok: true as const };
-      }).catch((err) => {
-        if (err instanceof QuotaExceededRollback) {
-          return { ok: false as const, reason: 'quota-exceeded' as const };
-        }
-        throw err;
       });
       return result;
     },
