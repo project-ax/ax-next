@@ -214,6 +214,67 @@ describe('csrf — wired through @ax/http-server', () => {
     }
   });
 
+  it('route registered with bypassCsrf: true accepts no-Origin POST', async () => {
+    // Repro for #82 — webhook receivers ARE external by design, the URL
+    // token is the auth (Phase C design §5). The default route still
+    // rejects; only the opted-out route lets the no-Origin POST through.
+    await harness.bus.call('http:register-route', harness.ctx(), {
+      method: 'POST',
+      path: '/webhooks/tok-abc/r/x',
+      handler: async (_req, res) => {
+        res.status(202).json({ accepted: true });
+      },
+      bypassCsrf: true,
+    });
+    const accepted = await fetch(`http://127.0.0.1:${port}/webhooks/tok-abc/r/x`, {
+      method: 'POST',
+      body: '{"hello":1}',
+      headers: { 'content-type': 'application/json' },
+    });
+    expect(accepted.status).toBe(202);
+    expect(await accepted.json()).toEqual({ accepted: true });
+
+    // A default-guarded route on the same server still 403s.
+    const rejected = await fetch(`http://127.0.0.1:${port}/protected`, {
+      method: 'POST',
+      body: '{}',
+      headers: { 'content-type': 'application/json' },
+    });
+    expect(rejected.status).toBe(403);
+  });
+
+  it('bypassCsrf is per-route — sibling path stays guarded', async () => {
+    // Sanity: registering one bypass route doesn't accidentally open
+    // a hole for a different path that happens to share a prefix.
+    await harness.bus.call('http:register-route', harness.ctx(), {
+      method: 'POST',
+      path: '/webhooks/tok-abc/open',
+      handler: async (_req, res) => {
+        res.status(202).end();
+      },
+      bypassCsrf: true,
+    });
+    await harness.bus.call('http:register-route', harness.ctx(), {
+      method: 'POST',
+      path: '/webhooks/tok-abc/closed',
+      handler: async (_req, res) => {
+        res.status(200).end();
+      },
+    });
+    const open = await fetch(`http://127.0.0.1:${port}/webhooks/tok-abc/open`, {
+      method: 'POST',
+      body: '{}',
+      headers: { 'content-type': 'application/json' },
+    });
+    expect(open.status).toBe(202);
+    const closed = await fetch(`http://127.0.0.1:${port}/webhooks/tok-abc/closed`, {
+      method: 'POST',
+      body: '{}',
+      headers: { 'content-type': 'application/json' },
+    });
+    expect(closed.status).toBe(403);
+  });
+
   it('CSRF rejection fires http:response-sent observer with 403', async () => {
     const observed: number[] = [];
     harness.bus.subscribe(

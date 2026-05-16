@@ -59,12 +59,23 @@ export function evaluateCsrf(
  * Build the http:request subscriber that enforces evaluateCsrf. The
  * subscriber returns a Rejection on violation; the http-server pipeline
  * already maps any reason starting with `csrf` to 403.
+ *
+ * `isBypassed`, if provided, lets the subscriber consult the router and
+ * skip the check for routes registered with `bypassCsrf: true` (e.g.
+ * external-receiver webhooks whose auth is a token in the path). The
+ * lookup runs BEFORE `evaluateCsrf` so even no-Origin requests sail
+ * through for those routes; everything else falls back to the standard
+ * Origin / X-Requested-With rule.
  */
-export function createCsrfSubscriber(config: CsrfGuardConfig) {
+export function createCsrfSubscriber(
+  config: CsrfGuardConfig,
+  isBypassed?: (method: HttpMethod, path: string) => boolean,
+) {
   return async (
     _ctx: unknown,
     payload: HttpRequestEvent,
   ): Promise<HttpRequestEvent | Rejection> => {
+    if (isBypassed?.(payload.method, payload.path) === true) return payload;
     const verdict = evaluateCsrf(payload.method, payload.headers, config);
     return verdict ?? payload;
   };

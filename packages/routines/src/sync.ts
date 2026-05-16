@@ -110,7 +110,7 @@ export async function handleWorkspaceApplied(
           try { stale(); } catch { /* swallow */ }
         }
         const out = await deps.bus.call<
-          { method: 'POST'; path: string; handler: unknown },
+          { method: 'POST'; path: string; handler: unknown; bypassCsrf: boolean },
           { unregister: () => void }
         >('http:register-route', ctx,
           {
@@ -120,6 +120,12 @@ export async function handleWorkspaceApplied(
               bus: deps.bus, store: deps.store,
               agentId, routinePath: change.path, fire: deps.fireRoutine,
             }),
+            // Webhook receivers are explicitly external — the per-agent
+            // URL token IS the auth (Phase C design §5). Browser-origin
+            // CSRF guarding would reject every legitimate caller (no
+            // Origin header from GitHub/Stripe/etc.), so opt this route
+            // out of the http-server's CSRF subscriber.
+            bypassCsrf: true,
           },
         );
         deps.webhookRoutes.set(key, out.unregister);
@@ -178,7 +184,7 @@ export async function rebindWebhooksForAgent(
       >('agents:ensure-webhook-token', ctx,
         { actor: { userId: row.authorUserId, isAdmin: false }, agentId });
       const out = await deps.bus.call<
-        { method: 'POST'; path: string; handler: unknown },
+        { method: 'POST'; path: string; handler: unknown; bypassCsrf: boolean },
         { unregister: () => void }
       >('http:register-route', ctx,
         {
@@ -188,6 +194,8 @@ export async function rebindWebhooksForAgent(
             bus: deps.bus, store: deps.store,
             agentId, routinePath: row.path, fire: deps.fireRoutine,
           }),
+          // See bypassCsrf rationale in handleWorkspaceApplied above.
+          bypassCsrf: true,
         },
       );
       deps.webhookRoutes.set(key, out.unregister);
