@@ -20,7 +20,7 @@
     "@ax/credentials": "workspace:*",
     "@ax/http-server": "workspace:*",
     "@ax/validator-routine": "workspace:*",
-    "croner": "^8.0.0",
+    "croner": "8.1.2",
     "kysely": "0.28.17"
   },
   "devDependencies": {

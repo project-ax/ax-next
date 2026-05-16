@@ -271,7 +271,11 @@ describe('Phase C webhook canary — half-wired window closure', () => {
     ensures: number;
   }
 
-  async function makeWebHarness(): Promise<{ h: TestHarness; captured: WebCaptured }> {
+  async function makeWebHarness(): Promise<{
+    h: TestHarness;
+    captured: WebCaptured;
+    tokens: Map<string, string>;
+  }> {
     const captured: WebCaptured = {
       invokes: [], routes: [], handlers: new Map(), unregisters: [], ensures: 0,
     };
@@ -346,7 +350,7 @@ describe('Phase C webhook canary — half-wired window closure', () => {
     });
     busRef.current = h;
     harnesses.push(h);
-    return { h, captured };
+    return { h, captured, tokens };
   }
 
   function makeReq(over: Partial<{ headers: Record<string, string>; body: Buffer }> = {}): HttpRequest {
@@ -469,5 +473,32 @@ describe('Phase C webhook canary — half-wired window closure', () => {
     });
     expect(captured.unregisters).toEqual(['/webhooks/tok-1/r/x']);
     expect(captured.handlers.size).toBe(0);
+  });
+
+  it('case 6: agents:webhook-token-rotated unmounts old route and registers fresh route (K5 e2e)', async () => {
+    const { h, captured, tokens } = await makeWebHarness();
+    await h.bus.fire('workspace:applied', h.ctx({ userId: 'u1' }), {
+      before: null, after: asWorkspaceVersion('v1'),
+      author: { agentId: 'agt_a', userId: 'u1' },
+      changes: [{ path: '.ax/routines/r.md', kind: 'added',
+        contentAfter: async () => webhookBody() }],
+    });
+    expect(captured.routes).toEqual([{ method: 'POST', path: '/webhooks/tok-1/r/x' }]);
+    expect(captured.handlers.size).toBe(1);
+
+    // Simulate @ax/agents rotating the token: mutate the harness map so the
+    // next ensure-webhook-token call returns the fresh value, then fire the
+    // event that PR #77's rebind subscriber listens for.
+    tokens.set('agt_a', 'tok-2');
+    await h.bus.fire('agents:webhook-token-rotated', h.ctx({ userId: 'u1' }),
+      { agentId: 'agt_a' });
+
+    expect(captured.unregisters).toContain('/webhooks/tok-1/r/x');
+    expect(captured.routes.map((r) => r.path)).toEqual([
+      '/webhooks/tok-1/r/x', '/webhooks/tok-2/r/x',
+    ]);
+    expect(captured.handlers.size).toBe(1);
+    expect(captured.handlers.has('/webhooks/tok-2/r/x')).toBe(true);
+    expect(captured.handlers.has('/webhooks/tok-1/r/x')).toBe(false);
   });
 });

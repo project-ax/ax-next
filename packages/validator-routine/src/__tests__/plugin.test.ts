@@ -79,6 +79,60 @@ describe('@ax/validator-routine — workspace:pre-apply', () => {
     expect(r.rejected).toBe(false);
   });
 
+  it('vetoes two webhook routines in the same batch declaring the same trigger.path', async () => {
+    const bus = await bootBus();
+    const webhook = (name: string) => [
+      '---', `name: ${name}`, 'description: d',
+      'trigger:', '  kind: webhook', '  path: "/r/x"',
+      '---', 'body',
+    ].join('\n') + '\n';
+    const r = await bus.fire('workspace:pre-apply', ctx(), preApply([
+      { path: '.ax/routines/a.md', kind: 'put', content: ENC.encode(webhook('a')) },
+      { path: '.ax/routines/b.md', kind: 'put', content: ENC.encode(webhook('b')) },
+    ]));
+    expect(r.rejected).toBe(true);
+    if (!r.rejected) return;
+    expect(r.reason).toMatch(/duplicate webhook trigger\.path/);
+    expect(r.reason).toMatch(/\/r\/x/);
+    // Both colliding routine files should appear in the reason so operators
+    // know exactly which two files clash.
+    expect(r.reason).toMatch(/\.ax\/routines\/a\.md/);
+    expect(r.reason).toMatch(/\.ax\/routines\/b\.md/);
+  });
+
+  it('accepts two webhook routines in the same batch with different trigger.paths', async () => {
+    const bus = await bootBus();
+    const webhook = (name: string, path: string) => [
+      '---', `name: ${name}`, 'description: d',
+      'trigger:', '  kind: webhook', `  path: "${path}"`,
+      '---', 'body',
+    ].join('\n') + '\n';
+    const r = await bus.fire('workspace:pre-apply', ctx(), preApply([
+      { path: '.ax/routines/a.md', kind: 'put', content: ENC.encode(webhook('a', '/r/x')) },
+      { path: '.ax/routines/b.md', kind: 'put', content: ENC.encode(webhook('b', '/r/y')) },
+    ]));
+    expect(r.rejected).toBe(false);
+  });
+
+  it('does not flag a webhook + interval as a collision (different trigger kinds, no URL conflict)', async () => {
+    const bus = await bootBus();
+    const webhook = [
+      '---', 'name: w', 'description: d',
+      'trigger:', '  kind: webhook', '  path: "/r/x"',
+      '---', 'body',
+    ].join('\n') + '\n';
+    const interval = [
+      '---', 'name: i', 'description: d',
+      'trigger:', '  kind: interval', '  every: "60s"',
+      '---', 'body',
+    ].join('\n') + '\n';
+    const r = await bus.fire('workspace:pre-apply', ctx(), preApply([
+      { path: '.ax/routines/w.md', kind: 'put', content: ENC.encode(webhook) },
+      { path: '.ax/routines/i.md', kind: 'put', content: ENC.encode(interval) },
+    ]));
+    expect(r.rejected).toBe(false);
+  });
+
   it('passes through nested paths under .ax/routines/ (validator regex is anchored)', async () => {
     const bus = await bootBus();
     const body = [

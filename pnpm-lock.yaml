@@ -1289,7 +1289,7 @@ importers:
         specifier: workspace:*
         version: link:../validator-routine
       croner:
-        specifier: ^8.0.0
+        specifier: 8.1.2
         version: 8.1.2
       kysely:
         specifier: 0.28.17
@@ -1584,7 +1584,7 @@ importers:
         specifier: workspace:*
         version: link:../core
       croner:
-        specifier: ^8.0.0
+        specifier: 8.1.2
         version: 8.1.2
       js-yaml:
         specifier: ^4.1.0
