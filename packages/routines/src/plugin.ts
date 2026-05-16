@@ -96,6 +96,10 @@ export function createRoutinesPlugin(
                 });
               }
             } else {
+              // Post-routines-followups Phase 2: chat:turn-end carries
+              // turnId from runners. A missing turnId now indicates
+              // either an older runner version or a runner-side bug —
+              // log loud, skip safe.
               ctx.logger.warn('routines_drop_turn_skipped_no_turn_id', {
                 conversationId: pf.conversationId,
               });

@@ -30,6 +30,7 @@ import { createPostToolUseHook } from './post-tool-use.js';
 import { createPreToolUseHook } from './pre-tool-use.js';
 import { setupProxy } from './proxy-startup.js';
 import { DISABLED_BUILTINS, MCP_HOST_SERVER_NAME } from './tool-names.js';
+import { readLastTurnUuid } from './turn-end-uuid.js';
 
 // ---------------------------------------------------------------------------
 // Runner entry binary (claude-sdk variant).
@@ -733,11 +734,20 @@ export async function main(): Promise<number> {
         if (turnToolResultBlocks.length > 0) {
           const toolBlocks = turnToolResultBlocks;
           turnToolResultBlocks = [];
+          // The SDK echoes tool_result blocks back as jsonl lines with
+          // `type: 'user'`, so we look up the uuid of the LAST 'user'
+          // line for this session. Best-effort: undefined-on-miss is
+          // fine because subscribers gracefully skip without a turnId.
+          const turnId =
+            runnerSessionId !== null
+              ? await readLastTurnUuid(env.workspaceRoot, runnerSessionId, 'user')
+              : undefined;
           await client
             .event('event.turn-end', {
               reason: 'user-message-wait',
               role: 'tool',
               contentBlocks: toolBlocks,
+              ...(turnId !== undefined ? { turnId } : {}),
             })
             .catch(() => {
               /* host may be tearing down; non-fatal */
@@ -746,6 +756,17 @@ export async function main(): Promise<number> {
 
         const assistantBlocks = turnContentBlocks;
         turnContentBlocks = [];
+        // Look up the uuid of the LAST 'assistant' line so subscribers
+        // (e.g., @ax/routines silence-token logic) can refer back to
+        // this specific turn via conversations:drop-turn.
+        const assistantTurnId =
+          runnerSessionId !== null
+            ? await readLastTurnUuid(
+                env.workspaceRoot,
+                runnerSessionId,
+                'assistant',
+              )
+            : undefined;
         await client
           .event('event.turn-end', {
             reason: 'user-message-wait',
@@ -753,6 +774,7 @@ export async function main(): Promise<number> {
             ...(assistantBlocks.length > 0
               ? { contentBlocks: assistantBlocks }
               : {}),
+            ...(assistantTurnId !== undefined ? { turnId: assistantTurnId } : {}),
           })
           .catch(() => {
             /* host may be tearing down; non-fatal */

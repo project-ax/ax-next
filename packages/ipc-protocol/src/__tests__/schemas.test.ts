@@ -376,6 +376,36 @@ describe('events', () => {
     expect(r.success).toBe(false);
   });
 
+  it('EventTurnEnd accepts optional turnId', () => {
+    expect(
+      EventTurnEndSchema.safeParse({
+        reason: 'user-message-wait',
+        role: 'assistant',
+        turnId: 'uuid-1',
+      }).success,
+    ).toBe(true);
+    // Missing turnId still valid.
+    expect(
+      EventTurnEndSchema.safeParse({
+        reason: 'user-message-wait',
+        role: 'assistant',
+      }).success,
+    ).toBe(true);
+  });
+
+  it('EventTurnEnd rejects an empty turnId', () => {
+    // Empty string would slip past the runtime guard
+    // `typeof turnId === 'string' && turnId.length > 0` only if a
+    // producer skipped its own check. The schema rejects it up-front.
+    expect(
+      EventTurnEndSchema.safeParse({
+        reason: 'user-message-wait',
+        role: 'assistant',
+        turnId: '',
+      }).success,
+    ).toBe(false);
+  });
+
   it('EventChatEnd round-trips a complete outcome', () => {
     const parsed = EventChatEndSchema.parse({
       outcome: {
