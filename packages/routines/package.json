@@ -17,6 +17,8 @@
   },
   "dependencies": {
     "@ax/core": "workspace:*",
+    "@ax/credentials": "workspace:*",
+    "@ax/http-server": "workspace:*",
     "@ax/validator-routine": "workspace:*",
     "croner": "^8.0.0",
     "kysely": "0.28.17"
