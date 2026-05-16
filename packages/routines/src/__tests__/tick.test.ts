@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, expect, it, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { Kysely, PostgresDialect, sql } from 'kysely';
 import pg from 'pg';
@@ -147,7 +147,16 @@ describe('runTickOnce', () => {
       clock: fakeClock, signal: ctlB.signal,
       tickIntervalMs: 1, electionRetryMs: 1, claimBatchSize: 10, claimWindowMinutes: 5,
     });
-    await new Promise((r) => setTimeout(r, 50));
+    // Wait until at least one loop has fired — proves a full tick
+    // (acquire-lock → claim → fire) actually ran. The previous fixed 50ms
+    // sleep flaked on slow CI runners where the DB round-trips overran the
+    // budget and BOTH counters stayed at 0. With 24h interval + fixed
+    // clock + lastRunAt advancement, the row is unclaimable after the
+    // first fire, so polling can't accidentally race past the boundary.
+    await vi.waitFor(
+      () => expect(fireA + fireB).toBeGreaterThanOrEqual(1),
+      { timeout: 5_000, interval: 25 },
+    );
     ctlA.abort(); ctlB.abort();
     await Promise.all([runA, runB]);
     expect(fireA + fireB).toBe(1);
@@ -163,7 +172,10 @@ describe('runTickOnce', () => {
       clock: fakeClock, signal: ctlC.signal,
       tickIntervalMs: 1, electionRetryMs: 1, claimBatchSize: 10, claimWindowMinutes: 5,
     });
-    await new Promise((r) => setTimeout(r, 50));
+    await vi.waitFor(
+      () => expect(fireC).toBe(1),
+      { timeout: 5_000, interval: 25 },
+    );
     ctlC.abort();
     await runC;
     expect(fireC).toBe(1);
