@@ -133,7 +133,11 @@ export function createTestOnlyGitServerPlugin(
       bus.registerService<WorkspaceApplyInput, WorkspaceApplyOutput>(
         'workspace:apply',
         PLUGIN_NAME,
-        (_ctx, input) => engine.apply(workspaceId, input),
+        (ctx, input) => engine.apply(workspaceId, input, {
+          agentId: ctx.agentId,
+          userId: ctx.userId,
+          sessionId: ctx.sessionId,
+        }),
       );
 
       bus.registerService<WorkspaceReadInput, WorkspaceReadOutput>(

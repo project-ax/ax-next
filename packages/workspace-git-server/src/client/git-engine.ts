@@ -734,6 +734,7 @@ async function buildDelta(
   parent: string | null,
   newOid: string,
   reason: string | undefined,
+  author: WorkspaceDelta['author'] | undefined,
 ): Promise<WorkspaceDelta> {
   const entries = await diffTree(mirror, parent, newOid);
   const changes: WorkspaceChange[] = entries.map((e) => {
@@ -777,6 +778,13 @@ async function buildDelta(
     changes,
   };
   if (reason !== undefined) out.reason = reason;
+  // Issue #80: subscribers like @ax/routines key off delta.author.agentId
+  // to decide whether to process a workspace:applied event. The local
+  // backend (@ax/workspace-git-core) populates author from the
+  // AgentContext at the registerService boundary; this multi-replica
+  // backend must too, or every author-keyed subscriber silently
+  // early-returns on git-protocol clusters.
+  if (author !== undefined) out.author = author;
   return out;
 }
 
@@ -799,10 +807,22 @@ export interface GitEngineOptions {
 }
 
 export interface GitEngine {
-  apply(workspaceId: string, input: WorkspaceApplyInput): Promise<WorkspaceApplyOutput>;
+  /**
+   * `author` (issue #80): optional `{ agentId, userId, sessionId }` from the
+   * caller's `AgentContext`. The registered plugin handler extracts it from
+   * ctx and threads it through so the returned `delta.author` lines up with
+   * what the local backend (`@ax/workspace-git-core`) produces. Subscribers
+   * like `@ax/routines` early-return on missing `author.agentId`.
+   */
+  apply(
+    workspaceId: string,
+    input: WorkspaceApplyInput,
+    author?: WorkspaceDelta['author'],
+  ): Promise<WorkspaceApplyOutput>;
   applyBundle(
     workspaceId: string,
     input: WorkspaceApplyBundleInput,
+    author?: WorkspaceDelta['author'],
   ): Promise<WorkspaceApplyBundleOutput>;
   exportBaselineBundle(
     workspaceId: string,
@@ -911,6 +931,7 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
   const apply = async (
     workspaceId: string,
     input: WorkspaceApplyInput,
+    author?: WorkspaceDelta['author'],
   ): Promise<WorkspaceApplyOutput> => {
     guardClosed();
     return enqueue(workspaceId, async () => {
@@ -994,6 +1015,7 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
             mirrorHead,
             newOid,
             input.reason,
+            author,
           );
           return {
             version: asWorkspaceVersion(newOid),
@@ -1028,6 +1050,7 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
   const applyBundle = async (
     workspaceId: string,
     input: WorkspaceApplyBundleInput,
+    author?: WorkspaceDelta['author'],
   ): Promise<WorkspaceApplyBundleOutput> => {
     guardClosed();
     return enqueue(workspaceId, async () => {
@@ -1203,6 +1226,7 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
             callerParent,
             newTip,
             input.reason,
+            author,
           );
           return {
             version: asWorkspaceVersion(newTip),
@@ -1376,7 +1400,8 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
         await fetchMirror(remoteUrl, opts.token, handle.dir);
         const from = input.from === null ? null : (input.from as string);
         const to = input.to as string;
-        const delta = await buildDelta(handle.dir, from, to, undefined);
+        // diff() is read-only — no author (no actor performed the diff).
+        const delta = await buildDelta(handle.dir, from, to, undefined, undefined);
         return { delta };
       });
     });
