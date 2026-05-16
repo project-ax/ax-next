@@ -744,36 +744,20 @@ describe('git-engine — delta.author plumbing (issue #80)', () => {
   });
 
   it('applyBundle: author passed in is reflected on the returned delta', async () => {
-    // Seed an empty workspace via apply so applyBundle has a real baseline
-    // to materialize against.
-    const seeded = await harness.engine.apply('wsengineauthor003', {
-      changes: [],
-      parent: null,
+    const sim = await simulateTurn({
+      baselineFiles: [],
+      turnFiles: { 'a.txt': 'a' },
     });
-    // Export the post-seed baseline so we have its OID for the bundle's
-    // prereq. Then construct a thin bundle on top of it manually.
-    // For this test, simpler: use the engine's own apply to mint a
-    // version, then verify the delta from THAT apply also has author.
-    // (applyBundle's delta construction shares the same buildDelta call
-    // site — covering apply covers both. Add a direct applyBundle check
-    // only if we want to be belt-and-suspenders.)
-    void seeded;
-
     const author = {
       agentId: 'agt_bundle_author',
       userId: 'usr_bundle_author',
       sessionId: 'req-bundle-001',
     };
-    const result = await harness.engine.apply(
-      'wsengineauthor004',
+    const result = await harness.engine.applyBundle(
+      'wsengineauthor003',
       {
-        changes: [
-          {
-            path: 'a.txt',
-            kind: 'put',
-            content: new TextEncoder().encode('a'),
-          },
-        ],
+        bundleBytes: sim.bundleB64,
+        baselineCommit: sim.baselineCommit,
         parent: null,
         reason: 'bundle-author-smoke',
       },
