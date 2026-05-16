@@ -120,6 +120,26 @@ export interface DeleteInput {
 
 export type DeleteOutput = void;
 
+export interface ResolveByWebhookTokenInput {
+  token: string;
+}
+
+/**
+ * Null on miss. Deliberately no `PluginError` — callers map null → 404
+ * and we avoid distinguishing "wrong token" from "no agent" (no
+ * oracle).
+ */
+export type ResolveByWebhookTokenOutput = { agent: Agent } | null;
+
+export interface RotateWebhookTokenInput {
+  actor: Actor;
+  agentId: string;
+}
+
+export interface RotateWebhookTokenOutput {
+  token: string;
+}
+
 // --- Subscriber payloads -----------------------------------------------------
 
 /**
