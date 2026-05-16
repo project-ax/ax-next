@@ -46,7 +46,7 @@ function makeInput(overrides: Partial<AgentInput> = {}): AgentInput {
 beforeAll(async () => {
   container = await new PostgreSqlContainer('postgres:16-alpine').start();
   connectionString = container.getConnectionUri();
-});
+}, 120_000);
 
 afterEach(async () => {
   while (opened.length > 0) {
