@@ -531,4 +531,47 @@ describe('Phase C webhook canary — half-wired window closure', () => {
     expect(captured.handlers.has('/webhooks/tok-2/r/x')).toBe(true);
     expect(captured.handlers.has('/webhooks/tok-1/r/x')).toBe(false);
   });
+
+  it('case 9: plugin init re-mounts webhook routes from DB rows (fixes #87)', async () => {
+    // Host pod restart leaves the in-memory `webhookRoutes` Map empty, but
+    // the routine definitions are still in `routines_v1_definitions`. Plugin
+    // init MUST scan and re-mount, otherwise webhook URLs return 403 (no
+    // route registered = no `bypassCsrf` flag) until a downstream
+    // `workspace:applied` event happens to touch the routine file.
+
+    const first = await makeWebHarness();
+    await first.h.bus.fire('workspace:applied', first.h.ctx({ userId: 'u1' }), {
+      before: null, after: asWorkspaceVersion('v1'),
+      author: { agentId: 'agt_a', userId: 'u1' },
+      changes: [{ path: '.ax/routines/r.md', kind: 'added',
+        contentAfter: async () => webhookBody() }],
+    });
+    expect(first.captured.routes).toEqual([
+      { method: 'POST', path: '/webhooks/tok-1/r/x', bypassCsrf: true },
+    ]);
+
+    // Tear down the first harness ("pod restart"). afterEach truncates only
+    // after the full test, so the routine row persists for harness 2.
+    await first.h.close({ onError: () => {} });
+    const idx = harnesses.indexOf(first.h);
+    if (idx >= 0) harnesses.splice(idx, 1);
+
+    const second = await makeWebHarness();
+    // Fresh harness mounted the route WITHOUT a workspace:applied event —
+    // the startup scan handled it. CSRF bypass must carry over.
+    expect(second.captured.routes).toEqual([
+      { method: 'POST', path: '/webhooks/tok-1/r/x', bypassCsrf: true },
+    ]);
+    expect(second.captured.handlers.size).toBe(1);
+    expect(second.captured.handlers.has('/webhooks/tok-1/r/x')).toBe(true);
+
+    // And the freshly-mounted handler should actually fire the routine —
+    // proves the closure was rebuilt with a live `fire` reference, not a
+    // dangling reference to the prior harness.
+    const handler = second.captured.handlers.get('/webhooks/tok-1/r/x')!;
+    await handler(makeReq({ body: Buffer.from('{"pr":{"title":"after-restart"}}') }), makeRes());
+    await vi.waitFor(() => expect(second.captured.invokes).toHaveLength(1),
+      { timeout: 5_000, interval: 25 });
+    expect(second.captured.invokes[0]!.message.content).toBe('PR: after-restart');
+  });
 });

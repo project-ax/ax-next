@@ -3,7 +3,7 @@ import { makeAgentContext, PluginError } from '@ax/core';
 import type { Kysely } from 'kysely';
 import { runRoutinesMigration, type RoutinesDatabase } from './migrations.js';
 import { createRoutinesStore, type RoutinesStore } from './store.js';
-import { handleWorkspaceApplied, rebindWebhooksForAgent } from './sync.js';
+import { handleWorkspaceApplied, mountAllWebhookRoutesOnStartup, rebindWebhooksForAgent } from './sync.js';
 import { systemClock, type Clock } from './clock.js';
 import { runTickLoop } from './tick.js';
 import { createFireRoutine, type PendingFires } from './fire.js';
@@ -212,6 +212,16 @@ export function createRoutinesPlugin(
             conversationId: result.conversationId ?? null,
           };
         },
+      );
+
+      // Re-mount webhook routes from DB before opening for traffic. After a
+      // host pod restart the in-memory `webhookRoutes` Map is empty, but
+      // `routines_v1_definitions` is not — without this, webhook URLs 403
+      // until something else nudges `workspace:applied`. Per-row failures
+      // are caught + logged inside the helper (K10).
+      await mountAllWebhookRoutesOnStartup(
+        { store: localStore, bus, webhookRoutes, fireRoutine },
+        initCtx,
       );
 
       const tickIntervalMs = config.tickIntervalMs ?? 5_000;
