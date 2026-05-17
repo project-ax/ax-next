@@ -16,7 +16,13 @@ import {
   type ToolListResponse,
   type WorkspaceCommitNotifyResponse,
   type WorkspaceMaterializeResponse,
+  type WorkspaceReadRequest,
+  type WorkspaceReadResponse,
 } from '@ax/ipc-protocol';
+import {
+  translateContentBlocks,
+  type WorkspaceReader,
+} from './attachment-translation.js';
 import { createCanUseTool } from './can-use-tool.js';
 import { readRunnerEnv } from './env.js';
 import { createHostMcpServer } from './host-mcp-server.js';
@@ -246,6 +252,22 @@ export async function main(): Promise<number> {
   });
 
   const inbox = createInboxLoop({ client });
+
+  // Phase 2: feature-detect whether the pinned claude-agent-sdk supports
+  // `document` content blocks. The SDK exposes its accepted block types
+  // via a type-only export, so we probe by environment variable for now.
+  // Pinning the SDK version makes this a static answer in practice; we
+  // keep the override so a future SDK bump doesn't silently regress.
+  // Conservative default: false. Override via env for early access.
+  const SUPPORTS_DOCUMENT_BLOCKS = process.env.AX_SDK_DOCUMENT_BLOCKS === '1';
+
+  const workspaceReader: WorkspaceReader = async (path) => {
+    const resp = (await client.call('workspace.read', {
+      path,
+    } as WorkspaceReadRequest)) as WorkspaceReadResponse;
+    return resp;
+  };
+
   // Phase 3: workspace commits are turn-end via git-status against
   // /permanent (`commitTurnAndBundle` at the SDK `result` boundary).
   // The legacy PostToolUse-based diff accumulator is gone — git status
@@ -334,11 +356,37 @@ export async function main(): Promise<number> {
       if (typeof entry.reqId === 'string' && entry.reqId.length > 0) {
         currentReqId = entry.reqId;
       }
-      chatEndHistory.push({ role: 'user', content: entry.payload.content });
+      const hasBlocks =
+        entry.payload.contentBlocks !== undefined &&
+        entry.payload.contentBlocks.length > 0;
+
+      const messageContent: unknown = hasBlocks
+        ? await translateContentBlocks(entry.payload.contentBlocks!, {
+            readWorkspace: workspaceReader,
+            supportsDocumentBlocks: SUPPORTS_DOCUMENT_BLOCKS,
+          })
+        : entry.payload.content;
+
+      // Keep chatEndHistory as text-only — if contentBlocks were used,
+      // stringify a short summary so the chat-end event payload doesn't
+      // carry raw bytes. Phase 3 may refine this once downstream consumers
+      // of event.chat-end's outcome.messages are clearer about what they
+      // need.
+      chatEndHistory.push({
+        role: 'user',
+        content: hasBlocks
+          ? `[${entry.payload.contentBlocks!.length} blocks]`
+          : entry.payload.content,
+      });
+
       yield {
         type: 'user',
         parent_tool_use_id: null,
-        message: { role: 'user', content: entry.payload.content },
+        // Cast: SDKUserMessage.message.content is typed `string` today, but
+        // the SDK accepts content-block arrays at runtime (the SDK's outbound
+        // schema permits both shapes; the type just hasn't been widened yet).
+        // Phase 3 may upstream a proper type widening to the SDK pin.
+        message: { role: 'user', content: messageContent } as never,
       };
     }
   }

@@ -644,13 +644,14 @@ describe('timeouts', () => {
     expect(Object.isFrozen(IPC_TIMEOUTS_MS)).toBe(true);
   });
 
-  it('IPC_TIMEOUTS_MS has the eight expected keys (Phase E dropped conversation.fetch-history)', () => {
+  it('IPC_TIMEOUTS_MS has the nine expected keys (Phase 2 adds workspace.read)', () => {
     const expected = [
       'tool.pre-call',
       'tool.execute-host',
       'tool.list',
       'workspace.commit-notify',
       'workspace.materialize',
+      'workspace.read',
       'session.next-message',
       'session.get-config',
       'conversation.store-runner-session',
@@ -666,11 +667,12 @@ describe('timeouts', () => {
       'tool.list',
       'workspace.commit-notify',
       'workspace.materialize',
+      'workspace.read',
       'session.next-message',
       'session.get-config',
       'conversation.store-runner-session',
     ];
-    expect(names).toHaveLength(8);
+    expect(names).toHaveLength(9);
   });
 });
 

@@ -27,6 +27,12 @@ export const IPC_TIMEOUTS_MS = Object.freeze({
   // so the next boot can resume() instead of replay. Tiny payload, single
   // indexed UPDATE host-side. 5 s is generous — fail-fast beats retry.
   'conversation.store-runner-session': 5_000,
+  // Phase 2 (attachments): runner fetches attachment bytes from the host
+  // workspace to translate ContentBlock[] into Anthropic image/document
+  // blocks before yielding to the SDK. Payload is a single workspace path;
+  // response is the file bytes base64-encoded. 10 s is generous for any
+  // attachment file a user could plausibly upload within a single turn.
+  'workspace.read': 10_000,
 });
 
 /** The closed set of sandbox→host RPC action names. */

@@ -2277,4 +2277,91 @@ describe('main()', () => {
       expect.arrayContaining(['ax-host-tools', 'ax-sandbox-tools']),
     );
   });
+
+  it('Phase 2: translates attachment contentBlocks to Anthropic image blocks before yielding to SDK', async () => {
+    setEnv(COMPLETE_ENV);
+    fakeClient = buildFakeClient();
+    const png = Buffer.from('fake-png-bytes');
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          conversationId: null,
+          runnerSessionId: null,
+        };
+      }
+      if (action === 'workspace.materialize') return { bundleBytes: '' };
+      if (action === 'tool.list') return { tools: [] };
+      if (action === 'workspace.read') {
+        return { found: true, bytesBase64: png.toString('base64') };
+      }
+      if (action === 'workspace.commit-notify') {
+        return { accepted: true, version: 'v1', delta: null };
+      }
+      throw new Error(`unexpected call: ${action}`);
+    });
+
+    // Inject a user message with an image attachment in its contentBlocks.
+    const userMsgWithAttachment: InboxLoopEntry = {
+      type: 'user-message',
+      payload: {
+        role: 'user',
+        content: '',
+        contentBlocks: [
+          {
+            type: 'attachment',
+            path: '.ax/uploads/c1/t1/img.png',
+            displayName: 'img.png',
+            mediaType: 'image/png',
+            sizeBytes: png.length,
+          },
+        ],
+      },
+      reqId: 'req-attachment',
+    };
+    fakeInbox = buildFakeInbox([userMsgWithAttachment, cancelEntry]);
+
+    // Capture the user messages the SDK actually sees.
+    const sdkUserMessages: SDKUserMessage[] = [];
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+      return (async function* () {
+        const it = prompt[Symbol.asyncIterator]();
+        const firstUser = await it.next();
+        if (!firstUser.done && firstUser.value !== undefined) {
+          sdkUserMessages.push(firstUser.value);
+        }
+        yield assistantText('ok');
+        yield resultSuccess();
+        await it.next();
+      })();
+    });
+
+    const { main } = await import('../main.js');
+    const rc = await main();
+    expect(rc).toBe(0);
+
+    expect(sdkUserMessages).toHaveLength(1);
+    expect((sdkUserMessages[0]!.message as { content: unknown }).content).toEqual([
+      {
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: 'image/png',
+          data: png.toString('base64'),
+        },
+      },
+    ]);
+
+    // Confirm workspace.read was actually called for the attachment path.
+    expect(fakeClient.call).toHaveBeenCalledWith('workspace.read', {
+      path: '.ax/uploads/c1/t1/img.png',
+    });
+  });
 });
