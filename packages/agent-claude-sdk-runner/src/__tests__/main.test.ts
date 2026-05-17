@@ -2214,4 +2214,67 @@ describe('main()', () => {
       expect(process.env.HOME).toBe(homeBefore);
     });
   });
+
+  it('Phase 2: query receives BOTH host and sandbox MCP servers when artifact_publish is in the catalog', async () => {
+    setEnv(COMPLETE_ENV);
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          conversationId: null,
+          runnerSessionId: null,
+        };
+      }
+      if (action === 'workspace.materialize') return { bundleBytes: '' };
+      if (action === 'tool.list') {
+        return {
+          tools: [
+            {
+              name: 'artifact_publish',
+              description: 'publish an artifact',
+              inputSchema: {
+                type: 'object',
+                properties: { path: { type: 'string' } },
+                required: ['path'],
+              },
+              executesIn: 'sandbox',
+            },
+          ],
+        };
+      }
+      if (action === 'workspace.commit-notify') {
+        return { accepted: true, version: 'v1', delta: null };
+      }
+      throw new Error(`unexpected call: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([cancelEntry]);
+
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+      return (async function* () {
+        // Drain immediately on cancel — we only care about the query() arg shape.
+        const it = prompt[Symbol.asyncIterator]();
+        await it.next();
+      })();
+    });
+
+    const { main } = await import('../main.js');
+    await main();
+
+    expect(queryMock).toHaveBeenCalledTimes(1);
+    const queryArg = queryMock.mock.calls[0]?.[0] as {
+      options: { mcpServers: Record<string, unknown> };
+    };
+    const serverNames = Object.keys(queryArg.options.mcpServers);
+    expect(serverNames).toEqual(
+      expect.arrayContaining(['ax-host-tools', 'ax-sandbox-tools']),
+    );
+  });
 });

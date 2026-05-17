@@ -26,11 +26,15 @@ import {
   materializeWorkspace,
   rollbackToBaseline,
 } from './git-workspace.js';
+import { createLocalDispatcher } from './local-dispatcher.js';
 import { createPostToolUseHook } from './post-tool-use.js';
 import { createPreToolUseHook } from './pre-tool-use.js';
 import { setupProxy } from './proxy-startup.js';
-import { DISABLED_BUILTINS, MCP_HOST_SERVER_NAME } from './tool-names.js';
+import { createSandboxMcpServer } from './sandbox-mcp-server.js';
+import { createArtifactPublishExecutor } from './artifact-publish-executor.js';
+import { DISABLED_BUILTINS, MCP_HOST_SERVER_NAME, MCP_SANDBOX_SERVER_NAME } from './tool-names.js';
 import { readLastTurnUuid } from './turn-end-uuid.js';
+import { ARTIFACT_PUBLISH_TOOL_NAME } from '@ax/tool-artifact-publish';
 
 // ---------------------------------------------------------------------------
 // Runner entry binary (claude-sdk variant).
@@ -225,6 +229,22 @@ export async function main(): Promise<number> {
   }
 
   const hostMcpServer = createHostMcpServer({ client, tools });
+
+  // Phase 2: sandbox-MCP bridge. The local-dispatcher holds executors for
+  // tools marked `executesIn: 'sandbox'`. Today only `artifact_publish`
+  // uses this path; future sandbox tools register here too.
+  const localDispatcher = createLocalDispatcher();
+  if (tools.some((t) => t.name === ARTIFACT_PUBLISH_TOOL_NAME && t.executesIn === 'sandbox')) {
+    localDispatcher.register(
+      ARTIFACT_PUBLISH_TOOL_NAME,
+      createArtifactPublishExecutor({ workspaceRoot: env.workspaceRoot }),
+    );
+  }
+  const sandboxMcpServer = createSandboxMcpServer({
+    dispatcher: localDispatcher,
+    tools,
+  });
+
   const inbox = createInboxLoop({ client });
   // Phase 3: workspace commits are turn-end via git-status against
   // /permanent (`commitTurnAndBundle` at the SDK `result` boundary).
@@ -389,7 +409,10 @@ export async function main(): Promise<number> {
             },
           ],
         },
-        mcpServers: { [MCP_HOST_SERVER_NAME]: hostMcpServer },
+        mcpServers: {
+          [MCP_HOST_SERVER_NAME]: hostMcpServer,
+          [MCP_SANDBOX_SERVER_NAME]: sandboxMcpServer,
+        },
         // Empty settingSources = SDK isolation mode: the runner does NOT
         // read ~/.claude, project settings, or CLAUDE.md. Config for this
         // sandbox arrives entirely through host-mediated IPC.
