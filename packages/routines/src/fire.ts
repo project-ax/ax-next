@@ -51,7 +51,12 @@ export function createFireRoutine(deps: FireDeps) {
       >('agents:resolve', baseCtx, { agentId: row.agentId, userId: row.authorUserId });
     } catch (err) {
       if (err instanceof PluginError) {
-        return { status: 'error', error: `${err.code}: ${err.message}`, conversationId: null };
+        return {
+          status: 'error',
+          error: `${err.code}: ${err.message}`,
+          conversationId: null,
+          renderedPrompt: null,
+        };
       }
       throw err;
     }
@@ -82,7 +87,12 @@ export function createFireRoutine(deps: FireDeps) {
       }
     } catch (err) {
       if (err instanceof PluginError) {
-        return { status: 'error', error: `${err.code}: ${err.message}`, conversationId: null };
+        return {
+          status: 'error',
+          error: `${err.code}: ${err.message}`,
+          conversationId: null,
+          renderedPrompt: null,
+        };
       }
       throw err;
     }
@@ -120,6 +130,6 @@ export function createFireRoutine(deps: FireDeps) {
       }
     });
 
-    return { status: 'ok', conversationId, error: null };
+    return { status: 'ok', conversationId, error: null, renderedPrompt: prompt };
   };
 }

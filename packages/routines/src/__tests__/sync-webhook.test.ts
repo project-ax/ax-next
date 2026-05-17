@@ -80,7 +80,9 @@ function makeBus(opts: {
   return bus;
 }
 
-const noopFire = async () => ({ status: 'ok' as const, conversationId: 'c1', error: null });
+const noopFire = async () => ({
+  status: 'ok' as const, conversationId: 'c1', error: null, renderedPrompt: 'p',
+});
 
 function ctx(): AgentContext {
   return makeAgentContext({ sessionId: 's', agentId: 'agt_a', userId: 'u1' });

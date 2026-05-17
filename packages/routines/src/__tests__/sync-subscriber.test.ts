@@ -55,7 +55,9 @@ function makeDeps(store: ReturnType<typeof createRoutinesStore>) {
     store,
     bus: new HookBus(),
     webhookRoutes: new Map<string, () => void>(),
-    fireRoutine: async () => ({ status: 'ok' as const, conversationId: 'c1', error: null }),
+    fireRoutine: async () => ({
+      status: 'ok' as const, conversationId: 'c1', error: null, renderedPrompt: 'p',
+    }),
   };
 }
 

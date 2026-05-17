@@ -66,7 +66,7 @@ describe('makeWebhookHandler', () => {
     const row = makeRow();
     const fire = vi.fn().mockImplementation(async (_r, source, payload) => {
       fired.push({ source, payload });
-      return { status: 'ok', conversationId: 'c1', error: null };
+      return { status: 'ok', conversationId: 'c1', error: null, renderedPrompt: 'p' };
     });
     const store = { findOne: async () => row };
     const handler = makeWebhookHandler({
@@ -167,7 +167,7 @@ describe('makeWebhookHandler', () => {
   });
 
   it('accepts a valid HMAC over the raw body and fires', async () => {
-    const fire = vi.fn().mockResolvedValue({ status: 'ok', conversationId: 'c1', error: null });
+    const fire = vi.fn().mockResolvedValue({ status: 'ok', conversationId: 'c1', error: null, renderedPrompt: 'p' });
     const row = makeRow({
       trigger: { kind: 'webhook', path: '/r',
         hmac: { secretRef: 's', header: 'X-Sig', algorithm: 'sha256', prefix: 'sha256=' } },
@@ -190,7 +190,7 @@ describe('makeWebhookHandler', () => {
   });
 
   it('verifies sha1 HMAC when algorithm: sha1', async () => {
-    const fire = vi.fn().mockResolvedValue({ status: 'ok', conversationId: 'c1', error: null });
+    const fire = vi.fn().mockResolvedValue({ status: 'ok', conversationId: 'c1', error: null, renderedPrompt: 'p' });
     const row = makeRow({
       trigger: { kind: 'webhook', path: '/r',
         hmac: { secretRef: 's', header: 'X-Sig', algorithm: 'sha1' } },
@@ -245,7 +245,7 @@ describe('makeWebhookHandler', () => {
     let captured: unknown;
     const fire = vi.fn().mockImplementation(async (_r, _s, p) => {
       captured = p;
-      return { status: 'ok', conversationId: 'c1', error: null };
+      return { status: 'ok', conversationId: 'c1', error: null, renderedPrompt: 'p' };
     });
     const row = makeRow();
     const store = { findOne: async () => row };
@@ -283,7 +283,7 @@ describe('makeWebhookHandler', () => {
   });
 
   it('ignores events filter when X-GitHub-Event header is absent', async () => {
-    const fire = vi.fn().mockResolvedValue({ status: 'ok', conversationId: 'c1', error: null });
+    const fire = vi.fn().mockResolvedValue({ status: 'ok', conversationId: 'c1', error: null, renderedPrompt: 'p' });
     const row = makeRow({
       trigger: { kind: 'webhook', path: '/r', events: ['pull_request'] },
     });
@@ -299,7 +299,7 @@ describe('makeWebhookHandler', () => {
   });
 
   it('matches HMAC when prefix is omitted (header is bare hex)', async () => {
-    const fire = vi.fn().mockResolvedValue({ status: 'ok', conversationId: 'c1', error: null });
+    const fire = vi.fn().mockResolvedValue({ status: 'ok', conversationId: 'c1', error: null, renderedPrompt: 'p' });
     const row = makeRow({
       trigger: { kind: 'webhook', path: '/r',
         hmac: { secretRef: 's', header: 'X-Sig', algorithm: 'sha256' } },

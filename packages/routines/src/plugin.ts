@@ -8,7 +8,6 @@ import { systemClock, type Clock } from './clock.js';
 import { runTickLoop } from './tick.js';
 import { createFireRoutine, type PendingFires } from './fire.js';
 import { applySilenceLogic } from './silence.js';
-import { renderTemplate } from './template.js';
 import type { RoutinesConfig, FireNowInput, FireNowOutput, ListInput, ListOutput } from './types.js';
 
 const PLUGIN_NAME = '@ax/routines';
@@ -201,9 +200,6 @@ export function createRoutinesPlugin(
             });
           }
           const source = input.source ?? 'manual';
-          const renderedPrompt = input.payload !== undefined
-            ? renderTemplate(row.promptBody, { payload: input.payload })
-            : row.promptBody;
           const result = await fireRoutine(
             row,
             source === 'tick' ? 'tick' : 'manual',
@@ -215,7 +211,7 @@ export function createRoutinesPlugin(
             conversationId: result.conversationId ?? null,
             status: result.status,
             error: result.error,
-            renderedPrompt,
+            renderedPrompt: result.renderedPrompt,
           });
           return {
             fireId,

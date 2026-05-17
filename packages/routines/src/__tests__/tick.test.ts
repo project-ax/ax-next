@@ -47,7 +47,7 @@ describe('runTickOnce', () => {
     const fired: Array<{ agentId: string; status: string }> = [];
     const fire: FireRoutineFn = async (row) => {
       fired.push({ agentId: row.agentId, status: 'ok' });
-      return { status: 'ok', error: null };
+      return { status: 'ok', error: null, renderedPrompt: 'p' };
     };
     await runTickOnce({
       store, fire, now: new Date('2026-05-14T12:01:00Z'),
@@ -63,7 +63,7 @@ describe('runTickOnce', () => {
   it('jumps to now + every when more than one interval behind (catch-up storm guard)', async () => {
     const store = createRoutinesStore(db);
     await seedInterval(store, 'agt_a', '30m', new Date('2026-05-14T09:00:00Z'));
-    const fire: FireRoutineFn = async () => ({ status: 'ok', error: null });
+    const fire: FireRoutineFn = async () => ({ status: 'ok', error: null, renderedPrompt: 'p' });
     await runTickOnce({
       store, fire, now: new Date('2026-05-14T12:00:00Z'),
       claimBatchSize: 50, claimWindowMinutes: 5,
@@ -84,7 +84,7 @@ describe('runTickOnce', () => {
       nextRunAt: new Date('2026-05-14T07:00:00Z'),
     });
     const fired: unknown[] = [];
-    const fire: FireRoutineFn = async (row) => { fired.push(row); return { status: 'ok', error: null }; };
+    const fire: FireRoutineFn = async (row) => { fired.push(row); return { status: 'ok', error: null, renderedPrompt: 'p' }; };
     await runTickOnce({
       store, fire, now: new Date('2026-05-14T07:05:00Z'),
       claimBatchSize: 50, claimWindowMinutes: 5,
@@ -138,12 +138,12 @@ describe('runTickOnce', () => {
     const ctlA = new AbortController();
     const ctlB = new AbortController();
     const runA = runTickLoop({
-      db, fire: async () => { fireA++; return { status: 'ok', error: null }; },
+      db, fire: async () => { fireA++; return { status: 'ok', error: null, renderedPrompt: 'p' }; },
       clock: fakeClock, signal: ctlA.signal,
       tickIntervalMs: 1, electionRetryMs: 1, claimBatchSize: 10, claimWindowMinutes: 5,
     });
     const runB = runTickLoop({
-      db, fire: async () => { fireB++; return { status: 'ok', error: null }; },
+      db, fire: async () => { fireB++; return { status: 'ok', error: null, renderedPrompt: 'p' }; },
       clock: fakeClock, signal: ctlB.signal,
       tickIntervalMs: 1, electionRetryMs: 1, claimBatchSize: 10, claimWindowMinutes: 5,
     });
@@ -168,7 +168,7 @@ describe('runTickOnce', () => {
     let fireC = 0;
     const ctlC = new AbortController();
     const runC = runTickLoop({
-      db, fire: async () => { fireC++; return { status: 'ok', error: null }; },
+      db, fire: async () => { fireC++; return { status: 'ok', error: null, renderedPrompt: 'p' }; },
       clock: fakeClock, signal: ctlC.signal,
       tickIntervalMs: 1, electionRetryMs: 1, claimBatchSize: 10, claimWindowMinutes: 5,
     });
