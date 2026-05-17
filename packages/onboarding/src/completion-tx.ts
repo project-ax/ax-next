@@ -77,6 +77,11 @@ export async function runCompletionTransaction(
   if (!valid) return { ok: false, reason: 'credential-invalid' };
 
   // Step 2: Atomic transaction — credential + agent + bootstrap:complete (I9).
+  // Capture the new agent id from inside the transaction so we can fire
+  // `agents:created` after commit (the agents plugin defers the event when
+  // a tx is supplied — see packages/agents/src/plugin.ts).
+  let createdAgentId: string | null = null;
+  let createdAgentOwnerId: string | null = null;
   await input.bus.call<unknown, void>('db:transact', input.ctx, {
     run: async ({ tx }: { tx: Transaction<unknown> }) => {
       await input.bus.call('credentials:set', input.ctx, {
@@ -93,7 +98,10 @@ export async function runCompletionTransaction(
         payload: new TextEncoder().encode(input.apiKey),
         tx,
       });
-      await input.bus.call('agents:create', input.ctx, {
+      const createOut = await input.bus.call<
+        unknown,
+        { agent: { id: string; ownerId: string } }
+      >('agents:create', input.ctx, {
         actor: { userId: input.adminUserId, isAdmin: true },
         input: {
           displayName: 'Default Agent',
@@ -109,9 +117,25 @@ export async function runCompletionTransaction(
         },
         tx,
       });
+      createdAgentId = createOut.agent.id;
+      createdAgentOwnerId = createOut.agent.ownerId;
       await input.bus.call('bootstrap:complete', input.ctx, { tx });
     },
   });
+
+  // Step 2b: Fire agents:created NOW, after commit. The agents plugin
+  // skips the fire when tx is passed (orphan-prevention contract); the
+  // tx-passing caller is responsible for firing after their commit.
+  // Subscriber failures are isolated by HookBus.fire (logged, not
+  // propagated) — bootstrap is already committed, so seeding errors are
+  // recoverable manually and must not block the wizard.
+  if (createdAgentId !== null && createdAgentOwnerId !== null) {
+    await input.bus.fire('agents:created', input.ctx, {
+      agentId: createdAgentId,
+      ownerId: createdAgentOwnerId,
+      ownerType: 'user',
+    });
+  }
 
   // Step 3: Fast-model setting (post-tx; recoverable, not atomic with above).
   // Swallowed on failure: bootstrap is already committed, and a missing

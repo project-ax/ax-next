@@ -377,12 +377,22 @@ async function createAgent(
   // re-resolve via `agents:resolve`. Subscriber failures are isolated by
   // HookBus.fire (logged, not propagated), so agent creation succeeds even
   // if every subscriber throws (L6).
-  const createdEvent: AgentsCreatedEvent = {
-    agentId: agent.id,
-    ownerId: agent.ownerId,
-    ownerType: agent.ownerType,
-  };
-  await bus.fire('agents:created', ctx, createdEvent);
+  //
+  // CONTRACT: when `input.tx` is supplied, the caller owns the commit
+  // boundary. Firing here would surface `agents:created` to subscribers
+  // BEFORE the outer transaction commits — if the caller rolls back, the
+  // heartbeat seed and any other subscriber-driven state would orphan
+  // against a non-existent agent row. Callers that pass `tx` MUST fire
+  // `agents:created` themselves AFTER their commit succeeds. See
+  // @ax/onboarding completion-tx for the canonical pattern.
+  if (input.tx === undefined) {
+    const createdEvent: AgentsCreatedEvent = {
+      agentId: agent.id,
+      ownerId: agent.ownerId,
+      ownerType: agent.ownerType,
+    };
+    await bus.fire('agents:created', ctx, createdEvent);
+  }
   return { agent };
 }
 

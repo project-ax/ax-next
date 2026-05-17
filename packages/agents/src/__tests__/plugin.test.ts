@@ -267,6 +267,42 @@ describe('@ax/agents service hooks (round trip)', () => {
     ]);
   });
 
+  it('does NOT fire agents:created when caller supplies a tx (caller-owns-commit contract)', async () => {
+    const h = await makeHarness();
+    const events: AgentsCreatedEvent[] = [];
+    h.bus.subscribe<AgentsCreatedEvent>(
+      'agents:created',
+      'test-spy',
+      async (_ctx, payload) => {
+        events.push(payload);
+        return undefined;
+      },
+    );
+    // Fetch a real Kysely instance so the create can execute against the
+    // postgres test container, then open a transaction and pass the
+    // resulting `trx` to agents:create. This mirrors the shape the
+    // onboarding wizard uses via db:transact (storage-postgres's run
+    // callback hands its run({tx}) a Kysely Transaction the same way).
+    const { db } = await h.bus.call<
+      unknown,
+      { db: import('kysely').Kysely<unknown> }
+    >('database:get-instance', h.ctx(), {});
+    await db.transaction().execute(async (trx) => {
+      await h.bus.call<CreateInput, CreateOutput>(
+        'agents:create',
+        h.ctx({ userId: 'u1' }),
+        {
+          actor: { userId: 'u1', isAdmin: false },
+          input: makeInput(),
+          tx: trx as never,
+        },
+      );
+    });
+    // After the outer transaction commits, the agents plugin must NOT
+    // have fired agents:created — that's the caller's responsibility.
+    expect(events).toEqual([]);
+  });
+
   it('agents:create succeeds even when an agents:created subscriber throws', async () => {
     const h = await makeHarness();
     h.bus.subscribe<AgentsCreatedEvent>(
