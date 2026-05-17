@@ -12,6 +12,11 @@ import { FireNowControl } from '../components/routines/FireNowControl';
 import type { Routine } from '../lib/routines';
 
 const fetchMock = vi.fn();
+// Capture the platform fetch so afterEach can restore it. Without this
+// the override leaks into adjacent test files when vitest reuses the
+// same JSDOM context — any later test that hits real fetch would see
+// our mock instead.
+const originalFetch = globalThis.fetch;
 
 beforeEach(() => {
   fetchMock.mockReset();
@@ -19,6 +24,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   fetchMock.mockReset();
+  globalThis.fetch = originalFetch;
 });
 
 function mockJson(status: number, body: unknown): void {

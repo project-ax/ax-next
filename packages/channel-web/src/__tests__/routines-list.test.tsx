@@ -16,6 +16,9 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { RoutinesList } from '../components/routines/RoutinesList';
 
 const fetchMock = vi.fn();
+// Capture the platform fetch so afterEach can restore it — see
+// fire-now-control.test.tsx for the rationale.
+const originalFetch = globalThis.fetch;
 
 beforeEach(() => {
   fetchMock.mockReset();
@@ -23,6 +26,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   fetchMock.mockReset();
+  globalThis.fetch = originalFetch;
 });
 
 function mockJsonOnce(status: number, body: unknown): void {

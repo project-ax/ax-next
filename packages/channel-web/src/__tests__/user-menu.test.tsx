@@ -80,13 +80,23 @@ describe('UserMenu', () => {
     expect(onOpenSettings).toHaveBeenCalled();
   });
 
-  it('"Routines" menuitem is visible to all users', () => {
+  it('"Routines" menuitem is visible to regular users', () => {
     render(
       <UserProvider value={regularUser}>
         <UserMenu />
       </UserProvider>,
     );
     fireEvent.click(screen.getByRole('button', { name: /Alice/i }));
+    expect(screen.getByRole('menuitem', { name: 'Routines' })).toBeTruthy();
+  });
+
+  it('"Routines" menuitem is visible to admin users', () => {
+    render(
+      <UserProvider value={adminUser}>
+        <UserMenu />
+      </UserProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Admin/i }));
     expect(screen.getByRole('menuitem', { name: 'Routines' })).toBeTruthy();
   });
 

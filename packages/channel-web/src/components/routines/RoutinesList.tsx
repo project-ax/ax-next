@@ -31,6 +31,12 @@ export interface RoutinesListProps {
 function relativeTime(d: Date | null): string {
   if (d === null) return 'never';
   const ms = Date.now() - d.getTime();
+  // Clock skew between the server and the user's machine can produce a
+  // negative delta. Falling through into the Math.floor branches would
+  // render "1s ago" for a future timestamp, which is misleading. Treat
+  // anything in the future as "just now" — the row exists, the time is
+  // close enough.
+  if (ms < 0) return 'just now';
   if (ms < 60_000) return `${Math.max(1, Math.floor(ms / 1_000))}s ago`;
   if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m ago`;
   if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h ago`;

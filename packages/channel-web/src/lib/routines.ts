@@ -87,14 +87,32 @@ async function readError(r: Response): Promise<string> {
   }
 }
 
+/**
+ * Coerce a server-supplied ISO string to a Date. Returns null when the
+ * value is missing or doesn't parse (which `new Date(...)` represents as
+ * an Invalid Date whose getTime() returns NaN). Without this guard, an
+ * Invalid Date silently propagates: relativeTime() would call .getTime()
+ * → NaN → render "NaNs ago", and FireRowsTable would call .toDateString()
+ * which throws "Invalid Date" as a string but is meaningless to users.
+ */
+function asValidDate(s: string | null | undefined): Date | null {
+  if (s === null || s === undefined) return null;
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
 function hydrateRoutine(raw: unknown): Routine {
   const r = raw as Routine & { lastRunAt: string | null };
-  return { ...r, lastRunAt: r.lastRunAt ? new Date(r.lastRunAt) : null };
+  return { ...r, lastRunAt: asValidDate(r.lastRunAt) };
 }
 
 function hydrateFire(raw: unknown): Fire {
   const f = raw as Fire & { firedAt: string };
-  return { ...f, firedAt: new Date(f.firedAt) };
+  // Fall back to epoch (not null) so FireRowsTable's formatTimestamp can
+  // still render *something* — `Fire.firedAt` is non-nullable per the
+  // type contract, and a row missing its timestamp is a data bug we'd
+  // rather surface as "Jan 1, 1970" than crash the whole panel.
+  return { ...f, firedAt: asValidDate(f.firedAt) ?? new Date(0) };
 }
 
 export const routines = {
