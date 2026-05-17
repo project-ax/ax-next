@@ -7,3 +7,4 @@ export {
   MAX_ARTIFACT_BYTES,
   type PathCheckResult,
 } from './path-allowlist.js';
+export { createToolArtifactPublishPlugin } from './plugin.js';
