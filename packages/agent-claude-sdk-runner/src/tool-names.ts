@@ -29,6 +29,7 @@
 // ---------------------------------------------------------------------------
 
 export const MCP_HOST_SERVER_NAME = 'ax-host-tools';
+export const MCP_SANDBOX_SERVER_NAME = 'ax_sandbox';
 
 export const DISABLED_BUILTINS = [
   'WebFetch',
