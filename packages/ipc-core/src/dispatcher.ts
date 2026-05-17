@@ -22,6 +22,7 @@ import { toolExecuteHostHandler } from './handlers/tool-execute-host.js';
 import { toolListHandler } from './handlers/tool-list.js';
 import { workspaceCommitNotifyHandler } from './handlers/workspace-commit-notify.js';
 import { workspaceMaterializeHandler } from './handlers/workspace-materialize.js';
+import { workspaceReadHandler } from './handlers/workspace-read.js';
 import { sessionNextMessageHandler } from './handlers/session-next-message.js';
 import { sessionGetConfigHandler } from './handlers/session-get-config.js';
 import { conversationStoreRunnerSessionHandler } from './handlers/conversation-store-runner-session.js';
@@ -74,6 +75,7 @@ ACTIONS.set('/tool.execute-host', { method: 'POST', handler: toolExecuteHostHand
 ACTIONS.set('/tool.list', { method: 'POST', handler: toolListHandler });
 ACTIONS.set('/workspace.commit-notify', { method: 'POST', handler: workspaceCommitNotifyHandler });
 ACTIONS.set('/workspace.materialize', { method: 'POST', handler: workspaceMaterializeHandler });
+ACTIONS.set('/workspace.read', { method: 'POST', handler: workspaceReadHandler });
 ACTIONS.set('/session.get-config', { method: 'POST', handler: sessionGetConfigHandler });
 ACTIONS.set('/conversation.store-runner-session', {
   method: 'POST',

@@ -10,6 +10,8 @@ import {
   WorkspaceCommitNotifyResponseSchema,
   WorkspaceMaterializeRequestSchema,
   WorkspaceMaterializeResponseSchema,
+  WorkspaceReadRequestSchema,
+  WorkspaceReadResponseSchema,
   SessionNextMessageResponseSchema,
   SessionGetConfigResponseSchema,
   ConversationStoreRunnerSessionRequestSchema,
@@ -707,6 +709,32 @@ describe('AgentMessageSchema — Phase 2 contentBlocks', () => {
         contentBlocks: [{ type: 'no-such-variant' }],
       }),
     ).toThrow();
+  });
+});
+
+describe('workspace.read schemas (Phase 2)', () => {
+  it('round-trips request schema with a workspace-relative path', () => {
+    const parsed = WorkspaceReadRequestSchema.parse({
+      path: '.ax/uploads/c1/t1/x.pdf',
+    });
+    expect(parsed.path).toBe('.ax/uploads/c1/t1/x.pdf');
+  });
+
+  it('rejects empty path', () => {
+    expect(() => WorkspaceReadRequestSchema.parse({ path: '' })).toThrow();
+  });
+
+  it('round-trips found response', () => {
+    const parsed = WorkspaceReadResponseSchema.parse({
+      found: true,
+      bytesBase64: 'aGk=',
+    });
+    expect(parsed).toEqual({ found: true, bytesBase64: 'aGk=' });
+  });
+
+  it('round-trips not-found response', () => {
+    const parsed = WorkspaceReadResponseSchema.parse({ found: false });
+    expect(parsed.found).toBe(false);
   });
 });
 

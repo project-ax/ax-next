@@ -243,6 +243,35 @@ export type WorkspaceMaterializeResponse = z.infer<
 >;
 
 // ---------------------------------------------------------------------------
+// workspace.read — Phase 2 (attachments translation, D3).
+//
+// Exposes the host's `workspace:read` service hook to runners over IPC.
+// The runner's attachment-translation pass uses this to fetch attachment
+// bytes that the host committed via `attachments:commit` after session
+// start (the runner's /permanent doesn't auto-sync mid-session).
+//
+// Auth: caller's bearer token resolves to a session row; the host-side
+// handler uses the session's workspaceId to scope `workspace:read`.
+// Cross-session reads are impossible — there's no session id on the wire.
+//
+// Payload: path is workspace-relative (matches what attachment blocks
+// carry, e.g. ".ax/uploads/<conv>/<turn>/file.pdf"). Bytes ride
+// base64-encoded for JSON safety.
+export const WorkspaceReadRequestSchema = z.object({
+  path: z.string().min(1),
+});
+export type WorkspaceReadRequest = z.infer<typeof WorkspaceReadRequestSchema>;
+
+export const WorkspaceReadResponseSchema = z.discriminatedUnion('found', [
+  z.object({
+    found: z.literal(true),
+    bytesBase64: z.string(),
+  }),
+  z.object({ found: z.literal(false) }),
+]);
+export type WorkspaceReadResponse = z.infer<typeof WorkspaceReadResponseSchema>;
+
+// ---------------------------------------------------------------------------
 // session.get-config
 //
 // Runner → host RPC fetched at boot. Authentication is the bearer token
