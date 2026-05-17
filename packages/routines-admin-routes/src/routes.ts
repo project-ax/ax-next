@@ -156,7 +156,21 @@ export function createRoutinesAdminHandlers(
       const agentId = req.params.agentId;
       const path = req.query.path;
       const rawLimit = req.query.limit;
-      const limit = rawLimit !== undefined ? Number(rawLimit) : 20;
+      // Validate `limit` BEFORE the bus call so a bad value (e.g.
+      // ?limit=abc, ?limit=Infinity) fails fast as a 400 instead of
+      // surfacing as a SQL `LIMIT NaN` runtime error inside the store's
+      // clamp. The store still clamps to [1, 100] for defense in depth.
+      let limit = 20;
+      if (rawLimit !== undefined) {
+        const parsed = Number(rawLimit);
+        if (!Number.isFinite(parsed) || parsed < 1) {
+          res
+            .status(400)
+            .json({ error: 'limit must be a positive integer' });
+          return;
+        }
+        limit = Math.min(100, Math.trunc(parsed));
+      }
       if (
         agentId === undefined ||
         agentId.length === 0 ||
@@ -281,8 +295,16 @@ export async function registerRoutinesAdminRoutes(
       const fn = unregisters.pop();
       try {
         fn?.();
-      } catch {
-        // best-effort unwind
+      } catch (unwindErr) {
+        // best-effort unwind — log so a transport error in the unwinder
+        // doesn't silently leave a dangling route handler behind. The
+        // parent `err` is rethrown below; this is the diagnostic for the
+        // unwind itself, which the operator may need to investigate.
+        console.warn(
+          `[${PLUGIN_NAME}] failed to unregister route during rollback: ${
+            unwindErr instanceof Error ? unwindErr.message : String(unwindErr)
+          }`,
+        );
       }
     }
     throw err;

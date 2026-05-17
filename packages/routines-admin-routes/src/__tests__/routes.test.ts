@@ -213,6 +213,31 @@ describe('routines-admin-routes', () => {
     await harness.close({ onError: () => {} });
   });
 
+  it('GET /settings/routines/:agentId/fires rejects non-numeric ?limit with 400', async () => {
+    let recentFiresCalled = false;
+    const { harness, handlers } = await makeHarnessWith({
+      recentFires: async () => {
+        recentFiresCalled = true;
+        return { fires: [] };
+      },
+    });
+    const handler = handlers.get('/settings/routines/:agentId/fires')!;
+    const { res, captured } = makeRes();
+    await handler(
+      makeReq({
+        params: { agentId: 'agt_a' },
+        query: { path: '.ax/routines/r.md', limit: 'abc' },
+      }),
+      res,
+    );
+    expect(captured.status).toBe(400);
+    expect((captured.body as { error: string }).error).toMatch(/limit/i);
+    // The bus call must NOT happen — bad input fails before the store
+    // ever sees a NaN that would become SQL `LIMIT NaN`.
+    expect(recentFiresCalled).toBe(false);
+    await harness.close({ onError: () => {} });
+  });
+
   it('POST /settings/routines/:agentId/fire calls routines:fire-now with payload', async () => {
     let fired:
       | { agentId: string; path: string; payload?: unknown; source: string }

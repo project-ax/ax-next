@@ -58,8 +58,17 @@ export function createRoutinesAdminRoutesPlugin(): Plugin {
           const fn = unregisterRoutes.pop();
           try {
             fn?.();
-          } catch {
-            // best-effort unwind
+          } catch (unwindErr) {
+            // best-effort unwind — log so a transport error in the
+            // unwinder doesn't silently leave a dangling route handler
+            // behind. console.warn (not ctx.logger): we have no logger
+            // available here without a service-call, and the parent
+            // failure is what the operator chases first.
+            console.warn(
+              `[${PLUGIN_NAME}] failed to unregister route during init-unwind: ${
+                unwindErr instanceof Error ? unwindErr.message : String(unwindErr)
+              }`,
+            );
           }
         }
         throw err;
@@ -75,8 +84,14 @@ export function createRoutinesAdminRoutesPlugin(): Plugin {
         const fn = unregisterRoutes.pop();
         try {
           fn?.();
-        } catch {
-          // best-effort
+        } catch (err) {
+          // best-effort — log so a transport-side failure during shutdown
+          // is visible. The next teardown attempt will still proceed.
+          console.warn(
+            `[${PLUGIN_NAME}] failed to unregister route during shutdown: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
         }
       }
     },
