@@ -17,7 +17,7 @@ import {
   type McpSdkServerConfigWithInstance,
   type SdkMcpToolDefinition,
 } from '@anthropic-ai/claude-agent-sdk';
-import type { ToolDescriptor } from '@ax/core';
+import type { ToolDescriptor } from '@ax/ipc-protocol';
 import { z } from 'zod';
 import type { LocalDispatcher } from './local-dispatcher.js';
 import { MCP_SANDBOX_SERVER_NAME } from './tool-names.js';
