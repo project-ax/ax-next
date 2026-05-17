@@ -99,7 +99,7 @@ FROM node:20-bookworm-slim AS runtime
 # is to pin to specific package versions once the image build pipeline
 # lands.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates tini git \
+ && apt-get install -y --no-install-recommends ca-certificates tini git git-lfs \
  && rm -rf /var/lib/apt/lists/*
 # `git` is needed by the host pod's @ax/ipc-core workspace.materialize
 # handler (it runs `git bundle` to seed the runner's /permanent dir at
@@ -109,6 +109,13 @@ RUN apt-get update \
 # now wrong — workspace.materialize runs on the host. Comment-only
 # header at the top of this file should be updated when that lands as
 # its own change.
+#
+# `git-lfs` is needed by runner pods to checkout LFS-tracked files
+# (user-uploaded attachments under `.ax/uploads/**`, agent artifacts
+# matching the LFS .gitattributes) so they materialize as their real
+# bytes rather than as LFS pointer text. The runner runs
+# `git lfs install --local` in /permanent after clone (see
+# packages/agent-claude-sdk-runner/src/git-workspace.ts).
 
 # Non-root user. The node:bookworm-slim base ships with a `node` user at
 # UID 1000; we drop it and create our own `axagent` so usernames in `ps`,
