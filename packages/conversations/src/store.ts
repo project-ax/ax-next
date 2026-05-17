@@ -65,6 +65,27 @@ export function validateTitle(value: unknown): string | null {
   return value;
 }
 
+/**
+ * Reject a non-boolean, non-undefined value for an optional boolean field.
+ * Caller passes `field` so the error message points at the right key.
+ *
+ * Used for `hidden` on createConversation / findOrCreateConversation —
+ * without this check a stray `hidden: "true"` or `hidden: 1` from an
+ * external caller surfaces as a less-helpful "invalid input syntax for
+ * type boolean" error from postgres at INSERT time. Validating at the
+ * boundary keeps the error close to the field.
+ */
+export function validateOptionalBoolean(
+  value: unknown,
+  field: string,
+): boolean | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'boolean') {
+    throw invalid(`${field} must be a boolean if provided`);
+  }
+  return value;
+}
+
 export function validateRole(value: unknown): TurnRole {
   if (typeof value !== 'string' || !VALID_ROLES.has(value as TurnRole)) {
     throw invalid("role must be 'user', 'assistant', or 'tool'");

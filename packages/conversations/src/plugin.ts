@@ -21,6 +21,7 @@ import {
 import {
   createConversationStore,
   dropTurnFromJsonl,
+  validateOptionalBoolean,
   validateRunnerType,
   validateTitle,
   validateWorkspaceRefForFreeze,
@@ -544,17 +545,19 @@ async function createConversation(
     'conversations:create',
   );
   const workspaceRef = validateWorkspaceRefForFreeze(agent.workspaceRef);
+  // Phase D (2026-05-17): routines call with `hidden: true` for per-fire
+  // conversations. Default false matches the store contract. validate
+  // boolean-ness at the boundary so an external caller passing a truthy
+  // non-boolean (e.g. "true") gets a structured invalid-payload error
+  // instead of a postgres "invalid input syntax" at INSERT time.
+  const hidden = validateOptionalBoolean(input.hidden, 'hidden') ?? false;
   const conv = await store.create({
     userId: input.userId,
     agentId: input.agentId,
     title,
     runnerType: cfg.defaultRunnerType,
     workspaceRef,
-    // Phase D (2026-05-17): routines call with `hidden: true` for
-    // per-fire conversations. Default false at this layer matches the
-    // store contract — document it here alongside the file's other ??
-    // patterns.
-    hidden: input.hidden ?? false,
+    hidden,
   });
   return conv;
 }
@@ -971,6 +974,8 @@ async function findOrCreateConversation(
   );
   const title = validateTitle(input.fallback.title ?? null);
   const workspaceRef = validateWorkspaceRefForFreeze(agent.workspaceRef);
+  // Phase D (2026-05-17): see createConversation for rationale.
+  const hidden = validateOptionalBoolean(input.fallback.hidden, 'hidden') ?? false;
   const result = await store.findOrCreate({
     userId: input.userId,
     agentId: input.agentId,
@@ -981,8 +986,7 @@ async function findOrCreateConversation(
       title,
       runnerType: cfg.defaultRunnerType,
       workspaceRef,
-      // Phase D (2026-05-17): see createConversation for rationale.
-      hidden: input.fallback.hidden ?? false,
+      hidden,
     },
   });
   return result;
