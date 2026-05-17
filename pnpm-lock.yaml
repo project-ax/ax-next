@@ -557,6 +557,9 @@ importers:
       '@ax/test-harness':
         specifier: workspace:*
         version: link:../test-harness
+      '@ax/tool-artifact-publish':
+        specifier: workspace:*
+        version: link:../tool-artifact-publish
       '@ax/validator-routine':
         specifier: workspace:*
         version: link:../validator-routine

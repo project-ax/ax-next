@@ -26,6 +26,7 @@
     { "path": "../chat-orchestrator" },
     { "path": "../agent-claude-sdk-runner" },
     { "path": "../mcp-client" },
+    { "path": "../tool-artifact-publish" },
     { "path": "../llm-anthropic" },
     { "path": "../memory-strata" },
     { "path": "../memory-strata-index-sqlite" },

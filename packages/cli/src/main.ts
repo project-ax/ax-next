@@ -22,6 +22,7 @@ import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
 import { createIpcServerPlugin } from '@ax/ipc-server';
 import { createChatOrchestratorPlugin } from '@ax/chat-orchestrator';
 import { createToolDispatcherPlugin, createMcpClientPlugin } from '@ax/mcp-client';
+import { createToolArtifactPublishPlugin } from '@ax/tool-artifact-publish';
 import { createLlmAnthropicPlugin } from '@ax/llm-anthropic';
 import { createMemoryStrataPlugin } from '@ax/memory-strata';
 import { createMemoryStrataIndexSqlitePlugin } from '@ax/memory-strata-index-sqlite';
@@ -246,6 +247,10 @@ export async function main(opts: MainOptions): Promise<number> {
   // descriptors are gone (Phase 6 Task 6 deleted their host-side packages
   // — the SDK runner's sandboxed Bash/Read/Write replace them).
   plugins.push(createToolDispatcherPlugin());
+
+  // artifact_publish tool — registers its descriptor via tool:register (same
+  // surface the dispatcher exposes). Must come AFTER createToolDispatcherPlugin().
+  plugins.push(createToolArtifactPublishPlugin());
 
   // MCP-sourced tools register through the same `tool:register` surface
   // the dispatcher exposes. Push unconditionally: when no MCP configs are
