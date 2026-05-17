@@ -186,6 +186,23 @@ describe('materializeWorkspace', () => {
       materializeWorkspace({ root, bundleBase64: notABundle }),
     ).rejects.toThrow(/git clone failed/);
   });
+
+  it('runs `git lfs install --local` after clone so LFS smudge is enabled', async () => {
+    // Requires git-lfs on PATH. The suite runs on machines that have it
+    // (same requirement as the agent container image built in Task 1).
+    const bundleB64 = await makeBundle({});
+    const root = path.join(scratchRoot, 'permanent');
+
+    await materializeWorkspace({ root, bundleBase64: bundleB64 });
+
+    // `git lfs install --local` writes [filter "lfs"] into .git/config.
+    // Its presence (with clean + smudge entries) is the durable signal
+    // that LFS smudge filters are active for this clone.
+    const cfg = await fs.readFile(path.join(root, '.git', 'config'), 'utf8');
+    expect(cfg).toContain('[filter "lfs"]');
+    expect(cfg).toMatch(/clean\s*=\s*git-lfs clean/);
+    expect(cfg).toMatch(/smudge\s*=\s*git-lfs smudge/);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -148,6 +148,14 @@ export async function materializeWorkspace(
       await runGit(['-C', root, 'update-ref', 'refs/heads/baseline', 'HEAD']),
       'git update-ref refs/heads/baseline',
     );
+    // Phase 2 (attachments): enable git-lfs smudge filters in this clone so
+    // LFS-tracked files (uploads under .ax/uploads/**, artifacts matching
+    // .gitattributes) check out as real bytes. --local writes only into
+    // THIS repo's .git/config, never HOME/system. Idempotent; safe to re-run.
+    await expectOk(
+      await runGit(['-C', root, 'lfs', 'install', '--local']),
+      'git lfs install --local',
+    );
     // Resolve the baseline OID for the caller. The runner uses this to
     // initialize parentVersion for its first commit-notify call: when
     // the workspace has prior history, parentVersion=null on the first
