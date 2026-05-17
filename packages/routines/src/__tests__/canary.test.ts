@@ -603,4 +603,31 @@ describe('Phase C webhook canary — half-wired window closure', () => {
       { timeout: 5_000, interval: 25 });
     expect(second.captured.invokes[0]!.message.content).toBe('PR: after-restart');
   });
+
+  it('case 10: routines:fire-now with payload renders template into rendered_prompt (#Phase D)', async () => {
+    const { h } = await makeWebHarness();
+    await h.bus.fire('workspace:applied', h.ctx({ userId: 'u1' }), {
+      before: null, after: asWorkspaceVersion('v1'),
+      author: { agentId: 'agt_a', userId: 'u1' },
+      changes: [{ path: '.ax/routines/r.md', kind: 'added',
+        contentAfter: async () => webhookBody() }],
+    });
+    await h.bus.call('routines:fire-now', h.ctx({ userId: 'u1' }), {
+      agentId: 'agt_a', path: '.ax/routines/r.md',
+      payload: { pr: { title: 'hello' } },
+    });
+    const k = new Kysely<RoutinesDatabase>({
+      dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString }) }),
+    });
+    try {
+      await vi.waitFor(async () => {
+        const fires = await k.selectFrom('routines_v1_fires').selectAll().execute();
+        expect(fires.length).toBeGreaterThanOrEqual(1);
+        const last = fires[fires.length - 1]!;
+        expect(last.rendered_prompt).toBe('PR: hello');
+      }, { timeout: 5_000, interval: 25 });
+    } finally {
+      await k.destroy();
+    }
+  });
 });
