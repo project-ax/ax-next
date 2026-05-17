@@ -1,6 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
-  makeAgentContext,
   type AgentContext,
   type HookBus,
   type ToolDescriptor,
