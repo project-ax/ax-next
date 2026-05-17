@@ -1,7 +1,7 @@
 import { sql, type Kysely } from 'kysely';
 import type { RoutinesDatabase } from './migrations.js';
 import type { TriggerSpec, ActiveHours } from '@ax/validator-routine';
-import type { FireSource, FireStatus, RoutineRow } from './types.js';
+import type { FireRow, FireSource, FireStatus, RoutineRow } from './types.js';
 
 export interface UpsertInput {
   agentId: string;
@@ -50,6 +50,7 @@ export interface RoutinesStore {
   claimDue(input: ClaimInput): Promise<RoutineRow[]>;
   advance(input: AdvanceInput): Promise<void>;
   recordFire(input: RecordFireInput): Promise<number>;
+  recentFires(input: { agentId: string; path: string; limit?: number }): Promise<FireRow[]>;
   list(input: { agentId?: string }): Promise<RoutineRow[]>;
   findOne(input: { agentId: string; path: string }): Promise<RoutineRow | null>;
 }
@@ -206,6 +207,29 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
         rendered_prompt: renderedPrompt,
       }).returning('id').executeTakeFirstOrThrow();
       return Number(row.id);
+    },
+
+    async recentFires(input) {
+      const limit = Math.min(100, Math.max(1, input.limit ?? 20));
+      const rows = await db
+        .selectFrom('routines_v1_fires')
+        .selectAll()
+        .where('agent_id', '=', input.agentId)
+        .where('path', '=', input.path)
+        .orderBy('fired_at', 'desc')
+        .limit(limit)
+        .execute();
+      return rows.map((r) => ({
+        id: Number(r.id),
+        agentId: r.agent_id,
+        path: r.path,
+        firedAt: r.fired_at,
+        triggerSource: r.trigger_source as FireSource,
+        conversationId: r.conversation_id,
+        status: r.status as FireStatus,
+        error: r.error,
+        renderedPrompt: r.rendered_prompt,
+      }));
     },
 
     async list(input) {

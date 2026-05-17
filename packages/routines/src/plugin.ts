@@ -8,7 +8,15 @@ import { systemClock, type Clock } from './clock.js';
 import { runTickLoop } from './tick.js';
 import { createFireRoutine, type PendingFires } from './fire.js';
 import { applySilenceLogic } from './silence.js';
-import type { RoutinesConfig, FireNowInput, FireNowOutput, ListInput, ListOutput } from './types.js';
+import type {
+  RoutinesConfig,
+  FireNowInput,
+  FireNowOutput,
+  ListInput,
+  ListOutput,
+  RecentFiresInput,
+  RecentFiresOutput,
+} from './types.js';
 
 const PLUGIN_NAME = '@ax/routines';
 
@@ -34,7 +42,7 @@ export function createRoutinesPlugin(
     manifest: {
       name: PLUGIN_NAME,
       version: '0.0.0',
-      registers: ['routines:fire-now', 'routines:list'],
+      registers: ['routines:fire-now', 'routines:list', 'routines:recent-fires'],
       calls: [
         'database:get-instance',
         'agents:resolve',
@@ -184,6 +192,14 @@ export function createRoutinesPlugin(
           if (input.agentId !== undefined) filter.agentId = input.agentId;
           const routines = await localStore.list(filter);
           return { routines };
+        },
+      );
+
+      bus.registerService<RecentFiresInput, RecentFiresOutput>(
+        'routines:recent-fires', PLUGIN_NAME,
+        async (_ctx, input) => {
+          const fires = await localStore.recentFires(input);
+          return { fires };
         },
       );
 

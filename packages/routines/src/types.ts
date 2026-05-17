@@ -53,6 +53,14 @@ export interface ListInput {
 export interface ListOutput {
   routines: RoutineRow[];
 }
+export interface RecentFiresInput {
+  agentId: string;
+  path: string;
+  limit?: number;
+}
+export interface RecentFiresOutput {
+  fires: FireRow[];
+}
 
 export interface RoutinesConfig {
   tickIntervalMs?: number;

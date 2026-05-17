@@ -156,3 +156,24 @@ describe('RoutinesStore.recordFire', () => {
     expect(row.rendered_prompt!.endsWith('…')).toBe(true);
   });
 });
+
+describe('RoutinesStore.recentFires', () => {
+  it('recentFires returns fires for one routine in fired_at DESC order, honors limit', async () => {
+    const store = createRoutinesStore(db);
+    await store.upsert(baseInput({
+      trigger: { kind: 'interval' as const, every: '60s' },
+    }));
+    for (let i = 0; i < 5; i += 1) {
+      await store.recordFire({
+        agentId: 'agt_a', path: '.ax/routines/r.md',
+        triggerSource: 'manual', conversationId: `cnv_${i}`,
+        status: 'ok', error: null, renderedPrompt: `prompt ${i}`,
+      });
+      await new Promise((r) => setTimeout(r, 5)); // ensure distinct fired_at
+    }
+    const out = await store.recentFires({ agentId: 'agt_a', path: '.ax/routines/r.md', limit: 3 });
+    expect(out).toHaveLength(3);
+    expect(out[0]!.renderedPrompt).toBe('prompt 4');
+    expect(out[2]!.renderedPrompt).toBe('prompt 2');
+  });
+});
