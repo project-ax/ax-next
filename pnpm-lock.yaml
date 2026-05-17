@@ -1809,6 +1809,9 @@ importers:
       '@ax/routines':
         specifier: workspace:*
         version: link:../../packages/routines
+      '@ax/routines-admin-routes':
+        specifier: workspace:*
+        version: link:../../packages/routines-admin-routes
       '@ax/sandbox-k8s':
         specifier: workspace:*
         version: link:../../packages/sandbox-k8s

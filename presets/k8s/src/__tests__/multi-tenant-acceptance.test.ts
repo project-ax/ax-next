@@ -134,6 +134,11 @@ const PLUGINS_TO_DROP = new Set<string>([
   // canary test in routines/__tests__; drop here so multi-tenant chat-path
   // canaries don't need postgres.
   '@ax/routines',
+  // Routines admin routes: depends on routines:* (just dropped) plus
+  // http:register-route + auth:require-user (also dropped). Drop here so
+  // the multi-tenant chat-path canary doesn't fail the kernel's topo-sort
+  // with unsatisfied calls.
+  '@ax/routines-admin-routes',
   // Attachments: postgres-backed (database:get-instance); no caller in
   // Phase 1 of the attachments subsystem (half-wired window open through
   // Phase 3). Static wiring pinned in preset.test.ts.

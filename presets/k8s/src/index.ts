@@ -12,6 +12,7 @@ import { auditLogPlugin } from '@ax/audit-log';
 import { createValidatorSkillPlugin } from '@ax/validator-skill';
 import { createValidatorRoutinePlugin } from '@ax/validator-routine';
 import { createRoutinesPlugin } from '@ax/routines';
+import { createRoutinesAdminRoutesPlugin } from '@ax/routines-admin-routes';
 import { createMcpClientPlugin, createToolDispatcherPlugin } from '@ax/mcp-client';
 import { createCredentialProxyPlugin } from '@ax/credential-proxy';
 import { createCredentialsPlugin } from '@ax/credentials';
@@ -491,6 +492,13 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   plugins.push(createValidatorSkillPlugin());
   plugins.push(createValidatorRoutinePlugin());
   plugins.push(createRoutinesPlugin());
+
+  // Phase D: admin routes for the Routines modal. Mounts /settings/routines/*
+  // against the same http listener. Loaded unconditionally alongside @ax/routines
+  // — there's no separate opt-in flag because the modal is the primary
+  // observability surface for routine fires, and the routines plugin itself
+  // is already unconditional in this preset.
+  plugins.push(createRoutinesAdminRoutesPlugin());
 
   // ----- 5. control-plane access (Week 9.5) -----------------------------
   // http-server provides the public-facing listener. auth registers the
