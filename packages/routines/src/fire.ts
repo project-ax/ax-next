@@ -7,6 +7,7 @@ export interface PendingFire {
   row: RoutineRow;
   conversationId: string;
   source: FireSource;
+  renderedPrompt: string;
   onTurnEnd: (turn: { contentBlocks?: unknown[] }) => Promise<void>;
 }
 export type PendingFires = Map<string, PendingFire>;
@@ -94,15 +95,18 @@ export function createFireRoutine(deps: FireDeps) {
       conversationId,
     });
 
-    deps.pending.set(reqId, {
-      row, conversationId, source,
-      onTurnEnd: async () => {},
-    });
-
+    // Phase D: render whenever payload is provided, regardless of source.
+    // fire-now can carry a payload with source='manual' (Task 2 plan).
     const prompt =
-      source === 'webhook' && payload !== undefined
+      payload !== undefined
         ? renderTemplate(row.promptBody, { payload })
         : row.promptBody;
+
+    deps.pending.set(reqId, {
+      row, conversationId, source,
+      renderedPrompt: prompt,
+      onTurnEnd: async () => {},
+    });
 
     void deps.bus.call('agent:invoke', fireCtx, {
       message: { role: 'user', content: prompt },

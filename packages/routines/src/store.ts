@@ -41,6 +41,7 @@ export interface RecordFireInput {
   conversationId: string | null;
   status: FireStatus;
   error: string | null;
+  renderedPrompt?: string | null;
 }
 
 export interface RoutinesStore {
@@ -189,6 +190,12 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
     },
 
     async recordFire(input) {
+      // L5: rendered prompt is post-substitution model-template output —
+      // cap at 64 KiB defense-in-depth at the write boundary.
+      const MAX = 64 * 1024;
+      const raw = input.renderedPrompt ?? null;
+      const renderedPrompt =
+        raw !== null && raw.length > MAX ? `${raw.slice(0, MAX - 1)}…` : raw;
       const row = await db.insertInto('routines_v1_fires').values({
         agent_id: input.agentId,
         path: input.path,
@@ -196,6 +203,7 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
         conversation_id: input.conversationId,
         status: input.status,
         error: input.error,
+        rendered_prompt: renderedPrompt,
       }).returning('id').executeTakeFirstOrThrow();
       return Number(row.id);
     },

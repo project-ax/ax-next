@@ -33,12 +33,14 @@ export interface FireRow {
   conversationId: string | null;
   status: FireStatus;
   error: string | null;
+  renderedPrompt: string | null;
 }
 
 export interface FireNowInput {
   agentId: string;
   path: string;
   source?: FireSource;
+  payload?: unknown;
 }
 export interface FireNowOutput {
   fireId: number;

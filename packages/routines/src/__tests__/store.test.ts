@@ -94,3 +94,65 @@ describe('RoutinesStore.upsert change-detection', () => {
     expect(r.changed).toBe(false);
   });
 });
+
+describe('RoutinesStore.recordFire', () => {
+  it('recordFire round-trips renderedPrompt', async () => {
+    const store = createRoutinesStore(db);
+    await store.upsert(baseInput({
+      trigger: { kind: 'interval' as const, every: '60s' },
+      promptBody: 'hi {{payload.x}}',
+    }));
+    const id = await store.recordFire({
+      agentId: 'agt_a', path: '.ax/routines/r.md',
+      triggerSource: 'manual',
+      conversationId: 'cnv_1',
+      status: 'ok', error: null,
+      renderedPrompt: 'hi world',
+    });
+    expect(id).toBeGreaterThan(0);
+    const row = await db
+      .selectFrom('routines_v1_fires')
+      .selectAll()
+      .where('id', '=', id)
+      .executeTakeFirstOrThrow();
+    expect(row.rendered_prompt).toBe('hi world');
+  });
+
+  it('recordFire stores null when renderedPrompt is omitted', async () => {
+    const store = createRoutinesStore(db);
+    await store.upsert(baseInput());
+    const id = await store.recordFire({
+      agentId: 'agt_a', path: '.ax/routines/r.md',
+      triggerSource: 'tick',
+      conversationId: null,
+      status: 'ok', error: null,
+    });
+    const row = await db
+      .selectFrom('routines_v1_fires')
+      .selectAll()
+      .where('id', '=', id)
+      .executeTakeFirstOrThrow();
+    expect(row.rendered_prompt).toBeNull();
+  });
+
+  it('recordFire truncates renderedPrompt above 64 KiB', async () => {
+    const store = createRoutinesStore(db);
+    await store.upsert(baseInput());
+    const huge = 'a'.repeat(64 * 1024 + 100);
+    const id = await store.recordFire({
+      agentId: 'agt_a', path: '.ax/routines/r.md',
+      triggerSource: 'manual',
+      conversationId: null,
+      status: 'ok', error: null,
+      renderedPrompt: huge,
+    });
+    const row = await db
+      .selectFrom('routines_v1_fires')
+      .selectAll()
+      .where('id', '=', id)
+      .executeTakeFirstOrThrow();
+    expect(row.rendered_prompt).not.toBeNull();
+    expect(row.rendered_prompt!.length).toBe(64 * 1024);
+    expect(row.rendered_prompt!.endsWith('…')).toBe(true);
+  });
+});
