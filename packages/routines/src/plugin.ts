@@ -223,14 +223,17 @@ export function createRoutinesPlugin(
             });
           }
           const source = input.source ?? 'manual';
-          const result = await fireRoutine(
-            row,
-            source === 'tick' ? 'tick' : 'manual',
-            input.payload,
-          );
+          // Normalize once so the executor and the audit row see the
+          // same value. A caller passing source='webhook' runs as
+          // manual; persisting raw `source` here would leave the
+          // fires_v1 audit trail saying "webhook" for a fire that the
+          // template engine actually ran as a manual.
+          const effectiveSource: 'tick' | 'manual' =
+            source === 'tick' ? 'tick' : 'manual';
+          const result = await fireRoutine(row, effectiveSource, input.payload);
           const fireId = await localStore.recordFire({
             agentId: row.agentId, path: row.path,
-            triggerSource: source,
+            triggerSource: effectiveSource,
             conversationId: result.conversationId ?? null,
             status: result.status,
             error: result.error,

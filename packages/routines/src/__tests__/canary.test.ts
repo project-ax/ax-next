@@ -664,9 +664,16 @@ describe('Phase C webhook canary — half-wired window closure', () => {
     });
     try {
       await vi.waitFor(async () => {
-        const fires = await k.selectFrom('routines_v1_fires').selectAll().execute();
-        expect(fires.length).toBeGreaterThanOrEqual(1);
-        const last = fires[fires.length - 1]!;
+        // SQL row order is not guaranteed without ORDER BY — explicitly
+        // pick the most-recently-inserted row by id DESC. Previous version
+        // happened to pass because postgres typically returns rows in
+        // insertion order on a single-process insert, but that's an
+        // implementation detail to lean on.
+        const last = await k
+          .selectFrom('routines_v1_fires')
+          .selectAll()
+          .orderBy('id', 'desc')
+          .executeTakeFirstOrThrow();
         expect(last.rendered_prompt).toBe('PR: hello');
       }, { timeout: 5_000, interval: 25 });
     } finally {
