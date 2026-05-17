@@ -1,5 +1,6 @@
 import {
   makeAgentContext,
+  PluginError,
   type AgentContext,
   type HookBus,
 } from '@ax/core';
@@ -60,10 +61,13 @@ function ctxForActor(actorId: string): AgentContext {
   });
 }
 
-/** True if `userId` can resolve `agentId`. `agents:resolve` already does the
- *  visibility/ACL check (owner OR team-member OR admin), so any thrown
- *  PluginError means "no, you can't see this agent". We swallow the error
- *  and return false — the caller writes the right HTTP status. */
+/** True if `userId` can resolve `agentId`. `agents:resolve` does the
+ *  visibility/ACL check (owner OR team-member OR admin); a 'forbidden' or
+ *  'not-found' PluginError means "no, you can't see this agent" and we
+ *  return false. Any OTHER error (e.g. 'unauthenticated', 'no-service',
+ *  'init-failed') means the bus or agents plugin is broken — we rethrow so
+ *  `writeServiceError` / the http-server's 500 handler can map it instead
+ *  of pretending it's a 403 and masking the real bug. */
 async function isOwnedBy(
   bus: HookBus,
   ctx: AgentContext,
@@ -77,8 +81,14 @@ async function isOwnedBy(
       { agentId, userId },
     );
     return true;
-  } catch {
-    return false;
+  } catch (err) {
+    if (
+      err instanceof PluginError &&
+      (err.code === 'forbidden' || err.code === 'not-found')
+    ) {
+      return false;
+    }
+    throw err;
   }
 }
 
@@ -157,11 +167,11 @@ export function createRoutinesAdminHandlers(
         return;
       }
       const ctx = ctxForActor(actor.id);
-      if (!(await isOwnedBy(deps.bus, ctx, agentId, actor.id))) {
-        res.status(403).json({ error: 'forbidden' });
-        return;
-      }
       try {
+        if (!(await isOwnedBy(deps.bus, ctx, agentId, actor.id))) {
+          res.status(403).json({ error: 'forbidden' });
+          return;
+        }
         const out = await deps.bus.call<
           { agentId: string; path: string; limit: number },
           RoutinesRecentFiresOutput
@@ -195,11 +205,11 @@ export function createRoutinesAdminHandlers(
         return;
       }
       const ctx = ctxForActor(actor.id);
-      if (!(await isOwnedBy(deps.bus, ctx, agentId, actor.id))) {
-        res.status(403).json({ error: 'forbidden' });
-        return;
-      }
       try {
+        if (!(await isOwnedBy(deps.bus, ctx, agentId, actor.id))) {
+          res.status(403).json({ error: 'forbidden' });
+          return;
+        }
         const input: {
           agentId: string;
           path: string;

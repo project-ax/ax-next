@@ -297,6 +297,87 @@ describe('routines-admin-routes', () => {
     await harness.close({ onError: () => {} });
   });
 
+  it('GET /settings/routines/:agentId/fires rethrows when agents:resolve fails with a non-ACL error', async () => {
+    // 'init-failed' is an infra failure, NOT an ACL denial. The route must
+    // surface it (rethrow past writeServiceError, which only maps
+    // forbidden / not-found / invalid-payload) rather than mask it as 403.
+    const { harness, handlers } = await makeHarnessWith({
+      resolveFailure: new PluginError({
+        code: 'init-failed',
+        plugin: 'test',
+        message: 'bus broken',
+      }),
+    });
+    const handler = handlers.get('/settings/routines/:agentId/fires')!;
+    const { res, captured } = makeRes();
+    await expect(
+      handler(
+        makeReq({
+          params: { agentId: 'agt_a' },
+          query: { path: '.ax/routines/r.md' },
+        }),
+        res,
+      ),
+    ).rejects.toThrow('bus broken');
+    // No HTTP response written by writeServiceError — 'init-failed' isn't in
+    // its mapped set, so it returns false and the handler rethrows. The
+    // http-server's 500 handler picks it up at the top level.
+    expect(captured.status).toBeUndefined();
+    await harness.close({ onError: () => {} });
+  });
+
+  it('POST /settings/routines/:agentId/fire rethrows when agents:resolve fails with a non-ACL error', async () => {
+    let fired = false;
+    const { harness, handlers } = await makeHarnessWith({
+      resolveFailure: new PluginError({
+        code: 'init-failed',
+        plugin: 'test',
+        message: 'bus broken',
+      }),
+      fireNow: async () => {
+        fired = true;
+        return { fireId: 1, status: 'ok', conversationId: null };
+      },
+    });
+    const handler = handlers.get('/settings/routines/:agentId/fire')!;
+    const { res, captured } = makeRes();
+    await expect(
+      handler(
+        makeReq({
+          params: { agentId: 'agt_a' },
+          body: Buffer.from(JSON.stringify({ path: '.ax/routines/r.md' })),
+        }),
+        res,
+      ),
+    ).rejects.toThrow('bus broken');
+    expect(captured.status).toBeUndefined();
+    expect(fired).toBe(false); // ACL gate ran first and faulted.
+    await harness.close({ onError: () => {} });
+  });
+
+  it('GET /settings/routines rethrows when agents:resolve fails with a non-ACL error during list filtering', async () => {
+    // The list handler runs isOwnedBy per routine. An infra failure on
+    // agents:resolve while filtering must bubble out, not silently drop the
+    // routine and return 200 with a partial list.
+    const { harness, handlers } = await makeHarnessWith({
+      routinesList: async () => ({
+        routines: [{ agentId: 'agt_a' }, { agentId: 'agt_b' }],
+      }),
+      resolveFailure: new PluginError({
+        code: 'no-service',
+        plugin: 'test',
+        message: 'agents plugin not loaded',
+      }),
+    });
+    const handler = handlers.get('/settings/routines')!;
+    const { res, captured } = makeRes();
+    await expect(handler(makeReq(), res)).rejects.toThrow(
+      'agents plugin not loaded',
+    );
+    expect(captured.status).toBeUndefined();
+    await harness.close({ onError: () => {} });
+  });
+
   it('POST /settings/routines/:agentId/fire rejects malformed body with 400', async () => {
     const { harness, handlers } = await makeHarnessWith({});
     const handler = handlers.get('/settings/routines/:agentId/fire')!;

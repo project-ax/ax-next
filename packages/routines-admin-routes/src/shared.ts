@@ -29,7 +29,7 @@ export interface RouteRequest {
   readonly body: Buffer;
   readonly cookies: Record<string, string>;
   readonly query: Record<string, string>;
-  /** Pattern-route capture for `/admin/credentials/:scope/:ownerId/:ref` etc. */
+  /** Pattern-route capture for `/settings/routines/:agentId/...` etc. */
   readonly params: Record<string, string>;
   signedCookie(name: string): string | null;
 }
