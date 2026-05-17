@@ -151,4 +151,41 @@ describe('conversations:create — Phase B freezing', () => {
     );
     expect(conv.runnerType).toBe('codex-cli');
   });
+
+  // Phase D (2026-05-17): routines pass `hidden: true` for per-fire
+  // conversations so they don't appear in the chat sidebar.
+  it('conversations:create respects optional hidden flag', async () => {
+    const h = await makeHarness({
+      agents: new Map([
+        ['agt_a', { id: 'agt_a', workspaceRef: 'wsp_demo' }],
+      ]),
+      defaultRunnerType: 'claude-sdk',
+    });
+    const conv = await h.bus.call<CreateInput, CreateOutput>(
+      'conversations:create',
+      h.ctx({ userId: 'u1' }),
+      {
+        userId: 'u1',
+        agentId: 'agt_a',
+        title: 'a hidden one',
+        hidden: true,
+      },
+    );
+    expect(conv.hidden).toBe(true);
+  });
+
+  it('conversations:create defaults hidden to false when omitted', async () => {
+    const h = await makeHarness({
+      agents: new Map([
+        ['agt_a', { id: 'agt_a', workspaceRef: 'wsp_demo' }],
+      ]),
+      defaultRunnerType: 'claude-sdk',
+    });
+    const conv = await h.bus.call<CreateInput, CreateOutput>(
+      'conversations:create',
+      h.ctx({ userId: 'u1' }),
+      { userId: 'u1', agentId: 'agt_a' },
+    );
+    expect(conv.hidden).toBe(false);
+  });
 });

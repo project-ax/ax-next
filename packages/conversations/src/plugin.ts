@@ -550,6 +550,11 @@ async function createConversation(
     title,
     runnerType: cfg.defaultRunnerType,
     workspaceRef,
+    // Phase D (2026-05-17): routines call with `hidden: true` for
+    // per-fire conversations. Default false at this layer matches the
+    // store contract — document it here alongside the file's other ??
+    // patterns.
+    hidden: input.hidden ?? false,
   });
   return conv;
 }
@@ -976,6 +981,8 @@ async function findOrCreateConversation(
       title,
       runnerType: cfg.defaultRunnerType,
       workspaceRef,
+      // Phase D (2026-05-17): see createConversation for rationale.
+      hidden: input.fallback.hidden ?? false,
     },
   });
   return result;

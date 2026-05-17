@@ -197,6 +197,24 @@ describe('conversations:find-or-create (Phase A routines foundation)', () => {
     expect(second.conversation.conversationId).not.toBe(first.conversation.conversationId);
   });
 
+  // Phase D (2026-05-17): routines pass `hidden: true` via fallback for
+  // per-fire conversations on the create branch.
+  it('conversations:find-or-create respects optional hidden flag on create branch', async () => {
+    const h = await makeHarness();
+    const result = await h.bus.call<FindOrCreateInput, FindOrCreateOutput>(
+      'conversations:find-or-create',
+      h.ctx({ userId: 'u1' }),
+      {
+        userId: 'u1',
+        agentId: 'agt_a',
+        externalKey: 'routine:x',
+        fallback: { title: 'shared', hidden: true },
+      },
+    );
+    expect(result.created).toBe(true);
+    expect(result.conversation.hidden).toBe(true);
+  });
+
   it('agents:resolve denial throws forbidden', async () => {
     const h = await makeHarness({ resolveOk: false });
     await expect(

@@ -176,6 +176,12 @@ export interface ConversationStoreCreateArgs {
    * key) lookup handle. NULL for non-routine conversations.
    */
   externalKey?: string | null;
+  /**
+   * Phase D (2026-05-17). When true, the new row is created with
+   * `hidden = true` so it does not appear in chat-sidebar list queries
+   * (routine per-fire conversations). Defaults to `false`.
+   */
+  hidden?: boolean;
 }
 
 /**
@@ -397,7 +403,7 @@ export function createConversationStore(
       return rows.map(rowToConversation);
     },
 
-    async create({ userId, agentId, title, runnerType, workspaceRef, externalKey }) {
+    async create({ userId, agentId, title, runnerType, workspaceRef, externalKey, hidden }) {
       const id = mintConversationId();
       const now = new Date();
       const row = await db
@@ -418,9 +424,10 @@ export function createConversationStore(
           last_activity_at: null,
           // Phase A: external_key for routines find-or-create lookup.
           external_key: externalKey ?? null,
-          // hidden defaults to false via the column DEFAULT; supply it
-          // explicitly so Kysely's non-nullable type check is satisfied.
-          hidden: false,
+          // Phase D (2026-05-17): routines pass `hidden: true` for
+          // per-fire conversations. Defaults to false; the column DEFAULT
+          // matches, but supply explicitly for Kysely's non-nullable check.
+          hidden: hidden ?? false,
           deleted_at: null,
           created_at: now,
           updated_at: now,
@@ -646,9 +653,9 @@ export function createConversationStore(
           workspace_ref: fallback.workspaceRef ?? null,
           last_activity_at: null,
           external_key: externalKey,
-          // hidden defaults to false via the column DEFAULT; supply it
-          // explicitly so Kysely's non-nullable type check is satisfied.
-          hidden: false,
+          // Phase D (2026-05-17): routines pass `hidden: true` for
+          // per-fire conversations. Defaults to false.
+          hidden: fallback.hidden ?? false,
           deleted_at: null,
           created_at: now,
           updated_at: now,

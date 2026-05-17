@@ -110,6 +110,12 @@ export interface CreateInput {
   agentId: string;
   /** Optional title — MVP leaves it null. */
   title?: string | null;
+  /**
+   * Phase D (2026-05-17). Routine per-fire conversations create with
+   * `hidden: true` so they don't appear in the chat sidebar. Defaults
+   * to `false`.
+   */
+  hidden?: boolean;
 }
 export type CreateOutput = Conversation;
 
@@ -375,6 +381,8 @@ export interface FindOrCreateInput {
   externalKey: string;
   fallback: {
     title?: string | null;
+    /** Phase D: see CreateInput.hidden. */
+    hidden?: boolean;
   };
 }
 export interface FindOrCreateOutput {
