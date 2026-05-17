@@ -27,6 +27,7 @@
     "@anthropic-ai/claude-agent-sdk": "0.2.119",
     "@ax/credential-proxy-bridge": "workspace:*",
     "@ax/ipc-protocol": "workspace:*",
+    "@ax/tool-artifact-publish": "workspace:*",
     "undici": "^6.25.0",
     "zod": "^3.23.8"
   },

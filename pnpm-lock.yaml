@@ -68,6 +68,9 @@ importers:
       '@ax/ipc-protocol':
         specifier: workspace:*
         version: link:../ipc-protocol
+      '@ax/tool-artifact-publish':
+        specifier: workspace:*
+        version: link:../tool-artifact-publish
       undici:
         specifier: ^6.25.0
         version: 6.25.0
