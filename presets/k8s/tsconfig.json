@@ -40,6 +40,7 @@
     { "path": "../../packages/onboarding" },
     { "path": "../../packages/validator-routine" },
     { "path": "../../packages/validator-skill" },
-    { "path": "../../packages/routines" }
+    { "path": "../../packages/routines" },
+    { "path": "../../packages/routines-admin-routes" }
   ]
 }
