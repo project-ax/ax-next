@@ -46,6 +46,7 @@
     "@ax/memory-strata-index-postgres": "workspace:*",
     "@ax/onboarding": "workspace:*",
     "@ax/routines": "workspace:*",
+    "@ax/routines-admin-routes": "workspace:*",
     "@ax/sandbox-k8s": "workspace:*",
     "@ax/session-postgres": "workspace:*",
     "@ax/static-files": "workspace:*",

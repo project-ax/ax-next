@@ -1,7 +1,7 @@
 import { sql, type Kysely } from 'kysely';
 import type { RoutinesDatabase } from './migrations.js';
 import type { TriggerSpec, ActiveHours } from '@ax/validator-routine';
-import type { FireSource, FireStatus, RoutineRow } from './types.js';
+import type { FireRow, FireSource, FireStatus, RoutineRow } from './types.js';
 
 export interface UpsertInput {
   agentId: string;
@@ -41,6 +41,7 @@ export interface RecordFireInput {
   conversationId: string | null;
   status: FireStatus;
   error: string | null;
+  renderedPrompt?: string | null;
 }
 
 export interface RoutinesStore {
@@ -49,8 +50,37 @@ export interface RoutinesStore {
   claimDue(input: ClaimInput): Promise<RoutineRow[]>;
   advance(input: AdvanceInput): Promise<void>;
   recordFire(input: RecordFireInput): Promise<number>;
+  recentFires(input: { agentId: string; path: string; limit?: number }): Promise<FireRow[]>;
   list(input: { agentId?: string }): Promise<RoutineRow[]>;
   findOne(input: { agentId: string; path: string }): Promise<RoutineRow | null>;
+}
+
+/**
+ * Truncate `value` to at most `maxBytes` UTF-8 bytes (including a
+ * trailing ellipsis). Uses TextEncoder.encode() length so multibyte
+ * content (CJK, emoji) doesn't sneak past the cap. Binary-searches the
+ * code-unit cut point; correct for surrogate pairs because slice() on
+ * a string never splits a pair when called at a non-low-surrogate
+ * position — and the binary search converges on a value where the
+ * encoded length is <= maxBytes, so any split that would have produced
+ * an unpaired surrogate is naturally rejected.
+ *
+ * Edge case: if maxBytes < 3 (smaller than the UTF-8 ellipsis itself),
+ * return empty string. In practice MAX is 64 KiB so this never triggers,
+ * but the guard keeps the function robust.
+ */
+function truncateUtf8(value: string, maxBytes: number): string {
+  const enc = new TextEncoder();
+  if (enc.encode(value).length <= maxBytes) return value;
+  if (maxBytes < 3) return '';
+  let lo = 0;
+  let hi = value.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (enc.encode(`${value.slice(0, mid)}…`).length <= maxBytes) lo = mid;
+    else hi = mid - 1;
+  }
+  return `${value.slice(0, lo)}…`;
 }
 
 function rowToRoutine(row: {
@@ -189,6 +219,14 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
     },
 
     async recordFire(input) {
+      // L5: rendered prompt is post-substitution model-template output —
+      // cap at 64 KiB defense-in-depth at the write boundary. The cap is
+      // BYTES, not chars: code-unit-based truncation lets UTF-8 multibyte
+      // content (CJK, emoji) sneak past the limit since one JS char can
+      // be 3-4 bytes after encoding.
+      const MAX = 64 * 1024;
+      const raw = input.renderedPrompt ?? null;
+      const renderedPrompt = raw !== null ? truncateUtf8(raw, MAX) : null;
       const row = await db.insertInto('routines_v1_fires').values({
         agent_id: input.agentId,
         path: input.path,
@@ -196,8 +234,32 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
         conversation_id: input.conversationId,
         status: input.status,
         error: input.error,
+        rendered_prompt: renderedPrompt,
       }).returning('id').executeTakeFirstOrThrow();
       return Number(row.id);
+    },
+
+    async recentFires(input) {
+      const limit = Math.min(100, Math.max(1, input.limit ?? 20));
+      const rows = await db
+        .selectFrom('routines_v1_fires')
+        .selectAll()
+        .where('agent_id', '=', input.agentId)
+        .where('path', '=', input.path)
+        .orderBy('fired_at', 'desc')
+        .limit(limit)
+        .execute();
+      return rows.map((r) => ({
+        id: Number(r.id),
+        agentId: r.agent_id,
+        path: r.path,
+        firedAt: r.fired_at,
+        triggerSource: r.trigger_source as FireSource,
+        conversationId: r.conversation_id,
+        status: r.status as FireStatus,
+        error: r.error,
+        renderedPrompt: r.rendered_prompt,
+      }));
     },
 
     async list(input) {

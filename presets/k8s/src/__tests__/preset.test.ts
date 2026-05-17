@@ -163,6 +163,7 @@ describe('@ax/preset-k8s wiring', () => {
         '@ax/mcp-client',
         '@ax/onboarding',
         '@ax/routines',
+        '@ax/routines-admin-routes',
         '@ax/sandbox-k8s',
         '@ax/session-postgres',
         '@ax/storage-postgres',
@@ -420,6 +421,7 @@ describe('@ax/preset-k8s — routines Phase B core (half-wired window closes her
     const plugins = createK8sPlugins(stubConfig);
     const names = plugins.map((p) => p.manifest.name);
     expect(names).toContain('@ax/routines');
+    expect(names).toContain('@ax/routines-admin-routes');
     expect(names).toContain('@ax/validator-routine');
   });
 

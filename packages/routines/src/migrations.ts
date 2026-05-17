@@ -31,6 +31,7 @@ export interface RoutinesFiresRow {
   conversation_id: string | null;
   status: 'ok' | 'silenced' | 'error';
   error: string | null;
+  rendered_prompt: string | null;
 }
 
 export interface RoutinesDatabase {
@@ -86,5 +87,10 @@ export async function runRoutinesMigration(db: Kysely<RoutinesDatabase>): Promis
   await sql`
     CREATE INDEX IF NOT EXISTS routines_v1_fires_by_routine
       ON routines_v1_fires (agent_id, path, fired_at DESC)
+  `.execute(db);
+
+  await sql`
+    ALTER TABLE routines_v1_fires
+      ADD COLUMN IF NOT EXISTS rendered_prompt TEXT
   `.execute(db);
 }

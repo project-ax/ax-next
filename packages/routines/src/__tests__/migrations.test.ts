@@ -74,4 +74,14 @@ describe('runRoutinesMigration', () => {
     await runRoutinesMigration(db);
     await runRoutinesMigration(db);
   });
+
+  it('adds rendered_prompt column to routines_v1_fires', async () => {
+    await runRoutinesMigration(db);
+    const cols = await sql<{ column_name: string }>`
+      SELECT column_name FROM information_schema.columns
+       WHERE table_name = 'routines_v1_fires'
+    `.execute(db);
+    const names = cols.rows.map((r) => r.column_name);
+    expect(names).toContain('rendered_prompt');
+  });
 });

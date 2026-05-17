@@ -148,6 +148,12 @@ const PLUGINS_TO_DROP = new Set<string>([
   // canary test in routines/__tests__ against a real testcontainer; drop
   // here so the chat-path canaries don't need postgres.
   '@ax/routines',
+  // Routines admin routes: declares routines:list / routines:recent-fires /
+  // routines:fire-now as calls — all satisfied only by @ax/routines, which
+  // we just dropped. Also requires http:register-route + auth:require-user,
+  // both dropped above. Drop here so the chat-path canaries don't fail the
+  // kernel's topo-sort with unsatisfied calls.
+  '@ax/routines-admin-routes',
   // Attachments: postgres-backed (database:get-instance) and not exercised
   // by any of these canaries — Phase 1 of the attachments subsystem has no
   // caller yet (half-wired window open through Phase 3). The static hook

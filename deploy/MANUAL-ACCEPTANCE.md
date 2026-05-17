@@ -905,6 +905,95 @@ direct DB query.
 # a future admin UI will provide a rotate button.
 ```
 
+## Scenario: Observe + manually fire a routine (Phase D)
+
+Validates the Routines modal + heartbeat seed end-to-end against
+`ax-next-dev`. This is the Phase D companion to the Phase C webhook
+scenario above — same cluster, same auth path; just observability +
+manual fire.
+
+### Prerequisites
+
+- Image rebuilt from current `main`. **Use `--no-cache`** when in doubt
+  — runner-side caching has bitten Phase B/C before. (Phase D doesn't
+  touch the runner, but the discipline applies to the host image too.)
+- Host pod rolled out; port-forward on 9090.
+- Goldenpath wizard already walked (a bootstrap admin exists).
+
+### Steps
+
+1. Sign in via the admin user (Phase C scenario's session works fine).
+2. Create a fresh agent via the chat sidebar's "New agent" flow (or
+   the admin UI's agent panel). Use displayName `phase-d-agent`.
+3. Within ~2 seconds, confirm `routines_v1_definitions` got a row for
+   the new agent at `.ax/routines/heartbeat.md`:
+
+   ```bash
+   POD=$(kubectl get pod -n ax-next -l app.kubernetes.io/name=postgresql -o jsonpath='{.items[0].metadata.name}')
+   PASS=$(kubectl get secret -n ax-next ax-next-postgresql -o jsonpath='{.data.postgres-password}' | base64 -d)
+   kubectl exec -n ax-next $POD -- env PGPASSWORD=$PASS \
+     psql -U postgres -d ax_next -c \
+     "SELECT agent_id, path, name FROM routines_v1_definitions WHERE path = '.ax/routines/heartbeat.md';"
+   ```
+
+   Expected: one row per agent ever created (including the new one).
+
+4. Click the avatar dropdown at the bottom-left of the sidebar →
+   **Routines**. The Routines modal opens. The new agent's heartbeat
+   appears as a row with last-status `—`, last-run `never`, trigger
+   chip `interval 24h`.
+5. Click **Fire now** on the heartbeat row. Within a few seconds:
+   - The row's last-status flips to `silenced` (heartbeat's
+     `silenceToken: HEARTBEAT_OK` triggers the silence path).
+   - Expand the row → one fire row appears with timestamp, status
+     `silenced`, triggerSource `manual`, and the rendered prompt
+     body visible (the heartbeat template's body verbatim — no
+     `{{payload.*}}` substitutions since this is a manual fire
+     without payload).
+6. Confirm the heartbeat's per-fire conversation is **not** in the
+   chat sidebar's session list. Verify the row exists in
+   `conversations_v1_conversations` with `hidden=t`:
+
+   ```bash
+   kubectl exec -n ax-next $POD -- env PGPASSWORD=$PASS \
+     psql -U postgres -d ax_next -c \
+     "SELECT conversation_id, hidden FROM conversations_v1_conversations WHERE title LIKE 'heartbeat @%' ORDER BY created_at DESC LIMIT 3;"
+   ```
+
+   Expected: `hidden | t` on each row.
+
+7. **Webhook payload variant (optional).** In a chat with
+   `phase-d-agent`, ask the agent to create
+   `.ax/routines/payload-test.md` with a webhook trigger
+   (`trigger.kind: webhook`, `trigger.path: "/payload-test"`) and a
+   prompt body of `received: {{payload.foo}}`. In the Routines modal,
+   click **Fire now** on that row → JSON form opens → paste
+   `{"foo": "bar"}` → Submit. Confirm the resulting fire row's
+   `renderedPrompt` is `received: bar`.
+
+### Acceptance criteria
+
+- New agent triggers heartbeat seed; `routines_v1_definitions` gains
+  a heartbeat row within 2 seconds.
+- Routines modal lists the new heartbeat with the trigger chip and
+  `—` / never.
+- Fire now on the heartbeat produces a `silenced` row visible in the
+  expanded panel, with `renderedPrompt` populated.
+- The fire's conversation is hidden from the chat sidebar (`hidden=t`
+  in DB).
+- (Optional) Webhook Fire now with payload renders the template into
+  `renderedPrompt` correctly.
+
+### Cleanup
+
+```bash
+# The new agent + its workspace remain — they're cheap. Delete them
+# via the admin UI if a clean slate is wanted.
+# The seeded heartbeat.md is part of the agent's workspace; deleting
+# the agent drops it. The agent's webhook_token (lazy-generated)
+# also goes with it.
+```
+
 ## When this passes, do
 1. Update the PR description's acceptance section with the date + cluster
    used + a copy of the `psql` count outputs.

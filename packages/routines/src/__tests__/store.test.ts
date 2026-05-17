@@ -94,3 +94,115 @@ describe('RoutinesStore.upsert change-detection', () => {
     expect(r.changed).toBe(false);
   });
 });
+
+describe('RoutinesStore.recordFire', () => {
+  it('recordFire round-trips renderedPrompt', async () => {
+    const store = createRoutinesStore(db);
+    await store.upsert(baseInput({
+      trigger: { kind: 'interval' as const, every: '60s' },
+      promptBody: 'hi {{payload.x}}',
+    }));
+    const id = await store.recordFire({
+      agentId: 'agt_a', path: '.ax/routines/r.md',
+      triggerSource: 'manual',
+      conversationId: 'cnv_1',
+      status: 'ok', error: null,
+      renderedPrompt: 'hi world',
+    });
+    expect(id).toBeGreaterThan(0);
+    const row = await db
+      .selectFrom('routines_v1_fires')
+      .selectAll()
+      .where('id', '=', id)
+      .executeTakeFirstOrThrow();
+    expect(row.rendered_prompt).toBe('hi world');
+  });
+
+  it('recordFire stores null when renderedPrompt is omitted', async () => {
+    const store = createRoutinesStore(db);
+    await store.upsert(baseInput());
+    const id = await store.recordFire({
+      agentId: 'agt_a', path: '.ax/routines/r.md',
+      triggerSource: 'tick',
+      conversationId: null,
+      status: 'ok', error: null,
+    });
+    const row = await db
+      .selectFrom('routines_v1_fires')
+      .selectAll()
+      .where('id', '=', id)
+      .executeTakeFirstOrThrow();
+    expect(row.rendered_prompt).toBeNull();
+  });
+
+  it('recordFire truncates renderedPrompt above 64 KiB (ASCII)', async () => {
+    const store = createRoutinesStore(db);
+    await store.upsert(baseInput());
+    const huge = 'a'.repeat(64 * 1024 + 100);
+    const id = await store.recordFire({
+      agentId: 'agt_a', path: '.ax/routines/r.md',
+      triggerSource: 'manual',
+      conversationId: null,
+      status: 'ok', error: null,
+      renderedPrompt: huge,
+    });
+    const row = await db
+      .selectFrom('routines_v1_fires')
+      .selectAll()
+      .where('id', '=', id)
+      .executeTakeFirstOrThrow();
+    expect(row.rendered_prompt).not.toBeNull();
+    expect(new TextEncoder().encode(row.rendered_prompt!).length)
+      .toBeLessThanOrEqual(64 * 1024);
+    expect(row.rendered_prompt!.endsWith('…')).toBe(true);
+  });
+
+  it('recordFire truncates renderedPrompt by BYTES not chars (UTF-8 multibyte)', async () => {
+    // A string of CJK/emoji chars whose CODE-UNIT length stays under
+    // 64 KiB but whose UTF-8 BYTE length explodes past it. The old
+    // truncation (`raw.length > MAX`) would have passed this through
+    // unmodified, producing a multi-hundred-KiB row.
+    const store = createRoutinesStore(db);
+    await store.upsert(baseInput());
+    // '日' is 3 bytes in UTF-8. 30k chars = 90k bytes — well over 64 KiB.
+    const huge = '日'.repeat(30_000);
+    expect(huge.length).toBeLessThan(64 * 1024); // pre-condition
+    const id = await store.recordFire({
+      agentId: 'agt_a', path: '.ax/routines/r.md',
+      triggerSource: 'manual',
+      conversationId: null,
+      status: 'ok', error: null,
+      renderedPrompt: huge,
+    });
+    const row = await db
+      .selectFrom('routines_v1_fires')
+      .selectAll()
+      .where('id', '=', id)
+      .executeTakeFirstOrThrow();
+    expect(row.rendered_prompt).not.toBeNull();
+    expect(new TextEncoder().encode(row.rendered_prompt!).length)
+      .toBeLessThanOrEqual(64 * 1024);
+    expect(row.rendered_prompt!.endsWith('…')).toBe(true);
+  });
+});
+
+describe('RoutinesStore.recentFires', () => {
+  it('recentFires returns fires for one routine in fired_at DESC order, honors limit', async () => {
+    const store = createRoutinesStore(db);
+    await store.upsert(baseInput({
+      trigger: { kind: 'interval' as const, every: '60s' },
+    }));
+    for (let i = 0; i < 5; i += 1) {
+      await store.recordFire({
+        agentId: 'agt_a', path: '.ax/routines/r.md',
+        triggerSource: 'manual', conversationId: `cnv_${i}`,
+        status: 'ok', error: null, renderedPrompt: `prompt ${i}`,
+      });
+      await new Promise((r) => setTimeout(r, 5)); // ensure distinct fired_at
+    }
+    const out = await store.recentFires({ agentId: 'agt_a', path: '.ax/routines/r.md', limit: 3 });
+    expect(out).toHaveLength(3);
+    expect(out[0]!.renderedPrompt).toBe('prompt 4');
+    expect(out[2]!.renderedPrompt).toBe('prompt 2');
+  });
+});

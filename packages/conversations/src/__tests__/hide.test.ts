@@ -128,6 +128,24 @@ describe('conversations:hide (Phase A routines foundation)', () => {
     expect(got.conversation.hidden).toBe(false);
   });
 
+  it('conversations:create rejects non-boolean `hidden` with invalid-payload', async () => {
+    const h = await makeHarness();
+    await expect(
+      h.bus.call<CreateInput, CreateOutput>(
+        'conversations:create',
+        h.ctx({ userId: 'u1' }),
+        {
+          userId: 'u1',
+          agentId: 'agt_a',
+          // Cast through unknown so TS doesn't reject the test input —
+          // this is exactly the kind of payload an external HTTP caller
+          // could send.
+          hidden: 'true' as unknown as boolean,
+        },
+      ),
+    ).rejects.toMatchObject({ code: 'invalid-payload' });
+  });
+
   it('hidden conversations are excluded from conversations:list', async () => {
     const h = await makeHarness();
     const visible = await h.bus.call<CreateInput, CreateOutput>(

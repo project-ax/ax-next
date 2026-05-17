@@ -65,6 +65,27 @@ export function validateTitle(value: unknown): string | null {
   return value;
 }
 
+/**
+ * Reject a non-boolean, non-undefined value for an optional boolean field.
+ * Caller passes `field` so the error message points at the right key.
+ *
+ * Used for `hidden` on createConversation / findOrCreateConversation —
+ * without this check a stray `hidden: "true"` or `hidden: 1` from an
+ * external caller surfaces as a less-helpful "invalid input syntax for
+ * type boolean" error from postgres at INSERT time. Validating at the
+ * boundary keeps the error close to the field.
+ */
+export function validateOptionalBoolean(
+  value: unknown,
+  field: string,
+): boolean | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'boolean') {
+    throw invalid(`${field} must be a boolean if provided`);
+  }
+  return value;
+}
+
 export function validateRole(value: unknown): TurnRole {
   if (typeof value !== 'string' || !VALID_ROLES.has(value as TurnRole)) {
     throw invalid("role must be 'user', 'assistant', or 'tool'");
@@ -176,6 +197,12 @@ export interface ConversationStoreCreateArgs {
    * key) lookup handle. NULL for non-routine conversations.
    */
   externalKey?: string | null;
+  /**
+   * Phase D (2026-05-17). When true, the new row is created with
+   * `hidden = true` so it does not appear in chat-sidebar list queries
+   * (routine per-fire conversations). Defaults to `false`.
+   */
+  hidden?: boolean;
 }
 
 /**
@@ -397,7 +424,7 @@ export function createConversationStore(
       return rows.map(rowToConversation);
     },
 
-    async create({ userId, agentId, title, runnerType, workspaceRef, externalKey }) {
+    async create({ userId, agentId, title, runnerType, workspaceRef, externalKey, hidden }) {
       const id = mintConversationId();
       const now = new Date();
       const row = await db
@@ -418,9 +445,10 @@ export function createConversationStore(
           last_activity_at: null,
           // Phase A: external_key for routines find-or-create lookup.
           external_key: externalKey ?? null,
-          // hidden defaults to false via the column DEFAULT; supply it
-          // explicitly so Kysely's non-nullable type check is satisfied.
-          hidden: false,
+          // Phase D (2026-05-17): routines pass `hidden: true` for
+          // per-fire conversations. Defaults to false; the column DEFAULT
+          // matches, but supply explicitly for Kysely's non-nullable check.
+          hidden: hidden ?? false,
           deleted_at: null,
           created_at: now,
           updated_at: now,
@@ -646,9 +674,9 @@ export function createConversationStore(
           workspace_ref: fallback.workspaceRef ?? null,
           last_activity_at: null,
           external_key: externalKey,
-          // hidden defaults to false via the column DEFAULT; supply it
-          // explicitly so Kysely's non-nullable type check is satisfied.
-          hidden: false,
+          // Phase D (2026-05-17): routines pass `hidden: true` for
+          // per-fire conversations. Defaults to false.
+          hidden: fallback.hidden ?? false,
           deleted_at: null,
           created_at: now,
           updated_at: now,

@@ -7,6 +7,7 @@ export interface PendingFire {
   row: RoutineRow;
   conversationId: string;
   source: FireSource;
+  renderedPrompt: string;
   onTurnEnd: (turn: { contentBlocks?: unknown[] }) => Promise<void>;
 }
 export type PendingFires = Map<string, PendingFire>;
@@ -50,7 +51,12 @@ export function createFireRoutine(deps: FireDeps) {
       >('agents:resolve', baseCtx, { agentId: row.agentId, userId: row.authorUserId });
     } catch (err) {
       if (err instanceof PluginError) {
-        return { status: 'error', error: `${err.code}: ${err.message}`, conversationId: null };
+        return {
+          status: 'error',
+          error: `${err.code}: ${err.message}`,
+          conversationId: null,
+          renderedPrompt: null,
+        };
       }
       throw err;
     }
@@ -65,7 +71,7 @@ export function createFireRoutine(deps: FireDeps) {
           userId: row.authorUserId,
           agentId: row.agentId,
           externalKey: row.path,
-          fallback: { title: row.name },
+          fallback: { title: row.name, hidden: true },
         });
         conversationId = out.conversation.conversationId;
       } else {
@@ -76,12 +82,18 @@ export function createFireRoutine(deps: FireDeps) {
           userId: row.authorUserId,
           agentId: row.agentId,
           title: `${row.name} @ ${new Date().toISOString()}`,
+          hidden: true,
         });
         conversationId = conv.conversationId;
       }
     } catch (err) {
       if (err instanceof PluginError) {
-        return { status: 'error', error: `${err.code}: ${err.message}`, conversationId: null };
+        return {
+          status: 'error',
+          error: `${err.code}: ${err.message}`,
+          conversationId: null,
+          renderedPrompt: null,
+        };
       }
       throw err;
     }
@@ -94,15 +106,18 @@ export function createFireRoutine(deps: FireDeps) {
       conversationId,
     });
 
-    deps.pending.set(reqId, {
-      row, conversationId, source,
-      onTurnEnd: async () => {},
-    });
-
+    // Phase D: render whenever payload is provided, regardless of source.
+    // fire-now can carry a payload with source='manual' (Task 2 plan).
     const prompt =
-      source === 'webhook' && payload !== undefined
+      payload !== undefined
         ? renderTemplate(row.promptBody, { payload })
         : row.promptBody;
+
+    deps.pending.set(reqId, {
+      row, conversationId, source,
+      renderedPrompt: prompt,
+      onTurnEnd: async () => {},
+    });
 
     void deps.bus.call('agent:invoke', fireCtx, {
       message: { role: 'user', content: prompt },
@@ -116,6 +131,6 @@ export function createFireRoutine(deps: FireDeps) {
       }
     });
 
-    return { status: 'ok', conversationId, error: null };
+    return { status: 'ok', conversationId, error: null, renderedPrompt: prompt };
   };
 }

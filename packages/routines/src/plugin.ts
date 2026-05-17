@@ -8,7 +8,16 @@ import { systemClock, type Clock } from './clock.js';
 import { runTickLoop } from './tick.js';
 import { createFireRoutine, type PendingFires } from './fire.js';
 import { applySilenceLogic } from './silence.js';
-import type { RoutinesConfig, FireNowInput, FireNowOutput, ListInput, ListOutput } from './types.js';
+import { createSeedHeartbeatSubscriber } from './seed-heartbeat.js';
+import type {
+  RoutinesConfig,
+  FireNowInput,
+  FireNowOutput,
+  ListInput,
+  ListOutput,
+  RecentFiresInput,
+  RecentFiresOutput,
+} from './types.js';
 
 const PLUGIN_NAME = '@ax/routines';
 
@@ -34,7 +43,7 @@ export function createRoutinesPlugin(
     manifest: {
       name: PLUGIN_NAME,
       version: '0.0.0',
-      registers: ['routines:fire-now', 'routines:list'],
+      registers: ['routines:fire-now', 'routines:list', 'routines:recent-fires'],
       calls: [
         'database:get-instance',
         'agents:resolve',
@@ -47,8 +56,9 @@ export function createRoutinesPlugin(
         'agent:invoke',
         'credentials:get',
         'http:register-route',
+        'workspace:apply',
       ],
-      subscribes: ['workspace:applied', 'chat:turn-end', 'agents:webhook-token-rotated'],
+      subscribes: ['workspace:applied', 'chat:turn-end', 'agents:webhook-token-rotated', 'agents:created'],
     },
     async init({ bus }) {
       const initCtx = makeAgentContext({
@@ -158,6 +168,7 @@ export function createRoutinesPlugin(
               triggerSource: pf.source,
               conversationId: pf.conversationId,
               status: 'silenced', error: null,
+              renderedPrompt: pf.renderedPrompt,
             });
           } else {
             await localStore.recordFire({
@@ -165,6 +176,7 @@ export function createRoutinesPlugin(
               triggerSource: pf.source,
               conversationId: pf.conversationId,
               status: 'ok', error: null,
+              renderedPrompt: pf.renderedPrompt,
             });
           }
         } catch (err) {
@@ -175,6 +187,11 @@ export function createRoutinesPlugin(
         return undefined;
       });
 
+      bus.subscribe<{ agentId: string; ownerId: string; ownerType: 'user' | 'team' }>(
+        'agents:created', PLUGIN_NAME,
+        createSeedHeartbeatSubscriber({ bus }),
+      );
+
       bus.registerService<ListInput, ListOutput>(
         'routines:list', PLUGIN_NAME,
         async (_ctx, input) => {
@@ -182,6 +199,14 @@ export function createRoutinesPlugin(
           if (input.agentId !== undefined) filter.agentId = input.agentId;
           const routines = await localStore.list(filter);
           return { routines };
+        },
+      );
+
+      bus.registerService<RecentFiresInput, RecentFiresOutput>(
+        'routines:recent-fires', PLUGIN_NAME,
+        async (_ctx, input) => {
+          const fires = await localStore.recentFires(input);
+          return { fires };
         },
       );
 
@@ -198,13 +223,21 @@ export function createRoutinesPlugin(
             });
           }
           const source = input.source ?? 'manual';
-          const result = await fireRoutine(row, source === 'tick' ? 'tick' : 'manual');
+          // Normalize once so the executor and the audit row see the
+          // same value. A caller passing source='webhook' runs as
+          // manual; persisting raw `source` here would leave the
+          // fires_v1 audit trail saying "webhook" for a fire that the
+          // template engine actually ran as a manual.
+          const effectiveSource: 'tick' | 'manual' =
+            source === 'tick' ? 'tick' : 'manual';
+          const result = await fireRoutine(row, effectiveSource, input.payload);
           const fireId = await localStore.recordFire({
             agentId: row.agentId, path: row.path,
-            triggerSource: source,
+            triggerSource: effectiveSource,
             conversationId: result.conversationId ?? null,
             status: result.status,
             error: result.error,
+            renderedPrompt: result.renderedPrompt,
           });
           return {
             fireId,

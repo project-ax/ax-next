@@ -10,7 +10,7 @@
  * checks `role === 'admin'` regardless of menu visibility.
  */
 import { useEffect, useRef, useState } from 'react';
-import { KeyRound, LogOut, Moon, Settings, Sun } from 'lucide-react';
+import { KeyRound, ListChecks, LogOut, Moon, Settings, Sun } from 'lucide-react';
 import { useUser } from '../lib/user-context';
 import { signOut } from '../lib/auth';
 import { useTheme, setTheme, type Theme } from '../lib/theme';
@@ -30,9 +30,11 @@ const THEME_OPTIONS: ThemeOption[] = [
 export function UserMenu({
   onOpenAdminSettings,
   onOpenSettings,
+  onOpenRoutines,
 }: {
   onOpenAdminSettings?: (() => void) | undefined;
   onOpenSettings?: (() => void) | undefined;
+  onOpenRoutines?: (() => void) | undefined;
 } = {}) {
   const user = useUser();
   const theme = useTheme();
@@ -148,6 +150,19 @@ export function UserMenu({
           >
             <KeyRound aria-hidden="true" strokeWidth={1.4} />
             <span>Credentials</span>
+          </button>
+          <button
+            type="button"
+            className="flex items-center gap-2.5 w-full px-2.5 py-2 rounded-md text-[12.5px] text-foreground hover:bg-muted transition-colors [&_svg]:h-3.5 [&_svg]:w-3.5 [&_svg]:shrink-0 [&_svg]:text-muted-foreground"
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
+              onOpenRoutines?.();
+            }}
+            data-action="routines"
+          >
+            <ListChecks aria-hidden="true" strokeWidth={1.4} />
+            <span>Routines</span>
           </button>
           {isAdmin && (
             <button

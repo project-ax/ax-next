@@ -12,6 +12,14 @@ export interface FireResult {
   status: FireStatus;
   conversationId?: string | null;
   error: string | null;
+  /**
+   * The prompt that was actually rendered and sent to the agent.
+   * `null` when fireRoutine returned before reaching the render step
+   * (e.g., agents:resolve or conversations:create failed). Non-null on
+   * `'ok'` and `'silenced'`, and on `'error'` paths that errored after
+   * rendering.
+   */
+  renderedPrompt: string | null;
 }
 
 export type FireRoutineFn = (
@@ -54,7 +62,7 @@ export async function runTickOnce(input: TickOnceInput): Promise<void> {
       result = await input.fire(row, 'tick');
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      result = { status: 'error', error: msg, conversationId: null };
+      result = { status: 'error', error: msg, conversationId: null, renderedPrompt: null };
     }
 
     await input.store.recordFire({
@@ -63,6 +71,7 @@ export async function runTickOnce(input: TickOnceInput): Promise<void> {
       conversationId: result.conversationId ?? null,
       status: result.status,
       error: result.error,
+      renderedPrompt: result.renderedPrompt,
     });
 
     // row.nextRunAt has been bumped by claimWindowMinutes by claimDue; recover the

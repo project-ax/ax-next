@@ -175,6 +175,23 @@ export interface AgentsWebhookTokenRotatedEvent {
   agentId: string;
 }
 
+/**
+ * FIRED by `agents:create` after the new agent row commits successfully.
+ * Payload is intentionally minimal and storage-agnostic (L4): callers that
+ * need richer agent data must look it up via `agents:resolve`. Carries
+ * `ownerType` so subscribers can distinguish user-owned from team-owned
+ * agents without re-resolving.
+ *
+ * Subscriber failures must not block agent creation — `HookBus.fire`
+ * already isolates errors per subscriber, but subscribers should also
+ * try/catch their own work (L6).
+ */
+export interface AgentsCreatedEvent {
+  agentId: string;
+  ownerId: string;
+  ownerType: 'user' | 'team';
+}
+
 // --- Plugin config -----------------------------------------------------------
 
 export interface AgentsConfig {
