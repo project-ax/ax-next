@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "8bf42c01421a",
+  "strategy": "manual-commit",
+  "branch": "feat/attachments-phase-2",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "packages/agent-claude-sdk-runner/src/__tests__/sandbox-mcp-server.test.ts",
+    "packages/agent-claude-sdk-runner/src/sandbox-mcp-server.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/8b/f42c01421a/0/metadata.json",
+      "transcript": "/8b/f42c01421a/0/full.jsonl",
+      "content_hash": "/8b/f42c01421a/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 147,
+    "cache_creation_tokens": 1128433,
+    "cache_read_tokens": 20147837,
+    "output_tokens": 136155,
+    "api_call_count": 107
+  }
+}
