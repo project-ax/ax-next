@@ -672,6 +672,44 @@ describe('timeouts', () => {
   });
 });
 
+describe('AgentMessageSchema — Phase 2 contentBlocks', () => {
+  it('round-trips a message with only content (string shape, backward compat)', () => {
+    const msg = { role: 'user' as const, content: 'hello' };
+    const parsed = AgentMessageSchema.parse(msg);
+    expect(parsed.contentBlocks).toBeUndefined();
+    expect(parsed.content).toBe('hello');
+  });
+
+  it('round-trips a message with contentBlocks (Phase 2)', () => {
+    const msg = {
+      role: 'user' as const,
+      content: '',
+      contentBlocks: [
+        { type: 'text' as const, text: 'see attached' },
+        {
+          type: 'attachment' as const,
+          path: '.ax/uploads/c1/t1/x.pdf',
+          displayName: 'X.pdf',
+          mediaType: 'application/pdf',
+          sizeBytes: 100,
+        },
+      ],
+    };
+    const parsed = AgentMessageSchema.parse(msg);
+    expect(parsed.contentBlocks).toHaveLength(2);
+  });
+
+  it('rejects contentBlocks with invalid variant', () => {
+    expect(() =>
+      AgentMessageSchema.parse({
+        role: 'user',
+        content: '',
+        contentBlocks: [{ type: 'no-such-variant' }],
+      }),
+    ).toThrow();
+  });
+});
+
 describe('shared schemas exported', () => {
   it('AgentMessageSchema rejects unknown role', () => {
     const r = AgentMessageSchema.safeParse({ role: 'alien', content: 'hi' });

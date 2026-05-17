@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { asWorkspaceVersion, type WorkspaceVersion } from '@ax/core';
+import { ContentBlockSchema } from './content-blocks.js';
 
 // Re-export so existing consumers importing from `@ax/ipc-protocol` keep
 // working transparently — canonical declaration lives in `@ax/core` so
@@ -19,6 +20,12 @@ export { asWorkspaceVersion, type WorkspaceVersion };
 export const AgentMessageSchema = z.object({
   role: z.enum(['user', 'assistant']),
   content: z.string(),
+  // Phase 2 (attachments). Optional richer payload — when present, the
+  // runner prefers this over `content`. The chat-messages handler does
+  // not emit this yet (Phase 3); shipping the schema first lets the
+  // runner translation pass be testable. Backward-compat: omitting the
+  // field reproduces the prior string-only shape exactly.
+  contentBlocks: z.array(ContentBlockSchema).optional(),
 });
 export type AgentMessage = z.infer<typeof AgentMessageSchema>;
 
