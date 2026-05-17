@@ -49,6 +49,7 @@
     { "path": "packages/memory-strata-index-sqlite" },
     { "path": "packages/memory-strata-index-postgres" },
     { "path": "packages/validator-routine" },
-    { "path": "packages/routines" }
+    { "path": "packages/routines" },
+    { "path": "packages/tool-artifact-publish" }
   ]
 }
