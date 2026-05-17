@@ -71,7 +71,7 @@ export function createFireRoutine(deps: FireDeps) {
           userId: row.authorUserId,
           agentId: row.agentId,
           externalKey: row.path,
-          fallback: { title: row.name },
+          fallback: { title: row.name, hidden: true },
         });
         conversationId = out.conversation.conversationId;
       } else {
@@ -82,6 +82,7 @@ export function createFireRoutine(deps: FireDeps) {
           userId: row.authorUserId,
           agentId: row.agentId,
           title: `${row.name} @ ${new Date().toISOString()}`,
+          hidden: true,
         });
         conversationId = conv.conversationId;
       }

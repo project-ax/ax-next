@@ -34,7 +34,8 @@ interface Captured {
   invokes: Array<{ message: { content: string }; reqId: string; conversationId: string | undefined }>;
   drops: Array<{ conversationId: string; turnId: string }>;
   hides: Array<{ conversationId: string }>;
-  findOrCreateCalls: Array<{ externalKey: string }>;
+  findOrCreateCalls: Array<{ externalKey: string; fallbackHidden?: boolean }>;
+  createInputs: Array<{ hidden?: boolean }>;
 }
 
 async function makeHarness(captured: Captured, replyOnInvoke: { contentBlocks: unknown[] }) {
@@ -55,8 +56,11 @@ async function makeHarness(captured: Captured, replyOnInvoke: { contentBlocks: u
       'credentials:get': async () => 'secret',
       'http:register-route': async () => ({ unregister: () => {} }),
       'conversations:find-or-create': async (_ctx, input: unknown) => {
-        const i = input as { externalKey: string };
-        captured.findOrCreateCalls.push({ externalKey: i.externalKey });
+        const i = input as { externalKey: string; fallback: { hidden?: boolean } };
+        captured.findOrCreateCalls.push({
+          externalKey: i.externalKey,
+          fallbackHidden: i.fallback.hidden,
+        });
         const existing = sharedConvIds.get(i.externalKey);
         if (existing !== undefined) {
           return { conversation: { conversationId: existing }, created: false };
@@ -65,7 +69,10 @@ async function makeHarness(captured: Captured, replyOnInvoke: { contentBlocks: u
         sharedConvIds.set(i.externalKey, fresh);
         return { conversation: { conversationId: fresh }, created: true };
       },
-      'conversations:create': async () => ({ conversationId: `cnv_${nextConvId++}` }),
+      'conversations:create': async (_ctx, input: unknown) => {
+        captured.createInputs.push(input as { hidden?: boolean });
+        return { conversationId: `cnv_${nextConvId++}` };
+      },
       'conversations:drop-turn': async (_ctx, input: unknown) => {
         captured.drops.push(input as { conversationId: string; turnId: string });
       },
@@ -119,7 +126,7 @@ afterAll(async () => { if (container) await container.stop(); });
 
 describe('Phase B canary — routine creates → fires → silence path closes window', () => {
   it('indexes a routine when workspace:applied carries .ax/routines/r.md', async () => {
-    const captured: Captured = { invokes: [], drops: [], hides: [], findOrCreateCalls: [] };
+    const captured: Captured = { invokes: [], drops: [], hides: [], findOrCreateCalls: [], createInputs: [] };
     const h = await makeHarness(captured, { contentBlocks: [{ type: 'text', text: 'HEARTBEAT_OK' }] });
     const delta: WorkspaceDelta = {
       before: null, after: asWorkspaceVersion('v1'),
@@ -138,7 +145,7 @@ describe('Phase B canary — routine creates → fires → silence path closes w
   });
 
   it('fire-now: silence-token reply triggers drop-turn + hide; status=silenced', async () => {
-    const captured: Captured = { invokes: [], drops: [], hides: [], findOrCreateCalls: [] };
+    const captured: Captured = { invokes: [], drops: [], hides: [], findOrCreateCalls: [], createInputs: [] };
     const h = await makeHarness(captured, { contentBlocks: [{ type: 'text', text: 'HEARTBEAT_OK' }] });
 
     await h.bus.fire('workspace:applied', h.ctx({ userId: 'u1' }), {
@@ -184,7 +191,7 @@ describe('Phase B canary — routine creates → fires → silence path closes w
   });
 
   it('fire-now: non-silence reply records status=ok and skips drop/hide', async () => {
-    const captured: Captured = { invokes: [], drops: [], hides: [], findOrCreateCalls: [] };
+    const captured: Captured = { invokes: [], drops: [], hides: [], findOrCreateCalls: [], createInputs: [] };
     const h = await makeHarness(captured, { contentBlocks: [{ type: 'text', text: 'real reply text' }] });
 
     await h.bus.fire('workspace:applied', h.ctx({ userId: 'u1' }), {
@@ -205,7 +212,7 @@ describe('Phase B canary — routine creates → fires → silence path closes w
   });
 
   it('shared routine reuses the same conversation across fires (find-or-create)', async () => {
-    const captured: Captured = { invokes: [], drops: [], hides: [], findOrCreateCalls: [] };
+    const captured: Captured = { invokes: [], drops: [], hides: [], findOrCreateCalls: [], createInputs: [] };
     const h = await makeHarness(captured, { contentBlocks: [{ type: 'text', text: 'reply' }] });
 
     const sharedBody = ENC.encode([
@@ -237,12 +244,40 @@ describe('Phase B canary — routine creates → fires → silence path closes w
     // mistakenly called :create on the second fire, the two captured
     // conversationIds would diverge.
     expect(captured.findOrCreateCalls).toEqual([
-      { externalKey: '.ax/routines/s.md' },
-      { externalKey: '.ax/routines/s.md' },
+      { externalKey: '.ax/routines/s.md', fallbackHidden: true },
+      { externalKey: '.ax/routines/s.md', fallbackHidden: true },
     ]);
     expect(captured.invokes).toHaveLength(2);
     expect(captured.invokes[0]!.conversationId).toBeDefined();
     expect(captured.invokes[0]!.conversationId).toBe(captured.invokes[1]!.conversationId);
+  });
+
+  it('case 11: per-fire routine marks conversation hidden at creation (#Phase D)', async () => {
+    // Routine-created conversations are observability rows surfaced via the
+    // Routines modal (Task 11), not chat-sidebar rows. Both call sites in
+    // fire.ts must pass `hidden: true` so the conversations plugin marks
+    // the row hidden — otherwise the "today" chat list fills with one row
+    // per fire and the sidebar becomes useless within minutes.
+    const captured: Captured = { invokes: [], drops: [], hides: [], findOrCreateCalls: [], createInputs: [] };
+    const h = await makeHarness(captured, { contentBlocks: [{ type: 'text', text: 'ack' }] });
+
+    // routineBody() defaults to `conversation: per-fire` (see line ~27),
+    // which exercises the conversations:create branch.
+    await h.bus.fire('workspace:applied', h.ctx({ userId: 'u1' }), {
+      before: null, after: asWorkspaceVersion('v1'),
+      author: { agentId: 'agt_a', userId: 'u1' },
+      changes: [{ path: '.ax/routines/r.md', kind: 'added',
+        contentAfter: async () => routineBody() }],
+    });
+
+    await h.bus.call('routines:fire-now', h.ctx({ userId: 'u1' }), {
+      agentId: 'agt_a', path: '.ax/routines/r.md',
+    });
+
+    expect(captured.createInputs).toHaveLength(1);
+    expect(captured.createInputs[0]!.hidden).toBe(true);
+    // And the shared branch is covered by the existing reuse test above
+    // (fallbackHidden: true assertion).
   });
 });
 
