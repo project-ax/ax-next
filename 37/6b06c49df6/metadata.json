@@ -1,0 +1,27 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "376b06c49df6",
+  "strategy": "manual-commit",
+  "branch": "feat/attachments-phase-2",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "packages/tool-artifact-publish/src/__tests__/plugin.test.ts",
+    "packages/tool-artifact-publish/src/index.ts",
+    "packages/tool-artifact-publish/src/plugin.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/37/6b06c49df6/0/metadata.json",
+      "transcript": "/37/6b06c49df6/0/full.jsonl",
+      "content_hash": "/37/6b06c49df6/0/content_hash.txt",
+      "prompt": "/37/6b06c49df6/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 122,
+    "cache_creation_tokens": 1089297,
+    "cache_read_tokens": 12846666,
+    "output_tokens": 109863,
+    "api_call_count": 82
+  }
+}
