@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DISABLED_BUILTINS,
   MCP_HOST_SERVER_NAME,
+  MCP_SANDBOX_SERVER_NAME,
   classifySdkToolName,
 } from '../tool-names.js';
 
@@ -32,6 +33,18 @@ describe('classifySdkToolName', () => {
     expect(
       classifySdkToolName(`mcp__${MCP_HOST_SERVER_NAME}__some_tool__with_delims`),
     ).toEqual({ kind: 'mcp-host', axName: 'some_tool__with_delims' });
+  });
+
+  it('strips the sandbox-MCP prefix and returns the axName for ax-sandbox-tools', () => {
+    expect(
+      classifySdkToolName(`mcp__${MCP_SANDBOX_SERVER_NAME}__artifact_publish`),
+    ).toEqual({ kind: 'mcp-sandbox', axName: 'artifact_publish' });
+  });
+
+  it('handles an ax-sandbox-tools axName that itself contains underscores', () => {
+    expect(
+      classifySdkToolName(`mcp__${MCP_SANDBOX_SERVER_NAME}__some_tool__with_delims`),
+    ).toEqual({ kind: 'mcp-sandbox', axName: 'some_tool__with_delims' });
   });
 
   it('treats an MCP tool from a different server as builtin (full-name pass-through)', () => {
