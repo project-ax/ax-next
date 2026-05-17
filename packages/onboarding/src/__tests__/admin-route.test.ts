@@ -54,8 +54,17 @@ interface BootedStack {
 }
 
 async function dropTables(): Promise<void> {
+  // pg.Pool emits 'error' on idle-client TCP failures. Without a listener
+  // Node escalates to unhandledException — which CI flagged on this file
+  // when the testcontainer was stopped (afterAll) before an idle client
+  // had a chance to drain. The drain-vs-stop ordering is racy and not worth
+  // fixing structurally for a teardown-only path; a no-op handler keeps the
+  // event from terminating the process. The database-postgres plugin's
+  // pool already does the same thing for the same reason.
+  const pool = new pg.Pool({ connectionString, max: 1 });
+  pool.on('error', () => {});
   const k = new Kysely<unknown>({
-    dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString, max: 1 }) }),
+    dialect: new PostgresDialect({ pool }),
   });
   try {
     await sql`DROP TABLE IF EXISTS bootstrap_state`.execute(k);
