@@ -44,6 +44,7 @@ import { Thread } from './components/Thread';
 import { ToastStack } from './components/Toast';
 import { AdminShell } from './components/admin/AdminShell';
 import { SettingsPanel } from './components/settings/SettingsPanel';
+import { RoutinesPanel } from './components/routines/RoutinesPanel';
 import { SetupWizard } from './components/setup/SetupWizard';
 import { UserProvider } from './lib/user-context';
 
@@ -138,6 +139,10 @@ const AppContent = ({ user }: { user: AuthUser }) => {
   // SettingsPanel renders below when true. Available to every signed-in
   // user (no isAdmin gate — server-side scope='user' enforces ownership).
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // `routinesOpen` is set by the user menu's "Routines" entry. Available
+  // to every signed-in user — server-side scopes routines to caller's
+  // owned/shared agents.
+  const [routinesOpen, setRoutinesOpen] = useState(false);
   // Mobile slide-over open state (Task 27). Used to render the scrim
   // that closes the sidebar on tap. Desktop CSS hides the scrim.
   const sidebarOpen = useSidebarOpen();
@@ -197,6 +202,7 @@ const AppContent = ({ user }: { user: AuthUser }) => {
               <Sidebar
                 onOpenAdminSettings={() => setAdminSettingsOpen(true)}
                 onOpenSettings={() => setSettingsOpen(true)}
+                onOpenRoutines={() => setRoutinesOpen(true)}
               />
               {sidebarOpen && (
                 <div
@@ -214,6 +220,10 @@ const AppContent = ({ user }: { user: AuthUser }) => {
           <SettingsPanel
             open={settingsOpen}
             onClose={() => setSettingsOpen(false)}
+          />
+          <RoutinesPanel
+            open={routinesOpen}
+            onClose={() => setRoutinesOpen(false)}
           />
           <ToastStack />
         </div>

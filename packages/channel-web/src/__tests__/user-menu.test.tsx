@@ -80,6 +80,28 @@ describe('UserMenu', () => {
     expect(onOpenSettings).toHaveBeenCalled();
   });
 
+  it('"Routines" menuitem is visible to all users', () => {
+    render(
+      <UserProvider value={regularUser}>
+        <UserMenu />
+      </UserProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Alice/i }));
+    expect(screen.getByRole('menuitem', { name: 'Routines' })).toBeTruthy();
+  });
+
+  it('"Routines" menuitem calls onOpenRoutines', () => {
+    const onOpenRoutines = vi.fn();
+    render(
+      <UserProvider value={regularUser}>
+        <UserMenu onOpenRoutines={onOpenRoutines} />
+      </UserProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Alice/i }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Routines' }));
+    expect(onOpenRoutines).toHaveBeenCalledTimes(1);
+  });
+
   it('outside click closes the menu', () => {
     render(
       <div>
