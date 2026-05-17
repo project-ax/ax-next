@@ -55,6 +55,10 @@ async function makeHarness(captured: Captured, replyOnInvoke: { contentBlocks: u
       'agents:resolve-by-webhook-token': async () => ({ agent: null }),
       'credentials:get': async () => 'secret',
       'http:register-route': async () => ({ unregister: () => {} }),
+      'workspace:apply': async () => ({
+        version: 'v1',
+        delta: { before: null, after: 'v1', changes: [] },
+      }),
       'conversations:find-or-create': async (_ctx, input: unknown) => {
         const i = input as { externalKey: string; fallback: { hidden?: boolean } };
         captured.findOrCreateCalls.push({
@@ -369,6 +373,10 @@ describe('Phase C webhook canary — half-wired window closure', () => {
         }),
         'conversations:drop-turn': async () => undefined,
         'conversations:hide': async () => undefined,
+        'workspace:apply': async () => ({
+          version: 'v1',
+          delta: { before: null, after: 'v1', changes: [] },
+        }),
         'agent:invoke': async (ctx, input: unknown) => {
           const i = input as { message: { content: string } };
           captured.invokes.push({

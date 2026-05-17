@@ -34,6 +34,10 @@ async function harness(): Promise<TestHarness> {
       'agent:invoke': async () => ({ kind: 'complete', messages: [] }),
       'credentials:get': async () => 'secret',
       'http:register-route': async () => ({ unregister: () => {} }),
+      'workspace:apply': async () => ({
+        version: 'v1',
+        delta: { before: null, after: 'v1', changes: [] },
+      }),
     },
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),

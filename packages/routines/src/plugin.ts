@@ -8,6 +8,7 @@ import { systemClock, type Clock } from './clock.js';
 import { runTickLoop } from './tick.js';
 import { createFireRoutine, type PendingFires } from './fire.js';
 import { applySilenceLogic } from './silence.js';
+import { createSeedHeartbeatSubscriber } from './seed-heartbeat.js';
 import type {
   RoutinesConfig,
   FireNowInput,
@@ -55,8 +56,9 @@ export function createRoutinesPlugin(
         'agent:invoke',
         'credentials:get',
         'http:register-route',
+        'workspace:apply',
       ],
-      subscribes: ['workspace:applied', 'chat:turn-end', 'agents:webhook-token-rotated'],
+      subscribes: ['workspace:applied', 'chat:turn-end', 'agents:webhook-token-rotated', 'agents:created'],
     },
     async init({ bus }) {
       const initCtx = makeAgentContext({
@@ -184,6 +186,11 @@ export function createRoutinesPlugin(
         }
         return undefined;
       });
+
+      bus.subscribe<{ agentId: string; ownerId: string; ownerType: 'user' | 'team' }>(
+        'agents:created', PLUGIN_NAME,
+        createSeedHeartbeatSubscriber({ bus }),
+      );
 
       bus.registerService<ListInput, ListOutput>(
         'routines:list', PLUGIN_NAME,
