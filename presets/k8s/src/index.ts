@@ -22,6 +22,7 @@ import { createCredentialsOauthPendingPlugin } from '@ax/credentials-oauth-pendi
 import { createIpcHttpPlugin } from '@ax/ipc-http';
 import { createAgentsPlugin } from '@ax/agents';
 import { createAttachmentsPlugin } from '@ax/attachments';
+import { createToolArtifactPublishPlugin } from '@ax/tool-artifact-publish';
 import { createHttpServerPlugin } from '@ax/http-server';
 import { createAuthBetterPlugin, type AuthBetterConfig } from '@ax/auth-better';
 import { createTeamsPlugin } from '@ax/teams';
@@ -687,6 +688,10 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // invokes these hooks. Phase 2 wires up the agent-side artifact_publish
   // tool; Phase 3 wires up channel-web's upload + download routes + UI.
   plugins.push(createAttachmentsPlugin());
+  // Phase 2: registers the `artifact_publish` tool descriptor so the canary
+  // smoke flow includes it in tool.list. The sandbox-MCP bridge dispatches
+  // calls once the runner's allowedTools includes `artifact_publish`.
+  plugins.push(createToolArtifactPublishPlugin());
 
   // Auto-titling: @ax/llm-anthropic registers `llm:call:anthropic`,
   // @ax/conversation-titles subscribes to `chat:turn-end` and dispatches

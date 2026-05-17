@@ -1849,6 +1849,9 @@ importers:
       '@ax/teams':
         specifier: workspace:*
         version: link:../../packages/teams
+      '@ax/tool-artifact-publish':
+        specifier: workspace:*
+        version: link:../../packages/tool-artifact-publish
       '@ax/validator-routine':
         specifier: workspace:*
         version: link:../../packages/validator-routine
