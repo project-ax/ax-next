@@ -9,6 +9,7 @@ import { PluginError } from '@ax/core';
 import { createAgentsPlugin } from '../plugin.js';
 import type {
   AgentInput,
+  AgentsCreatedEvent,
   CreateInput,
   CreateOutput,
   DeleteInput,
@@ -243,6 +244,45 @@ describe('@ax/agents service hooks (round trip)', () => {
     }
     expect(caught).toBeInstanceOf(PluginError);
     expect((caught as PluginError).code).toBe('forbidden');
+  });
+
+  it('fires agents:created after agents:create commits', async () => {
+    const h = await makeHarness();
+    const events: AgentsCreatedEvent[] = [];
+    h.bus.subscribe<AgentsCreatedEvent>(
+      'agents:created',
+      'test-spy',
+      async (_ctx, payload) => {
+        events.push(payload);
+        return undefined;
+      },
+    );
+    const out = await h.bus.call<CreateInput, CreateOutput>(
+      'agents:create',
+      h.ctx({ userId: 'u1' }),
+      { actor: { userId: 'u1', isAdmin: false }, input: makeInput() },
+    );
+    expect(events).toEqual([
+      { agentId: out.agent.id, ownerId: 'u1', ownerType: 'user' },
+    ]);
+  });
+
+  it('agents:create succeeds even when an agents:created subscriber throws', async () => {
+    const h = await makeHarness();
+    h.bus.subscribe<AgentsCreatedEvent>(
+      'agents:created',
+      'test-thrower',
+      async () => {
+        throw new Error('subscriber boom — must not block create');
+      },
+    );
+    const out = await h.bus.call<CreateInput, CreateOutput>(
+      'agents:create',
+      h.ctx({ userId: 'u1' }),
+      { actor: { userId: 'u1', isAdmin: false }, input: makeInput() },
+    );
+    expect(out.agent.id).toMatch(/^agt_/);
+    expect(out.agent.ownerId).toBe('u1');
   });
 
   it('agents:resolve fires agents:resolved subscriber on success', async () => {

@@ -20,6 +20,7 @@ import { randomBytes } from 'node:crypto';
 import type {
   Agent,
   AgentsConfig,
+  AgentsCreatedEvent,
   AgentsResolvedEvent,
   AgentsWebhookTokenRotatedEvent,
   CreateInput,
@@ -370,6 +371,18 @@ async function createAgent(
   const createArgs: Parameters<AgentStore['create']>[0] = { ownerId, ownerType, validated };
   if (input.tx !== undefined) createArgs.tx = input.tx;
   const agent = await store.create(createArgs);
+  // Fire subscriber event so callers (e.g., @ax/routines) can seed
+  // per-agent workspace state (e.g., heartbeat.md). Payload is intentionally
+  // minimal and storage-agnostic (L4) — subscribers needing richer data
+  // re-resolve via `agents:resolve`. Subscriber failures are isolated by
+  // HookBus.fire (logged, not propagated), so agent creation succeeds even
+  // if every subscriber throws (L6).
+  const createdEvent: AgentsCreatedEvent = {
+    agentId: agent.id,
+    ownerId: agent.ownerId,
+    ownerType: agent.ownerType,
+  };
+  await bus.fire('agents:created', ctx, createdEvent);
   return { agent };
 }
 
