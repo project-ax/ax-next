@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { FileChange } from '@ax/core';
-import { filterToAx } from '../filter.js';
+import { filterToPolicy } from '../filter.js';
 
-describe('filterToAx', () => {
-  it('keeps .ax/ paths and drops everything else', () => {
+describe('filterToPolicy', () => {
+  it('keeps .ax/ paths and drops non-policy paths', () => {
     const all: FileChange[] = [
       { path: '.ax/CLAUDE.md', kind: 'put', content: new Uint8Array() },
       {
@@ -15,16 +15,53 @@ describe('filterToAx', () => {
       { path: '.gitignore', kind: 'delete' },
       { path: 'README.md', kind: 'delete' },
     ];
-    const filtered = filterToAx(all);
+    const filtered = filterToPolicy(all);
     expect(filtered.map((c) => c.path)).toEqual([
       '.ax/CLAUDE.md',
       '.ax/skills/foo/SKILL.md',
     ]);
   });
 
-  it('returns an empty array when no .ax paths are present', () => {
+  it('keeps .claude/ paths (Phase 0: SDK setting-source roots are policy-visible)', () => {
+    const all: FileChange[] = [
+      { path: '.claude/settings.json', kind: 'put', content: new Uint8Array() },
+      { path: '.claude/agents/foo.md', kind: 'put', content: new Uint8Array() },
+      {
+        path: '.claude/skills/my-skill/SKILL.md',
+        kind: 'put',
+        content: new Uint8Array(),
+      },
+      { path: 'src/main.ts', kind: 'put', content: new Uint8Array() },
+    ];
+    const filtered = filterToPolicy(all);
+    expect(filtered.map((c) => c.path)).toEqual([
+      '.claude/settings.json',
+      '.claude/agents/foo.md',
+      '.claude/skills/my-skill/SKILL.md',
+    ]);
+  });
+
+  it('passes through both .ax/ and .claude/ in a mixed change set', () => {
+    const all: FileChange[] = [
+      { path: '.ax/skills/a/SKILL.md', kind: 'put', content: new Uint8Array() },
+      {
+        path: '.claude/settings.json',
+        kind: 'put',
+        content: new Uint8Array(),
+      },
+      { path: 'CLAUDE.md', kind: 'put', content: new Uint8Array() },
+      { path: 'src/main.ts', kind: 'put', content: new Uint8Array() },
+    ];
+    const filtered = filterToPolicy(all);
+    expect(filtered.map((c) => c.path).sort()).toEqual([
+      '.ax/skills/a/SKILL.md',
+      '.claude/settings.json',
+    ]);
+  });
+
+  it('returns an empty array when no policy paths are present', () => {
     expect(
-      filterToAx([
+      filterToPolicy([
         { path: 'a.txt', kind: 'put', content: new Uint8Array() },
         { path: 'b.txt', kind: 'delete' },
       ]),
@@ -32,26 +69,28 @@ describe('filterToAx', () => {
   });
 
   it('returns an empty array on an empty input', () => {
-    expect(filterToAx([])).toEqual([]);
+    expect(filterToPolicy([])).toEqual([]);
   });
 
   it('treats deletes the same as puts (path is the only criterion)', () => {
-    const r = filterToAx([
+    const r = filterToPolicy([
       { path: '.ax/old.md', kind: 'delete' },
       { path: '.ax/CLAUDE.md', kind: 'put', content: new Uint8Array() },
+      { path: '.claude/settings.json', kind: 'delete' },
     ]);
-    expect(r).toHaveLength(2);
-    expect(r.map((c) => c.kind).sort()).toEqual(['delete', 'put']);
+    expect(r).toHaveLength(3);
   });
 
-  it('does NOT match paths that merely contain ".ax/" — must be a prefix', () => {
+  it('does NOT match paths that merely contain ".ax/" or ".claude/" — must be a prefix', () => {
     // A path like "src/.ax/foo" lives under src/, not under .ax/. The
     // policy is rooted at the workspace root.
     expect(
-      filterToAx([
+      filterToPolicy([
         { path: 'src/.ax/foo', kind: 'put', content: new Uint8Array() },
         { path: 'foo.ax/bar', kind: 'put', content: new Uint8Array() },
         { path: '.ax-backup/x', kind: 'put', content: new Uint8Array() },
+        { path: 'src/.claude/settings.json', kind: 'put', content: new Uint8Array() },
+        { path: '.claude-plugin/x', kind: 'put', content: new Uint8Array() },
       ]),
     ).toEqual([]);
   });
@@ -62,7 +101,7 @@ describe('filterToAx', () => {
     // change at `.ax/` would be a directory operation we don't see in
     // FileChange anyway. Checking it just to pin the prefix semantic.
     expect(
-      filterToAx([{ path: '.ax/', kind: 'delete' }]),
+      filterToPolicy([{ path: '.ax/', kind: 'delete' }]),
     ).toEqual([{ path: '.ax/', kind: 'delete' }]);
   });
 });
