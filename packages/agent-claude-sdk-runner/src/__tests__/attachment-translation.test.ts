@@ -1,6 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { ContentBlock } from '@ax/ipc-protocol';
-import { translateContentBlocks } from '../attachment-translation.js';
+import {
+  MAX_INLINE_BYTES,
+  translateContentBlocks,
+} from '../attachment-translation.js';
 
 function fakeReader(map: Record<string, Buffer>) {
   return vi.fn(async (path: string) => {
@@ -150,15 +153,71 @@ describe('translateContentBlocks', () => {
     ]);
   });
 
-  it('maps non-image non-PDF attachments to a text mention (no byte fetch)', async () => {
-    const reader = fakeReader({});
+  it('inlines small text/plain attachment content with provenance preamble', async () => {
+    const body = Buffer.from('hello, this is the file content');
     const blocks: ContentBlock[] = [
       {
         type: 'attachment',
         path: '.ax/uploads/c1/t1/notes.txt',
         displayName: 'notes.txt',
         mediaType: 'text/plain',
-        sizeBytes: 12,
+        sizeBytes: body.length,
+      },
+    ];
+    const out = await translateContentBlocks(blocks, {
+      readWorkspace: fakeReader({ '.ax/uploads/c1/t1/notes.txt': body }),
+      supportsDocumentBlocks: true,
+    });
+    expect(out).toEqual([
+      {
+        type: 'text',
+        text:
+          `User attached 'notes.txt' (text/plain, ${body.length} bytes):\n\n` +
+          body.toString('utf8'),
+      },
+    ]);
+  });
+
+  it.each([
+    ['text/markdown', '# heading\n\nbody'],
+    ['text/csv', 'col1,col2\n1,2'],
+    ['application/json', '{"hello":"world"}'],
+    ['application/xml', '<root><a>1</a></root>'],
+    ['application/yaml', 'foo: bar\n'],
+    ['application/x-yaml', 'foo: bar\n'],
+  ])('inlines small %s attachment content', async (mediaType, content) => {
+    const body = Buffer.from(content);
+    const blocks: ContentBlock[] = [
+      {
+        type: 'attachment',
+        path: `.ax/uploads/c1/t1/file`,
+        displayName: 'file',
+        mediaType,
+        sizeBytes: body.length,
+      },
+    ];
+    const out = await translateContentBlocks(blocks, {
+      readWorkspace: fakeReader({ '.ax/uploads/c1/t1/file': body }),
+      supportsDocumentBlocks: true,
+    });
+    expect(out).toHaveLength(1);
+    const block = out[0] as { type: string; text: string };
+    expect(block.type).toBe('text');
+    expect(block.text).toContain(content);
+    expect(block.text).toContain(mediaType);
+  });
+
+  it('falls back to a text mention for text content exceeding MAX_INLINE_BYTES', async () => {
+    // Size threshold check is on `sizeBytes` from the block — we don't even
+    // need real bytes for the test, just the metadata over the cap.
+    const reader = fakeReader({});
+    const blocks: ContentBlock[] = [
+      {
+        type: 'attachment',
+        path: '.ax/uploads/c1/t1/big.csv',
+        displayName: 'big.csv',
+        mediaType: 'text/csv',
+        sizeBytes: MAX_INLINE_BYTES + 1,
       },
     ];
     const out = await translateContentBlocks(blocks, {
@@ -169,11 +228,89 @@ describe('translateContentBlocks', () => {
       {
         type: 'text',
         text: expect.stringMatching(
-          /User attached 'notes\.txt' at \.ax\/uploads\/c1\/t1\/notes\.txt \(text\/plain\)/,
+          /User attached 'big\.csv' at \.ax\/uploads\/c1\/t1\/big\.csv \(text\/csv\)/,
+        ),
+      },
+    ]);
+    // Critical: oversized text MUST NOT trigger an IPC fetch — wasted
+    // bandwidth and a step toward OOM on a malicious mediaType claim.
+    expect(reader).not.toHaveBeenCalled();
+  });
+
+  it('falls back to a text mention for binary types we can not inline (zip, mp4)', async () => {
+    const reader = fakeReader({});
+    const blocks: ContentBlock[] = [
+      {
+        type: 'attachment',
+        path: '.ax/uploads/c1/t1/archive.zip',
+        displayName: 'archive.zip',
+        mediaType: 'application/zip',
+        sizeBytes: 1024,
+      },
+    ];
+    const out = await translateContentBlocks(blocks, {
+      readWorkspace: reader,
+      supportsDocumentBlocks: true,
+    });
+    expect(out).toEqual([
+      {
+        type: 'text',
+        text: expect.stringMatching(
+          /User attached 'archive\.zip' at \.ax\/uploads\/c1\/t1\/archive\.zip \(application\/zip\)/,
         ),
       },
     ]);
     expect(reader).not.toHaveBeenCalled();
+  });
+
+  it('falls back to a text mention when an inlineable file is missing from the workspace', async () => {
+    const blocks: ContentBlock[] = [
+      {
+        type: 'attachment',
+        path: '.ax/uploads/c1/t1/notes.txt',
+        displayName: 'notes.txt',
+        mediaType: 'text/plain',
+        sizeBytes: 12,
+      },
+    ];
+    const out = await translateContentBlocks(blocks, {
+      readWorkspace: fakeReader({}),
+      supportsDocumentBlocks: true,
+    });
+    expect(out).toEqual([
+      {
+        type: 'text',
+        text: expect.stringMatching(
+          /User attached 'notes\.txt' at \.ax\/uploads\/c1\/t1\/notes\.txt \(text\/plain\)/,
+        ),
+      },
+    ]);
+  });
+
+  it('decodes invalid UTF-8 in a text-claimed attachment with replacement chars (no throw)', async () => {
+    // A file mis-labeled as text/plain that contains binary bytes. Node's
+    // Buffer.toString('utf8') replaces invalid sequences with U+FFFD. The
+    // model sees noisy output but the turn completes — same posture the
+    // design takes on MIME-spoofing.
+    const body = Buffer.from([0xff, 0xfe, 0xfd, 0x00, 0x01]);
+    const blocks: ContentBlock[] = [
+      {
+        type: 'attachment',
+        path: '.ax/uploads/c1/t1/lying.txt',
+        displayName: 'lying.txt',
+        mediaType: 'text/plain',
+        sizeBytes: body.length,
+      },
+    ];
+    const out = await translateContentBlocks(blocks, {
+      readWorkspace: fakeReader({ '.ax/uploads/c1/t1/lying.txt': body }),
+      supportsDocumentBlocks: true,
+    });
+    const block = out[0] as { type: string; text: string };
+    expect(block.type).toBe('text');
+    expect(block.text).toContain('User attached');
+    // Replacement char appears for invalid sequences.
+    expect(block.text).toContain('�');
   });
 
   it('passes through other ContentBlock variants (tool_use, thinking) unchanged', async () => {
