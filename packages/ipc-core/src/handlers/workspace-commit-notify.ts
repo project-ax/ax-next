@@ -12,7 +12,7 @@ import {
   WorkspaceCommitNotifyRequestSchema,
   WorkspaceCommitNotifyResponseSchema,
 } from '@ax/ipc-protocol';
-import { filterToAx } from '../bundler/filter.js';
+import { filterToPolicy } from '../bundler/filter.js';
 import { prepareScratchRepo } from '../bundler/scratch.js';
 import { verifyBundleAuthor } from '../bundler/verify.js';
 import { walkBundleChanges } from '../bundler/walk.js';
@@ -206,10 +206,12 @@ export const workspaceCommitNotifyHandler: ActionHandler = async (
       return internalError();
     }
 
-    // Filter to .ax/** for the pre-apply hook. Subscribers (skill
-    // validator, future identity validator) only see agent-managed
-    // memory; user-code changes are not policy-checked.
-    const axChanges = filterToAx(allChanges);
+    // Filter to policy-visible paths (`.ax/**` + `.claude/**`) for the
+    // pre-apply hook. Subscribers (skill validator, SDK-config veto,
+    // future identity validator) only see agent-managed memory and
+    // SDK setting-source paths; user-code changes are not policy-
+    // checked.
+    const policyChanges = filterToPolicy(allChanges);
 
     // ---- pre-apply: subscribers can transform or veto ----
     const pre = await bus.fire<{
@@ -219,7 +221,7 @@ export const workspaceCommitNotifyHandler: ActionHandler = async (
     }>(
       'workspace:pre-apply',
       ctx,
-      { changes: axChanges, parent, reason },
+      { changes: policyChanges, parent, reason },
     );
     if (pre.rejected) {
       const body = { accepted: false as const, reason: pre.reason };

@@ -65,6 +65,16 @@ const ENV_ALLOWLIST = new Set<string>([
   'no_proxy',
   'http_proxy',
   'https_proxy',
+  // Skill discovery (I-P0-1 / I-P0-3): the sandbox plugin (subprocess or
+  // k8s) injects CLAUDE_CONFIG_DIR=<homeDir>/.ax/session into the runner's
+  // own env so the SDK's `'user'` setting source resolves to a host-owned
+  // root that is SEPARATE from the workspace's `'project'` source. Without
+  // forwarding it here the SDK falls back to `<HOME>/.claude` — and because
+  // main.ts overrides HOME=workspaceRoot for the Phase C jsonl redirect,
+  // the `'user'` root would collapse onto the workspace's `<cwd>/.claude/`
+  // path, making the two setting sources indistinguishable and rendering
+  // the host-installed-skills surface unreachable.
+  'CLAUDE_CONFIG_DIR',
 ]);
 
 // Prefix allowlist:

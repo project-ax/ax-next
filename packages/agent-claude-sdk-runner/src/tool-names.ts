@@ -16,10 +16,25 @@
 //      subscribers see the ax-native tool name they registered.
 //
 //   3. Disabled built-ins — things we don't want the agent reaching at
-//      all (WebFetch, WebSearch, plus nested-agent surfaces like Task/Skill
-//      that would bypass our hook bus). The runner sets these in
-//      `disallowedTools` too; the classifier provides defense in depth so
-//      `canUseTool` refuses even if the disallow list ever slips.
+//      all: WebFetch / WebSearch (raw network egress that bypasses the
+//      credential-proxy / egress policy), plus `Task` (the nested-agent
+//      surface that would spawn a sub-agent outside our hook bus). The
+//      runner sets these in `disallowedTools` too; the classifier provides
+//      defense in depth so `canUseTool` refuses even if the disallow list
+//      ever slips.
+//
+//      NOTE on `Skill`: previously also denied here on the same
+//      "bypass our hook bus" rationale, but Phase 0 of the skill-install
+//      workflow (I-P0-1, docs/plans/2026-05-17-skill-install-phase-0-impl.md)
+//      flips Skill from "denied at every layer" to "the intended SDK-native
+//      skill-discovery path." Skill is now in `allowedTools` and the SDK
+//      reads skills from $CLAUDE_CONFIG_DIR/skills/ (host-controlled) and
+//      <workspace>/.claude/skills/ (a narrow symlink to .ax/skills,
+//      gated at workspace:pre-apply by @ax/validator-skill — see commit
+//      521f206c, which vetoes agent writes to .claude/settings.json,
+//      CLAUDE.md, and other SDK-config paths that would let an agent
+//      escalate via the now-enabled user/project setting sources).
+//      Skill is NOT a nested-agent bypass; `Task` still is.
 //
 // Anything else — including MCP tools from a DIFFERENT server (not ours) —
 // falls through as kind 'builtin' with the full name preserved. That's a
@@ -35,7 +50,6 @@ export const MCP_SANDBOX_SERVER_NAME = 'ax-sandbox-tools';
 export const DISABLED_BUILTINS = [
   'WebFetch',
   'WebSearch',
-  'Skill',
   'Task',
 ] as const;
 

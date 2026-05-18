@@ -415,6 +415,7 @@ describe('main()', () => {
     expect(queryMock).toHaveBeenCalledTimes(1);
     const queryArg = queryMock.mock.calls[0]?.[0] as {
       options: {
+        allowedTools: string[];
         disallowedTools: string[];
         mcpServers: Record<string, unknown>;
         settingSources: string[];
@@ -423,10 +424,22 @@ describe('main()', () => {
       };
     };
     expect(queryArg.options.disallowedTools).toEqual(
-      expect.arrayContaining(['WebFetch', 'WebSearch', 'Skill', 'Task']),
+      expect.arrayContaining(['WebFetch', 'WebSearch', 'Task']),
     );
+    // I-P0-1: positive guard that Skill is NOT denied. If a future refactor
+    // re-adds Skill to DISABLED_BUILTINS or otherwise reintroduces a deny,
+    // this assertion fails and the regression is caught here rather than in
+    // the canary acceptance test.
+    expect(queryArg.options.disallowedTools).not.toContain('Skill');
+    // I-P0-1: Skill is in allowedTools so the SDK auto-permits it when the
+    // model invokes a discovered skill.
+    expect(queryArg.options.allowedTools).toContain('Skill');
     expect(queryArg.options.mcpServers).toHaveProperty('ax-host-tools');
-    expect(queryArg.options.settingSources).toEqual([]);
+    // I-P0-1: 'user' enables $CLAUDE_CONFIG_DIR/skills/ discovery (host-
+    // controlled installed skills); 'project' enables <workspace>/.claude/
+    // skills/ discovery (a narrow symlink to .ax/skills, gated by
+    // validator-skill against .claude/settings.json / CLAUDE.md / etc.).
+    expect(queryArg.options.settingSources).toEqual(['user', 'project']);
     expect(queryArg.options.systemPrompt).toEqual({
       type: 'preset',
       preset: 'claude_code',
@@ -2155,9 +2168,12 @@ describe('main()', () => {
           env: { HOME?: string; ANTHROPIC_API_KEY?: string };
         };
       };
-      // HOME points at the workspace so the SDK's native
-      // ~/.claude/projects/<sessionId>.jsonl writes land where the
-      // turn-end git status + bundle flow captures them.
+      // HOME = workspaceRoot is for Phase C jsonl-redirect (the SDK's
+      // native ~/.claude/projects/<sessionId>.jsonl writes land where
+      // the turn-end git status + bundle flow captures them).
+      // Skill-discovery's `'user'` root is the separately-forwarded
+      // CLAUDE_CONFIG_DIR — see the I-P0-1 test below — which must NOT
+      // collapse onto this HOME path.
       expect(queryArg.options.env.HOME).toBe('/tmp/workspace');
       // ANTHROPIC_API_KEY is preserved through the spread — the
       // proxyStartup.anthropicEnv merge intent is documented here so
@@ -2446,5 +2462,85 @@ describe('main()', () => {
         },
       },
     ]);
+  });
+
+  // ---------------------------------------------------------------------
+  // Phase 0 — skill discovery (I-P0-1 / I-P0-3): the sandbox plugin
+  // (subprocess or k8s) injects CLAUDE_CONFIG_DIR=<sandbox-HOME>/.ax/session
+  // into the runner's own env. The runner MUST forward that value to the
+  // SDK subprocess via `options.env`. If it doesn't, the SDK's `'user'`
+  // setting source falls back to `<HOME>/.claude` — and because main.ts
+  // overrides HOME=workspaceRoot for the Phase C jsonl redirect, `'user'`
+  // would collapse onto `'project'`'s `<cwd>/.claude/` and the host-
+  // installed-skills surface would be unreachable.
+  //
+  // The forwarding is structural — it lives in proxy-startup's
+  // ENV_ALLOWLIST. This test pins the end-to-end shape by setting
+  // process.env.CLAUDE_CONFIG_DIR before main() and asserting the SDK
+  // sees the same value in options.env.
+  // ---------------------------------------------------------------------
+
+  describe('Phase 0: CLAUDE_CONFIG_DIR forward for skill discovery (I-P0-1)', () => {
+    it('forwards CLAUDE_CONFIG_DIR from sandbox env to SDK subprocess', async () => {
+      const sandboxConfigDir = '/tmp/sandbox-home-xyz/.ax/session';
+      setEnv({ ...COMPLETE_ENV, CLAUDE_CONFIG_DIR: sandboxConfigDir });
+      fakeClient = buildFakeClient();
+      fakeClient.call.mockImplementation(async (action: string) => {
+        if (action === 'session.get-config') {
+          return {
+            userId: 'u-test',
+            agentId: 'a-test',
+            agentConfig: {
+              systemPrompt: '',
+              allowedTools: [],
+              mcpConfigIds: [],
+              model: 'claude-sonnet-4-7',
+            },
+            conversationId: null,
+            runnerSessionId: null,
+          };
+        }
+        if (action === 'workspace.materialize') return { bundleBytes: '' };
+        if (action === 'tool.list') return { tools: [] };
+        throw new Error(`unexpected call: ${action}`);
+      });
+      fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
+      queryMock.mockImplementation(
+        ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+          return (async function* () {
+            const it = prompt[Symbol.asyncIterator]();
+            await it.next();
+            yield assistantText('ok');
+            yield resultSuccess();
+            await it.next();
+          })();
+        },
+      );
+
+      const { main } = await import('../main.js');
+      const rc = await main();
+      expect(rc).toBe(0);
+
+      expect(queryMock).toHaveBeenCalledTimes(1);
+      const queryArg = queryMock.mock.calls[0]?.[0] as {
+        options: {
+          env: { HOME?: string; CLAUDE_CONFIG_DIR?: string };
+        };
+      };
+      // Skill-discovery's `'user'` root, host-owned, separate from HOME.
+      // If this assertion regresses (e.g., a refactor drops the
+      // ENV_ALLOWLIST entry or main.ts spreads HOME-only), the SDK falls
+      // back to `<HOME>/.claude` which equals the `'project'` source path,
+      // and the entire Phase 0 / Phase 1 host-installed-skills surface
+      // goes silently dark.
+      expect(queryArg.options.env.CLAUDE_CONFIG_DIR).toBe(sandboxConfigDir);
+      // Sanity: the HOME redirect is still in place — these two env vars
+      // partition the design (HOME for jsonl, CLAUDE_CONFIG_DIR for skill
+      // discovery) and must NOT collapse onto each other.
+      expect(queryArg.options.env.HOME).toBe('/tmp/workspace');
+      expect(queryArg.options.env.CLAUDE_CONFIG_DIR).not.toBe(
+        queryArg.options.env.HOME,
+      );
+    });
   });
 });
