@@ -13,18 +13,8 @@ import { AxChatTransport } from './transport';
 import { useAgentStore } from './agent-store';
 import { sessionStoreActions, useSessionStore } from './session-store';
 import { useThinkingStore } from './thinking-store';
+import { AxAttachmentAdapter } from './ax-attachment-adapter';
 
-/**
- * Thread-specific runtime using AI SDK.
- * Passes the AX history adapter directly to useAISDKRuntime
- * so thread history loads when switching threads.
- *
- * No `attachments` adapter is configured: the composer's attach button is
- * gated on the adapter being present (assistant-ui contract), so omitting
- * it hides the button. The previous adapter POSTed to /api/files, which
- * has no host-side route — preset-k8s would 404 every upload. The button
- * comes back when a host-side blob-store + /api/files route ships.
- */
 const useChatThreadRuntime = (transport: AxChatTransport): AssistantRuntime => {
   const id = useAuiState(({ threadListItem }) => threadListItem.id);
   const aui = useAui();
@@ -41,8 +31,15 @@ const useChatThreadRuntime = (transport: AxChatTransport): AssistantRuntime => {
     [aui, thinkingVisible],
   );
 
+  // Phase 3: AxAttachmentAdapter mediates POST /api/attachments. Stable
+  // across the hook lifetime — no per-prop state, so a single instance
+  // is enough.
+  const attachments = useMemo(() => new AxAttachmentAdapter(), []);
+
   const chat = useChat({ id, transport });
-  return useAISDKRuntime(chat, { adapters: { history } });
+  return useAISDKRuntime(chat, {
+    adapters: { history, attachments },
+  });
 };
 
 /**
