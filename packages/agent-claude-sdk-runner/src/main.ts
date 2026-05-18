@@ -345,6 +345,25 @@ export async function main(): Promise<number> {
         // by the credential-proxy mid-flight); no ANTHROPIC_BASE_URL — SDK
         // calls api.anthropic.com directly through HTTPS_PROXY.
         //
+        // The env literal here partitions into two distinct concerns that
+        // happen to share the same SDK subprocess env namespace:
+        //
+        // (a) Phase C — HOME redirect for the SDK subprocess (jsonl
+        //     persistence). See per-bullet rationale below.
+        //
+        // (b) Phase 0 skill discovery (I-P0-1 / I-P0-3) — CLAUDE_CONFIG_DIR
+        //     forwarded from the sandbox-provided runner env so the SDK's
+        //     `'user'` setting source resolves to a host-owned root
+        //     (`<sandbox-HOME>/.ax/session`) that's SEPARATE from the
+        //     workspace's `'project'` source (`<cwd>/.claude/skills`).
+        //     Without the forward, the SDK falls back to `<HOME>/.claude`,
+        //     which — because the (a) override below sets HOME=workspaceRoot
+        //     — collapses onto the project-source path, making the two
+        //     setting sources indistinguishable and rendering the host-
+        //     installed-skills surface unreachable. The forward itself
+        //     lives in proxy-startup.ts (ENV_ALLOWLIST) so the value
+        //     arrives via `...proxyStartup.anthropicEnv` below.
+        //
         // Phase C: HOME redirect for the SDK subprocess.
         //   - The k8s sandbox pod sets HOME=/nonexistent at the pod level
         //     so `git` (and any other tool the runner spawns) can't
@@ -367,6 +386,11 @@ export async function main(): Promise<number> {
         //     value wins on conflict. anthropicEnv currently doesn't set
         //     HOME, but defensive ordering matches the intent: we
         //     explicitly redirect HOME for the SDK subprocess.
+        //   - We DO NOT override CLAUDE_CONFIG_DIR here — the sandbox
+        //     plugin's value (carried through proxyStartup.anthropicEnv)
+        //     is the source of truth for the (b) split above. If a future
+        //     refactor adds CLAUDE_CONFIG_DIR after the spread it would
+        //     break I-P0-1.
         env: {
           ...proxyStartup.anthropicEnv,
           HOME: env.workspaceRoot,

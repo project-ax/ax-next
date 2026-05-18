@@ -246,22 +246,31 @@ export async function openSessionImpl(
     //    ENOENT. `fs.rm` does NOT follow the link when removing it.
     //
     //    Concurrent-session race: two open-session calls on the same
-    //    workspace can interleave as A.rm → B.rm → A.symlink → B.symlink,
-    //    leaving B's symlink() to throw EEXIST. The end state is correct
-    //    (the link points where it should), so we re-read and accept iff
-    //    the existing target matches. A mismatched target surfaces the
-    //    real conflict instead of being silently overwritten.
+    //    workspace can interleave. We pre-check the existing target so
+    //    a correct symlink is left in place — that eliminates the window
+    //    where `A.rm → A.symlink → B.rm` would briefly remove a working
+    //    link out from under session A's spawning runner. If readlink
+    //    returns the expected target, we're done; otherwise (wrong
+    //    target, regular file, dir, ENOENT), fall through to the rm+
+    //    symlink path. The post-symlink EEXIST handler is the final
+    //    fallback for the A.rm → B.rm → A.symlink → B.symlink ordering
+    //    that the pre-check can't cover.
     await fs.mkdir(workspaceClaudeDir, { recursive: true, mode: 0o755 });
     await fs.mkdir(workspaceAxSkillsDir, { recursive: true, mode: 0o755 });
-    await fs.rm(workspaceSkillsSymlink, { recursive: true, force: true });
-    try {
-      await fs.symlink('../.ax/skills', workspaceSkillsSymlink);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
-      const existing = await fs
-        .readlink(workspaceSkillsSymlink)
-        .catch(() => null);
-      if (existing !== '../.ax/skills') throw err;
+    const existingTarget = await fs
+      .readlink(workspaceSkillsSymlink)
+      .catch(() => null);
+    if (existingTarget !== '../.ax/skills') {
+      await fs.rm(workspaceSkillsSymlink, { recursive: true, force: true });
+      try {
+        await fs.symlink('../.ax/skills', workspaceSkillsSymlink);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+        const raced = await fs
+          .readlink(workspaceSkillsSymlink)
+          .catch(() => null);
+        if (raced !== '../.ax/skills') throw err;
+      }
     }
   } catch (cause) {
     // Best-effort cleanup so a setup failure doesn't leak the tempdir.
