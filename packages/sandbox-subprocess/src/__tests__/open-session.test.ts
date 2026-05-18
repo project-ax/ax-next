@@ -663,6 +663,158 @@ describe('sandbox:open-session', () => {
     await fs.rm(ws, { recursive: true, force: true });
   });
 
+  // ---------------------------------------------------------------------
+  // I-P0-3 / I-P0-4: per-session HOME + CLAUDE_CONFIG_DIR + workspace
+  // skills symlink.
+  //
+  // The Claude Agent SDK's skill discovery walks two paths:
+  //   - `'project'` source → `<cwd>/.claude/skills/`
+  //   - `'user'` source    → `$CLAUDE_CONFIG_DIR/skills/` (fallback: `$HOME/.claude/skills/`)
+  //
+  // The sandbox MUST point both at host-controlled directories so the
+  // developer's personal `~/.claude/skills/` never leaks into the
+  // sandbox, and so the agent can't drop arbitrary content into
+  // `.claude/skills/` (that surface is owned by the host validator).
+  // ---------------------------------------------------------------------
+
+  it('allocates a per-session HOME and sets CLAUDE_CONFIG_DIR under it (I-P0-3)', async () => {
+    const ws = await mkWorkspace();
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    const result = await h.bus.call<unknown, OpenSessionResult>(
+      'sandbox:open-session',
+      ctx,
+      { sessionId: 'p0-home', workspaceRoot: ws, runnerBinary: ECHO_STUB },
+    );
+    const line = await readFirstStdoutLine(result);
+    const parsed = JSON.parse(line) as Record<string, string | null>;
+
+    // HOME is set, lives under the per-session socket tempdir (so cleanup
+    // piggybacks), and is NOT the host's HOME.
+    expect(typeof parsed.HOME).toBe('string');
+    expect(parsed.HOME).not.toBe(process.env.HOME ?? null);
+    expect(parsed.HOME).toMatch(/\/ax-ipc-.*\/home$/);
+
+    // CLAUDE_CONFIG_DIR points at $HOME/.ax/session.
+    expect(parsed.CLAUDE_CONFIG_DIR).toBe(
+      path.join(parsed.HOME as string, '.ax', 'session'),
+    );
+
+    // The installed-skills dir exists on disk before the runner spawned —
+    // by the time stdout has been echoed, mkdir has long since resolved,
+    // so we can stat it now.
+    const installedSkills = path.join(parsed.CLAUDE_CONFIG_DIR as string, 'skills');
+    const st = await fs.stat(installedSkills);
+    expect(st.isDirectory()).toBe(true);
+
+    await result.handle.kill();
+    await result.handle.exited;
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
+  it('cleans up the per-session HOME on child close (piggybacks on socketDir rm)', async () => {
+    const ws = await mkWorkspace();
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    const result = await h.bus.call<unknown, OpenSessionResult>(
+      'sandbox:open-session',
+      ctx,
+      { sessionId: 'p0-home-cleanup', workspaceRoot: ws, runnerBinary: ECHO_STUB },
+    );
+    const line = await readFirstStdoutLine(result);
+    const parsed = JSON.parse(line) as Record<string, string | null>;
+    const homeDir = parsed.HOME as string;
+    // Sanity: exists before close.
+    await expect(fs.stat(homeDir)).resolves.toBeDefined();
+
+    await result.handle.kill();
+    await result.handle.exited;
+
+    await waitForRemoval(homeDir);
+    await expect(fs.stat(homeDir)).rejects.toMatchObject({ code: 'ENOENT' });
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
+  it('symlinks <workspace>/.claude/skills → ../.ax/skills (I-P0-4)', async () => {
+    const ws = await mkWorkspace();
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    const result = await h.bus.call<unknown, OpenSessionResult>(
+      'sandbox:open-session',
+      ctx,
+      { sessionId: 'p0-symlink', workspaceRoot: ws, runnerBinary: ECHO_STUB },
+    );
+
+    const symlinkPath = path.join(ws, '.claude', 'skills');
+    // It IS a symlink (lstat doesn't follow).
+    const lst = await fs.lstat(symlinkPath);
+    expect(lst.isSymbolicLink()).toBe(true);
+
+    // Target is RELATIVE (`'../.ax/skills'`) — required for k8s-style
+    // pod-remount stability; this provider just keeps the on-disk shape
+    // identical to the k8s sibling.
+    const target = await fs.readlink(symlinkPath);
+    expect(target).toBe('../.ax/skills');
+
+    // The link resolves to the host-controlled .ax/skills directory.
+    const resolved = await fs.realpath(symlinkPath);
+    const expected = await fs.realpath(path.join(ws, '.ax', 'skills'));
+    expect(resolved).toBe(expected);
+
+    await result.handle.kill();
+    await result.handle.exited;
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
+  it('does NOT symlink the parent .claude/ directory — only .claude/skills/', async () => {
+    const ws = await mkWorkspace();
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    const result = await h.bus.call<unknown, OpenSessionResult>(
+      'sandbox:open-session',
+      ctx,
+      { sessionId: 'p0-narrow', workspaceRoot: ws, runnerBinary: ECHO_STUB },
+    );
+
+    // .claude/ is a real directory.
+    const parentLst = await fs.lstat(path.join(ws, '.claude'));
+    expect(parentLst.isDirectory()).toBe(true);
+    expect(parentLst.isSymbolicLink()).toBe(false);
+    // .claude/skills is the symlink.
+    const childLst = await fs.lstat(path.join(ws, '.claude', 'skills'));
+    expect(childLst.isSymbolicLink()).toBe(true);
+
+    await result.handle.kill();
+    await result.handle.exited;
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
+  it('handles re-entry when <workspace>/.claude/skills already exists (no EEXIST)', async () => {
+    // Workspace re-use: a prior session left a stale symlink (or even a
+    // dangling file) at .claude/skills. open-session must overwrite it
+    // cleanly. We seed a dangling symlink first.
+    const ws = await mkWorkspace();
+    await fs.mkdir(path.join(ws, '.claude'), { recursive: true });
+    await fs.symlink('/var/empty/does/not/exist', path.join(ws, '.claude', 'skills'));
+
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    const result = await h.bus.call<unknown, OpenSessionResult>(
+      'sandbox:open-session',
+      ctx,
+      { sessionId: 'p0-reentry', workspaceRoot: ws, runnerBinary: ECHO_STUB },
+    );
+
+    // After open-session, the symlink target points at ../.ax/skills,
+    // not the stale path we seeded.
+    const target = await fs.readlink(path.join(ws, '.claude', 'skills'));
+    expect(target).toBe('../.ax/skills');
+
+    await result.handle.kill();
+    await result.handle.exited;
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
   it('omits conversationId when owner has no conversationId (back-compat with non-orchestrator callers)', async () => {
     const ws = await mkWorkspace();
     const h = await makeHarness();

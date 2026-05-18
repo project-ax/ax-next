@@ -36,6 +36,8 @@ const env = {
   // Allowlisted parent vars echoed for the spread-precedence test.
   HOME: process.env.HOME ?? null,
   FOO: process.env.FOO ?? null,
+  // Skill-discovery env (I-P0-3): per-session HOME + CLAUDE_CONFIG_DIR.
+  CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR ?? null,
 };
 process.stdout.write(JSON.stringify(env) + '\n');
 
