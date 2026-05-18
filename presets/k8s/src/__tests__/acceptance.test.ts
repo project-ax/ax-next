@@ -13,6 +13,7 @@ import {
 
 import {
   HookBus,
+  PluginError,
   bootstrap,
   makeAgentContext,
   type AgentContext,
@@ -25,7 +26,11 @@ import {
   buildBaselineBundle,
   workspaceCommitNotifyHandler,
 } from '@ax/ipc-core';
+import { createAttachmentsPlugin } from '@ax/attachments';
+import { createChannelWebServerPlugin } from '@ax/channel-web/server';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
+import { createHttpServerPlugin } from '@ax/http-server';
+import { createWorkspaceGitPlugin } from '@ax/workspace-git';
 import { createConversationsPlugin } from '@ax/conversations';
 import type {
   CreateInput as ConversationsCreateInput,
@@ -1523,6 +1528,451 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         if (handle !== null) await handle.shutdown();
         if (server !== null) await server.close();
         await fs.rm(serverRepoRoot, { recursive: true, force: true });
+      }
+    },
+  );
+
+  // ---------------------------------------------------------------------------
+  // Phase 3 canary — attachments round-trip (I3 anchor, 2026-05-18).
+  //
+  // Closes the half-wired window opened by Phase 1: until now, the
+  // @ax/attachments hooks were reachable on the bus but no test exercised the
+  // full HTTP round-trip. This canary boots http-server + channel-web +
+  // attachments + conversations + workspace-git against a real Postgres
+  // testcontainer and drives the pipeline:
+  //
+  //   1. POST /api/attachments — multipart upload "hello attached" → 200 + attachmentId.
+  //   2. POST /api/chat/messages with `attachment_ref` → 202 + conversationId
+  //      (route calls attachments:commit which writes bytes to
+  //      .ax/uploads/<conversationId>/<turnId>/<file> via workspace:apply).
+  //   3. Seed the runner-native jsonl with the user turn carrying the
+  //      `attachment` block at the committed path — what the real runner
+  //      would write after its HOME-redirect picks up the user message.
+  //      This is the same `workspace:apply` pattern the Phase D canary uses;
+  //      the chat path here doesn't actually run a runner (agent:invoke is
+  //      stubbed) so the jsonl needs to be seeded by the test.
+  //   4. GET /api/files for the attachment path → 200 + bytes match.
+  //   5. GET /api/files for an unscoped path → 404 (path-scope ACL).
+  //   6. GET /api/files for the same path from a foreign user → 404
+  //      (conversation-ownership ACL collapses cross-tenant to not-found).
+  //
+  // Defers the artifact_publish round-trip to a follow-up canary: stubbing
+  // the runner end-to-end so an assistant turn lands a `tool_result` is
+  // significantly more wiring than the user-attachment path; the ArtifactChip
+  // surface is independently covered by component tests (Tasks 12 + 15).
+  //
+  // Same posture as the Phase D + F canaries — boot a hand-crafted plugin
+  // list directly rather than going through createK8sPlugins (the preset's
+  // sandbox + ipc + chat plugins are out of scope for the wire-surface this
+  // canary verifies).
+  // ---------------------------------------------------------------------------
+
+  it(
+    'Phase 3 canary: attachments round-trip via /api/attachments + /api/chat/messages + /api/files',
+    { timeout: 180_000 },
+    async () => {
+      const connectionString = await ensurePostgresStarted();
+      // workspace-git's bare repo lives under here; one canary, one
+      // directory tree the finally-block can rm -rf.
+      const workspaceRoot = await fs.realpath(
+        await fs.mkdtemp(path.join(os.tmpdir(), 'ax-phase-3-canary-')),
+      );
+
+      // CSRF: the http-server's subscriber checks Origin against
+      // allowedOrigins on state-changing methods. Port is OS-assigned
+      // (`port: 0`), so we can't pre-compute the Origin allowlist value;
+      // AX_HTTP_ALLOW_NO_ORIGINS=1 plus the X-Requested-With sentinel is
+      // the documented escape hatch the other channel-web tests use.
+      const originalAllowNoOrigins = process.env.AX_HTTP_ALLOW_NO_ORIGINS;
+      process.env.AX_HTTP_ALLOW_NO_ORIGINS = '1';
+
+      const cookieKey = randomBytes(32);
+      const http = createHttpServerPlugin({
+        host: '127.0.0.1',
+        port: 0,
+        cookieKey,
+        allowedOrigins: [],
+      });
+
+      // Auth stub: reads `x-test-user` to pick the user. Two-user shape so
+      // the foreign-user case (cross-tenant 404) can drive a separate
+      // identity over the same socket.
+      const AUTH_STUB_NAME = '@ax/preset-k8s/test/phase-3-auth-stub';
+      const authStubPlugin: Plugin = {
+        manifest: {
+          name: AUTH_STUB_NAME,
+          version: '0.0.0',
+          registers: ['auth:require-user'],
+          calls: [],
+          subscribes: [],
+        },
+        init({ bus }) {
+          bus.registerService(
+            'auth:require-user',
+            AUTH_STUB_NAME,
+            async (_ctx: AgentContext, input) => {
+              const i = input as { req?: { headers?: Record<string, string> } };
+              const userId = i.req?.headers?.['x-test-user'];
+              if (typeof userId !== 'string' || userId.length === 0) {
+                // Mirror @ax/auth-better's not-signed-in shape — the route
+                // collapses any PluginError to 401.
+                throw new PluginError({
+                  code: 'unauthenticated',
+                  plugin: AUTH_STUB_NAME,
+                  message: 'no x-test-user header',
+                });
+              }
+              return { user: { id: userId, isAdmin: false } };
+            },
+          );
+        },
+      };
+
+      // Permissive agents stub that ALSO registers agents:list-for-user
+      // (channel-web's manifest hard-requires it). The existing
+      // createPermissiveAgentsStubPlugin only registers agents:resolve.
+      const AGENTS_STUB_NAME = '@ax/preset-k8s/test/phase-3-agents-stub';
+      const agentsStubPlugin: Plugin = {
+        manifest: {
+          name: AGENTS_STUB_NAME,
+          version: '0.0.0',
+          registers: ['agents:resolve', 'agents:list-for-user'],
+          calls: [],
+          subscribes: [],
+        },
+        init({ bus }) {
+          bus.registerService(
+            'agents:resolve',
+            AGENTS_STUB_NAME,
+            async (_ctx: AgentContext, input) => {
+              const i = input as { agentId?: string; userId?: string };
+              const agentId = i.agentId ?? 'phase-3-agent';
+              const userId = i.userId ?? 'phase-3-user';
+              return {
+                agent: {
+                  id: agentId,
+                  ownerId: userId,
+                  ownerType: 'user' as const,
+                  visibility: 'personal' as const,
+                  displayName: 'Phase 3 canary agent',
+                  systemPrompt: 'You are a helpful assistant.',
+                  allowedTools: [] as string[],
+                  mcpConfigIds: [] as string[],
+                  model: 'claude-sonnet-4-7',
+                  workspaceRef: null,
+                  allowedHosts: [] as string[],
+                  requiredCredentials: {} as Record<
+                    string,
+                    { ref: string; kind: string }
+                  >,
+                  createdAt: new Date(),
+                  updatedAt: new Date(),
+                },
+              };
+            },
+          );
+          bus.registerService(
+            'agents:list-for-user',
+            AGENTS_STUB_NAME,
+            async () => ({ agents: [] as Array<unknown> }),
+          );
+        },
+      };
+
+      // agent:invoke stub — captures the dispatched message but does no
+      // runner work. The Phase 3 canary doesn't verify the chat actually
+      // ran (artifact_publish round-trip is a follow-up); it only needs
+      // the route to return 202 and the attachment to be committed
+      // beforehand.
+      const AGENT_INVOKE_STUB_NAME =
+        '@ax/preset-k8s/test/phase-3-agent-invoke-stub';
+      const dispatchedMessages: Array<unknown> = [];
+      const agentInvokeStubPlugin: Plugin = {
+        manifest: {
+          name: AGENT_INVOKE_STUB_NAME,
+          version: '0.0.0',
+          registers: ['agent:invoke'],
+          calls: [],
+          subscribes: [],
+        },
+        init({ bus }) {
+          bus.registerService(
+            'agent:invoke',
+            AGENT_INVOKE_STUB_NAME,
+            async (_ctx: AgentContext, input) => {
+              dispatchedMessages.push(input);
+              return { kind: 'complete', messages: [] };
+            },
+          );
+        },
+      };
+
+      const plugins: Plugin[] = [
+        http,
+        createDatabasePostgresPlugin({ connectionString }),
+        createWorkspaceGitPlugin({ repoRoot: workspaceRoot }),
+        createConversationsPlugin(),
+        createAttachmentsPlugin(),
+        createChannelWebServerPlugin(),
+        authStubPlugin,
+        agentsStubPlugin,
+        agentInvokeStubPlugin,
+      ];
+
+      const bus = new HookBus();
+      let handle: Awaited<ReturnType<typeof bootstrap>> | null = null;
+      try {
+        handle = await bootstrap({ bus, plugins, config: {} });
+        const port = http.boundPort();
+
+        const USER = 'phase-3-user';
+        const OTHER_USER = 'phase-3-other-user';
+        const AGENT = 'phase-3-agent';
+        const ATTACHMENT_BYTES = 'hello attached';
+        const REQUEST_ORIGIN = `http://127.0.0.1:${port}`;
+
+        // 1. POST /api/attachments — multipart upload.
+        const boundary = '----phase-3-canary-boundary';
+        const partsEnc = (s: string) => Buffer.from(s, 'utf8');
+        const uploadBody = Buffer.concat([
+          partsEnc(`--${boundary}\r\n`),
+          partsEnc(
+            'Content-Disposition: form-data; name="file"; filename="note.txt"\r\n',
+          ),
+          partsEnc('Content-Type: text/plain\r\n\r\n'),
+          partsEnc(ATTACHMENT_BYTES),
+          partsEnc(`\r\n--${boundary}--\r\n`),
+        ]);
+        const uploadResp = await fetch(
+          `http://127.0.0.1:${port}/api/attachments`,
+          {
+            method: 'POST',
+            // undici accepts Buffer here even though the DOM type doesn't
+            // include it; cast through unknown for tsc.
+            body: uploadBody as unknown as BodyInit,
+            headers: {
+              'content-type': `multipart/form-data; boundary=${boundary}`,
+              origin: REQUEST_ORIGIN,
+              'x-requested-with': 'ax-admin',
+              'x-test-user': USER,
+            },
+          },
+        );
+        expect(uploadResp.status).toBe(200);
+        const uploadJson = (await uploadResp.json()) as {
+          attachmentId: string;
+          sizeBytes: number;
+          mediaType: string;
+          displayName: string;
+        };
+        expect(typeof uploadJson.attachmentId).toBe('string');
+        expect(uploadJson.attachmentId.length).toBeGreaterThan(0);
+        expect(uploadJson.sizeBytes).toBe(ATTACHMENT_BYTES.length);
+
+        // 2. POST /api/chat/messages with the attachment_ref. The route
+        // commits the attachment to the workspace and dispatches
+        // agent:invoke (our stub) — returns 202 with conversationId.
+        const chatResp = await fetch(
+          `http://127.0.0.1:${port}/api/chat/messages`,
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              conversationId: null,
+              agentId: AGENT,
+              contentBlocks: [
+                { type: 'text', text: 'here is a note' },
+                {
+                  type: 'attachment_ref',
+                  attachmentId: uploadJson.attachmentId,
+                },
+              ],
+            }),
+            headers: {
+              'content-type': 'application/json',
+              origin: REQUEST_ORIGIN,
+              'x-requested-with': 'ax-admin',
+              'x-test-user': USER,
+            },
+          },
+        );
+        expect(chatResp.status).toBe(202);
+        const chatJson = (await chatResp.json()) as {
+          conversationId: string;
+          reqId: string;
+        };
+        expect(typeof chatJson.conversationId).toBe('string');
+        const conversationId = chatJson.conversationId;
+
+        // 3a. Locate the committed attachment via workspace:list. The
+        // commit handler mints a random filename prefix
+        // (sanitizeFilenameComponent), so we glob for the file rather
+        // than reconstructing the path. The workspace plugin keys by
+        // (ctx.userId, ctx.agentId) — same tuple as the route's
+        // attachmentCtx, so this list returns the file we just wrote.
+        const listCtx = makeAgentContext({
+          sessionId: 'phase-3-canary-lookup',
+          agentId: AGENT,
+          userId: USER,
+          workspace: { rootPath: workspaceRoot },
+        });
+        const listed = await bus.call<
+          { pathGlob: string },
+          { paths: string[] }
+        >('workspace:list', listCtx, {
+          pathGlob: `.ax/uploads/${conversationId}/**`,
+        });
+        expect(listed.paths.length).toBe(1);
+        const attachmentPath = listed.paths[0]!;
+        expect(attachmentPath.endsWith('__note.txt')).toBe(true);
+
+        // 3b. Seed the runner-native jsonl. attachments:download calls
+        // conversations:get internally to check that the requested path
+        // appears in the transcript; conversations:get reads the jsonl
+        // from the workspace. Without seeding, the transcript would be
+        // empty (we stubbed agent:invoke, so no runner ran).
+        //
+        // First bind a runnerSessionId — conversations:get short-circuits
+        // to empty turns when runnerSessionId is null (Phase D contract).
+        const runnerSessionId = '00000000-0000-0000-0000-00000000a3a3';
+        await bus.call<
+          ConversationsStoreRunnerSessionInput,
+          ConversationsStoreRunnerSessionOutput
+        >('conversations:store-runner-session', listCtx, {
+          conversationId,
+          runnerSessionId,
+        });
+
+        // The jsonl line mirrors what the SDK writes: a `user` turn whose
+        // `content` is an array carrying a text block + an `attachment`
+        // block at the committed path. The parseJsonlToTurns helper
+        // (used by conversations:get) maps that to a Turn with the same
+        // attachment block in contentBlocks.
+        const jsonlText =
+          JSON.stringify({
+            type: 'user',
+            message: {
+              role: 'user',
+              content: [
+                { type: 'text', text: 'here is a note' },
+                {
+                  type: 'attachment',
+                  path: attachmentPath,
+                  displayName: 'note.txt',
+                  mediaType: 'text/plain',
+                  sizeBytes: ATTACHMENT_BYTES.length,
+                },
+              ],
+            },
+            uuid: 'u-phase3-1',
+            timestamp: '2026-05-18T00:00:00.000Z',
+            sessionId: runnerSessionId,
+          }) + '\n';
+        const jsonlBytes = new TextEncoder().encode(jsonlText);
+        const jsonlPath = `.claude/projects/-permanent/${runnerSessionId}.jsonl`;
+        // The workspace already has a commit from attachments:commit; the
+        // git-backed workspace enforces parent CAS. Read the attachment we
+        // just located to recover the current HEAD as a WorkspaceVersion,
+        // then chain the seed apply onto it. (Phase D's canary used
+        // parent: null because its workspace started empty; we can't.)
+        const headProbe = await bus.call<
+          { path: string },
+          | { found: true; bytes: Uint8Array; version?: string }
+          | { found: false }
+        >('workspace:read', listCtx, { path: attachmentPath });
+        if (!headProbe.found || headProbe.version === undefined) {
+          throw new Error(
+            'phase-3 canary: failed to recover workspace version for seed apply',
+          );
+        }
+        await bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>(
+          'workspace:apply',
+          listCtx,
+          {
+            changes: [{ path: jsonlPath, kind: 'put', content: jsonlBytes }],
+            parent: headProbe.version,
+            reason: 'phase-3 canary: seed user jsonl',
+          },
+        );
+
+        // 3c. Sanity-check: conversations:get returns the seeded transcript
+        // with the attachment block. This is the same path
+        // attachments:download takes — verifying it here catches a
+        // jsonl-seed bug before the download assertion below would have
+        // to disambiguate it from an ACL bug.
+        const got = await bus.call<
+          ConversationsGetInput,
+          ConversationsGetOutput
+        >('conversations:get', listCtx, {
+          conversationId,
+          userId: USER,
+        });
+        expect(got.turns.length).toBe(1);
+        const blocks = got.turns[0]!.contentBlocks;
+        const attachmentBlock = blocks.find((b) => b.type === 'attachment');
+        expect(attachmentBlock).toBeTruthy();
+        if (attachmentBlock?.type === 'attachment') {
+          expect(attachmentBlock.path).toBe(attachmentPath);
+        }
+
+        // 4. GET /api/files for the user's attachment — 200 + bytes match.
+        const downloadResp = await fetch(
+          `http://127.0.0.1:${port}/api/files?` +
+            new URLSearchParams({
+              path: attachmentPath,
+              conversationId,
+            }).toString(),
+          {
+            method: 'GET',
+            headers: { 'x-test-user': USER },
+          },
+        );
+        expect(downloadResp.status).toBe(200);
+        expect(await downloadResp.text()).toBe(ATTACHMENT_BYTES);
+
+        // 5. GET /api/files for an unscoped path → 404. Path is well-formed
+        // but is not under .ax/uploads/<conversationId>/ and is not
+        // referenced from any transcript block (path-scope ACL).
+        const unscopedResp = await fetch(
+          `http://127.0.0.1:${port}/api/files?` +
+            new URLSearchParams({
+              path: 'secrets/api-keys.txt',
+              conversationId,
+            }).toString(),
+          {
+            method: 'GET',
+            headers: { 'x-test-user': USER },
+          },
+        );
+        expect(unscopedResp.status).toBe(404);
+
+        // 6. GET /api/files from a foreign user → 404. The conversation
+        // belongs to USER; OTHER_USER's conversations:get returns
+        // not-found, which the download handler collapses to its
+        // uniform-404 posture (existence-leak prevention).
+        const foreignResp = await fetch(
+          `http://127.0.0.1:${port}/api/files?` +
+            new URLSearchParams({
+              path: attachmentPath,
+              conversationId,
+            }).toString(),
+          {
+            method: 'GET',
+            headers: { 'x-test-user': OTHER_USER },
+          },
+        );
+        expect(foreignResp.status).toBe(404);
+
+        // The chat-messages route did dispatch agent:invoke — proves the
+        // happy-path through the producer, even though our stub is a no-op.
+        expect(dispatchedMessages.length).toBe(1);
+      } finally {
+        if (handle !== null) await handle.shutdown();
+        await fs.rm(workspaceRoot, { recursive: true, force: true });
+        if (originalAllowNoOrigins === undefined) {
+          delete process.env.AX_HTTP_ALLOW_NO_ORIGINS;
+        } else {
+          process.env.AX_HTTP_ALLOW_NO_ORIGINS = originalAllowNoOrigins;
+        }
       }
     },
   );
