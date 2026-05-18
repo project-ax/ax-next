@@ -297,7 +297,10 @@ describe('buildPodSpec', () => {
     expect(byName('GIT_CONFIG_NOSYSTEM')).toBe('1');
     expect(byName('GIT_CONFIG_GLOBAL')).toBe('/dev/null');
     expect(byName('GIT_TERMINAL_PROMPT')).toBe('0');
-    expect(byName('HOME')).toBe('/nonexistent');
+    // HOME is now /home/runner (a writable emptyDir Memory mount) per
+    // I-P0-3 — see the skill-install Phase 0 describe block below for
+    // the rationale and the volume/mount/env-stamp assertions.
+    expect(byName('HOME')).toBe('/home/runner');
     expect(byName('GIT_AUTHOR_NAME')).toBe('ax-runner');
     expect(byName('GIT_AUTHOR_EMAIL')).toBe('ax-runner@example.com');
     expect(byName('GIT_COMMITTER_NAME')).toBe('ax-runner');
@@ -383,6 +386,118 @@ describe('buildPodSpec', () => {
       expect(env.find((e) => e.name === 'NODE_EXTRA_CA_CERTS')).toBeUndefined();
       const vols = (spec.spec as { volumes: Array<{ name: string }> }).volumes;
       expect(vols.find((v) => v.name === 'proxy-socket')).toBeUndefined();
+    });
+  });
+
+  // Phase 0 of skill-install: HOME + CLAUDE_CONFIG_DIR + init-container
+  // skills scaffold (I-P0-3/4). K8s sibling of the sandbox-subprocess
+  // fix in 87a8c2c8 + 5b3d1828.
+  describe('skill-install Phase 0 (HOME + skills scaffold)', () => {
+    it('mounts an emptyDir at /home/runner with HOME pointing at it', () => {
+      // The SDK's `'user'` setting source walks `$HOME/.claude/skills/`. We
+      // can't let it land on the host node's /root or whatever the image
+      // ships — that's a per-pod tmpfs (Memory) so it's ephemeral, isolated
+      // per session, and writable despite the rest of rootfs being RO.
+      const spec = buildPodSpec('pod-home', baseInput, baseResolved());
+      const podSpec = spec.spec as {
+        containers: Array<{
+          env: Array<{ name: string; value: string }>;
+          volumeMounts: Array<{ name: string; mountPath: string }>;
+        }>;
+        volumes: Array<{ name: string; emptyDir?: { medium?: string } }>;
+      };
+      const homeVolume = podSpec.volumes.find((v) => v.name === 'home');
+      expect(homeVolume).toBeDefined();
+      expect(homeVolume!.emptyDir).toEqual({ medium: 'Memory' });
+
+      const main = podSpec.containers[0]!;
+      const homeMount = main.volumeMounts.find((m) => m.mountPath === '/home/runner');
+      expect(homeMount?.name).toBe('home');
+
+      const homeEnv = main.env.find((e) => e.name === 'HOME');
+      expect(homeEnv?.value).toBe('/home/runner');
+    });
+
+    it('sets CLAUDE_CONFIG_DIR to /home/runner/.ax/session', () => {
+      // The SDK's `'project'` setting source reads
+      // $CLAUDE_CONFIG_DIR/skills/ — point it at the per-session HOME
+      // subdir so Phase 1 (skill materialization) writes there.
+      const spec = buildPodSpec('pod-ccd', baseInput, baseResolved());
+      const env = (
+        spec.spec as { containers: Array<{ env: Array<{ name: string; value: string }> }> }
+      ).containers[0]!.env;
+      const ccd = env.find((e) => e.name === 'CLAUDE_CONFIG_DIR');
+      expect(ccd?.value).toBe('/home/runner/.ax/session');
+    });
+
+    it('includes an init container that scaffolds the skills dir + workspace symlink', () => {
+      // The init container creates the empty skills dir + the
+      // .claude/skills → ../.ax/skills symlink the SDK's project
+      // discovery walks. Matches the subprocess sibling's on-disk shape
+      // exactly (relative symlink target so it survives remounts).
+      const spec = buildPodSpec('pod-init', baseInput, baseResolved());
+      const init = (
+        spec.spec as {
+          initContainers?: Array<{
+            name: string;
+            command?: string[];
+            args?: string[];
+            volumeMounts?: Array<{ name: string; mountPath: string }>;
+          }>;
+        }
+      ).initContainers ?? [];
+      const scaffold = init.find((c) => c.name === 'sdk-scaffold');
+      expect(scaffold).toBeDefined();
+
+      const mounts = (scaffold!.volumeMounts ?? []).map((m) => m.name);
+      expect(mounts).toContain('home');
+      expect(mounts).toContain('permanent');
+
+      const cmdJoined = (scaffold!.command ?? []).concat(scaffold!.args ?? []).join(' ');
+      expect(cmdJoined).toContain('/home/runner/.ax/session/skills');
+      expect(cmdJoined).toMatch(/rm\s+-rf\s+\/permanent\/\.claude\/skills/);
+      expect(cmdJoined).toMatch(/ln\s+-s(?:f)?\s+\.\.\/\.ax\/skills\s+\/permanent\/\.claude\/skills/);
+    });
+
+    it('init container runs as the same non-root user as the main container', () => {
+      // Init containers run BEFORE the main container with their own
+      // security context. If we don't pin them to the same uid + locked
+      // down caps, an attacker who breaks into the init step (e.g. via
+      // a future image-supply-chain compromise) escalates beyond what
+      // the main container can do. Match the main container exactly.
+      const spec = buildPodSpec('pod-sec', baseInput, baseResolved());
+      const podSpec = spec.spec as {
+        containers: Array<{ securityContext: Record<string, unknown> }>;
+        initContainers: Array<{ name: string; securityContext: Record<string, unknown> }>;
+      };
+      const main = podSpec.containers[0]!;
+      const init = podSpec.initContainers.find((c) => c.name === 'sdk-scaffold')!;
+      expect(init.securityContext).toMatchObject({
+        runAsNonRoot: true,
+        runAsUser: main.securityContext.runAsUser,
+        runAsGroup: main.securityContext.runAsGroup,
+        allowPrivilegeEscalation: false,
+        readOnlyRootFilesystem: true,
+        capabilities: { drop: ['ALL'] },
+      });
+    });
+
+    it('init container uses the same image as the main runner container', () => {
+      // Same-image saves a second image pull on cold starts (the runner
+      // image is already cached when the init step runs). Introducing a
+      // separate busybox dep would also widen the supply-chain surface
+      // for what is effectively a few `mkdir`/`ln` calls.
+      const cfg = resolveConfig({
+        hostIpcUrl: 'http://test:80',
+      });
+      const spec = buildPodSpec('pod-img', baseInput, cfg);
+      const podSpec = spec.spec as {
+        containers: Array<{ image: string }>;
+        initContainers: Array<{ name: string; image: string }>;
+      };
+      const main = podSpec.containers[0]!;
+      const init = podSpec.initContainers.find((c) => c.name === 'sdk-scaffold')!;
+      expect(init.image).toBe(main.image);
     });
   });
 });

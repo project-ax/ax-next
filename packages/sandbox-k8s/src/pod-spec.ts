@@ -141,11 +141,21 @@ export function buildPodSpec(
   // composes PATH (Node + git on the locked-down image), and overriding it
   // from the pod-spec would force operators to know the image's bin layout.
   // The image is the trust root for binary lookup (I5).
+  // I-P0-3 (skill-install Phase 0): HOME is now a writable, per-session
+  // tmpfs mount at /home/runner (volume `home`, emptyDir Memory). This
+  // gives the Claude Agent SDK's `'user'` setting source a real path to
+  // walk for $HOME/.claude/skills/, isolated to the pod and discarded on
+  // exit. The previous /nonexistent value made the SDK either ENOENT or
+  // worse, fall through to whatever HOME the image ships with.
+  // CLAUDE_CONFIG_DIR points the SDK's `'project'` setting source at
+  // /home/runner/.ax/session/skills/ — also tmpfs, also ephemeral.
+  // Phase 1 (skill materialization) writes there; Phase 0 leaves it empty.
   const gitParanoidEnv: EnvVar[] = [
     { name: 'GIT_CONFIG_NOSYSTEM', value: '1' },
     { name: 'GIT_CONFIG_GLOBAL', value: '/dev/null' },
     { name: 'GIT_TERMINAL_PROMPT', value: '0' },
-    { name: 'HOME', value: '/nonexistent' },
+    { name: 'HOME', value: '/home/runner' },
+    { name: 'CLAUDE_CONFIG_DIR', value: '/home/runner/.ax/session' },
     { name: 'GIT_AUTHOR_NAME', value: 'ax-runner' },
     { name: 'GIT_AUTHOR_EMAIL', value: 'ax-runner@example.com' },
     { name: 'GIT_COMMITTER_NAME', value: 'ax-runner' },
@@ -299,6 +309,13 @@ export function buildPodSpec(
         securityContext: containerSecurity,
         volumeMounts: [
           { name: 'tmp', mountPath: '/tmp' },
+          // I-P0-3: per-session HOME on tmpfs. Mounted on both the main
+          // container AND the sdk-scaffold init container (the init step
+          // creates the .ax/session/skills/ directory before the SDK
+          // walks for it). The volume is defined as `emptyDir: Memory`
+          // below — tmpfs keeps it fast + ephemeral and never touches
+          // the node's disk.
+          { name: 'home', mountPath: '/home/runner' },
           // Phase 3: split the legacy /workspace mount in two. /permanent
           // is the git working tree (materialized at session start, the
           // source of every per-turn bundle). /ephemeral is caches and
@@ -327,8 +344,57 @@ export function buildPodSpec(
         ],
       },
     ],
+    // I-P0-3/4 (skill-install Phase 0): the sdk-scaffold init container
+    // runs before the main runner container and prepares the on-disk
+    // shape the Claude Agent SDK expects for skill discovery. It mirrors
+    // sandbox-subprocess's setup in `open-session.ts`:
+    //   - mkdir -p /home/runner/.ax/session/skills  (empty in Phase 0,
+    //     SDK's `'project'` source walks it via $CLAUDE_CONFIG_DIR/skills)
+    //   - mkdir -p /permanent/.claude  +  /permanent/.ax/skills
+    //   - rm -rf /permanent/.claude/skills  (recursive, idempotent — a
+    //     re-entry left behind any of: stale symlink, regular file, or
+    //     non-empty directory; matches 5b3d1828's recursive cleanup fix
+    //     in the subprocess sibling)
+    //   - ln -sf ../.ax/skills /permanent/.claude/skills  (-sf handles
+    //     the very unlikely concurrent-recreate race after the rm; also
+    //     redundantly clears anything the rm missed)
+    // Relative symlink target so it survives bind-mount path renames.
+    // Same image as the main runner — already cached on the node, no
+    // extra image pull, no extra supply-chain surface to vet.
+    // Same security context as the main runner (uid 1000, RO rootfs,
+    // dropped caps): a future image compromise can't use the init step
+    // to escalate beyond what the runner itself can do.
+    initContainers: [
+      {
+        name: 'sdk-scaffold',
+        image: config.image,
+        command: ['/bin/sh', '-c'],
+        args: [
+          [
+            'set -eu',
+            'mkdir -p /home/runner/.ax/session/skills',
+            'mkdir -p /permanent/.claude',
+            'mkdir -p /permanent/.ax/skills',
+            'rm -rf /permanent/.claude/skills',
+            'ln -sf ../.ax/skills /permanent/.claude/skills',
+          ].join(' && '),
+        ],
+        env: gitParanoidEnv,
+        volumeMounts: [
+          { name: 'home', mountPath: '/home/runner' },
+          { name: 'permanent', mountPath: '/permanent' },
+        ],
+        securityContext: containerSecurity,
+      },
+    ],
     volumes: [
       { name: 'tmp', emptyDir: {} },
+      // I-P0-3: tmpfs HOME for the runner. emptyDir w/ medium: Memory
+      // means the kubelet allocates an in-RAM tmpfs (no disk hit, no
+      // persistence past pod termination, no cross-pod visibility). The
+      // SDK's user-scope skill discovery walks $HOME/.claude/skills/
+      // here; Phase 0 leaves it empty.
+      { name: 'home', emptyDir: { medium: 'Memory' } },
       { name: 'permanent', emptyDir: {} },
       { name: 'ephemeral', emptyDir: {} },
       // hostPath bridge between host pod's credential-proxy and the
