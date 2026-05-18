@@ -391,6 +391,13 @@ export interface AgentStore {
    * a skill that an agent is currently relying on.
    */
   anyAttachedToSkill(skillId: string): Promise<boolean>;
+  /**
+   * Replace the skill_attachments array wholesale for an agent. The caller
+   * (agents:set-skill-attachments) is responsible for pre-validating the
+   * attachments with validateNewAttachments before calling this method.
+   * Throws PluginError(not-found) when the agent row doesn't exist.
+   */
+  setSkillAttachments(agentId: string, attachments: SkillAttachment[]): Promise<Agent>;
 }
 
 export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
@@ -553,6 +560,41 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
         .limit(1)
         .executeTakeFirst();
       return Boolean(row);
+    },
+
+    async setSkillAttachments(agentId, attachments) {
+      const row = await db
+        .updateTable('agents_v1_agents')
+        .set({
+          skill_attachments: JSON.stringify(attachments) as unknown,
+          updated_at: new Date(),
+        } as never)
+        .where('agent_id', '=', agentId)
+        .returning([
+          'agent_id',
+          'owner_id',
+          'owner_type',
+          'visibility',
+          'display_name',
+          'system_prompt',
+          'allowed_tools',
+          'mcp_config_ids',
+          'model',
+          'workspace_ref',
+          'webhook_token',
+          'skill_attachments',
+          'created_at',
+          'updated_at',
+        ])
+        .executeTakeFirst();
+      if (row === undefined) {
+        throw new PluginError({
+          code: 'not-found',
+          plugin: PLUGIN_NAME,
+          message: `agent '${agentId}' not found`,
+        });
+      }
+      return rowToAgent(row as AgentsRow);
     },
   };
 }

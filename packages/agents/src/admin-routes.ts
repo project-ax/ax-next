@@ -6,6 +6,10 @@ import {
   type HookBus,
 } from '@ax/core';
 import { z } from 'zod';
+import {
+  validateNewAttachments,
+  type NewAttachmentInput,
+} from './skill-attachments-validation.js';
 import type {
   Actor,
   Agent,
@@ -17,6 +21,7 @@ import type {
   ListForUserOutput,
   ResolveInput,
   ResolveOutput,
+  SkillAttachment,
   UpdateInput,
   UpdateOutput,
 } from './types.js';
@@ -169,6 +174,31 @@ const updateBodySchema = z
     mcpConfigIds: mcpConfigIdsSchema.optional(),
     model: modelSchema.optional(),
     workspaceRef: workspaceRefSchema.optional(),
+  })
+  .strict();
+
+// Slot identifiers: UPPER_SNAKE_CASE, 1-64 chars.
+const SLOT_RE = /^[A-Z][A-Z0-9_]{0,63}$/;
+// Skill identifiers: lower-kebab-case, 1-64 chars.
+const SKILL_ID_RE = /^[a-z][a-z0-9-]{0,63}$/;
+
+const skillAttachmentSchema = z
+  .object({
+    skillId: z.string().regex(SKILL_ID_RE, 'skillId has invalid shape'),
+    credentialBindings: z.record(
+      z.string().regex(SLOT_RE, 'slot has invalid shape'),
+      z.string().min(1).max(256),
+    ),
+  })
+  .strict();
+
+/**
+ * Body schema for `PATCH /admin/agents/:id/skill-attachments`. Replaces the
+ * entire skill_attachments array. An empty array detaches all skills.
+ */
+const patchAttachmentsBodySchema = z
+  .object({
+    skillAttachments: z.array(skillAttachmentSchema).max(20),
   })
   .strict();
 
@@ -470,6 +500,78 @@ export function createAdminAgentRouteHandlers(deps: AdminRouteDeps) {
         throw err;
       }
     },
+
+    /** PATCH /admin/agents/:id/skill-attachments */
+    async setSkillAttachments(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const actor = await requireUser(deps.bus, ctx, req, res);
+      if (actor === null) return;
+      // Admin-only: skill attachments carry credential refs that must not be
+      // set by arbitrary authenticated users.
+      if (!actor.isAdmin) {
+        res.status(403).json({ error: 'forbidden' });
+        return;
+      }
+      const agentId = req.params.id;
+      if (typeof agentId !== 'string' || agentId.length === 0) {
+        res.status(400).json({ error: 'missing-agent-id' });
+        return;
+      }
+      const parsed = parseAndValidate(req.body, patchAttachmentsBodySchema);
+      if (!parsed.ok) {
+        res.status(parsed.status).json({ error: parsed.message });
+        return;
+      }
+      const attachments = parsed.value.skillAttachments as NewAttachmentInput[];
+      // Collect unique skill ids to resolve in one call.
+      const uniqueSkillIds = [...new Set(attachments.map((a) => a.skillId))];
+      // Resolve referenced skills via the bus. A missing skills plugin surfaces
+      // as 'no-service'; treat it the same as zero skills found.
+      let resolvedSkills: Array<{
+        id: string;
+        capabilities: { allowedHosts: string[]; credentials: Array<{ slot: string; kind: 'api-key'; description?: string }> };
+        bodyMd: string;
+        manifestYaml: string;
+      }> = [];
+      if (uniqueSkillIds.length > 0) {
+        try {
+          const result = await deps.bus.call<
+            { skillIds: string[] },
+            { skills: typeof resolvedSkills }
+          >('skills:resolve', ctx, { skillIds: uniqueSkillIds });
+          resolvedSkills = result.skills;
+        } catch (err) {
+          if (err instanceof PluginError && err.code === 'no-service') {
+            // @ax/skills not loaded — any attachment reference is not-found.
+            resolvedSkills = [];
+          } else {
+            throw err;
+          }
+        }
+      }
+      // TODO(orchestrator-grows-requiredCredentials): pass agent.requiredCredentials
+      // keys here once Phase 1.5 plumbs that field through the agent shape. For
+      // Phase 1.4 the only seed is the attachments themselves.
+      const reservedAgentSlots: readonly string[] = [];
+      const validation = validateNewAttachments(attachments, resolvedSkills, reservedAgentSlots);
+      if (!validation.ok) {
+        res.status(400).json({ error: validation.message, code: validation.code });
+        return;
+      }
+      try {
+        const out = await deps.bus.call<
+          { actor: Actor; agentId: string; attachments: SkillAttachment[] },
+          { agent: Agent }
+        >('agents:set-skill-attachments', ctx, {
+          actor: { userId: actor.id, isAdmin: actor.isAdmin } satisfies Actor,
+          agentId,
+          attachments: validation.validated as SkillAttachment[],
+        });
+        res.status(200).json({ agent: serializeAgent(out.agent) });
+      } catch (err) {
+        if (writeServiceError(res, err)) return;
+        throw err;
+      }
+    },
   };
 }
 
@@ -493,6 +595,11 @@ export async function registerAdminAgentRoutes(
     { method: 'GET', path: '/admin/agents/:id', handler: handlers.show },
     { method: 'PATCH', path: '/admin/agents/:id', handler: handlers.update },
     { method: 'DELETE', path: '/admin/agents/:id', handler: handlers.destroy },
+    {
+      method: 'PATCH',
+      path: '/admin/agents/:id/skill-attachments',
+      handler: handlers.setSkillAttachments,
+    },
   ];
   const unregisters: Array<() => void> = [];
   for (const route of routes) {

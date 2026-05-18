@@ -119,6 +119,7 @@ describe('@ax/agents plugin manifest + lifecycle', () => {
         'agents:rotate-webhook-token',
         'agents:ensure-webhook-token',
         'agents:any-attached-to-skill',
+        'agents:set-skill-attachments',
       ],
       // database:get-instance + http:register-route + auth:require-user are
       // hard. teams:is-member is graceful (handled inside checkAccess via
