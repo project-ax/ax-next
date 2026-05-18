@@ -1,0 +1,23 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "8ce81f5bdc90",
+  "strategy": "manual-commit",
+  "branch": "feat/skill-install-phase-1",
+  "checkpoints_count": 2,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/8c/e81f5bdc90/0/metadata.json",
+      "transcript": "/8c/e81f5bdc90/0/full.jsonl",
+      "content_hash": "/8c/e81f5bdc90/0/content_hash.txt",
+      "prompt": "/8c/e81f5bdc90/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 340,
+    "cache_creation_tokens": 856044,
+    "cache_read_tokens": 77799755,
+    "output_tokens": 138996,
+    "api_call_count": 298
+  }
+}
