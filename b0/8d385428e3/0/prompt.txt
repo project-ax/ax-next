@@ -1,0 +1,43 @@
+address PR comments
+
+---
+
+Run pnpm typecheck
+
+> ax-next@0.0.0 typecheck /home/runner/work/ax-next/ax-next
+> tsc --build
+
+Error: packages/channel-web/src/components/admin/SkillAttachmentsSection.tsx(16,35): error TS2307: Cannot find module '@ax/skills' or its corresponding type declarations.
+Error: packages/channel-web/src/components/admin/SkillAttachmentsSection.tsx(142,56): error TS7006: Parameter 'slot' implicitly has an 'any' type.
+Error: packages/channel-web/src/components/admin/SkillEditor.tsx(14,36): error TS2307: Cannot find module '@ax/skills/manifest' or its corresponding type declarations.
+Error: packages/channel-web/src/components/admin/SkillEditor.tsx(156,69): error TS7006: Parameter 'h' implicitly has an 'any' type.
+Error: packages/channel-web/src/components/admin/SkillEditor.tsx(171,71): error TS7006: Parameter 'c' implicitly has an 'any' type.
+Error: packages/channel-web/src/components/admin/SkillsTab.tsx(23,35): error TS2307: Cannot find module '@ax/skills' or its corresponding type declarations.
+Error: packages/channel-web/src/components/admin/SkillsTab.tsx(119,56): error TS7006: Parameter 'h' implicitly has an 'any' type.
+Error: packages/channel-web/src/components/admin/SkillsTab.tsx(134,55): error TS7006: Parameter 'c' implicitly has an 'any' type.
+Error: packages/channel-web/src/components/admin/__tests__/SkillAttachmentsSection.test.tsx(4,35): error TS2307: Cannot find module '@ax/skills' or its corresponding type declarations.
+Error: packages/channel-web/src/components/admin/__tests__/SkillEditor.test.tsx(4,34): error TS2307: Cannot find module '@ax/skills' or its corresponding type declarations.
+Error: packages/channel-web/src/components/admin/__tests__/SkillsTab.test.tsx(4,35): error TS2307: Cannot find module '@ax/skills' or its corresponding type declarations.
+Error: packages/channel-web/src/lib/skills.ts(20,48): error TS2307: Cannot find module '@ax/skills' or its corresponding type declarations.
+ ELIFECYCLE  Command failed with exit code 2.
+Error: Process completed with exit code 2.
+
+---
+
+FAIL  __tests__/env-shape.test.ts > host deployment env vs preset loader
+deploy/charts/ax-next test: Error: helm dependency build failed: Error: error loading /home/runner/.cache/helm/repository/bitnami-index.yaml: empty index.yaml file
+deploy/charts/ax-next test: 
+deploy/charts/ax-next test:  ❯ __tests__/env-shape.test.ts:162:13
+deploy/charts/ax-next test:     160|     });
+deploy/charts/ax-next test:     161|     if (r.status !== 0) {
+deploy/charts/ax-next test:     162|       throw new Error(`helm dependency build failed: ${r.stderr ?? ''}…
+deploy/charts/ax-next test:        |             ^
+deploy/charts/ax-next test:     163|     }
+deploy/charts/ax-next test:     164|   });
+deploy/charts/ax-next test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+deploy/charts/ax-next test:  Test Files  1 failed | 1 passed (2)
+deploy/charts/ax-next test:       Tests  13 passed | 11 skipped (24)
+deploy/charts/ax-next test:    Start at  20:10:43
+deploy/charts/ax-next test:    Duration  10.58s (transform 126ms, setup 0ms, import 1.40s, tests 13.53s, environment 0ms)
+deploy/charts/ax-next test: ::error file=/home/runner/work/ax-next/ax-next/deploy/charts/ax-next/__tests__/env-shape.test.ts,title=__tests__/env-shape.test.ts > host deployment env vs preset loader,line=162,column=13::Error: helm dependency build failed: Error: error loading /home/runner/.cache/helm/repository/bitnami-index.yaml: empty index.yaml file%0A%0A ❯ __tests__/env-shape.test.ts:162:13%0A%0A
+deploy/charts/ax-next test: Failed
