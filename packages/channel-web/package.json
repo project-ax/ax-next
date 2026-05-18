@@ -27,6 +27,7 @@
     "@ax/core": "workspace:*",
     "@ax/http-server": "workspace:*",
     "@ax/ipc-protocol": "workspace:*",
+    "@ax/skills": "workspace:*",
     "zod": "^3.23.8"
   },
   "devDependencies": {

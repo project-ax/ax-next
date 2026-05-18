@@ -166,6 +166,7 @@ describe('@ax/preset-k8s wiring', () => {
         '@ax/routines-admin-routes',
         '@ax/sandbox-k8s',
         '@ax/session-postgres',
+        '@ax/skills',
         '@ax/storage-postgres',
         '@ax/teams',
         '@ax/tool-artifact-publish',

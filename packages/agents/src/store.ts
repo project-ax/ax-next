@@ -1,9 +1,9 @@
 import { randomBytes } from 'node:crypto';
 import { PluginError } from '@ax/core';
-import type { Kysely, Transaction } from 'kysely';
+import { sql, type Kysely, type Transaction } from 'kysely';
 import type { AgentsDatabase, AgentsRow } from './migrations.js';
 import { scopedAgents, type AgentScope } from './scope.js';
-import type { Agent, AgentInput } from './types.js';
+import type { Agent, AgentInput, SkillAttachment } from './types.js';
 
 const PLUGIN_NAME = '@ax/agents';
 
@@ -272,6 +272,21 @@ export function mintAgentId(): string {
   return `agt_${randomBytes(16).toString('base64url')}`;
 }
 
+// Validate that every value in a record is a non-empty string. Used to
+// narrow JSONB-decoded `credentialBindings` shapes before trusting them
+// in attachment-resolution. Array values must NOT pass (Array.isArray
+// short-circuits) — `typeof [] === 'object'` is true and we don't want
+// `{SLOT: ['a', 'b']}` slipping through.
+function isStringRecord(value: unknown): value is Record<string, string> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  for (const v of Object.values(value)) {
+    if (typeof v !== 'string' || v.length === 0) return false;
+  }
+  return true;
+}
+
 function rowToAgent(row: AgentsRow): Agent {
   // JSONB columns return parsed JS values from `pg`'s default casts —
   // narrow them defensively. A row that fails this cast is corrupt.
@@ -311,6 +326,25 @@ function rowToAgent(row: AgentsRow): Agent {
       message: `agents_v1_agents.${row.agent_id} has invalid visibility`,
     });
   }
+  const skillAttachmentsRaw = row.skill_attachments;
+  if (
+    !Array.isArray(skillAttachmentsRaw) ||
+    !skillAttachmentsRaw.every(
+      (e) =>
+        e !== null &&
+        typeof e === 'object' &&
+        !Array.isArray(e) &&
+        typeof (e as Record<string, unknown>)['skillId'] === 'string' &&
+        isStringRecord((e as Record<string, unknown>)['credentialBindings']),
+    )
+  ) {
+    throw new PluginError({
+      code: 'corrupt-row',
+      plugin: PLUGIN_NAME,
+      message: `agents_v1_agents.${row.agent_id} has invalid skill_attachments JSONB`,
+    });
+  }
+  const skillAttachments = skillAttachmentsRaw as SkillAttachment[];
   return {
     id: row.agent_id,
     ownerId: row.owner_id,
@@ -322,6 +356,7 @@ function rowToAgent(row: AgentsRow): Agent {
     mcpConfigIds,
     model: row.model,
     workspaceRef: row.workspace_ref,
+    skillAttachments,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -364,6 +399,20 @@ export interface AgentStore {
    * token surface as a constraint error from the driver.
    */
   setWebhookToken(agentId: string, token: string): Promise<void>;
+  /**
+   * Returns true if at least one agent row has an entry in
+   * skill_attachments[] whose skillId matches the given skillId.
+   * Used by the skill-delete-guard in @ax/skills to prevent removing
+   * a skill that an agent is currently relying on.
+   */
+  anyAttachedToSkill(skillId: string): Promise<boolean>;
+  /**
+   * Replace the skill_attachments array wholesale for an agent. The caller
+   * (agents:set-skill-attachments) is responsible for pre-validating the
+   * attachments with validateNewAttachments before calling this method.
+   * Throws PluginError(not-found) when the agent row doesn't exist.
+   */
+  setSkillAttachments(agentId: string, attachments: SkillAttachment[]): Promise<Agent>;
 }
 
 export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
@@ -403,6 +452,7 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
           mcp_config_ids: JSON.stringify(validated.mcpConfigIds) as unknown,
           model: validated.model,
           workspace_ref: validated.workspaceRef,
+          skill_attachments: JSON.stringify([]) as unknown,
           created_at: now,
           updated_at: now,
         } as never)
@@ -418,6 +468,7 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
           'model',
           'workspace_ref',
           'webhook_token',
+          'skill_attachments',
           'created_at',
           'updated_at',
         ])
@@ -455,6 +506,7 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
           'model',
           'workspace_ref',
           'webhook_token',
+          'skill_attachments',
           'created_at',
           'updated_at',
         ])
@@ -511,6 +563,53 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
           message: `agent '${agentId}' not found`,
         });
       }
+    },
+
+    async anyAttachedToSkill(skillId) {
+      // JSONB containment: skill_attachments array contains an object with
+      // the given skillId. Returns on the first match (LIMIT 1).
+      const row = await db
+        .selectFrom('agents_v1_agents')
+        .select(sql<number>`1`.as('one'))
+        .where(sql<boolean>`skill_attachments @> ${JSON.stringify([{ skillId }])}::jsonb`)
+        .limit(1)
+        .executeTakeFirst();
+      return Boolean(row);
+    },
+
+    async setSkillAttachments(agentId, attachments) {
+      const row = await db
+        .updateTable('agents_v1_agents')
+        .set({
+          skill_attachments: JSON.stringify(attachments) as unknown,
+          updated_at: new Date(),
+        } as never)
+        .where('agent_id', '=', agentId)
+        .returning([
+          'agent_id',
+          'owner_id',
+          'owner_type',
+          'visibility',
+          'display_name',
+          'system_prompt',
+          'allowed_tools',
+          'mcp_config_ids',
+          'model',
+          'workspace_ref',
+          'webhook_token',
+          'skill_attachments',
+          'created_at',
+          'updated_at',
+        ])
+        .executeTakeFirst();
+      if (row === undefined) {
+        throw new PluginError({
+          code: 'not-found',
+          plugin: PLUGIN_NAME,
+          message: `agent '${agentId}' not found`,
+        });
+      }
+      return rowToAgent(row as AgentsRow);
     },
   };
 }

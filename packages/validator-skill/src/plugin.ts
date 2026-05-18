@@ -36,7 +36,10 @@
 
 import type { FileChange, Plugin, WorkspaceVersion } from '@ax/core';
 import { reject } from '@ax/core';
-import { parseFrontmatterBytes } from './frontmatter.js';
+import {
+  parseFrontmatterBytes,
+  stripCapabilitiesFromFrontmatter,
+} from './frontmatter.js';
 
 const PLUGIN_NAME = '@ax/validator-skill';
 
@@ -93,8 +96,13 @@ export function createValidatorSkillPlugin(): Plugin {
       bus.subscribe<PreApplyPayload>(
         'workspace:pre-apply',
         PLUGIN_NAME,
-        async (_ctx, input) => {
-          for (const c of input.changes) {
+        async (ctx, input) => {
+          // Build the next change list lazily — if no SKILL.md needs
+          // rewriting, we return undefined and the bus keeps the
+          // original payload.
+          let rewritten: FileChange[] | undefined;
+          for (let i = 0; i < input.changes.length; i++) {
+            const c = input.changes[i]!;
             if (c.kind !== 'put') continue;
 
             // SDK-config veto — checked BEFORE the SKILL.md content
@@ -119,12 +127,42 @@ export function createValidatorSkillPlugin(): Plugin {
 
             if (!SKILL_PATH.test(c.path)) continue;
 
-            const r = parseFrontmatterBytes(c.content);
+            // I-P1-2: workspace-authored SKILL.md cannot self-grant
+            // capabilities. Strip the block before content validation
+            // so the validator sees the host-policy shape only. The
+            // installed-side parser (@ax/skills/manifest.ts) honors
+            // capabilities; this path does not.
+            let text: string;
+            try {
+              text = new TextDecoder('utf-8', { fatal: true }).decode(c.content);
+            } catch {
+              return reject({ reason: `${c.path}: SKILL.md content is not valid UTF-8` });
+            }
+            const stripResult = stripCapabilitiesFromFrontmatter(text);
+            let contentForValidation: Uint8Array = c.content;
+            if (stripResult.stripped) {
+              const newBytes = new TextEncoder().encode(stripResult.text);
+              contentForValidation = newBytes;
+              if (rewritten === undefined) {
+                rewritten = input.changes.slice();
+              }
+              rewritten[i] = { ...c, content: newBytes };
+              ctx.logger.warn('skill_capabilities_stripped', {
+                path: c.path,
+                reason:
+                  'workspace-authored SKILL.md may not declare a capabilities ' +
+                  'block; host strips it before storage. Install via /admin/skills ' +
+                  'to grant hosts or credential slots.',
+              });
+            }
+
+            const r = parseFrontmatterBytes(contentForValidation);
             if (!r.ok) {
               return reject({ reason: `${c.path}: ${r.reason}` });
             }
           }
-          return undefined;
+          if (rewritten === undefined) return undefined;
+          return { ...input, changes: rewritten };
         },
       );
     },

@@ -69,6 +69,16 @@ export async function runAgentsMigration<DB>(db: Kysely<DB>): Promise<void> {
       ON agents_v1_agents (webhook_token)
      WHERE webhook_token IS NOT NULL
   `.execute(db);
+
+  // Phase 1.4: skill attachments — which installed skills this agent uses
+  // and how their credential slots are bound to specific credential refs.
+  // NOT NULL DEFAULT '[]' so existing rows are safe; the column is owned
+  // exclusively by PATCH /admin/agents/:id/skill-attachments (never the
+  // generic update path).
+  await sql`
+    ALTER TABLE agents_v1_agents
+      ADD COLUMN IF NOT EXISTS skill_attachments JSONB NOT NULL DEFAULT '[]'
+  `.execute(db);
 }
 
 /**
@@ -87,6 +97,7 @@ export interface AgentsRow {
   model: string;
   workspace_ref: string | null;
   webhook_token: string | null;
+  skill_attachments: unknown; // JSONB; validated by store
   created_at: Date;
   updated_at: Date;
 }

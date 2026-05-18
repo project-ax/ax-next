@@ -22,7 +22,20 @@ beforeAll(async () => {
   });
 }, 120_000);
 
+// Single afterAll, explicit ordering: drain every per-test harness pool
+// FIRST, then the admin pool, THEN stop the container. Splitting these
+// across two afterAll blocks was a flake source on CI — when the
+// container stops, any still-open pool client emits a FATAL 57P01
+// (admin_shutdown) which @ax/database-postgres's `pool.on('error')`
+// handler logs as `database_postgres_pool_error`. The log itself is
+// fine, but vitest 4 treats the uncaught upstream exception as an
+// "Unhandled Error" and fails the run even though all 16 tests passed.
+// One-shot teardown removes the race.
 afterAll(async () => {
+  while (openedDbs.length > 0) {
+    const k = openedDbs.pop()!;
+    await k.destroy().catch(() => {});
+  }
   await adminDb?.destroy().catch(() => {});
   await container?.stop();
 });
@@ -68,12 +81,6 @@ beforeEach(async () => {
   }
 });
 
-afterAll(async () => {
-  while (openedDbs.length > 0) {
-    const k = openedDbs.pop()!;
-    await k.destroy().catch(() => {});
-  }
-});
 
 // ---------------------------------------------------------------------------
 // Test 1: tsvector weight A (summary) ranks higher than weight C (body)

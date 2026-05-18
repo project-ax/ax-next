@@ -33,6 +33,7 @@
     { "path": "../../packages/credentials-oauth-pending" },
     { "path": "../../packages/ipc-http" },
     { "path": "../../packages/agents" },
+    { "path": "../../packages/skills" },
     { "path": "../../packages/http-server" },
     { "path": "../../packages/auth-better" },
     { "path": "../../packages/teams" },

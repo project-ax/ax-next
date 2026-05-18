@@ -23,7 +23,7 @@
 //     ack the shape and move on.
 // ---------------------------------------------------------------------------
 
-import { load as yamlLoad, YAMLException } from 'js-yaml';
+import { load as yamlLoad, dump as yamlDump, YAMLException } from 'js-yaml';
 
 const FRONTMATTER_FENCE = /^---\n([\s\S]*?)\n---(\n|$)/;
 
@@ -80,6 +80,56 @@ export function parseFrontmatter(text: string): FrontmatterResult {
     };
   }
   return { ok: true, fields: { name, description } };
+}
+
+export interface StripCapabilitiesResult {
+  text: string;
+  stripped: boolean;
+}
+
+/**
+ * Strip a `capabilities` block from SKILL.md frontmatter.
+ *
+ * Workspace-authored SKILL.md may not declare its own capabilities
+ * (I-P1-2). The block is the host-only way to grant allowed hosts and
+ * credential slots; an agent that could self-grant would escape its
+ * sandbox. If a `capabilities` key is present, delete it from the
+ * parsed frontmatter, re-serialize, and return the rewritten text;
+ * the caller (workspace:pre-apply subscriber) fires a
+ * `skills:capabilities-stripped` event so the warning is observable.
+ *
+ * Pure function. No I/O. If the source has no frontmatter fence, no
+ * `capabilities` key, or malformed YAML inside the fence, returns the
+ * original text unchanged with stripped=false (malformed YAML is
+ * caught by the parse-and-veto path separately).
+ */
+export function stripCapabilitiesFromFrontmatter(text: string): StripCapabilitiesResult {
+  const m = FRONTMATTER_FENCE.exec(text);
+  if (m === null) return { text, stripped: false };
+
+  const body = m[1] ?? '';
+  let parsed: unknown;
+  try {
+    parsed = yamlLoad(body);
+  } catch {
+    return { text, stripped: false };
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { text, stripped: false };
+  }
+  const obj = parsed as Record<string, unknown>;
+  if (!('capabilities' in obj)) return { text, stripped: false };
+
+  delete obj['capabilities'];
+
+  const fenceLen = m[0].length;
+  const after = text.slice(fenceLen);
+  const trailingNewline = m[2] === '\n' ? '\n' : '';
+  const reSerialized = yamlDump(obj, { lineWidth: -1, noRefs: true });
+  return {
+    text: '---\n' + reSerialized + '---' + trailingNewline + after,
+    stripped: true,
+  };
 }
 
 /**

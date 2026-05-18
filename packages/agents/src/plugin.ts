@@ -18,6 +18,7 @@ import {
 } from './store.js';
 import { randomBytes } from 'node:crypto';
 import type {
+  Actor,
   Agent,
   AgentsConfig,
   AgentsCreatedEvent,
@@ -37,6 +38,7 @@ import type {
   ResolveOutput,
   RotateWebhookTokenInput,
   RotateWebhookTokenOutput,
+  SkillAttachment,
   UpdateInput,
   UpdateOutput,
 } from './types.js';
@@ -86,6 +88,8 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
         'agents:resolve-by-webhook-token',
         'agents:rotate-webhook-token',
         'agents:ensure-webhook-token',
+        'agents:any-attached-to-skill',
+        'agents:set-skill-attachments',
       ],
       // database:get-instance is hard. http:register-route + auth:require-user
       // are hard NOW because we mount admin routes; the plugin won't boot
@@ -227,6 +231,39 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
           const token = randomBytes(32).toString('base64url');
           await localStore.setWebhookToken(input.agentId, token);
           return { token };
+        },
+      );
+
+      bus.registerService<{ skillId: string }, { attached: boolean }>(
+        'agents:any-attached-to-skill',
+        PLUGIN_NAME,
+        async (_ctx, input) => ({
+          attached: await localStore.anyAttachedToSkill(input.skillId),
+        }),
+      );
+
+      bus.registerService<
+        { actor: Actor; agentId: string; attachments: SkillAttachment[] },
+        { agent: Agent }
+      >(
+        'agents:set-skill-attachments',
+        PLUGIN_NAME,
+        async (ctx, input) => {
+          const existing = await localStore.getById(input.agentId);
+          if (existing === null) {
+            throw new PluginError({
+              code: 'not-found',
+              plugin: PLUGIN_NAME,
+              message: `agent '${input.agentId}' not found`,
+            });
+          }
+          // ACL: same as agents:update — owner or admin.
+          await assertWriteAllowed(existing, bus, ctx, input.actor);
+          const updated = await localStore.setSkillAttachments(
+            input.agentId,
+            input.attachments,
+          );
+          return { agent: updated };
         },
       );
 

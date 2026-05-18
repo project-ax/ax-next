@@ -1,5 +1,5 @@
 // packages/channel-web/src/components/admin/AdminSidebar.tsx
-import { ChevronLeft, KeyRound, Cpu, User, Server, UsersRound, ShieldCheck } from 'lucide-react';
+import { ChevronLeft, KeyRound, Cpu, User, Server, UsersRound, ShieldCheck, Wrench } from 'lucide-react';
 import { BrandMark } from '../BrandMark';
 import { SidebarSectionLabel } from '../SidebarSectionLabel';
 import { AdminNavItem } from './AdminNavItem';
@@ -11,6 +11,7 @@ export type AdminTabId =
   | 'model-config'
   | 'auth-providers'
   | 'agents'
+  | 'skills'
   | 'mcp-servers'
   | 'teams';
 
@@ -19,6 +20,7 @@ const NAV: Array<{ id: AdminTabId; label: string; icon: typeof KeyRound }> = [
   { id: 'model-config', label: 'Model config', icon: Cpu },
   { id: 'auth-providers', label: 'Auth providers', icon: ShieldCheck },
   { id: 'agents', label: 'Agents', icon: User },
+  { id: 'skills', label: 'Skills', icon: Wrench },
   { id: 'mcp-servers', label: 'MCP servers', icon: Server },
   { id: 'teams', label: 'Teams', icon: UsersRound },
 ];

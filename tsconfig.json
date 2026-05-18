@@ -50,6 +50,7 @@
     { "path": "packages/memory-strata-index-postgres" },
     { "path": "packages/validator-routine" },
     { "path": "packages/routines" },
-    { "path": "packages/tool-artifact-publish" }
+    { "path": "packages/tool-artifact-publish" },
+    { "path": "packages/skills" }
   ]
 }

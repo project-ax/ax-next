@@ -9,6 +9,20 @@
  */
 import type { Transaction } from 'kysely';
 
+/**
+ * A single installed skill attached to an agent, with its credential slot
+ * bindings. `credentialBindings` maps each slot name declared by the skill
+ * to the credential ref (opaque string) the agent uses to satisfy it.
+ *
+ * Written exclusively via PATCH /admin/agents/:id/skill-attachments — never
+ * via agents:create or agents:update. Validated at attach-time by
+ * validateNewAttachments (slot-collision detection, missing/orphan bindings).
+ */
+export interface SkillAttachment {
+  skillId: string;
+  credentialBindings: Record<string /* slot */, string /* credential ref */>;
+}
+
 export interface Agent {
   id: string;
   ownerId: string;
@@ -20,6 +34,7 @@ export interface Agent {
   mcpConfigIds: string[];
   model: string;
   workspaceRef: string | null;
+  skillAttachments: SkillAttachment[];
   createdAt: Date;
   updatedAt: Date;
 }

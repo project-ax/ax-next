@@ -8,6 +8,7 @@ import { AuthProvidersTab } from './AuthProvidersTab';
 import { AgentForm } from './AgentForm';
 import { McpServerForm } from './McpServerForm';
 import { TeamList } from './TeamList';
+import { SkillsTab } from './SkillsTab';
 
 export interface AdminShellProps {
   onClose: () => void;
@@ -23,6 +24,7 @@ const TAB_META: Record<AdminTabId, TabMeta> = {
   'model-config': { eyebrow: 'Admin', title: 'Model config' },
   'auth-providers': { eyebrow: 'Admin', title: 'Auth providers' },
   agents: { eyebrow: 'Admin', title: 'Agents' },
+  skills: { eyebrow: 'Admin', title: 'Skills' },
   'mcp-servers': { eyebrow: 'Admin', title: 'MCP servers' },
   teams: { eyebrow: 'Admin', title: 'Teams' },
 };
@@ -45,6 +47,7 @@ export function AdminShell({ onClose }: AdminShellProps) {
         {activeTab === 'model-config' && <ModelConfigTab />}
         {activeTab === 'auth-providers' && <AuthProvidersTab />}
         {activeTab === 'agents' && <AgentForm />}
+        {activeTab === 'skills' && <SkillsTab />}
         {activeTab === 'mcp-servers' && <McpServerForm />}
         {activeTab === 'teams' && <TeamList />}
       </AdminPane>

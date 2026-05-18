@@ -994,4 +994,166 @@ describe('sandbox:open-session', () => {
     await fs.rm(ws, { recursive: true, force: true });
   });
 
+  // ---------------------------------------------------------------------
+  // I-P1-3: installed-skills materialization (Phase 1).
+  //
+  // The sandbox writes each skill's SKILL.md to
+  // $CLAUDE_CONFIG_DIR/skills/<id>/SKILL.md (mode 0444) then chmods
+  // the parent dir to 0555 so the runner's tool calls can't extend or
+  // overwrite. Phase 0 left the dir empty + 0755; Phase 1 fills + locks
+  // atomically inside the existing sandbox-prep try block.
+  // ---------------------------------------------------------------------
+
+  it('writes each skill SKILL.md and chmods parent dir to 0555 (I-P1-3)', async () => {
+    const ws = await mkWorkspace();
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    const result = await h.bus.call<unknown, OpenSessionResult>(
+      'sandbox:open-session',
+      ctx,
+      {
+        sessionId: 'skills-write-1',
+        workspaceRoot: ws,
+        runnerBinary: ECHO_STUB,
+        installedSkills: [
+          { id: 'github', skillMd: '---\nname: github\ndescription: x\n---\nBody' },
+        ],
+      },
+    );
+    const line = await readFirstStdoutLine(result);
+    const parsed = JSON.parse(line) as Record<string, string | null>;
+    const ccd = parsed.CLAUDE_CONFIG_DIR as string;
+
+    const skillMdPath = path.join(ccd, 'skills', 'github', 'SKILL.md');
+    const content = await fs.readFile(skillMdPath, 'utf-8');
+    expect(content).toBe('---\nname: github\ndescription: x\n---\nBody');
+
+    const skillsDirStat = await fs.stat(path.join(ccd, 'skills'));
+    expect(skillsDirStat.mode & 0o777).toBe(0o555);
+
+    await result.handle.kill();
+    await result.handle.exited;
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
+  it('skills dir stays 0755 when installedSkills is absent (Phase 0 default)', async () => {
+    const ws = await mkWorkspace();
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    const result = await h.bus.call<unknown, OpenSessionResult>(
+      'sandbox:open-session',
+      ctx,
+      { sessionId: 'skills-absent-1', workspaceRoot: ws, runnerBinary: ECHO_STUB },
+    );
+    const line = await readFirstStdoutLine(result);
+    const parsed = JSON.parse(line) as Record<string, string | null>;
+    const ccd = parsed.CLAUDE_CONFIG_DIR as string;
+
+    const skillsDirStat = await fs.stat(path.join(ccd, 'skills'));
+    expect(skillsDirStat.mode & 0o777).toBe(0o755);
+
+    await result.handle.kill();
+    await result.handle.exited;
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
+  it('skills dir stays 0755 when installedSkills is empty (Phase 0 default)', async () => {
+    const ws = await mkWorkspace();
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    const result = await h.bus.call<unknown, OpenSessionResult>(
+      'sandbox:open-session',
+      ctx,
+      {
+        sessionId: 'skills-empty-1',
+        workspaceRoot: ws,
+        runnerBinary: ECHO_STUB,
+        installedSkills: [],
+      },
+    );
+    const line = await readFirstStdoutLine(result);
+    const parsed = JSON.parse(line) as Record<string, string | null>;
+    const ccd = parsed.CLAUDE_CONFIG_DIR as string;
+
+    const skillsDirStat = await fs.stat(path.join(ccd, 'skills'));
+    expect(skillsDirStat.mode & 0o777).toBe(0o755);
+
+    await result.handle.kill();
+    await result.handle.exited;
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
+  it('overwrites an existing SKILL.md when the session reopens with different content', async () => {
+    const ws = await mkWorkspace();
+    // First session
+    const h1 = await makeHarness();
+    const ctx1 = h1.ctx();
+    const r1 = await h1.bus.call<unknown, OpenSessionResult>(
+      'sandbox:open-session',
+      ctx1,
+      {
+        sessionId: 'skills-overwrite-1',
+        workspaceRoot: ws,
+        runnerBinary: ECHO_STUB,
+        installedSkills: [{ id: 'github', skillMd: 'version-A' }],
+      },
+    );
+    const line1 = await readFirstStdoutLine(r1);
+    const env1 = JSON.parse(line1) as Record<string, string | null>;
+    const ccd1 = env1.CLAUDE_CONFIG_DIR as string;
+    const content1 = await fs.readFile(path.join(ccd1, 'skills', 'github', 'SKILL.md'), 'utf-8');
+    expect(content1).toBe('version-A');
+
+    await r1.handle.kill();
+    await r1.handle.exited;
+
+    // Second session on same workspace with different content
+    const h2 = await makeHarness();
+    const ctx2 = h2.ctx();
+    const r2 = await h2.bus.call<unknown, OpenSessionResult>(
+      'sandbox:open-session',
+      ctx2,
+      {
+        sessionId: 'skills-overwrite-2',
+        workspaceRoot: ws,
+        runnerBinary: ECHO_STUB,
+        installedSkills: [{ id: 'github', skillMd: 'version-B' }],
+      },
+    );
+    const line2 = await readFirstStdoutLine(r2);
+    const env2 = JSON.parse(line2) as Record<string, string | null>;
+    const ccd2 = env2.CLAUDE_CONFIG_DIR as string;
+    // ccd2 lives in the second session's own per-session socketDir — independent from ccd1.
+    const content2 = await fs.readFile(path.join(ccd2, 'skills', 'github', 'SKILL.md'), 'utf-8');
+    expect(content2).toBe('version-B');
+
+    await r2.handle.kill();
+    await r2.handle.exited;
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
+  it('rejects an invalid skill id (e.g. ../escape) with PluginError(invalid-payload)', async () => {
+    const ws = await mkWorkspace();
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    let caught: unknown;
+    try {
+      await h.bus.call(
+        'sandbox:open-session',
+        ctx,
+        {
+          sessionId: 'skills-bad-id',
+          workspaceRoot: ws,
+          runnerBinary: ECHO_STUB,
+          installedSkills: [{ id: '../escape', skillMd: 'x' }],
+        },
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('invalid-payload');
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
 });

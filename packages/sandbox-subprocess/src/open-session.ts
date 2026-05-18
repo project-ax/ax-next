@@ -30,6 +30,20 @@ const PLUGIN_NAME = '@ax/sandbox-subprocess';
 const HOOK_NAME = 'sandbox:open-session';
 const SIGKILL_DELAY_MS = 5_000;
 
+// Reset installedSkillsDir permissions to 0755 before deleting the
+// socketDir tree. Phase 1 chmods it to 0555 after writing skills —
+// fs.rm({ recursive: true }) cannot remove subdirectories from within a
+// 0555-mode directory (EACCES on non-Linux, possibly on Linux too).
+// Best-effort: if the dir doesn't exist or chmod fails, log nothing —
+// the caller's best-effort rm will cover ENOENT.
+async function unlockInstalledSkillsDir(installedSkillsDir: string): Promise<void> {
+  try {
+    await fs.chmod(installedSkillsDir, 0o755);
+  } catch {
+    // ENOENT (never created) or other — swallow; caller's rm is best-effort.
+  }
+}
+
 // Owner triple — the orchestrator resolves an agent before opening the
 // sandbox and forwards the {userId, agentId, agentConfig} so we can pass
 // it through to `session:create` atomically. Optional for back-compat
@@ -69,6 +83,11 @@ export const ProxyConfigSchema = z
     },
   );
 
+export const InstalledSkillSchema = z.object({
+  id: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/, 'invalid skill id shape'),
+  skillMd: z.string().min(1).max(512 * 1024), // 512 KiB per-skill cap
+});
+
 export const OpenSessionInputSchema = z.object({
   sessionId: z.string().min(1),
   workspaceRoot: z.string().regex(/^\//, 'workspaceRoot must be absolute'),
@@ -87,6 +106,12 @@ export const OpenSessionInputSchema = z.object({
     })
     .optional(),
   proxyConfig: ProxyConfigSchema.optional(),
+  // Phase 1 (skill-install): installed skills to materialize into the
+  // per-session CLAUDE_CONFIG_DIR/skills/ directory before the runner
+  // spawns. Each entry is written to skills/<id>/SKILL.md (mode 0444);
+  // after all writes the parent dir is chmod'd to 0555 to lock against
+  // agent writes. Max 50 skills, 512 KiB each.
+  installedSkills: z.array(InstalledSkillSchema).max(50).optional(),
 });
 
 export type OpenSessionInput = z.input<typeof OpenSessionInputSchema>;
@@ -272,8 +297,36 @@ export async function openSessionImpl(
         if (raced !== '../.ax/skills') throw err;
       }
     }
+
+    // Phase 1 (skill-install): materialize installed-skill SKILL.md bodies
+    // into $CLAUDE_CONFIG_DIR/skills/<id>/SKILL.md. The SDK's 'user' source
+    // (Phase 0 set settingSources + CLAUDE_CONFIG_DIR) discovers these at
+    // runner startup; Phase 1 fills the directory.
+    //
+    // chmod 0555 the parent skills dir AFTER all writes so the runner's own
+    // tool calls (echo > path, mkdir, etc.) can't extend or overwrite the
+    // directory. Workspace:apply has no path to HOME, so the workspace side
+    // defense is automatic; chmod is the belt against tool-bash. We chmod
+    // LAST because mkdir + writeFile both need write permission.
+    if (input.installedSkills !== undefined && input.installedSkills.length > 0) {
+      for (const skill of input.installedSkills) {
+        // The zod schema already validates id shape, but double-check at the
+        // trust boundary — the validation cost is trivial vs. a potential
+        // path-traversal regression. Skill id reaches the path via path.join,
+        // so a leading slash or `..` segment is the relevant attack shape.
+        const skillDir = path.join(installedSkillsDir, skill.id);
+        await fs.mkdir(skillDir, { recursive: true, mode: 0o755 });
+        await fs.writeFile(
+          path.join(skillDir, 'SKILL.md'),
+          skill.skillMd,
+          { mode: 0o444, encoding: 'utf-8' },
+        );
+      }
+      await fs.chmod(installedSkillsDir, 0o555);
+    }
   } catch (cause) {
     // Best-effort cleanup so a setup failure doesn't leak the tempdir.
+    await unlockInstalledSkillsDir(installedSkillsDir);
     await fs.rm(socketDir, { recursive: true, force: true }).catch(() => undefined);
     throw new PluginError({
       code: 'sandbox-prep-failed',
@@ -314,6 +367,7 @@ export async function openSessionImpl(
     );
   } catch (err) {
     // Clean up tempdir so a session:create failure doesn't leak dirs.
+    await unlockInstalledSkillsDir(installedSkillsDir);
     await fs.rm(socketDir, { recursive: true, force: true }).catch(() => undefined);
     throw err;
   }
@@ -333,6 +387,7 @@ export async function openSessionImpl(
         sessionId: created.sessionId,
       })
       .catch(() => undefined);
+    await unlockInstalledSkillsDir(installedSkillsDir);
     await fs.rm(socketDir, { recursive: true, force: true }).catch(() => undefined);
     throw err;
   }
@@ -393,6 +448,7 @@ export async function openSessionImpl(
       await bus
         .call('session:terminate', ctx, { sessionId: created.sessionId })
         .catch(() => undefined);
+      await unlockInstalledSkillsDir(installedSkillsDir);
       await fs.rm(socketDir, { recursive: true, force: true }).catch(() => undefined);
       throw new PluginError({
         code: 'ca-write-failed',
@@ -453,6 +509,7 @@ export async function openSessionImpl(
     await bus
       .call('session:terminate', ctx, { sessionId: created.sessionId })
       .catch(() => undefined);
+    await unlockInstalledSkillsDir(installedSkillsDir);
     await fs.rm(socketDir, { recursive: true, force: true }).catch(() => undefined);
     throw new PluginError({
       code: 'spawn-failed',
@@ -499,6 +556,7 @@ export async function openSessionImpl(
           err: err instanceof Error ? err.message : String(err),
         });
       }
+      await unlockInstalledSkillsDir(installedSkillsDir);
       try {
         await fs.rm(socketDir, { recursive: true, force: true });
       } catch (err) {
