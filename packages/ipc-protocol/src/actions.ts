@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { asWorkspaceVersion, type WorkspaceVersion } from '@ax/core';
+import { ContentBlockSchema, isWorkspaceRelativePath } from './content-blocks.js';
 
 // Re-export so existing consumers importing from `@ax/ipc-protocol` keep
 // working transparently — canonical declaration lives in `@ax/core` so
@@ -19,6 +20,12 @@ export { asWorkspaceVersion, type WorkspaceVersion };
 export const AgentMessageSchema = z.object({
   role: z.enum(['user', 'assistant']),
   content: z.string(),
+  // Phase 2 (attachments). Optional richer payload — when present, the
+  // runner prefers this over `content`. The chat-messages handler does
+  // not emit this yet (Phase 3); shipping the schema first lets the
+  // runner translation pass be testable. Backward-compat: omitting the
+  // field reproduces the prior string-only shape exactly.
+  contentBlocks: z.array(ContentBlockSchema).optional(),
 });
 export type AgentMessage = z.infer<typeof AgentMessageSchema>;
 
@@ -234,6 +241,54 @@ export const WorkspaceMaterializeResponseSchema = z.object({
 export type WorkspaceMaterializeResponse = z.infer<
   typeof WorkspaceMaterializeResponseSchema
 >;
+
+// ---------------------------------------------------------------------------
+// workspace.read — Phase 2 (attachments translation, D3).
+//
+// Exposes the host's `workspace:read` service hook to runners over IPC.
+// The runner's attachment-translation pass uses this to fetch attachment
+// bytes that the host committed via `attachments:commit` after session
+// start (the runner's /permanent doesn't auto-sync mid-session).
+//
+// Auth: caller's bearer token resolves to a session row; the host-side
+// handler uses the session's workspaceId to scope `workspace:read`.
+// Cross-session reads are impossible — there's no session id on the wire.
+//
+// Payload: path is workspace-relative (matches what attachment blocks
+// carry, e.g. ".ax/uploads/<conv>/<turn>/file.pdf"). Bytes ride
+// base64-encoded for JSON safety.
+export const WorkspaceReadRequestSchema = z.object({
+  // Defense in depth at the wire boundary: the same workspace-relative
+  // path rule the AttachmentBlock schema enforces. A malformed runner
+  // call (absolute path, `..` traversal, drive root, NUL byte) surfaces
+  // as a clean 400 VALIDATION here rather than as a confusing
+  // git-cat-file error one hop later.
+  path: z
+    .string()
+    .min(1)
+    .refine(
+      isWorkspaceRelativePath,
+      'path must be workspace-relative (no leading slash, no "..", no drive root, no NUL)',
+    ),
+});
+export type WorkspaceReadRequest = z.infer<typeof WorkspaceReadRequestSchema>;
+
+export const WorkspaceReadResponseSchema = z.discriminatedUnion('found', [
+  z.object({
+    found: z.literal(true),
+    // Same canonical-base64 refinement BundleBytesSchema uses: malformed
+    // payloads surface here, not as confusing decode failures downstream.
+    // Empty string allowed for parity with bundleBytes (a known-found
+    // zero-byte file is valid).
+    bytesBase64: z
+      .string()
+      .refine((s) => s === '' || BASE64_RE.test(s), {
+        message: 'bytesBase64 must be empty or canonical base64',
+      }),
+  }),
+  z.object({ found: z.literal(false) }),
+]);
+export type WorkspaceReadResponse = z.infer<typeof WorkspaceReadResponseSchema>;
 
 // ---------------------------------------------------------------------------
 // session.get-config

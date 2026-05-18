@@ -10,6 +10,8 @@ import {
   WorkspaceCommitNotifyResponseSchema,
   WorkspaceMaterializeRequestSchema,
   WorkspaceMaterializeResponseSchema,
+  WorkspaceReadRequestSchema,
+  WorkspaceReadResponseSchema,
   SessionNextMessageResponseSchema,
   SessionGetConfigResponseSchema,
   ConversationStoreRunnerSessionRequestSchema,
@@ -642,13 +644,14 @@ describe('timeouts', () => {
     expect(Object.isFrozen(IPC_TIMEOUTS_MS)).toBe(true);
   });
 
-  it('IPC_TIMEOUTS_MS has the eight expected keys (Phase E dropped conversation.fetch-history)', () => {
+  it('IPC_TIMEOUTS_MS has the nine expected keys (Phase 2 adds workspace.read)', () => {
     const expected = [
       'tool.pre-call',
       'tool.execute-host',
       'tool.list',
       'workspace.commit-notify',
       'workspace.materialize',
+      'workspace.read',
       'session.next-message',
       'session.get-config',
       'conversation.store-runner-session',
@@ -664,11 +667,105 @@ describe('timeouts', () => {
       'tool.list',
       'workspace.commit-notify',
       'workspace.materialize',
+      'workspace.read',
       'session.next-message',
       'session.get-config',
       'conversation.store-runner-session',
     ];
-    expect(names).toHaveLength(8);
+    expect(names).toHaveLength(9);
+  });
+});
+
+describe('AgentMessageSchema — Phase 2 contentBlocks', () => {
+  it('round-trips a message with only content (string shape, backward compat)', () => {
+    const msg = { role: 'user' as const, content: 'hello' };
+    const parsed = AgentMessageSchema.parse(msg);
+    expect(parsed.contentBlocks).toBeUndefined();
+    expect(parsed.content).toBe('hello');
+  });
+
+  it('round-trips a message with contentBlocks (Phase 2)', () => {
+    const msg = {
+      role: 'user' as const,
+      content: '',
+      contentBlocks: [
+        { type: 'text' as const, text: 'see attached' },
+        {
+          type: 'attachment' as const,
+          path: '.ax/uploads/c1/t1/x.pdf',
+          displayName: 'X.pdf',
+          mediaType: 'application/pdf',
+          sizeBytes: 100,
+        },
+      ],
+    };
+    const parsed = AgentMessageSchema.parse(msg);
+    expect(parsed.contentBlocks).toHaveLength(2);
+  });
+
+  it('rejects contentBlocks with invalid variant', () => {
+    expect(() =>
+      AgentMessageSchema.parse({
+        role: 'user',
+        content: '',
+        contentBlocks: [{ type: 'no-such-variant' }],
+      }),
+    ).toThrow();
+  });
+});
+
+describe('workspace.read schemas (Phase 2)', () => {
+  it('round-trips request schema with a workspace-relative path', () => {
+    const parsed = WorkspaceReadRequestSchema.parse({
+      path: '.ax/uploads/c1/t1/x.pdf',
+    });
+    expect(parsed.path).toBe('.ax/uploads/c1/t1/x.pdf');
+  });
+
+  it('rejects empty path', () => {
+    expect(() => WorkspaceReadRequestSchema.parse({ path: '' })).toThrow();
+  });
+
+  it('round-trips found response', () => {
+    const parsed = WorkspaceReadResponseSchema.parse({
+      found: true,
+      bytesBase64: 'aGk=',
+    });
+    expect(parsed).toEqual({ found: true, bytesBase64: 'aGk=' });
+  });
+
+  it('round-trips not-found response', () => {
+    const parsed = WorkspaceReadResponseSchema.parse({ found: false });
+    expect(parsed.found).toBe(false);
+  });
+
+  it.each([
+    '/etc/passwd',
+    '/permanent/workspace/x.pdf',
+    '\\\\windows\\path',
+    'C:/abs/path',
+    '../escape',
+    'workspace/../etc/passwd',
+    'workspace/foo\0bar',
+  ])('request schema rejects non-workspace-relative path %j', (badPath) => {
+    expect(() => WorkspaceReadRequestSchema.parse({ path: badPath })).toThrow();
+  });
+
+  it('response schema rejects non-canonical base64 in bytesBase64', () => {
+    expect(() =>
+      WorkspaceReadResponseSchema.parse({
+        found: true,
+        bytesBase64: 'not valid base64!!!',
+      }),
+    ).toThrow();
+  });
+
+  it('response schema accepts empty bytesBase64 (zero-byte file)', () => {
+    const parsed = WorkspaceReadResponseSchema.parse({
+      found: true,
+      bytesBase64: '',
+    });
+    expect(parsed).toEqual({ found: true, bytesBase64: '' });
   });
 });
 

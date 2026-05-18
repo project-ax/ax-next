@@ -8,6 +8,7 @@
   "exclude": ["src/**/__tests__/**", "dist", "node_modules"],
   "references": [
     { "path": "../credential-proxy-bridge" },
-    { "path": "../ipc-protocol" }
+    { "path": "../ipc-protocol" },
+    { "path": "../tool-artifact-publish" }
   ]
 }

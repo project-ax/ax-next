@@ -68,6 +68,9 @@ importers:
       '@ax/ipc-protocol':
         specifier: workspace:*
         version: link:../ipc-protocol
+      '@ax/tool-artifact-publish':
+        specifier: workspace:*
+        version: link:../tool-artifact-publish
       undici:
         specifier: ^6.25.0
         version: 6.25.0
@@ -554,6 +557,9 @@ importers:
       '@ax/test-harness':
         specifier: workspace:*
         version: link:../test-harness
+      '@ax/tool-artifact-publish':
+        specifier: workspace:*
+        version: link:../tool-artifact-publish
       '@ax/validator-routine':
         specifier: workspace:*
         version: link:../validator-routine
@@ -1600,6 +1606,22 @@ importers:
         specifier: ^4.1.4
         version: 4.1.5(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(jsdom@26.1.0)(vite@8.0.10(@types/node@25.6.0)(esbuild@0.27.7)(jiti@1.21.7)(tsx@4.21.0)(yaml@2.8.3))
 
+  packages/tool-artifact-publish:
+    dependencies:
+      '@ax/core':
+        specifier: workspace:*
+        version: link:../core
+      '@ax/ipc-protocol':
+        specifier: workspace:*
+        version: link:../ipc-protocol
+    devDependencies:
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^4.1.4
+        version: 4.1.5(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(jsdom@26.1.0)(vite@8.0.10(@types/node@25.6.0)(esbuild@0.27.7)(jiti@1.21.7)(tsx@4.21.0)(yaml@2.8.3))
+
   packages/validator-routine:
     dependencies:
       '@ax/core':
@@ -1827,6 +1849,9 @@ importers:
       '@ax/teams':
         specifier: workspace:*
         version: link:../../packages/teams
+      '@ax/tool-artifact-publish':
+        specifier: workspace:*
+        version: link:../../packages/tool-artifact-publish
       '@ax/validator-routine':
         specifier: workspace:*
         version: link:../../packages/validator-routine

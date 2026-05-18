@@ -2231,6 +2231,239 @@ describe('main()', () => {
     });
   });
 
+  it('Phase 2: query receives BOTH host and sandbox MCP servers when artifact_publish is in the catalog', async () => {
+    setEnv(COMPLETE_ENV);
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          conversationId: null,
+          runnerSessionId: null,
+        };
+      }
+      if (action === 'workspace.materialize') return { bundleBytes: '' };
+      if (action === 'tool.list') {
+        return {
+          tools: [
+            {
+              name: 'artifact_publish',
+              description: 'publish an artifact',
+              inputSchema: {
+                type: 'object',
+                properties: { path: { type: 'string' } },
+                required: ['path'],
+              },
+              executesIn: 'sandbox',
+            },
+          ],
+        };
+      }
+      if (action === 'workspace.commit-notify') {
+        return { accepted: true, version: 'v1', delta: null };
+      }
+      throw new Error(`unexpected call: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([cancelEntry]);
+
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+      return (async function* () {
+        // Drain immediately on cancel — we only care about the query() arg shape.
+        const it = prompt[Symbol.asyncIterator]();
+        await it.next();
+      })();
+    });
+
+    const { main } = await import('../main.js');
+    await main();
+
+    expect(queryMock).toHaveBeenCalledTimes(1);
+    const queryArg = queryMock.mock.calls[0]?.[0] as {
+      options: { mcpServers: Record<string, unknown> };
+    };
+    const serverNames = Object.keys(queryArg.options.mcpServers);
+    expect(serverNames).toEqual(
+      expect.arrayContaining(['ax-host-tools', 'ax-sandbox-tools']),
+    );
+  });
+
+  it('Phase 2: translates attachment contentBlocks to Anthropic image blocks before yielding to SDK', async () => {
+    setEnv(COMPLETE_ENV);
+    fakeClient = buildFakeClient();
+    const png = Buffer.from('fake-png-bytes');
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          conversationId: null,
+          runnerSessionId: null,
+        };
+      }
+      if (action === 'workspace.materialize') return { bundleBytes: '' };
+      if (action === 'tool.list') return { tools: [] };
+      if (action === 'workspace.read') {
+        return { found: true, bytesBase64: png.toString('base64') };
+      }
+      if (action === 'workspace.commit-notify') {
+        return { accepted: true, version: 'v1', delta: null };
+      }
+      throw new Error(`unexpected call: ${action}`);
+    });
+
+    // Inject a user message with an image attachment in its contentBlocks.
+    const userMsgWithAttachment: InboxLoopEntry = {
+      type: 'user-message',
+      payload: {
+        role: 'user',
+        content: '',
+        contentBlocks: [
+          {
+            type: 'attachment',
+            path: '.ax/uploads/c1/t1/img.png',
+            displayName: 'img.png',
+            mediaType: 'image/png',
+            sizeBytes: png.length,
+          },
+        ],
+      },
+      reqId: 'req-attachment',
+    };
+    fakeInbox = buildFakeInbox([userMsgWithAttachment, cancelEntry]);
+
+    // Capture the user messages the SDK actually sees.
+    const sdkUserMessages: SDKUserMessage[] = [];
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+      return (async function* () {
+        const it = prompt[Symbol.asyncIterator]();
+        const firstUser = await it.next();
+        if (!firstUser.done && firstUser.value !== undefined) {
+          sdkUserMessages.push(firstUser.value);
+        }
+        yield assistantText('ok');
+        yield resultSuccess();
+        await it.next();
+      })();
+    });
+
+    const { main } = await import('../main.js');
+    const rc = await main();
+    expect(rc).toBe(0);
+
+    expect(sdkUserMessages).toHaveLength(1);
+    expect((sdkUserMessages[0]!.message as { content: unknown }).content).toEqual([
+      {
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: 'image/png',
+          data: png.toString('base64'),
+        },
+      },
+    ]);
+
+    // Confirm workspace.read was actually called for the attachment path.
+    expect(fakeClient.call).toHaveBeenCalledWith('workspace.read', {
+      path: '.ax/uploads/c1/t1/img.png',
+    });
+  });
+
+  it('Phase 2: preserves typed user text alongside translated attachment blocks', async () => {
+    setEnv(COMPLETE_ENV);
+    fakeClient = buildFakeClient();
+    const png = Buffer.from('fake-png-bytes');
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          conversationId: null,
+          runnerSessionId: null,
+        };
+      }
+      if (action === 'workspace.materialize') return { bundleBytes: '' };
+      if (action === 'tool.list') return { tools: [] };
+      if (action === 'workspace.read') {
+        return { found: true, bytesBase64: png.toString('base64') };
+      }
+      if (action === 'workspace.commit-notify') {
+        return { accepted: true, version: 'v1', delta: null };
+      }
+      throw new Error(`unexpected call: ${action}`);
+    });
+
+    // The future Phase 3 chat-messages handler will send BOTH typed text
+    // AND attachment blocks for a single user turn. Confirm the runner
+    // emits text-first then translated blocks rather than discarding text.
+    const userMsg: InboxLoopEntry = {
+      type: 'user-message',
+      payload: {
+        role: 'user',
+        content: 'what is in this image?',
+        contentBlocks: [
+          {
+            type: 'attachment',
+            path: '.ax/uploads/c1/t1/img.png',
+            displayName: 'img.png',
+            mediaType: 'image/png',
+            sizeBytes: png.length,
+          },
+        ],
+      },
+      reqId: 'req-mixed',
+    };
+    fakeInbox = buildFakeInbox([userMsg, cancelEntry]);
+
+    const sdkUserMessages: SDKUserMessage[] = [];
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+      return (async function* () {
+        const it = prompt[Symbol.asyncIterator]();
+        const firstUser = await it.next();
+        if (!firstUser.done && firstUser.value !== undefined) {
+          sdkUserMessages.push(firstUser.value);
+        }
+        yield assistantText('ok');
+        yield resultSuccess();
+        await it.next();
+      })();
+    });
+
+    const { main } = await import('../main.js');
+    await main();
+
+    expect(sdkUserMessages).toHaveLength(1);
+    expect((sdkUserMessages[0]!.message as { content: unknown }).content).toEqual([
+      { type: 'text', text: 'what is in this image?' },
+      {
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: 'image/png',
+          data: png.toString('base64'),
+        },
+      },
+    ]);
+  });
+
   // ---------------------------------------------------------------------
   // Phase 0 — skill discovery (I-P0-1 / I-P0-3): the sandbox plugin
   // (subprocess or k8s) injects CLAUDE_CONFIG_DIR=<sandbox-HOME>/.ax/session

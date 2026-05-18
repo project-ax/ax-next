@@ -168,6 +168,7 @@ describe('@ax/preset-k8s wiring', () => {
         '@ax/session-postgres',
         '@ax/storage-postgres',
         '@ax/teams',
+        '@ax/tool-artifact-publish',
         '@ax/tool-dispatcher',
         '@ax/validator-routine',
         '@ax/validator-skill',

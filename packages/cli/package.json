@@ -41,6 +41,7 @@
     "@ax/chat-orchestrator": "workspace:*",
     "@ax/agent-claude-sdk-runner": "workspace:*",
     "@ax/mcp-client": "workspace:*",
+    "@ax/tool-artifact-publish": "workspace:*",
     "@ax/llm-anthropic": "workspace:*",
     "@ax/memory-strata": "workspace:*",
     "@ax/memory-strata-index-sqlite": "workspace:*",

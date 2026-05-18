@@ -16,7 +16,13 @@ import {
   type ToolListResponse,
   type WorkspaceCommitNotifyResponse,
   type WorkspaceMaterializeResponse,
+  type WorkspaceReadRequest,
+  type WorkspaceReadResponse,
 } from '@ax/ipc-protocol';
+import {
+  translateContentBlocks,
+  type WorkspaceReader,
+} from './attachment-translation.js';
 import { createCanUseTool } from './can-use-tool.js';
 import { readRunnerEnv } from './env.js';
 import { createHostMcpServer } from './host-mcp-server.js';
@@ -26,11 +32,15 @@ import {
   materializeWorkspace,
   rollbackToBaseline,
 } from './git-workspace.js';
+import { createLocalDispatcher } from './local-dispatcher.js';
 import { createPostToolUseHook } from './post-tool-use.js';
 import { createPreToolUseHook } from './pre-tool-use.js';
 import { setupProxy } from './proxy-startup.js';
-import { DISABLED_BUILTINS, MCP_HOST_SERVER_NAME } from './tool-names.js';
+import { createSandboxMcpServer } from './sandbox-mcp-server.js';
+import { createArtifactPublishExecutor } from './artifact-publish-executor.js';
+import { DISABLED_BUILTINS, MCP_HOST_SERVER_NAME, MCP_SANDBOX_SERVER_NAME } from './tool-names.js';
 import { readLastTurnUuid } from './turn-end-uuid.js';
+import { ARTIFACT_PUBLISH_TOOL_NAME } from '@ax/tool-artifact-publish';
 
 // ---------------------------------------------------------------------------
 // Runner entry binary (claude-sdk variant).
@@ -225,7 +235,39 @@ export async function main(): Promise<number> {
   }
 
   const hostMcpServer = createHostMcpServer({ client, tools });
+
+  // Phase 2: sandbox-MCP bridge. The local-dispatcher holds executors for
+  // tools marked `executesIn: 'sandbox'`. Today only `artifact_publish`
+  // uses this path; future sandbox tools register here too.
+  const localDispatcher = createLocalDispatcher();
+  if (tools.some((t) => t.name === ARTIFACT_PUBLISH_TOOL_NAME && t.executesIn === 'sandbox')) {
+    localDispatcher.register(
+      ARTIFACT_PUBLISH_TOOL_NAME,
+      createArtifactPublishExecutor({ workspaceRoot: env.workspaceRoot }),
+    );
+  }
+  const sandboxMcpServer = createSandboxMcpServer({
+    dispatcher: localDispatcher,
+    tools,
+  });
+
   const inbox = createInboxLoop({ client });
+
+  // Phase 2: feature-detect whether the pinned claude-agent-sdk supports
+  // `document` content blocks. The SDK exposes its accepted block types
+  // via a type-only export, so we probe by environment variable for now.
+  // Pinning the SDK version makes this a static answer in practice; we
+  // keep the override so a future SDK bump doesn't silently regress.
+  // Conservative default: false. Override via env for early access.
+  const SUPPORTS_DOCUMENT_BLOCKS = process.env.AX_SDK_DOCUMENT_BLOCKS === '1';
+
+  const workspaceReader: WorkspaceReader = async (path) => {
+    const resp = (await client.call('workspace.read', {
+      path,
+    } as WorkspaceReadRequest)) as WorkspaceReadResponse;
+    return resp;
+  };
+
   // Phase 3: workspace commits are turn-end via git-status against
   // /permanent (`commitTurnAndBundle` at the SDK `result` boundary).
   // The legacy PostToolUse-based diff accumulator is gone — git status
@@ -314,11 +356,48 @@ export async function main(): Promise<number> {
       if (typeof entry.reqId === 'string' && entry.reqId.length > 0) {
         currentReqId = entry.reqId;
       }
-      chatEndHistory.push({ role: 'user', content: entry.payload.content });
+      const hasBlocks =
+        entry.payload.contentBlocks !== undefined &&
+        entry.payload.contentBlocks.length > 0;
+
+      // When the chat-messages handler ships both `content` (typed text)
+      // AND `contentBlocks` (attachments) for a single user turn (Phase 3),
+      // we need to preserve BOTH. Dropping `content` here would erase the
+      // user's typed prompt the moment an attachment was attached. Emit
+      // text-first so the model reads the user's intent before the blocks.
+      // The empty-text guard skips synthetic empty text the chat-messages
+      // handler may send when the user attaches without typing.
+      const userText = entry.payload.content;
+      const messageContent: unknown = hasBlocks
+        ? [
+            ...(userText.length > 0 ? [{ type: 'text', text: userText }] : []),
+            ...(await translateContentBlocks(entry.payload.contentBlocks!, {
+              readWorkspace: workspaceReader,
+              supportsDocumentBlocks: SUPPORTS_DOCUMENT_BLOCKS,
+            })),
+          ]
+        : userText;
+
+      // Keep chatEndHistory as text-only — if contentBlocks were used,
+      // include the user's typed text (if any) plus a short blocks summary
+      // so the chat-end event payload doesn't carry raw bytes. Phase 3 may
+      // refine this once downstream consumers of event.chat-end's
+      // outcome.messages are clearer about what they need.
+      chatEndHistory.push({
+        role: 'user',
+        content: hasBlocks
+          ? `${userText}${userText.length > 0 ? ' ' : ''}[${entry.payload.contentBlocks!.length} blocks]`
+          : userText,
+      });
+
       yield {
         type: 'user',
         parent_tool_use_id: null,
-        message: { role: 'user', content: entry.payload.content },
+        // Cast: SDKUserMessage.message.content is typed `string` today, but
+        // the SDK accepts content-block arrays at runtime (the SDK's outbound
+        // schema permits both shapes; the type just hasn't been widened yet).
+        // Phase 3 may upstream a proper type widening to the SDK pin.
+        message: { role: 'user', content: messageContent } as never,
       };
     }
   }
@@ -425,7 +504,10 @@ export async function main(): Promise<number> {
             },
           ],
         },
-        mcpServers: { [MCP_HOST_SERVER_NAME]: hostMcpServer },
+        mcpServers: {
+          [MCP_HOST_SERVER_NAME]: hostMcpServer,
+          [MCP_SANDBOX_SERVER_NAME]: sandboxMcpServer,
+        },
         // settingSources: 'user' is required for the SDK to discover skills
         // under $CLAUDE_CONFIG_DIR/skills/ (host-controlled installed skills);
         // 'project' is required for skills under <workspace>/.claude/skills/

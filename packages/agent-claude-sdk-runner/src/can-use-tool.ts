@@ -44,11 +44,16 @@ export function createCanUseTool(_opts: CreateCanUseToolOptions): CanUseTool {
         return { behavior: 'deny', message: 'tool disabled by policy' };
       case 'builtin':
       case 'mcp-host':
+      case 'mcp-sandbox':
         // Allow pass-through. The host-side `tool:pre-call` subscriber
         // chain already ran inside the PreToolUse hook (see
         // pre-tool-use.ts); if it rejected, the SDK would never route the
         // call here. We echo the input unchanged because PreToolUse
         // already forwarded any `modifiedCall.input` to the SDK.
+        // Sandbox-executed tools (Phase 2 artifact_publish) follow the
+        // same allow-and-let-PreToolUse-decide pattern; the dispatch path
+        // differs (in-process via local-dispatcher) but the gating posture
+        // is identical.
         return { behavior: 'allow', updatedInput: input };
       default: {
         const _exhaustive: never = klass;

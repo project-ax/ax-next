@@ -8,11 +8,12 @@
 //      arrive verbatim. Our host-side `tool:pre-call` subscribers see the
 //      name as-is and decide whether to permit them.
 //
-//   2. MCP-hosted tools served from our in-process `ax-host-tools` MCP
-//      server (see host-mcp-server.ts). The SDK renames them to
-//      `mcp__<server>__<tool>` at the canUseTool boundary. We strip the
-//      `mcp__ax-host-tools__` prefix so subscribers see the ax-native tool
-//      name they registered.
+//   2. MCP-hosted tools served from one of our two in-process MCP servers:
+//      `ax-host-tools` (host-mcp-server.ts — `executesIn: 'host'`) and
+//      `ax-sandbox-tools` (sandbox-mcp-server.ts — `executesIn: 'sandbox'`).
+//      The SDK renames them to `mcp__<server>__<tool>` at the canUseTool
+//      boundary. We strip the appropriate `mcp__<server>__` prefix so
+//      subscribers see the ax-native tool name they registered.
 //
 //   3. Disabled built-ins — things we don't want the agent reaching at
 //      all: WebFetch / WebSearch (raw network egress that bypasses the
@@ -44,6 +45,7 @@
 // ---------------------------------------------------------------------------
 
 export const MCP_HOST_SERVER_NAME = 'ax-host-tools';
+export const MCP_SANDBOX_SERVER_NAME = 'ax-sandbox-tools';
 
 export const DISABLED_BUILTINS = [
   'WebFetch',
@@ -54,9 +56,11 @@ export const DISABLED_BUILTINS = [
 export type SdkToolClass =
   | { kind: 'builtin'; axName: string }
   | { kind: 'mcp-host'; axName: string }
+  | { kind: 'mcp-sandbox'; axName: string }
   | { kind: 'disabled' };
 
 const MCP_HOST_PREFIX = `mcp__${MCP_HOST_SERVER_NAME}__`;
+const MCP_SANDBOX_PREFIX = `mcp__${MCP_SANDBOX_SERVER_NAME}__`;
 
 export function classifySdkToolName(sdkName: string): SdkToolClass {
   if ((DISABLED_BUILTINS as readonly string[]).includes(sdkName)) {
@@ -64,6 +68,9 @@ export function classifySdkToolName(sdkName: string): SdkToolClass {
   }
   if (sdkName.startsWith(MCP_HOST_PREFIX)) {
     return { kind: 'mcp-host', axName: sdkName.slice(MCP_HOST_PREFIX.length) };
+  }
+  if (sdkName.startsWith(MCP_SANDBOX_PREFIX)) {
+    return { kind: 'mcp-sandbox', axName: sdkName.slice(MCP_SANDBOX_PREFIX.length) };
   }
   // Fallback: pass the name through unchanged. Covers built-in SDK tools
   // (Bash, Read, Edit, …) AND unknown-to-us MCP tools from other servers.
