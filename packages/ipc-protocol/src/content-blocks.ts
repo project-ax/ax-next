@@ -128,7 +128,7 @@ export type AttachmentRefBlock = z.infer<typeof AttachmentRefBlockSchema>;
  * the wire boundary so a malformed value can't reach storage or
  * `attachments:download` and bypass the path-scope ACL.
  */
-function isWorkspaceRelativePath(value: string): boolean {
+export function isWorkspaceRelativePath(value: string): boolean {
   if (value.startsWith('/') || value.startsWith('\\')) return false;
   if (value.includes('\0')) return false;
   if (/^[A-Za-z]:[\\/]/.test(value)) return false;

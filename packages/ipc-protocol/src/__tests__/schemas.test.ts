@@ -738,6 +738,35 @@ describe('workspace.read schemas (Phase 2)', () => {
     const parsed = WorkspaceReadResponseSchema.parse({ found: false });
     expect(parsed.found).toBe(false);
   });
+
+  it.each([
+    '/etc/passwd',
+    '/permanent/workspace/x.pdf',
+    '\\\\windows\\path',
+    'C:/abs/path',
+    '../escape',
+    'workspace/../etc/passwd',
+    'workspace/foo\0bar',
+  ])('request schema rejects non-workspace-relative path %j', (badPath) => {
+    expect(() => WorkspaceReadRequestSchema.parse({ path: badPath })).toThrow();
+  });
+
+  it('response schema rejects non-canonical base64 in bytesBase64', () => {
+    expect(() =>
+      WorkspaceReadResponseSchema.parse({
+        found: true,
+        bytesBase64: 'not valid base64!!!',
+      }),
+    ).toThrow();
+  });
+
+  it('response schema accepts empty bytesBase64 (zero-byte file)', () => {
+    const parsed = WorkspaceReadResponseSchema.parse({
+      found: true,
+      bytesBase64: '',
+    });
+    expect(parsed).toEqual({ found: true, bytesBase64: '' });
+  });
 });
 
 describe('shared schemas exported', () => {

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { asWorkspaceVersion, type WorkspaceVersion } from '@ax/core';
-import { ContentBlockSchema } from './content-blocks.js';
+import { ContentBlockSchema, isWorkspaceRelativePath } from './content-blocks.js';
 
 // Re-export so existing consumers importing from `@ax/ipc-protocol` keep
 // working transparently — canonical declaration lives in `@ax/core` so
@@ -258,14 +258,33 @@ export type WorkspaceMaterializeResponse = z.infer<
 // carry, e.g. ".ax/uploads/<conv>/<turn>/file.pdf"). Bytes ride
 // base64-encoded for JSON safety.
 export const WorkspaceReadRequestSchema = z.object({
-  path: z.string().min(1),
+  // Defense in depth at the wire boundary: the same workspace-relative
+  // path rule the AttachmentBlock schema enforces. A malformed runner
+  // call (absolute path, `..` traversal, drive root, NUL byte) surfaces
+  // as a clean 400 VALIDATION here rather than as a confusing
+  // git-cat-file error one hop later.
+  path: z
+    .string()
+    .min(1)
+    .refine(
+      isWorkspaceRelativePath,
+      'path must be workspace-relative (no leading slash, no "..", no drive root, no NUL)',
+    ),
 });
 export type WorkspaceReadRequest = z.infer<typeof WorkspaceReadRequestSchema>;
 
 export const WorkspaceReadResponseSchema = z.discriminatedUnion('found', [
   z.object({
     found: z.literal(true),
-    bytesBase64: z.string(),
+    // Same canonical-base64 refinement BundleBytesSchema uses: malformed
+    // payloads surface here, not as confusing decode failures downstream.
+    // Empty string allowed for parity with bundleBytes (a known-found
+    // zero-byte file is valid).
+    bytesBase64: z
+      .string()
+      .refine((s) => s === '' || BASE64_RE.test(s), {
+        message: 'bytesBase64 must be empty or canonical base64',
+      }),
   }),
   z.object({ found: z.literal(false) }),
 ]);
