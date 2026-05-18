@@ -143,6 +143,12 @@ const PLUGINS_TO_DROP = new Set<string>([
   // Phase 1 of the attachments subsystem (half-wired window open through
   // Phase 3). Static wiring pinned in preset.test.ts.
   '@ax/attachments',
+  // Skills: postgres-backed (database:get-instance) + depends on
+  // http:register-route + auth:require-user (both dropped). Chat-orchestrator
+  // soft-couples via bus.hasService('skills:resolve'); when absent, the
+  // skill-union step is skipped — exactly the degraded path the multi-tenant
+  // ACL canary actually wants.
+  '@ax/skills',
 ]);
 
 const AGENTS_RESOLVE_PLUGIN_NAME = '@ax/preset-k8s/test/discriminating-agents-resolve';
