@@ -1,0 +1,132 @@
+<task-notification>
+<task-id>a927088773ffb699e</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-vpulim-dev-ai-ax-next/156d1273-18d1-4285-b586-fdb68cdd1a6c/tasks/a927088773ffb699e.output</output-file>
+<status>completed</status>
+<summary>Agent "Implement Task 6: canary" completed</summary>
+<result>Committed and verified.
+
+**Commit SHA:** `f635aff3` on `feat/skill-install-phase-0`
+
+- `git log --oneline -1`: `f635aff3 test(sandbox-subprocess): Phase 0 skill-discovery acceptance + MANUAL-ACCEPTANCE update (I-P0-5)`
+- `git status`: clean working tree, no untracked files
+- `pnpm --filter @ax/sandbox-subprocess test`: 3 files, 30/30 passing</result>
+<usage><total_tokens>77387</total_tokens><tool_uses>3</tool_uses><duration_ms>27977</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a3cc302c145804e21</task-id>
+<tool-use-id>toolu_01RR6vRaNMYSzXCazf6aMwRD</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-vpulim-dev-ai-ax-next/156d1273-18d1-4285-b586-fdb68cdd1a6c/tasks/a3cc302c145804e21.output</output-file>
+<status>completed</status>
+<summary>Agent "Implement Task 3: runner Skill" completed</summary>
+<result>Now I see other commits I didn't make (f635aff3, 7b37a388, 533c8a4f, 5b3d1828) — those are from the controller / parallel agents. The branch has more commits than I was tracking; that's fine, my single follow-up commit landed cleanly on top.
+
+## Report: DONE — code fix landed; plan docs need controller sync
+
+### Status
+
+Code fixes for the load-bearing CLAUDE_CONFIG_DIR gap are committed. **The plan docs (`docs/plans/2026-05-17-skill-install-workflow-design.md` and `docs/plans/2026-05-17-skill-install-phase-0-impl.md`) are NOT in this worktree** — per your instructions, asking you to sync them across before I commit them. The other 5 self-review items are all green.
+
+### File-level diff summary (commit `f085ffe7`)
+
+| File | Change |
+|---|---|
+| `packages/agent-claude-sdk-runner/src/proxy-startup.ts` | `ENV_ALLOWLIST` gains `'CLAUDE_CONFIG_DIR'` with an inline comment explaining the HOME-redirect interaction. |
+| `packages/agent-claude-sdk-runner/src/main.ts` | Phase C `env:` comment block expanded to document the two-var partition explicitly: HOME = workspaceRoot for jsonl redirect, CLAUDE_CONFIG_DIR forwarded from sandbox-provided env for skill discovery's `'user'` source. Explicit warning that adding `CLAUDE_CONFIG_DIR` after the spread would break I-P0-1. |
+| `packages/agent-claude-sdk-runner/src/__tests__/main.test.ts` | New `describe('Phase 0: CLAUDE_CONFIG_DIR forward for skill discovery (I-P0-1)')` block with regression test that sets `process.env.CLAUDE_CONFIG_DIR = '/tmp/sandbox-home-xyz/.ax/session'`, drives `main()`, and asserts `queryArg.options.env.CLAUDE_CONFIG_DIR` matches AND is not equal to `env.HOME`. Existing HOME-redirect test gained a sibling comment cross-referencing the new test. |
+| `packages/sandbox-subprocess/SECURITY.md` | "HOME isolation" bullet refined to explain the two-env-var partition and the runner-side forward in `proxy-startup.ts`. Previously read as if HOME-isolation alone was the defense; reality is the two vars partition the design and must not collapse. |
+| `packages/sandbox-subprocess/src/open-session.ts` | Tightened the concurrent-session race comment + restructured to pre-check existing symlink target (read it first; if it's already correct, do nothing). Eliminates the window where session A's correct link gets momentarily removed by session B's rm before A's runner spawns. Post-symlink EEXIST handler preserved as residual fallback. |
+
+### TDD verification (proof the test catches the bug)
+
+I git-stashed only the `proxy-startup.ts` change and ran the new test:
+
+```
+AssertionError: expected undefined to be '/tmp/sandbox-home-xyz/.ax/session'
+- "/tmp/sandbox-home-xyz/.ax/session"
++ undefined
+  ❯ src/__tests__/main.test.ts:2303:54
+```
+
+Then restored the fix and re-ran — 123/123 pass. The test is a genuine regression guard.
+
+### Test / build / lint results
+
+- `pnpm test --filter @ax/agent-claude-sdk-runner` (run as `cd packages/agent-claude-sdk-runner &amp;&amp; pnpm test`): **123/123 passed** (was 122 before; +1 new I-P0-1 regression test).
+- `pnpm test --filter @ax/sandbox-subprocess`: **30/30 passed** (covers `open-session.ts` symlink-race restructure).
+- `pnpm build`: **clean**.
+- `pnpm lint`: 0 errors, same 2 pre-existing unrelated warnings.
+- `pnpm test` (full monorepo): **all packages green this run** including `memory-strata` (37/37 — earlier flake didn't recur).
+
+### Plan docs — needs your action
+
+```
+$ git ls-files docs/plans/2026-05-17-skill-install-*
+(empty)
+$ find . -name "2026-05-17-skill-install*" -not -path "*/node_modules/*"
+(empty)
+```
+
+These don't exist in the worktree. Five+ source comments and SECURITY.md sections reference `docs/plans/2026-05-17-skill-install-phase-0-impl.md`, so the dangling refs are a real concern. Please sync both files across so I can land them in a follow-up commit. Suggested follow-up commit message: `docs(plans): commit Phase 0 skill-install workflow design + impl plan (I-P0-1 follow-up)`.
+
+Once the docs land, PR #95 should be unblocked. The runtime fix itself is in `f085ffe7` and ready to merge.</result>
+<usage><total_tokens>140570</total_tokens><tool_uses>35</tool_uses><duration_ms>588753</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a3cc302c145804e21</task-id>
+<tool-use-id>toolu_01KU6Pnn68uGQekvv6Pi38Ee</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-vpulim-dev-ai-ax-next/156d1273-18d1-4285-b586-fdb68cdd1a6c/tasks/a3cc302c145804e21.output</output-file>
+<status>completed</status>
+<summary>Agent "Implement Task 3: runner Skill" completed</summary>
+<result>## Report: DONE — plan docs committed and pushed
+
+### New HEAD SHA
+**`b6720916`** (full: `b67209168feb2e35af0a6dc0736f3f43583a2079`)
+
+### Verifications
+
+```
+$ git ls-files docs/plans/2026-05-17-skill-install-*
+docs/plans/2026-05-17-skill-install-phase-0-impl.md
+docs/plans/2026-05-17-skill-install-workflow-design.md
+
+$ git log --oneline -2
+b6720916 docs(plans): commit Phase 0 skill-install workflow design + impl plan (I-P0-1 follow-up)
+f085ffe7 fix(runner,sandbox-subprocess): forward CLAUDE_CONFIG_DIR to SDK subprocess (I-P0-1 follow-up)
+
+$ git push origin feat/skill-install-phase-0
+To github.com:project-ax/ax-next.git
+   f635aff3..b6720916  feat/skill-install-phase-0 -&gt; feat/skill-install-phase-0
+
+$ git status
+On branch feat/skill-install-phase-0
+Your branch is up to date with 'origin/feat/skill-install-phase-0'.
+nothing to commit, working tree clean
+```
+
+### One thing I did that you should know about
+
+`docs/plans/*` is gitignored at the repo root with specific docs whitelisted via `!` lines (existing pattern for `2026-05-*-memory-strata-*` files and `memory-strata-design.md` etc.). The two synced files matched the base ignore rule and `git add` rejected them. Per the existing pattern, I added two `!` whitelist entries to `.gitignore` for the Phase 0 docs in the same commit:
+
+```
++!docs/plans/2026-05-17-skill-install-workflow-design.md
++!docs/plans/2026-05-17-skill-install-phase-0-impl.md
+```
+
+This matches how the other tracked plan docs were un-ignored. No `git add -f` was used; the un-ignore is explicit and visible in the diff. The commit is 3 files (2 plan docs + .gitignore), 1379 insertions.
+
+### PR #95 unblocked
+
+Both follow-up commits are now visible on origin: `f085ffe7` (the load-bearing `CLAUDE_CONFIG_DIR` forwarding fix + regression test + sandbox-subprocess polish) and `b6720916` (the plan docs that the source/SECURITY comments reference). PR #95 should be ready to merge once review re-runs.</result>
+<usage><total_tokens>142467</total_tokens><tool_uses>10</tool_uses><duration_ms>68428</duration_ms></usage>
+</task-notification>
+
+---
+
+address PR comments
