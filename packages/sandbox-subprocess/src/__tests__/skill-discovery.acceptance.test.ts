@@ -67,10 +67,22 @@ async function makeHarness() {
 }
 
 // echo-stub writes TWO JSON lines on stdout: env (line 1) + probe (line 2).
-// Read both and parse them. Resolves once two newlines have been seen.
+// Read both and parse them. Resolves once `count` newline-terminated lines
+// have arrived; rejects on stdout error, on the stream closing before
+// `count` lines arrive, or on a hard timeout — never hangs.
+//
+// Why bother with timeout + close handling: if the spawned echo-stub
+// crashes during startup (missing module, unhandled exception, env-contract
+// regression that throws before the JSON writes), stdout closes empty and
+// a naïve `await readStdoutLines(result, 2)` waits indefinitely until
+// vitest's own timeout, where the failure surfaces as "test timed out"
+// with no clue about where. With explicit rejection paths the failure
+// surfaces as "stdout closed before 2 lines; got 0" or "timeout after
+// 5000ms; partial buffer: …" — which actually points at the regression.
 function readStdoutLines(
   result: OpenSessionResult,
   count: number,
+  timeoutMs = 5000,
 ): Promise<string[]> {
   const stdout = result.handle.child?.stdout;
   if (stdout === undefined) {
@@ -79,6 +91,33 @@ function readStdoutLines(
   return new Promise<string[]>((resolve, reject) => {
     let buf = '';
     const lines: string[] = [];
+    let settled = false;
+
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      stdout.off('data', onData);
+      stdout.off('error', onErr);
+      stdout.off('end', onClose);
+      stdout.off('close', onClose);
+    };
+    const settle = (fn: () => void): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      fn();
+    };
+
+    const timer = setTimeout(() => {
+      settle(() =>
+        reject(
+          new Error(
+            `readStdoutLines: timeout after ${timeoutMs}ms; got ${lines.length}/${count} lines. ` +
+              `Partial buffer: ${JSON.stringify(buf.slice(0, 200))}`,
+          ),
+        ),
+      );
+    }, timeoutMs);
+
     const onData = (chunk: Buffer | string): void => {
       buf += typeof chunk === 'string' ? chunk : chunk.toString('utf8');
       let nl = buf.indexOf('\n');
@@ -88,14 +127,27 @@ function readStdoutLines(
         nl = buf.indexOf('\n');
       }
       if (lines.length >= count) {
-        stdout.off('data', onData);
-        stdout.off('error', onErr);
-        resolve(lines);
+        settle(() => resolve(lines));
       }
     };
-    const onErr = (err: Error): void => reject(err);
+    const onErr = (err: Error): void => {
+      settle(() => reject(err));
+    };
+    const onClose = (): void => {
+      settle(() =>
+        reject(
+          new Error(
+            `readStdoutLines: stdout closed before ${count} lines; got ${lines.length}. ` +
+              `Partial buffer: ${JSON.stringify(buf.slice(0, 200))}`,
+          ),
+        ),
+      );
+    };
+
     stdout.on('data', onData);
     stdout.on('error', onErr);
+    stdout.on('end', onClose);
+    stdout.on('close', onClose);
   });
 }
 
@@ -110,55 +162,64 @@ interface SkillProbe {
 describe('Phase 0: SDK skill discovery acceptance', () => {
   it('runner subprocess sees workspace SKILL.md via the symlinked .claude/skills path', async () => {
     const ws = await mkWorkspace();
-    // 1. Author a canary skill at the host-owned `.ax/skills/` location —
-    //    same shape an agent would write through the workspace plugin.
-    const canaryDir = path.join(ws, '.ax', 'skills', 'canary-skill');
-    await fs.mkdir(canaryDir, { recursive: true });
-    await fs.writeFile(path.join(canaryDir, 'SKILL.md'), CANARY_SKILL_BODY);
+    // Track the spawned session so cleanup runs even if an early assertion
+    // throws. Without this guard, a failing expect() in the middle of the
+    // test would skip the kill() + rm() tail and leak the child process
+    // plus the workspace tempdir — destabilizing later tests in the run.
+    let result: OpenSessionResult | undefined;
+    try {
+      // 1. Author a canary skill at the host-owned `.ax/skills/` location —
+      //    same shape an agent would write through the workspace plugin.
+      const canaryDir = path.join(ws, '.ax', 'skills', 'canary-skill');
+      await fs.mkdir(canaryDir, { recursive: true });
+      await fs.writeFile(path.join(canaryDir, 'SKILL.md'), CANARY_SKILL_BODY);
 
-    const h = await makeHarness();
-    const ctx = h.ctx();
-    // 2. Open the sandbox. open-session creates `.claude/skills` → `../.ax/skills`
-    //    and allocates a per-session HOME with `$CLAUDE_CONFIG_DIR/skills/`.
-    const result = await h.bus.call<unknown, OpenSessionResult>(
-      'sandbox:open-session',
-      ctx,
-      { sessionId: 'p0-canary', workspaceRoot: ws, runnerBinary: ECHO_STUB },
-    );
+      const h = await makeHarness();
+      const ctx = h.ctx();
+      // 2. Open the sandbox. open-session creates `.claude/skills` → `../.ax/skills`
+      //    and allocates a per-session HOME with `$CLAUDE_CONFIG_DIR/skills/`.
+      result = await h.bus.call<unknown, OpenSessionResult>(
+        'sandbox:open-session',
+        ctx,
+        { sessionId: 'p0-canary', workspaceRoot: ws, runnerBinary: ECHO_STUB },
+      );
 
-    // 3. echo-stub emits env (line 1) then probe (line 2). Parse both.
-    const [envLine, probeLine] = await readStdoutLines(result, 2);
-    const env = JSON.parse(envLine) as Record<string, string | null>;
-    const probe = JSON.parse(probeLine) as SkillProbe;
+      // 3. echo-stub emits env (line 1) then probe (line 2). Parse both.
+      const [envLine, probeLine] = await readStdoutLines(result, 2);
+      const env = JSON.parse(envLine) as Record<string, string | null>;
+      const probe = JSON.parse(probeLine) as SkillProbe;
 
-    // The child's view of CLAUDE_CONFIG_DIR matches the runner env contract
-    // (Task 3). Sanity-check before trusting the probe data.
-    expect(env.CLAUDE_CONFIG_DIR).toBe(
-      path.join(env.HOME as string, '.ax', 'session'),
-    );
-    expect(probe.workspaceRoot).toBe(ws);
+      // The child's view of CLAUDE_CONFIG_DIR matches the runner env contract
+      // (Task 3). Sanity-check before trusting the probe data.
+      expect(env.CLAUDE_CONFIG_DIR).toBe(
+        path.join(env.HOME as string, '.ax', 'session'),
+      );
+      expect(probe.workspaceRoot).toBe(ws);
 
-    // I-P0-4: the symlink the SDK's 'project' source walks resolves to
-    // `../.ax/skills` (relative target, so it survives a remount).
-    expect(probe.workspaceSkillsSymlinkTarget.error).toBeNull();
-    expect(probe.workspaceSkillsSymlinkTarget.value).toBe('../.ax/skills');
+      // I-P0-4: the symlink the SDK's 'project' source walks resolves to
+      // `../.ax/skills` (relative target, so it survives a remount).
+      expect(probe.workspaceSkillsSymlinkTarget.error).toBeNull();
+      expect(probe.workspaceSkillsSymlinkTarget.value).toBe('../.ax/skills');
 
-    // I-P0-5: the workspace-authored SKILL.md is reachable through the
-    // symlink — which is the exact path the SDK walks at startup. If this
-    // read fails, the SDK won't see the skill either.
-    expect(probe.canaryReadFile.error).toBeNull();
-    expect(probe.canaryReadFile.value).toContain('name: canary-skill');
-    expect(probe.canaryReadFile.value).toContain(
-      'When asked, mention "canary-skill" by name.',
-    );
+      // I-P0-5: the workspace-authored SKILL.md is reachable through the
+      // symlink — which is the exact path the SDK walks at startup. If this
+      // read fails, the SDK won't see the skill either.
+      expect(probe.canaryReadFile.error).toBeNull();
+      expect(probe.canaryReadFile.value).toContain('name: canary-skill');
+      expect(probe.canaryReadFile.value).toContain(
+        'When asked, mention "canary-skill" by name.',
+      );
 
-    // I-P0-3: `$CLAUDE_CONFIG_DIR/skills/` is pre-created. Phase 0 leaves
-    // it empty; Phase 1+ will populate it with host-installed skills.
-    expect(probe.installedSkillsDir.error).toBeNull();
-    expect(probe.installedSkillsDir.value).toEqual({ isDirectory: true });
-
-    await result.handle.kill();
-    await result.handle.exited;
-    await fs.rm(ws, { recursive: true, force: true });
+      // I-P0-3: `$CLAUDE_CONFIG_DIR/skills/` is pre-created. Phase 0 leaves
+      // it empty; Phase 1+ will populate it with host-installed skills.
+      expect(probe.installedSkillsDir.error).toBeNull();
+      expect(probe.installedSkillsDir.value).toEqual({ isDirectory: true });
+    } finally {
+      if (result !== undefined) {
+        await result.handle.kill();
+        await result.handle.exited;
+      }
+      await fs.rm(ws, { recursive: true, force: true });
+    }
   });
 });

@@ -14,14 +14,14 @@ is **not enabled** unless `'local'` is passed.
 
 For each tier the CLI looks up files via two helpers:
 
-```
+```text
 fKH(tier)  → the *root directory* for that tier
 hz(tier)   → the *settings.json file path* for that tier
 ```
 
 with:
 
-```
+```text
 fKH('userSettings')    = U6()                       // <CLAUDE_CONFIG_DIR> ?? ~/.claude
 fKH('projectSettings') = K8()                       // originalCwd at process start
 fKH('localSettings')   = K8()                       // same
@@ -118,7 +118,7 @@ Paths the `workspace:pre-apply` validator MUST reject when the change author is
 anything other than `actor: 'host'`. Match against the file's path *relative to
 project root*:
 
-```
+```text
 .claude/settings.json
 .claude/settings.local.json
 .claude/agents/                  (entire directory)
@@ -137,7 +137,7 @@ and `<root>/CLAUDE.local.md` are reachable.
 
 **Allowed (must NOT be vetoed):**
 
-```
+```text
 .claude/skills/<name>/SKILL.md
 .claude/skills/<name>/**         (skill body assets — scripts, references)
 .claude/skills/SKILL.md          (flat single-skill layout, if we choose to support)
