@@ -1,0 +1,37 @@
+<task-notification>
+<task-id>af990527b8547f1ee</task-id>
+<tool-use-id>toolu_01Q7ViyVtgyMqwUhGb75pum7</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-vpulim-dev-ai-ax-next/156d1273-18d1-4285-b586-fdb68cdd1a6c/tasks/af990527b8547f1ee.output</output-file>
+<status>completed</status>
+<summary>Agent "Implement Task 5: k8s sandbox" completed</summary>
+<result>Commit landed cleanly. Summary report:
+
+---
+
+## Follow-up Status: DONE
+
+### Commit
+`7b37a388 docs(sandbox-k8s): refresh SECURITY.md for Phase 0 HOME + tighten init-container env (I-P0-3 follow-ups)`
+
+### Diff summary (3 files, +45 / -5)
+
+**`packages/sandbox-k8s/SECURITY.md`** — 3 spots updated:
+- Top-of-file Sandbox bullet (line ~7): writable-mounts list now includes `/home/runner` (tmpfs Memory, per I-P0-3).
+- Pod-to-node "Read-only root filesystem" bullet (line ~23): same — four `emptyDir` mounts now, with `/home/runner` called out as the SDK user-scope HOME.
+- Git-paranoid-env bullets (lines ~69–70): the false "no `$HOME` directory to look in" claim is gone. Replaced with the suggested text, adapted to surrounding voice: `GIT_CONFIG_NOSYSTEM` + `GIT_CONFIG_GLOBAL=/dev/null` are billed as the canonical defense (neutralize the lookup at the source); new HOME shape (per-pod tmpfs emptyDir, pod-lifecycle scoped, no node-disk hit) is described; rationale traces to I-P0-3 in `docs/plans/2026-05-17-skill-install-phase-0-impl.md`.
+
+**`packages/sandbox-k8s/src/pod-spec.ts`** — init container `env` change:
+- Was: `env: gitParanoidEnv` (7 vars: GIT_CONFIG_NOSYSTEM, GIT_CONFIG_GLOBAL, GIT_TERMINAL_PROMPT, HOME, GIT_AUTHOR_NAME, GIT_AUTHOR_EMAIL, GIT_COMMITTER_NAME, GIT_COMMITTER_EMAIL — actually 8 vars after the Phase-0 CLAUDE_CONFIG_DIR addition, but only HOME is even nominally relevant to mkdir/ln).
+- Now: `env: [{ name: 'HOME', value: '/home/runner' }]`.
+- Added a comment block explaining invariant #5 rationale (capabilities minimized): mkdir+ln read no GIT_* vars and use absolute paths; HOME stays as forward-compat for future maintainers + documentation.
+
+**`packages/sandbox-k8s/src/__tests__/pod-spec.test.ts`** — one new regression test:
+- "init container env is narrowed to HOME only (no inherited GIT_* vars)" — asserts exact `[{ name: 'HOME', value: '/home/runner' }]` shape AND specifically negates each of the 7 GIT_* names. Catches future env-widening at review.
+
+### Verification
+- `pnpm --filter @ax/sandbox-k8s test`: 52 pass (1 new test, all others unchanged including the 5 from Task 5 and the updated HOME-value assertion).
+- `pnpm build`: clean.
+- `pnpm lint`: 0 errors (same 2 unrelated warnings in `deploy/charts` + `channel-web`, both pre-existing).
+- `grep -rn "nonexistent\|no \$HOME directory" packages/sandbox-k8s/`: only matches are the historical-context comments in `pod-spec.ts:148` (and the compiled `dist/pod-spec.js`) — both intentional past-tense descriptions of the prior state, not active claims. No stale assertions remain in SECURITY.md.</result>
+<usage><total_tokens>95600</total_tokens><tool_uses>17</tool_uses><duration_ms>169582</duration_ms></usage>
+</task-notification>

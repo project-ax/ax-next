@@ -1,0 +1,53 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "e06c393951ef",
+  "session_id": "156d1273-18d1-4285-b586-fdb68cdd1a6c",
+  "strategy": "manual-commit",
+  "created_at": "2026-05-18T04:07:32.957717Z",
+  "branch": "feat/skill-install-phase-0",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "deploy/MANUAL-ACCEPTANCE.md",
+    "packages/sandbox-subprocess/src/__tests__/fixtures/echo-stub.mjs",
+    "packages/sandbox-subprocess/src/__tests__/skill-discovery.acceptance.test.ts"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "be134002e546",
+  "checkpoint_transcript_start": 779,
+  "transcript_lines_at_start": 779,
+  "token_usage": {
+    "input_tokens": 19,
+    "cache_creation_tokens": 24358,
+    "cache_read_tokens": 3565223,
+    "output_tokens": 13741,
+    "api_call_count": 9
+  },
+  "session_metrics": {
+    "turn_count": 5
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-05-18T04:07:32.920076Z",
+    "agent_lines": 246,
+    "agent_removed": 0,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 246,
+    "total_lines_changed": 246,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 8,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claude/settings.local.json": 8
+      }
+    }
+  ]
+}
