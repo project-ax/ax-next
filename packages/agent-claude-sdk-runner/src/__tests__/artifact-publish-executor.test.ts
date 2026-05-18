@@ -97,8 +97,13 @@ describe('artifact_publish executor', () => {
   });
 
   it('rejects files larger than 100 MiB', async () => {
-    const big = Buffer.alloc(100 * 1024 * 1024 + 1, 0);
-    await writeFile('workspace/big.bin', big);
+    // fs.truncate grows the file to MAX+1 bytes as a sparse file on
+    // supported filesystems — same size on disk as a real 100 MiB write,
+    // but no 100 MiB allocation in the test process. The executor's lstat
+    // sees the full size and rejects before any byte read happens, so we
+    // never materialize the body. Keeps CI memory pressure flat.
+    const absPath = await writeFile('workspace/big.bin', Buffer.alloc(0));
+    await fs.truncate(absPath, 100 * 1024 * 1024 + 1);
     await expect(
       executor()({
         id: 'toolu_7',
