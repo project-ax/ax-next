@@ -134,7 +134,7 @@ export function parseSkillManifest(yaml: string): ParseResult {
 
   // Step 7 & 8 & 9: capabilities
   let allowedHosts: string[] = [];
-  let credentials: CapabilitySlot[] = [];
+  const credentials: CapabilitySlot[] = [];
 
   if ('capabilities' in doc) {
     const rawCaps = doc['capabilities'];

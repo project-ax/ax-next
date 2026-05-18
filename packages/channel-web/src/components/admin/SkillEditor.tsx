@@ -3,6 +3,14 @@ import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
+// `@ax/skills/manifest` is a pure-function SKILL.md parser (yaml +
+// shape validation) exported via a subpath so the heavy bits of
+// @ax/skills (kysely db, http routes, node:crypto via @ax/core) stay
+// out of the browser bundle. Same library-not-plugin shape as
+// @ax/validator-routine — the parser IS the boundary contract that
+// the admin editor's live-preview pane consumes. Disable applies to
+// THIS LINE ONLY; component-level eslint posture is unchanged.
+// eslint-disable-next-line @typescript-eslint/no-restricted-imports
 import { parseSkillManifest } from '@ax/skills/manifest';
 import { getSkill, upsertSkill, updateSkill } from '@/lib/skills';
 

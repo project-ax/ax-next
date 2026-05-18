@@ -40,7 +40,7 @@ const PLUGIN_NAME = '@ax/skills';
 
 export function createSkillsPlugin(): Plugin {
   let db: Kysely<SkillsDatabase> | undefined;
-  let busRef: HookBus | undefined;
+  let _busRef: HookBus | undefined;
   const routeUnregisters: Array<() => void> = [];
 
   return {
@@ -59,7 +59,7 @@ export function createSkillsPlugin(): Plugin {
     },
 
     async init({ bus }) {
-      busRef = bus;
+      _busRef = bus;
       const initCtx = makeAgentContext({
         sessionId: 'init',
         agentId: PLUGIN_NAME,
@@ -196,7 +196,7 @@ export function createSkillsPlugin(): Plugin {
           // best-effort
         }
       }
-      busRef = undefined;
+      _busRef = undefined;
       // The shared db handle is owned by @ax/database-postgres; don't close
       // it here. Just drop our reference so a re-init doesn't read a stale store.
       db = undefined;
