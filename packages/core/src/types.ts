@@ -3,6 +3,21 @@ import type { Rejection } from './errors.js';
 export interface AgentMessage {
   role: 'user' | 'assistant';
   content: string;
+  /**
+   * Phase 2 (attachments). Optional richer payload — when present the
+   * runner prefers this over `content`. Mirrors the wire shape in
+   * `@ax/ipc-protocol`'s `AgentMessageSchema`. Kept as `unknown[]` here
+   * (rather than importing `ContentBlock` from `@ax/ipc-protocol`) to
+   * keep `@ax/core` free of wire-layer imports; consumers that need the
+   * narrow shape can re-cast or import from the protocol layer.
+   */
+  contentBlocks?: unknown[];
+  /**
+   * Phase 3 (attachments, 2026-05-18). Server-minted user-turn id; see
+   * the equivalent comment on `@ax/ipc-protocol`'s `AgentMessageSchema`
+   * for the binding rationale.
+   */
+  turnId?: string;
 }
 
 export interface ToolCall {

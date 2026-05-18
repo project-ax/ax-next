@@ -13,7 +13,12 @@ import {
   it,
   vi,
 } from 'vitest';
-import { PluginError, type AgentContext, type Plugin } from '@ax/core';
+import {
+  makeAgentContext,
+  PluginError,
+  type AgentContext,
+  type Plugin,
+} from '@ax/core';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createHttpServerPlugin, type HttpServerPlugin } from '@ax/http-server';
 import { createConversationsPlugin } from '@ax/conversations';
@@ -21,6 +26,8 @@ import type {
   CreateInput as ConvCreateInput,
   CreateOutput as ConvCreateOutput,
 } from '@ax/conversations';
+import { createAttachmentsPlugin } from '@ax/attachments';
+import type { AttachmentsConfig } from '@ax/attachments';
 import {
   createMockWorkspacePlugin,
   createTestHarness,
@@ -143,7 +150,14 @@ function agentsMockPlugin(args: {
 
 interface ChatRunCapture {
   ctx: AgentContext;
-  input: { message: { role: string; content: string } };
+  input: {
+    message: {
+      role: string;
+      content: string;
+      contentBlocks?: Array<Record<string, unknown>>;
+      turnId?: string;
+    };
+  };
 }
 
 function chatRunMockPlugin(captures: ChatRunCapture[]): Plugin {
@@ -198,6 +212,15 @@ interface BootArgs {
   >;
   /** Override allowedOrigins on the http-server. */
   allowedOrigins?: readonly string[];
+  /**
+   * Phase 3 (attachments): when true, boot `@ax/attachments` alongside a
+   * permissive in-memory workspace stub (so `attachments:commit`'s
+   * `workspace:apply` calls — which pass `parent: null` — don't hit
+   * `createMockWorkspacePlugin`'s parent-CAS check on the second commit).
+   */
+  includeAttachments?: boolean;
+  /** Phase 3 (attachments): per-test attachments config (e.g. maxFileBytes). */
+  attachmentsConfig?: AttachmentsConfig;
 }
 
 interface BootResult {
@@ -205,6 +228,81 @@ interface BootResult {
   port: number;
   http: HttpServerPlugin;
   chatRunCaptures: ChatRunCapture[];
+}
+
+// In-memory workspace stub used by the Phase-3 attachment-ref tests. The
+// production `createMockWorkspacePlugin` enforces a `parent === latest` CAS
+// check; `attachments:commit` deliberately uses `parent: null` for every
+// commit (write-once-on-commit, no parallel-edit lock). For the chat-route
+// tests we only need `workspace:apply` to behave as a black-box "stash
+// these bytes" + `workspace:list`/`workspace:read` returning empty (the
+// `conversations:get` jsonl-scan paths these tests exercise have no
+// committed transcript yet). Mirrors the inline stub in
+// `packages/attachments/src/__tests__/contract.test.ts`.
+function permissiveWorkspacePlugin(): Plugin {
+  const blobs = new Map<string, Uint8Array>();
+  return {
+    manifest: {
+      name: 'mock-workspace-permissive',
+      version: '0.0.0',
+      registers: [
+        'workspace:apply',
+        'workspace:read',
+        'workspace:list',
+        'workspace:diff',
+      ],
+      calls: [],
+      subscribes: [],
+    },
+    init({ bus }) {
+      bus.registerService(
+        'workspace:apply',
+        'mock-workspace-permissive',
+        async (_ctx, input: unknown) => {
+          const { changes } = input as {
+            changes: Array<{
+              path: string;
+              kind: 'put' | 'delete';
+              content?: Uint8Array;
+            }>;
+          };
+          for (const change of changes) {
+            if (change.kind === 'put' && change.content !== undefined) {
+              blobs.set(change.path, change.content);
+            } else if (change.kind === 'delete') {
+              blobs.delete(change.path);
+            }
+          }
+          return {
+            version: 'v-permissive',
+            delta: { before: null, after: 'v-permissive', changes: [] },
+          };
+        },
+      );
+      bus.registerService(
+        'workspace:read',
+        'mock-workspace-permissive',
+        async (_ctx, input: unknown) => {
+          const { path } = input as { path: string };
+          const bytes = blobs.get(path);
+          if (bytes === undefined) return { found: false };
+          return { found: true, bytes };
+        },
+      );
+      bus.registerService(
+        'workspace:list',
+        'mock-workspace-permissive',
+        async () => ({ paths: [] as string[] }),
+      );
+      bus.registerService(
+        'workspace:diff',
+        'mock-workspace-permissive',
+        async () => ({
+          delta: { before: null, after: 'v-permissive', changes: [] },
+        }),
+      );
+    },
+  };
 }
 
 async function boot(args: BootArgs): Promise<BootResult> {
@@ -216,28 +314,37 @@ async function boot(args: BootArgs): Promise<BootResult> {
     allowedOrigins: args.allowedOrigins ?? [ALLOWED_ORIGIN],
   });
   const chatRunCaptures: ChatRunCapture[] = [];
-  const harness = await createTestHarness({
-    plugins: [
-      http,
-      createDatabasePostgresPlugin({ connectionString }),
-      authMockPlugin({ user: args.user }),
-      agentsMockPlugin({
-        allowedFor: args.allowedFor,
-        ...(args.notFound !== undefined ? { notFound: args.notFound } : {}),
-        ...(args.listFor !== undefined ? { listFor: args.listFor } : {}),
-      }),
-      // Phase D — @ax/conversations declares `workspace:list` /
-      // `workspace:read` calls (used by conversations:get to read
-      // runner-native jsonl). Bootstrap verifies them at boot, so
-      // every harness that boots conversations needs a workspace
-      // plugin registered. Empty mock workspace = no jsonl found =
-      // empty turns, which is what these tests expect.
-      createMockWorkspacePlugin(),
-      createConversationsPlugin(),
-      chatRunMockPlugin(chatRunCaptures),
-      createChannelWebServerPlugin({}),
-    ],
-  });
+  // When the attachments plugin is booted, swap in the permissive
+  // workspace stub — `createMockWorkspacePlugin`'s parent-CAS rejects
+  // the second `attachments:commit` (parent: null vs latest: 'mock-0').
+  const workspacePlugin =
+    args.includeAttachments === true
+      ? permissiveWorkspacePlugin()
+      : createMockWorkspacePlugin();
+  const plugins: Plugin[] = [
+    http,
+    createDatabasePostgresPlugin({ connectionString }),
+    authMockPlugin({ user: args.user }),
+    agentsMockPlugin({
+      allowedFor: args.allowedFor,
+      ...(args.notFound !== undefined ? { notFound: args.notFound } : {}),
+      ...(args.listFor !== undefined ? { listFor: args.listFor } : {}),
+    }),
+    // Phase D — @ax/conversations declares `workspace:list` /
+    // `workspace:read` calls (used by conversations:get to read
+    // runner-native jsonl). Bootstrap verifies them at boot, so
+    // every harness that boots conversations needs a workspace
+    // plugin registered. Empty mock workspace = no jsonl found =
+    // empty turns, which is what these tests expect.
+    workspacePlugin,
+    createConversationsPlugin(),
+    chatRunMockPlugin(chatRunCaptures),
+  ];
+  if (args.includeAttachments === true) {
+    plugins.push(createAttachmentsPlugin(args.attachmentsConfig ?? {}));
+  }
+  plugins.push(createChannelWebServerPlugin({}));
+  const harness = await createTestHarness({ plugins });
   return { harness, port: http.boundPort(), http, chatRunCaptures };
 }
 
@@ -254,6 +361,11 @@ afterEach(async () => {
   try {
     await cleanup.query('DROP TABLE IF EXISTS conversations_v1_turns');
     await cleanup.query('DROP TABLE IF EXISTS conversations_v1_conversations');
+    // Phase 3 (attachments): some tests boot `@ax/attachments`; drop
+    // its temp table here too so a per-test temp doesn't leak into the
+    // next test (where it'd pass the storage-uniqueness check but
+    // belong to a different user, masking forbidden/not-found cases).
+    await cleanup.query('DROP TABLE IF EXISTS attachments_v1_temps');
   } finally {
     await cleanup.end().catch(() => {});
   }
@@ -401,7 +513,16 @@ describe('@ax/channel-web POST /api/chat/messages', () => {
     expect(cap.ctx.userId).toBe('userA');
     expect(cap.ctx.agentId).toBe('agt_test');
     // agent:invoke's first-turn message — extracted from the first text block.
-    expect(cap.input.message).toEqual({ role: 'user', content: 'hello there' });
+    // Phase 3: the route now also passes `contentBlocks` (the rewritten
+    // block list — for a text-only message, just the text block) and a
+    // server-minted `turnId` so the runner can bind the user turn.
+    expect(cap.input.message.role).toBe('user');
+    expect(cap.input.message.content).toBe('hello there');
+    expect(cap.input.message.contentBlocks).toEqual([
+      { type: 'text', text: 'hello there' },
+    ]);
+    expect(typeof cap.input.message.turnId).toBe('string');
+    expect(cap.input.message.turnId!.length).toBeGreaterThan(0);
 
     // Phase E invariant: conversations:append-turn must not be called
     // anywhere in the POST handler chain. (The hook is still registered
@@ -1351,5 +1472,193 @@ describe('@ax/channel-web GET /api/chat/agents', () => {
         visibility: 'team',
       },
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/chat/messages — attachment_ref handling (Phase 3, Task 4).
+//
+// The wire schema accepts `attachment_ref` blocks. The handler commits each
+// one via `attachments:commit` (which validates ownership, applies the
+// bytes to the workspace, and returns a stable workspace path), then
+// replaces the ref with a canonical `attachment` block BEFORE dispatching
+// agent:invoke. Failure modes:
+//
+//   - attachmentId not found in temp store → 400 attachment-not-found
+//   - attachmentId belongs to a different user → 400 attachment-foreign-user
+//   - cumulative attachment bytes > 100 MiB → 413 attachment-total-too-large
+//
+// Atomicity: commits are per-row atomic; a partial-fail leaves the
+// successful commits orphaned in the workspace (the temp janitor reaps
+// stale temps; the orphan blobs sit until the next git GC). Acceptable
+// per the Phase-3 design.
+// ---------------------------------------------------------------------------
+
+describe('POST /api/chat/messages — attachment_ref handling', () => {
+  // Helper: build a user ctx for direct `attachments:store-temp` calls
+  // (we pre-stage the temp row via the bus, not via POST /api/attachments).
+  function userCtx(userId: string): AgentContext {
+    return makeAgentContext({
+      sessionId: 'test-store-temp',
+      agentId: 'agt_test',
+      userId,
+    });
+  }
+
+  it('commits attachment_ref blocks and dispatches agent:invoke with attachment blocks', async () => {
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+      includeAttachments: true,
+    });
+    harnesses.push(booted.harness);
+
+    // Pre-stage a temp via attachments:store-temp.
+    const stored = await booted.harness.bus.call<
+      unknown,
+      { attachmentId: string; sizeBytes: number; expiresAt: string }
+    >('attachments:store-temp', userCtx('userA'), {
+      bytes: Buffer.from('hello pdf bytes'),
+      displayName: 'note.pdf',
+      mediaType: 'application/pdf',
+    });
+
+    const r = await postMessage(booted.port, {
+      conversationId: null,
+      agentId: 'agt_test',
+      contentBlocks: [
+        { type: 'text', text: 'hi here is a doc' },
+        { type: 'attachment_ref', attachmentId: stored.attachmentId },
+      ],
+    });
+    expect(r.status).toBe(202);
+
+    // agent:invoke dispatch is async — wait a tick.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(booted.chatRunCaptures).toHaveLength(1);
+    const cap = booted.chatRunCaptures[0]!;
+    const msg = cap.input.message;
+    expect(msg.role).toBe('user');
+    expect(msg.contentBlocks).toBeTruthy();
+    expect(msg.contentBlocks).toHaveLength(2);
+    expect(msg.contentBlocks![0]).toEqual({
+      type: 'text',
+      text: 'hi here is a doc',
+    });
+    const att = msg.contentBlocks![1]!;
+    expect(att.type).toBe('attachment');
+    expect(att.mediaType).toBe('application/pdf');
+    expect(att.displayName).toBe('note.pdf');
+    expect(typeof att.path).toBe('string');
+    // Path shape: .ax/uploads/<conversationId>/<turnId>/<sanitized-filename>
+    // — sanitized filename has an 8-hex prefix per
+    // `sanitizeFilenameComponent` in @ax/attachments.
+    expect(att.path).toMatch(
+      /^\.ax\/uploads\/[^/]+\/[^/]+\/[0-9a-f]{8}__note\.pdf$/,
+    );
+    expect(typeof msg.turnId).toBe('string');
+  });
+
+  it('returns 400 attachment-not-found for an unknown attachmentId', async () => {
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+      includeAttachments: true,
+    });
+    harnesses.push(booted.harness);
+
+    const r = await postMessage(booted.port, {
+      conversationId: null,
+      agentId: 'agt_test',
+      contentBlocks: [
+        { type: 'attachment_ref', attachmentId: 'does-not-exist' },
+      ],
+    });
+    expect(r.status).toBe(400);
+    expect(await r.json()).toEqual({ error: 'attachment-not-found' });
+    // No agent:invoke fired.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(booted.chatRunCaptures).toHaveLength(0);
+  });
+
+  it('returns 400 attachment-foreign-user for an attachmentId belonging to another user', async () => {
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+      includeAttachments: true,
+    });
+    harnesses.push(booted.harness);
+
+    // userB stores a temp; userA tries to redeem it.
+    const stored = await booted.harness.bus.call<
+      unknown,
+      { attachmentId: string }
+    >('attachments:store-temp', userCtx('userB'), {
+      bytes: Buffer.from('foreign'),
+      displayName: 'x.txt',
+      mediaType: 'text/plain',
+    });
+
+    const r = await postMessage(booted.port, {
+      conversationId: null,
+      agentId: 'agt_test',
+      contentBlocks: [
+        { type: 'attachment_ref', attachmentId: stored.attachmentId },
+      ],
+    });
+    expect(r.status).toBe(400);
+    expect(await r.json()).toEqual({ error: 'attachment-foreign-user' });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(booted.chatRunCaptures).toHaveLength(0);
+  });
+
+  it('returns 413 attachment-total-too-large when cumulative bytes exceed 100 MiB', async () => {
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+      includeAttachments: true,
+      // Raise per-file cap so each 60 MiB upload passes store-temp;
+      // also raise per-user pending quota above 120 MiB so two 60 MiB
+      // temps can co-exist before redemption.
+      attachmentsConfig: {
+        maxFileBytes: 60 * 1024 * 1024,
+        maxPendingBytesPerUser: 200 * 1024 * 1024,
+      },
+    });
+    harnesses.push(booted.harness);
+
+    // Two 60 MiB pretend uploads — sum is 120 MiB > 100 MiB cap.
+    const big1 = Buffer.alloc(60 * 1024 * 1024, 0xab);
+    const big2 = Buffer.alloc(60 * 1024 * 1024, 0xcd);
+    const s1 = await booted.harness.bus.call<
+      unknown,
+      { attachmentId: string }
+    >('attachments:store-temp', userCtx('userA'), {
+      bytes: big1,
+      displayName: 'a.bin',
+      mediaType: 'application/octet-stream',
+    });
+    const s2 = await booted.harness.bus.call<
+      unknown,
+      { attachmentId: string }
+    >('attachments:store-temp', userCtx('userA'), {
+      bytes: big2,
+      displayName: 'b.bin',
+      mediaType: 'application/octet-stream',
+    });
+
+    const r = await postMessage(booted.port, {
+      conversationId: null,
+      agentId: 'agt_test',
+      contentBlocks: [
+        { type: 'attachment_ref', attachmentId: s1.attachmentId },
+        { type: 'attachment_ref', attachmentId: s2.attachmentId },
+      ],
+    });
+    expect(r.status).toBe(413);
+    expect(await r.json()).toEqual({ error: 'attachment-total-too-large' });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(booted.chatRunCaptures).toHaveLength(0);
   });
 });
