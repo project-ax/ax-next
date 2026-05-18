@@ -10,7 +10,19 @@
 // Extra env we dump beyond the four AX_* values — FOO — is used by the
 // allowlist-leak test to prove non-allowlist parent env does NOT reach the
 // child (it will render as null here).
+//
+// After the env line, the stub writes a SECOND JSON line: a "probe"
+// describing what the runner can see through the Phase 0 skill-discovery
+// wiring (the workspace `.claude/skills` symlink + the per-session
+// `$CLAUDE_CONFIG_DIR/skills/` dir). This is what the skill-discovery
+// acceptance test reads. The probe is best-effort — fields that can't be
+// resolved (missing AX_WORKSPACE_ROOT, missing CLAUDE_CONFIG_DIR, etc.) are
+// emitted as `null` so the existing env-only tests don't trip on the new
+// behavior.
 // ---------------------------------------------------------------------------
+import { promises as fs } from 'node:fs';
+import * as path from 'node:path';
+
 const env = {
   AX_RUNNER_ENDPOINT: process.env.AX_RUNNER_ENDPOINT ?? null,
   AX_SESSION_ID: process.env.AX_SESSION_ID ?? null,
@@ -40,6 +52,47 @@ const env = {
   CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR ?? null,
 };
 process.stdout.write(JSON.stringify(env) + '\n');
+
+// ---------------------------------------------------------------------------
+// Skill-discovery probe — emits a second JSON line capturing what an SDK
+// boot inside this child WOULD see when it walks `<cwd>/.claude/skills/`
+// and `$CLAUDE_CONFIG_DIR/skills/`. Best-effort: any field that can't be
+// resolved is `null`, with an `error` string for the test to surface.
+// ---------------------------------------------------------------------------
+async function safe(fn) {
+  try {
+    return { value: await fn(), error: null };
+  } catch (err) {
+    return { value: null, error: err && err.code ? err.code : String(err) };
+  }
+}
+
+(async () => {
+  const ws = process.env.AX_WORKSPACE_ROOT ?? null;
+  const ccd = process.env.CLAUDE_CONFIG_DIR ?? null;
+
+  const probe = {
+    workspaceRoot: ws,
+    workspaceSkillsSymlinkTarget: ws
+      ? await safe(() => fs.readlink(path.join(ws, '.claude', 'skills')))
+      : { value: null, error: 'no-AX_WORKSPACE_ROOT' },
+    canaryReadFile: ws
+      ? await safe(() =>
+          fs.readFile(
+            path.join(ws, '.claude', 'skills', 'canary-skill', 'SKILL.md'),
+            'utf-8',
+          ),
+        )
+      : { value: null, error: 'no-AX_WORKSPACE_ROOT' },
+    installedSkillsDir: ccd
+      ? await safe(async () => {
+          const st = await fs.stat(path.join(ccd, 'skills'));
+          return { isDirectory: st.isDirectory() };
+        })
+      : { value: null, error: 'no-CLAUDE_CONFIG_DIR' },
+  };
+  process.stdout.write(JSON.stringify(probe) + '\n');
+})();
 
 // Hold the process open until killed. NO unref() — we want the interval to
 // keep the Node event loop alive so the test can send SIGTERM deterministically
