@@ -15,3 +15,6 @@ export type {
   SkillsResolveInput,
   SkillsResolveOutput,
 } from './types.js';
+
+export { parseSkillManifest } from './manifest.js';
+export type { ManifestCode, ParsedManifest, ParseResult } from './manifest.js';
