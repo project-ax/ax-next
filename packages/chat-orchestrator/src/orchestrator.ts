@@ -134,9 +134,40 @@ interface AgentRecord {
    * inside its env map (I1: real credentials never enter the sandbox).
    */
   requiredCredentials?: Record<string, { ref: string; kind: string }>;
+  /**
+   * Phase 1 (skill-install) — admin-managed skills attached to this agent.
+   * The orchestrator resolves each via `skills:resolve` before
+   * `proxy:open-session` and unions their allowedHosts + merges
+   * credentialBindings into the proxy call. Empty/absent means no
+   * installed skills (back-compat for older agent rows that pre-date
+   * the skill_attachments column).
+   */
+  skillAttachments?: Array<{
+    skillId: string;
+    credentialBindings: Record<string, string>;
+  }>;
 }
 interface AgentsResolveOutput {
   agent: AgentRecord;
+}
+
+// skills:resolve — registered by @ax/skills. Duplicated structurally per I2
+// (no @ax/skills import). The orchestrator calls this when the agent has
+// skillAttachments and the service is registered.
+interface SkillsResolveInput {
+  skillIds: string[];
+}
+interface ResolvedSkillForOrch {
+  id: string;
+  capabilities: {
+    allowedHosts: string[];
+    credentials: Array<{ slot: string; kind: string; description?: string }>;
+  };
+  bodyMd: string;
+  manifestYaml: string;
+}
+interface SkillsResolveOutput {
+  skills: ResolvedSkillForOrch[];
 }
 
 // proxy:* shapes — duplicated structurally per I2. The orchestrator does
@@ -259,6 +290,12 @@ export interface ProxyConfig {
   envMap: Record<string, string>;
 }
 
+interface InstalledSkillForSandbox {
+  id: string;
+  /** Full SKILL.md content: '---\n' + manifestYaml + '---\n' + bodyMd. */
+  skillMd: string;
+}
+
 interface OpenSessionInput {
   sessionId: string;
   workspaceRoot: string;
@@ -285,6 +322,14 @@ interface OpenSessionInput {
    * set. Presets that want a working runner load @ax/credential-proxy.
    */
   proxyConfig?: ProxyConfig;
+  /**
+   * Phase 1 (skill-install) — installed-skill SKILL.md files to materialize
+   * inside the sandbox at $CLAUDE_CONFIG_DIR/skills/<id>/SKILL.md. The
+   * sandbox plugin writes them BEFORE spawning the runner; the SDK's
+   * 'user' source discovers them at boot. Empty/absent means no skills
+   * to materialize (Phase 0's empty skills/ dir is left as-is).
+   */
+  installedSkills?: InstalledSkillForSandbox[];
 }
 interface OpenSessionHandle {
   kill(): Promise<void>;
