@@ -349,6 +349,9 @@ importers:
       '@assistant-ui/react-markdown':
         specifier: ^0.12.6
         version: 0.12.11(@assistant-ui/react@0.12.26(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(use-sync-external-store@1.6.0(react@19.2.5)))(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
+      '@ax/attachments':
+        specifier: workspace:*
+        version: link:../attachments
       '@ax/database-postgres':
         specifier: workspace:*
         version: link:../database-postgres
