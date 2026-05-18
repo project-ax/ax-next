@@ -1,0 +1,23 @@
+address PR comments
+
+---
+
+Run pnpm typecheck
+
+> ax-next@0.0.0 typecheck /home/runner/work/ax-next/ax-next
+> tsc --build
+
+Error: packages/channel-web/src/components/admin/SkillAttachmentsSection.tsx(16,35): error TS2307: Cannot find module '@ax/skills' or its corresponding type declarations.
+Error: packages/channel-web/src/components/admin/SkillAttachmentsSection.tsx(142,56): error TS7006: Parameter 'slot' implicitly has an 'any' type.
+Error: packages/channel-web/src/components/admin/SkillEditor.tsx(14,36): error TS2307: Cannot find module '@ax/skills/manifest' or its corresponding type declarations.
+Error: packages/channel-web/src/components/admin/SkillEditor.tsx(156,69): error TS7006: Parameter 'h' implicitly has an 'any' type.
+Error: packages/channel-web/src/components/admin/SkillEditor.tsx(171,71): error TS7006: Parameter 'c' implicitly has an 'any' type.
+Error: packages/channel-web/src/components/admin/SkillsTab.tsx(23,35): error TS2307: Cannot find module '@ax/skills' or its corresponding type declarations.
+Error: packages/channel-web/src/components/admin/SkillsTab.tsx(119,56): error TS7006: Parameter 'h' implicitly has an 'any' type.
+Error: packages/channel-web/src/components/admin/SkillsTab.tsx(134,55): error TS7006: Parameter 'c' implicitly has an 'any' type.
+Error: packages/channel-web/src/components/admin/__tests__/SkillAttachmentsSection.test.tsx(4,35): error TS2307: Cannot find module '@ax/skills' or its corresponding type declarations.
+Error: packages/channel-web/src/components/admin/__tests__/SkillEditor.test.tsx(4,34): error TS2307: Cannot find module '@ax/skills' or its corresponding type declarations.
+Error: packages/channel-web/src/components/admin/__tests__/SkillsTab.test.tsx(4,35): error TS2307: Cannot find module '@ax/skills' or its corresponding type declarations.
+Error: packages/channel-web/src/lib/skills.ts(20,48): error TS2307: Cannot find module '@ax/skills' or its corresponding type declarations.
+ ELIFECYCLE  Command failed with exit code 2.
+Error: Process completed with exit code 2.
