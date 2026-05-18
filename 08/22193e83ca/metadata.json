@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "0822193e83ca",
+  "strategy": "manual-commit",
+  "branch": "feat/skill-install-phase-0",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "packages/sandbox-k8s/src/__tests__/pod-spec.test.ts",
+    "packages/sandbox-k8s/src/pod-spec.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/08/22193e83ca/0/metadata.json",
+      "transcript": "/08/22193e83ca/0/full.jsonl",
+      "content_hash": "/08/22193e83ca/0/content_hash.txt",
+      "prompt": "/08/22193e83ca/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 7,
+    "cache_creation_tokens": 1882,
+    "cache_read_tokens": 732738,
+    "output_tokens": 4636,
+    "api_call_count": 2
+  }
+}

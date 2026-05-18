@@ -1,0 +1,43 @@
+<task-notification>
+<task-id>af4ade6ff7bdbc423</task-id>
+<tool-use-id>toolu_01YVrak6YwZqZhFYJhJMh8hw</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-vpulim-dev-ai-ax-next/156d1273-18d1-4285-b586-fdb68cdd1a6c/tasks/af4ade6ff7bdbc423.output</output-file>
+<status>completed</status>
+<summary>Agent "Implement Task 4: subprocess sandbox" completed</summary>
+<result>## Status: DONE
+
+All three review issues addressed in a single follow-up commit `5b3d1828`.
+
+### Diff summary
+
+**`packages/sandbox-subprocess/src/open-session.ts`** (+33/-6):
+
+1. **Issue 1 (stale comment):** Rewrote the env-merge intro comment at the `// 6. Build child env` block to say "Allowlist merges FIRST so sessionEnv keys win on collision" — matches the actual `{ ...allowlistFromParent(), ...sessionEnv }` ordering and the longer comment at the merge site. Removed the contradictory "PATH/HOME/etc. from the host always win" line.
+
+2. **Issue 2 (EEXIST race):** Wrapped `fs.symlink` in a try/catch. EEXIST + matching `readlink` target → accept; EEXIST + mismatched target → rethrow (surfaces as `sandbox-prep-failed`). Any other error rethrows unchanged.
+
+3. **Issue 3 (recursive cleanup):** Changed `fs.rm(workspaceSkillsSymlink, { force: true })` to `{ recursive: true, force: true }` so a real (possibly non-empty) directory at `.claude/skills` gets cleared. Comment block explains why this can't lose user data (canonical content lives in `.ax/skills/`).
+
+**`packages/sandbox-subprocess/src/__tests__/open-session.test.ts`** (+131/-0): Four new tests.
+
+- `clears a regular file (not just a symlink) sitting at &lt;workspace&gt;/.claude/skills` — regression net (passed before, still passes).
+- `clears a non-empty directory sitting at &lt;workspace&gt;/.claude/skills (recursive cleanup)` — fails without `recursive: true` (verified: `ERR_FS_EISDIR`).
+- `accepts a concurrent-session EEXIST when the existing link target matches (race-safe)` — uses `vi.spyOn(fs, 'symlink').mockImplementationOnce` to sneak in a matching symlink and throw EEXIST. Fails without the catch (verified).
+- `surfaces a real EEXIST when the existing link points at a different target` — same mock pattern but with `'/somewhere/else'` as the seeded target; asserts `sandbox-prep-failed`.
+
+### Verification
+
+- `pnpm --filter @ax/sandbox-subprocess test` — 29/29 pass (was 25; 4 new).
+- Confirmed new tests fail against the pre-fix impl: 2 failed (the directory + race tests). Test file regressed to old impl while my new test file ran → exactly those two tests broke; the other two pass with old impl as expected.
+- `pnpm build` — clean.
+- `pnpm lint` — 0 errors (2 pre-existing warnings unrelated).
+- `pnpm test` (full workspace) — sandbox-subprocess 29/29 plus all other suites green.
+
+### Files
+
+- `/Users/vpulim/dev/ai/ax-next/.claude/worktrees/mutable-inventing-starfish/packages/sandbox-subprocess/src/open-session.ts`
+- `/Users/vpulim/dev/ai/ax-next/.claude/worktrees/mutable-inventing-starfish/packages/sandbox-subprocess/src/__tests__/open-session.test.ts`
+
+Commit: `5b3d1828 fix(sandbox-subprocess): correct stale env-merge comment + EEXIST race + recursive symlink cleanup (I-P0-3/4 follow-ups)`</result>
+<usage><total_tokens>140118</total_tokens><tool_uses>19</tool_uses><duration_ms>388141</duration_ms></usage>
+</task-notification>
