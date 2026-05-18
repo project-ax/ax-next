@@ -1,0 +1,29 @@
+Address MR comments
+
+---
+
+Will weaker LLMs know to call workspace:read if the user uploaded an attachment mid session?
+
+---
+
+What about instead of a path and the read tool, just make the text say "The is at http://<HOST_PROXY>/<path to file>" and then the agent can just make a web request to the host to get the file?
+
+---
+
+What about instead of a path and the read tool, just make the text say "The file is at http://<HOST_PROXY>/<path to file>" and then the agent can just make a web request to the host to get the file?
+
+---
+
+What about instead of a path and the read tool, just make the text say "The file is at http://<HOST_PROXY>/<path to file>" and then the agent can just make a web request to the host to get the file?
+
+---
+
+let pause and think some more since this is load bearing. goal is simplicity, reliability and support for weaker models. also, keep in mind that at the next turn, the uploadeded attachment will be in the workspace repo
+
+---
+
+Yes
+
+---
+
+Yes. Make sure this approach still allows attachments to be downloadable in old chat sessions in web ui
