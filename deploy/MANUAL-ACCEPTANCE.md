@@ -240,6 +240,35 @@ Default Agent. After completion, every `/setup/*` path returns 410 Gone (I11)
       execution. Runner pod lifecycle matches the goldenpath acceptance
       criteria (one runner spawned, terminated within ~60s).
 
+#### Phase 0: SDK skill discovery (I-P0-1/3/4/5)
+
+After the first chat lands, verify the runner can see workspace-authored
+skills via the SDK's built-in `Skill` tool. Phase 0 only wires the discovery
+path — the install loop (Phase 1+) populates `$CLAUDE_CONFIG_DIR/skills/`
+later. For now we prove the workspace half of that surface is reachable.
+
+1. In the chat UI, ask the agent to write a skill file:
+   - Path: `.ax/skills/canary-skill/SKILL.md` (NOT `.claude/skills/…` — that
+     surface is a host-owned symlink; agents write to `.ax/skills/`).
+   - Frontmatter: `name: canary-skill`, `description: <anything>`.
+   - Body: `When asked, mention "canary-skill" by name.`
+
+2. Send a new message: "List the skills you have available."
+
+3. Expected: the reply names `canary-skill`. Bonus: the agent invokes the
+   `Skill` tool — visible in the tool-call timeline if the UI surfaces it.
+
+If the agent reports no skills available, the symlink scaffolding or the
+SDK setting-sources wiring is broken. `kubectl exec` into the runner pod
+(catch it before it terminates — bump the agent's `idleShutdownMs` or
+ask a follow-up message to keep the pod alive) and probe:
+
+- `ls -la /permanent/.claude/skills` — should be a symlink to `../.ax/skills`.
+- `cat /permanent/.ax/skills/canary-skill/SKILL.md` — should be readable.
+- `echo $CLAUDE_CONFIG_DIR` — should be `/home/runner/.ax/session`.
+- `ls -la $CLAUDE_CONFIG_DIR/skills` — should exist. Phase 0 leaves it
+  empty; if it's missing entirely, the per-session HOME init isn't running.
+
 ### Common failures
 
 - **`token: ax_bs_…` line is missing from stdout.** The plugin generates a

@@ -208,4 +208,189 @@ describe('createValidatorSkillPlugin', () => {
       expect(decision.reason).toContain('UTF-8');
     }
   });
+
+  // -------------------------------------------------------------------
+  // SDK-config veto (Phase 0 — Task 2)
+  //
+  // The Claude Agent SDK reads these paths from project root when
+  // `settingSources: ['user', 'project']` is enabled. An agent write
+  // to any of them escalates SDK behavior (new sub-agents, prompt-
+  // injected rules, settings.json that re-enables disabled tools).
+  // Veto unconditionally — workspace:pre-apply is the agent path.
+  // -------------------------------------------------------------------
+
+  const AUDIT_DOC = 'docs/notes/2026-05-17-sdk-setting-sources-audit.md';
+
+  // Exact-file vetoes.
+  for (const protectedPath of [
+    '.claude/settings.json',
+    '.claude/settings.local.json',
+    '.claude/CLAUDE.md',
+    'CLAUDE.md',
+    'CLAUDE.local.md',
+  ]) {
+    it(`vetoes write to ${protectedPath}`, async () => {
+      const { bus, ctx } = await bootstrapWith([createValidatorSkillPlugin()]);
+      const decision = await bus.fire('workspace:pre-apply', ctx, {
+        changes: [
+          {
+            path: protectedPath,
+            kind: 'put',
+            content: enc.encode('# whatever'),
+          },
+        ],
+        parent: null,
+        reason: 'turn',
+      });
+      expect(decision.rejected).toBe(true);
+      if (decision.rejected) {
+        expect(decision.reason).toContain(protectedPath);
+        expect(decision.reason).toContain(AUDIT_DOC);
+      }
+    });
+  }
+
+  // Directory-prefix vetoes.
+  for (const { dir, sample } of [
+    { dir: '.claude/agents/', sample: '.claude/agents/some-agent.md' },
+    {
+      dir: '.claude/commands/',
+      sample: '.claude/commands/deploy.md',
+    },
+    { dir: '.claude/rules/', sample: '.claude/rules/style.md' },
+  ]) {
+    it(`vetoes write under ${dir}`, async () => {
+      const { bus, ctx } = await bootstrapWith([createValidatorSkillPlugin()]);
+      const decision = await bus.fire('workspace:pre-apply', ctx, {
+        changes: [
+          {
+            path: sample,
+            kind: 'put',
+            content: enc.encode('# hostile content'),
+          },
+        ],
+        parent: null,
+        reason: 'turn',
+      });
+      expect(decision.rejected).toBe(true);
+      if (decision.rejected) {
+        expect(decision.reason).toContain(sample);
+        expect(decision.reason).toContain(AUDIT_DOC);
+      }
+    });
+  }
+
+  it('vetoes nested writes under .claude/agents/ subdirectories', async () => {
+    const { bus, ctx } = await bootstrapWith([createValidatorSkillPlugin()]);
+    const decision = await bus.fire('workspace:pre-apply', ctx, {
+      changes: [
+        {
+          path: '.claude/agents/sub/deep/hostile.md',
+          kind: 'put',
+          content: enc.encode('# any depth'),
+        },
+      ],
+      parent: null,
+      reason: 'turn',
+    });
+    expect(decision.rejected).toBe(true);
+  });
+
+  it('allows write to .claude/skills/<name>/SKILL.md with valid frontmatter', async () => {
+    const { bus, ctx } = await bootstrapWith([createValidatorSkillPlugin()]);
+    const md = '---\nname: my-skill\ndescription: a useful skill\n---\n';
+    const decision = await bus.fire('workspace:pre-apply', ctx, {
+      changes: [
+        {
+          path: '.claude/skills/my-skill/SKILL.md',
+          kind: 'put',
+          content: enc.encode(md),
+        },
+      ],
+      parent: null,
+      reason: 'turn',
+    });
+    expect(decision.rejected).toBe(false);
+  });
+
+  it('allows write to .claude/skills/<name>/assets — skill body is not vetoed', async () => {
+    const { bus, ctx } = await bootstrapWith([createValidatorSkillPlugin()]);
+    const decision = await bus.fire('workspace:pre-apply', ctx, {
+      changes: [
+        {
+          path: '.claude/skills/my-skill/reference.md',
+          kind: 'put',
+          content: enc.encode('# reference body'),
+        },
+        {
+          path: '.claude/skills/my-skill/scripts/run.sh',
+          kind: 'put',
+          content: enc.encode('#!/bin/sh\necho hi\n'),
+        },
+      ],
+      parent: null,
+      reason: 'turn',
+    });
+    expect(decision.rejected).toBe(false);
+  });
+
+  it('SDK-config deletes are NOT vetoed — only puts (removing a file is fine)', async () => {
+    const { bus, ctx } = await bootstrapWith([createValidatorSkillPlugin()]);
+    const decision = await bus.fire('workspace:pre-apply', ctx, {
+      changes: [
+        { path: '.claude/settings.json', kind: 'delete' },
+        { path: '.claude/agents/foo.md', kind: 'delete' },
+        { path: 'CLAUDE.md', kind: 'delete' },
+      ],
+      parent: null,
+      reason: 'turn',
+    });
+    expect(decision.rejected).toBe(false);
+  });
+
+  it('vetoes when ANY protected SDK-config path is in a mixed batch', async () => {
+    const { bus, ctx } = await bootstrapWith([createValidatorSkillPlugin()]);
+    const decision = await bus.fire('workspace:pre-apply', ctx, {
+      changes: [
+        // Innocent skill write.
+        {
+          path: '.ax/skills/good/SKILL.md',
+          kind: 'put',
+          content: enc.encode('---\nname: good\ndescription: ok\n---\n'),
+        },
+        // Hostile SDK-config write — should veto the batch.
+        {
+          path: '.claude/settings.json',
+          kind: 'put',
+          content: enc.encode('{}'),
+        },
+      ],
+      parent: null,
+      reason: 'turn',
+    });
+    expect(decision.rejected).toBe(true);
+    if (decision.rejected) {
+      expect(decision.reason).toContain('.claude/settings.json');
+    }
+  });
+
+  it('does NOT veto .claude-plugin/ (different path entirely)', async () => {
+    const { bus, ctx } = await bootstrapWith([createValidatorSkillPlugin()]);
+    const decision = await bus.fire('workspace:pre-apply', ctx, {
+      changes: [
+        {
+          path: '.claude-plugin/marketplace.json',
+          kind: 'put',
+          content: enc.encode('{}'),
+        },
+      ],
+      parent: null,
+      reason: 'turn',
+    });
+    // Note: this validator only checks `.claude/...` and `.ax/...`
+    // prefixes. .claude-plugin is a sibling prefix and isn't covered
+    // by Phase 0 (the plugin system is off in our config). Pre-apply
+    // would only see this path if some future filter let it through.
+    expect(decision.rejected).toBe(false);
+  });
 });

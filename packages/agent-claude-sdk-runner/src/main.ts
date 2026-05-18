@@ -345,6 +345,25 @@ export async function main(): Promise<number> {
         // by the credential-proxy mid-flight); no ANTHROPIC_BASE_URL — SDK
         // calls api.anthropic.com directly through HTTPS_PROXY.
         //
+        // The env literal here partitions into two distinct concerns that
+        // happen to share the same SDK subprocess env namespace:
+        //
+        // (a) Phase C — HOME redirect for the SDK subprocess (jsonl
+        //     persistence). See per-bullet rationale below.
+        //
+        // (b) Phase 0 skill discovery (I-P0-1 / I-P0-3) — CLAUDE_CONFIG_DIR
+        //     forwarded from the sandbox-provided runner env so the SDK's
+        //     `'user'` setting source resolves to a host-owned root
+        //     (`<sandbox-HOME>/.ax/session`) that's SEPARATE from the
+        //     workspace's `'project'` source (`<cwd>/.claude/skills`).
+        //     Without the forward, the SDK falls back to `<HOME>/.claude`,
+        //     which — because the (a) override below sets HOME=workspaceRoot
+        //     — collapses onto the project-source path, making the two
+        //     setting sources indistinguishable and rendering the host-
+        //     installed-skills surface unreachable. The forward itself
+        //     lives in proxy-startup.ts (ENV_ALLOWLIST) so the value
+        //     arrives via `...proxyStartup.anthropicEnv` below.
+        //
         // Phase C: HOME redirect for the SDK subprocess.
         //   - The k8s sandbox pod sets HOME=/nonexistent at the pod level
         //     so `git` (and any other tool the runner spawns) can't
@@ -367,11 +386,28 @@ export async function main(): Promise<number> {
         //     value wins on conflict. anthropicEnv currently doesn't set
         //     HOME, but defensive ordering matches the intent: we
         //     explicitly redirect HOME for the SDK subprocess.
+        //   - We DO NOT override CLAUDE_CONFIG_DIR here — the sandbox
+        //     plugin's value (carried through proxyStartup.anthropicEnv)
+        //     is the source of truth for the (b) split above. If a future
+        //     refactor adds CLAUDE_CONFIG_DIR after the spread it would
+        //     break I-P0-1.
         env: {
           ...proxyStartup.anthropicEnv,
           HOME: env.workspaceRoot,
         },
         cwd: env.workspaceRoot,
+        // `Skill` is added to the allow list so the SDK auto-permits the
+        // built-in Skill tool without prompting — that's the path the SDK
+        // uses to invoke a skill it discovered under `settingSources`
+        // (below). The SDK treats `allowedTools` as a set, not an ordered
+        // list — position is irrelevant; we put Skill first for reader-
+        // facing emphasis only. The remaining names are the per-agent
+        // allow list the host wrote at session creation; an empty
+        // `agentConfig.allowedTools` means "no per-agent restriction"
+        // (orchestrator default) and the SDK falls back to its own
+        // defaults for everything other than the explicit deny list in
+        // `disallowedTools`.
+        allowedTools: ['Skill', ...agentConfig.allowedTools],
         disallowedTools: [...DISABLED_BUILTINS],
         // canUseTool stays as a belt-and-suspenders allow-path. The real
         // pre-call hook-bus forwarding happens in the PreToolUse hook below,
@@ -390,10 +426,23 @@ export async function main(): Promise<number> {
           ],
         },
         mcpServers: { [MCP_HOST_SERVER_NAME]: hostMcpServer },
-        // Empty settingSources = SDK isolation mode: the runner does NOT
-        // read ~/.claude, project settings, or CLAUDE.md. Config for this
-        // sandbox arrives entirely through host-mediated IPC.
-        settingSources: [],
+        // settingSources: 'user' is required for the SDK to discover skills
+        // under $CLAUDE_CONFIG_DIR/skills/ (host-controlled installed skills);
+        // 'project' is required for skills under <workspace>/.claude/skills/
+        // (which is a symlink to .ax/skills/, the agent-authored convention).
+        //
+        // Agent cannot escalate SDK behavior via these sources because:
+        //  - the SDK's other user/project files (.claude/settings.json,
+        //    CLAUDE.md, .claude/agents/, .claude/commands/, .claude/rules/,
+        //    CLAUDE.local.md, .claude/CLAUDE.md) are vetoed at the
+        //    workspace:pre-apply boundary by @ax/validator-skill;
+        //  - the workspace symlink points narrowly at `.ax/skills`, not at
+        //    the parent `.claude/` directory;
+        //  - $HOME is a per-session tempdir/emptyDir, isolated from the
+        //    host user's ~/.claude (allocated by sandbox plugins in Tasks 4/5).
+        //
+        // I-P0-1 in docs/plans/2026-05-17-skill-install-phase-0-impl.md.
+        settingSources: ['user', 'project'],
         // Week 9.5: use the frozen agentConfig.systemPrompt the host wrote
         // at session-creation time. An empty string falls back to the SDK
         // preset (the dev-agents-stub seeds a default; production agents

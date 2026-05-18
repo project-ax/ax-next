@@ -193,6 +193,97 @@ export async function openSessionImpl(
   const socketDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-ipc-'));
   const socketPath = path.join(socketDir, 'ipc.sock');
 
+  // I-P0-3: per-session HOME, isolated from the host user's home so the
+  //    Claude Agent SDK's `'user'` setting source — which walks
+  //    `$CLAUDE_CONFIG_DIR` (falling back to `$HOME/.claude`) — can't
+  //    read the developer's personal `~/.claude/skills/` and load
+  //    arbitrary host-side content into the sandbox.
+  //
+  //    The home root piggybacks on the same per-session tempdir as the
+  //    IPC socket — cleanup is already handled by the existing
+  //    `fs.rm(socketDir, { recursive: true })` in the close handler.
+  //
+  //    CLAUDE_CONFIG_DIR points at `$HOME/.ax/session` — the "session"
+  //    name matches the rest of the codebase's vocabulary (sessionId,
+  //    session-postgres, etc.). The empty `skills/` subdirectory must
+  //    exist on disk BEFORE the runner spawns: the SDK walks it during
+  //    skill discovery and an ENOENT would surface as a startup error.
+  //    Phase 0 leaves it empty (the SDK simply finds no installed skills);
+  //    Phase 1 will materialize approved skill bodies here, then chmod
+  //    to 0555 to lock against agent writes. For Phase 0 the dir stays
+  //    0755 — there is nothing to lock yet.
+  const homeDir = path.join(socketDir, 'home');
+  const claudeConfigDir = path.join(homeDir, '.ax', 'session');
+  const installedSkillsDir = path.join(claudeConfigDir, 'skills');
+  const workspaceClaudeDir = path.join(input.workspaceRoot, '.claude');
+  const workspaceAxSkillsDir = path.join(input.workspaceRoot, '.ax', 'skills');
+  const workspaceSkillsSymlink = path.join(workspaceClaudeDir, 'skills');
+  try {
+    await fs.mkdir(installedSkillsDir, { recursive: true, mode: 0o755 });
+
+    // I-P0-4: narrow symlink. The SDK's `'project'` setting source walks
+    //    `<cwd>/.claude/skills/` for workspace-authored skills. We don't
+    //    want the agent to be able to drop arbitrary content directly
+    //    into `.claude/skills/` — that surface is owned by the host (so
+    //    the validator can veto). Instead, `.claude/skills/` is a symlink
+    //    that points at `.ax/skills/` (the host-controlled location);
+    //    `.claude/` itself remains a regular directory so other tooling
+    //    that expects files at `.claude/<x>` keeps working.
+    //
+    //    Symlink target is RELATIVE (`'../.ax/skills'`) so the link
+    //    resolves consistently across filesystem rebases / pod remounts
+    //    (matters for the k8s sibling more than for subprocess, but
+    //    keeping the two providers' on-disk shape identical is cheap).
+    //
+    //    Idempotency: if `.claude/skills/` already exists (stale file
+    //    from a prior session, dangling symlink, even a non-empty
+    //    directory committed by accident), drop it first. `recursive:
+    //    true` covers all three shapes — symlink, regular file, and
+    //    directory — without an extra stat round-trip. We can blow
+    //    the path away because the canonical content lives under
+    //    `.ax/skills/`; anything sitting at `.claude/skills/` is by
+    //    definition transient. `force: true` keeps the call a no-op on
+    //    ENOENT. `fs.rm` does NOT follow the link when removing it.
+    //
+    //    Concurrent-session race: two open-session calls on the same
+    //    workspace can interleave. We pre-check the existing target so
+    //    a correct symlink is left in place — that eliminates the window
+    //    where `A.rm → A.symlink → B.rm` would briefly remove a working
+    //    link out from under session A's spawning runner. If readlink
+    //    returns the expected target, we're done; otherwise (wrong
+    //    target, regular file, dir, ENOENT), fall through to the rm+
+    //    symlink path. The post-symlink EEXIST handler is the final
+    //    fallback for the A.rm → B.rm → A.symlink → B.symlink ordering
+    //    that the pre-check can't cover.
+    await fs.mkdir(workspaceClaudeDir, { recursive: true, mode: 0o755 });
+    await fs.mkdir(workspaceAxSkillsDir, { recursive: true, mode: 0o755 });
+    const existingTarget = await fs
+      .readlink(workspaceSkillsSymlink)
+      .catch(() => null);
+    if (existingTarget !== '../.ax/skills') {
+      await fs.rm(workspaceSkillsSymlink, { recursive: true, force: true });
+      try {
+        await fs.symlink('../.ax/skills', workspaceSkillsSymlink);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+        const raced = await fs
+          .readlink(workspaceSkillsSymlink)
+          .catch(() => null);
+        if (raced !== '../.ax/skills') throw err;
+      }
+    }
+  } catch (cause) {
+    // Best-effort cleanup so a setup failure doesn't leak the tempdir.
+    await fs.rm(socketDir, { recursive: true, force: true }).catch(() => undefined);
+    throw new PluginError({
+      code: 'sandbox-prep-failed',
+      plugin: PLUGIN_NAME,
+      hookName: HOOK_NAME,
+      message: `failed to prepare per-session HOME / skills layout`,
+      cause,
+    });
+  }
+
   // 4. Mint session + token. The token flows to the runner as env — it is
   //    never returned from this hook (I9). We do NOT log the token here; if
   //    we need to correlate failures, we log `sessionId` instead.
@@ -250,7 +341,10 @@ export async function openSessionImpl(
   //    input doesn't accept env, so the only sources are
   //      (a) our session-scoped injects, and
   //      (b) the allowlist from the parent process.
-  //    Allowlist merges LAST so PATH/HOME/etc. from the host always win.
+  //    Allowlist merges FIRST so sessionEnv keys win on collision —
+  //    a session-scoped value (HOME, CLAUDE_CONFIG_DIR, an env-injected
+  //    placeholder) MUST take precedence over the parent's same-named
+  //    var. See the longer comment at the actual merge site below.
   //
   //    AX_RUNNER_ENDPOINT carries the opaque URI the runner uses to reach
   //    the host. For this provider it's always `unix://<socketPath>`. The
@@ -262,6 +356,12 @@ export async function openSessionImpl(
     AX_SESSION_ID: created.sessionId,
     AX_AUTH_TOKEN: created.token,
     AX_WORKSPACE_ROOT: input.workspaceRoot,
+    // I-P0-3: override HOME (which is in the allowlist; sessionEnv merges
+    // LAST so this wins) and set CLAUDE_CONFIG_DIR so the SDK's `'user'`
+    // skill-discovery walks the host-controlled per-session dir, not the
+    // developer's `~/.claude/`.
+    HOME: homeDir,
+    CLAUDE_CONFIG_DIR: claudeConfigDir,
   };
 
   // credential-proxy env. When the orchestrator handed us a `proxyConfig`,

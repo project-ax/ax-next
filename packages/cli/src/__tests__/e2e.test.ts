@@ -60,6 +60,13 @@ describe('@ax/cli end-to-end', () => {
     });
 
     const result = spawnSync('node', [cliEntry, 'hi'], {
+      // cwd defaults to process.cwd() (the cli package dir) which the CLI
+      // would then use as workspaceRoot — side-effect setup inside
+      // sandbox:open-session (per-session `.claude/skills` symlink) would
+      // pollute the repo tree on every run. Pin cwd to the tmpdir so all
+      // workspace-rooted state lands inside `workDir` and the afterEach
+      // rm sweeps it.
+      cwd: workDir,
       env: {
         ...process.env,
         AX_DB: dbPath,
@@ -87,6 +94,7 @@ describe('@ax/cli end-to-end', () => {
     // Pointing AX_DB at a directory (not a file) forces SQLite open to fail
     // at init, which bubbles up as `init-failed` → non-zero CLI exit.
     const result = spawnSync('node', [cliEntry, 'hi'], {
+      cwd: workDir,
       env: { ...process.env, AX_DB: workDir },
       encoding: 'utf8',
     });

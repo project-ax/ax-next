@@ -22,6 +22,21 @@ describe('classifySdkToolName', () => {
     expect(classifySdkToolName(name)).toEqual({ kind: 'disabled' });
   });
 
+  it('classifies Skill as builtin (allowed) — I-P0-1 skill discovery', () => {
+    // Skill was previously in DISABLED_BUILTINS on the "nested-agent
+    // bypass" rationale. Phase 0 (docs/plans/2026-05-17-skill-install-
+    // phase-0-impl.md) makes Skill the intended SDK-native skill-discovery
+    // path, gated by validator-skill's veto on writes to .claude/settings.json
+    // and other SDK-config paths (commit 521f206c). This test pins the
+    // new classification so a revert that re-adds Skill to DISABLED_BUILTINS
+    // would fail loudly here rather than silently re-disabling skill
+    // discovery.
+    expect(classifySdkToolName('Skill')).toEqual({
+      kind: 'builtin',
+      axName: 'Skill',
+    });
+  });
+
   it('strips our MCP prefix and returns the axName for ax-host-tools', () => {
     expect(
       classifySdkToolName(`mcp__${MCP_HOST_SERVER_NAME}__memory.recall`),
