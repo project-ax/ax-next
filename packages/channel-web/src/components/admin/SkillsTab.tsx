@@ -37,6 +37,9 @@ export function SkillsTab() {
       setSkills(items);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      // Surface an empty list alongside the alert so the render branch
+      // doesn't stay stuck on "Loading…" (which keys off skills === null).
+      setSkills([]);
     }
   }
 

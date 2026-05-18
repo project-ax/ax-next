@@ -63,12 +63,16 @@ function err(code: ManifestCode, message: string): ParseResult {
   return { ok: false, code, message };
 }
 
-// Matches wildcard host patterns like *.example.com that appear inside
-// allowedHosts flow sequences or block lists, before YAML parsing.
-// YAML treats bare `*` as an alias sigil, so the parser would throw
-// YAMLException instead of reaching the host validator — we catch the
-// pattern pre-parse to return the correct code.
-const WILDCARD_HOST_IN_YAML_RE = /allowedHosts[^\n]*\*[a-zA-Z0-9.]/;
+// Matches wildcard host patterns like *.example.com inside an
+// allowedHosts entry, before YAML parsing. YAML treats bare `*` as an
+// alias sigil, so the parser would throw YAMLException instead of
+// reaching the host validator — catch pre-parse to return the correct
+// code. Covers both shapes the editor / user might submit:
+//   allowedHosts: [*.example.com, ...]                (flow sequence)
+//   allowedHosts:                                     (block list)
+//     - *.example.com
+const WILDCARD_HOST_IN_YAML_RE =
+  /(?:^|\n)\s*allowedHosts\s*:\s*(?:\[[^\]]*\*[^\]]*\]|(?:\n[ \t]*-[ \t]*[^\n]*\*[^\n]*)+)/;
 
 export function parseSkillManifest(yaml: string): ParseResult {
   // Pre-check: wildcard host patterns cause YAMLException (alias sigil).
@@ -214,11 +218,20 @@ export function parseSkillManifest(yaml: string): ParseResult {
           return err('invalid-kind', `"kind" must be "api-key", got: ${JSON.stringify(rawKind)}`);
         }
 
-        // description (optional)
+        // description (optional). Reject non-string values loudly rather
+        // than silently dropping — a manifest with `description: 42` is a
+        // user error worth surfacing, not a quiet shape-coercion.
+        const rawDescription = cred['description'];
+        if (rawDescription !== undefined && typeof rawDescription !== 'string') {
+          return err(
+            'invalid-slot',
+            `"description" on slot "${rawSlot}" must be a string when provided, got: ${JSON.stringify(rawDescription)}`,
+          );
+        }
         const slot: CapabilitySlot = {
           slot: rawSlot,
           kind: 'api-key',
-          ...(typeof cred['description'] === 'string' ? { description: cred['description'] } : {}),
+          ...(rawDescription !== undefined ? { description: rawDescription } : {}),
         };
         credentials.push(slot);
       }

@@ -272,6 +272,21 @@ export function mintAgentId(): string {
   return `agt_${randomBytes(16).toString('base64url')}`;
 }
 
+// Validate that every value in a record is a non-empty string. Used to
+// narrow JSONB-decoded `credentialBindings` shapes before trusting them
+// in attachment-resolution. Array values must NOT pass (Array.isArray
+// short-circuits) — `typeof [] === 'object'` is true and we don't want
+// `{SLOT: ['a', 'b']}` slipping through.
+function isStringRecord(value: unknown): value is Record<string, string> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  for (const v of Object.values(value)) {
+    if (typeof v !== 'string' || v.length === 0) return false;
+  }
+  return true;
+}
+
 function rowToAgent(row: AgentsRow): Agent {
   // JSONB columns return parsed JS values from `pg`'s default casts —
   // narrow them defensively. A row that fails this cast is corrupt.
@@ -318,9 +333,9 @@ function rowToAgent(row: AgentsRow): Agent {
       (e) =>
         e !== null &&
         typeof e === 'object' &&
+        !Array.isArray(e) &&
         typeof (e as Record<string, unknown>)['skillId'] === 'string' &&
-        typeof (e as Record<string, unknown>)['credentialBindings'] === 'object' &&
-        (e as Record<string, unknown>)['credentialBindings'] !== null,
+        isStringRecord((e as Record<string, unknown>)['credentialBindings']),
     )
   ) {
     throw new PluginError({

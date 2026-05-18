@@ -162,7 +162,9 @@ const upsertBodySchema = z
 function splitSkillMd(
   skillMd: string,
 ): { manifestYaml: string; bodyMd: string } | null {
-  const re = /^---\n([\s\S]*?)\n---(?:\n([\s\S]*)|$)/;
+  // Accept both LF and CRLF line endings on every fence boundary so a
+  // SKILL.md authored / copy-pasted on Windows doesn't 400 here.
+  const re = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n([\s\S]*)|$)/;
   const m = re.exec(skillMd);
   if (m === null) return null;
   return { manifestYaml: m[1] ?? '', bodyMd: m[2] ?? '' };
@@ -307,10 +309,19 @@ export function createAdminSkillsHandlers(deps: AdminRouteDeps): {
         return;
       }
 
-      // Quick name extraction to validate path-vs-manifest consistency before
-      // the round-trip. The full parse happens inside skills:upsert.
-      const nameMatch = /^name:\s*(\S+)/m.exec(split.manifestYaml);
-      const skillIdFromManifest = nameMatch?.[1];
+      // Quick name extraction to validate path-vs-manifest consistency
+      // before the round-trip. The full parse happens inside skills:upsert
+      // and the post-call equality check below is the source of truth;
+      // this is just to give the caller a crisper 4xx without taking the
+      // round-trip. Accepts unquoted, single-quoted, and double-quoted
+      // scalars with optional trailing comments — same surface yaml itself
+      // would accept.
+      const nameMatch =
+        /^\s*name\s*:\s*(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([^\s#\r\n]+))\s*(?:#.*)?$/m.exec(
+          split.manifestYaml,
+        );
+      const skillIdFromManifest =
+        nameMatch?.[1] ?? nameMatch?.[2] ?? nameMatch?.[3];
       if (skillIdFromManifest !== undefined && skillIdFromManifest !== id) {
         res
           .status(400)

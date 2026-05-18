@@ -64,6 +64,17 @@ describe('materializeInstalledSkillsFromEnv', () => {
     await expect(materializeInstalledSkillsFromEnv()).resolves.toBeUndefined();
   });
 
+  it('is a no-op when AX_INSTALLED_SKILLS_JSON is an empty array (no chmod ENOENT)', async () => {
+    // Distinct bootstrap path: well-formed empty array. Must not throw
+    // ENOENT on chmod of a never-created skills dir, and must not
+    // surprise-create one in prod (init container already did that).
+    process.env['AX_INSTALLED_SKILLS_JSON'] = '[]';
+    await expect(materializeInstalledSkillsFromEnv()).resolves.toBeUndefined();
+    await expect(fs.stat(path.join(tmpRoot, 'skills'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+  });
+
   it('writes each skill SKILL.md and chmods parent dir to 0555', async () => {
     process.env['AX_INSTALLED_SKILLS_JSON'] = JSON.stringify([
       { id: 'github', skillMd: '---\nname: github\ndescription: x\n---\nBody' },

@@ -45,6 +45,13 @@ export function SkillEditor({ skillId, onSaved, onCancel }: Props) {
   const [serverError, setServerError] = useState<string | null>(null);
 
   useEffect(() => {
+    // Reset loading + serverError on every skillId change so the editor
+    // doesn't show stale content (or a stale error) while the new skill's
+    // fetch is in flight. Without this, an editor that was just open on
+    // skill A can briefly be saved as skill B before A's bytes are
+    // replaced.
+    setServerError(null);
+    setLoading(skillId !== undefined);
     if (skillId === undefined) {
       setText(EMPTY_TEMPLATE);
       return;

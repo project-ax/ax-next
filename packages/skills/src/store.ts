@@ -9,15 +9,34 @@ import type {
 } from './types.js';
 
 // ---------------------------------------------------------------------------
-// Default capabilities for defensive fallback when the stored manifest
-// is somehow malformed (should not happen in practice, but guards against
-// corrupt rows surfacing unvalidated state up the call stack).
+// Capability re-parse on read.
+//
+// `skills:upsert` validates the manifest at write time via parseSkillManifest;
+// the row's `manifest_yaml` is the canonical store. On read we re-parse
+// rather than denormalize into separate JSONB columns — for the v1
+// admin-managed scale (~10s of skills), the parse cost is negligible.
+//
+// Defensive fallback for parse-failure: log loud (stderr) but DO NOT throw.
+// A corrupt row would otherwise crash skills:list and freeze the admin UI;
+// the design doc explicitly tolerates this state (a `skills:resolve` of a
+// silently-malformed row drops it from the union, matching the "deleted-
+// skill-still-attached" policy). The loud log lets the operator find and
+// fix the row; the empty caps keep the rest of the system live.
 // ---------------------------------------------------------------------------
 const EMPTY_CAPABILITIES: SkillCapabilities = { allowedHosts: [], credentials: [] };
 
-function parseCapabilities(manifestYaml: string): SkillCapabilities {
+function parseCapabilities(manifestYaml: string, skillId: string): SkillCapabilities {
   const result = parseSkillManifest(manifestYaml);
-  if (!result.ok) return EMPTY_CAPABILITIES;
+  if (!result.ok) {
+    // Use stderr directly — the store doesn't have a logger handle and
+    // pulling one in would couple the read path to AgentContext just
+    // for this defensive branch. The structured "msg" prefix matches
+    // the rest of the codebase's plain-text log convention.
+    process.stderr.write(
+      `[@ax/skills/store] corrupt_manifest skillId=${JSON.stringify(skillId)} code=${result.code} message=${JSON.stringify(result.message)}\n`,
+    );
+    return EMPTY_CAPABILITIES;
+  }
   return result.value.capabilities;
 }
 
@@ -50,7 +69,7 @@ export function createSkillsStore(db: Kysely<SkillsDatabase>): SkillsStore {
         id: row.skill_id,
         description: row.description,
         version: row.version,
-        capabilities: parseCapabilities(row.manifest_yaml),
+        capabilities: parseCapabilities(row.manifest_yaml, row.skill_id),
         updatedAt: row.updated_at.toISOString(),
       }));
     },
@@ -68,7 +87,7 @@ export function createSkillsStore(db: Kysely<SkillsDatabase>): SkillsStore {
         id: row.skill_id,
         description: row.description,
         version: row.version,
-        capabilities: parseCapabilities(row.manifest_yaml),
+        capabilities: parseCapabilities(row.manifest_yaml, row.skill_id),
         updatedAt: row.updated_at.toISOString(),
         bodyMd: row.body_md,
         manifestYaml: row.manifest_yaml,
@@ -145,7 +164,7 @@ export function createSkillsStore(db: Kysely<SkillsDatabase>): SkillsStore {
         if (row === undefined) continue;
         result.push({
           id: row.skill_id,
-          capabilities: parseCapabilities(row.manifest_yaml),
+          capabilities: parseCapabilities(row.manifest_yaml, row.skill_id),
           bodyMd: row.body_md,
           manifestYaml: row.manifest_yaml,
         });

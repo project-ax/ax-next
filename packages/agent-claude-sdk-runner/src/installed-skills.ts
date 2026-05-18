@@ -43,7 +43,15 @@ export async function materializeInstalledSkillsFromEnv(): Promise<void> {
     throw new Error('AX_INSTALLED_SKILLS_JSON must be an array');
   }
 
+  // Empty array: nothing to materialize, nothing to lock. The Phase 0
+  // sandbox init container already created the skills dir at 0o755;
+  // chmodding it (or creating it just to chmod it) would surface an
+  // ENOENT on tmpdir-based tests AND would lock a dir we never touched
+  // in prod. Early-return — same Phase 0 default behavior.
+  if (parsed.length === 0) return;
+
   const skillsDir = path.join(ccd, 'skills');
+  await fs.mkdir(skillsDir, { recursive: true, mode: 0o755 });
   for (const entry of parsed) {
     if (
       typeof entry !== 'object' ||

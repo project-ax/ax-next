@@ -467,7 +467,14 @@ export function AgentForm() {
             agentId={editing.id}
             initialAttachments={editing.skillAttachments ?? []}
             onSaved={(next) => {
-              setEditing({ ...editing, skillAttachments: next });
+              // Functional updater + identity guard: if the user has
+              // navigated to a different agent (or to 'new') by the time
+              // the save resolves, don't reopen the stale edit view.
+              setEditing((current) => {
+                if (current === 'new' || current === null) return current;
+                if (current.id !== editing.id) return current;
+                return { ...current, skillAttachments: next };
+              });
             }}
           />
         </Card>

@@ -159,8 +159,12 @@ describe('SkillsStore', () => {
     expect(detail!.bodyMd).toBe(SAMPLE_BODY);
     expect(detail!.manifestYaml).toBe(SAMPLE_MANIFEST);
     expect(typeof detail!.updatedAt).toBe('string');
-    // updatedAt is an ISO string
-    expect(() => new Date(detail!.updatedAt)).not.toThrow();
+    // updatedAt is a valid ISO timestamp — `new Date(garbage)` returns
+    // Invalid Date (does not throw), so check round-trip parse equality
+    // to actually pin the format.
+    const parsedUpdatedAt = new Date(detail!.updatedAt);
+    expect(Number.isNaN(parsedUpdatedAt.getTime())).toBe(false);
+    expect(parsedUpdatedAt.toISOString()).toBe(detail!.updatedAt);
   });
 
   it('delete(id) removes the row; subsequent get returns null', async () => {
