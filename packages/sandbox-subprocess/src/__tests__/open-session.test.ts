@@ -815,6 +815,149 @@ describe('sandbox:open-session', () => {
     await fs.rm(ws, { recursive: true, force: true });
   });
 
+  it('clears a regular file (not just a symlink) sitting at <workspace>/.claude/skills', async () => {
+    // Reviewer note: the prior `fs.rm({ force: true })` (no `recursive`)
+    // would already clear a regular file, but the larger fix moved to
+    // `recursive: true` to also handle a real directory. Test both shapes
+    // explicitly — start with the simpler file-at-path case.
+    const ws = await mkWorkspace();
+    await fs.mkdir(path.join(ws, '.claude'), { recursive: true });
+    await fs.writeFile(path.join(ws, '.claude', 'skills'), 'not a symlink');
+
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    const result = await h.bus.call<unknown, OpenSessionResult>(
+      'sandbox:open-session',
+      ctx,
+      { sessionId: 'p0-reentry-file', workspaceRoot: ws, runnerBinary: ECHO_STUB },
+    );
+
+    // File got replaced by the symlink, target matches.
+    const lst = await fs.lstat(path.join(ws, '.claude', 'skills'));
+    expect(lst.isSymbolicLink()).toBe(true);
+    const target = await fs.readlink(path.join(ws, '.claude', 'skills'));
+    expect(target).toBe('../.ax/skills');
+
+    await result.handle.kill();
+    await result.handle.exited;
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
+  it('clears a non-empty directory sitting at <workspace>/.claude/skills (recursive cleanup)', async () => {
+    // Reviewer note: an agent could conceivably commit a real `.claude/skills/`
+    // directory with content. The canonical skill content lives under
+    // `.ax/skills/`, so blowing `.claude/skills/` away can't lose user data.
+    // We seed a non-empty directory and assert openSession reclaims the path.
+    const ws = await mkWorkspace();
+    await fs.mkdir(path.join(ws, '.claude', 'skills'), { recursive: true });
+    await fs.writeFile(path.join(ws, '.claude', 'skills', 'stray.md'), 'stale');
+
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    const result = await h.bus.call<unknown, OpenSessionResult>(
+      'sandbox:open-session',
+      ctx,
+      { sessionId: 'p0-reentry-dir', workspaceRoot: ws, runnerBinary: ECHO_STUB },
+    );
+
+    const lst = await fs.lstat(path.join(ws, '.claude', 'skills'));
+    expect(lst.isSymbolicLink()).toBe(true);
+    const target = await fs.readlink(path.join(ws, '.claude', 'skills'));
+    expect(target).toBe('../.ax/skills');
+
+    await result.handle.kill();
+    await result.handle.exited;
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
+  it('accepts a concurrent-session EEXIST when the existing link target matches (race-safe)', async () => {
+    // Race shape: two concurrent open-session calls on the same workspace
+    // can interleave so that B.symlink() throws EEXIST after A.symlink()
+    // wins. The end state is correct (both sessions wanted the same
+    // target), so B must NOT throw — instead re-read the link and accept
+    // iff the target matches.
+    //
+    // We can't deterministically interleave two real openSession calls in
+    // a unit test, so simulate the race by spying on fs.symlink: on the
+    // FIRST call, drop a real symlink at the intended target *and* throw
+    // EEXIST (mimicking the kernel returning EEXIST because A already won).
+    // Subsequent fs.symlink calls fall through to the real impl. The
+    // openSession code path must readlink, see the matching target, and
+    // proceed without throwing.
+    const ws = await mkWorkspace();
+    const h = await makeHarness();
+    const ctx = h.ctx();
+
+    const realSymlink = fs.symlink.bind(fs);
+    const symlinkSpy = vi
+      .spyOn(fs, 'symlink')
+      .mockImplementationOnce(async (target: unknown, p: unknown) => {
+        // Sneak the link in under the same name with the same target
+        // and then throw EEXIST so the caller sees what concurrent A
+        // would have produced.
+        await realSymlink(target as string, p as string);
+        const err = new Error('file already exists') as NodeJS.ErrnoException;
+        err.code = 'EEXIST';
+        throw err;
+      });
+
+    try {
+      const result = await h.bus.call<unknown, OpenSessionResult>(
+        'sandbox:open-session',
+        ctx,
+        { sessionId: 'p0-eexist-accept', workspaceRoot: ws, runnerBinary: ECHO_STUB },
+      );
+
+      // Link sits where openSession's readlink check would have approved.
+      const target = await fs.readlink(path.join(ws, '.claude', 'skills'));
+      expect(target).toBe('../.ax/skills');
+
+      await result.handle.kill();
+      await result.handle.exited;
+    } finally {
+      symlinkSpy.mockRestore();
+    }
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
+  it('surfaces a real EEXIST when the existing link points at a different target', async () => {
+    // Sibling of the race-safe path: if EEXIST arrives AND the existing
+    // link points somewhere unexpected, that's a real conflict (two
+    // different sessions disagreeing on the target — shouldn't happen
+    // since the target is hard-coded, but be defensive). Surface as
+    // sandbox-prep-failed instead of silently accepting.
+    const ws = await mkWorkspace();
+    const h = await makeHarness();
+    const ctx = h.ctx();
+
+    const realSymlink = fs.symlink.bind(fs);
+    const symlinkSpy = vi
+      .spyOn(fs, 'symlink')
+      .mockImplementationOnce(async (_target: unknown, p: unknown) => {
+        // Sneak in a DIFFERENT-target symlink, then throw EEXIST.
+        await realSymlink('/somewhere/else', p as string);
+        const err = new Error('file already exists') as NodeJS.ErrnoException;
+        err.code = 'EEXIST';
+        throw err;
+      });
+
+    let caught: unknown;
+    try {
+      await h.bus.call<unknown, OpenSessionResult>(
+        'sandbox:open-session',
+        ctx,
+        { sessionId: 'p0-eexist-mismatch', workspaceRoot: ws, runnerBinary: ECHO_STUB },
+      );
+    } catch (err) {
+      caught = err;
+    } finally {
+      symlinkSpy.mockRestore();
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('sandbox-prep-failed');
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
   it('omits conversationId when owner has no conversationId (back-compat with non-orchestrator callers)', async () => {
     const ws = await mkWorkspace();
     const h = await makeHarness();

@@ -236,13 +236,33 @@ export async function openSessionImpl(
     //    keeping the two providers' on-disk shape identical is cheap).
     //
     //    Idempotency: if `.claude/skills/` already exists (stale file
-    //    from a prior session, dangling symlink, etc.), drop it first.
-    //    `fs.rm({ force: true })` is a no-op on ENOENT; it does NOT
-    //    follow the link.
+    //    from a prior session, dangling symlink, even a non-empty
+    //    directory committed by accident), drop it first. `recursive:
+    //    true` covers all three shapes — symlink, regular file, and
+    //    directory — without an extra stat round-trip. We can blow
+    //    the path away because the canonical content lives under
+    //    `.ax/skills/`; anything sitting at `.claude/skills/` is by
+    //    definition transient. `force: true` keeps the call a no-op on
+    //    ENOENT. `fs.rm` does NOT follow the link when removing it.
+    //
+    //    Concurrent-session race: two open-session calls on the same
+    //    workspace can interleave as A.rm → B.rm → A.symlink → B.symlink,
+    //    leaving B's symlink() to throw EEXIST. The end state is correct
+    //    (the link points where it should), so we re-read and accept iff
+    //    the existing target matches. A mismatched target surfaces the
+    //    real conflict instead of being silently overwritten.
     await fs.mkdir(workspaceClaudeDir, { recursive: true, mode: 0o755 });
     await fs.mkdir(workspaceAxSkillsDir, { recursive: true, mode: 0o755 });
-    await fs.rm(workspaceSkillsSymlink, { force: true });
-    await fs.symlink('../.ax/skills', workspaceSkillsSymlink);
+    await fs.rm(workspaceSkillsSymlink, { recursive: true, force: true });
+    try {
+      await fs.symlink('../.ax/skills', workspaceSkillsSymlink);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+      const existing = await fs
+        .readlink(workspaceSkillsSymlink)
+        .catch(() => null);
+      if (existing !== '../.ax/skills') throw err;
+    }
   } catch (cause) {
     // Best-effort cleanup so a setup failure doesn't leak the tempdir.
     await fs.rm(socketDir, { recursive: true, force: true }).catch(() => undefined);
@@ -312,7 +332,10 @@ export async function openSessionImpl(
   //    input doesn't accept env, so the only sources are
   //      (a) our session-scoped injects, and
   //      (b) the allowlist from the parent process.
-  //    Allowlist merges LAST so PATH/HOME/etc. from the host always win.
+  //    Allowlist merges FIRST so sessionEnv keys win on collision —
+  //    a session-scoped value (HOME, CLAUDE_CONFIG_DIR, an env-injected
+  //    placeholder) MUST take precedence over the parent's same-named
+  //    var. See the longer comment at the actual merge site below.
   //
   //    AX_RUNNER_ENDPOINT carries the opaque URI the runner uses to reach
   //    the host. For this provider it's always `unix://<socketPath>`. The
