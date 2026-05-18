@@ -142,25 +142,54 @@ const EXTERNAL_READERS: ReadonlySet<string> = new Set([
   'LOG_LEVEL',
 ]);
 
+// Bitnami's chart repo intermittently returns an empty index.yaml on CI
+// (late-2025 migration left the public endpoint flaky), so
+// `helm dependency build` fails with "error loading bitnami-index.yaml:
+// empty index.yaml file". Wrap the add+build sequence in a small retry —
+// a fresh `--force-update` re-pull usually returns a populated index on
+// the second attempt. Mirrors render.test.ts's helmRepoSync (commit
+// f01b2fcd); kept inline rather than extracted into a shared helper
+// because the two test files want independent isolation if either
+// changes its setup posture.
+function helmRepoSync(): { ok: true } | { ok: false; reason: string } {
+  if (HELM === null) return { ok: true };
+  const repoAdd = spawnSync(
+    HELM,
+    ['repo', 'add', '--force-update', 'bitnami', 'https://charts.bitnami.com/bitnami'],
+    { encoding: 'utf8', stdio: ['ignore', 'ignore', 'pipe'] },
+  );
+  if (repoAdd.status !== 0) {
+    return {
+      ok: false,
+      reason: `helm repo add bitnami exit ${repoAdd.status}: ${repoAdd.stderr ?? ''}`,
+    };
+  }
+  const r = spawnSync(HELM, ['dependency', 'build', chartDir], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'ignore', 'pipe'],
+  });
+  if (r.status !== 0) {
+    return {
+      ok: false,
+      reason: `helm dependency build exit ${r.status}: ${r.stderr ?? ''}`,
+    };
+  }
+  return { ok: true };
+}
+
 describeIfHelm('host deployment env vs preset loader', () => {
   beforeAll(() => {
-    // Ensure subchart tarballs are present (postgresql). Idempotent.
     if (!HELM) return;
-    const repoAdd = spawnSync(
-      HELM,
-      ['repo', 'add', '--force-update', 'bitnami', 'https://charts.bitnami.com/bitnami'],
-      { encoding: 'utf8', stdio: ['ignore', 'ignore', 'pipe'] },
+    const attempts = 3;
+    let lastReason = '';
+    for (let i = 0; i < attempts; i += 1) {
+      const out = helmRepoSync();
+      if (out.ok) return;
+      lastReason = out.reason;
+    }
+    throw new Error(
+      `helm dependency build failed after ${attempts} attempts: ${lastReason}`,
     );
-    if (repoAdd.status !== 0) {
-      throw new Error(`helm repo add bitnami failed: ${repoAdd.stderr ?? ''}`);
-    }
-    const r = spawnSync(HELM, ['dependency', 'build', chartDir], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'ignore', 'pipe'],
-    });
-    if (r.status !== 0) {
-      throw new Error(`helm dependency build failed: ${r.stderr ?? ''}`);
-    }
   });
 
   function renderHostDeployment(extraArgs: readonly string[] = []): K8sDoc {
