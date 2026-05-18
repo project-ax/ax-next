@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { MessageFormatAdapter, MessageFormatItem, MessageStorageEntry } from '@assistant-ui/react';
-import { createAxHistoryAdapter } from '../lib/history-adapter';
+import { contentBlocksToAuiParts, createAxHistoryAdapter, decodeAttachmentPath } from '../lib/history-adapter';
 
 type StorageFormat = Record<string, unknown>;
 type TestMessage = MessageStorageEntry<StorageFormat>;
@@ -283,5 +283,72 @@ describe('createAxHistoryAdapter', () => {
     const result = await adapter.withFormat!(makeFormatAdapter()).load();
     const parts = (result.messages[0]!.message.content as { parts: unknown[] }).parts;
     expect(parts).toHaveLength(1);
+  });
+});
+
+describe('contentBlocksToAuiParts — attachment blocks', () => {
+  it('translates an image attachment block to a file part with image type', () => {
+    const blocks = [{
+      type: 'attachment' as const,
+      path: '.ax/uploads/c1/t1/abcd1234__cat.png',
+      displayName: 'cat.png',
+      mediaType: 'image/png',
+      sizeBytes: 1234,
+    }];
+    const parts = contentBlocksToAuiParts(blocks, { conversationId: 'c1' });
+    expect(parts).toHaveLength(1);
+    expect(parts[0]).toMatchObject({
+      type: 'file',
+      mediaType: 'image/png',
+      filename: 'cat.png',
+    });
+    const data = (parts[0] as { data: string }).data;
+    expect(data.startsWith('ax://attachment-path/')).toBe(true);
+  });
+
+  it('translates a PDF attachment block to a file part with pdf type', () => {
+    const blocks = [{
+      type: 'attachment' as const,
+      path: '.ax/uploads/c1/t1/abcd1234__report.pdf',
+      displayName: 'Q4 Report.pdf',
+      mediaType: 'application/pdf',
+      sizeBytes: 482113,
+    }];
+    const parts = contentBlocksToAuiParts(blocks, { conversationId: 'c1' });
+    expect(parts[0]).toMatchObject({
+      type: 'file',
+      mediaType: 'application/pdf',
+      filename: 'Q4 Report.pdf',
+    });
+  });
+
+  it('preserves text + attachment ordering', () => {
+    const blocks = [
+      { type: 'text' as const, text: 'see attached' },
+      {
+        type: 'attachment' as const,
+        path: '.ax/uploads/c1/t1/x.pdf',
+        displayName: 'x.pdf',
+        mediaType: 'application/pdf',
+        sizeBytes: 10,
+      },
+    ];
+    const parts = contentBlocksToAuiParts(blocks, { conversationId: 'c1' });
+    expect(parts).toHaveLength(2);
+    expect(parts[0]).toMatchObject({ type: 'text' });
+    expect(parts[1]).toMatchObject({ type: 'file' });
+  });
+});
+
+describe('decodeAttachmentPath', () => {
+  it('decodes a base64url-encoded path', () => {
+    const path = '.ax/uploads/c1/t1/foo.pdf';
+    const encoded = btoa(path).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    const url = `ax://attachment-path/${encoded}`;
+    expect(decodeAttachmentPath(url)).toBe(path);
+  });
+
+  it('returns null for non-ax URLs', () => {
+    expect(decodeAttachmentPath('https://example.com')).toBe(null);
   });
 });
