@@ -374,6 +374,111 @@ describe('createValidatorSkillPlugin', () => {
     }
   });
 
+  // -------------------------------------------------------------------
+  // Capabilities-strip (I-P1-2)
+  //
+  // Workspace-authored SKILL.md may NOT declare a capabilities block —
+  // the block is the host-only path to grant new hosts / credential
+  // slots. Strip-and-warn rather than veto, so the rest of the skill
+  // body still lands on disk; the SDK still discovers the skill,
+  // minus any agent-attempted capability grants.
+  // -------------------------------------------------------------------
+
+  it('strips capabilities block from agent-authored SKILL.md (rewrites the change)', async () => {
+    const { bus, ctx } = await bootstrapWith([createValidatorSkillPlugin()]);
+    const src =
+      '---\n' +
+      'name: foo\n' +
+      'description: A skill that tries to self-grant.\n' +
+      'capabilities:\n' +
+      '  allowedHosts: [api.example.com]\n' +
+      '  credentials:\n' +
+      '    - slot: SECRET_TOKEN\n' +
+      '      kind: api-key\n' +
+      '---\n' +
+      '# Body\n';
+    const decision = await bus.fire<{
+      changes: FileChange[];
+      parent: null;
+      reason: string;
+    }>('workspace:pre-apply', ctx, {
+      changes: [
+        {
+          path: '.ax/skills/foo/SKILL.md',
+          kind: 'put',
+          content: enc.encode(src),
+        },
+      ],
+      parent: null,
+      reason: 'turn',
+    });
+    expect(decision.rejected).toBe(false);
+    if (decision.rejected) return;
+    expect(decision.payload.changes).toHaveLength(1);
+    const change = decision.payload.changes[0]!;
+    expect(change.kind).toBe('put');
+    if (change.kind !== 'put') return;
+    const rewritten = new TextDecoder('utf-8').decode(change.content);
+    expect(rewritten).not.toMatch(/capabilities/);
+    expect(rewritten).not.toMatch(/SECRET_TOKEN/);
+    expect(rewritten).not.toMatch(/api\.example\.com/);
+    expect(rewritten).toMatch(/name: foo/);
+    expect(rewritten).toMatch(/description: A skill that tries to self-grant\./);
+    expect(rewritten).toMatch(/# Body/);
+  });
+
+  it('leaves SKILL.md unchanged when no capabilities block is present', async () => {
+    const { bus, ctx } = await bootstrapWith([createValidatorSkillPlugin()]);
+    const src = '---\nname: foo\ndescription: ok\n---\n# Body\n';
+    const original = enc.encode(src);
+    const decision = await bus.fire<{
+      changes: FileChange[];
+      parent: null;
+      reason: string;
+    }>('workspace:pre-apply', ctx, {
+      changes: [
+        { path: '.ax/skills/foo/SKILL.md', kind: 'put', content: original },
+      ],
+      parent: null,
+      reason: 'turn',
+    });
+    expect(decision.rejected).toBe(false);
+    if (decision.rejected) return;
+    const change = decision.payload.changes[0]!;
+    if (change.kind !== 'put') return;
+    // The bus should hand back the original payload reference (no rewrite).
+    expect(change.content).toBe(original);
+  });
+
+  it('strip path still vetoes a stripped SKILL.md that ends up malformed', async () => {
+    // If the agent submits a SKILL.md whose ONLY non-capability fields
+    // are invalid (e.g. missing required `name`), the strip happens
+    // first, then the standard frontmatter validation rejects.
+    const { bus, ctx } = await bootstrapWith([createValidatorSkillPlugin()]);
+    const src =
+      '---\n' +
+      'description: missing name\n' +
+      'capabilities:\n' +
+      '  allowedHosts: [api.example.com]\n' +
+      '---\n' +
+      '# Body\n';
+    const decision = await bus.fire('workspace:pre-apply', ctx, {
+      changes: [
+        {
+          path: '.ax/skills/bad/SKILL.md',
+          kind: 'put',
+          content: enc.encode(src),
+        },
+      ],
+      parent: null,
+      reason: 'turn',
+    });
+    expect(decision.rejected).toBe(true);
+    if (decision.rejected) {
+      expect(decision.reason).toContain('name');
+    }
+  });
+
   it('does NOT veto .claude-plugin/ (different path entirely)', async () => {
     const { bus, ctx } = await bootstrapWith([createValidatorSkillPlugin()]);
     const decision = await bus.fire('workspace:pre-apply', ctx, {
