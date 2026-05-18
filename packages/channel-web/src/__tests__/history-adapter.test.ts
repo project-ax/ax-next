@@ -351,4 +351,22 @@ describe('decodeAttachmentPath', () => {
   it('returns null for non-ax URLs', () => {
     expect(decodeAttachmentPath('https://example.com')).toBe(null);
   });
+
+  it('round-trips a Unicode filename through the attachment-path URL', async () => {
+    // Drive the encode side via the public attachment-translation path so
+    // the encoder and decoder stay locked together — `btoa(path)` directly
+    // would throw on code points > 0xFF, which is the bug we're guarding
+    // against.
+    const path = '.ax/uploads/c1/t1/カタログ.pdf';
+    const blocks = [{
+      type: 'attachment' as const,
+      path,
+      displayName: 'カタログ.pdf',
+      mediaType: 'application/pdf',
+      sizeBytes: 1234,
+    }];
+    const parts = contentBlocksToAuiParts(blocks);
+    const url = (parts[0] as { data: string }).data;
+    expect(decodeAttachmentPath(url)).toBe(path);
+  });
 });

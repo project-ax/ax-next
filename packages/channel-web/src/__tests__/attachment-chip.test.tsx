@@ -1,12 +1,18 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { AttachmentChip } from '../components/AttachmentChip';
 
 describe('AttachmentChip', () => {
+  // vi.spyOn + restoreAllMocks keeps the window.open stub scoped to this
+  // describe block. Object.defineProperty(window, 'open', …) would persist
+  // across the whole test file and leak into anything that mounts after.
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('renders display name and triggers GET /api/files on click', () => {
-    const openSpy = vi.fn();
-    Object.defineProperty(window, 'open', { value: openSpy, writable: true });
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
 
     render(
       <AttachmentChip

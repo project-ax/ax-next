@@ -69,6 +69,15 @@ describe('parseSingleFileMultipart', () => {
     await expect(parseSingleFileMultipart(buf, '')).rejects.toThrow(/content-type/i);
   });
 
+  it('rejects multipart/* subtypes other than form-data', async () => {
+    const { buf } = buildMultipart([
+      { name: 'file', filename: 'a.txt', contentType: 'text/plain', body: 'a' },
+    ]);
+    await expect(
+      parseSingleFileMultipart(buf, 'multipart/mixed; boundary=----test-boundary'),
+    ).rejects.toThrow(/multipart\/form-data/i);
+  });
+
   it('defaults mimeType to application/octet-stream when the part omits it', async () => {
     const { buf, contentType } = buildMultipart([
       { name: 'file', filename: 'blob.bin', body: Buffer.from([0x00, 0x01, 0x02]) },

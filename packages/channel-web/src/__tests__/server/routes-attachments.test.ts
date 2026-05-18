@@ -210,7 +210,7 @@ afterEach(async () => {
   const cleanup = new (await import('pg')).default.Client({ connectionString });
   await cleanup.connect();
   try {
-    await cleanup.query('DROP TABLE IF EXISTS attachments_v1_temp');
+    await cleanup.query('DROP TABLE IF EXISTS attachments_v1_temps');
   } finally {
     await cleanup.end().catch(() => {});
   }

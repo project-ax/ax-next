@@ -123,7 +123,7 @@ type AnchorProps = ComponentPropsWithoutRef<'a'>;
 
 const EMPTY_PARTS: readonly unknown[] = Object.freeze([]);
 
-const Anchor: FC<AnchorProps> = ({ href, children }) => {
+const Anchor: FC<AnchorProps> = ({ href, children, ...anchorProps }) => {
   const conversationId = useConversationId();
   const parts = useMessage(
     (m) => (m as { content?: readonly unknown[] }).content ?? EMPTY_PARTS,
@@ -153,8 +153,11 @@ const Anchor: FC<AnchorProps> = ({ href, children }) => {
       />
     );
   }
+  // Spread incoming props (title, data-*, aria-*, etc.) but write our own
+  // `href`/`target`/`rel` AFTER so callers can't override the safe-window
+  // semantics or substitute a different href.
   return (
-    <a href={href} target="_blank" rel="noopener noreferrer">
+    <a {...anchorProps} href={href} target="_blank" rel="noopener noreferrer">
       {children}
     </a>
   );

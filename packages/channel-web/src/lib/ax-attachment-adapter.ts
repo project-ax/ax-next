@@ -117,7 +117,14 @@ function uploadWithProgress(
         onProgress(e.loaded / e.total);
       }
     };
+    // Cap stall-out at 60s so an unreachable server doesn't leave the
+    // returned promise pending forever. abort + timeout get their own
+    // rejection reasons so an upstream surface (toast, retry button) can
+    // distinguish them from a generic network failure.
+    xhr.timeout = 60_000;
     xhr.onerror = () => reject(new Error('upload failed'));
+    xhr.onabort = () => reject(new Error('upload aborted'));
+    xhr.ontimeout = () => reject(new Error('upload timed out'));
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) {
         try {

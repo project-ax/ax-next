@@ -22,14 +22,17 @@ import {
   useExternalStoreRuntime,
 } from '@assistant-ui/react';
 import type { ThreadMessageLike } from '@assistant-ui/react';
-import type { ReactNode } from 'react';
+import { useEffect, type ReactNode } from 'react';
 import { Thread } from '../components/Thread';
 import { setActiveConversationId } from '../lib/use-conversation-id';
 
 function ProviderWithSeededMessages({ children }: { children: ReactNode }) {
   // Publish a non-null conversation id so AttachmentChip can build the
-  // `GET /api/files?...&conversationId=...` URL.
+  // `GET /api/files?...&conversationId=...` URL. Clear it on unmount so
+  // the module-level store doesn't bleed into any test that mounts a
+  // chip after this one.
   setActiveConversationId('c1');
+  useEffect(() => () => setActiveConversationId(null), []);
   const seeded: ThreadMessageLike[] = [
     {
       id: 'm-user-1',

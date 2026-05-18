@@ -49,7 +49,14 @@ export function parseSingleFileMultipart(
   contentTypeHeader: string,
 ): Promise<ParsedFile> {
   return new Promise((resolve, reject) => {
-    if (!contentTypeHeader || !contentTypeHeader.toLowerCase().startsWith('multipart/')) {
+    // Require multipart/form-data specifically — busboy parses other
+    // multipart/* subtypes (multipart/mixed, multipart/related) the same
+    // way, but accepting them here would contradict the error message and
+    // let the route handle a body shape it doesn't promise to support.
+    if (
+      !contentTypeHeader ||
+      !/^multipart\/form-data\b/i.test(contentTypeHeader.trim())
+    ) {
       reject(new Error('invalid content-type: expected multipart/form-data'));
       return;
     }

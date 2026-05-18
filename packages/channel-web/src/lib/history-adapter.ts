@@ -190,9 +190,16 @@ export function contentBlocksToAuiParts(
  * Encode a workspace-relative path as base64url so it can ride safely as
  * the path segment of `ax://attachment-path/<...>` URLs (no raw slashes
  * or `+`/`=` chars).
+ *
+ * Goes through TextEncoder/TextDecoder rather than `btoa(input)` directly
+ * because `btoa` throws on code points > 0xFF — Unicode filenames (CJK,
+ * emoji) would otherwise blow up here.
  */
 function base64url(input: string): string {
-  return btoa(input)
+  const bytes = new TextEncoder().encode(input);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]!);
+  return btoa(binary)
     .replace(/\+/g, '-')
     .replace(/\//g, '_')
     .replace(/=+$/, '');
@@ -203,6 +210,9 @@ function base64url(input: string): string {
  * workspace-relative path. Used by `AttachmentChip` (Task 11) to build
  * its `GET /api/files` request. Returns `null` for non-ax URLs or any
  * decode failure.
+ *
+ * Symmetrically to `base64url`, decodes through TextDecoder so multi-byte
+ * UTF-8 sequences (Unicode filenames) round-trip correctly.
  */
 export function decodeAttachmentPath(url: string): string | null {
   const PREFIX = 'ax://attachment-path/';
@@ -212,7 +222,10 @@ export function decodeAttachmentPath(url: string): string | null {
     .replace(/-/g, '+')
     .replace(/_/g, '/');
   try {
-    return atob(padded + '==='.slice(0, (4 - (padded.length % 4)) % 4));
+    const binary = atob(padded + '==='.slice(0, (4 - (padded.length % 4)) % 4));
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return new TextDecoder().decode(bytes);
   } catch {
     return null;
   }

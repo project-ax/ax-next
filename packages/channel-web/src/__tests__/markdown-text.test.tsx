@@ -15,6 +15,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import { useEffect } from 'react';
 import {
   AssistantRuntimeProvider,
   MessagePrimitive,
@@ -43,6 +44,9 @@ function Harness({
   toolResult?: SeededArtifactResult;
 }) {
   setActiveConversationId('c1');
+  // Reset the module-level conversation id on unmount so it doesn't bleed
+  // into any sibling test that mounts a chip-rendering component after.
+  useEffect(() => () => setActiveConversationId(null), []);
   const content: ThreadMessageLike['content'] = toolResult
     ? [
         {

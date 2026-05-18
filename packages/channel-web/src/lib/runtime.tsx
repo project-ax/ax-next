@@ -104,22 +104,23 @@ export const useAxChatRuntime = (
     [user, handleSetConversationId],
   );
 
-  // Whenever the session-store's `activeSessionId` clears (the user
-  // opened a fresh session via "+ new session", or AgentChip dropped
-  // the previous session as part of a mid-chat agent switch), reset
-  // the transport's conversationId so the next POST sends
-  // `conversationId: null`. The server then mints a new conversation
-  // row — without this, the transport would carry the previous id
-  // forward and the new agent's first turn would land in the old
-  // conversation.
+  // Keep the subscriber-visible id (AttachmentChip / ArtifactChip read it
+  // via useConversationId) aligned with the sidebar's active session on
+  // every change — not just when it clears. Without this, switching from
+  // conversation A to B leaves chips still building `GET /api/files?
+  // conversationId=<A>` URLs against B, which 404s.
+  //
+  // `conversationRef.current` is intentionally NOT clobbered on every
+  // change: the transport sets it from the server's freshly-minted id in
+  // `handleSetConversationId`, and we'd race that here. Only clear it
+  // when the session goes null (fresh-session / agent-switch path) so
+  // the next POST mints a new conversation row instead of carrying the
+  // previous id forward.
   const activeSessionId = useSessionStore().activeSessionId;
   useEffect(() => {
+    setActiveConversationId(activeSessionId);
     if (activeSessionId === null) {
       conversationRef.current = null;
-      // Clear the subscriber-visible id so any AttachmentChip / ArtifactChip
-      // that's still mounted falls back to its conversation-unknown state
-      // rather than building a URL against the previous conversation.
-      setActiveConversationId(null);
     }
   }, [activeSessionId]);
 
