@@ -86,6 +86,7 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
         'agents:resolve-by-webhook-token',
         'agents:rotate-webhook-token',
         'agents:ensure-webhook-token',
+        'agents:any-attached-to-skill',
       ],
       // database:get-instance is hard. http:register-route + auth:require-user
       // are hard NOW because we mount admin routes; the plugin won't boot
@@ -228,6 +229,14 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
           await localStore.setWebhookToken(input.agentId, token);
           return { token };
         },
+      );
+
+      bus.registerService<{ skillId: string }, { attached: boolean }>(
+        'agents:any-attached-to-skill',
+        PLUGIN_NAME,
+        async (_ctx, input) => ({
+          attached: await localStore.anyAttachedToSkill(input.skillId),
+        }),
       );
 
       // Mount /admin/agents[/:id]. Routes are registered LAST so the bus

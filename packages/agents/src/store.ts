@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { PluginError } from '@ax/core';
-import type { Kysely, Transaction } from 'kysely';
+import { sql, type Kysely, type Transaction } from 'kysely';
 import type { AgentsDatabase, AgentsRow } from './migrations.js';
 import { scopedAgents, type AgentScope } from './scope.js';
 import type { Agent, AgentInput, SkillAttachment } from './types.js';
@@ -384,6 +384,13 @@ export interface AgentStore {
    * token surface as a constraint error from the driver.
    */
   setWebhookToken(agentId: string, token: string): Promise<void>;
+  /**
+   * Returns true if at least one agent row has an entry in
+   * skill_attachments[] whose skillId matches the given skillId.
+   * Used by the skill-delete-guard in @ax/skills to prevent removing
+   * a skill that an agent is currently relying on.
+   */
+  anyAttachedToSkill(skillId: string): Promise<boolean>;
 }
 
 export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
@@ -534,6 +541,18 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
           message: `agent '${agentId}' not found`,
         });
       }
+    },
+
+    async anyAttachedToSkill(skillId) {
+      // JSONB containment: skill_attachments array contains an object with
+      // the given skillId. Returns on the first match (LIMIT 1).
+      const row = await db
+        .selectFrom('agents_v1_agents')
+        .select(sql<number>`1`.as('one'))
+        .where(sql<boolean>`skill_attachments @> ${JSON.stringify([{ skillId }])}::jsonb`)
+        .limit(1)
+        .executeTakeFirst();
+      return Boolean(row);
     },
   };
 }

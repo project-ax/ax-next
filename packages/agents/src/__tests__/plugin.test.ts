@@ -118,6 +118,7 @@ describe('@ax/agents plugin manifest + lifecycle', () => {
         'agents:resolve-by-webhook-token',
         'agents:rotate-webhook-token',
         'agents:ensure-webhook-token',
+        'agents:any-attached-to-skill',
       ],
       // database:get-instance + http:register-route + auth:require-user are
       // hard. teams:is-member is graceful (handled inside checkAccess via
@@ -465,5 +466,69 @@ describe('@ax/agents service hooks (round trip)', () => {
       caught = err;
     }
     expect((caught as PluginError).code).toBe('not-found');
+  });
+
+  it('agents:any-attached-to-skill returns false when no agent has the skill', async () => {
+    const h = await makeHarness();
+    const r = await h.bus.call<{ skillId: string }, { attached: boolean }>(
+      'agents:any-attached-to-skill',
+      h.ctx(),
+      { skillId: 'unattached-skill' },
+    );
+    expect(r).toEqual({ attached: false });
+  });
+
+  it('agents:any-attached-to-skill returns true when at least one agent has the skill', async () => {
+    const h = await makeHarness();
+    const created = await h.bus.call<CreateInput, CreateOutput>('agents:create', h.ctx(), {
+      actor: { userId: 'u1', isAdmin: false },
+      input: makeInput(),
+    });
+    // Seed skill_attachments directly — the dedicated PATCH route ships in Phase 1.4.3.
+    const { db } = await h.bus.call<unknown, { db: import('kysely').Kysely<unknown> }>(
+      'database:get-instance',
+      h.ctx(),
+      {},
+    );
+    const { sql } = await import('kysely');
+    await sql`
+      UPDATE agents_v1_agents
+         SET skill_attachments = ${JSON.stringify([{ skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'cred-ref-1' } }])}::jsonb
+       WHERE agent_id = ${created.agent.id}
+    `.execute(db);
+
+    const r = await h.bus.call<{ skillId: string }, { attached: boolean }>(
+      'agents:any-attached-to-skill',
+      h.ctx(),
+      { skillId: 'github' },
+    );
+    expect(r).toEqual({ attached: true });
+  });
+
+  it('agents:any-attached-to-skill returns false when an agent has a DIFFERENT skill attached', async () => {
+    const h = await makeHarness();
+    const created = await h.bus.call<CreateInput, CreateOutput>('agents:create', h.ctx(), {
+      actor: { userId: 'u1', isAdmin: false },
+      input: makeInput(),
+    });
+    // Attach 'github' — then query for 'openai'.
+    const { db } = await h.bus.call<unknown, { db: import('kysely').Kysely<unknown> }>(
+      'database:get-instance',
+      h.ctx(),
+      {},
+    );
+    const { sql } = await import('kysely');
+    await sql`
+      UPDATE agents_v1_agents
+         SET skill_attachments = ${JSON.stringify([{ skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'cred-ref-1' } }])}::jsonb
+       WHERE agent_id = ${created.agent.id}
+    `.execute(db);
+
+    const r = await h.bus.call<{ skillId: string }, { attached: boolean }>(
+      'agents:any-attached-to-skill',
+      h.ctx(),
+      { skillId: 'openai' },
+    );
+    expect(r).toEqual({ attached: false });
   });
 });
