@@ -49,6 +49,32 @@ describe('translateContentBlocks', () => {
     ]);
   });
 
+  it('falls back to a text mention when the reader throws (IPC failure)', async () => {
+    const blocks: ContentBlock[] = [
+      {
+        type: 'attachment',
+        path: '.ax/uploads/c1/t1/img.png',
+        displayName: 'img.png',
+        mediaType: 'image/png',
+        sizeBytes: 1,
+      },
+    ];
+    const out = await translateContentBlocks(blocks, {
+      readWorkspace: vi.fn(async () => {
+        throw new Error('IPC connection refused');
+      }),
+      supportsDocumentBlocks: true,
+    });
+    expect(out).toEqual([
+      {
+        type: 'text',
+        text: expect.stringMatching(
+          /User attached 'img\.png' at \.ax\/uploads\/c1\/t1\/img\.png \(image\/png\)/,
+        ),
+      },
+    ]);
+  });
+
   it('falls back to a text mention when the image is missing from the workspace', async () => {
     const blocks: ContentBlock[] = [
       {

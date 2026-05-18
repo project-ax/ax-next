@@ -65,7 +65,17 @@ async function translateAttachment(
   if (!isImage && !(isPdf && opts.supportsDocumentBlocks)) {
     return textMention(att);
   }
-  const read = await opts.readWorkspace(att.path);
+  // IPC failures (host down, retries exhausted, schema-drift rejection)
+  // degrade to a text mention so the model still sees the attachment's
+  // provenance even when bytes are unavailable. Throwing here would abort
+  // the entire user-message handoff to the SDK and terminate the turn —
+  // disproportionate for a single missing image.
+  let read: { found: true; bytesBase64: string } | { found: false };
+  try {
+    read = await opts.readWorkspace(att.path);
+  } catch {
+    return textMention(att);
+  }
   if (!read.found) {
     return textMention(att);
   }
