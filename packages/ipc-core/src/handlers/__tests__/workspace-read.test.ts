@@ -50,6 +50,11 @@ describe('workspace.read handler', () => {
     });
     const result = await workspaceReadHandler({ path: '' }, fakeCtx(), bus as never);
     expect(result.status).not.toBe(200);
+    // Reject-before-dispatch contract: schema validation must short-circuit
+    // before the bus call so a malformed wire payload can never reach the
+    // workspace plugin (which might be expensive or have side effects on
+    // garbage input).
+    expect(bus.call).not.toHaveBeenCalled();
   });
 
   it('rejects missing path key', async () => {
@@ -58,6 +63,7 @@ describe('workspace.read handler', () => {
     });
     const result = await workspaceReadHandler({}, fakeCtx(), bus as never);
     expect(result.status).not.toBe(200);
+    expect(bus.call).not.toHaveBeenCalled();
   });
 
   it('returns an internal error envelope when bus.call("workspace:read") throws', async () => {

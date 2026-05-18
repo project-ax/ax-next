@@ -323,4 +323,25 @@ describe('translateContentBlocks', () => {
     });
     expect(out).toEqual([{ type: 'tool_use', id: 'toolu_1', name: 'foo', input: {} }]);
   });
+
+  it('emits a defensive text mention when an attachment_ref reaches the runner', async () => {
+    // attachment_ref is a transit-only variant — Phase 3's chat-messages
+    // handler is supposed to resolve them to `attachment` blocks before
+    // the runner sees the user message. If one slips through (host bug,
+    // schema drift) the runner emits a provenance-preserving text block
+    // rather than crashing the turn. This exercises that fallback path.
+    const blocks: ContentBlock[] = [
+      { type: 'attachment_ref', attachmentId: 'att_123abc' },
+    ];
+    const out = await translateContentBlocks(blocks, {
+      readWorkspace: fakeReader({}),
+      supportsDocumentBlocks: true,
+    });
+    expect(out).toEqual([
+      {
+        type: 'text',
+        text: '[runner: attachment_ref att_123abc not committed]',
+      },
+    ]);
+  });
 });
