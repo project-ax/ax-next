@@ -294,6 +294,7 @@ function serializeAgent(a: Agent): Record<string, unknown> {
     mcpConfigIds: a.mcpConfigIds,
     model: a.model,
     workspaceRef: a.workspaceRef,
+    skillAttachments: a.skillAttachments,
     createdAt: a.createdAt.toISOString(),
     updatedAt: a.updatedAt.toISOString(),
   };

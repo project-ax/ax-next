@@ -3,7 +3,7 @@ import { PluginError } from '@ax/core';
 import type { Kysely, Transaction } from 'kysely';
 import type { AgentsDatabase, AgentsRow } from './migrations.js';
 import { scopedAgents, type AgentScope } from './scope.js';
-import type { Agent, AgentInput } from './types.js';
+import type { Agent, AgentInput, SkillAttachment } from './types.js';
 
 const PLUGIN_NAME = '@ax/agents';
 
@@ -311,6 +311,25 @@ function rowToAgent(row: AgentsRow): Agent {
       message: `agents_v1_agents.${row.agent_id} has invalid visibility`,
     });
   }
+  const skillAttachmentsRaw = row.skill_attachments;
+  if (
+    !Array.isArray(skillAttachmentsRaw) ||
+    !skillAttachmentsRaw.every(
+      (e) =>
+        e !== null &&
+        typeof e === 'object' &&
+        typeof (e as Record<string, unknown>)['skillId'] === 'string' &&
+        typeof (e as Record<string, unknown>)['credentialBindings'] === 'object' &&
+        (e as Record<string, unknown>)['credentialBindings'] !== null,
+    )
+  ) {
+    throw new PluginError({
+      code: 'corrupt-row',
+      plugin: PLUGIN_NAME,
+      message: `agents_v1_agents.${row.agent_id} has invalid skill_attachments JSONB`,
+    });
+  }
+  const skillAttachments = skillAttachmentsRaw as SkillAttachment[];
   return {
     id: row.agent_id,
     ownerId: row.owner_id,
@@ -322,6 +341,7 @@ function rowToAgent(row: AgentsRow): Agent {
     mcpConfigIds,
     model: row.model,
     workspaceRef: row.workspace_ref,
+    skillAttachments,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -403,6 +423,7 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
           mcp_config_ids: JSON.stringify(validated.mcpConfigIds) as unknown,
           model: validated.model,
           workspace_ref: validated.workspaceRef,
+          skill_attachments: JSON.stringify([]) as unknown,
           created_at: now,
           updated_at: now,
         } as never)
@@ -418,6 +439,7 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
           'model',
           'workspace_ref',
           'webhook_token',
+          'skill_attachments',
           'created_at',
           'updated_at',
         ])
@@ -455,6 +477,7 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
           'model',
           'workspace_ref',
           'webhook_token',
+          'skill_attachments',
           'created_at',
           'updated_at',
         ])
