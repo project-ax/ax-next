@@ -70,4 +70,18 @@ describe('buildSandboxToolEntries', () => {
     expect(out.isError).toBe(true);
     expect(out.content[0].text).toMatch(/echo_local/);
   });
+
+  it('coerces undefined executor output to a string so the SDK content shape stays valid', async () => {
+    // JSON.stringify(undefined) === undefined; without the coercion the
+    // handler would emit `text: undefined` and the SDK would reject the
+    // shape at the boundary. artifact_publish never returns undefined,
+    // but future sandbox tools might.
+    const dispatcher = createLocalDispatcher();
+    dispatcher.register('echo_local', async () => undefined);
+    const [entry] = buildSandboxToolEntries(dispatcher, [sampleSandboxDescriptor]);
+    const out = await entry.handler({ text: 'x' }, { signal: undefined } as never);
+    expect(out.isError ?? false).toBe(false);
+    expect(typeof out.content[0].text).toBe('string');
+    expect(out.content[0].text).toBe('undefined');
+  });
 });

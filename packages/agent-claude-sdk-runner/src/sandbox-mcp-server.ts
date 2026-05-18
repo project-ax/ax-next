@@ -50,12 +50,22 @@ function shapeFromInputSchema(
 
 /**
  * Render a tool output as an SDK-MCP content block list. String outputs
- * pass through verbatim; anything else is JSON-stringified.
+ * pass through verbatim; anything else is JSON-stringified. Executors
+ * that return `undefined` (or any other value `JSON.stringify` collapses
+ * to `undefined` — functions, symbols) are coerced to the string
+ * `'undefined'` so the SDK content shape always has a string `text`,
+ * never the literal undefined that would violate the wire schema.
  */
 function renderOutput(output: unknown): {
   content: Array<{ type: 'text'; text: string }>;
 } {
-  const text = typeof output === 'string' ? output : JSON.stringify(output);
+  let text: string;
+  if (typeof output === 'string') {
+    text = output;
+  } else {
+    const json = JSON.stringify(output);
+    text = json ?? String(output);
+  }
   return { content: [{ type: 'text', text }] };
 }
 
