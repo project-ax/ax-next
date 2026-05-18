@@ -372,14 +372,17 @@ export async function main(): Promise<number> {
           HOME: env.workspaceRoot,
         },
         cwd: env.workspaceRoot,
-        // `Skill` leads the allow list so the SDK auto-permits the
+        // `Skill` is added to the allow list so the SDK auto-permits the
         // built-in Skill tool without prompting — that's the path the SDK
         // uses to invoke a skill it discovered under `settingSources`
-        // (below). The remaining names are the per-agent allow list the
-        // host wrote at session creation; an empty `agentConfig.allowedTools`
-        // means "no per-agent restriction" (orchestrator default) and the
-        // SDK falls back to its own defaults for everything other than the
-        // explicit deny list in `disallowedTools`.
+        // (below). The SDK treats `allowedTools` as a set, not an ordered
+        // list — position is irrelevant; we put Skill first for reader-
+        // facing emphasis only. The remaining names are the per-agent
+        // allow list the host wrote at session creation; an empty
+        // `agentConfig.allowedTools` means "no per-agent restriction"
+        // (orchestrator default) and the SDK falls back to its own
+        // defaults for everything other than the explicit deny list in
+        // `disallowedTools`.
         allowedTools: ['Skill', ...agentConfig.allowedTools],
         disallowedTools: [...DISABLED_BUILTINS],
         // canUseTool stays as a belt-and-suspenders allow-path. The real
