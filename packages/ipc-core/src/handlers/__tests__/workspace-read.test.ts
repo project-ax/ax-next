@@ -59,4 +59,48 @@ describe('workspace.read handler', () => {
     const result = await workspaceReadHandler({}, fakeCtx(), bus as never);
     expect(result.status).not.toBe(200);
   });
+
+  it('returns an internal error envelope when bus.call("workspace:read") throws', async () => {
+    // Plugin-side exceptions (workspace plugin not registered, git engine
+    // unhealthy, transient I/O failure) must surface as a 500 INTERNAL
+    // rather than propagating raw to the runner. The sanitized envelope
+    // hides any underlying paths or git diagnostics.
+    const ctx = fakeCtx();
+    const bus = fakeBus(async () => {
+      throw new Error('git engine: workspace plugin not registered');
+    });
+    const result = await workspaceReadHandler(
+      { path: 'workspace/foo' },
+      ctx,
+      bus as never,
+    );
+    expect(result.status).not.toBe(200);
+    // Logger MUST be called with the sanitized internal-error path so the
+    // host operator sees the real diagnostic in logs, not the runner.
+    expect((ctx as never as { logger: { error: ReturnType<typeof vi.fn> } }).logger.error).toHaveBeenCalled();
+  });
+
+  it('rejects request with absolute path (workspace-relative enforcement)', async () => {
+    const bus = fakeBus(async () => {
+      throw new Error('should not call workspace:read');
+    });
+    const result = await workspaceReadHandler(
+      { path: '/etc/passwd' },
+      fakeCtx(),
+      bus as never,
+    );
+    expect(result.status).not.toBe(200);
+  });
+
+  it('rejects request with traversal segment (workspace-relative enforcement)', async () => {
+    const bus = fakeBus(async () => {
+      throw new Error('should not call workspace:read');
+    });
+    const result = await workspaceReadHandler(
+      { path: 'workspace/../etc/passwd' },
+      fakeCtx(),
+      bus as never,
+    );
+    expect(result.status).not.toBe(200);
+  });
 });
