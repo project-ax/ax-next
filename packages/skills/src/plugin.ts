@@ -8,6 +8,7 @@ import type { Kysely } from 'kysely';
 import { parseSkillManifest } from './manifest.js';
 import { runSkillsMigration, type SkillsDatabase } from './migrations.js';
 import { createSkillsStore } from './store.js';
+import { registerAdminSkillsRoutes } from './admin-routes.js';
 import type {
   SkillsDeleteInput,
   SkillsDeleteOutput,
@@ -26,22 +27,21 @@ const PLUGIN_NAME = '@ax/skills';
 // ---------------------------------------------------------------------------
 // @ax/skills plugin
 //
-// Registers the five `skills:*` service hooks backed by skills_v1_skills.
-// Capabilities are re-parsed from manifest_yaml on every read — at the
-// admin-managed scale (~10s of skills) re-parsing is cheap and avoids a
-// denormalized copy drifting from the stored YAML.
+// Registers the five `skills:*` service hooks backed by skills_v1_skills,
+// plus the five /admin/skills* HTTP routes.
 //
 // Manifest decisions:
-//   - `calls: ['database:get-instance']` is the ONLY hard dep. We DO NOT
-//     declare `agents:any-attached-to-skill` because it may not be present
-//     in stripped presets. The delete path checks via `bus.hasService` and
-//     degrades gracefully (still allows delete) when @ax/agents isn't loaded.
-//   - No admin-route wiring here — that ships in Phase 1.3.
+//   - `calls: ['database:get-instance', 'http:register-route', 'auth:require-user']`
+//     are the hard deps. We DO NOT declare `agents:any-attached-to-skill`
+//     because it may not be present in stripped presets. The delete path
+//     checks via `bus.hasService` and degrades gracefully when @ax/agents
+//     isn't loaded.
 // ---------------------------------------------------------------------------
 
 export function createSkillsPlugin(): Plugin {
   let db: Kysely<SkillsDatabase> | undefined;
   let busRef: HookBus | undefined;
+  const routeUnregisters: Array<() => void> = [];
 
   return {
     manifest: {
@@ -54,7 +54,7 @@ export function createSkillsPlugin(): Plugin {
         'skills:delete',
         'skills:resolve',
       ],
-      calls: ['database:get-instance'],
+      calls: ['database:get-instance', 'http:register-route', 'auth:require-user'],
       subscribes: [],
     },
 
@@ -164,9 +164,38 @@ export function createSkillsPlugin(): Plugin {
         PLUGIN_NAME,
         async (_ctx, input) => ({ skills: await store.resolve(input.skillIds) }),
       );
+
+      // Register admin HTTP routes. Atomic try/catch unwind: if any route
+      // registration fails after earlier ones succeeded, unwind the earlier
+      // ones before rethrowing (bootstrap marks the plugin failed and won't
+      // call shutdown, so the unwind must happen here).
+      try {
+        const unregisters = await registerAdminSkillsRoutes(bus, initCtx);
+        routeUnregisters.push(...unregisters);
+      } catch (err) {
+        while (routeUnregisters.length > 0) {
+          const fn = routeUnregisters.pop();
+          try {
+            fn?.();
+          } catch {
+            // best-effort unwind
+          }
+        }
+        throw err;
+      }
     },
 
     async shutdown() {
+      // Drop routes before clearing references so a re-init doesn't trip
+      // duplicate-route on the http-server.
+      while (routeUnregisters.length > 0) {
+        const fn = routeUnregisters.pop();
+        try {
+          fn?.();
+        } catch {
+          // best-effort
+        }
+      }
       busRef = undefined;
       // The shared db handle is owned by @ax/database-postgres; don't close
       // it here. Just drop our reference so a re-init doesn't read a stale store.

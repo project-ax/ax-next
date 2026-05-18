@@ -39,11 +39,23 @@ capabilities:
 
 const SAMPLE_BODY = '# GitHub\n\nGitHub skill body.\n';
 
+// Stub for http:register-route — @ax/skills now declares this as a `calls`
+// dep (for the admin HTTP routes). In tests we don't boot http-server, so we
+// provide a no-op that returns the unregister callback shape the plugin expects.
+const httpRegisterRouteStub = async () => ({ unregister: () => {} });
+
+// Stub for auth:require-user — similarly declared as a `calls` dep.
+const authRequireUserStub = async () => ({ user: { id: 'admin', isAdmin: true } });
+
 async function makeHarness(opts: {
   services?: Record<string, (ctx: unknown, input: unknown) => Promise<unknown>>;
 } = {}): Promise<TestHarness> {
   const h = await createTestHarness({
-    services: opts.services,
+    services: {
+      'http:register-route': httpRegisterRouteStub,
+      'auth:require-user': authRequireUserStub,
+      ...opts.services,
+    },
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),
       createSkillsPlugin(),
@@ -89,7 +101,7 @@ describe('@ax/skills plugin manifest + lifecycle', () => {
         'skills:delete',
         'skills:resolve',
       ],
-      calls: ['database:get-instance'],
+      calls: ['database:get-instance', 'http:register-route', 'auth:require-user'],
       subscribes: [],
     });
   });
@@ -252,6 +264,8 @@ describe('@ax/skills service hooks (round-trip)', () => {
     // the delete path checks it.
     const h = await createTestHarness({
       services: {
+        'http:register-route': httpRegisterRouteStub,
+        'auth:require-user': authRequireUserStub,
         'agents:any-attached-to-skill': async () => ({ attached: true }),
       },
       plugins: [
