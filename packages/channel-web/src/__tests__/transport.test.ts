@@ -11,8 +11,8 @@
  * method shape, then drive `processResponseStream` directly when we
  * only care about chunk parsing.
  */
-import { afterEach, beforeEach, describe, test, expect, vi } from 'vitest';
-import { AxChatTransport } from '../lib/transport';
+import { afterEach, beforeEach, describe, it, test, expect, vi } from 'vitest';
+import { AxChatTransport, toContentBlocksForTesting } from '../lib/transport';
 import {
   agentStatusActions,
   getAgentStatusSnapshot,
@@ -66,6 +66,69 @@ async function drain(stream: ReadableStream<unknown>): Promise<unknown[]> {
 type StreamFn = (s: ReadableStream<Uint8Array>) => ReadableStream<unknown>;
 const asProcess = (t: AxChatTransport): StreamFn =>
   (t as unknown as { processResponseStream: StreamFn }).processResponseStream.bind(t);
+
+describe('toContentBlocks — attachment handling', () => {
+  it('emits attachment_ref blocks for ax://attachment/<id> file parts', () => {
+    const msg = {
+      role: 'user' as const,
+      id: 'm1',
+      parts: [
+        { type: 'text' as const, text: 'see attached' },
+        {
+          type: 'file' as const,
+          url: 'ax://attachment/att-abc',
+          data: 'ax://attachment/att-abc',
+          mediaType: 'application/pdf',
+          filename: 'report.pdf',
+        },
+      ],
+    };
+    const blocks = toContentBlocksForTesting(msg);
+    expect(blocks).toEqual([
+      { type: 'text', text: 'see attached' },
+      { type: 'attachment_ref', attachmentId: 'att-abc' },
+    ]);
+  });
+
+  it('preserves attachment_ref ordering across multiple files', () => {
+    // The runtime helper accepts `data` OR `url`. The AI SDK's FileUIPart
+    // type makes `url` required, so we cast through unknown to exercise
+    // the `data`-only branch.
+    const msg = {
+      role: 'user' as const,
+      id: 'm1',
+      parts: [
+        { type: 'text' as const, text: 'two files:' },
+        { type: 'file' as const, data: 'ax://attachment/a1', mediaType: 'text/plain', filename: 'a.txt' },
+        { type: 'file' as const, data: 'ax://attachment/a2', mediaType: 'text/plain', filename: 'b.txt' },
+      ],
+    } as unknown as Parameters<typeof toContentBlocksForTesting>[0];
+    const blocks = toContentBlocksForTesting(msg);
+    expect(blocks).toHaveLength(3);
+    expect(blocks[1]).toEqual({ type: 'attachment_ref', attachmentId: 'a1' });
+    expect(blocks[2]).toEqual({ type: 'attachment_ref', attachmentId: 'a2' });
+  });
+
+  it('falls back to a text mention for non-ax file parts', () => {
+    const msg = {
+      role: 'user' as const,
+      id: 'm1',
+      parts: [
+        {
+          type: 'file' as const,
+          url: 'https://example.com/x.pdf',
+          mediaType: 'application/pdf',
+          filename: 'x.pdf',
+        },
+      ],
+    };
+    const blocks = toContentBlocksForTesting(msg);
+    expect(blocks[0]).toEqual({
+      type: 'text',
+      text: expect.stringContaining('x.pdf'),
+    });
+  });
+});
 
 describe('AxChatTransport construction', () => {
   test('constructs with default api /api/chat/messages', () => {
