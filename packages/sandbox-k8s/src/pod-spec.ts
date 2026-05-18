@@ -379,7 +379,16 @@ export function buildPodSpec(
             'ln -sf ../.ax/skills /permanent/.claude/skills',
           ].join(' && '),
         ],
-        env: gitParanoidEnv,
+        // Invariant #5 (capabilities minimized): the init step only runs
+        // mkdir + ln, neither of which reads any GIT_* var or expands
+        // $HOME (the snippet uses absolute paths everywhere). The 7
+        // gitParanoidEnv vars stay on the MAIN container where git
+        // actually runs. We still stamp HOME — it's not load-bearing
+        // today, but (a) it documents the init's awareness of the new
+        // tmpfs HOME location, and (b) if a future maintainer adds a
+        // `$HOME/...` ref to the snippet, it expands to the right path
+        // instead of an empty string + silent breakage.
+        env: [{ name: 'HOME', value: '/home/runner' }],
         volumeMounts: [
           { name: 'home', mountPath: '/home/runner' },
           { name: 'permanent', mountPath: '/permanent' },

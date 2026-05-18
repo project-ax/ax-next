@@ -499,5 +499,36 @@ describe('buildPodSpec', () => {
       const init = podSpec.initContainers.find((c) => c.name === 'sdk-scaffold')!;
       expect(init.image).toBe(main.image);
     });
+
+    it('init container env is narrowed to HOME only (no inherited GIT_* vars)', () => {
+      // Invariant #5 (capabilities minimized): the init step runs only
+      // mkdir + ln, neither of which reads any GIT_* var or expands
+      // $HOME (the snippet uses absolute paths everywhere). Inheriting
+      // the full 7-var gitParanoidEnv would be harmless but soft-violate
+      // capabilities-minimized. HOME stays — it's documentation that the
+      // init container knows where HOME lives, and load-bearing if a
+      // future maintainer references `$HOME/...` in the snippet.
+      const spec = buildPodSpec('pod-narrow-env', baseInput, baseResolved());
+      const podSpec = spec.spec as {
+        initContainers: Array<{
+          name: string;
+          env: Array<{ name: string; value: string }>;
+        }>;
+      };
+      const init = podSpec.initContainers.find((c) => c.name === 'sdk-scaffold')!;
+      expect(init.env).toEqual([{ name: 'HOME', value: '/home/runner' }]);
+      // Specifically, none of the GIT_* vars should appear here.
+      for (const name of [
+        'GIT_CONFIG_NOSYSTEM',
+        'GIT_CONFIG_GLOBAL',
+        'GIT_TERMINAL_PROMPT',
+        'GIT_AUTHOR_NAME',
+        'GIT_AUTHOR_EMAIL',
+        'GIT_COMMITTER_NAME',
+        'GIT_COMMITTER_EMAIL',
+      ]) {
+        expect(init.env.find((e) => e.name === name)).toBeUndefined();
+      }
+    });
   });
 });
