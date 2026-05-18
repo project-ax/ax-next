@@ -30,6 +30,7 @@ import { ComposerPrimitive, ThreadPrimitive } from '@assistant-ui/react';
 import { Paperclip } from 'lucide-react';
 import { handleTestTrigger } from '../lib/agent-status-test-triggers';
 import { AgentStatus } from './AgentStatus';
+import { AttachmentComposerChip } from './AttachmentComposerChip';
 
 function AttachMenu() {
   const [open, setOpen] = useState(false);
@@ -136,73 +137,87 @@ export function Composer() {
         onSubmit={onSubmit}
       >
         <AgentStatus />
-        <div
+        <ComposerPrimitive.AttachmentDropzone
+          data-attachment-dropzone=""
           className="
-            composer-field relative flex items-end gap-2.5
-            px-3.5 pl-[14px] py-2.5 rounded-lg bg-card
-            border border-border shadow-sm transition-[border-color,box-shadow] duration-150
-            focus-within:border-primary/40
-            focus-within:shadow-[0_0_0_4px_hsl(var(--primary)/0.14),0_1px_2px_hsl(0_0%_0%/0.04)]
+            relative rounded-lg
+            data-[dragging=true]:ring-2 data-[dragging=true]:ring-primary
+            data-[dragging=true]:ring-offset-2
           "
         >
-          <AttachMenu />
-          <ComposerPrimitive.Input
-            placeholder="Message ax…"
-            // `composer-input` class is the hook for the field's :has()
-            // ready-state rule in index.css.
+          <div className="composer-attachments flex flex-wrap gap-1.5 px-1.5 pt-1.5 empty:hidden">
+            <ComposerPrimitive.Attachments
+              components={{ Attachment: AttachmentComposerChip }}
+            />
+          </div>
+          <div
             className="
-              composer-input flex-1 min-w-0 resize-none border-0 outline-none bg-transparent
-              text-foreground text-[15px] leading-[1.55] py-0.5
-              min-h-7 max-h-[200px]
-              placeholder:text-muted-foreground
+              composer-field relative flex items-end gap-2.5
+              px-3.5 pl-[14px] py-2.5 rounded-lg bg-card
+              border border-border shadow-sm transition-[border-color,box-shadow] duration-150
+              focus-within:border-primary/40
+              focus-within:shadow-[0_0_0_4px_hsl(var(--primary)/0.14),0_1px_2px_hsl(0_0%_0%/0.04)]
             "
-            autoFocus
-            rows={1}
-            ref={inputRef}
-          />
-          <ThreadPrimitive.If running={false}>
-            <ComposerPrimitive.Send asChild>
-              <button
-                type="button"
-                data-send=""
-                aria-label="Send"
-                className="
-                  inline-flex items-center justify-center shrink-0
-                  h-[30px] w-[30px] rounded-full bg-ink-ghost text-background
-                  transition-[background-color,transform,filter] duration-150
-                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2
-                "
-              >
-                <svg viewBox="0 0 16 16" fill="none" aria-hidden="true" className="h-3.5 w-3.5">
-                  <path
-                    d="M3 8 L12 8 M8 4 L12 8 L8 12"
-                    stroke="currentColor"
-                    strokeWidth="1.6"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              </button>
-            </ComposerPrimitive.Send>
-          </ThreadPrimitive.If>
-          <ThreadPrimitive.If running>
-            <ComposerPrimitive.Cancel asChild>
-              <button
-                type="button"
-                aria-label="Stop"
-                className="
-                  inline-flex items-center justify-center shrink-0
-                  h-[30px] w-[30px] rounded-full bg-primary text-primary-foreground
-                  transition-transform duration-150 hover:scale-105
-                "
-              >
-                <svg viewBox="0 0 10 10" fill="currentColor" aria-hidden="true" className="h-2.5 w-2.5">
-                  <rect width="10" height="10" rx="1" />
-                </svg>
-              </button>
-            </ComposerPrimitive.Cancel>
-          </ThreadPrimitive.If>
-        </div>
+          >
+            <AttachMenu />
+            <ComposerPrimitive.Input
+              placeholder="Message ax…"
+              // `composer-input` class is the hook for the field's :has()
+              // ready-state rule in index.css.
+              className="
+                composer-input flex-1 min-w-0 resize-none border-0 outline-none bg-transparent
+                text-foreground text-[15px] leading-[1.55] py-0.5
+                min-h-7 max-h-[200px]
+                placeholder:text-muted-foreground
+              "
+              autoFocus
+              rows={1}
+              ref={inputRef}
+            />
+            <ThreadPrimitive.If running={false}>
+              <ComposerPrimitive.Send asChild>
+                <button
+                  type="button"
+                  data-send=""
+                  aria-label="Send"
+                  className="
+                    inline-flex items-center justify-center shrink-0
+                    h-[30px] w-[30px] rounded-full bg-ink-ghost text-background
+                    transition-[background-color,transform,filter] duration-150
+                    focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2
+                  "
+                >
+                  <svg viewBox="0 0 16 16" fill="none" aria-hidden="true" className="h-3.5 w-3.5">
+                    <path
+                      d="M3 8 L12 8 M8 4 L12 8 L8 12"
+                      stroke="currentColor"
+                      strokeWidth="1.6"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                </button>
+              </ComposerPrimitive.Send>
+            </ThreadPrimitive.If>
+            <ThreadPrimitive.If running>
+              <ComposerPrimitive.Cancel asChild>
+                <button
+                  type="button"
+                  aria-label="Stop"
+                  className="
+                    inline-flex items-center justify-center shrink-0
+                    h-[30px] w-[30px] rounded-full bg-primary text-primary-foreground
+                    transition-transform duration-150 hover:scale-105
+                  "
+                >
+                  <svg viewBox="0 0 10 10" fill="currentColor" aria-hidden="true" className="h-2.5 w-2.5">
+                    <rect width="10" height="10" rx="1" />
+                  </svg>
+                </button>
+              </ComposerPrimitive.Cancel>
+            </ThreadPrimitive.If>
+          </div>
+        </ComposerPrimitive.AttachmentDropzone>
         <div
           className="
             mt-2 text-center text-[10.5px] tracking-[0.04em] text-ink-ghost pointer-events-none
