@@ -60,6 +60,13 @@ export const ProxyConfigSchema = z.object({
   envMap: z.record(z.string(), z.string()),
 });
 
+// Re-declare the installed-skill shape locally (structural duplicate of
+// sandbox-subprocess's InstalledSkillSchema — I2: no cross-plugin imports).
+const InstalledSkillSchema = z.object({
+  id: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/, 'invalid skill id shape'),
+  skillMd: z.string().min(1).max(512 * 1024), // 512 KiB per-skill cap
+});
+
 export const OpenSessionInputSchema = z.object({
   sessionId: z.string().min(1),
   workspaceRoot: z.string().regex(/^\//, 'workspaceRoot must be absolute'),
@@ -85,6 +92,12 @@ export const OpenSessionInputSchema = z.object({
    * no credential-proxy loaded; runner will fail loud at boot.
    */
   proxyConfig: ProxyConfigSchema.optional(),
+  /**
+   * Phase 1 (skill-install): installed skills to pass to the runner pod
+   * via AX_INSTALLED_SKILLS_JSON. The runner reads and materializes them
+   * BEFORE the SDK spawns (see @ax/agent-claude-sdk-runner main.ts).
+   */
+  installedSkills: z.array(InstalledSkillSchema).max(50).optional(),
 });
 
 export type OpenSessionInput = z.input<typeof OpenSessionInputSchema>;
@@ -223,6 +236,11 @@ export function createOpenSession(deps: OpenSessionDeps) {
                 : {}),
             },
           }
+        : {}),
+      // Phase 1 (skill-install): pass installed skills through to pod-spec
+      // so the runner pod receives AX_INSTALLED_SKILLS_JSON in its env.
+      ...(input.installedSkills !== undefined && input.installedSkills.length > 0
+        ? { installedSkills: input.installedSkills }
         : {}),
     }, deps.config);
 

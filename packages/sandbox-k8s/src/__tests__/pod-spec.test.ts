@@ -531,4 +531,73 @@ describe('buildPodSpec', () => {
       }
     });
   });
+
+  // Phase 1 (skill-install): AX_INSTALLED_SKILLS_JSON env var wiring (I-P1-3).
+  //
+  // K8s pods can't have the host write files into them at create-time, so
+  // we pass installed-skill content as the env var AX_INSTALLED_SKILLS_JSON
+  // (JSON-encoded array, 256 KiB cap). The runner reads it from process.env
+  // in main() BEFORE the SDK spawns and materializes each skill at
+  // $CLAUDE_CONFIG_DIR/skills/<id>/SKILL.md, then chmods the parent dir to
+  // 0555. The Phase 0 init container created the empty dir; Phase 1's
+  // runner-side step fills + locks it.
+  describe('AX_INSTALLED_SKILLS_JSON wiring (I-P1-3)', () => {
+    it('stamps AX_INSTALLED_SKILLS_JSON when installedSkills is non-empty', () => {
+      const spec = buildPodSpec(
+        'pod-skills',
+        {
+          ...baseInput,
+          installedSkills: [
+            { id: 'github', skillMd: '---\nname: github\ndescription: x\n---\nBody' },
+          ],
+        },
+        baseResolved(),
+      );
+      const env = (
+        spec.spec as { containers: Array<{ env: Array<{ name: string; value: string }> }> }
+      ).containers[0]!.env;
+      const entry = env.find((e) => e.name === 'AX_INSTALLED_SKILLS_JSON');
+      expect(entry).toBeDefined();
+      const parsed = JSON.parse(entry!.value) as unknown;
+      expect(parsed).toEqual([
+        { id: 'github', skillMd: '---\nname: github\ndescription: x\n---\nBody' },
+      ]);
+    });
+
+    it('does NOT stamp AX_INSTALLED_SKILLS_JSON when installedSkills is absent', () => {
+      const spec = buildPodSpec('pod-no-skills', baseInput, baseResolved());
+      const env = (
+        spec.spec as { containers: Array<{ env: Array<{ name: string }> }> }
+      ).containers[0]!.env;
+      expect(env.find((e) => e.name === 'AX_INSTALLED_SKILLS_JSON')).toBeUndefined();
+    });
+
+    it('does NOT stamp AX_INSTALLED_SKILLS_JSON when installedSkills is empty', () => {
+      const spec = buildPodSpec(
+        'pod-empty-skills',
+        { ...baseInput, installedSkills: [] },
+        baseResolved(),
+      );
+      const env = (
+        spec.spec as { containers: Array<{ env: Array<{ name: string }> }> }
+      ).containers[0]!.env;
+      expect(env.find((e) => e.name === 'AX_INSTALLED_SKILLS_JSON')).toBeUndefined();
+    });
+
+    it('throws when the total installedSkills payload exceeds 256 KiB', () => {
+      // Each skill can be up to 512 KiB individually (schema cap), but the
+      // combined JSON env var must fit in 256 KiB to stay manageable.
+      const hugeSkillMd = 'x'.repeat(300 * 1024); // 300 KiB
+      expect(() =>
+        buildPodSpec(
+          'pod-huge',
+          {
+            ...baseInput,
+            installedSkills: [{ id: 'giant', skillMd: hugeSkillMd }],
+          },
+          baseResolved(),
+        ),
+      ).toThrow(/over 256 KiB/);
+    });
+  });
 });
