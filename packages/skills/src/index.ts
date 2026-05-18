@@ -1,0 +1,17 @@
+export type {
+  CapabilitySlot,
+  SkillCapabilities,
+  SkillSummary,
+  SkillDetail,
+  ResolvedSkill,
+  SkillsListInput,
+  SkillsListOutput,
+  SkillsGetInput,
+  SkillsGetOutput,
+  SkillsUpsertInput,
+  SkillsUpsertOutput,
+  SkillsDeleteInput,
+  SkillsDeleteOutput,
+  SkillsResolveInput,
+  SkillsResolveOutput,
+} from './types.js';
