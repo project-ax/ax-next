@@ -144,6 +144,38 @@ describe('setupProxy', () => {
     expect(out.anthropicEnv.PATH).toBe(process.env.PATH);
   });
 
+  it('direct mode: does NOT forward AX_INSTALLED_SKILLS_JSON into the SDK subprocess (I-P1-3)', async () => {
+    // AX_INSTALLED_SKILLS_JSON is consumed BY THE RUNNER in main() BEFORE
+    // the SDK spawns. The materialized files land at
+    // $CLAUDE_CONFIG_DIR/skills/<id>/SKILL.md which the SDK discovers
+    // naturally. Forwarding the raw JSON would put the full skill content
+    // into every SDK call's env unnecessarily (bloat) and is excluded from
+    // ENV_ALLOWLIST. This test pins that contract so a future ENV_ALLOWLIST
+    // expansion can't accidentally re-include it.
+    process.env.ANTHROPIC_API_KEY = 'ax-cred:0123456789abcdef0123456789abcdef';
+    process.env['AX_INSTALLED_SKILLS_JSON'] = JSON.stringify([
+      { id: 'github', skillMd: '---\nname: github\n---\nBody' },
+    ]);
+    const savedSkills = process.env['AX_INSTALLED_SKILLS_JSON'];
+    try {
+      const env: RunnerEnv = {
+        runnerEndpoint: 'unix:///tmp/x.sock',
+        sessionId: 's',
+        authToken: 'ipc-bearer',
+        workspaceRoot: '/ws',
+        proxyEndpoint: 'http://127.0.0.1:54321',
+      };
+      const out = await setupProxy(env);
+      expect(out.anthropicEnv['AX_INSTALLED_SKILLS_JSON']).toBeUndefined();
+    } finally {
+      if (savedSkills === undefined) {
+        delete process.env['AX_INSTALLED_SKILLS_JSON'];
+      } else {
+        process.env['AX_INSTALLED_SKILLS_JSON'] = savedSkills;
+      }
+    }
+  });
+
   it('throws when both proxyEndpoint and proxyUnixSocket are set (mutually exclusive)', async () => {
     const env: RunnerEnv = {
       runnerEndpoint: 'unix:///tmp/x.sock',

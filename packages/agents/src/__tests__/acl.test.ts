@@ -38,6 +38,7 @@ function makePersonalAgent(overrides: Partial<Agent> = {}): Agent {
     mcpConfigIds: [],
     model: 'claude-opus-4-7',
     workspaceRef: null,
+    skillAttachments: [],
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,

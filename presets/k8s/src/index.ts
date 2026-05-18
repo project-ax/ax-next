@@ -21,6 +21,7 @@ import { createCredentialsAdminRoutesPlugin } from '@ax/credentials-admin-routes
 import { createCredentialsOauthPendingPlugin } from '@ax/credentials-oauth-pending';
 import { createIpcHttpPlugin } from '@ax/ipc-http';
 import { createAgentsPlugin } from '@ax/agents';
+import { createSkillsPlugin } from '@ax/skills';
 import { createAttachmentsPlugin } from '@ax/attachments';
 import { createToolArtifactPublishPlugin } from '@ax/tool-artifact-publish';
 import { createHttpServerPlugin } from '@ax/http-server';
@@ -646,6 +647,20 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // until both upstream plugins have registered. Reuses the shared
   // postgres pool via `database:get-instance` (no second pool).
   plugins.push(createAgentsPlugin());
+
+  // ----- 8a. skills ------------------------------------------------------
+  // @ax/skills registers skills:* service hooks (list/get/upsert/delete/
+  // resolve) backed by the skills_v1_skills table + mounts /admin/skills*
+  // HTTP CRUD. The chat-orchestrator (loaded above) soft-couples via
+  // bus.hasService('skills:resolve') so an admin can install skills and
+  // attach them to agents; session-open will then union the skill's
+  // allowedHosts + merge credentialBindings into proxy:open-session, and
+  // the sandbox plugin will materialize SKILL.md files under
+  // $CLAUDE_CONFIG_DIR/skills/<id>/ before the runner spawns.
+  //
+  // skills:delete soft-couples to agents:any-attached-to-skill (registered
+  // by @ax/agents above) so a delete that would orphan an attachment 409s.
+  plugins.push(createSkillsPlugin());
 
   // ----- 8b. credentials admin routes (optional) -------------------------
   // Mounts /admin/credentials* (admin-only CRUD) + /settings/credentials*

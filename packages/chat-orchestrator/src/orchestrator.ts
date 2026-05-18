@@ -134,9 +134,40 @@ interface AgentRecord {
    * inside its env map (I1: real credentials never enter the sandbox).
    */
   requiredCredentials?: Record<string, { ref: string; kind: string }>;
+  /**
+   * Phase 1 (skill-install) — admin-managed skills attached to this agent.
+   * The orchestrator resolves each via `skills:resolve` before
+   * `proxy:open-session` and unions their allowedHosts + merges
+   * credentialBindings into the proxy call. Empty/absent means no
+   * installed skills (back-compat for older agent rows that pre-date
+   * the skill_attachments column).
+   */
+  skillAttachments?: Array<{
+    skillId: string;
+    credentialBindings: Record<string, string>;
+  }>;
 }
 interface AgentsResolveOutput {
   agent: AgentRecord;
+}
+
+// skills:resolve — registered by @ax/skills. Duplicated structurally per I2
+// (no @ax/skills import). The orchestrator calls this when the agent has
+// skillAttachments and the service is registered.
+interface SkillsResolveInput {
+  skillIds: string[];
+}
+interface ResolvedSkillForOrch {
+  id: string;
+  capabilities: {
+    allowedHosts: string[];
+    credentials: Array<{ slot: string; kind: string; description?: string }>;
+  };
+  bodyMd: string;
+  manifestYaml: string;
+}
+interface SkillsResolveOutput {
+  skills: ResolvedSkillForOrch[];
 }
 
 // proxy:* shapes — duplicated structurally per I2. The orchestrator does
@@ -259,6 +290,12 @@ export interface ProxyConfig {
   envMap: Record<string, string>;
 }
 
+interface InstalledSkillForSandbox {
+  id: string;
+  /** Full SKILL.md content: '---\n' + manifestYaml + '---\n' + bodyMd. */
+  skillMd: string;
+}
+
 interface OpenSessionInput {
   sessionId: string;
   workspaceRoot: string;
@@ -285,6 +322,14 @@ interface OpenSessionInput {
    * set. Presets that want a working runner load @ax/credential-proxy.
    */
   proxyConfig?: ProxyConfig;
+  /**
+   * Phase 1 (skill-install) — installed-skill SKILL.md files to materialize
+   * inside the sandbox at $CLAUDE_CONFIG_DIR/skills/<id>/SKILL.md. The
+   * sandbox plugin writes them BEFORE spawning the runner; the SDK's
+   * 'user' source discovers them at boot. Empty/absent means no skills
+   * to materialize (Phase 0's empty skills/ dir is left as-is).
+   */
+  installedSkills?: InstalledSkillForSandbox[];
 }
 interface OpenSessionHandle {
   kill(): Promise<void>;
@@ -750,6 +795,88 @@ export function createOrchestrator(
       return outcome;
     }
     const useAnthropicDefaults = allowedHostsMissing; // and therefore both
+
+    // Phase 1 (skill-install): resolve installed skills attached to this agent
+    // and union their declared allowedHosts + credentialBindings into the
+    // proxy open-session call. Skills are the v1 primary path by which an
+    // agent gains access to a new credentialed host; see
+    // docs/plans/2026-05-17-skill-install-workflow-design.md.
+    let resolvedSkills: ResolvedSkillForOrch[] = [];
+    const attachments = agent.skillAttachments ?? [];
+    if (attachments.length > 0 && bus.hasService('skills:resolve')) {
+      try {
+        const r = await bus.call<SkillsResolveInput, SkillsResolveOutput>(
+          'skills:resolve', ctx, { skillIds: attachments.map((a) => a.skillId) },
+        );
+        resolvedSkills = r.skills;
+      } catch (err) {
+        const outcome: AgentOutcome = {
+          kind: 'terminated',
+          reason: 'skill-resolve-failed',
+          error: err,
+        };
+        await bus.fire('chat:end', ctx, { outcome });
+        return outcome;
+      }
+    }
+
+    const skillById = new Map(resolvedSkills.map((s) => [s.id, s]));
+
+    // Build the union allowlist + credentials, starting from agent defaults.
+    const baseAllowSet = useAnthropicDefaults
+      ? new Set<string>(['api.anthropic.com'])
+      : new Set<string>(agent.allowedHosts ?? []);
+    const baseCreds: Record<string, { ref: string; kind: string }> = useAnthropicDefaults
+      ? { ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' } }
+      : { ...(agent.requiredCredentials ?? {}) };
+
+    // Track slot ownership so the collision error can name the culprit.
+    const slotOwners = new Map<string, string>(
+      Object.keys(baseCreds).map((slot) => [slot, '<agent.requiredCredentials>']),
+    );
+
+    for (const attachment of attachments) {
+      const skill = skillById.get(attachment.skillId);
+      if (skill === undefined) continue; // deleted-skill-still-attached — drop silently
+      for (const host of skill.capabilities.allowedHosts) {
+        baseAllowSet.add(host);
+      }
+      for (const slotDef of skill.capabilities.credentials) {
+        const ref = attachment.credentialBindings[slotDef.slot];
+        if (ref === undefined) {
+          const outcome: AgentOutcome = {
+            kind: 'terminated',
+            reason: 'skill-binding-missing',
+            error: new Error(`skill '${skill.id}' attachment is missing binding for slot '${slotDef.slot}'`),
+          };
+          await bus.fire('chat:end', ctx, { outcome });
+          return outcome;
+        }
+        if (slotOwners.has(slotDef.slot)) {
+          const existing = slotOwners.get(slotDef.slot)!;
+          const outcome: AgentOutcome = {
+            kind: 'terminated',
+            reason: 'skill-slot-collision',
+            error: new Error(
+              `slot '${slotDef.slot}' on skill '${skill.id}' collides with existing owner '${existing}'`,
+            ),
+          };
+          await bus.fire('chat:end', ctx, { outcome });
+          return outcome;
+        }
+        baseCreds[slotDef.slot] = { ref, kind: slotDef.kind };
+        slotOwners.set(slotDef.slot, skill.id);
+      }
+    }
+
+    const unionedAllowlist = [...baseAllowSet];
+    const unionedCreds = baseCreds;
+
+    const installedSkillsForSandbox: InstalledSkillForSandbox[] = resolvedSkills.map((s) => ({
+      id: s.id,
+      skillMd: '---\n' + s.manifestYaml + (s.manifestYaml.endsWith('\n') ? '' : '\n') + '---\n' + s.bodyMd,
+    }));
+
     try {
       const opened = await bus.call<ProxyOpenSessionInput, ProxyOpenSessionOutput>(
         'proxy:open-session',
@@ -758,12 +885,8 @@ export function createOrchestrator(
           sessionId: ctx.sessionId,
           userId: ctx.userId,
           agentId: agent.id,
-          allowlist: useAnthropicDefaults
-            ? ['api.anthropic.com']
-            : agent.allowedHosts!,
-          credentials: useAnthropicDefaults
-            ? { ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' } }
-            : agent.requiredCredentials!,
+          allowlist: unionedAllowlist,
+          credentials: unionedCreds,
         },
       );
       // Mark opened BEFORE endpointToProxyConfig — that helper throws on
@@ -872,6 +995,7 @@ export function createOrchestrator(
         // by the time we reach this point (the !proxyOpenLoaded gate above
         // returns early with `proxy-not-loaded` otherwise).
         proxyConfig,
+        ...(installedSkillsForSandbox.length > 0 ? { installedSkills: installedSkillsForSandbox } : {}),
       };
       const opened = await bus.call<OpenSessionInput, OpenSessionResult>(
         'sandbox:open-session',

@@ -38,6 +38,7 @@ import { createPreToolUseHook } from './pre-tool-use.js';
 import { setupProxy } from './proxy-startup.js';
 import { createSandboxMcpServer } from './sandbox-mcp-server.js';
 import { createArtifactPublishExecutor } from './artifact-publish-executor.js';
+import { materializeInstalledSkillsFromEnv } from './installed-skills.js';
 import { DISABLED_BUILTINS, MCP_HOST_SERVER_NAME, MCP_SANDBOX_SERVER_NAME } from './tool-names.js';
 import { readLastTurnUuid } from './turn-end-uuid.js';
 import { ARTIFACT_PUBLISH_TOOL_NAME } from '@ax/tool-artifact-publish';
@@ -98,6 +99,21 @@ export async function main(): Promise<number> {
   } catch (err) {
     process.stderr.write(
       `runner: proxy setup failed: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+    return 2;
+  }
+
+  // Phase 1 (skill-install): materialize installed skills from
+  // AX_INSTALLED_SKILLS_JSON BEFORE the SDK spawns. The sandbox-k8s plugin
+  // passes skill content via this env var (subprocess sandbox writes files
+  // directly during open-session instead). A failure here is bootstrap-
+  // fatal — the SDK discovers skills at startup; missing files it expects
+  // would produce a silent skill gap for the entire session life.
+  try {
+    await materializeInstalledSkillsFromEnv();
+  } catch (err) {
+    process.stderr.write(
+      `runner: installed-skills materialize failed: ${err instanceof Error ? err.message : String(err)}\n`,
     );
     return 2;
   }

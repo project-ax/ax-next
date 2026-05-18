@@ -60,6 +60,13 @@ export const ProxyConfigSchema = z.object({
   envMap: z.record(z.string(), z.string()),
 });
 
+// Re-declare the installed-skill shape locally (structural duplicate of
+// sandbox-subprocess's InstalledSkillSchema — I2: no cross-plugin imports).
+const InstalledSkillSchema = z.object({
+  id: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/, 'invalid skill id shape'),
+  skillMd: z.string().min(1).max(512 * 1024), // 512 KiB per-skill cap
+});
+
 export const OpenSessionInputSchema = z.object({
   sessionId: z.string().min(1),
   workspaceRoot: z.string().regex(/^\//, 'workspaceRoot must be absolute'),
@@ -85,6 +92,12 @@ export const OpenSessionInputSchema = z.object({
    * no credential-proxy loaded; runner will fail loud at boot.
    */
   proxyConfig: ProxyConfigSchema.optional(),
+  /**
+   * Phase 1 (skill-install): installed skills to pass to the runner pod
+   * via AX_INSTALLED_SKILLS_JSON. The runner reads and materializes them
+   * BEFORE the SDK spawns (see @ax/agent-claude-sdk-runner main.ts).
+   */
+  installedSkills: z.array(InstalledSkillSchema).max(50).optional(),
 });
 
 export type OpenSessionInput = z.input<typeof OpenSessionInputSchema>;
@@ -202,29 +215,55 @@ export function createOpenSession(deps: OpenSessionDeps) {
     //    (config.hostIpcUrl) and stamped onto AX_RUNNER_ENDPOINT — the
     //    runner reads it at startup and connects out to the host's
     //    @ax/ipc-http listener.
-    const podSpec = buildPodSpec(podName, {
-      sessionId: created.sessionId,
-      workspaceRoot: input.workspaceRoot,
-      runnerBinary: input.runnerBinary,
-      authToken: created.token,
-      runnerEndpoint: deps.config.hostIpcUrl,
-      // ctx.requestId may be undefined in synthetic tests; pass through.
-      requestId: ctx.reqId,
-      ...(input.proxyConfig !== undefined
-        ? {
-            proxyConfig: {
-              caCertPem: input.proxyConfig.caCertPem,
-              envMap: input.proxyConfig.envMap,
-              ...(input.proxyConfig.endpoint !== undefined
-                ? { endpoint: input.proxyConfig.endpoint }
-                : {}),
-              ...(input.proxyConfig.unixSocketPath !== undefined
-                ? { unixSocketPath: input.proxyConfig.unixSocketPath }
-                : {}),
-            },
-          }
-        : {}),
-    }, deps.config);
+    //
+    //    buildPodSpec can throw (e.g., AX_INSTALLED_SKILLS_JSON over the
+    //    256 KiB env-var cap). The session was minted at step 2, so on
+    //    throw roll back the session to avoid orphaning a live token
+    //    with no pod. Mirror the createNamespacedPod failure handler
+    //    below — best-effort terminate, then re-throw.
+    let podSpec;
+    try {
+      podSpec = buildPodSpec(podName, {
+        sessionId: created.sessionId,
+        workspaceRoot: input.workspaceRoot,
+        runnerBinary: input.runnerBinary,
+        authToken: created.token,
+        runnerEndpoint: deps.config.hostIpcUrl,
+        // ctx.requestId may be undefined in synthetic tests; pass through.
+        requestId: ctx.reqId,
+        ...(input.proxyConfig !== undefined
+          ? {
+              proxyConfig: {
+                caCertPem: input.proxyConfig.caCertPem,
+                envMap: input.proxyConfig.envMap,
+                ...(input.proxyConfig.endpoint !== undefined
+                  ? { endpoint: input.proxyConfig.endpoint }
+                  : {}),
+                ...(input.proxyConfig.unixSocketPath !== undefined
+                  ? { unixSocketPath: input.proxyConfig.unixSocketPath }
+                  : {}),
+              },
+            }
+          : {}),
+        // Phase 1 (skill-install): pass installed skills through to pod-spec
+        // so the runner pod receives AX_INSTALLED_SKILLS_JSON in its env.
+        ...(input.installedSkills !== undefined && input.installedSkills.length > 0
+          ? { installedSkills: input.installedSkills }
+          : {}),
+      }, deps.config);
+    } catch (err) {
+      podLog.error('pod_spec_build_failed', {
+        err: err instanceof Error ? err.message : String(err),
+      });
+      await deps.bus
+        .call<SessionTerminateInput, Record<string, never>>(
+          'session:terminate',
+          ctx,
+          { sessionId: created.sessionId },
+        )
+        .catch(() => undefined);
+      throw err;
+    }
 
     podLog.info('creating_pod', {
       namespace: deps.config.namespace,

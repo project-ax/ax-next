@@ -1522,4 +1522,556 @@ describe('chat-orchestrator', () => {
       ]);
     }
   });
+
+  // ---------------------------------------------------------------------
+  // Phase 1 (skill-install) — skill attachment union step
+  //
+  // The orchestrator resolves agent.skillAttachments via skills:resolve
+  // before proxy:open-session, unions allowedHosts (set-dedup), and
+  // merges credentialBindings (per slot) into the proxy call. Three new
+  // termination outcomes: skill-resolve-failed, skill-binding-missing,
+  // skill-slot-collision.
+  // ---------------------------------------------------------------------
+
+  interface ResolvedSkill {
+    id: string;
+    capabilities: {
+      allowedHosts: string[];
+      credentials: Array<{ slot: string; kind: string; description?: string }>;
+    };
+    bodyMd: string;
+    manifestYaml: string;
+  }
+
+  interface SkillsHookState {
+    resolveCalls: number;
+    lastResolveInput: unknown;
+  }
+
+  function buildSkillsHooks(opts: {
+    resolveThrows?: unknown;
+    skills?: Record<string, ResolvedSkill>;
+  }): { state: SkillsHookState; services: Record<string, ServiceHandler> } {
+    const state: SkillsHookState = {
+      resolveCalls: 0,
+      lastResolveInput: undefined,
+    };
+    const services: Record<string, ServiceHandler> = {
+      'skills:resolve': async (_ctx, input) => {
+        state.resolveCalls += 1;
+        state.lastResolveInput = input;
+        if (opts.resolveThrows !== undefined) throw opts.resolveThrows;
+        const requested = (input as { skillIds: string[] }).skillIds;
+        return {
+          skills: requested
+            .map((id) => opts.skills?.[id])
+            .filter((s): s is ResolvedSkill => s !== undefined),
+        };
+      },
+    };
+    return { state, services };
+  }
+
+  // Builds a happy-path open-session that fires chat:end via the bus.
+  function makeChatEndOpenSession(
+    busRef: { current: HookBus | null },
+  ): ServiceHandler {
+    return async (ctx, input: unknown) => {
+      const sessionId = (input as { sessionId: string }).sessionId;
+      const originatingReqId = ctx.reqId;
+      setImmediate(() => {
+        void busRef.current!.fire(
+          'chat:end',
+          makeAgentContext({
+            sessionId,
+            agentId: 'a',
+            userId: 'u',
+            reqId: originatingReqId,
+            logger: createLogger({ reqId: originatingReqId, writer: () => undefined }),
+          }),
+          { outcome: { kind: 'complete', messages: [] } },
+        );
+      });
+      return {
+        runnerEndpoint: 'unix:///tmp/x.sock',
+        handle: {
+          kill: async () => undefined,
+          exited: new Promise(() => undefined),
+        },
+      };
+    };
+  }
+
+  it('unions skill allowedHosts and merges credential bindings into proxy:open-session', async () => {
+    const proxy = buildProxyHooks();
+    const skillsHooks = buildSkillsHooks({
+      skills: {
+        github: {
+          id: 'github',
+          capabilities: {
+            allowedHosts: ['api.github.com'],
+            credentials: [{ slot: 'GITHUB_TOKEN', kind: 'api-key' }],
+          },
+          bodyMd: 'Use the GitHub API.',
+          manifestYaml: 'name: github\nversion: 1.0.0\n',
+        },
+      },
+    });
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: {
+            ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' },
+          },
+          skillAttachments: [
+            { skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'gh-pat' } },
+          ],
+        },
+      }),
+      openSession: makeChatEndOpenSession(busRef),
+    });
+    Object.assign(mocks.services, proxy.services, skillsHooks.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+      ],
+    });
+    busRef.current = h.bus;
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('skill-union-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+    expect(skillsHooks.state.resolveCalls).toBe(1);
+
+    const openIn = proxy.state.lastOpenInput as {
+      allowlist: string[];
+      credentials: Record<string, { ref: string; kind: string }>;
+    };
+    // Allowlist must contain both the agent host AND the skill host.
+    expect(openIn.allowlist).toContain('api.anthropic.com');
+    expect(openIn.allowlist).toContain('api.github.com');
+    // Credentials must carry both the agent cred and the skill binding.
+    expect(openIn.credentials).toMatchObject({
+      ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' },
+      GITHUB_TOKEN: { ref: 'gh-pat', kind: 'api-key' },
+    });
+  });
+
+  it('threads installedSkills into sandbox:open-session with correct SKILL.md content', async () => {
+    const proxy = buildProxyHooks();
+    const manifestYaml = 'name: github\nversion: 1.0.0\n';
+    const bodyMd = 'Use the GitHub API.';
+    const skillsHooks = buildSkillsHooks({
+      skills: {
+        github: {
+          id: 'github',
+          capabilities: {
+            allowedHosts: ['api.github.com'],
+            credentials: [{ slot: 'GITHUB_TOKEN', kind: 'api-key' }],
+          },
+          bodyMd,
+          manifestYaml,
+        },
+      },
+    });
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: {
+            ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' },
+          },
+          skillAttachments: [
+            { skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'gh-pat' } },
+          ],
+        },
+      }),
+      openSession: makeChatEndOpenSession(busRef),
+    });
+    Object.assign(mocks.services, proxy.services, skillsHooks.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+      ],
+    });
+    busRef.current = h.bus;
+
+    await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('skill-sandbox-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+
+    const sandboxIn = mocks.calls.lastSandboxInput as {
+      installedSkills?: Array<{ id: string; skillMd: string }>;
+    };
+    expect(sandboxIn.installedSkills).toHaveLength(1);
+    const entry = sandboxIn.installedSkills![0]!;
+    expect(entry.id).toBe('github');
+    // skillMd must start with the YAML front-matter block.
+    expect(entry.skillMd).toMatch(/^---\nname: github\nversion: 1\.0\.0\n---\n/);
+    expect(entry.skillMd).toContain('Use the GitHub API.');
+  });
+
+  it('does NOT call skills:resolve when agent has no skillAttachments', async () => {
+    const proxy = buildProxyHooks();
+    const skillsHooks = buildSkillsHooks({ skills: {} });
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: {
+            ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' },
+          },
+          // No skillAttachments field — old agent row shape.
+        },
+      }),
+      openSession: makeChatEndOpenSession(busRef),
+    });
+    Object.assign(mocks.services, proxy.services, skillsHooks.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+      ],
+    });
+    busRef.current = h.bus;
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('no-skills-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+    expect(skillsHooks.state.resolveCalls).toBe(0);
+  });
+
+  it('drops unknown skill ids silently (deleted-skill-still-attached) without terminating', async () => {
+    const proxy = buildProxyHooks();
+    const skillsHooks = buildSkillsHooks({
+      skills: {
+        github: {
+          id: 'github',
+          capabilities: {
+            allowedHosts: ['api.github.com'],
+            credentials: [{ slot: 'GITHUB_TOKEN', kind: 'api-key' }],
+          },
+          bodyMd: 'GitHub',
+          manifestYaml: 'name: github\n',
+        },
+        // 'vanished' is NOT in the resolved set
+      },
+    });
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: {
+            ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' },
+          },
+          skillAttachments: [
+            { skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'gh-pat' } },
+            { skillId: 'vanished', credentialBindings: {} },
+          ],
+        },
+      }),
+      openSession: makeChatEndOpenSession(busRef),
+    });
+    Object.assign(mocks.services, proxy.services, skillsHooks.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+      ],
+    });
+    busRef.current = h.bus;
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('deleted-skill-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    // Must succeed — the vanished skill is silently dropped.
+    expect(outcome.kind).toBe('complete');
+    expect(mocks.calls.sandboxOpen).toBe(1);
+
+    const openIn = proxy.state.lastOpenInput as { allowlist: string[]; credentials: Record<string, unknown> };
+    expect(openIn.allowlist).toContain('api.github.com');
+    expect(openIn.credentials).toHaveProperty('GITHUB_TOKEN');
+  });
+
+  it('terminates with skill-binding-missing when a required slot has no binding', async () => {
+    const proxy = buildProxyHooks();
+    const skillsHooks = buildSkillsHooks({
+      skills: {
+        github: {
+          id: 'github',
+          capabilities: {
+            allowedHosts: ['api.github.com'],
+            credentials: [{ slot: 'GITHUB_TOKEN', kind: 'api-key' }],
+          },
+          bodyMd: 'GitHub',
+          manifestYaml: 'name: github\n',
+        },
+      },
+    });
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: {
+            ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' },
+          },
+          skillAttachments: [
+            {
+              skillId: 'github',
+              credentialBindings: {}, // GITHUB_TOKEN binding is absent
+            },
+          ],
+        },
+      }),
+    });
+    Object.assign(mocks.services, proxy.services, skillsHooks.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+      ],
+    });
+
+    const endFires: AgentOutcome[] = [];
+    h.bus.subscribe('chat:end', 'obs', async (_ctx, p: unknown) => {
+      endFires.push((p as { outcome: AgentOutcome }).outcome);
+      return undefined;
+    });
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('binding-missing-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('terminated');
+    expect((outcome as { reason: string }).reason).toBe('skill-binding-missing');
+    // proxy:open-session must NOT be called — abort happens before the proxy step.
+    expect(proxy.state.openCalls).toBe(0);
+    expect(mocks.calls.sandboxOpen).toBe(0);
+    expect(endFires).toHaveLength(1);
+  });
+
+  it('terminates with skill-slot-collision when two skills declare the same slot', async () => {
+    const proxy = buildProxyHooks();
+    const skillsHooks = buildSkillsHooks({
+      skills: {
+        'skill-a': {
+          id: 'skill-a',
+          capabilities: {
+            allowedHosts: ['api.example.com'],
+            credentials: [{ slot: 'OPENAI_API_KEY', kind: 'api-key' }],
+          },
+          bodyMd: 'A',
+          manifestYaml: 'name: skill-a\n',
+        },
+        'skill-b': {
+          id: 'skill-b',
+          capabilities: {
+            allowedHosts: ['api.other.com'],
+            credentials: [{ slot: 'OPENAI_API_KEY', kind: 'api-key' }], // same slot
+          },
+          bodyMd: 'B',
+          manifestYaml: 'name: skill-b\n',
+        },
+      },
+    });
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: {
+            ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' },
+          },
+          skillAttachments: [
+            { skillId: 'skill-a', credentialBindings: { OPENAI_API_KEY: 'ref-a' } },
+            { skillId: 'skill-b', credentialBindings: { OPENAI_API_KEY: 'ref-b' } },
+          ],
+        },
+      }),
+    });
+    Object.assign(mocks.services, proxy.services, skillsHooks.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+      ],
+    });
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('slot-collision-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('terminated');
+    expect((outcome as { reason: string }).reason).toBe('skill-slot-collision');
+    expect(proxy.state.openCalls).toBe(0);
+    expect(mocks.calls.sandboxOpen).toBe(0);
+  });
+
+  it('terminates with skill-slot-collision when skill slot collides with agent.requiredCredentials', async () => {
+    const proxy = buildProxyHooks();
+    const skillsHooks = buildSkillsHooks({
+      skills: {
+        badskill: {
+          id: 'badskill',
+          capabilities: {
+            allowedHosts: ['api.example.com'],
+            credentials: [
+              { slot: 'ANTHROPIC_API_KEY', kind: 'api-key' }, // collides with agent default
+            ],
+          },
+          bodyMd: 'Bad skill',
+          manifestYaml: 'name: badskill\n',
+        },
+      },
+    });
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: {
+            ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' },
+          },
+          skillAttachments: [
+            {
+              skillId: 'badskill',
+              credentialBindings: { ANTHROPIC_API_KEY: 'some-other-ref' },
+            },
+          ],
+        },
+      }),
+    });
+    Object.assign(mocks.services, proxy.services, skillsHooks.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+      ],
+    });
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('agent-slot-collision-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('terminated');
+    expect((outcome as { reason: string }).reason).toBe('skill-slot-collision');
+    // Error message must name <agent.requiredCredentials> as the existing owner.
+    expect((outcome as { error?: Error }).error?.message).toContain('<agent.requiredCredentials>');
+    expect(proxy.state.openCalls).toBe(0);
+    expect(mocks.calls.sandboxOpen).toBe(0);
+  });
+
+  it('terminates with skill-resolve-failed when skills:resolve throws', async () => {
+    const proxy = buildProxyHooks();
+    const resolveError = new Error('skills store unreachable');
+    const skillsHooks = buildSkillsHooks({ resolveThrows: resolveError });
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: {
+            ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' },
+          },
+          skillAttachments: [
+            { skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'ref' } },
+          ],
+        },
+      }),
+    });
+    Object.assign(mocks.services, proxy.services, skillsHooks.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+      ],
+    });
+
+    const endFires: AgentOutcome[] = [];
+    h.bus.subscribe('chat:end', 'obs', async (_ctx, p: unknown) => {
+      endFires.push((p as { outcome: AgentOutcome }).outcome);
+      return undefined;
+    });
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('resolve-failed-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('terminated');
+    expect((outcome as { reason: string }).reason).toBe('skill-resolve-failed');
+    expect((outcome as { error?: unknown }).error).toBeDefined();
+    expect(proxy.state.openCalls).toBe(0);
+    expect(mocks.calls.sandboxOpen).toBe(0);
+    expect(endFires).toHaveLength(1);
+  });
+
+  it('skips skill resolution entirely when skills:resolve service is not registered', async () => {
+    // Soft-coupling: a stripped preset (no @ax/skills) must not crash.
+    // Agent has skillAttachments but no skills:resolve service → flow
+    // proceeds with agent's own allowedHosts only.
+    const proxy = buildProxyHooks();
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: {
+            ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' },
+          },
+          skillAttachments: [
+            { skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'ref' } },
+          ],
+        },
+      }),
+      openSession: makeChatEndOpenSession(busRef),
+    });
+    // Only add proxy stubs — no skills:resolve service.
+    Object.assign(mocks.services, proxy.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+      ],
+    });
+    busRef.current = h.bus;
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('no-resolve-service-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+    expect(mocks.calls.sandboxOpen).toBe(1);
+
+    // Proxy was called with agent's own allowedHosts (no skill union).
+    const openIn = proxy.state.lastOpenInput as { allowlist: string[] };
+    expect(openIn.allowlist).toEqual(['api.anthropic.com']);
+  });
 });

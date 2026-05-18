@@ -165,6 +165,13 @@ const PLUGINS_TO_DROP = new Set<string>([
   // wiring is pinned in preset.test.ts; drop here so these sub-tests don't
   // need a postgres testcontainer.
   '@ax/attachments',
+  // Skills: postgres-backed (database:get-instance) and depends on
+  // http:register-route + auth:require-user (both dropped above). The
+  // static hook wiring is pinned in preset.test.ts; drop here so these
+  // sub-tests don't need a postgres testcontainer. The chat-orchestrator
+  // soft-couples via bus.hasService('skills:resolve') and degrades to
+  // no-skill-unioning when @ax/skills is absent — exactly what we want.
+  '@ax/skills',
 ]);
 
 // Stub `agents:resolve` — production presets register `@ax/agents` (postgres-

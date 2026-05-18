@@ -217,6 +217,54 @@ describe('runAgentsMigration', () => {
     expect(ix.rows[0]!.indexdef.toLowerCase()).toContain('webhook_token is not null');
   });
 
+  it('adds skill_attachments column as JSONB with default []', async () => {
+    const k = makeKysely();
+    await runAgentsMigration(k);
+    const cols = await sql<{ column_name: string; data_type: string; column_default: string | null; is_nullable: 'YES' | 'NO' }>`
+      SELECT column_name, data_type, column_default, is_nullable
+        FROM information_schema.columns
+       WHERE table_name = 'agents_v1_agents'
+         AND column_name = 'skill_attachments'
+    `.execute(k);
+    expect(cols.rows).toHaveLength(1);
+    expect(cols.rows[0]).toMatchObject({
+      data_type: 'jsonb',
+      is_nullable: 'NO',
+    });
+    // Default is '[]'::jsonb in pg; the column_default text varies in formatting
+    // ('"[]"' vs '''[]''::jsonb'). Just assert it contains the bracket pair.
+    expect(cols.rows[0]?.column_default ?? '').toContain('[]');
+  });
+
+  it('new rows have skill_attachments = [] by default', async () => {
+    const k = makeKysely();
+    await runAgentsMigration(k);
+    await k
+      .insertInto('agents_v1_agents')
+      .values({
+        agent_id: 'a-sa',
+        owner_id: 'u1',
+        owner_type: 'user',
+        visibility: 'personal',
+        display_name: 'SA',
+        system_prompt: '',
+        allowed_tools: JSON.stringify([]) as unknown,
+        mcp_config_ids: JSON.stringify([]) as unknown,
+        model: 'claude-opus-4-7',
+        workspace_ref: null,
+        created_at: new Date(),
+        updated_at: new Date(),
+      } as never)
+      .execute();
+    const row = await k
+      .selectFrom('agents_v1_agents')
+      .select('skill_attachments')
+      .where('agent_id', '=', 'a-sa')
+      .executeTakeFirstOrThrow();
+    // pg parses JSONB '[]' back to a JS array.
+    expect(row.skill_attachments).toEqual([]);
+  });
+
   it('is idempotent — running twice does not throw', async () => {
     const db = makeKysely();
     await runAgentsMigration(db);

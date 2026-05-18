@@ -101,6 +101,17 @@ export interface BuildPodSpecInput {
    * the bridge tries to dial it.
    */
   proxyConfig?: PodProxyConfig;
+  /**
+   * Phase 1 (skill-install): installed skills to pass to the runner via
+   * AX_INSTALLED_SKILLS_JSON. The runner reads this env var in main()
+   * BEFORE the SDK spawns, materializes each skill at
+   * $CLAUDE_CONFIG_DIR/skills/<id>/SKILL.md, then chmods the parent dir
+   * to 0555. Capped at 256 KiB total payload; throws if exceeded.
+   *
+   * The env var is consumed BY THE RUNNER, not forwarded into the SDK
+   * subprocess — it is NOT in ENV_ALLOWLIST.
+   */
+  installedSkills?: Array<{ id: string; skillMd: string }>;
 }
 
 interface EnvVar {
@@ -130,6 +141,22 @@ export function buildPodSpec(
   input: BuildPodSpecInput,
   config: ResolvedSandboxK8sConfig,
 ): PodSpec {
+  // Phase 1 (skill-install): encode installedSkills as JSON for the
+  // AX_INSTALLED_SKILLS_JSON env var. The runner reads it before the SDK
+  // spawns and materializes each skill under $CLAUDE_CONFIG_DIR/skills/.
+  // Cap at 256 KiB — k8s env var limit is ~1 MB but we're conservative to
+  // keep individual sessions manageable. Throw before building the spec so
+  // the caller sees a clear error rather than a silent k8s 422.
+  let installedSkillsEnv: EnvVar | undefined;
+  if (input.installedSkills !== undefined && input.installedSkills.length > 0) {
+    const encoded = JSON.stringify(input.installedSkills);
+    if (Buffer.byteLength(encoded, 'utf-8') > 256 * 1024) {
+      throw new Error(
+        'AX_INSTALLED_SKILLS_JSON payload over 256 KiB — too large for env var transport',
+      );
+    }
+    installedSkillsEnv = { name: 'AX_INSTALLED_SKILLS_JSON', value: encoded };
+  }
   // Phase 3: the sandbox now spawns the in-image `git` binary to materialize
   // /permanent at session start and to bundle per-turn diffs at turn end.
   // These env vars are the locked-down rails — they prevent git-init from
@@ -240,6 +267,9 @@ export function buildPodSpec(
       : []),
     ...gitParanoidEnv,
     ...proxyEnv,
+    // Phase 1: installed skills — only present when non-empty so the env
+    // list has no `: undefined` entries and kubectl describe stays clean.
+    ...(installedSkillsEnv !== undefined ? [installedSkillsEnv] : []),
     ...Object.entries(input.extraEnv ?? {}).map(([name, value]) => ({
       name,
       value,

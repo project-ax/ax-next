@@ -29,6 +29,7 @@ import {
   type AdminAgent,
   type AdminAgentInput,
 } from '../../lib/admin';
+import { SkillAttachmentsSection } from './SkillAttachmentsSection';
 import type { Team } from '../../../mock/admin/teams';
 import type { McpServer } from '../../../mock/admin/mcp-servers';
 import { Button } from '@/components/ui/button';
@@ -457,6 +458,27 @@ export function AgentForm() {
           </div>
         </form>
       </Card>
+
+      {/* Skill attachments — only available when editing an existing agent.
+          New agents get their skill-attachment section after first save. */}
+      {editing !== 'new' && (
+        <Card className="p-5 mt-4">
+          <SkillAttachmentsSection
+            agentId={editing.id}
+            initialAttachments={editing.skillAttachments ?? []}
+            onSaved={(next) => {
+              // Functional updater + identity guard: if the user has
+              // navigated to a different agent (or to 'new') by the time
+              // the save resolves, don't reopen the stale edit view.
+              setEditing((current) => {
+                if (current === 'new' || current === null) return current;
+                if (current.id !== editing.id) return current;
+                return { ...current, skillAttachments: next };
+              });
+            }}
+          />
+        </Card>
+      )}
     </div>
   );
 }

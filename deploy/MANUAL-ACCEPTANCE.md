@@ -1023,6 +1023,82 @@ manual fire.
 # also goes with it.
 ```
 
+## Scenario: Install a skill, attach to agent, chat (Phase 1 skill-install)
+
+### What this proves
+
+Admin installs a skill via /admin/skills, attaches it to an agent (binding
+its credential slots to existing credentials), opens a chat, and the runner
+sees the SKILL.md materialized + the proxy substitutes the bound credential
+when the model calls the skill's allowedHost. Validates I-P1-1..8 in a
+real cluster.
+
+### Walk
+
+1. Sign in as admin. Navigate to Admin → Credentials. Add a credential
+   `kind=api-key`, `scope=global`, `ref=gh-pat`, with any string for value
+   (the bytes don't have to be a real PAT for this walk — the proxy will
+   substitute and the upstream will 401, which is fine for the gate check).
+2. Navigate to Admin → Skills (new tab in the sidebar). Click `+ New skill`.
+   Paste:
+   ```yaml
+   ---
+   name: github
+   description: Access the GitHub REST API with a personal access token.
+   capabilities:
+     allowedHosts:
+       - api.github.com
+     credentials:
+       - slot: GITHUB_TOKEN
+         kind: api-key
+         description: GitHub PAT.
+   ---
+   Use this skill to call the GitHub REST API.
+   ```
+   The live preview pane should show `github`, the allowedHost chip
+   `api.github.com`, and the slot `GITHUB_TOKEN (api-key)`. Click Install.
+3. Confirm `github` appears in the Skills table with the host and slot
+   chips populated.
+4. Navigate to Admin → Agents, pick any test agent, scroll to the Skills
+   section. Click `+ Attach skill`, pick `github`. A slot-binding row
+   appears: `GITHUB_TOKEN ← [Select credential ▾]`. Pick `gh-pat`. Click
+   `Save attachments`.
+5. Open a chat with that agent and ask something benign: "Try to fetch
+   https://api.github.com/users/torvalds and tell me the response status."
+6. Verify in the network panel that the agent's tool call to api.github.com
+   was permitted by the proxy (the proxy substitutes the placeholder with
+   the credential value). The upstream may return 401 if the PAT is fake —
+   that's fine; we're checking that the proxy DIDN'T return 403 (allowedHost
+   gate) and that the substitution happened (no placeholder leaked to GitHub).
+7. Navigate back to Admin → Skills. Click Delete on the `github` row.
+   Verify the API returns 409 with "skill is attached" — the delete is
+   blocked because the agent still has it attached.
+8. Detach the skill from the agent (Skills section → trash icon → Save).
+   Retry delete in the Skills tab. Verify it succeeds (204).
+9. (Optional) `kubectl exec` into the runner pod for the session you opened
+   in step 5 and confirm `$CLAUDE_CONFIG_DIR/skills/github/SKILL.md` exists
+   with mode 0444, and the parent `skills/` dir is mode 0555.
+
+### Acceptance criteria
+
+- Skill installs via UI; appears in the table with host + slot chips.
+- Attach + save succeeds; the agent record gains a
+  `skill_attachments[].skillId='github'` row.
+- Chat session opens without termination outcomes (skill-resolve-failed,
+  skill-binding-missing, skill-slot-collision are all clear).
+- Proxy permits the api.github.com tool call (no 403 from the proxy).
+- skills:delete is blocked when the skill is attached (409); succeeds
+  after detach (204).
+- (Optional cluster-side) SKILL.md exists at the expected path inside
+  the runner pod with the expected modes.
+
+### Cleanup
+
+```bash
+# Delete the test agent + the github skill + the gh-pat credential
+# via the admin UI. All three are scoped to this walk and cheap to recreate.
+```
+
 ## When this passes, do
 1. Update the PR description's acceptance section with the date + cluster
    used + a copy of the `psql` count outputs.
