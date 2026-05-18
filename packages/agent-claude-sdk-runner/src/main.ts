@@ -372,6 +372,15 @@ export async function main(): Promise<number> {
           HOME: env.workspaceRoot,
         },
         cwd: env.workspaceRoot,
+        // `Skill` leads the allow list so the SDK auto-permits the
+        // built-in Skill tool without prompting — that's the path the SDK
+        // uses to invoke a skill it discovered under `settingSources`
+        // (below). The remaining names are the per-agent allow list the
+        // host wrote at session creation; an empty `agentConfig.allowedTools`
+        // means "no per-agent restriction" (orchestrator default) and the
+        // SDK falls back to its own defaults for everything other than the
+        // explicit deny list in `disallowedTools`.
+        allowedTools: ['Skill', ...agentConfig.allowedTools],
         disallowedTools: [...DISABLED_BUILTINS],
         // canUseTool stays as a belt-and-suspenders allow-path. The real
         // pre-call hook-bus forwarding happens in the PreToolUse hook below,
@@ -390,10 +399,23 @@ export async function main(): Promise<number> {
           ],
         },
         mcpServers: { [MCP_HOST_SERVER_NAME]: hostMcpServer },
-        // Empty settingSources = SDK isolation mode: the runner does NOT
-        // read ~/.claude, project settings, or CLAUDE.md. Config for this
-        // sandbox arrives entirely through host-mediated IPC.
-        settingSources: [],
+        // settingSources: 'user' is required for the SDK to discover skills
+        // under $CLAUDE_CONFIG_DIR/skills/ (host-controlled installed skills);
+        // 'project' is required for skills under <workspace>/.claude/skills/
+        // (which is a symlink to .ax/skills/, the agent-authored convention).
+        //
+        // Agent cannot escalate SDK behavior via these sources because:
+        //  - the SDK's other user/project files (.claude/settings.json,
+        //    CLAUDE.md, .claude/agents/, .claude/commands/, .claude/rules/,
+        //    CLAUDE.local.md, .claude/CLAUDE.md) are vetoed at the
+        //    workspace:pre-apply boundary by @ax/validator-skill;
+        //  - the workspace symlink points narrowly at `.ax/skills`, not at
+        //    the parent `.claude/` directory;
+        //  - $HOME is a per-session tempdir/emptyDir, isolated from the
+        //    host user's ~/.claude (allocated by sandbox plugins in Tasks 4/5).
+        //
+        // I-P0-1 in docs/plans/2026-05-17-skill-install-phase-0-impl.md.
+        settingSources: ['user', 'project'],
         // Week 9.5: use the frozen agentConfig.systemPrompt the host wrote
         // at session-creation time. An empty string falls back to the SDK
         // preset (the dev-agents-stub seeds a default; production agents

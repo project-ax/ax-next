@@ -415,6 +415,7 @@ describe('main()', () => {
     expect(queryMock).toHaveBeenCalledTimes(1);
     const queryArg = queryMock.mock.calls[0]?.[0] as {
       options: {
+        allowedTools: string[];
         disallowedTools: string[];
         mcpServers: Record<string, unknown>;
         settingSources: string[];
@@ -423,10 +424,22 @@ describe('main()', () => {
       };
     };
     expect(queryArg.options.disallowedTools).toEqual(
-      expect.arrayContaining(['WebFetch', 'WebSearch', 'Skill', 'Task']),
+      expect.arrayContaining(['WebFetch', 'WebSearch', 'Task']),
     );
+    // I-P0-1: positive guard that Skill is NOT denied. If a future refactor
+    // re-adds Skill to DISABLED_BUILTINS or otherwise reintroduces a deny,
+    // this assertion fails and the regression is caught here rather than in
+    // the canary acceptance test.
+    expect(queryArg.options.disallowedTools).not.toContain('Skill');
+    // I-P0-1: Skill is in allowedTools so the SDK auto-permits it when the
+    // model invokes a discovered skill.
+    expect(queryArg.options.allowedTools).toContain('Skill');
     expect(queryArg.options.mcpServers).toHaveProperty('ax-host-tools');
-    expect(queryArg.options.settingSources).toEqual([]);
+    // I-P0-1: 'user' enables $CLAUDE_CONFIG_DIR/skills/ discovery (host-
+    // controlled installed skills); 'project' enables <workspace>/.claude/
+    // skills/ discovery (a narrow symlink to .ax/skills, gated by
+    // validator-skill against .claude/settings.json / CLAUDE.md / etc.).
+    expect(queryArg.options.settingSources).toEqual(['user', 'project']);
     expect(queryArg.options.systemPrompt).toEqual({
       type: 'preset',
       preset: 'claude_code',
