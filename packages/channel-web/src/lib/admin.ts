@@ -43,6 +43,7 @@ export interface AdminAgent {
   mcpConfigIds: string[];
   model: string;
   workspaceRef: string | null;
+  skillAttachments: Array<{ skillId: string; credentialBindings: Record<string, string> }>;
   createdAt: string;
   updatedAt: string;
 }
@@ -97,6 +98,27 @@ export async function deleteAgent(id: string): Promise<void> {
     credentials: 'include',
   });
   if (!res.ok) throw new Error(`delete agent: ${res.status}`);
+}
+
+export async function patchAgentSkillAttachments(
+  agentId: string,
+  skillAttachments: Array<{ skillId: string; credentialBindings: Record<string, string> }>,
+): Promise<AdminAgent> {
+  const res = await fetch(
+    `/admin/agents/${encodeURIComponent(agentId)}/skill-attachments`,
+    {
+      method: 'PATCH',
+      headers: writeHeaders,
+      credentials: 'include',
+      body: JSON.stringify({ skillAttachments }),
+    },
+  );
+  if (!res.ok) {
+    const excerpt = await res.text().catch(() => '');
+    throw new Error(`patch skill attachments: ${res.status} ${excerpt.slice(0, 200)}`);
+  }
+  const out = (await res.json()) as { agent: AdminAgent };
+  return out.agent;
 }
 
 // MCP servers ------------------------------------------------------------
