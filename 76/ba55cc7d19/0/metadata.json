@@ -1,0 +1,35 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "76ba55cc7d19",
+  "session_id": "c3a913fa-9496-4f14-9047-03209da3dc7b",
+  "strategy": "manual-commit",
+  "created_at": "2026-05-18T23:06:03.248871Z",
+  "branch": "feat/skill-install-phase-1",
+  "checkpoints_count": 1,
+  "files_touched": [],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "401561a5b15d",
+  "token_usage": {
+    "input_tokens": 400,
+    "cache_creation_tokens": 1368017,
+    "cache_read_tokens": 98239813,
+    "output_tokens": 155725,
+    "api_call_count": 343
+  },
+  "session_metrics": {
+    "turn_count": 4
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 8,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claude/settings.local.json": 8
+      }
+    }
+  ]
+}
