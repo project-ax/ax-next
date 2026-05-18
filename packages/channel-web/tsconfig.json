@@ -20,6 +20,7 @@
     { "path": "../auth-oidc" },
     { "path": "../agents" },
     { "path": "../conversations" },
-    { "path": "../ipc-protocol" }
+    { "path": "../ipc-protocol" },
+    { "path": "../attachments" }
   ]
 }
