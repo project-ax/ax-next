@@ -109,6 +109,39 @@ function chatRunMockPlugin(): Plugin {
   };
 }
 
+/**
+ * Stub for `attachments:store-temp` / `:commit` / `:download`. Channel-web
+ * declares all three as hard calls (Phase 3); this suite doesn't exercise
+ * the attachment paths, so a no-op registration satisfies bootstrap.
+ */
+function attachmentsMockPlugin(): Plugin {
+  return {
+    manifest: {
+      name: 'mock-attachments',
+      version: '0.0.0',
+      registers: [
+        'attachments:store-temp',
+        'attachments:commit',
+        'attachments:download',
+      ],
+      calls: [],
+      subscribes: [],
+    },
+    init({ bus }) {
+      const notImpl = async () => {
+        throw new PluginError({
+          code: 'not-implemented',
+          plugin: 'mock-attachments',
+          message: 'attachments stub (not exercised by this suite)',
+        });
+      };
+      bus.registerService('attachments:store-temp', 'mock-attachments', notImpl);
+      bus.registerService('attachments:commit', 'mock-attachments', notImpl);
+      bus.registerService('attachments:download', 'mock-attachments', notImpl);
+    },
+  };
+}
+
 function agentsMockPlugin(args: { allowedFor: Set<string> }): Plugin {
   return {
     manifest: {
@@ -186,6 +219,7 @@ async function boot(args: BootArgs): Promise<{
       createMockWorkspacePlugin(),
       createConversationsPlugin(),
       chatRunMockPlugin(),
+      attachmentsMockPlugin(),
       createChannelWebServerPlugin({}),
     ],
   });

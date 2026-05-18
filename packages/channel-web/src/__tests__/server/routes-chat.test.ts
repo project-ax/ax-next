@@ -305,6 +305,43 @@ function permissiveWorkspacePlugin(): Plugin {
   };
 }
 
+/**
+ * No-op stub for `attachments:*`. Channel-web declares `attachments:store-temp`
+ * / `:commit` / `:download` as hard calls (Phase 3); tests that don't load
+ * the real `@ax/attachments` (because they don't exercise upload/commit/
+ * download) still need someone registered or bootstrap's verifyCalls walk
+ * fails. The real plugin runs alongside this stub when `includeAttachments`
+ * is true — duplicate-service registration would throw, so we only push
+ * the stub on the false path.
+ */
+function attachmentsStubPlugin(): Plugin {
+  return {
+    manifest: {
+      name: 'mock-attachments-stub',
+      version: '0.0.0',
+      registers: [
+        'attachments:store-temp',
+        'attachments:commit',
+        'attachments:download',
+      ],
+      calls: [],
+      subscribes: [],
+    },
+    init({ bus }) {
+      const notImpl = async () => {
+        throw new PluginError({
+          code: 'not-implemented',
+          plugin: 'mock-attachments-stub',
+          message: 'attachments stub (not exercised by this case)',
+        });
+      };
+      bus.registerService('attachments:store-temp', 'mock-attachments-stub', notImpl);
+      bus.registerService('attachments:commit', 'mock-attachments-stub', notImpl);
+      bus.registerService('attachments:download', 'mock-attachments-stub', notImpl);
+    },
+  };
+}
+
 async function boot(args: BootArgs): Promise<BootResult> {
   process.env.AX_HTTP_ALLOW_NO_ORIGINS = '1';
   const http = createHttpServerPlugin({
@@ -342,6 +379,11 @@ async function boot(args: BootArgs): Promise<BootResult> {
   ];
   if (args.includeAttachments === true) {
     plugins.push(createAttachmentsPlugin(args.attachmentsConfig ?? {}));
+  } else {
+    // Channel-web declares `attachments:*` as hard calls (Phase 3) — when
+    // the real plugin isn't loaded, bootstrap still needs SOMEONE
+    // registered for those hooks.
+    plugins.push(attachmentsStubPlugin());
   }
   plugins.push(createChannelWebServerPlugin({}));
   const harness = await createTestHarness({ plugins });
