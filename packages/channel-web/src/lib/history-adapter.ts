@@ -104,6 +104,20 @@ function blocksToParts(
       }
       continue;
     }
+    if (block.type === 'attachment') {
+      // Phase 3 (2026-05-18): translate stored `attachment` content blocks to
+      // assistant-ui's `file` part shape. The `data` URL carries the
+      // workspace-relative path (base64url-encoded) so AttachmentChip can
+      // decode it and feed `GET /api/files`.
+      const encodedPath = base64url(block.path);
+      parts.push({
+        type: 'file',
+        data: `ax://attachment-path/${encodedPath}`,
+        mediaType: block.mediaType,
+        filename: block.displayName,
+      });
+      continue;
+    }
     if (block.type === 'tool_use') {
       // Emit an AI SDK v5 dynamic-tool UIMessage part. assistant-ui's
       // react-ai-sdk bridge converts these into tool-call ThreadMessage
@@ -152,6 +166,69 @@ function blocksToParts(
     parts.push({ type: 'text', text: '' });
   }
   return parts;
+}
+
+/**
+ * Public-facing wrapper used by render-side code and tests. The optional
+ * second arg carries opts that downstream renderers may want (e.g.
+ * conversationId for the chip's GET /api/files URL); this function itself
+ * doesn't read them — the `useConversationId` hook (Task 14) provides
+ * them to chips at render time.
+ *
+ * Internally delegates to `blocksToParts` with an empty tool-result map
+ * since attachment translation never needs the cross-turn tool_use ↔
+ * tool_result join.
+ */
+export function contentBlocksToAuiParts(
+  blocks: ContentBlock[],
+  _opts?: { conversationId?: string },
+): Array<Record<string, unknown>> {
+  return blocksToParts(blocks, new Map());
+}
+
+/**
+ * Encode a workspace-relative path as base64url so it can ride safely as
+ * the path segment of `ax://attachment-path/<...>` URLs (no raw slashes
+ * or `+`/`=` chars).
+ *
+ * Goes through TextEncoder/TextDecoder rather than `btoa(input)` directly
+ * because `btoa` throws on code points > 0xFF — Unicode filenames (CJK,
+ * emoji) would otherwise blow up here.
+ */
+function base64url(input: string): string {
+  const bytes = new TextEncoder().encode(input);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]!);
+  return btoa(binary)
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+}
+
+/**
+ * Decode an `ax://attachment-path/<base64url>` URL back to the original
+ * workspace-relative path. Used by `AttachmentChip` (Task 11) to build
+ * its `GET /api/files` request. Returns `null` for non-ax URLs or any
+ * decode failure.
+ *
+ * Symmetrically to `base64url`, decodes through TextDecoder so multi-byte
+ * UTF-8 sequences (Unicode filenames) round-trip correctly.
+ */
+export function decodeAttachmentPath(url: string): string | null {
+  const PREFIX = 'ax://attachment-path/';
+  if (!url.startsWith(PREFIX)) return null;
+  const encoded = url.slice(PREFIX.length);
+  const padded = encoded
+    .replace(/-/g, '+')
+    .replace(/_/g, '/');
+  try {
+    const binary = atob(padded + '==='.slice(0, (4 - (padded.length % 4)) % 4));
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return new TextDecoder().decode(bytes);
+  } catch {
+    return null;
+  }
 }
 
 /** Build a tool_use_id → result lookup from every block we'll see. */

@@ -124,6 +124,53 @@ function conversationsMockPlugin(args: {
 }
 
 /**
+ * Stub for `attachments:store-temp` / `attachments:commit` / `attachments:download`.
+ * Channel-web declares all three as hard calls (Phase 3). This suite doesn't
+ * exercise the attachment paths — a no-op registration satisfies the
+ * bootstrap verifyCalls walk. The real plugin (`@ax/attachments`) needs a
+ * postgres testcontainer + workspace registration; using a stub keeps the
+ * suite's existing scope (SSE wire shape) intact.
+ */
+function attachmentsMockPlugin(): Plugin {
+  return {
+    manifest: {
+      name: 'mock-attachments',
+      version: '0.0.0',
+      registers: [
+        'attachments:store-temp',
+        'attachments:commit',
+        'attachments:download',
+      ],
+      calls: [],
+      subscribes: [],
+    },
+    init({ bus }) {
+      bus.registerService('attachments:store-temp', 'mock-attachments', async () => {
+        throw new PluginError({
+          code: 'not-implemented',
+          plugin: 'mock-attachments',
+          message: 'attachments:store-temp stub (not exercised by this suite)',
+        });
+      });
+      bus.registerService('attachments:commit', 'mock-attachments', async () => {
+        throw new PluginError({
+          code: 'not-implemented',
+          plugin: 'mock-attachments',
+          message: 'attachments:commit stub (not exercised by this suite)',
+        });
+      });
+      bus.registerService('attachments:download', 'mock-attachments', async () => {
+        throw new PluginError({
+          code: 'not-implemented',
+          plugin: 'mock-attachments',
+          message: 'attachments:download stub (not exercised by this suite)',
+        });
+      });
+    },
+  };
+}
+
+/**
  * Stub for `agent:invoke`. The plugin manifest declares it as a hard call;
  * this suite doesn't drive the chat-flow producer endpoint, so a no-op
  * registration satisfies the bootstrap verifyCalls walk.
@@ -222,6 +269,7 @@ async function boot(args: BootArgs = {}): Promise<{
       conversationsMockPlugin({ byReqId }),
       agentsMockPlugin({ allow: args.agentsAllow ?? true }),
       chatRunMockPlugin(),
+      attachmentsMockPlugin(),
       createChannelWebServerPlugin({}),
     ],
   });
@@ -349,8 +397,60 @@ describe('@ax/channel-web server plugin (integration)', () => {
         'conversations:list',
         'conversations:delete',
         'agent:invoke',
+        'attachments:store-temp',
+        'attachments:commit',
+        'attachments:download',
       ],
       subscribes: ['chat:stream-chunk', 'chat:phase', 'chat:turn-end'],
+    });
+  });
+
+  describe('attachments routes', () => {
+    it('declares attachments:* hooks in manifest.calls', () => {
+      const plugin = createChannelWebServerPlugin();
+      expect(plugin.manifest.calls).toContain('attachments:store-temp');
+      expect(plugin.manifest.calls).toContain('attachments:commit');
+      expect(plugin.manifest.calls).toContain('attachments:download');
+    });
+
+    it('registers POST /api/attachments and GET /api/files at boot', async () => {
+      const booted = await boot();
+      harness = booted.harness;
+
+      // Probe route existence via real HTTP. A 404 with body
+      // `{"error":"not-found"}` from the http-server's no-match path
+      // would mean the route was never registered; ANY other status
+      // (400 invalid-payload, 401 unauth, 415 unsupported, etc.)
+      // proves the route is wired.
+      //
+      // POST uses the `X-Requested-With: ax-admin` header to bypass the
+      // CSRF subscriber (which would otherwise short-circuit to 403
+      // BEFORE the router runs — see `csrf.ts`). Routes-attachments'
+      // POST handler will then auth + try to parse multipart, returning
+      // 400 invalid-payload for our empty body. That's good enough — it
+      // means the route handler ran.
+      const post = await fetch(
+        `http://127.0.0.1:${booted.port}/api/attachments`,
+        {
+          method: 'POST',
+          headers: {
+            'x-requested-with': 'ax-admin',
+            'content-type': 'multipart/form-data; boundary=----test',
+          },
+          body: '------test--\r\n',
+        },
+      );
+      expect(post.status).not.toBe(404);
+
+      // GET /api/files: cookie auth only, no CSRF gate. Our auth mock
+      // accepts any request, so the route dispatches into the
+      // attachments stub (which throws not-implemented). The route
+      // handler maps that to a 5xx via the unhandled-error path — but
+      // it's NOT a 404, which is what proves the route exists.
+      const get = await fetch(
+        `http://127.0.0.1:${booted.port}/api/files?path=foo&conversationId=cnv_test`,
+      );
+      expect(get.status).not.toBe(404);
     });
   });
 });

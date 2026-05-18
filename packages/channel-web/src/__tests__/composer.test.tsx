@@ -29,6 +29,7 @@ import {
   getAgentStatusSnapshot,
 } from '../lib/agent-status-store';
 import { testTriggersInternals } from '../lib/agent-status-test-triggers';
+import { AxAttachmentAdapter } from '../lib/ax-attachment-adapter';
 
 const StubRuntimeProvider = ({ children }: { children: ReactNode }) => {
   const runtime = useLocalRuntime({
@@ -135,5 +136,52 @@ describe('Composer', () => {
       // The status row should NOT have been flipped on by a trigger.
       expect(getAgentStatusSnapshot().mode).toBe('hidden');
     });
+  });
+});
+
+function AttachmentRuntimeProvider({ children }: { children: ReactNode }) {
+  const runtime = useLocalRuntime(
+    {
+      async run() {
+        return { content: [{ type: 'text', text: 'ok' }] };
+      },
+    },
+    { adapters: { attachments: new AxAttachmentAdapter() } },
+  );
+  return (
+    <AssistantRuntimeProvider runtime={runtime}>
+      {children}
+    </AssistantRuntimeProvider>
+  );
+}
+
+describe('Composer with attachment dropzone', () => {
+  it('mounts the dropzone wrapper', () => {
+    const { container } = render(
+      <AttachmentRuntimeProvider>
+        <Composer />
+      </AttachmentRuntimeProvider>,
+    );
+    expect(container.querySelector('[data-attachment-dropzone]')).toBeTruthy();
+  });
+
+  it('renders the attachments row above the input field', () => {
+    const { container } = render(
+      <AttachmentRuntimeProvider>
+        <Composer />
+      </AttachmentRuntimeProvider>,
+    );
+    const inner = container.querySelector('.composer-inner');
+    expect(inner).toBeTruthy();
+    // The attachments row should precede the field row visually.
+    const att = container.querySelector('.composer-attachments');
+    const field = container.querySelector('.composer-field');
+    expect(att).toBeTruthy();
+    expect(field).toBeTruthy();
+    if (att && field) {
+      const order = att.compareDocumentPosition(field);
+      // Node.DOCUMENT_POSITION_FOLLOWING === 4 — field follows att in DOM order.
+      expect(order & 4).toBe(4);
+    }
   });
 });

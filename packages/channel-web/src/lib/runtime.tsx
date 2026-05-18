@@ -13,18 +13,9 @@ import { AxChatTransport } from './transport';
 import { useAgentStore } from './agent-store';
 import { sessionStoreActions, useSessionStore } from './session-store';
 import { useThinkingStore } from './thinking-store';
+import { AxAttachmentAdapter } from './ax-attachment-adapter';
+import { setActiveConversationId } from './use-conversation-id';
 
-/**
- * Thread-specific runtime using AI SDK.
- * Passes the AX history adapter directly to useAISDKRuntime
- * so thread history loads when switching threads.
- *
- * No `attachments` adapter is configured: the composer's attach button is
- * gated on the adapter being present (assistant-ui contract), so omitting
- * it hides the button. The previous adapter POSTed to /api/files, which
- * has no host-side route — preset-k8s would 404 every upload. The button
- * comes back when a host-side blob-store + /api/files route ships.
- */
 const useChatThreadRuntime = (transport: AxChatTransport): AssistantRuntime => {
   const id = useAuiState(({ threadListItem }) => threadListItem.id);
   const aui = useAui();
@@ -41,8 +32,15 @@ const useChatThreadRuntime = (transport: AxChatTransport): AssistantRuntime => {
     [aui, thinkingVisible],
   );
 
+  // Phase 3: AxAttachmentAdapter mediates POST /api/attachments. Stable
+  // across the hook lifetime — no per-prop state, so a single instance
+  // is enough.
+  const attachments = useMemo(() => new AxAttachmentAdapter(), []);
+
   const chat = useChat({ id, transport });
-  return useAISDKRuntime(chat, { adapters: { history } });
+  return useAISDKRuntime(chat, {
+    adapters: { history, attachments },
+  });
 };
 
 /**
@@ -73,6 +71,10 @@ export const useAxChatRuntime = (
 
   const handleSetConversationId = useCallback((id: string) => {
     conversationRef.current = id;
+    // Publish the freshly-minted id to subscribers (AttachmentChip,
+    // ArtifactChip) via the module-level store so they can build
+    // GET /api/files URLs without prop-drilling.
+    setActiveConversationId(id);
     // The server just minted a fresh conversation row (typical first
     // message after a "+ new session" click or an agent switch).
     // Promote it to the sidebar's active session immediately so the
@@ -102,16 +104,21 @@ export const useAxChatRuntime = (
     [user, handleSetConversationId],
   );
 
-  // Whenever the session-store's `activeSessionId` clears (the user
-  // opened a fresh session via "+ new session", or AgentChip dropped
-  // the previous session as part of a mid-chat agent switch), reset
-  // the transport's conversationId so the next POST sends
-  // `conversationId: null`. The server then mints a new conversation
-  // row — without this, the transport would carry the previous id
-  // forward and the new agent's first turn would land in the old
-  // conversation.
+  // Keep the subscriber-visible id (AttachmentChip / ArtifactChip read it
+  // via useConversationId) aligned with the sidebar's active session on
+  // every change — not just when it clears. Without this, switching from
+  // conversation A to B leaves chips still building `GET /api/files?
+  // conversationId=<A>` URLs against B, which 404s.
+  //
+  // `conversationRef.current` is intentionally NOT clobbered on every
+  // change: the transport sets it from the server's freshly-minted id in
+  // `handleSetConversationId`, and we'd race that here. Only clear it
+  // when the session goes null (fresh-session / agent-switch path) so
+  // the next POST mints a new conversation row instead of carrying the
+  // previous id forward.
   const activeSessionId = useSessionStore().activeSessionId;
   useEffect(() => {
+    setActiveConversationId(activeSessionId);
     if (activeSessionId === null) {
       conversationRef.current = null;
     }

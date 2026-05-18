@@ -119,10 +119,32 @@ interface AxChatTransportOptions {
   fetch?: typeof fetch;
 }
 
-/** Convert one AI-SDK UIMessage's parts list to an AX ContentBlock array. */
+const AX_ATTACHMENT_URL_PREFIX = 'ax://attachment/';
+
+function isAxAttachmentPart(p: unknown): { attachmentId: string } | null {
+  if (!p || typeof p !== 'object') return null;
+  const obj = p as { type?: unknown; data?: unknown; url?: unknown };
+  if (obj.type !== 'file') return null;
+  const candidate =
+    typeof obj.data === 'string' ? obj.data :
+    typeof obj.url === 'string' ? obj.url : null;
+  if (candidate === null) return null;
+  if (!candidate.startsWith(AX_ATTACHMENT_URL_PREFIX)) return null;
+  const id = candidate.slice(AX_ATTACHMENT_URL_PREFIX.length);
+  if (id.length === 0) return null;
+  return { attachmentId: id };
+}
+
+/** Convert one AI-SDK UIMessage's parts list to an AX ContentBlock array.
+ *  Phase 3: ax://attachment/<id> file parts become attachment_ref blocks;
+ *  other file parts fall back to text mentions (legacy behavior preserved
+ *  for any non-ax adapter that might surface a file part in the future).
+ */
 function toContentBlocks(msg: UIMessage): ContentBlock[] {
   const blocks: ContentBlock[] = [];
   if (!msg.parts) return blocks;
+
+  // Collect text first (chat-flow concatenates all text into one block).
   let collectedText = '';
   for (const p of msg.parts) {
     if (p.type === 'text') {
@@ -132,22 +154,32 @@ function toContentBlocks(msg: UIMessage): ContentBlock[] {
   if (collectedText.length > 0) {
     blocks.push({ type: 'text', text: collectedText });
   }
-  // Image / file parts: serialize as a text fallback for MVP. The AX
-  // ContentBlock has rich image/tool variants but the AI SDK FileUIPart
-  // shape isn't 1:1 with them; Tasks 17-21 are scoped to text + thinking.
+
+  // Then file parts, preserving order.
   for (const p of msg.parts) {
-    if (p.type === 'file') {
-      const fp = p as { url?: string; mediaType?: string; filename?: string };
-      const ref = fp.url ?? '';
-      const filename = fp.filename ?? '';
-      blocks.push({
-        type: 'text',
-        text: `[attachment: ${filename || ref}]`,
-      });
+    if (p.type !== 'file') continue;
+    const ax = isAxAttachmentPart(p);
+    if (ax !== null) {
+      blocks.push({ type: 'attachment_ref', attachmentId: ax.attachmentId });
+      continue;
     }
+    // Non-ax file part — text-mention fallback (preserves the legacy
+    // path so a future adapter that emits e.g. https:// file parts
+    // doesn't drop the user's intent silently).
+    const fp = p as { url?: string; mediaType?: string; filename?: string };
+    const ref = fp.url ?? '';
+    const filename = fp.filename ?? '';
+    blocks.push({
+      type: 'text',
+      text: `[attachment: ${filename || ref}]`,
+    });
   }
   return blocks;
 }
+
+/** Test-only export of toContentBlocks so unit tests can drive it
+ *  without booting an entire transport instance. */
+export const toContentBlocksForTesting = toContentBlocks;
 
 /**
  * Body shape we POST. The server's `PostMessageRequest` zod schema is

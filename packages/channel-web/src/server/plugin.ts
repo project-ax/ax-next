@@ -5,6 +5,7 @@ import {
   type Plugin,
 } from '@ax/core';
 import { createChunkBuffer, type ChunkBuffer } from './chunk-buffer.js';
+import { registerAttachmentsRoutes } from './routes-attachments.js';
 import { registerChatRoutes } from './routes-chat.js';
 import {
   createBufferFillSubscriber,
@@ -70,6 +71,10 @@ export function createChannelWebServerPlugin(
         'conversations:list',
         'conversations:delete',
         'agent:invoke',
+        // Phase 3 — attachments & artifacts.
+        'attachments:store-temp',
+        'attachments:commit',
+        'attachments:download',
       ],
       subscribes: ['chat:stream-chunk', 'chat:phase', 'chat:turn-end'],
     },
@@ -144,6 +149,17 @@ export function createChannelWebServerPlugin(
       // methods. See routes-chat.ts for per-endpoint details.
       const chatRouteUnregisters = await registerChatRoutes(bus, initCtx);
       for (const u of chatRouteUnregisters) unregisterRoutes.push(u);
+
+      // Phase 3 — attachments + downloads. Closes the half-wired window
+      // opened in Phase 1 (routes-chat.ts already calls
+      // `attachments:commit` for attachment_ref blocks); declaring the
+      // three hooks in `manifest.calls` + registering the two routes here
+      // makes the surface complete.
+      const attachmentRouteUnregisters = await registerAttachmentsRoutes(
+        bus,
+        initCtx,
+      );
+      for (const u of attachmentRouteUnregisters) unregisterRoutes.push(u);
     },
 
     async shutdown() {

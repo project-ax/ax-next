@@ -480,6 +480,71 @@ describe('@ax/http-server', () => {
     expect(r.status).toBe(404);
   });
 
+  describe('per-route maxBodyBytes', () => {
+    it('honors a 2 MiB per-route cap when set above the default — a 1.5 MiB body returns 200', async () => {
+      let observedLen = 0;
+      await harness.bus.call('http:register-route', harness.ctx(), {
+        method: 'POST',
+        path: '/big-upload',
+        handler: async (req, res) => {
+          observedLen = req.body.length;
+          res.status(200).text('ok');
+        },
+        maxBodyBytes: 2 * 1024 * 1024,
+      });
+      const body = Buffer.alloc(1.5 * 1024 * 1024, 0x61);
+      const r = await fetch(`http://127.0.0.1:${port}/big-upload`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/octet-stream',
+          'x-requested-with': 'ax-admin',
+        },
+        body,
+      });
+      expect(r.status).toBe(200);
+      expect(observedLen).toBe(1.5 * 1024 * 1024);
+    });
+
+    it('returns 413 above the per-route cap — a 3 MiB body against a 2 MiB cap returns 413', async () => {
+      await harness.bus.call('http:register-route', harness.ctx(), {
+        method: 'POST',
+        path: '/capped-upload',
+        handler: async (_req, res) => {
+          res.status(200).text('should not reach');
+        },
+        maxBodyBytes: 2 * 1024 * 1024,
+      });
+      const body = Buffer.alloc(3 * 1024 * 1024, 0x61);
+      const r = await fetch(`http://127.0.0.1:${port}/capped-upload`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/octet-stream',
+          'x-requested-with': 'ax-admin',
+        },
+        body,
+      });
+      expect(r.status).toBe(413);
+      expect(await r.json()).toEqual({ error: 'body-too-large' });
+    });
+
+    it('inherits the default 1 MiB cap when maxBodyBytes is not set — a 1.5 MiB body returns 413', async () => {
+      await registerRoute('POST', '/default-cap', async (_req, res) => {
+        res.status(200).text('should not reach');
+      });
+      const body = Buffer.alloc(1.5 * 1024 * 1024, 0x61);
+      const r = await fetch(`http://127.0.0.1:${port}/default-cap`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/octet-stream',
+          'x-requested-with': 'ax-admin',
+        },
+        body,
+      });
+      expect(r.status).toBe(413);
+      expect(await r.json()).toEqual({ error: 'body-too-large' });
+    });
+  });
+
   it('res.stream() flushes headers, allows multiple writes, closes on demand', async () => {
     await registerRoute('GET', '/sse', async (_req, res) => {
       const s = res.status(200).stream();

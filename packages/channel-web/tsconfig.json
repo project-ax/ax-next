@@ -21,6 +21,7 @@
     { "path": "../agents" },
     { "path": "../conversations" },
     { "path": "../ipc-protocol" },
+    { "path": "../attachments" },
     { "path": "../skills" }
   ]
 }

@@ -26,6 +26,16 @@ export const AgentMessageSchema = z.object({
   // runner translation pass be testable. Backward-compat: omitting the
   // field reproduces the prior string-only shape exactly.
   contentBlocks: z.array(ContentBlockSchema).optional(),
+  /**
+   * Phase 3 (attachments, 2026-05-18). Server-minted user-turn id, used
+   * by the runner to bind the user message to the same turn the host
+   * committed attachments under. The chat-messages handler mints this
+   * BEFORE calling `attachments:commit` so the committed file path
+   * (`.ax/uploads/<conversationId>/<turnId>/<file>`) and the SDK turn
+   * that references it agree. Optional for backward-compat with code
+   * paths that don't carry attachments (existing canary tests).
+   */
+  turnId: z.string().optional(),
 });
 export type AgentMessage = z.infer<typeof AgentMessageSchema>;
 

@@ -5,6 +5,7 @@ interface ExactRouteEntry {
   path: string;
   handler: HttpRouteHandler;
   bypassCsrf: boolean;
+  maxBodyBytes: number | undefined;
 }
 
 /**
@@ -25,6 +26,7 @@ interface PatternRouteEntry {
   paramNames: readonly string[];
   handler: HttpRouteHandler;
   bypassCsrf: boolean;
+  maxBodyBytes: number | undefined;
 }
 
 export interface MatchResult {
@@ -33,10 +35,16 @@ export interface MatchResult {
   params: Record<string, string>;
   /** Mirrors HttpRegisterRouteInput.bypassCsrf at registration time. */
   bypassCsrf: boolean;
+  /**
+   * Per-route body cap; `undefined` means the framework default applies.
+   * Mirrors HttpRegisterRouteInput.maxBodyBytes at registration time.
+   */
+  maxBodyBytes: number | undefined;
 }
 
 export interface RegisterRouteOptions {
   bypassCsrf?: boolean;
+  maxBodyBytes?: number;
 }
 
 /**
@@ -72,12 +80,13 @@ export class Router {
     options: RegisterRouteOptions = {},
   ): () => void {
     const bypassCsrf = options.bypassCsrf === true;
+    const maxBodyBytes = options.maxBodyBytes;
     const compiled = compilePathPattern(path);
     if (compiled === null) {
       // Exact route.
-      return this.registerExact(method, path, handler, bypassCsrf);
+      return this.registerExact(method, path, handler, bypassCsrf, maxBodyBytes);
     }
-    return this.registerPattern(method, path, compiled, handler, bypassCsrf);
+    return this.registerPattern(method, path, compiled, handler, bypassCsrf, maxBodyBytes);
   }
 
   private registerExact(
@@ -85,12 +94,13 @@ export class Router {
     path: string,
     handler: HttpRouteHandler,
     bypassCsrf: boolean,
+    maxBodyBytes: number | undefined,
   ): () => void {
     const key = Router.makeKey(method, path);
     if (this.exact.has(key)) {
       throw new Error(`route already registered: ${method} ${path}`);
     }
-    this.exact.set(key, { method, path, handler, bypassCsrf });
+    this.exact.set(key, { method, path, handler, bypassCsrf, maxBodyBytes });
     let methods = this.methodsByPath.get(path);
     if (methods === undefined) {
       methods = new Set();
@@ -117,6 +127,7 @@ export class Router {
     compiled: PatternRouteEntry['segments'],
     handler: HttpRouteHandler,
     bypassCsrf: boolean,
+    maxBodyBytes: number | undefined,
   ): () => void {
     let list = this.patternsByMethod.get(method);
     if (list === undefined) {
@@ -136,6 +147,7 @@ export class Router {
       paramNames,
       handler,
       bypassCsrf,
+      maxBodyBytes,
     };
     list.push(entry);
 
@@ -154,7 +166,12 @@ export class Router {
   match(method: HttpMethod, path: string): MatchResult | undefined {
     const exact = this.exact.get(Router.makeKey(method, path));
     if (exact !== undefined) {
-      return { handler: exact.handler, params: {}, bypassCsrf: exact.bypassCsrf };
+      return {
+        handler: exact.handler,
+        params: {},
+        bypassCsrf: exact.bypassCsrf,
+        maxBodyBytes: exact.maxBodyBytes,
+      };
     }
     const patterns = this.patternsByMethod.get(method);
     if (patterns === undefined) return undefined;
@@ -166,14 +183,24 @@ export class Router {
       if (isSplatPattern(entry)) continue;
       const params = matchPattern(entry.segments, requestSegments);
       if (params !== null) {
-        return { handler: entry.handler, params, bypassCsrf: entry.bypassCsrf };
+        return {
+          handler: entry.handler,
+          params,
+          bypassCsrf: entry.bypassCsrf,
+          maxBodyBytes: entry.maxBodyBytes,
+        };
       }
     }
     for (const entry of patterns) {
       if (!isSplatPattern(entry)) continue;
       const params = matchPattern(entry.segments, requestSegments);
       if (params !== null) {
-        return { handler: entry.handler, params, bypassCsrf: entry.bypassCsrf };
+        return {
+          handler: entry.handler,
+          params,
+          bypassCsrf: entry.bypassCsrf,
+          maxBodyBytes: entry.maxBodyBytes,
+        };
       }
     }
     return undefined;

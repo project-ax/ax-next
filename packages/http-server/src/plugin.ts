@@ -173,10 +173,27 @@ export function createHttpServerPlugin(
               message: 'handler must be a function',
             });
           }
+          if (
+            input.maxBodyBytes !== undefined &&
+            (typeof input.maxBodyBytes !== 'number' ||
+              !Number.isInteger(input.maxBodyBytes) ||
+              input.maxBodyBytes <= 0)
+          ) {
+            throw new PluginError({
+              code: 'invalid-payload',
+              plugin: PLUGIN_NAME,
+              message: `maxBodyBytes must be a positive integer when provided: got ${JSON.stringify(input.maxBodyBytes)}`,
+            });
+          }
           let unregister: () => void;
           try {
+            // Spread maxBodyBytes only when set so `exactOptionalPropertyTypes`
+            // doesn't see an explicit `undefined` value (which it disallows).
             unregister = router.register(input.method, input.path, input.handler, {
               bypassCsrf: input.bypassCsrf === true,
+              ...(input.maxBodyBytes !== undefined
+                ? { maxBodyBytes: input.maxBodyBytes }
+                : {}),
             });
           } catch (err) {
             throw new PluginError({
@@ -352,7 +369,8 @@ async function handle(
 
   let body: Buffer;
   try {
-    body = await readBodyCapped(req, MAX_BODY_BYTES);
+    const cap = matched.maxBodyBytes ?? MAX_BODY_BYTES;
+    body = await readBodyCapped(req, cap);
   } catch (err) {
     if (err instanceof BodyTooLargeError) {
       return finish(413, { error: 'body-too-large' });

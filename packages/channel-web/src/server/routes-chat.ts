@@ -186,6 +186,32 @@ interface AgentInvokeInput {
   message: AgentMessage;
 }
 
+// --- attachments:commit (Phase 3) ----------------------------------------
+// Duck-typed payloads — I2 forbids importing `@ax/attachments` from here.
+// Drift surfaces as a test failure (the Phase-3 attachment-ref tests
+// exercise the commit-call shape).
+interface AttachmentsCommitInput {
+  attachmentId: string;
+  conversationId: string;
+  turnId: string;
+}
+interface AttachmentsCommitOutput {
+  path: string;
+  sha256: string;
+  mediaType: string;
+  sizeBytes: number;
+  displayName: string;
+}
+
+/**
+ * Per-message attachment-bytes cap. Sum of `sizeBytes` across every
+ * attachment block in a single user turn. Design doc §"Caps (v1)" —
+ * 100 MiB lines up with the per-user pending quota in `@ax/attachments`
+ * (so a single message can redeem the user's entire pending budget but
+ * not more).
+ */
+const MAX_PER_MESSAGE_ATTACHMENT_BYTES = 100 * 1024 * 1024;
+
 // --- handler factory ------------------------------------------------------
 
 export interface ChatRouteDeps {
@@ -303,6 +329,72 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
         }
       }
 
+      // 4.5) Commit any attachment_ref blocks. The wire allows them as
+      // part of contentBlocks; we resolve each one to a workspace path
+      // BEFORE dispatching agent:invoke so the runner sees stable
+      // `attachment` blocks (I4 — single source of truth: the runner
+      // gets canonical paths, not opaque ids).
+      //
+      // turnId is server-minted here (separate from `reqId` below — the
+      // runner uses turnId to bind the user message to the same turn the
+      // host committed attachments under, so the file path
+      // `.ax/uploads/<conv>/<turnId>/<file>` and the SDK turn agree).
+      //
+      // Atomicity: `attachments:commit` is atomic per row, but if ref #2
+      // fails after ref #1 succeeded we have one committed file with no
+      // transcript reference. Acceptable per the Phase-3 design — the
+      // janitor reaps stale temps, and the orphan committed file just
+      // sits in the workspace until the next git GC.
+      const userTurnId = makeReqId();
+      const rewrittenBlocks: ContentBlock[] = [];
+      let totalAttachmentBytes = 0;
+      const attachmentCtx = makeAgentContext({
+        sessionId: 'channel-web-commit',
+        agentId: body.agentId,
+        userId,
+        conversationId,
+      });
+      for (const block of body.contentBlocks) {
+        if (block.type !== 'attachment_ref') {
+          rewrittenBlocks.push(block);
+          continue;
+        }
+        try {
+          const committed = await bus.call<
+            AttachmentsCommitInput,
+            AttachmentsCommitOutput
+          >('attachments:commit', attachmentCtx, {
+            attachmentId: block.attachmentId,
+            conversationId,
+            turnId: userTurnId,
+          });
+          totalAttachmentBytes += committed.sizeBytes;
+          if (totalAttachmentBytes > MAX_PER_MESSAGE_ATTACHMENT_BYTES) {
+            res.status(413).json({ error: 'attachment-total-too-large' });
+            return;
+          }
+          rewrittenBlocks.push({
+            type: 'attachment',
+            path: committed.path,
+            displayName: committed.displayName,
+            mediaType: committed.mediaType,
+            sizeBytes: committed.sizeBytes,
+          });
+        } catch (err) {
+          if (err instanceof PluginError) {
+            if (err.code === 'not-found') {
+              res.status(400).json({ error: 'attachment-not-found' });
+              return;
+            }
+            if (err.code === 'forbidden') {
+              res.status(400).json({ error: 'attachment-foreign-user' });
+              return;
+            }
+          }
+          throw err;
+        }
+      }
+
       // 5) Mint reqId (J9 — server-side only). The schema doesn't carry a
       // reqId field on the request body; even if a client tried to inject
       // one, zod's strict shape would refuse it (and we'd ignore it here
@@ -382,7 +474,19 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
 
       const message: AgentMessage = {
         role: 'user',
-        content: extractText(body.contentBlocks),
+        content: extractText(rewrittenBlocks),
+        // Phase 3: pass the full block list when ANY block is present so
+        // the runner can render attachments. Phase 2's D2 extension on
+        // AgentMessageSchema makes `contentBlocks` optional; Phase 3
+        // starts populating it.
+        contentBlocks: rewrittenBlocks,
+        // turnId is the per-user-turn id the runner uses to bind the
+        // user message to the same turn the host committed attachments
+        // under (so the file path `.ax/uploads/<conv>/<turnId>/<file>`
+        // and the SDK turn agree). Set unconditionally so the runner's
+        // jsonl write picks up a stable id even when no attachments were
+        // committed this turn — useful for future per-turn correlation.
+        turnId: userTurnId,
       };
 
       // Fire-and-forget. A failure inside agent:invoke still emits a

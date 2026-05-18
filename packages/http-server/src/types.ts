@@ -141,6 +141,18 @@ export interface HttpRegisterRouteInput {
    * Defaults to `false`.
    */
   bypassCsrf?: boolean;
+  /**
+   * Per-route override for the request-body size cap. Defaults to
+   * `MAX_BODY_BYTES` (1 MiB). Routes that handle multipart uploads opt
+   * into a larger cap by declaring it explicitly; everything else
+   * inherits the framework default.
+   *
+   * The cap is enforced BEFORE the handler runs (the framework drains
+   * the body up to this limit and returns 413 above it). A route that
+   * sets this MUST also declare any further per-field caps inside its
+   * handler — this is the outermost defense-in-depth check only.
+   */
+  maxBodyBytes?: number;
 }
 
 export interface HttpRegisterRouteOutput {
