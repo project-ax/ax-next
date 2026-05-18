@@ -14,6 +14,7 @@ import { useAgentStore } from './agent-store';
 import { sessionStoreActions, useSessionStore } from './session-store';
 import { useThinkingStore } from './thinking-store';
 import { AxAttachmentAdapter } from './ax-attachment-adapter';
+import { setActiveConversationId } from './use-conversation-id';
 
 const useChatThreadRuntime = (transport: AxChatTransport): AssistantRuntime => {
   const id = useAuiState(({ threadListItem }) => threadListItem.id);
@@ -70,6 +71,10 @@ export const useAxChatRuntime = (
 
   const handleSetConversationId = useCallback((id: string) => {
     conversationRef.current = id;
+    // Publish the freshly-minted id to subscribers (AttachmentChip,
+    // ArtifactChip) via the module-level store so they can build
+    // GET /api/files URLs without prop-drilling.
+    setActiveConversationId(id);
     // The server just minted a fresh conversation row (typical first
     // message after a "+ new session" click or an agent switch).
     // Promote it to the sidebar's active session immediately so the
@@ -111,6 +116,10 @@ export const useAxChatRuntime = (
   useEffect(() => {
     if (activeSessionId === null) {
       conversationRef.current = null;
+      // Clear the subscriber-visible id so any AttachmentChip / ArtifactChip
+      // that's still mounted falls back to its conversation-unknown state
+      // rather than building a URL against the previous conversation.
+      setActiveConversationId(null);
     }
   }, [activeSessionId]);
 

@@ -41,7 +41,10 @@ import { thinkingStoreActions, useThinkingStore } from '../lib/thinking-store';
 import { MarkdownText } from './MarkdownText';
 import { Composer } from './Composer';
 import { SearchBar } from './SearchBar';
-import { ToolFallback, ToolGroup } from './ToolUse';
+import { ArtifactPublishTool, ToolFallback, ToolGroup } from './ToolUse';
+import { AttachmentChip } from './AttachmentChip';
+import { decodeAttachmentPath } from '../lib/history-adapter';
+import { useConversationId } from '../lib/use-conversation-id';
 
 const MSG_ACTION_CLASS =
   'msg-action inline-flex items-center justify-center cursor-pointer h-[22px] w-[22px] rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors data-[copied=true]:text-primary [&_svg]:h-3.5 [&_svg]:w-3.5 [&_svg]:block [&[data-copied=true]_.msg-action-icon-copy]:hidden [&:not([data-copied])_.msg-action-icon-check]:hidden';
@@ -97,6 +100,52 @@ const ThreadWelcome: FC = () => (
   </div>
 );
 
+/**
+ * Adapter from assistant-ui's `FileMessagePart` shape to `AttachmentChip`.
+ * The history adapter (Task 6) encodes `ax://attachment-path/<base64url>`
+ * URLs into the `data` slot so the renderer can decode them back to a
+ * workspace path and build `GET /api/files` URLs at render time.
+ *
+ * Falls back to a small text marker when the URL doesn't carry a known
+ * `ax://` prefix or when no conversation id is in play yet — we never
+ * silently drop the user's attachment from the transcript.
+ *
+ * Accepts both `mediaType` (history-adapter path / AI SDK UIMessage shape)
+ * and `mimeType` (assistant-ui's canonical `FileMessagePart` shape) since
+ * the path the part travels depends on whether the message comes from
+ * `useLocalRuntime` / `initialMessages` or the live AI SDK bridge.
+ */
+interface FileMessagePartLike {
+  data?: string;
+  url?: string;
+  mediaType?: string;
+  mimeType?: string;
+  filename?: string;
+}
+
+const UserFilePart: FC<FileMessagePartLike> = (props) => {
+  const conversationId = useConversationId();
+  const url = props.data ?? props.url ?? '';
+  const path = decodeAttachmentPath(url);
+  const mediaType =
+    props.mediaType ?? props.mimeType ?? 'application/octet-stream';
+  if (path === null || conversationId === null) {
+    return (
+      <span className="text-xs text-muted-foreground italic">
+        [attachment: {props.filename ?? 'unknown'}]
+      </span>
+    );
+  }
+  return (
+    <AttachmentChip
+      path={path}
+      displayName={props.filename ?? 'file'}
+      mediaType={mediaType}
+      conversationId={conversationId}
+    />
+  );
+};
+
 const UserMessage: FC = () => (
   <MessagePrimitive.Root asChild>
     <div className="msg you mb-[22px] flex flex-col items-end relative max-w-full" data-role="user">
@@ -106,7 +155,9 @@ const UserMessage: FC = () => (
           font-sans text-[15px] leading-[1.6] whitespace-pre-wrap break-words
         "
       >
-        <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
+        <MessagePrimitive.Parts
+          components={{ Text: MarkdownText, File: UserFilePart }}
+        />
       </div>
       <ActionBarPrimitive.Root
         className="
@@ -164,7 +215,10 @@ const AssistantMessage: FC = () => (
         <MessagePrimitive.Parts
           components={{
             Text: MarkdownText,
-            tools: { Fallback: ToolFallback },
+            tools: {
+              by_name: { artifact_publish: ArtifactPublishTool },
+              Fallback: ToolFallback,
+            },
             ToolGroup,
           }}
         />

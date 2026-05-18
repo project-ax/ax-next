@@ -22,6 +22,8 @@ import { useMemo, useState } from 'react';
 import { useMessage } from '@assistant-ui/react';
 import type { ToolCallMessagePartProps } from '@assistant-ui/react';
 import { cn } from '@/lib/utils';
+import { ArtifactChip } from './ArtifactChip';
+import { useConversationId } from '../lib/use-conversation-id';
 
 const VERB_MAP: Record<string, string> = {
   'email.search': 'searched email',
@@ -208,5 +210,67 @@ export const ToolFallback: FC<ToolCallMessagePartProps> = (p) => {
         </>
       ) : null}
     </div>
+  );
+};
+
+/**
+ * Result shape emitted by the `artifact_publish` runner tool. We don't trust
+ * the assistant — every field is treated as optional and the chip falls back
+ * to the standard tool panel if anything's missing or malformed.
+ */
+interface ArtifactPublishToolResult {
+  artifactId?: string;
+  downloadUrl?: string;
+  path?: string;
+  displayName?: string;
+  mediaType?: string;
+  sizeBytes?: number;
+  sha256?: string;
+}
+
+/**
+ * Custom renderer for the `artifact_publish` tool. Parses the tool's JSON
+ * result and renders an inline `ArtifactChip` so the user can download the
+ * published file straight from the transcript. Any failure path (still
+ * running, errored, parse-failed, missing fields, missing conversation
+ * context) falls back to the standard `ToolFallback` panel — the user
+ * still sees what happened, just without the chip affordance.
+ */
+export const ArtifactPublishTool: FC<ToolCallMessagePartProps> = (p) => {
+  const conversationId = useConversationId();
+  if (p.status?.type === 'running' || p.result === undefined) {
+    return <ToolFallback {...p} />;
+  }
+  if (p.isError === true) {
+    return <ToolFallback {...p} />;
+  }
+  let parsed: ArtifactPublishToolResult | null = null;
+  try {
+    const raw =
+      typeof p.result === 'string' ? p.result : JSON.stringify(p.result);
+    parsed = JSON.parse(raw) as ArtifactPublishToolResult;
+  } catch {
+    return <ToolFallback {...p} />;
+  }
+  if (
+    !parsed ||
+    conversationId === null ||
+    typeof parsed.path !== 'string' ||
+    typeof parsed.displayName !== 'string' ||
+    typeof parsed.mediaType !== 'string' ||
+    typeof parsed.sizeBytes !== 'number'
+  ) {
+    return <ToolFallback {...p} />;
+  }
+  return (
+    <ArtifactChip
+      variant="inline"
+      conversationId={conversationId}
+      path={parsed.path}
+      displayName={parsed.displayName}
+      mediaType={parsed.mediaType}
+      sizeBytes={parsed.sizeBytes}
+      {...(parsed.artifactId !== undefined && { artifactId: parsed.artifactId })}
+    />
   );
 };
