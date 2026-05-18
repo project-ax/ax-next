@@ -1,0 +1,91 @@
+<task-notification>
+<task-id>a3cc302c145804e21</task-id>
+<tool-use-id>toolu_01XC9mBJGXiBJ55NVnbG9W87</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-vpulim-dev-ai-ax-next/156d1273-18d1-4285-b586-fdb68cdd1a6c/tasks/a3cc302c145804e21.output</output-file>
+<status>completed</status>
+<summary>Agent "Implement Task 3: runner Skill" completed</summary>
+<result>## Report: DONE — Task 3 complete
+
+### File-level diff summary
+
+**`packages/agent-claude-sdk-runner/src/tool-names.ts`** (production):
+- `DISABLED_BUILTINS` shrunk from 4 → 3 elements: removed `'Skill'`; kept `'WebFetch'`, `'WebSearch'`, `'Task'`.
+- Surrounding comment rewritten to clarify why Task stays (nested-agent bypass) while Skill no longer does (it's now the intended SDK-native discovery path, gated by validator-skill's veto from commit `521f206c`).
+
+**`packages/agent-claude-sdk-runner/src/main.ts`** (production):
+- Added `allowedTools: ['Skill', ...agentConfig.allowedTools]` to the SDK options literal (the field didn't exist before — `agentConfig.allowedTools` was only used as a defensive client-side tool-catalog filter at lines 222-225).
+- `settingSources: []` → `settingSources: ['user', 'project']` with the multi-line WHY comment from the Task 3 spec (references validator-skill veto, narrow symlink scope, per-session HOME isolation, I-P0-1 plan ref).
+- `disallowedTools: [...DISABLED_BUILTINS]` unchanged — Skill naturally drops out because `DISABLED_BUILTINS` no longer contains it.
+
+**`packages/agent-claude-sdk-runner/src/__tests__/main.test.ts`** (test):
+- Cast type extended with `allowedTools: string[]`.
+- `disallowedTools` arrayContaining `['WebFetch', 'WebSearch', 'Skill', 'Task']` → `['WebFetch', 'WebSearch', 'Task']`.
+- New positive guard: `expect(disallowedTools).not.toContain('Skill')`.
+- New positive guard: `expect(allowedTools).toContain('Skill')`.
+- `settingSources` expectation flipped to `['user', 'project']` with a comment explaining what each source enables.
+
+**`packages/agent-claude-sdk-runner/src/__tests__/tool-names.test.ts`** (test):
+- New test `classifies Skill as builtin (allowed) — I-P0-1 skill discovery` that pins `classifySdkToolName('Skill')` to `{ kind: 'builtin', axName: 'Skill' }`. A revert that re-adds Skill to `DISABLED_BUILTINS` fails loudly here.
+- The existing `it.each(DISABLED_BUILTINS)` auto-adjusts (Skill is no longer in the input).
+
+### Test / build / lint results
+
+- `pnpm test` in `packages/agent-claude-sdk-runner`: **12 files, 122 tests passed.**
+- `pnpm build`: **clean** (full monorepo tsc --build).
+- `pnpm lint`: **0 errors, 2 pre-existing warnings** (unused eslint-disable directives in `deploy/charts/ax-next/__tests__/render.test.ts` and `packages/channel-web/src/__tests__/tool-use.test.tsx` — unrelated to this task, present on baseline).
+- `pnpm test` full monorepo: one flaky failure in `@ax/memory-strata` `plugin.test.ts &gt; serializes consolidator passes per-agent — pass 2 waits for pass 1 fs work to settle` — a filesystem timing test in a totally unrelated package. **Passes cleanly on re-run in isolation** (8/8). Not caused by this commit; my changes touch only `packages/agent-claude-sdk-runner/`.
+
+### Commit
+
+`448f119b feat(runner): enable Skill discovery via user+project setting sources (I-P0-1)` — 4 files changed, 75 insertions(+), 11 deletions(-).
+
+### Notes / concerns
+
+- All 8 plan steps executed as specified.
+- Self-review checklist: all items checked.
+- The memory-strata flake is worth flagging but does not block this task — the test passes in isolation, depends on filesystem ordering timings, and the code path it exercises has zero overlap with my changes.</result>
+<usage><total_tokens>73034</total_tokens><tool_uses>21</tool_uses><duration_ms>303403</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>a3cc302c145804e21</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-vpulim-dev-ai-ax-next/156d1273-18d1-4285-b586-fdb68cdd1a6c/tasks/a3cc302c145804e21.output</output-file>
+<status>completed</status>
+<summary>Agent "Implement Task 3: runner Skill" completed</summary>
+<result>## Report: DONE — SECURITY.md refresh + main.ts comment tweak
+
+### File-level diff summary
+
+**`packages/agent-claude-sdk-runner/SECURITY.md`** (4 spots, all four review comments addressed):
+
+1. **Sandbox bullet (line 7):** disabled-built-ins list trimmed from `WebFetch, WebSearch, Skill, Task` → `WebFetch, WebSearch, Task`. Skill added to the enabled-built-ins list with a forward-pointer to "Newly enabled with caveats." The `settingSources: []` description rewritten to `settingSources: ['user', 'project']` explaining what each source enables and that the broader SDK-config surface is gated by validator-skill at `workspace:pre-apply`.
+
+2. **"Disabled built-ins (why)" section:** dropped the `Skill` bullet (the old "settingSources: [] is the suspenders, disabling is the belt" framing is no longer accurate). Added a new sibling section **"Newly enabled with caveats — `Skill`"** that uses the reviewer's suggested three-defense narrative in bypass-cost order:
+   - validator-skill veto on `.claude/settings.json`, `.claude/settings.local.json`, `.claude/CLAUDE.md`, `CLAUDE.md`, `CLAUDE.local.md`, plus `.claude/agents/`, `.claude/commands/`, `.claude/rules/` dir prefixes (commit `521f206c`);
+   - narrow `&lt;workspace&gt;/.claude/skills → &lt;workspace&gt;/.ax/skills` symlink scope;
+   - per-session `$HOME` (tempdir / emptyDir) isolated from host `~/.claude`.
+   
+   Points readers at `docs/notes/2026-05-17-sdk-setting-sources-audit.md` for the full audit.
+
+3. **Known scope limits (line 32):** rewrote to drop the `settingSources: []`-as-contract premise. New framing covers BOTH `allowedTools`/`disallowedTools` (future SDK built-in slipping past `tool-names.ts`) AND `settingSources` (future SDK source addition or new-file-under-existing-source slipping past validator-skill's veto path list). Updated the runner-test guard description to match the new asserted values (`['user', 'project']`, Skill in allowed, Skill not in disallowed).
+
+4. **What we don't know yet (line 45):** rewrote the same-premise bullet to point at the LOW-confidence hedge in the Task 1 audit doc: "we don't know if there's an SDK file-read path under `'user'` or `'project'` source that the audit missed."
+
+**`packages/agent-claude-sdk-runner/src/main.ts`** (folded-in phrasing tweak):
+- Comment above `allowedTools: ['Skill', ...agentConfig.allowedTools]` changed from `Skill leads the allow list...` to `Skill is added to the allow list...`, with a new clarifying sentence: `The SDK treats allowedTools as a set, not an ordered list — position is irrelevant; we put Skill first for reader-facing emphasis only.`
+
+### Self-review
+
+- No remaining stale references — `grep` confirms the only mentions of `settingSources: []` and `Skill` in disabled contexts are now in their correctly-framed historical/comparative roles (the new Skill section explicitly contrasts "the agent-self-escalation risk that empty settingSources previously prevented").
+- `pnpm test` in `packages/agent-claude-sdk-runner`: 12 files, **122/122 passed**.
+- `pnpm lint`: 0 errors, same 2 pre-existing unrelated warnings.
+- Commit kept docs-separate from the Task 3 code commit as requested.
+
+### Commit
+
+`742d1ea6 docs(runner): refresh SECURITY.md for Phase 0 — Skill enabled, settingSources flipped (I-P0-1)` — 2 files, 22 insertions / 10 deletions.</result>
+<usage><total_tokens>90109</total_tokens><tool_uses>14</tool_uses><duration_ms>155628</duration_ms></usage>
+</task-notification>
