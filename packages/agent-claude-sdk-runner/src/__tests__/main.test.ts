@@ -2364,4 +2364,87 @@ describe('main()', () => {
       path: '.ax/uploads/c1/t1/img.png',
     });
   });
+
+  it('Phase 2: preserves typed user text alongside translated attachment blocks', async () => {
+    setEnv(COMPLETE_ENV);
+    fakeClient = buildFakeClient();
+    const png = Buffer.from('fake-png-bytes');
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          conversationId: null,
+          runnerSessionId: null,
+        };
+      }
+      if (action === 'workspace.materialize') return { bundleBytes: '' };
+      if (action === 'tool.list') return { tools: [] };
+      if (action === 'workspace.read') {
+        return { found: true, bytesBase64: png.toString('base64') };
+      }
+      if (action === 'workspace.commit-notify') {
+        return { accepted: true, version: 'v1', delta: null };
+      }
+      throw new Error(`unexpected call: ${action}`);
+    });
+
+    // The future Phase 3 chat-messages handler will send BOTH typed text
+    // AND attachment blocks for a single user turn. Confirm the runner
+    // emits text-first then translated blocks rather than discarding text.
+    const userMsg: InboxLoopEntry = {
+      type: 'user-message',
+      payload: {
+        role: 'user',
+        content: 'what is in this image?',
+        contentBlocks: [
+          {
+            type: 'attachment',
+            path: '.ax/uploads/c1/t1/img.png',
+            displayName: 'img.png',
+            mediaType: 'image/png',
+            sizeBytes: png.length,
+          },
+        ],
+      },
+      reqId: 'req-mixed',
+    };
+    fakeInbox = buildFakeInbox([userMsg, cancelEntry]);
+
+    const sdkUserMessages: SDKUserMessage[] = [];
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+      return (async function* () {
+        const it = prompt[Symbol.asyncIterator]();
+        const firstUser = await it.next();
+        if (!firstUser.done && firstUser.value !== undefined) {
+          sdkUserMessages.push(firstUser.value);
+        }
+        yield assistantText('ok');
+        yield resultSuccess();
+        await it.next();
+      })();
+    });
+
+    const { main } = await import('../main.js');
+    await main();
+
+    expect(sdkUserMessages).toHaveLength(1);
+    expect((sdkUserMessages[0]!.message as { content: unknown }).content).toEqual([
+      { type: 'text', text: 'what is in this image?' },
+      {
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: 'image/png',
+          data: png.toString('base64'),
+        },
+      },
+    ]);
+  });
 });

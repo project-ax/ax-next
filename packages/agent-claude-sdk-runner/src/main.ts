@@ -360,23 +360,34 @@ export async function main(): Promise<number> {
         entry.payload.contentBlocks !== undefined &&
         entry.payload.contentBlocks.length > 0;
 
+      // When the chat-messages handler ships both `content` (typed text)
+      // AND `contentBlocks` (attachments) for a single user turn (Phase 3),
+      // we need to preserve BOTH. Dropping `content` here would erase the
+      // user's typed prompt the moment an attachment was attached. Emit
+      // text-first so the model reads the user's intent before the blocks.
+      // The empty-text guard skips synthetic empty text the chat-messages
+      // handler may send when the user attaches without typing.
+      const userText = entry.payload.content;
       const messageContent: unknown = hasBlocks
-        ? await translateContentBlocks(entry.payload.contentBlocks!, {
-            readWorkspace: workspaceReader,
-            supportsDocumentBlocks: SUPPORTS_DOCUMENT_BLOCKS,
-          })
-        : entry.payload.content;
+        ? [
+            ...(userText.length > 0 ? [{ type: 'text', text: userText }] : []),
+            ...(await translateContentBlocks(entry.payload.contentBlocks!, {
+              readWorkspace: workspaceReader,
+              supportsDocumentBlocks: SUPPORTS_DOCUMENT_BLOCKS,
+            })),
+          ]
+        : userText;
 
       // Keep chatEndHistory as text-only — if contentBlocks were used,
-      // stringify a short summary so the chat-end event payload doesn't
-      // carry raw bytes. Phase 3 may refine this once downstream consumers
-      // of event.chat-end's outcome.messages are clearer about what they
-      // need.
+      // include the user's typed text (if any) plus a short blocks summary
+      // so the chat-end event payload doesn't carry raw bytes. Phase 3 may
+      // refine this once downstream consumers of event.chat-end's
+      // outcome.messages are clearer about what they need.
       chatEndHistory.push({
         role: 'user',
         content: hasBlocks
-          ? `[${entry.payload.contentBlocks!.length} blocks]`
-          : entry.payload.content,
+          ? `${userText}${userText.length > 0 ? ' ' : ''}[${entry.payload.contentBlocks!.length} blocks]`
+          : userText,
       });
 
       yield {
