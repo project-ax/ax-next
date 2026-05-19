@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest';
 import {
   PostgreSqlContainer,
   type StartedPostgreSqlContainer,
@@ -27,6 +27,7 @@ const harnesses: TestHarness[] = [];
 
 async function makeHarness(extras: {
   withTeams?: 'always-member' | 'never-member' | null;
+  extraServices?: Record<string, (ctx: unknown, input: unknown) => Promise<unknown>>;
 } = {}): Promise<TestHarness> {
   // The agents plugin declares `calls: ['database:get-instance',
   // 'http:register-route', 'auth:require-user']`. The bus tests below don't
@@ -47,6 +48,7 @@ async function makeHarness(extras: {
         'auth:require-user mock not configured for plugin.test.ts',
       );
     },
+    ...extras.extraServices,
   };
   if (extras.withTeams === 'always-member') {
     services['teams:is-member'] = async () => ({ member: true });
@@ -567,5 +569,96 @@ describe('@ax/agents service hooks (round trip)', () => {
       { skillId: 'openai' },
     );
     expect(r).toEqual({ attached: false });
+  });
+});
+
+describe('@ax/agents credential purge on delete', () => {
+  it('agents:delete calls credentials:purge-by-owner({ scope: agent }) exactly once', async () => {
+    const purgeStub = vi.fn(async () => ({ deleted: 0 }));
+
+    const h = await makeHarness({
+      withTeams: undefined,
+      extraServices: { 'credentials:purge-by-owner': purgeStub },
+    });
+    const ctx = h.ctx({ userId: 'u1' });
+
+    // Create an agent.
+    const created = await h.bus.call<CreateInput, CreateOutput>('agents:create', ctx, {
+      actor: { userId: 'u1', isAdmin: false },
+      input: makeInput(),
+    });
+    const agentId = created.agent.id;
+
+    // Delete it — purge stub should fire exactly once with scope: 'agent'.
+    await h.bus.call<DeleteInput, void>('agents:delete', ctx, {
+      actor: { userId: 'u1', isAdmin: false },
+      agentId,
+    });
+
+    expect(purgeStub).toHaveBeenCalledTimes(1);
+    expect(purgeStub).toHaveBeenCalledWith(
+      expect.anything(),
+      { scope: 'agent', ownerId: agentId },
+    );
+
+    // Agent row should be gone.
+    const empty = await h.bus.call<ListForUserInput, ListForUserOutput>(
+      'agents:list-for-user',
+      ctx,
+      { userId: 'u1' },
+    );
+    expect(empty.agents).toEqual([]);
+  });
+
+  it('agents:delete continues and deletes agent even if credentials:purge-by-owner fails', async () => {
+    const purgeStub = vi.fn(async () => {
+      throw new Error('storage exploded');
+    });
+
+    const h = await makeHarness({
+      withTeams: undefined,
+      extraServices: { 'credentials:purge-by-owner': purgeStub },
+    });
+    const ctx = h.ctx({ userId: 'u1' });
+
+    const created = await h.bus.call<CreateInput, CreateOutput>('agents:create', ctx, {
+      actor: { userId: 'u1', isAdmin: false },
+      input: makeInput(),
+    });
+
+    // Delete should succeed even though purge throws.
+    await expect(
+      h.bus.call<DeleteInput, void>('agents:delete', ctx, {
+        actor: { userId: 'u1', isAdmin: false },
+        agentId: created.agent.id,
+      }),
+    ).resolves.toBeUndefined();
+
+    // Agent should be gone.
+    const empty = await h.bus.call<ListForUserInput, ListForUserOutput>(
+      'agents:list-for-user',
+      ctx,
+      { userId: 'u1' },
+    );
+    expect(empty.agents).toEqual([]);
+  });
+
+  it('agents:delete skips credentials:purge-by-owner when service is not loaded', async () => {
+    // No extraServices — @ax/credentials not wired in (stripped preset simulation).
+    const h = await makeHarness();
+    const ctx = h.ctx({ userId: 'u1' });
+
+    const created = await h.bus.call<CreateInput, CreateOutput>('agents:create', ctx, {
+      actor: { userId: 'u1', isAdmin: false },
+      input: makeInput(),
+    });
+
+    // Should complete without throwing even though credentials is absent.
+    await expect(
+      h.bus.call<DeleteInput, void>('agents:delete', ctx, {
+        actor: { userId: 'u1', isAdmin: false },
+        agentId: created.agent.id,
+      }),
+    ).resolves.toBeUndefined();
   });
 });

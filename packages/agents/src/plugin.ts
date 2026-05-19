@@ -484,6 +484,24 @@ async function deleteAgent(
     });
   }
   await assertWriteAllowed(existing, bus, ctx, input.actor);
+
+  // Purge credentials BEFORE store.deleteById — if the purge fails, the agent
+  // row stays and the operator can retry. If we deleted the agent first and the
+  // purge failed, credential rows would be orphaned with no way to reclaim them.
+  if (bus.hasService('credentials:purge-by-owner')) {
+    try {
+      await bus.call('credentials:purge-by-owner', ctx, {
+        scope: 'agent',
+        ownerId: input.agentId,
+      });
+    } catch (err) {
+      ctx.logger.warn('agents_delete_credential_purge_failed', {
+        agentId: input.agentId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   await store.deleteById(input.agentId);
 }
 
