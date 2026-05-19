@@ -20,7 +20,27 @@ beforeAll(async () => {
 }, 120_000);
 
 afterEach(async () => {
+  // CASCADE on default_routines_v1 drops dependent rows in
+  // routines_v1_definitions (via FK ON DELETE CASCADE). Then re-seed the
+  // heartbeat default so each test gets a clean slate with exactly the
+  // seeded default present — matches the post-migration starting state.
+  await sql`TRUNCATE default_routines_v1 CASCADE`.execute(db);
   await sql`TRUNCATE routines_v1_definitions, routines_v1_fires`.execute(db);
+  await sql`
+    INSERT INTO default_routines_v1
+      (default_routine_id, name, description, spec_hash, trigger_kind,
+       trigger_spec, interval_seconds, silence_token, silence_max,
+       conversation, prompt_body, source_md)
+    VALUES
+      ('default-heartbeat-2026-05-19', 'heartbeat',
+       'Daily check-in: ask if anything is outstanding.',
+       'seed-2026-05-19',
+       'interval', ${'{"kind":"interval","every":"24h"}'}::jsonb, 86400,
+       'HEARTBEAT_OK', 300, 'shared',
+       'If nothing is outstanding, respond with HEARTBEAT_OK and end.',
+       'seed')
+    ON CONFLICT (name) DO NOTHING
+  `.execute(db);
 });
 
 afterAll(async () => {
@@ -204,5 +224,101 @@ describe('RoutinesStore.recentFires', () => {
     expect(out).toHaveLength(3);
     expect(out[0]!.renderedPrompt).toBe('prompt 4');
     expect(out[2]!.renderedPrompt).toBe('prompt 2');
+  });
+});
+
+describe('RoutinesStore default-routine CRUD', () => {
+  it('upsertDefault + listDefaults round-trip', async () => {
+    const store = createRoutinesStore(db);
+
+    const r = await store.upsertDefault({
+      name: 'my-default',
+      description: 'd',
+      specHash: 'h1',
+      trigger: { kind: 'interval', every: '1h' },
+      intervalSeconds: 3600,
+      activeHours: null,
+      silenceToken: 'TOK',
+      silenceMax: 300,
+      conversation: 'shared',
+      promptBody: 'p',
+      sourceMd: '---\nname: my-default\n---\n',
+    });
+    expect(r.created).toBe(true);
+    expect(typeof r.defaultRoutineId).toBe('string');
+
+    const list = await store.listDefaults();
+    // The heartbeat seed is also present — at least 2 defaults total.
+    expect(list.map((d) => d.name)).toContain('my-default');
+    expect(list.map((d) => d.name)).toContain('heartbeat');
+  });
+
+  it('upsertDefault rejects duplicate name as expected (unique constraint)', async () => {
+    // Two upserts with the same name from different upsert calls should
+    // update, not duplicate.
+    const store = createRoutinesStore(db);
+
+    await store.upsertDefault({
+      name: 'twice', description: 'a', specHash: 'h1',
+      trigger: { kind: 'interval', every: '1h' }, intervalSeconds: 3600,
+      activeHours: null, silenceToken: null, silenceMax: 300,
+      conversation: 'shared', promptBody: 'p1',
+      sourceMd: 'a',
+    });
+    const r2 = await store.upsertDefault({
+      name: 'twice', description: 'b', specHash: 'h2',
+      trigger: { kind: 'interval', every: '2h' }, intervalSeconds: 7200,
+      activeHours: null, silenceToken: null, silenceMax: 300,
+      conversation: 'shared', promptBody: 'p2',
+      sourceMd: 'b',
+    });
+    expect(r2.created).toBe(false);
+    const d = await store.getDefault(r2.defaultRoutineId);
+    expect(d?.description).toBe('b');
+    expect(d?.intervalSeconds).toBe(7200);
+  });
+
+  it('deleteDefault cascades to per-agent rows', async () => {
+    const store = createRoutinesStore(db);
+
+    const { defaultRoutineId } = await store.upsertDefault({
+      name: 'cascade-test', description: 'd', specHash: 'h',
+      trigger: { kind: 'interval', every: '1h' }, intervalSeconds: 3600,
+      activeHours: null, silenceToken: null, silenceMax: 300,
+      conversation: 'shared', promptBody: 'p',
+      sourceMd: 's',
+    });
+
+    // Insert a per-agent row referencing the default.
+    await db.insertInto('routines_v1_definitions').values({
+      agent_id: 'agent-x',
+      path: `default:${defaultRoutineId}`,
+      author_user_id: '@ax/routines/defaults',
+      name: 'cascade-test',
+      description: 'd',
+      spec_hash: 'h',
+      trigger_kind: 'interval',
+      trigger_spec: { kind: 'interval', every: '1h' } as unknown,
+      active_hours: null,
+      silence_token: null,
+      silence_max: 300,
+      conversation: 'shared',
+      prompt_body: 'p',
+      next_run_at: null,
+      last_run_at: null,
+      last_status: null,
+      last_error: null,
+      definition_id: defaultRoutineId,
+      definition_updated_at: new Date(),
+    }).execute();
+
+    await store.deleteDefault(defaultRoutineId);
+
+    const remaining = await db
+      .selectFrom('routines_v1_definitions')
+      .select('agent_id')
+      .where('agent_id', '=', 'agent-x')
+      .execute();
+    expect(remaining).toEqual([]);
   });
 });

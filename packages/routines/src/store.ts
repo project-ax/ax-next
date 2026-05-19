@@ -44,6 +44,38 @@ export interface RecordFireInput {
   renderedPrompt?: string | null;
 }
 
+export interface UpsertDefaultInput {
+  defaultRoutineId?: string;
+  name: string;
+  description: string;
+  specHash: string;
+  trigger: TriggerSpec;
+  intervalSeconds: number | null;
+  activeHours: ActiveHours | null;
+  silenceToken: string | null;
+  silenceMax: number;
+  conversation: 'per-fire' | 'shared';
+  promptBody: string;
+  sourceMd: string;
+}
+
+export interface DefaultRoutineDetailRow {
+  defaultRoutineId: string;
+  name: string;
+  description: string;
+  specHash: string;
+  trigger: TriggerSpec;
+  intervalSeconds: number | null;
+  activeHours: ActiveHours | null;
+  silenceToken: string | null;
+  silenceMax: number;
+  conversation: 'per-fire' | 'shared';
+  promptBody: string;
+  enabled: boolean;
+  sourceMd: string;
+  updatedAt: Date;
+}
+
 export interface RoutinesStore {
   upsert(input: UpsertInput): Promise<{ changed: boolean }>;
   delete(input: { agentId: string; path: string }): Promise<void>;
@@ -53,6 +85,10 @@ export interface RoutinesStore {
   recentFires(input: { agentId: string; path: string; limit?: number }): Promise<FireRow[]>;
   list(input: { agentId?: string }): Promise<RoutineRow[]>;
   findOne(input: { agentId: string; path: string }): Promise<RoutineRow | null>;
+  upsertDefault(input: UpsertDefaultInput): Promise<{ defaultRoutineId: string; created: boolean }>;
+  getDefault(defaultRoutineId: string): Promise<DefaultRoutineDetailRow | null>;
+  listDefaults(): Promise<DefaultRoutineDetailRow[]>;
+  deleteDefault(defaultRoutineId: string): Promise<void>;
 }
 
 /**
@@ -92,6 +128,8 @@ function rowToRoutine(row: {
   conversation: string; prompt_body: string;
   next_run_at: Date | null; last_run_at: Date | null;
   last_status: string | null; last_error: string | null;
+  definition_id: string | null;
+  definition_updated_at: Date | null;
 }): RoutineRow {
   return {
     agentId: row.agent_id,
@@ -110,6 +148,8 @@ function rowToRoutine(row: {
     lastRunAt: row.last_run_at,
     lastStatus: row.last_status as FireStatus | null,
     lastError: row.last_error,
+    definitionId: row.definition_id,
+    definitionUpdatedAt: row.definition_updated_at,
   };
 }
 
@@ -184,6 +224,8 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
         conversation: string; prompt_body: string;
         next_run_at: Date | null; last_run_at: Date | null;
         last_status: string | null; last_error: string | null;
+        definition_id: string | null;
+        definition_updated_at: Date | null;
       }>`
         WITH due AS (
           SELECT agent_id, path
@@ -278,5 +320,111 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
         .executeTakeFirst();
       return row === undefined ? null : rowToRoutine(row as Parameters<typeof rowToRoutine>[0]);
     },
+
+    async upsertDefault(input) {
+      const existing = await db
+        .selectFrom('default_routines_v1')
+        .select(['default_routine_id'])
+        .where('name', '=', input.name)
+        .executeTakeFirst();
+      if (existing === undefined) {
+        const id = input.defaultRoutineId ?? `default-${input.name}-${Date.now()}`;
+        await db.insertInto('default_routines_v1').values({
+          default_routine_id: id,
+          name: input.name,
+          description: input.description,
+          spec_hash: input.specHash,
+          trigger_kind: input.trigger.kind as 'interval',
+          trigger_spec: input.trigger as unknown,
+          interval_seconds: input.intervalSeconds,
+          active_hours: input.activeHours as unknown,
+          silence_token: input.silenceToken,
+          silence_max: input.silenceMax,
+          conversation: input.conversation,
+          prompt_body: input.promptBody,
+          enabled: true,
+          source_md: input.sourceMd,
+        }).execute();
+        return { defaultRoutineId: id, created: true };
+      }
+      await db.updateTable('default_routines_v1')
+        .set({
+          description: input.description,
+          spec_hash: input.specHash,
+          trigger_kind: input.trigger.kind as 'interval',
+          trigger_spec: input.trigger as unknown,
+          interval_seconds: input.intervalSeconds,
+          active_hours: input.activeHours as unknown,
+          silence_token: input.silenceToken,
+          silence_max: input.silenceMax,
+          conversation: input.conversation,
+          prompt_body: input.promptBody,
+          source_md: input.sourceMd,
+          updated_at: sql`now()` as unknown as Date,
+        })
+        .where('default_routine_id', '=', existing.default_routine_id)
+        .execute();
+      return { defaultRoutineId: existing.default_routine_id, created: false };
+    },
+
+    async getDefault(defaultRoutineId) {
+      const row = await db
+        .selectFrom('default_routines_v1')
+        .selectAll()
+        .where('default_routine_id', '=', defaultRoutineId)
+        .executeTakeFirst();
+      return row === undefined ? null : defaultRowToDetail(row);
+    },
+
+    async listDefaults() {
+      const rows = await db
+        .selectFrom('default_routines_v1')
+        .selectAll()
+        .orderBy('name')
+        .execute();
+      return rows.map(defaultRowToDetail);
+    },
+
+    async deleteDefault(defaultRoutineId) {
+      // FK ON DELETE CASCADE on routines_v1_definitions.definition_id
+      // drops dependent per-agent rows.
+      await db.deleteFrom('default_routines_v1')
+        .where('default_routine_id', '=', defaultRoutineId)
+        .execute();
+    },
+  };
+}
+
+function defaultRowToDetail(row: {
+  default_routine_id: string;
+  name: string;
+  description: string;
+  spec_hash: string;
+  trigger_spec: unknown;
+  interval_seconds: number | null;
+  active_hours: unknown | null;
+  silence_token: string | null;
+  silence_max: number;
+  conversation: string;
+  prompt_body: string;
+  enabled: boolean;
+  source_md: string;
+  updated_at: Date;
+}): DefaultRoutineDetailRow {
+  return {
+    defaultRoutineId: row.default_routine_id,
+    name: row.name,
+    description: row.description,
+    specHash: row.spec_hash,
+    trigger: row.trigger_spec as TriggerSpec,
+    intervalSeconds: row.interval_seconds,
+    activeHours: row.active_hours as ActiveHours | null,
+    silenceToken: row.silence_token,
+    silenceMax: row.silence_max,
+    conversation: row.conversation as 'per-fire' | 'shared',
+    promptBody: row.prompt_body,
+    enabled: row.enabled,
+    sourceMd: row.source_md,
+    updatedAt: row.updated_at,
   };
 }
