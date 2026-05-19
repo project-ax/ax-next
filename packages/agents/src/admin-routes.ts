@@ -86,7 +86,12 @@ export interface RouteResponse {
 // layer stays strict. Drift in the OTHER direction (this layer accepts
 // what the store rejects) gets caught by the hook impl and surfaces as
 // invalid-payload at runtime.
-const TOOL_NAME_RE = /^[a-z][a-z0-9_.-]{0,63}$/;
+// allowedTools is a union of MCP tool names (`mcp__<server>__<tool>`, all
+// lowercase) AND Claude Agent SDK built-ins (`Bash`, `Read`, `WebFetch`,
+// `Skill`, …, PascalCase). The MCP catalog's own regex stays strict-lower
+// in @ax/mcp-client; the agent layer relaxes the leading-letter case so
+// SDK built-ins parse without an out-of-band case-mapping table.
+const TOOL_NAME_RE = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
 const MCP_ID_RE = /^[a-z0-9][a-z0-9_.-]{0,63}$/;
 const WORKSPACE_REF_RE = /^[A-Za-z0-9_./-]+$/;
 

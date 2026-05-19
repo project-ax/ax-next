@@ -26,10 +26,13 @@ const SYSTEM_PROMPT_MAX = 32 * 1024; // 32 KiB
 const ALLOWED_TOOLS_MAX = 100;
 const MCP_CONFIG_IDS_MAX = 50;
 const WORKSPACE_REF_MAX = 256;
-// Mirrors the tool-dispatcher plugin's TOOL_NAME_RE (now in @ax/mcp-client) —
-// keep in sync if the dispatcher relaxes it. Tightening here would exclude
-// dispatcher-valid tool names from agent allow-lists, which is wrong.
-const TOOL_NAME_RE = /^[a-z][a-z0-9_.-]{0,63}$/;
+// allowedTools is a union of MCP tool names (lowercase, namespaced by
+// @ax/mcp-client's stricter TOOL_NAME_RE) AND Claude Agent SDK built-ins
+// (`Bash`, `Read`, `WebFetch`, `Skill`, …, PascalCase). The agent layer
+// relaxes the leading-letter case so SDK built-ins parse without an
+// out-of-band case-mapping table. Keep this in sync with admin-routes.ts's
+// schema regex (the two are belt-and-braces).
+const TOOL_NAME_RE = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
 // Mirrors @ax/mcp-client/config.ts ID_RE. Same rationale.
 const MCP_ID_RE = /^[a-z0-9][a-z0-9_.-]{0,63}$/;
 const WORKSPACE_REF_RE = /^[A-Za-z0-9_./-]+$/;
