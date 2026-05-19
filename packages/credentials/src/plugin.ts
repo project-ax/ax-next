@@ -3,7 +3,11 @@ import type { Transaction } from 'kysely';
 import { encryptWithKey, decryptWithKey, parseKeyFromEnv } from './crypto.js';
 
 const PLUGIN_NAME = '@ax/credentials';
-const REF_RE = /^[a-z0-9][a-z0-9_.-]{0,127}$/;
+// `:` is the separator for deterministic destination refs
+// (provider:anthropic, skill:<id>:<slot>, mcp:<id>:env:<name>, etc.).
+// The full ref including separators is one opaque string from the
+// store's POV — refs are never parsed back out. See refs.ts.
+const REF_RE = /^[a-z0-9][a-z0-9_.:-]{0,191}$/;
 const USER_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}$/;
 const KIND_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 

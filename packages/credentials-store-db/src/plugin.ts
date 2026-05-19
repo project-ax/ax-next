@@ -32,7 +32,11 @@ import type { Transaction } from 'kysely';
 const PLUGIN_NAME = '@ax/credentials-store-db';
 const KEY_PREFIX_V2 = 'credential:v2:';
 const KEY_PREFIX_V1 = 'credential:';
-const REF_RE = /^[a-z0-9][a-z0-9_.-]{0,127}$/;
+// `:` is the separator for deterministic destination refs
+// (provider:anthropic, skill:<id>:<slot>, mcp:<id>:env:<name>, etc.).
+// The full ref including separators is one opaque string from the
+// store's POV — refs are never parsed back out. See refs.ts.
+const REF_RE = /^[a-z0-9][a-z0-9_.:-]{0,191}$/;
 const OWNER_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}$/;
 const SCOPE_VALUES = ['global', 'user', 'agent'] as const;
 type Scope = (typeof SCOPE_VALUES)[number];
