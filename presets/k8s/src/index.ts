@@ -18,7 +18,6 @@ import { createCredentialProxyPlugin } from '@ax/credential-proxy';
 import { createCredentialsPlugin } from '@ax/credentials';
 import { createCredentialsStoreDbPlugin } from '@ax/credentials-store-db';
 import { createCredentialsAdminRoutesPlugin } from '@ax/credentials-admin-routes';
-import { createCredentialsOauthPendingPlugin } from '@ax/credentials-oauth-pending';
 import { createIpcHttpPlugin } from '@ax/ipc-http';
 import { createAgentsPlugin } from '@ax/agents';
 import { createSkillsPlugin } from '@ax/skills';
@@ -663,21 +662,17 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   plugins.push(createSkillsPlugin());
 
   // ----- 8b. credentials admin routes (optional) -------------------------
-  // Mounts /admin/credentials* (admin-only CRUD) + /settings/credentials*
-  // (per-user CRUD locked to scope='user') + /admin|settings/credentials/oauth/*
-  // (web-paste flow) on the existing http listener. Loaded only when the
+  // Mounts /admin/credentials* (admin-only CRUD, new destination-based
+  // write surface) on the existing http listener. Loaded only when the
   // operator opts in — the chart's `credentials.admin.enabled=true` flag
   // sets AX_CREDENTIALS_ADMIN_ENABLED which loadK8sConfigFromEnv
   // translates into cfg.credentialsAdmin.
   //
-  // The OAuth pending-state holder rides alongside: it's an in-memory
-  // single-replica plugin that holds PKCE + redirect state between
-  // /oauth/start and /oauth/finish (5min TTL, 1000 entry cap). Multi-
-  // replica deployments need either sticky sessions for that 5min window
-  // or a DB-backed sibling plugin — see the manifest comment in
-  // @ax/credentials-oauth-pending.
+  // MVP: OAuth-paste flows deferred — see docs/plans/2026-05-19-credentials-ux-redesign-design.md §3.
+  // @ax/credentials-oauth-pending stays in the tree for future re-introduction
+  // but is not loaded here. To re-enable, push createCredentialsOauthPendingPlugin()
+  // before createCredentialsAdminRoutesPlugin() in a custom preset.
   if (config.credentialsAdmin === true) {
-    plugins.push(createCredentialsOauthPendingPlugin());
     plugins.push(createCredentialsAdminRoutesPlugin());
   }
 
