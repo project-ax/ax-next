@@ -88,11 +88,39 @@ export async function requireUser(
   return requireAuthenticated(bus, ctx, req, res);
 }
 
+/** /admin/* gate. Authed AND isAdmin; 401 if no session, 403 if not admin. */
+export async function requireAdmin(
+  bus: HookBus,
+  ctx: AgentContext,
+  req: RouteRequest,
+  res: RouteResponse,
+): Promise<AuthedUser | null> {
+  const actor = await requireAuthenticated(bus, ctx, req, res);
+  if (actor === null) return null;
+  if (!actor.isAdmin) {
+    res.status(403).json({ error: 'forbidden' });
+    return null;
+  }
+  return actor;
+}
+
 /**
  * Translate a service PluginError into an HTTP status. Returns true if the
  * response was written; false if the error wasn't recognized (caller should
  * re-throw so the http-server's 500 handler logs it).
+ *
+ * Extra 400-mapped codes cover the default-routine surface
+ * (/admin/routines/defaults*): the routines plugin throws these on bad
+ * source-md or unsupported trigger kinds, and we want them surfaced as a
+ * 4xx with the original message rather than masked as a 500.
  */
+const DEFAULT_ROUTINE_BAD_REQUEST_CODES: ReadonlySet<string> = new Set([
+  'invalid-routine-md',
+  'default-trigger-webhook-not-supported',
+  'default-trigger-cron-not-supported',
+  'invalid-interval',
+]);
+
 export function writeServiceError(res: RouteResponse, err: unknown): boolean {
   if (err instanceof PluginError) {
     if (err.code === 'forbidden') {
@@ -105,6 +133,10 @@ export function writeServiceError(res: RouteResponse, err: unknown): boolean {
     }
     if (err.code === 'invalid-payload') {
       res.status(400).json({ error: err.message });
+      return true;
+    }
+    if (DEFAULT_ROUTINE_BAD_REQUEST_CODES.has(err.code)) {
+      res.status(400).json({ error: err.message, code: err.code });
       return true;
     }
   }

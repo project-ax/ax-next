@@ -26,13 +26,23 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { RoutinesList } from './RoutinesList';
+import { DefaultRoutinesSection } from '@/components/admin/DefaultRoutinesSection';
 
 export function RoutinesPanel({
   open,
   onClose,
+  isAdmin,
 }: {
   open: boolean;
   onClose: () => void;
+  /**
+   * When true, the admin-only Default Routines management section is
+   * rendered above the per-user routines list. The server enforces the
+   * same gate (admin-routes.ts requireAdmin → 403), so a non-admin who
+   * forced this prop would still see 403s from every default-routines
+   * fetch — but we hide the section client-side to avoid the noise.
+   */
+  isAdmin: boolean;
 }) {
   // Bumped after a Fire now call so RoutinesList re-fetches. Same
   // refresh-key idiom as SettingsPanel.
@@ -40,11 +50,12 @@ export function RoutinesPanel({
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="max-w-[720px] font-sans">
+      <DialogContent className="max-w-[900px] font-sans">
         <DialogHeader>
           <DialogTitle id="routines-panel-title">Routines</DialogTitle>
         </DialogHeader>
-        <div className="flex flex-col mt-2 max-h-[60vh] overflow-y-auto">
+        <div className="flex flex-col gap-4 mt-2 max-h-[70vh] overflow-y-auto">
+          {isAdmin && <DefaultRoutinesSection />}
           <RoutinesList
             refreshKey={refreshKey}
             onFired={() => setRefreshKey((n) => n + 1)}

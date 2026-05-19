@@ -1,19 +1,25 @@
 import { type Plugin, makeAgentContext } from '@ax/core';
-import { registerRoutinesAdminRoutes } from './routes.js';
+import {
+  registerAdminDefaultRoutinesRoutes,
+  registerRoutinesAdminRoutes,
+} from './routes.js';
 
 const PLUGIN_NAME = '@ax/routines-admin-routes';
 
 // ---------------------------------------------------------------------------
 // @ax/routines-admin-routes
 //
-// Mounts /settings/routines* on top of the routines facade (@ax/routines).
-// Owner-scoped only — /admin/routines* is intentionally not part of this
-// package; the Routines admin UI is a per-user surface, not a fleet-wide
-// shared-key surface like /admin/credentials.
+// Mounts two surfaces on top of the routines facade (@ax/routines):
 //
-// Duck-typed req/res surface (no @ax/http-server import per Invariant I2).
-// No cross-plugin imports per Invariant L2 — `shared.ts` is copied from
-// credentials-admin-routes, not imported.
+//   - /settings/routines*           — owner-scoped (per-user view of the
+//                                     routines visible on agents they own)
+//   - /admin/routines/defaults*     — admin-only CRUD over the default
+//                                     routines library that materializes
+//                                     per-agent on tick
+//
+// Both share the duck-typed req/res surface (no @ax/http-server import per
+// Invariant I2) and the auth helpers in ./shared.ts (copied from
+// credentials-admin-routes per Invariant L2 — no cross-plugin imports).
 // ---------------------------------------------------------------------------
 
 export function createRoutinesAdminRoutesPlugin(): Plugin {
@@ -28,12 +34,20 @@ export function createRoutinesAdminRoutesPlugin(): Plugin {
       // auth:require-user from @ax/auth-oidc, routines:* from @ax/routines,
       // and agents:resolve from @ax/agents. The topo-sort in bootstrap()
       // ensures these are wired before our init runs.
+      //
+      // The default-routines surface adds routines:*-default hooks; we don't
+      // need a separate auth:require-admin call because requireAdmin is just
+      // requireAuthenticated + an isAdmin check on the returned actor.
       calls: [
         'http:register-route',
         'auth:require-user',
         'routines:list',
         'routines:recent-fires',
         'routines:fire-now',
+        'routines:list-defaults',
+        'routines:get-default',
+        'routines:upsert-default',
+        'routines:delete-default',
         'agents:resolve',
       ],
       subscribes: [],
@@ -45,13 +59,17 @@ export function createRoutinesAdminRoutesPlugin(): Plugin {
         agentId: PLUGIN_NAME,
         userId: 'system',
       });
-      // Atomic route registration: registerRoutinesAdminRoutes already
-      // unwinds internally on partial failure, but we still push into our
-      // shutdown-bound list AFTER it returns successfully so a re-init
-      // doesn't double-mount.
+      // Atomic route registration: each register* helper already unwinds
+      // internally on partial failure, but we still push into our
+      // shutdown-bound list AFTER each returns successfully so a re-init
+      // doesn't double-mount. If the SECOND register call throws, we unwind
+      // the FIRST batch in the catch below.
       try {
         unregisterRoutes.push(
           ...(await registerRoutinesAdminRoutes(bus, initCtx)),
+        );
+        unregisterRoutes.push(
+          ...(await registerAdminDefaultRoutinesRoutes(bus, initCtx)),
         );
       } catch (err) {
         while (unregisterRoutes.length > 0) {

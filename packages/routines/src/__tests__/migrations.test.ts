@@ -27,6 +27,7 @@ afterAll(async () => {
 afterEach(async () => {
   await sql`DROP TABLE IF EXISTS routines_v1_fires`.execute(db);
   await sql`DROP TABLE IF EXISTS routines_v1_definitions`.execute(db);
+  await sql`DROP TABLE IF EXISTS default_routines_v1`.execute(db);
 });
 
 describe('runRoutinesMigration', () => {
@@ -83,5 +84,94 @@ describe('runRoutinesMigration', () => {
     `.execute(db);
     const names = cols.rows.map((r) => r.column_name);
     expect(names).toContain('rendered_prompt');
+  });
+
+  it('default_routines_v1 table has expected schema', async () => {
+    await runRoutinesMigration(db);
+    const cols = await sql<{ column_name: string; data_type: string; is_nullable: string }>`
+      SELECT column_name, data_type, is_nullable
+        FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = 'default_routines_v1'
+       ORDER BY ordinal_position
+    `.execute(db);
+    const byName = Object.fromEntries(cols.rows.map((r) => [r.column_name, r]));
+    expect(byName['default_routine_id']).toMatchObject({ data_type: 'text', is_nullable: 'NO' });
+    expect(byName['name']).toMatchObject({ data_type: 'text', is_nullable: 'NO' });
+    expect(byName['trigger_kind']).toMatchObject({ data_type: 'text', is_nullable: 'NO' });
+    expect(byName['trigger_spec']).toMatchObject({ data_type: 'jsonb', is_nullable: 'NO' });
+    expect(byName['interval_seconds']).toMatchObject({ data_type: 'integer', is_nullable: 'YES' });
+    expect(byName['silence_token']).toMatchObject({ data_type: 'text', is_nullable: 'YES' });
+    expect(byName['silence_max']).toMatchObject({ data_type: 'integer', is_nullable: 'NO' });
+    expect(byName['conversation']).toMatchObject({ data_type: 'text', is_nullable: 'NO' });
+    expect(byName['prompt_body']).toMatchObject({ data_type: 'text', is_nullable: 'NO' });
+    expect(byName['enabled']).toMatchObject({ data_type: 'boolean', is_nullable: 'NO' });
+    expect(byName['source_md']).toMatchObject({ data_type: 'text', is_nullable: 'NO' });
+  });
+
+  it('routines_v1_definitions gained definition_id + definition_updated_at columns', async () => {
+    await runRoutinesMigration(db);
+    const cols = await sql<{ column_name: string; data_type: string; is_nullable: string }>`
+      SELECT column_name, data_type, is_nullable
+        FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = 'routines_v1_definitions'
+         AND column_name IN ('definition_id', 'definition_updated_at')
+    `.execute(db);
+    expect(cols.rows).toHaveLength(2);
+    const byName = Object.fromEntries(cols.rows.map((r) => [r.column_name, r]));
+    expect(byName['definition_id']).toMatchObject({ data_type: 'text', is_nullable: 'YES' });
+    expect(byName['definition_updated_at']).toMatchObject({ data_type: 'timestamp with time zone', is_nullable: 'YES' });
+  });
+
+  it('CHECK constraint forbids default-sourced row with non-null next_run_at', async () => {
+    await runRoutinesMigration(db);
+
+    // First, seed a default so the FK resolves.
+    await sql`
+      INSERT INTO default_routines_v1
+        (default_routine_id, name, description, spec_hash, trigger_kind, trigger_spec,
+         interval_seconds, silence_max, conversation, prompt_body, source_md)
+      VALUES
+        ('d-hb', 'heartbeat-test', 'd', 'hash', 'interval', '{"kind":"interval","every":"24h"}'::jsonb,
+         86400, 300, 'shared', 'p', 's')
+    `.execute(db);
+
+    let caught: unknown;
+    try {
+      await sql`
+        INSERT INTO routines_v1_definitions
+          (agent_id, path, author_user_id, name, description, spec_hash,
+           trigger_kind, trigger_spec, silence_max, conversation, prompt_body,
+           definition_id, next_run_at)
+        VALUES
+          ('agent-x', 'default:d-hb', 'admin', 'heartbeat', 'd', 'hash',
+           'interval', '{"kind":"interval","every":"24h"}'::jsonb, 300, 'shared', 'p',
+           'd-hb', now())
+      `.execute(db);
+    } catch (e) {
+      caught = e;
+    }
+    // postgres CHECK violation = SQLSTATE 23514
+    expect((caught as { code?: string } | undefined)?.code).toBe('23514');
+  });
+
+  it('first-boot seed of default heartbeat is idempotent', async () => {
+    await runRoutinesMigration(db);
+    await runRoutinesMigration(db);
+
+    const rows = await sql<{ name: string; trigger_kind: string }>`
+      SELECT name, trigger_kind FROM default_routines_v1 WHERE name = 'heartbeat'
+    `.execute(db);
+    expect(rows.rows).toEqual([{ name: 'heartbeat', trigger_kind: 'interval' }]);
+  });
+
+  it('routines_v1_definitions_default_idx exists', async () => {
+    await runRoutinesMigration(db);
+    const r = await sql<{ indexname: string }>`
+      SELECT indexname FROM pg_indexes
+       WHERE schemaname = 'public'
+         AND tablename = 'routines_v1_definitions'
+         AND indexname = 'routines_v1_definitions_default_idx'
+    `.execute(db);
+    expect(r.rows).toHaveLength(1);
   });
 });

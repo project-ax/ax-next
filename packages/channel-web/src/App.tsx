@@ -224,6 +224,7 @@ const AppContent = ({ user }: { user: AuthUser }) => {
           <RoutinesPanel
             open={routinesOpen}
             onClose={() => setRoutinesOpen(false)}
+            isAdmin={user.role === 'admin'}
           />
           <ToastStack />
         </div>

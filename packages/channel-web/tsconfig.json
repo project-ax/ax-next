@@ -22,6 +22,8 @@
     { "path": "../conversations" },
     { "path": "../ipc-protocol" },
     { "path": "../attachments" },
-    { "path": "../skills" }
+    { "path": "../skills" },
+    { "path": "../routines" },
+    { "path": "../validator-routine" }
   ]
 }

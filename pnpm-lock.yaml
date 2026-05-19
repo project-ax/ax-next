@@ -332,9 +332,15 @@ importers:
       '@ax/ipc-protocol':
         specifier: workspace:*
         version: link:../ipc-protocol
+      '@ax/routines':
+        specifier: workspace:*
+        version: link:../routines
       '@ax/skills':
         specifier: workspace:*
         version: link:../skills
+      '@ax/validator-routine':
+        specifier: workspace:*
+        version: link:../validator-routine
       '@radix-ui/react-checkbox':
         specifier: ^1.3.3
         version: 1.3.3(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)

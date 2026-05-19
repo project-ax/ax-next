@@ -44,6 +44,38 @@ export interface RecordFireInput {
   renderedPrompt?: string | null;
 }
 
+export interface UpsertDefaultInput {
+  defaultRoutineId?: string;
+  name: string;
+  description: string;
+  specHash: string;
+  trigger: TriggerSpec;
+  intervalSeconds: number | null;
+  activeHours: ActiveHours | null;
+  silenceToken: string | null;
+  silenceMax: number;
+  conversation: 'per-fire' | 'shared';
+  promptBody: string;
+  sourceMd: string;
+}
+
+export interface DefaultRoutineDetailRow {
+  defaultRoutineId: string;
+  name: string;
+  description: string;
+  specHash: string;
+  trigger: TriggerSpec;
+  intervalSeconds: number | null;
+  activeHours: ActiveHours | null;
+  silenceToken: string | null;
+  silenceMax: number;
+  conversation: 'per-fire' | 'shared';
+  promptBody: string;
+  enabled: boolean;
+  sourceMd: string;
+  updatedAt: Date;
+}
+
 export interface RoutinesStore {
   upsert(input: UpsertInput): Promise<{ changed: boolean }>;
   delete(input: { agentId: string; path: string }): Promise<void>;
@@ -53,6 +85,12 @@ export interface RoutinesStore {
   recentFires(input: { agentId: string; path: string; limit?: number }): Promise<FireRow[]>;
   list(input: { agentId?: string }): Promise<RoutineRow[]>;
   findOne(input: { agentId: string; path: string }): Promise<RoutineRow | null>;
+  upsertDefault(input: UpsertDefaultInput): Promise<{ defaultRoutineId: string; created: boolean }>;
+  getDefault(defaultRoutineId: string): Promise<DefaultRoutineDetailRow | null>;
+  listDefaults(): Promise<DefaultRoutineDetailRow[]>;
+  deleteDefault(defaultRoutineId: string): Promise<void>;
+  materializeMissing(input: { agentIds: string[]; now: Date }): Promise<void>;
+  refreshStale(input: { now: Date }): Promise<void>;
 }
 
 /**
@@ -92,6 +130,8 @@ function rowToRoutine(row: {
   conversation: string; prompt_body: string;
   next_run_at: Date | null; last_run_at: Date | null;
   last_status: string | null; last_error: string | null;
+  definition_id: string | null;
+  definition_updated_at: Date | null;
 }): RoutineRow {
   return {
     agentId: row.agent_id,
@@ -110,6 +150,8 @@ function rowToRoutine(row: {
     lastRunAt: row.last_run_at,
     lastStatus: row.last_status as FireStatus | null,
     lastError: row.last_error,
+    definitionId: row.definition_id,
+    definitionUpdatedAt: row.definition_updated_at,
   };
 }
 
@@ -175,6 +217,23 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
     },
 
     async claimDue(input) {
+      // Two-branch claim:
+      //
+      // Branch 1 — workspace rows: definition_id IS NULL, claim by
+      //   next_run_at <= now, supports interval and cron.
+      //
+      // Branch 2 — default-sourced rows: definition_id IS NOT NULL,
+      //   claim by COALESCE(last_run_at, created_at) + interval <= now.
+      //   v1 supports interval only (default_routines_v1 CHECK enforces).
+      //   Excluded if:
+      //     - the source default has been edited but per-agent copy is
+      //       not yet refreshed (definition_updated_at < d.updated_at)
+      //     - a same-name workspace row exists for the same agent
+      //       (override). Workspace wins.
+      //
+      // The UPDATE keeps next_run_at NULL on default-sourced rows (CASE
+      // branch); only workspace rows advance their next_run_at by the
+      // claim window.
       const rows = await sql<{
         agent_id: string; path: string; author_user_id: string;
         name: string; description: string; spec_hash: string;
@@ -184,19 +243,54 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
         conversation: string; prompt_body: string;
         next_run_at: Date | null; last_run_at: Date | null;
         last_status: string | null; last_error: string | null;
+        definition_id: string | null;
+        definition_updated_at: Date | null;
       }>`
-        WITH due AS (
+        WITH workspace_due AS (
           SELECT agent_id, path
             FROM routines_v1_definitions
-           WHERE next_run_at IS NOT NULL
+           WHERE definition_id IS NULL
+             AND next_run_at IS NOT NULL
              AND next_run_at <= ${input.now}
              AND trigger_kind IN ('interval', 'cron')
            ORDER BY next_run_at ASC
            LIMIT ${input.limit}
            FOR UPDATE SKIP LOCKED
+        ),
+        default_due AS (
+          SELECT r.agent_id, r.path
+            FROM routines_v1_definitions r
+            JOIN default_routines_v1 d ON d.default_routine_id = r.definition_id
+           WHERE r.definition_id IS NOT NULL
+             AND d.enabled
+             AND d.trigger_kind = 'interval'
+             AND r.definition_updated_at IS NOT NULL
+             AND r.definition_updated_at >= d.updated_at
+             AND COALESCE(r.last_run_at, r.created_at)
+                 + (d.interval_seconds || ' seconds')::interval <= ${input.now}
+             AND NOT EXISTS (
+               SELECT 1 FROM routines_v1_definitions w
+                WHERE w.agent_id = r.agent_id
+                  AND w.definition_id IS NULL
+                  AND w.name = r.name
+             )
+           ORDER BY r.last_run_at NULLS FIRST
+           LIMIT ${input.limit}
+           FOR UPDATE OF r SKIP LOCKED
+        ),
+        due AS (
+          SELECT agent_id, path FROM workspace_due
+          UNION ALL
+          SELECT agent_id, path FROM default_due
+          -- total cap across both branches; per-branch LIMITs bound lock acquisition
+          LIMIT ${input.limit}
         )
         UPDATE routines_v1_definitions r
-           SET next_run_at = r.next_run_at + (${input.claimWindowMinutes} || ' minutes')::interval
+           SET next_run_at = CASE
+             WHEN r.definition_id IS NULL
+               THEN r.next_run_at + (${input.claimWindowMinutes} || ' minutes')::interval
+             ELSE r.next_run_at
+           END
           FROM due
          WHERE r.agent_id = due.agent_id AND r.path = due.path
         RETURNING r.*
@@ -278,5 +372,166 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
         .executeTakeFirst();
       return row === undefined ? null : rowToRoutine(row as Parameters<typeof rowToRoutine>[0]);
     },
+
+    async upsertDefault(input) {
+      // Single atomic INSERT … ON CONFLICT DO UPDATE to avoid TOCTOU race
+      // between SELECT and INSERT/UPDATE in concurrent callers.
+      // (xmax = 0) is true for freshly INSERTed rows and false for UPDATEd rows —
+      // that's how we report `created` without a separate SELECT.
+      const id = input.defaultRoutineId ?? `default-${input.name}-${Date.now()}`;
+      const row = await sql<{ default_routine_id: string; created: boolean }>`
+        INSERT INTO default_routines_v1
+          (default_routine_id, name, description, spec_hash, trigger_kind, trigger_spec,
+           interval_seconds, active_hours, silence_token, silence_max, conversation,
+           prompt_body, enabled, source_md)
+        VALUES
+          (${id}, ${input.name}, ${input.description}, ${input.specHash},
+           ${input.trigger.kind}, ${JSON.stringify(input.trigger)}::jsonb,
+           ${input.intervalSeconds}, ${input.activeHours === null ? null : JSON.stringify(input.activeHours)}::jsonb,
+           ${input.silenceToken}, ${input.silenceMax}, ${input.conversation},
+           ${input.promptBody}, true, ${input.sourceMd})
+        ON CONFLICT (name) DO UPDATE SET
+          description = EXCLUDED.description,
+          spec_hash = EXCLUDED.spec_hash,
+          trigger_kind = EXCLUDED.trigger_kind,
+          trigger_spec = EXCLUDED.trigger_spec,
+          interval_seconds = EXCLUDED.interval_seconds,
+          active_hours = EXCLUDED.active_hours,
+          silence_token = EXCLUDED.silence_token,
+          silence_max = EXCLUDED.silence_max,
+          conversation = EXCLUDED.conversation,
+          prompt_body = EXCLUDED.prompt_body,
+          source_md = EXCLUDED.source_md,
+          updated_at = now()
+        RETURNING default_routine_id, (xmax = 0) AS created
+      `.execute(db);
+      const r = row.rows[0];
+      if (!r) throw new Error('upsertDefault: INSERT … RETURNING returned no row');
+      return { defaultRoutineId: r.default_routine_id, created: r.created };
+    },
+
+    async getDefault(defaultRoutineId) {
+      const row = await db
+        .selectFrom('default_routines_v1')
+        .selectAll()
+        .where('default_routine_id', '=', defaultRoutineId)
+        .executeTakeFirst();
+      return row === undefined ? null : defaultRowToDetail(row);
+    },
+
+    async listDefaults() {
+      const rows = await db
+        .selectFrom('default_routines_v1')
+        .selectAll()
+        .orderBy('name')
+        .execute();
+      return rows.map(defaultRowToDetail);
+    },
+
+    async deleteDefault(defaultRoutineId) {
+      // FK ON DELETE CASCADE on routines_v1_definitions.definition_id
+      // drops dependent per-agent rows.
+      await db.deleteFrom('default_routines_v1')
+        .where('default_routine_id', '=', defaultRoutineId)
+        .execute();
+    },
+
+    async materializeMissing(input) {
+      if (input.agentIds.length === 0) return;
+      // INSERT … SELECT cross-joins agentIds with all enabled defaults,
+      // filtering out (agent, default) pairs that already have a
+      // materialized row. ON CONFLICT (agent_id, path) DO NOTHING makes
+      // this safe under concurrent materializers — the path encodes the
+      // default id, so two materializers racing on the same agent will
+      // not duplicate.
+      //
+      // next_run_at is NULL for default-sourced rows: the claim SQL
+      // computes due-ness from last_run_at + interval, and the CHECK
+      // constraint routines_v1_default_next_run_at_chk forbids a non-null
+      // next_run_at for default_id IS NOT NULL.
+      await sql`
+        INSERT INTO routines_v1_definitions
+          (agent_id, path, author_user_id, name, description, spec_hash,
+           trigger_kind, trigger_spec, active_hours, silence_token, silence_max,
+           conversation, prompt_body, next_run_at, definition_id, definition_updated_at,
+           created_at, updated_at)
+        SELECT
+          a.agent_id, 'default:' || d.default_routine_id, '@ax/routines/defaults',
+          d.name, d.description, d.spec_hash,
+          d.trigger_kind, d.trigger_spec, d.active_hours, d.silence_token, d.silence_max,
+          d.conversation, d.prompt_body, NULL,
+          d.default_routine_id, d.updated_at,
+          ${input.now}, ${input.now}
+        FROM (SELECT unnest(${input.agentIds}::text[]) AS agent_id) a
+        CROSS JOIN default_routines_v1 d
+        WHERE d.enabled
+          AND NOT EXISTS (
+            SELECT 1 FROM routines_v1_definitions r
+             WHERE r.agent_id = a.agent_id
+               AND r.definition_id = d.default_routine_id
+          )
+        ON CONFLICT (agent_id, path) DO NOTHING
+      `.execute(db);
+    },
+
+    async refreshStale(input) {
+      // Refresh denormalized fields on all default-sourced per-agent rows
+      // whose copy is older than the source default. Runs unconditionally
+      // before each tick — the WHERE clause makes it a no-op when nothing
+      // is stale.
+      await sql`
+        UPDATE routines_v1_definitions r
+           SET name = d.name,
+               description = d.description,
+               spec_hash = d.spec_hash,
+               trigger_kind = d.trigger_kind,
+               trigger_spec = d.trigger_spec,
+               active_hours = d.active_hours,
+               silence_token = d.silence_token,
+               silence_max = d.silence_max,
+               conversation = d.conversation,
+               prompt_body = d.prompt_body,
+               definition_updated_at = d.updated_at,
+               updated_at = ${input.now}
+          FROM default_routines_v1 d
+         WHERE r.definition_id = d.default_routine_id
+           AND (r.definition_updated_at IS NULL
+                OR r.definition_updated_at < d.updated_at)
+      `.execute(db);
+    },
+  };
+}
+
+function defaultRowToDetail(row: {
+  default_routine_id: string;
+  name: string;
+  description: string;
+  spec_hash: string;
+  trigger_spec: unknown;
+  interval_seconds: number | null;
+  active_hours: unknown | null;
+  silence_token: string | null;
+  silence_max: number;
+  conversation: string;
+  prompt_body: string;
+  enabled: boolean;
+  source_md: string;
+  updated_at: Date;
+}): DefaultRoutineDetailRow {
+  return {
+    defaultRoutineId: row.default_routine_id,
+    name: row.name,
+    description: row.description,
+    specHash: row.spec_hash,
+    trigger: row.trigger_spec as TriggerSpec,
+    intervalSeconds: row.interval_seconds,
+    activeHours: row.active_hours as ActiveHours | null,
+    silenceToken: row.silence_token,
+    silenceMax: row.silence_max,
+    conversation: row.conversation as 'per-fire' | 'shared',
+    promptBody: row.prompt_body,
+    enabled: row.enabled,
+    sourceMd: row.source_md,
+    updatedAt: row.updated_at,
   };
 }

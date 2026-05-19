@@ -22,6 +22,8 @@ export interface RoutineRow {
   lastRunAt: Date | null;
   lastStatus: FireStatus | null;
   lastError: string | null;
+  definitionId: string | null;
+  definitionUpdatedAt: Date | null;
 }
 
 export interface FireRow {
@@ -68,3 +70,45 @@ export interface RoutinesConfig {
   claimWindowMinutes?: number;
   electionRetryMs?: number;
 }
+
+export interface DefaultRoutineSummary {
+  defaultRoutineId: string;
+  name: string;
+  description: string;
+  trigger: TriggerSpec;
+  enabled: boolean;
+  updatedAt: string;
+}
+
+export interface DefaultRoutineDetail extends DefaultRoutineSummary {
+  sourceMd: string;
+  silenceToken: string | null;
+  silenceMax: number;
+  conversation: 'per-fire' | 'shared';
+  activeHours: ActiveHours | null;
+  promptBody: string;
+}
+
+export type RoutinesListDefaultsInput = Record<string, never>;
+export interface RoutinesListDefaultsOutput {
+  defaults: DefaultRoutineSummary[];
+}
+
+export interface RoutinesGetDefaultInput {
+  defaultRoutineId: string;
+}
+export type RoutinesGetDefaultOutput = DefaultRoutineDetail;
+
+export interface RoutinesUpsertDefaultInput {
+  sourceMd: string;
+  enabled?: boolean;
+}
+export interface RoutinesUpsertDefaultOutput {
+  defaultRoutineId: string;
+  created: boolean;
+}
+
+export interface RoutinesDeleteDefaultInput {
+  defaultRoutineId: string;
+}
+export type RoutinesDeleteDefaultOutput = Record<string, never>;
