@@ -161,6 +161,43 @@ describe('sandbox:open-session', () => {
     await fs.rm(ws, { recursive: true, force: true });
   });
 
+  it('stamps git author/committer identity + paranoid config on the child env (parity with k8s)', async () => {
+    // Mirrors `sandbox-k8s/pod-spec.ts`'s gitParanoidEnv block. Without this,
+    // the runner's turn-end git commit falls through to whatever's sitting
+    // in the host operator's ~/.gitconfig, the bundle reaches commit-notify
+    // with the wrong author, and the host's verifyBundleAuthor rejects it
+    // with `expected ax-runner <ax-runner@example.com>` — bricking every
+    // subprocess chat.
+    //
+    // HOME deliberately diverges between providers (subprocess uses the
+    // per-session tempdir; k8s pins /home/runner) — only the GIT_* vars
+    // need byte-for-byte parity.
+    const ws = await mkWorkspace();
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    const result = await h.bus.call<unknown, OpenSessionResult>(
+      'sandbox:open-session',
+      ctx,
+      { sessionId: 'git-env-1', workspaceRoot: ws, runnerBinary: ECHO_STUB },
+    );
+    const line = await readFirstStdoutLine(result);
+    const parsed = JSON.parse(line) as Record<string, string | null>;
+    expect(parsed.GIT_CONFIG_NOSYSTEM).toBe('1');
+    expect(parsed.GIT_CONFIG_GLOBAL).toBe('/dev/null');
+    expect(parsed.GIT_TERMINAL_PROMPT).toBe('0');
+    expect(parsed.GIT_AUTHOR_NAME).toBe('ax-runner');
+    expect(parsed.GIT_AUTHOR_EMAIL).toBe('ax-runner@example.com');
+    expect(parsed.GIT_COMMITTER_NAME).toBe('ax-runner');
+    expect(parsed.GIT_COMMITTER_EMAIL).toBe('ax-runner@example.com');
+    expect(parsed.GIT_CONFIG_COUNT).toBe('1');
+    expect(parsed.GIT_CONFIG_KEY_0).toBe('safe.directory');
+    expect(parsed.GIT_CONFIG_VALUE_0).toBe('*');
+
+    await result.handle.kill();
+    await result.handle.exited;
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
   it('does NOT leak non-allowlist parent env (FOO stays undefined in child)', async () => {
     const ws = await mkWorkspace();
     const prior = process.env.FOO;

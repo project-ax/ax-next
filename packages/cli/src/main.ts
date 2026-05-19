@@ -336,7 +336,12 @@ export async function main(opts: MainOptions): Promise<number> {
     logger,
     sessionId: 'cli-session',
     agentId: 'cli-agent',
-    userId: 'cli-user',
+    // `cli` matches what every other CLI subcommand (credentials, mcp,
+    // admin) writes against — without alignment, `credentials set
+    // anthropic-api` stores under userId=`cli` and the chat path's
+    // `credentials:get` looks under `cli-user`, finds nothing, and
+    // `proxy:open-session` terminates the chat with `proxy-open-failed`.
+    userId: 'cli',
     workspace: { rootPath: opts.workspaceRoot ?? cwd },
   });
 
