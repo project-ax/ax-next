@@ -1,6 +1,7 @@
 import {
   makeAgentContext,
   PluginError,
+  type AgentContext,
   type HookBus,
   type Plugin,
 } from '@ax/core';
@@ -37,8 +38,51 @@ const PLUGIN_NAME = '@ax/skills';
 //     are the hard deps. We DO NOT declare `agents:any-attached-to-skill`
 //     because it may not be present in stripped presets. The delete path
 //     checks via `bus.hasService` and degrades gracefully when @ax/agents
-//     isn't loaded.
+//     isn't loaded. Similarly, `credentials:list` / `credentials:delete`
+//     are soft deps — guarded via `bus.hasService` inside purgeSkillCredentials
+//     so stripped presets that omit @ax/credentials don't wedge skill operations.
+//     They are NOT listed in `calls:` because that would make them hard deps
+//     and break bootstrap when the credentials plugin is absent.
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Credential purge helper
+//
+// Called by skills:delete (all slots) and skills:upsert (removed slots only).
+// Fetches all credentials rows and filters by ref prefix locally — fine for
+// v1 (small N). Wrapped in try/catch at call sites so a credential hiccup
+// never wedges a skill operation.
+// ---------------------------------------------------------------------------
+interface CredentialRow {
+  scope: 'global' | 'user' | 'agent';
+  ownerId: string | null;
+  ref: string;
+}
+
+async function purgeSkillCredentials(
+  bus: HookBus,
+  ctx: AgentContext,
+  skillId: string,
+  slots: string[],
+): Promise<void> {
+  if (slots.length === 0) return;
+  if (!bus.hasService('credentials:list') || !bus.hasService('credentials:delete')) return;
+
+  const refsToDelete = new Set(slots.map((s) => `skill:${skillId}:${s}`));
+  const { credentials } = await bus.call<
+    Record<string, never>,
+    { credentials: CredentialRow[] }
+  >('credentials:list', ctx, {});
+
+  for (const c of credentials) {
+    if (!refsToDelete.has(c.ref)) continue;
+    await bus.call<CredentialRow, void>('credentials:delete', ctx, {
+      scope: c.scope,
+      ownerId: c.ownerId,
+      ref: c.ref,
+    });
+  }
+}
 
 export function createSkillsPlugin(): Plugin {
   let db: Kysely<SkillsDatabase> | undefined;
@@ -103,7 +147,7 @@ export function createSkillsPlugin(): Plugin {
       bus.registerService<SkillsUpsertInput, SkillsUpsertOutput>(
         'skills:upsert',
         PLUGIN_NAME,
-        async (_ctx, input) => {
+        async (ctx, input) => {
           if (typeof input.manifestYaml !== 'string') {
             throw new PluginError({
               code: 'invalid-payload',
@@ -139,15 +183,35 @@ export function createSkillsPlugin(): Plugin {
               message: `skill '${parsed.value.id}' declares credential slots; default-attached skills must be instruction-only`,
             });
           }
+
+          // Capture the previous slot list so we can purge credentials for
+          // any slots that are removed by this manifest edit.
+          const skillId = parsed.value.id;
+          const previous = await store.get(skillId);
+          const oldSlots = previous?.capabilities.credentials.map((c) => c.slot) ?? [];
+          const newSlots = parsed.value.capabilities.credentials.map((c) => c.slot);
+
           const r = await store.upsert({
-            id: parsed.value.id,
+            id: skillId,
             description: parsed.value.description,
             manifestYaml: input.manifestYaml,
             bodyMd: input.bodyMd,
             version: parsed.value.version,
             defaultAttached: input.defaultAttached ?? false,
           });
-          return { skillId: parsed.value.id, created: r.created };
+
+          // Purge credentials for slots that no longer exist in the manifest.
+          const removedSlots = oldSlots.filter((s) => !newSlots.includes(s));
+          try {
+            await purgeSkillCredentials(bus, ctx, skillId, removedSlots);
+          } catch (err) {
+            ctx.logger.warn('skills_credential_purge_failed', {
+              skillId,
+              err: err instanceof Error ? err.message : String(err),
+            });
+          }
+
+          return { skillId, created: r.created };
         },
       );
 
@@ -171,6 +235,24 @@ export function createSkillsPlugin(): Plugin {
               });
             }
           }
+
+          // Purge credentials for every slot declared by this skill before
+          // removing the skill row. Do this before store.delete so we still
+          // have access to the capability list. A purge failure is warned but
+          // does not abort the delete — the skill row is removed regardless.
+          const existing = await store.get(input.skillId);
+          if (existing !== null) {
+            const slots = existing.capabilities.credentials.map((c) => c.slot);
+            try {
+              await purgeSkillCredentials(bus, ctx, input.skillId, slots);
+            } catch (err) {
+              ctx.logger.warn('skills_credential_purge_failed', {
+                skillId: input.skillId,
+                err: err instanceof Error ? err.message : String(err),
+              });
+            }
+          }
+
           await store.delete(input.skillId);
           return {};
         },
