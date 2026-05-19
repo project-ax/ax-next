@@ -9,6 +9,8 @@ import { runTickLoop } from './tick.js';
 import { createFireRoutine, type PendingFires } from './fire.js';
 import { applySilenceLogic } from './silence.js';
 import { createSeedHeartbeatSubscriber } from './seed-heartbeat.js';
+import { parseRoutineRow } from './parse-routine.js';
+import { durationToSeconds } from '@ax/validator-routine';
 import type {
   RoutinesConfig,
   FireNowInput,
@@ -17,6 +19,14 @@ import type {
   ListOutput,
   RecentFiresInput,
   RecentFiresOutput,
+  RoutinesListDefaultsInput,
+  RoutinesListDefaultsOutput,
+  RoutinesGetDefaultInput,
+  RoutinesGetDefaultOutput,
+  RoutinesUpsertDefaultInput,
+  RoutinesUpsertDefaultOutput,
+  RoutinesDeleteDefaultInput,
+  RoutinesDeleteDefaultOutput,
 } from './types.js';
 
 const PLUGIN_NAME = '@ax/routines';
@@ -43,7 +53,15 @@ export function createRoutinesPlugin(
     manifest: {
       name: PLUGIN_NAME,
       version: '0.0.0',
-      registers: ['routines:fire-now', 'routines:list', 'routines:recent-fires'],
+      registers: [
+        'routines:fire-now',
+        'routines:list',
+        'routines:recent-fires',
+        'routines:list-defaults',
+        'routines:get-default',
+        'routines:upsert-default',
+        'routines:delete-default',
+      ],
       calls: [
         'database:get-instance',
         'agents:resolve',
@@ -245,6 +263,109 @@ export function createRoutinesPlugin(
             status: result.status,
             conversationId: result.conversationId ?? null,
           };
+        },
+      );
+
+      bus.registerService<RoutinesListDefaultsInput, RoutinesListDefaultsOutput>(
+        'routines:list-defaults', PLUGIN_NAME,
+        async () => {
+          const rows = await localStore.listDefaults();
+          return {
+            defaults: rows.map((r) => ({
+              defaultRoutineId: r.defaultRoutineId,
+              name: r.name,
+              description: r.description,
+              trigger: r.trigger,
+              enabled: r.enabled,
+              updatedAt: r.updatedAt.toISOString(),
+            })),
+          };
+        },
+      );
+
+      bus.registerService<RoutinesGetDefaultInput, RoutinesGetDefaultOutput>(
+        'routines:get-default', PLUGIN_NAME,
+        async (_ctx, input) => {
+          const row = await localStore.getDefault(input.defaultRoutineId);
+          if (row === null) {
+            throw new PluginError({
+              code: 'not-found', plugin: PLUGIN_NAME,
+              hookName: 'routines:get-default',
+              message: `default routine '${input.defaultRoutineId}' not found`,
+            });
+          }
+          return {
+            defaultRoutineId: row.defaultRoutineId,
+            name: row.name,
+            description: row.description,
+            trigger: row.trigger,
+            enabled: row.enabled,
+            updatedAt: row.updatedAt.toISOString(),
+            sourceMd: row.sourceMd,
+            silenceToken: row.silenceToken,
+            silenceMax: row.silenceMax,
+            conversation: row.conversation,
+            activeHours: row.activeHours,
+            promptBody: row.promptBody,
+          };
+        },
+      );
+
+      bus.registerService<RoutinesUpsertDefaultInput, RoutinesUpsertDefaultOutput>(
+        'routines:upsert-default', PLUGIN_NAME,
+        async (_ctx, input) => {
+          const parsed = parseRoutineRow(new TextEncoder().encode(input.sourceMd));
+          if (!parsed.ok) {
+            throw new PluginError({
+              code: 'invalid-routine-md', plugin: PLUGIN_NAME,
+              hookName: 'routines:upsert-default',
+              message: parsed.reason,
+            });
+          }
+          if (parsed.fields.trigger.kind === 'webhook') {
+            throw new PluginError({
+              code: 'default-trigger-webhook-not-supported', plugin: PLUGIN_NAME,
+              hookName: 'routines:upsert-default',
+              message: 'default routines do not support webhook triggers in v1',
+            });
+          }
+          if (parsed.fields.trigger.kind === 'cron') {
+            throw new PluginError({
+              code: 'default-trigger-cron-not-supported', plugin: PLUGIN_NAME,
+              hookName: 'routines:upsert-default',
+              message: 'default routines support interval triggers only in v1',
+            });
+          }
+          // trigger.kind is now narrowed to 'interval'
+          const intervalSeconds = durationToSeconds(parsed.fields.trigger.every) ?? 0;
+          if (intervalSeconds <= 0) {
+            throw new PluginError({
+              code: 'invalid-interval', plugin: PLUGIN_NAME,
+              hookName: 'routines:upsert-default',
+              message: 'interval must resolve to a positive duration',
+            });
+          }
+          return localStore.upsertDefault({
+            name: parsed.fields.name,
+            description: parsed.fields.description,
+            specHash: parsed.specHash,
+            trigger: parsed.fields.trigger,
+            intervalSeconds,
+            activeHours: parsed.fields.activeHours ?? null,
+            silenceToken: parsed.fields.silenceToken ?? null,
+            silenceMax: parsed.fields.silenceMaxChars,
+            conversation: parsed.fields.conversation,
+            promptBody: parsed.fields.promptBody,
+            sourceMd: input.sourceMd,
+          });
+        },
+      );
+
+      bus.registerService<RoutinesDeleteDefaultInput, RoutinesDeleteDefaultOutput>(
+        'routines:delete-default', PLUGIN_NAME,
+        async (_ctx, input) => {
+          await localStore.deleteDefault(input.defaultRoutineId);
+          return {};
         },
       );
 
