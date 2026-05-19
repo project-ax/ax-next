@@ -86,6 +86,12 @@ const ENV_ALLOWLIST = new Set<string>([
 //   - LC_*  — locale categories (LC_CTYPE, LC_COLLATE, etc.).
 const ENV_ALLOWLIST_PREFIXES = ['GIT_', 'LC_'] as const;
 
+// `ax-cred:<32-hex>` is the credential-proxy registry's placeholder
+// shape. Both ENV_ALLOWLIST's ANTHROPIC_API_KEY guard below and the
+// value-forwarding loop in setupProxy() share this regex so a future
+// change to the placeholder format surfaces in one place.
+const PLACEHOLDER_RE = /^ax-cred:[0-9a-f]{32}$/;
+
 function isEnvAllowed(key: string): boolean {
   if (ENV_ALLOWLIST.has(key)) return true;
   for (const prefix of ENV_ALLOWLIST_PREFIXES) {
@@ -120,6 +126,17 @@ export async function setupProxy(env: RunnerEnv): Promise<ProxyStartup> {
   }
 
   let stop: (() => void) | undefined;
+  // Bridge mode mutates process.env.HTTP_PROXY/HTTPS_PROXY (line below) so
+  // the runner's own undici dispatcher routes through the bridge. If a
+  // later step (e.g. the ANTHROPIC_API_KEY placeholder check) throws, we
+  // restore these before re-raising — otherwise the runner exits with
+  // its env still pointing at a (now-stopped) loopback proxy and any
+  // best-effort retry / teardown that re-reads them dials a dead port.
+  // Capture the prior values BEFORE the mutation so undefined-vs-empty
+  // is preserved (NODE_OPTIONS callers care about the distinction).
+  let priorHttpProxy: string | undefined;
+  let priorHttpsProxy: string | undefined;
+  let envMutated = false;
 
   if (env.proxyUnixSocket !== undefined) {
     // Dynamic import keeps the bridge unloaded when not needed (subprocess
@@ -127,6 +144,9 @@ export async function setupProxy(env: RunnerEnv): Promise<ProxyStartup> {
     const { startWebProxyBridge } = await import('@ax/credential-proxy-bridge');
     const bridge = await startWebProxyBridge(env.proxyUnixSocket);
     const local = `http://127.0.0.1:${bridge.port}`;
+    priorHttpProxy = process.env.HTTP_PROXY;
+    priorHttpsProxy = process.env.HTTPS_PROXY;
+    envMutated = true;
     process.env.HTTP_PROXY = local;
     process.env.HTTPS_PROXY = local;
 
@@ -167,6 +187,14 @@ export async function setupProxy(env: RunnerEnv): Promise<ProxyStartup> {
     for (const [k, v] of Object.entries(process.env)) {
       if (typeof v !== 'string') continue;
       if (isEnvAllowed(k)) anthropicEnv[k] = v;
+      // Phase 1 (skill-install): forward credential placeholders into the
+      // SDK subprocess env so the model's Bash tool can reference slot
+      // env vars (e.g. `curl -H "Authorization: Bearer $GITHUB_TOKEN"`).
+      // The placeholder shape `ax-cred:<32-hex>` is the same opaque token
+      // the credential-proxy registry mints — value-shape matching keeps
+      // real env contents (which never legitimately hold that pattern)
+      // out of the SDK subprocess.
+      else if (PLACEHOLDER_RE.test(v)) anthropicEnv[k] = v;
     }
     // sandbox-subprocess injected the envMap from proxy:open-session into
     // the child env, so process.env.ANTHROPIC_API_KEY already holds the
@@ -183,10 +211,7 @@ export async function setupProxy(env: RunnerEnv): Promise<ProxyStartup> {
     // to update both, surfacing as a loud test failure rather than a
     // silent capability leak.
     const placeholder = process.env.ANTHROPIC_API_KEY;
-    if (
-      typeof placeholder !== 'string' ||
-      !/^ax-cred:[0-9a-f]{32}$/.test(placeholder)
-    ) {
+    if (typeof placeholder !== 'string' || !PLACEHOLDER_RE.test(placeholder)) {
       throw new MissingEnvError(
         'ANTHROPIC_API_KEY (expected ax-cred:<32-hex> placeholder from proxy:open-session)',
       );
@@ -245,6 +270,15 @@ export async function setupProxy(env: RunnerEnv): Promise<ProxyStartup> {
       } catch {
         /* swallow — we're already bailing */
       }
+    }
+    // Restore the prior HTTP_PROXY / HTTPS_PROXY values we overwrote above
+    // so the failed-boot process.env doesn't keep pointing at a stopped
+    // loopback proxy. Undefined → delete (not "set to literal 'undefined'").
+    if (envMutated) {
+      if (priorHttpProxy === undefined) delete process.env.HTTP_PROXY;
+      else process.env.HTTP_PROXY = priorHttpProxy;
+      if (priorHttpsProxy === undefined) delete process.env.HTTPS_PROXY;
+      else process.env.HTTPS_PROXY = priorHttpsProxy;
     }
     throw err;
   }

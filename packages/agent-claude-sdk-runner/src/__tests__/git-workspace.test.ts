@@ -8,6 +8,7 @@ import {
   commitTurnAndBundle,
   materializeWorkspace,
   rollbackToBaseline,
+  scaffoldWorkspaceSkillSurface,
 } from '../git-workspace.js';
 
 // ---------------------------------------------------------------------------
@@ -202,6 +203,53 @@ describe('materializeWorkspace', () => {
     expect(cfg).toContain('[filter "lfs"]');
     expect(cfg).toMatch(/clean\s*=\s*git-lfs clean/);
     expect(cfg).toMatch(/smudge\s*=\s*git-lfs smudge/);
+  });
+});
+
+describe('scaffoldWorkspaceSkillSurface', () => {
+  it('creates .ax/skills and a relative .claude/skills symlink in a materialized workspace', async () => {
+    // Realistic shape: clone first (so /permanent is a real git worktree),
+    // then scaffold — mirrors the runner main's call order. The scaffold
+    // running BEFORE clone is what the regression guard exists for.
+    const bundleB64 = await makeBundle({ 'README.md': 'hello' });
+    const root = path.join(scratchRoot, 'permanent');
+    await materializeWorkspace({ root, bundleBase64: bundleB64 });
+
+    await scaffoldWorkspaceSkillSurface(root);
+
+    const axSkillsStat = await fs.stat(path.join(root, '.ax', 'skills'));
+    expect(axSkillsStat.isDirectory()).toBe(true);
+    const linkTarget = await fs.readlink(path.join(root, '.claude', 'skills'));
+    expect(linkTarget).toBe('../.ax/skills');
+  });
+
+  it('is idempotent — a second call leaves the correct symlink in place', async () => {
+    const bundleB64 = await makeBundle({});
+    const root = path.join(scratchRoot, 'permanent');
+    await materializeWorkspace({ root, bundleBase64: bundleB64 });
+
+    await scaffoldWorkspaceSkillSurface(root);
+    await scaffoldWorkspaceSkillSurface(root);
+
+    const linkTarget = await fs.readlink(path.join(root, '.claude', 'skills'));
+    expect(linkTarget).toBe('../.ax/skills');
+  });
+
+  it('replaces a stale non-symlink at .claude/skills with the canonical symlink', async () => {
+    // A prior session that exited mid-scaffold could leave a regular
+    // directory or file at .claude/skills. The scaffolder treats that as
+    // transient and overwrites with the canonical symlink.
+    const bundleB64 = await makeBundle({});
+    const root = path.join(scratchRoot, 'permanent');
+    await materializeWorkspace({ root, bundleBase64: bundleB64 });
+    await fs.mkdir(path.join(root, '.claude'), { recursive: true });
+    await fs.mkdir(path.join(root, '.claude', 'skills'));
+    await fs.writeFile(path.join(root, '.claude', 'skills', 'bogus.md'), 'x');
+
+    await scaffoldWorkspaceSkillSurface(root);
+
+    const linkTarget = await fs.readlink(path.join(root, '.claude', 'skills'));
+    expect(linkTarget).toBe('../.ax/skills');
   });
 });
 

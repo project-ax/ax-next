@@ -430,11 +430,16 @@ describe('buildPodSpec', () => {
       expect(ccd?.value).toBe('/home/runner/.ax/session');
     });
 
-    it('includes an init container that scaffolds the skills dir + workspace symlink', () => {
-      // The init container creates the empty skills dir + the
-      // .claude/skills → ../.ax/skills symlink the SDK's project
-      // discovery walks. Matches the subprocess sibling's on-disk shape
-      // exactly (relative symlink target so it survives remounts).
+    it('includes an init container that scaffolds the user-source skills dir', () => {
+      // The init container creates the empty $CLAUDE_CONFIG_DIR/skills dir
+      // the SDK's `'user'` source walks at startup. The matching
+      // `.claude/skills → ../.ax/skills` symlink (`'project'` source)
+      // is laid down by the runner AFTER `materializeWorkspace` clones
+      // the baseline bundle — see
+      // `git-workspace.ts#scaffoldWorkspaceSkillSurface`. Doing it here
+      // would non-empty `/permanent` before the runner's `git clone`
+      // and crash the runner with "destination path '/permanent'
+      // already exists and is not an empty directory."
       const spec = buildPodSpec('pod-init', baseInput, baseResolved());
       const init = (
         spec.spec as {
@@ -451,12 +456,15 @@ describe('buildPodSpec', () => {
 
       const mounts = (scaffold!.volumeMounts ?? []).map((m) => m.name);
       expect(mounts).toContain('home');
-      expect(mounts).toContain('permanent');
+      // Regression guard: the init container MUST NOT mount /permanent.
+      // Mounting it here lets a future maintainer reintroduce the
+      // pre-clone scaffold that broke chat post-Phase-0.
+      expect(mounts).not.toContain('permanent');
 
       const cmdJoined = (scaffold!.command ?? []).concat(scaffold!.args ?? []).join(' ');
       expect(cmdJoined).toContain('/home/runner/.ax/session/skills');
-      expect(cmdJoined).toMatch(/rm\s+-rf\s+\/permanent\/\.claude\/skills/);
-      expect(cmdJoined).toMatch(/ln\s+-s(?:f)?\s+\.\.\/\.ax\/skills\s+\/permanent\/\.claude\/skills/);
+      // Regression guard: no writes to /permanent here.
+      expect(cmdJoined).not.toMatch(/\/permanent/);
     });
 
     it('init container runs as the same non-root user as the main container', () => {

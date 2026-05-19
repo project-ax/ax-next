@@ -1103,3 +1103,16 @@ real cluster.
 1. Update the PR description's acceptance section with the date + cluster
    used + a copy of the `psql` count outputs.
 2. Mark Task 21 complete.
+
+### Walks completed
+- **Skill install Phase 1 (PR #96)** — tested 2026-05-18 on
+  `kind-ax-next-dev` (image `ax-next/agent:dev`).
+  - Two regressions caught and fixed before this PR could merge:
+    - Init container wrote into `/permanent` before the runner cloned
+      the workspace there, so `git clone` refused the non-empty target.
+      Scaffold moved to `git-workspace.ts#scaffoldWorkspaceSkillSurface`,
+      which runs after materialize.
+    - Skill slot env vars (e.g. `GITHUB_TOKEN`) never reached the SDK
+      subprocess. `proxy-startup.ts` now forwards env vars whose value
+      is an `ax-cred:<32-hex>` placeholder.
+  - All step 1–9 acceptance criteria pass.
