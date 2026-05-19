@@ -184,6 +184,76 @@ describe('SkillsStore', () => {
     expect(await store.get('github')).toBeNull();
   });
 
+  it('upsert with defaultAttached: true persists the flag and reads back via get()', async () => {
+    const db = makeKysely();
+    await runSkillsMigration(db);
+    const store = createSkillsStore(db);
+
+    // Instruction-only manifest (no credential slots) — required for defaults.
+    const INSTRUCTION_ONLY_MANIFEST = `name: heartbeat
+description: Daily check-in skill.
+version: 1
+`;
+    await store.upsert({
+      id: 'heartbeat',
+      description: 'Daily check-in skill.',
+      manifestYaml: INSTRUCTION_ONLY_MANIFEST,
+      bodyMd: '# Heartbeat\n',
+      version: 1,
+      defaultAttached: true,
+    });
+
+    const detail = await store.get('heartbeat');
+    expect(detail).not.toBeNull();
+    expect(detail!.defaultAttached).toBe(true);
+
+    // list() also reports it.
+    const list = await store.list();
+    expect(list.find((s) => s.id === 'heartbeat')?.defaultAttached).toBe(true);
+  });
+
+  it('getDefaults() returns ResolvedSkill[] for default-attached rows ordered by id', async () => {
+    const db = makeKysely();
+    await runSkillsMigration(db);
+    const store = createSkillsStore(db);
+
+    // Two defaults + one explicit-only skill.
+    await store.upsert({
+      id: 'heartbeat',
+      description: 'd',
+      manifestYaml: 'name: heartbeat\ndescription: d\n',
+      bodyMd: '# heartbeat\n',
+      version: 0,
+      defaultAttached: true,
+    });
+    await store.upsert({
+      id: 'acceptance-canary',
+      description: 'd',
+      manifestYaml: 'name: acceptance-canary\ndescription: d\n',
+      bodyMd: '# canary\n',
+      version: 0,
+      defaultAttached: true,
+    });
+    await store.upsert({
+      id: 'github',
+      description: 'd',
+      manifestYaml: SAMPLE_MANIFEST,
+      bodyMd: SAMPLE_BODY,
+      version: 1,
+      defaultAttached: false,
+    });
+
+    const defaults = await store.getDefaults();
+    expect(defaults.map((s) => s.id)).toEqual(['acceptance-canary', 'heartbeat']);
+    // Returns the ResolvedSkill shape — same as resolve().
+    expect(defaults[0]).toMatchObject({
+      id: 'acceptance-canary',
+      bodyMd: '# canary\n',
+      capabilities: { allowedHosts: [], credentials: [] },
+    });
+    expect(defaults[0]).toHaveProperty('manifestYaml');
+  });
+
   it('resolve preserves input order and drops unknown ids silently', async () => {
     const db = makeKysely();
     await runSkillsMigration(db);

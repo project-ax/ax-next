@@ -46,6 +46,7 @@ export interface UpsertInput {
   manifestYaml: string;
   bodyMd: string;
   version: number;
+  defaultAttached?: boolean;
 }
 
 export interface SkillsStore {
@@ -54,6 +55,7 @@ export interface SkillsStore {
   upsert(input: UpsertInput): Promise<{ created: boolean }>;
   delete(skillId: string): Promise<void>;
   resolve(skillIds: string[]): Promise<ResolvedSkill[]>;
+  getDefaults(): Promise<ResolvedSkill[]>;
 }
 
 export function createSkillsStore(db: Kysely<SkillsDatabase>): SkillsStore {
@@ -70,6 +72,7 @@ export function createSkillsStore(db: Kysely<SkillsDatabase>): SkillsStore {
         description: row.description,
         version: row.version,
         capabilities: parseCapabilities(row.manifest_yaml, row.skill_id),
+        defaultAttached: row.default_attached,
         updatedAt: row.updated_at.toISOString(),
       }));
     },
@@ -88,6 +91,7 @@ export function createSkillsStore(db: Kysely<SkillsDatabase>): SkillsStore {
         description: row.description,
         version: row.version,
         capabilities: parseCapabilities(row.manifest_yaml, row.skill_id),
+        defaultAttached: row.default_attached,
         updatedAt: row.updated_at.toISOString(),
         bodyMd: row.body_md,
         manifestYaml: row.manifest_yaml,
@@ -116,6 +120,7 @@ export function createSkillsStore(db: Kysely<SkillsDatabase>): SkillsStore {
             manifest_yaml: input.manifestYaml,
             body_md: input.bodyMd,
             version: input.version,
+            default_attached: input.defaultAttached ?? false,
             created_at: now,
             updated_at: now,
           })
@@ -130,6 +135,7 @@ export function createSkillsStore(db: Kysely<SkillsDatabase>): SkillsStore {
           manifest_yaml: input.manifestYaml,
           body_md: input.bodyMd,
           version: input.version,
+          default_attached: input.defaultAttached ?? false,
           updated_at: new Date(),
         })
         .where('skill_id', '=', input.id)
@@ -144,6 +150,22 @@ export function createSkillsStore(db: Kysely<SkillsDatabase>): SkillsStore {
         .deleteFrom('skills_v1_skills')
         .where('skill_id', '=', skillId)
         .execute();
+    },
+
+    async getDefaults() {
+      const rows = await db
+        .selectFrom('skills_v1_skills')
+        .selectAll()
+        .where('default_attached', '=', true)
+        .orderBy('skill_id', 'asc')
+        .execute();
+
+      return rows.map((row): ResolvedSkill => ({
+        id: row.skill_id,
+        capabilities: parseCapabilities(row.manifest_yaml, row.skill_id),
+        bodyMd: row.body_md,
+        manifestYaml: row.manifest_yaml,
+      }));
     },
 
     async resolve(skillIds) {
