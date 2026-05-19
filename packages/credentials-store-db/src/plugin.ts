@@ -81,6 +81,18 @@ export interface StoreBlobListOutput {
   entries: StoreBlobListEntry[];
 }
 
+export interface StoreBlobPurgeByOwnerInput {
+  // 'global' is rejected at runtime — there is no per-owner purge for the
+  // singleton global scope. The type narrows it out so callers get a
+  // compile-time nudge toward the correct shape.
+  scope: Exclude<Scope, 'global'>;
+  ownerId: string;
+}
+
+export interface StoreBlobPurgeByOwnerOutput {
+  deleted: number;
+}
+
 export function v2StorageKey(scope: Scope, ownerId: string | null, ref: string): string {
   return `${KEY_PREFIX_V2}${scope}:${ownerId ?? '_'}:${ref}`;
 }
@@ -144,6 +156,7 @@ export function createCredentialsStoreDbPlugin(): Plugin {
         'credentials:store-blob:put',
         'credentials:store-blob:get',
         'credentials:store-blob:list',
+        'credentials:store-blob:purge-by-owner',
       ],
       calls: [
         'storage:get',
@@ -268,6 +281,28 @@ export function createCredentialsStoreDbPlugin(): Plugin {
             });
           }
           return { entries };
+        },
+      );
+
+      bus.registerService<StoreBlobPurgeByOwnerInput, StoreBlobPurgeByOwnerOutput>(
+        'credentials:store-blob:purge-by-owner',
+        PLUGIN_NAME,
+        async (ctx, input) => {
+          const scope = validateScope(input.scope);
+          if (scope === 'global') {
+            throw new PluginError({
+              code: 'purge-global-forbidden',
+              plugin: PLUGIN_NAME,
+              message: "purge-by-owner is not allowed for scope='global'",
+            });
+          }
+          const ownerId = validateOwnerId(scope, input.ownerId);
+          const prefix = `${KEY_PREFIX_V2}${scope}:${ownerId ?? '_'}:`;
+          return bus.call<{ prefix: string }, { deleted: number }>(
+            'storage:delete-prefix',
+            ctx,
+            { prefix },
+          );
         },
       );
     },
