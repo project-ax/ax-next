@@ -26,6 +26,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { RoutinesList } from './RoutinesList';
+import { DefaultRoutinesSection } from '@/components/admin/DefaultRoutinesSection';
 
 export function RoutinesPanel({
   open,
@@ -40,11 +41,12 @@ export function RoutinesPanel({
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="max-w-[720px] font-sans">
+      <DialogContent className="max-w-[900px] font-sans">
         <DialogHeader>
           <DialogTitle id="routines-panel-title">Routines</DialogTitle>
         </DialogHeader>
-        <div className="flex flex-col mt-2 max-h-[60vh] overflow-y-auto">
+        <div className="flex flex-col gap-4 mt-2 max-h-[70vh] overflow-y-auto">
+          <DefaultRoutinesSection />
           <RoutinesList
             refreshKey={refreshKey}
             onFired={() => setRefreshKey((n) => n + 1)}
