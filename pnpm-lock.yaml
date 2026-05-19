@@ -589,6 +589,9 @@ importers:
       '@ax/validator-skill':
         specifier: workspace:*
         version: link:../validator-skill
+      '@ax/workspace-git':
+        specifier: workspace:*
+        version: link:../workspace-git
       zod:
         specifier: ^3.23.8
         version: 3.25.76

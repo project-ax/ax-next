@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createRequire } from 'node:module';
+import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
   HookBus,
@@ -18,6 +19,7 @@ import { auditLogPlugin } from '@ax/audit-log';
 import { createValidatorSkillPlugin } from '@ax/validator-skill';
 import { createValidatorRoutinePlugin } from '@ax/validator-routine';
 import { createSandboxSubprocessPlugin } from '@ax/sandbox-subprocess';
+import { createWorkspaceGitPlugin } from '@ax/workspace-git';
 import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
 import { createIpcServerPlugin } from '@ax/ipc-server';
 import { createChatOrchestratorPlugin } from '@ax/chat-orchestrator';
@@ -114,6 +116,20 @@ export function resolveRunnerBinary(opts: Pick<MainOptions, 'runnerBinaryOverrid
 }
 
 const DEFAULT_SQLITE_PATH = './ax-next-chat.sqlite';
+
+/**
+ * Default location for the bare workspace repo `@ax/workspace-git`
+ * initializes. Derived from the sqlite path so both pieces of host
+ * state live in the same parent directory. The bare repo MUST live
+ * outside the agent's working tree (the runner's `git clone` refuses
+ * a non-empty target); placing it next to the sqlite file naturally
+ * satisfies that as long as the user's `cwd` for chat is a different
+ * directory.
+ */
+function defaultWorkspaceRepoRoot(sqlitePath: string): string {
+  const dir = path.dirname(path.resolve(sqlitePath));
+  return path.join(dir, 'ax-next-workspace.git');
+}
 
 export async function main(opts: MainOptions): Promise<number> {
   const out = opts.stdout ?? ((line) => process.stdout.write(line + '\n'));
@@ -216,6 +232,19 @@ export async function main(opts: MainOptions): Promise<number> {
   if (cfg.sandbox === 'subprocess') {
     plugins.push(createSandboxSubprocessPlugin());
   }
+
+  // Single-replica workspace plugin — registers workspace:list /
+  // workspace:read / workspace:apply / workspace:apply-bundle /
+  // workspace:export-baseline-bundle. The runner's `workspace.materialize`
+  // IPC delegates to `workspace:export-baseline-bundle` (bundle-aware
+  // path); without this plugin the runner can't materialize and chat
+  // can't start. Default `repoRoot` lives next to the sqlite file so
+  // both host-side state files end up in the same parent dir; override
+  // with AX_WORKSPACE_REPO_ROOT for ops that want it elsewhere.
+  const sqlitePath = opts.sqlitePath ?? DEFAULT_SQLITE_PATH;
+  const workspaceRepoRoot =
+    process.env.AX_WORKSPACE_REPO_ROOT ?? defaultWorkspaceRepoRoot(sqlitePath);
+  plugins.push(createWorkspaceGitPlugin({ repoRoot: workspaceRepoRoot }));
 
   // Session + IPC + chat orchestration. `agent:invoke` is registered by
   // @ax/chat-orchestrator, which drives the per-chat lifecycle through
