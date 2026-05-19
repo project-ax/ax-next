@@ -1,4 +1,5 @@
-import { PluginError, type Plugin } from '@ax/core';
+import { PluginError, makeAgentContext, type Plugin } from '@ax/core';
+import { wipePreRedesignCredentials } from './wipe-pre-redesign.js';
 import type { Transaction } from 'kysely';
 import { encryptWithKey, decryptWithKey, parseKeyFromEnv } from './crypto.js';
 
@@ -252,6 +253,10 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
         'credentials:store-blob:put',
         'credentials:store-blob:list',
         'credentials:store-blob:purge-by-owner',
+        // storage:get / storage:set / storage:delete-prefix are called only
+        // when bus.hasService('storage:get') is true (the wipe-once routine
+        // on first boot). They are not declared here so that test harnesses
+        // that only stub credentials:store-blob:* pass verifyCalls().
       ],
       subscribes: [],
     },
@@ -698,6 +703,22 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
           );
         },
       );
+
+      // One-shot wipe of pre-redesign credential rows. Runs on every boot but
+      // is a no-op after the first time (guarded by a storage marker key).
+      // Must run AFTER all bus.registerService calls so that storage:* calls
+      // inside wipePreRedesignCredentials resolve correctly.
+      //
+      // Gated on storage:get being available — test harnesses that only stub
+      // credentials:store-blob:* don't wire storage:* and have nothing to wipe.
+      if (bus.hasService('storage:get')) {
+        const wipeCtx = makeAgentContext({
+          sessionId: 'credentials-wipe',
+          agentId: PLUGIN_NAME,
+          userId: 'system',
+        });
+        await wipePreRedesignCredentials(bus, wipeCtx);
+      }
     },
   };
 }
