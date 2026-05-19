@@ -126,6 +126,17 @@ export async function setupProxy(env: RunnerEnv): Promise<ProxyStartup> {
   }
 
   let stop: (() => void) | undefined;
+  // Bridge mode mutates process.env.HTTP_PROXY/HTTPS_PROXY (line below) so
+  // the runner's own undici dispatcher routes through the bridge. If a
+  // later step (e.g. the ANTHROPIC_API_KEY placeholder check) throws, we
+  // restore these before re-raising — otherwise the runner exits with
+  // its env still pointing at a (now-stopped) loopback proxy and any
+  // best-effort retry / teardown that re-reads them dials a dead port.
+  // Capture the prior values BEFORE the mutation so undefined-vs-empty
+  // is preserved (NODE_OPTIONS callers care about the distinction).
+  let priorHttpProxy: string | undefined;
+  let priorHttpsProxy: string | undefined;
+  let envMutated = false;
 
   if (env.proxyUnixSocket !== undefined) {
     // Dynamic import keeps the bridge unloaded when not needed (subprocess
@@ -133,6 +144,9 @@ export async function setupProxy(env: RunnerEnv): Promise<ProxyStartup> {
     const { startWebProxyBridge } = await import('@ax/credential-proxy-bridge');
     const bridge = await startWebProxyBridge(env.proxyUnixSocket);
     const local = `http://127.0.0.1:${bridge.port}`;
+    priorHttpProxy = process.env.HTTP_PROXY;
+    priorHttpsProxy = process.env.HTTPS_PROXY;
+    envMutated = true;
     process.env.HTTP_PROXY = local;
     process.env.HTTPS_PROXY = local;
 
@@ -256,6 +270,15 @@ export async function setupProxy(env: RunnerEnv): Promise<ProxyStartup> {
       } catch {
         /* swallow — we're already bailing */
       }
+    }
+    // Restore the prior HTTP_PROXY / HTTPS_PROXY values we overwrote above
+    // so the failed-boot process.env doesn't keep pointing at a stopped
+    // loopback proxy. Undefined → delete (not "set to literal 'undefined'").
+    if (envMutated) {
+      if (priorHttpProxy === undefined) delete process.env.HTTP_PROXY;
+      else process.env.HTTP_PROXY = priorHttpProxy;
+      if (priorHttpsProxy === undefined) delete process.env.HTTPS_PROXY;
+      else process.env.HTTPS_PROXY = priorHttpsProxy;
     }
     throw err;
   }
