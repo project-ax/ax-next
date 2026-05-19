@@ -120,6 +120,7 @@ describe('@ax/agents plugin manifest + lifecycle', () => {
         'agents:ensure-webhook-token',
         'agents:any-attached-to-skill',
         'agents:set-skill-attachments',
+        'agents:list-ids',
       ],
       // database:get-instance + http:register-route + auth:require-user are
       // hard. teams:is-member is graceful (handled inside checkAccess via
@@ -504,6 +505,41 @@ describe('@ax/agents service hooks (round trip)', () => {
       { skillId: 'github' },
     );
     expect(r).toEqual({ attached: true });
+  });
+
+  it('agents:list-ids returns every agent id (no ACL filtering, all owners)', async () => {
+    const h = await makeHarness();
+    // Empty state — must succeed and return an empty array.
+    const empty = await h.bus.call<Record<string, never>, { agentIds: string[] }>(
+      'agents:list-ids',
+      h.ctx(),
+      {},
+    );
+    expect(empty.agentIds).toEqual([]);
+
+    // Create three agents across two distinct owners — no scope filtering
+    // applies, the tick loop sees them all.
+    const a = await h.bus.call<CreateInput, CreateOutput>('agents:create', h.ctx(), {
+      actor: { userId: 'u1', isAdmin: false },
+      input: makeInput({ displayName: 'A' }),
+    });
+    const b = await h.bus.call<CreateInput, CreateOutput>('agents:create', h.ctx(), {
+      actor: { userId: 'u1', isAdmin: false },
+      input: makeInput({ displayName: 'B' }),
+    });
+    const c = await h.bus.call<CreateInput, CreateOutput>('agents:create', h.ctx(), {
+      actor: { userId: 'u2', isAdmin: false },
+      input: makeInput({ displayName: 'C' }),
+    });
+
+    const all = await h.bus.call<Record<string, never>, { agentIds: string[] }>(
+      'agents:list-ids',
+      h.ctx(),
+      {},
+    );
+    expect(all.agentIds.sort()).toEqual(
+      [a.agent.id, b.agent.id, c.agent.id].sort(),
+    );
   });
 
   it('agents:any-attached-to-skill returns false when an agent has a DIFFERENT skill attached', async () => {

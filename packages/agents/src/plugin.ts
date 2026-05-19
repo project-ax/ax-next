@@ -90,6 +90,7 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
         'agents:ensure-webhook-token',
         'agents:any-attached-to-skill',
         'agents:set-skill-attachments',
+        'agents:list-ids',
       ],
       // database:get-instance is hard. http:register-route + auth:require-user
       // are hard NOW because we mount admin routes; the plugin won't boot
@@ -240,6 +241,16 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
         async (_ctx, input) => ({
           attached: await localStore.anyAttachedToSkill(input.skillId),
         }),
+      );
+
+      // Read-only enumeration of agent ids. The @ax/routines tick loop
+      // calls this to drive lazy materialization of default-sourced
+      // per-agent rows. Background-loop caller, not user-facing — no ACL
+      // filtering. See I-R10 + I-R11 in the defaults-routines-half plan.
+      bus.registerService<Record<string, never>, { agentIds: string[] }>(
+        'agents:list-ids',
+        PLUGIN_NAME,
+        async () => ({ agentIds: await localStore.listAllIds() }),
       );
 
       bus.registerService<

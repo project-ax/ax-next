@@ -416,6 +416,14 @@ export interface AgentStore {
    * Throws PluginError(not-found) when the agent row doesn't exist.
    */
   setSkillAttachments(agentId: string, attachments: SkillAttachment[]): Promise<Agent>;
+  /**
+   * Read-only enumeration of every agent id. Used by callers that need to
+   * iterate the agent set without paying for full row hydration — e.g.,
+   * the @ax/routines tick loop's lazy materialization of default rows. No
+   * ACL filtering: the caller is a trusted background loop, not a user
+   * request. Visibility / ownership filtering belongs in listScoped.
+   */
+  listAllIds(): Promise<string[]>;
 }
 
 export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
@@ -578,6 +586,15 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
         .limit(1)
         .executeTakeFirst();
       return Boolean(row);
+    },
+
+    async listAllIds() {
+      const rows = await db
+        .selectFrom('agents_v1_agents')
+        .select(['agent_id'])
+        .orderBy('agent_id')
+        .execute();
+      return rows.map((r) => r.agent_id);
     },
 
     async setSkillAttachments(agentId, attachments) {
