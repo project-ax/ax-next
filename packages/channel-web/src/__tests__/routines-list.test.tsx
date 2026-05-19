@@ -132,4 +132,52 @@ describe('RoutinesList', () => {
     render(<RoutinesList onFired={() => {}} />);
     await waitFor(() => expect(screen.getByText(/Error: boom/)).toBeTruthy());
   });
+
+  it('shows an HMAC CredentialSlotRow for webhook-triggered routines', async () => {
+    // First call: routines list
+    mockJsonOnce(200, {
+      routines: [
+        {
+          agentId: 'agt-1',
+          path: '.ax/routines/gh-webhook.md',
+          name: 'gh-webhook',
+          description: 'GitHub push webhook',
+          trigger: {
+            kind: 'webhook',
+            path: '/gh',
+            events: ['push'],
+            hmac: {
+              secretRef: 'routine:agt-1:.ax/routines/gh-webhook.md:hmac',
+              header: 'X-Hub-Signature-256',
+              algorithm: 'sha256',
+            },
+          },
+          conversation: 'shared',
+          lastStatus: 'ok',
+          lastError: null,
+          lastRunAt: '2026-05-17T00:00:00.000Z',
+        },
+      ],
+    });
+    // Second call: adminCredentials.list() from CredentialSlotRow status check
+    mockJsonOnce(200, { credentials: [] });
+
+    render(<RoutinesList onFired={() => {}} />);
+
+    // The HMAC label (slot label from CredentialSlotRow) should appear
+    expect(await screen.findByText('HMAC', { selector: 'span' })).toBeInTheDocument();
+    // The "Set credential" button from CredentialSlotRow should appear
+    expect(await screen.findByRole('button', { name: /set credential/i })).toBeInTheDocument();
+  });
+
+  it('does NOT show an HMAC CredentialSlotRow for interval-triggered routines', async () => {
+    mockJsonOnce(200, { routines: [sampleRoutine] });
+
+    render(<RoutinesList onFired={() => {}} />);
+
+    // Wait for the routine name to appear
+    await waitFor(() => expect(screen.getByText('heartbeat')).toBeTruthy());
+    // No HMAC label for an interval routine
+    expect(screen.queryByText(/HMAC/i)).toBeNull();
+  });
 });
