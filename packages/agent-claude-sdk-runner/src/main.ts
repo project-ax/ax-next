@@ -31,6 +31,7 @@ import {
   commitTurnAndBundle,
   materializeWorkspace,
   rollbackToBaseline,
+  scaffoldWorkspaceSkillSurface,
 } from './git-workspace.js';
 import { createLocalDispatcher } from './local-dispatcher.js';
 import { createPostToolUseHook } from './post-tool-use.js';
@@ -204,6 +205,11 @@ export async function main(): Promise<number> {
       bundleBase64: matResp.bundleBytes,
     });
     initialBaselineCommit = out.baselineCommit;
+    // Lay down `.claude/skills` → `../.ax/skills` so the SDK's
+    // `'project'` skill source resolves. Must run AFTER the clone — see
+    // scaffoldWorkspaceSkillSurface's doc for the regression that
+    // motivated moving this off the k8s init container.
+    await scaffoldWorkspaceSkillSurface(env.workspaceRoot);
   } catch (err) {
     process.stderr.write(
       `runner: workspace.materialize failed: ${err instanceof Error ? err.message : String(err)}\n`,

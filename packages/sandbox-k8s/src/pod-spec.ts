@@ -375,43 +375,24 @@ export function buildPodSpec(
       },
     ],
     // I-P0-3/4 (skill-install Phase 0): the sdk-scaffold init container
-    // runs before the main runner container and prepares the on-disk
-    // shape the Claude Agent SDK expects for skill discovery. It mirrors
-    // sandbox-subprocess's setup in `open-session.ts`:
-    //   - mkdir -p /home/runner/.ax/session/skills  (empty in Phase 0,
-    //     SDK's `'project'` source walks it via $CLAUDE_CONFIG_DIR/skills)
-    //   - mkdir -p /permanent/.claude  +  /permanent/.ax/skills
-    //   - rm -rf /permanent/.claude/skills  (recursive, idempotent — a
-    //     re-entry left behind any of: stale symlink, regular file, or
-    //     non-empty directory; matches 5b3d1828's recursive cleanup fix
-    //     in the subprocess sibling)
-    //   - ln -sf ../.ax/skills /permanent/.claude/skills  (-sf handles
-    //     the very unlikely concurrent-recreate race after the rm; also
-    //     redundantly clears anything the rm missed)
-    // Relative symlink target so it survives bind-mount path renames.
-    // Same image as the main runner — already cached on the node, no
-    // extra image pull, no extra supply-chain surface to vet.
-    // Same security context as the main runner (uid 1000, RO rootfs,
-    // dropped caps): a future image compromise can't use the init step
-    // to escalate beyond what the runner itself can do.
+    // runs before the main runner container and prepares the $HOME
+    // skill-discovery shape the Claude Agent SDK's `'user'` source walks
+    // ($CLAUDE_CONFIG_DIR/skills). It is restricted to /home/runner
+    // (the tmpfs HOME mount) on purpose: writing into /permanent here
+    // collides with the runner's `git clone` of the materialized
+    // workspace bundle (clone refuses a non-empty target). The
+    // `.claude/skills → ../.ax/skills` symlink the SDK's `'project'`
+    // source needs is created by the runner main AFTER materialize, in
+    // `git-workspace.ts`'s `scaffoldWorkspaceSkillSurface`.
     initContainers: [
       {
         name: 'sdk-scaffold',
         image: config.image,
         command: ['/bin/sh', '-c'],
-        args: [
-          [
-            'set -eu',
-            'mkdir -p /home/runner/.ax/session/skills',
-            'mkdir -p /permanent/.claude',
-            'mkdir -p /permanent/.ax/skills',
-            'rm -rf /permanent/.claude/skills',
-            'ln -sf ../.ax/skills /permanent/.claude/skills',
-          ].join(' && '),
-        ],
+        args: ['set -eu && mkdir -p /home/runner/.ax/session/skills'],
         // Invariant #5 (capabilities minimized): the init step only runs
-        // mkdir + ln, neither of which reads any GIT_* var or expands
-        // $HOME (the snippet uses absolute paths everywhere). The 7
+        // a single mkdir, which does not read any GIT_* var or expand
+        // $HOME (the snippet uses an absolute path). The 7
         // gitParanoidEnv vars stay on the MAIN container where git
         // actually runs. We still stamp HOME — it's not load-bearing
         // today, but (a) it documents the init's awareness of the new
@@ -419,10 +400,7 @@ export function buildPodSpec(
         // `$HOME/...` ref to the snippet, it expands to the right path
         // instead of an empty string + silent breakage.
         env: [{ name: 'HOME', value: '/home/runner' }],
-        volumeMounts: [
-          { name: 'home', mountPath: '/home/runner' },
-          { name: 'permanent', mountPath: '/permanent' },
-        ],
+        volumeMounts: [{ name: 'home', mountPath: '/home/runner' }],
         securityContext: containerSecurity,
       },
     ],

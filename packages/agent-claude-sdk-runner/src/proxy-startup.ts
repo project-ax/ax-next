@@ -86,6 +86,12 @@ const ENV_ALLOWLIST = new Set<string>([
 //   - LC_*  — locale categories (LC_CTYPE, LC_COLLATE, etc.).
 const ENV_ALLOWLIST_PREFIXES = ['GIT_', 'LC_'] as const;
 
+// `ax-cred:<32-hex>` is the credential-proxy registry's placeholder
+// shape. Both ENV_ALLOWLIST's ANTHROPIC_API_KEY guard below and the
+// value-forwarding loop in setupProxy() share this regex so a future
+// change to the placeholder format surfaces in one place.
+const PLACEHOLDER_RE = /^ax-cred:[0-9a-f]{32}$/;
+
 function isEnvAllowed(key: string): boolean {
   if (ENV_ALLOWLIST.has(key)) return true;
   for (const prefix of ENV_ALLOWLIST_PREFIXES) {
@@ -167,6 +173,14 @@ export async function setupProxy(env: RunnerEnv): Promise<ProxyStartup> {
     for (const [k, v] of Object.entries(process.env)) {
       if (typeof v !== 'string') continue;
       if (isEnvAllowed(k)) anthropicEnv[k] = v;
+      // Phase 1 (skill-install): forward credential placeholders into the
+      // SDK subprocess env so the model's Bash tool can reference slot
+      // env vars (e.g. `curl -H "Authorization: Bearer $GITHUB_TOKEN"`).
+      // The placeholder shape `ax-cred:<32-hex>` is the same opaque token
+      // the credential-proxy registry mints — value-shape matching keeps
+      // real env contents (which never legitimately hold that pattern)
+      // out of the SDK subprocess.
+      else if (PLACEHOLDER_RE.test(v)) anthropicEnv[k] = v;
     }
     // sandbox-subprocess injected the envMap from proxy:open-session into
     // the child env, so process.env.ANTHROPIC_API_KEY already holds the
@@ -183,10 +197,7 @@ export async function setupProxy(env: RunnerEnv): Promise<ProxyStartup> {
     // to update both, surfacing as a loud test failure rather than a
     // silent capability leak.
     const placeholder = process.env.ANTHROPIC_API_KEY;
-    if (
-      typeof placeholder !== 'string' ||
-      !/^ax-cred:[0-9a-f]{32}$/.test(placeholder)
-    ) {
+    if (typeof placeholder !== 'string' || !PLACEHOLDER_RE.test(placeholder)) {
       throw new MissingEnvError(
         'ANTHROPIC_API_KEY (expected ax-cred:<32-hex> placeholder from proxy:open-session)',
       );

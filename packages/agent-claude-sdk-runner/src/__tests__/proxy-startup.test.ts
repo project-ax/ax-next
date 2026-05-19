@@ -17,6 +17,8 @@ const ENV_KEYS_TO_SAVE = [
   'AX_AUTH_TOKEN',
   'AX_RUNNER_ENDPOINT',
   'AX_SESSION_ID',
+  'GITHUB_TOKEN',
+  'SOME_REAL_SECRET',
 ] as const;
 
 describe('setupProxy', () => {
@@ -174,6 +176,35 @@ describe('setupProxy', () => {
         process.env['AX_INSTALLED_SKILLS_JSON'] = savedSkills;
       }
     }
+  });
+
+  it('direct mode: forwards skill slot env vars whose value is an ax-cred placeholder', async () => {
+    // Phase 1 (skill-install) canary: when the agent has a skill attached
+    // whose credentials bind a slot (e.g. GITHUB_TOKEN), the
+    // credential-proxy stamps `<SLOT>=ax-cred:<hex>` onto the runner pod
+    // env. Without forwarding into the SDK subprocess env, the model's
+    // Bash tool sees `$GITHUB_TOKEN` as empty and the proxy substitution
+    // path never fires — defeating the I3 canary scenario. The forward
+    // is gated by value-shape (`ax-cred:<32-hex>`) so real env vars stay
+    // out of the SDK subprocess.
+    process.env.ANTHROPIC_API_KEY = 'ax-cred:0123456789abcdef0123456789abcdef';
+    process.env.GITHUB_TOKEN = 'ax-cred:fedcba9876543210fedcba9876543210';
+    // A real-shape secret that happens to share the slot's env-var
+    // namespace must NOT be forwarded — proves the forward is value-
+    // shape-gated, not env-var-name-pattern-gated.
+    process.env.SOME_REAL_SECRET = 'sk-real-looking-secret';
+    const env: RunnerEnv = {
+      runnerEndpoint: 'unix:///tmp/x.sock',
+      sessionId: 's',
+      authToken: 'ipc-bearer',
+      workspaceRoot: '/ws',
+      proxyEndpoint: 'http://127.0.0.1:54321',
+    };
+    const out = await setupProxy(env);
+    expect(out.anthropicEnv.GITHUB_TOKEN).toBe(
+      'ax-cred:fedcba9876543210fedcba9876543210',
+    );
+    expect(out.anthropicEnv.SOME_REAL_SECRET).toBeUndefined();
   });
 
   it('throws when both proxyEndpoint and proxyUnixSocket are set (mutually exclusive)', async () => {
