@@ -1,5 +1,6 @@
 import { type Plugin } from '@ax/core';
 import { registerAdminCredentialsRoutes } from './admin-routes.js';
+import { registerDestinationRoutes } from './destination-routes.js';
 import { registerSettingsCredentialsRoutes } from './settings-routes.js';
 import { registerOauthRoutes } from './oauth-routes.js';
 import {
@@ -88,6 +89,9 @@ export function createCredentialsAdminRoutesPlugin(): Plugin {
         unregisterRoutes.push(...(await registerOauthRoutes(bus, initCtx)));
         unregisterRoutes.push(
           ...(await registerProviderRoutes(bus, initCtx)),
+        );
+        unregisterRoutes.push(
+          ...(await registerDestinationRoutes(bus, initCtx)),
         );
       } catch (err) {
         while (unregisterRoutes.length > 0) {
