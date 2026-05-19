@@ -1,3 +1,4 @@
+export { refForDestination, type Destination } from './refs.js';
 export {
   createCredentialsPlugin,
   validateScope,
