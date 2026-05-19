@@ -7,7 +7,7 @@ import { cn } from '@/lib/utils';
 
 
 export type AdminTabId =
-  | 'provider-keys'
+  | 'providers'
   | 'model-config'
   | 'auth-providers'
   | 'agents'
@@ -16,7 +16,7 @@ export type AdminTabId =
   | 'teams';
 
 const NAV: Array<{ id: AdminTabId; label: string; icon: typeof KeyRound }> = [
-  { id: 'provider-keys', label: 'Provider keys', icon: KeyRound },
+  { id: 'providers', label: 'Providers', icon: KeyRound },
   { id: 'model-config', label: 'Model config', icon: Cpu },
   { id: 'auth-providers', label: 'Auth providers', icon: ShieldCheck },
   { id: 'agents', label: 'Agents', icon: User },

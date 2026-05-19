@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { AdminSidebar, type AdminTabId } from './AdminSidebar';
 import { AdminPane } from './AdminPane';
 import { AdminPaneHeader } from './AdminPaneHeader';
-import { ProviderKeysTab } from './ProviderKeysTab';
+import { ProvidersPanel } from './ProvidersPanel';
 import { ModelConfigTab } from './ModelConfigTab';
 import { AuthProvidersTab } from './AuthProvidersTab';
 import { AgentForm } from './AgentForm';
@@ -20,7 +20,7 @@ interface TabMeta {
 }
 
 const TAB_META: Record<AdminTabId, TabMeta> = {
-  'provider-keys': { eyebrow: 'Admin', title: 'Provider keys' },
+  providers: { eyebrow: 'Admin', title: 'Providers' },
   'model-config': { eyebrow: 'Admin', title: 'Model config' },
   'auth-providers': { eyebrow: 'Admin', title: 'Auth providers' },
   agents: { eyebrow: 'Admin', title: 'Agents' },
@@ -30,7 +30,7 @@ const TAB_META: Record<AdminTabId, TabMeta> = {
 };
 
 export function AdminShell({ onClose }: AdminShellProps) {
-  const [activeTab, setActiveTab] = useState<AdminTabId>('provider-keys');
+  const [activeTab, setActiveTab] = useState<AdminTabId>('providers');
   const meta = TAB_META[activeTab];
 
   return (
@@ -43,7 +43,7 @@ export function AdminShell({ onClose }: AdminShellProps) {
       <AdminPane
         header={<AdminPaneHeader eyebrow={meta.eyebrow} title={meta.title} />}
       >
-        {activeTab === 'provider-keys' && <ProviderKeysTab />}
+        {activeTab === 'providers' && <ProvidersPanel />}
         {activeTab === 'model-config' && <ModelConfigTab />}
         {activeTab === 'auth-providers' && <AuthProvidersTab />}
         {activeTab === 'agents' && <AgentForm />}

@@ -4,10 +4,19 @@ import { AdminShell } from '../AdminShell';
 import { UserProvider } from '../../../lib/user-context';
 import type { AuthUser } from '../../../lib/auth';
 
-// ProviderKeysTab and ModelConfigTab fetch on mount — stub to avoid leaking
+// ProvidersPanel and ModelConfigTab fetch on mount — stub to avoid leaking
 // unhandled promise rejections.
 const fetchMock = vi.fn();
-function emptyResponse(): Response {
+function emptyResponse(url: string): Response {
+  // ProvidersPanel (default tab) calls adminCredentials.list() which hits
+  // /admin/credentials (no trailing path) and expects { credentials: [] }.
+  // ModelConfigTab calls listProviders() → /admin/credentials/providers → { providers: [] }.
+  if (/\/admin\/credentials(\?|$)/.test(url) || /\/settings\/credentials(\?|$)/.test(url)) {
+    return new Response(JSON.stringify({ credentials: [] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
   return new Response(JSON.stringify({ providers: [], agents: [], teams: [], servers: [] }), {
     status: 200,
     headers: { 'content-type': 'application/json' },
@@ -16,7 +25,9 @@ function emptyResponse(): Response {
 beforeEach(() => {
   fetchMock.mockReset();
   globalThis.fetch = fetchMock as unknown as typeof fetch;
-  fetchMock.mockImplementation(() => Promise.resolve(emptyResponse()));
+  fetchMock.mockImplementation((input: RequestInfo | URL) =>
+    Promise.resolve(emptyResponse(String(input))),
+  );
 });
 
 const fakeUser: AuthUser = {
@@ -35,15 +46,15 @@ function renderShell(onClose = vi.fn()) {
 }
 
 describe('AdminShell', () => {
-  it('renders all 5 nav items with provider-keys active by default', () => {
+  it('renders all 5 nav items with providers active by default', () => {
     renderShell();
     const nav = screen.getByRole('list');
-    expect(within(nav).getByText('Provider keys')).toBeTruthy();
+    expect(within(nav).getByText('Providers')).toBeTruthy();
     expect(within(nav).getByText('Model config')).toBeTruthy();
     expect(within(nav).getByText('Agents')).toBeTruthy();
     expect(within(nav).getByText('MCP servers')).toBeTruthy();
     expect(within(nav).getByText('Teams')).toBeTruthy();
-    const active = within(nav).getByRole('button', { name: 'Provider keys' });
+    const active = within(nav).getByRole('button', { name: 'Providers' });
     expect(active.getAttribute('data-active')).toBeTruthy();
   });
 
@@ -55,7 +66,7 @@ describe('AdminShell', () => {
       within(nav).getByRole('button', { name: 'Model config' }).getAttribute('data-active'),
     ).toBeTruthy();
     expect(
-      within(nav).getByRole('button', { name: 'Provider keys' }).getAttribute('data-active'),
+      within(nav).getByRole('button', { name: 'Providers' }).getAttribute('data-active'),
     ).toBeNull();
   });
 

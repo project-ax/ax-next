@@ -47,6 +47,17 @@ import { PluginError, type AgentContext, type AgentMessage, type AgentOutcome, t
 //        sandbox-subprocess / ipc-server's jobs.
 // ---------------------------------------------------------------------------
 
+export const KNOWN_PROVIDERS = [
+  {
+    provider: 'anthropic' as const,
+    name: 'Anthropic',
+    slot: 'ANTHROPIC_API_KEY' as const,
+    description: 'API key from console.anthropic.com.',
+  },
+] as const;
+
+export type KnownProvider = (typeof KNOWN_PROVIDERS)[number];
+
 export interface ChatOrchestratorConfig {
   // Absolute path to the runner's dist/main.js. Passed through to
   // sandbox:open-session — we don't validate here; the sandbox plugin does.

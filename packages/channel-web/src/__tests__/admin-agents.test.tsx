@@ -203,7 +203,15 @@ describe('AdminSettings — agents tab', () => {
   it('clicking Back to chat calls onClose', async () => {
     fetchMock.mockReset();
     globalThis.fetch = fetchMock as unknown as typeof fetch;
-    fetchMock.mockImplementation(() => Promise.resolve(jsonOk({ providers: [] })));
+    // ProvidersPanel (default tab) hits /admin/credentials → { credentials: [] }.
+    // Other requests (providers, agents, etc.) get the generic empty response.
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (/\/admin\/credentials(\?|$)/.test(url) || /\/settings\/credentials(\?|$)/.test(url)) {
+        return Promise.resolve(jsonOk({ credentials: [] }));
+      }
+      return Promise.resolve(jsonOk({ providers: [] }));
+    });
 
     const onClose = vi.fn();
     render(
