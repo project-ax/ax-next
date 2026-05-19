@@ -103,7 +103,6 @@ export function SkillEditor({ skillId, onSaved, onCancel }: Props) {
   // Auto-clear the flag if the user adds credential slots while the box was checked.
   useEffect(() => {
     if (!canBeDefault && defaultAttached) setDefaultAttached(false);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canBeDefault, defaultAttached]);
 
   async function handleSave() {
