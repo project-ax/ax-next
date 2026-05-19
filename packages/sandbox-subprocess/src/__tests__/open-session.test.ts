@@ -735,18 +735,25 @@ describe('sandbox:open-session', () => {
     await fs.rm(ws, { recursive: true, force: true });
   });
 
-  it('does NOT pre-populate <workspace>/.claude or <workspace>/.ax/skills before the runner spawns (I-P0-4)', async () => {
+  it('leaves <workspace> empty before the runner spawns (I-P0-4)', async () => {
     // Regression guard for PR #99's k8s fix mirrored on the subprocess side:
     // open-session used to scaffold `<workspace>/.claude/skills →
     // ../.ax/skills` before spawning the runner. The runner's own
     // `materializeWorkspace` then `git clone`s into `<workspace>`, which
-    // refuses a non-empty target — chat sat on "Starting sandbox…" forever.
+    // refuses ANY non-empty target — chat sat on "Starting sandbox…" forever.
     // The scaffold moved to the runner main
     // (`scaffoldWorkspaceSkillSurface` in @ax/agent-claude-sdk-runner's
     // git-workspace.ts), which runs after `materializeWorkspace`. Open-
     // session must leave `<workspace>` untouched so the clone has a clean
-    // target. This test stubs out the runner (echo-stub doesn't
-    // materialize), so we observe the pre-spawn state directly.
+    // target.
+    //
+    // Asserting on `fs.readdir` (not a specific path list) is the right
+    // shape: any top-level write — `.claude`, `.ax`, a stray dotfile,
+    // a new feature that thinks it can pre-populate the workspace — would
+    // collide with `git clone`. A narrow `fs.stat('.claude')` check would
+    // pass while the regression still bricked chat. This test stubs out
+    // the runner (echo-stub doesn't materialize), so we observe the
+    // pre-spawn state directly.
     const ws = await mkWorkspace();
     const h = await makeHarness();
     const ctx = h.ctx();
@@ -756,12 +763,7 @@ describe('sandbox:open-session', () => {
       { sessionId: 'p0-no-prescaffold', workspaceRoot: ws, runnerBinary: ECHO_STUB },
     );
 
-    await expect(fs.stat(path.join(ws, '.claude'))).rejects.toMatchObject({
-      code: 'ENOENT',
-    });
-    await expect(fs.stat(path.join(ws, '.ax', 'skills'))).rejects.toMatchObject({
-      code: 'ENOENT',
-    });
+    await expect(fs.readdir(ws)).resolves.toEqual([]);
 
     await result.handle.kill();
     await result.handle.exited;
