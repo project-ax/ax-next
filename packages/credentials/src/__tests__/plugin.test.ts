@@ -109,7 +109,7 @@ describe('@ax/credentials plugin', () => {
   });
 
   // Phase 1a — env fallback for the kind-dev posture. The k8s preset
-  // configures `envFallback: { 'anthropic-api': 'ANTHROPIC_API_KEY' }`
+  // configures `envFallback: { 'provider:anthropic': 'ANTHROPIC_API_KEY' }`
   // so the runner can dial the credential-proxy without an admin
   // having pre-seeded a per-user credential. Without this fallback
   // the kind goldenpath fails at proxy:open-session with
@@ -122,7 +122,7 @@ describe('@ax/credentials plugin', () => {
         memStoragePlugin(),
         createCredentialsStoreDbPlugin(),
         createCredentialsPlugin({
-          envFallback: { 'anthropic-api': 'ANTHROPIC_API_KEY' },
+          envFallback: { 'provider:anthropic': 'ANTHROPIC_API_KEY' },
         }),
       ],
       config: {},
@@ -132,7 +132,7 @@ describe('@ax/credentials plugin', () => {
       const got = await bus.call<{ ref: string; userId: string }, string>(
         'credentials:get',
         ctx(),
-        { ref: 'anthropic-api', userId: 'u' },
+        { ref: 'provider:anthropic', userId: 'u' },
       );
       expect(got).toBe('sk-test-fallback');
     } finally {
@@ -151,7 +151,7 @@ describe('@ax/credentials plugin', () => {
         memStoragePlugin(),
         createCredentialsStoreDbPlugin(),
         createCredentialsPlugin({
-          envFallback: { 'anthropic-api': 'ANTHROPIC_API_KEY' },
+          envFallback: { 'provider:anthropic': 'ANTHROPIC_API_KEY' },
         }),
       ],
       config: {},
@@ -161,14 +161,14 @@ describe('@ax/credentials plugin', () => {
       await bus.call('credentials:set', ctx(), {
         scope: 'user',
         ownerId: 'u',
-        ref: 'anthropic-api',
+        ref: 'provider:anthropic',
         kind: 'api-key',
         payload: bytes('sk-from-store'),
       });
       const got = await bus.call<{ ref: string; userId: string }, string>(
         'credentials:get',
         ctx(),
-        { ref: 'anthropic-api', userId: 'u' },
+        { ref: 'provider:anthropic', userId: 'u' },
       );
       expect(got).toBe('sk-from-store');
     } finally {
@@ -189,7 +189,7 @@ describe('@ax/credentials plugin', () => {
         memStoragePlugin(),
         createCredentialsStoreDbPlugin(),
         createCredentialsPlugin({
-          envFallback: { 'anthropic-api': 'ANTHROPIC_API_KEY' },
+          envFallback: { 'provider:anthropic': 'ANTHROPIC_API_KEY' },
         }),
       ],
       config: {},
@@ -199,20 +199,20 @@ describe('@ax/credentials plugin', () => {
       await bus.call('credentials:set', ctx(), {
         scope: 'user',
         ownerId: 'u',
-        ref: 'anthropic-api',
+        ref: 'provider:anthropic',
         kind: 'api-key',
         payload: bytes('sk-from-store'),
       });
       await bus.call('credentials:delete', ctx(), {
         scope: 'user',
         ownerId: 'u',
-        ref: 'anthropic-api',
+        ref: 'provider:anthropic',
       });
       // Tombstone falls through; agent + global empty; env fallback wins.
       const got = await bus.call<{ ref: string; userId: string }, string>(
         'credentials:get',
         ctx(),
-        { ref: 'anthropic-api', userId: 'u' },
+        { ref: 'provider:anthropic', userId: 'u' },
       );
       expect(got).toBe('sk-from-env');
     } finally {

@@ -756,7 +756,7 @@ describe('chat-orchestrator', () => {
           ...TEST_AGENT,
           allowedHosts: ['api.anthropic.com'],
           requiredCredentials: {
-            ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' },
+            ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
           },
         },
       }),
@@ -817,7 +817,7 @@ describe('chat-orchestrator', () => {
     expect(openIn.userId).toBe('test-user');
     expect(openIn.allowlist).toEqual(['api.anthropic.com']);
     expect(openIn.credentials).toEqual({
-      ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' },
+      ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
     });
 
     // sandbox:open-session received the translated proxyConfig (tcp:// →
@@ -1312,7 +1312,7 @@ describe('chat-orchestrator', () => {
           ...TEST_AGENT,
           allowedHosts: ['api.anthropic.com'],
           requiredCredentials: {
-            ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' },
+            ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
           },
         },
       }),
@@ -1624,7 +1624,7 @@ describe('chat-orchestrator', () => {
           ...TEST_AGENT,
           allowedHosts: ['api.anthropic.com'],
           requiredCredentials: {
-            ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' },
+            ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
           },
           skillAttachments: [
             { skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'gh-pat' } },
@@ -1659,7 +1659,7 @@ describe('chat-orchestrator', () => {
     expect(openIn.allowlist).toContain('api.github.com');
     // Credentials must carry both the agent cred and the skill binding.
     expect(openIn.credentials).toMatchObject({
-      ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' },
+      ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
       GITHUB_TOKEN: { ref: 'gh-pat', kind: 'api-key' },
     });
   });
@@ -1688,7 +1688,7 @@ describe('chat-orchestrator', () => {
           ...TEST_AGENT,
           allowedHosts: ['api.anthropic.com'],
           requiredCredentials: {
-            ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' },
+            ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
           },
           skillAttachments: [
             { skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'gh-pat' } },
@@ -1733,7 +1733,7 @@ describe('chat-orchestrator', () => {
           ...TEST_AGENT,
           allowedHosts: ['api.anthropic.com'],
           requiredCredentials: {
-            ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' },
+            ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
           },
           // No skillAttachments field — old agent row shape.
         },
@@ -1781,7 +1781,7 @@ describe('chat-orchestrator', () => {
           ...TEST_AGENT,
           allowedHosts: ['api.anthropic.com'],
           requiredCredentials: {
-            ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' },
+            ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
           },
           skillAttachments: [
             { skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'gh-pat' } },
@@ -1835,7 +1835,7 @@ describe('chat-orchestrator', () => {
           ...TEST_AGENT,
           allowedHosts: ['api.anthropic.com'],
           requiredCredentials: {
-            ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' },
+            ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
           },
           skillAttachments: [
             {
@@ -1903,7 +1903,7 @@ describe('chat-orchestrator', () => {
           ...TEST_AGENT,
           allowedHosts: ['api.anthropic.com'],
           requiredCredentials: {
-            ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' },
+            ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
           },
           skillAttachments: [
             { skillId: 'skill-a', credentialBindings: { OPENAI_API_KEY: 'ref-a' } },
@@ -1954,7 +1954,7 @@ describe('chat-orchestrator', () => {
           ...TEST_AGENT,
           allowedHosts: ['api.anthropic.com'],
           requiredCredentials: {
-            ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' },
+            ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
           },
           skillAttachments: [
             {
@@ -1996,7 +1996,7 @@ describe('chat-orchestrator', () => {
           ...TEST_AGENT,
           allowedHosts: ['api.anthropic.com'],
           requiredCredentials: {
-            ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' },
+            ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
           },
           skillAttachments: [
             { skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'ref' } },
@@ -2043,7 +2043,7 @@ describe('chat-orchestrator', () => {
           ...TEST_AGENT,
           allowedHosts: ['api.anthropic.com'],
           requiredCredentials: {
-            ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' },
+            ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
           },
           skillAttachments: [
             { skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'ref' } },
@@ -2109,7 +2109,7 @@ describe('chat-orchestrator', () => {
         agent: {
           ...TEST_AGENT,
           allowedHosts: ['api.anthropic.com'],
-          requiredCredentials: { ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' } },
+          requiredCredentials: { ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' } },
           // No explicit skillAttachments.
         },
       }),
@@ -2161,7 +2161,7 @@ describe('chat-orchestrator', () => {
         agent: {
           ...TEST_AGENT,
           allowedHosts: ['api.anthropic.com'],
-          requiredCredentials: { ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' } },
+          requiredCredentials: { ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' } },
           skillAttachments: [
             { skillId: 'shared', credentialBindings: { TOK: 'my-tok' } },
           ],
@@ -2201,7 +2201,7 @@ describe('chat-orchestrator', () => {
         agent: {
           ...TEST_AGENT,
           allowedHosts: ['api.anthropic.com'],
-          requiredCredentials: { ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' } },
+          requiredCredentials: { ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' } },
         },
       }),
       openSession: makeChatEndOpenSession(busRef),
@@ -2238,7 +2238,7 @@ describe('chat-orchestrator', () => {
         agent: {
           ...TEST_AGENT,
           allowedHosts: ['api.anthropic.com'],
-          requiredCredentials: { ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' } },
+          requiredCredentials: { ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' } },
         },
       }),
       openSession: makeChatEndOpenSession(busRef),
@@ -2283,7 +2283,7 @@ describe('chat-orchestrator', () => {
         agent: {
           ...TEST_AGENT,
           allowedHosts: ['api.anthropic.com'],
-          requiredCredentials: { ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' } },
+          requiredCredentials: { ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' } },
           // Critical: agent has ZERO explicit skillAttachments. The skill
           // gets there only because it is default-attached.
           skillAttachments: [],

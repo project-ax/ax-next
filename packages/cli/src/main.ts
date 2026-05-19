@@ -86,7 +86,7 @@ export interface MainOptions {
   /**
    * Test-seam ONLY. When true, the Phase 2 credential-proxy is NOT loaded.
    * Lets library-mode tests with stubbed runtimes exercise the
-   * chat-orchestrator without having to seed an `anthropic-api` credential.
+   * chat-orchestrator without having to seed a `provider:anthropic` credential.
    * Not reachable from file-based config.
    */
   skipCredentialProxy?: boolean;
@@ -338,7 +338,7 @@ export async function main(opts: MainOptions): Promise<number> {
     agentId: 'cli-agent',
     // `cli` matches what every other CLI subcommand (credentials, mcp,
     // admin) writes against — without alignment, `credentials set
-    // anthropic-api` stores under userId=`cli` and the chat path's
+    // provider:anthropic` stores under userId=`cli` and the chat path's
     // `credentials:get` looks under `cli-user`, finds nothing, and
     // `proxy:open-session` terminates the chat with `proxy-open-failed`.
     userId: 'cli',

@@ -35,7 +35,7 @@ describe('dev-agents-stub', () => {
     const agent = await resolve({});
     expect(agent.allowedHosts).toEqual(['api.anthropic.com']);
     expect(agent.requiredCredentials).toEqual({
-      ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' },
+      ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
     });
   });
 

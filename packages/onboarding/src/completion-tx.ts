@@ -93,7 +93,7 @@ export async function runCompletionTransaction(
         // same row to render "Configured". Drift on this string means
         // (a) the wizard credential is orphaned data, and (b) the admin UI
         // shows "Not configured" right after a successful wizard run.
-        ref: 'anthropic-api',
+        ref: 'provider:anthropic',
         kind: 'api-key',
         payload: new TextEncoder().encode(input.apiKey),
         tx,

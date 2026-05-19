@@ -104,7 +104,7 @@ export function createDevAgentsStubPlugin(
   const allowedHosts = [...(cfg.allowedHosts ?? ['api.anthropic.com'])];
   const requiredCredentials: Record<string, { ref: string; kind: string }> = {
     ...(cfg.requiredCredentials ?? {
-      ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' },
+      ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
     }),
   };
 

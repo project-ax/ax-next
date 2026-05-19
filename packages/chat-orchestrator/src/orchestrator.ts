@@ -769,7 +769,7 @@ export function createOrchestrator(
     let proxyConfig: ProxyConfig;
     let proxyOpened = false;
     // Default to the api.anthropic.com allowlist + the canonical
-    // ANTHROPIC_API_KEY → 'anthropic-api' credential ref when the agent
+    // ANTHROPIC_API_KEY → 'provider:anthropic' credential ref when the agent
     // record carries no explicit per-row entries. The production agents
     // plugin (`@ax/agents`) doesn't yet persist these fields; without a
     // default the runner boots without an API key and crashes at
@@ -827,7 +827,7 @@ export function createOrchestrator(
       ? new Set<string>(['api.anthropic.com'])
       : new Set<string>(agent.allowedHosts ?? []);
     const baseCreds: Record<string, { ref: string; kind: string }> = useAnthropicDefaults
-      ? { ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' } }
+      ? { ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' } }
       : { ...(agent.requiredCredentials ?? {}) };
 
     // Track slot ownership so the collision error can name the culprit.
