@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
+import { Checkbox } from '@/components/ui/checkbox';
 // `@ax/skills/manifest` is a pure-function SKILL.md parser (yaml +
 // shape validation) exported via a subpath so the heavy bits of
 // @ax/skills (kysely db, http routes, node:crypto via @ax/core) stay
@@ -43,6 +44,7 @@ export function SkillEditor({ skillId, onSaved, onCancel }: Props) {
   const [loading, setLoading] = useState<boolean>(skillId !== undefined);
   const [saving, setSaving] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
+  const [defaultAttached, setDefaultAttached] = useState<boolean>(false);
 
   useEffect(() => {
     // Reset loading + serverError on every skillId change so the editor
@@ -54,6 +56,7 @@ export function SkillEditor({ skillId, onSaved, onCancel }: Props) {
     setLoading(skillId !== undefined);
     if (skillId === undefined) {
       setText(EMPTY_TEMPLATE);
+      setDefaultAttached(false);
       return;
     }
     let cancelled = false;
@@ -68,6 +71,7 @@ export function SkillEditor({ skillId, onSaved, onCancel }: Props) {
           '---\n' +
           detail.bodyMd;
         setText(md);
+        setDefaultAttached(detail.defaultAttached);
       } catch (err) {
         if (cancelled) return;
         setServerError(err instanceof Error ? err.message : String(err));
@@ -94,14 +98,22 @@ export function SkillEditor({ skillId, onSaved, onCancel }: Props) {
     return parseSkillManifest(m[1] ?? '');
   }, [text]);
 
+  const canBeDefault =
+    parsedResult.ok && parsedResult.value.capabilities.credentials.length === 0;
+  // Auto-clear the flag if the user adds credential slots while the box was checked.
+  useEffect(() => {
+    if (!canBeDefault && defaultAttached) setDefaultAttached(false);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canBeDefault, defaultAttached]);
+
   async function handleSave() {
     setSaving(true);
     setServerError(null);
     try {
       if (skillId === undefined) {
-        await upsertSkill(text);
+        await upsertSkill(text, { defaultAttached });
       } else {
-        await updateSkill(skillId, text);
+        await updateSkill(skillId, text, { defaultAttached });
       }
       onSaved();
     } catch (err) {
@@ -192,6 +204,28 @@ export function SkillEditor({ skillId, onSaved, onCancel }: Props) {
               <AlertDescription className="text-xs">{liveError}</AlertDescription>
             </Alert>
           )}
+        </div>
+      </div>
+
+      <div className="flex items-start gap-2">
+        <Checkbox
+          id="default-attached"
+          checked={defaultAttached}
+          disabled={!canBeDefault}
+          onCheckedChange={(v) => setDefaultAttached(v === true)}
+        />
+        <div className="space-y-1 leading-none">
+          <label
+            htmlFor="default-attached"
+            className="text-sm font-medium"
+          >
+            Default-attached to all agents
+          </label>
+          <p className="text-xs text-muted-foreground">
+            {canBeDefault
+              ? "Adds this skill to every agent at session start, without per-agent setup."
+              : "Capability-bearing skills must be attached per agent."}
+          </p>
         </div>
       </div>
 
