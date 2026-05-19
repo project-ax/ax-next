@@ -2573,23 +2573,17 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         const createdSkillId = skillUpsertOut.skillId;
 
         // ── Step 3: Seed credentials ─────────────────────────────────────────
-        // Three credential rows that CAN be stored (refs pass REF_RE):
-        //   A) global  provider:anthropic  — cleaned by credentials:delete directly
-        //   B) global  skill:<id>:T        — cleaned by skills:delete (Task 14)
-        //   C) global  mcp:srv:env:E       — cleaned by credentials:delete directly
+        // Four credential rows for the destination-plugin cleanup paths:
+        //   A) global  provider:anthropic         — cleaned by credentials:delete directly
+        //   B) global  skill:<id>:T               — cleaned by skills:delete (Task 14)
+        //   C) global  mcp:srv:env:E              — cleaned by credentials:delete directly
         //              (Task 15 HTTP path is separately tested)
+        //   D) agent/<agentId>  provider:anthropic — purged by agents:delete (Task 17)
         //
-        // One more agent-scope row for the Task 17 agents:delete purge path:
-        //   D) agent/<agentId>  provider:anthropic  — purged by agents:delete
-        //
-        // NOTE on Task 16 (routine-hmac): the REF_RE /^[a-zA-Z0-9][a-zA-Z0-9_.:-]
-        // {0,191}$/ does NOT allow '/'. Routine-hmac refs embed the full routine
-        // path (e.g. routine:agt:.ax/routines/r.md:hmac) which contains '/'.
-        // credentials:set rejects such refs, so a real HMAC credential cannot be
-        // stored through the facade today. This canary still exercises the Task 16
-        // wiring by firing workspace:applied with a deleted routine change and
-        // proving the subscriber runs (the purge is a no-op because no matching
-        // row exists). FOLLOW-UP NEEDED: widen REF_RE to include '/'.
+        // One more agent-scope row for the Task 16 routine-hmac purge path:
+        //   E) agent/<agentId>  routine:<id>:.ax/routines/task21-r.md:hmac
+        //      — purged by workspace:applied subscriber when the routine file
+        //        is deleted. Requires REF_RE to allow '/' (now fixed).
         const credPayload = new TextEncoder().encode('test-value');
 
         // Row A: global provider
@@ -2610,19 +2604,26 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           ref: 'mcp:task21-srv:env:API-KEY',
           kind: 'api-key', payload: credPayload,
         });
-        // Row D: agent-scope credential — purged by agents:delete below.
-        // Uses a valid ref (no '/') distinct from the routine-hmac format.
+        // Row D: agent-scope credential — purged by agents:delete below (Task 17).
         await bus.call<CredentialsSetInput, void>('credentials:set', ctx, {
           scope: 'agent', ownerId: createdAgentId,
           ref: 'provider:anthropic',
           kind: 'api-key', payload: credPayload,
         });
+        // Row E: agent-scope routine-hmac — purged by workspace:applied subscriber
+        // when .ax/routines/task21-r.md is deleted (Task 16). The ref embeds '/'
+        // which requires the widened REF_RE (/^[a-zA-Z0-9][a-zA-Z0-9_./:-]{0,191}$/).
+        await bus.call<CredentialsSetInput, void>('credentials:set', ctx, {
+          scope: 'agent', ownerId: createdAgentId,
+          ref: `routine:${createdAgentId}:.ax/routines/task21-r.md:hmac`,
+          kind: 'api-key', payload: credPayload,
+        });
 
-        // All four stored.
+        // All five stored.
         const listBefore = await bus.call<CredentialsListInput, CredentialsListOutput>(
           'credentials:list', ctx, {},
         );
-        expect(listBefore.credentials).toHaveLength(4);
+        expect(listBefore.credentials).toHaveLength(5);
 
         // ── Task 14: skill delete purges skill-slot credential ───────────────
         // purgeSkillCredentials() inside skills:delete lists all credentials
@@ -2633,8 +2634,8 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         const listAfterSkill = await bus.call<CredentialsListInput, CredentialsListOutput>(
           'credentials:list', ctx, {},
         );
-        // Row B deleted; rows A, C, D remain.
-        expect(listAfterSkill.credentials).toHaveLength(3);
+        // Row B deleted; rows A, C, D, E remain.
+        expect(listAfterSkill.credentials).toHaveLength(4);
         expect(
           listAfterSkill.credentials.every((c) => !c.ref.startsWith('skill:')),
         ).toBe(true);
@@ -2642,10 +2643,9 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         // ── Task 16: workspace:applied delete fires routines subscriber ───────
         // The routines plugin's workspace:applied subscriber calls
         // handleWorkspaceApplied. For a 'deleted' routine change it constructs
-        // `routine:${agentId}:${path}:hmac` and tries to purge. Because the
-        // path contains '/' (blocked by REF_RE — see NOTE above), no matching
-        // row exists and the purge is a no-op. The subscriber DOES execute,
-        // proving the Task 16 wiring is active.
+        // `routine:${agentId}:${path}:hmac` and calls credentials:delete on
+        // the matching row. Row E (the routine-hmac credential seeded above)
+        // is purged — proving the Task 16 wiring works end-to-end.
         const routineDelta: WorkspaceDelta = {
           before: null,
           after: asWorkspaceVersion('v1'),
@@ -2654,7 +2654,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         };
         await bus.fire('workspace:applied', ctx, routineDelta);
 
-        // Count unchanged (no matching row to purge due to REF_RE '/' gap).
+        // Row E (routine-hmac) deleted by the subscriber; rows A, C, D remain.
         const listAfterRoutine = await bus.call<CredentialsListInput, CredentialsListOutput>(
           'credentials:list', ctx, {},
         );

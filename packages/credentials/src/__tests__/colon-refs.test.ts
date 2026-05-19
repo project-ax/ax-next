@@ -160,6 +160,24 @@ describe('colon-bearing credential refs', () => {
     });
   });
 
+  it('accepts routine-hmac refs that embed a /-bearing path', async () => {
+    const bus = new HookBus();
+    await bootstrap({
+      bus,
+      plugins: [memStoragePlugin(), createCredentialsStoreDbPlugin(), createCredentialsPlugin()],
+      config: {},
+    });
+    await expect(
+      bus.call('credentials:set', ctx(), {
+        scope: 'agent',
+        ownerId: 'agt-1',
+        ref: 'routine:agt-1:.ax/routines/cron.md:hmac',
+        kind: 'api-key',
+        payload: bytes('s'),
+      }),
+    ).resolves.not.toThrow();
+  });
+
   it('round-trips a colon-bearing ref through set+get', async () => {
     const bus = new HookBus();
     await bootstrap({
