@@ -385,25 +385,27 @@ export interface AdminDefaultRoutinesHandlers {
 export function createAdminDefaultRoutinesHandlers(
   deps: AdminDeps,
 ): AdminDefaultRoutinesHandlers {
-  // Admin context — the actor binds at the per-request level via requireAdmin,
-  // but the routines:*-default hooks don't ACL on userId (default routines
-  // are fleet-wide). Keep a fixed admin ctx for the bus call so the
-  // sessionId/agentId fields land usefully in logs.
+  // requireAdmin only calls auth:require-user — it doesn't read userId
+  // from the ctx — so the ctx we hand it can be a system-flavoured one.
+  // Per-handler we build a fresh ctxForActor(actor.id) AFTER requireAdmin
+  // returns, and THAT flows into routines:*-default so audit logs reflect
+  // the real admin who performed the change, not a static 'admin' literal.
   const adminCtx = makeAgentContext({
     sessionId: 'routines-admin',
     agentId: PLUGIN_NAME,
-    userId: 'admin',
+    userId: 'system',
   });
 
   return {
     async list(req, res) {
       const actor = await requireAdmin(deps.bus, adminCtx, req, res);
       if (actor === null) return;
+      const ctx = ctxForActor(actor.id);
       try {
         const out = await deps.bus.call<
           Record<string, never>,
           DefaultRoutinesListOutput
-        >('routines:list-defaults', adminCtx, {});
+        >('routines:list-defaults', ctx, {});
         res.status(200).json(out);
       } catch (err) {
         if (writeServiceError(res, err)) return;
@@ -419,11 +421,12 @@ export function createAdminDefaultRoutinesHandlers(
         res.status(400).json({ error: 'missing default routine id' });
         return;
       }
+      const ctx = ctxForActor(actor.id);
       try {
         const detail = await deps.bus.call<
           { defaultRoutineId: string },
           DefaultRoutineDetailWire
-        >('routines:get-default', adminCtx, { defaultRoutineId: id });
+        >('routines:get-default', ctx, { defaultRoutineId: id });
         res.status(200).json(detail);
       } catch (err) {
         if (writeServiceError(res, err)) return;
@@ -450,11 +453,12 @@ export function createAdminDefaultRoutinesHandlers(
         });
         return;
       }
+      const ctx = ctxForActor(actor.id);
       try {
         const out = await deps.bus.call<
           { sourceMd: string },
           UpsertDefaultOutput
-        >('routines:upsert-default', adminCtx, {
+        >('routines:upsert-default', ctx, {
           sourceMd: zodResult.data.sourceMd,
         });
         res
@@ -490,17 +494,60 @@ export function createAdminDefaultRoutinesHandlers(
         });
         return;
       }
+      const ctx = ctxForActor(actor.id);
+      // PRE-WRITE id-vs-manifest consistency check. Pull `name:` out of
+      // the sourceMd frontmatter and look up the existing row by URL
+      // id. If the names disagree, reject 400 BEFORE the upsert ever
+      // fires — without this guard, the upsert would shadow-write the
+      // OTHER row (matched by name) and the post-call equality check
+      // would land too late to undo it. Mirrors @ax/skills admin path.
+      //
+      // Accepts unquoted / single-quoted / double-quoted YAML scalars
+      // with optional trailing comments — same surface yaml itself
+      // would accept.
+      const nameMatch =
+        /^\s*name\s*:\s*(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([^\s#\r\n]+))\s*(?:#.*)?$/m.exec(
+          zodResult.data.sourceMd,
+        );
+      const manifestName =
+        nameMatch?.[1] ?? nameMatch?.[2] ?? nameMatch?.[3];
+      if (manifestName !== undefined) {
+        try {
+          const existing = await deps.bus.call<
+            { defaultRoutineId: string },
+            DefaultRoutineDetailWire
+          >('routines:get-default', ctx, { defaultRoutineId: id });
+          if (existing.name !== manifestName) {
+            res.status(400).json({
+              error: 'default routine id in path does not match manifest name',
+            });
+            return;
+          }
+        } catch (err) {
+          // URL id doesn't exist — fall through; the post-call equality
+          // check below catches the case where the manifest name maps
+          // to a different existing row, and the upsert otherwise
+          // creates the new row with the URL-id-mismatched id (caught
+          // by the same post-call check).
+          if (
+            !(err instanceof PluginError && err.code === 'not-found')
+          ) {
+            if (writeServiceError(res, err)) return;
+            throw err;
+          }
+        }
+      }
       try {
         const out = await deps.bus.call<
           { sourceMd: string },
           UpsertDefaultOutput
-        >('routines:upsert-default', adminCtx, {
+        >('routines:upsert-default', ctx, {
           sourceMd: zodResult.data.sourceMd,
         });
-        // The PUT path identifies the row by id; if upsert returns a
-        // different id, the client's URL and the body disagree on which
-        // row this is. Surface that as 400 rather than silently writing
-        // to the wrong row — mirrors @ax/skills admin handler.
+        // Defense-in-depth: if our regex missed a name (e.g. multi-line
+        // YAML scalar), or the URL id was for a non-existent row whose
+        // manifest name collides with some other existing row, the
+        // upsert may have landed on a different id. Surface as 400.
         if (out.defaultRoutineId !== id) {
           res.status(400).json({
             error: 'default routine id in path does not match manifest name',
@@ -524,11 +571,12 @@ export function createAdminDefaultRoutinesHandlers(
         res.status(400).json({ error: 'missing default routine id' });
         return;
       }
+      const ctx = ctxForActor(actor.id);
       try {
         await deps.bus.call<
           { defaultRoutineId: string },
           Record<string, never>
-        >('routines:delete-default', adminCtx, { defaultRoutineId: id });
+        >('routines:delete-default', ctx, { defaultRoutineId: id });
         res.status(204).end();
       } catch (err) {
         if (writeServiceError(res, err)) return;

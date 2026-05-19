@@ -56,6 +56,11 @@ export async function runTickOnce(input: TickOnceInput): Promise<void> {
   // continue; the next tick will retry.
   if (input.getAgentIds !== undefined) {
     try {
+      // getAgentIds hits the shared pg pool via agents:list-ids. Same
+      // connection-checkout dependency on pool.max > 1 as input.fire()
+      // — when pool.max === 1, both block waiting on the pinned
+      // advisory-lock session. Production defaults poolMax=10
+      // (packages/database-postgres/src/plugin.ts).
       const agentIds = await input.getAgentIds();
       await input.store.materializeMissing({ agentIds, now: input.now });
       await input.store.refreshStale({ now: input.now });
@@ -76,10 +81,21 @@ export async function runTickOnce(input: TickOnceInput): Promise<void> {
     if (row.activeHours !== null) {
       const adjusted = advanceToNextActiveWindow(input.now, row.activeHours);
       if (adjusted.getTime() > input.now.getTime()) {
+        // Default-sourced rows MUST keep next_run_at NULL (the
+        // routines_v1_default_next_run_at_chk CHECK constraint).
+        // Their next-due computation is COALESCE(last_run_at,
+        // created_at) + d.interval_seconds, so setting last_run_at
+        // to the next active-window boundary defers the next claim
+        // past the inactive period — the next active window's claim
+        // re-evaluates activeHours from scratch.
+        //
+        // Workspace rows keep the legacy behaviour: next_run_at is
+        // bumped explicitly and last_run_at stays at `now`.
+        const isDefaultSourced = row.definitionId !== null;
         await input.store.advance({
           agentId: row.agentId, path: row.path,
-          nextRunAt: adjusted,
-          lastRunAt: input.now,
+          nextRunAt: isDefaultSourced ? null : adjusted,
+          lastRunAt: isDefaultSourced ? adjusted : input.now,
           lastStatus: row.lastStatus ?? 'ok',
           lastError: row.lastError ?? null,
         });

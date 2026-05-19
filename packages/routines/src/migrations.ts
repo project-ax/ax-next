@@ -171,6 +171,7 @@ export async function runRoutinesMigration(db: Kysely<RoutinesDatabase>): Promis
       IF NOT EXISTS (
         SELECT 1 FROM pg_constraint
          WHERE conname = 'routines_v1_default_next_run_at_chk'
+           AND conrelid = 'routines_v1_definitions'::regclass
       ) THEN
         ALTER TABLE routines_v1_definitions
           ADD CONSTRAINT routines_v1_default_next_run_at_chk

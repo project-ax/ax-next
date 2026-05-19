@@ -767,7 +767,7 @@ describe('admin /admin/routines/defaults*', () => {
     await harness.close({ onError: () => {} });
   });
 
-  it('PUT /admin/routines/defaults/:id rejects id mismatch with 400', async () => {
+  it('PUT /admin/routines/defaults/:id rejects id mismatch with 400 (URL id does not exist → post-call mismatch)', async () => {
     const { harness, handlersByMethod } = await makeHarnessWith({
       authedUser: { id: 'admin1', isAdmin: true },
       defaults: new Map(),
@@ -775,6 +775,9 @@ describe('admin /admin/routines/defaults*', () => {
     const handler = handlersByMethod.get('PUT /admin/routines/defaults/:id')!;
     const { res, captured } = makeRes();
     // PUT-path id is 'wrong-id', body sourceMd computes id 'default-demo-test'.
+    // URL id doesn't exist (empty defaults), so pre-write check falls
+    // through; upsert lands on 'default-demo-test' and the post-call
+    // equality check fires.
     await handler(
       makeReq({
         params: { id: 'wrong-id' },
@@ -783,6 +786,65 @@ describe('admin /admin/routines/defaults*', () => {
       res,
     );
     expect(captured.status).toBe(400);
+    await harness.close({ onError: () => {} });
+  });
+
+  it('PUT /admin/routines/defaults/:id rejects id mismatch PRE-WRITE when URL id exists with a different name', async () => {
+    // Regression: the original handler validated id-vs-manifest AFTER
+    // routines:upsert-default had already run, so a mismatched PUT
+    // would shadow-write the OTHER row (matched by name) before the
+    // post-call check could 400. The fix calls routines:get-default
+    // for the URL id and compares to the parsed manifest name BEFORE
+    // calling upsert.
+    const seeded = new Map<string, DefaultRoutineDetailMock>();
+    seeded.set('default-other-test', {
+      defaultRoutineId: 'default-other-test',
+      name: 'other',
+      description: 'a different routine',
+      trigger: { kind: 'interval', every: '10m' },
+      enabled: true,
+      updatedAt: '2026-05-19T00:00:00.000Z',
+      sourceMd: '---\nname: other\n---\nbody',
+      silenceToken: null,
+      silenceMax: 300,
+      conversation: 'per-fire',
+      activeHours: null,
+      promptBody: 'body',
+    });
+    // upsertDefaultThrow makes routines:upsert-default throw if reached.
+    // The pre-write rejection MUST short-circuit before we get there —
+    // the body.code assertion below proves it (writeServiceError would
+    // have set { code: 'invalid-routine-md' } if upsert had run).
+    const { harness, handlersByMethod } = await makeHarnessWith({
+      authedUser: { id: 'admin1', isAdmin: true },
+      defaults: seeded,
+      upsertDefaultThrow: new PluginError({
+        code: 'invalid-routine-md',
+        plugin: 'test',
+        message: 'upsertDefault should not have been called',
+      }),
+    });
+    const handler = handlersByMethod.get('PUT /admin/routines/defaults/:id')!;
+    const { res, captured } = makeRes();
+    await handler(
+      makeReq({
+        params: { id: 'default-other-test' }, // URL id exists, name='other'
+        body: Buffer.from(JSON.stringify({ sourceMd: VALID_INTERVAL_MD })), // manifest name='demo'
+      }),
+      res,
+    );
+    expect(captured.status).toBe(400);
+    const body = captured.body as { error: string; code?: string };
+    expect(body.error).toMatch(/does not match manifest name/);
+    // If upsert had been invoked, the mock would have thrown
+    // invalid-routine-md and writeServiceError would have set code on
+    // the body. Pre-write rejection sets only { error: ... }.
+    expect(body.code).toBeUndefined();
+    // The seeded row must be untouched (sourceMd was NOT swapped to
+    // the VALID_INTERVAL_MD that the PUT carried).
+    expect(seeded.get('default-other-test')?.sourceMd).toBe(
+      '---\nname: other\n---\nbody',
+    );
     await harness.close({ onError: () => {} });
   });
 

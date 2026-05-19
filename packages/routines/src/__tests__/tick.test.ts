@@ -21,7 +21,29 @@ beforeAll(async () => {
 }, 120_000);
 
 afterEach(async () => {
+  // CASCADE on default_routines_v1 drops dependent per-agent rows
+  // (FK ON DELETE CASCADE on routines_v1_definitions.definition_id),
+  // then re-seed the heartbeat default so each test sees the same
+  // post-migration baseline. Tests that bump default rows (e.g. the
+  // refreshStale + active-hours-defer tests) would otherwise leak
+  // mutated state across the test order. Mirrors store.test.ts.
+  await sql`TRUNCATE default_routines_v1 CASCADE`.execute(db);
   await sql`TRUNCATE routines_v1_definitions, routines_v1_fires`.execute(db);
+  await sql`
+    INSERT INTO default_routines_v1
+      (default_routine_id, name, description, spec_hash, trigger_kind,
+       trigger_spec, interval_seconds, silence_token, silence_max,
+       conversation, prompt_body, source_md)
+    VALUES
+      ('default-heartbeat-2026-05-19', 'heartbeat',
+       'Daily check-in: ask if anything is outstanding.',
+       'seed-2026-05-19',
+       'interval', ${'{"kind":"interval","every":"24h"}'}::jsonb, 86400,
+       'HEARTBEAT_OK', 300, 'shared',
+       'If nothing is outstanding, respond with HEARTBEAT_OK and end.',
+       'seed')
+    ON CONFLICT (name) DO NOTHING
+  `.execute(db);
 });
 
 afterAll(async () => {
@@ -294,6 +316,64 @@ describe('runTickOnce', () => {
     // The workspace row was claimed and fired despite the defaults
     // branch failure.
     expect(fired).toEqual(['agt_a']);
+  });
+
+  it('active-hours defer on default-sourced row keeps next_run_at NULL and pushes last_run_at to the next window', async () => {
+    // Regression: the active-hours defer branch in runTickOnce used to
+    // unconditionally write nextRunAt=adjusted, which violates
+    // routines_v1_default_next_run_at_chk for default-sourced rows
+    // (definition_id IS NOT NULL). The fix routes default-sourced rows
+    // through nextRunAt=null + lastRunAt=adjusted so the next claim's
+    // due-ness computation (COALESCE(last_run_at, created_at) +
+    // interval_seconds) defers past the current inactive window.
+    const store = createRoutinesStore(db);
+    const fire: FireRoutineFn = async () => ({ status: 'ok', error: null, renderedPrompt: 'p' });
+
+    // Materialize the heartbeat default for agt_a.
+    await runTickOnce({
+      store, fire, now: new Date('2026-05-14T12:00:00Z'),
+      claimBatchSize: 50, claimWindowMinutes: 5,
+      getAgentIds: async () => ['agt_a'],
+    });
+
+    // Patch the per-agent row to: (a) carry an active_hours window
+    // that's always inactive at the fake `now` (09:00–09:01 UTC, and
+    // we'll tick at 12:00), and (b) be computed-due by backdating
+    // last_run_at past now − interval.
+    await sql`
+      UPDATE routines_v1_definitions
+         SET active_hours = ${'{"start":"09:00","end":"09:01","tz":"Etc/UTC"}'}::jsonb,
+             last_run_at = ${new Date('2026-05-12T12:00:00Z')}
+       WHERE agent_id = 'agt_a' AND definition_id IS NOT NULL
+    `.execute(db);
+
+    const tickNow = new Date('2026-05-14T12:00:00Z');
+    // Must not throw — the bug would surface as a Postgres CHECK
+    // constraint violation on the advance() write.
+    await expect(
+      runTickOnce({
+        store, fire, now: tickNow,
+        claimBatchSize: 50, claimWindowMinutes: 5,
+        getAgentIds: async () => ['agt_a'],
+      }),
+    ).resolves.toBeUndefined();
+
+    const row = await db
+      .selectFrom('routines_v1_definitions')
+      .selectAll()
+      .where('agent_id', '=', 'agt_a')
+      .where('definition_id', 'is not', null)
+      .executeTakeFirstOrThrow();
+    // Constraint compliance: default-sourced row keeps next_run_at NULL.
+    expect(row.next_run_at).toBeNull();
+    // Defer signal: last_run_at moved forward of `now`, into the next
+    // valid active window — guarantees the next claim won't pick this
+    // row up again until that future moment passes.
+    expect(row.last_run_at).not.toBeNull();
+    expect(row.last_run_at!.getTime()).toBeGreaterThan(tickNow.getTime());
+    // Nothing fired (we deferred before reaching input.fire).
+    const fires = await db.selectFrom('routines_v1_fires').selectAll().execute();
+    expect(fires).toHaveLength(0);
   });
 
   it('default-sourced rows are advanced with nextRunAt=null after firing', async () => {

@@ -117,7 +117,9 @@ export function DefaultRoutinesSection() {
                 <TableHead>Description</TableHead>
                 <TableHead>Trigger</TableHead>
                 <TableHead>Updated</TableHead>
-                <TableHead className="w-[120px]"></TableHead>
+                <TableHead className="w-[120px]">
+                  <span className="sr-only">Actions</span>
+                </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
