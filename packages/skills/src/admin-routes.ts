@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type {
   SkillsListOutput,
   SkillsGetOutput,
+  SkillsUpsertInput,
   SkillsUpsertOutput,
 } from './types.js';
 
@@ -150,6 +151,7 @@ const SKILL_MD_MAX = 32 * 1024;
 const upsertBodySchema = z
   .object({
     skillMd: z.string().min(1).max(SKILL_MD_MAX),
+    defaultAttached: z.boolean().optional(),
   })
   .strict();
 
@@ -264,10 +266,11 @@ export function createAdminSkillsHandlers(deps: AdminRouteDeps): {
       }
 
       try {
-        const out = await deps.bus.call<
-          { manifestYaml: string; bodyMd: string },
-          SkillsUpsertOutput
-        >('skills:upsert', ctx, split);
+        const out = await deps.bus.call<SkillsUpsertInput, SkillsUpsertOutput>(
+          'skills:upsert',
+          ctx,
+          { ...split, defaultAttached: zodResult.data.defaultAttached ?? false },
+        );
         res.status(201).json({ skillId: out.skillId, created: out.created });
       } catch (err) {
         if (writeServiceError(res, err)) return;
@@ -331,10 +334,11 @@ export function createAdminSkillsHandlers(deps: AdminRouteDeps): {
       }
 
       try {
-        const out = await deps.bus.call<
-          { manifestYaml: string; bodyMd: string },
-          SkillsUpsertOutput
-        >('skills:upsert', ctx, split);
+        const out = await deps.bus.call<SkillsUpsertInput, SkillsUpsertOutput>(
+          'skills:upsert',
+          ctx,
+          { ...split, defaultAttached: zodResult.data.defaultAttached ?? false },
+        );
 
         // Double-check after the parse in case our quick regex missed something.
         if (out.skillId !== id) {

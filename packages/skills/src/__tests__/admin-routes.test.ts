@@ -421,4 +421,46 @@ describe('/admin/skills handlers', () => {
     expect(statusOf()).toBe(400);
     expect((bodyOf() as { error: string }).error).toBe('missing frontmatter fence');
   });
+
+  // 18. POST with defaultAttached: true on credential-free manifest persists the flag
+  it('POST /admin/skills with defaultAttached: true persists the flag', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminSkillsHandlers({ bus: h.bus });
+    const INSTRUCTION_ONLY = `---
+name: greeter
+description: Greets every agent at session start.
+version: 1
+---
+# Greeter
+
+When asked, say hi.
+`;
+    const { res, statusOf, bodyOf } = mkRes();
+    await handlers.create(
+      mkReq({ body: { skillMd: INSTRUCTION_ONLY, defaultAttached: true } }),
+      res,
+    );
+    expect(statusOf()).toBe(201);
+    expect(bodyOf()).toMatchObject({ skillId: 'greeter', created: true });
+
+    // Confirm via the list-defaults hook that the flag is persisted.
+    const { skills } = await h.bus.call<
+      Record<string, never>,
+      { skills: Array<{ id: string }> }
+    >('skills:list-defaults', h.ctx(), {});
+    expect(skills.map((s) => s.id)).toEqual(['greeter']);
+  });
+
+  // 19. POST with defaultAttached: true on a credentialed manifest → 400
+  it('POST /admin/skills with defaultAttached: true on a credentialed manifest returns 400', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminSkillsHandlers({ bus: h.bus });
+    const { res, statusOf, bodyOf } = mkRes();
+    await handlers.create(
+      mkReq({ body: { skillMd: SAMPLE_SKILL_MD, defaultAttached: true } }),
+      res,
+    );
+    expect(statusOf()).toBe(400);
+    expect((bodyOf() as { code?: string }).code).toBe('default-attached-requires-no-credentials');
+  });
 });
