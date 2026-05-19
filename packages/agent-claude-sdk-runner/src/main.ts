@@ -31,6 +31,7 @@ import {
   commitTurnAndBundle,
   materializeWorkspace,
   rollbackToBaseline,
+  scaffoldSdkProjectsSymlink,
   scaffoldWorkspaceSkillSurface,
 } from './git-workspace.js';
 import { createLocalDispatcher } from './local-dispatcher.js';
@@ -210,6 +211,26 @@ export async function main(): Promise<number> {
     // scaffoldWorkspaceSkillSurface's doc for the regression that
     // motivated moving this off the k8s init container.
     await scaffoldWorkspaceSkillSurface(env.workspaceRoot);
+    // Phase E follow-up: redirect the SDK's turn-transcript jsonl
+    // writes back into the workspace. Phase 0 set CLAUDE_CONFIG_DIR
+    // OUTSIDE /permanent so the `'user'` skill-discovery source could
+    // be distinct from the `'project'` source, but the SDK ALSO derives
+    // `$CLAUDE_CONFIG_DIR/projects/<encoded-cwd>/<sid>.jsonl` from the
+    // same var — the transcript writes moved with it. We restore the
+    // pre-Phase-0 invariant ("turn-end git add -A captures the SDK's
+    // own jsonl") with a filesystem-level redirect: a symlink at
+    // `$CLAUDE_CONFIG_DIR/projects` pointing into the workspace. See
+    // scaffoldSdkProjectsSymlink's doc and the (a)/(b) comment block
+    // around the SDK query() env literal below for the full picture.
+    //
+    // Guard: CLAUDE_CONFIG_DIR is sandbox-injected. If a future sandbox
+    // provider doesn't set it, fall through to the pre-Phase-0 behavior
+    // (HOME redirect below sends the SDK's jsonls to `<HOME>/.claude/
+    // projects/...` which IS inside workspaceRoot already).
+    const claudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    if (claudeConfigDir) {
+      await scaffoldSdkProjectsSymlink(env.workspaceRoot, claudeConfigDir);
+    }
   } catch (err) {
     process.stderr.write(
       `runner: workspace.materialize failed: ${err instanceof Error ? err.message : String(err)}\n`,
@@ -464,6 +485,20 @@ export async function main(): Promise<number> {
         //     installed-skills surface unreachable. The forward itself
         //     lives in proxy-startup.ts (ENV_ALLOWLIST) so the value
         //     arrives via `...proxyStartup.anthropicEnv` below.
+        //
+        // (a)/(b) interact via the SDK's per-session jsonl path. The
+        // SDK derives `$CLAUDE_CONFIG_DIR/projects/<encoded-cwd>/
+        // <sid>.jsonl` from the same var that drives skill discovery,
+        // so once (b) moved CLAUDE_CONFIG_DIR outside the workspace,
+        // the SDK's turn-transcript writes went with it — and the
+        // turn-end `git add -A` stopped capturing them. The fix lives
+        // upstream of this env literal: scaffoldSdkProjectsSymlink (in
+        // git-workspace.ts, called from the materialize block above)
+        // creates `$CLAUDE_CONFIG_DIR/projects` as a symlink into
+        // `<workspaceRoot>/.claude/projects`, so the writes land inside
+        // `/permanent` and the bundler picks them up. The (b) split
+        // and the jsonl capture are restored independently; no env
+        // change here.
         //
         // Phase C: HOME redirect for the SDK subprocess.
         //   - The k8s sandbox pod sets HOME=/nonexistent at the pod level

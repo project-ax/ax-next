@@ -372,7 +372,9 @@ export async function openSessionImpl(
     // I-P0-3: override HOME (which is in the allowlist; sessionEnv merges
     // LAST so this wins) and set CLAUDE_CONFIG_DIR so the SDK's `'user'`
     // skill-discovery walks the host-controlled per-session dir, not the
-    // developer's `~/.claude/`.
+    // developer's `~/.claude/`. The runner pairs this with a symlink
+    // scaffold (scaffoldSdkProjectsSymlink in @ax/agent-claude-sdk-runner)
+    // so the SDK's transcript jsonl writes still land inside the workspace.
     HOME: homeDir,
     CLAUDE_CONFIG_DIR: claudeConfigDir,
   };
