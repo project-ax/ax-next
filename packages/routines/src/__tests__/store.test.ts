@@ -436,6 +436,17 @@ describe('RoutinesStore default-routine CRUD', () => {
       claimWindowMinutes: 1,
     });
     expect(claimed.some((r) => r.definitionId === defaultRoutineId)).toBe(false);
+
+    // After refreshStale the per-agent copy is no longer stale — the row
+    // must become claimable again. Guards against an over-broad staleness
+    // predicate that permanently excludes refreshed rows.
+    await store.refreshStale({ now: new Date() });
+    const claimedAfterRefresh = await store.claimDue({
+      now: new Date(),
+      limit: 10,
+      claimWindowMinutes: 1,
+    });
+    expect(claimedAfterRefresh.some((r) => r.definitionId === defaultRoutineId)).toBe(true);
   });
 
   it('deleteDefault cascades to per-agent rows', async () => {

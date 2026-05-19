@@ -282,6 +282,8 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
           SELECT agent_id, path FROM workspace_due
           UNION ALL
           SELECT agent_id, path FROM default_due
+          -- total cap across both branches; per-branch LIMITs bound lock acquisition
+          LIMIT ${input.limit}
         )
         UPDATE routines_v1_definitions r
            SET next_run_at = CASE
@@ -372,49 +374,40 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
     },
 
     async upsertDefault(input) {
-      const existing = await db
-        .selectFrom('default_routines_v1')
-        .select(['default_routine_id'])
-        .where('name', '=', input.name)
-        .executeTakeFirst();
-      if (existing === undefined) {
-        const id = input.defaultRoutineId ?? `default-${input.name}-${Date.now()}`;
-        await db.insertInto('default_routines_v1').values({
-          default_routine_id: id,
-          name: input.name,
-          description: input.description,
-          spec_hash: input.specHash,
-          trigger_kind: input.trigger.kind as 'interval',
-          trigger_spec: input.trigger as unknown,
-          interval_seconds: input.intervalSeconds,
-          active_hours: input.activeHours as unknown,
-          silence_token: input.silenceToken,
-          silence_max: input.silenceMax,
-          conversation: input.conversation,
-          prompt_body: input.promptBody,
-          enabled: true,
-          source_md: input.sourceMd,
-        }).execute();
-        return { defaultRoutineId: id, created: true };
-      }
-      await db.updateTable('default_routines_v1')
-        .set({
-          description: input.description,
-          spec_hash: input.specHash,
-          trigger_kind: input.trigger.kind as 'interval',
-          trigger_spec: input.trigger as unknown,
-          interval_seconds: input.intervalSeconds,
-          active_hours: input.activeHours as unknown,
-          silence_token: input.silenceToken,
-          silence_max: input.silenceMax,
-          conversation: input.conversation,
-          prompt_body: input.promptBody,
-          source_md: input.sourceMd,
-          updated_at: sql`now()` as unknown as Date,
-        })
-        .where('default_routine_id', '=', existing.default_routine_id)
-        .execute();
-      return { defaultRoutineId: existing.default_routine_id, created: false };
+      // Single atomic INSERT … ON CONFLICT DO UPDATE to avoid TOCTOU race
+      // between SELECT and INSERT/UPDATE in concurrent callers.
+      // (xmax = 0) is true for freshly INSERTed rows and false for UPDATEd rows —
+      // that's how we report `created` without a separate SELECT.
+      const id = input.defaultRoutineId ?? `default-${input.name}-${Date.now()}`;
+      const row = await sql<{ default_routine_id: string; created: boolean }>`
+        INSERT INTO default_routines_v1
+          (default_routine_id, name, description, spec_hash, trigger_kind, trigger_spec,
+           interval_seconds, active_hours, silence_token, silence_max, conversation,
+           prompt_body, enabled, source_md)
+        VALUES
+          (${id}, ${input.name}, ${input.description}, ${input.specHash},
+           ${input.trigger.kind}, ${JSON.stringify(input.trigger)}::jsonb,
+           ${input.intervalSeconds}, ${input.activeHours === null ? null : JSON.stringify(input.activeHours)}::jsonb,
+           ${input.silenceToken}, ${input.silenceMax}, ${input.conversation},
+           ${input.promptBody}, true, ${input.sourceMd})
+        ON CONFLICT (name) DO UPDATE SET
+          description = EXCLUDED.description,
+          spec_hash = EXCLUDED.spec_hash,
+          trigger_kind = EXCLUDED.trigger_kind,
+          trigger_spec = EXCLUDED.trigger_spec,
+          interval_seconds = EXCLUDED.interval_seconds,
+          active_hours = EXCLUDED.active_hours,
+          silence_token = EXCLUDED.silence_token,
+          silence_max = EXCLUDED.silence_max,
+          conversation = EXCLUDED.conversation,
+          prompt_body = EXCLUDED.prompt_body,
+          source_md = EXCLUDED.source_md,
+          updated_at = now()
+        RETURNING default_routine_id, (xmax = 0) AS created
+      `.execute(db);
+      const r = row.rows[0];
+      if (!r) throw new Error('upsertDefault: INSERT … RETURNING returned no row');
+      return { defaultRoutineId: r.default_routine_id, created: r.created };
     },
 
     async getDefault(defaultRoutineId) {
