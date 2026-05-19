@@ -764,6 +764,19 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
   server.on('connect', handleCONNECT);
 
   server.on('connection', (socket) => {
+    // Shutdown-race defense: attach a noop 'error' listener BEFORE the
+    // socket can be destroyed by any code path. Node's EventEmitter throws
+    // when 'error' is emitted with zero listeners; a kernel-level
+    // ECONNRESET that races with `stopFn`'s `socket.destroy()` (or with an
+    // in-flight handler awaiting before it attaches its own listener)
+    // would otherwise crash the host. Subsequent listeners
+    // (handleMITMConnect, handleCONNECT bypass path) stack on top — all
+    // fire on emit, so this doesn't suppress real error handling, just
+    // prevents the unhandled-error throw. PR #104 walk symptom: "Error:
+    // read ECONNRESET at TCP.onStreamRead, Emitted 'error' event on
+    // Socket instance" — the "Socket" (not TLSSocket) is exactly this
+    // inbound socket.
+    socket.on('error', () => { /* see comment above */ });
     activeSockets.add(socket);
     socket.on('close', () => activeSockets.delete(socket));
   });
@@ -774,7 +787,16 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
   }
 
   const stopFn = () => {
-    for (const s of activeSockets) s.destroy();
+    for (const s of activeSockets) {
+      // Belt-and-suspenders: ensure an 'error' listener exists before
+      // destroy. Inbound sockets already get one at server.on('connection');
+      // clientTls / targetTls / targetSocket get theirs synchronously
+      // after creation in the MITM and bypass-MITM paths. This catches
+      // any future socket type that someone adds to activeSockets without
+      // remembering to attach a listener first.
+      s.on('error', () => { /* see server.on('connection') note above */ });
+      s.destroy();
+    }
     activeSockets.clear();
     server.close();
     if (listen.kind === 'unix') {
