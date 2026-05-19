@@ -72,3 +72,53 @@ describe('Thread renders AttachmentChip for ax://attachment-path file parts', ()
     expect(screen.getByText('foo.pdf')).toBeTruthy();
   });
 });
+
+describe('Thread live-frame attachment rendering', () => {
+  it('renders LiveAttachmentChip via MessagePrimitive.Attachments for a just-sent message', () => {
+    const seeded: ThreadMessageLike[] = [
+      {
+        id: 'm-user-live',
+        role: 'user',
+        content: [{ type: 'text', text: 'see attached' }],
+        attachments: [
+          {
+            id: 'att-1',
+            type: 'document',
+            name: 'live.pdf',
+            contentType: 'application/pdf',
+            status: { type: 'complete' },
+            content: [
+              {
+                type: 'file',
+                data: 'ax://attachment/att-1',
+                mimeType: 'application/pdf',
+                filename: 'live.pdf',
+              },
+            ],
+          },
+        ],
+      },
+    ];
+    function Provider({ children }: { children: ReactNode }) {
+      const runtime = useExternalStoreRuntime({
+        messages: seeded,
+        convertMessage: (m) => m,
+        async onNew() {},
+      });
+      return (
+        <AssistantRuntimeProvider runtime={runtime}>
+          {children}
+        </AssistantRuntimeProvider>
+      );
+    }
+    render(
+      <Provider>
+        <Thread />
+      </Provider>,
+    );
+    // The pending-variant chip renders the filename.
+    expect(screen.getByText('live.pdf')).toBeTruthy();
+    // No download button in the pending variant.
+    expect(screen.queryByLabelText(/Download/)).toBeNull();
+  });
+});

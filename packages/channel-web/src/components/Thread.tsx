@@ -32,6 +32,7 @@ import {
   ComposerPrimitive,
   MessagePrimitive,
   ThreadPrimitive,
+  useAttachment,
   useMessage,
 } from '@assistant-ui/react';
 import { Brain, Check, Copy, Pencil, RotateCcw } from 'lucide-react';
@@ -146,9 +147,55 @@ const UserFilePart: FC<FileMessagePartLike> = (props) => {
   );
 };
 
+/**
+ * LiveAttachmentChip — `MessagePrimitive.Attachments` slot renderer for
+ * the **live frame** right after a user hits send. The AI SDK bridge
+ * (`@assistant-ui/react-ai-sdk`'s `convertMessage`) routes user-message
+ * file parts into the message's `attachments` array (not `content.parts`),
+ * so `UserFilePart` doesn't fire until after a page reload — when the
+ * history-load adapter rewrites the `attachment` blocks back into `file`
+ * parts on `content.parts`.
+ *
+ * The live-frame attachment carries `data: ax://attachment/<attachmentId>`
+ * (the attachmentId, not a workspace path), so we can't build a
+ * `GET /api/files?path=…` URL yet. We render display name + icon only.
+ * After reload, the downloadable chip takes over.
+ */
+interface LiveAttachmentLike {
+  name?: string;
+  contentType?: string;
+  content?: ReadonlyArray<{
+    type?: string;
+    data?: string;
+    filename?: string;
+    mimeType?: string;
+  }>;
+}
+
+const LiveAttachmentChip: FC = () => {
+  // useAttachment with no selector args reads the current AttachmentState
+  // for this slot; we narrow to our shape via a cast. No download in the
+  // live frame — the history-load path (UserFilePart) takes over after
+  // reload.
+  const a = useAttachment() as unknown as LiveAttachmentLike;
+  const filename = a.content?.[0]?.filename ?? a.name ?? 'file';
+  const mediaType =
+    a.content?.[0]?.mimeType ?? a.contentType ?? 'application/octet-stream';
+  return (
+    <AttachmentChip
+      variant="pending"
+      displayName={filename}
+      mediaType={mediaType}
+    />
+  );
+};
+
 const UserMessage: FC = () => (
   <MessagePrimitive.Root asChild>
     <div className="msg you mb-[22px] flex flex-col items-end relative max-w-full" data-role="user">
+      <MessagePrimitive.Attachments
+        components={{ Attachment: LiveAttachmentChip }}
+      />
       <div
         className="
           msg-body bg-muted text-foreground px-3 py-[7px] rounded-md max-w-[78%]
