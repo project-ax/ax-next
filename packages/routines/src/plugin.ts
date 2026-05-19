@@ -66,7 +66,7 @@ export function createRoutinesPlugin(
         'agents:resolve',
         'agents:ensure-webhook-token',
         'agents:resolve-by-webhook-token',
-        'agents:list-ids',
+        'agents:list-personal-owners',
         'conversations:find-or-create',
         'conversations:create',
         'conversations:drop-turn',
@@ -381,20 +381,24 @@ export function createRoutinesPlugin(
         electionRetryMs: config.electionRetryMs ?? tickIntervalMs * 10,
       };
 
-      // Adapt agents:list-ids → getAgentIds callback so tick.ts stays
-      // free of HookBus imports. Failures inside the bus call surface
-      // as a thrown promise inside runTickOnce, where the I-R10 try/catch
-      // logs and continues (workspace claims still fire).
-      const getAgentIds = async (): Promise<string[]> => {
-        const r = await bus.call<Record<string, never>, { agentIds: string[] }>(
-          'agents:list-ids', initCtx, {},
-        );
-        return r.agentIds;
+      // Adapt agents:list-personal-owners → getAgents callback so
+      // tick.ts stays free of HookBus imports. The owner id stamped
+      // on each materialized row is what fire.ts:51 passes to
+      // agents:resolve's ACL gate. Failures inside the bus call
+      // surface as a thrown promise inside runTickOnce, where the
+      // I-R10 try/catch logs and continues (workspace claims still
+      // fire).
+      const getAgents = async (): Promise<Array<{ agentId: string; ownerUserId: string }>> => {
+        const r = await bus.call<
+          Record<string, never>,
+          { agents: Array<{ agentId: string; ownerUserId: string }> }
+        >('agents:list-personal-owners', initCtx, {});
+        return r.agents;
       };
 
       abortCtl = new AbortController();
       void runTickLoop({
-        db: localDb, fire: fireRoutine, getAgentIds, clock,
+        db: localDb, fire: fireRoutine, getAgents, clock,
         signal: abortCtl.signal,
         ...tickConfig,
       }).catch((err) => {

@@ -31,17 +31,21 @@ export interface TickOnceInput {
   store: RoutinesStore;
   fire: FireRoutineFn;
   /**
-   * Returns every agent id the tick loop should consider for lazy
-   * materialization of default-sourced rows. Optional so existing
-   * callers (tests that don't exercise the defaults path) can omit it;
-   * when absent, materialize/refresh is skipped and only pre-existing
-   * rows are claimed.
+   * Returns each personal agent the tick loop should consider for
+   * lazy materialization of default-sourced rows, paired with its
+   * owner user id. The owner id lands in `author_user_id` on the
+   * materialized row, so `fire.ts:51` can pass a real user id to
+   * `agents:resolve` (whose ACL gate has no concept of a system
+   * actor). Optional so existing callers can omit it; when absent,
+   * materialize/refresh is skipped and only pre-existing rows are
+   * claimed.
    *
-   * Plugin wiring is in plugin.ts — it adapts the `agents:list-ids`
-   * service hook into this callback shape so tick.ts stays free of
-   * HookBus imports.
+   * Plugin wiring is in plugin.ts — it adapts the
+   * `agents:list-personal-owners` service hook into this callback
+   * shape so tick.ts stays free of HookBus imports. Team agents are
+   * excluded upstream pending a fire-under-team policy decision.
    */
-  getAgentIds?: () => Promise<string[]>;
+  getAgents?: () => Promise<Array<{ agentId: string; ownerUserId: string }>>;
   now: Date;
   claimBatchSize: number;
   claimWindowMinutes: number;
@@ -54,15 +58,16 @@ export async function runTickOnce(input: TickOnceInput): Promise<void> {
   // I-R10: a failure here MUST NOT crash the tick — workspace-row
   // claims happen unconditionally below. We log to stderr and
   // continue; the next tick will retry.
-  if (input.getAgentIds !== undefined) {
+  if (input.getAgents !== undefined) {
     try {
-      // getAgentIds hits the shared pg pool via agents:list-ids. Same
-      // connection-checkout dependency on pool.max > 1 as input.fire()
-      // — when pool.max === 1, both block waiting on the pinned
+      // getAgents hits the shared pg pool via
+      // agents:list-personal-owners. Same connection-checkout
+      // dependency on pool.max > 1 as input.fire() — when
+      // pool.max === 1, both block waiting on the pinned
       // advisory-lock session. Production defaults poolMax=10
       // (packages/database-postgres/src/plugin.ts).
-      const agentIds = await input.getAgentIds();
-      await input.store.materializeMissing({ agentIds, now: input.now });
+      const agents = await input.getAgents();
+      await input.store.materializeMissing({ agents, now: input.now });
       await input.store.refreshStale({ now: input.now });
     } catch (err) {
       process.stderr.write(
@@ -170,7 +175,7 @@ export interface TickLoopInput {
    * reason — existing tests can omit it and only exercise the
    * workspace-row path.
    */
-  getAgentIds?: () => Promise<string[]>;
+  getAgents?: () => Promise<Array<{ agentId: string; ownerUserId: string }>>;
   clock: Clock;
   signal: AbortSignal;
   tickIntervalMs: number;
@@ -205,8 +210,8 @@ export async function runTickLoop(input: TickLoopInput): Promise<void> {
               claimBatchSize: input.claimBatchSize,
               claimWindowMinutes: input.claimWindowMinutes,
             };
-            if (input.getAgentIds !== undefined) {
-              tickInput.getAgentIds = input.getAgentIds;
+            if (input.getAgents !== undefined) {
+              tickInput.getAgents = input.getAgents;
             }
             await runTickOnce(tickInput);
           } catch (err) {

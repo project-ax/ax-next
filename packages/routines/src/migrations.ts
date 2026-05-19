@@ -201,4 +201,16 @@ export async function runRoutinesMigration(db: Kysely<RoutinesDatabase>): Promis
        ${HEARTBEAT_SEED_MD})
     ON CONFLICT (name) DO NOTHING
   `.execute(db);
+
+  // PR #105 backfill: drop default-sourced rows materialized with the
+  // synthetic system-actor string. fire.ts passes author_user_id to
+  // agents:resolve's ACL gate, which rejects '@ax/routines/defaults'
+  // as forbidden. Targeted DELETE is safe because routines_v1_fires
+  // has no FK to definitions, and the next tick re-materializes each
+  // row with the real owner via agents:list-personal-owners.
+  await sql`
+    DELETE FROM routines_v1_definitions
+     WHERE author_user_id = '@ax/routines/defaults'
+       AND definition_id IS NOT NULL
+  `.execute(db);
 }

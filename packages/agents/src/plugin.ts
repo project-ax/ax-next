@@ -32,6 +32,8 @@ import type {
   EnsureWebhookTokenOutput,
   ListForUserInput,
   ListForUserOutput,
+  ListPersonalOwnersInput,
+  ListPersonalOwnersOutput,
   ResolveByWebhookTokenInput,
   ResolveByWebhookTokenOutput,
   ResolveInput,
@@ -91,6 +93,7 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
         'agents:any-attached-to-skill',
         'agents:set-skill-attachments',
         'agents:list-ids',
+        'agents:list-personal-owners',
       ],
       // database:get-instance is hard. http:register-route + auth:require-user
       // are hard NOW because we mount admin routes; the plugin won't boot
@@ -251,6 +254,18 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
         'agents:list-ids',
         PLUGIN_NAME,
         async () => ({ agentIds: await localStore.listAllIds() }),
+      );
+
+      // Personal-agent enumeration with owners. Backs the
+      // @ax/routines tick loop's defaults-materialize step — it must
+      // stamp each materialized routine with the agent owner's user id
+      // so that `agents:resolve` (called from fire.ts) finds a real
+      // user. Team agents are deliberately excluded; routing a default
+      // fire under a team is a policy question, not a lookup.
+      bus.registerService<ListPersonalOwnersInput, ListPersonalOwnersOutput>(
+        'agents:list-personal-owners',
+        PLUGIN_NAME,
+        async () => ({ agents: await localStore.listPersonalAgentOwners() }),
       );
 
       bus.registerService<

@@ -165,6 +165,23 @@ export interface EnsureWebhookTokenOutput {
   token: string;
 }
 
+/**
+ * Personal-agent enumeration with owner ids. Returned to trusted
+ * background loops (the @ax/routines defaults-materialize tick) that
+ * need to write per-agent rows under the agent owner's identity rather
+ * than a synthetic system actor — the rows feed `agents:resolve`'s ACL
+ * gate, which has no concept of a system user.
+ *
+ * Team-owned agents are deliberately excluded: routing a default
+ * routine fire under "the team" is a policy decision (which member's
+ * identity carries the fire?) the kernel doesn't make. They'll be
+ * surfaced separately once the policy lands.
+ */
+export type ListPersonalOwnersInput = Record<string, never>;
+export interface ListPersonalOwnersOutput {
+  agents: Array<{ agentId: string; ownerUserId: string }>;
+}
+
 // --- Subscriber payloads -----------------------------------------------------
 
 /**
