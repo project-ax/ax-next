@@ -215,6 +215,72 @@ export async function scaffoldWorkspaceSkillSurface(root: string): Promise<void>
   }
 }
 
+/**
+ * Lay down `$CLAUDE_CONFIG_DIR/projects` as a symlink pointing INTO the
+ * workspace at `<workspaceRoot>/.claude/projects` so the Anthropic SDK's
+ * native turn-transcript writes land inside `/permanent` and get picked
+ * up by the runner's turn-end `git add -A + bundle`.
+ *
+ * Background: Phase 0 set `CLAUDE_CONFIG_DIR=<sandbox-HOME>/.ax/session`
+ * so skill-discovery's `'user'` setting source resolves to a host-owned
+ * root SEPARATE from the workspace's `'project'` source. That split is
+ * load-bearing — see proxy-startup.ts (CLAUDE_CONFIG_DIR allowlist entry)
+ * and main.ts (the (a)/(b) comment block in the query() env literal).
+ *
+ * Side effect we missed: the SDK ALSO derives its per-session jsonl path
+ * from CLAUDE_CONFIG_DIR — `$CLAUDE_CONFIG_DIR/projects/<encoded-cwd>/
+ * <sid>.jsonl`. After Phase 0 those writes started landing OUTSIDE the
+ * workspace, so `git add -A` couldn't see them, so `conversations:get`
+ * came back `{ turns: [] }` for every conversation booted on a
+ * post-Phase-0 runner.
+ *
+ * The SDK's `projectsDir = join(configDir, "projects")` is hard-coded
+ * (no separable env override), so we redirect the I/O at the filesystem
+ * layer instead. This is symmetric with the sibling
+ * `scaffoldWorkspaceSkillSurface`: both run AFTER materializeWorkspace
+ * clones the baseline bundle into `/permanent` (a pre-clone scaffold
+ * would leave the target non-empty and `git clone` would refuse it).
+ *
+ * Symlink target style — IMPORTANT distinction from the sibling: this
+ * link lives OUTSIDE the workspace (in `$CLAUDE_CONFIG_DIR`), so the
+ * target must be the ABSOLUTE workspace path. The sibling uses a
+ * RELATIVE target (`../.ax/skills`) because it lives INSIDE the
+ * workspace and a relative link survives bind-mount path renames; there
+ * is no equivalent relative path here (the two roots are unrelated
+ * filesystem subtrees by design).
+ *
+ * Idempotent. A correct symlink already in place is left untouched (so
+ * concurrent re-entry doesn't briefly orphan it); anything else at the
+ * symlink path (regular file, dangling link, or directory left by an
+ * interrupted previous session) is dropped and recreated.
+ */
+export async function scaffoldSdkProjectsSymlink(
+  workspaceRoot: string,
+  claudeConfigDir: string,
+): Promise<void> {
+  const targetDir = path.join(workspaceRoot, '.claude', 'projects');
+  const linkPath = path.join(claudeConfigDir, 'projects');
+  // Target dir must exist before the SDK opens a file under it — the
+  // SDK's `mkdir(dirname, { recursive: true })` over a symlink whose
+  // target dir is missing would hit ENOENT on the chain.
+  await fs.mkdir(targetDir, { recursive: true, mode: 0o755 });
+  // Parent of the symlink: the sandbox init container usually
+  // pre-creates this (it stamps `mkdir -p .../session/skills` for the
+  // skill-discovery surface), but the scaffolder must not assume so —
+  // a future sandbox provider may only stamp the bare HOME root.
+  await fs.mkdir(claudeConfigDir, { recursive: true, mode: 0o755 });
+  const existing = await fs.readlink(linkPath).catch(() => null);
+  if (existing === targetDir) return;
+  await fs.rm(linkPath, { recursive: true, force: true });
+  try {
+    await fs.symlink(targetDir, linkPath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+    const raced = await fs.readlink(linkPath).catch(() => null);
+    if (raced !== targetDir) throw err;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Turn-end helpers (Phase 3 Slice 7).
 //

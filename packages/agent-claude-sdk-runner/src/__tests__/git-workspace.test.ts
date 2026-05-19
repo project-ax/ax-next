@@ -8,6 +8,7 @@ import {
   commitTurnAndBundle,
   materializeWorkspace,
   rollbackToBaseline,
+  scaffoldSdkProjectsSymlink,
   scaffoldWorkspaceSkillSurface,
 } from '../git-workspace.js';
 
@@ -250,6 +251,112 @@ describe('scaffoldWorkspaceSkillSurface', () => {
 
     const linkTarget = await fs.readlink(path.join(root, '.claude', 'skills'));
     expect(linkTarget).toBe('../.ax/skills');
+  });
+});
+
+describe('scaffoldSdkProjectsSymlink', () => {
+  // Phase E follow-up: the Anthropic SDK writes its per-session turn
+  // transcripts to `$CLAUDE_CONFIG_DIR/projects/<encoded-cwd>/<sid>.jsonl`.
+  // Phase 0 sets CLAUDE_CONFIG_DIR=<sandbox-HOME>/.ax/session — OUTSIDE
+  // the workspace — so the turn-end `git add -A + bundle` never captures
+  // those jsonls. This scaffolder lays down a symlink from the SDK's
+  // projects dir into the workspace so the writes land inside /permanent
+  // and get bundled. The load-bearing assertion is the last test: a
+  // write through the symlink path materializes inside workspaceRoot.
+
+  it('creates <claudeConfigDir>/projects as a symlink to <workspaceRoot>/.claude/projects', async () => {
+    const root = path.join(scratchRoot, 'permanent');
+    const claudeConfigDir = path.join(scratchRoot, 'session');
+    await fs.mkdir(root, { recursive: true });
+
+    await scaffoldSdkProjectsSymlink(root, claudeConfigDir);
+
+    const linkTarget = await fs.readlink(path.join(claudeConfigDir, 'projects'));
+    expect(linkTarget).toBe(path.join(root, '.claude', 'projects'));
+    // Target dir is materialized so the SDK's `open(..., 'a')` on
+    // <claudeConfigDir>/projects/<encoded-cwd>/<sid>.jsonl can mkdir
+    // through the symlink without ENOENT on the parent.
+    const targetStat = await fs.stat(path.join(root, '.claude', 'projects'));
+    expect(targetStat.isDirectory()).toBe(true);
+  });
+
+  it('creates the claudeConfigDir parent if it does not already exist (defensive)', async () => {
+    const root = path.join(scratchRoot, 'permanent');
+    // Deliberately a nested path that doesn't exist yet — the init
+    // container usually pre-creates this, but the scaffolder must not
+    // assume so.
+    const claudeConfigDir = path.join(scratchRoot, 'home', 'runner', '.ax', 'session');
+    await fs.mkdir(root, { recursive: true });
+
+    await scaffoldSdkProjectsSymlink(root, claudeConfigDir);
+
+    const linkTarget = await fs.readlink(path.join(claudeConfigDir, 'projects'));
+    expect(linkTarget).toBe(path.join(root, '.claude', 'projects'));
+  });
+
+  it('is idempotent — a second call leaves the correct symlink in place', async () => {
+    const root = path.join(scratchRoot, 'permanent');
+    const claudeConfigDir = path.join(scratchRoot, 'session');
+    await fs.mkdir(root, { recursive: true });
+
+    await scaffoldSdkProjectsSymlink(root, claudeConfigDir);
+    await scaffoldSdkProjectsSymlink(root, claudeConfigDir);
+
+    const linkTarget = await fs.readlink(path.join(claudeConfigDir, 'projects'));
+    expect(linkTarget).toBe(path.join(root, '.claude', 'projects'));
+  });
+
+  it('replaces a stale regular file at <claudeConfigDir>/projects with the canonical symlink', async () => {
+    const root = path.join(scratchRoot, 'permanent');
+    const claudeConfigDir = path.join(scratchRoot, 'session');
+    await fs.mkdir(claudeConfigDir, { recursive: true });
+    await fs.writeFile(path.join(claudeConfigDir, 'projects'), 'leftover');
+
+    await scaffoldSdkProjectsSymlink(root, claudeConfigDir);
+
+    const linkTarget = await fs.readlink(path.join(claudeConfigDir, 'projects'));
+    expect(linkTarget).toBe(path.join(root, '.claude', 'projects'));
+  });
+
+  it('replaces a stale directory at <claudeConfigDir>/projects with the canonical symlink', async () => {
+    const root = path.join(scratchRoot, 'permanent');
+    const claudeConfigDir = path.join(scratchRoot, 'session');
+    await fs.mkdir(path.join(claudeConfigDir, 'projects', 'foo'), { recursive: true });
+    await fs.writeFile(path.join(claudeConfigDir, 'projects', 'foo', 'bar.jsonl'), '{}');
+
+    await scaffoldSdkProjectsSymlink(root, claudeConfigDir);
+
+    const linkTarget = await fs.readlink(path.join(claudeConfigDir, 'projects'));
+    expect(linkTarget).toBe(path.join(root, '.claude', 'projects'));
+  });
+
+  it('writes through the symlink land inside workspaceRoot (the load-bearing assertion)', async () => {
+    // This is what the SDK actually does: it calls `open(..., 'a')` on
+    // `$CLAUDE_CONFIG_DIR/projects/<encoded-cwd>/<sid>.jsonl` and
+    // appends turn transcript lines. We mimic that I/O pattern and check
+    // the bytes land where the runner's `git add -A` will see them.
+    const root = path.join(scratchRoot, 'permanent');
+    const claudeConfigDir = path.join(scratchRoot, 'session');
+    await fs.mkdir(root, { recursive: true });
+
+    await scaffoldSdkProjectsSymlink(root, claudeConfigDir);
+
+    const encodedCwd = '-permanent';
+    const sid = 'abc123';
+    const sdkPath = path.join(claudeConfigDir, 'projects', encodedCwd, `${sid}.jsonl`);
+    await fs.mkdir(path.dirname(sdkPath), { recursive: true });
+    await fs.writeFile(sdkPath, '{"turn":1}\n');
+
+    // Bytes must be reachable via the workspace path — that's what the
+    // turn-end `git add -A` walks.
+    const workspacePath = path.join(
+      root,
+      '.claude',
+      'projects',
+      encodedCwd,
+      `${sid}.jsonl`,
+    );
+    expect(await fs.readFile(workspacePath, 'utf8')).toBe('{"turn":1}\n');
   });
 });
 

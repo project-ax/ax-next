@@ -74,6 +74,18 @@ const ENV_ALLOWLIST = new Set<string>([
   // the `'user'` root would collapse onto the workspace's `<cwd>/.claude/`
   // path, making the two setting sources indistinguishable and rendering
   // the host-installed-skills surface unreachable.
+  //
+  // Side effect of this forward (Phase E follow-up): the SDK ALSO derives
+  // its per-session turn-transcript jsonl path from this var
+  // (`$CLAUDE_CONFIG_DIR/projects/<encoded-cwd>/<sid>.jsonl`), so a
+  // CLAUDE_CONFIG_DIR pointing OUTSIDE the workspace breaks the
+  // turn-end `git add -A + bundle` capture of those jsonls. The fix is
+  // paired with this forward: main.ts calls
+  // `scaffoldSdkProjectsSymlink` after materialize to point
+  // `$CLAUDE_CONFIG_DIR/projects` at `<workspaceRoot>/.claude/projects`
+  // via symlink. Both halves are needed — forwarding without the
+  // symlink loses transcripts; the symlink without the forward
+  // collapses the `'user'`/`'project'` skill split.
   'CLAUDE_CONFIG_DIR',
 ]);
 
