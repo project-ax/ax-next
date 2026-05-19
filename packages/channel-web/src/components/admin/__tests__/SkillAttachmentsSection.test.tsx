@@ -34,6 +34,7 @@ const GITHUB_SKILL: SkillSummary = {
     allowedHosts: ['api.github.com'],
     credentials: [{ slot: 'GITHUB_TOKEN', kind: 'api-key', description: 'PAT' }],
   },
+  defaultAttached: false,
   updatedAt: '2026-05-18T10:00:00.000Z',
 };
 
@@ -45,6 +46,7 @@ const SLACK_SKILL: SkillSummary = {
     allowedHosts: [],
     credentials: [],
   },
+  defaultAttached: false,
   updatedAt: '2026-05-17T08:00:00.000Z',
 };
 

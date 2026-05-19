@@ -24,6 +24,7 @@ const DETAIL: SkillDetail = {
     allowedHosts: ['api.github.com'],
     credentials: [{ slot: 'GITHUB_TOKEN', kind: 'api-key', description: 'Personal access token' }],
   },
+  defaultAttached: false,
   updatedAt: '2026-05-18T10:00:00.000Z',
   bodyMd: '# GitHub API\n\nUsage details here.\n',
   manifestYaml: [
