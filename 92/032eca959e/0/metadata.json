@@ -1,0 +1,48 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "92032eca959e",
+  "session_id": "3dbef76d-b4d1-481a-91c9-b4177091ae0f",
+  "strategy": "manual-commit",
+  "created_at": "2026-05-19T17:14:42.276277Z",
+  "branch": "feat/defaults-routines-half",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "packages/routines/src/tick.ts",
+    "packages/routines/src/__tests__/tick.test.ts",
+    "packages/channel-web/src/components/admin/DefaultRoutinesSection.tsx",
+    "packages/channel-web/src/components/routines/RoutinesPanel.tsx",
+    "packages/routines-admin-routes/src/routes.ts",
+    "packages/routines-admin-routes/src/__tests__/routes.test.ts"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "3e5c64c359e9",
+  "token_usage": {
+    "input_tokens": 192,
+    "cache_creation_tokens": 673642,
+    "cache_read_tokens": 24732352,
+    "output_tokens": 82096,
+    "api_call_count": 148
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-05-19T17:14:42.251603Z",
+    "agent_lines": 236,
+    "agent_removed": 19,
+    "human_added": 2,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 238,
+    "total_lines_changed": 257,
+    "agent_percentage": 99.22178988326849,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
+}

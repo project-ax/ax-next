@@ -1,0 +1,30 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "92032eca959e",
+  "strategy": "manual-commit",
+  "branch": "feat/defaults-routines-half",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "packages/channel-web/src/components/admin/DefaultRoutinesSection.tsx",
+    "packages/channel-web/src/components/routines/RoutinesPanel.tsx",
+    "packages/routines-admin-routes/src/__tests__/routes.test.ts",
+    "packages/routines-admin-routes/src/routes.ts",
+    "packages/routines/src/__tests__/tick.test.ts",
+    "packages/routines/src/tick.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/92/032eca959e/0/metadata.json",
+      "transcript": "/92/032eca959e/0/full.jsonl",
+      "content_hash": "/92/032eca959e/0/content_hash.txt",
+      "prompt": "/92/032eca959e/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 192,
+    "cache_creation_tokens": 673642,
+    "cache_read_tokens": 24732352,
+    "output_tokens": 82096,
+    "api_call_count": 148
+  }
+}
