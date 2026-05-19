@@ -3,8 +3,10 @@ import { sql, type Kysely } from 'kysely';
 /**
  * Per-plugin migration. @ax/skills owns tables under the `skills_v1_`
  * prefix — never reach into them from another plugin (Invariant I4 — one
- * source of truth per concept). Schema version is forward-only via a
- * future `v2` side-table, never an in-place ALTER.
+ * source of truth per concept). Schema version is additive-only. New
+ * columns land via `ALTER TABLE … ADD COLUMN IF NOT EXISTS` (idempotent,
+ * forward-only). Destructive changes (drop column, rename, type change)
+ * require a new `skills_v2_*` side-table instead.
  *
  * Single table:
  *   skills_v1_skills — admin-managed installed skills (manifest YAML +
