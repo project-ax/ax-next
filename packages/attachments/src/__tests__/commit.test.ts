@@ -240,6 +240,84 @@ describe('attachments:commit handler', () => {
     expect(await store.getTemp('a-del')).toBeNull();
   });
 
+  it('rebases on workspace:apply parent-mismatch and re-applies', async () => {
+    const { store } = await freshSetup();
+    let attempt = 0;
+    const seenParents: Array<string | null> = [];
+    const bus = new HookBus();
+    bus.registerService<ApplyCall['input'], { version: string; delta: unknown }>(
+      'workspace:apply',
+      'test-mock',
+      async (_ctx, input) => {
+        seenParents.push(input.parent);
+        if (attempt++ === 0) {
+          throw new PluginError({
+            code: 'parent-mismatch',
+            plugin: 'test-mock',
+            message: 'mirror has commits; caller passed parent: null',
+            cause: { actualParent: 'v-current' },
+          });
+        }
+        return { version: 'v-after', delta: { before: 'v-current', after: 'v-after', changes: [] } };
+      },
+    );
+    const handler = createCommitHandler({ store, bus });
+
+    await store.insertTemp({
+      attachmentId: 'a-rebase', userId: 'u-1',
+      bytes: Buffer.from('hello'),
+      displayName: 'h.txt', mediaType: 'text/plain',
+      sizeBytes: 5,
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+
+    const result = await handler(makeCtx('u-1'), {
+      attachmentId: 'a-rebase',
+      conversationId: 'c-1',
+      turnId: 't-1',
+    });
+
+    expect(result.path).toMatch(/h\.txt$/);
+    expect(attempt).toBe(2);
+    expect(seenParents).toEqual([null, 'v-current']);
+  });
+
+  it('bails out after a bounded number of parent-mismatch retries', async () => {
+    const { store } = await freshSetup();
+    let attempts = 0;
+    const bus = new HookBus();
+    bus.registerService<ApplyCall['input'], { version: string; delta: unknown }>(
+      'workspace:apply',
+      'test-mock',
+      async () => {
+        attempts++;
+        // Always echo a NEW parent so the retry guard ("same parent twice")
+        // never trips — proves the retry cap fires independently.
+        throw new PluginError({
+          code: 'parent-mismatch',
+          plugin: 'test-mock',
+          message: 'churning',
+          cause: { actualParent: `v-${attempts}` },
+        });
+      },
+    );
+    const handler = createCommitHandler({ store, bus });
+
+    await store.insertTemp({
+      attachmentId: 'a-loop', userId: 'u-1',
+      bytes: Buffer.from('x'), displayName: 'x.txt', mediaType: 'text/plain',
+      sizeBytes: 1, expiresAt: new Date(Date.now() + 60_000),
+    });
+
+    await expect(
+      handler(makeCtx('u-1'), {
+        attachmentId: 'a-loop', conversationId: 'c-1', turnId: 't-1',
+      }),
+    ).rejects.toMatchObject({ code: 'parent-mismatch' });
+    // 5 bounded attempts.
+    expect(attempts).toBe(5);
+  });
+
   it('throws PluginError instances (not plain Errors)', async () => {
     const { store } = await freshSetup();
     const { bus } = makeBusWithApply(async () => ({ version: 'v', delta: {} }));

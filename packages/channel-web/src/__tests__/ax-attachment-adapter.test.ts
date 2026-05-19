@@ -40,31 +40,36 @@ afterEach(() => {
 });
 
 describe('AxAttachmentAdapter', () => {
-  it('yields a running-pending and then a requires-action state on success', async () => {
+  it('keeps the same id across both yields so assistant-ui sees one attachment, not two', async () => {
     const adapter = new AxAttachmentAdapter();
     const file = new File(['fake bytes'], 'report.pdf', { type: 'application/pdf' });
-    const states: unknown[] = [];
+    const states: Array<{ id: string; status: { type: string } }> = [];
     for await (const state of adapter.add({ file })) {
-      states.push(state);
+      states.push(state as { id: string; status: { type: string } });
     }
-    expect(states.length).toBeGreaterThanOrEqual(2);
-    const last = states[states.length - 1] as { id: string; status: { type: string } };
-    expect(last.id).toBe('att-123');
-    expect(last.status.type).toBe('requires-action');
+    expect(states).toHaveLength(2);
+    expect(states[0]!.id).toBe(states[1]!.id);
+    expect(states[0]!.status.type).toBe('running');
+    expect(states[1]!.status.type).toBe('requires-action');
   });
 
-  it('send() returns a CompleteAttachment with an ax://attachment URL', async () => {
+  it('send() rewrites pending.id to the server attachmentId in the ax:// URL', async () => {
     const adapter = new AxAttachmentAdapter();
-    const pending = {
-      id: 'att-123',
-      type: 'document' as const,
+    const file = new File(['fake bytes'], 'report.pdf', { type: 'application/pdf' });
+    const states: Array<{ id: string; status: { type: string } }> = [];
+    for await (const state of adapter.add({ file })) {
+      states.push(state as { id: string; status: { type: string } });
+    }
+    const last = states[states.length - 1]!;
+    const result = await adapter.send({
+      id: last.id,
+      type: 'document',
       name: 'report.pdf',
       contentType: 'application/pdf',
-      file: new File(['x'], 'report.pdf', { type: 'application/pdf' }),
-      status: { type: 'requires-action' as const, reason: 'composer-send' as const },
-    };
-    const result = await adapter.send(pending);
-    expect(result.id).toBe('att-123');
+      file,
+      status: { type: 'requires-action', reason: 'composer-send' },
+    });
+    expect(result.id).toBe(last.id); // assistant-ui's identity stays on the client-side tempId
     expect(result.status.type).toBe('complete');
     expect(result.content).toHaveLength(1);
     const part = result.content[0] as {
@@ -74,9 +79,24 @@ describe('AxAttachmentAdapter', () => {
       filename: string;
     };
     expect(part.type).toBe('file');
+    // The wire URL carries the server-minted attachmentId (att-123), NOT the tempId.
     expect(part.data).toBe('ax://attachment/att-123');
     expect(part.mimeType).toBe('application/pdf');
     expect(part.filename).toBe('report.pdf');
+  });
+
+  it('send() falls back to pending.id when no server id was recorded (defensive)', async () => {
+    const adapter = new AxAttachmentAdapter();
+    const result = await adapter.send({
+      id: 'detached-id',
+      type: 'document',
+      name: 'x.pdf',
+      contentType: 'application/pdf',
+      file: new File(['x'], 'x.pdf', { type: 'application/pdf' }),
+      status: { type: 'requires-action', reason: 'composer-send' },
+    });
+    const part = result.content[0] as { data: string };
+    expect(part.data).toBe('ax://attachment/detached-id');
   });
 
   it('remove() is a no-op', async () => {

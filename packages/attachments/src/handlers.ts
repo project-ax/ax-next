@@ -7,6 +7,7 @@ import {
   type WorkspaceApplyOutput,
   type WorkspaceReadInput,
   type WorkspaceReadOutput,
+  type WorkspaceVersion,
 } from '@ax/core';
 import type { ContentBlock } from '@ax/ipc-protocol';
 import type { AttachmentsStore } from './store.js';
@@ -178,18 +179,61 @@ export function createCommitHandler(deps: CommitDeps) {
     const path = `.ax/uploads/${input.conversationId}/${input.turnId}/${filenameComponent}`;
     const sha256 = createHash('sha256').update(row.bytes).digest('hex');
 
-    await deps.bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>(
-      'workspace:apply',
-      ctx,
-      {
-        changes: [{ path, kind: 'put', content: row.bytes }],
-        // parent: null — no CAS check. workspace:apply applies on top of
-        // current HEAD. CAS belongs to flows that need optimistic locking
-        // (e.g. parallel agent edits); attachments are write-once-on-commit.
-        parent: null,
-        reason: `attachments:commit ${input.attachmentId}`,
-      },
-    );
+    // workspace:apply requires `parent` to match the current mirror HEAD —
+    // a fresh empty workspace accepts `null`, a non-empty one needs the
+    // current head. We don't know which we're against (the workspace is
+    // shared across all conversations for the same agent+user, so prior
+    // turns or attachments may have left commits), so try `null` first
+    // and rebase on `parent-mismatch` using the actualParent the storage
+    // tier echoes back in the error's `cause`.
+    //
+    // Bounded retries (5) cover concurrent committers without spinning if
+    // the workspace is genuinely contended.
+    let parent: WorkspaceVersion | null = null;
+    let applied = false;
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        await deps.bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>(
+          'workspace:apply',
+          ctx,
+          {
+            changes: [{ path, kind: 'put', content: row.bytes }],
+            parent,
+            reason: `attachments:commit ${input.attachmentId}`,
+          },
+        );
+        applied = true;
+        break;
+      } catch (err) {
+        lastErr = err;
+        if (
+          err instanceof PluginError &&
+          err.code === 'parent-mismatch' &&
+          err.cause !== null &&
+          typeof err.cause === 'object' &&
+          'actualParent' in err.cause
+        ) {
+          const next = (err.cause as { actualParent: WorkspaceVersion | null })
+            .actualParent;
+          // Same parent twice in a row means the storage tier is wedged or
+          // the contract drifted; don't loop forever.
+          if (next === parent) break;
+          parent = next;
+          continue;
+        }
+        throw err;
+      }
+    }
+    if (!applied) {
+      throw lastErr ??
+        new PluginError({
+          code: 'internal-error',
+          plugin: PLUGIN_NAME,
+          hookName: 'attachments:commit',
+          message: 'workspace:apply exhausted retries without applying',
+        });
+    }
 
     // Best-effort delete; janitor reaps any leftovers.
     try {

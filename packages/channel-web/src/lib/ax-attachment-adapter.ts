@@ -32,6 +32,15 @@ export class AxAttachmentAdapter implements AttachmentAdapter {
     'image/png,image/jpeg,image/gif,image/webp,application/pdf,' +
     'text/plain,text/csv,text/markdown,application/json,application/zip';
 
+  /**
+   * assistant-ui identifies attachments by `id` — if `add()` yields two states
+   * with different ids, the runtime treats them as two separate attachments
+   * and renders both. So we keep the same `tempId` across both yields and
+   * stash the server-minted attachmentId in this side map; `send()` reads it
+   * back when constructing the wire URL.
+   */
+  private readonly serverIds = new Map<string, string>();
+
   async *add({
     file,
   }: {
@@ -53,8 +62,10 @@ export class AxAttachmentAdapter implements AttachmentAdapter {
     });
     void lastProgress; // observed via the promise's progress callback above
 
+    this.serverIds.set(tempId, result.attachmentId);
+
     yield {
-      id: result.attachmentId,
+      id: tempId,
       type: typeForMime(result.mediaType),
       name: result.displayName,
       contentType: result.mediaType,
@@ -64,6 +75,8 @@ export class AxAttachmentAdapter implements AttachmentAdapter {
   }
 
   async send(pending: PendingAttachment): Promise<CompleteAttachment> {
+    const serverId = this.serverIds.get(pending.id) ?? pending.id;
+    this.serverIds.delete(pending.id);
     return {
       id: pending.id,
       type: pending.type,
@@ -73,7 +86,7 @@ export class AxAttachmentAdapter implements AttachmentAdapter {
       content: [
         {
           type: 'file',
-          data: `ax://attachment/${pending.id}`,
+          data: `ax://attachment/${serverId}`,
           mimeType: pending.contentType ?? 'application/octet-stream',
           filename: pending.name,
         },
@@ -81,8 +94,11 @@ export class AxAttachmentAdapter implements AttachmentAdapter {
     };
   }
 
-  async remove(_attachment?: unknown): Promise<void> {
-    // No-op. TTL janitor reaps unsent temps.
+  async remove(attachment?: { id?: string }): Promise<void> {
+    if (attachment && typeof attachment.id === 'string') {
+      this.serverIds.delete(attachment.id);
+    }
+    // Server-side TTL janitor reaps the unsent temp upload.
   }
 }
 
