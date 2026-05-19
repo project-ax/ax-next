@@ -281,7 +281,7 @@ describe('RoutinesStore default-routine CRUD', () => {
   it('materializeMissing creates one row per (agent, default) pair, idempotent', async () => {
     const store = createRoutinesStore(db);
 
-    await store.materializeMissing({ agentIds: ['agent-x'], now: new Date() });
+    await store.materializeMissing({ agents: [{ agentId: 'agent-x', ownerUserId: 'u_owner_x' }], now: new Date() });
     const after = await db.selectFrom('routines_v1_definitions')
       .selectAll()
       .where('agent_id', '=', 'agent-x')
@@ -295,7 +295,7 @@ describe('RoutinesStore default-routine CRUD', () => {
     expect(after[0]?.path).toMatch(/^default:/);
 
     // Idempotent — second call doesn't duplicate.
-    await store.materializeMissing({ agentIds: ['agent-x'], now: new Date() });
+    await store.materializeMissing({ agents: [{ agentId: 'agent-x', ownerUserId: 'u_owner_x' }], now: new Date() });
     const again = await db.selectFrom('routines_v1_definitions')
       .selectAll()
       .where('agent_id', '=', 'agent-x')
@@ -308,7 +308,7 @@ describe('RoutinesStore default-routine CRUD', () => {
     const store = createRoutinesStore(db);
 
     // Setup: materialize for an agent (heartbeat seed is the only default).
-    await store.materializeMissing({ agentIds: ['agent-x'], now: new Date() });
+    await store.materializeMissing({ agents: [{ agentId: 'agent-x', ownerUserId: 'u_owner_x' }], now: new Date() });
     const before = await db.selectFrom('routines_v1_definitions')
       .selectAll()
       .where('agent_id', '=', 'agent-x')
@@ -345,7 +345,7 @@ describe('RoutinesStore default-routine CRUD', () => {
       conversation: 'shared', promptBody: 'p', sourceMd: 's',
     });
 
-    await store.materializeMissing({ agentIds: ['agent-x'], now: new Date() });
+    await store.materializeMissing({ agents: [{ agentId: 'agent-x', ownerUserId: 'u_owner_x' }], now: new Date() });
     // Set last_run_at 5 seconds ago so it's due now.
     await db.updateTable('routines_v1_definitions')
       .set({ last_run_at: new Date(Date.now() - 5_000) })
@@ -373,7 +373,7 @@ describe('RoutinesStore default-routine CRUD', () => {
     });
 
     // Materialize and make the default-sourced row computed-due.
-    await store.materializeMissing({ agentIds: ['agent-x'], now: new Date() });
+    await store.materializeMissing({ agents: [{ agentId: 'agent-x', ownerUserId: 'u_owner_x' }], now: new Date() });
     await db.updateTable('routines_v1_definitions')
       .set({ last_run_at: new Date(Date.now() - 5_000) })
       .where('agent_id', '=', 'agent-x')
@@ -415,7 +415,7 @@ describe('RoutinesStore default-routine CRUD', () => {
       conversation: 'shared', promptBody: 'p', sourceMd: 's',
     });
 
-    await store.materializeMissing({ agentIds: ['agent-x'], now: new Date() });
+    await store.materializeMissing({ agents: [{ agentId: 'agent-x', ownerUserId: 'u_owner_x' }], now: new Date() });
     // Make the per-agent row computed-due.
     await db.updateTable('routines_v1_definitions')
       .set({ last_run_at: new Date(Date.now() - 5_000) })

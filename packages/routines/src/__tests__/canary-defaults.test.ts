@@ -2,9 +2,11 @@ import { describe, expect, it, beforeAll, afterAll, afterEach, vi } from 'vitest
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { Kysely, PostgresDialect, sql } from 'kysely';
 import pg from 'pg';
+import { HookBus, PluginError } from '@ax/core';
 import { runRoutinesMigration, type RoutinesDatabase } from '../migrations.js';
 import { createRoutinesStore } from '../store.js';
 import { runTickOnce, type FireRoutineFn } from '../tick.js';
+import { createFireRoutine, type PendingFires } from '../fire.js';
 
 // Parse BIGINT as Number — matches sibling tests; BIGSERIAL returns strings
 // by default and would otherwise produce surprising assertions.
@@ -71,7 +73,7 @@ describe('canary — defaults materialize → claim → fire → override → ad
     await runTickOnce({
       store, fire: fireSpy, now: t0,
       claimBatchSize: 50, claimWindowMinutes: 5,
-      getAgentIds: async () => ['agt_x'],
+      getAgents: async () => [{ agentId: 'agt_x', ownerUserId: 'u_test' }],
     });
 
     const materialized = await db
@@ -100,7 +102,7 @@ describe('canary — defaults materialize → claim → fire → override → ad
     await runTickOnce({
       store, fire: fireSpy, now: t0,
       claimBatchSize: 50, claimWindowMinutes: 5,
-      getAgentIds: async () => ['agt_x'],
+      getAgents: async () => [{ agentId: 'agt_x', ownerUserId: 'u_test' }],
     });
 
     expect(fireSpy).toHaveBeenCalledTimes(1);
@@ -158,7 +160,7 @@ describe('canary — defaults materialize → claim → fire → override → ad
     await runTickOnce({
       store, fire: fireSpy, now: t0,
       claimBatchSize: 50, claimWindowMinutes: 5,
-      getAgentIds: async () => ['agt_x'],
+      getAgents: async () => [{ agentId: 'agt_x', ownerUserId: 'u_test' }],
     });
 
     const firedPaths = fireSpy.mock.calls.map((c) => c[0].path);
@@ -203,7 +205,7 @@ describe('canary — defaults materialize → claim → fire → override → ad
     await runTickOnce({
       store, fire: fireSpy, now: t1,
       claimBatchSize: 50, claimWindowMinutes: 5,
-      getAgentIds: async () => ['agt_x'],
+      getAgents: async () => [{ agentId: 'agt_x', ownerUserId: 'u_test' }],
     });
 
     expect(fireSpy).toHaveBeenCalledTimes(1);
@@ -222,3 +224,113 @@ describe('canary — defaults materialize → claim → fire → override → ad
     expect(onDisk.prompt_body).toBe('EDITED PROMPT');
   });
 });
+
+// PR #105 regression: materialize previously hardcoded
+// author_user_id='@ax/routines/defaults', and fire.ts:51 passes that to
+// agents:resolve which rejects 'forbidden' (no concept of system actor).
+// The PR #105 canary above mocks fire() with a spy, so the auth path
+// was never exercised. This test wires a real HookBus with a stub
+// agents:resolve that mimics the real ACL gate — passing materialize
+// the per-agent owner makes the row's authorUserId resolvable, and
+// the resulting fire records status='ok'.
+describe('canary — default-sourced fire passes agents:resolve under real bus', () => {
+  it('materialize writes per-agent owner; fire records ok, not forbidden', async () => {
+    const store = createRoutinesStore(db);
+    const bus = new HookBus();
+
+    bus.registerService<{ agentId: string; userId: string }, { agent: unknown }>(
+      'agents:resolve', '@ax/agents',
+      async (_ctx, input) => {
+        if (input.userId !== 'u_owner_of_agt_x') {
+          throw new PluginError({
+            code: 'forbidden',
+            plugin: '@ax/agents',
+            hookName: 'agents:resolve',
+            message: `agent '${input.agentId}' not accessible to user '${input.userId}'`,
+          });
+        }
+        return {
+          agent: {
+            id: input.agentId,
+            ownerId: 'u_owner_of_agt_x',
+            workspaceRef: null,
+          },
+        };
+      },
+    );
+    bus.registerService<unknown, { conversation: { conversationId: string }; created: boolean }>(
+      'conversations:find-or-create', '@ax/conversations',
+      async () => ({ conversation: { conversationId: 'conv-real-bus' }, created: true }),
+    );
+    bus.registerService<unknown, unknown>('agent:invoke', '@ax/orchestrator', async () => ({}));
+
+    const pending: PendingFires = new Map();
+    const fire = createFireRoutine({ bus, pending });
+
+    const t0 = new Date('2030-01-01T00:00:00Z');
+
+    // 1) Materialize with the agent's real owner via the new
+    // getAgents callback. The fix is: the materialize SQL writes
+    // a.owner_user_id (not the literal '@ax/routines/defaults').
+    await runTickOnce({
+      store, fire, now: t0,
+      claimBatchSize: 50, claimWindowMinutes: 5,
+      getAgents: async () => [{ agentId: 'agt_x', ownerUserId: 'u_owner_of_agt_x' }],
+    });
+
+    const materialized = await db
+      .selectFrom('routines_v1_definitions')
+      .selectAll()
+      .where('agent_id', '=', 'agt_x')
+      .where('definition_id', 'is not', null)
+      .executeTakeFirstOrThrow();
+    expect(materialized.author_user_id).toBe('u_owner_of_agt_x');
+
+    // 2) Make the row due, then tick again to drive a real fire.
+    await sql`
+      UPDATE routines_v1_definitions
+         SET created_at = ${new Date(t0.getTime() - 25 * 3600 * 1000)}
+       WHERE agent_id = 'agt_x' AND definition_id IS NOT NULL
+    `.execute(db);
+
+    await runTickOnce({
+      store, fire, now: t0,
+      claimBatchSize: 50, claimWindowMinutes: 5,
+      getAgents: async () => [{ agentId: 'agt_x', ownerUserId: 'u_owner_of_agt_x' }],
+    });
+
+    // 3) The fire row must record status='ok' with no error. On the
+    // buggy main, fire.ts would catch the forbidden PluginError and
+    // return status='error' with error='forbidden: agent ...'.
+    const fires = await db
+      .selectFrom('routines_v1_fires')
+      .selectAll()
+      .where('agent_id', '=', 'agt_x')
+      .execute();
+    expect(fires).toHaveLength(1);
+    expect(fires[0]!.status).toBe('ok');
+    expect(fires[0]!.error).toBeNull();
+  });
+
+  it('materializeMissing on the store writes a.owner_user_id per row', async () => {
+    // Store-level coverage for the same regression: two agents, two
+    // owners, one row each — author_user_id matches each agent's owner.
+    const store = createRoutinesStore(db);
+    await store.materializeMissing({
+      agents: [
+        { agentId: 'agt_alice', ownerUserId: 'u_alice' },
+        { agentId: 'agt_bob', ownerUserId: 'u_bob' },
+      ],
+      now: new Date(),
+    });
+    const rows = await db
+      .selectFrom('routines_v1_definitions')
+      .selectAll()
+      .where('definition_id', 'is not', null)
+      .execute();
+    const byAgent = new Map(rows.map((r) => [r.agent_id, r.author_user_id]));
+    expect(byAgent.get('agt_alice')).toBe('u_alice');
+    expect(byAgent.get('agt_bob')).toBe('u_bob');
+  });
+});
+

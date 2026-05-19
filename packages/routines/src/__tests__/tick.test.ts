@@ -224,7 +224,7 @@ describe('runTickOnce', () => {
     await runTickOnce({
       store, fire, now: new Date('2026-05-14T12:00:00Z'),
       claimBatchSize: 50, claimWindowMinutes: 5,
-      getAgentIds: async () => ['agt_a'],
+      getAgents: async () => [{ agentId: 'agt_a', ownerUserId: 'u_owner_a' }],
     });
 
     // After the tick, a default-sourced per-agent row exists (assert on
@@ -250,7 +250,7 @@ describe('runTickOnce', () => {
     await runTickOnce({
       store, fire, now: new Date('2026-05-14T12:00:00Z'),
       claimBatchSize: 50, claimWindowMinutes: 5,
-      getAgentIds: async () => ['agt_a'],
+      getAgents: async () => [{ agentId: 'agt_a', ownerUserId: 'u_owner_a' }],
     });
     const materialized = await db
       .selectFrom('routines_v1_definitions')
@@ -281,7 +281,7 @@ describe('runTickOnce', () => {
     await runTickOnce({
       store, fire, now: new Date('2026-05-14T13:01:00Z'),
       claimBatchSize: 50, claimWindowMinutes: 5,
-      getAgentIds: async () => ['agt_a'],
+      getAgents: async () => [{ agentId: 'agt_a', ownerUserId: 'u_owner_a' }],
     });
     const refreshed = await db
       .selectFrom('routines_v1_definitions')
@@ -292,7 +292,7 @@ describe('runTickOnce', () => {
     expect(refreshed.prompt_body).toBe('REFRESHED');
   });
 
-  it('runTickOnce continues claiming workspace rows when getAgentIds throws (I-R10)', async () => {
+  it('runTickOnce continues claiming workspace rows when getAgents throws (I-R10)', async () => {
     const store = createRoutinesStore(db);
     // Seed a due workspace row — must still be claimed and fired even
     // though the defaults branch blew up.
@@ -303,13 +303,13 @@ describe('runTickOnce', () => {
       return { status: 'ok', error: null, renderedPrompt: 'p' };
     };
 
-    // getAgentIds throws — runTickOnce must NOT propagate (the I-R10
+    // getAgents throws — runTickOnce must NOT propagate (the I-R10
     // try/catch in tick.ts logs to stderr and falls through to claim).
     await expect(
       runTickOnce({
         store, fire, now: new Date('2026-05-14T12:01:00Z'),
         claimBatchSize: 50, claimWindowMinutes: 5,
-        getAgentIds: async () => { throw new Error('agents:list-ids unavailable'); },
+        getAgents: async () => { throw new Error('agents:list-personal-owners unavailable'); },
       }),
     ).resolves.toBeUndefined();
 
@@ -333,7 +333,7 @@ describe('runTickOnce', () => {
     await runTickOnce({
       store, fire, now: new Date('2026-05-14T12:00:00Z'),
       claimBatchSize: 50, claimWindowMinutes: 5,
-      getAgentIds: async () => ['agt_a'],
+      getAgents: async () => [{ agentId: 'agt_a', ownerUserId: 'u_owner_a' }],
     });
 
     // Patch the per-agent row to: (a) carry an active_hours window
@@ -354,7 +354,7 @@ describe('runTickOnce', () => {
       runTickOnce({
         store, fire, now: tickNow,
         claimBatchSize: 50, claimWindowMinutes: 5,
-        getAgentIds: async () => ['agt_a'],
+        getAgents: async () => [{ agentId: 'agt_a', ownerUserId: 'u_owner_a' }],
       }),
     ).resolves.toBeUndefined();
 
@@ -398,7 +398,7 @@ describe('runTickOnce', () => {
       store, fire: async () => ({ status: 'ok', error: null, renderedPrompt: 'p' }),
       now: new Date('2026-05-14T12:00:00Z'),
       claimBatchSize: 50, claimWindowMinutes: 5,
-      getAgentIds: async () => ['agt_a'],
+      getAgents: async () => [{ agentId: 'agt_a', ownerUserId: 'u_owner_a' }],
     });
     // No claim happened on the first tick (24h interval, last_run_at is
     // NULL, so coalesce uses created_at which is ~now).
@@ -416,7 +416,7 @@ describe('runTickOnce', () => {
     await runTickOnce({
       store, fire, now: new Date('2026-05-14T13:00:00Z'),
       claimBatchSize: 50, claimWindowMinutes: 5,
-      getAgentIds: async () => ['agt_a'],
+      getAgents: async () => [{ agentId: 'agt_a', ownerUserId: 'u_owner_a' }],
     });
 
     // Exactly one advance call, for the default-sourced row, with

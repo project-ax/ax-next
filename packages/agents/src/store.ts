@@ -424,6 +424,12 @@ export interface AgentStore {
    * request. Visibility / ownership filtering belongs in listScoped.
    */
   listAllIds(): Promise<string[]>;
+  /**
+   * Personal-agent (owner_type='user') ids paired with their owner user
+   * ids. Backs `agents:list-personal-owners` — same trust posture as
+   * listAllIds (background-loop caller, no ACL). Excludes team agents.
+   */
+  listPersonalAgentOwners(): Promise<Array<{ agentId: string; ownerUserId: string }>>;
 }
 
 export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
@@ -595,6 +601,16 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
         .orderBy('agent_id')
         .execute();
       return rows.map((r) => r.agent_id);
+    },
+
+    async listPersonalAgentOwners() {
+      const rows = await db
+        .selectFrom('agents_v1_agents')
+        .select(['agent_id', 'owner_id'])
+        .where('owner_type', '=', 'user')
+        .orderBy('agent_id')
+        .execute();
+      return rows.map((r) => ({ agentId: r.agent_id, ownerUserId: r.owner_id }));
     },
 
     async setSkillAttachments(agentId, attachments) {

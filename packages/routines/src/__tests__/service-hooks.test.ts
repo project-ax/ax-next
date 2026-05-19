@@ -25,7 +25,7 @@ async function harness(): Promise<TestHarness> {
         return { token: `tok-${i.agentId}` };
       },
       'agents:resolve-by-webhook-token': async () => ({ agent: null }),
-      'agents:list-ids': async () => ({ agentIds: [] }),
+      'agents:list-personal-owners': async () => ({ agents: [] }),
       'conversations:find-or-create': async () => ({
         conversation: { conversationId: 'cnv_x' }, created: true,
       }),

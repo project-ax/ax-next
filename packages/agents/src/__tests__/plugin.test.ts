@@ -121,6 +121,7 @@ describe('@ax/agents plugin manifest + lifecycle', () => {
         'agents:any-attached-to-skill',
         'agents:set-skill-attachments',
         'agents:list-ids',
+        'agents:list-personal-owners',
       ],
       // database:get-instance + http:register-route + auth:require-user are
       // hard. teams:is-member is graceful (handled inside checkAccess via
@@ -539,6 +540,38 @@ describe('@ax/agents service hooks (round trip)', () => {
     );
     expect(all.agentIds.sort()).toEqual(
       [a.agent.id, b.agent.id, c.agent.id].sort(),
+    );
+  });
+
+  it('agents:list-personal-owners returns (agentId, ownerUserId) for personal agents only', async () => {
+    // teams:is-member stub lets us create a team agent without loading
+    // @ax/teams — it must be excluded from the result, since routing a
+    // default routine fire under a team is a separate policy decision.
+    const h = await makeHarness({ withTeams: 'always-member' });
+
+    const personalA = await h.bus.call<CreateInput, CreateOutput>('agents:create', h.ctx(), {
+      actor: { userId: 'u_alice', isAdmin: false },
+      input: makeInput({ displayName: 'A' }),
+    });
+    const personalB = await h.bus.call<CreateInput, CreateOutput>('agents:create', h.ctx(), {
+      actor: { userId: 'u_bob', isAdmin: false },
+      input: makeInput({ displayName: 'B' }),
+    });
+    // Team-visibility agent — must NOT appear in the result.
+    await h.bus.call<CreateInput, CreateOutput>('agents:create', h.ctx(), {
+      actor: { userId: 'u_alice', isAdmin: false },
+      input: makeInput({ displayName: 'T', visibility: 'team', teamId: 't1' }),
+    });
+
+    const r = await h.bus.call<
+      Record<string, never>,
+      { agents: Array<{ agentId: string; ownerUserId: string }> }
+    >('agents:list-personal-owners', h.ctx(), {});
+    expect(r.agents.sort((x, y) => x.agentId.localeCompare(y.agentId))).toEqual(
+      [
+        { agentId: personalA.agent.id, ownerUserId: 'u_alice' },
+        { agentId: personalB.agent.id, ownerUserId: 'u_bob' },
+      ].sort((x, y) => x.agentId.localeCompare(y.agentId)),
     );
   });
 

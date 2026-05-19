@@ -89,7 +89,20 @@ export interface RoutinesStore {
   getDefault(defaultRoutineId: string): Promise<DefaultRoutineDetailRow | null>;
   listDefaults(): Promise<DefaultRoutineDetailRow[]>;
   deleteDefault(defaultRoutineId: string): Promise<void>;
-  materializeMissing(input: { agentIds: string[]; now: Date }): Promise<void>;
+  /**
+   * Materialize one row per (agent, enabled default) pair, stamping
+   * `author_user_id = ownerUserId` per agent. The owner id is the
+   * identity that `fire.ts` passes to `agents:resolve`'s ACL gate —
+   * the gate has no concept of a system actor, so a synthetic
+   * '@ax/routines/defaults' string here would fail every fire as
+   * forbidden. Team agents are excluded upstream (see
+   * `agents:list-personal-owners`); routing a default fire under a
+   * team is a separate policy decision.
+   */
+  materializeMissing(input: {
+    agents: ReadonlyArray<{ agentId: string; ownerUserId: string }>;
+    now: Date;
+  }): Promise<void>;
   refreshStale(input: { now: Date }): Promise<void>;
 }
 
@@ -437,18 +450,25 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
     },
 
     async materializeMissing(input) {
-      if (input.agentIds.length === 0) return;
-      // INSERT … SELECT cross-joins agentIds with all enabled defaults,
+      if (input.agents.length === 0) return;
+      // INSERT … SELECT cross-joins agents with all enabled defaults,
       // filtering out (agent, default) pairs that already have a
       // materialized row. ON CONFLICT (agent_id, path) DO NOTHING makes
       // this safe under concurrent materializers — the path encodes the
       // default id, so two materializers racing on the same agent will
       // not duplicate.
       //
+      // author_user_id is the owner user id (a.owner_user_id), not a
+      // synthetic system actor: fire.ts:51 passes this through to
+      // agents:resolve, whose ACL gate requires a real user id. See
+      // bug write-up in 2026-05-19 MANUAL-ACCEPTANCE walk.
+      //
       // next_run_at is NULL for default-sourced rows: the claim SQL
       // computes due-ness from last_run_at + interval, and the CHECK
       // constraint routines_v1_default_next_run_at_chk forbids a non-null
       // next_run_at for default_id IS NOT NULL.
+      const agentIds = input.agents.map((a) => a.agentId);
+      const ownerIds = input.agents.map((a) => a.ownerUserId);
       await sql`
         INSERT INTO routines_v1_definitions
           (agent_id, path, author_user_id, name, description, spec_hash,
@@ -456,13 +476,14 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
            conversation, prompt_body, next_run_at, definition_id, definition_updated_at,
            created_at, updated_at)
         SELECT
-          a.agent_id, 'default:' || d.default_routine_id, '@ax/routines/defaults',
+          a.agent_id, 'default:' || d.default_routine_id, a.owner_user_id,
           d.name, d.description, d.spec_hash,
           d.trigger_kind, d.trigger_spec, d.active_hours, d.silence_token, d.silence_max,
           d.conversation, d.prompt_body, NULL,
           d.default_routine_id, d.updated_at,
           ${input.now}, ${input.now}
-        FROM (SELECT unnest(${input.agentIds}::text[]) AS agent_id) a
+        FROM unnest(${agentIds}::text[], ${ownerIds}::text[])
+          AS a(agent_id, owner_user_id)
         CROSS JOIN default_routines_v1 d
         WHERE d.enabled
           AND NOT EXISTS (

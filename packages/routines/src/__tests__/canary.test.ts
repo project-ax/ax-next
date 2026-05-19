@@ -53,7 +53,7 @@ async function makeHarness(captured: Captured, replyOnInvoke: { contentBlocks: u
         token: `tok-${(input as { agentId: string }).agentId}`,
       }),
       'agents:resolve-by-webhook-token': async () => ({ agent: null }),
-      'agents:list-ids': async () => ({ agentIds: [] }),
+      'agents:list-personal-owners': async () => ({ agents: [] }),
       'credentials:get': async () => 'secret',
       'http:register-route': async () => ({ unregister: () => {} }),
       'workspace:apply': async () => ({
@@ -348,7 +348,7 @@ describe('Phase C webhook canary — half-wired window closure', () => {
           }
           return null;
         },
-        'agents:list-ids': async () => ({ agentIds: [] }),
+        'agents:list-personal-owners': async () => ({ agents: [] }),
         'credentials:get': async (_c, input: unknown) => {
           const ref = (input as { ref: string }).ref;
           if (ref === 'gh-secret') return 'shhh';
