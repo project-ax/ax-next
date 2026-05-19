@@ -7,6 +7,7 @@ import {
 import { z } from 'zod';
 import {
   parseRequestBody,
+  requireAdmin,
   requireUser,
   writeServiceError,
   type RouteRequest,
@@ -302,6 +303,301 @@ export async function registerRoutinesAdminRoutes(
         // unwind itself, which the operator may need to investigate.
         console.warn(
           `[${PLUGIN_NAME}] failed to unregister route during rollback: ${
+            unwindErr instanceof Error ? unwindErr.message : String(unwindErr)
+          }`,
+        );
+      }
+    }
+    throw err;
+  }
+  return unregisters;
+}
+
+// ---------------------------------------------------------------------------
+// /admin/routines/defaults* — admin-only CRUD over the default_routines_v1
+// table (the "library of templates" that materialize per-agent on tick).
+//
+// Five routes:
+//
+//   GET    /admin/routines/defaults          → list (DefaultRoutineSummary[])
+//   GET    /admin/routines/defaults/:id      → detail (DefaultRoutineDetail)
+//   POST   /admin/routines/defaults          → upsert via { sourceMd }
+//   PUT    /admin/routines/defaults/:id      → upsert via { sourceMd }
+//   DELETE /admin/routines/defaults/:id      → drop (cascades to per-agent)
+//
+// Every route gates on `auth:require-admin` (via requireAdmin) — these are
+// fleet-wide changes, not per-user. There's no ACL check past "is this an
+// admin"; the default_routines_v1 row has no owner field.
+//
+// Body shape on POST/PUT: `{ sourceMd: string }`, capped at 64 KiB to match
+// the rest of the admin surface. The full SKILL.md-style frontmatter parse
+// happens inside `routines:upsert-default`; we just relay the raw text. The
+// routines plugin throws PluginError with codes
+// `invalid-routine-md` / `default-trigger-webhook-not-supported` /
+// `default-trigger-cron-not-supported` / `invalid-interval`, which
+// `writeServiceError` maps to 400.
+// ---------------------------------------------------------------------------
+
+/** POST/PUT /admin/routines/defaults body. Strict — extra fields reject so
+ *  a confused client doesn't slip an `enabled` override past us until the
+ *  upsert hook itself accepts one. */
+const upsertDefaultBodySchema = z
+  .object({
+    sourceMd: z.string().min(1).max(64 * 1024),
+  })
+  .strict();
+
+interface DefaultRoutineSummaryWire {
+  defaultRoutineId: string;
+  name: string;
+  description: string;
+  trigger: unknown;
+  enabled: boolean;
+  updatedAt: string;
+}
+
+interface DefaultRoutinesListOutput {
+  defaults: DefaultRoutineSummaryWire[];
+}
+
+interface DefaultRoutineDetailWire extends DefaultRoutineSummaryWire {
+  sourceMd: string;
+  silenceToken: string | null;
+  silenceMax: number;
+  conversation: 'per-fire' | 'shared';
+  activeHours: unknown | null;
+  promptBody: string;
+}
+
+interface UpsertDefaultOutput {
+  defaultRoutineId: string;
+  created: boolean;
+}
+
+export interface AdminDefaultRoutinesHandlers {
+  list: (req: RouteRequest, res: RouteResponse) => Promise<void>;
+  get: (req: RouteRequest, res: RouteResponse) => Promise<void>;
+  create: (req: RouteRequest, res: RouteResponse) => Promise<void>;
+  update: (req: RouteRequest, res: RouteResponse) => Promise<void>;
+  destroy: (req: RouteRequest, res: RouteResponse) => Promise<void>;
+}
+
+export function createAdminDefaultRoutinesHandlers(
+  deps: AdminDeps,
+): AdminDefaultRoutinesHandlers {
+  // Admin context — the actor binds at the per-request level via requireAdmin,
+  // but the routines:*-default hooks don't ACL on userId (default routines
+  // are fleet-wide). Keep a fixed admin ctx for the bus call so the
+  // sessionId/agentId fields land usefully in logs.
+  const adminCtx = makeAgentContext({
+    sessionId: 'routines-admin',
+    agentId: PLUGIN_NAME,
+    userId: 'admin',
+  });
+
+  return {
+    async list(req, res) {
+      const actor = await requireAdmin(deps.bus, adminCtx, req, res);
+      if (actor === null) return;
+      try {
+        const out = await deps.bus.call<
+          Record<string, never>,
+          DefaultRoutinesListOutput
+        >('routines:list-defaults', adminCtx, {});
+        res.status(200).json(out);
+      } catch (err) {
+        if (writeServiceError(res, err)) return;
+        throw err;
+      }
+    },
+
+    async get(req, res) {
+      const actor = await requireAdmin(deps.bus, adminCtx, req, res);
+      if (actor === null) return;
+      const { id } = req.params;
+      if (id === undefined || id.length === 0) {
+        res.status(400).json({ error: 'missing default routine id' });
+        return;
+      }
+      try {
+        const detail = await deps.bus.call<
+          { defaultRoutineId: string },
+          DefaultRoutineDetailWire
+        >('routines:get-default', adminCtx, { defaultRoutineId: id });
+        res.status(200).json(detail);
+      } catch (err) {
+        if (writeServiceError(res, err)) return;
+        throw err;
+      }
+    },
+
+    async create(req, res) {
+      const actor = await requireAdmin(deps.bus, adminCtx, req, res);
+      if (actor === null) return;
+      const parsedBody = parseRequestBody(req.body);
+      if (!parsedBody.ok) {
+        res.status(parsedBody.status).json({ error: parsedBody.message });
+        return;
+      }
+      const zodResult = upsertDefaultBodySchema.safeParse(parsedBody.value);
+      if (!zodResult.success) {
+        const first = zodResult.error.issues[0];
+        res.status(400).json({
+          error:
+            first?.message !== undefined && first.message.length > 0
+              ? first.message
+              : 'invalid-payload',
+        });
+        return;
+      }
+      try {
+        const out = await deps.bus.call<
+          { sourceMd: string },
+          UpsertDefaultOutput
+        >('routines:upsert-default', adminCtx, {
+          sourceMd: zodResult.data.sourceMd,
+        });
+        res
+          .status(201)
+          .json({ defaultRoutineId: out.defaultRoutineId, created: out.created });
+      } catch (err) {
+        if (writeServiceError(res, err)) return;
+        throw err;
+      }
+    },
+
+    async update(req, res) {
+      const actor = await requireAdmin(deps.bus, adminCtx, req, res);
+      if (actor === null) return;
+      const { id } = req.params;
+      if (id === undefined || id.length === 0) {
+        res.status(400).json({ error: 'missing default routine id' });
+        return;
+      }
+      const parsedBody = parseRequestBody(req.body);
+      if (!parsedBody.ok) {
+        res.status(parsedBody.status).json({ error: parsedBody.message });
+        return;
+      }
+      const zodResult = upsertDefaultBodySchema.safeParse(parsedBody.value);
+      if (!zodResult.success) {
+        const first = zodResult.error.issues[0];
+        res.status(400).json({
+          error:
+            first?.message !== undefined && first.message.length > 0
+              ? first.message
+              : 'invalid-payload',
+        });
+        return;
+      }
+      try {
+        const out = await deps.bus.call<
+          { sourceMd: string },
+          UpsertDefaultOutput
+        >('routines:upsert-default', adminCtx, {
+          sourceMd: zodResult.data.sourceMd,
+        });
+        // The PUT path identifies the row by id; if upsert returns a
+        // different id, the client's URL and the body disagree on which
+        // row this is. Surface that as 400 rather than silently writing
+        // to the wrong row — mirrors @ax/skills admin handler.
+        if (out.defaultRoutineId !== id) {
+          res.status(400).json({
+            error: 'default routine id in path does not match manifest name',
+          });
+          return;
+        }
+        res
+          .status(200)
+          .json({ defaultRoutineId: out.defaultRoutineId, created: out.created });
+      } catch (err) {
+        if (writeServiceError(res, err)) return;
+        throw err;
+      }
+    },
+
+    async destroy(req, res) {
+      const actor = await requireAdmin(deps.bus, adminCtx, req, res);
+      if (actor === null) return;
+      const { id } = req.params;
+      if (id === undefined || id.length === 0) {
+        res.status(400).json({ error: 'missing default routine id' });
+        return;
+      }
+      try {
+        await deps.bus.call<
+          { defaultRoutineId: string },
+          Record<string, never>
+        >('routines:delete-default', adminCtx, { defaultRoutineId: id });
+        res.status(204).end();
+      } catch (err) {
+        if (writeServiceError(res, err)) return;
+        throw err;
+      }
+    },
+  };
+}
+
+/**
+ * Mount the five /admin/routines/defaults* routes via `http:register-route`.
+ * Returns the list of unregister callbacks. Same unwind-on-partial-failure
+ * shape as registerRoutinesAdminRoutes — never leaves a half-mounted route
+ * surface behind (Invariant: no half-wired plugins).
+ */
+export async function registerAdminDefaultRoutinesRoutes(
+  bus: HookBus,
+  initCtx: AgentContext,
+): Promise<Array<() => void>> {
+  const handlers = createAdminDefaultRoutinesHandlers({ bus });
+  const routes: Array<{
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE';
+    path: string;
+    handler: (req: RouteRequest, res: RouteResponse) => Promise<void>;
+  }> = [
+    {
+      method: 'GET',
+      path: '/admin/routines/defaults',
+      handler: handlers.list,
+    },
+    {
+      method: 'GET',
+      path: '/admin/routines/defaults/:id',
+      handler: handlers.get,
+    },
+    {
+      method: 'POST',
+      path: '/admin/routines/defaults',
+      handler: handlers.create,
+    },
+    {
+      method: 'PUT',
+      path: '/admin/routines/defaults/:id',
+      handler: handlers.update,
+    },
+    {
+      method: 'DELETE',
+      path: '/admin/routines/defaults/:id',
+      handler: handlers.destroy,
+    },
+  ];
+  const unregisters: Array<() => void> = [];
+  try {
+    for (const route of routes) {
+      const result = await bus.call<typeof route, { unregister: () => void }>(
+        'http:register-route',
+        initCtx,
+        route,
+      );
+      unregisters.push(result.unregister);
+    }
+  } catch (err) {
+    while (unregisters.length > 0) {
+      const fn = unregisters.pop();
+      try {
+        fn?.();
+      } catch (unwindErr) {
+        console.warn(
+          `[${PLUGIN_NAME}] failed to unregister admin route during rollback: ${
             unwindErr instanceof Error ? unwindErr.message : String(unwindErr)
           }`,
         );

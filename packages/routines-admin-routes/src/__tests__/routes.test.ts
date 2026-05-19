@@ -20,8 +20,34 @@ import type { RouteRequest, RouteResponse } from '../shared.js';
 
 type Handler = (req: RouteRequest, res: RouteResponse) => Promise<void>;
 
+interface DefaultRoutineSummaryMock {
+  defaultRoutineId: string;
+  name: string;
+  description: string;
+  trigger: unknown;
+  enabled: boolean;
+  updatedAt: string;
+}
+
+interface DefaultRoutineDetailMock extends DefaultRoutineSummaryMock {
+  sourceMd: string;
+  silenceToken: string | null;
+  silenceMax: number;
+  conversation: 'per-fire' | 'shared';
+  activeHours: unknown | null;
+  promptBody: string;
+}
+
+/** When set, auth:require-user throws this — drives the 401-path test
+ *  through requireAuthenticated / requireAdmin. */
+type AuthMode =
+  | { kind: 'unauthenticated' }
+  | { kind: 'authed'; user: { id: string; isAdmin: boolean } };
+
 interface MockServices {
   authedUser?: { id: string; isAdmin: boolean };
+  /** Forces auth:require-user to throw — overrides authedUser. */
+  authMode?: AuthMode;
   /** When set, agents:resolve throws this for ANY agentId+userId pair —
    *  used by the 403-path test. */
   resolveFailure?: PluginError;
@@ -36,19 +62,44 @@ interface MockServices {
   fireNow?: (
     input: { agentId: string; path: string; payload?: unknown; source: string },
   ) => Promise<{ fireId: number; status: string; conversationId: string | null }>;
+  /** In-memory store of default routines for the admin-routes tests. Keyed
+   *  by defaultRoutineId. Initialized with a heartbeat seed so the list/get
+   *  tests have something to find without going through upsert first. */
+  defaults?: Map<string, DefaultRoutineDetailMock>;
+  /** When set, routines:upsert-default throws this instead of writing. */
+  upsertDefaultThrow?: PluginError;
 }
 
 async function makeHarnessWith(opts: MockServices) {
+  // Path-keyed map for backwards compat with the pre-existing /settings/*
+  // tests (each settings route has a unique path, so collisions aren't a
+  // concern there). The admin /defaults* surface shares paths across
+  // methods, so we ALSO populate a method+path map and prefer it.
   const handlers = new Map<string, Handler>();
+  const handlersByMethod = new Map<string, Handler>();
   const authedUser = opts.authedUser ?? { id: 'u1', isAdmin: false };
+  const authMode: AuthMode =
+    opts.authMode ?? { kind: 'authed', user: authedUser };
+  const defaults =
+    opts.defaults ?? new Map<string, DefaultRoutineDetailMock>();
   const harness = await createTestHarness({
     services: {
       'http:register-route': async (_ctx, input: unknown) => {
-        const i = input as { path: string; handler: Handler };
+        const i = input as { method: string; path: string; handler: Handler };
         handlers.set(i.path, i.handler);
+        handlersByMethod.set(`${i.method} ${i.path}`, i.handler);
         return { unregister: () => {} };
       },
-      'auth:require-user': async () => ({ user: authedUser }),
+      'auth:require-user': async () => {
+        if (authMode.kind === 'unauthenticated') {
+          throw new PluginError({
+            code: 'unauthenticated',
+            plugin: 'test',
+            message: 'no session',
+          });
+        }
+        return { user: authMode.user };
+      },
       'routines:list': async () =>
         opts.routinesList !== undefined
           ? opts.routinesList()
@@ -94,10 +145,81 @@ async function makeHarnessWith(opts: MockServices) {
           agent: { id: i.agentId, ownerId: i.userId, workspaceRef: null },
         };
       },
+      'routines:list-defaults': async () => ({
+        defaults: Array.from(defaults.values()).map((d) => ({
+          defaultRoutineId: d.defaultRoutineId,
+          name: d.name,
+          description: d.description,
+          trigger: d.trigger,
+          enabled: d.enabled,
+          updatedAt: d.updatedAt,
+        })),
+      }),
+      'routines:get-default': async (_ctx, input: unknown) => {
+        const i = input as { defaultRoutineId: string };
+        const row = defaults.get(i.defaultRoutineId);
+        if (row === undefined) {
+          throw new PluginError({
+            code: 'not-found',
+            plugin: 'test',
+            message: `default routine '${i.defaultRoutineId}' not found`,
+          });
+        }
+        return row;
+      },
+      'routines:upsert-default': async (_ctx, input: unknown) => {
+        if (opts.upsertDefaultThrow !== undefined) {
+          throw opts.upsertDefaultThrow;
+        }
+        const i = input as { sourceMd: string };
+        // Pretend-parse: pull `name:` out of the frontmatter. If we can't
+        // find one we throw invalid-routine-md to mirror the real plugin's
+        // behaviour on malformed sourceMd. The router-level test exercises
+        // the writeServiceError mapping, so we just need the throw shape.
+        const nameMatch = /^name:\s*([\w-]+)\s*$/m.exec(i.sourceMd);
+        if (nameMatch === null) {
+          throw new PluginError({
+            code: 'invalid-routine-md',
+            plugin: 'test',
+            message: 'missing name in frontmatter',
+          });
+        }
+        // Reject webhook trigger to drive the 400 code-mapping test.
+        if (/kind:\s*webhook/.test(i.sourceMd)) {
+          throw new PluginError({
+            code: 'default-trigger-webhook-not-supported',
+            plugin: 'test',
+            message: 'default routines do not support webhook triggers in v1',
+          });
+        }
+        const name = nameMatch[1] ?? 'unknown';
+        const id = `default-${name}-test`;
+        const existed = defaults.has(id);
+        defaults.set(id, {
+          defaultRoutineId: id,
+          name,
+          description: 'mock',
+          trigger: { kind: 'interval', every: '5m' },
+          enabled: true,
+          updatedAt: new Date('2026-05-19T00:00:00Z').toISOString(),
+          sourceMd: i.sourceMd,
+          silenceToken: null,
+          silenceMax: 300,
+          conversation: 'per-fire',
+          activeHours: null,
+          promptBody: 'mock body',
+        });
+        return { defaultRoutineId: id, created: !existed };
+      },
+      'routines:delete-default': async (_ctx, input: unknown) => {
+        const i = input as { defaultRoutineId: string };
+        defaults.delete(i.defaultRoutineId);
+        return {};
+      },
     },
     plugins: [createRoutinesAdminRoutesPlugin()],
   });
-  return { harness, handlers };
+  return { harness, handlers, handlersByMethod, defaults };
 }
 
 function makeReq(over: Partial<RouteRequest> = {}): RouteRequest {
@@ -418,6 +540,292 @@ describe('routines-admin-routes', () => {
       res,
     );
     expect(captured.status).toBe(400);
+    await harness.close({ onError: () => {} });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// /admin/routines/defaults* — admin-only CRUD over the default routines table.
+//
+// Auth model differs from /settings/routines*: requireAdmin (isAdmin=true) is
+// gated BEFORE any service call. 401 if unauthenticated, 403 if authed-but-
+// not-admin. There's no per-row owner ACL — default routines are fleet-wide.
+// ---------------------------------------------------------------------------
+
+/** Helper: build a seeded defaults map with one "heartbeat" entry, mirroring
+ *  what the migration's seed does in prod. */
+function seedDefaults(): Map<string, DefaultRoutineDetailMock> {
+  const m = new Map<string, DefaultRoutineDetailMock>();
+  m.set('default-heartbeat-2026-05-19', {
+    defaultRoutineId: 'default-heartbeat-2026-05-19',
+    name: 'heartbeat',
+    description: 'daily check-in',
+    trigger: { kind: 'interval', every: '24h' },
+    enabled: true,
+    updatedAt: '2026-05-19T00:00:00.000Z',
+    sourceMd: '---\nname: heartbeat\n---\nbody',
+    silenceToken: 'HEARTBEAT_OK',
+    silenceMax: 300,
+    conversation: 'shared',
+    activeHours: null,
+    promptBody: 'body',
+  });
+  return m;
+}
+
+const VALID_INTERVAL_MD = [
+  '---',
+  'name: demo',
+  'description: a demo default routine',
+  'trigger:',
+  '  kind: interval',
+  '  every: "5m"',
+  '---',
+  'do the thing',
+  '',
+].join('\n');
+
+const WEBHOOK_TRIGGER_MD = [
+  '---',
+  'name: webhooky',
+  'description: a webhook routine that should reject',
+  'trigger:',
+  '  kind: webhook',
+  '---',
+  'do the thing',
+  '',
+].join('\n');
+
+describe('admin /admin/routines/defaults*', () => {
+  it('GET /admin/routines/defaults returns the seeded heartbeat in defaults[]', async () => {
+    const { harness, handlersByMethod } = await makeHarnessWith({
+      authedUser: { id: 'admin1', isAdmin: true },
+      defaults: seedDefaults(),
+    });
+    const handler = handlersByMethod.get('GET /admin/routines/defaults');
+    expect(handler).toBeDefined();
+    const { res, captured } = makeRes();
+    await handler!(makeReq(), res);
+    expect(captured.status).toBe(200);
+    const body = captured.body as { defaults: Array<{ name: string }> };
+    expect(body.defaults.map((d) => d.name)).toContain('heartbeat');
+    await harness.close({ onError: () => {} });
+  });
+
+  it('GET /admin/routines/defaults/:id returns full detail', async () => {
+    const { harness, handlersByMethod } = await makeHarnessWith({
+      authedUser: { id: 'admin1', isAdmin: true },
+      defaults: seedDefaults(),
+    });
+    const handler = handlersByMethod.get('GET /admin/routines/defaults/:id')!;
+    const { res, captured } = makeRes();
+    await handler(
+      makeReq({ params: { id: 'default-heartbeat-2026-05-19' } }),
+      res,
+    );
+    expect(captured.status).toBe(200);
+    const detail = captured.body as { name: string; sourceMd: string };
+    expect(detail.name).toBe('heartbeat');
+    expect(detail.sourceMd.length).toBeGreaterThan(0);
+    await harness.close({ onError: () => {} });
+  });
+
+  it('GET /admin/routines/defaults/:id returns 404 on miss', async () => {
+    const { harness, handlersByMethod } = await makeHarnessWith({
+      authedUser: { id: 'admin1', isAdmin: true },
+      defaults: new Map(),
+    });
+    const handler = handlersByMethod.get('GET /admin/routines/defaults/:id')!;
+    const { res, captured } = makeRes();
+    await handler(makeReq({ params: { id: 'does-not-exist' } }), res);
+    expect(captured.status).toBe(404);
+    await harness.close({ onError: () => {} });
+  });
+
+  it('POST /admin/routines/defaults with valid interval sourceMd returns 201 and persists', async () => {
+    const { harness, handlersByMethod, defaults } = await makeHarnessWith({
+      authedUser: { id: 'admin1', isAdmin: true },
+      defaults: new Map(),
+    });
+    const handler = handlersByMethod.get('POST /admin/routines/defaults')!;
+    const { res, captured } = makeRes();
+    await handler(
+      makeReq({
+        body: Buffer.from(JSON.stringify({ sourceMd: VALID_INTERVAL_MD })),
+      }),
+      res,
+    );
+    expect(captured.status).toBe(201);
+    const body = captured.body as {
+      defaultRoutineId: string;
+      created: boolean;
+    };
+    expect(body.created).toBe(true);
+    expect(body.defaultRoutineId).toBe('default-demo-test');
+    // Side-effect: the mock store now holds the new row.
+    expect(defaults.has('default-demo-test')).toBe(true);
+    await harness.close({ onError: () => {} });
+  });
+
+  it('POST /admin/routines/defaults with webhook trigger surfaces 400 with code', async () => {
+    const { harness, handlersByMethod } = await makeHarnessWith({
+      authedUser: { id: 'admin1', isAdmin: true },
+      defaults: new Map(),
+    });
+    const handler = handlersByMethod.get('POST /admin/routines/defaults')!;
+    const { res, captured } = makeRes();
+    await handler(
+      makeReq({
+        body: Buffer.from(JSON.stringify({ sourceMd: WEBHOOK_TRIGGER_MD })),
+      }),
+      res,
+    );
+    expect(captured.status).toBe(400);
+    const body = captured.body as { error: string; code?: string };
+    expect(body.code).toBe('default-trigger-webhook-not-supported');
+    expect(body.error).toMatch(/webhook/i);
+    await harness.close({ onError: () => {} });
+  });
+
+  it('POST /admin/routines/defaults with malformed sourceMd returns 400', async () => {
+    const { harness, handlersByMethod } = await makeHarnessWith({
+      authedUser: { id: 'admin1', isAdmin: true },
+      defaults: new Map(),
+    });
+    const handler = handlersByMethod.get('POST /admin/routines/defaults')!;
+    const { res, captured } = makeRes();
+    // No frontmatter `name:` → our mock throws invalid-routine-md.
+    await handler(
+      makeReq({
+        body: Buffer.from(
+          JSON.stringify({ sourceMd: '# just a heading\n' }),
+        ),
+      }),
+      res,
+    );
+    expect(captured.status).toBe(400);
+    const body = captured.body as { error: string; code?: string };
+    expect(body.code).toBe('invalid-routine-md');
+    await harness.close({ onError: () => {} });
+  });
+
+  it('POST /admin/routines/defaults rejects empty sourceMd via zod (400)', async () => {
+    // The strict body schema requires sourceMd to be a non-empty string;
+    // a body of `{}` fails zod BEFORE reaching the upsert hook, so this
+    // test verifies the route's own validation rather than the service.
+    const { harness, handlersByMethod } = await makeHarnessWith({
+      authedUser: { id: 'admin1', isAdmin: true },
+      defaults: new Map(),
+    });
+    const handler = handlersByMethod.get('POST /admin/routines/defaults')!;
+    const { res, captured } = makeRes();
+    await handler(makeReq({ body: Buffer.from(JSON.stringify({})) }), res);
+    expect(captured.status).toBe(400);
+    await harness.close({ onError: () => {} });
+  });
+
+  it('PUT /admin/routines/defaults/:id with valid sourceMd returns 200 and updates', async () => {
+    const seeded = new Map<string, DefaultRoutineDetailMock>();
+    seeded.set('default-demo-test', {
+      defaultRoutineId: 'default-demo-test',
+      name: 'demo',
+      description: 'old',
+      trigger: { kind: 'interval', every: '5m' },
+      enabled: true,
+      updatedAt: '2026-05-19T00:00:00.000Z',
+      sourceMd: '---\nname: demo\n---\nold',
+      silenceToken: null,
+      silenceMax: 300,
+      conversation: 'per-fire',
+      activeHours: null,
+      promptBody: 'old',
+    });
+    const { harness, handlersByMethod, defaults } = await makeHarnessWith({
+      authedUser: { id: 'admin1', isAdmin: true },
+      defaults: seeded,
+    });
+    const handler = handlersByMethod.get('PUT /admin/routines/defaults/:id')!;
+    const { res, captured } = makeRes();
+    await handler(
+      makeReq({
+        params: { id: 'default-demo-test' },
+        body: Buffer.from(JSON.stringify({ sourceMd: VALID_INTERVAL_MD })),
+      }),
+      res,
+    );
+    expect(captured.status).toBe(200);
+    const body = captured.body as {
+      defaultRoutineId: string;
+      created: boolean;
+    };
+    expect(body.defaultRoutineId).toBe('default-demo-test');
+    expect(body.created).toBe(false);
+    // Side-effect: the row was updated (sourceMd swapped in).
+    expect(defaults.get('default-demo-test')?.sourceMd).toContain(
+      'a demo default routine',
+    );
+    await harness.close({ onError: () => {} });
+  });
+
+  it('PUT /admin/routines/defaults/:id rejects id mismatch with 400', async () => {
+    const { harness, handlersByMethod } = await makeHarnessWith({
+      authedUser: { id: 'admin1', isAdmin: true },
+      defaults: new Map(),
+    });
+    const handler = handlersByMethod.get('PUT /admin/routines/defaults/:id')!;
+    const { res, captured } = makeRes();
+    // PUT-path id is 'wrong-id', body sourceMd computes id 'default-demo-test'.
+    await handler(
+      makeReq({
+        params: { id: 'wrong-id' },
+        body: Buffer.from(JSON.stringify({ sourceMd: VALID_INTERVAL_MD })),
+      }),
+      res,
+    );
+    expect(captured.status).toBe(400);
+    await harness.close({ onError: () => {} });
+  });
+
+  it('DELETE /admin/routines/defaults/:id returns 204 and drops the row', async () => {
+    const seeded = seedDefaults();
+    const { harness, handlersByMethod, defaults } = await makeHarnessWith({
+      authedUser: { id: 'admin1', isAdmin: true },
+      defaults: seeded,
+    });
+    const handler = handlersByMethod.get(
+      'DELETE /admin/routines/defaults/:id',
+    )!;
+    const { res, captured } = makeRes();
+    await handler(
+      makeReq({ params: { id: 'default-heartbeat-2026-05-19' } }),
+      res,
+    );
+    expect(captured.status).toBe(204);
+    expect(defaults.has('default-heartbeat-2026-05-19')).toBe(false);
+    await harness.close({ onError: () => {} });
+  });
+
+  it('Unauthenticated GET /admin/routines/defaults returns 401', async () => {
+    const { harness, handlersByMethod } = await makeHarnessWith({
+      authMode: { kind: 'unauthenticated' },
+      defaults: seedDefaults(),
+    });
+    const handler = handlersByMethod.get('GET /admin/routines/defaults')!;
+    const { res, captured } = makeRes();
+    await handler(makeReq(), res);
+    expect(captured.status).toBe(401);
+    await harness.close({ onError: () => {} });
+  });
+
+  it('Non-admin authenticated GET /admin/routines/defaults returns 403', async () => {
+    const { harness, handlersByMethod } = await makeHarnessWith({
+      authedUser: { id: 'u1', isAdmin: false },
+      defaults: seedDefaults(),
+    });
+    const handler = handlersByMethod.get('GET /admin/routines/defaults')!;
+    const { res, captured } = makeRes();
+    await handler(makeReq(), res);
+    expect(captured.status).toBe(403);
     await harness.close({ onError: () => {} });
   });
 });
