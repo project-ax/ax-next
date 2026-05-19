@@ -671,6 +671,115 @@ describe('@ax/mcp-client admin routes', () => {
     expect(r.status).toBe(404);
   });
 
+  it('DELETE own config purges every declared env+header credential', async () => {
+    // Seed a stdio server config with two env vars treated as credential slots.
+    const { cookie, userId } = await signInWithUser(stack);
+    const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId });
+
+    // Create the server config with env vars declared as credential slots.
+    const createR = await http(stack.port, 'POST', '/admin/mcp-servers', {
+      cookie,
+      body: {
+        id: 'gh-del',
+        enabled: true,
+        transport: 'stdio',
+        command: 'mcp-github',
+        args: [],
+        env: { GH_TOKEN: '', GH_HOST: '' },
+      },
+    });
+    expect(createR.status).toBe(201);
+
+    // Set credentials for both env var slots.
+    await stack.harness.bus.call('credentials:set', ctx, {
+      scope: 'global',
+      ownerId: null,
+      ref: 'mcp:gh-del:env:GH_TOKEN',
+      kind: 'api-key',
+      payload: new TextEncoder().encode('token-value'),
+    });
+    await stack.harness.bus.call('credentials:set', ctx, {
+      scope: 'global',
+      ownerId: null,
+      ref: 'mcp:gh-del:env:GH_HOST',
+      kind: 'api-key',
+      payload: new TextEncoder().encode('host-value'),
+    });
+
+    // Verify both credentials exist.
+    const before = (await stack.harness.bus.call('credentials:list', ctx, {})) as {
+      credentials: Array<{ ref: string }>;
+    };
+    const beforeRefs = before.credentials.map((c) => c.ref);
+    expect(beforeRefs).toContain('mcp:gh-del:env:GH_TOKEN');
+    expect(beforeRefs).toContain('mcp:gh-del:env:GH_HOST');
+
+    // Delete the server config.
+    const del = await http(stack.port, 'DELETE', '/admin/mcp-servers/gh-del', { cookie });
+    expect(del.status).toBe(204);
+
+    // Both credentials must be purged.
+    const after = (await stack.harness.bus.call('credentials:list', ctx, {})) as {
+      credentials: Array<{ ref: string }>;
+    };
+    const afterRefs = after.credentials.map((c) => c.ref);
+    expect(afterRefs).not.toContain('mcp:gh-del:env:GH_TOKEN');
+    expect(afterRefs).not.toContain('mcp:gh-del:env:GH_HOST');
+    // Sanity: filter by prefix yields nothing.
+    expect(afterRefs.filter((r) => r.startsWith('mcp:gh-del:'))).toHaveLength(0);
+  });
+
+  it('PATCH own config deletes credentials for dropped env names', async () => {
+    // Seed a stdio server with two env vars, then re-save with only one.
+    const { cookie, userId } = await signInWithUser(stack);
+    const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId });
+
+    // Create server with two env slots.
+    const createR = await http(stack.port, 'POST', '/admin/mcp-servers', {
+      cookie,
+      body: {
+        id: 'gh-patch',
+        enabled: true,
+        transport: 'stdio',
+        command: 'mcp-github',
+        args: [],
+        env: { GH_TOKEN: '', LEGACY: '' },
+      },
+    });
+    expect(createR.status).toBe(201);
+
+    // Set credentials for both env var slots.
+    await stack.harness.bus.call('credentials:set', ctx, {
+      scope: 'global',
+      ownerId: null,
+      ref: 'mcp:gh-patch:env:GH_TOKEN',
+      kind: 'api-key',
+      payload: new TextEncoder().encode('token-value'),
+    });
+    await stack.harness.bus.call('credentials:set', ctx, {
+      scope: 'global',
+      ownerId: null,
+      ref: 'mcp:gh-patch:env:LEGACY',
+      kind: 'api-key',
+      payload: new TextEncoder().encode('legacy-value'),
+    });
+
+    // Re-save config dropping LEGACY but keeping GH_TOKEN.
+    const patchR = await http(stack.port, 'PATCH', '/admin/mcp-servers/gh-patch', {
+      cookie,
+      body: { env: { GH_TOKEN: '' } },
+    });
+    expect(patchR.status).toBe(200);
+
+    // LEGACY must be purged, GH_TOKEN must survive.
+    const after = (await stack.harness.bus.call('credentials:list', ctx, {})) as {
+      credentials: Array<{ ref: string }>;
+    };
+    const afterRefs = after.credentials.map((c) => c.ref);
+    expect(afterRefs).not.toContain('mcp:gh-patch:env:LEGACY');
+    expect(afterRefs).toContain('mcp:gh-patch:env:GH_TOKEN');
+  });
+
   // -------------------------------------------------------------------------
   // POST /admin/mcp-servers/:id/test
   // -------------------------------------------------------------------------
