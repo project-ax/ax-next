@@ -2264,4 +2264,56 @@ describe('chat-orchestrator', () => {
     };
     expect(sandboxIn.installedSkills ?? []).toHaveLength(0);
   });
+
+  // 2026-05-19 defaults — end-to-end canary closing I-S7's half-wired window.
+  // Default-attached instruction-only skill flows: db row → skills:list-defaults
+  // → orchestrator union → sandbox:open-session installedSkills payload.
+  it('CANARY: default-attached instruction skill is delivered to sandbox:open-session with intact SKILL.md', async () => {
+    const proxy = buildProxyHooks();
+    const defaultSkill: ResolvedSkill = {
+      id: 'greeter',
+      capabilities: { allowedHosts: [], credentials: [] },
+      bodyMd: '# Greeter\n\nSay hi.\n',
+      manifestYaml: 'name: greeter\ndescription: Greets every agent.\nversion: 1\n',
+    };
+    const defaults = buildDefaultsHook({ skills: [defaultSkill] });
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: { ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' } },
+          // Critical: agent has ZERO explicit skillAttachments. The skill
+          // gets there only because it is default-attached.
+          skillAttachments: [],
+        },
+      }),
+      openSession: makeChatEndOpenSession(busRef),
+    });
+    Object.assign(mocks.services, proxy.services, defaults.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+      ],
+    });
+    busRef.current = h.bus;
+
+    await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('defaults-canary-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+
+    const sandboxIn = mocks.calls.lastSandboxInput as {
+      installedSkills: Array<{ id: string; skillMd: string }>;
+    };
+    expect(sandboxIn.installedSkills).toHaveLength(1);
+    const entry = sandboxIn.installedSkills[0]!;
+    expect(entry.id).toBe('greeter');
+    // SKILL.md framing: --- yaml --- body
+    expect(entry.skillMd).toContain('---\nname: greeter\n');
+    expect(entry.skillMd).toContain('---\n# Greeter');
+  });
 });
