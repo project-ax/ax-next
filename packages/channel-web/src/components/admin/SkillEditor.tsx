@@ -98,12 +98,16 @@ export function SkillEditor({ skillId, onSaved, onCancel }: Props) {
     return parseSkillManifest(m[1] ?? '');
   }, [text]);
 
-  const canBeDefault =
-    parsedResult.ok && parsedResult.value.capabilities.credentials.length === 0;
-  // Auto-clear the flag if the user adds credential slots while the box was checked.
+  // Only the confirmed-credentials case should auto-clear the flag. A
+  // transient parse error (parsedResult.ok === false) leaves the flag
+  // alone so the box doesn't silently un-check while the user is mid-
+  // typing — they fix the YAML and the checked state survives.
+  const hasCredentialSlots =
+    parsedResult.ok && parsedResult.value.capabilities.credentials.length > 0;
+  const canBeDefault = parsedResult.ok && !hasCredentialSlots;
   useEffect(() => {
-    if (!canBeDefault && defaultAttached) setDefaultAttached(false);
-  }, [canBeDefault, defaultAttached]);
+    if (hasCredentialSlots && defaultAttached) setDefaultAttached(false);
+  }, [hasCredentialSlots, defaultAttached]);
 
   async function handleSave() {
     setSaving(true);

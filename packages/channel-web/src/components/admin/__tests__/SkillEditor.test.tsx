@@ -265,4 +265,61 @@ describe('SkillEditor', () => {
     const checkbox = await screen.findByLabelText(/default-attached/i);
     await waitFor(() => expect(checkbox).toBeChecked());
   });
+
+  it('preserves checked state across a transient parse error', async () => {
+    render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
+
+    const textarea = await screen.findByRole('textbox');
+    const VALID_INSTRUCTION_ONLY = [
+      '---',
+      'name: greeter',
+      'description: A skill.',
+      '---',
+      '# Body',
+    ].join('\n');
+    fireEvent.change(textarea, { target: { value: VALID_INSTRUCTION_ONLY } });
+
+    const checkbox = await screen.findByLabelText(/default-attached/i);
+    fireEvent.click(checkbox);
+    expect(checkbox).toBeChecked();
+
+    // Mid-typing: break the YAML so parseSkillManifest fails.
+    const BROKEN_YAML = '---\nname: greeter\ndescription: : bad colon\n---\n# Body\n';
+    fireEvent.change(textarea, { target: { value: BROKEN_YAML } });
+
+    // The box is disabled while the parse is broken, but its checked
+    // state must survive — we do NOT auto-clear on transient errors.
+    await waitFor(() => expect(checkbox).toBeDisabled());
+    expect(checkbox).toBeChecked();
+
+    // Fix the YAML to a valid instruction-only manifest. The flag should
+    // still be checked.
+    fireEvent.change(textarea, { target: { value: VALID_INSTRUCTION_ONLY } });
+    await waitFor(() => expect(checkbox).not.toBeDisabled());
+    expect(checkbox).toBeChecked();
+  });
+
+  it('auto-clears the flag when the user adds credential slots', async () => {
+    render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
+
+    const textarea = await screen.findByRole('textbox');
+    const VALID_INSTRUCTION_ONLY = [
+      '---',
+      'name: greeter',
+      'description: A skill.',
+      '---',
+      '# Body',
+    ].join('\n');
+    fireEvent.change(textarea, { target: { value: VALID_INSTRUCTION_ONLY } });
+
+    const checkbox = await screen.findByLabelText(/default-attached/i);
+    fireEvent.click(checkbox);
+    expect(checkbox).toBeChecked();
+
+    // Add a credential slot — the flag must be auto-cleared.
+    fireEvent.change(textarea, { target: { value: VALID_MD } });
+
+    await waitFor(() => expect(checkbox).toBeDisabled());
+    expect(checkbox).not.toBeChecked();
+  });
 });
