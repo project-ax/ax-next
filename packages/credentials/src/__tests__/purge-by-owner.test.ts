@@ -89,12 +89,12 @@ describe('credentials:purge-by-owner', () => {
         kind: 'api-key',
         payload: new TextEncoder().encode('x'),
       });
-    await seed('skill:s1:a');
-    await seed('skill:s2:b');
+    await seed('skill:s1:A');
+    await seed('skill:s2:B');
     await h.bus.call('credentials:set', h.ctx, {
       scope: 'agent',
       ownerId: 'agt-Y',
-      ref: 'skill:s1:a',
+      ref: 'skill:s1:A',
       kind: 'api-key',
       payload: new TextEncoder().encode('keep'),
     });

@@ -122,6 +122,24 @@ describe('colon-bearing credential refs', () => {
     ).resolves.not.toThrow();
   });
 
+  it('accepts uppercase slot names like LINEAR_TOKEN', async () => {
+    const bus = new HookBus();
+    await bootstrap({
+      bus,
+      plugins: [memStoragePlugin(), createCredentialsStoreDbPlugin(), createCredentialsPlugin()],
+      config: {},
+    });
+    await expect(
+      bus.call('credentials:set', ctx(), {
+        scope: 'agent',
+        ownerId: 'a',
+        ref: 'skill:linear-tracker:LINEAR_TOKEN',
+        kind: 'api-key',
+        payload: bytes('lin_api_secret'),
+      }),
+    ).resolves.not.toThrow();
+  });
+
   it('rejects refs containing spaces (REF_RE unchanged boundary)', async () => {
     const bus = new HookBus();
     await bootstrap({

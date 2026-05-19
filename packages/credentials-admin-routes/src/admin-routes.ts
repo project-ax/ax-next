@@ -38,7 +38,7 @@ const PLUGIN_NAME = '@ax/credentials-admin-routes';
 // (provider:anthropic, skill:<id>:<slot>, mcp:<id>:env:<name>, etc.).
 // The full ref including separators is one opaque string from the
 // store's POV — refs are never parsed back out. See refs.ts.
-const REF_RE = /^[a-z0-9][a-z0-9_.:-]{0,191}$/;
+const REF_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,191}$/;
 const KIND_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const OWNER_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}$/;
 
