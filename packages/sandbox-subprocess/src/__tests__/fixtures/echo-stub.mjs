@@ -50,6 +50,20 @@ const env = {
   FOO: process.env.FOO ?? null,
   // Skill-discovery env (I-P0-3): per-session HOME + CLAUDE_CONFIG_DIR.
   CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR ?? null,
+  // Git author/committer identity stamped on the runner so its turn-end
+  // commits match what the host's verifyBundleAuthor expects. Mirrors the
+  // k8s side's gitParanoidEnv. Echoed here so open-session.test.ts can
+  // assert the spawned child saw them.
+  GIT_CONFIG_NOSYSTEM: process.env.GIT_CONFIG_NOSYSTEM ?? null,
+  GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL ?? null,
+  GIT_TERMINAL_PROMPT: process.env.GIT_TERMINAL_PROMPT ?? null,
+  GIT_AUTHOR_NAME: process.env.GIT_AUTHOR_NAME ?? null,
+  GIT_AUTHOR_EMAIL: process.env.GIT_AUTHOR_EMAIL ?? null,
+  GIT_COMMITTER_NAME: process.env.GIT_COMMITTER_NAME ?? null,
+  GIT_COMMITTER_EMAIL: process.env.GIT_COMMITTER_EMAIL ?? null,
+  GIT_CONFIG_COUNT: process.env.GIT_CONFIG_COUNT ?? null,
+  GIT_CONFIG_KEY_0: process.env.GIT_CONFIG_KEY_0 ?? null,
+  GIT_CONFIG_VALUE_0: process.env.GIT_CONFIG_VALUE_0 ?? null,
 };
 process.stdout.write(JSON.stringify(env) + '\n');
 

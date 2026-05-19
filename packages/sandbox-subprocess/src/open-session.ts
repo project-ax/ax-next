@@ -377,6 +377,33 @@ export async function openSessionImpl(
     // so the SDK's transcript jsonl writes still land inside the workspace.
     HOME: homeDir,
     CLAUDE_CONFIG_DIR: claudeConfigDir,
+    // Git author/committer identity for the runner's turn-end commits.
+    // Mirrors the k8s side's gitParanoidEnv (sandbox-k8s/pod-spec.ts) so the
+    // host's `verifyBundleAuthor` accepts the bundle regardless of which
+    // sandbox provider produced it — without this, git falls through to the
+    // host operator's ~/.gitconfig and every subprocess chat fails at the
+    // turn boundary with `expected ax-runner <ax-runner@example.com>`.
+    //
+    // HOME deliberately diverges between providers: subprocess uses the
+    // per-session tempdir set above; k8s pins `/home/runner` (a tmpfs
+    // mount). Don't unify them — the path only has to exist and be writable
+    // by the runner, and the provider already picked the right one.
+    //
+    // safe.directory=* is defense-in-depth here. Subprocess's workspaceRoot
+    // is usually owned by the same uid running the runner so git's
+    // "dubious ownership" guard wouldn't fire today; the env stamp keeps
+    // parity with k8s and hardens against future bind-mount / permission
+    // scenarios.
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_AUTHOR_NAME: 'ax-runner',
+    GIT_AUTHOR_EMAIL: 'ax-runner@example.com',
+    GIT_COMMITTER_NAME: 'ax-runner',
+    GIT_COMMITTER_EMAIL: 'ax-runner@example.com',
+    GIT_CONFIG_COUNT: '1',
+    GIT_CONFIG_KEY_0: 'safe.directory',
+    GIT_CONFIG_VALUE_0: '*',
   };
 
   // credential-proxy env. When the orchestrator handed us a `proxyConfig`,
