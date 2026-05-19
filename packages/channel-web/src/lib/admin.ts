@@ -127,9 +127,15 @@ export async function patchAgentSkillAttachments(
 
 export interface McpServerInput {
   name: string;
-  url: string;
-  transport: 'http' | 'stdio' | 'sse';
-  credentials_id?: string;
+  transport: 'http' | 'stdio' | 'sse' | 'streamable-http';
+  // stdio fields
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  credentialRefs?: Record<string, string>;
+  // http/sse/streamable-http fields
+  url?: string;
+  headerCredentialRefs?: Record<string, string>;
 }
 
 export async function listMcpServers(): Promise<McpServer[]> {

@@ -1,5 +1,5 @@
 /**
- * McpServerForm — admin CRUD for MCP servers (Task 23).
+ * McpServerForm — admin CRUD for MCP servers (Task 23 / Task 12).
  *
  * Mirrors AgentForm's list+form shape:
  *
@@ -18,8 +18,16 @@
  *
  * Test status is stored per-row in a `Record<id, status>` map so multiple
  * rows can be tested independently without one clobbering another's badge.
+ *
+ * Task 12 replaces the old `credentials_id` field with per-env/per-header
+ * CredentialSlotRow lists, matching the real @ax/mcp-client ServerConfig
+ * schema (`credentialRefs` for stdio, `headerCredentialRefs` for http
+ * transports). The `initialConfig` prop accepts an optional
+ * McpServerConfig-shaped object for testability — when provided the form
+ * opens immediately in "edit" mode, bypassing the list view.
  */
 import { useEffect, useState } from 'react';
+import { Plus, Trash2 } from 'lucide-react';
 import {
   listMcpServers,
   createMcpServer,
@@ -28,36 +36,122 @@ import {
   testMcpServer,
 } from '../../lib/admin';
 import type { McpServerInput } from '../../lib/admin';
-import type { McpServer } from '../../../mock/admin/mcp-servers';
+import type { McpServer, McpServerConfig } from '../../../mock/admin/mcp-servers';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card } from '@/components/ui/card';
 import { RoleCard } from './RoleCard';
 import { StatusDot } from './StatusDot';
+import { CredentialSlotRow } from '../credentials/CredentialSlotRow';
+import { refForDestination } from '@/lib/credentials';
 
-const TRANSPORTS: McpServerInput['transport'][] = ['http', 'stdio', 'sse'];
+const TRANSPORTS: McpServerInput['transport'][] = [
+  'stdio',
+  'streamable-http',
+  'sse',
+  'http',
+];
+
+const HTTP_TRANSPORTS: McpServerInput['transport'][] = [
+  'http',
+  'sse',
+  'streamable-http',
+];
+
+function buildEnvBindings(
+  serverId: string,
+  envNames: string[],
+): Record<string, string> {
+  return Object.fromEntries(
+    envNames.map((name) => [
+      name,
+      refForDestination({ kind: 'mcp-env', serverId, envName: name }),
+    ]),
+  );
+}
+
+function buildHeaderBindings(
+  serverId: string,
+  headerNames: string[],
+): Record<string, string> {
+  return Object.fromEntries(
+    headerNames.map((name) => [
+      name,
+      refForDestination({ kind: 'mcp-header', serverId, headerName: name }),
+    ]),
+  );
+}
+
+type FormTransport = McpServerInput['transport'];
 
 type FormState = {
   name: string;
+  transport: FormTransport;
+  // stdio fields
+  command: string;
+  args: string; // space-separated
+  envNames: string[]; // each env var name becomes a credential slot
+  // http/sse/streamable-http fields
   url: string;
-  transport: McpServerInput['transport'];
-  credentials_id: string;
+  headerNames: string[]; // each header name becomes a credential slot
 };
 
 const emptyForm = (): FormState => ({
   name: '',
+  transport: 'stdio',
+  command: '',
+  args: '',
+  envNames: [],
   url: '',
-  transport: 'http',
-  credentials_id: '',
+  headerNames: [],
 });
 
-const formFromServer = (s: McpServer): FormState => ({
-  name: s.name,
-  url: s.url,
-  transport: s.transport,
-  credentials_id: s.credentials_id ?? '',
-});
+/** Derive initial form state from an existing McpServerConfig (for edit mode). */
+function formFromConfig(cfg: McpServerConfig): FormState {
+  if (cfg.transport === 'stdio') {
+    // Env names: union of plain env keys and credentialRefs keys
+    const envNames = Array.from(
+      new Set([
+        ...Object.keys(cfg.env ?? {}),
+        ...Object.keys(cfg.credentialRefs ?? {}),
+      ]),
+    );
+    return {
+      name: cfg.id,
+      transport: 'stdio',
+      command: cfg.command,
+      args: (cfg.args ?? []).join(' '),
+      envNames,
+      url: '',
+      headerNames: [],
+    };
+  }
+  // http / sse / streamable-http
+  const headerNames = Object.keys(cfg.headerCredentialRefs ?? {});
+  return {
+    name: cfg.id,
+    transport: cfg.transport,
+    command: '',
+    args: '',
+    envNames: [],
+    url: cfg.url,
+    headerNames,
+  };
+}
+
+/** Derive initial form state from a flat McpServer (list-mode record). */
+function formFromServer(s: McpServer): FormState {
+  return {
+    name: s.name,
+    transport: s.transport,
+    command: '',
+    args: '',
+    envNames: [],
+    url: s.url,
+    headerNames: [],
+  };
+}
 
 type TestStatus = 'idle' | 'testing' | 'ok' | string;
 
@@ -70,10 +164,25 @@ const testStatusToVariant = (
   return 'bad';
 };
 
-export function McpServerForm() {
+export interface McpServerFormProps {
+  /** When provided the form opens immediately in edit mode, bypassing the
+   *  list view. Intended for tests and deep-link scenarios. */
+  initialConfig?: McpServerConfig;
+}
+
+export function McpServerForm({ initialConfig }: McpServerFormProps = {}) {
   const [servers, setServers] = useState<McpServer[]>([]);
-  const [editing, setEditing] = useState<McpServer | 'new' | null>(null);
-  const [form, setForm] = useState<FormState>(() => emptyForm());
+  const [editing, setEditing] = useState<McpServer | 'new' | null>(
+    initialConfig != null ? ('new' as const) : null,
+  );
+  const [form, setForm] = useState<FormState>(() =>
+    initialConfig != null ? formFromConfig(initialConfig) : emptyForm(),
+  );
+  // serverId is the id used for computing refs. For "new" it's empty until
+  // the user fills the name; for edits it's the existing server id.
+  const [serverId, setServerId] = useState<string>(
+    initialConfig != null ? initialConfig.id : '',
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [testStatus, setTestStatus] = useState<Record<string, TestStatus>>({});
@@ -88,18 +197,26 @@ export function McpServerForm() {
   };
 
   useEffect(() => {
+    // Skip the initial list fetch when driven by initialConfig (test/deep-link mode).
+    if (initialConfig != null) return;
     void refresh();
-  }, []);
+    // `refresh` is stable (defined inside the component but doesn't close
+    // over any state that changes after mount). `initialConfig` is a prop
+    // that is intentionally read only at mount time — the list view is not
+    // supported when initialConfig is provided.
+  }, []); // mount-only: intentional
 
   const startNew = () => {
     setError(null);
     setForm(emptyForm());
+    setServerId('');
     setEditing('new');
   };
 
   const startEdit = (s: McpServer) => {
     setError(null);
     setForm(formFromServer(s));
+    setServerId(s.id);
     setEditing(s);
   };
 
@@ -108,6 +225,8 @@ export function McpServerForm() {
     setError(null);
   };
 
+  const isHttpTransport = HTTP_TRANSPORTS.includes(form.transport);
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (busy) return;
@@ -115,20 +234,41 @@ export function McpServerForm() {
       setError('name is required');
       return;
     }
-    if (!form.url.trim()) {
-      setError('url is required');
+    if (isHttpTransport && !form.url.trim()) {
+      setError('url is required for http transports');
+      return;
+    }
+    if (!isHttpTransport && !form.command.trim()) {
+      setError('command is required for stdio transport');
       return;
     }
     setBusy(true);
     setError(null);
-    const payload: McpServerInput = {
-      name: form.name.trim(),
-      url: form.url.trim(),
-      transport: form.transport,
-      ...(form.credentials_id.trim()
-        ? { credentials_id: form.credentials_id.trim() }
-        : {}),
-    };
+
+    const id = serverId || form.name.trim().toLowerCase().replace(/[^a-z0-9._-]/g, '-');
+
+    let payload: McpServerInput;
+    if (isHttpTransport) {
+      payload = {
+        name: form.name.trim(),
+        transport: form.transport,
+        url: form.url.trim(),
+        ...(form.headerNames.length > 0
+          ? { headerCredentialRefs: buildHeaderBindings(id, form.headerNames) }
+          : {}),
+      };
+    } else {
+      payload = {
+        name: form.name.trim(),
+        transport: form.transport,
+        command: form.command.trim(),
+        args: form.args.trim() ? form.args.trim().split(/\s+/) : [],
+        ...(form.envNames.length > 0
+          ? { credentialRefs: buildEnvBindings(id, form.envNames) }
+          : {}),
+      };
+    }
+
     try {
       if (editing === 'new') {
         await createMcpServer(payload);
@@ -181,6 +321,47 @@ export function McpServerForm() {
     if (status === 'ok') return 'ok';
     return status;
   };
+
+  // ── Env var / header name list helpers ────────────────────────────────
+
+  const addEnvName = () =>
+    setForm((f) => ({ ...f, envNames: [...f.envNames, ''] }));
+
+  const setEnvName = (idx: number, value: string) =>
+    setForm((f) => {
+      const next = [...f.envNames];
+      next[idx] = value;
+      return { ...f, envNames: next };
+    });
+
+  const removeEnvName = (idx: number) =>
+    setForm((f) => ({
+      ...f,
+      envNames: f.envNames.filter((_, i) => i !== idx),
+    }));
+
+  const addHeaderName = () =>
+    setForm((f) => ({ ...f, headerNames: [...f.headerNames, ''] }));
+
+  const setHeaderName = (idx: number, value: string) =>
+    setForm((f) => {
+      const next = [...f.headerNames];
+      next[idx] = value;
+      return { ...f, headerNames: next };
+    });
+
+  const removeHeaderName = (idx: number) =>
+    setForm((f) => ({
+      ...f,
+      headerNames: f.headerNames.filter((_, i) => i !== idx),
+    }));
+
+  // The effective server id for ref computation — use the existing server id
+  // for edits, or derive a slug from the current name for new ones.
+  const effectiveServerId =
+    serverId ||
+    form.name.trim().toLowerCase().replace(/[^a-z0-9._-]/g, '-') ||
+    'new';
 
   // ── List view ──────────────────────────────────────────────────────────
   if (editing === null) {
@@ -288,20 +469,6 @@ export function McpServerForm() {
             />
           </div>
 
-          {/* URL */}
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="mcp-url">URL</Label>
-            <Input
-              id="mcp-url"
-              type="text"
-              value={form.url}
-              onChange={(e) =>
-                setForm((f) => ({ ...f, url: e.target.value }))
-              }
-              required
-            />
-          </div>
-
           {/* Transport */}
           <div className="flex flex-col gap-2">
             <Label htmlFor="mcp-transport">Transport</Label>
@@ -312,7 +479,7 @@ export function McpServerForm() {
               onChange={(e) =>
                 setForm((f) => ({
                   ...f,
-                  transport: e.target.value as McpServerInput['transport'],
+                  transport: e.target.value as FormTransport,
                 }))
               }
             >
@@ -324,19 +491,172 @@ export function McpServerForm() {
             </select>
           </div>
 
-          {/* Credentials ID */}
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="mcp-credentials">Credentials ID</Label>
-            <Input
-              id="mcp-credentials"
-              type="text"
-              placeholder="optional"
-              value={form.credentials_id}
-              onChange={(e) =>
-                setForm((f) => ({ ...f, credentials_id: e.target.value }))
-              }
-            />
-          </div>
+          {/* Stdio-specific fields */}
+          {!isHttpTransport && (
+            <>
+              <div className="flex flex-col gap-2">
+                <Label htmlFor="mcp-command">Command</Label>
+                <Input
+                  id="mcp-command"
+                  type="text"
+                  placeholder="e.g. mcp-github"
+                  value={form.command}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, command: e.target.value }))
+                  }
+                  required
+                />
+              </div>
+
+              <div className="flex flex-col gap-2">
+                <Label htmlFor="mcp-args">Args (space-separated)</Label>
+                <Input
+                  id="mcp-args"
+                  type="text"
+                  placeholder="optional"
+                  value={form.args}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, args: e.target.value }))
+                  }
+                />
+              </div>
+
+              {/* Env var credential slots (stdio) */}
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center justify-between">
+                  <Label>Env vars (credential slots)</Label>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={addEnvName}
+                  >
+                    <Plus className="h-3.5 w-3.5 mr-1" />
+                    Add env var
+                  </Button>
+                </div>
+                {form.envNames.length === 0 && (
+                  <p className="text-xs text-muted-foreground">
+                    No env vars declared. Each declared env var name becomes a
+                    credential slot the operator must fill.
+                  </p>
+                )}
+                <div className="space-y-1 divide-y divide-border">
+                  {form.envNames.map((name, idx) => (
+                    <div key={idx} className="pt-1">
+                      <div className="flex items-center gap-2 mb-1">
+                        <Input
+                          aria-label={`Env var name ${idx + 1}`}
+                          type="text"
+                          className="h-7 text-xs font-mono"
+                          placeholder="VAR_NAME"
+                          value={name}
+                          onChange={(e) => setEnvName(idx, e.target.value)}
+                        />
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => removeEnvName(idx)}
+                          aria-label={`Remove env var ${name || idx + 1}`}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                      {name.trim() && (
+                        <CredentialSlotRow
+                          destination={{
+                            kind: 'mcp-env',
+                            serverId: effectiveServerId,
+                            envName: name.trim(),
+                          }}
+                          slot={{ label: name.trim(), kind: 'api-key' }}
+                          scope={{ scope: 'global', ownerId: null }}
+                        />
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* HTTP-specific fields */}
+          {isHttpTransport && (
+            <>
+              <div className="flex flex-col gap-2">
+                <Label htmlFor="mcp-url">URL</Label>
+                <Input
+                  id="mcp-url"
+                  type="text"
+                  placeholder="https://..."
+                  value={form.url}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, url: e.target.value }))
+                  }
+                  required
+                />
+              </div>
+
+              {/* Header credential slots (http) */}
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center justify-between">
+                  <Label>Headers (credential slots)</Label>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={addHeaderName}
+                  >
+                    <Plus className="h-3.5 w-3.5 mr-1" />
+                    Add header
+                  </Button>
+                </div>
+                {form.headerNames.length === 0 && (
+                  <p className="text-xs text-muted-foreground">
+                    No headers declared. Each declared header name becomes a
+                    credential slot the operator must fill.
+                  </p>
+                )}
+                <div className="space-y-1 divide-y divide-border">
+                  {form.headerNames.map((name, idx) => (
+                    <div key={idx} className="pt-1">
+                      <div className="flex items-center gap-2 mb-1">
+                        <Input
+                          aria-label={`Header name ${idx + 1}`}
+                          type="text"
+                          className="h-7 text-xs font-mono"
+                          placeholder="Authorization"
+                          value={name}
+                          onChange={(e) => setHeaderName(idx, e.target.value)}
+                        />
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => removeHeaderName(idx)}
+                          aria-label={`Remove header ${name || idx + 1}`}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                      {name.trim() && (
+                        <CredentialSlotRow
+                          destination={{
+                            kind: 'mcp-header',
+                            serverId: effectiveServerId,
+                            headerName: name.trim(),
+                          }}
+                          slot={{ label: name.trim(), kind: 'api-key' }}
+                          scope={{ scope: 'global', ownerId: null }}
+                        />
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
 
           {error && (
             <div

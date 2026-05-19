@@ -7,8 +7,7 @@ export interface McpServer {
   id: string;
   name: string;
   url: string;
-  transport: 'http' | 'stdio' | 'sse';
-  credentials_id?: string;
+  transport: 'http' | 'stdio' | 'sse' | 'streamable-http';
   created_at: number;
   updated_at: number;
 }
@@ -16,9 +15,47 @@ export interface McpServer {
 export interface McpServerInput {
   name?: string;
   url?: string;
-  transport?: 'http' | 'stdio' | 'sse';
-  credentials_id?: string;
+  transport?: 'http' | 'stdio' | 'sse' | 'streamable-http';
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  credentialRefs?: Record<string, string>;
+  headerCredentialRefs?: Record<string, string>;
 }
+
+/**
+ * Typed union matching the real @ax/mcp-client McpServerConfig schema.
+ * Duplicated here (not imported) because @ax/mcp-client is not a
+ * channel-web dependency — plugins communicate through the hook bus, not
+ * via cross-package imports (CLAUDE.md invariant 2).
+ */
+export type McpServerConfig =
+  | {
+      id: string;
+      enabled: boolean;
+      transport: 'stdio';
+      command: string;
+      args: string[];
+      env?: Record<string, string>;
+      credentialRefs?: Record<string, string>;
+      ownerId: string | null;
+    }
+  | {
+      id: string;
+      enabled: boolean;
+      transport: 'streamable-http';
+      url: string;
+      headerCredentialRefs?: Record<string, string>;
+      ownerId: string | null;
+    }
+  | {
+      id: string;
+      enabled: boolean;
+      transport: 'sse';
+      url: string;
+      headerCredentialRefs?: Record<string, string>;
+      ownerId: string | null;
+    };
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   let raw = '';
@@ -57,7 +94,7 @@ function newMcpId(): string {
   return `mcp-${ts}-${rand}`;
 }
 
-const VALID_TRANSPORTS = new Set(['http', 'stdio', 'sse']);
+const VALID_TRANSPORTS = new Set(['http', 'stdio', 'sse', 'streamable-http']);
 
 export function adminMcpServersMiddleware(
   store: Store,
@@ -85,7 +122,7 @@ export function adminMcpServersMiddleware(
 
     if (path === '/api/admin/mcp-servers' && method === 'POST') {
       const body = (await readJsonBody(req)) as McpServerInput;
-      if (!body.name || !body.url || !body.transport || !VALID_TRANSPORTS.has(body.transport)) {
+      if (!body.name || !body.transport || !VALID_TRANSPORTS.has(body.transport)) {
         send(res, 400, { error: 'missing or invalid fields' });
         return true;
       }
@@ -93,9 +130,8 @@ export function adminMcpServersMiddleware(
       const server: McpServer = {
         id: newMcpId(),
         name: body.name,
-        url: body.url,
+        url: body.url ?? '',
         transport: body.transport,
-        ...(body.credentials_id !== undefined ? { credentials_id: body.credentials_id } : {}),
         created_at: now,
         updated_at: now,
       };
@@ -132,7 +168,6 @@ export function adminMcpServersMiddleware(
           ...(body.name !== undefined ? { name: body.name } : {}),
           ...(body.url !== undefined ? { url: body.url } : {}),
           ...(body.transport !== undefined ? { transport: body.transport } : {}),
-          ...(body.credentials_id !== undefined ? { credentials_id: body.credentials_id } : {}),
           updated_at: Math.max(Date.now(), existing.updated_at + 1),
         };
         servers.upsert(next);
