@@ -21,6 +21,7 @@
     { "path": "../database-postgres" },
     { "path": "../onboarding" },
     { "path": "../sandbox-subprocess" },
+    { "path": "../workspace-git" },
     { "path": "../session-inmemory" },
     { "path": "../ipc-server" },
     { "path": "../chat-orchestrator" },
