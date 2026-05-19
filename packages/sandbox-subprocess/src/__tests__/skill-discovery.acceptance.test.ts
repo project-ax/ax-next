@@ -16,10 +16,15 @@ import type { OpenSessionResult } from '../open-session.js';
 //
 //   1. Writing a workspace-authored skill at `.ax/skills/canary-skill/SKILL.md`
 //      (the host-owned location).
-//   2. Opening a sandbox session against that workspace.
-//   3. Having the spawned echo-stub act as the SDK would: readlink the
-//      symlink the sandbox just created at `<workspace>/.claude/skills`,
-//      and read the SKILL.md file through that symlink. The stub also
+//   2. Laying down `<workspace>/.claude/skills → ../.ax/skills` — the
+//      shape the runner's `scaffoldWorkspaceSkillSurface` produces after
+//      `materializeWorkspace`. Echo-stub doesn't run materialize, so we
+//      reproduce the runner's post-materialize on-disk shape directly
+//      from the test. The host side stopped doing this in mirror-of-PR
+//      #99 (it collided with the runner's `git clone` of the bundle).
+//   3. Opening a sandbox session against that workspace.
+//   4. Having the spawned echo-stub act as the SDK would: readlink the
+//      symlink and read the SKILL.md file through it. The stub also
 //      stats `$CLAUDE_CONFIG_DIR/skills/` (the empty install target).
 //
 // If any of these probes fail, the SDK booting in this child would not
@@ -174,10 +179,20 @@ describe('Phase 0: SDK skill discovery acceptance', () => {
       await fs.mkdir(canaryDir, { recursive: true });
       await fs.writeFile(path.join(canaryDir, 'SKILL.md'), CANARY_SKILL_BODY);
 
+      // 2. Lay down `.claude/skills → ../.ax/skills`. In production the
+      //    runner main does this via `scaffoldWorkspaceSkillSurface` right
+      //    after `materializeWorkspace` (see PR #99). Echo-stub never
+      //    calls materialize, so we reproduce the post-materialize shape
+      //    here. The two-line setup is the contract under test: if the
+      //    on-disk shape matches, the SDK's `'project'` source resolves.
+      await fs.mkdir(path.join(ws, '.claude'), { recursive: true });
+      await fs.symlink('../.ax/skills', path.join(ws, '.claude', 'skills'));
+
       const h = await makeHarness();
       const ctx = h.ctx();
-      // 2. Open the sandbox. open-session creates `.claude/skills` → `../.ax/skills`
-      //    and allocates a per-session HOME with `$CLAUDE_CONFIG_DIR/skills/`.
+      // 3. Open the sandbox. open-session allocates a per-session HOME
+      //    with `$CLAUDE_CONFIG_DIR/skills/` and leaves the workspace
+      //    untouched (the scaffold above is the only `.claude` content).
       result = await h.bus.call<unknown, OpenSessionResult>(
         'sandbox:open-session',
         ctx,
