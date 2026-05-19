@@ -51,15 +51,25 @@ export async function getSkill(skillId: string): Promise<SkillDetail> {
 /**
  * Create a skill from a full SKILL.md string (frontmatter fence + body).
  * The server splits the fence and validates the manifest.
+ *
+ * `opts.defaultAttached` flips the skill onto every agent at session-open
+ * (admin-only). Skills declaring credential slots cannot be default-attached;
+ * the server rejects such writes with `default-attached-requires-no-credentials`.
  */
 export async function upsertSkill(
   skillMd: string,
+  opts?: { defaultAttached?: boolean },
 ): Promise<{ skillId: string; created: boolean }> {
   const res = await fetch('/admin/skills', {
     method: 'POST',
     headers: writeHeaders,
     credentials: 'include',
-    body: JSON.stringify({ skillMd }),
+    body: JSON.stringify({
+      skillMd,
+      ...(opts?.defaultAttached !== undefined
+        ? { defaultAttached: opts.defaultAttached }
+        : {}),
+    }),
   });
   return (await handleResponse(res)) as { skillId: string; created: boolean };
 }
@@ -71,12 +81,18 @@ export async function upsertSkill(
 export async function updateSkill(
   skillId: string,
   skillMd: string,
+  opts?: { defaultAttached?: boolean },
 ): Promise<{ skillId: string; created: boolean }> {
   const res = await fetch(`/admin/skills/${encodeURIComponent(skillId)}`, {
     method: 'PUT',
     headers: writeHeaders,
     credentials: 'include',
-    body: JSON.stringify({ skillMd }),
+    body: JSON.stringify({
+      skillMd,
+      ...(opts?.defaultAttached !== undefined
+        ? { defaultAttached: opts.defaultAttached }
+        : {}),
+    }),
   });
   return (await handleResponse(res)) as { skillId: string; created: boolean };
 }

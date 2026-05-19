@@ -14,6 +14,8 @@ export type {
   SkillsDeleteOutput,
   SkillsResolveInput,
   SkillsResolveOutput,
+  SkillsListDefaultsInput,
+  SkillsListDefaultsOutput,
 } from './types.js';
 
 export { parseSkillManifest } from './manifest.js';

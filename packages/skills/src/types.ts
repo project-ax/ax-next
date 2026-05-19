@@ -22,6 +22,7 @@ export interface SkillSummary {
   description: string;
   version: number;
   capabilities: SkillCapabilities;
+  defaultAttached: boolean;
   updatedAt: string;
 }
 
@@ -50,6 +51,7 @@ export type SkillsGetOutput = SkillDetail;
 export interface SkillsUpsertInput {
   manifestYaml: string;
   bodyMd: string;
+  defaultAttached?: boolean;
 }
 export interface SkillsUpsertOutput {
   skillId: string;
@@ -65,5 +67,10 @@ export interface SkillsResolveInput {
   skillIds: string[];
 }
 export interface SkillsResolveOutput {
+  skills: ResolvedSkill[];
+}
+
+export type SkillsListDefaultsInput = Record<string, never>;
+export interface SkillsListDefaultsOutput {
   skills: ResolvedSkill[];
 }

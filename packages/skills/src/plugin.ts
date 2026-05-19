@@ -14,6 +14,8 @@ import type {
   SkillsDeleteOutput,
   SkillsGetInput,
   SkillsGetOutput,
+  SkillsListDefaultsInput,
+  SkillsListDefaultsOutput,
   SkillsListInput,
   SkillsListOutput,
   SkillsResolveInput,
@@ -53,6 +55,7 @@ export function createSkillsPlugin(): Plugin {
         'skills:upsert',
         'skills:delete',
         'skills:resolve',
+        'skills:list-defaults',
       ],
       calls: ['database:get-instance', 'http:register-route', 'auth:require-user'],
       subscribes: [],
@@ -123,12 +126,26 @@ export function createSkillsPlugin(): Plugin {
               message: parsed.message,
             });
           }
+          // I-S2: default-attached skills are instruction-only in v1. Credential
+          // slots imply per-agent bindings, which "everyone gets this" cannot
+          // supply. Loud rejection at the host so the admin sees the cause.
+          if (
+            input.defaultAttached === true &&
+            parsed.value.capabilities.credentials.length > 0
+          ) {
+            throw new PluginError({
+              code: 'default-attached-requires-no-credentials',
+              plugin: PLUGIN_NAME,
+              message: `skill '${parsed.value.id}' declares credential slots; default-attached skills must be instruction-only`,
+            });
+          }
           const r = await store.upsert({
             id: parsed.value.id,
             description: parsed.value.description,
             manifestYaml: input.manifestYaml,
             bodyMd: input.bodyMd,
             version: parsed.value.version,
+            defaultAttached: input.defaultAttached ?? false,
           });
           return { skillId: parsed.value.id, created: r.created };
         },
@@ -163,6 +180,12 @@ export function createSkillsPlugin(): Plugin {
         'skills:resolve',
         PLUGIN_NAME,
         async (_ctx, input) => ({ skills: await store.resolve(input.skillIds) }),
+      );
+
+      bus.registerService<SkillsListDefaultsInput, SkillsListDefaultsOutput>(
+        'skills:list-defaults',
+        PLUGIN_NAME,
+        async () => ({ skills: await store.getDefaults() }),
       );
 
       // Register admin HTTP routes. Atomic try/catch unwind: if any route

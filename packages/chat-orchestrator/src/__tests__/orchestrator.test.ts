@@ -2074,4 +2074,246 @@ describe('chat-orchestrator', () => {
     const openIn = proxy.state.lastOpenInput as { allowlist: string[] };
     expect(openIn.allowlist).toEqual(['api.anthropic.com']);
   });
+
+  // -----------------------------------------------------------------
+  // 2026-05-19 defaults — union of explicit attachments + defaults.
+  // -----------------------------------------------------------------
+
+  function buildDefaultsHook(opts: {
+    listDefaultsThrows?: unknown;
+    skills?: ResolvedSkill[];
+  }): { listDefaultsCalls: { count: number }; services: Record<string, ServiceHandler> } {
+    const counter = { count: 0 };
+    const services: Record<string, ServiceHandler> = {
+      'skills:list-defaults': async () => {
+        counter.count += 1;
+        if (opts.listDefaultsThrows !== undefined) throw opts.listDefaultsThrows;
+        return { skills: opts.skills ?? [] };
+      },
+    };
+    return { listDefaultsCalls: counter, services };
+  }
+
+  it('unions skills:list-defaults output into installedSkills (no explicit attachments)', async () => {
+    const proxy = buildProxyHooks();
+    const defaultSkill: ResolvedSkill = {
+      id: 'heartbeat',
+      capabilities: { allowedHosts: [], credentials: [] },
+      bodyMd: '# heartbeat\n',
+      manifestYaml: 'name: heartbeat\ndescription: hb\n',
+    };
+    const defaults = buildDefaultsHook({ skills: [defaultSkill] });
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: { ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' } },
+          // No explicit skillAttachments.
+        },
+      }),
+      openSession: makeChatEndOpenSession(busRef),
+    });
+    Object.assign(mocks.services, proxy.services, defaults.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+      ],
+    });
+    busRef.current = h.bus;
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('defaults-only-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+    expect(defaults.listDefaultsCalls.count).toBe(1);
+
+    const sandboxIn = mocks.calls.lastSandboxInput as {
+      installedSkills?: Array<{ id: string; skillMd: string }>;
+    };
+    expect(sandboxIn.installedSkills).toHaveLength(1);
+    expect(sandboxIn.installedSkills![0]!.id).toBe('heartbeat');
+  });
+
+  it('explicit attachments win on id collision (defaults filtered out for same id)', async () => {
+    const proxy = buildProxyHooks();
+    const explicitSkill: ResolvedSkill = {
+      id: 'shared',
+      capabilities: { allowedHosts: ['api.example.com'], credentials: [{ slot: 'TOK', kind: 'api-key' }] },
+      bodyMd: '# explicit body\n',
+      manifestYaml: 'name: shared\ndescription: explicit\n',
+    };
+    const defaultSameId: ResolvedSkill = {
+      id: 'shared',
+      capabilities: { allowedHosts: [], credentials: [] },
+      bodyMd: '# default body\n',
+      manifestYaml: 'name: shared\ndescription: default\n',
+    };
+    const skillsHooks = buildSkillsHooks({ skills: { shared: explicitSkill } });
+    const defaults = buildDefaultsHook({ skills: [defaultSameId] });
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: { ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' } },
+          skillAttachments: [
+            { skillId: 'shared', credentialBindings: { TOK: 'my-tok' } },
+          ],
+        },
+      }),
+      openSession: makeChatEndOpenSession(busRef),
+    });
+    Object.assign(mocks.services, proxy.services, skillsHooks.services, defaults.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+      ],
+    });
+    busRef.current = h.bus;
+
+    await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('explicit-wins-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+
+    const sandboxIn = mocks.calls.lastSandboxInput as {
+      installedSkills: Array<{ id: string; skillMd: string }>;
+    };
+    expect(sandboxIn.installedSkills).toHaveLength(1);
+    // Explicit body wins.
+    expect(sandboxIn.installedSkills[0]!.skillMd).toContain('# explicit body');
+  });
+
+  it('skips defaults entirely when skills:list-defaults service is not registered', async () => {
+    // Stripped-preset compatibility (I-S6).
+    const proxy = buildProxyHooks();
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: { ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' } },
+        },
+      }),
+      openSession: makeChatEndOpenSession(busRef),
+    });
+    Object.assign(mocks.services, proxy.services);
+    // NO defaults.services — service absent.
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+      ],
+    });
+    busRef.current = h.bus;
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('no-defaults-service-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+
+    const sandboxIn = mocks.calls.lastSandboxInput as {
+      installedSkills?: Array<{ id: string; skillMd: string }>;
+    };
+    expect(sandboxIn.installedSkills ?? []).toHaveLength(0);
+  });
+
+  it('skills:list-defaults throwing does NOT terminate the session (non-fatal, I-S5)', async () => {
+    const proxy = buildProxyHooks();
+    const defaults = buildDefaultsHook({ listDefaultsThrows: new Error('boom') });
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: { ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' } },
+        },
+      }),
+      openSession: makeChatEndOpenSession(busRef),
+    });
+    Object.assign(mocks.services, proxy.services, defaults.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+      ],
+    });
+    busRef.current = h.bus;
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('defaults-throw-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete'); // NOT terminated.
+
+    const sandboxIn = mocks.calls.lastSandboxInput as {
+      installedSkills?: Array<{ id: string; skillMd: string }>;
+    };
+    expect(sandboxIn.installedSkills ?? []).toHaveLength(0);
+  });
+
+  // 2026-05-19 defaults — end-to-end canary closing I-S7's half-wired window.
+  // Default-attached instruction-only skill flows: db row → skills:list-defaults
+  // → orchestrator union → sandbox:open-session installedSkills payload.
+  it('CANARY: default-attached instruction skill is delivered to sandbox:open-session with intact SKILL.md', async () => {
+    const proxy = buildProxyHooks();
+    const defaultSkill: ResolvedSkill = {
+      id: 'greeter',
+      capabilities: { allowedHosts: [], credentials: [] },
+      bodyMd: '# Greeter\n\nSay hi.\n',
+      manifestYaml: 'name: greeter\ndescription: Greets every agent.\nversion: 1\n',
+    };
+    const defaults = buildDefaultsHook({ skills: [defaultSkill] });
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: { ANTHROPIC_API_KEY: { ref: 'anthropic-api', kind: 'api-key' } },
+          // Critical: agent has ZERO explicit skillAttachments. The skill
+          // gets there only because it is default-attached.
+          skillAttachments: [],
+        },
+      }),
+      openSession: makeChatEndOpenSession(busRef),
+    });
+    Object.assign(mocks.services, proxy.services, defaults.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+      ],
+    });
+    busRef.current = h.bus;
+
+    await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('defaults-canary-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+
+    const sandboxIn = mocks.calls.lastSandboxInput as {
+      installedSkills: Array<{ id: string; skillMd: string }>;
+    };
+    expect(sandboxIn.installedSkills).toHaveLength(1);
+    const entry = sandboxIn.installedSkills[0]!;
+    expect(entry.id).toBe('greeter');
+    // SKILL.md framing: --- yaml --- body
+    expect(entry.skillMd).toContain('---\nname: greeter\n');
+    expect(entry.skillMd).toContain('---\n# Greeter');
+  });
 });

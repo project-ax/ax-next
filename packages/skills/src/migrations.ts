@@ -3,8 +3,10 @@ import { sql, type Kysely } from 'kysely';
 /**
  * Per-plugin migration. @ax/skills owns tables under the `skills_v1_`
  * prefix — never reach into them from another plugin (Invariant I4 — one
- * source of truth per concept). Schema version is forward-only via a
- * future `v2` side-table, never an in-place ALTER.
+ * source of truth per concept). Schema version is additive-only. New
+ * columns land via `ALTER TABLE … ADD COLUMN IF NOT EXISTS` (idempotent,
+ * forward-only). Destructive changes (drop column, rename, type change)
+ * require a new `skills_v2_*` side-table instead.
  *
  * Single table:
  *   skills_v1_skills — admin-managed installed skills (manifest YAML +
@@ -23,6 +25,11 @@ export async function runSkillsMigration<DB>(db: Kysely<DB>): Promise<void> {
       updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `.execute(db);
+
+  await sql`
+    ALTER TABLE skills_v1_skills
+      ADD COLUMN IF NOT EXISTS default_attached BOOLEAN NOT NULL DEFAULT false
+  `.execute(db);
 }
 
 /**
@@ -35,6 +42,7 @@ export interface SkillsRow {
   manifest_yaml: string;
   body_md: string;
   version: number;
+  default_attached: boolean;
   created_at: Date;
   updated_at: Date;
 }

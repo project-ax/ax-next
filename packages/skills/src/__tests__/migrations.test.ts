@@ -125,4 +125,48 @@ describe('runSkillsMigration', () => {
     }
     expect((caught as { code?: string } | undefined)?.code).toBe('23505');
   });
+
+  it('default_attached column exists with the expected default', async () => {
+    const db = makeKysely();
+    await runSkillsMigration(db);
+
+    const cols = await sql<{ column_name: string; data_type: string; column_default: string | null; is_nullable: string }>`
+      SELECT column_name, data_type, column_default, is_nullable
+        FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = 'skills_v1_skills'
+         AND column_name = 'default_attached'
+    `.execute(db);
+
+    expect(cols.rows).toHaveLength(1);
+    expect(cols.rows[0]?.data_type).toBe('boolean');
+    expect(cols.rows[0]?.is_nullable).toBe('NO');
+    // postgres normalises `DEFAULT false` to the textual literal "false".
+    expect(cols.rows[0]?.column_default).toBe('false');
+  });
+
+  it('migration is idempotent when the column already exists', async () => {
+    const db = makeKysely();
+    await runSkillsMigration(db);
+    // Run again — should not throw.
+    await runSkillsMigration(db);
+
+    // Smoke: column still readable, default holds.
+    await db
+      .insertInto('skills_v1_skills')
+      .values({
+        skill_id: 'rerun',
+        description: 'd',
+        manifest_yaml: 'name: rerun\ndescription: d\n',
+        body_md: '',
+        version: 0,
+        created_at: new Date(),
+        updated_at: new Date(),
+      })
+      .execute();
+    const rows = await db
+      .selectFrom('skills_v1_skills')
+      .select(['skill_id', 'default_attached'])
+      .execute();
+    expect(rows).toEqual([{ skill_id: 'rerun', default_attached: false }]);
+  });
 });

@@ -12,6 +12,8 @@ import type {
   SkillsDeleteOutput,
   SkillsGetInput,
   SkillsGetOutput,
+  SkillsListDefaultsInput,
+  SkillsListDefaultsOutput,
   SkillsListInput,
   SkillsListOutput,
   SkillsResolveInput,
@@ -100,6 +102,7 @@ describe('@ax/skills plugin manifest + lifecycle', () => {
         'skills:upsert',
         'skills:delete',
         'skills:resolve',
+        'skills:list-defaults',
       ],
       calls: ['database:get-instance', 'http:register-route', 'auth:require-user'],
       subscribes: [],
@@ -255,6 +258,54 @@ describe('@ax/skills service hooks (round-trip)', () => {
     }
     expect(caught).toBeInstanceOf(PluginError);
     expect((caught as PluginError).code).toBe('skill-not-found');
+  });
+
+  it('skills:list-defaults returns default-attached skills only', async () => {
+    const h = await makeHarness();
+    // Two skills, only one default-attached.
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>(
+      'skills:upsert',
+      h.ctx(),
+      {
+        manifestYaml: 'name: heartbeat\ndescription: Daily check-in.\nversion: 1\n',
+        bodyMd: '# heartbeat\n',
+        defaultAttached: true,
+      },
+    );
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>(
+      'skills:upsert',
+      h.ctx(),
+      { manifestYaml: SAMPLE_MANIFEST, bodyMd: SAMPLE_BODY },
+    );
+
+    const out = await h.bus.call<
+      SkillsListDefaultsInput,
+      SkillsListDefaultsOutput
+    >('skills:list-defaults', h.ctx(), {});
+
+    expect(out.skills.map((s) => s.id)).toEqual(['heartbeat']);
+    expect(out.skills[0]?.bodyMd).toBe('# heartbeat\n');
+  });
+
+  it('skills:upsert rejects defaultAttached=true when the manifest declares credential slots', async () => {
+    const h = await makeHarness();
+    let caught: unknown;
+    try {
+      await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>(
+        'skills:upsert',
+        h.ctx(),
+        {
+          // SAMPLE_MANIFEST has a GITHUB_TOKEN slot — not allowed as default.
+          manifestYaml: SAMPLE_MANIFEST,
+          bodyMd: SAMPLE_BODY,
+          defaultAttached: true,
+        },
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('default-attached-requires-no-credentials');
   });
 
   it('skills:delete is blocked when agents:any-attached-to-skill returns { attached: true }', async () => {

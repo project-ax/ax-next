@@ -872,7 +872,36 @@ export function createOrchestrator(
     const unionedAllowlist = [...baseAllowSet];
     const unionedCreds = baseCreds;
 
-    const installedSkillsForSandbox: InstalledSkillForSandbox[] = resolvedSkills.map((s) => ({
+    // 2026-05-19 defaults — union admin-curated default skills into the
+    // installedSkills set. Soft-coupled via hasService: stripped presets
+    // without @ax/skills no-op (I-S6). Throws are non-fatal (I-S5) — log
+    // + treat as empty; the session still opens. Explicit attachments win
+    // on id collision (I-S4) — we filter defaults by ids already present
+    // in resolvedSkills.
+    let defaultSkillsForUnion: ResolvedSkillForOrch[] = [];
+    if (bus.hasService('skills:list-defaults')) {
+      try {
+        const r = await bus.call<
+          Record<string, never>,
+          { skills: ResolvedSkillForOrch[] }
+        >('skills:list-defaults', ctx, {});
+        defaultSkillsForUnion = r.skills;
+      } catch (err) {
+        // Matches the existing `ctx.logger.warn(event, fields)` convention in
+        // this file (see e.g. proxy_close_session_failed).
+        ctx.logger.warn('skills_list_defaults_failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        defaultSkillsForUnion = [];
+      }
+    }
+    const explicitIds = new Set(resolvedSkills.map((s) => s.id));
+    const unionedSkills = [
+      ...resolvedSkills,
+      ...defaultSkillsForUnion.filter((s) => !explicitIds.has(s.id)),
+    ];
+
+    const installedSkillsForSandbox: InstalledSkillForSandbox[] = unionedSkills.map((s) => ({
       id: s.id,
       skillMd: '---\n' + s.manifestYaml + (s.manifestYaml.endsWith('\n') ? '' : '\n') + '---\n' + s.bodyMd,
     }));

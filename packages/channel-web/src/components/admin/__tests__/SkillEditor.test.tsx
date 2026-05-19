@@ -24,6 +24,7 @@ const DETAIL: SkillDetail = {
     allowedHosts: ['api.github.com'],
     credentials: [{ slot: 'GITHUB_TOKEN', kind: 'api-key', description: 'Personal access token' }],
   },
+  defaultAttached: false,
   updatedAt: '2026-05-18T10:00:00.000Z',
   bodyMd: '# GitHub API\n\nUsage details here.\n',
   manifestYaml: [
@@ -158,7 +159,7 @@ describe('SkillEditor', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Install' }));
 
     await waitFor(() => {
-      expect(mockUpsertSkill).toHaveBeenCalledWith(VALID_MD);
+      expect(mockUpsertSkill).toHaveBeenCalledWith(VALID_MD, { defaultAttached: false });
       expect(onSaved).toHaveBeenCalledTimes(1);
     });
   });
@@ -184,6 +185,7 @@ describe('SkillEditor', () => {
       expect(mockUpdateSkill).toHaveBeenCalledWith(
         'github-api',
         expect.stringContaining('name: github-api'),
+        { defaultAttached: false },
       );
       expect(onSaved).toHaveBeenCalledTimes(1);
     });
@@ -209,5 +211,115 @@ describe('SkillEditor', () => {
     await waitFor(() => {
       expect(screen.getByText('name mismatch')).toBeTruthy();
     });
+  });
+
+  it('default-attached checkbox saves the flag through upsertSkill', async () => {
+    render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
+
+    const textarea = await screen.findByRole('textbox');
+    const VALID_INSTRUCTION_ONLY = [
+      '---',
+      'name: greeter',
+      'description: A skill.',
+      '---',
+      '# Body',
+    ].join('\n');
+    fireEvent.change(textarea, { target: { value: VALID_INSTRUCTION_ONLY } });
+
+    const checkbox = await screen.findByLabelText(/default-attached/i);
+    expect(checkbox).not.toBeDisabled();
+    fireEvent.click(checkbox);
+
+    const save = screen.getByRole('button', { name: /install/i });
+    fireEvent.click(save);
+
+    await waitFor(() => {
+      expect(mockUpsertSkill).toHaveBeenCalledWith(
+        VALID_INSTRUCTION_ONLY,
+        { defaultAttached: true },
+      );
+    });
+  });
+
+  it('default-attached checkbox is disabled when the parsed manifest declares credentials', async () => {
+    render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
+
+    const textarea = await screen.findByRole('textbox');
+    fireEvent.change(textarea, { target: { value: VALID_MD } });
+    // VALID_MD already declares a MY_TOKEN credential slot — lock-out should engage.
+
+    const checkbox = await screen.findByLabelText(/default-attached/i);
+    expect(checkbox).toBeDisabled();
+  });
+
+  it('loads existing defaultAttached state on edit', async () => {
+    mockGetSkill.mockResolvedValueOnce({
+      ...DETAIL,
+      // Override to instruction-only + default-attached.
+      capabilities: { allowedHosts: [], credentials: [] },
+      manifestYaml: 'name: github-api\ndescription: Interacts with the GitHub REST API.\nversion: 1\n',
+      defaultAttached: true,
+    });
+    render(<SkillEditor skillId="github-api" onSaved={vi.fn()} onCancel={vi.fn()} />);
+
+    const checkbox = await screen.findByLabelText(/default-attached/i);
+    await waitFor(() => expect(checkbox).toBeChecked());
+  });
+
+  it('preserves checked state across a transient parse error', async () => {
+    render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
+
+    const textarea = await screen.findByRole('textbox');
+    const VALID_INSTRUCTION_ONLY = [
+      '---',
+      'name: greeter',
+      'description: A skill.',
+      '---',
+      '# Body',
+    ].join('\n');
+    fireEvent.change(textarea, { target: { value: VALID_INSTRUCTION_ONLY } });
+
+    const checkbox = await screen.findByLabelText(/default-attached/i);
+    fireEvent.click(checkbox);
+    expect(checkbox).toBeChecked();
+
+    // Mid-typing: break the YAML so parseSkillManifest fails.
+    const BROKEN_YAML = '---\nname: greeter\ndescription: : bad colon\n---\n# Body\n';
+    fireEvent.change(textarea, { target: { value: BROKEN_YAML } });
+
+    // The box is disabled while the parse is broken, but its checked
+    // state must survive — we do NOT auto-clear on transient errors.
+    await waitFor(() => expect(checkbox).toBeDisabled());
+    expect(checkbox).toBeChecked();
+
+    // Fix the YAML to a valid instruction-only manifest. The flag should
+    // still be checked.
+    fireEvent.change(textarea, { target: { value: VALID_INSTRUCTION_ONLY } });
+    await waitFor(() => expect(checkbox).not.toBeDisabled());
+    expect(checkbox).toBeChecked();
+  });
+
+  it('auto-clears the flag when the user adds credential slots', async () => {
+    render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
+
+    const textarea = await screen.findByRole('textbox');
+    const VALID_INSTRUCTION_ONLY = [
+      '---',
+      'name: greeter',
+      'description: A skill.',
+      '---',
+      '# Body',
+    ].join('\n');
+    fireEvent.change(textarea, { target: { value: VALID_INSTRUCTION_ONLY } });
+
+    const checkbox = await screen.findByLabelText(/default-attached/i);
+    fireEvent.click(checkbox);
+    expect(checkbox).toBeChecked();
+
+    // Add a credential slot — the flag must be auto-cleared.
+    fireEvent.change(textarea, { target: { value: VALID_MD } });
+
+    await waitFor(() => expect(checkbox).toBeDisabled());
+    expect(checkbox).not.toBeChecked();
   });
 });
