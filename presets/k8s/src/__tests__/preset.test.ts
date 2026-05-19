@@ -455,6 +455,37 @@ describe('@ax/preset-k8s — routines Phase B core (half-wired window closes her
   });
 });
 
+// Defaults routines-half (2026-05-19). Closes the manifest-level
+// half-wired window for I-R8 / I-R9: @ax/routines registers the four
+// new default-routine CRUD hooks and the tick loop's agents:list-ids
+// caller is satisfied by @ax/agents. Admin surface lives in
+// @ax/routines-admin-routes (still loaded in the preset).
+describe('@ax/preset-k8s — default routines (routines-half closes here)', () => {
+  it('@ax/routines registers the four routines:*-default hooks', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const routines = plugins.find((p) => p.manifest.name === '@ax/routines');
+    expect(routines, '@ax/routines plugin').toBeDefined();
+    expect(routines!.manifest.registers).toContain('routines:list-defaults');
+    expect(routines!.manifest.registers).toContain('routines:get-default');
+    expect(routines!.manifest.registers).toContain('routines:upsert-default');
+    expect(routines!.manifest.registers).toContain('routines:delete-default');
+  });
+
+  it('@ax/agents registers agents:list-ids', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const agents = plugins.find((p) => p.manifest.name === '@ax/agents');
+    expect(agents, '@ax/agents plugin').toBeDefined();
+    expect(agents!.manifest.registers).toContain('agents:list-ids');
+  });
+
+  it('@ax/routines no longer subscribes to agents:created (seed-heartbeat deleted)', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const routines = plugins.find((p) => p.manifest.name === '@ax/routines');
+    expect(routines, '@ax/routines plugin').toBeDefined();
+    expect(routines!.manifest.subscribes).not.toContain('agents:created');
+  });
+});
+
 describe('@ax/preset-k8s workspace backend selection', () => {
   // Catches the wiring gap that motivated Task 19. Before this slice, the
   // preset always pushed @ax/workspace-git regardless of config; the http
