@@ -131,6 +131,7 @@ export function writeServiceError(res: RouteResponse, err: unknown): boolean {
       'inline-secret-forbidden',
       'capability-deferred',
       'invalid-payload',
+      'default-attached-requires-no-credentials',
     ]);
     if (badRequestCodes.has(err.code)) {
       res.status(400).json({ error: err.message, code: err.code });
