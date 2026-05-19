@@ -133,6 +133,14 @@ export interface CredentialsListKindsOutput {
   kinds: Array<{ kind: string; flow: 'paste' | 'oauth' }>;
 }
 
+export type CredentialsPurgeByOwnerInput =
+  | { scope: 'user'; ownerId: string }
+  | { scope: 'agent'; ownerId: string };
+
+export interface CredentialsPurgeByOwnerOutput {
+  deleted: number;
+}
+
 // Raw envelope primitive — `(plaintext: string) → ciphertext: Uint8Array` and
 // the inverse. NOT the same shape as the credential-set envelope (which
 // JSON-wraps `kind` + `payloadB64` + metadata). Other plugins want a
@@ -227,6 +235,7 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
         'credentials:delete',
         'credentials:list',
         'credentials:list-kinds',
+        'credentials:purge-by-owner',
         'credentials:resolve:setting',
         'credentials:envelope-encrypt',
         'credentials:envelope-decrypt',
@@ -242,6 +251,7 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
         'credentials:store-blob:get',
         'credentials:store-blob:put',
         'credentials:store-blob:list',
+        'credentials:store-blob:purge-by-owner',
       ],
       subscribes: [],
     },
@@ -676,6 +686,18 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
         // — propagate as-is.
         return { plaintext: decryptWithKey(key, input.ciphertext) };
       });
+
+      bus.registerService<CredentialsPurgeByOwnerInput, CredentialsPurgeByOwnerOutput>(
+        'credentials:purge-by-owner',
+        PLUGIN_NAME,
+        async (ctx, input) => {
+          return bus.call<CredentialsPurgeByOwnerInput, CredentialsPurgeByOwnerOutput>(
+            'credentials:store-blob:purge-by-owner',
+            ctx,
+            input,
+          );
+        },
+      );
     },
   };
 }
