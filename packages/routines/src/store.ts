@@ -217,6 +217,23 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
     },
 
     async claimDue(input) {
+      // Two-branch claim:
+      //
+      // Branch 1 — workspace rows: definition_id IS NULL, claim by
+      //   next_run_at <= now, supports interval and cron.
+      //
+      // Branch 2 — default-sourced rows: definition_id IS NOT NULL,
+      //   claim by COALESCE(last_run_at, created_at) + interval <= now.
+      //   v1 supports interval only (default_routines_v1 CHECK enforces).
+      //   Excluded if:
+      //     - the source default has been edited but per-agent copy is
+      //       not yet refreshed (definition_updated_at < d.updated_at)
+      //     - a same-name workspace row exists for the same agent
+      //       (override). Workspace wins.
+      //
+      // The UPDATE keeps next_run_at NULL on default-sourced rows (CASE
+      // branch); only workspace rows advance their next_run_at by the
+      // claim window.
       const rows = await sql<{
         agent_id: string; path: string; author_user_id: string;
         name: string; description: string; spec_hash: string;
@@ -229,18 +246,49 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
         definition_id: string | null;
         definition_updated_at: Date | null;
       }>`
-        WITH due AS (
+        WITH workspace_due AS (
           SELECT agent_id, path
             FROM routines_v1_definitions
-           WHERE next_run_at IS NOT NULL
+           WHERE definition_id IS NULL
+             AND next_run_at IS NOT NULL
              AND next_run_at <= ${input.now}
              AND trigger_kind IN ('interval', 'cron')
            ORDER BY next_run_at ASC
            LIMIT ${input.limit}
            FOR UPDATE SKIP LOCKED
+        ),
+        default_due AS (
+          SELECT r.agent_id, r.path
+            FROM routines_v1_definitions r
+            JOIN default_routines_v1 d ON d.default_routine_id = r.definition_id
+           WHERE r.definition_id IS NOT NULL
+             AND d.enabled
+             AND d.trigger_kind = 'interval'
+             AND r.definition_updated_at IS NOT NULL
+             AND r.definition_updated_at >= d.updated_at
+             AND COALESCE(r.last_run_at, r.created_at)
+                 + (d.interval_seconds || ' seconds')::interval <= ${input.now}
+             AND NOT EXISTS (
+               SELECT 1 FROM routines_v1_definitions w
+                WHERE w.agent_id = r.agent_id
+                  AND w.definition_id IS NULL
+                  AND w.name = r.name
+             )
+           ORDER BY r.last_run_at NULLS FIRST
+           LIMIT ${input.limit}
+           FOR UPDATE OF r SKIP LOCKED
+        ),
+        due AS (
+          SELECT agent_id, path FROM workspace_due
+          UNION ALL
+          SELECT agent_id, path FROM default_due
         )
         UPDATE routines_v1_definitions r
-           SET next_run_at = r.next_run_at + (${input.claimWindowMinutes} || ' minutes')::interval
+           SET next_run_at = CASE
+             WHEN r.definition_id IS NULL
+               THEN r.next_run_at + (${input.claimWindowMinutes} || ' minutes')::interval
+             ELSE r.next_run_at
+           END
           FROM due
          WHERE r.agent_id = due.agent_id AND r.path = due.path
         RETURNING r.*

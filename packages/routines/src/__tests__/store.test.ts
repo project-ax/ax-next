@@ -334,6 +334,110 @@ describe('RoutinesStore default-routine CRUD', () => {
     expect(after.definition_updated_at).not.toEqual(before.definition_updated_at);
   });
 
+  it('claimDue picks up default-sourced rows whose last_run_at + interval is due', async () => {
+    const store = createRoutinesStore(db);
+
+    // Use a default with a 1-second interval.
+    const { defaultRoutineId } = await store.upsertDefault({
+      name: 'quick', description: 'd', specHash: 'h',
+      trigger: { kind: 'interval', every: '1s' }, intervalSeconds: 1,
+      activeHours: null, silenceToken: null, silenceMax: 300,
+      conversation: 'shared', promptBody: 'p', sourceMd: 's',
+    });
+
+    await store.materializeMissing({ agentIds: ['agent-x'], now: new Date() });
+    // Set last_run_at 5 seconds ago so it's due now.
+    await db.updateTable('routines_v1_definitions')
+      .set({ last_run_at: new Date(Date.now() - 5_000) })
+      .where('agent_id', '=', 'agent-x')
+      .where('definition_id', '=', defaultRoutineId)
+      .execute();
+
+    const claimed = await store.claimDue({
+      now: new Date(),
+      limit: 10,
+      claimWindowMinutes: 1,
+    });
+    expect(claimed.some((r) => r.definitionId === defaultRoutineId)).toBe(true);
+  });
+
+  it('claimDue excludes default-sourced rows shadowed by same-name workspace row', async () => {
+    const store = createRoutinesStore(db);
+
+    // Default 'quick' with a 1-second interval.
+    const { defaultRoutineId } = await store.upsertDefault({
+      name: 'quick', description: 'd', specHash: 'h',
+      trigger: { kind: 'interval', every: '1s' }, intervalSeconds: 1,
+      activeHours: null, silenceToken: null, silenceMax: 300,
+      conversation: 'shared', promptBody: 'p', sourceMd: 's',
+    });
+
+    // Materialize and make the default-sourced row computed-due.
+    await store.materializeMissing({ agentIds: ['agent-x'], now: new Date() });
+    await db.updateTable('routines_v1_definitions')
+      .set({ last_run_at: new Date(Date.now() - 5_000) })
+      .where('agent_id', '=', 'agent-x')
+      .where('definition_id', '=', defaultRoutineId)
+      .execute();
+
+    // Workspace row with same name='quick' on a different path, also due.
+    await store.upsert(baseInput({
+      agentId: 'agent-x',
+      path: '.ax/routines/quick.md',
+      name: 'quick',
+      specHash: 'h-ws',
+      trigger: { kind: 'interval' as const, every: '1s' },
+      nextRunAt: new Date(Date.now() - 1_000),
+    }));
+
+    const claimed = await store.claimDue({
+      now: new Date(),
+      limit: 10,
+      claimWindowMinutes: 1,
+    });
+    // Workspace row claimed; default-sourced row suppressed by shadow.
+    const claimedDefault = claimed.filter((r) => r.definitionId === defaultRoutineId);
+    const claimedWorkspace = claimed.filter(
+      (r) => r.agentId === 'agent-x' && r.path === '.ax/routines/quick.md',
+    );
+    expect(claimedDefault).toHaveLength(0);
+    expect(claimedWorkspace).toHaveLength(1);
+    expect(claimedWorkspace[0]!.definitionId).toBeNull();
+  });
+
+  it('claimDue excludes stale default-sourced rows (definition_updated_at < d.updated_at)', async () => {
+    const store = createRoutinesStore(db);
+
+    const { defaultRoutineId } = await store.upsertDefault({
+      name: 'quick', description: 'd', specHash: 'h',
+      trigger: { kind: 'interval', every: '1s' }, intervalSeconds: 1,
+      activeHours: null, silenceToken: null, silenceMax: 300,
+      conversation: 'shared', promptBody: 'p', sourceMd: 's',
+    });
+
+    await store.materializeMissing({ agentIds: ['agent-x'], now: new Date() });
+    // Make the per-agent row computed-due.
+    await db.updateTable('routines_v1_definitions')
+      .set({ last_run_at: new Date(Date.now() - 5_000) })
+      .where('agent_id', '=', 'agent-x')
+      .where('definition_id', '=', defaultRoutineId)
+      .execute();
+
+    // Admin bumps the default's updated_at — without refreshStale, the
+    // per-agent copy is now stale and must be skipped.
+    await db.updateTable('default_routines_v1')
+      .set({ updated_at: sql`now() + interval '1 second'` as unknown as Date })
+      .where('default_routine_id', '=', defaultRoutineId)
+      .execute();
+
+    const claimed = await store.claimDue({
+      now: new Date(),
+      limit: 10,
+      claimWindowMinutes: 1,
+    });
+    expect(claimed.some((r) => r.definitionId === defaultRoutineId)).toBe(false);
+  });
+
   it('deleteDefault cascades to per-agent rows', async () => {
     const store = createRoutinesStore(db);
 
