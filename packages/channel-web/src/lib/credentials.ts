@@ -250,6 +250,29 @@ export const myCredentials = {
 
 // Destination credential helpers -----------------------------------------
 
+/**
+ * Compute the canonical ref string for a Destination.
+ *
+ * Mirrors `refForDestination` from `@ax/credentials` without a runtime
+ * cross-plugin import (CLAUDE.md invariant 2 — plugins communicate via
+ * the hook bus; runtime cross-plugin imports are forbidden). This is a
+ * pure string computation with no side effects.
+ */
+export function refForDestination(dest: Destination): string {
+  switch (dest.kind) {
+    case 'provider':
+      return `provider:${dest.provider}`;
+    case 'skill-slot':
+      return `skill:${dest.skillId}:${dest.slot}`;
+    case 'mcp-env':
+      return `mcp:${dest.serverId}:env:${dest.envName}`;
+    case 'mcp-header':
+      return `mcp:${dest.serverId}:header:${dest.headerName}`;
+    case 'routine-hmac':
+      return `routine:${dest.agentId}:${dest.routinePath}:hmac`;
+  }
+}
+
 export async function setDestinationCredential(args: {
   destination: Destination;
   slot: { kind: 'api-key' };
