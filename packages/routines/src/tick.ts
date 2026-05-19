@@ -30,12 +30,42 @@ export type FireRoutineFn = (
 export interface TickOnceInput {
   store: RoutinesStore;
   fire: FireRoutineFn;
+  /**
+   * Returns every agent id the tick loop should consider for lazy
+   * materialization of default-sourced rows. Optional so existing
+   * callers (tests that don't exercise the defaults path) can omit it;
+   * when absent, materialize/refresh is skipped and only pre-existing
+   * rows are claimed.
+   *
+   * Plugin wiring is in plugin.ts — it adapts the `agents:list-ids`
+   * service hook into this callback shape so tick.ts stays free of
+   * HookBus imports.
+   */
+  getAgentIds?: () => Promise<string[]>;
   now: Date;
   claimBatchSize: number;
   claimWindowMinutes: number;
 }
 
 export async function runTickOnce(input: TickOnceInput): Promise<void> {
+  // Materialize + refresh BEFORE claim so newly-created agents and
+  // edited defaults are visible in the same tick.
+  //
+  // I-R10: a failure here MUST NOT crash the tick — workspace-row
+  // claims happen unconditionally below. We log to stderr and
+  // continue; the next tick will retry.
+  if (input.getAgentIds !== undefined) {
+    try {
+      const agentIds = await input.getAgentIds();
+      await input.store.materializeMissing({ agentIds, now: input.now });
+      await input.store.refreshStale({ now: input.now });
+    } catch (err) {
+      process.stderr.write(
+        `[ax/routines] materialize/refresh error: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
+  }
+
   const claimed = await input.store.claimDue({
     now: input.now,
     limit: input.claimBatchSize,
@@ -92,6 +122,13 @@ export async function runTickOnce(input: TickOnceInput): Promise<void> {
 }
 
 function computeNextRunAt(row: RoutineRow, originalNextRunAt: Date | null, now: Date): Date | null {
+  // Default-sourced rows MUST keep next_run_at NULL — the claim SQL
+  // computes due-ness from last_run_at + d.interval_seconds, and the
+  // routines_v1_default_next_run_at_chk CHECK constraint forbids a
+  // non-null next_run_at when definition_id IS NOT NULL. Returning
+  // null here keeps the row eligible for the next default-branch
+  // claim without tripping the constraint.
+  if (row.definitionId !== null) return null;
   if (row.trigger.kind === 'webhook') return null;
   const eng = engineFor(row.trigger);
   if (eng === null) return null;
@@ -112,6 +149,12 @@ function computeNextRunAt(row: RoutineRow, originalNextRunAt: Date | null, now: 
 export interface TickLoopInput {
   db: Kysely<RoutinesDatabase>;
   fire: FireRoutineFn;
+  /**
+   * Threaded straight through to `runTickOnce`. Optional for the same
+   * reason — existing tests can omit it and only exercise the
+   * workspace-row path.
+   */
+  getAgentIds?: () => Promise<string[]>;
   clock: Clock;
   signal: AbortSignal;
   tickIntervalMs: number;
@@ -140,12 +183,16 @@ export async function runTickLoop(input: TickLoopInput): Promise<void> {
       try {
         while (!input.signal.aborted) {
           try {
-            await runTickOnce({
+            const tickInput: Parameters<typeof runTickOnce>[0] = {
               store: pinnedStore, fire: input.fire,
               now: input.clock.now(),
               claimBatchSize: input.claimBatchSize,
               claimWindowMinutes: input.claimWindowMinutes,
-            });
+            };
+            if (input.getAgentIds !== undefined) {
+              tickInput.getAgentIds = input.getAgentIds;
+            }
+            await runTickOnce(tickInput);
           } catch (err) {
             process.stderr.write(
               `[ax/routines] tick error: ${err instanceof Error ? err.message : String(err)}\n`,

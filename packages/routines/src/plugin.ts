@@ -49,6 +49,7 @@ export function createRoutinesPlugin(
         'agents:resolve',
         'agents:ensure-webhook-token',
         'agents:resolve-by-webhook-token',
+        'agents:list-ids',
         'conversations:find-or-create',
         'conversations:create',
         'conversations:drop-turn',
@@ -265,9 +266,20 @@ export function createRoutinesPlugin(
         electionRetryMs: config.electionRetryMs ?? tickIntervalMs * 10,
       };
 
+      // Adapt agents:list-ids → getAgentIds callback so tick.ts stays
+      // free of HookBus imports. Failures inside the bus call surface
+      // as a thrown promise inside runTickOnce, where the I-R10 try/catch
+      // logs and continues (workspace claims still fire).
+      const getAgentIds = async (): Promise<string[]> => {
+        const r = await bus.call<Record<string, never>, { agentIds: string[] }>(
+          'agents:list-ids', initCtx, {},
+        );
+        return r.agentIds;
+      };
+
       abortCtl = new AbortController();
       void runTickLoop({
-        db: localDb, fire: fireRoutine, clock,
+        db: localDb, fire: fireRoutine, getAgentIds, clock,
         signal: abortCtl.signal,
         ...tickConfig,
       }).catch((err) => {
