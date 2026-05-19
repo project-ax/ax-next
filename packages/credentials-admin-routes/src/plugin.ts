@@ -1,8 +1,6 @@
 import { type Plugin } from '@ax/core';
 import { registerAdminCredentialsRoutes } from './admin-routes.js';
 import { registerDestinationRoutes } from './destination-routes.js';
-import { registerSettingsCredentialsRoutes } from './settings-routes.js';
-import { registerOauthRoutes } from './oauth-routes.js';
 import {
   registerProviderRoutes,
   registerProviderService,
@@ -14,23 +12,18 @@ const PLUGIN_NAME = '@ax/credentials-admin-routes';
 // ---------------------------------------------------------------------------
 // @ax/credentials-admin-routes
 //
-// Mounts two HTTP route trees on top of the credentials facade (Phase 1):
+// Mounts HTTP route trees on top of the credentials facade:
 //
-//   - /admin/credentials*    — admin-only CRUD over the full scope axis
-//                              (global / user / agent). Used by the admin UI
-//                              for shared keys + cross-user surgery.
-//   - /settings/credentials* — per-user CRUD restricted to scope='user' and
-//                              ownerId=actor.id. Used by the settings UI
-//                              every authed user gets.
+//   - /admin/credentials*             — read-only GET routes (list + kinds).
+//                                       Used by the new UI's status pill.
+//   - /admin/credentials/providers*   — provider list + validate-and-save.
+//   - /admin/credentials/destinations*— write surface for the new UI
+//                                       (Task 9). Creates/deletes credentials
+//                                       by destination ref.
 //
-// Both trees mirror the @ax/agents admin-routes pattern: duck-typed
-// req/res surface (no @ax/http-server import per Invariant I2), 64 KiB
-// body cap, zod-validated payloads, and PluginError → HTTP-status mapping.
-//
-// OAuth start/finish routes ride alongside (Phase 3): they call into
-// `credentials:oauth:stash-pending` / `:claim-pending` (the in-memory
-// state holder in @ax/credentials-oauth-pending) and the per-kind
-// `credentials:login:*` / `credentials:exchange:*` services.
+// The legacy /settings/credentials* CRUD routes and the /oauth/* routes
+// were removed in the credentials UX redesign (Task 19). Write operations
+// now go through /admin/credentials/destinations.
 // ---------------------------------------------------------------------------
 
 export function createCredentialsAdminRoutesPlugin(): Plugin {
@@ -45,22 +38,19 @@ export function createCredentialsAdminRoutesPlugin(): Plugin {
       // @ax/http-server + @ax/auth-oidc; credentials:* from @ax/credentials.
       // Topo-sort ensures all are loaded before our init runs.
       //
-      // Per-kind `credentials:login:*` and `credentials:exchange:*` are
-      // checked at runtime (bus.hasService) — declaring every kind here
-      // would couple the plugin to a static list. The OAuth start handler
-      // 400s when the kind isn't registered.
-      //
-      // `credentials:validate:*` is also checked at runtime (bus.hasService)
-      // — the validate endpoint falls back to built-in logic if not registered.
+      // `credentials:validate:*` is checked at runtime (bus.hasService)
+      // — the providers validate endpoint falls back to built-in logic if
+      // not registered.
       calls: [
         'auth:require-user',
         'http:register-route',
         'credentials:list',
         'credentials:list-kinds',
+        // credentials:set + credentials:delete are called by destination-routes
+        // and providers-routes (validate path). Listed here for manifest
+        // completeness; the actual calls live in those files.
         'credentials:set',
         'credentials:delete',
-        'credentials:oauth:stash-pending',
-        'credentials:oauth:claim-pending',
       ],
       subscribes: [],
     },
@@ -83,10 +73,6 @@ export function createCredentialsAdminRoutesPlugin(): Plugin {
         unregisterRoutes.push(
           ...(await registerAdminCredentialsRoutes(bus, initCtx)),
         );
-        unregisterRoutes.push(
-          ...(await registerSettingsCredentialsRoutes(bus, initCtx)),
-        );
-        unregisterRoutes.push(...(await registerOauthRoutes(bus, initCtx)));
         unregisterRoutes.push(
           ...(await registerProviderRoutes(bus, initCtx)),
         );
