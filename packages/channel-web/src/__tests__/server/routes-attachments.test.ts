@@ -44,6 +44,7 @@ import { registerAttachmentsRoutes } from '../../server/routes-attachments.js';
 //   4. Oversize (declared content-length) → 413
 //   5. No file part → 400
 //   6. Foreign Origin → 403 (CSRF gate)
+//   7. Hook-level cap (route's own 413 substring branch) → 413
 // ---------------------------------------------------------------------------
 
 const COOKIE_KEY = randomBytes(32);
@@ -155,6 +156,7 @@ afterAll(async () => {
 interface BootArgs {
   user: { id: string; isAdmin: boolean } | null;
   allowedOrigins?: readonly string[];
+  attachmentsConfig?: Parameters<typeof createAttachmentsPlugin>[0];
 }
 
 interface BootResult {
@@ -182,7 +184,7 @@ async function boot(args: BootArgs): Promise<BootResult> {
       // only hits store-temp (which never invokes any of them).
       createMockWorkspacePlugin(),
       conversationsGetMockPlugin(),
-      createAttachmentsPlugin({}),
+      createAttachmentsPlugin(args.attachmentsConfig ?? {}),
     ],
   });
 
@@ -331,5 +333,28 @@ describe('@ax/channel-web POST /api/attachments', () => {
     delete (headers as Record<string, string>)['x-requested-with'];
     const r = await post(booted.port, body, headers);
     expect(r.status).toBe(403);
+  });
+
+  it('7. rejects 413 attachment-too-large when attachments:store-temp rejects on hook-level cap', async () => {
+    // Configure the attachments plugin with a 1 KiB per-file cap. The
+    // framework's per-route cap stays at 25 MiB (boot's default), so a
+    // 2 KiB body sails through the framework and the route's own
+    // substring-mapping branch is the one that fires.
+    const booted = await boot({
+      user: { id: 'u1', isAdmin: false },
+      attachmentsConfig: { maxFileBytes: 1024 },
+    });
+    harnesses.push(booted.harness);
+    const { body, headers } = makeMultipart([
+      {
+        name: 'file',
+        filename: 'big.txt',
+        contentType: 'text/plain',
+        body: Buffer.alloc(2 * 1024, 0x41),
+      },
+    ]);
+    const r = await post(booted.port, body, headers);
+    expect(r.status).toBe(413);
+    expect(((await r.json()) as { error: string }).error).toBe('payload-too-large');
   });
 });

@@ -102,9 +102,26 @@ describe('validation', () => {
   });
 
   it('rejects allowedTools entry that fails the regex', () => {
+    // Whitespace breaks the regex regardless of case. Other shapes that
+    // remain invalid: leading digit, leading punctuation. PascalCase
+    // names like 'Bash' / 'Read' are accepted (SDK built-ins).
     expect(() =>
-      validateCreateInput(makeInput({ allowedTools: ['Bad-Name'] }), vctx),
+      validateCreateInput(makeInput({ allowedTools: ['Bad Name'] }), vctx),
     ).toThrow(/must match/);
+  });
+
+  it('accepts PascalCase SDK built-in tool names (Bash, Read, WebFetch, Skill)', () => {
+    // Phase 1 skill-install canary: the model needs SDK built-ins by their
+    // canonical PascalCase names. The prior strict-lowercase regex rejected
+    // them, forcing operators to either fall back to lowercase aliases (which
+    // didn't actually map to anything) or hand-edit the DB. Widened to a case-
+    // insensitive leading letter — see TOOL_NAME_RE comment.
+    expect(() =>
+      validateCreateInput(
+        makeInput({ allowedTools: ['Bash', 'Read', 'WebFetch', 'Skill'] }),
+        vctx,
+      ),
+    ).not.toThrow();
   });
 
   it('rejects mcpConfigIds entry that fails the regex', () => {

@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import * as os from 'node:os';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 
 import {
   PostgreSqlContainer,
@@ -27,6 +27,7 @@ import {
   workspaceCommitNotifyHandler,
 } from '@ax/ipc-core';
 import { createAttachmentsPlugin } from '@ax/attachments';
+import { createToolArtifactPublishPlugin } from '@ax/tool-artifact-publish';
 import { createChannelWebServerPlugin } from '@ax/channel-web/server';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createHttpServerPlugin } from '@ax/http-server';
@@ -1972,6 +1973,388 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         // The chat-messages route did dispatch agent:invoke — proves the
         // happy-path through the producer, even though our stub is a no-op.
         expect(dispatchedMessages.length).toBe(1);
+      } finally {
+        if (handle !== null) await handle.shutdown();
+        await fs.rm(workspaceRoot, { recursive: true, force: true });
+        if (originalAllowNoOrigins === undefined) {
+          delete process.env.AX_HTTP_ALLOW_NO_ORIGINS;
+        } else {
+          process.env.AX_HTTP_ALLOW_NO_ORIGINS = originalAllowNoOrigins;
+        }
+      }
+    },
+  );
+
+  // ---------------------------------------------------------------------------
+  // Phase 3 follow-up F2 — artifact_publish round-trip canary.
+  //
+  // Sibling of the attachments canary above. Same scaffolding posture: a
+  // hand-crafted plugin list (not createK8sPlugins) wired to the channel-web
+  // server. What's different:
+  //
+  //   - No multipart upload. The "artifact" file is pre-committed via
+  //     `workspace:apply` directly, mirroring what the runner's
+  //     artifact_publish tool does in production.
+  //   - The seeded jsonl carries BOTH a `tool_use` block (the model's call to
+  //     artifact_publish) AND a `tool_result` block whose `content` is a JSON
+  //     string carrying the artifact's `path`. The download ACL's
+  //     `checkPathScope` reads that JSON-encoded path and admits the file —
+  //     this is the artifact-block branch of the same ACL that the upload
+  //     canary exercises via the attachment-block branch.
+  //   - We also assert that `conversations:get` surfaces the tool_use +
+  //     tool_result blocks intact, since channel-web's MarkdownText resolves
+  //     ax://artifact/<id> links by looking up the tool_result in the
+  //     conversation history.
+  // ---------------------------------------------------------------------------
+  it(
+    'Phase 3 canary: artifact_publish round-trip via assistant tool_result + GET /api/files',
+    { timeout: 180_000 },
+    async () => {
+      const connectionString = await ensurePostgresStarted();
+      const workspaceRoot = await fs.realpath(
+        await fs.mkdtemp(path.join(os.tmpdir(), 'ax-phase-3-artifact-canary-')),
+      );
+
+      const originalAllowNoOrigins = process.env.AX_HTTP_ALLOW_NO_ORIGINS;
+      process.env.AX_HTTP_ALLOW_NO_ORIGINS = '1';
+
+      const cookieKey = randomBytes(32);
+      const http = createHttpServerPlugin({
+        host: '127.0.0.1',
+        port: 0,
+        cookieKey,
+        allowedOrigins: [],
+      });
+
+      const AUTH_STUB_NAME = '@ax/preset-k8s/test/phase-3-artifact-auth-stub';
+      const authStubPlugin: Plugin = {
+        manifest: {
+          name: AUTH_STUB_NAME,
+          version: '0.0.0',
+          registers: ['auth:require-user'],
+          calls: [],
+          subscribes: [],
+        },
+        init({ bus }) {
+          bus.registerService(
+            'auth:require-user',
+            AUTH_STUB_NAME,
+            async (_ctx: AgentContext, input) => {
+              const i = input as { req?: { headers?: Record<string, string> } };
+              const userId = i.req?.headers?.['x-test-user'];
+              if (typeof userId !== 'string' || userId.length === 0) {
+                throw new PluginError({
+                  code: 'unauthenticated',
+                  plugin: AUTH_STUB_NAME,
+                  message: 'no x-test-user header',
+                });
+              }
+              return { user: { id: userId, isAdmin: false } };
+            },
+          );
+        },
+      };
+
+      const AGENTS_STUB_NAME =
+        '@ax/preset-k8s/test/phase-3-artifact-agents-stub';
+      const agentsStubPlugin: Plugin = {
+        manifest: {
+          name: AGENTS_STUB_NAME,
+          version: '0.0.0',
+          registers: ['agents:resolve', 'agents:list-for-user'],
+          calls: [],
+          subscribes: [],
+        },
+        init({ bus }) {
+          bus.registerService(
+            'agents:resolve',
+            AGENTS_STUB_NAME,
+            async (_ctx: AgentContext, input) => {
+              const i = input as { agentId?: string; userId?: string };
+              return {
+                agent: {
+                  id: i.agentId ?? 'phase-3-artifact-agent',
+                  ownerId: i.userId ?? 'phase-3-artifact-user',
+                  ownerType: 'user' as const,
+                  visibility: 'personal' as const,
+                  displayName: 'Phase 3 artifact canary agent',
+                  systemPrompt: 'You are a helpful assistant.',
+                  allowedTools: ['artifact_publish'] as string[],
+                  mcpConfigIds: [] as string[],
+                  model: 'claude-sonnet-4-7',
+                  workspaceRef: null,
+                  allowedHosts: [] as string[],
+                  requiredCredentials: {} as Record<
+                    string,
+                    { ref: string; kind: string }
+                  >,
+                  createdAt: new Date(),
+                  updatedAt: new Date(),
+                },
+              };
+            },
+          );
+          bus.registerService(
+            'agents:list-for-user',
+            AGENTS_STUB_NAME,
+            async () => ({ agents: [] as Array<unknown> }),
+          );
+        },
+      };
+
+      const AGENT_INVOKE_STUB_NAME =
+        '@ax/preset-k8s/test/phase-3-artifact-agent-invoke-stub';
+      const agentInvokeStubPlugin: Plugin = {
+        manifest: {
+          name: AGENT_INVOKE_STUB_NAME,
+          version: '0.0.0',
+          registers: ['agent:invoke'],
+          calls: [],
+          subscribes: [],
+        },
+        init({ bus }) {
+          bus.registerService(
+            'agent:invoke',
+            AGENT_INVOKE_STUB_NAME,
+            async () => ({ kind: 'complete', messages: [] }),
+          );
+        },
+      };
+
+      // tool-artifact-publish calls `tool:register` from its init() to ship
+      // the artifact_publish descriptor into the catalog. We're not running
+      // the real runner here (agent:invoke is stubbed and the jsonl is
+      // seeded directly), so the descriptor never gets consulted — but the
+      // init call still needs a responder or bootstrap blows up. The real
+      // owner of `tool:register` is `@ax/tool-dispatcher` (via mcp-client);
+      // pulling it in would also drag in `tool:list` consumers we don't
+      // exercise. Stub the no-op contract instead.
+      const TOOL_REGISTER_STUB_NAME =
+        '@ax/preset-k8s/test/phase-3-artifact-tool-register-stub';
+      const toolRegisterStubPlugin: Plugin = {
+        manifest: {
+          name: TOOL_REGISTER_STUB_NAME,
+          version: '0.0.0',
+          registers: ['tool:register'],
+          calls: [],
+          subscribes: [],
+        },
+        init({ bus }) {
+          bus.registerService(
+            'tool:register',
+            TOOL_REGISTER_STUB_NAME,
+            async () => ({ ok: true as const }),
+          );
+        },
+      };
+
+      const plugins: Plugin[] = [
+        http,
+        createDatabasePostgresPlugin({ connectionString }),
+        createWorkspaceGitPlugin({ repoRoot: workspaceRoot }),
+        createConversationsPlugin(),
+        createAttachmentsPlugin(),
+        toolRegisterStubPlugin,
+        createToolArtifactPublishPlugin(),
+        createChannelWebServerPlugin(),
+        authStubPlugin,
+        agentsStubPlugin,
+        agentInvokeStubPlugin,
+      ];
+
+      const bus = new HookBus();
+      let handle: Awaited<ReturnType<typeof bootstrap>> | null = null;
+      try {
+        handle = await bootstrap({ bus, plugins, config: {} });
+        const port = http.boundPort();
+
+        const USER = 'phase-3-artifact-user';
+        const AGENT = 'phase-3-artifact-agent';
+        const REQUEST_ORIGIN = `http://127.0.0.1:${port}`;
+        const ARTIFACT_BYTES_TEXT = '# Summary\n\nLooks good.\n';
+        const ARTIFACT_BYTES = new TextEncoder().encode(ARTIFACT_BYTES_TEXT);
+
+        // 1. Mint a conversation via the chat-messages route. Required so the
+        // route persists the conversation row (used by attachments:download's
+        // ownership check). No attachment_ref — this canary doesn't exercise
+        // user upload, only the artifact-emission path.
+        const chatResp = await fetch(
+          `http://127.0.0.1:${port}/api/chat/messages`,
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              conversationId: null,
+              agentId: AGENT,
+              contentBlocks: [{ type: 'text', text: 'make me a summary file' }],
+            }),
+            headers: {
+              'content-type': 'application/json',
+              origin: REQUEST_ORIGIN,
+              'x-requested-with': 'ax-admin',
+              'x-test-user': USER,
+            },
+          },
+        );
+        expect(chatResp.status).toBe(202);
+        const chatJson = (await chatResp.json()) as { conversationId: string };
+        const conversationId = chatJson.conversationId;
+
+        // 2. Pre-commit the artifact file at workspace/summary.md. The
+        // workspace was fresh before the chat-messages POST; but that POST
+        // can have written nothing to the workspace (no attachment_ref).
+        // We still use parent: null on the very first apply — if the route
+        // committed anything we'd see parent-mismatch and re-probe.
+        const seedCtx = makeAgentContext({
+          sessionId: 'phase-3-artifact-canary',
+          agentId: AGENT,
+          userId: USER,
+          workspace: { rootPath: workspaceRoot },
+        });
+        const ARTIFACT_PATH = 'workspace/summary.md';
+        await bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>(
+          'workspace:apply',
+          seedCtx,
+          {
+            changes: [
+              { path: ARTIFACT_PATH, kind: 'put', content: ARTIFACT_BYTES },
+            ],
+            parent: null,
+            reason: 'phase-3 artifact canary: seed artifact file',
+          },
+        );
+
+        // 3. Bind a runnerSessionId so conversations:get exits the
+        //    short-circuit-empty branch and reads the workspace jsonl.
+        const runnerSessionId = '00000000-0000-0000-0000-00000000a3ac';
+        await bus.call<
+          ConversationsStoreRunnerSessionInput,
+          ConversationsStoreRunnerSessionOutput
+        >('conversations:store-runner-session', seedCtx, {
+          conversationId,
+          runnerSessionId,
+        });
+
+        // 4. Seed the jsonl with one user line + one assistant line. The
+        // assistant line bundles BOTH the tool_use call AND the tool_result
+        // (one assistant line, all three blocks) — parseJsonlToTurns admits
+        // any block that round-trips through ContentBlockSchema, so tool_use
+        // and tool_result both land in a single role='assistant' Turn.
+        // The tool_result's `content` is a JSON string whose `path` matches
+        // ARTIFACT_PATH — that's the artifact-block branch of checkPathScope.
+        const sha256 = createHash('sha256').update(ARTIFACT_BYTES).digest('hex');
+        const artifactResult = {
+          artifactId: 'art-canary-1',
+          downloadUrl: 'ax://artifact/art-canary-1',
+          path: ARTIFACT_PATH,
+          displayName: 'summary.md',
+          mediaType: 'text/markdown',
+          sizeBytes: ARTIFACT_BYTES.byteLength,
+          sha256,
+        };
+        const userLine = JSON.stringify({
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [{ type: 'text', text: 'make me a summary file' }],
+          },
+          uuid: 'u-1',
+          timestamp: '2026-05-19T00:00:00.000Z',
+          sessionId: runnerSessionId,
+        });
+        const assistantLine = JSON.stringify({
+          type: 'assistant',
+          message: {
+            id: 'msg-canary',
+            type: 'message',
+            role: 'assistant',
+            content: [
+              {
+                type: 'tool_use',
+                id: 'toolu_1',
+                name: 'artifact_publish',
+                input: { path: ARTIFACT_PATH, displayName: 'summary.md' },
+              },
+              {
+                type: 'tool_result',
+                tool_use_id: 'toolu_1',
+                content: JSON.stringify(artifactResult),
+              },
+              {
+                type: 'text',
+                text: 'Done. See [download](ax://artifact/art-canary-1).',
+              },
+            ],
+          },
+          uuid: 'u-2',
+          timestamp: '2026-05-19T00:00:01.000Z',
+          sessionId: runnerSessionId,
+        });
+        const jsonlPath = `.claude/projects/-permanent/${runnerSessionId}.jsonl`;
+        // Chain the jsonl apply onto the artifact-commit HEAD via parent CAS.
+        const headProbe = await bus.call<
+          { path: string },
+          | { found: true; bytes: Uint8Array; version?: string }
+          | { found: false }
+        >('workspace:read', seedCtx, { path: ARTIFACT_PATH });
+        if (!headProbe.found || headProbe.version === undefined) {
+          throw new Error(
+            'phase-3 artifact canary: failed to recover workspace version for seed apply',
+          );
+        }
+        await bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>(
+          'workspace:apply',
+          seedCtx,
+          {
+            changes: [
+              {
+                path: jsonlPath,
+                kind: 'put',
+                content: new TextEncoder().encode(
+                  userLine + '\n' + assistantLine + '\n',
+                ),
+              },
+            ],
+            parent: headProbe.version,
+            reason: 'phase-3 artifact canary: seed assistant jsonl',
+          },
+        );
+
+        // 5. GET /api/files for the artifact path → 200 + bytes match.
+        const downloadResp = await fetch(
+          `http://127.0.0.1:${port}/api/files?` +
+            new URLSearchParams({
+              path: ARTIFACT_PATH,
+              conversationId,
+            }).toString(),
+          { method: 'GET', headers: { 'x-test-user': USER } },
+        );
+        expect(downloadResp.status).toBe(200);
+        expect(await downloadResp.text()).toBe(ARTIFACT_BYTES_TEXT);
+
+        // 6. conversations:get returns the tool_use + tool_result blocks so
+        //    MarkdownText's Anchor can resolve ax://artifact/<id> links.
+        const got = await bus.call<
+          ConversationsGetInput,
+          ConversationsGetOutput
+        >('conversations:get', seedCtx, {
+          conversationId,
+          userId: USER,
+        });
+        const assistantTurn = got.turns.find((t) => t.role === 'assistant');
+        expect(assistantTurn).toBeTruthy();
+        const blocks = assistantTurn!.contentBlocks;
+        const toolUse = blocks.find(
+          (b) =>
+            b.type === 'tool_use' &&
+            (b as { name?: string }).name === 'artifact_publish',
+        );
+        const toolResult = blocks.find(
+          (b) =>
+            b.type === 'tool_result' &&
+            (b as { tool_use_id?: string }).tool_use_id === 'toolu_1',
+        );
+        expect(toolUse).toBeTruthy();
+        expect(toolResult).toBeTruthy();
       } finally {
         if (handle !== null) await handle.shutdown();
         await fs.rm(workspaceRoot, { recursive: true, force: true });

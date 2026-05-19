@@ -406,7 +406,7 @@ export function AgentForm() {
             <Label htmlFor="agent-tools">Allowed tools</Label>
             <Input
               id="agent-tools"
-              placeholder="comma, separated, names"
+              placeholder="e.g. Bash, Read, Write, Edit, artifact_publish"
               value={form.allowedTools}
               onChange={(e) =>
                 setForm((f) => ({ ...f, allowedTools: e.target.value }))

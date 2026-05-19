@@ -240,63 +240,21 @@ export async function openSessionImpl(
   const homeDir = path.join(socketDir, 'home');
   const claudeConfigDir = path.join(homeDir, '.ax', 'session');
   const installedSkillsDir = path.join(claudeConfigDir, 'skills');
-  const workspaceClaudeDir = path.join(input.workspaceRoot, '.claude');
-  const workspaceAxSkillsDir = path.join(input.workspaceRoot, '.ax', 'skills');
-  const workspaceSkillsSymlink = path.join(workspaceClaudeDir, 'skills');
   try {
     await fs.mkdir(installedSkillsDir, { recursive: true, mode: 0o755 });
 
-    // I-P0-4: narrow symlink. The SDK's `'project'` setting source walks
-    //    `<cwd>/.claude/skills/` for workspace-authored skills. We don't
-    //    want the agent to be able to drop arbitrary content directly
-    //    into `.claude/skills/` — that surface is owned by the host (so
-    //    the validator can veto). Instead, `.claude/skills/` is a symlink
-    //    that points at `.ax/skills/` (the host-controlled location);
-    //    `.claude/` itself remains a regular directory so other tooling
-    //    that expects files at `.claude/<x>` keeps working.
-    //
-    //    Symlink target is RELATIVE (`'../.ax/skills'`) so the link
-    //    resolves consistently across filesystem rebases / pod remounts
-    //    (matters for the k8s sibling more than for subprocess, but
-    //    keeping the two providers' on-disk shape identical is cheap).
-    //
-    //    Idempotency: if `.claude/skills/` already exists (stale file
-    //    from a prior session, dangling symlink, even a non-empty
-    //    directory committed by accident), drop it first. `recursive:
-    //    true` covers all three shapes — symlink, regular file, and
-    //    directory — without an extra stat round-trip. We can blow
-    //    the path away because the canonical content lives under
-    //    `.ax/skills/`; anything sitting at `.claude/skills/` is by
-    //    definition transient. `force: true` keeps the call a no-op on
-    //    ENOENT. `fs.rm` does NOT follow the link when removing it.
-    //
-    //    Concurrent-session race: two open-session calls on the same
-    //    workspace can interleave. We pre-check the existing target so
-    //    a correct symlink is left in place — that eliminates the window
-    //    where `A.rm → A.symlink → B.rm` would briefly remove a working
-    //    link out from under session A's spawning runner. If readlink
-    //    returns the expected target, we're done; otherwise (wrong
-    //    target, regular file, dir, ENOENT), fall through to the rm+
-    //    symlink path. The post-symlink EEXIST handler is the final
-    //    fallback for the A.rm → B.rm → A.symlink → B.symlink ordering
-    //    that the pre-check can't cover.
-    await fs.mkdir(workspaceClaudeDir, { recursive: true, mode: 0o755 });
-    await fs.mkdir(workspaceAxSkillsDir, { recursive: true, mode: 0o755 });
-    const existingTarget = await fs
-      .readlink(workspaceSkillsSymlink)
-      .catch(() => null);
-    if (existingTarget !== '../.ax/skills') {
-      await fs.rm(workspaceSkillsSymlink, { recursive: true, force: true });
-      try {
-        await fs.symlink('../.ax/skills', workspaceSkillsSymlink);
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
-        const raced = await fs
-          .readlink(workspaceSkillsSymlink)
-          .catch(() => null);
-        if (raced !== '../.ax/skills') throw err;
-      }
-    }
+    // I-P0-4: the `.claude/skills → ../.ax/skills` symlink that the SDK's
+    //    `'project'` setting source walks now lives on the RUNNER side
+    //    (see @ax/agent-claude-sdk-runner/git-workspace.ts's
+    //    `scaffoldWorkspaceSkillSurface`, called after
+    //    `materializeWorkspace`). Doing it here pre-spawn was the bug PR
+    //    #99 fixed for k8s: the runner's `git clone` of the materialized
+    //    workspace bundle refuses a non-empty target with
+    //    `fatal: destination path '<workspace>' already exists and is not
+    //    an empty directory`. Subprocess uses the same runner main and
+    //    the same always-bundle materialize contract, so it has the same
+    //    failure mode — even though the existing test stubs (echo-stub
+    //    short-circuits before materialize) don't surface it.
 
     // Phase 1 (skill-install): materialize installed-skill SKILL.md bodies
     // into $CLAUDE_CONFIG_DIR/skills/<id>/SKILL.md. The SDK's 'user' source

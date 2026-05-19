@@ -10,6 +10,7 @@ import {
   X,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Progress } from '@/components/ui/progress';
 import { cn } from '@/lib/utils';
 
 /**
@@ -104,18 +105,7 @@ export const AttachmentComposerChip: FC<AttachmentComposerChipProps> = ({
           {attachment.name}
         </div>
         {isUploading && progress !== null && (
-          <div
-            className="mt-0.5 h-1 w-full overflow-hidden rounded-full bg-muted"
-            role="progressbar"
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={progress}
-          >
-            <div
-              className="h-full bg-primary transition-all"
-              style={{ width: `${progress}%` }}
-            />
-          </div>
+          <Progress value={progress} className="mt-0.5 h-1 w-full" />
         )}
       </div>
       <AttachmentPrimitive.Remove asChild>
