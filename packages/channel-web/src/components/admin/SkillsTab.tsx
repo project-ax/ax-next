@@ -110,7 +110,14 @@ export function SkillsTab() {
             <TableBody>
               {skills.map((s) => (
                 <TableRow key={s.id}>
-                  <TableCell className="font-mono text-xs">{s.id}</TableCell>
+                  <TableCell className="font-mono text-xs">
+                    {s.id}
+                    {s.defaultAttached && (
+                      <Badge variant="outline" className="ml-2 text-[10px]">
+                        default
+                      </Badge>
+                    )}
+                  </TableCell>
                   <TableCell className="text-sm">{s.description}</TableCell>
                   <TableCell>
                     {s.capabilities.allowedHosts.length === 0 ? (

@@ -167,4 +167,36 @@ describe('SkillsTab', () => {
       expect(screen.getByText('skill is still attached')).toBeTruthy();
     });
   });
+
+  it('renders a "default" badge for default-attached skills', async () => {
+    mockListSkills.mockResolvedValueOnce([
+      {
+        id: 'heartbeat',
+        description: 'Daily check-in.',
+        version: 1,
+        capabilities: { allowedHosts: [], credentials: [] },
+        defaultAttached: true,
+        updatedAt: '2026-05-19T00:00:00.000Z',
+      },
+      {
+        id: 'github',
+        description: 'GitHub API.',
+        version: 1,
+        capabilities: { allowedHosts: ['api.github.com'], credentials: [{ slot: 'X', kind: 'api-key' }] },
+        defaultAttached: false,
+        updatedAt: '2026-05-19T00:00:00.000Z',
+      },
+    ]);
+
+    render(<SkillsTab />);
+
+    // The default-attached row should expose the badge text.
+    const heartbeatCell = await screen.findByText('heartbeat');
+    const heartbeatRow = heartbeatCell.closest('tr')!;
+    expect(heartbeatRow.textContent).toMatch(/default/i);
+
+    // The non-default row should not.
+    const githubRow = screen.getByText('github').closest('tr')!;
+    expect(githubRow.textContent).not.toMatch(/default/i);
+  });
 });
