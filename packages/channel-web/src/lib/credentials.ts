@@ -1,3 +1,5 @@
+import type { Destination } from '@ax/credentials';
+
 /**
  * Credentials wire client — typed wrappers around `/admin/credentials*`
  * and `/settings/credentials*`.
@@ -245,3 +247,50 @@ export const myCredentials = {
     return out.credential;
   },
 };
+
+// Destination credential helpers -----------------------------------------
+
+export async function setDestinationCredential(args: {
+  destination: Destination;
+  slot: { kind: 'api-key' };
+  scope: { scope: 'global' | 'user' | 'agent'; ownerId: string | null };
+  payload: string;
+}): Promise<void> {
+  const base = args.scope.scope === 'user' ? '/settings' : '/admin';
+  const url = `${base}/destinations/${args.destination.kind}/credential`;
+  const body = {
+    destination: args.destination,
+    scope: args.scope.scope,
+    ownerId: args.scope.ownerId,
+    kind: args.slot.kind,
+    payloadB64: btoa(args.payload),
+  };
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+  }
+}
+
+export async function clearDestinationCredential(args: {
+  destination: Destination;
+  scope: { scope: 'global' | 'user' | 'agent'; ownerId: string | null };
+}): Promise<void> {
+  const base = args.scope.scope === 'user' ? '/settings' : '/admin';
+  const url = `${base}/destinations/${args.destination.kind}/credential`;
+  const res = await fetch(url, {
+    method: 'DELETE',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      destination: args.destination,
+      scope: args.scope.scope,
+      ownerId: args.scope.ownerId,
+    }),
+  });
+  if (!res.ok && res.status !== 404) {
+    throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+  }
+}
