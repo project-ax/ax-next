@@ -278,6 +278,62 @@ describe('RoutinesStore default-routine CRUD', () => {
     expect(d?.intervalSeconds).toBe(7200);
   });
 
+  it('materializeMissing creates one row per (agent, default) pair, idempotent', async () => {
+    const store = createRoutinesStore(db);
+
+    await store.materializeMissing({ agentIds: ['agent-x'], now: new Date() });
+    const after = await db.selectFrom('routines_v1_definitions')
+      .selectAll()
+      .where('agent_id', '=', 'agent-x')
+      .where('definition_id', 'is not', null)
+      .execute();
+    // The heartbeat seed is in default_routines_v1 — exactly one row
+    // materialized for the (agent-x, heartbeat) pair.
+    expect(after).toHaveLength(1);
+    expect(after[0]?.next_run_at).toBeNull();
+    expect(after[0]?.definition_updated_at).not.toBeNull();
+    expect(after[0]?.path).toMatch(/^default:/);
+
+    // Idempotent — second call doesn't duplicate.
+    await store.materializeMissing({ agentIds: ['agent-x'], now: new Date() });
+    const again = await db.selectFrom('routines_v1_definitions')
+      .selectAll()
+      .where('agent_id', '=', 'agent-x')
+      .where('definition_id', 'is not', null)
+      .execute();
+    expect(again).toHaveLength(1);
+  });
+
+  it('refreshStale updates denormalized fields when default has changed', async () => {
+    const store = createRoutinesStore(db);
+
+    // Setup: materialize for an agent (heartbeat seed is the only default).
+    await store.materializeMissing({ agentIds: ['agent-x'], now: new Date() });
+    const before = await db.selectFrom('routines_v1_definitions')
+      .selectAll()
+      .where('agent_id', '=', 'agent-x')
+      .executeTakeFirstOrThrow();
+
+    // Admin edits the heartbeat — change prompt_body and bump updated_at.
+    await db.updateTable('default_routines_v1')
+      .set({
+        prompt_body: 'NEW PROMPT',
+        updated_at: sql`now() + interval '1 second'` as unknown as Date,
+      })
+      .where('name', '=', 'heartbeat')
+      .execute();
+
+    // Refresh.
+    await store.refreshStale({ now: new Date() });
+
+    const after = await db.selectFrom('routines_v1_definitions')
+      .selectAll()
+      .where('agent_id', '=', 'agent-x')
+      .executeTakeFirstOrThrow();
+    expect(after.prompt_body).toBe('NEW PROMPT');
+    expect(after.definition_updated_at).not.toEqual(before.definition_updated_at);
+  });
+
   it('deleteDefault cascades to per-agent rows', async () => {
     const store = createRoutinesStore(db);
 

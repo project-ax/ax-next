@@ -89,6 +89,8 @@ export interface RoutinesStore {
   getDefault(defaultRoutineId: string): Promise<DefaultRoutineDetailRow | null>;
   listDefaults(): Promise<DefaultRoutineDetailRow[]>;
   deleteDefault(defaultRoutineId: string): Promise<void>;
+  materializeMissing(input: { agentIds: string[]; now: Date }): Promise<void>;
+  refreshStale(input: { now: Date }): Promise<void>;
 }
 
 /**
@@ -391,6 +393,70 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
       await db.deleteFrom('default_routines_v1')
         .where('default_routine_id', '=', defaultRoutineId)
         .execute();
+    },
+
+    async materializeMissing(input) {
+      if (input.agentIds.length === 0) return;
+      // INSERT … SELECT cross-joins agentIds with all enabled defaults,
+      // filtering out (agent, default) pairs that already have a
+      // materialized row. ON CONFLICT (agent_id, path) DO NOTHING makes
+      // this safe under concurrent materializers — the path encodes the
+      // default id, so two materializers racing on the same agent will
+      // not duplicate.
+      //
+      // next_run_at is NULL for default-sourced rows: the claim SQL
+      // computes due-ness from last_run_at + interval, and the CHECK
+      // constraint routines_v1_default_next_run_at_chk forbids a non-null
+      // next_run_at for default_id IS NOT NULL.
+      await sql`
+        INSERT INTO routines_v1_definitions
+          (agent_id, path, author_user_id, name, description, spec_hash,
+           trigger_kind, trigger_spec, active_hours, silence_token, silence_max,
+           conversation, prompt_body, next_run_at, definition_id, definition_updated_at,
+           created_at, updated_at)
+        SELECT
+          a.agent_id, 'default:' || d.default_routine_id, '@ax/routines/defaults',
+          d.name, d.description, d.spec_hash,
+          d.trigger_kind, d.trigger_spec, d.active_hours, d.silence_token, d.silence_max,
+          d.conversation, d.prompt_body, NULL,
+          d.default_routine_id, d.updated_at,
+          ${input.now}, ${input.now}
+        FROM (SELECT unnest(${input.agentIds}::text[]) AS agent_id) a
+        CROSS JOIN default_routines_v1 d
+        WHERE d.enabled
+          AND NOT EXISTS (
+            SELECT 1 FROM routines_v1_definitions r
+             WHERE r.agent_id = a.agent_id
+               AND r.definition_id = d.default_routine_id
+          )
+        ON CONFLICT (agent_id, path) DO NOTHING
+      `.execute(db);
+    },
+
+    async refreshStale(input) {
+      // Refresh denormalized fields on all default-sourced per-agent rows
+      // whose copy is older than the source default. Runs unconditionally
+      // before each tick — the WHERE clause makes it a no-op when nothing
+      // is stale.
+      await sql`
+        UPDATE routines_v1_definitions r
+           SET name = d.name,
+               description = d.description,
+               spec_hash = d.spec_hash,
+               trigger_kind = d.trigger_kind,
+               trigger_spec = d.trigger_spec,
+               active_hours = d.active_hours,
+               silence_token = d.silence_token,
+               silence_max = d.silence_max,
+               conversation = d.conversation,
+               prompt_body = d.prompt_body,
+               definition_updated_at = d.updated_at,
+               updated_at = ${input.now}
+          FROM default_routines_v1 d
+         WHERE r.definition_id = d.default_routine_id
+           AND (r.definition_updated_at IS NULL
+                OR r.definition_updated_at < d.updated_at)
+      `.execute(db);
     },
   };
 }
