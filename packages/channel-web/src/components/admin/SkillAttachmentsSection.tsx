@@ -9,10 +9,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Label } from '@/components/ui/label';
 import { listSkills } from '@/lib/skills';
-import { adminCredentials, type CredentialMeta } from '@/lib/credentials';
+import { refForDestination } from '@/lib/credentials';
 import { patchAgentSkillAttachments } from '@/lib/admin';
+import { CredentialSlotRow } from '../credentials/CredentialSlotRow';
 import type { SkillSummary } from '@ax/skills';
 
 interface Attachment {
@@ -26,6 +26,18 @@ interface Props {
   onSaved?: (attachments: Attachment[]) => void;
 }
 
+function buildBindings(
+  skillId: string,
+  slots: { slot: string }[],
+): Record<string, string> {
+  return Object.fromEntries(
+    slots.map((s) => [
+      s.slot,
+      refForDestination({ kind: 'skill-slot', skillId, slot: s.slot }),
+    ]),
+  );
+}
+
 export function SkillAttachmentsSection({
   agentId,
   initialAttachments,
@@ -33,7 +45,6 @@ export function SkillAttachmentsSection({
 }: Props) {
   const [attachments, setAttachments] = useState<Attachment[]>(initialAttachments);
   const [allSkills, setAllSkills] = useState<SkillSummary[]>([]);
-  const [credentials, setCredentials] = useState<CredentialMeta[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [addingSkillId, setAddingSkillId] = useState<string | null>(null);
@@ -41,12 +52,8 @@ export function SkillAttachmentsSection({
   useEffect(() => {
     void (async () => {
       try {
-        const [skills, creds] = await Promise.all([
-          listSkills(),
-          adminCredentials.list(),
-        ]);
+        const skills = await listSkills();
         setAllSkills(skills);
-        setCredentials(creds);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
@@ -72,22 +79,21 @@ export function SkillAttachmentsSection({
     setAttachments(attachments.filter((a) => a.skillId !== skillId));
   }
 
-  function updateBinding(skillId: string, slot: string, ref: string) {
-    setAttachments(
-      attachments.map((a) =>
-        a.skillId === skillId
-          ? { ...a, credentialBindings: { ...a.credentialBindings, [slot]: ref } }
-          : a,
-      ),
-    );
-  }
-
   async function save() {
     setSaving(true);
     setError(null);
     try {
-      await patchAgentSkillAttachments(agentId, attachments);
-      onSaved?.(attachments);
+      const withBindings = attachments.map((a) => {
+        const skill = skillById.get(a.skillId);
+        return {
+          ...a,
+          credentialBindings: skill
+            ? buildBindings(a.skillId, skill.capabilities.credentials)
+            : {},
+        };
+      });
+      await patchAgentSkillAttachments(agentId, withBindings);
+      onSaved?.(withBindings);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -138,49 +144,15 @@ export function SkillAttachmentsSection({
                 </Button>
               </div>
               {skill && skill.capabilities.credentials.length > 0 && (
-                <div className="space-y-2">
-                  {skill.capabilities.credentials.map((slot) => {
-                    const matching = credentials.filter(
-                      (c) => c.kind === slot.kind,
-                    );
-                    return (
-                      <div
-                        key={slot.slot}
-                        className="grid grid-cols-3 gap-2 items-center"
-                      >
-                        <Label className="text-xs font-mono">{slot.slot}</Label>
-                        <Select
-                          value={a.credentialBindings[slot.slot] ?? ''}
-                          onValueChange={(v) =>
-                            updateBinding(a.skillId, slot.slot, v)
-                          }
-                        >
-                          <SelectTrigger className="col-span-2 text-xs">
-                            <SelectValue placeholder="Select credential…" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {matching.length === 0 ? (
-                              <div className="px-2 py-1.5 text-xs text-muted-foreground">
-                                No matching credentials
-                              </div>
-                            ) : (
-                              matching.map((c) => (
-                                <SelectItem
-                                  key={`${c.scope}-${c.ownerId ?? '_'}-${c.ref}`}
-                                  value={c.ref}
-                                >
-                                  {c.ref}{' '}
-                                  <span className="text-muted-foreground">
-                                    ({c.scope})
-                                  </span>
-                                </SelectItem>
-                              ))
-                            )}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                    );
-                  })}
+                <div className="space-y-1 divide-y divide-border">
+                  {skill.capabilities.credentials.map((slotDef) => (
+                    <CredentialSlotRow
+                      key={slotDef.slot}
+                      destination={{ kind: 'skill-slot', skillId: a.skillId, slot: slotDef.slot }}
+                      slot={{ label: slotDef.slot, kind: slotDef.kind }}
+                      scope={{ scope: 'agent', ownerId: agentId }}
+                    />
+                  ))}
                 </div>
               )}
             </li>
