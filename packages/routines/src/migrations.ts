@@ -1,5 +1,21 @@
 import { sql, type Kysely, type Generated, type ColumnType } from 'kysely';
 
+// Heartbeat default seed content — mirrors heartbeat-template.ts (which is
+// deleted in Task 7; keep both in sync until then).
+const HEARTBEAT_SEED_MD: string = [
+  '---',
+  'name: heartbeat',
+  "description: daily check-in; says HEARTBEAT_OK and goes quiet when nothing's outstanding",
+  'trigger:',
+  '  kind: interval',
+  '  every: "24h"',
+  'conversation: shared',
+  'silenceToken: HEARTBEAT_OK',
+  '---',
+  "If nothing's outstanding for you to report on, just say `HEARTBEAT_OK` and nothing else. Otherwise, give a one-paragraph summary.",
+  '',
+].join('\n');
+
 export interface RoutinesDefinitionsRow {
   agent_id: string;
   path: string;
@@ -20,6 +36,8 @@ export interface RoutinesDefinitionsRow {
   last_error: string | null;
   created_at: ColumnType<Date, Date | undefined, Date>;
   updated_at: ColumnType<Date, Date | undefined, Date>;
+  definition_id: string | null;
+  definition_updated_at: ColumnType<Date | null, Date | null | undefined, Date | null>;
 }
 
 export interface RoutinesFiresRow {
@@ -34,9 +52,29 @@ export interface RoutinesFiresRow {
   rendered_prompt: string | null;
 }
 
+export interface DefaultRoutinesRow {
+  default_routine_id: string;
+  name: string;
+  description: string;
+  spec_hash: string;
+  trigger_kind: 'interval';
+  trigger_spec: unknown;
+  interval_seconds: number | null;
+  active_hours: unknown | null;
+  silence_token: string | null;
+  silence_max: number;
+  conversation: 'per-fire' | 'shared';
+  prompt_body: string;
+  enabled: boolean;
+  source_md: string;
+  created_at: ColumnType<Date, Date | undefined, Date>;
+  updated_at: ColumnType<Date, Date | undefined, Date>;
+}
+
 export interface RoutinesDatabase {
   routines_v1_definitions: RoutinesDefinitionsRow;
   routines_v1_fires: RoutinesFiresRow;
+  default_routines_v1: DefaultRoutinesRow;
 }
 
 export async function runRoutinesMigration(db: Kysely<RoutinesDatabase>): Promise<void> {
@@ -92,5 +130,74 @@ export async function runRoutinesMigration(db: Kysely<RoutinesDatabase>): Promis
   await sql`
     ALTER TABLE routines_v1_fires
       ADD COLUMN IF NOT EXISTS rendered_prompt TEXT
+  `.execute(db);
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS default_routines_v1 (
+      default_routine_id  TEXT        PRIMARY KEY,
+      name                TEXT        NOT NULL UNIQUE,
+      description         TEXT        NOT NULL,
+      spec_hash           TEXT        NOT NULL,
+      trigger_kind        TEXT        NOT NULL CHECK (trigger_kind IN ('interval')),
+      trigger_spec        JSONB       NOT NULL,
+      interval_seconds    INTEGER,
+      active_hours        JSONB,
+      silence_token       TEXT,
+      silence_max         INTEGER     NOT NULL DEFAULT 300 CHECK (silence_max >= 0),
+      conversation        TEXT        NOT NULL CHECK (conversation IN ('per-fire','shared')),
+      prompt_body         TEXT        NOT NULL,
+      enabled             BOOLEAN     NOT NULL DEFAULT true,
+      source_md           TEXT        NOT NULL,
+      created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+      CHECK ((trigger_kind = 'interval') = (interval_seconds IS NOT NULL))
+    )
+  `.execute(db);
+
+  await sql`
+    ALTER TABLE routines_v1_definitions
+      ADD COLUMN IF NOT EXISTS definition_id TEXT
+        REFERENCES default_routines_v1 (default_routine_id) ON DELETE CASCADE
+  `.execute(db);
+
+  await sql`
+    ALTER TABLE routines_v1_definitions
+      ADD COLUMN IF NOT EXISTS definition_updated_at TIMESTAMPTZ
+  `.execute(db);
+
+  await sql`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+         WHERE conname = 'routines_v1_default_next_run_at_chk'
+      ) THEN
+        ALTER TABLE routines_v1_definitions
+          ADD CONSTRAINT routines_v1_default_next_run_at_chk
+          CHECK (definition_id IS NULL OR next_run_at IS NULL);
+      END IF;
+    END $$;
+  `.execute(db);
+
+  await sql`
+    CREATE INDEX IF NOT EXISTS routines_v1_definitions_default_idx
+      ON routines_v1_definitions (definition_id, last_run_at)
+     WHERE definition_id IS NOT NULL
+  `.execute(db);
+
+  await sql`
+    INSERT INTO default_routines_v1
+      (default_routine_id, name, description, spec_hash, trigger_kind,
+       trigger_spec, interval_seconds, silence_token, silence_max,
+       conversation, prompt_body, source_md)
+    VALUES
+      ('default-heartbeat-2026-05-19', 'heartbeat',
+       'Daily check-in: ask if anything is outstanding.',
+       'seed-2026-05-19',
+       'interval', ${'{"kind":"interval","every":"24h"}'}::jsonb, 86400,
+       'HEARTBEAT_OK', 300, 'shared',
+       'If nothing is outstanding, respond with HEARTBEAT_OK and end.',
+       ${HEARTBEAT_SEED_MD})
+    ON CONFLICT (name) DO NOTHING
   `.execute(db);
 }
