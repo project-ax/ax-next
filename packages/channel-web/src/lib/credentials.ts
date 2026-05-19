@@ -56,8 +56,6 @@ const writeHeaders = {
   'x-requested-with': 'ax-admin',
 } as const;
 
-const csrfHeader = { 'x-requested-with': 'ax-admin' } as const;
-
 /**
  * Base64-encode a UTF-8 string. The browser path uses `btoa` over the
  * raw byte sequence; Node test runs (jsdom) provide the same global.
@@ -132,24 +130,6 @@ export const adminCredentials = {
     return out.credential;
   },
 
-  async delete(input: {
-    scope: 'global' | 'user' | 'agent';
-    ownerId: string | null;
-    ref: string;
-  }): Promise<void> {
-    // The URL placeholder for "no owner" (scope='global') is `_` — JSON
-    // null doesn't path-encode. Server-side `_` is translated back to
-    // null before the bus call.
-    const owner = input.ownerId ?? '_';
-    const path = `/admin/credentials/${encodeURIComponent(input.scope)}/${encodeURIComponent(owner)}/${encodeURIComponent(input.ref)}`;
-    const res = await fetch(path, {
-      method: 'DELETE',
-      headers: csrfHeader,
-      credentials: 'include',
-    });
-    if (!res.ok) throw new Error(`delete credential: ${res.status}`);
-  },
-
   async oauthStart(input: AdminOauthStartInput): Promise<OauthStartResult> {
     const res = await fetch('/admin/credentials/oauth/start', {
       method: 'POST',
@@ -179,14 +159,6 @@ export const adminCredentials = {
 
 // myCredentials ----------------------------------------------------------
 
-export interface MyCredentialCreateInput {
-  ref: string;
-  kind: string;
-  payload: string;
-  expiresAt?: number;
-  metadata?: Record<string, unknown>;
-}
-
 export interface MyOauthStartInput {
   ref: string;
   kind: string;
@@ -195,31 +167,6 @@ export interface MyOauthStartInput {
 export const myCredentials = {
   list: () => listAt('/settings/credentials'),
   listKinds,
-
-  async create(input: MyCredentialCreateInput): Promise<CredentialMeta> {
-    const body = { ...input, payload: b64(input.payload) };
-    const res = await fetch('/settings/credentials', {
-      method: 'POST',
-      headers: writeHeaders,
-      credentials: 'include',
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) throw new Error(`create credential: ${res.status}`);
-    const out = (await res.json()) as { credential: CredentialMeta };
-    return out.credential;
-  },
-
-  async delete(ref: string): Promise<void> {
-    const res = await fetch(
-      `/settings/credentials/${encodeURIComponent(ref)}`,
-      {
-        method: 'DELETE',
-        headers: csrfHeader,
-        credentials: 'include',
-      },
-    );
-    if (!res.ok) throw new Error(`delete credential: ${res.status}`);
-  },
 
   async oauthStart(input: MyOauthStartInput): Promise<OauthStartResult> {
     const res = await fetch('/settings/credentials/oauth/start', {

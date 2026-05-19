@@ -4,11 +4,10 @@
  * Mirrors the shape the server contracts in `@ax/credentials-admin-routes`:
  *   - GET    /admin/credentials              → { credentials: [...] }
  *   - POST   /admin/credentials              → { credential }
- *   - DELETE /admin/credentials/:scope/:owner/:ref → 204
  *   - GET    /admin/credentials/kinds        → { kinds: [...] }
  *   - POST   /admin/credentials/oauth/start  → { pendingId, authorizeUrl, instructions }
  *   - POST   /admin/credentials/oauth/finish → { credential }
- *   - GET/POST/DELETE /settings/credentials  (per-user)
+ *   - GET    /settings/credentials           (per-user list)
  *
  * Pinned behaviors (the assertions are a contract):
  *   - All requests carry `credentials: 'include'` so cookies flow.
@@ -88,46 +87,6 @@ describe('credentials wire client', () => {
       });
     });
 
-    it('writes carry x-requested-with: ax-admin', async () => {
-      const fetchMock = vi
-        .spyOn(globalThis, 'fetch')
-        .mockResolvedValue(new Response(null, { status: 204 }));
-      await adminCredentials.delete({
-        scope: 'user',
-        ownerId: 'alice',
-        ref: 'gh',
-      });
-      const headers = (fetchMock.mock.calls[0]![1] as RequestInit)
-        .headers as Record<string, string>;
-      expect(headers).toMatchObject({ 'x-requested-with': 'ax-admin' });
-    });
-
-    it('delete URL-encodes scope, ownerId, and ref', async () => {
-      const fetchMock = vi
-        .spyOn(globalThis, 'fetch')
-        .mockResolvedValue(new Response(null, { status: 204 }));
-      await adminCredentials.delete({
-        scope: 'user',
-        ownerId: 'alice@example.com',
-        ref: 'k',
-      });
-      expect(fetchMock.mock.calls[0]![0]).toBe(
-        '/admin/credentials/user/alice%40example.com/k',
-      );
-    });
-
-    it('delete uses "_" for null ownerId (global scope)', async () => {
-      const fetchMock = vi
-        .spyOn(globalThis, 'fetch')
-        .mockResolvedValue(new Response(null, { status: 204 }));
-      await adminCredentials.delete({
-        scope: 'global',
-        ownerId: null,
-        ref: 'k',
-      });
-      expect(fetchMock.mock.calls[0]![0]).toBe('/admin/credentials/global/_/k');
-    });
-
     it('listKinds GETs /admin/credentials/kinds', async () => {
       const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
         jsonResponse({
@@ -191,33 +150,6 @@ describe('credentials wire client', () => {
         '/settings/credentials',
         expect.objectContaining({ credentials: 'include' }),
       );
-    });
-
-    it('create POSTs /settings/credentials with base64 payload', async () => {
-      const fetchMock = vi
-        .spyOn(globalThis, 'fetch')
-        .mockResolvedValue(jsonResponse({ credential: {} }, 201));
-      await myCredentials.create({
-        ref: 'k',
-        kind: 'api-key',
-        payload: 'sk-test',
-      });
-      expect(fetchMock.mock.calls[0]![0]).toBe('/settings/credentials');
-      const body = JSON.parse(
-        (fetchMock.mock.calls[0]![1] as RequestInit).body as string,
-      ) as Record<string, unknown>;
-      expect(body.payload).toBe(Buffer.from('sk-test').toString('base64'));
-      // settings doesn't carry scope/ownerId — server forces both:
-      expect(body).not.toHaveProperty('scope');
-      expect(body).not.toHaveProperty('ownerId');
-    });
-
-    it('delete hits /settings/credentials/:ref', async () => {
-      const fetchMock = vi
-        .spyOn(globalThis, 'fetch')
-        .mockResolvedValue(new Response(null, { status: 204 }));
-      await myCredentials.delete('k');
-      expect(fetchMock.mock.calls[0]![0]).toBe('/settings/credentials/k');
     });
 
     it('listKinds shares the /admin/credentials/kinds route', async () => {
