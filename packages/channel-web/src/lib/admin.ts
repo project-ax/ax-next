@@ -144,6 +144,14 @@ export async function listMcpServers(): Promise<McpServer[]> {
   return (await res.json()).servers;
 }
 
+export async function getMcpServer(id: string): Promise<McpServer> {
+  const res = await fetch(`/admin/mcp-servers/${encodeURIComponent(id)}`, {
+    credentials: 'include',
+  });
+  if (!res.ok) throw new Error(`get mcp: ${res.status}`);
+  return (await res.json()).server;
+}
+
 export async function createMcpServer(
   input: McpServerInput,
 ): Promise<{ id: string }> {

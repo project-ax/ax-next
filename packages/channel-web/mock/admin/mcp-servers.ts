@@ -126,6 +126,14 @@ export function adminMcpServersMiddleware(
         send(res, 400, { error: 'missing or invalid fields' });
         return true;
       }
+      if (body.transport === 'stdio' && !body.command) {
+        send(res, 400, { error: 'missing command for stdio transport' });
+        return true;
+      }
+      if ((body.transport === 'http' || body.transport === 'sse' || body.transport === 'streamable-http') && !body.url) {
+        send(res, 400, { error: 'missing url for http transport' });
+        return true;
+      }
       const now = Date.now();
       const server: McpServer = {
         id: newMcpId(),
@@ -145,6 +153,16 @@ export function adminMcpServersMiddleware(
     if (idMatch && idMatch[1]) {
       const id = idMatch[1];
       const isTest = !!idMatch[2];
+
+      if (!isTest && method === 'GET') {
+        const existing = servers.get(id);
+        if (!existing) {
+          send(res, 404, { error: 'not found' });
+          return true;
+        }
+        send(res, 200, { server: existing });
+        return true;
+      }
 
       if (isTest && method === 'POST') {
         // Mock always succeeds. Future task could simulate failure via header.

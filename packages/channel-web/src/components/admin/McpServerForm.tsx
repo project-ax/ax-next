@@ -30,6 +30,7 @@ import { useEffect, useState } from 'react';
 import { Plus, Trash2 } from 'lucide-react';
 import {
   listMcpServers,
+  getMcpServer,
   createMcpServer,
   patchMcpServer,
   deleteMcpServer,
@@ -213,11 +214,21 @@ export function McpServerForm({ initialConfig }: McpServerFormProps = {}) {
     setEditing('new');
   };
 
-  const startEdit = (s: McpServer) => {
+  const startEdit = async (s: McpServer) => {
     setError(null);
-    setForm(formFromServer(s));
     setServerId(s.id);
     setEditing(s);
+    try {
+      // Fetch the full server record so command/args/envNames/headerNames are
+      // preserved (the list endpoint returns only flat McpServer shape).
+      const full = await getMcpServer(s.id);
+      // The full record from the server is a flat McpServer; derive form state
+      // from it preserving transport-specific fields where available.
+      setForm(formFromServer(full));
+    } catch {
+      // Fall back to the list-provided data without transport-specific fields.
+      setForm(formFromServer(s));
+    }
   };
 
   const cancelForm = () => {
@@ -247,14 +258,17 @@ export function McpServerForm({ initialConfig }: McpServerFormProps = {}) {
 
     const id = serverId || form.name.trim().toLowerCase().replace(/[^a-z0-9._-]/g, '-');
 
+    const normalizedEnvNames = Array.from(new Set(form.envNames.map((n) => n.trim()).filter(Boolean)));
+    const normalizedHeaderNames = Array.from(new Set(form.headerNames.map((n) => n.trim()).filter(Boolean)));
+
     let payload: McpServerInput;
     if (isHttpTransport) {
       payload = {
         name: form.name.trim(),
         transport: form.transport,
         url: form.url.trim(),
-        ...(form.headerNames.length > 0
-          ? { headerCredentialRefs: buildHeaderBindings(id, form.headerNames) }
+        ...(normalizedHeaderNames.length > 0
+          ? { headerCredentialRefs: buildHeaderBindings(id, normalizedHeaderNames) }
           : {}),
       };
     } else {
@@ -263,8 +277,8 @@ export function McpServerForm({ initialConfig }: McpServerFormProps = {}) {
         transport: form.transport,
         command: form.command.trim(),
         args: form.args.trim() ? form.args.trim().split(/\s+/) : [],
-        ...(form.envNames.length > 0
-          ? { credentialRefs: buildEnvBindings(id, form.envNames) }
+        ...(normalizedEnvNames.length > 0
+          ? { credentialRefs: buildEnvBindings(id, normalizedEnvNames) }
           : {}),
       };
     }
@@ -358,10 +372,15 @@ export function McpServerForm({ initialConfig }: McpServerFormProps = {}) {
 
   // The effective server id for ref computation — use the existing server id
   // for edits, or derive a slug from the current name for new ones.
-  const effectiveServerId =
+  // Returns null when no real id can be determined (unsaved new server with
+  // no name yet). CredentialSlotRow must not render under the sentinel 'new'
+  // because that would write creds to refs like mcp:new:env:… which can
+  // never be associated with a real server.
+  const effectiveServerId: string | null =
     serverId ||
-    form.name.trim().toLowerCase().replace(/[^a-z0-9._-]/g, '-') ||
-    'new';
+    (form.name.trim()
+      ? form.name.trim().toLowerCase().replace(/[^a-z0-9._-]/g, '-')
+      : null);
 
   // ── List view ──────────────────────────────────────────────────────────
   if (editing === null) {
@@ -418,7 +437,7 @@ export function McpServerForm({ initialConfig }: McpServerFormProps = {}) {
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => startEdit(s)}
+                    onClick={() => void startEdit(s)}
                   >
                     edit
                   </Button>
@@ -563,7 +582,7 @@ export function McpServerForm({ initialConfig }: McpServerFormProps = {}) {
                           <Trash2 className="h-3.5 w-3.5" />
                         </Button>
                       </div>
-                      {name.trim() && (
+                      {name.trim() && effectiveServerId ? (
                         <CredentialSlotRow
                           destination={{
                             kind: 'mcp-env',
@@ -573,7 +592,11 @@ export function McpServerForm({ initialConfig }: McpServerFormProps = {}) {
                           slot={{ label: name.trim(), kind: 'api-key' }}
                           scope={{ scope: 'global', ownerId: null }}
                         />
-                      )}
+                      ) : name.trim() ? (
+                        <p className="text-xs text-muted-foreground italic">
+                          Save the server first to add credentials.
+                        </p>
+                      ) : null}
                     </div>
                   ))}
                 </div>
@@ -640,7 +663,7 @@ export function McpServerForm({ initialConfig }: McpServerFormProps = {}) {
                           <Trash2 className="h-3.5 w-3.5" />
                         </Button>
                       </div>
-                      {name.trim() && (
+                      {name.trim() && effectiveServerId ? (
                         <CredentialSlotRow
                           destination={{
                             kind: 'mcp-header',
@@ -650,7 +673,11 @@ export function McpServerForm({ initialConfig }: McpServerFormProps = {}) {
                           slot={{ label: name.trim(), kind: 'api-key' }}
                           scope={{ scope: 'global', ownerId: null }}
                         />
-                      )}
+                      ) : name.trim() ? (
+                        <p className="text-xs text-muted-foreground italic">
+                          Save the server first to add credentials.
+                        </p>
+                      ) : null}
                     </div>
                   ))}
                 </div>
