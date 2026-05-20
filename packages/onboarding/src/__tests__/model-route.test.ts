@@ -2,7 +2,7 @@
 // POST /setup/model — Task 2.7 integration tests.
 //
 // Boots: database-postgres + storage-postgres + credentials-store-db +
-//        credentials + agents + http-server + auth-oidc + onboarding.
+//        credentials + agents + http-server + auth-better + onboarding.
 //
 // Note on atomicity coverage: The I9 atomicity invariant (credential + agent
 // + bootstrap:complete rolling back together on failure) is proven separately
@@ -32,7 +32,7 @@ import { createCredentialsPlugin } from '@ax/credentials';
 import { createCredentialsStoreDbPlugin } from '@ax/credentials-store-db';
 import { createAgentsPlugin } from '@ax/agents';
 import { createHttpServerPlugin, type HttpServerPlugin } from '@ax/http-server';
-import { createAuthPlugin } from '@ax/auth-oidc';
+import { createAuthBetterPlugin } from '@ax/auth-better';
 import { createOnboardingPlugin } from '../plugin.js';
 
 const COOKIE_KEY = randomBytes(32);
@@ -65,8 +65,9 @@ async function dropTables(): Promise<void> {
     await sql`DROP TABLE IF EXISTS bootstrap_state`.execute(k);
     await sql`DROP TABLE IF EXISTS storage_postgres_v1_kv`.execute(k);
     await sql`DROP TABLE IF EXISTS agents_v1_agents`.execute(k);
-    await sql`DROP TABLE IF EXISTS auth_v1_sessions`.execute(k);
-    await sql`DROP TABLE IF EXISTS auth_v1_users`.execute(k);
+    await sql`DROP TABLE IF EXISTS auth_better_v1_sessions`.execute(k);
+    await sql`DROP TABLE IF EXISTS auth_better_v1_users`.execute(k);
+    await sql`DROP TABLE IF EXISTS auth_providers`.execute(k);
     await sql`DROP TABLE IF EXISTS credentials_v1_store`.execute(k);
   } finally {
     await k.destroy().catch(() => {});
@@ -91,10 +92,7 @@ async function bootStack(): Promise<BootedStack> {
       createCredentialsPlugin(),
       createAgentsPlugin(),
       http,
-      createAuthPlugin({
-        providers: {},
-        devBootstrap: { token: 'auth-oidc-dev-bootstrap-token' },
-      }),
+      createAuthBetterPlugin(),
       createOnboardingPlugin({
         baseUrl: 'http://127.0.0.1',
         envOverride: { AX_BOOTSTRAP_TOKEN: TEST_TOKEN },
