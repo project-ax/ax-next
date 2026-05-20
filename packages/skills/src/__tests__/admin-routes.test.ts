@@ -50,18 +50,6 @@ apiKey: should-not-be-here
 # GitHub
 `;
 
-// Manifest with mcpServers — should trigger capability-deferred.
-const MCP_SKILL_MD = `---
-name: github
-description: Access the GitHub REST API.
-version: 1
-capabilities:
-  mcpServers:
-    - url: https://example.com
----
-# GitHub
-`;
-
 // Malformed YAML — keys with duplicate colon.
 const BAD_YAML_SKILL_MD = `---
 name: github
@@ -190,15 +178,24 @@ describe('/admin/skills handlers', () => {
     expect(body.code).toBe('inline-secret-forbidden');
   });
 
-  // 4. POST with mcpServers → 400 capability-deferred
-  it('POST /admin/skills with capabilities.mcpServers returns 400 capability-deferred', async () => {
+  // 4. POST with mcpServers → persists and round-trips through GET
+  it('POST /admin/skills with capabilities.mcpServers persists and returns it on GET', async () => {
     const h = await makeHarness();
     const handlers = createAdminSkillsHandlers({ bus: h.bus });
-    const { res, statusOf, bodyOf } = mkRes();
-    await handlers.create(mkReq({ body: { skillMd: MCP_SKILL_MD } }), res);
-    expect(statusOf()).toBe(400);
-    const body = bodyOf() as { code: string };
-    expect(body.code).toBe('capability-deferred');
+
+    // Create
+    const skillMd = `---\nname: ghub\ndescription: GitHub\ncapabilities:\n  mcpServers:\n    - name: github\n      transport: stdio\n      command: npx\n      args: ['-y', '@modelcontextprotocol/server-github']\n---\nbody`;
+    const { res: r1, statusOf: s1 } = mkRes();
+    await handlers.create(mkReq({ body: { skillMd } }), r1);
+    expect(s1()).toBe(201);
+
+    // GET
+    const { res: r2, statusOf: s2, bodyOf: b2 } = mkRes();
+    await handlers.get(mkReq({ params: { id: 'ghub' } }), r2);
+    expect(s2()).toBe(200);
+    const detail = b2() as { capabilities: { mcpServers: Array<{ name: string }> } };
+    expect(detail.capabilities.mcpServers).toHaveLength(1);
+    expect(detail.capabilities.mcpServers[0]?.name).toBe('github');
   });
 
   // 5. PUT with new body → 200, created: false, GET returns new body

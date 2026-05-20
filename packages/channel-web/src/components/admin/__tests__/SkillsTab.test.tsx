@@ -30,6 +30,7 @@ const SKILL_A: SkillSummary = {
   capabilities: {
     allowedHosts: ['api.github.com'],
     credentials: [{ slot: 'GITHUB_TOKEN', kind: 'api-key', description: 'PAT' }],
+    mcpServers: [],
   },
   defaultAttached: false,
   updatedAt: '2026-05-18T10:00:00.000Z',
@@ -42,6 +43,7 @@ const SKILL_B: SkillSummary = {
   capabilities: {
     allowedHosts: [],
     credentials: [],
+    mcpServers: [],
   },
   defaultAttached: false,
   updatedAt: '2026-05-17T08:00:00.000Z',
@@ -174,7 +176,7 @@ describe('SkillsTab', () => {
         id: 'heartbeat',
         description: 'Daily check-in.',
         version: 1,
-        capabilities: { allowedHosts: [], credentials: [] },
+        capabilities: { allowedHosts: [], credentials: [], mcpServers: [] },
         defaultAttached: true,
         updatedAt: '2026-05-19T00:00:00.000Z',
       },
@@ -182,7 +184,7 @@ describe('SkillsTab', () => {
         id: 'github',
         description: 'GitHub API.',
         version: 1,
-        capabilities: { allowedHosts: ['api.github.com'], credentials: [{ slot: 'X', kind: 'api-key' }] },
+        capabilities: { allowedHosts: ['api.github.com'], credentials: [{ slot: 'X', kind: 'api-key' }], mcpServers: [] },
         defaultAttached: false,
         updatedAt: '2026-05-19T00:00:00.000Z',
       },

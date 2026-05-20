@@ -23,6 +23,7 @@ const DETAIL: SkillDetail = {
   capabilities: {
     allowedHosts: ['api.github.com'],
     credentials: [{ slot: 'GITHUB_TOKEN', kind: 'api-key', description: 'Personal access token' }],
+    mcpServers: [],
   },
   defaultAttached: false,
   updatedAt: '2026-05-18T10:00:00.000Z',
@@ -256,7 +257,7 @@ describe('SkillEditor', () => {
     mockGetSkill.mockResolvedValueOnce({
       ...DETAIL,
       // Override to instruction-only + default-attached.
-      capabilities: { allowedHosts: [], credentials: [] },
+      capabilities: { allowedHosts: [], credentials: [], mcpServers: [] },
       manifestYaml: 'name: github-api\ndescription: Interacts with the GitHub REST API.\nversion: 1\n',
       defaultAttached: true,
     });

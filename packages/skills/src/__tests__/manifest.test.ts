@@ -110,12 +110,10 @@ describe('parseSkillManifest', () => {
     if (!r.ok) expect(r.code).toBe('inline-secret-forbidden');
   });
 
-  it('rejects reserved capabilities.mcpServers', () => {
-    const r = parseSkillManifest(
-      `name: x\ndescription: x\ncapabilities:\n  mcpServers:\n    - name: foo`,
-    );
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.code).toBe('capability-deferred');
+  it('no longer reserves capability-deferred for mcpServers', () => {
+    const yaml = `name: x\ndescription: x\ncapabilities:\n  mcpServers:\n    - name: x\n      transport: stdio\n      command: npx`;
+    const r = parseSkillManifest(yaml);
+    expect(r.ok).toBe(true);
   });
 
   it('rejects malformed YAML (loud, not silent)', () => {

@@ -130,7 +130,8 @@ export function writeServiceError(res: RouteResponse, err: unknown): boolean {
       'invalid-manifest',
       'invalid-version',
       'inline-secret-forbidden',
-      'capability-deferred',
+      'invalid-mcp-command',
+      'invalid-mcp-transport',
       'invalid-payload',
       'default-attached-requires-no-credentials',
     ]);
