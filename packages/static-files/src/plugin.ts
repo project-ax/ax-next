@@ -59,9 +59,8 @@ interface RegisterRouteResult {
   unregister(): void;
 }
 
-// Structural minimum we need from @ax/http-server's adapter. Mirrors the
-// pattern @ax/auth-oidc uses with HttpRequestLike: I2 forbids importing
-// from @ax/http-server, so we duck-type the surface here.
+// Structural minimum we need from @ax/http-server's adapter. I2 forbids
+// importing from @ax/http-server, so we duck-type the surface here.
 interface HttpRequestLike {
   readonly headers: Record<string, string>;
   readonly params: Record<string, string>;

@@ -43,8 +43,8 @@ export interface OnboardingStore {
  * winner" invariant (I6). A plain read-then-update (TOCTOU) would break under
  * concurrent callers.
  *
- * Only this file may query `bootstrap_state` directly (mirrors auth-oidc's
- * store-scoped access pattern, enforced by convention and future lint rule).
+ * Only this file may query `bootstrap_state` directly (store-scoped access
+ * pattern, enforced by convention and future lint rule).
  */
 export function createOnboardingStore(
   db: Kysely<OnboardingDatabase>,

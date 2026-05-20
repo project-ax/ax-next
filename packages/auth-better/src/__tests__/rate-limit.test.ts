@@ -2,16 +2,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Kysely } from 'kysely';
 import type { AuthBetterDatabase } from '../migrations.js';
 
-// Task 15 of the @ax/auth-oidc retirement — confirms `@ax/auth-better`
-// pins better-auth's built-in rate-limiter at or above auth-oidc's prior
-// 30/min/IP posture on `/auth/*`.
+// Pins `@ax/auth-better`'s built-in rate-limiter at 30 req / 60s / IP on
+// `/auth/*`, always-on (no NODE_ENV gate).
 //
-// The retired auth-oidc plugin registered an `http:request` subscriber
-// keyed off `/auth/*` paths, with a 30 req / 60s token bucket per source
-// IP, ALWAYS-ON (no NODE_ENV gate). Better-auth's default rate-limiter is
-// production-only and uses 100 req / 10s globally (= 600/min), which is
-// WEAKER than 30/min. Without explicit config, the auth-better swap
-// would regress posture on:
+// Better-auth's default rate-limiter is production-only and uses 100 req
+// / 10s globally (= 600/min), which is too permissive for /auth/*.
+// Without explicit config the boot would regress posture on:
 //   - dev/test environments (rate-limit disabled entirely)
 //   - OAuth callbacks + any /auth/* path without a built-in special-rule
 //     (100 per 10s = 600/min — 20× more permissive than 30/min)
@@ -49,7 +45,7 @@ describe('createBetterAuthHandler — rateLimit posture', () => {
     capturedConfigs.length = 0;
   });
 
-  it('passes a rateLimit config to betterAuth() that matches auth-oidc 30/min', () => {
+  it('passes a rateLimit config to betterAuth() pinned at 30/min', () => {
     createBetterAuthHandler({ database: stubDb, providers: [] });
     expect(capturedConfigs).toHaveLength(1);
     const rateLimit = capturedConfigs[0]?.['rateLimit'];
@@ -64,13 +60,13 @@ describe('createBetterAuthHandler — rateLimit posture', () => {
   it('forces enabled:true so dev/test environments are not regressed', () => {
     // Better-auth's untouched default is `enabled: isProduction`. We must
     // override to true so a `NODE_ENV=development` boot still rate-limits
-    // /auth/* — auth-oidc was unconditional, and we're preserving that.
+    // /auth/* — always-on posture.
     createBetterAuthHandler({ database: stubDb, providers: [] });
     const rateLimit = capturedConfigs[0]?.['rateLimit'] as { enabled: unknown };
     expect(rateLimit.enabled).toBe(true);
   });
 
-  it('global max is at or below 30 per 60s window (>= auth-oidc strictness)', () => {
+  it('global max is at or below 30 per 60s window', () => {
     // Pin the inequality, not just the literal values. If a future tweak
     // wants to tighten further (e.g., 20/min) this still passes — what we
     // refuse is regressing TO weaker than 30/min.

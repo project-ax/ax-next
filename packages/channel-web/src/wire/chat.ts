@@ -41,8 +41,8 @@ const ConversationShape = z.object({
 //     (OpenAI / Gemini wrappers translate INTO this shape).
 //
 // Why a separate `wire/` directory:
-//   - The pattern matches Week 9.5's admin-routes split (@ax/agents,
-//     @ax/auth-oidc) where the on-the-wire shape is locked away from the
+//   - The pattern matches Week 9.5's admin-routes split (@ax/agents)
+//     where the on-the-wire shape is locked away from the
 //     internal handler factory. A consumer that only needs the request /
 //     response Zod schemas (e.g. a browser fetch helper) imports this file
 //     without dragging in @ax/core or http-server adapters.

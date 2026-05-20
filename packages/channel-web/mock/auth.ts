@@ -83,7 +83,7 @@ export function canUseAgent(user: User, agent: AclAgent, store: Store): boolean 
 
 /**
  * Translate the mock store's UI-shaped User to the BackendUser wire
- * shape `@ax/auth-oidc` returns from /admin/me. Mirrors `lib/auth.ts`'s
+ * shape `@ax/auth-better` returns from /admin/me. Mirrors `lib/auth.ts`'s
  * inverse mapping so the UI's wire client and this mock agree on the
  * boundary contract.
  */
@@ -112,7 +112,7 @@ export function authMiddleware(
     const path = pathRaw ?? '';
     const method = req.method ?? 'GET';
 
-    // Mock the @ax/auth-oidc wire surface (NOT the v1 better-auth shape):
+    // Mock the @ax/auth-better wire surface:
     //   GET  /auth/sign-in/google
     //   GET  /auth/callback/google
     //   GET  /admin/me

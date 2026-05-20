@@ -725,12 +725,10 @@ describe('loadK8sConfigFromEnv', () => {
   });
 
   it('succeeds with no auth env at all (auth-better is DB-driven)', () => {
-    // Regression guard: the prior shape (auth-oidc) required at least one
-    // of AX_AUTH_GOOGLE_* or AX_DEV_BOOTSTRAP_TOKEN, and the loader threw
-    // a `no-auth-providers`-shaped error otherwise. Auth-better reads
-    // providers from the `auth_providers` table at runtime, so a fresh
-    // boot must succeed without any auth env. The operator walks the
-    // /setup wizard and adds providers from the admin UI afterward.
+    // Regression guard: auth-better reads providers from the
+    // `auth_providers` table at runtime, so a fresh boot must succeed
+    // without any auth env. The operator walks the /setup wizard and
+    // adds providers from the admin UI afterward.
     const cfg = loadK8sConfigFromEnv(minRequired());
     expect(cfg.auth).toBeUndefined();
   });

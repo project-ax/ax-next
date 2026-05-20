@@ -47,7 +47,7 @@ export interface AuthedUser {
 }
 
 /**
- * Ask @ax/auth-oidc to resolve the session cookie. Returns the user on
+ * Ask @ax/auth-better to resolve the session cookie. Returns the user on
  * success, or null if we wrote 401 ourselves (caller must early-return).
  *
  * The shape mirrors packages/agents/src/admin-routes.ts:requireUser — call

@@ -144,8 +144,8 @@ const ADMIN_HEADERS = (cookieHeader: string): Record<string, string> => ({
 // classifyProviderGate() calls. Better-auth's memory storage is module-level
 // (per-process), so without per-test IP isolation a later test's 4th hit
 // would 429 instead of returning the expected PROVIDER_NOT_FOUND. This
-// preserves the rate-limit posture pin (Task 15 of the auth-oidc retirement)
-// while keeping the hot-reload contract test scoped to its actual concern.
+// preserves the rate-limit posture pin (see rate-limit.test.ts) while
+// keeping the hot-reload contract test scoped to its actual concern.
 let SOCIAL_TEST_IP = '';
 const SOCIAL_HEADERS = (): Record<string, string> => ({
   'content-type': 'application/json',

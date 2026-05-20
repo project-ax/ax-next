@@ -12,9 +12,7 @@
 // in Phase 5 once the default presets switched to @ax/auth-better, which
 // does not expose that endpoint. First-admin creation is now the
 // @ax/onboarding wizard at /setup/*; `reset-bootstrap` covers
-// operator-driven recovery. @ax/auth-oidc remains in-tree as a fallback
-// alternate-impl, including its /auth/dev-bootstrap route — only the CLI
-// caller was deleted.
+// operator-driven recovery.
 import { runAdminResetBootstrapCommand } from './admin/reset-bootstrap.js';
 
 export interface RunAdminOptions {

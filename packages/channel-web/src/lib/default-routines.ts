@@ -3,7 +3,7 @@
  *
  * Mirrors `lib/skills.ts` shape:
  *
- *   - `credentials: 'include'` on every call so the auth-oidc session
+ *   - `credentials: 'include'` on every call so the auth-better session
  *     cookie flows.
  *   - `x-requested-with: ax-admin` on writes so requests pass the
  *     http-server's CSRF guard.

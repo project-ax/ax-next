@@ -3,11 +3,6 @@ import { reject, type Rejection } from '@ax/core';
 // ---------------------------------------------------------------------------
 // In-memory token bucket for /setup/* endpoints.
 //
-// This is a deliberate copy of packages/auth-oidc/src/rate-limit.ts — NOT an
-// import. Cross-plugin imports are forbidden per Invariant I2. The algorithm,
-// config shape, and defaults are intentionally identical to auth-oidc's
-// version; keep them in sync by hand when the algorithm changes.
-//
 // Onboarding tightens the budget to 5 wrong attempts per minute per IP
 // because /setup/claim is a single-use surface — brute force on a 32-byte
 // token is the primary threat model.

@@ -35,8 +35,7 @@ import type { PhaseEvent, SseFrame, StreamChunk } from './types.js';
 
 const SSE_KEEPALIVE_MS = 25_000;
 
-// Duck-typed request/response — see auth-oidc/admin-routes.ts for the
-// canonical pattern. The full @ax/http-server `HttpResponse` adds
+// Duck-typed request/response. The full @ax/http-server `HttpResponse` adds
 // `stream()` (we extended it for this slice); we re-declare just the
 // piece we need so this file stays free of @ax/http-server imports
 // (Invariant I2).

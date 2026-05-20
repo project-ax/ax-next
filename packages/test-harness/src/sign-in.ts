@@ -30,7 +30,7 @@ export interface SignInAsAdminOptions {
    */
   cookieKey: Buffer;
   ctx?: AgentContext;
-  /** Defaults to `'ax_auth_session'` (the default in both auth-oidc and auth-better). */
+  /** Defaults to `'ax_auth_session'` (the default in auth-better). */
   sessionCookieName?: string;
   /** Defaults to `'Admin McAdminface'`. */
   displayName?: string;

@@ -109,10 +109,9 @@ function build(input: HandlerInput): (req: Request) => Promise<Response> {
     // which we don't have here.
     database: { db: input.database, type: 'postgres' },
     emailAndPassword: { enabled: true, minPasswordLength: 12 },
-    // We mount @ax/http-server routes at `/auth/*` (sibling of `/admin/*`,
-    // matching the v1 auth-oidc layout). Better-auth's default basePath is
-    // `/api/auth`; override so its internal router agrees with where we
-    // forward requests.
+    // We mount @ax/http-server routes at `/auth/*` (sibling of `/admin/*`).
+    // Better-auth's default basePath is `/api/auth`; override so its
+    // internal router agrees with where we forward requests.
     basePath: '/auth',
     // The OS-assigned port at boot can move between rebuilds; rather
     // than thread a host into every rebuild, let better-auth resolve
@@ -131,28 +130,24 @@ function build(input: HandlerInput): (req: Request) => Promise<Response> {
         role: { type: 'string', defaultValue: 'user' },
       },
     },
-    // Rate-limit posture preserved from the retired @ax/auth-oidc plugin
-    // (Task 15 of the auth-oidc retirement). auth-oidc registered an
-    // http:request subscriber that token-bucketed `/auth/*` at 30
-    // requests / 60 seconds / source IP, unconditionally (no NODE_ENV
-    // gate). Better-auth's built-in limiter ships:
+    // Rate-limit posture: token-bucket `/auth/*` at 30 requests / 60s /
+    // source IP, unconditionally. Better-auth's built-in limiter ships:
     //   - production-only by default (gated on NODE_ENV === 'production')
-    //   - global default 100 req / 10s (= 600/min) — WEAKER than 30/min
+    //   - global default 100 req / 10s (= 600/min) — too lax for /auth/*
     //   - special rules: 3 per 10s for /sign-in*, /sign-up*,
     //     /change-password, /change-email; 3 per 60s for
     //     /forget-password*, /request-password-reset,
     //     /send-verification-email
     //
     // We force `enabled: true` so dev/test environments get the same
-    // gate (regression-safe — matches auth-oidc's always-on posture),
-    // and pin window/max to 60s/30 so the GLOBAL fallback for any
-    // /auth/* path without a special-rule match (notably OAuth
-    // callbacks) is at least as strict as auth-oidc's bucket. The
-    // built-in specialRules for sign-in/sign-up/password-reset paths
-    // remain in force and are stricter than 30/min — better posture,
-    // not worse. Storage is memory (single-process, per-pod), matching
-    // auth-oidc's caveat re: multi-replica coordination being deferred
-    // post-MVP.
+    // gate (regression-safe — always-on posture), and pin window/max to
+    // 60s/30 so the GLOBAL fallback for any /auth/* path without a
+    // special-rule match (notably OAuth callbacks) is at least as
+    // strict as 30/min. The built-in specialRules for
+    // sign-in/sign-up/password-reset paths remain in force and are
+    // stricter than 30/min — better posture, not worse. Storage is
+    // memory (single-process, per-pod); multi-replica coordination is
+    // deferred post-MVP.
     rateLimit: {
       enabled: true,
       window: 60,

@@ -1,7 +1,6 @@
 // ---------------------------------------------------------------------------
 // /admin/me + /admin/sign-out — channel-web's `lib/auth.ts` calls these
-// directly (no longer routed through @ax/auth-oidc since Phase 3 swapped
-// the default to @ax/auth-better). Without these routes registered,
+// directly against @ax/auth-better. Without these routes registered,
 // static-files's SPA fallback would return index.html for /admin/me,
 // which the SPA can't parse as a session response — every fresh sign-in
 // would get bounced to LoginPage.

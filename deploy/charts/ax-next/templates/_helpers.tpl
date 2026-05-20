@@ -201,6 +201,6 @@ operator sets onboarding.bootstrapToken (or scrapes one from stdout),
 walks /setup/*, and adds providers from the admin UI.
 
 The previous helpers — `ax-next.devBootstrapEnabled` and
-`ax-next.googleAuthEnabled` — gated env stamping for the legacy auth-oidc
-plugin. Both are gone.
+`ax-next.googleAuthEnabled` — gated env stamping for the previous auth
+plugin and are gone.
 */}}

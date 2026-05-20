@@ -41,7 +41,7 @@ import { createChannelWebServerPlugin } from '../../server/plugin';
 //   5. Asserting the SSE consumer receives the expected frames.
 //
 // We keep auth + agents mocked. The point of this test is the FULL streaming
-// chain — auth's wire integration is covered by sse.test.ts and the auth-oidc
+// chain — auth's wire integration is covered by sse.test.ts and the auth-better
 // suite. Substituting real auth here would gain nothing and add a lot of
 // HMAC/cookie setup.
 // ---------------------------------------------------------------------------

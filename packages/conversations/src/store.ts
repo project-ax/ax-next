@@ -136,7 +136,7 @@ export function validateWorkspaceRefForFreeze(value: unknown): string | null {
 
 // ---------------------------------------------------------------------------
 // ID minting — `crypto.randomBytes`-derived prefixed ids, mirroring the
-// `agt_` / `usr_` posture in @ax/agents and @ax/auth-oidc.
+// `agt_` / `usr_` posture in @ax/agents and @ax/auth-better.
 // ---------------------------------------------------------------------------
 
 export function mintConversationId(): string {

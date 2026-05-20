@@ -61,9 +61,9 @@ async function bootStack(): Promise<BootedStack> {
   });
   const harness = await createTestHarness({
     // Stub the auth/tx/credential/agent hooks that onboarding declares in its
-    // `calls`. claim-route.test.ts doesn't load auth-oidc, storage-postgres,
-    // credentials, or agents; those routes are not exercised here, so stubs
-    // satisfy verifyCalls without weakening any assertion.
+    // `calls`. claim-route.test.ts doesn't load storage-postgres, credentials,
+    // or agents; those routes are not exercised here, so stubs satisfy
+    // verifyCalls without weakening any assertion.
     services: {
       'auth:create-bootstrap-user': async () => ({ user: { id: 'stub', email: null, displayName: null, isAdmin: true }, oneTimeToken: 'stub-token' }),
       'auth:complete-bootstrap-user': async () => ({ sessionCookie: { name: 'ax_auth_session', value: 'stub', opts: { path: '/', sameSite: 'Lax', maxAge: 60 } } }),

@@ -3,7 +3,7 @@
  *
  * Centered card with the brand mark, a one-line blurb, and a single
  * "Sign in with Google" CTA. Clicking navigates to
- * `/auth/sign-in/google` (handled by @ax/auth-oidc); the server
+ * `/auth/sign-in/google` (handled by @ax/auth-better); the server
  * 302-redirects to Google, then back via `/auth/callback/google`
  * which sets the signed session cookie and lands the user back at `/`.
  *
