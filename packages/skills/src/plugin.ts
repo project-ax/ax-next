@@ -197,6 +197,16 @@ export function createSkillsPlugin(): Plugin {
 
           // Capture the previous slot list so we can purge credentials for
           // any slots that are removed by this manifest edit.
+          //
+          // KNOWN LIMITATION: `previous` is read outside any transaction. If
+          // two concurrent upserts race, the second may read a `previous` that
+          // reflects the first's changes rather than the pre-upsert state, and
+          // may therefore skip purging some now-removed slots. The concurrency
+          // window is small and the purge is already best-effort (a missed
+          // purge leaves orphan credential rows but doesn't cause data loss or
+          // incorrect behavior). Fixing this properly requires a store-layer
+          // atomic read/compare/upsert primitive that doesn't yet exist.
+          // Revisit when the store gains transactional support.
           const skillId = parsed.value.id;
           const previous = await store.get(skillId);
           const oldSlots = previous?.capabilities.credentials.map((c) => c.slot) ?? [];
