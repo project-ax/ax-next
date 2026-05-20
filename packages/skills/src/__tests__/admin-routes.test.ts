@@ -496,6 +496,40 @@ version: 1
     expect(out.skills.map((s) => s.id)).toEqual(['greeter']);
   });
 
+  it('POST /admin/skills with sourceUrl persists it and reflects it on GET', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminSkillsHandlers({ bus: h.bus });
+
+    const skillMd = `---\nname: src\ndescription: src\nsourceUrl: https://example.com/src.md\n---\nbody`;
+    const { res: r1, statusOf: s1 } = mkRes();
+    await handlers.create(mkReq({ body: { skillMd } }), r1);
+    expect(s1()).toBe(201);
+
+    const { res: r2, statusOf: s2, bodyOf: b2 } = mkRes();
+    await handlers.get(mkReq({ params: { id: 'src' } }), r2);
+    expect(s2()).toBe(200);
+    const detail = b2() as { sourceUrl?: string };
+    expect(detail.sourceUrl).toBe('https://example.com/src.md');
+  });
+
+  it('PUT /admin/skills/:id clears sourceUrl when re-upserted without one', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminSkillsHandlers({ bus: h.bus });
+
+    // Create with sourceUrl
+    await handlers.create(mkReq({ body: { skillMd: `---\nname: src2\ndescription: d\nsourceUrl: https://example.com/x.md\n---\nbody` } }), mkRes().res);
+
+    // PUT without sourceUrl
+    const { res: r2, statusOf: s2 } = mkRes();
+    await handlers.update(mkReq({ body: { skillMd: `---\nname: src2\ndescription: d\n---\nupdated body` }, params: { id: 'src2' } }), r2);
+    expect(s2()).toBe(200);
+
+    const { res: r3, bodyOf: b3 } = mkRes();
+    await handlers.get(mkReq({ params: { id: 'src2' } }), r3);
+    const detail = b3() as { sourceUrl?: string };
+    expect(detail.sourceUrl).toBeUndefined();
+  });
+
   it('PUT /admin/skills/:id with defaultAttached: true on a credentialed manifest returns 400', async () => {
     const h = await makeHarness();
     const handlers = createAdminSkillsHandlers({ bus: h.bus });

@@ -219,6 +219,11 @@ export function createSkillsPlugin(): Plugin {
             bodyMd: input.bodyMd,
             version: parsed.value.version,
             defaultAttached: input.defaultAttached ?? false,
+            // sourceUrl: undefined and null both clear the column on update;
+            // an actual string persists. Threaded straight from the parsed
+            // manifest so the column is the source of truth, kept in sync
+            // with the manifest_yaml on every upsert.
+            sourceUrl: parsed.value.sourceUrl ?? null,
           });
 
           // Purge credentials for slots that no longer exist in the manifest.

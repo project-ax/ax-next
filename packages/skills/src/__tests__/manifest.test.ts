@@ -121,4 +121,60 @@ describe('parseSkillManifest', () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.code).toBe('invalid-yaml');
   });
+
+  it('accepts top-level https sourceUrl', () => {
+    const r = parseSkillManifest('name: x\ndescription: x\nsourceUrl: https://example.com/skill.md');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.sourceUrl).toBe('https://example.com/skill.md');
+  });
+
+  it('omits sourceUrl when absent', () => {
+    const r = parseSkillManifest('name: x\ndescription: x');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.sourceUrl).toBeUndefined();
+  });
+
+  it('rejects http:// sourceUrl', () => {
+    const r = parseSkillManifest('name: x\ndescription: x\nsourceUrl: http://example.com/skill.md');
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.code).toBe('invalid-manifest');
+  });
+
+  it('rejects file:// sourceUrl', () => {
+    const r = parseSkillManifest('name: x\ndescription: x\nsourceUrl: file:///etc/passwd');
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.code).toBe('invalid-manifest');
+  });
+
+  it('rejects IPv4-literal sourceUrl', () => {
+    const r = parseSkillManifest('name: x\ndescription: x\nsourceUrl: https://10.0.0.1/skill.md');
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.code).toBe('invalid-manifest');
+  });
+
+  it('rejects bare-host sourceUrl', () => {
+    const r = parseSkillManifest('name: x\ndescription: x\nsourceUrl: https://localhost/skill.md');
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.code).toBe('invalid-manifest');
+  });
+
+  it('rejects malformed sourceUrl', () => {
+    const r = parseSkillManifest('name: x\ndescription: x\nsourceUrl: ":::not a url"');
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.code).toBe('invalid-manifest');
+  });
+
+  it('rejects non-string sourceUrl', () => {
+    const r = parseSkillManifest('name: x\ndescription: x\nsourceUrl: 42');
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.code).toBe('invalid-manifest');
+  });
 });
