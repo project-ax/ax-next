@@ -1,12 +1,10 @@
 /**
- * Wire-client tests for `lib/credentials.ts` — Task 4.1.
+ * Wire-client tests for `lib/credentials.ts`.
  *
  * Mirrors the shape the server contracts in `@ax/credentials-admin-routes`:
  *   - GET    /admin/credentials              → { credentials: [...] }
  *   - POST   /admin/credentials              → { credential }
  *   - GET    /admin/credentials/kinds        → { kinds: [...] }
- *   - POST   /admin/credentials/oauth/start  → { pendingId, authorizeUrl, instructions }
- *   - POST   /admin/credentials/oauth/finish → { credential }
  *   - GET    /settings/credentials           (per-user list)
  *
  * Pinned behaviors (the assertions are a contract):
@@ -96,40 +94,6 @@ describe('credentials wire client', () => {
       const kinds = await adminCredentials.listKinds();
       expect(fetchMock.mock.calls[0]![0]).toBe('/admin/credentials/kinds');
       expect(kinds).toEqual([{ kind: 'api-key', flow: 'paste' }]);
-    });
-
-    it('oauthStart POSTs /admin/credentials/oauth/start', async () => {
-      const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-        jsonResponse({
-          pendingId: 'p1',
-          authorizeUrl: 'https://provider/authorize',
-          instructions: 'paste',
-        }),
-      );
-      const out = await adminCredentials.oauthStart({
-        scope: 'global',
-        ownerId: null,
-        ref: 'anthropic',
-        kind: 'anthropic-oauth',
-      });
-      const call = fetchMock.mock.calls[0]!;
-      expect(call[0]).toBe('/admin/credentials/oauth/start');
-      const init = call[1] as RequestInit;
-      expect(init.method).toBe('POST');
-      expect((init.headers as Record<string, string>)['x-requested-with']).toBe(
-        'ax-admin',
-      );
-      expect(out.pendingId).toBe('p1');
-    });
-
-    it('oauthFinish POSTs /admin/credentials/oauth/finish', async () => {
-      const fetchMock = vi
-        .spyOn(globalThis, 'fetch')
-        .mockResolvedValue(jsonResponse({ credential: { ref: 'k' } }, 201));
-      await adminCredentials.oauthFinish({ pendingId: 'p1', code: 'abc' });
-      expect(fetchMock.mock.calls[0]![0]).toBe(
-        '/admin/credentials/oauth/finish',
-      );
     });
 
     it('throws on non-ok responses', async () => {
