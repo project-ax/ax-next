@@ -1,0 +1,28 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "f9258f350218",
+  "strategy": "manual-commit",
+  "branch": "worktree-credentials-ux-redesign",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "packages/channel-web/src/components/admin/SkillAttachmentsSection.tsx",
+    "packages/channel-web/src/components/credentials/CredentialSlotForm.tsx",
+    "packages/channel-web/src/components/credentials/CredentialSlotRow.tsx",
+    "packages/channel-web/src/lib/credentials.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/f9/258f350218/0/metadata.json",
+      "transcript": "/f9/258f350218/0/full.jsonl",
+      "content_hash": "/f9/258f350218/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 0,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 0,
+    "output_tokens": 0,
+    "api_call_count": 0
+  }
+}
