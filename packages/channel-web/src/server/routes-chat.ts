@@ -472,14 +472,17 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
         }
       }
 
+      // `content` carries the typed text; `contentBlocks` carries only
+      // non-text blocks (attachments, images). The runner's user-message
+      // handoff prepends `content` as a text block to the translated
+      // contentBlocks — leaving a text block in contentBlocks here would
+      // duplicate the user's prompt in both the SDK input and the
+      // resulting jsonl transcript.
+      const nonTextBlocks = rewrittenBlocks.filter((b) => b.type !== 'text');
       const message: AgentMessage = {
         role: 'user',
         content: extractText(rewrittenBlocks),
-        // Phase 3: pass the full block list when ANY block is present so
-        // the runner can render attachments. Phase 2's D2 extension on
-        // AgentMessageSchema makes `contentBlocks` optional; Phase 3
-        // starts populating it.
-        contentBlocks: rewrittenBlocks,
+        ...(nonTextBlocks.length > 0 ? { contentBlocks: nonTextBlocks } : {}),
         // turnId is the per-user-turn id the runner uses to bind the
         // user message to the same turn the host committed attachments
         // under (so the file path `.ax/uploads/<conv>/<turnId>/<file>`

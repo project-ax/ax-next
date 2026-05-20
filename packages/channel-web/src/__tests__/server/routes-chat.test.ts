@@ -555,14 +555,14 @@ describe('@ax/channel-web POST /api/chat/messages', () => {
     expect(cap.ctx.userId).toBe('userA');
     expect(cap.ctx.agentId).toBe('agt_test');
     // agent:invoke's first-turn message — extracted from the first text block.
-    // Phase 3: the route now also passes `contentBlocks` (the rewritten
-    // block list — for a text-only message, just the text block) and a
-    // server-minted `turnId` so the runner can bind the user turn.
+    // `content` carries the typed text; `contentBlocks` is omitted because
+    // a text-only message has no non-text blocks to ship. The runner's
+    // user-message handoff would otherwise prepend `content` ALONGSIDE
+    // the same text already present in contentBlocks — duplicating it in
+    // the SDK input and jsonl transcript.
     expect(cap.input.message.role).toBe('user');
     expect(cap.input.message.content).toBe('hello there');
-    expect(cap.input.message.contentBlocks).toEqual([
-      { type: 'text', text: 'hello there' },
-    ]);
+    expect(cap.input.message.contentBlocks).toBeUndefined();
     expect(typeof cap.input.message.turnId).toBe('string');
     expect(cap.input.message.turnId!.length).toBeGreaterThan(0);
 
@@ -1582,13 +1582,13 @@ describe('POST /api/chat/messages — attachment_ref handling', () => {
     const cap = booted.chatRunCaptures[0]!;
     const msg = cap.input.message;
     expect(msg.role).toBe('user');
+    // `content` carries the typed text; `contentBlocks` carries the
+    // committed attachment only. Including the text-block here as well
+    // would duplicate the user's prompt once the runner prepends `content`.
+    expect(msg.content).toBe('hi here is a doc');
     expect(msg.contentBlocks).toBeTruthy();
-    expect(msg.contentBlocks).toHaveLength(2);
-    expect(msg.contentBlocks![0]).toEqual({
-      type: 'text',
-      text: 'hi here is a doc',
-    });
-    const att = msg.contentBlocks![1]!;
+    expect(msg.contentBlocks).toHaveLength(1);
+    const att = msg.contentBlocks![0]!;
     expect(att.type).toBe('attachment');
     expect(att.mediaType).toBe('application/pdf');
     expect(att.displayName).toBe('note.pdf');
