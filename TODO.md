@@ -49,11 +49,11 @@ Sources scanned (2026-05-19): `MEMORY.md`, recent `docs/plans/*followup*`,
 
 These wait on stated triggers — don't ship pre-emptively.
 
-- [x] ~~**Delete `@ax/credentials-anthropic-oauth`**~~ Shipped in this branch — package deleted, CLI dep + tsconfig refs removed, k8s preset comment rewritten. No off-default preset depended on the Anthropic-OAuth kind once `ax credentials login` was removed.
-- [x] ~~**Delete `@ax/credentials-oauth-pending`**~~ Shipped in this branch — `@ax/credentials-admin-routes` had no remaining callers of `credentials:oauth:stash-pending` / `:claim-pending` after PR #109 removed the `/oauth/*` routes.
-- [x] ~~**Retire `/admin/credentials/oauth/start` + `/finish`** routes + `oauth-flow.test.ts` in `@ax/credentials-admin-routes`.~~ Already done in PR #109 (credentials UX redesign); only the comment/test cross-references remained, cleaned up in this branch.
-- [x] ~~**Audit + delete `oauthStart` / `oauthFinish`**~~ Shipped in this branch — only the test file referenced them; no production UI caller remained after `OAuthFlowForm` was deleted in PR #109.
-- [x] ~~**Delete `ax credentials login`** subcommand~~ Shipped in this branch — `runLoginCommand` + `startRedirectListener` + OAuth constants + the `open-browser.ts` helper removed, `@ax/credentials-anthropic-oauth` dep dropped.
+- [x] ~~**Delete `@ax/credentials-anthropic-oauth`**~~ Shipped in PR #110 (2026-05-20) — package deleted, CLI dep + tsconfig refs removed, k8s preset comment rewritten. No off-default preset depended on the Anthropic-OAuth kind once `ax credentials login` was removed.
+- [x] ~~**Delete `@ax/credentials-oauth-pending`**~~ Shipped in PR #110 — `@ax/credentials-admin-routes` had no remaining callers of `credentials:oauth:stash-pending` / `:claim-pending` after PR #109 removed the `/oauth/*` routes.
+- [x] ~~**Retire `/admin/credentials/oauth/start` + `/finish`** routes + `oauth-flow.test.ts` in `@ax/credentials-admin-routes`.~~ Already done in PR #109; comment/test cross-references cleaned up in PR #110.
+- [x] ~~**Audit + delete `oauthStart` / `oauthFinish`**~~ Shipped in PR #110 — only the test file referenced them; no production UI caller remained after `OAuthFlowForm` was deleted in PR #109.
+- [x] ~~**Delete `ax credentials login`** subcommand~~ Shipped in PR #110 — `runLoginCommand` + `startRedirectListener` + OAuth constants + the `open-browser.ts` helper removed, `@ax/credentials-anthropic-oauth` dep dropped.
 - [ ] **`ax admin reset-password` CLI + `/auth/reset-password` route.** Pick up when local password sign-in becomes a real surface (wizard re-adds password OR Settings → Password lands). Today the wizard captures only name+email against `@ax/auth-oidc`.
 - [ ] **Delete `/auth/dev-bootstrap` route + `dev-bootstrap.ts`** in `@ax/auth-oidc`. Pick up when `@ax/auth-oidc` itself retires (touches `packages/auth-oidc/src/types.ts` that `@ax/auth-better` type-imports).
 
