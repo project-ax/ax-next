@@ -660,5 +660,13 @@ describe('@ax/agents credential purge on delete', () => {
         agentId: created.agent.id,
       }),
     ).resolves.toBeUndefined();
+
+    // Confirm the agent row is actually gone (not a silent no-op).
+    const { agents } = await h.bus.call<ListForUserInput, ListForUserOutput>(
+      'agents:list-for-user',
+      ctx,
+      { userId: 'u1' },
+    );
+    expect(agents.find((a) => a.id === created.agent.id)).toBeUndefined();
   });
 });
