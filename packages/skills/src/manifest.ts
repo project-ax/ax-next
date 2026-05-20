@@ -114,30 +114,37 @@ type CredentialListResult =
 // `capabilities.credentials`: each entry must have a SCREAMING_SNAKE slot
 // matching SLOT_RE, kind: 'api-key', optional string description; duplicate
 // slot names within a single list are rejected with `duplicate-slot`.
-function parseCredentialList(raw: unknown): CredentialListResult {
+//
+// `contextLabel` is prefixed into error messages so callers can disambiguate
+// top-level (`capabilities.credentials`) from per-server
+// (`capabilities.mcpServers[N].credentials`) failures.
+function parseCredentialList(
+  raw: unknown,
+  contextLabel: string = 'capabilities.credentials',
+): CredentialListResult {
   if (!Array.isArray(raw)) {
-    return { ok: false, code: 'invalid-slot', message: '"credentials" must be an array.' };
+    return { ok: false, code: 'invalid-slot', message: `"${contextLabel}" must be an array.` };
   }
   const out: CapabilitySlot[] = [];
   const seen = new Set<string>();
   for (const rawCred of raw) {
     if (rawCred === null || typeof rawCred !== 'object' || Array.isArray(rawCred)) {
-      return { ok: false, code: 'invalid-slot', message: 'Each credential entry must be a mapping object.' };
+      return { ok: false, code: 'invalid-slot', message: `Each entry in "${contextLabel}" must be a mapping object.` };
     }
     const cred = rawCred as Record<string, unknown>;
 
     const rawSlot = cred['slot'];
     if (typeof rawSlot !== 'string' || !SLOT_RE.test(rawSlot)) {
-      return { ok: false, code: 'invalid-slot', message: `"slot" must match /^[A-Z][A-Z0-9_]{0,63}$/, got: ${JSON.stringify(rawSlot)}` };
+      return { ok: false, code: 'invalid-slot', message: `"${contextLabel}" entry "slot" must match /^[A-Z][A-Z0-9_]{0,63}$/, got: ${JSON.stringify(rawSlot)}` };
     }
     if (seen.has(rawSlot)) {
-      return { ok: false, code: 'duplicate-slot', message: `Duplicate slot name "${rawSlot}" in credentials.` };
+      return { ok: false, code: 'duplicate-slot', message: `Duplicate slot name "${rawSlot}" in "${contextLabel}".` };
     }
     seen.add(rawSlot);
 
     const rawKind = cred['kind'];
     if (rawKind !== 'api-key') {
-      return { ok: false, code: 'invalid-kind', message: `"kind" must be "api-key", got: ${JSON.stringify(rawKind)}` };
+      return { ok: false, code: 'invalid-kind', message: `"${contextLabel}" entry "kind" must be "api-key", got: ${JSON.stringify(rawKind)}` };
     }
 
     const rawDescription = cred['description'];
@@ -145,7 +152,7 @@ function parseCredentialList(raw: unknown): CredentialListResult {
       return {
         ok: false,
         code: 'invalid-slot',
-        message: `"description" on slot "${rawSlot}" must be a string when provided, got: ${JSON.stringify(rawDescription)}`,
+        message: `"${contextLabel}" entry "description" on slot "${rawSlot}" must be a string when provided, got: ${JSON.stringify(rawDescription)}`,
       };
     }
     out.push({
@@ -175,7 +182,8 @@ function parseMcpServers(raw: unknown, allowedHostsAcc: Set<string>): McpServers
   const out: McpServerSpec[] = [];
   const seenNames = new Set<string>();
 
-  for (const rawEntry of raw) {
+  for (let index = 0; index < raw.length; index++) {
+    const rawEntry = raw[index];
     if (rawEntry === null || typeof rawEntry !== 'object' || Array.isArray(rawEntry)) {
       return { ok: false, code: 'invalid-manifest', message: 'Each mcpServers entry must be a mapping object.' };
     }
@@ -217,7 +225,10 @@ function parseMcpServers(raw: unknown, allowedHostsAcc: Set<string>): McpServers
     // per-server credentials (optional). Same shape as top-level credentials.
     let perServerCreds: CapabilitySlot[] = [];
     if ('credentials' in entry) {
-      const credResult = parseCredentialList(entry['credentials']);
+      const credResult = parseCredentialList(
+        entry['credentials'],
+        `capabilities.mcpServers[${index}].credentials`,
+      );
       if (!credResult.ok) {
         return { ok: false, code: credResult.code, message: credResult.message };
       }

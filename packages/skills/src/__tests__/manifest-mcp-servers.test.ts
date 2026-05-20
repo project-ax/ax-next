@@ -31,6 +31,7 @@ capabilities:
         credentials: [{ slot: 'GITHUB_TOKEN', kind: 'api-key' }],
       },
     ]);
+    expect(r.value.capabilities.allowedHosts).toContain('api.github.com');
   });
 
   it('parses a valid http MCP server and folds url host into allowedHosts implicitly', () => {
@@ -46,6 +47,7 @@ capabilities:
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.value.capabilities.mcpServers?.[0]?.allowedHosts).toContain('mcp.example.com');
+    expect(r.value.capabilities.allowedHosts).toContain('mcp.example.com');
   });
 
   it('rejects non-whitelisted command', () => {
