@@ -20,7 +20,7 @@ import type { AuthBetterDatabase } from '../migrations.js';
 import type {
   CreateBootstrapUserInput,
   CreateBootstrapUserOutput,
-} from '@ax/auth-oidc';
+} from '../index.js';
 
 let container: StartedPostgreSqlContainer;
 let connectionString: string;
