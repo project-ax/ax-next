@@ -496,6 +496,61 @@ describe('@ax/skills credential purge on delete / slot removal', () => {
     expect(credStore[0]?.ref).toBe('skill:gh-tool:KEEPER');
   });
 
+  it('skills:delete continues purging remaining rows when one delete fails (per-row try/catch)', async () => {
+    // Seed 3 credential rows for 3 slots.  The middle delete throws; the
+    // first and last must still be deleted.
+    const credStore: CredentialRow[] = [
+      { scope: 'global', ownerId: null, ref: 'skill:multi-slot:SLOT_A' },
+      { scope: 'global', ownerId: null, ref: 'skill:multi-slot:SLOT_B' },
+      { scope: 'global', ownerId: null, ref: 'skill:multi-slot:SLOT_C' },
+    ];
+
+    let callCount = 0;
+    const credDeleteStub = vi.fn(async (_ctx: unknown, input: unknown) => {
+      callCount++;
+      const inp = input as CredentialRow;
+      if (inp.ref === 'skill:multi-slot:SLOT_B') {
+        throw new Error('middle delete exploded');
+      }
+      const idx = credStore.findIndex(
+        (r) => r.scope === inp.scope && r.ownerId === inp.ownerId && r.ref === inp.ref,
+      );
+      if (idx !== -1) credStore.splice(idx, 1);
+    });
+
+    const h = await makeHarness({
+      services: {
+        'credentials:list': async () => ({ credentials: [...credStore] }),
+        'credentials:delete': credDeleteStub,
+      },
+    });
+
+    const manifest = yamlForSkill('multi-slot', [
+      { slot: 'SLOT_A', kind: 'api-key' },
+      { slot: 'SLOT_B', kind: 'api-key' },
+      { slot: 'SLOT_C', kind: 'api-key' },
+    ]);
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>(
+      'skills:upsert',
+      h.ctx(),
+      { manifestYaml: manifest, bodyMd: '# multi-slot\n' },
+    );
+
+    // Delete must succeed even though SLOT_B's delete threw.
+    await expect(
+      h.bus.call<SkillsDeleteInput, SkillsDeleteOutput>(
+        'skills:delete',
+        h.ctx(),
+        { skillId: 'multi-slot' },
+      ),
+    ).resolves.toEqual({});
+
+    // All 3 deletes were attempted.
+    expect(callCount).toBe(3);
+    // SLOT_A and SLOT_C were removed; SLOT_B (which threw) remains.
+    expect(credStore.map((r) => r.ref)).toEqual(['skill:multi-slot:SLOT_B']);
+  });
+
   it('skills:delete credential purge failure does not abort the skill deletion', async () => {
     const credListStub = async () => ({
       credentials: [{ scope: 'global' as const, ownerId: null, ref: 'skill:bad-skill:TOKEN' }],

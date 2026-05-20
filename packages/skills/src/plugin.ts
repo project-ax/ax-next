@@ -76,11 +76,22 @@ async function purgeSkillCredentials(
 
   for (const c of credentials) {
     if (!refsToDelete.has(c.ref)) continue;
-    await bus.call<CredentialRow, void>('credentials:delete', ctx, {
-      scope: c.scope,
-      ownerId: c.ownerId,
-      ref: c.ref,
-    });
+    // Per-row try/catch: one failed delete must not abort the rest. The caller
+    // wraps the whole purge in its own try/catch for the list-phase errors.
+    try {
+      await bus.call<CredentialRow, void>('credentials:delete', ctx, {
+        scope: c.scope,
+        ownerId: c.ownerId,
+        ref: c.ref,
+      });
+    } catch (err) {
+      ctx.logger.warn('skills_purge_credential_delete_failed', {
+        ref: c.ref,
+        scope: c.scope,
+        ownerId: c.ownerId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 }
 
@@ -236,13 +247,24 @@ export function createSkillsPlugin(): Plugin {
             }
           }
 
-          // Purge credentials for every slot declared by this skill before
-          // removing the skill row. Do this before store.delete so we still
-          // have access to the capability list. A purge failure is warned but
-          // does not abort the delete — the skill row is removed regardless.
+          // Read the skill's credential slots BEFORE deletion (we need
+          // the capability list). Then delete the row first — if store.delete
+          // throws, no purge has run yet and the caller can retry cleanly.
+          // After a successful row deletion the purge is best-effort: a
+          // failure is logged but does not surface as an error.
+          //
+          // Note: agents:delete keeps the opposite order (purge-first) because
+          // an orphaned agent-scope credential row can never be cleaned up once
+          // the agent row is gone. Skills credentials are keyed by skillId and
+          // slot only, so they can always be cleaned up by re-running the
+          // purge — making delete-first safe here.
           const existing = await store.get(input.skillId);
-          if (existing !== null) {
-            const slots = existing.capabilities.credentials.map((c) => c.slot);
+          const slots = existing?.capabilities.credentials.map((c) => c.slot) ?? [];
+
+          await store.delete(input.skillId);
+
+          // Best-effort purge — skill row is already gone at this point.
+          if (slots.length > 0) {
             try {
               await purgeSkillCredentials(bus, ctx, input.skillId, slots);
             } catch (err) {
@@ -252,8 +274,6 @@ export function createSkillsPlugin(): Plugin {
               });
             }
           }
-
-          await store.delete(input.skillId);
           return {};
         },
       );
