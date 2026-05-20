@@ -1,0 +1,16 @@
+FAIL  src/__tests__/store.test.ts [ src/__tests__/store.test.ts ]
+packages/routines test: Error: Hook timed out in 10000ms.
+packages/routines test: If this is a long-running hook, pass a timeout value as the last argument or configure it globally with "hookTimeout".
+packages/routines test:  ❯ src/__tests__/store.test.ts:46:1
+packages/routines test:      44| });
+packages/routines test:      45|
+packages/routines test:      46| afterAll(async () => {
+packages/routines test:        | ^
+packages/routines test:      47|   await db.destroy();
+packages/routines test:      48|   if (container) await container.stop();
+packages/routines test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+packages/routines test:  Test Files  1 failed | 17 passed (18)
+packages/routines test:       Tests  161 passed (161)
+packages/routines test:    Start at  01:30:27
+packages/routines test:    Duration  54.12s (transform 3.78s, setup 0ms, import 20.61s, tests 135.44s, environment 3ms)
+packages/routines test: ::error file=/home/runner/work/ax-next/ax-next/packages/routines/src/__tests__/store.test.ts,title=src/__tests__/store.test.ts,line=46,column=1::Error: Hook timed out in 10000ms.%0AIf this is a long-running hook, pass a timeout value as the last argument or configure it globally with "hookTimeout".%0A ❯ src/__tests__/store.test.ts:46:1%0A%0A
