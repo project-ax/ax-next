@@ -1578,6 +1578,9 @@ importers:
         specifier: 0.28.17
         version: 0.28.17
     devDependencies:
+      '@ax/auth-better':
+        specifier: workspace:*
+        version: link:../auth-better
       '@ax/auth-oidc':
         specifier: workspace:*
         version: link:../auth-oidc
