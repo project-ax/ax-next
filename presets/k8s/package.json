@@ -34,7 +34,6 @@
     "@ax/credential-proxy": "workspace:*",
     "@ax/credentials": "workspace:*",
     "@ax/credentials-admin-routes": "workspace:*",
-    "@ax/credentials-oauth-pending": "workspace:*",
     "@ax/credentials-store-db": "workspace:*",
     "@ax/database-postgres": "workspace:*",
     "@ax/eventbus-postgres": "workspace:*",

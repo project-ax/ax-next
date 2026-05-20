@@ -23,7 +23,6 @@
   },
   "devDependencies": {
     "@ax/credentials": "workspace:*",
-    "@ax/credentials-oauth-pending": "workspace:*",
     "@ax/credentials-store-db": "workspace:*",
     "@ax/storage-sqlite": "workspace:*",
     "@types/node": "^25.6.0",

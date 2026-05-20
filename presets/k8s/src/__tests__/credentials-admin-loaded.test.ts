@@ -36,22 +36,10 @@ describe('credentials-admin-routes loaded conditionally', () => {
     ).toBeDefined();
   });
 
-  it('does NOT load @ax/credentials-oauth-pending (OAuth-paste deferred for MVP)', () => {
-    // MVP: OAuth-paste flows are out of scope — see design §3. The plugin
-    // stays in the tree for future re-introduction but is not wired here.
-    const plugins = createK8sPlugins({ ...baseCfg, credentialsAdmin: true });
-    expect(
-      plugins.find((p) => p.manifest.name === '@ax/credentials-oauth-pending'),
-    ).toBeUndefined();
-  });
-
   it('does NOT load when credentialsAdmin is undefined', () => {
     const plugins = createK8sPlugins(baseCfg);
     expect(
       plugins.find((p) => p.manifest.name === '@ax/credentials-admin-routes'),
-    ).toBeUndefined();
-    expect(
-      plugins.find((p) => p.manifest.name === '@ax/credentials-oauth-pending'),
     ).toBeUndefined();
   });
 
@@ -59,9 +47,6 @@ describe('credentials-admin-routes loaded conditionally', () => {
     const plugins = createK8sPlugins({ ...baseCfg, credentialsAdmin: false });
     expect(
       plugins.find((p) => p.manifest.name === '@ax/credentials-admin-routes'),
-    ).toBeUndefined();
-    expect(
-      plugins.find((p) => p.manifest.name === '@ax/credentials-oauth-pending'),
     ).toBeUndefined();
   });
 

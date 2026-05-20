@@ -666,11 +666,6 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // operator opts in — the chart's `credentials.admin.enabled=true` flag
   // sets AX_CREDENTIALS_ADMIN_ENABLED which loadK8sConfigFromEnv
   // translates into cfg.credentialsAdmin.
-  //
-  // MVP: OAuth-paste flows deferred — see docs/plans/2026-05-19-credentials-ux-redesign-design.md §3.
-  // @ax/credentials-oauth-pending stays in the tree for future re-introduction
-  // but is not loaded here. To re-enable, push createCredentialsOauthPendingPlugin()
-  // before createCredentialsAdminRoutesPlugin() in a custom preset.
   if (config.credentialsAdmin === true) {
     plugins.push(createCredentialsAdminRoutesPlugin());
   }
