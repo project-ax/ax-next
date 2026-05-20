@@ -16,7 +16,8 @@ import { HookBus, bootstrap, makeAgentContext, type Plugin } from '@ax/core';
 import { createTestHarness, type TestHarness } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createHttpServerPlugin, type HttpServerPlugin } from '@ax/http-server';
-import { createAuthPlugin } from '@ax/auth-oidc';
+import { createAuthBetterPlugin } from '@ax/auth-better';
+import { signInAsAdmin } from '@ax/test-harness';
 import { createCredentialsStoreDbPlugin } from '@ax/credentials-store-db';
 import { createCredentialsPlugin } from '@ax/credentials';
 import { createToolDispatcherPlugin } from '../tool-dispatcher-plugin.js';
@@ -52,7 +53,6 @@ import { saveConfig } from '../config.js';
 // ---------------------------------------------------------------------------
 
 const COOKIE_KEY = randomBytes(32);
-const DEV_TOKEN = 'mcp-admin-routes-test-bootstrap-token';
 const CREDENTIALS_KEY_HEX = '42'.repeat(32);
 
 let container: StartedPostgreSqlContainer;
@@ -83,8 +83,9 @@ async function dropAllTables(): Promise<void> {
   const c = new pgmod.default.Client({ connectionString });
   await c.connect();
   try {
-    await c.query('DROP TABLE IF EXISTS auth_v1_sessions');
-    await c.query('DROP TABLE IF EXISTS auth_v1_users');
+    await c.query('DROP TABLE IF EXISTS auth_better_v1_sessions');
+    await c.query('DROP TABLE IF EXISTS auth_better_v1_users');
+    await c.query('DROP TABLE IF EXISTS auth_providers');
   } finally {
     await c.end().catch(() => {});
   }
@@ -217,7 +218,7 @@ async function bootStack(opts: {
       createCredentialsPlugin(),
       createToolDispatcherPlugin(),
       http,
-      createAuthPlugin({ providers: {}, devBootstrap: { token: DEV_TOKEN } }),
+      createAuthBetterPlugin(),
       mcp,
     ],
   });
@@ -254,52 +255,52 @@ async function signIn(stack: BootedStack): Promise<string> {
 }
 
 /** Variant of signIn() that also returns the resolved userId, for tests
- *  that need to seed scope='user' rows bound to whatever user the
- *  bootstrap path resolved (which isn't always the literal 'u'). */
+ *  that need to seed scope='user' rows bound to the actor that
+ *  auth:create-bootstrap-user actually minted (the helper returns it
+ *  directly — no fetch-and-parse needed). */
 async function signInWithUser(
   stack: BootedStack,
 ): Promise<{ cookie: string; userId: string }> {
-  const r = await fetch(`http://127.0.0.1:${stack.port}/auth/dev-bootstrap`, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'x-requested-with': 'ax-admin',
-    },
-    body: JSON.stringify({ token: DEV_TOKEN, displayName: 'User A' }),
+  const { cookieHeader, user } = await signInAsAdmin({
+    bus: stack.harness.bus,
+    cookieKey: COOKIE_KEY,
+    displayName: 'User A',
+    email: 'admin@example.com',
   });
-  expect(r.status).toBe(200);
-  const setCookie =
-    r.headers.getSetCookie?.() ?? [r.headers.get('set-cookie') ?? ''];
-  const cookieHeader = setCookie.find((c) => c.startsWith('ax_auth_session='));
-  if (cookieHeader === undefined) throw new Error('no session cookie returned');
-  const body = (await r.json()) as { user: { id: string } };
-  return { cookie: cookieHeader.split(';')[0]!, userId: body.user.id };
+  const userId = (user as { id: string }).id;
+  return { cookie: cookieHeader, userId };
 }
 
-/** Mint a SECOND user via raw SQL (separate user_id, distinct subject) and
- *  forge a signed session cookie for them. Mirrors the agents admin test. */
+/** Mint a SECOND user via raw SQL (separate user_id, distinct email) and
+ *  forge a signed session cookie for them. Mirrors the agents admin test.
+ *
+ *  In auth-better, the COOKIE VALUE is the session's `token` column, not
+ *  its primary-key `id` — see migrations.ts. */
 async function mintSecondUserCookie(): Promise<{ userId: string; cookie: string }> {
   const pgmod = await import('pg');
   const c = new pgmod.default.Client({ connectionString });
   await c.connect();
   try {
-    const userId = 'usr_test_b';
-    const subjectId = `bootstrap-test-b-${randomBytes(4).toString('hex')}`;
+    const userId = `usr_${randomBytes(16).toString('hex')}`;
+    const sessionId = `sess_${randomBytes(16).toString('hex')}`;
+    const token = randomBytes(32).toString('base64url');
+    const now = new Date();
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
     await c.query(
-      `INSERT INTO auth_v1_users (user_id, auth_subject_id, auth_provider, email, display_name, is_admin)
-       VALUES ($1, $2, 'dev-bootstrap', NULL, 'User B', false)
-       ON CONFLICT (auth_provider, auth_subject_id) DO NOTHING`,
-      [userId, subjectId],
+      `INSERT INTO auth_better_v1_users (id, email, email_verified, name, image, role, created_at, updated_at)
+       VALUES ($1, $2, false, $3, NULL, 'user', $4, $4)
+       ON CONFLICT (email) DO NOTHING`,
+      [userId, `user-b-${userId}@example.invalid`, 'User B', now],
     );
-    const sessionId = randomBytes(32).toString('base64url');
-    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
     await c.query(
-      `INSERT INTO auth_v1_sessions (session_id, user_id, expires_at)
-       VALUES ($1, $2, $3)`,
-      [sessionId, userId, expiresAt],
+      `INSERT INTO auth_better_v1_sessions (id, user_id, token, expires_at, ip_address, user_agent, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, NULL, NULL, $5, $5)`,
+      [sessionId, userId, token, expiresAt, now],
     );
+
     const { signCookieValue } = await import('@ax/http-server');
-    const wire = signCookieValue(COOKIE_KEY, sessionId);
+    const wire = signCookieValue(COOKIE_KEY, token);
     return { userId, cookie: `ax_auth_session=${wire}` };
   } finally {
     await c.end().catch(() => {});
@@ -513,9 +514,9 @@ describe('@ax/mcp-client admin routes', () => {
     // body must contain the ref id (`cred-foo`) but NOT the resolved
     // value (`super-secret-value`).
     //
-    // The credential MUST be seeded under whatever userId the dev-bootstrap
-    // path actually creates — earlier this seeded under hardcoded 'u', but
-    // dev-bootstrap may resolve the user to a different id. If they
+    // The credential MUST be seeded under the userId that signInAsAdmin
+    // actually minted — earlier this seeded under hardcoded 'u', but the
+    // bootstrap hook resolves the user to a different id. If they
     // mismatch the credential is non-resolvable and the leak assertion
     // passes vacuously (no value to leak), defeating the regression test.
     const { cookie, userId } = await signInWithUser(stack);
@@ -884,25 +885,19 @@ describe('@ax/mcp-client admin routes', () => {
         createCredentialsPlugin(),
         createToolDispatcherPlugin(),
         http2,
-        createAuthPlugin({ providers: {}, devBootstrap: { token: DEV_TOKEN } }),
+        createAuthBetterPlugin(),
         sleepPlugin,
       ],
     });
     const port = http2.boundPort();
 
     try {
-      const r0 = await fetch(`http://127.0.0.1:${port}/auth/dev-bootstrap`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-requested-with': 'ax-admin',
-        },
-        body: JSON.stringify({ token: DEV_TOKEN, displayName: 'TO User' }),
+      const { cookieHeader: cookie } = await signInAsAdmin({
+        bus: harness2.bus,
+        cookieKey: COOKIE_KEY,
+        displayName: 'TO User',
+        email: 'admin@example.com',
       });
-      const setCookie =
-        r0.headers.getSetCookie?.() ?? [r0.headers.get('set-cookie') ?? ''];
-      const cookieHeader = setCookie.find((c) => c.startsWith('ax_auth_session='));
-      const cookie = cookieHeader!.split(';')[0]!;
       await http(port, 'POST', '/admin/mcp-servers', {
         cookie,
         body: makeBody({ id: 'slow' }),
