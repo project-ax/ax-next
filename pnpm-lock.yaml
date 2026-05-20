@@ -1240,6 +1240,9 @@ importers:
       '@ax/agents':
         specifier: workspace:*
         version: link:../agents
+      '@ax/auth-better':
+        specifier: workspace:*
+        version: link:../auth-better
       '@ax/auth-oidc':
         specifier: workspace:*
         version: link:../auth-oidc

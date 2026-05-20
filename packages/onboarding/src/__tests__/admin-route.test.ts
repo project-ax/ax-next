@@ -16,13 +16,13 @@ import pg from 'pg';
 import { createTestHarness, type TestHarness } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createHttpServerPlugin, type HttpServerPlugin } from '@ax/http-server';
-import { createAuthPlugin } from '@ax/auth-oidc';
+import { createAuthBetterPlugin } from '@ax/auth-better';
 import { createOnboardingPlugin } from '../plugin.js';
 
 // ---------------------------------------------------------------------------
 // POST /setup/admin — Task 2.6 integration tests.
 //
-// Boots: database-postgres + http-server + auth-oidc + onboarding.
+// Boots: database-postgres + http-server + auth-better + onboarding.
 // Exercises:
 //   - happy path: claim → admin → cookie swap (bootstrap-session cleared,
 //     auth-session issued), next = '/setup/model'
@@ -68,8 +68,9 @@ async function dropTables(): Promise<void> {
   });
   try {
     await sql`DROP TABLE IF EXISTS bootstrap_state`.execute(k);
-    await sql`DROP TABLE IF EXISTS auth_v1_sessions`.execute(k);
-    await sql`DROP TABLE IF EXISTS auth_v1_users`.execute(k);
+    await sql`DROP TABLE IF EXISTS auth_better_v1_sessions`.execute(k);
+    await sql`DROP TABLE IF EXISTS auth_better_v1_users`.execute(k);
+    await sql`DROP TABLE IF EXISTS auth_providers`.execute(k);
   } finally {
     await k.destroy().catch(() => {});
   }
@@ -94,14 +95,17 @@ async function bootStack(): Promise<BootedStack> {
       'credentials:set': async () => { throw new Error('credentials:set not expected in admin-route tests'); },
       'agents:create': async () => { throw new Error('agents:create not expected in admin-route tests'); },
       'storage:set': async () => { throw new Error('storage:set not expected in admin-route tests'); },
+      'credentials:envelope-encrypt': async (_ctx, input) => ({
+        ciphertext: Buffer.from((input as { plaintext: string }).plaintext, 'utf8'),
+      }),
+      'credentials:envelope-decrypt': async (_ctx, input) => ({
+        plaintext: Buffer.from((input as { ciphertext: Uint8Array }).ciphertext).toString('utf8'),
+      }),
     },
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),
       http,
-      createAuthPlugin({
-        providers: {},
-        devBootstrap: { token: 'auth-oidc-dev-bootstrap-token' },
-      }),
+      createAuthBetterPlugin(),
       createOnboardingPlugin({
         baseUrl: `http://127.0.0.1`,
         envOverride: { AX_BOOTSTRAP_TOKEN: TEST_TOKEN },

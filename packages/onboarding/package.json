@@ -23,6 +23,7 @@
   },
   "devDependencies": {
     "@ax/agents": "workspace:*",
+    "@ax/auth-better": "workspace:*",
     "@ax/auth-oidc": "workspace:*",
     "@ax/credentials": "workspace:*",
     "@ax/credentials-store-db": "workspace:*",
