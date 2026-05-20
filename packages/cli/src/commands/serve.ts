@@ -44,13 +44,6 @@ env (required):
   AX_WORKSPACE_GIT_HTTP_TOKEN (when backend=http)
   AX_CREDENTIALS_KEY          used by @ax/credentials at init
 
-env (auth — at least one required):
-  AX_DEV_BOOTSTRAP_TOKEN      pre-shared bearer token for dev/canary
-  AX_AUTH_GOOGLE_CLIENT_ID    Google OIDC; full set required if any set:
-  AX_AUTH_GOOGLE_CLIENT_SECRET
-  AX_AUTH_GOOGLE_ISSUER
-  AX_AUTH_GOOGLE_REDIRECT_URI
-
 env (optional):
   AX_SERVE_TOKEN              if set, /chat requires Bearer <token>
                               if unset, /chat is unauthenticated (loud warn)
