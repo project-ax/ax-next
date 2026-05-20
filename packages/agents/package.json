@@ -24,7 +24,6 @@
   },
   "devDependencies": {
     "@ax/auth-better": "workspace:*",
-    "@ax/auth-oidc": "workspace:*",
     "@ax/database-postgres": "workspace:*",
     "@ax/http-server": "workspace:*",
     "@ax/teams": "workspace:*",

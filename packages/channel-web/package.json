@@ -22,7 +22,6 @@
   },
   "dependencies": {
     "@ax/agents": "workspace:*",
-    "@ax/auth-oidc": "workspace:*",
     "@ax/conversations": "workspace:*",
     "@ax/core": "workspace:*",
     "@ax/credentials": "workspace:*",
