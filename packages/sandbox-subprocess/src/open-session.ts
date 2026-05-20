@@ -83,10 +83,46 @@ export const ProxyConfigSchema = z
     },
   );
 
+// Phase B (capabilities.mcpServers) — each skill carries an optional list of
+// MCP server specs. The orchestrator passes these through unmodified from the
+// skills:resolve output; this schema is the boundary re-validation. After
+// SKILL.md is written, if mcpServers is non-empty we materialize a
+// `.mcp.json` in the same skill dir so the SDK auto-discovers bundled MCP
+// servers via its `'project'` setting source. Structural twin of the
+// sandbox-k8s McpServerSchema (I2 — no cross-plugin imports).
+const McpServerSchema = z.object({
+  name: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/),
+  transport: z.enum(['stdio', 'http']),
+  command: z.string().optional(),
+  args: z.array(z.string().max(256)).max(32).optional(),
+  env: z.record(z.string(), z.string()).optional(),
+  url: z.string().url().optional(),
+  allowedHosts: z.array(z.string()).default([]),
+  credentials: z.array(z.object({ slot: z.string(), kind: z.literal('api-key') })).default([]),
+});
+
 export const InstalledSkillSchema = z.object({
   id: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/, 'invalid skill id shape'),
   skillMd: z.string().min(1).max(512 * 1024), // 512 KiB per-skill cap
+  mcpServers: z.array(McpServerSchema).max(8).default([]),
 });
+
+// Translate an McpServerSpec into the Anthropic SDK's `.mcp.json` shape.
+// stdio: { command, args, env }. http: { url, type: 'http' }. The SDK accepts
+// either at top level under the `mcpServers` map; the per-skill dir's
+// `.mcp.json` is auto-loaded by the SDK's `'project'` setting source.
+function toMcpJsonShape(s: {
+  transport: 'stdio' | 'http';
+  command?: string | undefined;
+  args?: string[] | undefined;
+  env?: Record<string, string> | undefined;
+  url?: string | undefined;
+}): unknown {
+  if (s.transport === 'stdio') {
+    return { command: s.command, args: s.args ?? [], env: s.env ?? {} };
+  }
+  return { url: s.url, type: 'http' };
+}
 
 export const OpenSessionInputSchema = z.object({
   sessionId: z.string().min(1),
@@ -279,6 +315,27 @@ export async function openSessionImpl(
           skill.skillMd,
           { mode: 0o444, encoding: 'utf-8' },
         );
+        // Phase B — write `.mcp.json` alongside SKILL.md when the skill
+        // bundles MCP servers. The SDK auto-discovers it via its `'project'`
+        // setting source; the file lives in the per-skill dir so each
+        // skill's MCP scope stays isolated. Defaulted-empty arrays from the
+        // schema mean we always have a real array here.
+        if (skill.mcpServers.length > 0) {
+          const mcpJsonContent = JSON.stringify(
+            {
+              mcpServers: Object.fromEntries(
+                skill.mcpServers.map((s) => [s.name, toMcpJsonShape(s)]),
+              ),
+            },
+            null,
+            2,
+          );
+          await fs.writeFile(
+            path.join(skillDir, '.mcp.json'),
+            mcpJsonContent,
+            { mode: 0o444, encoding: 'utf-8' },
+          );
+        }
       }
       await fs.chmod(installedSkillsDir, 0o555);
     }

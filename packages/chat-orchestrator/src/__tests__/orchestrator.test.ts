@@ -1538,6 +1538,19 @@ describe('chat-orchestrator', () => {
     capabilities: {
       allowedHosts: string[];
       credentials: Array<{ slot: string; kind: string; description?: string }>;
+      // Phase B — bundled MCP server specs. Optional in the test fixture for
+      // back-compat with existing tests; the orchestrator's `?? []` defense
+      // turns undefined into an empty array on the wire.
+      mcpServers?: Array<{
+        name: string;
+        transport: 'stdio' | 'http';
+        command?: string;
+        args?: string[];
+        env?: Record<string, string>;
+        url?: string;
+        allowedHosts: string[];
+        credentials: Array<{ slot: string; kind: 'api-key' }>;
+      }>;
     };
     bodyMd: string;
     manifestYaml: string;
@@ -1713,7 +1726,11 @@ describe('chat-orchestrator', () => {
     );
 
     const sandboxIn = mocks.calls.lastSandboxInput as {
-      installedSkills?: Array<{ id: string; skillMd: string }>;
+      installedSkills?: Array<{
+        id: string;
+        skillMd: string;
+        mcpServers: Array<unknown>;
+      }>;
     };
     expect(sandboxIn.installedSkills).toHaveLength(1);
     const entry = sandboxIn.installedSkills![0]!;
@@ -1721,6 +1738,80 @@ describe('chat-orchestrator', () => {
     // skillMd must start with the YAML front-matter block.
     expect(entry.skillMd).toMatch(/^---\nname: github\nversion: 1\.0\.0\n---\n/);
     expect(entry.skillMd).toContain('Use the GitHub API.');
+    // Phase B regression — a skill that declares NO mcpServers still threads
+    // an EMPTY ARRAY (not undefined) through to the sandbox so downstream
+    // .mcp.json materialization can branch on `length > 0` cleanly.
+    expect(entry.mcpServers).toEqual([]);
+  });
+
+  it('unions skill-bundled mcpServers into the sandbox open-session input', async () => {
+    const proxy = buildProxyHooks();
+    const skillsHooks = buildSkillsHooks({
+      skills: {
+        github: {
+          id: 'github',
+          capabilities: {
+            allowedHosts: ['api.github.com'],
+            credentials: [{ slot: 'GITHUB_TOKEN', kind: 'api-key' }],
+            mcpServers: [
+              {
+                name: 'github',
+                transport: 'stdio',
+                command: 'npx',
+                args: ['-y', '@modelcontextprotocol/server-github'],
+                env: { GITHUB_TOKEN: '$GITHUB_TOKEN' },
+                allowedHosts: ['api.github.com'],
+                credentials: [{ slot: 'GITHUB_TOKEN', kind: 'api-key' }],
+              },
+            ],
+          },
+          bodyMd: 'Use the GitHub MCP server.',
+          manifestYaml: 'name: github\nversion: 1.0.0\n',
+        },
+      },
+    });
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: {
+            ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
+          },
+          skillAttachments: [
+            { skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'gh-pat' } },
+          ],
+        },
+      }),
+      openSession: makeChatEndOpenSession(busRef),
+    });
+    Object.assign(mocks.services, proxy.services, skillsHooks.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+      ],
+    });
+    busRef.current = h.bus;
+
+    await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('skill-mcp-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+
+    const sandboxIn = mocks.calls.lastSandboxInput as {
+      installedSkills?: Array<{
+        id: string;
+        skillMd: string;
+        mcpServers: Array<{ name: string; transport: string; command?: string }>;
+      }>;
+    };
+    expect(sandboxIn.installedSkills).toHaveLength(1);
+    expect(sandboxIn.installedSkills![0]!.mcpServers).toEqual([
+      expect.objectContaining({ name: 'github', transport: 'stdio', command: 'npx' }),
+    ]);
   });
 
   it('does NOT call skills:resolve when agent has no skillAttachments', async () => {

@@ -62,9 +62,29 @@ export const ProxyConfigSchema = z.object({
 
 // Re-declare the installed-skill shape locally (structural duplicate of
 // sandbox-subprocess's InstalledSkillSchema — I2: no cross-plugin imports).
+//
+// Phase B (capabilities.mcpServers): each skill carries an optional list of
+// MCP server specs. This is the trust-boundary re-validation — the host-side
+// orchestrator built these from the parsed manifest but the schema here is
+// the wire-level contract for sandbox:open-session. The k8s sandbox forwards
+// these into the runner pod via AX_INSTALLED_SKILLS_JSON; the runner module
+// (agent-claude-sdk-runner/src/installed-skills.ts) writes `.mcp.json`
+// alongside SKILL.md before spawning the SDK.
+const McpServerSchema = z.object({
+  name: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/),
+  transport: z.enum(['stdio', 'http']),
+  command: z.string().optional(),
+  args: z.array(z.string().max(256)).max(32).optional(),
+  env: z.record(z.string(), z.string()).optional(),
+  url: z.string().url().optional(),
+  allowedHosts: z.array(z.string()).default([]),
+  credentials: z.array(z.object({ slot: z.string(), kind: z.literal('api-key') })).default([]),
+});
+
 const InstalledSkillSchema = z.object({
   id: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/, 'invalid skill id shape'),
   skillMd: z.string().min(1).max(512 * 1024), // 512 KiB per-skill cap
+  mcpServers: z.array(McpServerSchema).max(8).default([]),
 });
 
 export const OpenSessionInputSchema = z.object({

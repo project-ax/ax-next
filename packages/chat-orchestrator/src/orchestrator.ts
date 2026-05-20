@@ -168,11 +168,26 @@ interface AgentsResolveOutput {
 interface SkillsResolveInput {
   skillIds: string[];
 }
+// Structural mirror of @ax/skills McpServerSpec (I2 — no cross-plugin imports).
+// The orchestrator does NOT re-validate; trust comes from skills:resolve having
+// already parsed the manifest. The sandbox schemas (k8s + subprocess) do the
+// boundary re-validation downstream.
+interface McpServerSpecForOrch {
+  name: string;
+  transport: 'stdio' | 'http';
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string;
+  allowedHosts: string[];
+  credentials: Array<{ slot: string; kind: string; description?: string }>;
+}
 interface ResolvedSkillForOrch {
   id: string;
   capabilities: {
     allowedHosts: string[];
     credentials: Array<{ slot: string; kind: string; description?: string }>;
+    mcpServers: McpServerSpecForOrch[];
   };
   bodyMd: string;
   manifestYaml: string;
@@ -305,6 +320,15 @@ interface InstalledSkillForSandbox {
   id: string;
   /** Full SKILL.md content: '---\n' + manifestYaml + '---\n' + bodyMd. */
   skillMd: string;
+  /**
+   * Phase B (capabilities.mcpServers) — bundled MCP servers declared by the
+   * skill's manifest. Sandbox plugins materialize one `.mcp.json` per skill
+   * alongside SKILL.md so the SDK auto-discovers bundled MCP servers via
+   * its `'project'` setting source. Empty array when the manifest omits
+   * `capabilities.mcpServers` — every entry stays grouped per-skill (no
+   * cross-skill union; the `.mcp.json` shape is per-directory).
+   */
+  mcpServers: McpServerSpecForOrch[];
 }
 
 interface OpenSessionInput {
@@ -915,6 +939,11 @@ export function createOrchestrator(
     const installedSkillsForSandbox: InstalledSkillForSandbox[] = unionedSkills.map((s) => ({
       id: s.id,
       skillMd: '---\n' + s.manifestYaml + (s.manifestYaml.endsWith('\n') ? '' : '\n') + '---\n' + s.bodyMd,
+      // Phase B — per-skill MCP server bundle. Defense-in-depth `?? []` in
+      // case skills:resolve returned a ResolvedSkill without the field
+      // (older impl, structural shape mismatch). No cross-skill union — each
+      // skill stays its own group because `.mcp.json` is per-directory.
+      mcpServers: s.capabilities.mcpServers ?? [],
     }));
 
     try {

@@ -151,4 +151,76 @@ describe('materializeInstalledSkillsFromEnv', () => {
     ]);
     await expect(materializeInstalledSkillsFromEnv()).rejects.toThrow(/invalid shape/);
   });
+
+  // -------------------------------------------------------------------------
+  // Phase B (capabilities.mcpServers) — materialize a per-skill `.mcp.json`
+  // alongside SKILL.md so the SDK auto-discovers bundled MCP servers via its
+  // `'project'` setting source. Empty / absent mcpServers must NOT create
+  // the file. http and stdio transports produce different JSON shapes.
+  // -------------------------------------------------------------------------
+
+  it('writes .mcp.json alongside SKILL.md when the skill declares mcpServers', async () => {
+    process.env['AX_INSTALLED_SKILLS_JSON'] = JSON.stringify([
+      {
+        id: 'github',
+        skillMd: '---\nname: github\n---\nbody',
+        mcpServers: [
+          {
+            name: 'github',
+            transport: 'stdio',
+            command: 'npx',
+            args: ['-y', 'pkg'],
+            env: {},
+            allowedHosts: [],
+            credentials: [],
+          },
+        ],
+      },
+    ]);
+    await materializeInstalledSkillsFromEnv();
+    const mcpJson = JSON.parse(
+      await fs.readFile(path.join(tmpRoot, 'skills', 'github', '.mcp.json'), 'utf8'),
+    );
+    expect(mcpJson.mcpServers.github).toEqual({
+      command: 'npx',
+      args: ['-y', 'pkg'],
+      env: {},
+    });
+  });
+
+  it('does NOT write .mcp.json when the skill has no mcpServers', async () => {
+    process.env['AX_INSTALLED_SKILLS_JSON'] = JSON.stringify([
+      { id: 'github', skillMd: '---\nname: github\n---\nbody' },
+    ]);
+    await materializeInstalledSkillsFromEnv();
+    await expect(
+      fs.stat(path.join(tmpRoot, 'skills', 'github', '.mcp.json')),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('writes .mcp.json with http transport shape', async () => {
+    process.env['AX_INSTALLED_SKILLS_JSON'] = JSON.stringify([
+      {
+        id: 'remote',
+        skillMd: '---\nname: remote\n---\nbody',
+        mcpServers: [
+          {
+            name: 'remote',
+            transport: 'http',
+            url: 'https://mcp.example.com',
+            allowedHosts: [],
+            credentials: [],
+          },
+        ],
+      },
+    ]);
+    await materializeInstalledSkillsFromEnv();
+    const mcpJson = JSON.parse(
+      await fs.readFile(path.join(tmpRoot, 'skills', 'remote', '.mcp.json'), 'utf8'),
+    );
+    expect(mcpJson.mcpServers.remote).toEqual({
+      url: 'https://mcp.example.com',
+      type: 'http',
+    });
+  });
 });
