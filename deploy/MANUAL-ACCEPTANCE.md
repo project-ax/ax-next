@@ -1188,6 +1188,105 @@ on the goldenpath kind cluster).
 # teardown removes it.
 ```
 
+## Scenario: Skill versioning + refresh (Phase C — sourceUrl)
+
+### What this proves
+
+A skill that declares a `sourceUrl` in its manifest persists it through
+storage. Whenever the admin opens the Skills tab, the UI fires
+`/admin/skills/:id/check-update` for each skill carrying a sourceUrl;
+when the remote manifest's `version:` is higher than what's stored, an
+"Update available" badge appears with an inline "Update" button.
+Clicking the button POSTs `/admin/skills/:id/refresh-from-source`, which
+fetches the manifest, re-validates it through the existing parser, and
+upserts the new body + version. Latest-wins — no per-attachment pinning.
+
+### Prerequisites
+
+Same as the Phase 1 + Phase B scenarios above (clean `kind ax-next-dev`,
+admin account). You also need somewhere to host a static SKILL.md file
+the cluster's runner can reach via HTTPS — a public Gist works fine.
+Two revisions are needed:
+
+- **v1**: a SKILL.md with `version: 1` at any https URL of your choice.
+- **v2**: the same file at the same URL, edited later to bump `version: 2`
+  and change at least one visible line of the body.
+
+A Gist works well: a single file at
+`https://gist.githubusercontent.com/<you>/<gist-id>/raw/<commit>/SKILL.md`
+(omit the commit segment to point at the latest revision so you can edit
+in place between the two stages).
+
+### Walk
+
+1. Host v1 of the skill at your chosen https URL. The file must contain
+   a `sourceUrl: <url>` line in its manifest pointing back at the same
+   URL so refresh stays a no-op-but-idempotent operation:
+   ```yaml
+   ---
+   name: heartbeat-v
+   description: Daily check-in skill (versioning demo, v1).
+   version: 1
+   sourceUrl: https://gist.githubusercontent.com/you/abc/raw/SKILL.md
+   ---
+   Use this skill to demonstrate sourceUrl-driven refresh.
+   Body v1.
+   ```
+2. Sign in as admin. Navigate to Admin → Skills → `+ New skill`. Paste
+   the v1 content. Click Install. Confirm the row appears with
+   `defaultAttached: false`. No "Update available" badge should appear
+   — the stored version (1) matches the remote version (1).
+3. Replace the hosted file with v2 (keep the URL stable):
+   ```yaml
+   ---
+   name: heartbeat-v
+   description: Daily check-in skill (versioning demo, v2).
+   version: 2
+   sourceUrl: https://gist.githubusercontent.com/you/abc/raw/SKILL.md
+   ---
+   Use this skill to demonstrate sourceUrl-driven refresh.
+   Body v2 — this line is new.
+   ```
+4. Reload the Admin → Skills tab. Confirm:
+   - "Update available: v2" Badge appears on the `heartbeat-v` row.
+   - An "Update" Button appears in the action cell.
+5. Click Update. While the request is in flight, the button should be
+   disabled. When the call returns, the badge should disappear and the
+   row's "Updated" timestamp should refresh.
+6. Click the pencil (Edit) icon on the row. The SkillEditor's body
+   preview should show "Body v2 — this line is new." The version field
+   should now be `2`. Cancel out of the editor.
+7. Replace the hosted file with a v3 that introduces a malformed
+   manifest (e.g., set `version: -1`). Reload the Skills tab.
+   - Either no badge appears (the check-update call surfaces an error
+     server-side; the UI swallows per-skill check failures silently) OR
+     a 4xx surfaces in the global error Alert when you click Update.
+   - The stored row should NOT mutate from v2 — bad remote content
+     never overwrites a working skill.
+
+### Acceptance criteria
+
+- Skill installs via UI with `sourceUrl` persisting through the GET payload.
+- After bumping the remote `version:`, the Badge + Update button appear on
+  the next refresh of the tab.
+- Clicking Update bumps the stored `version` to match the remote version
+  AND updates the bodyMd (verify via the SkillEditor preview).
+- A malformed remote does NOT corrupt the stored row.
+- (Optional) `kubectl exec` into the host pod and `psql` the
+  `skills_v1_skills` row:
+  ```sql
+  SELECT skill_id, version, source_url IS NOT NULL FROM skills_v1_skills
+   WHERE skill_id = 'heartbeat-v';
+  ```
+  Expected: version=2, source_url=t.
+
+### Cleanup
+
+```bash
+# Delete the heartbeat-v skill via the admin UI; remove or unpublish the
+# Gist if you don't want the demo content around.
+```
+
 ## When this passes, do
 1. Update the PR description's acceptance section with the date + cluster
    used + a copy of the `psql` count outputs.
