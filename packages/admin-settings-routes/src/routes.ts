@@ -124,7 +124,13 @@ function resolveSettingsKey(
   res: RouteResponse,
 ): { storageKey: string } | null {
   const k = req.params.key;
-  if (k === undefined || !(k in ALLOWED_SETTINGS)) {
+  // Own-property check (NOT `k in ALLOWED_SETTINGS`) so prototype keys
+  // like `constructor` / `toString` can't slip past the unknown-setting
+  // branch and resolve to something non-allowlisted.
+  if (
+    k === undefined ||
+    !Object.prototype.hasOwnProperty.call(ALLOWED_SETTINGS, k)
+  ) {
     res.status(404).json({ error: 'unknown-setting' });
     return null;
   }
@@ -237,13 +243,29 @@ export async function registerAdminSettingsRoutes(
   ];
 
   const unregisters: Array<() => void> = [];
-  for (const route of routes) {
-    const result = await bus.call<unknown, { unregister: () => void }>(
-      'http:register-route',
-      initCtx,
-      route,
-    );
-    unregisters.push(result.unregister);
+  try {
+    for (const route of routes) {
+      const result = await bus.call<unknown, { unregister: () => void }>(
+        'http:register-route',
+        initCtx,
+        route,
+      );
+      unregisters.push(result.unregister);
+    }
+  } catch (err) {
+    // Atomic registration: if route N fails after N-1 already succeeded,
+    // unwind the earlier ones so we don't return half-mounted state. The
+    // caller's catch block (`plugin.init`) only sees the throw and can't
+    // know what's already registered — it's our responsibility to clean up.
+    while (unregisters.length > 0) {
+      const fn = unregisters.pop();
+      try {
+        fn?.();
+      } catch {
+        // best-effort unwind
+      }
+    }
+    throw err;
   }
   return unregisters;
 }

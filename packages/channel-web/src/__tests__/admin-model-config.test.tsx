@@ -192,6 +192,81 @@ describe('ModelConfigTab', () => {
     });
   });
 
+  it('refuses to save when the same model id is offered by multiple configured providers (ambiguous)', async () => {
+    // Two providers both list "shared-model" → buildModelRef should
+    // refuse to silently pick one and instead surface an error.
+    const second = {
+      id: 'other',
+      name: 'Other',
+      ref: 'other',
+      models: ['shared-model'],
+      configured: true,
+    };
+    const first = {
+      ...configuredProvider,
+      models: [...configuredProvider.models, 'shared-model'],
+    };
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/admin/credentials/providers') {
+        return jsonOk({ providers: [first, second] });
+      }
+      if (url === '/admin/settings/fast-model' && (init?.method ?? 'GET') === 'GET') {
+        return jsonOk({ value: null });
+      }
+      if (url === '/admin/settings/fast-model' && init?.method === 'PUT') {
+        return new Response(null, { status: 204 });
+      }
+      return new Response(null, { status: 404 });
+    });
+
+    render(<ModelConfigTab />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+
+    const combobox = screen.getByRole('combobox');
+    fireEvent.click(combobox);
+    // Two providers both offer "shared-model" — pick the first match. The
+    // tab tracks model-id only, so either click ends up in the same
+    // ambiguous-save path.
+    await waitFor(() => {
+      expect(screen.getAllByText('shared-model').length).toBeGreaterThanOrEqual(2);
+    });
+    fireEvent.click(screen.getAllByText('shared-model')[0]!);
+
+    fireEvent.click(screen.getByRole('button', { name: /Save changes/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/ambiguous|unavailable/i);
+    });
+
+    // Critical: no PUT was issued.
+    const putCalls = fetchMock.mock.calls.filter(
+      ([, opts]) => (opts as RequestInit | undefined)?.method === 'PUT',
+    );
+    expect(putCalls).toHaveLength(0);
+  });
+
+  it('surfaces load errors instead of silently emptying the picker (non-404 from settings GET)', async () => {
+    // The settings GET returns 500 — the tab should render its load-error
+    // banner, not silently behave as "no value set".
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/admin/credentials/providers') {
+        return jsonOk({ providers: [configuredProvider] });
+      }
+      if (url === '/admin/settings/fast-model') {
+        return new Response('boom', { status: 500 });
+      }
+      return new Response(null, { status: 404 });
+    });
+
+    render(<ModelConfigTab />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/Couldn't load providers/i);
+    });
+  });
+
   it('Save button is disabled when no model is selected', async () => {
     defaultFetchScript([configuredProvider]);
     render(<ModelConfigTab />);

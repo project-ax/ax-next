@@ -42,21 +42,26 @@ interface ProviderSelection {
 
 /**
  * Build a `provider/model-id` ref from the configured-providers list +
- * a chosen model id. Returns null if the model doesn't belong to any
- * configured provider (shouldn't happen, but UI input is fundamentally
- * a free-form string).
+ * a chosen model id. Returns null if:
+ *  - the model isn't offered by any configured provider, OR
+ *  - the same model id is offered by more than one configured provider
+ *    (ambiguous — saving either would silently pick a provider for the
+ *    operator). Surface this as a save error so the user gets a clear
+ *    "ambiguous" message instead of a quiet wrong-provider flip.
+ *
+ * Today the UI doesn't have a separate provider picker, so the
+ * unambiguous-match path is the only safe shape. A future "pick the
+ * provider explicitly" step would replace this with a passed-through
+ * providerId.
  */
 function buildModelRef(
   providers: ProviderEntry[],
   modelId: string,
 ): ProviderSelection | null {
   if (modelId.length === 0) return null;
-  for (const p of providers) {
-    if (p.models.includes(modelId)) {
-      return { providerId: p.id, modelId };
-    }
-  }
-  return null;
+  const matches = providers.filter((p) => p.models.includes(modelId));
+  if (matches.length !== 1) return null;
+  return { providerId: matches[0]!.id, modelId };
 }
 
 /**
@@ -84,10 +89,16 @@ export function ModelConfigTab() {
     let cancelled = false;
     void (async () => {
       try {
-        // Run in parallel — they share no state.
+        // Run in parallel — they share no state. The server returns
+        // 200 + { value: null } when nothing has been stored yet, so
+        // no per-error swallowing is needed: any thrown error
+        // (auth/network/5xx/unknown-key) surfaces to the outer catch
+        // and renders as the load-error banner. Previous code did
+        // `.catch(() => null)` which hid those real errors behind an
+        // empty picker.
         const [list, current] = await Promise.all([
           listProviders(),
-          getAdminSetting('fast-model').catch(() => null),
+          getAdminSetting('fast-model'),
         ]);
         if (cancelled) return;
         setProviders(list);
@@ -126,9 +137,13 @@ export function ModelConfigTab() {
     try {
       const ref = buildModelRef(configured, selectedModel);
       if (ref === null) {
-        // No configured provider claims this model id — refuse to save
-        // garbage. Defensive; the combobox should never offer such a value.
-        throw new Error(`No configured provider supplies "${selectedModel}".`);
+        // Either no configured provider supplies this model id, or two
+        // do — in either case we refuse to silently pick. The combobox
+        // shouldn't normally surface either shape, so this is a defensive
+        // last-resort message.
+        throw new Error(
+          `Model "${selectedModel}" is unavailable or ambiguous across configured providers.`,
+        );
       }
       await putAdminSetting('fast-model', `${ref.providerId}/${ref.modelId}`);
       setSavedOk(true);

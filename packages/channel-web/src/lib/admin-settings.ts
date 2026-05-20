@@ -18,15 +18,41 @@ const writeHeaders = {
 
 export type AdminSettingsKey = 'fast-model';
 
+/**
+ * Error thrown by `getAdminSetting` / `putAdminSetting` so callers can
+ * narrow on the wire status — particularly to distinguish "the row
+ * doesn't exist yet" (404) from auth/network/server problems.
+ */
+export class AdminSettingNotFoundError extends Error {
+  constructor(key: AdminSettingsKey) {
+    super(`admin setting "${key}" not found`);
+    this.name = 'AdminSettingNotFoundError';
+  }
+}
+
+export class AdminSettingHttpError extends Error {
+  constructor(
+    public readonly status: number,
+    key: AdminSettingsKey,
+    op: 'get' | 'put',
+  ) {
+    super(`${op} setting ${key}: ${status}`);
+    this.name = 'AdminSettingHttpError';
+  }
+}
+
 export async function getAdminSetting(key: AdminSettingsKey): Promise<string | null> {
   const res = await fetch(`/admin/settings/${key}`, {
     credentials: 'include',
   });
-  if (!res.ok) {
-    throw new Error(`get setting ${key}: ${res.status}`);
+  if (res.ok) {
+    const body = (await res.json()) as { value: string | null };
+    return body.value;
   }
-  const body = (await res.json()) as { value: string | null };
-  return body.value;
+  if (res.status === 404) {
+    throw new AdminSettingNotFoundError(key);
+  }
+  throw new AdminSettingHttpError(res.status, key, 'get');
 }
 
 export async function putAdminSetting(
@@ -40,6 +66,6 @@ export async function putAdminSetting(
     body: JSON.stringify({ value }),
   });
   if (!res.ok) {
-    throw new Error(`put setting ${key}: ${res.status}`);
+    throw new AdminSettingHttpError(res.status, key, 'put');
   }
 }

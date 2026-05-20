@@ -629,6 +629,33 @@ describe('@ax/conversation-titles chat:turn-end subscriber', () => {
     expect(stubs.llmCalls[0]?.model).toBe('claude-haiku-4-5-20251001');
   });
 
+  it('falls back to cfg.model when the override provider hook is not registered', async () => {
+    // Storage says "use openai/..." but only the anthropic hook is wired —
+    // titling should still run against the configured anthropic fallback,
+    // not skip generation.
+    const stubs = makeStubsBus();
+    seedAssistantTurn(stubs);
+    stubs.registerStorageGet(new TextEncoder().encode('openai/gpt-4o'));
+    const warnSpy = vi.fn();
+    const plugin = createConversationTitlesPlugin();
+    await plugin.init({ bus: stubs.bus, config: {} });
+
+    const baseCtx = makeCtx({ conversationId: 'c1' });
+    const ctx: AgentContext = {
+      ...baseCtx,
+      logger: { ...baseCtx.logger, warn: warnSpy },
+    };
+    await stubs.bus.fire('chat:turn-end', ctx, { role: 'assistant' });
+
+    // The default anthropic stub (registered in makeStubsBus) was hit.
+    expect(stubs.llmCalls).toHaveLength(1);
+    expect(stubs.llmCalls[0]?.model).toBe('claude-haiku-4-5-20251001');
+    expect(warnSpy).toHaveBeenCalledWith(
+      'conversation_titles_override_hook_missing',
+      expect.objectContaining({ provider: 'openai' }),
+    );
+  });
+
   it('falls back to cfg.model when storage value is not a valid provider/model-id ref', async () => {
     const stubs = makeStubsBus();
     seedAssistantTurn(stubs);

@@ -19,6 +19,25 @@ let connectionString: string;
 const harnesses: TestHarness[] = [];
 const cleanupKyselys: Kysely<unknown>[] = [];
 
+/**
+ * Build a `pg.Pool` with a noop `error` listener attached.
+ *
+ * Why this exists: when `container.stop()` runs in `afterAll`, postgres
+ * sends `FATAL 57P01` ("terminating connection due to administrator
+ * command") to any client connection still attached to the pool. Each
+ * such socket emits `'error'` on the pool, and `pg.Pool` re-emits it as
+ * `'error'` on itself. If no listener is attached, Node treats it as an
+ * uncaught exception and Vitest fails the file with exit code 1 even
+ * though every assertion passed. The noop listener is a teardown-noise
+ * absorber, NOT a real error-swallower — query errors still surface
+ * through the awaited query path.
+ */
+function makeTestPool(): pg.Pool {
+  const pool = new pg.Pool({ connectionString });
+  pool.on('error', () => {});
+  return pool;
+}
+
 async function bootHarness(opts: {
   env?: Record<string, string | undefined>;
   stdoutFails?: boolean;
@@ -91,7 +110,7 @@ afterEach(async () => {
   }
   // Drop the bootstrap_state table so each test starts clean.
   const k = new Kysely<unknown>({
-    dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString }) }),
+    dialect: new PostgresDialect({ pool: makeTestPool() }),
   });
   cleanupKyselys.push(k);
   await sql`DROP TABLE IF EXISTS bootstrap_state`.execute(k);
@@ -137,7 +156,7 @@ describe('bootstrap:initialize', () => {
     // route layer having called complete()). Cleaner than depending on
     // future tasks' route code.
     const k = new Kysely<unknown>({
-      dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString }) }),
+      dialect: new PostgresDialect({ pool: makeTestPool() }),
     });
     cleanupKyselys.push(k);
     await sql`UPDATE bootstrap_state SET status='completed', completed_at=NOW() WHERE id=1`.execute(k);

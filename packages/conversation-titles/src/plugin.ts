@@ -233,8 +233,20 @@ async function resolveTitleModel(
     });
     return fallbackResult;
   }
+  const overrideHook = `llm:call:${parsed.provider}`;
+  // The override pointed at a provider whose llm:call:<provider> hook
+  // isn't registered in this deployment. Fall back to cfg.model so
+  // titling still runs — the configured fallback hook is guaranteed
+  // to be present (it's declared as a hard call in the manifest).
+  if (!bus.hasService(overrideHook)) {
+    ctx.logger.warn('conversation_titles_override_hook_missing', {
+      provider: parsed.provider,
+      fallback: fallback.fallbackRef,
+    });
+    return fallbackResult;
+  }
   return {
-    llmCallHook: `llm:call:${parsed.provider}`,
+    llmCallHook: overrideHook,
     modelId: parsed.modelId,
   };
 }

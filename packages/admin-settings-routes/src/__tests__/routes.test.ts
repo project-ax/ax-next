@@ -3,6 +3,7 @@ import { HookBus, PluginError, makeAgentContext } from '@ax/core';
 import {
   ALLOWED_SETTINGS,
   createSettingsHandlers,
+  registerAdminSettingsRoutes,
   type RouteRequest,
   type RouteResponse,
 } from '../routes.js';
@@ -125,6 +126,20 @@ describe('admin-settings handlers', () => {
     await handlers.get(mkReq({ params: { key: 'not-a-real-setting' } }), res);
     expect(statusOf()).toBe(404);
     expect((bodyOf() as { error: string }).error).toBe('unknown-setting');
+  });
+
+  it('GET: rejects prototype keys (constructor / toString / __proto__) with 404', async () => {
+    // Defense-in-depth: own-property check on the allowlist must NOT let
+    // prototype keys resolve to a storage key.
+    const { bus, storage } = makeBus({ id: 'admin', isAdmin: true });
+    const handlers = createSettingsHandlers({ bus });
+    for (const proto of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+      const { res, statusOf, bodyOf } = mkRes();
+      await handlers.get(mkReq({ params: { key: proto } }), res);
+      expect(statusOf()).toBe(404);
+      expect((bodyOf() as { error: string }).error).toBe('unknown-setting');
+    }
+    expect(storage.size).toBe(0);
   });
 
   it('GET: non-admin gets 403', async () => {
@@ -285,6 +300,51 @@ describe('admin-settings handlers', () => {
     const { res, statusOf } = mkRes();
     await handlers.put(req, res);
     expect(statusOf()).toBe(400);
+  });
+
+  // ---- Atomic route registration ---------------------------------------
+
+  it('registerAdminSettingsRoutes unwinds already-mounted routes when a later call fails', async () => {
+    // Stand up a fake http:register-route service that succeeds for the
+    // first N-1 invocations and throws on the last. The helper must
+    // unmount the earlier ones before propagating the error so the
+    // running system never sees half-registered routes.
+    const bus = new HookBus();
+    const calls: Array<{ method: string; path: string }> = [];
+    const unmounts: string[] = [];
+    let invocation = 0;
+    bus.registerService<
+      { method: string; path: string },
+      { unregister: () => void }
+    >('http:register-route', 'test', async (_ctx, input) => {
+      calls.push({ method: input.method, path: input.path });
+      invocation += 1;
+      if (invocation === 2) {
+        throw new PluginError({
+          code: 'unknown',
+          plugin: 'test',
+          message: 'second registration blew up',
+        });
+      }
+      return {
+        unregister: () => {
+          unmounts.push(input.path);
+        },
+      };
+    });
+
+    const initCtx = makeAgentContext({
+      sessionId: 's',
+      agentId: 'test',
+      userId: 'system',
+    });
+
+    await expect(registerAdminSettingsRoutes(bus, initCtx)).rejects.toThrow(
+      /second registration blew up/,
+    );
+    // Both routes were attempted; the first one was unmounted on failure.
+    expect(calls).toHaveLength(2);
+    expect(unmounts).toEqual([calls[0]!.path]);
   });
 
   // ---- Allowlist contract ----------------------------------------------
