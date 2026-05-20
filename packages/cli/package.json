@@ -32,7 +32,6 @@
     "@ax/credential-proxy": "workspace:*",
     "@ax/credentials": "workspace:*",
     "@ax/credentials-store-db": "workspace:*",
-    "@ax/credentials-anthropic-oauth": "workspace:*",
     "@ax/database-postgres": "workspace:*",
     "@ax/onboarding": "workspace:*",
     "@ax/sandbox-subprocess": "workspace:*",

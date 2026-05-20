@@ -412,12 +412,11 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   );
 
   // I12 — provider credentials are API-key-only across the default UI/preset.
-  // `@ax/credentials-anthropic-oauth` is intentionally NOT loaded here. The
-  // package stays in the tree (the legacy `ax credentials login` CLI path
-  // loads it explicitly) but the default k8s preset advertises only
-  // `kind: api-key` to /admin/credentials/kinds. To re-enable OAuth, an
-  // operator would compose a custom preset that pushes
-  // `createCredentialsAnthropicOauthPlugin()` after createCredentialsPlugin.
+  // The default k8s preset advertises only `kind: api-key` via
+  // /admin/credentials/kinds. Adding a new credential kind means a new
+  // plugin that registers `credentials:resolve:<kind>` (and the matching
+  // login/exchange surface, if it's an OAuth flow) pushed before
+  // createCredentialsPlugin.
 
   // Phase 2 — credential-proxy on a Unix socket. The host pod mounts an
   // emptyDir at /var/run/ax (helm template); the proxy listens on
