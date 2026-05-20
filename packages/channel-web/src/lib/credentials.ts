@@ -100,19 +100,6 @@ export interface AdminCredentialCreateInput {
   metadata?: Record<string, unknown>;
 }
 
-export interface AdminOauthStartInput {
-  scope: 'global' | 'user' | 'agent';
-  ownerId: string | null;
-  ref: string;
-  kind: string;
-}
-
-export interface OauthStartResult {
-  pendingId: string;
-  authorizeUrl: string;
-  instructions: string;
-}
-
 export const adminCredentials = {
   list: () => listAt('/admin/credentials'),
   listKinds,
@@ -129,70 +116,13 @@ export const adminCredentials = {
     const out = (await res.json()) as { credential: CredentialMeta };
     return out.credential;
   },
-
-  async oauthStart(input: AdminOauthStartInput): Promise<OauthStartResult> {
-    const res = await fetch('/admin/credentials/oauth/start', {
-      method: 'POST',
-      headers: writeHeaders,
-      credentials: 'include',
-      body: JSON.stringify(input),
-    });
-    if (!res.ok) throw new Error(`oauth-start: ${res.status}`);
-    return (await res.json()) as OauthStartResult;
-  },
-
-  async oauthFinish(input: {
-    pendingId: string;
-    code: string;
-  }): Promise<CredentialMeta> {
-    const res = await fetch('/admin/credentials/oauth/finish', {
-      method: 'POST',
-      headers: writeHeaders,
-      credentials: 'include',
-      body: JSON.stringify(input),
-    });
-    if (!res.ok) throw new Error(`oauth-finish: ${res.status}`);
-    const out = (await res.json()) as { credential: CredentialMeta };
-    return out.credential;
-  },
 };
 
 // myCredentials ----------------------------------------------------------
 
-export interface MyOauthStartInput {
-  ref: string;
-  kind: string;
-}
-
 export const myCredentials = {
   list: () => listAt('/settings/credentials'),
   listKinds,
-
-  async oauthStart(input: MyOauthStartInput): Promise<OauthStartResult> {
-    const res = await fetch('/settings/credentials/oauth/start', {
-      method: 'POST',
-      headers: writeHeaders,
-      credentials: 'include',
-      body: JSON.stringify(input),
-    });
-    if (!res.ok) throw new Error(`oauth-start: ${res.status}`);
-    return (await res.json()) as OauthStartResult;
-  },
-
-  async oauthFinish(input: {
-    pendingId: string;
-    code: string;
-  }): Promise<CredentialMeta> {
-    const res = await fetch('/settings/credentials/oauth/finish', {
-      method: 'POST',
-      headers: writeHeaders,
-      credentials: 'include',
-      body: JSON.stringify(input),
-    });
-    if (!res.ok) throw new Error(`oauth-finish: ${res.status}`);
-    const out = (await res.json()) as { credential: CredentialMeta };
-    return out.credential;
-  },
 };
 
 // Destination credential helpers -----------------------------------------

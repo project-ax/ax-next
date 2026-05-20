@@ -18,7 +18,7 @@ Sources scanned (2026-05-19): `MEMORY.md`, recent `docs/plans/*followup*`,
 ## Open bugs
 
 - [x] ~~**PR #105: default-sourced routine fires error with `forbidden: agent X not accessible to user '@ax/routines/defaults'`.**~~ Fixed in PR #108. Added `agents:list-personal-owners` service hook; routines tick now stamps each materialized default-routine row with the agent owner's user id, so `agents:resolve`'s ACL gate sees a real user. Backfill migration drops the broken rows so the next tick re-materializes them. Real-bus integration test in `canary-defaults.test.ts` exercises `agents:resolve` via a stubbed handler (no `fire`-spy). Walk-verified on `ax-next-dev` 2026-05-19. **Team agents are deliberately excluded from default-materialize pending the policy decision below.**
-- [ ] **Credential-proxy shutdown race emits unhandled ECONNRESET.** Surfaced in PR #104 walk. Suspect bypass-MITM `net.connect()` at `packages/credential-proxy/src/listener.ts:680` — `'error'` listener attached at line 727, leaving a sync-error window. WIP test in git status: `packages/credential-proxy/src/__tests__/listener-shutdown-race.test.ts`. Fix shape: attach the `'error'` listener at the same tick `net.connect()` returns. Also audit the MITM `tls.connect()` path at line 470 (line 483 listener) for the same shape. **File a GitHub issue.**
+- [x] **Credential-proxy shutdown race emits unhandled ECONNRESET.** Surfaced in PR #104 walk. Suspect bypass-MITM `net.connect()` at `packages/credential-proxy/src/listener.ts:680` — `'error'` listener attached at line 727, leaving a sync-error window. WIP test in git status: `packages/credential-proxy/src/__tests__/listener-shutdown-race.test.ts`. Fix shape: attach the `'error'` listener at the same tick `net.connect()` returns. Also audit the MITM `tls.connect()` path at line 470 (line 483 listener) for the same shape. **File a GitHub issue.**
 - [ ] **Possible jsonl-parser duplication.** PR #103 walk noted user-turn `contentBlocks` returned the user-text duplicated. Not Phase E's bug; file separately if it recurs.
 
 ## Routines
@@ -49,13 +49,22 @@ Sources scanned (2026-05-19): `MEMORY.md`, recent `docs/plans/*followup*`,
 
 These wait on stated triggers — don't ship pre-emptively.
 
-- [ ] **Delete `@ax/credentials-anthropic-oauth`** once no off-default preset depends on the Anthropic-OAuth credential kind.
-- [ ] **Delete `@ax/credentials-oauth-pending`** once `@ax/credentials-admin-routes` no longer calls `credentials:oauth:stash-pending` / `credentials:oauth:claim-pending`.
-- [ ] **Retire `/admin/credentials/oauth/start` + `/finish`** routes + `oauth-flow.test.ts` in `@ax/credentials-admin-routes` (paired with the deletions above).
-- [ ] **Audit + delete `oauthStart` / `oauthFinish`** in `packages/channel-web/src/lib/credentials.ts` (only known UI caller — `OAuthFlowForm` — is gone, but other callers were not audited).
-- [ ] **Delete `ax credentials login`** subcommand in `packages/cli/src/commands/credentials.ts` (surgical edit; the file has more than just login). Drop `@ax/credentials-anthropic-oauth` from `packages/cli/package.json:32` + `tsconfig.json:17` after.
+- [x] ~~**Delete `@ax/credentials-anthropic-oauth`**~~ Shipped in this branch — package deleted, CLI dep + tsconfig refs removed, k8s preset comment rewritten. No off-default preset depended on the Anthropic-OAuth kind once `ax credentials login` was removed.
+- [x] ~~**Delete `@ax/credentials-oauth-pending`**~~ Shipped in this branch — `@ax/credentials-admin-routes` had no remaining callers of `credentials:oauth:stash-pending` / `:claim-pending` after PR #109 removed the `/oauth/*` routes.
+- [x] ~~**Retire `/admin/credentials/oauth/start` + `/finish`** routes + `oauth-flow.test.ts` in `@ax/credentials-admin-routes`.~~ Already done in PR #109 (credentials UX redesign); only the comment/test cross-references remained, cleaned up in this branch.
+- [x] ~~**Audit + delete `oauthStart` / `oauthFinish`**~~ Shipped in this branch — only the test file referenced them; no production UI caller remained after `OAuthFlowForm` was deleted in PR #109.
+- [x] ~~**Delete `ax credentials login`** subcommand~~ Shipped in this branch — `runLoginCommand` + `startRedirectListener` + OAuth constants + the `open-browser.ts` helper removed, `@ax/credentials-anthropic-oauth` dep dropped.
 - [ ] **`ax admin reset-password` CLI + `/auth/reset-password` route.** Pick up when local password sign-in becomes a real surface (wizard re-adds password OR Settings → Password lands). Today the wizard captures only name+email against `@ax/auth-oidc`.
 - [ ] **Delete `/auth/dev-bootstrap` route + `dev-bootstrap.ts`** in `@ax/auth-oidc`. Pick up when `@ax/auth-oidc` itself retires (touches `packages/auth-oidc/src/types.ts` that `@ax/auth-better` type-imports).
+
+## Credentials UX redesign (PR #109, merged 2026-05-19)
+
+- [ ] **ModelConfigTab broken at runtime.** `packages/channel-web/src/components/admin/ModelConfigTab.tsx:88` POSTs to the deleted `/admin/credentials` endpoint via `adminCredentials.create({ kind: 'setting', ref: 'setting.fast-model', ... })`. Read path (provider list, picker UI) still works; save will 404 after this redesign lands. Pre-existing misuse of the credentials store as a KV settings store. Fix shape: dedicated `/admin/settings/<key>` endpoint OR migrate model-picker storage to a different primitive.
+- [ ] **User-delete wiring in `@ax/auth-better`.** When a user-delete service hook lands, it should call `credentials:purge-by-owner({ scope: 'user', ownerId })` — the facade hook + the matching agent-delete wiring already exist; only the auth-better side is missing.
+- [ ] **Routine markdown linter for `secretRef` mismatch.** Routine YAML frontmatter still names a `secretRef` string by hand; for the destination-first design to make sense, it should equal `refForDestination({ kind: 'routine-hmac', agentId, routinePath })`. Add a `@ax/validator-routine` check that vetoes upserts on mismatch.
+- [ ] **Provider pre-save validation against the provider API.** The deleted `/admin/credentials/providers/:id/validate` route used to validate the key against Anthropic before saving. The new `ProvidersPanel` drops this — UX regression. Reintroduce as a pre-save hook on the destination-routes path if reviewers push back.
+- [ ] **Bulk "all credentials" admin inventory view.** Design §3 non-goal; revisit when an operator needs a single audit surface.
+- [ ] **Drift guard for the 3× `refForDestination` duplication.** `@ax/credentials/src/refs.ts` is canonical; `packages/channel-web/src/lib/credentials.ts` and `packages/credentials-admin-routes/src/destination-routes.ts` carry local duplicates (eslint `no-restricted-imports` blocks cross-plugin runtime imports). A test that snapshots all three copies against the canonical output for every kind would catch silent divergence when adding a 6th destination kind.
 
 ## Phase 6 PR-A follow-ups (open since 2026-04-29)
 

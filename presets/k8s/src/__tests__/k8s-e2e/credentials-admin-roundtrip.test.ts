@@ -20,11 +20,9 @@
  *      the right ownerId.
  *
  * (A previous OAuth /start canary lived here. Removed when I12 — provider
- * credentials are API-key-only — landed: the default preset no longer
- * loads @ax/credentials-anthropic-oauth, so kind='anthropic-oauth' has
- * nothing to dispatch to. The unit-level oauth-flow.test.ts in
- * @ax/credentials-admin-routes covers the /start → /finish HTTP contract
- * with a fake-oauth stub kind.)
+ * credentials are API-key-only — landed. The OAuth code paths
+ * themselves were removed in the credentials UX redesign + this
+ * cleanup; the /admin/credentials/oauth/* routes no longer exist.)
  *
  * NOT COVERED here (deferred to follow-ups):
  *   - Chat-turn-resolution proof: that a credential seeded via the admin
