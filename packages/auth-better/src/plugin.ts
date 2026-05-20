@@ -19,16 +19,14 @@ import type {
   HttpRequest,
   HttpResponse,
 } from '@ax/http-server';
-// Type-only import from `@ax/auth-oidc` — boundary types are the contract
-// (a future @ax/auth-better is an alternate impl of the same hook surface).
-// Same I2 escape hatch: types-only.
 import type {
   CompleteBootstrapUserInput,
   CompleteBootstrapUserOutput,
   CreateBootstrapUserInput,
   CreateBootstrapUserOutput,
+  HttpRequestLike,
   User,
-} from '@ax/auth-oidc';
+} from './types.js';
 import { runAuthBetterMigration, type AuthBetterDatabase } from './migrations.js';
 import {
   createBetterAuthHandler,
@@ -397,17 +395,6 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
 // grow. The kysely-direct calls are short enough that a separate module
 // adds more boilerplate than it removes.
 // ---------------------------------------------------------------------------
-
-/**
- * Structural minimum we need from an HTTP request adapter for
- * `auth:require-user`. Mirrors @ax/auth-oidc's `HttpRequestLike` so
- * consumers passing the same request shape Just Work across either auth
- * impl. Declared locally to avoid runtime import of @ax/auth-oidc.
- */
-interface HttpRequestLike {
-  readonly headers: Record<string, string>;
-  signedCookie(name: string): string | null;
-}
 
 async function loadProviders(
   db: Kysely<AuthBetterDatabase>,
