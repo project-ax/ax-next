@@ -49,7 +49,7 @@ const STATIC_PROVIDERS: ProviderEntry[] = [
     // Must match the ref the chat-orchestrator looks up at proxy:open-session
     // (and the wizard's completion-tx writes), or the Provider keys tab
     // shows "Not configured" right after a successful wizard run.
-    ref: 'anthropic-api',
+    ref: 'provider:anthropic',
     models: [
       'claude-opus-4-7',
       'claude-sonnet-4-6',

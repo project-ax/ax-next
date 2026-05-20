@@ -49,7 +49,7 @@ afterEach(async () => {
 afterAll(async () => {
   await db.destroy();
   if (container) await container.stop();
-});
+}, 60_000);
 
 async function seedInterval(store: RoutinesStore, agentId: string, every: string, nextAt: Date) {
   await store.upsert({

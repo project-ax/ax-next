@@ -1,3 +1,5 @@
+import type { Destination } from '@ax/credentials';
+
 /**
  * Credentials wire client — typed wrappers around `/admin/credentials*`
  * and `/settings/credentials*`.
@@ -53,8 +55,6 @@ const writeHeaders = {
   'content-type': 'application/json',
   'x-requested-with': 'ax-admin',
 } as const;
-
-const csrfHeader = { 'x-requested-with': 'ax-admin' } as const;
 
 /**
  * Base64-encode a UTF-8 string. The browser path uses `btoa` over the
@@ -130,24 +130,6 @@ export const adminCredentials = {
     return out.credential;
   },
 
-  async delete(input: {
-    scope: 'global' | 'user' | 'agent';
-    ownerId: string | null;
-    ref: string;
-  }): Promise<void> {
-    // The URL placeholder for "no owner" (scope='global') is `_` — JSON
-    // null doesn't path-encode. Server-side `_` is translated back to
-    // null before the bus call.
-    const owner = input.ownerId ?? '_';
-    const path = `/admin/credentials/${encodeURIComponent(input.scope)}/${encodeURIComponent(owner)}/${encodeURIComponent(input.ref)}`;
-    const res = await fetch(path, {
-      method: 'DELETE',
-      headers: csrfHeader,
-      credentials: 'include',
-    });
-    if (!res.ok) throw new Error(`delete credential: ${res.status}`);
-  },
-
   async oauthStart(input: AdminOauthStartInput): Promise<OauthStartResult> {
     const res = await fetch('/admin/credentials/oauth/start', {
       method: 'POST',
@@ -177,14 +159,6 @@ export const adminCredentials = {
 
 // myCredentials ----------------------------------------------------------
 
-export interface MyCredentialCreateInput {
-  ref: string;
-  kind: string;
-  payload: string;
-  expiresAt?: number;
-  metadata?: Record<string, unknown>;
-}
-
 export interface MyOauthStartInput {
   ref: string;
   kind: string;
@@ -193,31 +167,6 @@ export interface MyOauthStartInput {
 export const myCredentials = {
   list: () => listAt('/settings/credentials'),
   listKinds,
-
-  async create(input: MyCredentialCreateInput): Promise<CredentialMeta> {
-    const body = { ...input, payload: b64(input.payload) };
-    const res = await fetch('/settings/credentials', {
-      method: 'POST',
-      headers: writeHeaders,
-      credentials: 'include',
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) throw new Error(`create credential: ${res.status}`);
-    const out = (await res.json()) as { credential: CredentialMeta };
-    return out.credential;
-  },
-
-  async delete(ref: string): Promise<void> {
-    const res = await fetch(
-      `/settings/credentials/${encodeURIComponent(ref)}`,
-      {
-        method: 'DELETE',
-        headers: csrfHeader,
-        credentials: 'include',
-      },
-    );
-    if (!res.ok) throw new Error(`delete credential: ${res.status}`);
-  },
 
   async oauthStart(input: MyOauthStartInput): Promise<OauthStartResult> {
     const res = await fetch('/settings/credentials/oauth/start', {
@@ -245,3 +194,75 @@ export const myCredentials = {
     return out.credential;
   },
 };
+
+// Destination credential helpers -----------------------------------------
+
+/**
+ * Compute the canonical ref string for a Destination.
+ *
+ * Mirrors `refForDestination` from `@ax/credentials` without a runtime
+ * cross-plugin import (CLAUDE.md invariant 2 — plugins communicate via
+ * the hook bus; runtime cross-plugin imports are forbidden). This is a
+ * pure string computation with no side effects.
+ */
+export function refForDestination(dest: Destination): string {
+  switch (dest.kind) {
+    case 'provider':
+      return `provider:${dest.provider}`;
+    case 'skill-slot':
+      return `skill:${dest.skillId}:${dest.slot}`;
+    case 'mcp-env':
+      return `mcp:${dest.serverId}:env:${dest.envName}`;
+    case 'mcp-header':
+      return `mcp:${dest.serverId}:header:${dest.headerName}`;
+    case 'routine-hmac':
+      return `routine:${dest.agentId}:${dest.routinePath}:hmac`;
+  }
+}
+
+export async function setDestinationCredential(args: {
+  destination: Destination;
+  slot: { kind: 'api-key' };
+  scope: { scope: 'global' | 'user' | 'agent'; ownerId: string | null };
+  payload: string;
+}): Promise<void> {
+  const base = args.scope.scope === 'user' ? '/settings' : '/admin';
+  const url = `${base}/destinations/${args.destination.kind}/credential`;
+  const body = {
+    destination: args.destination,
+    scope: args.scope.scope,
+    ownerId: args.scope.ownerId,
+    kind: args.slot.kind,
+    payloadB64: b64(args.payload),
+  };
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: writeHeaders,
+    credentials: 'include',
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+  }
+}
+
+export async function clearDestinationCredential(args: {
+  destination: Destination;
+  scope: { scope: 'global' | 'user' | 'agent'; ownerId: string | null };
+}): Promise<void> {
+  const base = args.scope.scope === 'user' ? '/settings' : '/admin';
+  const url = `${base}/destinations/${args.destination.kind}/credential`;
+  const res = await fetch(url, {
+    method: 'DELETE',
+    headers: writeHeaders,
+    credentials: 'include',
+    body: JSON.stringify({
+      destination: args.destination,
+      scope: args.scope.scope,
+      ownerId: args.scope.ownerId,
+    }),
+  });
+  if (!res.ok && res.status !== 404) {
+    throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+  }
+}

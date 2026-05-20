@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import {
   PostgreSqlContainer,
   type StartedPostgreSqlContainer,
@@ -345,5 +345,253 @@ describe('@ax/skills service hooks (round-trip)', () => {
     }
     expect(caught).toBeInstanceOf(PluginError);
     expect((caught as PluginError).code).toBe('skill-in-use');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Helpers for credential-purge tests
+// ---------------------------------------------------------------------------
+
+/** Build a minimal valid manifest YAML for the given skill name and slots. */
+function yamlForSkill(
+  name: string,
+  slots: Array<{ slot: string; kind: 'api-key' }>,
+): string {
+  const credLines =
+    slots.length === 0
+      ? ''
+      : [
+          '  credentials:',
+          ...slots.map((s) => `    - slot: ${s.slot}\n      kind: ${s.kind}`),
+        ].join('\n') + '\n';
+  return [
+    `name: ${name}`,
+    `description: test skill for ${name}`,
+    'version: 1',
+    'capabilities:',
+    '  allowedHosts: []',
+    credLines.trimEnd(),
+  ]
+    .filter(Boolean)
+    .join('\n') + '\n';
+}
+
+interface CredentialRow {
+  scope: 'global' | 'user' | 'agent';
+  ownerId: string | null;
+  ref: string;
+}
+
+describe('@ax/skills credential purge on delete / slot removal', () => {
+  it('skills:delete fires credentials:delete for every (scope, ownerId) row at skill:<id>:*', async () => {
+    // Track which credentials:delete calls were made.
+    const deletedRefs: Array<{ scope: string; ownerId: string | null; ref: string }> = [];
+    // In-memory credential store keyed by "scope:ownerId:ref".
+    const credStore: CredentialRow[] = [];
+
+    const credListStub = async (_ctx: unknown, input: unknown) => {
+      const inp = input as { scope?: string; ownerId?: string | null };
+      if (inp.ownerId !== undefined && inp.scope === undefined) {
+        throw new PluginError({ code: 'invalid-payload', plugin: 'stub', message: 'ownerId requires scope' });
+      }
+      let rows = [...credStore];
+      if (inp.scope !== undefined) rows = rows.filter((r) => r.scope === inp.scope);
+      if (inp.ownerId !== undefined) rows = rows.filter((r) => r.ownerId === inp.ownerId);
+      return { credentials: rows };
+    };
+
+    const credDeleteStub = vi.fn(async (_ctx: unknown, input: unknown) => {
+      const inp = input as CredentialRow;
+      deletedRefs.push({ scope: inp.scope, ownerId: inp.ownerId, ref: inp.ref });
+      const idx = credStore.findIndex(
+        (r) => r.scope === inp.scope && r.ownerId === inp.ownerId && r.ref === inp.ref,
+      );
+      if (idx !== -1) credStore.splice(idx, 1);
+    });
+
+    const h = await makeHarness({
+      services: {
+        'credentials:list': credListStub,
+        'credentials:delete': credDeleteStub,
+      },
+    });
+
+    // 1. Seed the skill with one credential slot.
+    const manifest = yamlForSkill('linear-tracker', [{ slot: 'LINEAR_TOKEN', kind: 'api-key' }]);
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>(
+      'skills:upsert',
+      h.ctx(),
+      { manifestYaml: manifest, bodyMd: '# linear-tracker\n' },
+    );
+
+    // 2. Seed credentials at global scope and user scope for the slot ref.
+    credStore.push({ scope: 'global', ownerId: null, ref: 'skill:linear-tracker:LINEAR_TOKEN' });
+    credStore.push({ scope: 'user', ownerId: 'alice', ref: 'skill:linear-tracker:LINEAR_TOKEN' });
+
+    // 3. Delete the skill.
+    await h.bus.call<SkillsDeleteInput, SkillsDeleteOutput>(
+      'skills:delete',
+      h.ctx(),
+      { skillId: 'linear-tracker' },
+    );
+
+    // 4. Both credential rows should have been deleted.
+    expect(credDeleteStub).toHaveBeenCalledTimes(2);
+    expect(deletedRefs.map((d) => `${d.scope}:${d.ownerId}:${d.ref}`).sort()).toEqual([
+      'global:null:skill:linear-tracker:LINEAR_TOKEN',
+      'user:alice:skill:linear-tracker:LINEAR_TOKEN',
+    ]);
+    // Credential store should now be empty.
+    expect(credStore).toHaveLength(0);
+  });
+
+  it('skills:upsert fires credentials:delete for slots dropped in a manifest edit', async () => {
+    const credStore: CredentialRow[] = [];
+
+    const credListStub = async (_ctx: unknown, _input: unknown) => ({
+      credentials: [...credStore],
+    });
+
+    const credDeleteStub = vi.fn(async (_ctx: unknown, input: unknown) => {
+      const inp = input as CredentialRow;
+      const idx = credStore.findIndex(
+        (r) => r.scope === inp.scope && r.ownerId === inp.ownerId && r.ref === inp.ref,
+      );
+      if (idx !== -1) credStore.splice(idx, 1);
+    });
+
+    const h = await makeHarness({
+      services: {
+        'credentials:list': credListStub,
+        'credentials:delete': credDeleteStub,
+      },
+    });
+
+    // 1. Upsert skill with two slots.
+    const manifest1 = yamlForSkill('gh-tool', [
+      { slot: 'OLD_SLOT', kind: 'api-key' },
+      { slot: 'KEEPER', kind: 'api-key' },
+    ]);
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>(
+      'skills:upsert',
+      h.ctx(),
+      { manifestYaml: manifest1, bodyMd: '# gh-tool\n' },
+    );
+
+    // 2. Seed credentials for both slots.
+    credStore.push({ scope: 'global', ownerId: null, ref: 'skill:gh-tool:OLD_SLOT' });
+    credStore.push({ scope: 'user', ownerId: 'bob', ref: 'skill:gh-tool:KEEPER' });
+
+    // 3. Upsert again with only KEEPER (OLD_SLOT dropped).
+    const manifest2 = yamlForSkill('gh-tool', [{ slot: 'KEEPER', kind: 'api-key' }]);
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>(
+      'skills:upsert',
+      h.ctx(),
+      { manifestYaml: manifest2, bodyMd: '# gh-tool updated\n' },
+    );
+
+    // 4. Only KEEPER's credential should survive; OLD_SLOT's should be gone.
+    expect(credDeleteStub).toHaveBeenCalledTimes(1);
+    expect(credStore).toHaveLength(1);
+    expect(credStore[0]?.ref).toBe('skill:gh-tool:KEEPER');
+  });
+
+  it('skills:delete continues purging remaining rows when one delete fails (per-row try/catch)', async () => {
+    // Seed 3 credential rows for 3 slots.  The middle delete throws; the
+    // first and last must still be deleted.
+    const credStore: CredentialRow[] = [
+      { scope: 'global', ownerId: null, ref: 'skill:multi-slot:SLOT_A' },
+      { scope: 'global', ownerId: null, ref: 'skill:multi-slot:SLOT_B' },
+      { scope: 'global', ownerId: null, ref: 'skill:multi-slot:SLOT_C' },
+    ];
+
+    let callCount = 0;
+    const credDeleteStub = vi.fn(async (_ctx: unknown, input: unknown) => {
+      callCount++;
+      const inp = input as CredentialRow;
+      if (inp.ref === 'skill:multi-slot:SLOT_B') {
+        throw new Error('middle delete exploded');
+      }
+      const idx = credStore.findIndex(
+        (r) => r.scope === inp.scope && r.ownerId === inp.ownerId && r.ref === inp.ref,
+      );
+      if (idx !== -1) credStore.splice(idx, 1);
+    });
+
+    const h = await makeHarness({
+      services: {
+        'credentials:list': async () => ({ credentials: [...credStore] }),
+        'credentials:delete': credDeleteStub,
+      },
+    });
+
+    const manifest = yamlForSkill('multi-slot', [
+      { slot: 'SLOT_A', kind: 'api-key' },
+      { slot: 'SLOT_B', kind: 'api-key' },
+      { slot: 'SLOT_C', kind: 'api-key' },
+    ]);
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>(
+      'skills:upsert',
+      h.ctx(),
+      { manifestYaml: manifest, bodyMd: '# multi-slot\n' },
+    );
+
+    // Delete must succeed even though SLOT_B's delete threw.
+    await expect(
+      h.bus.call<SkillsDeleteInput, SkillsDeleteOutput>(
+        'skills:delete',
+        h.ctx(),
+        { skillId: 'multi-slot' },
+      ),
+    ).resolves.toEqual({});
+
+    // All 3 deletes were attempted.
+    expect(callCount).toBe(3);
+    // SLOT_A and SLOT_C were removed; SLOT_B (which threw) remains.
+    expect(credStore.map((r) => r.ref)).toEqual(['skill:multi-slot:SLOT_B']);
+  });
+
+  it('skills:delete credential purge failure does not abort the skill deletion', async () => {
+    const credListStub = async () => ({
+      credentials: [{ scope: 'global' as const, ownerId: null, ref: 'skill:bad-skill:TOKEN' }],
+    });
+    const credDeleteStub = async () => {
+      throw new Error('storage exploded');
+    };
+
+    const h = await makeHarness({
+      services: {
+        'credentials:list': credListStub,
+        'credentials:delete': credDeleteStub,
+      },
+    });
+
+    const manifest = yamlForSkill('bad-skill', [{ slot: 'TOKEN', kind: 'api-key' }]);
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>(
+      'skills:upsert',
+      h.ctx(),
+      { manifestYaml: manifest, bodyMd: '# bad-skill\n' },
+    );
+
+    // Delete should succeed even though the credential purge throws.
+    await expect(
+      h.bus.call<SkillsDeleteInput, SkillsDeleteOutput>(
+        'skills:delete',
+        h.ctx(),
+        { skillId: 'bad-skill' },
+      ),
+    ).resolves.toEqual({});
+
+    // Skill should be gone.
+    let caught: unknown;
+    try {
+      await h.bus.call<SkillsGetInput, SkillsGetOutput>('skills:get', h.ctx(), {
+        skillId: 'bad-skill',
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('skill-not-found');
   });
 });

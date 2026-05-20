@@ -499,6 +499,28 @@ async function deleteAgent(
     });
   }
   await assertWriteAllowed(existing, bus, ctx, input.actor);
+
+  // Credential purge is best-effort: failures are logged and we continue to
+  // store.deleteById regardless. The purge runs first so that on success the
+  // agent's creds are gone before the agent row is removed — if the purge
+  // fails the agent row stays and the operator can retry (preserving the
+  // ability to clean up the orphaned credential rows). If we deleted the
+  // agent row first and the purge then failed, the credential rows would be
+  // orphaned with no way to reclaim them.
+  if (bus.hasService('credentials:purge-by-owner')) {
+    try {
+      await bus.call('credentials:purge-by-owner', ctx, {
+        scope: 'agent',
+        ownerId: input.agentId,
+      });
+    } catch (err) {
+      ctx.logger.warn('agents_delete_credential_purge_failed', {
+        agentId: input.agentId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   await store.deleteById(input.agentId);
 }
 

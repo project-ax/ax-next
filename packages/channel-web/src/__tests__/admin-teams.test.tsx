@@ -31,7 +31,7 @@ function jsonOk(body: unknown): Response {
 beforeEach(() => {
   fetchMock.mockReset();
   globalThis.fetch = fetchMock as unknown as typeof fetch;
-  // Default: providers empty for the initial ProviderKeysTab load.
+  // Default: empty response for any background fetches.
   fetchMock.mockImplementation(() =>
     Promise.resolve(jsonOk({ providers: [], agents: [], teams: [], servers: [] })),
   );

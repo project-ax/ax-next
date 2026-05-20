@@ -1,9 +1,14 @@
-import { PluginError, type Plugin } from '@ax/core';
+import { PluginError, makeAgentContext, type Plugin } from '@ax/core';
+import { wipePreRedesignCredentials } from './wipe-pre-redesign.js';
 import type { Transaction } from 'kysely';
 import { encryptWithKey, decryptWithKey, parseKeyFromEnv } from './crypto.js';
 
 const PLUGIN_NAME = '@ax/credentials';
-const REF_RE = /^[a-z0-9][a-z0-9_.-]{0,127}$/;
+// `:` is the separator for deterministic destination refs
+// (provider:anthropic, skill:<id>:<slot>, mcp:<id>:env:<name>, etc.).
+// The full ref including separators is one opaque string from the
+// store's POV — refs are never parsed back out. See refs.ts.
+const REF_RE = /^[a-zA-Z0-9][a-zA-Z0-9_./:-]{0,191}$/;
 const USER_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}$/;
 const KIND_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
@@ -129,6 +134,14 @@ export interface CredentialsListKindsOutput {
   kinds: Array<{ kind: string; flow: 'paste' | 'oauth' }>;
 }
 
+export type CredentialsPurgeByOwnerInput =
+  | { scope: 'user'; ownerId: string }
+  | { scope: 'agent'; ownerId: string };
+
+export interface CredentialsPurgeByOwnerOutput {
+  deleted: number;
+}
+
 // Raw envelope primitive — `(plaintext: string) → ciphertext: Uint8Array` and
 // the inverse. NOT the same shape as the credential-set envelope (which
 // JSON-wraps `kind` + `payloadB64` + metadata). Other plugins want a
@@ -223,6 +236,7 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
         'credentials:delete',
         'credentials:list',
         'credentials:list-kinds',
+        'credentials:purge-by-owner',
         'credentials:resolve:setting',
         'credentials:envelope-encrypt',
         'credentials:envelope-decrypt',
@@ -238,6 +252,11 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
         'credentials:store-blob:get',
         'credentials:store-blob:put',
         'credentials:store-blob:list',
+        'credentials:store-blob:purge-by-owner',
+        // storage:get / storage:set / storage:delete-prefix are called only
+        // when bus.hasService('storage:get') is true (the wipe-once routine
+        // on first boot). They are not declared here so that test harnesses
+        // that only stub credentials:store-blob:* pass verifyCalls().
       ],
       subscribes: [],
     },
@@ -672,6 +691,34 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
         // — propagate as-is.
         return { plaintext: decryptWithKey(key, input.ciphertext) };
       });
+
+      bus.registerService<CredentialsPurgeByOwnerInput, CredentialsPurgeByOwnerOutput>(
+        'credentials:purge-by-owner',
+        PLUGIN_NAME,
+        async (ctx, input) => {
+          return bus.call<CredentialsPurgeByOwnerInput, CredentialsPurgeByOwnerOutput>(
+            'credentials:store-blob:purge-by-owner',
+            ctx,
+            input,
+          );
+        },
+      );
+
+      // One-shot wipe of pre-redesign credential rows. Runs on every boot but
+      // is a no-op after the first time (guarded by a storage marker key).
+      // Must run AFTER all bus.registerService calls so that storage:* calls
+      // inside wipePreRedesignCredentials resolve correctly.
+      //
+      // Gated on storage:get being available — test harnesses that only stub
+      // credentials:store-blob:* don't wire storage:* and have nothing to wipe.
+      if (bus.hasService('storage:get')) {
+        const wipeCtx = makeAgentContext({
+          sessionId: 'credentials-wipe',
+          agentId: PLUGIN_NAME,
+          userId: 'system',
+        });
+        await wipePreRedesignCredentials(bus, wipeCtx);
+      }
     },
   };
 }

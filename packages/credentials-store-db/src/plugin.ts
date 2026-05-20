@@ -32,7 +32,11 @@ import type { Transaction } from 'kysely';
 const PLUGIN_NAME = '@ax/credentials-store-db';
 const KEY_PREFIX_V2 = 'credential:v2:';
 const KEY_PREFIX_V1 = 'credential:';
-const REF_RE = /^[a-z0-9][a-z0-9_.-]{0,127}$/;
+// `:` is the separator for deterministic destination refs
+// (provider:anthropic, skill:<id>:<slot>, mcp:<id>:env:<name>, etc.).
+// The full ref including separators is one opaque string from the
+// store's POV — refs are never parsed back out. See refs.ts.
+const REF_RE = /^[a-zA-Z0-9][a-zA-Z0-9_./:-]{0,191}$/;
 const OWNER_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}$/;
 const SCOPE_VALUES = ['global', 'user', 'agent'] as const;
 type Scope = (typeof SCOPE_VALUES)[number];
@@ -75,6 +79,18 @@ export interface StoreBlobListEntry {
 
 export interface StoreBlobListOutput {
   entries: StoreBlobListEntry[];
+}
+
+export interface StoreBlobPurgeByOwnerInput {
+  // 'global' is rejected at runtime — there is no per-owner purge for the
+  // singleton global scope. The type narrows it out so callers get a
+  // compile-time nudge toward the correct shape.
+  scope: Exclude<Scope, 'global'>;
+  ownerId: string;
+}
+
+export interface StoreBlobPurgeByOwnerOutput {
+  deleted: number;
 }
 
 export function v2StorageKey(scope: Scope, ownerId: string | null, ref: string): string {
@@ -140,6 +156,7 @@ export function createCredentialsStoreDbPlugin(): Plugin {
         'credentials:store-blob:put',
         'credentials:store-blob:get',
         'credentials:store-blob:list',
+        'credentials:store-blob:purge-by-owner',
       ],
       calls: [
         'storage:get',
@@ -264,6 +281,28 @@ export function createCredentialsStoreDbPlugin(): Plugin {
             });
           }
           return { entries };
+        },
+      );
+
+      bus.registerService<StoreBlobPurgeByOwnerInput, StoreBlobPurgeByOwnerOutput>(
+        'credentials:store-blob:purge-by-owner',
+        PLUGIN_NAME,
+        async (ctx, input) => {
+          const scope = validateScope(input.scope);
+          if (scope === 'global') {
+            throw new PluginError({
+              code: 'purge-global-forbidden',
+              plugin: PLUGIN_NAME,
+              message: "purge-by-owner is not allowed for scope='global'",
+            });
+          }
+          const ownerId = validateOwnerId(scope, input.ownerId);
+          const prefix = `${KEY_PREFIX_V2}${scope}:${ownerId ?? '_'}:`;
+          return bus.call<{ prefix: string }, { deleted: number }>(
+            'storage:delete-prefix',
+            ctx,
+            { prefix },
+          );
         },
       );
     },

@@ -76,7 +76,7 @@ afterEach(async () => {
   }
 });
 
-afterAll(async () => { if (container) await container.stop(); });
+afterAll(async () => { if (container) await container.stop(); }, 60_000);
 
 // Minimal valid interval-trigger routine markdown.
 function intervalMd(name: string, description: string, every = '60s'): string {

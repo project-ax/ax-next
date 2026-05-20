@@ -43,7 +43,6 @@ import { SessionHeader } from './components/SessionHeader';
 import { Thread } from './components/Thread';
 import { ToastStack } from './components/Toast';
 import { AdminShell } from './components/admin/AdminShell';
-import { SettingsPanel } from './components/settings/SettingsPanel';
 import { RoutinesPanel } from './components/routines/RoutinesPanel';
 import { SetupWizard } from './components/setup/SetupWizard';
 import { UserProvider } from './lib/user-context';
@@ -135,10 +134,6 @@ const AppContent = ({ user }: { user: AuthUser }) => {
   // `adminSettingsOpen` is set by the user menu's "Settings" entry
   // (admin-gated). AdminSettings renders in the main pane when true.
   const [adminSettingsOpen, setAdminSettingsOpen] = useState(false);
-  // `settingsOpen` is set by the user menu's "Credentials" entry.
-  // SettingsPanel renders below when true. Available to every signed-in
-  // user (no isAdmin gate — server-side scope='user' enforces ownership).
-  const [settingsOpen, setSettingsOpen] = useState(false);
   // `routinesOpen` is set by the user menu's "Routines" entry. Available
   // to every signed-in user — server-side scopes routines to caller's
   // owned/shared agents.
@@ -201,7 +196,6 @@ const AppContent = ({ user }: { user: AuthUser }) => {
             <>
               <Sidebar
                 onOpenAdminSettings={() => setAdminSettingsOpen(true)}
-                onOpenSettings={() => setSettingsOpen(true)}
                 onOpenRoutines={() => setRoutinesOpen(true)}
               />
               {sidebarOpen && (
@@ -217,10 +211,6 @@ const AppContent = ({ user }: { user: AuthUser }) => {
               </main>
             </>
           )}
-          <SettingsPanel
-            open={settingsOpen}
-            onClose={() => setSettingsOpen(false)}
-          />
           <RoutinesPanel
             open={routinesOpen}
             onClose={() => setRoutinesOpen(false)}

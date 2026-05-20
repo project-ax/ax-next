@@ -132,7 +132,7 @@ describe('providers handlers', () => {
       {
         scope: 'global',
         ownerId: null,
-        ref: 'anthropic-api',
+        ref: 'provider:anthropic',
         kind: 'api-key',
         payload: new TextEncoder().encode('sk-test'),
       },
@@ -222,7 +222,7 @@ describe('providers handlers', () => {
     >('credentials:list', ctx, {});
     expect(
       credentials.some(
-        (c) => c.scope === 'global' && c.ref === 'anthropic-api',
+        (c) => c.scope === 'global' && c.ref === 'provider:anthropic',
       ),
     ).toBe(true);
   });

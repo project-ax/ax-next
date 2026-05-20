@@ -54,7 +54,7 @@ afterEach(async () => {
 afterAll(async () => {
   await db.destroy();
   if (container) await container.stop();
-});
+}, 60_000);
 
 describe('canary — defaults materialize → claim → fire → override → admin-edit (I-R8)', () => {
   it('drives all four state transitions end-to-end', async () => {

@@ -326,6 +326,9 @@ importers:
       '@ax/core':
         specifier: workspace:*
         version: link:../core
+      '@ax/credentials':
+        specifier: workspace:*
+        version: link:../credentials
       '@ax/http-server':
         specifier: workspace:*
         version: link:../http-server

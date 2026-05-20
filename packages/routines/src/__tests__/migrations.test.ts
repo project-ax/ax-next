@@ -22,7 +22,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await db.destroy();
   if (container) await container.stop();
-});
+}, 60_000);
 
 afterEach(async () => {
   await sql`DROP TABLE IF EXISTS routines_v1_fires`.execute(db);

@@ -27,7 +27,7 @@ afterEach(async () => {
 afterAll(async () => {
   await db.destroy();
   if (container) await container.stop();
-});
+}, 60_000);
 
 const ENC = new TextEncoder();
 

@@ -33,6 +33,8 @@ describe('UserMenu', () => {
     expect(screen.queryByText(/Admin · MCP Servers/)).toBeNull();
     expect(screen.queryByText(/Admin · Teams/)).toBeNull();
     expect(screen.queryByText(/Admin · Credentials/)).toBeNull();
+    // Standalone Credentials entry removed (now lives inside admin Settings).
+    expect(screen.queryByRole('menuitem', { name: 'Credentials' })).toBeNull();
   });
 
   it('"Settings" entry calls onOpenAdminSettings', () => {
@@ -56,28 +58,6 @@ describe('UserMenu', () => {
     fireEvent.click(screen.getByRole('button', { name: /Alice/i }));
     expect(screen.queryByRole('menuitem', { name: 'Settings' })).toBeNull();
     expect(screen.queryByText('Admin Settings')).toBeNull();
-  });
-
-  it('regular user sees "Credentials" entry', () => {
-    render(
-      <UserProvider value={regularUser}>
-        <UserMenu />
-      </UserProvider>,
-    );
-    fireEvent.click(screen.getByRole('button', { name: /Alice/i }));
-    expect(screen.getByRole('menuitem', { name: 'Credentials' })).toBeTruthy();
-  });
-
-  it('"Credentials" entry calls onOpenSettings', () => {
-    const onOpenSettings = vi.fn();
-    render(
-      <UserProvider value={regularUser}>
-        <UserMenu onOpenSettings={onOpenSettings} />
-      </UserProvider>,
-    );
-    fireEvent.click(screen.getByRole('button', { name: /Alice/i }));
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Credentials' }));
-    expect(onOpenSettings).toHaveBeenCalled();
   });
 
   it('"Routines" menuitem is visible to regular users', () => {

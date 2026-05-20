@@ -1,5 +1,5 @@
 /**
- * Admin MCP servers form — Task 23.
+ * Admin MCP servers form — Task 23 / Task 12.
  *
  * Mirrors the agents test (Task 22): render McpServerForm directly →
  * reveal form → POST → re-fetch. Adds two cases that don't exist on the
@@ -9,6 +9,11 @@
  *     surfaces "ok" inline on success.
  *   - The same button surfaces an "error" badge on failure (HTTP 5xx
  *     or `{ ok: false, error }` body).
+ *
+ * Task 12 replaces the old `credentials_id` field with per-env/per-header
+ * CredentialSlotRow lists. The form now accepts an optional `initialConfig`
+ * prop for testability — when provided it skips the list view and opens
+ * the form directly in "edit" mode.
  *
  * The mock middleware always returns `{ ok: true }`, so the failure
  * test fakes a non-OK response directly.
@@ -20,6 +25,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { McpServerForm } from '../components/admin/McpServerForm';
+import type { McpServerConfig } from '../../mock/admin/mcp-servers';
 
 const fetchMock = vi.fn();
 
@@ -33,9 +39,10 @@ function jsonOk(body: unknown): Response {
 beforeEach(() => {
   fetchMock.mockReset();
   globalThis.fetch = fetchMock as unknown as typeof fetch;
-  // Default: stub all fetches with empty responses.
+  // Default: stub all fetches with empty responses, including credential list
+  // queries that CredentialSlotRow fires on mount.
   fetchMock.mockImplementation(() =>
-    Promise.resolve(jsonOk({ providers: [], agents: [], teams: [], servers: [] })),
+    Promise.resolve(jsonOk({ providers: [], agents: [], teams: [], servers: [], credentials: [] })),
   );
 });
 
@@ -43,7 +50,7 @@ const sampleServer = {
   id: 'mcp-1',
   name: 'fs',
   url: 'stdio://fs',
-  transport: 'stdio',
+  transport: 'stdio' as const,
   created_at: 0,
   updated_at: 0,
 };
@@ -52,7 +59,9 @@ describe('AdminSettings — MCP Servers tab', () => {
   it('lists mcp servers', async () => {
     fetchMock.mockReset();
     globalThis.fetch = fetchMock as unknown as typeof fetch;
-    fetchMock.mockResolvedValueOnce(jsonOk({ servers: [sampleServer] }));
+    fetchMock.mockImplementation(() =>
+      Promise.resolve(jsonOk({ servers: [sampleServer], credentials: [] })),
+    );
 
     render(<McpServerForm />);
     await waitFor(() => expect(screen.getByText('fs')).toBeTruthy());
@@ -61,22 +70,23 @@ describe('AdminSettings — MCP Servers tab', () => {
   it('+ New MCP server reveals the form', async () => {
     fetchMock.mockReset();
     globalThis.fetch = fetchMock as unknown as typeof fetch;
-    fetchMock.mockResolvedValueOnce(jsonOk({ servers: [] }));
+    fetchMock.mockImplementation(() =>
+      Promise.resolve(jsonOk({ servers: [], credentials: [] })),
+    );
 
     render(<McpServerForm />);
     await waitFor(() => screen.getByText(/New MCP server/i));
     fireEvent.click(screen.getByText(/New MCP server/i));
     expect(screen.getByLabelText(/^name/i)).toBeTruthy();
-    expect(screen.getByLabelText(/^url/i)).toBeTruthy();
     expect(screen.getByLabelText(/^transport/i)).toBeTruthy();
   });
 
   it('POST creates a new server', async () => {
     fetchMock.mockReset();
     globalThis.fetch = fetchMock as unknown as typeof fetch;
-    fetchMock.mockResolvedValueOnce(jsonOk({ servers: [] }));
-    fetchMock.mockResolvedValueOnce(jsonOk({ id: 'mcp-x' }));
-    fetchMock.mockResolvedValueOnce(jsonOk({ servers: [] }));
+    fetchMock.mockImplementation(() =>
+      Promise.resolve(jsonOk({ servers: [], credentials: [], id: 'mcp-x' })),
+    );
 
     render(<McpServerForm />);
     await waitFor(() => screen.getByText(/New MCP server/i));
@@ -84,8 +94,8 @@ describe('AdminSettings — MCP Servers tab', () => {
     fireEvent.change(screen.getByLabelText(/^name/i), {
       target: { value: 'fs' },
     });
-    fireEvent.change(screen.getByLabelText(/^url/i), {
-      target: { value: 'stdio://fs' },
+    fireEvent.change(screen.getByLabelText(/^command/i), {
+      target: { value: 'mcp-fs' },
     });
     fireEvent.click(screen.getByText(/Save/i));
     await waitFor(() => {
@@ -101,8 +111,10 @@ describe('AdminSettings — MCP Servers tab', () => {
   it('Test button surfaces success', async () => {
     fetchMock.mockReset();
     globalThis.fetch = fetchMock as unknown as typeof fetch;
-    fetchMock.mockResolvedValueOnce(jsonOk({ servers: [sampleServer] }));
-    fetchMock.mockResolvedValueOnce(jsonOk({ ok: true }));
+    fetchMock.mockImplementation((url: string) => {
+      if (String(url).includes('/test')) return Promise.resolve(jsonOk({ ok: true }));
+      return Promise.resolve(jsonOk({ servers: [sampleServer], credentials: [] }));
+    });
 
     render(<McpServerForm />);
     await waitFor(() => screen.getByText('fs'));
@@ -115,8 +127,11 @@ describe('AdminSettings — MCP Servers tab', () => {
   it('Test button surfaces failure', async () => {
     fetchMock.mockReset();
     globalThis.fetch = fetchMock as unknown as typeof fetch;
-    fetchMock.mockResolvedValueOnce(jsonOk({ servers: [sampleServer] }));
-    fetchMock.mockResolvedValueOnce(new Response(null, { status: 500 }));
+    fetchMock.mockImplementation((url: string) => {
+      if (String(url).includes('/test'))
+        return Promise.resolve(new Response(null, { status: 500 }));
+      return Promise.resolve(jsonOk({ servers: [sampleServer], credentials: [] }));
+    });
 
     render(<McpServerForm />);
     await waitFor(() => screen.getByText('fs'));
@@ -129,11 +144,10 @@ describe('AdminSettings — MCP Servers tab', () => {
   it('Test button surfaces error if fetch throws (defensive try/catch)', async () => {
     fetchMock.mockReset();
     globalThis.fetch = fetchMock as unknown as typeof fetch;
-    fetchMock.mockResolvedValueOnce(jsonOk({ servers: [sampleServer] }));
-    // Network failure — the helper today catches this internally, but
-    // this test guards against a future refactor that lets a throw
-    // escape `testMcpServer`. The badge must move out of "testing…".
-    fetchMock.mockRejectedValueOnce(new Error('network'));
+    fetchMock.mockImplementation((url: string) => {
+      if (String(url).includes('/test')) return Promise.reject(new Error('network'));
+      return Promise.resolve(jsonOk({ servers: [sampleServer], credentials: [] }));
+    });
 
     render(<McpServerForm />);
     await waitFor(() => screen.getByText('fs'));
@@ -144,5 +158,34 @@ describe('AdminSettings — MCP Servers tab', () => {
       expect(screen.getByText(/error/i)).toBeTruthy();
       expect(screen.queryByText(/testing/i)).toBeNull();
     });
+  });
+
+  it('renders one CredentialSlotRow per declared env var (stdio)', async () => {
+    const config: McpServerConfig = {
+      id: 'github',
+      enabled: true,
+      transport: 'stdio',
+      command: 'mcp-github',
+      args: [],
+      env: { GH_TOKEN: '', GH_HOST: 'api.github.com' },
+      ownerId: null,
+    };
+    render(<McpServerForm initialConfig={config} />);
+    expect(await screen.findByText('GH_TOKEN')).toBeInTheDocument();
+    expect(screen.getByText('GH_HOST')).toBeInTheDocument();
+  });
+
+  it('renders one CredentialSlotRow per declared header (http transports)', async () => {
+    const config: McpServerConfig = {
+      id: 'gh-http',
+      enabled: true,
+      transport: 'streamable-http',
+      url: 'https://example.com',
+      headerCredentialRefs: { Authorization: '', 'X-Trace': '' },
+      ownerId: null,
+    };
+    render(<McpServerForm initialConfig={config} />);
+    expect(await screen.findByText('Authorization')).toBeInTheDocument();
+    expect(screen.getByText('X-Trace')).toBeInTheDocument();
   });
 });

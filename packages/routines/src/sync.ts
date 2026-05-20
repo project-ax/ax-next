@@ -40,6 +40,33 @@ export async function handleWorkspaceApplied(
         try { unreg(); } catch { /* idempotent per http-server */ }
         deps.webhookRoutes.delete(key);
       }
+
+      // Purge the HMAC credential minted by @ax/routines when this routine
+      // was first given a webhook secret. Soft-dep: only attempted when
+      // credentials:list + credentials:delete are both present (hasService
+      // gate keeps stripped presets working). Failures are logged + swallowed
+      // so a credential hiccup never wedges the routine deletion.
+      const hmacRef = `routine:${agentId}:${change.path}:hmac`;
+      if (deps.bus.hasService('credentials:list') && deps.bus.hasService('credentials:delete')) {
+        try {
+          const list = await deps.bus.call<
+            Record<string, never>,
+            { credentials: Array<{ scope: 'user' | 'agent' | 'global'; ownerId: string | null; ref: string }> }
+          >('credentials:list', ctx, {});
+          for (const c of list.credentials) {
+            if (c.ref !== hmacRef) continue;
+            await deps.bus.call('credentials:delete', ctx, {
+              scope: c.scope, ownerId: c.ownerId, ref: c.ref,
+            });
+          }
+        } catch (err) {
+          ctx.logger.warn('routines_sync_credential_purge_failed', {
+            agentId, path: change.path,
+            err: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+
       try {
         await deps.store.delete({ agentId, path: change.path });
       } catch (err) {

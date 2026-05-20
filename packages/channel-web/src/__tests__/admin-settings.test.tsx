@@ -2,21 +2,17 @@
  * AdminShell — main in-place settings shell tests.
  *
  * Pinned behaviors:
- *   1. Default tab is 'provider-keys' (ProviderKeysTab rendered, not AgentForm).
+ *   1. Default tab is 'providers' (ProvidersPanel rendered, not AgentForm).
  *   2. Clicking "Model Config" nav item shows ModelConfigTab.
  *   3. Clicking "← chat" calls onClose.
  *   4. Clicking "Agents" nav item shows AgentForm content.
  *
- * ProviderKeysTab and ModelConfigTab make fetch calls on mount — we stub
+ * ProvidersPanel and ModelConfigTab make fetch calls on mount — we stub
  * fetch so those effects resolve without error rather than leaking unhandled
  * promise rejections.
  *
  * AdminSidebar requires a UserProvider (it calls useUser() and returns null
  * when no provider is mounted). We wrap every render in a UserProvider.
- *
- * NOTE: The canary banner (CanaryAdvisory) lives inside ProviderKeysTab and
- * is rendered synchronously on the default tab. Tests verify its presence via
- * data-testid="canary-advisory" and text content.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
@@ -33,7 +29,16 @@ const mockUser: AuthUser = {
   role: 'admin',
 };
 
-function emptyProviders(): Response {
+function emptyResponse(url: string): Response {
+  // ProvidersPanel (default tab) calls adminCredentials.list() which hits
+  // /admin/credentials (no trailing path) and expects { credentials: [] }.
+  // ModelConfigTab calls listProviders() → /admin/credentials/providers → { providers: [] }.
+  if (/\/admin\/credentials(\?|$)/.test(url) || /\/settings\/credentials(\?|$)/.test(url)) {
+    return new Response(JSON.stringify({ credentials: [] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
   return new Response(JSON.stringify({ providers: [], agents: [], teams: [], servers: [] }), {
     status: 200,
     headers: { 'content-type': 'application/json' },
@@ -53,29 +58,23 @@ beforeEach(() => {
   globalThis.fetch = fetchMock as unknown as typeof fetch;
   // Default stub: return a fresh Response on each call so the body is never
   // "already read" — Response.json() can only be consumed once per instance.
-  fetchMock.mockImplementation(() => Promise.resolve(emptyProviders()));
+  fetchMock.mockImplementation((input: RequestInfo | URL) =>
+    Promise.resolve(emptyResponse(String(input))),
+  );
 });
 
 describe('AdminShell', () => {
-  it('default tab is provider-keys — ProviderKeysTab is rendered, not AgentForm', async () => {
+  it('default tab is providers — ProvidersPanel is rendered, not AgentForm', async () => {
     renderShell();
-    // The "Provider keys" nav button should be present and active (data-active attr).
-    const providerKeysBtn = screen.getByRole('button', { name: /provider keys/i });
-    expect(providerKeysBtn).toBeTruthy();
-    expect(providerKeysBtn.getAttribute('data-active')).toBe('true');
-    // Wait for ProviderKeysTab to settle (it fetches on mount).
+    // The "Providers" nav button should be present and active (data-active attr).
+    const providersBtn = screen.getByRole('button', { name: /^providers$/i });
+    expect(providersBtn).toBeTruthy();
+    expect(providersBtn.getAttribute('data-active')).toBe('true');
+    // Wait for ProvidersPanel to settle (it fetches on mount).
     await waitFor(() => {
       // AgentForm renders a "+ New agent" button — it must NOT be present.
       expect(screen.queryByText(/New agent/i)).toBeNull();
     });
-  });
-
-  it('canary banner is present on default tab', () => {
-    renderShell();
-    // CanaryAdvisory is rendered synchronously inside ProviderKeysTab (default tab).
-    expect(screen.getByTestId('canary-advisory')).toBeTruthy();
-    expect(screen.getByText(/canary scanner isn't wired in yet/i)).toBeTruthy();
-    expect(screen.getByText(/no automated secret-leak veto/i)).toBeTruthy();
   });
 
   it('clicking "Model Config" nav item shows ModelConfigTab', async () => {
@@ -107,7 +106,7 @@ describe('AdminShell', () => {
 
   it('all five nav items are present in the sidebar', () => {
     renderShell();
-    expect(screen.getByRole('button', { name: /provider keys/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^providers$/i })).toBeTruthy();
     expect(screen.getByRole('button', { name: /model config/i })).toBeTruthy();
     expect(screen.getByRole('button', { name: /^agents$/i })).toBeTruthy();
     expect(screen.getByRole('button', { name: /mcp servers/i })).toBeTruthy();

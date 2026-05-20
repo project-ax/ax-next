@@ -7,13 +7,16 @@ import { createAdminCredentialsHandlers } from '../admin-routes.js';
 import type { RouteRequest, RouteResponse } from '../shared.js';
 
 // ---------------------------------------------------------------------------
-// /admin/credentials* CRUD handler tests.
+// /admin/credentials* read-only handler tests (list + kinds).
 //
 // We boot the credentials facade against an in-memory sqlite (the same
 // pattern packages/credentials/src/__tests__/list.test.ts uses) and stub
 // `auth:require-user` so we can drive the actor identity per case. The
 // handlers are tested directly with mkReq/mkRes — the actual HTTP
 // transport is the http-server's job and isn't under test here.
+//
+// create / destroy tests were removed with the credentials UX redesign
+// (Task 19) — write paths now go through destination-routes.
 // ---------------------------------------------------------------------------
 
 const KEY = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
@@ -92,52 +95,6 @@ describe('admin credentials handlers', () => {
     process.env.AX_CREDENTIALS_KEY = KEY;
   });
 
-  it('non-admin gets 403 on POST /admin/credentials', async () => {
-    const bus = await makeBus({ id: 'alice', isAdmin: false });
-    const handlers = createAdminCredentialsHandlers({ bus });
-    const { res, statusOf } = mkRes();
-    await handlers.create(
-      mkReq({
-        body: {
-          scope: 'global',
-          ownerId: null,
-          ref: 'k',
-          kind: 'api-key',
-          payload: 'eA==',
-        },
-      }),
-      res,
-    );
-    expect(statusOf()).toBe(403);
-  });
-
-  it('admin can POST a global api-key credential', async () => {
-    const bus = await makeBus({ id: 'admin', isAdmin: true });
-    const handlers = createAdminCredentialsHandlers({ bus });
-    const { res, statusOf, bodyOf } = mkRes();
-    await handlers.create(
-      mkReq({
-        body: {
-          scope: 'global',
-          ownerId: null,
-          ref: 'anthropic-api-key',
-          kind: 'api-key',
-          payload: Buffer.from('sk-test').toString('base64'),
-        },
-      }),
-      res,
-    );
-    expect(statusOf()).toBe(201);
-    expect(bodyOf()).toMatchObject({
-      credential: {
-        scope: 'global',
-        ownerId: null,
-        ref: 'anthropic-api-key',
-        kind: 'api-key',
-      },
-    });
-  });
-
   it('GET /admin/credentials returns metadata only', async () => {
     const bus = await makeBus({ id: 'admin', isAdmin: true });
     await bus.call(
@@ -158,60 +115,6 @@ describe('admin credentials handlers', () => {
     const body = bodyOf() as { credentials: unknown[] };
     expect(body.credentials).toHaveLength(1);
     expect(JSON.stringify(body)).not.toContain('SHHH');
-  });
-
-  it('rejects body > 64 KiB', async () => {
-    const bus = await makeBus({ id: 'admin', isAdmin: true });
-    const handlers = createAdminCredentialsHandlers({ bus });
-    const { res, statusOf } = mkRes();
-    const req: RouteRequest = mkReq({});
-    // Mutate body in place — a real over-cap request ships the bytes; the
-    // body-cap check is the contract regardless of JSON validity.
-    (req as { body: Buffer }).body = Buffer.alloc(65 * 1024);
-    await handlers.create(req, res);
-    expect(statusOf()).toBe(413);
-  });
-
-  it('rejects scope=global with non-null ownerId at the route layer', async () => {
-    const bus = await makeBus({ id: 'admin', isAdmin: true });
-    const handlers = createAdminCredentialsHandlers({ bus });
-    const { res, statusOf, bodyOf } = mkRes();
-    await handlers.create(
-      mkReq({
-        body: {
-          scope: 'global',
-          ownerId: 'alice',
-          ref: 'k',
-          kind: 'api-key',
-          payload: 'eA==',
-        },
-      }),
-      res,
-    );
-    expect(statusOf()).toBe(400);
-    expect((bodyOf() as { error: string }).error).toMatch(/ownerId must be null/);
-  });
-
-  it('DELETE /admin/credentials/:scope/:ownerId/:ref returns 204', async () => {
-    const bus = await makeBus({ id: 'admin', isAdmin: true });
-    await bus.call(
-      'credentials:set',
-      makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'admin' }),
-      {
-        scope: 'user',
-        ownerId: 'alice',
-        ref: 'k',
-        kind: 'api-key',
-        payload: new Uint8Array([1]),
-      },
-    );
-    const handlers = createAdminCredentialsHandlers({ bus });
-    const { res, statusOf } = mkRes();
-    await handlers.destroy(
-      mkReq({ params: { scope: 'user', ownerId: 'alice', ref: 'k' } }),
-      res,
-    );
-    expect(statusOf()).toBe(204);
   });
 
   it('GET /admin/credentials/kinds returns the catalog (any authed user)', async () => {

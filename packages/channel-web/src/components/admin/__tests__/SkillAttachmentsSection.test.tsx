@@ -2,28 +2,23 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { SkillAttachmentsSection } from '../SkillAttachmentsSection';
 import type { SkillSummary } from '@ax/skills';
-import type { CredentialMeta } from '@/lib/credentials';
 
 vi.mock('@/lib/skills', () => ({
   listSkills: vi.fn(),
-}));
-
-vi.mock('@/lib/credentials', () => ({
-  adminCredentials: {
-    list: vi.fn(),
-  },
 }));
 
 vi.mock('@/lib/admin', () => ({
   patchAgentSkillAttachments: vi.fn(),
 }));
 
+// CredentialSlotRow makes fetch calls internally; mock at the fetch level
+// rather than mocking the whole component (we want to verify it renders).
+// Each test that needs it will spy on globalThis.fetch.
+
 import { listSkills } from '@/lib/skills';
-import { adminCredentials } from '@/lib/credentials';
 import { patchAgentSkillAttachments } from '@/lib/admin';
 
 const mockListSkills = vi.mocked(listSkills);
-const mockAdminCredentialsList = vi.mocked(adminCredentials.list);
 const mockPatch = vi.mocked(patchAgentSkillAttachments);
 
 const GITHUB_SKILL: SkillSummary = {
@@ -50,28 +45,20 @@ const SLACK_SKILL: SkillSummary = {
   updatedAt: '2026-05-17T08:00:00.000Z',
 };
 
-const CRED_A: CredentialMeta = {
-  scope: 'global',
-  ownerId: null,
-  ref: 'gh-pat-global',
-  kind: 'api-key',
-  createdAt: '2026-05-18T00:00:00.000Z',
-};
-
-const CRED_B: CredentialMeta = {
-  scope: 'user',
-  ownerId: 'u1',
-  ref: 'my-github-token',
-  kind: 'api-key',
-  createdAt: '2026-05-18T00:00:00.000Z',
-};
-
 const AGENT_ID = 'agent-123';
+
+// Minimal fetch stub that satisfies CredentialSlotRow's adminCredentials.list() call
+const credentialsFetchStub = vi.fn().mockResolvedValue(
+  new Response(JSON.stringify({ credentials: [] }), { status: 200 }),
+);
 
 beforeEach(() => {
   vi.resetAllMocks();
   mockListSkills.mockResolvedValue([GITHUB_SKILL, SLACK_SKILL]);
-  mockAdminCredentialsList.mockResolvedValue([CRED_A, CRED_B]);
+  credentialsFetchStub.mockResolvedValue(
+    new Response(JSON.stringify({ credentials: [] }), { status: 200 }),
+  );
+  vi.spyOn(globalThis, 'fetch').mockImplementation(credentialsFetchStub);
   mockPatch.mockResolvedValue({
     id: AGENT_ID,
     ownerId: 'u1',
@@ -90,12 +77,42 @@ beforeEach(() => {
 });
 
 describe('SkillAttachmentsSection', () => {
+  it('renders a CredentialSlotRow per skill slot (not a credential dropdown)', async () => {
+    vi.mocked(listSkills).mockResolvedValue([
+      {
+        id: 'linear-tracker',
+        description: 'tracks linear issues',
+        version: 1,
+        capabilities: {
+          allowedHosts: [],
+          credentials: [{ slot: 'LINEAR_TOKEN', kind: 'api-key' }],
+        },
+        defaultAttached: false,
+        updatedAt: new Date().toISOString(),
+      },
+    ]);
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ credentials: [] }), { status: 200 }),
+    );
+    render(
+      <SkillAttachmentsSection
+        agentId="agt-1"
+        initialAttachments={[{ skillId: 'linear-tracker', credentialBindings: {} }]}
+      />,
+    );
+    await waitFor(() => {
+      expect(screen.queryByText(/select credential/i)).not.toBeInTheDocument();
+    });
+    expect(screen.getByText('LINEAR_TOKEN')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /set credential/i })).toBeInTheDocument();
+  });
+
   it('renders existing attachments with their slot labels', async () => {
     render(
       <SkillAttachmentsSection
         agentId={AGENT_ID}
         initialAttachments={[
-          { skillId: 'github-api', credentialBindings: { GITHUB_TOKEN: 'gh-pat-global' } },
+          { skillId: 'github-api', credentialBindings: { GITHUB_TOKEN: 'skill:github-api:GITHUB_TOKEN' } },
         ]}
         onSaved={vi.fn()}
       />,
@@ -131,13 +148,13 @@ describe('SkillAttachmentsSection', () => {
     });
   });
 
-  it('clicking Save attachments calls patchAgentSkillAttachments', async () => {
+  it('clicking Save attachments calls patchAgentSkillAttachments with deterministic refs', async () => {
     const onSaved = vi.fn();
     render(
       <SkillAttachmentsSection
         agentId={AGENT_ID}
         initialAttachments={[
-          { skillId: 'github-api', credentialBindings: { GITHUB_TOKEN: 'gh-pat-global' } },
+          { skillId: 'github-api', credentialBindings: {} },
         ]}
         onSaved={onSaved}
       />,
@@ -151,7 +168,10 @@ describe('SkillAttachmentsSection', () => {
 
     await waitFor(() => {
       expect(mockPatch).toHaveBeenCalledWith(AGENT_ID, [
-        { skillId: 'github-api', credentialBindings: { GITHUB_TOKEN: 'gh-pat-global' } },
+        {
+          skillId: 'github-api',
+          credentialBindings: { GITHUB_TOKEN: 'skill:github-api:GITHUB_TOKEN' },
+        },
       ]);
       expect(onSaved).toHaveBeenCalledTimes(1);
     });
@@ -206,22 +226,22 @@ describe('SkillAttachmentsSection', () => {
     expect(mockPatch).not.toHaveBeenCalled();
   });
 
-  it('shows no matching credentials message when kind does not match', async () => {
-    // Override: no credentials at all
-    mockAdminCredentialsList.mockResolvedValueOnce([]);
-
+  it('skill with no credential slots renders without a Set credential button', async () => {
     render(
       <SkillAttachmentsSection
         agentId={AGENT_ID}
         initialAttachments={[
-          { skillId: 'github-api', credentialBindings: {} },
+          { skillId: 'slack-notify', credentialBindings: {} },
         ]}
         onSaved={vi.fn()}
       />,
     );
 
     await waitFor(() => {
-      expect(screen.getByText('GITHUB_TOKEN')).toBeTruthy();
+      expect(screen.getByText('slack-notify')).toBeTruthy();
     });
+
+    // slack-notify has no credentials, so no Set credential button
+    expect(screen.queryByRole('button', { name: /set credential/i })).toBeNull();
   });
 });

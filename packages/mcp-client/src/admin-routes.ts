@@ -22,6 +22,71 @@ import {
 } from './transports.js';
 
 // ---------------------------------------------------------------------------
+// Credential purge helper
+//
+// Called on server-delete (all declared env/header slots) and config-update
+// (only slots dropped from the new config). Soft-dep on credentials:list /
+// credentials:delete — gracefully skipped if those services aren't loaded
+// (e.g. CLI or sandbox-side contexts). Wrapped in try/catch at call sites so
+// a credential hiccup never wedges an MCP operation.
+// ---------------------------------------------------------------------------
+
+interface CredentialRow {
+  scope: 'global' | 'user' | 'agent';
+  ownerId: string | null;
+  ref: string;
+}
+
+async function purgeMcpCredentials(
+  bus: HookBus,
+  ctx: AgentContext,
+  serverId: string,
+  envNames: string[],
+  headerNames: string[],
+): Promise<void> {
+  if (envNames.length === 0 && headerNames.length === 0) return;
+  if (!bus.hasService('credentials:list') || !bus.hasService('credentials:delete')) return;
+
+  const refsToDelete = new Set<string>([
+    ...envNames.map((n) => `mcp:${serverId}:env:${n}`),
+    ...headerNames.map((n) => `mcp:${serverId}:header:${n}`),
+  ]);
+
+  const { credentials } = await bus.call<
+    Record<string, never>,
+    { credentials: CredentialRow[] }
+  >('credentials:list', ctx, {});
+
+  for (const c of credentials) {
+    if (!refsToDelete.has(c.ref)) continue;
+    await bus.call<CredentialRow, void>('credentials:delete', ctx, {
+      scope: c.scope,
+      ownerId: c.ownerId,
+      ref: c.ref,
+    });
+  }
+}
+
+/** Extract declared env var names from a config (stdio only). */
+function envNamesOf(cfg: McpServerConfig): string[] {
+  if (cfg.transport === 'stdio' && cfg.env !== undefined) {
+    return Object.keys(cfg.env);
+  }
+  return [];
+}
+
+/** Extract declared header credential ref keys from a config (http/sse only). */
+function headerNamesOf(cfg: McpServerConfig): string[] {
+  if (
+    (cfg.transport === 'streamable-http' || cfg.transport === 'sse') &&
+    cfg.headerCredentialRefs !== undefined
+  ) {
+    return Object.keys(cfg.headerCredentialRefs);
+  }
+  return [];
+}
+
+// ---------------------------------------------------------------------------
 // HTTP route handlers for /admin/mcp-servers[/:id][/test]. Mirrors the
 // agents/admin-routes.ts pattern (Task 9): handlers duck-type the
 // http-server's req/res surface so the plugin stays I2-clean (no @ax/*
@@ -448,6 +513,35 @@ export function createAdminMcpRouteHandlers(deps: AdminRouteDeps) {
         return;
       }
       const saved = await saveConfig(deps.bus, ctx, cfg);
+
+      // Purge credentials for env/header names that were in the old config
+      // but are absent from the new one. Graceful: a credential hiccup must
+      // NOT fail the config update — log and continue.
+      const oldEnvNames = envNamesOf(existing);
+      const newEnvNames = new Set(envNamesOf(saved));
+      const droppedEnvNames = oldEnvNames.filter((n) => !newEnvNames.has(n));
+
+      const oldHeaderNames = headerNamesOf(existing);
+      const newHeaderNames = new Set(headerNamesOf(saved));
+      const droppedHeaderNames = oldHeaderNames.filter((n) => !newHeaderNames.has(n));
+
+      if (droppedEnvNames.length > 0 || droppedHeaderNames.length > 0) {
+        try {
+          await purgeMcpCredentials(
+            deps.bus,
+            ctx,
+            saved.id,
+            droppedEnvNames,
+            droppedHeaderNames,
+          );
+        } catch (err) {
+          ctx.logger.warn('mcp_credential_purge_failed_on_update', {
+            serverId: saved.id,
+            err: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+
       res.status(200).json({ config: serializeConfig(saved) });
     },
 
@@ -482,7 +576,25 @@ export function createAdminMcpRouteHandlers(deps: AdminRouteDeps) {
         res.status(403).json({ error: 'forbidden' });
         return;
       }
+      // Capture the declared env/header names before the row is tombstoned.
+      const allEnvNames = envNamesOf(existing);
+      const allHeaderNames = headerNamesOf(existing);
+
       await deleteConfig(deps.bus, ctx, id);
+
+      // Purge all credential refs for this server's declared env/header slots.
+      // Graceful: a credential hiccup must NOT fail the delete — log + continue.
+      if (allEnvNames.length > 0 || allHeaderNames.length > 0) {
+        try {
+          await purgeMcpCredentials(deps.bus, ctx, id, allEnvNames, allHeaderNames);
+        } catch (err) {
+          ctx.logger.warn('mcp_credential_purge_failed_on_delete', {
+            serverId: id,
+            err: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+
       res.status(204).end();
     },
 

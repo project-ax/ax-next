@@ -217,12 +217,12 @@ describe('@ax/onboarding POST /setup/model', () => {
     );
     expect(status.status).toBe('completed');
 
-    // Verify credential row exists with ref='anthropic-api' and kind='api-key'.
+    // Verify credential row exists with ref='provider:anthropic' and kind='api-key'.
     const creds = await stack.harness.bus.call<
       { scope: string },
       { credentials: Array<{ ref: string; kind: string }> }
     >('credentials:list', stack.harness.ctx(), { scope: 'global' });
-    const cred = creds.credentials.find((c) => c.ref === 'anthropic-api');
+    const cred = creds.credentials.find((c) => c.ref === 'provider:anthropic');
     expect(cred).toBeDefined();
     expect(cred!.kind).toBe('api-key');
 

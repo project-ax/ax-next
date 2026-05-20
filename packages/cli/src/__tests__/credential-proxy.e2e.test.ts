@@ -102,12 +102,12 @@ describe.skipIf(skip)('credential-proxy e2e (real Anthropic API)', () => {
     async () => {
       const sqlitePath = path.join(tmp, 'e2e.sqlite');
 
-      // 1. Seed the anthropic-api credential so the proxy can resolve it
+      // 1. Seed the provider:anthropic credential so the proxy can resolve it
       //    at proxy:open-session time. runCredentialsCommand bootstraps
       //    its own minimal plugin set and writes through credentials:set.
       const stdin = Readable.from([apiKey ?? '']);
       const seedCode = await runCredentialsCommand({
-        argv: ['set', 'anthropic-api'],
+        argv: ['set', 'provider:anthropic'],
         stdin,
         stdout: () => undefined,
         stderr: () => undefined,

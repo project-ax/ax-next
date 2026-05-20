@@ -22,6 +22,8 @@ import { TriggerChip } from './TriggerChip';
 import { StatusChip } from './StatusChip';
 import { FireRowsTable } from './FireRowsTable';
 import { FireNowControl } from './FireNowControl';
+import { CredentialSlotRow } from '../credentials/CredentialSlotRow';
+import { refForDestination } from '@/lib/credentials';
 
 export interface RoutinesListProps {
   refreshKey?: number;
@@ -169,6 +171,19 @@ export function RoutinesList({ refreshKey = 0, onFired }: RoutinesListProps) {
                     ) : (
                       <FireRowsTable fires={fires[key]!} />
                     )}
+                  </div>
+                )}
+                {r.trigger.kind === 'webhook' && (
+                  <div className="pb-3 pl-[2.875rem] pr-2">
+                    <CredentialSlotRow
+                      destination={{ kind: 'routine-hmac', agentId: r.agentId, routinePath: r.path }}
+                      slot={{
+                        label: 'HMAC',
+                        kind: 'api-key',
+                        description: `Routine markdown should declare secretRef: ${refForDestination({ kind: 'routine-hmac', agentId: r.agentId, routinePath: r.path })}`,
+                      }}
+                      scope={{ scope: 'agent', ownerId: r.agentId }}
+                    />
                   </div>
                 )}
               </div>

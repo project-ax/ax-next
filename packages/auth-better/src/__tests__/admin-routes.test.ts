@@ -102,6 +102,7 @@ async function bootStack(): Promise<BootedStack> {
         return {};
       },
       'credentials:store-blob:list': async () => ({ refs: [...blobs.keys()] }),
+      'credentials:store-blob:purge-by-owner': async () => ({ deleted: 0 }),
     },
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),

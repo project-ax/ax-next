@@ -288,13 +288,13 @@ describe('@ax/credentials-store-db plugin', () => {
     await bus.call('credentials:store-blob:put', ctx(), {
       scope: 'user',
       ownerId: 'u',
-      ref: 'anthropic-api',
+      ref: 'provider:anthropic',
       blob: new Uint8Array([1, 2, 3]),
     });
     await bus.call('credentials:store-blob:put', ctx(), {
       scope: 'global',
       ownerId: null,
-      ref: 'anthropic-api',
+      ref: 'provider:anthropic',
       blob: new Uint8Array([4, 5, 6]),
     });
     // Direct write to simulate a v1 row left over from before the v2 cutover.

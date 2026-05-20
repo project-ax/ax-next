@@ -16,11 +16,13 @@ import {
   PluginError,
   bootstrap,
   makeAgentContext,
+  asWorkspaceVersion,
   type AgentContext,
   type AgentOutcome,
   type Plugin,
   type WorkspaceApplyInput,
   type WorkspaceApplyOutput,
+  type WorkspaceDelta,
 } from '@ax/core';
 import {
   buildBaselineBundle,
@@ -62,6 +64,28 @@ import {
   createWorkspaceGitServer,
   type WorkspaceGitServer,
 } from '@ax/workspace-git-server/server';
+import { createCredentialsPlugin } from '@ax/credentials';
+import type {
+  CredentialsListInput,
+  CredentialsListOutput,
+  CredentialsSetInput,
+  CredentialsDeleteInput,
+} from '@ax/credentials';
+import { createCredentialsStoreDbPlugin } from '@ax/credentials-store-db';
+import { createAgentsPlugin } from '@ax/agents';
+import type {
+  CreateInput as AgentsCreateInput,
+  CreateOutput as AgentsCreateOutput,
+  DeleteInput as AgentsDeleteInput,
+} from '@ax/agents';
+import { createSkillsPlugin } from '@ax/skills';
+import type {
+  SkillsUpsertInput,
+  SkillsUpsertOutput,
+  SkillsDeleteInput,
+  SkillsDeleteOutput,
+} from '@ax/skills';
+import { createRoutinesPlugin } from '@ax/routines';
 
 import { createK8sPlugins, type K8sPresetConfig } from '../index.js';
 
@@ -2363,6 +2387,319 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         } else {
           process.env.AX_HTTP_ALLOW_NO_ORIGINS = originalAllowNoOrigins;
         }
+      }
+    },
+  );
+
+  // ---------------------------------------------------------------------------
+  // Task 21 canary — destination-first credential lifecycle (Tasks 14-17).
+  //
+  // Seeds credentials at key destination kinds, then deletes each destination
+  // and asserts credentials:list({}) ends empty.
+  //
+  // Cleanup paths exercised:
+  //
+  //   Task 14 (@ax/skills):
+  //     skills:delete → purgeSkillCredentials lists all credentials and
+  //     deletes any row whose ref starts with skill:<id>:<slot>.
+  //     VERIFIED BELOW: global skill-slot credential is deleted.
+  //
+  //   Task 15 (@ax/mcp-client):
+  //     Credential purge lives inside the HTTP DELETE /admin/mcp-servers/:id
+  //     handler (purgeMcpCredentials). That route requires the full
+  //     http-server stack and is independently covered by
+  //     mcp-client/__tests__/admin-routes.test.ts. Here we use
+  //     credentials:delete directly for the mcp-env row so the final
+  //     list assertion still holds.
+  //     CONSTRAINT: not exercisable via bus.call alone.
+  //
+  //   Task 16 (@ax/routines):
+  //     bus.fire('workspace:applied', ...) with a deleted .ax/routines/*.md
+  //     change triggers @ax/routines' workspace:applied subscriber →
+  //     handleWorkspaceApplied → credentials:list match → credentials:delete.
+  //     WIRING GAP (discovered by this canary):
+  //     REF_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,191}$/ does not permit '/'
+  //     but routine-hmac refs embed the full path (e.g.
+  //     routine:agt:.ax/routines/r.md:hmac). credentials:set rejects such
+  //     refs — so a real HMAC credential cannot be stored through the facade.
+  //     The subscriber wiring IS exercised below (workspace:applied fires and
+  //     the subscriber runs) but the purge is a no-op because no matching
+  //     credential exists. FIX NEEDED: widen REF_RE to include '/'.
+  //
+  //   Task 17 (@ax/agents):
+  //     agents:delete → credentials:purge-by-owner({ scope:'agent',
+  //     ownerId }) prefix-deletes every agent-scope row for that owner.
+  //     VERIFIED BELOW: an agent-scope credential is purged when the agent
+  //     is deleted.
+  //
+  // Plugin setup: postgres testcontainer (shared with Phase D/F canaries)
+  // + sqlite for credential blobs. Agents, skills, and routines are booted
+  // with stub http:register-route + auth:require-user (same pattern as their
+  // own plugin.test.ts unit tests). Routines-specific hard deps (conversations:*
+  // + agent:invoke + workspace:apply) are stubbed since they are never invoked
+  // by the workspace:applied subscriber path.
+  // ---------------------------------------------------------------------------
+  it(
+    'Task 21 canary: destination-first lifecycle — credentials purged via destination plugins',
+    { timeout: 180_000 },
+    async () => {
+      const connectionString = await ensurePostgresStarted();
+
+      // Stubs shared by agents, skills, and routines for their admin HTTP
+      // routes. Same pattern as agents/plugin.test.ts + skills/plugin.test.ts.
+      const httpStub = async () => ({ unregister: () => {} });
+      const authStub = async () => {
+        throw new Error('auth:require-user mock: not exercised in this test');
+      };
+
+      // Routines-specific stubs: services in @ax/routines' calls: that are
+      // not provided by other real plugins loaded below. These are only
+      // invoked when a routine fires or registers a webhook route, never by
+      // the workspace:applied delete path we exercise here.
+      const noop = async () => ({});
+
+      const sqlitePath = path.join(tmp, 'task21-lifecycle.sqlite');
+
+      const plugins: Plugin[] = [
+        // Real postgres: agents_v1_agents, skills_v1_skills, routines_v1_* tables.
+        createDatabasePostgresPlugin({ connectionString }),
+        // Real sqlite storage for credential blobs.
+        createStorageSqlitePlugin({ databasePath: sqlitePath }),
+        // Real credential store (store-blob:* surface) + credentials facade.
+        createCredentialsStoreDbPlugin(),
+        createCredentialsPlugin(),
+        // http:register-route + auth:require-user stubs satisfy verifyCalls()
+        // for agents, skills, and routines without booting a TCP listener.
+        {
+          manifest: {
+            name: '@ax/preset-k8s/test/task21-http-auth-stub',
+            version: '0.0.0',
+            registers: ['http:register-route', 'auth:require-user'],
+            calls: [],
+            subscribes: [],
+          },
+          init({ bus: b }) {
+            const S = '@ax/preset-k8s/test/task21-http-auth-stub';
+            b.registerService('http:register-route', S, httpStub);
+            b.registerService('auth:require-user', S, authStub);
+          },
+        } satisfies Plugin,
+        // Real agents plugin: agents:create + agents:delete (Task 17 wiring).
+        // agents:any-attached-to-skill + agents:list-ids etc. all come from here
+        // so skills:delete + routines can verify attachment state.
+        createAgentsPlugin(),
+        // Real skills plugin: skills:upsert + skills:delete (Task 14 wiring).
+        createSkillsPlugin(),
+        // Routines hard deps not yet provided by the plugins above.
+        // These are only reachable during routine fires / webhook registration,
+        // never during the workspace:applied delete subscriber path.
+        {
+          manifest: {
+            name: '@ax/preset-k8s/test/task21-routines-deps-stub',
+            version: '0.0.0',
+            registers: [
+              'conversations:find-or-create',
+              'conversations:create',
+              'conversations:drop-turn',
+              'conversations:hide',
+              'agent:invoke',
+              'workspace:apply',
+            ],
+            calls: [],
+            subscribes: [],
+          },
+          init({ bus: b }) {
+            const S = '@ax/preset-k8s/test/task21-routines-deps-stub';
+            b.registerService('conversations:find-or-create', S, noop);
+            b.registerService('conversations:create', S, noop);
+            b.registerService('conversations:drop-turn', S, noop);
+            b.registerService('conversations:hide', S, noop);
+            b.registerService('agent:invoke', S, noop);
+            b.registerService('workspace:apply', S, noop);
+          },
+        } satisfies Plugin,
+        // Real routines plugin: registers workspace:applied subscriber that
+        // calls handleWorkspaceApplied → credential purge (Task 16 wiring).
+        createRoutinesPlugin(),
+      ];
+
+      const bus = new HookBus();
+      let handle: Awaited<ReturnType<typeof bootstrap>> | null = null;
+      try {
+        handle = await bootstrap({ bus, plugins, config: {} });
+
+        const userId = 'task21-user';
+        const ctx = makeAgentContext({
+          sessionId: 'task21-session',
+          agentId: 'task21-agt-initial',
+          userId,
+          workspace: { rootPath: tmp },
+        });
+
+        // ── Step 1: Create agent (needed before deleting it in Task 17 test) ─
+        const agentCreateOut = await bus.call<AgentsCreateInput, AgentsCreateOutput>(
+          'agents:create',
+          ctx,
+          {
+            actor: { userId, isAdmin: false },
+            input: {
+              displayName: 'Task 21 canary agent',
+              systemPrompt: 'You are a helpful assistant.',
+              allowedTools: [],
+              mcpConfigIds: [],
+              model: 'claude-sonnet-4-6',
+              visibility: 'personal',
+            },
+          },
+        );
+        const createdAgentId = agentCreateOut.agent.id;
+
+        // ── Step 2: Create skill (needed before deleting it in Task 14 test) ─
+        const skillManifestYaml = [
+          'name: task21-skill',
+          'description: Task 21 lifecycle canary skill.',
+          'version: 1',
+          'capabilities:',
+          '  credentials:',
+          '    - slot: T',
+          '      kind: api-key',
+          '      description: Task 21 test slot.',
+        ].join('\n') + '\n';
+        const skillUpsertOut = await bus.call<SkillsUpsertInput, SkillsUpsertOutput>(
+          'skills:upsert',
+          ctx,
+          { manifestYaml: skillManifestYaml, bodyMd: '# Task 21 skill\n' },
+        );
+        const createdSkillId = skillUpsertOut.skillId;
+
+        // ── Step 3: Seed credentials ─────────────────────────────────────────
+        // Four credential rows for the destination-plugin cleanup paths:
+        //   A) global  provider:anthropic         — cleaned by credentials:delete directly
+        //   B) global  skill:<id>:T               — cleaned by skills:delete (Task 14)
+        //   C) global  mcp:srv:env:E              — cleaned by credentials:delete directly
+        //              (Task 15 HTTP path is separately tested)
+        //   D) agent/<agentId>  provider:anthropic — purged by agents:delete (Task 17)
+        //
+        // One more agent-scope row for the Task 16 routine-hmac purge path:
+        //   E) agent/<agentId>  routine:<id>:.ax/routines/task21-r.md:hmac
+        //      — purged by workspace:applied subscriber when the routine file
+        //        is deleted. Requires REF_RE to allow '/' (now fixed).
+        const credPayload = new TextEncoder().encode('test-value');
+
+        // Row A: global provider
+        await bus.call<CredentialsSetInput, void>('credentials:set', ctx, {
+          scope: 'global', ownerId: null,
+          ref: 'provider:anthropic',
+          kind: 'api-key', payload: credPayload,
+        });
+        // Row B: global skill-slot (matches the skill's declared slot)
+        await bus.call<CredentialsSetInput, void>('credentials:set', ctx, {
+          scope: 'global', ownerId: null,
+          ref: `skill:${createdSkillId}:T`,
+          kind: 'api-key', payload: credPayload,
+        });
+        // Row C: global mcp-env
+        await bus.call<CredentialsSetInput, void>('credentials:set', ctx, {
+          scope: 'global', ownerId: null,
+          ref: 'mcp:task21-srv:env:API-KEY',
+          kind: 'api-key', payload: credPayload,
+        });
+        // Row D: agent-scope credential — purged by agents:delete below (Task 17).
+        await bus.call<CredentialsSetInput, void>('credentials:set', ctx, {
+          scope: 'agent', ownerId: createdAgentId,
+          ref: 'provider:anthropic',
+          kind: 'api-key', payload: credPayload,
+        });
+        // Row E: agent-scope routine-hmac — purged by workspace:applied subscriber
+        // when .ax/routines/task21-r.md is deleted (Task 16). The ref embeds '/'
+        // which requires the widened REF_RE (/^[a-zA-Z0-9][a-zA-Z0-9_./:-]{0,191}$/).
+        await bus.call<CredentialsSetInput, void>('credentials:set', ctx, {
+          scope: 'agent', ownerId: createdAgentId,
+          ref: `routine:${createdAgentId}:.ax/routines/task21-r.md:hmac`,
+          kind: 'api-key', payload: credPayload,
+        });
+
+        // All five stored.
+        const listBefore = await bus.call<CredentialsListInput, CredentialsListOutput>(
+          'credentials:list', ctx, {},
+        );
+        expect(listBefore.credentials).toHaveLength(5);
+
+        // ── Task 14: skill delete purges skill-slot credential ───────────────
+        // purgeSkillCredentials() inside skills:delete lists all credentials
+        // and tombstones any row whose ref matches skill:<id>:<slot>.
+        await bus.call<SkillsDeleteInput, SkillsDeleteOutput>(
+          'skills:delete', ctx, { skillId: createdSkillId },
+        );
+        const listAfterSkill = await bus.call<CredentialsListInput, CredentialsListOutput>(
+          'credentials:list', ctx, {},
+        );
+        // Row B deleted; rows A, C, D, E remain.
+        expect(listAfterSkill.credentials).toHaveLength(4);
+        expect(
+          listAfterSkill.credentials.every((c) => !c.ref.startsWith('skill:')),
+        ).toBe(true);
+
+        // ── Task 16: workspace:applied delete fires routines subscriber ───────
+        // The routines plugin's workspace:applied subscriber calls
+        // handleWorkspaceApplied. For a 'deleted' routine change it constructs
+        // `routine:${agentId}:${path}:hmac` and calls credentials:delete on
+        // the matching row. Row E (the routine-hmac credential seeded above)
+        // is purged — proving the Task 16 wiring works end-to-end.
+        const routineDelta: WorkspaceDelta = {
+          before: null,
+          after: asWorkspaceVersion('v1'),
+          author: { agentId: createdAgentId, userId },
+          changes: [{ path: '.ax/routines/task21-r.md', kind: 'deleted' }],
+        };
+        await bus.fire('workspace:applied', ctx, routineDelta);
+
+        // Row E (routine-hmac) deleted by the subscriber; rows A, C, D remain.
+        const listAfterRoutine = await bus.call<CredentialsListInput, CredentialsListOutput>(
+          'credentials:list', ctx, {},
+        );
+        expect(listAfterRoutine.credentials).toHaveLength(3); // A, C, D still present
+
+        // ── Task 17: agents:delete purges all agent-scope rows ────────────────
+        // deleteAgent() calls credentials:purge-by-owner({ scope:'agent',
+        // ownerId: createdAgentId }) which prefix-deletes every agent-scope
+        // credential row for the agent being removed.
+        await bus.call<AgentsDeleteInput, void>(
+          'agents:delete', ctx,
+          { actor: { userId, isAdmin: false }, agentId: createdAgentId },
+        );
+        const listAfterAgent = await bus.call<CredentialsListInput, CredentialsListOutput>(
+          'credentials:list', ctx, {},
+        );
+        // Row D (agent-scope) deleted; rows A + C remain.
+        expect(listAfterAgent.credentials).toHaveLength(2);
+        expect(
+          listAfterAgent.credentials.every((c) => c.scope !== 'agent'),
+        ).toBe(true);
+
+        // ── Task 15 (direct delete, HTTP path separately tested) ─────────────
+        // Task 15 wires purge inside the HTTP DELETE /admin/mcp-servers/:id
+        // handler; that requires the full http-server stack and is covered by
+        // mcp-client/__tests__/admin-routes.test.ts. Here we call
+        // credentials:delete directly to clear the mcp-env row.
+        await bus.call<CredentialsDeleteInput, void>('credentials:delete', ctx, {
+          scope: 'global', ownerId: null, ref: 'mcp:task21-srv:env:API-KEY',
+        });
+
+        // ── Provider delete (direct — no destination plugin) ─────────────────
+        await bus.call<CredentialsDeleteInput, void>('credentials:delete', ctx, {
+          scope: 'global', ownerId: null, ref: 'provider:anthropic',
+        });
+
+        // ── Final assertion: list must be empty ───────────────────────────────
+        // credentials:list skips tombstones — the returned array is empty iff
+        // every row has been deleted (tombstoned) through its cleanup path.
+        const listFinal = await bus.call<CredentialsListInput, CredentialsListOutput>(
+          'credentials:list', ctx, {},
+        );
+        expect(listFinal.credentials).toEqual([]);
+      } finally {
+        if (handle !== null) await handle.shutdown();
       }
     },
   );
