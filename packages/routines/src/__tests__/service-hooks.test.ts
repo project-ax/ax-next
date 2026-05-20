@@ -65,7 +65,7 @@ afterEach(async () => {
   }
 });
 
-afterAll(async () => { if (container) await container.stop(); });
+afterAll(async () => { if (container) await container.stop(); }, 60_000);
 
 describe('routines:list', () => {
   it('returns rows in the mirror, filtered by agent', async () => {

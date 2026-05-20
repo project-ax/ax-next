@@ -29,7 +29,7 @@ afterEach(async () => {
 afterAll(async () => {
   await db.destroy();
   if (container) await container.stop();
-});
+}, 60_000);
 
 function delta(changes: WorkspaceDelta['changes'], author: { agentId: string; userId: string }): WorkspaceDelta {
   return {

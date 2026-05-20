@@ -127,7 +127,7 @@ afterEach(async () => {
   }
 });
 
-afterAll(async () => { if (container) await container.stop(); });
+afterAll(async () => { if (container) await container.stop(); }, 60_000);
 
 describe('Phase B canary — routine creates → fires → silence path closes window', () => {
   it('indexes a routine when workspace:applied carries .ax/routines/r.md', async () => {

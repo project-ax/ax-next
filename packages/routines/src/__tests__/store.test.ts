@@ -46,7 +46,7 @@ afterEach(async () => {
 afterAll(async () => {
   await db.destroy();
   if (container) await container.stop();
-});
+}, 60_000);
 
 function baseInput(over: Partial<Parameters<ReturnType<typeof createRoutinesStore>['upsert']>[0]> = {}) {
   return {
