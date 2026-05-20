@@ -83,13 +83,21 @@ export function SkillAttachmentsSection({
     setSaving(true);
     setError(null);
     try {
+      // Guard: if any attachment is missing skill metadata, abort rather than
+      // emitting credentialBindings: {} which would silently erase prior bindings.
+      const missingIds = attachments
+        .filter((a) => !skillById.has(a.skillId))
+        .map((a) => a.skillId);
+      if (missingIds.length > 0) {
+        setError(`Cannot save: missing skill metadata for ${missingIds.join(', ')}`);
+        setSaving(false);
+        return;
+      }
       const withBindings = attachments.map((a) => {
-        const skill = skillById.get(a.skillId);
+        const skill = skillById.get(a.skillId)!;
         return {
           ...a,
-          credentialBindings: skill
-            ? buildBindings(a.skillId, skill.capabilities.credentials)
-            : {},
+          credentialBindings: buildBindings(a.skillId, skill.capabilities.credentials),
         };
       });
       await patchAgentSkillAttachments(agentId, withBindings);

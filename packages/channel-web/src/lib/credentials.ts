@@ -233,11 +233,12 @@ export async function setDestinationCredential(args: {
     scope: args.scope.scope,
     ownerId: args.scope.ownerId,
     kind: args.slot.kind,
-    payloadB64: btoa(args.payload),
+    payloadB64: b64(args.payload),
   };
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: writeHeaders,
+    credentials: 'include',
     body: JSON.stringify(body),
   });
   if (!res.ok) {
@@ -253,7 +254,8 @@ export async function clearDestinationCredential(args: {
   const url = `${base}/destinations/${args.destination.kind}/credential`;
   const res = await fetch(url, {
     method: 'DELETE',
-    headers: { 'content-type': 'application/json' },
+    headers: writeHeaders,
+    credentials: 'include',
     body: JSON.stringify({
       destination: args.destination,
       scope: args.scope.scope,

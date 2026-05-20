@@ -28,7 +28,7 @@ export function CredentialSlotForm({
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (busy || payload.length === 0) return;
+    if (busy || payload.trim().length === 0) return;
     setBusy(true);
     setError(null);
     try {
@@ -66,7 +66,7 @@ export function CredentialSlotForm({
         />
       </div>
       <div className="flex justify-end gap-2">
-        <Button type="submit" disabled={busy || payload.length === 0}>
+        <Button type="submit" disabled={busy || payload.trim().length === 0}>
           {busy ? 'Saving…' : current.set ? 'Replace' : 'Save'}
         </Button>
       </div>

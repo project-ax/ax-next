@@ -18,15 +18,21 @@ export function CredentialSlotRow({ destination, slot, scope }: CredentialSlotRo
   const [isSet, setIsSet] = useState(false);
 
   const refresh = useCallback(async () => {
-    const list =
-      scope.scope === 'user'
-        ? await myCredentials.list()
-        : await adminCredentials.list();
-    setIsSet(
-      list.some(
-        (c) => c.ref === ref && c.scope === scope.scope && c.ownerId === scope.ownerId,
-      ),
-    );
+    try {
+      const list =
+        scope.scope === 'user'
+          ? await myCredentials.list()
+          : await adminCredentials.list();
+      setIsSet(
+        list.some(
+          (c) => c.ref === ref && c.scope === scope.scope && c.ownerId === scope.ownerId,
+        ),
+      );
+    } catch (err) {
+      // Treat list failure as "not set" so the UI doesn't show stale state.
+      setIsSet(false);
+      console.warn('CredentialSlotRow: failed to refresh credential status', err);
+    }
   }, [ref, scope.scope, scope.ownerId]);
 
   useEffect(() => {
