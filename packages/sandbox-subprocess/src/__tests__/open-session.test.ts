@@ -1005,4 +1005,193 @@ describe('sandbox:open-session', () => {
     await fs.rm(ws, { recursive: true, force: true });
   });
 
+  // ---------------------------------------------------------------------
+  // Phase B (capabilities.mcpServers) — per-skill `.mcp.json` materialization.
+  //
+  // The subprocess sandbox writes `.mcp.json` alongside `SKILL.md` when a
+  // skill declares mcpServers. The runner-side has a structural twin in
+  // @ax/agent-claude-sdk-runner/installed-skills.ts — but the subprocess
+  // path is its own code branch (writes happen pre-spawn inside the host
+  // process, not inside the runner) and needs its own regression net so
+  // a runner-only fix can't silently fix-by-coincidence here.
+  // ---------------------------------------------------------------------
+
+  it('writes .mcp.json next to SKILL.md when a skill declares stdio mcpServers (Phase B)', async () => {
+    const ws = await mkWorkspace();
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    const result = await h.bus.call<unknown, OpenSessionResult>(
+      'sandbox:open-session',
+      ctx,
+      {
+        sessionId: 'mcp-stdio-1',
+        workspaceRoot: ws,
+        runnerBinary: ECHO_STUB,
+        installedSkills: [
+          {
+            id: 'github',
+            skillMd: '---\nname: github\n---\nbody',
+            mcpServers: [
+              {
+                name: 'github',
+                transport: 'stdio',
+                command: 'npx',
+                args: ['-y', 'pkg'],
+                env: { TOKEN: 'x' },
+                allowedHosts: [],
+                credentials: [],
+              },
+            ],
+          },
+        ],
+      },
+    );
+    const line = await readFirstStdoutLine(result);
+    const parsed = JSON.parse(line) as Record<string, string | null>;
+    const ccd = parsed.CLAUDE_CONFIG_DIR as string;
+    const mcpJsonPath = path.join(ccd, 'skills', 'github', '.mcp.json');
+
+    const mcpJson = JSON.parse(await fs.readFile(mcpJsonPath, 'utf8')) as {
+      mcpServers: Record<string, unknown>;
+    };
+    expect(mcpJson.mcpServers.github).toEqual({
+      command: 'npx',
+      args: ['-y', 'pkg'],
+      env: { TOKEN: 'x' },
+    });
+
+    await result.handle.kill();
+    await result.handle.exited;
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
+  it('does NOT write .mcp.json when the skill has empty mcpServers (Phase B)', async () => {
+    const ws = await mkWorkspace();
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    const result = await h.bus.call<unknown, OpenSessionResult>(
+      'sandbox:open-session',
+      ctx,
+      {
+        sessionId: 'mcp-empty-1',
+        workspaceRoot: ws,
+        runnerBinary: ECHO_STUB,
+        installedSkills: [
+          {
+            id: 'github',
+            skillMd: '---\nname: github\n---\nbody',
+            mcpServers: [],
+          },
+        ],
+      },
+    );
+    const line = await readFirstStdoutLine(result);
+    const parsed = JSON.parse(line) as Record<string, string | null>;
+    const ccd = parsed.CLAUDE_CONFIG_DIR as string;
+    // SKILL.md is written, .mcp.json is not.
+    await expect(
+      fs.stat(path.join(ccd, 'skills', 'github', 'SKILL.md')),
+    ).resolves.toBeDefined();
+    await expect(
+      fs.stat(path.join(ccd, 'skills', 'github', '.mcp.json')),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+
+    await result.handle.kill();
+    await result.handle.exited;
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
+  it('writes .mcp.json read-only (mode 0444) (Phase B)', async () => {
+    // Same defense as SKILL.md: the runner's tool calls (bash/edit) must
+    // not be able to rewrite `.mcp.json` mid-session. Parent dir chmod
+    // 0555 covers create/delete; per-file 0444 covers overwrite-in-place.
+    const ws = await mkWorkspace();
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    const result = await h.bus.call<unknown, OpenSessionResult>(
+      'sandbox:open-session',
+      ctx,
+      {
+        sessionId: 'mcp-mode-1',
+        workspaceRoot: ws,
+        runnerBinary: ECHO_STUB,
+        installedSkills: [
+          {
+            id: 'github',
+            skillMd: '---\nname: github\n---\nbody',
+            mcpServers: [
+              {
+                name: 'github',
+                transport: 'stdio',
+                command: 'npx',
+                args: [],
+                env: {},
+                allowedHosts: [],
+                credentials: [],
+              },
+            ],
+          },
+        ],
+      },
+    );
+    const line = await readFirstStdoutLine(result);
+    const parsed = JSON.parse(line) as Record<string, string | null>;
+    const ccd = parsed.CLAUDE_CONFIG_DIR as string;
+    const mcpJsonStat = await fs.stat(
+      path.join(ccd, 'skills', 'github', '.mcp.json'),
+    );
+    expect(mcpJsonStat.mode & 0o777).toBe(0o444);
+
+    await result.handle.kill();
+    await result.handle.exited;
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
+  it('writes .mcp.json with http transport shape (Phase B)', async () => {
+    const ws = await mkWorkspace();
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    const result = await h.bus.call<unknown, OpenSessionResult>(
+      'sandbox:open-session',
+      ctx,
+      {
+        sessionId: 'mcp-http-1',
+        workspaceRoot: ws,
+        runnerBinary: ECHO_STUB,
+        installedSkills: [
+          {
+            id: 'remote',
+            skillMd: '---\nname: remote\n---\nbody',
+            mcpServers: [
+              {
+                name: 'remote',
+                transport: 'http',
+                url: 'https://mcp.example.com',
+                allowedHosts: [],
+                credentials: [],
+              },
+            ],
+          },
+        ],
+      },
+    );
+    const line = await readFirstStdoutLine(result);
+    const parsed = JSON.parse(line) as Record<string, string | null>;
+    const ccd = parsed.CLAUDE_CONFIG_DIR as string;
+    const mcpJson = JSON.parse(
+      await fs.readFile(
+        path.join(ccd, 'skills', 'remote', '.mcp.json'),
+        'utf8',
+      ),
+    ) as { mcpServers: Record<string, unknown> };
+    expect(mcpJson.mcpServers.remote).toEqual({
+      url: 'https://mcp.example.com',
+      type: 'http',
+    });
+
+    await result.handle.kill();
+    await result.handle.exited;
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
 });
