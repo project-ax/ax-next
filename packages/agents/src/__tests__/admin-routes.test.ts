@@ -15,7 +15,8 @@ import {
 import { createTestHarness, type TestHarness } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createHttpServerPlugin, type HttpServerPlugin } from '@ax/http-server';
-import { createAuthPlugin } from '@ax/auth-oidc';
+import { createAuthBetterPlugin } from '@ax/auth-better';
+import { signInAsAdmin } from '@ax/test-harness';
 import { createAgentsPlugin } from '../plugin.js';
 import { ADMIN_BODY_MAX_BYTES } from '../admin-routes.js';
 import type { AgentInput } from '../types.js';
@@ -35,14 +36,13 @@ import type { AgentInput } from '../types.js';
 //   - PATCH own → 200, fields updated; PATCH other → 403
 //   - DELETE own → 204, then GET /:id → 404; DELETE absent → 404
 //
-// We sign in via the dev-bootstrap path to mint a session cookie without
-// going through OIDC. A second user is minted via auth:create-bootstrap-user
-// (still admin in this env, but with a distinct user_id); the test uses the
-// returned oneTimeToken as the session_id directly.
+// We sign in via signInAsAdmin (auth:create-bootstrap-user hook) to mint a
+// session cookie. A SECOND user is minted directly in postgres against
+// auth-better's schema so cross-tenant tests can drive a distinct user_id
+// without rerunning the bootstrap path (which is single-subject).
 // ---------------------------------------------------------------------------
 
 const COOKIE_KEY = randomBytes(32);
-const DEV_TOKEN = 'admin-routes-test-bootstrap-token';
 
 let container: StartedPostgreSqlContainer;
 let connectionString: string;
@@ -68,8 +68,9 @@ async function dropAllTables(): Promise<void> {
   await c.connect();
   try {
     await c.query('DROP TABLE IF EXISTS agents_v1_agents');
-    await c.query('DROP TABLE IF EXISTS auth_v1_sessions');
-    await c.query('DROP TABLE IF EXISTS auth_v1_users');
+    await c.query('DROP TABLE IF EXISTS auth_better_v1_sessions');
+    await c.query('DROP TABLE IF EXISTS auth_better_v1_users');
+    await c.query('DROP TABLE IF EXISTS auth_providers');
   } finally {
     await c.end().catch(() => {});
   }
@@ -107,11 +108,17 @@ async function bootStack(): Promise<BootedStack> {
             manifestYaml: 'name: x\n',
           })),
       }),
+      'credentials:envelope-encrypt': async (_ctx, input) => ({
+        ciphertext: Buffer.from((input as { plaintext: string }).plaintext, 'utf8'),
+      }),
+      'credentials:envelope-decrypt': async (_ctx, input) => ({
+        plaintext: Buffer.from((input as { ciphertext: Uint8Array }).ciphertext).toString('utf8'),
+      }),
     },
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),
       http,
-      createAuthPlugin({ providers: {}, devBootstrap: { token: DEV_TOKEN } }),
+      createAuthBetterPlugin(),
       createAgentsPlugin(),
     ],
   });
@@ -119,76 +126,59 @@ async function bootStack(): Promise<BootedStack> {
 }
 
 /**
- * Sign in via /auth/dev-bootstrap. The endpoint mints a cookie tied to the
- * supplied displayName; subsequent calls with the same displayName upsert
- * the same row (one row per provider+subject). To get distinct users we'd
- * need different providers OR distinct subjects — dev-bootstrap pins the
- * subject to 'admin' so a single bootstrap row is shared. For
- * cross-tenant tests we mint a separate user via the upsert hook with a
- * forged subject (test seam — the `auth:create-bootstrap-user` hook reuses
- * the same bootstrap admin, so distinct-user testing uses the store
- * directly via a second harness OR a different mint path).
- *
- * Strategy in this file: dev-bootstrap gives us the FIRST user. For a
- * SECOND user we use auth:create-bootstrap-user with the SAME subject but
- * the test harness ALSO inserts a synthetic 'user-b' row via raw SQL so we
- * can mint a session pointing at it. Keeps us off the OIDC happy-path.
+ * Sign in via the impl-agnostic signInAsAdmin helper (which calls
+ * auth:create-bootstrap-user on the bus and signs the returned
+ * oneTimeToken with the http-server's cookie key). The returned cookie
+ * header round-trips through req.signedCookie as the session token. For a
+ * SECOND user we insert a synthetic row directly into auth-better's
+ * tables — see mintSecondUserCookie below.
  */
 async function signIn(stack: BootedStack): Promise<string> {
-  const r = await fetch(`http://127.0.0.1:${stack.port}/auth/dev-bootstrap`, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'x-requested-with': 'ax-admin',
-    },
-    body: JSON.stringify({
-      token: DEV_TOKEN,
-      displayName: 'Test Admin',
-    }),
+  const { cookieHeader } = await signInAsAdmin({
+    bus: stack.harness.bus,
+    cookieKey: COOKIE_KEY,
+    displayName: 'Test Admin',
+    email: 'admin@example.com',
   });
-  expect(r.status).toBe(200);
-  const setCookie =
-    r.headers.getSetCookie?.() ?? [r.headers.get('set-cookie') ?? ''];
-  const cookieHeader = setCookie.find((c) => c.startsWith('ax_auth_session='));
-  if (cookieHeader === undefined) throw new Error('no session cookie returned');
-  const value = cookieHeader.split(';')[0]!; // 'ax_auth_session=...'
-  return value;
+  return cookieHeader;
 }
 
 /**
  * Mint a SECOND user directly in postgres (separate user_id, distinct
- * provider) and create a session row pointing at them. Returns the
- * Cookie-header value. Bypasses dev-bootstrap (which is single-subject)
- * so we can drive the cross-tenant tests without an OIDC fixture.
+ * email) and create a session row pointing at them. Returns the
+ * Cookie-header value. Bypasses the bootstrap hook (which is admin-only)
+ * so we can drive cross-tenant tests with a non-admin user.
  *
- * The session_id is signed with the same HMAC key the http-server uses,
- * so it round-trips through req.signedCookie as plaintext.
+ * The session token is signed with the same HMAC key the http-server
+ * uses, so it round-trips through req.signedCookie as plaintext. (In
+ * auth-better, the COOKIE VALUE is the session's `token` column, not its
+ * primary-key `id` — see migrations.ts.)
  */
 async function mintSecondUserCookie(): Promise<{ userId: string; cookie: string }> {
   const pgmod = await import('pg');
   const c = new pgmod.default.Client({ connectionString });
   await c.connect();
   try {
-    const userId = 'usr_test_b';
-    const subjectId = `bootstrap-test-b-${randomBytes(4).toString('hex')}`;
+    const userId = `usr_${randomBytes(16).toString('hex')}`;
+    const sessionId = `sess_${randomBytes(16).toString('hex')}`;
+    const token = randomBytes(32).toString('base64url');
+    const now = new Date();
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
     await c.query(
-      `INSERT INTO auth_v1_users (user_id, auth_subject_id, auth_provider, email, display_name, is_admin)
-       VALUES ($1, $2, 'dev-bootstrap', NULL, 'User B', false)
-       ON CONFLICT (auth_provider, auth_subject_id) DO NOTHING`,
-      [userId, subjectId],
+      `INSERT INTO auth_better_v1_users (id, email, email_verified, name, image, role, created_at, updated_at)
+       VALUES ($1, $2, false, $3, NULL, 'user', $4, $4)
+       ON CONFLICT (email) DO NOTHING`,
+      [userId, `user-b-${userId}@example.invalid`, 'User B', now],
     );
-    const sessionId = randomBytes(32).toString('base64url');
-    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
     await c.query(
-      `INSERT INTO auth_v1_sessions (session_id, user_id, expires_at)
-       VALUES ($1, $2, $3)`,
-      [sessionId, userId, expiresAt],
+      `INSERT INTO auth_better_v1_sessions (id, user_id, token, expires_at, ip_address, user_agent, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, NULL, NULL, $5, $5)`,
+      [sessionId, userId, token, expiresAt, now],
     );
-    // Sign the session_id with the http-server's cookie key so
-    // signedCookie() returns it verbatim. We import the cookie helper
-    // directly — same module, same key, no leakage.
+
     const { signCookieValue } = await import('@ax/http-server');
-    const wire = signCookieValue(COOKIE_KEY, sessionId);
+    const wire = signCookieValue(COOKIE_KEY, token);
     return { userId, cookie: `ax_auth_session=${wire}` };
   } finally {
     await c.end().catch(() => {});
