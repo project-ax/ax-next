@@ -24,7 +24,6 @@
     "kysely": "0.28.17"
   },
   "devDependencies": {
-    "@ax/auth-oidc": "workspace:*",
     "@ax/credentials": "workspace:*",
     "@ax/credentials-store-db": "workspace:*",
     "@ax/database-postgres": "workspace:*",

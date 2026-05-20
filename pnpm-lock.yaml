@@ -232,9 +232,6 @@ importers:
         specifier: 0.28.17
         version: 0.28.17
     devDependencies:
-      '@ax/auth-oidc':
-        specifier: workspace:*
-        version: link:../auth-oidc
       '@ax/credentials':
         specifier: workspace:*
         version: link:../credentials
