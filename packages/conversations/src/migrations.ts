@@ -9,7 +9,7 @@ import { sql, type Kysely } from 'kysely';
  * Tables:
  *   conversations_v1_conversations  — conversation entity, owned by user_id.
  *
- * No FK to auth_v1_users / agents_v1_agents. Cross-plugin FKs would
+ * No FK to auth_better_v1_users / agents_v1_agents. Cross-plugin FKs would
  * require shared schema migrations, which violates I4 (no shared rows).
  * The runtime ACL gate (`agents:resolve`) checks ownership against the
  * live row at hook time; orphan conversation rows after a user/agent

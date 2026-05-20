@@ -1,6 +1,6 @@
 /**
- * Auth client — wraps the auth-plugin wire surface (default impl is
- * @ax/auth-better since Phase 3; @ax/auth-oidc is the alternate impl).
+ * Auth client — wraps the auth-plugin wire surface (@ax/auth-better is
+ * the only auth impl).
  *
  * Endpoints (host: ax-next serve, mounted via @ax/http-server):
  *   GET  /auth/sign-in/google  — server 302-redirects to Google OIDC
@@ -9,9 +9,8 @@
  *   POST /admin/sign-out       — clears cookie (idempotent)
  *
  * Wire-shape mapping: the backend's `User` (`{id, email, displayName,
- * isAdmin}`) is the shared boundary contract — both auth-oidc and
- * auth-better register against this exact shape (see
- * packages/auth-oidc/src/types.ts:1-113). We translate to the UI's
+ * isAdmin}`) is the shared boundary contract — @ax/auth-better
+ * registers against this exact shape. We translate to the UI's
  * local `AuthUser` (`{id, email, name, role}`) here at the wire
  * boundary so the rest of channel-web doesn't have to track changes
  * to the backend type. If the backend adds a field, this file is the

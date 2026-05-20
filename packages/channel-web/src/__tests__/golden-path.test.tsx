@@ -28,7 +28,7 @@ beforeEach(() => {
   fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
     const url = typeof input === 'string' ? input : (input as Request).url ?? String(input);
     if (url.includes('/admin/me')) {
-      // BackendUser shape (from @ax/auth-oidc); lib/auth.ts maps to AuthUser.
+      // BackendUser shape (from @ax/auth-better); lib/auth.ts maps to AuthUser.
       return new Response(
         JSON.stringify({
           user: { id: 'u2', email: 'alice@local', displayName: 'Alice', isAdmin: false },

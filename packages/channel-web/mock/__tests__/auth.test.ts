@@ -17,7 +17,7 @@ async function startServer(store: Store): Promise<{ server: Server; url: string 
   return { server, url: `http://127.0.0.1:${port}` };
 }
 
-describe('mock auth (mirrors @ax/auth-oidc wire surface)', () => {
+describe('mock auth (mirrors @ax/auth-better wire surface)', () => {
   let dir: string;
   let store: Store;
 

@@ -1,27 +1,25 @@
 /**
- * @ax/auth-oidc public hook payload types.
+ * @ax/auth-better public hook payload types.
  *
  * BOUNDARY CONTRACT — these types are the auth alternate-impl boundary
  * (mirrors the `@ax/sandbox-k8s` / `@ax/sandbox-subprocess` pattern).
- * A future `@ax/auth-better-auth`, `@ax/auth-saml`, or `@ax/auth-local`
+ * A future `@ax/auth-saml`, `@ax/auth-passkeys`, or any other auth plugin
  * MUST register the same hook surface with the same shapes. Consumers
  * (`@ax/agents`, the chat orchestrator, the CLI bootstrap, channel-web)
  * resolve users only through the bus — they MUST NOT duplicate the
- * `User` type or speak directly to `auth_v1_*` tables.
+ * `User` type or speak directly to `auth_better_v1_*` tables.
  *
  * Lock-ins keeping the swap cheap:
  *   1. `User` lives here only. Consumers reference this type, never copy
  *      it. Drift = boundary violation. If a consumer needs a subset
  *      (`{userId, isAdmin}` for an actor payload), that's fine — subsets
  *      don't break alternate impls.
- *   2. Tenant tables (`auth_v1_*`) are scoped to this package's
- *      `store.ts`. The `local/no-bare-tenant-tables` ESLint rule
- *      enforces it; alternate impls own their own tables.
+ *   2. Tenant tables (`auth_better_v1_*`) are scoped to this package's
+ *      `migrations.ts` + `plugin.ts`. Alternate impls own their own tables.
  *   3. IdP-callback error sanitization is part of the contract, not the
  *      impl: an alternate auth plugin MUST log only `error.code`,
  *      NEVER `error.message` (raw IdP errors carry user-controlled
- *      `state` and other request echoes). See `oidc.ts`'s
- *      `auth_callback_failed` log line for the established shape.
+ *      `state` and other request echoes).
  *
  * NOTE on `HttpRequestLike`: this plugin MUST NOT import from
  * `@ax/http-server` (Invariant I2 — no cross-plugin imports). To accept a
@@ -71,6 +69,12 @@ export type GetUserOutput = User | null;
 export interface CreateBootstrapUserInput {
   displayName: string;
   email?: string;
+  /**
+   * Forward-compat: a future local-password slice will hash + persist this
+   * via better-auth's credential account. Today it is accepted but ignored
+   * by the auth-better impl (see plugin.ts `createBootstrapUser`).
+   */
+  password?: string;
 }
 
 export interface CreateBootstrapUserOutput {
@@ -92,19 +96,16 @@ export interface CompleteBootstrapUserInput {
    * expiry. Single-use enforcement is the caller's responsibility: the
    * onboarding wizard's `/setup/admin` route destroys the bootstrap
    * session before/after this call so the token can't be replayed.
-   *
-   * Phase 1's auth-better impl will accept an optional `password` field
-   * here; this Phase 2 impl ignores it (auth-oidc has no local password).
    */
   oneTimeToken: string;
-  /** Forward-compat for Phase 1; ignored by auth-oidc. */
+  /** Forward-compat for the local-password slice; ignored today. */
   password?: string;
 }
 
 export interface CompleteBootstrapUserOutput {
   /**
    * Cookie payload for the wizard route to set on its response. Cookie
-   * shape is HTTP-universal (not transport-specific to auth-oidc), so
+   * shape is HTTP-universal (not transport-specific to the impl), so
    * passing it through the bus does not violate Invariant I1. The
    * onboarding plugin sets this verbatim via `res.setSignedCookie`.
    */
@@ -118,33 +119,4 @@ export interface CompleteBootstrapUserOutput {
       maxAge: number;
     };
   };
-}
-
-/**
- * Plugin config. Pass at least one of `providers.google` or `devBootstrap`;
- * init throws `no-auth-providers` otherwise. The CLI's `serve` boot path
- * derives this from env (see `loadAuthConfigFromEnv`); programmatic callers
- * can pass it directly for tests / preset wiring.
- *
- * Why both `providers.google` and `devBootstrap` are optional individually:
- * production usually has only `google`; laptops usually have only the
- * dev-bootstrap token. Requiring both would force ops to ship a bogus
- * google client_secret in dev or a bogus token in prod.
- */
-export interface AuthConfig {
-  providers: {
-    google?: {
-      clientId: string;
-      clientSecret: string;
-      issuer: string;
-      redirectUri: string;
-    };
-  };
-  devBootstrap?: {
-    token: string;
-  };
-  /** Cookie name for the http login session. Default 'ax_auth_session'. */
-  sessionCookieName?: string;
-  /** Session lifetime in seconds. Default 7 days. */
-  sessionLifetimeSeconds?: number;
 }

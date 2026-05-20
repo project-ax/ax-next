@@ -16,7 +16,7 @@ import type {
   CreateBootstrapUserInput,
   CreateBootstrapUserOutput,
   User,
-} from '@ax/auth-oidc';
+} from '../index.js';
 
 // ---------------------------------------------------------------------------
 // auth:create-bootstrap-user contract.

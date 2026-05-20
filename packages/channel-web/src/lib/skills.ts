@@ -6,7 +6,7 @@
  *
  * Wire posture:
  *
- *   - `credentials: 'include'` on every call so the auth-oidc session
+ *   - `credentials: 'include'` on every call so the auth-better session
  *     cookie flows. Same posture as `lib/credentials.ts`.
  *   - `x-requested-with: ax-admin` on writes so requests pass the
  *     http-server's CSRF guard. Same posture as `lib/credentials.ts`.

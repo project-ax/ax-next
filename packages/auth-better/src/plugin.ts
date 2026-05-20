@@ -11,7 +11,7 @@ import { sql, type Kysely } from 'kysely';
 // from a peer plugin (Invariant I2 — no cross-plugin imports). TypeScript's
 // `verbatimModuleSyntax: true` plus `import type {...}` guarantees the
 // emit drops the import entirely. The dev-dep entry in package.json is
-// type-only, mirroring auth-oidc.
+// type-only.
 import type {
   HttpMethod,
   HttpRegisterRouteInput,
@@ -19,16 +19,14 @@ import type {
   HttpRequest,
   HttpResponse,
 } from '@ax/http-server';
-// Type-only import from `@ax/auth-oidc` — boundary types are the contract
-// (a future @ax/auth-better is an alternate impl of the same hook surface).
-// Same I2 escape hatch: types-only.
 import type {
   CompleteBootstrapUserInput,
   CompleteBootstrapUserOutput,
   CreateBootstrapUserInput,
   CreateBootstrapUserOutput,
+  HttpRequestLike,
   User,
-} from '@ax/auth-oidc';
+} from './types.js';
 import { runAuthBetterMigration, type AuthBetterDatabase } from './migrations.js';
 import {
   createBetterAuthHandler,
@@ -56,8 +54,7 @@ const EMAIL_RE = /^[^@\s]+@[^@\s]+$/;
 
 /**
  * Config surface for `@ax/auth-better`. All fields optional; defaults
- * mirror auth-oidc so a host swapping plugins doesn't change cookie
- * behavior unexpectedly.
+ * keep cookie behavior stable.
  */
 export interface AuthBetterConfig {
   /** Cookie name for the http login session. Default 'ax_auth_session'. */
@@ -257,7 +254,7 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
         async (_ctx, input) => {
           // The oneTimeToken IS a sessionId pre-minted by the create hook.
           // We just package it as a cookie. We do NOT validate it here — the
-          // route layer is the auth gate (mirrors auth-oidc's impl).
+          // route layer is the auth gate.
           // `password` is accepted in the input type for forward-compat with
           // Phase 3 local-auth plans but is silently ignored for now (no
           // local password support yet; deferred per YAGNI guard in plan).
@@ -303,14 +300,11 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
         unregisterRoutes.push(unregister);
       }
 
-      // 6.5) /admin/me + /admin/sign-out — same wire shape as the
-      // @ax/auth-oidc routes so channel-web's `lib/auth.ts` doesn't
-      // need to know which auth backend is loaded. Without these,
-      // static-files's SPA fallback would catch /admin/me and return
-      // index.html — the SPA's getSession() would then see no user
-      // field and treat every fresh sign-in as unauthenticated, which
-      // is the bug Phase 3 introduced when it swapped the default to
-      // auth-better but didn't port the /admin namespace alias.
+      // 6.5) /admin/me + /admin/sign-out — channel-web's `lib/auth.ts`
+      // calls these. Without them, static-files's SPA fallback would
+      // catch /admin/me and return index.html — the SPA's getSession()
+      // would then see no user field and treat every fresh sign-in as
+      // unauthenticated.
       {
         const meHandler = async (req: HttpRequest, res: HttpResponse): Promise<void> => {
           try {
@@ -397,17 +391,6 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
 // grow. The kysely-direct calls are short enough that a separate module
 // adds more boilerplate than it removes.
 // ---------------------------------------------------------------------------
-
-/**
- * Structural minimum we need from an HTTP request adapter for
- * `auth:require-user`. Mirrors @ax/auth-oidc's `HttpRequestLike` so
- * consumers passing the same request shape Just Work across either auth
- * impl. Declared locally to avoid runtime import of @ax/auth-oidc.
- */
-interface HttpRequestLike {
-  readonly headers: Record<string, string>;
-  signedCookie(name: string): string | null;
-}
 
 async function loadProviders(
   db: Kysely<AuthBetterDatabase>,

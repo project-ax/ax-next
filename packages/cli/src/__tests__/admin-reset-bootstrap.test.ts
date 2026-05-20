@@ -92,7 +92,7 @@ function captureStreams(): Captured {
 
 /**
  * Pre-seed a `completed` row by inserting one directly. We don't go
- * through the wizard — that would require auth-oidc + http-server +
+ * through the wizard — that would require auth-better + http-server +
  * agents + credentials all wired up, and the test is about the CLI's
  * branching, not the wizard's transactional shape (which has its own
  * dedicated test in @ax/onboarding).

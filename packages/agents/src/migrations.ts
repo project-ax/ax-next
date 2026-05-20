@@ -9,7 +9,7 @@ import { sql, type Kysely } from 'kysely';
  * Single table:
  *   agents_v1_agents  — agent entity, owned by user_id OR team_id.
  *
- * No FK to auth_v1_users / teams_v1_teams. Cross-plugin FKs would
+ * No FK to auth_better_v1_users / teams_v1_teams. Cross-plugin FKs would
  * require shared schema migrations, which violates I4 (no shared rows).
  * The runtime ACL gate checks ownership against the live row at
  * resolve-time; orphan rows after a user/team delete are tolerable

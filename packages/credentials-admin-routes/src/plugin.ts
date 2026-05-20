@@ -42,7 +42,7 @@ export function createCredentialsAdminRoutesPlugin(): Plugin {
       version: '0.0.0',
       registers: ['credentials:list-providers'],
       // Hard deps. http:register-route + auth:require-user come from
-      // @ax/http-server + @ax/auth-oidc; credentials:* from @ax/credentials.
+      // @ax/http-server + @ax/auth-better; credentials:* from @ax/credentials.
       // Topo-sort ensures all are loaded before our init runs.
       //
       // `credentials:validate:*` is checked at runtime (bus.hasService)

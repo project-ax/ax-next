@@ -84,7 +84,7 @@ async function makeBus(authedUser: {
   });
   // Register the provider service (normally done by plugin.ts init).
   registerProviderService(bus);
-  // Stub auth:require-user — the production registrant is @ax/auth-oidc.
+  // Stub auth:require-user — the production registrant is @ax/auth-better.
   bus.registerService(
     'auth:require-user',
     'test',

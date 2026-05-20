@@ -79,7 +79,7 @@ async function makeBus(authedUser: {
     ],
     config: {},
   });
-  // Stub auth:require-user. Production registrant is @ax/auth-oidc; the
+  // Stub auth:require-user. Production registrant is @ax/auth-better; the
   // routes don't care which plugin owns it as long as the contract is
   // `{ req } → { user: { id, isAdmin } }`.
   bus.registerService(
@@ -167,7 +167,7 @@ describe('admin credentials handlers', () => {
       ],
       config: {},
     });
-    // No-cookie / unknown-session is modeled in production by auth-oidc
+    // No-cookie / unknown-session is modeled in production by auth-better
     // throwing PluginError{ code: 'unauthenticated' }. We mirror that here
     // by registering a service that throws — the route should write 401
     // BEFORE the 403 admin-gate kicks in (unauthenticated is the prior

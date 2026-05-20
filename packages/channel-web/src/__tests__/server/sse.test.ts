@@ -113,7 +113,7 @@ function fakeReq(opts: FakeReqOpts = {}): RouteRequest {
     signedCookie() {
       // The auth subscriber inspects this — we model auth via a service
       // hook rather than a real cookie chain (the cookie mechanism lives
-      // in @ax/auth-oidc and is exercised separately).
+      // in @ax/auth-better and is exercised separately).
       return opts.cookieUserId ?? null;
     },
   };

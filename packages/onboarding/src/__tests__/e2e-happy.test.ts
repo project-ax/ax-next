@@ -2,7 +2,7 @@
 // END-TO-END HAPPY PATH CANARY — Task 2.9
 //
 // Boots the full plugin chain (database-postgres + storage-postgres +
-// credentials-store-db + credentials + agents + http-server + auth-oidc +
+// credentials-store-db + credentials + agents + http-server + auth-better +
 // onboarding) and walks the wizard from cold boot to chat-ready.
 //
 // What makes this different from model-route.test.ts:
@@ -14,7 +14,7 @@
 //
 //   2. No mocked /setup/admin or /setup/claim auth shortcuts. The full
 //      sequence (claim → admin → model) runs through real route handlers and
-//      real auth-oidc hooks.
+//      real auth-better hooks.
 //
 //   3. Only global.fetch is mocked, and only for api.anthropic.com requests
 //      (the credential probe in completion-tx.ts). Everything else is real.
@@ -40,14 +40,10 @@ import { createHttpServerPlugin, type HttpServerPlugin } from '@ax/http-server';
 import { createCredentialsStoreDbPlugin } from '@ax/credentials-store-db';
 import { createCredentialsPlugin } from '@ax/credentials';
 import { createAgentsPlugin } from '@ax/agents';
-import { createAuthPlugin } from '@ax/auth-oidc';
+import { createAuthBetterPlugin } from '@ax/auth-better';
 import { createOnboardingPlugin } from '../plugin.js';
 
 const COOKIE_KEY = randomBytes(32);
-// Required by createAuthPlugin init validation: refuses to load without at
-// least one provider OR devBootstrap. Not used in this test — we use the
-// onboarding bootstrap token, not the auth-oidc dev-bootstrap path.
-const DEV_BOOTSTRAP_TOKEN = 'dev-bootstrap-not-used-in-e2e';
 const VALID_ANTHROPIC_KEY = 'sk-ant-fake-e2e-test-key';
 
 let container: StartedPostgreSqlContainer;
@@ -70,8 +66,9 @@ async function dropTables(): Promise<void> {
     await sql`DROP TABLE IF EXISTS bootstrap_state`.execute(k);
     await sql`DROP TABLE IF EXISTS storage_postgres_v1_kv`.execute(k);
     await sql`DROP TABLE IF EXISTS agents_v1_agents`.execute(k);
-    await sql`DROP TABLE IF EXISTS auth_v1_sessions`.execute(k);
-    await sql`DROP TABLE IF EXISTS auth_v1_users`.execute(k);
+    await sql`DROP TABLE IF EXISTS auth_better_v1_sessions`.execute(k);
+    await sql`DROP TABLE IF EXISTS auth_better_v1_users`.execute(k);
+    await sql`DROP TABLE IF EXISTS auth_providers`.execute(k);
     await sql`DROP TABLE IF EXISTS credentials_v1_store`.execute(k);
   } finally {
     await k.destroy().catch(() => {});
@@ -132,10 +129,7 @@ describe('Onboarding wizard — end-to-end happy path canary', () => {
           createCredentialsStoreDbPlugin(),
           createCredentialsPlugin(),
           createAgentsPlugin(),
-          createAuthPlugin({
-            providers: {},
-            devBootstrap: { token: DEV_BOOTSTRAP_TOKEN },
-          }),
+          createAuthBetterPlugin(),
           createOnboardingPlugin({
             baseUrl: `http://127.0.0.1`,
             stdoutWriter: (line) => stdoutLines.push(line),

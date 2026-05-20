@@ -10,7 +10,7 @@ import { sql, type Kysely } from 'kysely';
  *   teams_v1_teams        — team entity (id, name, creator).
  *   teams_v1_memberships  — many-to-many user↔team with a role enum.
  *
- * No FK to auth_v1_users / agents_v1_agents. Cross-plugin FKs would
+ * No FK to auth_better_v1_users / agents_v1_agents. Cross-plugin FKs would
  * require shared schema migrations, which violates I4 (no shared rows).
  * Orphan memberships left after a user delete are tolerable — they
  * simply fail every `agents:resolve` ACL check and can be GC'd later.

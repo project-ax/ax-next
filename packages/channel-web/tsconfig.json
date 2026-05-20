@@ -17,7 +17,6 @@
   "references": [
     { "path": "../core" },
     { "path": "../http-server" },
-    { "path": "../auth-oidc" },
     { "path": "../agents" },
     { "path": "../conversations" },
     { "path": "../ipc-protocol" },

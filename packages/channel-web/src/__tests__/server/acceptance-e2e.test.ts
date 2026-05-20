@@ -66,8 +66,8 @@ function authMockPlugin(args: {
         async (_ctx, input: unknown) => {
           // Cookie-tamper proxy: a synthetic header signals a forged or
           // otherwise rejected cookie. The real cookie-tamper test lives
-          // in @ax/auth-oidc; this proxy exercises the channel-web 401
-          // path the auth-oidc plugin would trigger in production.
+          // in @ax/auth-better; this proxy exercises the channel-web 401
+          // path the auth-better plugin would trigger in production.
           const { req } = input as {
             req: { headers: Record<string, string> };
           };
@@ -712,8 +712,8 @@ describe('Week 10-12 acceptance', () => {
 
   // -------------------------------------------------------------------------
   // Hardening H3 — cookie tamper proxy: synthetic header drives the
-  // mock-auth into the same 401 path that auth-oidc would produce on a
-  // tampered HMAC. Real cookie-tamper flow is covered by auth-oidc's own
+  // mock-auth into the same 401 path that auth-better would produce on a
+  // tampered HMAC. Real cookie-tamper flow is covered by auth-better's own
   // suite (Week 9.5).
   // -------------------------------------------------------------------------
   it('H3. cookie tamper (proxy): tampered header → 401', async () => {

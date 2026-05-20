@@ -55,7 +55,7 @@ describe('Sidebar collapse', () => {
           ok: true,
           status: 200,
           json: async () => ({
-            // BackendUser shape (from @ax/auth-oidc); lib/auth.ts maps to AuthUser.
+            // BackendUser shape (from @ax/auth-better); lib/auth.ts maps to AuthUser.
             user: { id: 'u1', email: 'alice@local', displayName: 'Alice', isAdmin: false },
           }),
         };

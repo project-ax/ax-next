@@ -20,7 +20,7 @@ import type { Destination } from '@ax/credentials';
  *
  * Wire posture:
  *
- *   - `credentials: 'include'` on every call so the auth-oidc cookie
+ *   - `credentials: 'include'` on every call so the auth-better cookie
  *     flows. Same as `lib/auth.ts` and `lib/admin.ts`.
  *   - `x-requested-with: ax-admin` on writes so requests pass the
  *     http-server's CSRF guard regardless of how `allowedOrigins` is

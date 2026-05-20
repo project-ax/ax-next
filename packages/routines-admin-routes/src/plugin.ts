@@ -31,7 +31,7 @@ export function createRoutinesAdminRoutesPlugin(): Plugin {
       version: '0.0.0',
       registers: [],
       // Hard deps. http:register-route comes from @ax/http-server,
-      // auth:require-user from @ax/auth-oidc, routines:* from @ax/routines,
+      // auth:require-user from @ax/auth-better, routines:* from @ax/routines,
       // and agents:resolve from @ax/agents. The topo-sort in bootstrap()
       // ensures these are wired before our init runs.
       //
