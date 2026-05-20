@@ -202,6 +202,12 @@ export function createDestinationHandlers(deps: DestinationRouteDeps): {
       throw err;
     }
 
+    // Strict base64 validation — Buffer.from silently coerces malformed input.
+    const STRICT_B64 = /^[A-Za-z0-9+/]*={0,2}$/;
+    if (!STRICT_B64.test(data.payloadB64) || data.payloadB64.length % 4 !== 0) {
+      res.status(400).json({ error: 'payloadB64 must be valid base64' });
+      return;
+    }
     let payload: Uint8Array;
     try {
       payload = new Uint8Array(Buffer.from(data.payloadB64, 'base64'));

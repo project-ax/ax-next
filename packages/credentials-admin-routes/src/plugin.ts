@@ -17,13 +17,20 @@ const PLUGIN_NAME = '@ax/credentials-admin-routes';
 //   - /admin/credentials*             — read-only GET routes (list + kinds).
 //                                       Used by the new UI's status pill.
 //   - /admin/credentials/providers*   — provider list + validate-and-save.
-//   - /admin/credentials/destinations*— write surface for the new UI
-//                                       (Task 9). Creates/deletes credentials
-//                                       by destination ref.
+//
+// Write surface for the new UX redesign (Task 19):
+//
+//   - /admin/destinations/:kind/credential   — admin write (creates/deletes
+//                                              credentials by destination ref).
+//   - /settings/destinations/:kind/credential— user-scoped write (scope and
+//                                              ownerId are forced to the
+//                                              authenticated user; body values
+//                                              for those fields are ignored).
+//
+//   Both write trees are implemented in destination-routes.ts.
 //
 // The legacy /settings/credentials* CRUD routes and the /oauth/* routes
-// were removed in the credentials UX redesign (Task 19). Write operations
-// now go through /admin/credentials/destinations.
+// were removed in the credentials UX redesign (Task 19).
 // ---------------------------------------------------------------------------
 
 export function createCredentialsAdminRoutesPlugin(): Plugin {

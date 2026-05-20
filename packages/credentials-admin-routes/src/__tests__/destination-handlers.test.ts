@@ -159,6 +159,29 @@ describe('destination credential handlers', () => {
     expect(out.credentials.find((c) => c.ref === 'skill:my-skill:apiKey')).toBeDefined();
   });
 
+  it('POST /admin: rejects malformed base64 payloadB64 with 400', async () => {
+    const bus = await makeBus({ id: 'admin', isAdmin: true });
+    const handlers = createDestinationHandlers({ bus });
+    const { res, statusOf, bodyOf } = mkRes();
+
+    await handlers.create(
+      mkReq({
+        params: { destinationKind: 'provider' },
+        body: {
+          destination: { kind: 'provider', provider: 'anthropic' },
+          scope: 'global',
+          ownerId: null,
+          kind: 'api-key',
+          payloadB64: 'not!base64!',
+        },
+      }),
+      res,
+    );
+
+    expect(statusOf()).toBe(400);
+    expect((bodyOf() as { error: string }).error).toMatch(/base64/);
+  });
+
   it('POST /admin: rejects when destination.kind does not match route param (400)', async () => {
     const bus = await makeBus({ id: 'admin', isAdmin: true });
     const handlers = createDestinationHandlers({ bus });
