@@ -139,15 +139,30 @@ const ADMIN_HEADERS = (cookieHeader: string): Record<string, string> => ({
   cookie: cookieHeader,
 });
 
-const SOCIAL_HEADERS: Record<string, string> = {
+// Each test case gets a unique source IP via x-forwarded-for so better-auth's
+// built-in rate-limiter (3 req / 10s on /sign-in*) doesn't bleed across the
+// classifyProviderGate() calls. Better-auth's memory storage is module-level
+// (per-process), so without per-test IP isolation a later test's 4th hit
+// would 429 instead of returning the expected PROVIDER_NOT_FOUND. This
+// preserves the rate-limit posture pin (Task 15 of the auth-oidc retirement)
+// while keeping the hot-reload contract test scoped to its actual concern.
+let SOCIAL_TEST_IP = '';
+const SOCIAL_HEADERS = (): Record<string, string> => ({
   'content-type': 'application/json',
   'x-requested-with': 'ax-admin',
-};
+  'x-forwarded-for': SOCIAL_TEST_IP,
+});
+
+let socialIpCounter = 1;
 
 describe('@ax/auth-better — provider hot-reload (I10)', () => {
   let stack: BootedStack;
 
   beforeEach(async () => {
+    // 192.0.2.0/24 is the IETF TEST-NET-1 documentation range — guaranteed
+    // not to collide with any real address, and large enough to give every
+    // test a fresh bucket.
+    SOCIAL_TEST_IP = `192.0.2.${socialIpCounter++}`;
     stack = await bootStack();
   });
 
@@ -177,7 +192,7 @@ describe('@ax/auth-better — provider hot-reload (I10)', () => {
   async function classifyProviderGate(): Promise<'configured' | 'missing'> {
     const res = await fetch(`${stack.baseUrl}/auth/sign-in/social`, {
       method: 'POST',
-      headers: SOCIAL_HEADERS,
+      headers: SOCIAL_HEADERS(),
       body: JSON.stringify({ provider: 'google' }),
     });
     if (res.status === 404) {
@@ -300,7 +315,7 @@ describe('@ax/auth-better — provider hot-reload (I10)', () => {
 
     const anonPost = await fetch(`${stack.baseUrl}/admin/auth/providers`, {
       method: 'POST',
-      headers: SOCIAL_HEADERS,
+      headers: SOCIAL_HEADERS(),
       body: JSON.stringify({
         kind: 'google',
         clientId: 'x',
