@@ -133,6 +133,82 @@ describe('@ax/validator-routine — workspace:pre-apply', () => {
     expect(r.rejected).toBe(false);
   });
 
+  // ---------------------------------------------------------------------
+  // secretRef drift veto: webhook routines that hand-wrote hmac.secretRef
+  // must use the canonical destination-derived ref shape:
+  //   routine:<agentId>:<path>:hmac
+  // Mismatch means the routines plugin will mint / fetch the credential
+  // under a key that nothing else writes to, so the webhook silently 401s.
+  // ---------------------------------------------------------------------
+
+  function webhookHmacBody(secretRef: string): Uint8Array {
+    return ENC.encode(
+      [
+        '---',
+        'name: gh',
+        'description: d',
+        'trigger:',
+        '  kind: webhook',
+        '  path: "/r/gh"',
+        '  hmac:',
+        `    secretRef: ${secretRef}`,
+        '    header: X-Sig',
+        '    algorithm: sha256',
+        '---',
+        '# body',
+      ].join('\n') + '\n',
+    );
+  }
+
+  function ctxForAgent(agentId: string) {
+    return makeAgentContext({ sessionId: 's', agentId, userId: 'u' });
+  }
+
+  it('accepts webhook routine with canonical hmac.secretRef', async () => {
+    const bus = await bootBus();
+    const path = '.ax/routines/gh.md';
+    const r = await bus.fire('workspace:pre-apply', ctxForAgent('agt-1'), preApply([
+      { path, kind: 'put', content: webhookHmacBody(`routine:agt-1:${path}:hmac`) },
+    ]));
+    expect(r.rejected).toBe(false);
+  });
+
+  it('vetoes webhook routine whose hmac.secretRef does not match the canonical shape', async () => {
+    const bus = await bootBus();
+    const path = '.ax/routines/gh.md';
+    const r = await bus.fire('workspace:pre-apply', ctxForAgent('agt-1'), preApply([
+      { path, kind: 'put', content: webhookHmacBody('my-hand-picked-name') },
+    ]));
+    expect(r.rejected).toBe(true);
+    if (!r.rejected) return;
+    expect(r.reason).toMatch(/\.ax\/routines\/gh\.md/);
+    expect(r.reason).toMatch(/hmac\.secretRef/);
+    expect(r.reason).toMatch(/routine:agt-1:\.ax\/routines\/gh\.md:hmac/);
+  });
+
+  it('vetoes webhook routine whose hmac.secretRef references a different agentId', async () => {
+    const bus = await bootBus();
+    const path = '.ax/routines/gh.md';
+    // Right shape but wrong agentId — still a drift the operator should fix.
+    const r = await bus.fire('workspace:pre-apply', ctxForAgent('agt-1'), preApply([
+      { path, kind: 'put', content: webhookHmacBody(`routine:agt-OTHER:${path}:hmac`) },
+    ]));
+    expect(r.rejected).toBe(true);
+  });
+
+  it('passes through webhook routines without hmac configured', async () => {
+    const bus = await bootBus();
+    const body = [
+      '---', 'name: r', 'description: d',
+      'trigger:', '  kind: webhook', '  path: "/r/y"',
+      '---', '# body',
+    ].join('\n') + '\n';
+    const r = await bus.fire('workspace:pre-apply', ctxForAgent('agt-1'), preApply([
+      { path: '.ax/routines/r.md', kind: 'put', content: ENC.encode(body) },
+    ]));
+    expect(r.rejected).toBe(false);
+  });
+
   it('passes through nested paths under .ax/routines/ (validator regex is anchored)', async () => {
     const bus = await bootBus();
     const body = [

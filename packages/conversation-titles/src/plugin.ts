@@ -15,6 +15,11 @@ import type {
   SetTitleOutput,
 } from './types.js';
 
+// Storage key the admin "Model config" tab + the onboarding wizard write
+// the runtime fast-model selection to. Lives at the kernel `storage:*`
+// surface (NOT inside `credentials-store-db`'s `credential:v2:` namespace).
+const FAST_MODEL_STORAGE_KEY = 'settings:fast-model';
+
 const PLUGIN_NAME = '@ax/conversation-titles';
 const PLUGIN_VERSION = '0.0.0';
 
@@ -103,16 +108,26 @@ interface TurnEndPayload {
 export function createConversationTitlesPlugin(
   cfg: ConversationTitlesConfig = {},
 ): Plugin {
-  const modelRef = cfg.model ?? DEFAULT_TITLE_MODEL;
-  const { provider, modelId } = parseModelRef(modelRef);
-  const llmCallHook = `llm:call:${provider}`;
+  const fallbackRef = cfg.model ?? DEFAULT_TITLE_MODEL;
+  // Eagerly validate the fallback config so a typo fails at boot, not at
+  // first chat:turn-end. The runtime override path goes through
+  // parseModelRef again so a bad storage value is caught before it lands
+  // in an llm:call.
+  const fallbackParsed = parseModelRef(fallbackRef);
+  const fallbackHook = `llm:call:${fallbackParsed.provider}`;
 
   return {
     manifest: {
       name: PLUGIN_NAME,
       version: PLUGIN_VERSION,
       registers: [],
-      calls: [llmCallHook, 'conversations:get', 'conversations:set-title'],
+      // `storage:get` is a soft dep — declared so the topo-sort orders us
+      // after any storage plugin that registers it, but the runtime path
+      // tolerates `storage:get` being absent (presets that strip it just
+      // fall through to cfg.model). The configured fallback llm hook is
+      // declared as the hard provider; a runtime override that points to a
+      // different provider hook is resolved against the bus dynamically.
+      calls: [fallbackHook, 'storage:get', 'conversations:get', 'conversations:set-title'],
       subscribes: ['chat:turn-end'],
     },
     async init({ bus }) {
@@ -126,7 +141,15 @@ export function createConversationTitlesPlugin(
           // than letting the bus's generic `hook_subscriber_failed` swallow
           // the context.
           try {
-            await handleTurnEnd(bus, ctx, payload, { llmCallHook, modelId });
+            const resolved = await resolveTitleModel(bus, ctx, {
+              fallbackRef,
+              fallbackHook,
+              fallbackModelId: fallbackParsed.modelId,
+            });
+            await handleTurnEnd(bus, ctx, payload, {
+              llmCallHook: resolved.llmCallHook,
+              modelId: resolved.modelId,
+            });
           } catch (err) {
             ctx.logger.warn('conversation_titles_subscriber_failed', {
               err: err instanceof Error ? err : new Error(String(err)),
@@ -139,6 +162,80 @@ export function createConversationTitlesPlugin(
         },
       );
     },
+  };
+}
+
+interface ResolvedTitleModel {
+  llmCallHook: string;
+  modelId: string;
+}
+
+/**
+ * Resolve the title-LLM model for this turn. Reads the runtime override
+ * from `storage:get('settings:fast-model')` if available; otherwise uses
+ * the plugin's configured fallback.
+ *
+ * The override exists so the operator can change the title model from the
+ * admin UI without redeploying. The wizard's first-run write seeds the
+ * same key, so post-onboarding chat uses the operator's chosen model
+ * straight away.
+ *
+ * Failure modes (silently fall back to cfg.model):
+ *  - `storage:get` not registered → no storage layer in this preset.
+ *  - `storage:get` throws → transient backend issue; titling is a nice-to-
+ *    have, not load-bearing.
+ *  - Decoded value is empty or not a valid `provider/model-id` ref.
+ */
+async function resolveTitleModel(
+  bus: HookBus,
+  ctx: AgentContext,
+  fallback: {
+    fallbackRef: string;
+    fallbackHook: string;
+    fallbackModelId: string;
+  },
+): Promise<ResolvedTitleModel> {
+  const fallbackResult: ResolvedTitleModel = {
+    llmCallHook: fallback.fallbackHook,
+    modelId: fallback.fallbackModelId,
+  };
+  if (!bus.hasService('storage:get')) return fallbackResult;
+  let value: Uint8Array | undefined;
+  try {
+    const r = await bus.call<
+      { key: string },
+      { value: Uint8Array | undefined }
+    >('storage:get', ctx, { key: FAST_MODEL_STORAGE_KEY });
+    value = r.value;
+  } catch (err) {
+    ctx.logger.debug('conversation_titles_storage_get_failed', {
+      err: err instanceof Error ? err.message : String(err),
+    });
+    return fallbackResult;
+  }
+  if (value === undefined || value.length === 0) return fallbackResult;
+  let text: string;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(value);
+  } catch {
+    return fallbackResult;
+  }
+  if (text.length === 0) return fallbackResult;
+  let parsed: ParsedModelRef;
+  try {
+    parsed = parseModelRef(text);
+  } catch {
+    ctx.logger.warn('conversation_titles_invalid_storage_ref', {
+      // Length only — the raw value may contain a provider name we don't
+      // want in logs verbatim.
+      length: text.length,
+      fallback: fallback.fallbackRef,
+    });
+    return fallbackResult;
+  }
+  return {
+    llmCallHook: `llm:call:${parsed.provider}`,
+    modelId: parsed.modelId,
   };
 }
 

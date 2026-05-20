@@ -141,10 +141,16 @@ export async function runCompletionTransaction(
   // Swallowed on failure: bootstrap is already committed, and a missing
   // fast-model setting can be set manually later. Returning 500 here would
   // leave the wizard wedged behind the post-completion 410 gate.
+  //
+  // Storage value is the canonical `provider/model-id` ref that
+  // @ax/conversation-titles + the admin "Model config" tab both read. The
+  // wizard only supports Anthropic today, so the provider prefix is
+  // hardcoded here; when another provider lands, the wizard step that
+  // picks `fastModel` will need to capture the provider alongside it.
   try {
     await input.bus.call('storage:set', input.ctx, {
       key: 'settings:fast-model',
-      value: new TextEncoder().encode(input.fastModel),
+      value: new TextEncoder().encode(`anthropic/${input.fastModel}`),
     });
   } catch (err) {
     // Best-effort log; don't propagate. Bootstrap is already committed

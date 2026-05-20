@@ -1,5 +1,9 @@
 export { refForDestination, type Destination } from './refs.js';
 export {
+  KNOWN_DESTINATION_FIXTURES,
+  type DestinationFixture,
+} from './refs-fixtures.js';
+export {
   createCredentialsPlugin,
   validateScope,
   validateOwnerIdForScope,

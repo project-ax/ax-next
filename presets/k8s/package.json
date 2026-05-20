@@ -21,6 +21,7 @@
     "test:k8s-e2e": "vitest run --config vitest.config.k8s-e2e.ts"
   },
   "dependencies": {
+    "@ax/admin-settings-routes": "workspace:*",
     "@ax/agent-claude-sdk-runner": "workspace:*",
     "@ax/agents": "workspace:*",
     "@ax/attachments": "workspace:*",

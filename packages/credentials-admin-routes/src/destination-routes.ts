@@ -9,6 +9,7 @@ import {
   type RouteRequest,
   type RouteResponse,
 } from './shared.js';
+import { validateProviderKey } from './provider-validator.js';
 
 // ---------------------------------------------------------------------------
 // /admin/destinations/:destinationKind/credential   (POST / DELETE)
@@ -53,7 +54,7 @@ function assertNoColon(field: string, value: string): void {
   }
 }
 
-function refForDestination(dest: Destination): string {
+export function refForDestination(dest: Destination): string {
   switch (dest.kind) {
     case 'provider':
       assertNoColon('provider', dest.provider);
@@ -139,6 +140,17 @@ const DeleteBodySchema = z
 
 export interface DestinationRouteDeps {
   bus: HookBus;
+  /**
+   * Test seam for the built-in Anthropic key validator. Production wiring
+   * leaves this unset (real `fetch`); tests pass a stub to keep the run
+   * hermetic.
+   */
+  fetchImpl?: typeof fetch;
+  /**
+   * Test seam for the built-in Anthropic key validator timeout (ms).
+   * Defaults to 10 s in `provider-validator.ts`.
+   */
+  validateTimeoutMs?: number;
 }
 
 export function createDestinationHandlers(deps: DestinationRouteDeps): {
@@ -218,6 +230,27 @@ export function createDestinationHandlers(deps: DestinationRouteDeps): {
     if (payload.length === 0) {
       res.status(400).json({ error: 'payload must decode to non-empty bytes' });
       return;
+    }
+
+    // Provider destinations: validate the key against the provider's API
+    // BEFORE persisting it. Saving an invalid key would surface as a
+    // mid-session 401 later, which is worse than rejecting the save now.
+    if (data.destination.kind === 'provider') {
+      const validationDeps: Parameters<typeof validateProviderKey>[0] = {
+        bus: deps.bus,
+        ctx,
+        providerId: data.destination.provider,
+        keyBytes: payload,
+      };
+      if (deps.fetchImpl !== undefined) validationDeps.fetchImpl = deps.fetchImpl;
+      if (deps.validateTimeoutMs !== undefined) {
+        validationDeps.timeoutMs = deps.validateTimeoutMs;
+      }
+      const validation = await validateProviderKey(validationDeps);
+      if (!validation.ok) {
+        res.status(422).json({ error: validation.error });
+        return;
+      }
     }
 
     try {

@@ -184,6 +184,9 @@ const PLUGINS_TO_DROP = new Set<string>([
   // both dropped above. Drop here so the chat-path canaries don't fail the
   // kernel's topo-sort with unsatisfied calls.
   '@ax/routines-admin-routes',
+  // Admin settings routes: declares http:register-route + auth:require-user
+  // as calls (both dropped above). Static wiring is pinned in preset.test.ts.
+  '@ax/admin-settings-routes',
   // Attachments: postgres-backed (database:get-instance) and not exercised
   // by any of these canaries — Phase 1 of the attachments subsystem has no
   // caller yet (half-wired window open through Phase 3). The static hook

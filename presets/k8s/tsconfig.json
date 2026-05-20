@@ -30,6 +30,7 @@
     { "path": "../../packages/credentials" },
     { "path": "../../packages/credentials-store-db" },
     { "path": "../../packages/credentials-admin-routes" },
+    { "path": "../../packages/admin-settings-routes" },
     { "path": "../../packages/ipc-http" },
     { "path": "../../packages/agents" },
     { "path": "../../packages/skills" },

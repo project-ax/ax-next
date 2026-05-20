@@ -248,7 +248,12 @@ describe('@ax/onboarding POST /setup/model', () => {
       { value: Uint8Array | undefined }
     >('storage:get', stack.harness.ctx(), { key: 'settings:fast-model' });
     expect(fastModelBytes.value).toBeDefined();
-    expect(new TextDecoder().decode(fastModelBytes.value)).toBe('claude-haiku-4-5-20251001');
+    // Stored as `provider/model-id` so @ax/conversation-titles + the admin
+    // "Model config" tab can read the same canonical ref shape; the wizard
+    // hardcodes `anthropic/` since it only supports Anthropic today.
+    expect(new TextDecoder().decode(fastModelBytes.value)).toBe(
+      'anthropic/claude-haiku-4-5-20251001',
+    );
   }, 30_000);
 
   it('invalid key → 200 with ok:false + credential-invalid, state unchanged', async () => {

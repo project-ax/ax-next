@@ -18,6 +18,7 @@ import { createCredentialProxyPlugin } from '@ax/credential-proxy';
 import { createCredentialsPlugin } from '@ax/credentials';
 import { createCredentialsStoreDbPlugin } from '@ax/credentials-store-db';
 import { createCredentialsAdminRoutesPlugin } from '@ax/credentials-admin-routes';
+import { createAdminSettingsRoutesPlugin } from '@ax/admin-settings-routes';
 import { createIpcHttpPlugin } from '@ax/ipc-http';
 import { createAgentsPlugin } from '@ax/agents';
 import { createSkillsPlugin } from '@ax/skills';
@@ -669,6 +670,15 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   if (config.credentialsAdmin === true) {
     plugins.push(createCredentialsAdminRoutesPlugin());
   }
+
+  // ----- 8c. admin settings routes ---------------------------------------
+  // Mounts /admin/settings/:key (GET + PUT) for the small allowlisted set
+  // of admin-managed non-credential settings. Today the only entry is
+  // `fast-model`, which the admin "Model config" tab writes and the
+  // @ax/conversation-titles plugin reads at runtime. Always loaded — it's
+  // tiny, gated by admin-only auth, and the in-memory route registration
+  // has no postgres cost.
+  plugins.push(createAdminSettingsRoutesPlugin());
 
   // ----- 9. conversations ------------------------------------------------
   // Registers `conversations:*` (create/get/list/delete/get-by-req-id +
