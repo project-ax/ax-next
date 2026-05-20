@@ -6,11 +6,14 @@ import {
   type Plugin,
 } from '@ax/core';
 import type { Kysely } from 'kysely';
+import { checkForUpdates } from './check-updates.js';
 import { parseSkillManifest } from './manifest.js';
 import { runSkillsMigration, type SkillsDatabase } from './migrations.js';
 import { createSkillsStore } from './store.js';
 import { registerAdminSkillsRoutes } from './admin-routes.js';
 import type {
+  SkillsCheckForUpdatesInput,
+  SkillsCheckForUpdatesOutput,
   SkillsDeleteInput,
   SkillsDeleteOutput,
   SkillsGetInput,
@@ -111,6 +114,7 @@ export function createSkillsPlugin(): Plugin {
         'skills:delete',
         'skills:resolve',
         'skills:list-defaults',
+        'skills:check-for-updates',
       ],
       calls: ['database:get-instance', 'http:register-route', 'auth:require-user'],
       subscribes: [],
@@ -303,6 +307,24 @@ export function createSkillsPlugin(): Plugin {
         'skills:list-defaults',
         PLUGIN_NAME,
         async () => ({ skills: await store.getDefaults() }),
+      );
+
+      bus.registerService<SkillsCheckForUpdatesInput, SkillsCheckForUpdatesOutput>(
+        'skills:check-for-updates',
+        PLUGIN_NAME,
+        async (_ctx, input) => {
+          const detail = await store.get(input.skillId);
+          if (detail === null) {
+            throw new PluginError({
+              code: 'skill-not-found',
+              plugin: PLUGIN_NAME,
+              message: `skill '${input.skillId}' does not exist`,
+            });
+          }
+          // .bind(globalThis) — calling globalThis.fetch unbound triggers
+          // "Illegal invocation" in some node versions.
+          return checkForUpdates(detail, { fetch: globalThis.fetch.bind(globalThis) });
+        },
       );
 
       // Register admin HTTP routes. Atomic try/catch unwind: if any route

@@ -87,3 +87,19 @@ export type SkillsListDefaultsInput = Record<string, never>;
 export interface SkillsListDefaultsOutput {
   skills: ResolvedSkill[];
 }
+
+// Phase C — version-aware refresh hook surface. Storage-agnostic and
+// alternate-impl-friendly: a future "skill registry index" plugin can
+// implement this same hook against an internal catalog instead of the
+// fetch-based logic in @ax/skills/check-updates.ts. See the locked
+// boundary review in docs/plans/2026-05-20-skills-versioning-design-note.md
+// (C-design.3) for details.
+export interface SkillsCheckForUpdatesInput {
+  skillId: string;
+}
+export interface SkillsCheckForUpdatesOutput {
+  available: boolean;        // false if sourceUrl unset OR latestVersion <= currentVersion
+  currentVersion: number;
+  latestVersion?: number;    // when sourceUrl is set, the version we successfully fetched
+  latestSkillMd?: string;    // present iff available === true (the freshly-fetched body)
+}

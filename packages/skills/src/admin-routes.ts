@@ -1,6 +1,7 @@
 import { makeAgentContext, PluginError, isRejection, type AgentContext, type HookBus } from '@ax/core';
 import { z } from 'zod';
 import type {
+  SkillsCheckForUpdatesOutput,
   SkillsListOutput,
   SkillsGetOutput,
   SkillsUpsertInput,
@@ -190,6 +191,8 @@ export function createAdminSkillsHandlers(deps: AdminRouteDeps): {
   create: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   update: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   destroy: (req: RouteRequest, res: RouteResponse) => Promise<void>;
+  checkUpdate: (req: RouteRequest, res: RouteResponse) => Promise<void>;
+  refresh: (req: RouteRequest, res: RouteResponse) => Promise<void>;
 } {
   const ctx = makeAgentContext({
     sessionId: 'skills-admin',
@@ -379,6 +382,63 @@ export function createAdminSkillsHandlers(deps: AdminRouteDeps): {
         throw err;
       }
     },
+
+    /** POST /admin/skills/:id/check-update */
+    async checkUpdate(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const actor = await requireAdmin(deps.bus, ctx, req, res);
+      if (actor === null) return;
+      const { id } = req.params;
+      if (!id) {
+        res.status(400).json({ error: 'missing skill id' });
+        return;
+      }
+      try {
+        const out = await deps.bus.call<
+          { skillId: string },
+          SkillsCheckForUpdatesOutput
+        >('skills:check-for-updates', ctx, { skillId: id });
+        res.status(200).json(out);
+      } catch (err) {
+        if (writeServiceError(res, err)) return;
+        throw err;
+      }
+    },
+
+    /** POST /admin/skills/:id/refresh-from-source — convenience: check + if available, upsert. */
+    async refresh(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const actor = await requireAdmin(deps.bus, ctx, req, res);
+      if (actor === null) return;
+      const { id } = req.params;
+      if (!id) {
+        res.status(400).json({ error: 'missing skill id' });
+        return;
+      }
+      try {
+        const check = await deps.bus.call<
+          { skillId: string },
+          SkillsCheckForUpdatesOutput
+        >('skills:check-for-updates', ctx, { skillId: id });
+        if (!check.available || check.latestSkillMd === undefined) {
+          res.status(200).json({ updated: false, currentVersion: check.currentVersion });
+          return;
+        }
+        // Re-use the splitter so /refresh follows the same upsert path as /create.
+        const split = splitSkillMd(check.latestSkillMd);
+        if (split === null) {
+          res.status(502).json({ error: 'remote skill missing frontmatter fence' });
+          return;
+        }
+        await deps.bus.call<SkillsUpsertInput, SkillsUpsertOutput>(
+          'skills:upsert',
+          ctx,
+          { ...split },
+        );
+        res.status(200).json({ updated: true, newVersion: check.latestVersion });
+      } catch (err) {
+        if (writeServiceError(res, err)) return;
+        throw err;
+      }
+    },
   };
 }
 
@@ -401,6 +461,8 @@ export async function registerAdminSkillsRoutes(
     { method: 'POST', path: '/admin/skills', handler: handlers.create },
     { method: 'PUT', path: '/admin/skills/:id', handler: handlers.update },
     { method: 'DELETE', path: '/admin/skills/:id', handler: handlers.destroy },
+    { method: 'POST', path: '/admin/skills/:id/check-update', handler: handlers.checkUpdate },
+    { method: 'POST', path: '/admin/skills/:id/refresh-from-source', handler: handlers.refresh },
   ];
   const unregisters: Array<() => void> = [];
   for (const route of routes) {
