@@ -163,10 +163,6 @@ export async function main(opts: MainOptions): Promise<number> {
   plugins.push(createCredentialsPlugin());
 
   // I12 — provider credentials are API-key-only across the default UI/preset.
-  // `@ax/credentials-anthropic-oauth` is intentionally NOT loaded here. The
-  // package stays in the tree and is loaded explicitly by the legacy
-  // `ax credentials login` CLI path (see commands/credentials.ts) so that
-  // OAuth flow keeps working for users who opt into it on the command line.
   // Default-preset hosts (CLI + k8s chart) advertise only `kind: api-key`
   // via /admin/credentials/kinds.
 
