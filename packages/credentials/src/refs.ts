@@ -3,7 +3,7 @@ import { PluginError } from '@ax/core';
 const PLUGIN_NAME = '@ax/credentials';
 
 export type Destination =
-  | { kind: 'provider'; provider: 'anthropic' }
+  | { kind: 'provider'; provider: string }
   | { kind: 'skill-slot'; skillId: string; slot: string }
   | { kind: 'mcp-env'; serverId: string; envName: string }
   | { kind: 'mcp-header'; serverId: string; headerName: string }
