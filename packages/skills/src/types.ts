@@ -35,6 +35,7 @@ export interface SkillSummary {
   version: number;
   capabilities: SkillCapabilities;
   defaultAttached: boolean;
+  sourceUrl?: string;
   updatedAt: string;
 }
 

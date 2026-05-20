@@ -30,6 +30,11 @@ export async function runSkillsMigration<DB>(db: Kysely<DB>): Promise<void> {
     ALTER TABLE skills_v1_skills
       ADD COLUMN IF NOT EXISTS default_attached BOOLEAN NOT NULL DEFAULT false
   `.execute(db);
+
+  await sql`
+    ALTER TABLE skills_v1_skills
+      ADD COLUMN IF NOT EXISTS source_url TEXT NULL
+  `.execute(db);
 }
 
 /**
@@ -43,6 +48,7 @@ export interface SkillsRow {
   body_md: string;
   version: number;
   default_attached: boolean;
+  source_url: string | null;
   created_at: Date;
   updated_at: Date;
 }

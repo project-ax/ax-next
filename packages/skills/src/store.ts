@@ -47,6 +47,7 @@ export interface UpsertInput {
   bodyMd: string;
   version: number;
   defaultAttached?: boolean;
+  sourceUrl?: string | null;
 }
 
 export interface SkillsStore {
@@ -73,6 +74,7 @@ export function createSkillsStore(db: Kysely<SkillsDatabase>): SkillsStore {
         version: row.version,
         capabilities: parseCapabilities(row.manifest_yaml, row.skill_id),
         defaultAttached: row.default_attached,
+        ...(row.source_url !== null ? { sourceUrl: row.source_url } : {}),
         updatedAt: row.updated_at.toISOString(),
       }));
     },
@@ -92,6 +94,7 @@ export function createSkillsStore(db: Kysely<SkillsDatabase>): SkillsStore {
         version: row.version,
         capabilities: parseCapabilities(row.manifest_yaml, row.skill_id),
         defaultAttached: row.default_attached,
+        ...(row.source_url !== null ? { sourceUrl: row.source_url } : {}),
         updatedAt: row.updated_at.toISOString(),
         bodyMd: row.body_md,
         manifestYaml: row.manifest_yaml,
@@ -121,6 +124,7 @@ export function createSkillsStore(db: Kysely<SkillsDatabase>): SkillsStore {
             body_md: input.bodyMd,
             version: input.version,
             default_attached: input.defaultAttached ?? false,
+            source_url: input.sourceUrl ?? null,
             created_at: now,
             updated_at: now,
           })
@@ -136,6 +140,7 @@ export function createSkillsStore(db: Kysely<SkillsDatabase>): SkillsStore {
           body_md: input.bodyMd,
           version: input.version,
           default_attached: input.defaultAttached ?? false,
+          source_url: input.sourceUrl ?? null,
           updated_at: new Date(),
         })
         .where('skill_id', '=', input.id)
