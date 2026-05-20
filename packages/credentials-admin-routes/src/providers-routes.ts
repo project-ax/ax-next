@@ -7,6 +7,7 @@ import {
   type RouteRequest,
   type RouteResponse,
 } from './shared.js';
+import { validateProviderKey } from './provider-validator.js';
 
 // ---------------------------------------------------------------------------
 // Provider registry + /admin/credentials/providers* handlers.
@@ -192,12 +193,10 @@ export function createProviderHandlers(deps: ProviderRouteDeps): {
         return;
       }
 
-      // Decode base64 key → bytes → UTF-8 string
+      // Decode base64 key → bytes.
       let keyBytes: Uint8Array;
-      let keyString: string;
       try {
         keyBytes = new Uint8Array(Buffer.from(schemaResult.data.key, 'base64'));
-        keyString = Buffer.from(keyBytes).toString('utf8');
       } catch {
         res.status(400).json({ error: 'invalid-payload' });
         return;
@@ -207,49 +206,14 @@ export function createProviderHandlers(deps: ProviderRouteDeps): {
         return;
       }
 
-      // Validate: prefer a registered `credentials:validate:<id>` service;
-      // fall back to built-in provider logic.
-      const validateService = `credentials:validate:${providerId}`;
-      let validationResult: { ok: boolean; error?: string };
-      if (deps.bus.hasService(validateService)) {
-        validationResult = await deps.bus.call<
-          { key: Uint8Array },
-          { ok: boolean; error?: string }
-        >(validateService, ctx, { key: keyBytes });
-      } else {
-        // Built-in validation by provider.
-        if (providerId === 'anthropic') {
-          try {
-            const fetchResult = await fetch(
-              'https://api.anthropic.com/v1/models',
-              {
-                method: 'GET',
-                headers: {
-                  'x-api-key': keyString,
-                  'anthropic-version': '2023-06-01',
-                },
-              },
-            );
-            validationResult =
-              fetchResult.status === 200
-                ? { ok: true }
-                : { ok: false, error: 'key-rejected' };
-          } catch {
-            validationResult = { ok: false, error: 'validation-failed' };
-          }
-        } else {
-          validationResult = {
-            ok: false,
-            error: 'validation not supported for this provider',
-          };
-        }
-      }
-
-      // Key bytes are no longer needed after validation — do not retain.
+      const validationResult = await validateProviderKey({
+        bus: deps.bus,
+        ctx,
+        providerId: providerEntry.id,
+        keyBytes,
+      });
       if (!validationResult.ok) {
-        res
-          .status(422)
-          .json({ error: validationResult.error ?? 'key-rejected' });
+        res.status(422).json({ error: validationResult.error });
         return;
       }
 

@@ -4,11 +4,12 @@
  * Pinned behaviors:
  *   1. Unconfigured provider models don't appear in the combobox.
  *   2. Configured provider models appear in the combobox groups.
- *   3. Selecting a model and clicking Save calls adminCredentials.create
- *      with the correct args.
+ *   3. Selecting a model and clicking Save calls PUT /admin/settings/fast-model
+ *      with `{value: "<providerId>/<modelId>"}`.
  *   4. Save error shown near button.
- *   5. Empty selection is skipped (Save button disabled until a model is
- *      selected).
+ *   5. Save is disabled when no model is selected.
+ *   6. The existing setting (GET /admin/settings/fast-model) preselects the
+ *      combobox so the operator sees what's currently in effect.
  *
  * Interaction pattern for ModelCombobox (Radix Popover + cmdk):
  *   1. fireEvent.click(comboboxButton) — opens the popover.
@@ -49,6 +50,23 @@ const unconfiguredProvider = {
   configured: false,
 };
 
+/**
+ * Default fetch script: providers list + an empty setting (no current
+ * selection). Override before render() when a test wants other shapes.
+ */
+function defaultFetchScript(providers: typeof configuredProvider[]) {
+  fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+    const url = typeof input === 'string' ? input : input.toString();
+    if (url === '/admin/credentials/providers') {
+      return jsonOk({ providers });
+    }
+    if (url === '/admin/settings/fast-model') {
+      return jsonOk({ value: null });
+    }
+    return new Response(null, { status: 404 });
+  });
+}
+
 /** Open a combobox popover and select a model by its display text. */
 async function selectModel(comboboxButton: HTMLElement, modelName: string) {
   fireEvent.click(comboboxButton);
@@ -61,26 +79,20 @@ async function selectModel(comboboxButton: HTMLElement, modelName: string) {
 
 describe('ModelConfigTab', () => {
   it('unconfigured provider models do not appear in combobox', async () => {
-    fetchMock.mockResolvedValueOnce(
-      jsonOk({ providers: [unconfiguredProvider] }),
-    );
+    defaultFetchScript([unconfiguredProvider]);
     render(<ModelConfigTab />);
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    // None of the unconfigured provider's models should be in the DOM.
     expect(screen.queryByText('gpt-4o')).toBeNull();
     expect(screen.queryByText('gpt-4o-mini')).toBeNull();
   });
 
   it('configured provider models appear in combobox groups', async () => {
-    fetchMock.mockResolvedValueOnce(
-      jsonOk({ providers: [configuredProvider] }),
-    );
+    defaultFetchScript([configuredProvider]);
     render(<ModelConfigTab />);
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
 
-    // Open the first combobox to verify models are present.
-    const comboboxes = screen.getAllByRole('combobox');
-    fireEvent.click(comboboxes[0]!);
+    const combobox = screen.getByRole('combobox');
+    fireEvent.click(combobox);
 
     await waitFor(() => {
       expect(screen.getAllByText('claude-sonnet-4-6').length).toBeGreaterThan(0);
@@ -88,60 +100,90 @@ describe('ModelConfigTab', () => {
     expect(screen.getAllByText('claude-opus-4-7').length).toBeGreaterThan(0);
   });
 
-  it('selecting a model and clicking Save calls adminCredentials.create with correct args', async () => {
-    fetchMock.mockResolvedValueOnce(
-      jsonOk({ providers: [configuredProvider] }),
-    );
-    // adminCredentials.create → POST /admin/credentials
-    fetchMock.mockResolvedValueOnce(
-      jsonOk({ credential: { scope: 'global', ref: 'setting.runner-model', kind: 'setting' } }, 201),
-    );
+  it('selecting a model and clicking Save PUTs /admin/settings/fast-model with the canonical provider/model ref', async () => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/admin/credentials/providers' && (init?.method ?? 'GET') === 'GET') {
+        return jsonOk({ providers: [configuredProvider] });
+      }
+      if (url === '/admin/settings/fast-model' && (init?.method ?? 'GET') === 'GET') {
+        return jsonOk({ value: null });
+      }
+      if (url === '/admin/settings/fast-model' && init?.method === 'PUT') {
+        return new Response(null, { status: 204 });
+      }
+      return new Response(null, { status: 404 });
+    });
 
     render(<ModelConfigTab />);
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
 
-    // ROLES order: fast-model (index 0), runner-model (index 1).
-    const comboboxes = screen.getAllByRole('combobox');
-    const runnerCombobox = comboboxes[1]!;
-
-    // Open the runner-model combobox and select a model.
-    await selectModel(runnerCombobox, 'claude-sonnet-4-6');
+    const combobox = screen.getByRole('combobox');
+    await selectModel(combobox, 'claude-sonnet-4-6');
 
     fireEvent.click(screen.getByRole('button', { name: /Save changes/i }));
 
     await waitFor(() => {
-      const postCalls = fetchMock.mock.calls.filter(
+      const putCalls = fetchMock.mock.calls.filter(
         ([url, opts]) =>
-          url === '/admin/credentials' &&
-          (opts as RequestInit | undefined)?.method === 'POST',
+          url === '/admin/settings/fast-model' &&
+          (opts as RequestInit | undefined)?.method === 'PUT',
       );
-      expect(postCalls.length).toBeGreaterThan(0);
+      expect(putCalls).toHaveLength(1);
 
-      const body = JSON.parse((postCalls[0]![1] as RequestInit).body as string) as Record<
+      const body = JSON.parse((putCalls[0]![1] as RequestInit).body as string) as Record<
         string,
         unknown
       >;
-      expect(body.scope).toBe('global');
-      expect(body.ownerId).toBeNull();
-      expect(body.ref).toBe('setting.runner-model');
-      expect(body.kind).toBe('setting');
-      // payload is base64-encoded by adminCredentials.create.
-      expect(body.payload).toBe(Buffer.from('claude-sonnet-4-6').toString('base64'));
+      // Canonical `provider/model-id` ref. Provider chosen by which
+      // configured-providers group claims the model id.
+      expect(body.value).toBe('anthropic/claude-sonnet-4-6');
+    });
+  });
+
+  it('preselects the model id from an existing /admin/settings/fast-model value', async () => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/admin/credentials/providers') {
+        return jsonOk({ providers: [configuredProvider] });
+      }
+      if (url === '/admin/settings/fast-model') {
+        // GET returns a stored ref — the tab should preselect 'claude-opus-4-7'.
+        return jsonOk({ value: 'anthropic/claude-opus-4-7' });
+      }
+      return new Response(null, { status: 404 });
+    });
+
+    render(<ModelConfigTab />);
+
+    // The "Currently · <model>" caption renders the parsed model id; the
+    // combobox button also shows it. Multiple matches are fine — what we
+    // care about is that the storage value flowed into state.
+    await waitFor(() => {
+      expect(screen.getAllByText('claude-opus-4-7').length).toBeGreaterThan(0);
     });
   });
 
   it('save error is shown near the button', async () => {
-    fetchMock.mockResolvedValueOnce(
-      jsonOk({ providers: [configuredProvider] }),
-    );
-    // POST fails.
-    fetchMock.mockResolvedValueOnce(new Response(null, { status: 500 }));
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/admin/credentials/providers') {
+        return jsonOk({ providers: [configuredProvider] });
+      }
+      if (url === '/admin/settings/fast-model' && (init?.method ?? 'GET') === 'GET') {
+        return jsonOk({ value: null });
+      }
+      if (url === '/admin/settings/fast-model' && init?.method === 'PUT') {
+        return new Response(null, { status: 500 });
+      }
+      return new Response(null, { status: 404 });
+    });
 
     render(<ModelConfigTab />);
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
 
-    const comboboxes = screen.getAllByRole('combobox');
-    await selectModel(comboboxes[0]!, 'claude-sonnet-4-6');
+    const combobox = screen.getByRole('combobox');
+    await selectModel(combobox, 'claude-sonnet-4-6');
 
     fireEvent.click(screen.getByRole('button', { name: /Save changes/i }));
 
@@ -150,48 +192,87 @@ describe('ModelConfigTab', () => {
     });
   });
 
-  it('Save button is disabled when no model is selected', async () => {
-    fetchMock.mockResolvedValueOnce(
-      jsonOk({ providers: [configuredProvider] }),
+  it('refuses to save when the same model id is offered by multiple configured providers (ambiguous)', async () => {
+    // Two providers both list "shared-model" → buildModelRef should
+    // refuse to silently pick one and instead surface an error.
+    const second = {
+      id: 'other',
+      name: 'Other',
+      ref: 'other',
+      models: ['shared-model'],
+      configured: true,
+    };
+    const first = {
+      ...configuredProvider,
+      models: [...configuredProvider.models, 'shared-model'],
+    };
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/admin/credentials/providers') {
+        return jsonOk({ providers: [first, second] });
+      }
+      if (url === '/admin/settings/fast-model' && (init?.method ?? 'GET') === 'GET') {
+        return jsonOk({ value: null });
+      }
+      if (url === '/admin/settings/fast-model' && init?.method === 'PUT') {
+        return new Response(null, { status: 204 });
+      }
+      return new Response(null, { status: 404 });
+    });
+
+    render(<ModelConfigTab />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+
+    const combobox = screen.getByRole('combobox');
+    fireEvent.click(combobox);
+    // Two providers both offer "shared-model" — pick the first match. The
+    // tab tracks model-id only, so either click ends up in the same
+    // ambiguous-save path.
+    await waitFor(() => {
+      expect(screen.getAllByText('shared-model').length).toBeGreaterThanOrEqual(2);
+    });
+    fireEvent.click(screen.getAllByText('shared-model')[0]!);
+
+    fireEvent.click(screen.getByRole('button', { name: /Save changes/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/ambiguous|unavailable/i);
+    });
+
+    // Critical: no PUT was issued.
+    const putCalls = fetchMock.mock.calls.filter(
+      ([, opts]) => (opts as RequestInit | undefined)?.method === 'PUT',
     );
+    expect(putCalls).toHaveLength(0);
+  });
+
+  it('surfaces load errors instead of silently emptying the picker (non-404 from settings GET)', async () => {
+    // The settings GET returns 500 — the tab should render its load-error
+    // banner, not silently behave as "no value set".
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/admin/credentials/providers') {
+        return jsonOk({ providers: [configuredProvider] });
+      }
+      if (url === '/admin/settings/fast-model') {
+        return new Response('boom', { status: 500 });
+      }
+      return new Response(null, { status: 404 });
+    });
+
+    render(<ModelConfigTab />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/Couldn't load providers/i);
+    });
+  });
+
+  it('Save button is disabled when no model is selected', async () => {
+    defaultFetchScript([configuredProvider]);
     render(<ModelConfigTab />);
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
 
     const saveBtn = screen.getByRole('button', { name: /Save changes/i }) as HTMLButtonElement;
     expect(saveBtn.disabled).toBe(true);
-  });
-
-  it('empty selection roles are skipped — only selected roles are POSTed', async () => {
-    fetchMock.mockResolvedValueOnce(
-      jsonOk({ providers: [configuredProvider] }),
-    );
-    // Only one POST (for the one role selected).
-    fetchMock.mockResolvedValueOnce(
-      jsonOk({ credential: { scope: 'global', ref: 'setting.fast-model', kind: 'setting' } }, 201),
-    );
-
-    render(<ModelConfigTab />);
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-
-    // Only select fast-model (index 0); leave runner-model empty.
-    const comboboxes = screen.getAllByRole('combobox');
-    await selectModel(comboboxes[0]!, 'claude-opus-4-7');
-
-    fireEvent.click(screen.getByRole('button', { name: /Save changes/i }));
-
-    await waitFor(() => {
-      const postCalls = fetchMock.mock.calls.filter(
-        ([url, opts]) =>
-          url === '/admin/credentials' &&
-          (opts as RequestInit | undefined)?.method === 'POST',
-      );
-      // Only one POST — runner-model was empty and was skipped.
-      expect(postCalls).toHaveLength(1);
-      const body = JSON.parse((postCalls[0]![1] as RequestInit).body as string) as Record<
-        string,
-        unknown
-      >;
-      expect(body.ref).toBe('setting.fast-model');
-    });
   });
 });

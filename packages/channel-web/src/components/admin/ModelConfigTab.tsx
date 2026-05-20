@@ -1,44 +1,85 @@
 /**
- * ModelConfigTab — searchable model pickers per role.
+ * ModelConfigTab — pick the fast-model used by conversation auto-titling.
  *
- * Behavior contract preserved from the legacy implementation:
- *   - Fetch listProviders() on mount.
- *   - Show only configured providers.
- *   - On Save, write each non-empty selection as a credential
- *     (scope='global', ownerId=null, ref=role.ref, kind='setting',
- *     payload=selectedModel).
- *   - Empty selections are silently skipped.
+ * Storage shape: `provider/model-id` in the kernel `storage:*` surface at
+ * key `settings:fast-model`. The wizard seeds the same key during
+ * onboarding; @ax/conversation-titles reads it at every chat:turn-end and
+ * falls back to its plugin config when absent. The wire layer lives in
+ * `lib/admin-settings.ts` (GET/PUT `/admin/settings/fast-model`).
+ *
+ * The previous shape had a second "runner-model" role and POSTed to a
+ * deleted `/admin/credentials` endpoint; both are gone here — runner
+ * model is set per-agent via the Agents tab.
  */
 import { useEffect, useRef, useState } from 'react';
 import { Info } from 'lucide-react';
 import { listProviders, type ProviderEntry } from '@/lib/providers';
-import { adminCredentials } from '@/lib/credentials';
+import { getAdminSetting, putAdminSetting } from '@/lib/admin-settings';
 import { Button } from '@/components/ui/button';
 import { RoleCard } from './RoleCard';
 import { ModelCombobox, type ModelComboboxGroup } from './ModelCombobox';
 
-const ROLES = [
-  {
-    id: 'fast-model',
-    pill: 'fast',
-    label: 'Fast / cheap model',
-    ref: 'setting.fast-model',
-    description:
-      'Used for conversation titles, quick classification, low-latency tasks.',
-  },
-  {
-    id: 'runner-model',
-    pill: 'runner',
-    label: 'Agent runner model',
-    ref: 'setting.runner-model',
-    description: 'Used for all agent sessions via the Claude SDK runner.',
-  },
-] as const;
+interface RoleMeta {
+  id: 'fast-model';
+  pill: string;
+  label: string;
+  description: string;
+}
+
+const ROLE: RoleMeta = {
+  id: 'fast-model',
+  pill: 'fast',
+  label: 'Fast / cheap model',
+  description:
+    'Used for conversation titles, quick classification, low-latency tasks. ' +
+    'Each agent picks its own primary chat model separately on the Agents tab.',
+};
+
+interface ProviderSelection {
+  providerId: string;
+  modelId: string;
+}
+
+/**
+ * Build a `provider/model-id` ref from the configured-providers list +
+ * a chosen model id. Returns null if:
+ *  - the model isn't offered by any configured provider, OR
+ *  - the same model id is offered by more than one configured provider
+ *    (ambiguous — saving either would silently pick a provider for the
+ *    operator). Surface this as a save error so the user gets a clear
+ *    "ambiguous" message instead of a quiet wrong-provider flip.
+ *
+ * Today the UI doesn't have a separate provider picker, so the
+ * unambiguous-match path is the only safe shape. A future "pick the
+ * provider explicitly" step would replace this with a passed-through
+ * providerId.
+ */
+function buildModelRef(
+  providers: ProviderEntry[],
+  modelId: string,
+): ProviderSelection | null {
+  if (modelId.length === 0) return null;
+  const matches = providers.filter((p) => p.models.includes(modelId));
+  if (matches.length !== 1) return null;
+  return { providerId: matches[0]!.id, modelId };
+}
+
+/**
+ * Reverse: given a stored `provider/model-id` ref, extract the model id
+ * so the combobox can preselect it. Splits on the FIRST `/` to mirror
+ * conversation-titles' parseModelRef.
+ */
+function parseStoredRef(ref: string | null): string {
+  if (ref === null || ref.length === 0) return '';
+  const idx = ref.indexOf('/');
+  if (idx <= 0 || idx === ref.length - 1) return '';
+  return ref.slice(idx + 1);
+}
 
 export function ModelConfigTab() {
   const [providers, setProviders] = useState<ProviderEntry[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [selectedModels, setSelectedModels] = useState<Record<string, string>>({});
+  const [selectedModel, setSelectedModel] = useState<string>('');
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedOk, setSavedOk] = useState(false);
@@ -48,9 +89,20 @@ export function ModelConfigTab() {
     let cancelled = false;
     void (async () => {
       try {
-        const list = await listProviders();
+        // Run in parallel — they share no state. The server returns
+        // 200 + { value: null } when nothing has been stored yet, so
+        // no per-error swallowing is needed: any thrown error
+        // (auth/network/5xx/unknown-key) surfaces to the outer catch
+        // and renders as the load-error banner. Previous code did
+        // `.catch(() => null)` which hid those real errors behind an
+        // empty picker.
+        const [list, current] = await Promise.all([
+          listProviders(),
+          getAdminSetting('fast-model'),
+        ]);
         if (cancelled) return;
         setProviders(list);
+        setSelectedModel(parseStoredRef(current));
         setLoadError(null);
       } catch (err) {
         if (cancelled) return;
@@ -74,6 +126,7 @@ export function ModelConfigTab() {
   }));
 
   const handleSave = async () => {
+    if (selectedModel.length === 0) return;
     setSaving(true);
     setSaveError(null);
     setSavedOk(false);
@@ -82,17 +135,17 @@ export function ModelConfigTab() {
       savedTimeoutRef.current = null;
     }
     try {
-      for (const role of ROLES) {
-        const selectedModel = selectedModels[role.ref];
-        if (!selectedModel) continue;
-        await adminCredentials.create({
-          scope: 'global',
-          ownerId: null,
-          ref: role.ref,
-          kind: 'setting',
-          payload: selectedModel,
-        });
+      const ref = buildModelRef(configured, selectedModel);
+      if (ref === null) {
+        // Either no configured provider supplies this model id, or two
+        // do — in either case we refuse to silently pick. The combobox
+        // shouldn't normally surface either shape, so this is a defensive
+        // last-resort message.
+        throw new Error(
+          `Model "${selectedModel}" is unavailable or ambiguous across configured providers.`,
+        );
       }
+      await putAdminSetting('fast-model', `${ref.providerId}/${ref.modelId}`);
       setSavedOk(true);
       savedTimeoutRef.current = setTimeout(() => {
         setSavedOk(false);
@@ -104,8 +157,6 @@ export function ModelConfigTab() {
       setSaving(false);
     }
   };
-
-  const hasAnySelection = ROLES.some((r) => selectedModels[r.ref]);
 
   if (loadError !== null) {
     return (
@@ -125,8 +176,8 @@ export function ModelConfigTab() {
           Model configuration
         </h2>
         <p className="text-sm leading-[1.55] text-muted-foreground max-w-[56ch]">
-          Pick which model handles each role. Only providers with a configured key
-          appear here.
+          Pick the fast model used for conversation titles and other
+          low-latency tasks. Only providers with a configured key appear here.
         </p>
       </div>
 
@@ -137,59 +188,50 @@ export function ModelConfigTab() {
             strokeWidth={3}
           />
           <span>
-            Configure a provider key first, then come back here to choose models.
+            Configure a provider key first, then come back here to choose a model.
           </span>
         </div>
       )}
 
       <div className="flex flex-col gap-3.5">
-        {ROLES.map((role) => (
-          <RoleCard
-            key={role.id}
-            pill={role.pill}
-            title={role.label}
-            caption={role.description}
-          >
-            <ModelCombobox
-              ariaLabel={role.label}
-              groups={groups}
-              value={selectedModels[role.ref] ?? ''}
-              onChange={(model) =>
-                setSelectedModels((prev) => ({ ...prev, [role.ref]: model }))
-              }
-              disabled={noProviders}
-              placeholder={
-                noProviders ? '— Configure a provider first —' : '— Select a model —'
-              }
-            />
-            {selectedModels[role.ref] && (
-              <span className="flex items-center gap-1.5 mt-2 text-[11.5px] text-muted-foreground">
-                Currently ·{' '}
-                <code className="font-mono text-[11.5px] text-primary tracking-[0.02em]">
-                  {selectedModels[role.ref]}
-                </code>
-              </span>
-            )}
-          </RoleCard>
-        ))}
+        <RoleCard pill={ROLE.pill} title={ROLE.label} caption={ROLE.description}>
+          <ModelCombobox
+            ariaLabel={ROLE.label}
+            groups={groups}
+            value={selectedModel}
+            onChange={setSelectedModel}
+            disabled={noProviders}
+            placeholder={
+              noProviders ? '— Configure a provider first —' : '— Select a model —'
+            }
+          />
+          {selectedModel.length > 0 && (
+            <span className="flex items-center gap-1.5 mt-2 text-[11.5px] text-muted-foreground">
+              Currently ·{' '}
+              <code className="font-mono text-[11.5px] text-primary tracking-[0.02em]">
+                {selectedModel}
+              </code>
+            </span>
+          )}
+        </RoleCard>
       </div>
 
       <div className="mt-6 pt-4 border-t border-rule-soft flex items-center gap-3">
         <Button
           type="button"
           onClick={() => void handleSave()}
-          disabled={saving || !hasAnySelection}
+          disabled={saving || selectedModel.length === 0}
         >
           {saving ? 'Saving…' : savedOk ? '✓ Saved' : 'Save changes'}
         </Button>
-        {!hasAnySelection && !saving && !savedOk && !saveError && (
+        {selectedModel.length === 0 && !saving && !savedOk && !saveError && (
           <span className="text-[12.5px] text-muted-foreground">
             Pick a model above to enable save.
           </span>
         )}
         {savedOk && (
           <span className="text-[12.5px] text-muted-foreground">
-            Changes apply on the next session start.
+            Changes apply on the next chat turn.
           </span>
         )}
         {saveError && (

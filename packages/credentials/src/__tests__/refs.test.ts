@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { refForDestination, type Destination } from '../refs.js';
+import { KNOWN_DESTINATION_FIXTURES } from '../refs-fixtures.js';
 import { PluginError } from '@ax/core';
 
 describe('refForDestination', () => {
@@ -26,6 +27,12 @@ describe('refForDestination', () => {
     expect(refForDestination({
       kind: 'routine-hmac', agentId: 'agt-1', routinePath: '.ax/routines/cron.md',
     })).toBe('routine:agt-1:.ax/routines/cron.md:hmac');
+  });
+
+  it('canonical refs match KNOWN_DESTINATION_FIXTURES (drift guard)', () => {
+    for (const { destination, expectedRef } of KNOWN_DESTINATION_FIXTURES) {
+      expect(refForDestination(destination)).toBe(expectedRef);
+    }
   });
 
   it('rejects identifiers containing the reserved char ":"', () => {

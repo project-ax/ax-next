@@ -35,11 +35,30 @@ interface Stubs {
   getCalls: Array<GetInput>;
   llmCalls: Array<LlmCallInput>;
   setTitleCalls: Array<SetTitleInput>;
+  /**
+   * Inputs `storage:get` has been called with (only when the stub was
+   * registered via `registerStorageGet`).
+   */
+  storageGetCalls: Array<{ key: string }>;
   setGetResult(v: GetOutput | (() => Promise<GetOutput>)): void;
   setLlmResult(v: LlmCallOutput | (() => Promise<LlmCallOutput>)): void;
   setSetTitleResult(
     v: SetTitleOutput | (() => Promise<SetTitleOutput>),
   ): void;
+  /**
+   * Register a `storage:get` stub on the bus that returns `value` for the
+   * fast-model key (and `undefined` for any other key). Pass a thunk to
+   * simulate a transient failure. Call sites that DON'T invoke this leave
+   * `storage:get` unregistered, exercising the "no storage layer" path.
+   */
+  registerStorageGet(
+    value: Uint8Array | undefined | (() => Promise<Uint8Array | undefined>),
+  ): void;
+  /**
+   * Register stubs for an alternate provider (used by the storage-override
+   * tests). Returns the captured llm-call list.
+   */
+  registerLlmCallProvider(provider: string): Array<LlmCallInput>;
 }
 
 function makeStubsBus(): Stubs {
@@ -89,11 +108,14 @@ function makeStubsBus(): Stubs {
     },
   );
 
+  const storageGetCalls: Array<{ key: string }> = [];
+
   return {
     bus,
     getCalls,
     llmCalls,
     setTitleCalls,
+    storageGetCalls,
     setGetResult(v) {
       getResult = v;
     },
@@ -102,6 +124,34 @@ function makeStubsBus(): Stubs {
     },
     setSetTitleResult(v) {
       setTitleResult = v;
+    },
+    registerStorageGet(value) {
+      bus.registerService<{ key: string }, { value: Uint8Array | undefined }>(
+        'storage:get',
+        'mock-storage',
+        async (_ctx, input) => {
+          storageGetCalls.push(input);
+          const v = typeof value === 'function' ? await value() : value;
+          if (input.key !== 'settings:fast-model') return { value: undefined };
+          return { value: v };
+        },
+      );
+    },
+    registerLlmCallProvider(provider) {
+      const calls: Array<LlmCallInput> = [];
+      bus.registerService<LlmCallInput, LlmCallOutput>(
+        `llm:call:${provider}`,
+        `mock-llm-${provider}`,
+        async (_ctx, input) => {
+          calls.push(input);
+          return {
+            text: `Title from ${provider}`,
+            stopReason: 'end_turn',
+            usage: { inputTokens: 1, outputTokens: 1 },
+          };
+        },
+      );
+      return calls;
     },
   };
 }
@@ -154,6 +204,7 @@ describe('@ax/conversation-titles plugin manifest', () => {
       registers: [],
       calls: [
         'llm:call:anthropic',
+        'storage:get',
         'conversations:get',
         'conversations:set-title',
       ],
@@ -454,6 +505,180 @@ describe('@ax/conversation-titles chat:turn-end subscriber', () => {
     );
   });
 
+  // ---------------------------------------------------------------------
+  // Runtime model override via `storage:get('settings:fast-model')`.
+  //
+  // The admin "Model config" tab and the onboarding wizard both write this
+  // key. The plugin uses it as the runtime model selection; cfg.model is
+  // the fallback when storage is empty / errors / not registered.
+  // ---------------------------------------------------------------------
+
+  function seedAssistantTurn(stubs: Stubs): void {
+    stubs.setGetResult({
+      conversation: makeConversation({ title: null }),
+      turns: [
+        turn('user', [{ type: 'text', text: 'Hi' }]),
+        turn('assistant', [{ type: 'text', text: 'Hello!' }]),
+      ],
+    });
+  }
+
+  it('uses storage:get override when present (different model-id, same provider)', async () => {
+    const stubs = makeStubsBus();
+    seedAssistantTurn(stubs);
+    stubs.registerStorageGet(
+      new TextEncoder().encode('anthropic/claude-sonnet-4-6'),
+    );
+    const plugin = createConversationTitlesPlugin();
+    await plugin.init({ bus: stubs.bus, config: {} });
+
+    await stubs.bus.fire('chat:turn-end', makeCtx({ conversationId: 'c1' }), {
+      role: 'assistant',
+    });
+
+    expect(stubs.storageGetCalls).toEqual([{ key: 'settings:fast-model' }]);
+    expect(stubs.llmCalls).toHaveLength(1);
+    expect(stubs.llmCalls[0]?.model).toBe('claude-sonnet-4-6');
+  });
+
+  it('uses storage:get override with a different provider hook', async () => {
+    const stubs = makeStubsBus();
+    seedAssistantTurn(stubs);
+    stubs.registerStorageGet(new TextEncoder().encode('openai/gpt-4o'));
+    const altCalls = stubs.registerLlmCallProvider('openai');
+    const plugin = createConversationTitlesPlugin();
+    await plugin.init({ bus: stubs.bus, config: {} });
+
+    await stubs.bus.fire('chat:turn-end', makeCtx({ conversationId: 'c1' }), {
+      role: 'assistant',
+    });
+
+    // Storage override routed to the openai hook, NOT the default anthropic hook.
+    expect(altCalls).toHaveLength(1);
+    expect(altCalls[0]?.model).toBe('gpt-4o');
+    expect(stubs.llmCalls).toHaveLength(0);
+  });
+
+  it('falls back to cfg.model when storage:get returns undefined', async () => {
+    const stubs = makeStubsBus();
+    seedAssistantTurn(stubs);
+    stubs.registerStorageGet(undefined);
+    const plugin = createConversationTitlesPlugin();
+    await plugin.init({ bus: stubs.bus, config: {} });
+
+    await stubs.bus.fire('chat:turn-end', makeCtx({ conversationId: 'c1' }), {
+      role: 'assistant',
+    });
+
+    expect(stubs.llmCalls).toHaveLength(1);
+    // Default fast model id from DEFAULT_TITLE_MODEL.
+    expect(stubs.llmCalls[0]?.model).toBe('claude-haiku-4-5-20251001');
+  });
+
+  it('falls back to cfg.model when storage:get throws', async () => {
+    const stubs = makeStubsBus();
+    seedAssistantTurn(stubs);
+    stubs.registerStorageGet(async () => {
+      throw new PluginError({
+        code: 'unknown',
+        plugin: 'mock-storage',
+        hookName: 'storage:get',
+        message: 'simulated backend hiccup',
+      });
+    });
+    const plugin = createConversationTitlesPlugin();
+    await plugin.init({ bus: stubs.bus, config: {} });
+
+    const fireResult = await stubs.bus.fire(
+      'chat:turn-end',
+      makeCtx({ conversationId: 'c1' }),
+      { role: 'assistant' },
+    );
+    expect(fireResult.rejected).toBe(false);
+    expect(stubs.llmCalls).toHaveLength(1);
+    expect(stubs.llmCalls[0]?.model).toBe('claude-haiku-4-5-20251001');
+  });
+
+  it('falls back to cfg.model when storage:get is not registered', async () => {
+    const stubs = makeStubsBus(); // no registerStorageGet call
+    seedAssistantTurn(stubs);
+    const plugin = createConversationTitlesPlugin();
+    await plugin.init({ bus: stubs.bus, config: {} });
+
+    await stubs.bus.fire('chat:turn-end', makeCtx({ conversationId: 'c1' }), {
+      role: 'assistant',
+    });
+
+    expect(stubs.storageGetCalls).toHaveLength(0);
+    expect(stubs.llmCalls).toHaveLength(1);
+    expect(stubs.llmCalls[0]?.model).toBe('claude-haiku-4-5-20251001');
+  });
+
+  it('falls back to cfg.model when storage value is empty bytes', async () => {
+    const stubs = makeStubsBus();
+    seedAssistantTurn(stubs);
+    stubs.registerStorageGet(new Uint8Array(0));
+    const plugin = createConversationTitlesPlugin();
+    await plugin.init({ bus: stubs.bus, config: {} });
+
+    await stubs.bus.fire('chat:turn-end', makeCtx({ conversationId: 'c1' }), {
+      role: 'assistant',
+    });
+
+    expect(stubs.llmCalls).toHaveLength(1);
+    expect(stubs.llmCalls[0]?.model).toBe('claude-haiku-4-5-20251001');
+  });
+
+  it('falls back to cfg.model when the override provider hook is not registered', async () => {
+    // Storage says "use openai/..." but only the anthropic hook is wired —
+    // titling should still run against the configured anthropic fallback,
+    // not skip generation.
+    const stubs = makeStubsBus();
+    seedAssistantTurn(stubs);
+    stubs.registerStorageGet(new TextEncoder().encode('openai/gpt-4o'));
+    const warnSpy = vi.fn();
+    const plugin = createConversationTitlesPlugin();
+    await plugin.init({ bus: stubs.bus, config: {} });
+
+    const baseCtx = makeCtx({ conversationId: 'c1' });
+    const ctx: AgentContext = {
+      ...baseCtx,
+      logger: { ...baseCtx.logger, warn: warnSpy },
+    };
+    await stubs.bus.fire('chat:turn-end', ctx, { role: 'assistant' });
+
+    // The default anthropic stub (registered in makeStubsBus) was hit.
+    expect(stubs.llmCalls).toHaveLength(1);
+    expect(stubs.llmCalls[0]?.model).toBe('claude-haiku-4-5-20251001');
+    expect(warnSpy).toHaveBeenCalledWith(
+      'conversation_titles_override_hook_missing',
+      expect.objectContaining({ provider: 'openai' }),
+    );
+  });
+
+  it('falls back to cfg.model when storage value is not a valid provider/model-id ref', async () => {
+    const stubs = makeStubsBus();
+    seedAssistantTurn(stubs);
+    stubs.registerStorageGet(new TextEncoder().encode('no-slash'));
+    const warnSpy = vi.fn();
+    const plugin = createConversationTitlesPlugin();
+    await plugin.init({ bus: stubs.bus, config: {} });
+
+    const baseCtx = makeCtx({ conversationId: 'c1' });
+    const ctx: AgentContext = {
+      ...baseCtx,
+      logger: { ...baseCtx.logger, warn: warnSpy },
+    };
+    await stubs.bus.fire('chat:turn-end', ctx, { role: 'assistant' });
+
+    expect(stubs.llmCalls).toHaveLength(1);
+    expect(stubs.llmCalls[0]?.model).toBe('claude-haiku-4-5-20251001');
+    expect(warnSpy).toHaveBeenCalledWith(
+      'conversation_titles_invalid_storage_ref',
+      expect.objectContaining({ length: 'no-slash'.length }),
+    );
+  });
+
   it('swallows set-title failures (subscriber must not throw)', async () => {
     const stubs = makeStubsBus();
     stubs.setGetResult({
@@ -528,6 +753,7 @@ describe('@ax/conversation-titles factory config', () => {
     });
     expect(plugin.manifest.calls).toEqual([
       'llm:call:anthropic',
+      'storage:get',
       'conversations:get',
       'conversations:set-title',
     ]);
@@ -537,6 +763,7 @@ describe('@ax/conversation-titles factory config', () => {
     const plugin = createConversationTitlesPlugin({ model: 'openai/gpt-4' });
     expect(plugin.manifest.calls).toEqual([
       'llm:call:openai',
+      'storage:get',
       'conversations:get',
       'conversations:set-title',
     ]);

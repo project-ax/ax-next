@@ -265,13 +265,17 @@ describe('Onboarding wizard — end-to-end happy path canary', () => {
       expect(agentsOut.agents[0].displayName).toBe('Default Agent');
       expect(agentsOut.agents[0].model).toBe('claude-sonnet-4-6');
 
-      // e) storage:get('settings:fast-model') — returns the chosen fastModel bytes.
+      // e) storage:get('settings:fast-model') — returns the chosen fastModel
+      //    as the canonical `provider/model-id` ref that @ax/conversation-
+      //    titles + the admin "Model config" tab both read.
       const fastModelOut = await harness.bus.call<
         { key: string },
         { value: Uint8Array | undefined }
       >('storage:get', harness.ctx(), { key: 'settings:fast-model' });
       expect(fastModelOut.value).toBeDefined();
-      expect(new TextDecoder().decode(fastModelOut.value!)).toBe('claude-haiku-4-5-20251001');
+      expect(new TextDecoder().decode(fastModelOut.value!)).toBe(
+        'anthropic/claude-haiku-4-5-20251001',
+      );
 
       // -----------------------------------------------------------------------
       // Post-completion lockdown (I11)

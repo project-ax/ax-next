@@ -60,10 +60,10 @@ function mkReq(opts: {
   };
 }
 
-async function makeBus(authedUser: {
-  id: string;
-  isAdmin: boolean;
-}): Promise<HookBus> {
+async function makeBus(
+  authedUser: { id: string; isAdmin: boolean },
+  opts: { registerAnthropicValidator?: 'accept' | 'reject' | 'skip' } = {},
+): Promise<HookBus> {
   const bus = new HookBus();
   await bootstrap({
     bus,
@@ -79,6 +79,21 @@ async function makeBus(authedUser: {
     'test',
     async (_ctx, _input) => ({ user: authedUser }),
   );
+  // Provider destinations validate the key against the provider's API before
+  // persisting. Stub the per-provider validator service so tests don't hit
+  // real Anthropic; pass `skip` only when explicitly testing the
+  // unsupported-provider fallback (no service registered).
+  const validatorMode = opts.registerAnthropicValidator ?? 'accept';
+  if (validatorMode !== 'skip') {
+    bus.registerService(
+      'credentials:validate:anthropic',
+      'test',
+      async (_ctx, _input: { key: Uint8Array }) =>
+        validatorMode === 'accept'
+          ? { ok: true }
+          : { ok: false, error: 'key-rejected' },
+    );
+  }
   return bus;
 }
 
@@ -440,5 +455,143 @@ describe('destination credential handlers', () => {
       {},
     );
     expect(out.credentials.find((c) => c.ref === 'skill:my-skill:apiKey')).toBeUndefined();
+  });
+
+  // -------------------------------------------------------------------------
+  // Provider pre-save validation
+  //
+  // Provider destinations validate the key against the provider's API
+  // before the credentials:set call so we don't quietly persist a key
+  // that's already broken. Non-provider destinations bypass this.
+  // -------------------------------------------------------------------------
+
+  it('POST /admin: rejects provider destination with 422 when the validator rejects the key', async () => {
+    const bus = await makeBus(
+      { id: 'admin', isAdmin: true },
+      { registerAnthropicValidator: 'reject' },
+    );
+    const handlers = createDestinationHandlers({ bus });
+    const { res, statusOf, bodyOf } = mkRes();
+
+    await handlers.create(
+      mkReq({
+        params: { destinationKind: 'provider' },
+        body: {
+          destination: { kind: 'provider', provider: 'anthropic' },
+          scope: 'global',
+          ownerId: null,
+          kind: 'api-key',
+          payloadB64: Buffer.from('sk-ant-bad').toString('base64'),
+        },
+      }),
+      res,
+    );
+
+    expect(statusOf()).toBe(422);
+    expect((bodyOf() as { error: string }).error).toBe('key-rejected');
+
+    // Nothing should have been persisted.
+    const out = await bus.call<
+      Record<string, never>,
+      { credentials: Array<{ ref: string }> }
+    >(
+      'credentials:list',
+      makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'admin' }),
+      {},
+    );
+    expect(out.credentials.find((c) => c.ref === 'provider:anthropic')).toBeUndefined();
+  });
+
+  it('POST /admin: provider destination success path persists the credential when the validator accepts', async () => {
+    // Default `registerAnthropicValidator: 'accept'` makes this work.
+    const bus = await makeBus({ id: 'admin', isAdmin: true });
+    const handlers = createDestinationHandlers({ bus });
+    const { res, statusOf } = mkRes();
+
+    await handlers.create(
+      mkReq({
+        params: { destinationKind: 'provider' },
+        body: {
+          destination: { kind: 'provider', provider: 'anthropic' },
+          scope: 'global',
+          ownerId: null,
+          kind: 'api-key',
+          payloadB64: Buffer.from('sk-ant-good').toString('base64'),
+        },
+      }),
+      res,
+    );
+
+    expect(statusOf()).toBe(204);
+    const out = await bus.call<
+      Record<string, never>,
+      { credentials: Array<{ ref: string }> }
+    >(
+      'credentials:list',
+      makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'admin' }),
+      {},
+    );
+    expect(out.credentials.some((c) => c.ref === 'provider:anthropic')).toBe(true);
+  });
+
+  it('POST /admin: non-provider destinations skip validation', async () => {
+    // Even with NO validator registered, a skill-slot save should succeed.
+    const bus = await makeBus(
+      { id: 'admin', isAdmin: true },
+      { registerAnthropicValidator: 'skip' },
+    );
+    const handlers = createDestinationHandlers({ bus });
+    const { res, statusOf } = mkRes();
+
+    await handlers.create(
+      mkReq({
+        params: { destinationKind: 'skill-slot' },
+        body: {
+          destination: { kind: 'skill-slot', skillId: 's', slot: 'TOKEN' },
+          scope: 'global',
+          ownerId: null,
+          kind: 'api-key',
+          payloadB64: Buffer.from('whatever').toString('base64'),
+        },
+      }),
+      res,
+    );
+
+    expect(statusOf()).toBe(204);
+  });
+
+  it('POST /admin: validation runs BEFORE credentials:set (bad key is not persisted)', async () => {
+    // Tighter contract restatement of the 422 case — covered by the first
+    // test, kept here as a regression marker so a future refactor that
+    // calls credentials:set first and validates second would break this.
+    const bus = await makeBus(
+      { id: 'admin', isAdmin: true },
+      { registerAnthropicValidator: 'reject' },
+    );
+    const handlers = createDestinationHandlers({ bus });
+
+    await handlers.create(
+      mkReq({
+        params: { destinationKind: 'provider' },
+        body: {
+          destination: { kind: 'provider', provider: 'anthropic' },
+          scope: 'global',
+          ownerId: null,
+          kind: 'api-key',
+          payloadB64: Buffer.from('sk-ant-bad').toString('base64'),
+        },
+      }),
+      mkRes().res,
+    );
+
+    const out = await bus.call<
+      Record<string, never>,
+      { credentials: Array<{ ref: string }> }
+    >(
+      'credentials:list',
+      makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'admin' }),
+      {},
+    );
+    expect(out.credentials.find((c) => c.ref === 'provider:anthropic')).toBeUndefined();
   });
 });
