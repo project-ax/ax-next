@@ -12,7 +12,11 @@ import {
   type WorkspaceReadOutput,
 } from '@ax/core';
 import { parseJsonlToTurns } from '@ax/agent-claude-sdk-runner-host';
-import type { ContentBlock } from '@ax/ipc-protocol';
+import {
+  AttachmentBlockSchema,
+  parseAttachmentMention,
+  type ContentBlock,
+} from '@ax/ipc-protocol';
 import { type Kysely } from 'kysely';
 import {
   runConversationsMigration,
@@ -714,7 +718,85 @@ async function getConversation(
           }),
           conv.runnerSessionId,
         );
-  return { conversation: conv, turns };
+  return {
+    conversation: conv,
+    turns: reconstructAttachmentBlocks(turns, conv.conversationId),
+  };
+}
+
+/**
+ * Restore user-facing `attachment` chips that runner translation strips out.
+ *
+ * Under runner-owned-sessions the jsonl persists the runner's MODEL-facing
+ * translation of an attachment — a one-line text mention (`User attached '…'
+ * at <path> (<mime>)`, see `formatAttachmentMention`) — not the original
+ * `attachment` block. The chat UI renders an `attachment` block as a download
+ * chip but a `text` block as raw text, so a reopened chat would otherwise show
+ * the mention verbatim. We rebuild the block from the mention here, on read,
+ * which also retroactively fixes chats stored before this landed (no
+ * migration — the read derives the chip every time).
+ *
+ * Safety — the jsonl is untrusted (I5; the SDK is third-party and the model
+ * output it transcribes is adversarial):
+ *   - only `role: 'user'` turns are touched. The model authors assistant /
+ *     tool lines, so it cannot inject a chip into a user turn.
+ *   - the parsed path must sit under THIS conversation's own upload prefix
+ *     (`.ax/uploads/<conversationId>/`), so a crafted mention can't aim the
+ *     download chip at another conversation or an arbitrary file.
+ *   - the rebuilt block must round-trip `AttachmentBlockSchema` (which rejects
+ *     absolute paths, `..`, drive roots, NUL) or the original text is kept.
+ *
+ * `sizeBytes` is unrecoverable from the mention (and unused by the render
+ * path), so it's set to 0. A single `text` block may carry the user's typed
+ * prompt and the mention on separate lines (the SDK concatenates the runner's
+ * separate text blocks), so we split per line, convert only matching lines,
+ * and keep the rest as text — preserving order.
+ */
+function reconstructAttachmentBlocks(
+  turns: Turn[],
+  conversationId: string,
+): Turn[] {
+  const prefix = `.ax/uploads/${conversationId}/`;
+  return turns.map((t) => {
+    if (t.role !== 'user') return t;
+    let changed = false;
+    const rebuilt: ContentBlock[] = [];
+    for (const block of t.contentBlocks) {
+      if (block.type !== 'text') {
+        rebuilt.push(block);
+        continue;
+      }
+      const out: ContentBlock[] = [];
+      let textBuf: string[] = [];
+      const flushText = (): void => {
+        const joined = textBuf.join('\n');
+        if (joined.length > 0) out.push({ type: 'text', text: joined });
+        textBuf = [];
+      };
+      for (const line of block.text.split('\n')) {
+        const mention = parseAttachmentMention(line);
+        if (mention !== null && mention.path.startsWith(prefix)) {
+          const parsed = AttachmentBlockSchema.safeParse({
+            type: 'attachment',
+            path: mention.path,
+            displayName: mention.displayName,
+            mediaType: mention.mediaType,
+            sizeBytes: 0,
+          });
+          if (parsed.success) {
+            flushText();
+            out.push(parsed.data);
+            changed = true;
+            continue;
+          }
+        }
+        textBuf.push(line);
+      }
+      flushText();
+      for (const b of out) rebuilt.push(b);
+    }
+    return changed ? { ...t, contentBlocks: rebuilt } : t;
+  });
 }
 
 /**
