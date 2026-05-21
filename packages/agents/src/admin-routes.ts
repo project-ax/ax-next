@@ -741,7 +741,7 @@ export function createAdminAgentRouteHandlers(deps: AdminRouteDeps) {
 }
 
 /**
- * Register all five admin routes against @ax/http-server. Returned
+ * Register the admin agent routes against @ax/http-server. Returned
  * unregister callbacks should be tracked by the plugin and called in
  * shutdown so a re-init in tests doesn't trip duplicate-route.
  */
