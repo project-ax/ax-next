@@ -1,0 +1,23 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "2a95c7a2a274",
+  "strategy": "manual-commit",
+  "branch": "worktree-fix+google-login-better-auth",
+  "checkpoints_count": 2,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/2a/95c7a2a274/0/metadata.json",
+      "transcript": "/2a/95c7a2a274/0/full.jsonl",
+      "content_hash": "/2a/95c7a2a274/0/content_hash.txt",
+      "prompt": "/2a/95c7a2a274/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 11651,
+    "cache_creation_tokens": 242167,
+    "cache_read_tokens": 4336933,
+    "output_tokens": 63671,
+    "api_call_count": 36
+  }
+}
