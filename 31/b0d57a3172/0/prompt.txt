@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b1ww8qnt5</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-vpulim-dev-ai-ax-next/abcd8291-c254-4852-b73d-dc09b4c436fe/tasks/b1ww8qnt5.output</output-file>
+<status>completed</status>
+<summary>Background command "Poll PR checks until all settle (background)" completed (exit code 0)</summary>
+</task-notification>
