@@ -29,6 +29,17 @@ const TITLE_MAX_TOKENS = 32;
 // title is a coin flip and we'd rather it be readable.
 const TITLE_TEMPERATURE = 0.3;
 
+// Generate a title on any of the first N assistant turns while the
+// conversation is still untitled — not just the first. The single-attempt
+// design left a chat permanently untitled whenever that one attempt was
+// skipped or failed for a transient reason: `conversations:get` reading the
+// runner's jsonl before it's flushed (0 turns), an `llm:call` error, or the
+// model returning an unusable title. Re-attempting on the next few turns
+// recovers from those; the `title !== null` guard + `ifNull: true` on
+// set-title keep it idempotent (once a title lands we stop). The cap bounds
+// title-LLM spend if a model keeps emitting rejected output forever.
+const MAX_TITLE_ATTEMPT_TURNS = 3;
+
 /**
  * Default `provider/model` reference — preserves today's hardcoded haiku.
  * Operators override via the preset's `AX_TITLE_MODEL` env var, which flows
@@ -278,16 +289,15 @@ async function handleTurnEnd(
   if (conv.conversation.title !== null) return;
   if (conv.turns.length === 0) return;
 
-  // Only auto-title on the first assistant turn. If that attempt was lost
-  // (LLM error, validation rejected the output), we deliberately don't
-  // retry on later turns — the design says "after the first assistant
-  // turn", and re-firing per turn would mean later titles summarize a
-  // different transcript than the design specifies (and would expand
-  // LLM spend silently). Manual retitling is a future feature.
+  // Auto-title on the first few assistant turns while still untitled — see
+  // MAX_TITLE_ATTEMPT_TURNS. Past the cap we stop re-attempting so a model
+  // that keeps emitting unusable titles can't drive unbounded LLM spend.
   const assistantTurnCount = conv.turns.filter(
     (t) => t.role === 'assistant',
   ).length;
-  if (assistantTurnCount !== 1) return;
+  if (assistantTurnCount < 1 || assistantTurnCount > MAX_TITLE_ATTEMPT_TURNS) {
+    return;
+  }
 
   const prompt = buildPrompt(conv.turns);
   const llmOut = await bus.call<LlmCallInput, LlmCallOutput>(
