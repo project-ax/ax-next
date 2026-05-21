@@ -150,7 +150,7 @@ surface above. For *build-time* deps, however: N/A — no `package.json` change 
 
 ## Output contract (paste this into the PR body)
 
-```
+```md
 ## Security review
 - Sandbox: Adds MCP-server spawn inside the agent sandbox. Command is parse-time
   whitelisted (npx/node/bun/uvx/python/python3); args/env capped (32 × 256 chars, ≤8

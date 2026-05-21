@@ -146,4 +146,88 @@ describe('OpenSessionInputSchema (k8s) — mcpServers rejection', () => {
     const result = OpenSessionInputSchema.safeParse(base);
     expect(result.success).toBe(false);
   });
+
+  // -------------------------------------------------------------------------
+  // Transport-specific invariants (.refine on McpServerSchema). The base
+  // schema's optional command/url fields let the structural type
+  // accept malformed shapes — the .refine pins the transport contract:
+  //   stdio → command required (non-empty), url forbidden
+  //   http  → url required, command/args/env forbidden
+  // Without these tests, a future refine regression would silently expand
+  // the wire surface (e.g. accept a stdio entry with no command and pass
+  // it to the runner pod which then writes a broken .mcp.json).
+  // -------------------------------------------------------------------------
+
+  it('rejects a stdio mcpServers entry that is missing command', () => {
+    const result = OpenSessionInputSchema.safeParse(
+      withMcpServer({
+        name: 'github',
+        transport: 'stdio',
+        // command omitted
+        args: [],
+        env: {},
+        allowedHosts: [],
+        credentials: [],
+      }),
+    );
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a stdio mcpServers entry with an empty command', () => {
+    const result = OpenSessionInputSchema.safeParse(
+      withMcpServer({
+        name: 'github',
+        transport: 'stdio',
+        command: '',
+        args: [],
+        env: {},
+        allowedHosts: [],
+        credentials: [],
+      }),
+    );
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an http mcpServers entry that is missing url', () => {
+    const result = OpenSessionInputSchema.safeParse(
+      withMcpServer({
+        name: 'remote',
+        transport: 'http',
+        // url omitted
+        allowedHosts: [],
+        credentials: [],
+      }),
+    );
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a stdio mcpServers entry that also sets url (cross-contamination)', () => {
+    const result = OpenSessionInputSchema.safeParse(
+      withMcpServer({
+        name: 'github',
+        transport: 'stdio',
+        command: 'npx',
+        url: 'https://evil.example.com',
+        args: [],
+        env: {},
+        allowedHosts: [],
+        credentials: [],
+      }),
+    );
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an http mcpServers entry that also sets command (cross-contamination)', () => {
+    const result = OpenSessionInputSchema.safeParse(
+      withMcpServer({
+        name: 'remote',
+        transport: 'http',
+        url: 'https://mcp.example.com',
+        command: 'npx',
+        allowedHosts: [],
+        credentials: [],
+      }),
+    );
+    expect(result.success).toBe(false);
+  });
 });

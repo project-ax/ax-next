@@ -1147,6 +1147,154 @@ describe('sandbox:open-session', () => {
     await fs.rm(ws, { recursive: true, force: true });
   });
 
+  // ---------------------------------------------------------------------
+  // Transport-specific invariants on the wire schema (Phase B follow-up).
+  //
+  // McpServerSchema's .refine() pins:
+  //   stdio → command required (non-empty), url forbidden
+  //   http  → url required, command/args/env forbidden
+  // These tests go through bus.call so the PluginError(invalid-payload)
+  // code path is also exercised end-to-end at the sandbox boundary.
+  // ---------------------------------------------------------------------
+
+  it('rejects a stdio mcpServers entry that is missing command (Phase B)', async () => {
+    const ws = await mkWorkspace();
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    let caught: unknown;
+    try {
+      await h.bus.call('sandbox:open-session', ctx, {
+        sessionId: 'mcp-stdio-no-cmd',
+        workspaceRoot: ws,
+        runnerBinary: ECHO_STUB,
+        installedSkills: [
+          {
+            id: 'github',
+            skillMd: '---\nname: github\n---\nbody',
+            mcpServers: [
+              {
+                name: 'github',
+                transport: 'stdio',
+                // command omitted
+                allowedHosts: [],
+                credentials: [],
+              },
+            ],
+          },
+        ],
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('invalid-payload');
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
+  it('rejects an http mcpServers entry that is missing url (Phase B)', async () => {
+    const ws = await mkWorkspace();
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    let caught: unknown;
+    try {
+      await h.bus.call('sandbox:open-session', ctx, {
+        sessionId: 'mcp-http-no-url',
+        workspaceRoot: ws,
+        runnerBinary: ECHO_STUB,
+        installedSkills: [
+          {
+            id: 'remote',
+            skillMd: '---\nname: remote\n---\nbody',
+            mcpServers: [
+              {
+                name: 'remote',
+                transport: 'http',
+                // url omitted
+                allowedHosts: [],
+                credentials: [],
+              },
+            ],
+          },
+        ],
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('invalid-payload');
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
+  it('rejects a stdio mcpServers entry that also sets url (Phase B, cross-contamination)', async () => {
+    const ws = await mkWorkspace();
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    let caught: unknown;
+    try {
+      await h.bus.call('sandbox:open-session', ctx, {
+        sessionId: 'mcp-stdio-with-url',
+        workspaceRoot: ws,
+        runnerBinary: ECHO_STUB,
+        installedSkills: [
+          {
+            id: 'github',
+            skillMd: '---\nname: github\n---\nbody',
+            mcpServers: [
+              {
+                name: 'github',
+                transport: 'stdio',
+                command: 'npx',
+                url: 'https://evil.example.com',
+                allowedHosts: [],
+                credentials: [],
+              },
+            ],
+          },
+        ],
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('invalid-payload');
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
+  it('rejects an http mcpServers entry that also sets command (Phase B, cross-contamination)', async () => {
+    const ws = await mkWorkspace();
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    let caught: unknown;
+    try {
+      await h.bus.call('sandbox:open-session', ctx, {
+        sessionId: 'mcp-http-with-cmd',
+        workspaceRoot: ws,
+        runnerBinary: ECHO_STUB,
+        installedSkills: [
+          {
+            id: 'remote',
+            skillMd: '---\nname: remote\n---\nbody',
+            mcpServers: [
+              {
+                name: 'remote',
+                transport: 'http',
+                url: 'https://mcp.example.com',
+                command: 'npx',
+                allowedHosts: [],
+                credentials: [],
+              },
+            ],
+          },
+        ],
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('invalid-payload');
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
   it('writes .mcp.json with http transport shape (Phase B)', async () => {
     const ws = await mkWorkspace();
     const h = await makeHarness();

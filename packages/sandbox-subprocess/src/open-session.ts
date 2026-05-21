@@ -90,16 +90,42 @@ export const ProxyConfigSchema = z
 // `.mcp.json` in the same skill dir so the SDK auto-discovers bundled MCP
 // servers via its `'project'` setting source. Structural twin of the
 // sandbox-k8s McpServerSchema (I2 — no cross-plugin imports).
-const McpServerSchema = z.object({
-  name: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/),
-  transport: z.enum(['stdio', 'http']),
-  command: z.string().optional(),
-  args: z.array(z.string().max(256)).max(32).optional(),
-  env: z.record(z.string(), z.string()).optional(),
-  url: z.string().url().optional(),
-  allowedHosts: z.array(z.string()).default([]),
-  credentials: z.array(z.object({ slot: z.string(), kind: z.literal('api-key') })).default([]),
-});
+const McpServerSchema = z
+  .object({
+    name: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/),
+    transport: z.enum(['stdio', 'http']),
+    command: z.string().optional(),
+    args: z.array(z.string().max(256)).max(32).optional(),
+    env: z.record(z.string(), z.string()).optional(),
+    url: z.string().url().optional(),
+    allowedHosts: z.array(z.string()).default([]),
+    credentials: z.array(z.object({ slot: z.string(), kind: z.literal('api-key') })).default([]),
+  })
+  // Transport-specific field invariants — twin of sandbox-k8s's refine
+  // (I2: no cross-plugin imports). stdio requires a non-empty command and
+  // forbids url; http requires url and forbids command/args/env.
+  .refine(
+    (v) => {
+      if (v.transport === 'stdio') {
+        return (
+          typeof v.command === 'string' &&
+          v.command.length > 0 &&
+          v.url === undefined
+        );
+      }
+      // transport === 'http'
+      return (
+        typeof v.url === 'string' &&
+        v.command === undefined &&
+        v.args === undefined &&
+        v.env === undefined
+      );
+    },
+    {
+      message:
+        'mcpServers entry must match its transport: stdio requires command (no url); http requires url (no command/args/env)',
+    },
+  );
 
 export const InstalledSkillSchema = z.object({
   id: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/, 'invalid skill id shape'),

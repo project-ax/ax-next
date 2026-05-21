@@ -89,4 +89,64 @@ capabilities:
     if (r.ok) return;
     expect(r.code).toBe('invalid-manifest');
   });
+
+  // -------------------------------------------------------------------------
+  // env caps (symmetric with MCP_ARGS_*). Without these, the parser accepted
+  // arbitrarily large env maps that downstream layers would still JSON-encode.
+  // -------------------------------------------------------------------------
+
+  it('rejects env with more than 32 keys', () => {
+    // YAML flow-mapping inline so we keep the test compact.
+    const pairs = Array.from({ length: 33 }, (_, i) => `K${i}: v`).join(', ');
+    const yaml = `name: x
+description: x
+capabilities:
+  mcpServers:
+    - name: srv
+      transport: stdio
+      command: npx
+      env: { ${pairs} }
+`;
+    const r = parseSkillManifest(yaml);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.code).toBe('invalid-manifest');
+    expect(r.message).toMatch(/at most 32 entries/);
+  });
+
+  it('rejects an env value longer than 256 chars', () => {
+    const big = 'x'.repeat(257);
+    const yaml = `name: x
+description: x
+capabilities:
+  mcpServers:
+    - name: srv
+      transport: stdio
+      command: npx
+      env: { K: "${big}" }
+`;
+    const r = parseSkillManifest(yaml);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.code).toBe('invalid-manifest');
+    expect(r.message).toMatch(/value length/);
+  });
+
+  it('rejects an env key longer than 256 chars', () => {
+    const bigKey = 'K'.repeat(257);
+    const yaml = `name: x
+description: x
+capabilities:
+  mcpServers:
+    - name: srv
+      transport: stdio
+      command: npx
+      env: { ${bigKey}: v }
+`;
+    const r = parseSkillManifest(yaml);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.code).toBe('invalid-manifest');
+    expect(r.message).toMatch(/key length/);
+  });
 });

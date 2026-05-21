@@ -76,6 +76,11 @@ const MCP_COMMAND_ALLOW = new Set(['npx', 'node', 'bun', 'uvx', 'python', 'pytho
 const MCP_SERVERS_MAX = 8;
 const MCP_ARGS_MAX = 32;
 const MCP_ARG_LEN_MAX = 256;
+// Symmetric with MCP_ARGS_* — env keys + values flow into the spawned process's
+// environment, so the grammar must cap them too. Without these the parser
+// accepted (and downstream JSON-encoded) arbitrarily large env maps.
+const MCP_ENV_MAX = 32;
+const MCP_ENV_LEN_MAX = 256;
 
 type HostValidation =
   | { ok: true; value: string }
@@ -281,10 +286,32 @@ function parseMcpServers(raw: unknown, allowedHostsAcc: Set<string>): McpServers
         if (rawEnv === null || typeof rawEnv !== 'object' || Array.isArray(rawEnv)) {
           return { ok: false, code: 'invalid-manifest', message: `mcpServers "env" must be a mapping object.` };
         }
+        const envEntries = Object.entries(rawEnv as Record<string, unknown>);
+        if (envEntries.length > MCP_ENV_MAX) {
+          return {
+            ok: false,
+            code: 'invalid-manifest',
+            message: `mcpServers "env" may declare at most ${MCP_ENV_MAX} entries, got ${envEntries.length}.`,
+          };
+        }
         const envOut: Record<string, string> = {};
-        for (const [k, v] of Object.entries(rawEnv as Record<string, unknown>)) {
+        for (const [k, v] of envEntries) {
+          if (k.length > MCP_ENV_LEN_MAX) {
+            return {
+              ok: false,
+              code: 'invalid-manifest',
+              message: `mcpServers "env" key length must be ≤ ${MCP_ENV_LEN_MAX} chars, got ${k.length}.`,
+            };
+          }
           if (typeof v !== 'string') {
             return { ok: false, code: 'invalid-manifest', message: `mcpServers "env.${k}" must be a string, got: ${JSON.stringify(v)}` };
+          }
+          if (v.length > MCP_ENV_LEN_MAX) {
+            return {
+              ok: false,
+              code: 'invalid-manifest',
+              message: `mcpServers "env.${k}" value length must be ≤ ${MCP_ENV_LEN_MAX} chars, got ${v.length}.`,
+            };
           }
           envOut[k] = v;
         }

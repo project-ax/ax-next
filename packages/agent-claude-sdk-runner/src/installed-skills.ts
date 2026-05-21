@@ -46,6 +46,14 @@ function toMcpJsonShape(s: {
   return { url: s.url, type: 'http' };
 }
 
+// Symmetric with the manifest parser + sandbox schemas: 32 entries per array,
+// 256 chars per string. Defense in depth — the host already validated upstream
+// but the runner re-checks at its trust boundary.
+const MCP_ARGS_MAX = 32;
+const MCP_ARG_LEN_MAX = 256;
+const MCP_ENV_MAX = 32;
+const MCP_ENV_LEN_MAX = 256;
+
 // Defense-in-depth validation of an mcpServers entry. The sandbox-k8s zod
 // schema already enforced this upstream, but the runner re-checks at the
 // trust boundary — a buggy or compromised host process could otherwise spawn
@@ -83,8 +91,22 @@ function validateMcpEntry(value: unknown): {
     out.command = v['command'];
   }
   if (v['args'] !== undefined) {
-    if (!Array.isArray(v['args']) || !v['args'].every((a) => typeof a === 'string')) {
+    if (!Array.isArray(v['args'])) {
       throw new Error(`mcpServers entry '${v['name']}' args must be string[]`);
+    }
+    if (v['args'].length > MCP_ARGS_MAX) {
+      throw new Error(
+        `mcpServers entry '${v['name']}' has too many args (max ${MCP_ARGS_MAX})`,
+      );
+    }
+    if (
+      !v['args'].every(
+        (a): a is string => typeof a === 'string' && a.length <= MCP_ARG_LEN_MAX,
+      )
+    ) {
+      throw new Error(
+        `mcpServers entry '${v['name']}' has an arg over ${MCP_ARG_LEN_MAX} chars or non-string`,
+      );
     }
     out.args = v['args'] as string[];
   }
@@ -92,10 +114,30 @@ function validateMcpEntry(value: unknown): {
     if (
       typeof v['env'] !== 'object' ||
       v['env'] === null ||
-      Array.isArray(v['env']) ||
-      !Object.values(v['env']).every((x) => typeof x === 'string')
+      Array.isArray(v['env'])
     ) {
       throw new Error(`mcpServers entry '${v['name']}' env must be Record<string,string>`);
+    }
+    const envEntries = Object.entries(v['env'] as Record<string, unknown>);
+    if (envEntries.length > MCP_ENV_MAX) {
+      throw new Error(
+        `mcpServers entry '${v['name']}' env has too many entries (max ${MCP_ENV_MAX})`,
+      );
+    }
+    for (const [k, val] of envEntries) {
+      if (k.length > MCP_ENV_LEN_MAX) {
+        throw new Error(
+          `mcpServers entry '${v['name']}' env key length must be ≤ ${MCP_ENV_LEN_MAX}`,
+        );
+      }
+      if (typeof val !== 'string') {
+        throw new Error(`mcpServers entry '${v['name']}' env must be Record<string,string>`);
+      }
+      if (val.length > MCP_ENV_LEN_MAX) {
+        throw new Error(
+          `mcpServers entry '${v['name']}' env value length must be ≤ ${MCP_ENV_LEN_MAX}`,
+        );
+      }
     }
     out.env = v['env'] as Record<string, string>;
   }
@@ -112,6 +154,41 @@ function validateMcpEntry(value: unknown): {
     }
     out.url = v['url'];
   }
+
+  // Transport-specific invariants — symmetric with the sandbox schemas'
+  // .refine(). stdio requires a non-empty command and forbids url; http
+  // requires url and forbids the stdio-only fields. Without these the runner
+  // would happily JSON-encode a cross-contaminated .mcp.json that the SDK
+  // either silently misinterprets or fails on at spawn time.
+  if (v['transport'] === 'stdio') {
+    if (out.command === undefined) {
+      throw new Error(
+        `mcpServers entry '${v['name']}' (stdio) is missing required 'command'`,
+      );
+    }
+    if (out.url !== undefined) {
+      throw new Error(
+        `mcpServers entry '${v['name']}' (stdio) must not set 'url'`,
+      );
+    }
+  } else {
+    // transport === 'http'
+    if (out.url === undefined) {
+      throw new Error(
+        `mcpServers entry '${v['name']}' (http) is missing required 'url'`,
+      );
+    }
+    if (
+      out.command !== undefined ||
+      out.args !== undefined ||
+      out.env !== undefined
+    ) {
+      throw new Error(
+        `mcpServers entry '${v['name']}' (http) must not set 'command', 'args', or 'env'`,
+      );
+    }
+  }
+
   return out;
 }
 
