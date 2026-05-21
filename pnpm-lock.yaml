@@ -152,6 +152,9 @@ importers:
       '@ax/http-server':
         specifier: workspace:*
         version: link:../http-server
+      '@ax/skills':
+        specifier: workspace:*
+        version: link:../skills
       '@ax/teams':
         specifier: workspace:*
         version: link:../teams

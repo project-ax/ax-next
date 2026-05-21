@@ -27,6 +27,7 @@
     "@ax/auth-better": "workspace:*",
     "@ax/database-postgres": "workspace:*",
     "@ax/http-server": "workspace:*",
+    "@ax/skills": "workspace:*",
     "@ax/teams": "workspace:*",
     "@ax/test-harness": "workspace:*",
     "@testcontainers/postgresql": "11.14.0",

@@ -5,6 +5,7 @@ import {
   type AgentContext,
   type HookBus,
 } from '@ax/core';
+import { buildSkillManifestYaml } from '@ax/skills-parser';
 import { z } from 'zod';
 import {
   validateNewAttachments,
@@ -14,6 +15,8 @@ import type {
   Actor,
   Agent,
   AgentInput,
+  AgentsListAuthoredSkillsInput,
+  AgentsListAuthoredSkillsOutput,
   CreateInput,
   CreateOutput,
   DeleteInput,
@@ -204,6 +207,29 @@ const skillAttachmentSchema = z
 const patchAttachmentsBodySchema = z
   .object({
     skillAttachments: z.array(skillAttachmentSchema).max(20),
+  })
+  .strict();
+
+/**
+ * Body schema for `POST /admin/agents/:id/authored-skills/promote`.
+ * Admin-supplied capability grants REPLACE whatever the authored file declared
+ * (half-trust: an agent must not grant itself reach). mcpServers is kept
+ * permissive here — skills:upsert's parseSkillManifest validates it downstream.
+ */
+const promoteAuthoredSkillBodySchema = z
+  .object({
+    skillId: z.string().min(1),
+    targetScope: z.enum(['global', 'user']),
+    grants: z.object({
+      allowedHosts: z.array(z.string()),
+      credentials: z.array(
+        z.object({
+          slot: z.string(),
+          kind: z.literal('api-key'),
+        }),
+      ),
+      mcpServers: z.array(z.unknown()),
+    }),
   })
   .strict();
 
@@ -577,6 +603,140 @@ export function createAdminAgentRouteHandlers(deps: AdminRouteDeps) {
         throw err;
       }
     },
+
+    /** GET /admin/agents/:id/authored-skills */
+    async listAuthoredSkills(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const actor = await requireUser(deps.bus, ctx, req, res);
+      if (actor === null) return;
+      if (!actor.isAdmin) {
+        res.status(403).json({ error: 'forbidden' });
+        return;
+      }
+      const agentId = req.params.id;
+      if (typeof agentId !== 'string' || agentId.length === 0) {
+        res.status(400).json({ error: 'missing-agent-id' });
+        return;
+      }
+      const out = await deps.bus.call<AgentsListAuthoredSkillsInput, AgentsListAuthoredSkillsOutput>(
+        'agents:list-authored-skills',
+        ctx,
+        { agentId },
+      );
+      res.status(200).json(out);
+    },
+
+    /** POST /admin/agents/:id/authored-skills/promote */
+    async promoteAuthoredSkill(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const actor = await requireUser(deps.bus, ctx, req, res);
+      if (actor === null) return;
+      if (!actor.isAdmin) {
+        res.status(403).json({ error: 'forbidden' });
+        return;
+      }
+      const agentId = req.params.id;
+      if (typeof agentId !== 'string' || agentId.length === 0) {
+        res.status(400).json({ error: 'missing-agent-id' });
+        return;
+      }
+
+      // Check that skills:upsert is available — soft dep, do not add to manifest.
+      if (!deps.bus.hasService('skills:upsert')) {
+        res.status(503).json({ error: 'skills-plugin-not-loaded' });
+        return;
+      }
+
+      const parsed = parseAndValidate(req.body, promoteAuthoredSkillBodySchema);
+      if (!parsed.ok) {
+        res.status(parsed.status).json({ error: parsed.message });
+        return;
+      }
+      const body = parsed.value;
+
+      // For user-scope promotion, resolve the agent owner BEFORE checking
+      // authored skills so we give a clear "team-agent-user-scope-unsupported"
+      // response rather than a confusing "authored-skill-not-found" (team agents
+      // have no single-owner workspace so list-authored-skills returns []).
+      let userScopeOwnerId: string | undefined;
+      if (body.targetScope === 'user') {
+        const { agents: personalOwners } = await deps.bus.call<
+          Record<string, never>,
+          { agents: Array<{ agentId: string; ownerUserId: string }> }
+        >('agents:list-personal-owners', ctx, {});
+        const ownerEntry = personalOwners.find((a) => a.agentId === agentId);
+        if (ownerEntry === undefined) {
+          // Agent not found in personal owners: it's a team agent or nonexistent.
+          res.status(400).json({ error: 'team-agent-user-scope-unsupported' });
+          return;
+        }
+        userScopeOwnerId = ownerEntry.ownerUserId;
+      }
+
+      // Load the agent's authored skills and find the target.
+      const { skills } = await deps.bus.call<AgentsListAuthoredSkillsInput, AgentsListAuthoredSkillsOutput>(
+        'agents:list-authored-skills',
+        ctx,
+        { agentId },
+      );
+      const target = skills.find((s) => s.id === body.skillId);
+      if (target === undefined) {
+        res.status(404).json({ error: 'authored-skill-not-found' });
+        return;
+      }
+
+      // Build the manifest from ADMIN grants only — the authored file's declared
+      // capabilities are intentionally IGNORED (half-trust: admin grants replace them).
+      const manifestYaml = buildSkillManifestYaml({
+        id: target.id,
+        description: target.description,
+        version: target.version,
+        capabilities: {
+          allowedHosts: body.grants.allowedHosts,
+          credentials: body.grants.credentials,
+          mcpServers: body.grants.mcpServers as never[],
+        },
+      });
+
+      try {
+        if (body.targetScope === 'global') {
+          await deps.bus.call<
+            { manifestYaml: string; bodyMd: string; scope: 'global' },
+            { skillId: string; created: boolean }
+          >('skills:upsert', ctx, {
+            manifestYaml,
+            bodyMd: target.bodyMd,
+            scope: 'global',
+          });
+        } else {
+          // userScopeOwnerId is guaranteed non-undefined here: we checked above
+          // and returned early if it was missing.
+          await deps.bus.call<
+            { manifestYaml: string; bodyMd: string; scope: 'user'; ownerUserId: string },
+            { skillId: string; created: boolean }
+          >('skills:upsert', ctx, {
+            manifestYaml,
+            bodyMd: target.bodyMd,
+            scope: 'user',
+            ownerUserId: userScopeOwnerId!,
+          });
+        }
+      } catch (err) {
+        if (writeServiceError(res, err)) return;
+        // skills:upsert manifest-validation errors (invalid-host, invalid-slot,
+        // invalid-mcp-command, etc.) are PluginErrors not mapped by writeServiceError.
+        // Return them as 400 so callers get actionable feedback.
+        if (err instanceof PluginError) {
+          res.status(400).json({ error: err.message, code: err.code });
+          return;
+        }
+        throw err;
+      }
+
+      res.status(200).json({
+        promoted: true,
+        skillId: target.id,
+        targetScope: body.targetScope,
+      });
+    },
   };
 }
 
@@ -604,6 +764,16 @@ export async function registerAdminAgentRoutes(
       method: 'PATCH',
       path: '/admin/agents/:id/skill-attachments',
       handler: handlers.setSkillAttachments,
+    },
+    {
+      method: 'GET',
+      path: '/admin/agents/:id/authored-skills',
+      handler: handlers.listAuthoredSkills,
+    },
+    {
+      method: 'POST',
+      path: '/admin/agents/:id/authored-skills/promote',
+      handler: handlers.promoteAuthoredSkill,
     },
   ];
   const unregisters: Array<() => void> = [];
