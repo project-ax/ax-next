@@ -53,3 +53,12 @@ Listed here only so the triggers are easy to find. Per the roadmap, these stay d
 - [ ] **Memory replay / time-travel queries** — when a user asks "what did the agent know on date X?"
 - [ ] **Cross-agent memory sharing** — explicit user request only (likely requires the Curator pipeline first).
 - [ ] **Bring-your-own embedding provider** — Phase 3 dropped vectors; reopen only if Level 7 is re-spiked and lands "IN".
+
+## UI Bugs
+
+- [x] ~~Chat session titles aren't being consistenly generated for new chats~~ — fixed (PR #PENDING): bounded retry replaces the one-shot title gate (`@ax/conversation-titles`) + widened `generateTitle` poll window (`channel-web`).
+- [x] ~~When files are attached to a user message, that message doesn't show the attachment chip when loaded again from a previous chat session~~ — fixed (PR #PENDING): the runner-translated text-mention is reconstructed back into an `attachment` block on the `conversations:get` read path, gated to the conversation's own `.ax/uploads/<conversationId>/` prefix.
+
+### UI bug follow-ups
+
+- [ ] **Live title refresh after the poll window.** `generateTitle` widened its poll to ~10s, but a title that lands *after* the window still needs a sidebar `list()` refresh (page nav/reload) to surface — there's no push channel. Pick up if users report a stale "New Chat" that the backend has actually titled. Real fix is a server→client title-update signal (SSE/websocket) or a low-frequency background `list()` poll.
