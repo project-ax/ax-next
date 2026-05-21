@@ -525,17 +525,21 @@ Core's `package.json` carries the public hook-surface version (same as semver �
 }
 ```
 
-At load, core reads each plugin's manifest (the `ax` field in their `package.json`):
+At load, core reads each plugin's **runtime manifest** — the `manifest` object the plugin module exposes on its `Plugin` instance, validated by `PluginManifestSchema` in `@ax/core` (`packages/core/src/plugin.ts`):
 
-```json
-"ax": {
-  "registers": ["sandbox:spawn", "sandbox:kill"],
-  "calls":     ["storage:get", "storage:set", "audit:write"],
-  "configSchema": "./schema.json"
+```ts
+manifest: {
+  name: '@ax/sandbox-k8s',
+  version: '0.3.2',
+  registers: ['sandbox:spawn', 'sandbox:kill'],
+  calls: ['storage:get', 'storage:set', 'audit:write'],
+  subscribes: [],
 }
 ```
 
-Core uses this for: (a) cycle detection at load, (b) failing fast on missing services, (c) generating a compatibility matrix.
+`bootstrap()` reads these manifests off the already-imported plugin instances and uses them for: (a) cycle detection at load, (b) failing fast on missing services, (c) generating a compatibility matrix. Plugin config is injected at construction via `PluginInitContext.config`, not declared in the manifest — there is no `configSchema` field.
+
+> **Manifest source of truth:** an earlier draft of this spec described an `ax` field in each plugin's `package.json`. That was never adopted — the in-code runtime manifest is canonical. See `docs/plans/2026-05-20-manifest-canonical-form-design.md`.
 
 ### User installation
 
@@ -641,6 +645,8 @@ Applies to both build-out AND steady state.
 | Cycle detected at boot | Same — fail fast with a clear "plugin X declares calls→Y, plugin Y declares calls→X" message. |
 | Required service hook missing | Boot-time check: if any plugin declares `calls: ['storage:set']` but no plugin registers `storage:set`, fail fast with a missing-service message. |
 | Two plugins register the same service hook | Boot-time error — config must pick one. (Subscribers to the same hook are fine; service hooks are exclusive.) |
+
+> **Not yet enforced (as of 2026-05-20):** the "Service plugin returns wrong shape → Zod validation" and "Plugin hangs → per-hook timeout" rows describe the *target* hook-bus contract, not current behavior. `HookBus.call` (`packages/core/src/hook-bus.ts`) awaits and casts today — no return validation, no timeout. These land with the hook-bus-enforcement work (finding 2); see `docs/plans/2026-05-20-manifest-canonical-form-design.md`.
 
 Pattern: **boot-time failures are loud and prevent startup; runtime failures degrade gracefully with structured errors.** The hook bus is the natural enforcement point — every cross-plugin interaction goes through it.
 
