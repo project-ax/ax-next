@@ -1025,6 +1025,18 @@ manual fire.
 
 ## Scenario: Install a skill, attach to agent, chat (Phase 1 skill-install)
 
+> **Now auto-canaried.** The install → attach → invoke path (skill installed
+> via `skills:upsert`, attached via `agents:set-skill-attachments`, session
+> opened via the orchestrator, and the unioned allowlist + credential bindings
+> reaching `proxy:open-session` while the SKILL.md reaches `sandbox:open-session`)
+> is exercised end-to-end against a real Postgres testcontainer in
+> `packages/skills/src/__tests__/e2e/skill-install.canary.test.ts` (runs in CI
+> via `pnpm test`, no separate step needed — `@ax/skills` already uses
+> testcontainers). The manual walk below is still encouraged for the
+> cluster-only surfaces the canary can't reach: real sandbox materialization
+> of `.claude/skills/`, the credential-proxy actually substituting the bound
+> token on an egress call, and the admin UI.
+
 ### What this proves
 
 Admin installs a skill via /admin/skills, attaches it to an agent (binding
