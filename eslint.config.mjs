@@ -44,9 +44,9 @@
 //                           store) and @ax/agents (future scanner). No manifest,
 //                           no hooks, no runtime behavior beyond parsing.
 //
-// These last five are shared-import expansions of the kernel-only allowlist
-// and form the documented one-way boundary between host-side plugins and
-// sandbox-side code.
+// These shared-import expansions of the kernel-only allowlist form the
+// documented one-way boundary between host-side plugins and sandbox-side
+// code.
 //
 // Path-scoped exceptions (rule turned off):
 //   packages/cli/**                 — the CLI loads plugins per ax.config.ts
@@ -129,7 +129,7 @@ export default tseslint.config(
               ],
               allowTypeImports: true,
               message:
-                'Cross-plugin runtime imports are forbidden. Plugins communicate through the hook bus only. See CLAUDE.md invariant 2. Type-only imports (`import type {...}` / `export type {...}`) are allowed — boundary types are how plugins agree on a shared contract without runtime coupling. The only @ax/* runtime imports allowed in plugin code are @ax/core, @ax/test-harness, @ax/ipc-protocol + @ax/workspace-protocol (wire schemas), @ax/ipc-core (transport-agnostic IPC library), @ax/agent-claude-sdk-runner-host (pure-function jsonl→Turn[] parser), and @ax/validator-routine (pure-function routine frontmatter parser shared between the validator and the routines plugin)',
+                'Cross-plugin runtime imports are forbidden. Plugins communicate through the hook bus only. See CLAUDE.md invariant 2. Type-only imports (`import type {...}` / `export type {...}`) are allowed — boundary types are how plugins agree on a shared contract without runtime coupling. The only @ax/* runtime imports allowed in plugin code are @ax/core, @ax/test-harness, @ax/ipc-protocol + @ax/workspace-protocol (wire schemas), @ax/ipc-core (transport-agnostic IPC library), @ax/agent-claude-sdk-runner-host (pure-function jsonl→Turn[] parser), @ax/validator-routine (pure-function routine frontmatter parser shared between the validator and the routines plugin), and @ax/skills-parser (pure-function SKILL.md parser + capability types shared between @ax/skills and @ax/agents)',
             },
           ],
         },
