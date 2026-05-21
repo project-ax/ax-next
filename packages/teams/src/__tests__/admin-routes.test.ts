@@ -62,6 +62,8 @@ async function dropAllTables(): Promise<void> {
   try {
     await c.query('DROP TABLE IF EXISTS teams_v1_memberships');
     await c.query('DROP TABLE IF EXISTS teams_v1_teams');
+    await c.query('DROP TABLE IF EXISTS auth_better_v1_verifications');
+    await c.query('DROP TABLE IF EXISTS auth_better_v1_accounts');
     await c.query('DROP TABLE IF EXISTS auth_better_v1_sessions');
     await c.query('DROP TABLE IF EXISTS auth_better_v1_users');
     await c.query('DROP TABLE IF EXISTS auth_providers');

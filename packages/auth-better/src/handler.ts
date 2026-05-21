@@ -1,6 +1,7 @@
 import { betterAuth } from 'better-auth';
 import type { Kysely } from 'kysely';
 import type { AuthBetterDatabase } from './migrations.js';
+import { parseDomains, assertDomainAllowed, sessionTokenALS } from './session-bridge.js';
 
 /**
  * Provider-row shape consumed by the handler factory. Mirrors the row
@@ -19,6 +20,8 @@ export interface ProviderRow {
   clientId: string;
   clientSecret: string;
   discoveryUrl?: string;
+  /** Comma-separated list of allowed email domains for Google sign-in. Empty = open (all domains allowed). Populated by loadProviders() in plugin.ts. */
+  allowedDomains?: string;
 }
 
 export interface HandlerInput {
@@ -31,6 +34,12 @@ export interface HandlerInput {
    * allow-list. Plumbed from `AuthBetterConfig.trustedOrigins`.
    */
   trustedOrigins?: string[];
+  /**
+   * Stable secret for OAuth state + at-rest OAuth-token encryption.
+   * MUST be stable across restarts or encrypted tokens become undecryptable.
+   * Plumbed from AX_AUTH_SECRET in production (Task 6).
+   */
+  secret?: string;
 }
 
 /**
@@ -103,7 +112,12 @@ function build(input: HandlerInput): (req: Request) => Promise<Response> {
     }
   }
 
+  const googleAllowedDomains = parseDomains(
+    input.providers.find((p) => p.kind === 'google')?.allowedDomains,
+  );
+
   const auth = betterAuth({
+    ...(input.secret !== undefined ? { secret: input.secret } : {}),
     // better-auth wants a `{ db, type }` wrapper when handed a Kysely
     // instance directly — passing the bare Kysely is the dialect path,
     // which we don't have here.
@@ -124,10 +138,85 @@ function build(input: HandlerInput): (req: Request) => Promise<Response> {
     // AX_PUBLIC_BASE_URL when set.
     trustedOrigins: input.trustedOrigins ?? ['*'],
     socialProviders: socialProviders as Parameters<typeof betterAuth>[0]['socialProviders'],
-    session: { expiresIn: 7 * 24 * 60 * 60 },
+    session: {
+      expiresIn: 7 * 24 * 60 * 60,
+      modelName: 'auth_better_v1_sessions',
+      fields: {
+        userId: 'user_id',
+        expiresAt: 'expires_at',
+        ipAddress: 'ip_address',
+        userAgent: 'user_agent',
+        createdAt: 'created_at',
+        updatedAt: 'updated_at',
+      },
+    },
     user: {
       additionalFields: {
         role: { type: 'string', defaultValue: 'user' },
+      },
+      modelName: 'auth_better_v1_users',
+      fields: {
+        emailVerified: 'email_verified',
+        createdAt: 'created_at',
+        updatedAt: 'updated_at',
+      },
+    },
+    account: {
+      modelName: 'auth_better_v1_accounts',
+      // OAuth tokens encrypted at rest. Requires a STABLE `secret` (input.secret,
+      // plumbed from AX_AUTH_SECRET in the preset/chart) — without it better-auth
+      // derives an ephemeral per-process key and tokens won't survive a restart.
+      encryptOAuthTokens: true,
+      fields: {
+        userId: 'user_id',
+        accountId: 'account_id',
+        providerId: 'provider_id',
+        accessToken: 'access_token',
+        refreshToken: 'refresh_token',
+        idToken: 'id_token',
+        accessTokenExpiresAt: 'access_token_expires_at',
+        refreshTokenExpiresAt: 'refresh_token_expires_at',
+        createdAt: 'created_at',
+        updatedAt: 'updated_at',
+      },
+    },
+    verification: {
+      modelName: 'auth_better_v1_verifications',
+      fields: {
+        expiresAt: 'expires_at',
+        createdAt: 'created_at',
+        updatedAt: 'updated_at',
+      },
+    },
+    advanced: { cookiePrefix: 'ax_better_auth' },
+    databaseHooks: {
+      user: {
+        create: {
+          before: async (user, context) => {
+            // Gate runs ONLY during the Google OAuth callback — `googleAllowedDomains`
+            // is parsed from the Google provider row, so checking any other provider's
+            // callback (e.g. github) against it would mis-gate once others are wired.
+            // better-auth's social callback path is `/callback/:providerId`.
+            if (context?.path?.includes('/callback/google')) {
+              assertDomainAllowed(String(user.email), googleAllowedDomains);
+            }
+            return { data: { ...user, role: 'user' } };
+          },
+        },
+      },
+      session: {
+        create: {
+          after: async (session) => {
+            // Capture the session token minted by better-auth so plugin.ts's
+            // forwardToBetterAuth can re-issue it as the http-server-signed
+            // ax_auth_session cookie (keeping the ALS → cookie bridge intact).
+            // Guard the type so a future better-auth shape change can't silently
+            // write `undefined` into the box.
+            const box = sessionTokenALS.getStore();
+            const token = (session as { token?: string }).token;
+            if (box && typeof token === 'string') box.token = token;
+          },
+        },
       },
     },
     // Rate-limit posture: token-bucket `/auth/*` at 30 requests / 60s /

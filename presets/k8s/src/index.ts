@@ -299,6 +299,12 @@ export interface K8sPresetConfig {
      * loader does this automatically when AX_PUBLIC_BASE_URL is set).
      */
     trustedOrigins?: string[];
+    /**
+     * Stable secret for better-auth (OAuth state + at-rest OAuth-token
+     * encryption). MUST be stable across restarts — rotating it makes
+     * existing encrypted OAuth tokens undecryptable.
+     */
+    secret?: string;
   };
   /**
    * Phase 2 — credential-proxy socket override. Defaults to
@@ -532,6 +538,9 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   }
   if (config.auth?.trustedOrigins !== undefined) {
     authBetterCfg.trustedOrigins = config.auth.trustedOrigins;
+  }
+  if (config.auth?.secret !== undefined) {
+    authBetterCfg.secret = config.auth.secret;
   }
   plugins.push(createAuthBetterPlugin(authBetterCfg));
 
@@ -1049,6 +1058,13 @@ export function loadK8sConfigFromEnv(
       );
     }
     auth.trustedOrigins = [parsedPublicBaseUrl.origin];
+  }
+  // AX_AUTH_SECRET — stable secret for better-auth (OAuth state + at-rest
+  // OAuth-token encryption). MUST be stable across restarts; a rotation
+  // makes all existing encrypted OAuth tokens undecryptable.
+  const authSecret = env.AX_AUTH_SECRET?.trim();
+  if (authSecret) {
+    auth.secret = authSecret;
   }
 
   const config: K8sPresetConfig = {

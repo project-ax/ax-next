@@ -1287,6 +1287,230 @@ in place between the two stages).
 # Gist if you don't want the demo content around.
 ```
 
+## Scenario: Google sign-in (better-auth Google provider)
+
+This scenario walks the end-to-end Google OAuth flow — configuring the
+provider in the admin UI, verifying the happy path (Google account allowed
+by domain), and verifying the rejection path (account outside
+`allowed_domains`). It's the manual complement to the existing wizard walk,
+covering authentication for everyone who isn't the bootstrap admin.
+
+### Prerequisites
+
+**Google Cloud Console setup (do this before touching the cluster):**
+
+1. In the [Google Cloud Console](https://console.cloud.google.com/), create
+   an OAuth 2.0 client ID (Web application). Under "Authorized redirect
+   URIs", add exactly:
+
+   ```text
+   ${AX_PUBLIC_BASE_URL}/auth/callback/google
+   ```
+
+   For a local kind walk that uses port-forward, that's:
+
+   ```text
+   http://localhost:9090/auth/callback/google
+   ```
+
+   This is not optional. Google rejects the OAuth exchange with
+   `redirect_uri_mismatch` if the redirect URI doesn't match what's
+   registered. No match, no login — for anyone.
+
+2. Note your **Client ID** and **Client Secret** from the console.
+
+**Cluster setup:**
+
+- Goldenpath bring-up complete: kind cluster + image loaded + chart installed +
+  port-forward `9090:9090` is live.
+- The chart must be installed with a stable `http.cookieKey` value. Better-auth
+  uses it to sign session cookies. If the value rotates between restarts,
+  existing sessions break — that's expected and correct, but jarring mid-walk.
+  For kind, the goldenpath `helm upgrade --install` generates a fresh key on
+  each run, so start a fresh port-forward after any reinstall.
+- `AX_AUTH_SECRET` must be stable across restarts. Better-auth uses it to
+  encrypt the OAuth tokens it stores. The chart generates it independently —
+  its own `auth-secret` key in `hook-secret.yaml`, held stable across
+  `helm upgrade` by the `lookup` guard — so you don't set it by hand and it
+  survives a normal upgrade automatically. The data-loss risk is about
+  `AX_AUTH_SECRET` itself: if its value changes, every previously-encrypted
+  OAuth token in the database becomes undecryptable. The only way an operator
+  breaks this is by forcing a new value (e.g., overriding it explicitly or
+  deleting the Secret so the chart regenerates it). For a greenfield kind walk
+  this doesn't matter — there's nothing stored yet. For a cluster with real
+  users, don't force a new value.
+- The first-use wizard must have been completed (a bootstrap admin must exist)
+  so we can sign in to configure the provider.
+- `trustedOrigins` must include the origin you're accessing the app from.
+  When you set `AX_PUBLIC_BASE_URL` on the chart, it's plumbed automatically.
+  For the local kind walk, `http://localhost:9090` is included by default when
+  you port-forward on 9090.
+- A second Google account (or any Google account) whose domain you're willing
+  to use as the `allowed_domains` test value. You'll need one account that
+  IS allowed and one that is NOT.
+
+### Steps — configure the Google provider
+
+1. Sign in to the admin account (via the bootstrap flow or an existing
+   admin session at `http://localhost:9090`).
+2. Navigate to **Admin → Auth** (`http://localhost:9090/admin/auth`).
+3. Click **+ Add provider** and select **Google**.
+4. Fill in the form:
+   - **Client ID:** the OAuth 2.0 client ID from Google Cloud Console.
+   - **Client Secret:** the corresponding client secret.
+   - **Allowed domains:** your org's domain (e.g., `example.com`). Comma-separated
+     if you want multiple. This is the gate — only accounts whose email
+     ends in one of these domains will be permitted in.
+5. Click **Save**.
+
+Expected:
+- The provider row appears in the provider list with kind `google` and
+  the client ID visible. The client secret is stored encrypted and is
+  never echoed back in the UI. If the secret appears anywhere in the UI
+  response after save, that's a bug — stop and file it.
+- No restart is needed; the route is live immediately.
+
+### Steps — happy path (allowed domain)
+
+6. Open a **private/incognito browser window** (or a different browser).
+   This ensures we're testing a fresh session, not the admin's existing one.
+7. Navigate to `http://localhost:9090`. The login page should show a
+   **Sign in with Google** button.
+8. Click **Sign in with Google**.
+
+   You'll land on Google's consent / account-picker screen. This step
+   requires a real browser and real Google credentials — it's not
+   scriptable via Playwright MCP (see caveat below).
+
+9. Sign in with a Google account whose domain matches the `allowed_domains`
+   value you configured in step 4.
+10. After consent, Google redirects to
+    `http://localhost:9090/auth/callback/google`. Better-auth validates
+    the OAuth exchange, creates or finds the user record, sets a session
+    cookie, and redirects to `/`.
+
+Expected:
+- [ ] The browser lands at `http://localhost:9090/` (or `/chat`) and the
+      user menu (avatar, top-right or sidebar) shows the signed-in
+      Google account's name or email.
+- [ ] The user exists in `auth_better_v1_users`, and the Google linkage
+      lives in `auth_better_v1_accounts` (the `provider_id` column, joined
+      by `user_id` — `auth_better_v1_users` itself has no `provider` column):
+
+  ```bash
+  kubectl exec -n ax-next deploy/ax-next-host -- \
+    psql -U ax-next -d ax-next \
+    -c "SELECT u.email, a.provider_id, u.role \
+        FROM auth_better_v1_users u \
+        JOIN auth_better_v1_accounts a ON a.user_id = u.id \
+        WHERE a.provider_id = 'google' \
+        ORDER BY u.created_at DESC LIMIT 5;"
+  ```
+
+  Expected: a row with the signed-in email, `provider_id = google`, and
+  `role = user` (not `admin` — new Google sign-ins default to `user`).
+
+### Steps — negative path (domain not allowed)
+
+11. Open another private window (or sign out from step 10 first).
+12. Navigate to `http://localhost:9090` and click **Sign in with Google** again.
+13. Sign in with a Google account whose domain is NOT in `allowed_domains`.
+    If you only have one Google account, you can temporarily remove its
+    domain from the `allowed_domains` field in step 4, sign in, then re-add it.
+14. After the Google consent screen, the callback completes but the
+    authorization check fails.
+
+Expected:
+- [ ] The browser is redirected back to the login page
+      (or an error page at `/auth/error`), not to `/`.
+- [ ] The error message is generic — something like "This Google account
+      isn't permitted." or "Sign-in not allowed for this account." It must
+      NOT reveal which domains are allowed, whether the email already has a
+      record, or any internal detail. The exact wording is defined by the
+      `@ax/auth-better` plugin's error surface.
+- [ ] No user row was created for the rejected email:
+
+  ```bash
+  kubectl exec -n ax-next deploy/ax-next-host -- \
+    psql -U ax-next -d ax-next \
+    -c "SELECT count(*) FROM auth_better_v1_users WHERE email = '<rejected-email>';"
+  ```
+
+  Expected: `count = 0`. The rejection must happen before any user or
+  session row is written. If a partial row exists, that's a bug — the
+  domain check must be atomic with row creation.
+- [ ] No auth session row was created:
+
+  ```bash
+  kubectl exec -n ax-next deploy/ax-next-host -- \
+    psql -U ax-next -d ax-next \
+    -c "SELECT count(*) FROM auth_better_v1_sessions WHERE user_id IN \
+        (SELECT id FROM auth_better_v1_users WHERE email = '<rejected-email>');"
+  ```
+
+  Expected: `count = 0`.
+
+### Playwright caveat
+
+The Google consent screen is served by Google, not by ax-next. It requires
+real human interaction with a real Google account — username, password,
+2FA if applicable. Playwright MCP can drive the ax-next surfaces before and
+after the consent screen (navigate to `/`, click the button, observe the
+final redirect outcome), but the consent screen itself must be handled manually.
+
+If you're building a CI-level smoke test for this flow, consider using
+Google's [OAuth 2.0 Playground](https://developers.google.com/oauthplayground)
+to hand-craft a callback request, or configure a test Google Workspace
+account specifically for this purpose and store its credentials in a secrets
+manager (not in the repo).
+
+### Acceptance criteria
+
+- [ ] Google provider appears in the Admin → Auth table after save, with
+      client ID visible and client secret not echoed.
+- [ ] A Google account in `allowed_domains` completes the flow, lands at `/`,
+      and has a row in `auth_better_v1_users` (`role = user`) linked to an
+      `auth_better_v1_accounts` row with `provider_id = google`.
+- [ ] A Google account outside `allowed_domains` is redirected to the login
+      page with a generic, non-leaking error message.
+- [ ] No user or session row is created for the rejected account.
+- [ ] The admin account (bootstrap user) is unaffected — it can still sign in
+      via the admin path and its `role = admin` row is intact.
+
+### Common failures
+
+- **`redirect_uri_mismatch` from Google.** The redirect URI registered in
+  Google Cloud Console doesn't match `${AX_PUBLIC_BASE_URL}/auth/callback/google`.
+  Check for trailing slashes, `http` vs `https`, and port mismatches. The
+  registered URI must be an exact character-for-character match.
+- **Blank page or infinite redirect after Google consent.** Usually a
+  `trustedOrigins` mismatch — better-auth's CSRF check rejects the callback
+  if the origin isn't trusted. Confirm `AX_PUBLIC_BASE_URL` is set to the
+  same origin the browser is using (including port). On kind with port-forward
+  9090, that's `http://localhost:9090`.
+- **"Invalid state parameter" error.** The OAuth state cookie was lost between
+  the sign-in click and the callback redirect. This happens when the session
+  cookie domain/path doesn't match, or when the browser blocked third-party
+  cookies mid-flow. Use the same browser window throughout the flow; don't
+  open a new tab between clicking "Sign in with Google" and landing at the
+  callback URL.
+- **Rejected user gets a 500 instead of a generic message.** The error handler
+  in `@ax/auth-better` isn't catching the domain-mismatch case cleanly. The
+  user should always land on the login page with a readable message, never on
+  an uncaught exception page.
+
+### Cleanup
+
+```bash
+# The Google provider config is stored in the host's credential/settings store.
+# To remove it: Admin → Auth → Delete on the google provider row.
+# The Google-authenticated user rows persist in auth_better_v1_users;
+# delete them via psql if a clean slate is needed:
+kubectl exec -n ax-next deploy/ax-next-host -- \
+  psql -U ax-next -d ax-next \
+  -c "DELETE FROM auth_better_v1_users WHERE id IN (SELECT user_id FROM auth_better_v1_accounts WHERE provider_id = 'google');"
+```
+
 ## When this passes, do
 1. Update the PR description's acceptance section with the date + cluster
    used + a copy of the `psql` count outputs.

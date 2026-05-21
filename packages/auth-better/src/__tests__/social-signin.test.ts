@@ -1,9 +1,10 @@
 // ---------------------------------------------------------------------------
-// /admin/me + /admin/sign-out — channel-web's `lib/auth.ts` calls these
-// directly against @ax/auth-better. Without these routes registered,
-// static-files's SPA fallback would return index.html for /admin/me,
-// which the SPA can't parse as a session response — every fresh sign-in
-// would get bounced to LoginPage.
+// Social sign-in (Google OAuth) — headline integration test for Task 3.
+//
+// Verifies that POST /auth/sign-in/social with provider=google returns a
+// Google authorize URL (status 200) rather than a 500 caused by the missing
+// `verification` table. The fix is remapping better-auth's model names to
+// the existing auth_better_v1_* tables.
 // ---------------------------------------------------------------------------
 
 import {
@@ -120,7 +121,7 @@ async function bootStack(): Promise<BootedStack> {
   return { harness, http, baseUrl, cookieHeader };
 }
 
-describe('@ax/auth-better — /admin/me', () => {
+describe('@ax/auth-better — social sign-in (Google)', () => {
   let stack: BootedStack;
 
   beforeEach(async () => {
@@ -133,79 +134,60 @@ describe('@ax/auth-better — /admin/me', () => {
     }
   });
 
-  it('GET /admin/me with a valid session cookie returns { user }', async () => {
-    const res = await fetch(`${stack.baseUrl}/admin/me`, {
-      headers: { cookie: stack.cookieHeader },
-    });
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { user?: { id: string; isAdmin: boolean } };
-    expect(body.user).toBeDefined();
-    expect(body.user?.isAdmin).toBe(true);
-  });
-
-  it('GET /admin/me without a cookie returns 401', async () => {
-    const res = await fetch(`${stack.baseUrl}/admin/me`);
-    expect(res.status).toBe(401);
-  });
-
-  it('GET /admin/me with a forged/unknown signed cookie returns 401', async () => {
-    // Passing a random unsigned string in the cookie header — http-server's
-    // signedCookie() returns null on a verify miss, so this exercises the
-    // same code path as no cookie at all.
-    const res = await fetch(`${stack.baseUrl}/admin/me`, {
-      headers: { cookie: 'ax_auth_session=not-a-real-signed-cookie' },
-    });
-    expect(res.status).toBe(401);
-  });
-});
-
-describe('@ax/auth-better — /admin/sign-out', () => {
-  let stack: BootedStack;
-
-  beforeEach(async () => {
-    stack = await bootStack();
-  });
-
-  afterEach(async () => {
-    if (stack !== undefined) {
-      await stack.harness.close({ onError: () => {} });
-    }
-  });
-
-  it('POST /admin/sign-out clears the cookie + invalidates the session', async () => {
-    // Sanity: we start signed in.
-    const meBefore = await fetch(`${stack.baseUrl}/admin/me`, {
-      headers: { cookie: stack.cookieHeader },
-    });
-    expect(meBefore.status).toBe(200);
-
-    const out = await fetch(`${stack.baseUrl}/admin/sign-out`, {
+  it('POST /auth/sign-in/social returns a Google authorize url (not 500)', async () => {
+    // Configure a google provider at runtime (fires auth:providers-changed →
+    // rebuilds the handler with google before the next request returns).
+    const create = await fetch(`${stack.baseUrl}/admin/auth/providers`, {
       method: 'POST',
       headers: {
         cookie: stack.cookieHeader,
+        'content-type': 'application/json',
         'x-requested-with': 'ax-admin',
       },
+      body: JSON.stringify({ kind: 'google', clientId: 'test-client-id', clientSecret: 'test-secret' }),
     });
-    expect(out.status).toBe(200);
-    const setCookie = out.headers.get('set-cookie') ?? '';
-    expect(setCookie.toLowerCase()).toContain('ax_auth_session=');
-    // The clear is signaled by Max-Age=0 (or an Expires in the past) —
-    // either is fine; we accept both.
-    expect(/(max-age=0|expires=)/i.test(setCookie)).toBe(true);
+    expect(create.status).toBe(201);
 
-    // The session row is gone, so even re-presenting the original cookie
-    // now returns 401.
-    const meAfter = await fetch(`${stack.baseUrl}/admin/me`, {
-      headers: { cookie: stack.cookieHeader },
-    });
-    expect(meAfter.status).toBe(401);
-  });
-
-  it('POST /admin/sign-out without a cookie returns 200 (idempotent, no oracle)', async () => {
-    const res = await fetch(`${stack.baseUrl}/admin/sign-out`, {
+    const res = await fetch(`${stack.baseUrl}/auth/sign-in/social`, {
       method: 'POST',
-      headers: { 'x-requested-with': 'ax-admin' },
+      headers: { 'content-type': 'application/json', 'x-requested-with': 'ax-admin' },
+      body: JSON.stringify({ provider: 'google', callbackURL: '/' }),
     });
     expect(res.status).toBe(200);
+    const body = (await res.json()) as { url?: string };
+    expect(body.url).toMatch(/accounts\.google\.com/);
+  });
+
+  it('email sign-in bridges better-auth session into a working ax_auth_session cookie', async () => {
+    const signUp = await fetch(`${stack.baseUrl}/auth/sign-up/email`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-requested-with': 'ax-admin' },
+      body: JSON.stringify({ email: 'member@example.com', password: 'correcthorsebattery', name: 'Member' }),
+    });
+    expect([200, 201]).toContain(signUp.status);
+
+    // better-auth auto-signs-in on sign-up, so the sign-up response itself
+    // bridges to ax_auth_session (its own session cookie is dropped).
+    const signUpCookie = signUp.headers.getSetCookie().join('\n');
+    expect(signUpCookie).toContain('ax_auth_session=');
+    expect(signUpCookie).not.toContain('ax_better_auth.session_token=');
+
+    const signIn = await fetch(`${stack.baseUrl}/auth/sign-in/email`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-requested-with': 'ax-admin' },
+      body: JSON.stringify({ email: 'member@example.com', password: 'correcthorsebattery' }),
+    });
+    expect(signIn.status).toBe(200);
+
+    // fetch Response: getSetCookie() returns string[]; join for substring checks.
+    const setCookie = signIn.headers.getSetCookie().join('\n');
+    expect(setCookie).toContain('ax_auth_session=');
+    expect(setCookie).not.toContain('ax_better_auth.session_token=');
+
+    const cookiePair = /ax_auth_session=[^;]+/.exec(setCookie)?.[0] ?? '';
+    const me = await fetch(`${stack.baseUrl}/admin/me`, { headers: { cookie: cookiePair } });
+    expect(me.status).toBe(200);
+    const body = (await me.json()) as { user?: { email?: string } };
+    expect(body.user?.email).toBe('member@example.com');
   });
 });

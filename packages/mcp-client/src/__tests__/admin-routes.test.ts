@@ -83,6 +83,8 @@ async function dropAllTables(): Promise<void> {
   const c = new pgmod.default.Client({ connectionString });
   await c.connect();
   try {
+    await c.query('DROP TABLE IF EXISTS auth_better_v1_verifications');
+    await c.query('DROP TABLE IF EXISTS auth_better_v1_accounts');
     await c.query('DROP TABLE IF EXISTS auth_better_v1_sessions');
     await c.query('DROP TABLE IF EXISTS auth_better_v1_users');
     await c.query('DROP TABLE IF EXISTS auth_providers');

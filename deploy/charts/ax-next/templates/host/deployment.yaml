@@ -227,6 +227,16 @@ spec:
                   name: {{ include "ax-next.fullname" . }}-secrets
                   key: credentials-key
 
+            # better-auth secret — stable secret for OAuth state and at-rest
+            # OAuth-token encryption. Auto-generated at first install and
+            # never rotated by helm upgrade (lookup-stable in hook-secret.yaml).
+            # A rotation makes every existing encrypted OAuth token undecryptable.
+            - name: AX_AUTH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ax-next.fullname" . }}-secrets
+                  key: auth-secret
+
             # Conditionally mount /admin/credentials* + /settings/credentials*
             # by loading @ax/credentials-admin-routes. Off by default; the
             # preset reads this env var (loadK8sConfigFromEnv) and only loads
