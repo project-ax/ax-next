@@ -23,11 +23,14 @@
   },
   "dependencies": {
     "@ax/core": "workspace:*",
+    "@ax/skills-parser": "workspace:*",
     "js-yaml": "^4.1.0",
     "kysely": "0.28.17",
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@ax/agents": "workspace:*",
+    "@ax/chat-orchestrator": "workspace:*",
     "@ax/database-postgres": "workspace:*",
     "@ax/test-harness": "workspace:*",
     "@testcontainers/postgresql": "11.14.0",

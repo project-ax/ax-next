@@ -48,6 +48,7 @@
     { "path": "packages/validator-routine" },
     { "path": "packages/routines" },
     { "path": "packages/tool-artifact-publish" },
-    { "path": "packages/skills" }
+    { "path": "packages/skills" },
+    { "path": "packages/skills-parser" }
   ]
 }

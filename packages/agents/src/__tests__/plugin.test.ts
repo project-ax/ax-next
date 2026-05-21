@@ -124,6 +124,7 @@ describe('@ax/agents plugin manifest + lifecycle', () => {
         'agents:set-skill-attachments',
         'agents:list-ids',
         'agents:list-personal-owners',
+        'agents:list-authored-skills',
       ],
       // database:get-instance + http:register-route + auth:require-user are
       // hard. teams:is-member is graceful (handled inside checkAccess via

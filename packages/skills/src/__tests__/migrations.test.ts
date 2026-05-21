@@ -30,6 +30,11 @@ afterEach(async () => {
   while (opened.length > 0) {
     const k = opened.pop()!;
     try {
+      await k.schema.dropTable('skills_v1_user_skills').ifExists().execute();
+    } catch {
+      /* drained pool — ignore */
+    }
+    try {
       await k.schema.dropTable('skills_v1_skills').ifExists().execute();
     } catch {
       /* drained pool — ignore */
@@ -208,5 +213,143 @@ describe('runSkillsMigration', () => {
       .execute();
     const r = await db.selectFrom('skills_v1_skills').selectAll().where('skill_id', '=', 'su-smoke').executeTakeFirstOrThrow();
     expect(r.source_url).toBeNull();
+  });
+});
+
+describe('runSkillsMigration — skills_v1_user_skills side-table', () => {
+  // SkillsDatabase now includes skills_v1_user_skills, so makeKysely() is sufficient.
+
+  it('creates skills_v1_user_skills table', async () => {
+    const db = makeKysely();
+    await runSkillsMigration(db);
+
+    const tables = await sql<{ table_name: string }>`
+      SELECT table_name FROM information_schema.tables
+      WHERE table_schema = 'public' AND table_name = 'skills_v1_user_skills'
+    `.execute(db);
+    expect(tables.rows.map((r) => r.table_name)).toEqual(['skills_v1_user_skills']);
+  });
+
+  it('columns exist with expected types', async () => {
+    const db = makeKysely();
+    await runSkillsMigration(db);
+
+    const cols = await sql<{
+      column_name: string;
+      data_type: string;
+      is_nullable: string;
+      column_default: string | null;
+    }>`
+      SELECT column_name, data_type, is_nullable, column_default
+        FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = 'skills_v1_user_skills'
+       ORDER BY ordinal_position
+    `.execute(db);
+
+    const byName = Object.fromEntries(
+      cols.rows.map((r) => [
+        r.column_name,
+        { data_type: r.data_type, is_nullable: r.is_nullable, column_default: r.column_default },
+      ]),
+    );
+
+    expect(byName['owner_user_id']?.data_type).toBe('text');
+    expect(byName['owner_user_id']?.is_nullable).toBe('NO');
+    expect(byName['skill_id']?.data_type).toBe('text');
+    expect(byName['skill_id']?.is_nullable).toBe('NO');
+    expect(byName['description']?.data_type).toBe('text');
+    expect(byName['manifest_yaml']?.data_type).toBe('text');
+    expect(byName['body_md']?.data_type).toBe('text');
+    expect(byName['version']?.data_type).toBe('integer');
+    expect(byName['source_url']?.data_type).toBe('text');
+    expect(byName['source_url']?.is_nullable).toBe('YES');
+    expect(byName['default_attached']?.data_type).toBe('boolean');
+    expect(byName['default_attached']?.is_nullable).toBe('NO');
+    expect(byName['default_attached']?.column_default).toBe('false');
+    expect(byName['created_at']?.data_type).toBe('timestamp with time zone');
+    expect(byName['updated_at']?.data_type).toBe('timestamp with time zone');
+  });
+
+  it('compound PRIMARY KEY allows same skill_id with different owner_user_id', async () => {
+    const db = makeKysely();
+    await runSkillsMigration(db);
+
+    const base = {
+      skill_id: 'github',
+      description: 'GitHub skill',
+      manifest_yaml: 'name: github\ndescription: GitHub\n',
+      body_md: '# GitHub',
+      version: 1,
+      source_url: null,
+      default_attached: false,
+      created_at: new Date(),
+      updated_at: new Date(),
+    };
+
+    // Two rows with the same skill_id but different owner_user_id — both must succeed.
+    await db.insertInto('skills_v1_user_skills').values({ ...base, owner_user_id: 'user-a' }).execute();
+    await db.insertInto('skills_v1_user_skills').values({ ...base, owner_user_id: 'user-b' }).execute();
+
+    const rows = await db.selectFrom('skills_v1_user_skills').select(['owner_user_id', 'skill_id']).orderBy('owner_user_id').execute();
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.owner_user_id).toBe('user-a');
+    expect(rows[1]?.owner_user_id).toBe('user-b');
+  });
+
+  it('compound PRIMARY KEY rejects duplicate (owner_user_id, skill_id) with pg error 23505', async () => {
+    const db = makeKysely();
+    await runSkillsMigration(db);
+
+    const row = {
+      owner_user_id: 'user-a',
+      skill_id: 'github',
+      description: 'GitHub skill',
+      manifest_yaml: 'name: github\ndescription: GitHub\n',
+      body_md: '# GitHub',
+      version: 1,
+      source_url: null,
+      default_attached: false,
+      created_at: new Date(),
+      updated_at: new Date(),
+    };
+
+    await db.insertInto('skills_v1_user_skills').values(row).execute();
+
+    let caught: unknown;
+    try {
+      await db.insertInto('skills_v1_user_skills').values({ ...row, version: 2 }).execute();
+    } catch (err) {
+      caught = err;
+    }
+    expect((caught as { code?: string } | undefined)?.code).toBe('23505');
+  });
+
+  it('is idempotent — running runSkillsMigration twice does not throw and table stays usable', async () => {
+    const db = makeKysely();
+    await runSkillsMigration(db);
+    await runSkillsMigration(db);
+
+    await db
+      .insertInto('skills_v1_user_skills')
+      .values({
+        owner_user_id: 'user-x',
+        skill_id: 'my-skill',
+        description: 'A test skill',
+        manifest_yaml: 'name: my-skill\ndescription: A test skill\n',
+        body_md: '# My Skill',
+        version: 0,
+        source_url: null,
+        default_attached: false,
+        created_at: new Date(),
+        updated_at: new Date(),
+      })
+      .execute();
+
+    const rows = await db
+      .selectFrom('skills_v1_user_skills')
+      .select(['owner_user_id', 'skill_id'])
+      .execute();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toEqual({ owner_user_id: 'user-x', skill_id: 'my-skill' });
   });
 });

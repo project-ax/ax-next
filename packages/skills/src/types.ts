@@ -6,28 +6,8 @@
  * no field here mentions postgres, rows, or any storage detail.
  */
 
-export interface CapabilitySlot {
-  slot: string;
-  kind: 'api-key';
-  description?: string;
-}
-
-export interface McpServerSpec {
-  name: string;
-  transport: 'stdio' | 'http';
-  command?: string;
-  args?: string[];
-  env?: Record<string, string>;
-  url?: string;
-  allowedHosts: string[];     // unioned with the url host on parse
-  credentials: CapabilitySlot[];
-}
-
-export interface SkillCapabilities {
-  allowedHosts: string[];
-  credentials: CapabilitySlot[];
-  mcpServers: McpServerSpec[];   // always present, defaults to []
-}
+import type { SkillCapabilities } from '@ax/skills-parser';
+export type { CapabilitySlot, McpServerSpec, SkillCapabilities } from '@ax/skills-parser';
 
 export interface SkillSummary {
   id: string;
@@ -37,6 +17,10 @@ export interface SkillSummary {
   defaultAttached: boolean;
   sourceUrl?: string;
   updatedAt: string;
+  /** Storage scope for this skill. 'global' = admin-managed; 'user' = user-private copy. */
+  scope: 'global' | 'user';
+  /** Present iff scope === 'user'. The user who owns this private skill copy. */
+  ownerUserId?: string;
 }
 
 export interface SkillDetail extends SkillSummary {
@@ -51,13 +35,21 @@ export interface ResolvedSkill {
   manifestYaml: string;
 }
 
-export type SkillsListInput = Record<string, never>;
+export interface SkillsListInput {
+  /** 'all' (default) = global + user rows unioned; 'global' = admin rows only; 'user' = user rows only. */
+  scope?: 'all' | 'global' | 'user';
+  /** Required when scope === 'user' or scope === 'all' to include user rows. */
+  ownerUserId?: string;
+}
 export interface SkillsListOutput {
   skills: SkillSummary[];
 }
 
 export interface SkillsGetInput {
   skillId: string;
+  /** If omitted or 'all': user row wins over global when ownerUserId is provided. */
+  scope?: 'all' | 'global' | 'user';
+  ownerUserId?: string;
 }
 export type SkillsGetOutput = SkillDetail;
 
@@ -65,6 +57,10 @@ export interface SkillsUpsertInput {
   manifestYaml: string;
   bodyMd: string;
   defaultAttached?: boolean;
+  /** 'global' (default) = admin-managed table; 'user' = user-private table. */
+  scope?: 'global' | 'user';
+  /** Required when scope === 'user'. */
+  ownerUserId?: string;
 }
 export interface SkillsUpsertOutput {
   skillId: string;
@@ -73,17 +69,26 @@ export interface SkillsUpsertOutput {
 
 export interface SkillsDeleteInput {
   skillId: string;
+  /** 'global' (default) = admin-managed table; 'user' = user-private table. */
+  scope?: 'global' | 'user';
+  /** Required when scope === 'user'. */
+  ownerUserId?: string;
 }
 export type SkillsDeleteOutput = Record<string, never>;
 
 export interface SkillsResolveInput {
   skillIds: string[];
+  /** When provided, user-scoped skills are resolved and override same-id globals. */
+  ownerUserId?: string;
 }
 export interface SkillsResolveOutput {
   skills: ResolvedSkill[];
 }
 
-export type SkillsListDefaultsInput = Record<string, never>;
+export interface SkillsListDefaultsInput {
+  /** When provided, user-scoped default skills are unioned with globals (user wins on collision). */
+  ownerUserId?: string;
+}
 export interface SkillsListDefaultsOutput {
   skills: ResolvedSkill[];
 }

@@ -1025,6 +1025,18 @@ manual fire.
 
 ## Scenario: Install a skill, attach to agent, chat (Phase 1 skill-install)
 
+> **Now auto-canaried.** The install → attach → invoke path (skill installed
+> via `skills:upsert`, attached via `agents:set-skill-attachments`, session
+> opened via the orchestrator, and the unioned allowlist + credential bindings
+> reaching `proxy:open-session` while the SKILL.md reaches `sandbox:open-session`)
+> is exercised end-to-end against a real Postgres testcontainer in
+> `packages/skills/src/__tests__/e2e/skill-install.canary.test.ts` (runs in CI
+> via `pnpm test`, no separate step needed — `@ax/skills` already uses
+> testcontainers). The manual walk below is still encouraged for the
+> cluster-only surfaces the canary can't reach: real sandbox materialization
+> of `.claude/skills/`, the credential-proxy actually substituting the bound
+> token on an egress call, and the admin UI.
+
 ### What this proves
 
 Admin installs a skill via /admin/skills, attaches it to an agent (binding
@@ -1287,6 +1299,86 @@ in place between the two stages).
 # Gist if you don't want the demo content around.
 ```
 
+## Scenario: User-installable skill (Phase 1 follow-up D — user scope)
+
+### What this proves
+
+A regular (non-admin) user can install their own private skill that only
+their own agents can see — without bugging an admin. The global namespace
+(`/admin/skills`) stays separate, and one user's private skills are invisible
+to everyone else. If user-scoped rows ever leaked into another user's view or
+into the admin global list, that's a privacy bug, and this walk catches it.
+
+### Prerequisites
+
+- A completed-bootstrap cluster with at least two real user accounts (call
+  them **alice** and **bob**) plus the **admin**.
+- Each of alice and bob owns at least one agent they can open a chat session
+  with.
+
+### Walk
+
+1. **alice installs a private skill.** Log in as alice. Open the user menu
+   (top-left avatar) → **My Skills**. The panel opens (it's a dialog, not a
+   separate page). Click **New skill** and paste a minimal SKILL.md:
+
+   ```markdown
+   ---
+   name: alice-notes
+   description: Alice's private note-taking helper.
+   version: 1
+   ---
+   # alice-notes
+
+   When asked, summarize the conversation into three bullet points.
+   ```
+
+   Save. It should appear in alice's **My Skills** list.
+
+2. **alice's agent sees it.** Attach `alice-notes` to one of alice's agents
+   (admin → agent → skill attachments, or however attachment is surfaced for
+   the owner), then open a chat session with that agent. The resolved skill
+   set for the session should include `alice-notes` (verify the skill body
+   shows up in the materialized `.claude/skills/` surface, or that the agent
+   can act on the instruction).
+
+3. **bob sees nothing of alice's.** Log in as bob. Open the user menu →
+   **My Skills**. The list is **empty** (bob installed none). There is no
+   trace of `alice-notes`.
+
+4. **bob's agent does NOT see alice's skill.** Open a chat session with one
+   of bob's agents. `alice-notes` must NOT be in the resolved set (bob can't
+   attach it — it isn't visible to him — and even a same-named id wouldn't
+   resolve to alice's row for bob).
+
+5. **admin global list is unchanged.** Log in as admin → **Skills**
+   (`/admin/skills`). Only global skills appear; `alice-notes` is NOT listed
+   there. (User-scoped skills never surface in the admin global namespace.)
+
+### Acceptance criteria
+
+- alice can create / edit / delete skills under **My Skills**; they round-trip.
+- A direct DB check confirms alice's row lands in `skills_v1_user_skills` with
+  `owner_user_id` = alice's id (NOT in `skills_v1_skills`):
+
+  ```sql
+  SELECT owner_user_id, skill_id FROM skills_v1_user_skills;
+  SELECT skill_id FROM skills_v1_skills;  -- alice-notes must NOT appear here
+  ```
+- bob's **My Skills** is empty; `GET /settings/skills` as bob returns no alice
+  rows; `GET /settings/skills/alice-notes` as bob → 404.
+- admin `/admin/skills` shows only global skills (no user-scoped rows).
+- On id collision (alice installs a `github` skill while a global `github`
+  exists), alice's agents resolve to **alice's** copy (user-wins).
+
+### Cleanup
+
+```bash
+# As alice, delete alice-notes via My Skills. Detach it from her agent first
+# if attached. The user-scoped row is keyed (owner_user_id, skill_id) so it's
+# cheap to recreate.
+```
+
 ## Scenario: Google sign-in (better-auth Google provider)
 
 This scenario walks the end-to-end Google OAuth flow — configuring the
@@ -1528,3 +1620,21 @@ kubectl exec -n ax-next deploy/ax-next-host -- \
       subprocess. `proxy-startup.ts` now forwards env vars whose value
       is an `ax-cred:<32-hex>` placeholder.
   - All step 1–9 acceptance criteria pass.
+- **Skills distribution Phases D + E (this PR)** — walked 2026-05-21 on
+  `kind-ax-next-dev` (rebuilt `ax-next/agent:dev`, `reset-bootstrap --force`
+  to re-open `/setup` since Google-OAuth login isn't Playwright-drivable).
+  Single-user (admin) scope — multi-user alice/bob isolation and the
+  populated-promote flow aren't browser-walkable here (OAuth + workspace
+  seeding) and are covered by automated tests instead.
+  - **Phase D (My Skills):** user-menu → My Skills → New skill → installed
+    `acceptance-note` via the live-preview editor → it appears in the list.
+    `GET/POST /settings/skills` returned 200/201. DB confirmed the row landed
+    in `skills_v1_user_skills` with `owner_user_id` = the admin's id and did
+    NOT appear in `skills_v1_skills`. ✅
+  - **Phase E (Authored Skills):** the agent detail form (Admin → Agents →
+    edit) renders the "Authored Skills" section below skill attachments;
+    `GET /admin/agents/:id/authored-skills` returned 200 and the
+    `agents:list-authored-skills` hook ran (empty for an agent that has
+    authored no `.ax/skills/*/SKILL.md`, as expected). ✅
+  - 0 console errors (2 benign Radix `aria-describedby` dialog advisories,
+    consistent with the app's other dialogs).

@@ -215,6 +215,71 @@ export async function testMcpServer(
   }
 }
 
+// Authored skills --------------------------------------------------------
+// E3: list the skills an agent has written in its workspace and promote
+// one to an installed skill with admin-chosen capability grants.
+
+export interface AuthoredSkill {
+  id: string;
+  description: string;
+  version: number;
+  bodyMd: string;
+  hasForbiddenCapabilities: boolean;
+}
+
+export async function listAuthoredSkills(agentId: string): Promise<AuthoredSkill[]> {
+  const res = await fetch(
+    `/admin/agents/${encodeURIComponent(agentId)}/authored-skills`,
+    { credentials: 'include' },
+  );
+  if (!res.ok) {
+    const excerpt = await res.text().catch(() => '');
+    const msg = (() => {
+      try {
+        return (JSON.parse(excerpt) as { error?: string }).error ?? excerpt;
+      } catch {
+        return excerpt;
+      }
+    })();
+    throw new Error(msg || `list authored-skills: ${res.status}`);
+  }
+  const body = (await res.json()) as { skills: AuthoredSkill[] };
+  return body.skills;
+}
+
+export interface PromoteGrants {
+  allowedHosts: string[];
+  credentials: Array<{ slot: string; kind: 'api-key' }>;
+  mcpServers: never[];
+}
+
+export async function promoteAuthoredSkill(
+  agentId: string,
+  body: { skillId: string; targetScope: 'global' | 'user'; grants: PromoteGrants },
+): Promise<{ promoted: true; skillId: string; targetScope: string }> {
+  const res = await fetch(
+    `/admin/agents/${encodeURIComponent(agentId)}/authored-skills/promote`,
+    {
+      method: 'POST',
+      headers: writeHeaders,
+      credentials: 'include',
+      body: JSON.stringify(body),
+    },
+  );
+  if (!res.ok) {
+    const excerpt = await res.text().catch(() => '');
+    const msg = (() => {
+      try {
+        return (JSON.parse(excerpt) as { error?: string }).error ?? excerpt;
+      } catch {
+        return excerpt;
+      }
+    })();
+    throw new Error(msg || `promote authored-skill: ${res.status}`);
+  }
+  return res.json() as Promise<{ promoted: true; skillId: string; targetScope: string }>;
+}
+
 // Teams ------------------------------------------------------------------
 // Task 24 swaps the placeholder for a real list/edit panel. Listing today
 // is enough so AgentForm can populate the team-owner dropdown.

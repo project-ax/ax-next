@@ -7,6 +7,7 @@ import {
 } from '@ax/core';
 import { sql, type Kysely } from 'kysely';
 import { checkAccess } from './acl.js';
+import { listAuthoredSkills } from './authored-skills.js';
 import { registerAdminAgentRoutes } from './admin-routes.js';
 import { runAgentsMigration, type AgentsDatabase } from './migrations.js';
 import {
@@ -22,6 +23,8 @@ import type {
   Agent,
   AgentsConfig,
   AgentsCreatedEvent,
+  AgentsListAuthoredSkillsInput,
+  AgentsListAuthoredSkillsOutput,
   AgentsResolvedEvent,
   AgentsWebhookTokenRotatedEvent,
   CreateInput,
@@ -94,6 +97,7 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
         'agents:set-skill-attachments',
         'agents:list-ids',
         'agents:list-personal-owners',
+        'agents:list-authored-skills',
       ],
       // database:get-instance is hard. http:register-route + auth:require-user
       // are hard NOW because we mount admin routes; the plugin won't boot
@@ -290,6 +294,29 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
             input.attachments,
           );
           return { agent: updated };
+        },
+      );
+
+      // Read-side hook for the "promote authored skill" Phase E flow.
+      // Scans the agent's workspace for .ax/skills/*/SKILL.md files and
+      // returns parsed summaries. Personal agents only: team agents have no
+      // single-owner workspace (per-user shards; deferred). workspace:list
+      // and workspace:read are soft deps (hasService guards) so this hook is
+      // safe to register in presets that strip the workspace plugin.
+      bus.registerService<AgentsListAuthoredSkillsInput, AgentsListAuthoredSkillsOutput>(
+        'agents:list-authored-skills',
+        PLUGIN_NAME,
+        async (_ctx, input) => {
+          const agent = await localStore.getById(input.agentId);
+          // Personal agents only: team-owned agents have per-user workspace
+          // shards and no single canonical owner userId to route the
+          // workspace:list/read ctx through. Return [] until that policy lands.
+          if (agent === null || agent.ownerType !== 'user') {
+            return { skills: [] };
+          }
+          return {
+            skills: await listAuthoredSkills(bus, agent.ownerId, input.agentId),
+          };
         },
       );
 

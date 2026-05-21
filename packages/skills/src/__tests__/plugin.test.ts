@@ -80,6 +80,8 @@ afterEach(async () => {
   const cleanup = new (await import('pg')).default.Client({ connectionString });
   await cleanup.connect();
   try {
+    // Truncate both tables so user-scope rows don't bleed between tests.
+    await cleanup.query('DROP TABLE IF EXISTS skills_v1_user_skills');
     await cleanup.query('DROP TABLE IF EXISTS skills_v1_skills');
   } finally {
     await cleanup.end().catch(() => {});
@@ -594,5 +596,413 @@ describe('@ax/skills credential purge on delete / slot removal', () => {
     }
     expect(caught).toBeInstanceOf(PluginError);
     expect((caught as PluginError).code).toBe('skill-not-found');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// User-scope tests (Phase D — scope-aware hooks)
+// ---------------------------------------------------------------------------
+
+// A minimal manifest without credential slots (safe for defaultAttached).
+const DEFAULT_MANIFEST = `name: github
+description: Access the GitHub REST API.
+version: 1
+capabilities:
+  allowedHosts:
+    - api.github.com
+`;
+
+const DEFAULT_MANIFEST_BODY = '# GitHub skill (no creds)\n';
+
+// A second distinct skill for default-merge tests.
+const LINEAR_MANIFEST = `name: linear
+description: Linear issue tracker.
+version: 1
+capabilities:
+  allowedHosts:
+    - linear.app
+`;
+const LINEAR_BODY = '# Linear\n';
+
+describe('@ax/skills user-scope hooks (Phase D)', () => {
+  // -------------------------------------------------------------------------
+  // skills:list scope behaviour
+  // -------------------------------------------------------------------------
+
+  it('skills:list scope=all unions global+user, user wins on id collision', async () => {
+    const h = await makeHarness();
+
+    // Upsert 'github' globally.
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
+      manifestYaml: SAMPLE_MANIFEST,
+      bodyMd: 'global body',
+    });
+
+    // Upsert 'github' for user alice (no credential slots so no upsert rejection).
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
+      manifestYaml: DEFAULT_MANIFEST,
+      bodyMd: 'user body',
+      scope: 'user',
+      ownerUserId: 'alice',
+    });
+
+    const { skills } = await h.bus.call<SkillsListInput, SkillsListOutput>(
+      'skills:list',
+      h.ctx(),
+      { scope: 'all', ownerUserId: 'alice' },
+    );
+
+    // Only one 'github' row — the user row wins.
+    expect(skills.filter((s) => s.id === 'github')).toHaveLength(1);
+    const github = skills.find((s) => s.id === 'github')!;
+    expect(github.scope).toBe('user');
+    expect(github.ownerUserId).toBe('alice');
+  });
+
+  it('skills:list scope=global ignores user rows even when ownerUserId is provided', async () => {
+    const h = await makeHarness();
+
+    // Upsert 'github' globally.
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
+      manifestYaml: SAMPLE_MANIFEST,
+      bodyMd: SAMPLE_BODY,
+    });
+
+    // Upsert 'github' for user alice.
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
+      manifestYaml: DEFAULT_MANIFEST,
+      bodyMd: 'user body',
+      scope: 'user',
+      ownerUserId: 'alice',
+    });
+
+    const { skills } = await h.bus.call<SkillsListInput, SkillsListOutput>(
+      'skills:list',
+      h.ctx(),
+      { scope: 'global', ownerUserId: 'alice' },
+    );
+
+    // Should only see the global row.
+    expect(skills).toHaveLength(1);
+    expect(skills[0]!.scope).toBe('global');
+  });
+
+  it('skills:list scope=user without ownerUserId throws missing-owner', async () => {
+    const h = await makeHarness();
+    let caught: unknown;
+    try {
+      await h.bus.call<SkillsListInput, SkillsListOutput>('skills:list', h.ctx(), {
+        scope: 'user',
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('missing-owner');
+  });
+
+  // -------------------------------------------------------------------------
+  // User isolation: alice can't see bob's rows
+  // -------------------------------------------------------------------------
+
+  it('skills:list user-scope isolation: alice skills invisible to bob', async () => {
+    const h = await makeHarness();
+
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
+      manifestYaml: DEFAULT_MANIFEST,
+      bodyMd: 'alice body',
+      scope: 'user',
+      ownerUserId: 'alice',
+    });
+
+    const { skills } = await h.bus.call<SkillsListInput, SkillsListOutput>(
+      'skills:list',
+      h.ctx(),
+      { scope: 'user', ownerUserId: 'bob' },
+    );
+
+    expect(skills).toHaveLength(0);
+  });
+
+  it('skills:get user-scope isolation: alice skill not found for bob', async () => {
+    const h = await makeHarness();
+
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
+      manifestYaml: DEFAULT_MANIFEST,
+      bodyMd: 'alice body',
+      scope: 'user',
+      ownerUserId: 'alice',
+    });
+
+    let caught: unknown;
+    try {
+      await h.bus.call<SkillsGetInput, SkillsGetOutput>('skills:get', h.ctx(), {
+        skillId: 'github',
+        scope: 'user',
+        ownerUserId: 'bob',
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('skill-not-found');
+  });
+
+  // -------------------------------------------------------------------------
+  // skills:get scope behaviour
+  // -------------------------------------------------------------------------
+
+  it('skills:get scope=user returns the user row', async () => {
+    const h = await makeHarness();
+
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
+      manifestYaml: DEFAULT_MANIFEST,
+      bodyMd: 'user-only body',
+      scope: 'user',
+      ownerUserId: 'alice',
+    });
+
+    const detail = await h.bus.call<SkillsGetInput, SkillsGetOutput>('skills:get', h.ctx(), {
+      skillId: 'github',
+      scope: 'user',
+      ownerUserId: 'alice',
+    });
+    expect(detail.scope).toBe('user');
+    expect(detail.ownerUserId).toBe('alice');
+    expect(detail.bodyMd).toBe('user-only body');
+  });
+
+  it('skills:get user-wins when scope unset + ownerUserId given', async () => {
+    const h = await makeHarness();
+
+    // Global 'github'.
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
+      manifestYaml: DEFAULT_MANIFEST,
+      bodyMd: 'global body',
+    });
+
+    // User 'github' for alice.
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
+      manifestYaml: DEFAULT_MANIFEST,
+      bodyMd: 'alice body',
+      scope: 'user',
+      ownerUserId: 'alice',
+    });
+
+    // No scope specified, ownerUserId provided → user wins.
+    const detail = await h.bus.call<SkillsGetInput, SkillsGetOutput>('skills:get', h.ctx(), {
+      skillId: 'github',
+      ownerUserId: 'alice',
+    });
+    expect(detail.scope).toBe('user');
+    expect(detail.bodyMd).toBe('alice body');
+  });
+
+  // -------------------------------------------------------------------------
+  // skills:upsert scope behaviour
+  // -------------------------------------------------------------------------
+
+  it('skills:upsert scope=user lands in skills_v1_user_skills; global unaffected', async () => {
+    const h = await makeHarness();
+
+    // Global upsert.
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
+      manifestYaml: DEFAULT_MANIFEST,
+      bodyMd: 'global body',
+    });
+
+    // User upsert for alice — same skill id.
+    const result = await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>(
+      'skills:upsert',
+      h.ctx(),
+      {
+        manifestYaml: DEFAULT_MANIFEST,
+        bodyMd: 'alice body',
+        scope: 'user',
+        ownerUserId: 'alice',
+      },
+    );
+    expect(result.created).toBe(true);
+
+    // User row has alice's body.
+    const userDetail = await h.bus.call<SkillsGetInput, SkillsGetOutput>('skills:get', h.ctx(), {
+      skillId: 'github',
+      scope: 'user',
+      ownerUserId: 'alice',
+    });
+    expect(userDetail.bodyMd).toBe('alice body');
+
+    // Global row still has global body.
+    const globalDetail = await h.bus.call<SkillsGetInput, SkillsGetOutput>('skills:get', h.ctx(), {
+      skillId: 'github',
+      scope: 'global',
+    });
+    expect(globalDetail.bodyMd).toBe('global body');
+  });
+
+  // -------------------------------------------------------------------------
+  // skills:resolve user-wins
+  // -------------------------------------------------------------------------
+
+  it('skills:resolve with ownerUserId prefers user row over same-id global', async () => {
+    const h = await makeHarness();
+
+    // Global 'github'.
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
+      manifestYaml: DEFAULT_MANIFEST,
+      bodyMd: 'global resolved body',
+    });
+
+    // User 'github' for alice.
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
+      manifestYaml: DEFAULT_MANIFEST,
+      bodyMd: 'alice resolved body',
+      scope: 'user',
+      ownerUserId: 'alice',
+    });
+
+    const { skills } = await h.bus.call<SkillsResolveInput, SkillsResolveOutput>(
+      'skills:resolve',
+      h.ctx(),
+      { skillIds: ['github'], ownerUserId: 'alice' },
+    );
+    expect(skills).toHaveLength(1);
+    expect(skills[0]!.bodyMd).toBe('alice resolved body');
+  });
+
+  // -------------------------------------------------------------------------
+  // skills:list-defaults user-wins
+  // -------------------------------------------------------------------------
+
+  it('skills:list-defaults unions user default skills with globals (user wins on collision)', async () => {
+    const h = await makeHarness();
+
+    // Global default: linear.
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
+      manifestYaml: LINEAR_MANIFEST,
+      bodyMd: LINEAR_BODY,
+      defaultAttached: true,
+    });
+
+    // Global non-default: github.
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
+      manifestYaml: DEFAULT_MANIFEST,
+      bodyMd: DEFAULT_MANIFEST_BODY,
+      defaultAttached: false,
+    });
+
+    // User default: github (same id as global non-default — plus default).
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
+      manifestYaml: DEFAULT_MANIFEST,
+      bodyMd: 'user github default body',
+      defaultAttached: true,
+      scope: 'user',
+      ownerUserId: 'alice',
+    });
+
+    const { skills } = await h.bus.call<SkillsListDefaultsInput, SkillsListDefaultsOutput>(
+      'skills:list-defaults',
+      h.ctx(),
+      { ownerUserId: 'alice' },
+    );
+
+    // Should include: global 'linear' + user 'github'.
+    const ids = skills.map((s) => s.id).sort();
+    expect(ids).toEqual(['github', 'linear']);
+
+    // github comes from user store.
+    const githubSkill = skills.find((s) => s.id === 'github')!;
+    expect(githubSkill.bodyMd).toBe('user github default body');
+  });
+
+  // -------------------------------------------------------------------------
+  // I-2 (scope-blind in-use guard regression): a user-scope delete must NOT
+  // be refused by agents:any-attached-to-skill, because attachments match
+  // purely on skillId (no scope) — a same-id GLOBAL skill being in-use would
+  // otherwise produce a cross-scope false-positive denial. A GLOBAL-scope
+  // delete of an in-use skill must STILL throw skill-in-use.
+  // -------------------------------------------------------------------------
+
+  it('user-scope delete succeeds even when a same-id global skill is reported in-use', async () => {
+    // Bootstrap a harness whose agents:any-attached-to-skill stub always
+    // reports the skill as in-use (registered BEFORE skills boots so
+    // bus.hasService is true during init).
+    const h = await createTestHarness({
+      services: {
+        'http:register-route': httpRegisterRouteStub,
+        'auth:require-user': authRequireUserStub,
+        'agents:any-attached-to-skill': async () => ({ attached: true }),
+      },
+      plugins: [
+        createDatabasePostgresPlugin({ connectionString }),
+        createSkillsPlugin(),
+      ],
+    });
+    harnesses.push(h);
+
+    // Install a user-scope skill for alice.
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
+      manifestYaml: DEFAULT_MANIFEST,
+      bodyMd: 'alice body',
+      scope: 'user',
+      ownerUserId: 'alice',
+    });
+
+    // User-scope delete must SUCCEED despite the in-use stub (cross-scope
+    // false-positive avoided — guard is global-only now).
+    await expect(
+      h.bus.call<SkillsDeleteInput, SkillsDeleteOutput>('skills:delete', h.ctx(), {
+        skillId: 'github',
+        scope: 'user',
+        ownerUserId: 'alice',
+      }),
+    ).resolves.toEqual({});
+
+    // The user row is gone.
+    let caught: unknown;
+    try {
+      await h.bus.call<SkillsGetInput, SkillsGetOutput>('skills:get', h.ctx(), {
+        skillId: 'github',
+        scope: 'user',
+        ownerUserId: 'alice',
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('skill-not-found');
+  });
+
+  it('global-scope delete still throws skill-in-use when reported in-use', async () => {
+    const h = await createTestHarness({
+      services: {
+        'http:register-route': httpRegisterRouteStub,
+        'auth:require-user': authRequireUserStub,
+        'agents:any-attached-to-skill': async () => ({ attached: true }),
+      },
+      plugins: [
+        createDatabasePostgresPlugin({ connectionString }),
+        createSkillsPlugin(),
+      ],
+    });
+    harnesses.push(h);
+
+    // Install a GLOBAL skill.
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
+      manifestYaml: DEFAULT_MANIFEST,
+      bodyMd: 'global body',
+    });
+
+    let caught: unknown;
+    try {
+      await h.bus.call<SkillsDeleteInput, SkillsDeleteOutput>('skills:delete', h.ctx(), {
+        skillId: 'github',
+        scope: 'global',
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('skill-in-use');
   });
 });

@@ -224,6 +224,34 @@ export interface AgentsCreatedEvent {
   ownerType: 'user' | 'team';
 }
 
+// --- agents:list-authored-skills ---------------------------------------------
+
+/**
+ * A SKILL.md file found under `.ax/skills/<id>/SKILL.md` in an agent's
+ * workspace. Returned by `agents:list-authored-skills`.
+ *
+ * `hasForbiddenCapabilities` is true when the parsed manifest declares any
+ * `allowedHosts`, `credentials`, or `mcpServers` entries. Agent-authored
+ * files MUST NOT declare capabilities (half-trust: an agent cannot grant
+ * itself external reach). We flag rather than drop so the promote UI can
+ * explain what must change before the skill can be promoted.
+ */
+export interface AuthoredSkillSummary {
+  id: string;
+  description: string;
+  version: number;
+  bodyMd: string;
+  hasForbiddenCapabilities: boolean;
+}
+
+export interface AgentsListAuthoredSkillsInput {
+  agentId: string;
+}
+
+export interface AgentsListAuthoredSkillsOutput {
+  skills: AuthoredSkillSummary[];
+}
+
 // --- Plugin config -----------------------------------------------------------
 
 export interface AgentsConfig {

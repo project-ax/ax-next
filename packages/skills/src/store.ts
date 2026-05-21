@@ -1,9 +1,12 @@
 import type { Kysely } from 'kysely';
-import { parseSkillManifest } from './manifest.js';
 import type { SkillsDatabase } from './migrations.js';
+import {
+  rowToGlobalDetail,
+  rowToGlobalResolved,
+  rowToGlobalSummary,
+} from './_row-mappers.js';
 import type {
   ResolvedSkill,
-  SkillCapabilities,
   SkillDetail,
   SkillSummary,
 } from './types.js';
@@ -22,23 +25,11 @@ import type {
 // silently-malformed row drops it from the union, matching the "deleted-
 // skill-still-attached" policy). The loud log lets the operator find and
 // fix the row; the empty caps keep the rest of the system live.
+//
+// The actual parseCapabilities helper and row mappers live in _row-mappers.ts
+// so both store.ts and user-store.ts share the same logic (DRY without
+// violating I4 — the mapper module is internal to @ax/skills).
 // ---------------------------------------------------------------------------
-const EMPTY_CAPABILITIES: SkillCapabilities = { allowedHosts: [], credentials: [], mcpServers: [] };
-
-function parseCapabilities(manifestYaml: string, skillId: string): SkillCapabilities {
-  const result = parseSkillManifest(manifestYaml);
-  if (!result.ok) {
-    // Use stderr directly — the store doesn't have a logger handle and
-    // pulling one in would couple the read path to AgentContext just
-    // for this defensive branch. The structured "msg" prefix matches
-    // the rest of the codebase's plain-text log convention.
-    process.stderr.write(
-      `[@ax/skills/store] corrupt_manifest skillId=${JSON.stringify(skillId)} code=${result.code} message=${JSON.stringify(result.message)}\n`,
-    );
-    return EMPTY_CAPABILITIES;
-  }
-  return result.value.capabilities;
-}
 
 export interface UpsertInput {
   id: string;
@@ -68,15 +59,7 @@ export function createSkillsStore(db: Kysely<SkillsDatabase>): SkillsStore {
         .orderBy('skill_id', 'asc')
         .execute();
 
-      return rows.map((row): SkillSummary => ({
-        id: row.skill_id,
-        description: row.description,
-        version: row.version,
-        capabilities: parseCapabilities(row.manifest_yaml, row.skill_id),
-        defaultAttached: row.default_attached,
-        ...(row.source_url !== null ? { sourceUrl: row.source_url } : {}),
-        updatedAt: row.updated_at.toISOString(),
-      }));
+      return rows.map(rowToGlobalSummary);
     },
 
     async get(skillId) {
@@ -88,18 +71,7 @@ export function createSkillsStore(db: Kysely<SkillsDatabase>): SkillsStore {
 
       if (row === undefined) return null;
 
-      const detail: SkillDetail = {
-        id: row.skill_id,
-        description: row.description,
-        version: row.version,
-        capabilities: parseCapabilities(row.manifest_yaml, row.skill_id),
-        defaultAttached: row.default_attached,
-        ...(row.source_url !== null ? { sourceUrl: row.source_url } : {}),
-        updatedAt: row.updated_at.toISOString(),
-        bodyMd: row.body_md,
-        manifestYaml: row.manifest_yaml,
-      };
-      return detail;
+      return rowToGlobalDetail(row);
     },
 
     async upsert(input) {
@@ -165,12 +137,7 @@ export function createSkillsStore(db: Kysely<SkillsDatabase>): SkillsStore {
         .orderBy('skill_id', 'asc')
         .execute();
 
-      return rows.map((row): ResolvedSkill => ({
-        id: row.skill_id,
-        capabilities: parseCapabilities(row.manifest_yaml, row.skill_id),
-        bodyMd: row.body_md,
-        manifestYaml: row.manifest_yaml,
-      }));
+      return rows.map(rowToGlobalResolved);
     },
 
     async resolve(skillIds) {
@@ -189,12 +156,7 @@ export function createSkillsStore(db: Kysely<SkillsDatabase>): SkillsStore {
       for (const id of skillIds) {
         const row = byId.get(id);
         if (row === undefined) continue;
-        result.push({
-          id: row.skill_id,
-          capabilities: parseCapabilities(row.manifest_yaml, row.skill_id),
-          bodyMd: row.body_md,
-          manifestYaml: row.manifest_yaml,
-        });
+        result.push(rowToGlobalResolved(row));
       }
       return result;
     },
