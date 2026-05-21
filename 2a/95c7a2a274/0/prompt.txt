@@ -56,3 +56,30 @@ One concern to flag: the four sibling suites needed teardown fixes that weren't 
 **New commit SHA:** `e4a30269b6b58038c89a016c673d9857d66b6926`</result>
 <usage><total_tokens>37796</total_tokens><tool_uses>9</tool_uses><duration_ms>38723</duration_ms></usage>
 </task-notification>
+
+---
+
+<task-notification>
+<task-id>a2a74e8e06f5474a8</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-vpulim-dev-ai-ax-next/d0c30c14-d5d0-42ad-a7e1-bc83eec13b77/tasks/a2a74e8e06f5474a8.output</output-file>
+<status>completed</status>
+<summary>Agent "Implement Task 3: handler remap" completed</summary>
+<result>**Status: DONE**
+
+All three review improvements applied to `handler.ts`:
+
+1. **Domain gate scoped to Google** — guard changed from `context?.path?.includes('/callback/')` to `context?.path?.includes('/callback/google')`, with a comment explaining the gate is Google-provider-specific.
+2. **Hardened session-token capture** — now reads `token` as `{ token?: string }` and only writes when `box &amp;&amp; typeof token === 'string'`, so a future better-auth shape change can't silently write `undefined`.
+3. **Co-located warning comment** on the `encryptOAuthTokens: true` line documenting the stable-`secret` dependency.
+
+`plugin.ts`/`loadProviders` untouched (left for Task 4 per instruction).
+
+**Verification:**
+- `social-signin.test.ts`: PASS (54 passed)
+- `handler.test.ts`: PASS (54 passed)
+- `tsc --noEmit`: exit 0
+
+**New commit SHA (amended):** `18a2f5fe5f8ea95853e10c1e42569a9a38157779`</result>
+<usage><total_tokens>90099</total_tokens><tool_uses>9</tool_uses><duration_ms>58183</duration_ms></usage>
+</task-notification>
