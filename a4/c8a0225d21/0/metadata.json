@@ -3,21 +3,44 @@
   "checkpoint_id": "a4c8a0225d21",
   "session_id": "d0c30c14-d5d0-42ad-a7e1-bc83eec13b77",
   "strategy": "manual-commit",
-  "created_at": "2026-05-21T04:13:12.798954Z",
+  "created_at": "2026-05-21T04:19:10.757281Z",
   "branch": "worktree-fix+google-login-better-auth",
-  "checkpoints_count": 1,
-  "files_touched": [],
+  "checkpoints_count": 2,
+  "files_touched": [
+    "deploy/charts/ax-next/values.yaml"
+  ],
   "agent": "Claude Code",
   "model": "",
   "turn_id": "a1cc1fee4812",
   "token_usage": {
-    "input_tokens": 11715,
-    "cache_creation_tokens": 272790,
-    "cache_read_tokens": 6389342,
-    "output_tokens": 83380,
-    "api_call_count": 46
+    "input_tokens": 12109,
+    "cache_creation_tokens": 291015,
+    "cache_read_tokens": 7527639,
+    "output_tokens": 92313,
+    "api_call_count": 51
   },
   "session_metrics": {
-    "turn_count": 4
-  }
+    "turn_count": 5
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-05-21T04:19:10.734903Z",
+    "agent_lines": 19,
+    "agent_removed": 13,
+    "human_added": 43,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 62,
+    "total_lines_changed": 75,
+    "agent_percentage": 42.66666666666667,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    }
+  ]
 }
