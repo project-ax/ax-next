@@ -72,6 +72,8 @@ async function dropTables(): Promise<void> {
   });
   try {
     await k.schema.dropTable('auth_providers').ifExists().execute();
+    await k.schema.dropTable('auth_better_v1_verifications').ifExists().execute();
+    await k.schema.dropTable('auth_better_v1_accounts').ifExists().execute();
     await k.schema.dropTable('auth_better_v1_sessions').ifExists().execute();
     await k.schema.dropTable('auth_better_v1_users').ifExists().execute();
   } finally {
