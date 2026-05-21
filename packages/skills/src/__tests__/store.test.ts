@@ -254,6 +254,39 @@ version: 1
     expect(defaults[0]).toHaveProperty('manifestYaml');
   });
 
+  it('roundtrips capabilities.mcpServers through upsert + list + get', async () => {
+    const db = makeKysely();
+    await runSkillsMigration(db);
+    const store = createSkillsStore(db);
+
+    const yaml = `name: ghub
+description: GitHub MCP bundle.
+capabilities:
+  mcpServers:
+    - name: github
+      transport: stdio
+      command: npx
+      args: ['-y', '@modelcontextprotocol/server-github']
+`;
+    await store.upsert({
+      id: 'ghub',
+      description: 'GitHub MCP bundle.',
+      manifestYaml: yaml,
+      bodyMd: '# ghub\n',
+      version: 0,
+    });
+
+    const list = await store.list();
+    const ghub = list.find((s) => s.id === 'ghub');
+    expect(ghub?.capabilities.mcpServers).toHaveLength(1);
+    expect(ghub?.capabilities.mcpServers[0]?.name).toBe('github');
+
+    const detail = await store.get('ghub');
+    expect(detail).not.toBeNull();
+    expect(detail!.capabilities.mcpServers[0]?.transport).toBe('stdio');
+    expect(detail!.capabilities.mcpServers[0]?.command).toBe('npx');
+  });
+
   it('resolve preserves input order and drops unknown ids silently', async () => {
     const db = makeKysely();
     await runSkillsMigration(db);

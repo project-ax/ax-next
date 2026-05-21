@@ -1,5 +1,5 @@
 import { load as yamlLoad, YAMLException } from 'js-yaml';
-import type { CapabilitySlot, SkillCapabilities } from './types.js';
+import type { CapabilitySlot, McpServerSpec, SkillCapabilities } from './types.js';
 
 export type ManifestCode =
   | 'invalid-yaml'
@@ -12,7 +12,9 @@ export type ManifestCode =
   | 'invalid-host'
   | 'invalid-slot'
   | 'duplicate-slot'
-  | 'invalid-kind';
+  | 'invalid-kind'
+  | 'invalid-mcp-command'
+  | 'invalid-mcp-transport';
 
 export interface ParsedManifest {
   id: string;
@@ -61,6 +63,314 @@ const SLOT_RE = /^[A-Z][A-Z0-9_]{0,63}$/;
 
 function err(code: ManifestCode, message: string): ParseResult {
   return { ok: false, code, message };
+}
+
+// MCP stdio commands the parser will accept. Anything else is rejected with
+// `invalid-mcp-command` at parse time so the sandbox never sees a manifest
+// that asks it to spawn `/bin/sh`, `curl`, `bash -c …`, etc. See
+// docs/plans/2026-05-20-skills-mcp-bundling-security-note.md §1.
+const MCP_COMMAND_ALLOW = new Set(['npx', 'node', 'bun', 'uvx', 'python', 'python3']);
+
+// Max servers per skill — defense-in-depth bound also enforced by the
+// sandbox zod schema (see security note §1 "Array length DoS bound").
+const MCP_SERVERS_MAX = 8;
+const MCP_ARGS_MAX = 32;
+const MCP_ARG_LEN_MAX = 256;
+// Symmetric with MCP_ARGS_* — env keys + values flow into the spawned process's
+// environment, so the grammar must cap them too. Without these the parser
+// accepted (and downstream JSON-encoded) arbitrarily large env maps.
+const MCP_ENV_MAX = 32;
+const MCP_ENV_LEN_MAX = 256;
+
+type HostValidation =
+  | { ok: true; value: string }
+  | { ok: false; code: 'invalid-host'; message: string };
+
+// Shared host-string validator (no scheme, no path, no wildcard, no IPv4,
+// must match HOSTNAME_RE). Used by both top-level `allowedHosts` and the
+// per-mcpServer `allowedHosts` list.
+function validateHost(h: unknown): HostValidation {
+  if (typeof h !== 'string') {
+    return { ok: false, code: 'invalid-host', message: `Each allowedHost must be a string, got: ${JSON.stringify(h)}` };
+  }
+  if (h.includes('*')) {
+    return { ok: false, code: 'invalid-host', message: `Wildcard hosts are not allowed: "${h}"` };
+  }
+  if (h.includes('://')) {
+    return { ok: false, code: 'invalid-host', message: `Hosts must not include a scheme: "${h}"` };
+  }
+  if (h.includes('/')) {
+    return { ok: false, code: 'invalid-host', message: `Hosts must not include a path: "${h}"` };
+  }
+  if (IPV4_RE.test(h)) {
+    return { ok: false, code: 'invalid-host', message: `IP address literals are not allowed: "${h}"` };
+  }
+  if (!HOSTNAME_RE.test(h)) {
+    return { ok: false, code: 'invalid-host', message: `"${h}" is not a valid hostname.` };
+  }
+  return { ok: true, value: h };
+}
+
+type CredentialListResult =
+  | { ok: true; value: CapabilitySlot[] }
+  | { ok: false; code: ManifestCode; message: string };
+
+// Shared credentials-list parser. Same shape rules as top-level
+// `capabilities.credentials`: each entry must have a SCREAMING_SNAKE slot
+// matching SLOT_RE, kind: 'api-key', optional string description; duplicate
+// slot names within a single list are rejected with `duplicate-slot`.
+//
+// `contextLabel` is prefixed into error messages so callers can disambiguate
+// top-level (`capabilities.credentials`) from per-server
+// (`capabilities.mcpServers[N].credentials`) failures.
+function parseCredentialList(
+  raw: unknown,
+  contextLabel: string = 'capabilities.credentials',
+): CredentialListResult {
+  if (!Array.isArray(raw)) {
+    return { ok: false, code: 'invalid-slot', message: `"${contextLabel}" must be an array.` };
+  }
+  const out: CapabilitySlot[] = [];
+  const seen = new Set<string>();
+  for (const rawCred of raw) {
+    if (rawCred === null || typeof rawCred !== 'object' || Array.isArray(rawCred)) {
+      return { ok: false, code: 'invalid-slot', message: `Each entry in "${contextLabel}" must be a mapping object.` };
+    }
+    const cred = rawCred as Record<string, unknown>;
+
+    const rawSlot = cred['slot'];
+    if (typeof rawSlot !== 'string' || !SLOT_RE.test(rawSlot)) {
+      return { ok: false, code: 'invalid-slot', message: `"${contextLabel}" entry "slot" must match /^[A-Z][A-Z0-9_]{0,63}$/, got: ${JSON.stringify(rawSlot)}` };
+    }
+    if (seen.has(rawSlot)) {
+      return { ok: false, code: 'duplicate-slot', message: `Duplicate slot name "${rawSlot}" in "${contextLabel}".` };
+    }
+    seen.add(rawSlot);
+
+    const rawKind = cred['kind'];
+    if (rawKind !== 'api-key') {
+      return { ok: false, code: 'invalid-kind', message: `"${contextLabel}" entry "kind" must be "api-key", got: ${JSON.stringify(rawKind)}` };
+    }
+
+    const rawDescription = cred['description'];
+    if (rawDescription !== undefined && typeof rawDescription !== 'string') {
+      return {
+        ok: false,
+        code: 'invalid-slot',
+        message: `"${contextLabel}" entry "description" on slot "${rawSlot}" must be a string when provided, got: ${JSON.stringify(rawDescription)}`,
+      };
+    }
+    out.push({
+      slot: rawSlot,
+      kind: 'api-key',
+      ...(rawDescription !== undefined ? { description: rawDescription } : {}),
+    });
+  }
+  return { ok: true, value: out };
+}
+
+type McpServersResult =
+  | { ok: true; value: McpServerSpec[] }
+  | { ok: false; code: ManifestCode; message: string };
+
+// Parses `capabilities.mcpServers`. Per-server `allowedHosts` and the http
+// transport's URL host are folded into `allowedHostsAcc` so the final union
+// at the top of parseSkillManifest picks them up (the credential-proxy gates
+// egress on the unioned skill-level list — see security note §1).
+function parseMcpServers(raw: unknown, allowedHostsAcc: Set<string>): McpServersResult {
+  if (!Array.isArray(raw)) {
+    return { ok: false, code: 'invalid-manifest', message: '"capabilities.mcpServers" must be an array.' };
+  }
+  if (raw.length > MCP_SERVERS_MAX) {
+    return { ok: false, code: 'invalid-manifest', message: `"capabilities.mcpServers" may declare at most ${MCP_SERVERS_MAX} servers, got ${raw.length}.` };
+  }
+  const out: McpServerSpec[] = [];
+  const seenNames = new Set<string>();
+
+  for (let index = 0; index < raw.length; index++) {
+    const rawEntry = raw[index];
+    if (rawEntry === null || typeof rawEntry !== 'object' || Array.isArray(rawEntry)) {
+      return { ok: false, code: 'invalid-manifest', message: 'Each mcpServers entry must be a mapping object.' };
+    }
+    const entry = rawEntry as Record<string, unknown>;
+
+    // name (required, NAME_RE, unique within manifest)
+    const rawName = entry['name'];
+    if (typeof rawName !== 'string' || !NAME_RE.test(rawName)) {
+      return { ok: false, code: 'invalid-manifest', message: `mcpServers entry "name" must match /^[a-z][a-z0-9-]{0,63}$/, got: ${JSON.stringify(rawName)}` };
+    }
+    if (seenNames.has(rawName)) {
+      return { ok: false, code: 'invalid-manifest', message: `Duplicate mcpServers name "${rawName}".` };
+    }
+    seenNames.add(rawName);
+
+    // transport (required, enum)
+    const rawTransport = entry['transport'];
+    if (rawTransport !== 'stdio' && rawTransport !== 'http') {
+      return { ok: false, code: 'invalid-mcp-transport', message: `mcpServers entry "transport" must be "stdio" or "http", got: ${JSON.stringify(rawTransport)}` };
+    }
+
+    // per-server allowedHosts (optional). Validated with the shared host
+    // validator; collected into both the per-server list and the parent
+    // accumulator for the top-level union.
+    const perServerHosts = new Set<string>();
+    if ('allowedHosts' in entry) {
+      const rawHosts = entry['allowedHosts'];
+      if (!Array.isArray(rawHosts)) {
+        return { ok: false, code: 'invalid-host', message: `mcpServers entry "allowedHosts" must be an array.` };
+      }
+      for (const h of rawHosts) {
+        const v = validateHost(h);
+        if (!v.ok) return { ok: false, code: 'invalid-host', message: v.message };
+        perServerHosts.add(v.value);
+        allowedHostsAcc.add(v.value);
+      }
+    }
+
+    // per-server credentials (optional). Same shape as top-level credentials.
+    let perServerCreds: CapabilitySlot[] = [];
+    if ('credentials' in entry) {
+      const credResult = parseCredentialList(
+        entry['credentials'],
+        `capabilities.mcpServers[${index}].credentials`,
+      );
+      if (!credResult.ok) {
+        return { ok: false, code: credResult.code, message: credResult.message };
+      }
+      perServerCreds = credResult.value;
+    }
+
+    // transport-specific fields
+    let command: string | undefined;
+    let args: string[] | undefined;
+    let env: Record<string, string> | undefined;
+    let url: string | undefined;
+
+    if (rawTransport === 'stdio') {
+      const rawCommand = entry['command'];
+      if (typeof rawCommand !== 'string' || rawCommand.length === 0) {
+        return { ok: false, code: 'invalid-mcp-command', message: `mcpServers stdio entry requires "command", got: ${JSON.stringify(rawCommand)}` };
+      }
+      if (!MCP_COMMAND_ALLOW.has(rawCommand)) {
+        return {
+          ok: false,
+          code: 'invalid-mcp-command',
+          message: `mcpServers "command" must be one of ${[...MCP_COMMAND_ALLOW].join(', ')}; got: ${JSON.stringify(rawCommand)}`,
+        };
+      }
+      command = rawCommand;
+
+      if ('args' in entry) {
+        const rawArgs = entry['args'];
+        if (!Array.isArray(rawArgs)) {
+          return { ok: false, code: 'invalid-manifest', message: `mcpServers "args" must be an array.` };
+        }
+        if (rawArgs.length > MCP_ARGS_MAX) {
+          return { ok: false, code: 'invalid-manifest', message: `mcpServers "args" may have at most ${MCP_ARGS_MAX} entries, got ${rawArgs.length}.` };
+        }
+        const parsedArgs: string[] = [];
+        for (const a of rawArgs) {
+          if (typeof a !== 'string') {
+            return { ok: false, code: 'invalid-manifest', message: `Each mcpServers "args" entry must be a string, got: ${JSON.stringify(a)}` };
+          }
+          if (a.length > MCP_ARG_LEN_MAX) {
+            return { ok: false, code: 'invalid-manifest', message: `mcpServers "args" entries must be ≤ ${MCP_ARG_LEN_MAX} chars, got ${a.length}.` };
+          }
+          parsedArgs.push(a);
+        }
+        args = parsedArgs;
+      }
+
+      if ('env' in entry) {
+        const rawEnv = entry['env'];
+        if (rawEnv === null || typeof rawEnv !== 'object' || Array.isArray(rawEnv)) {
+          return { ok: false, code: 'invalid-manifest', message: `mcpServers "env" must be a mapping object.` };
+        }
+        const envEntries = Object.entries(rawEnv as Record<string, unknown>);
+        if (envEntries.length > MCP_ENV_MAX) {
+          return {
+            ok: false,
+            code: 'invalid-manifest',
+            message: `mcpServers "env" may declare at most ${MCP_ENV_MAX} entries, got ${envEntries.length}.`,
+          };
+        }
+        const envOut: Record<string, string> = {};
+        for (const [k, v] of envEntries) {
+          if (k.length > MCP_ENV_LEN_MAX) {
+            return {
+              ok: false,
+              code: 'invalid-manifest',
+              message: `mcpServers "env" key length must be ≤ ${MCP_ENV_LEN_MAX} chars, got ${k.length}.`,
+            };
+          }
+          if (typeof v !== 'string') {
+            return { ok: false, code: 'invalid-manifest', message: `mcpServers "env.${k}" must be a string, got: ${JSON.stringify(v)}` };
+          }
+          if (v.length > MCP_ENV_LEN_MAX) {
+            return {
+              ok: false,
+              code: 'invalid-manifest',
+              message: `mcpServers "env.${k}" value length must be ≤ ${MCP_ENV_LEN_MAX} chars, got ${v.length}.`,
+            };
+          }
+          envOut[k] = v;
+        }
+        env = envOut;
+      }
+
+      // stdio entries must NOT carry a url.
+      if ('url' in entry) {
+        return { ok: false, code: 'invalid-manifest', message: 'mcpServers stdio entry must not declare "url".' };
+      }
+    } else {
+      // transport === 'http'
+      const rawUrl = entry['url'];
+      if (typeof rawUrl !== 'string' || rawUrl.length === 0) {
+        return { ok: false, code: 'invalid-host', message: `mcpServers http entry requires "url", got: ${JSON.stringify(rawUrl)}` };
+      }
+      let parsed: URL;
+      try {
+        parsed = new URL(rawUrl);
+      } catch {
+        return { ok: false, code: 'invalid-host', message: `mcpServers "url" must be a valid URL, got: ${JSON.stringify(rawUrl)}` };
+      }
+      if (parsed.protocol !== 'https:') {
+        return { ok: false, code: 'invalid-host', message: `mcpServers "url" must use https://, got: ${JSON.stringify(rawUrl)}` };
+      }
+      const host = parsed.hostname;
+      if (IPV4_RE.test(host)) {
+        return { ok: false, code: 'invalid-host', message: `mcpServers "url" host may not be an IP literal: "${host}"` };
+      }
+      if (!HOSTNAME_RE.test(host)) {
+        return { ok: false, code: 'invalid-host', message: `mcpServers "url" host "${host}" is not a valid hostname.` };
+      }
+      url = rawUrl;
+      // Fold the URL host into both the per-server list and the parent acc
+      // so the top-level union (and downstream credential-proxy) sees it.
+      perServerHosts.add(host);
+      allowedHostsAcc.add(host);
+
+      // http entries must NOT carry stdio-only fields.
+      for (const k of ['command', 'args', 'env']) {
+        if (k in entry) {
+          return { ok: false, code: 'invalid-manifest', message: `mcpServers http entry must not declare "${k}".` };
+        }
+      }
+    }
+
+    out.push({
+      name: rawName,
+      transport: rawTransport,
+      ...(command !== undefined ? { command } : {}),
+      ...(args !== undefined ? { args } : {}),
+      ...(env !== undefined ? { env } : {}),
+      ...(url !== undefined ? { url } : {}),
+      allowedHosts: [...perServerHosts],
+      credentials: perServerCreds,
+    });
+  }
+
+  return { ok: true, value: out };
 }
 
 // Matches wildcard host patterns like *.example.com inside an
@@ -138,7 +448,8 @@ export function parseSkillManifest(yaml: string): ParseResult {
 
   // Step 7 & 8 & 9: capabilities
   let allowedHosts: string[] = [];
-  const credentials: CapabilitySlot[] = [];
+  let credentials: CapabilitySlot[] = [];
+  let mcpServers: McpServerSpec[] = [];
 
   if ('capabilities' in doc) {
     const rawCaps = doc['capabilities'];
@@ -147,94 +458,40 @@ export function parseSkillManifest(yaml: string): ParseResult {
     }
     const caps = rawCaps as Record<string, unknown>;
 
-    // Step 7: reserved mcpServers key
+    // Accumulator: top-level allowedHosts plus every per-server allowedHosts
+    // (incl. the http transport's implicit URL host) are unioned here so the
+    // credential-proxy sees the full skill-level egress allowlist. See
+    // docs/plans/2026-05-20-skills-mcp-bundling-security-note.md §1.
+    const allowedHostsAcc = new Set<string>();
+
+    // Step 7 (was: reserved mcpServers key): parse mcpServers.
     if ('mcpServers' in caps) {
-      return err('capability-deferred', '"capabilities.mcpServers" is reserved for a future phase and may not be used.');
+      const r = parseMcpServers(caps['mcpServers'], allowedHostsAcc);
+      if (!r.ok) return err(r.code, r.message);
+      mcpServers = r.value;
     }
 
-    // Step 8: allowedHosts
+    // Step 8: top-level allowedHosts
     if ('allowedHosts' in caps) {
       const rawHosts = caps['allowedHosts'];
       if (!Array.isArray(rawHosts)) {
         return err('invalid-host', '"capabilities.allowedHosts" must be an array.');
       }
       for (const h of rawHosts) {
-        if (typeof h !== 'string') {
-          return err('invalid-host', `Each allowedHost must be a string, got: ${JSON.stringify(h)}`);
-        }
-        // Reject wildcards
-        if (h.includes('*')) {
-          return err('invalid-host', `Wildcard hosts are not allowed: "${h}"`);
-        }
-        // Reject if it contains a scheme (://)
-        if (h.includes('://')) {
-          return err('invalid-host', `Hosts must not include a scheme: "${h}"`);
-        }
-        // Reject if it contains a path (/)
-        if (h.includes('/')) {
-          return err('invalid-host', `Hosts must not include a path: "${h}"`);
-        }
-        // Reject IPv4 literals
-        if (IPV4_RE.test(h)) {
-          return err('invalid-host', `IP address literals are not allowed: "${h}"`);
-        }
-        // Must match hostname pattern
-        if (!HOSTNAME_RE.test(h)) {
-          return err('invalid-host', `"${h}" is not a valid hostname.`);
-        }
+        const v = validateHost(h);
+        if (!v.ok) return err('invalid-host', v.message);
+        allowedHostsAcc.add(v.value);
       }
-      // Deduplicate
-      allowedHosts = [...new Set(rawHosts as string[])];
     }
 
-    // Step 9: credentials
+    // Materialize the unioned host list (insertion-ordered, deduped).
+    allowedHosts = [...allowedHostsAcc];
+
+    // Step 9: top-level credentials
     if ('credentials' in caps) {
-      const rawCreds = caps['credentials'];
-      if (!Array.isArray(rawCreds)) {
-        return err('invalid-slot', '"capabilities.credentials" must be an array.');
-      }
-      const seenSlots = new Set<string>();
-      for (const rawCred of rawCreds) {
-        if (rawCred === null || typeof rawCred !== 'object' || Array.isArray(rawCred)) {
-          return err('invalid-slot', 'Each credential entry must be a mapping object.');
-        }
-        const cred = rawCred as Record<string, unknown>;
-
-        // slot
-        const rawSlot = cred['slot'];
-        if (typeof rawSlot !== 'string' || !SLOT_RE.test(rawSlot)) {
-          return err('invalid-slot', `"slot" must match /^[A-Z][A-Z0-9_]{0,63}$/, got: ${JSON.stringify(rawSlot)}`);
-        }
-
-        // duplicate slot
-        if (seenSlots.has(rawSlot)) {
-          return err('duplicate-slot', `Duplicate slot name "${rawSlot}" in credentials.`);
-        }
-        seenSlots.add(rawSlot);
-
-        // kind
-        const rawKind = cred['kind'];
-        if (rawKind !== 'api-key') {
-          return err('invalid-kind', `"kind" must be "api-key", got: ${JSON.stringify(rawKind)}`);
-        }
-
-        // description (optional). Reject non-string values loudly rather
-        // than silently dropping — a manifest with `description: 42` is a
-        // user error worth surfacing, not a quiet shape-coercion.
-        const rawDescription = cred['description'];
-        if (rawDescription !== undefined && typeof rawDescription !== 'string') {
-          return err(
-            'invalid-slot',
-            `"description" on slot "${rawSlot}" must be a string when provided, got: ${JSON.stringify(rawDescription)}`,
-          );
-        }
-        const slot: CapabilitySlot = {
-          slot: rawSlot,
-          kind: 'api-key',
-          ...(rawDescription !== undefined ? { description: rawDescription } : {}),
-        };
-        credentials.push(slot);
-      }
+      const r = parseCredentialList(caps['credentials']);
+      if (!r.ok) return err(r.code, r.message);
+      credentials = r.value;
     }
   }
 
@@ -244,7 +501,7 @@ export function parseSkillManifest(yaml: string): ParseResult {
       id: name,
       description,
       version,
-      capabilities: { allowedHosts, credentials },
+      capabilities: { allowedHosts, credentials, mcpServers },
     },
   };
 }

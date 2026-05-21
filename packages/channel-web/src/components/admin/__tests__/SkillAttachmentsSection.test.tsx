@@ -28,6 +28,7 @@ const GITHUB_SKILL: SkillSummary = {
   capabilities: {
     allowedHosts: ['api.github.com'],
     credentials: [{ slot: 'GITHUB_TOKEN', kind: 'api-key', description: 'PAT' }],
+    mcpServers: [],
   },
   defaultAttached: false,
   updatedAt: '2026-05-18T10:00:00.000Z',
@@ -40,6 +41,7 @@ const SLACK_SKILL: SkillSummary = {
   capabilities: {
     allowedHosts: [],
     credentials: [],
+    mcpServers: [],
   },
   defaultAttached: false,
   updatedAt: '2026-05-17T08:00:00.000Z',
@@ -86,6 +88,7 @@ describe('SkillAttachmentsSection', () => {
         capabilities: {
           allowedHosts: [],
           credentials: [{ slot: 'LINEAR_TOKEN', kind: 'api-key' }],
+          mcpServers: [],
         },
         defaultAttached: false,
         updatedAt: new Date().toISOString(),

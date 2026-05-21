@@ -62,9 +62,58 @@ export const ProxyConfigSchema = z.object({
 
 // Re-declare the installed-skill shape locally (structural duplicate of
 // sandbox-subprocess's InstalledSkillSchema — I2: no cross-plugin imports).
+//
+// Phase B (capabilities.mcpServers): each skill carries an optional list of
+// MCP server specs. This is the trust-boundary re-validation — the host-side
+// orchestrator built these from the parsed manifest but the schema here is
+// the wire-level contract for sandbox:open-session. The k8s sandbox forwards
+// these into the runner pod via AX_INSTALLED_SKILLS_JSON; the runner module
+// (agent-claude-sdk-runner/src/installed-skills.ts) writes `.mcp.json`
+// alongside SKILL.md before spawning the SDK.
+const McpServerSchema = z
+  .object({
+    name: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/),
+    transport: z.enum(['stdio', 'http']),
+    command: z.string().optional(),
+    args: z.array(z.string().max(256)).max(32).optional(),
+    env: z.record(z.string(), z.string()).optional(),
+    url: z.string().url().optional(),
+    allowedHosts: z.array(z.string()).default([]),
+    credentials: z.array(z.object({ slot: z.string(), kind: z.literal('api-key') })).default([]),
+  })
+  // Transport-specific field invariants: enforces that stdio entries carry a
+  // non-empty command and no url, and http entries carry a url and none of
+  // the stdio-only fields. Without this the schema accepted cross-contaminated
+  // shapes (e.g. transport=stdio with a url, or transport=http with command)
+  // that the manifest parser already rejects upstream — re-validate at the
+  // wire boundary so a drifted host can't smuggle one through.
+  .refine(
+    (v) => {
+      if (v.transport === 'stdio') {
+        return (
+          typeof v.command === 'string' &&
+          v.command.length > 0 &&
+          v.url === undefined
+        );
+      }
+      // transport === 'http'
+      return (
+        typeof v.url === 'string' &&
+        v.command === undefined &&
+        v.args === undefined &&
+        v.env === undefined
+      );
+    },
+    {
+      message:
+        'mcpServers entry must match its transport: stdio requires command (no url); http requires url (no command/args/env)',
+    },
+  );
+
 const InstalledSkillSchema = z.object({
   id: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/, 'invalid skill id shape'),
   skillMd: z.string().min(1).max(512 * 1024), // 512 KiB per-skill cap
+  mcpServers: z.array(McpServerSchema).max(8).default([]),
 });
 
 export const OpenSessionInputSchema = z.object({

@@ -1099,6 +1099,95 @@ real cluster.
 # via the admin UI. All three are scoped to this walk and cheap to recreate.
 ```
 
+## Scenario: MCP-bundled skill (Phase B — capabilities.mcpServers)
+
+### What this proves
+
+A skill that declares `capabilities.mcpServers` produces a per-skill
+`.mcp.json` next to `SKILL.md` inside the runner. The Claude SDK
+auto-discovers the file, spawns the bundled MCP server in the sandbox,
+and exposes its tools to the model. Validates the orchestrator → sandbox
+→ runner materialization wiring end-to-end.
+
+### Prerequisites
+
+Same as the Phase 1 skill-install scenario above (clean `kind ax-next-dev`
+cluster, an admin account, and a test agent). The MCP server used here is
+`@modelcontextprotocol/server-everything`, a no-credentials reference
+server that prints a few demo tools — it's fetched via `npx -y` at session
+start, so the runner pod needs outbound network reach to npm (already true
+on the goldenpath kind cluster).
+
+### Walk
+
+1. Sign in as admin. Navigate to Admin → Skills → `+ New skill`. Paste:
+   ```yaml
+   ---
+   name: everything
+   description: Bundles the @modelcontextprotocol/server-everything demo MCP server.
+   capabilities:
+     mcpServers:
+       - name: everything
+         transport: stdio
+         command: npx
+         args: ['-y', '@modelcontextprotocol/server-everything']
+   ---
+   Use this skill to demonstrate that MCP-bundled tools land in the session.
+   ```
+   The preview pane should show the skill name `everything`, no
+   allowedHosts chips, no credential slot chips, and an MCP-server chip
+   `everything (stdio: npx)`. Click Install.
+2. Navigate to Admin → Agents → test agent → Skills section. Attach the
+   `everything` skill. No credential bindings are needed (the skill
+   declares zero `capabilities.credentials`). Save.
+3. Open a chat with that agent. Ask: "List the MCP tools you can call.
+   Just the names." Expect the response to mention tools from
+   `server-everything` — at minimum `echo`, `add`, and `printEnv` (the
+   exact tool list is the SDK's `everything` reference contract; check
+   the README at `@modelcontextprotocol/server-everything` if it drifts).
+4. Ask the agent to call one of those tools, e.g. "Use the echo tool with
+   message 'phase-b acceptance'." The agent should issue a tool call and
+   echo the message back in its response.
+5. (Optional cluster-side) `kubectl exec` into the runner pod for the
+   session opened in step 3 and confirm
+   `$CLAUDE_CONFIG_DIR/skills/everything/.mcp.json` exists with mode 0444,
+   and its content shape is:
+   ```json
+   {
+     "mcpServers": {
+       "everything": {
+         "command": "npx",
+         "args": ["-y", "@modelcontextprotocol/server-everything"],
+         "env": {}
+       }
+     }
+   }
+   ```
+6. Detach the skill from the agent (Skills section → trash → Save).
+   Open a new chat. Ask again: "List the MCP tools you can call." The
+   `echo` / `add` / `printEnv` tools should NO LONGER appear — verifying
+   that the materialization is gated on attachment, not baked into the
+   sandbox image.
+7. Delete the skill via the Admin → Skills tab.
+
+### Acceptance criteria
+
+- Skill installs via UI; the MCP-server chip appears on the row.
+- Attach + save succeeds; the agent's session opens without termination.
+- Step 3: the agent lists MCP tools sourced from `everything`.
+- Step 4: a `tools/call` to one of those tools returns the expected
+  payload (echo round-trip is the cleanest assertion).
+- Step 5: `.mcp.json` exists, mode 0444, content matches the shape above.
+- Step 6: after detach, a fresh session does NOT have those tools.
+
+### Cleanup
+
+```bash
+# Detach + delete the test skill + delete the test agent via the admin UI.
+# The MCP server binary was npx-fetched into the pod's npm cache; pod
+# teardown removes it.
+```
+
 ## When this passes, do
 1. Update the PR description's acceptance section with the date + cluster
    used + a copy of the `psql` count outputs.

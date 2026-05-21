@@ -23,7 +23,7 @@ import type {
 // skill-still-attached" policy). The loud log lets the operator find and
 // fix the row; the empty caps keep the rest of the system live.
 // ---------------------------------------------------------------------------
-const EMPTY_CAPABILITIES: SkillCapabilities = { allowedHosts: [], credentials: [] };
+const EMPTY_CAPABILITIES: SkillCapabilities = { allowedHosts: [], credentials: [], mcpServers: [] };
 
 function parseCapabilities(manifestYaml: string, skillId: string): SkillCapabilities {
   const result = parseSkillManifest(manifestYaml);
