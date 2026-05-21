@@ -28,6 +28,7 @@
 // NOT exported from `index.ts`. NOT registered by any preset.
 // ---------------------------------------------------------------------------
 
+import { registerWorkspaceApplyFacade } from '@ax/core';
 import type {
   Plugin,
   WorkspaceApplyInput,
@@ -103,6 +104,7 @@ export function createTestOnlyGitServerPlugin(
       version: '0.0.0',
       registers: [
         'workspace:apply',
+        'workspace:apply-internal',
         'workspace:read',
         'workspace:list',
         'workspace:diff',
@@ -126,12 +128,17 @@ export function createTestOnlyGitServerPlugin(
       await ensureRepoExists(lifecycleClient, workspaceId);
       state = { mirrorCache, engine, workspaceId };
 
+      // The PUBLIC `workspace:apply` is the @ax/core facade (pre-apply +
+      // applied around the raw impl); we register the raw impl as
+      // `workspace:apply-internal`.
+      registerWorkspaceApplyFacade(bus, PLUGIN_NAME);
+
       // Each hook delegates to the engine with the FIXED workspaceId from
       // boot() — production callers derive workspaceId from ctx, but this
       // adapter pins one workspace per plugin instance so the contract test
       // gets a clean version history per scenario.
       bus.registerService<WorkspaceApplyInput, WorkspaceApplyOutput>(
-        'workspace:apply',
+        'workspace:apply-internal',
         PLUGIN_NAME,
         (ctx, input) => engine.apply(workspaceId, input, {
           agentId: ctx.agentId,

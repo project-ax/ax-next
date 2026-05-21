@@ -33,6 +33,7 @@ export function createWorkspaceGitPlugin(config: WorkspaceGitConfig): Plugin {
       version: '0.0.0',
       registers: [
         'workspace:apply',
+        'workspace:apply-internal',
         'workspace:apply-bundle',
         'workspace:export-baseline-bundle',
         'workspace:read',

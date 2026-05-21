@@ -39,6 +39,7 @@
 // scrubber catches it before it reaches the kernel's error logger.
 // ---------------------------------------------------------------------------
 
+import { registerWorkspaceApplyFacade } from '@ax/core';
 import type { AgentContext, Plugin, WorkspaceDelta } from '@ax/core';
 import type {
   WorkspaceApplyBundleInput,
@@ -190,6 +191,7 @@ export function createWorkspaceGitServerPlugin(
       version: '0.0.0',
       registers: [
         'workspace:apply',
+        'workspace:apply-internal',
         'workspace:apply-bundle',
         'workspace:export-baseline-bundle',
         'workspace:read',
@@ -228,11 +230,16 @@ export function createWorkspaceGitServerPlugin(
 
       state = { mirrorCache, lifecycleClient, engine };
 
-      // Register the four hooks. Each derives `workspaceId` from ctx via
+      // The PUBLIC `workspace:apply` is the @ax/core facade — it fires
+      // workspace:pre-apply (veto) + workspace:applied (notify) around our
+      // raw impl, which we register as `workspace:apply-internal` below.
+      registerWorkspaceApplyFacade(bus, PLUGIN_NAME);
+
+      // Register the raw hooks. Each derives `workspaceId` from ctx via
       // the (possibly-overridden) `workspaceIdFor`, then delegates to the
       // engine. Errors get scrubbed for token leaks before re-throwing.
       bus.registerService<WorkspaceApplyInput, WorkspaceApplyOutput>(
-        'workspace:apply',
+        'workspace:apply-internal',
         PLUGIN_NAME,
         async (ctx, input) => {
           const workspaceId = resolveWorkspaceId(ctx);

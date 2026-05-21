@@ -9,6 +9,7 @@ import picomatch from 'picomatch';
 import {
   PluginError,
   asWorkspaceVersion,
+  registerWorkspaceApplyFacade,
   type Bytes,
   type FileChange,
   type HookBus,
@@ -481,7 +482,7 @@ function validatePath(path: string): void {
     throw new PluginError({
       code: 'invalid-path',
       plugin: PLUGIN_NAME,
-      hookName: 'workspace:apply',
+      hookName: 'workspace:apply-internal',
       message: 'path must be a non-empty string',
     });
   }
@@ -489,7 +490,7 @@ function validatePath(path: string): void {
     throw new PluginError({
       code: 'invalid-path',
       plugin: PLUGIN_NAME,
-      hookName: 'workspace:apply',
+      hookName: 'workspace:apply-internal',
       message: `path contains NUL byte: ${JSON.stringify(path)}`,
     });
   }
@@ -497,7 +498,7 @@ function validatePath(path: string): void {
     throw new PluginError({
       code: 'invalid-path',
       plugin: PLUGIN_NAME,
-      hookName: 'workspace:apply',
+      hookName: 'workspace:apply-internal',
       message: `path must be relative, got: ${JSON.stringify(path)}`,
     });
   }
@@ -505,7 +506,7 @@ function validatePath(path: string): void {
     throw new PluginError({
       code: 'invalid-path',
       plugin: PLUGIN_NAME,
-      hookName: 'workspace:apply',
+      hookName: 'workspace:apply-internal',
       message: `path must use POSIX separators, got: ${JSON.stringify(path)}`,
     });
   }
@@ -515,7 +516,7 @@ function validatePath(path: string): void {
       throw new PluginError({
         code: 'invalid-path',
         plugin: PLUGIN_NAME,
-        hookName: 'workspace:apply',
+        hookName: 'workspace:apply-internal',
         message: `path contains forbidden segment: ${JSON.stringify(path)}`,
       });
     }
@@ -523,7 +524,7 @@ function validatePath(path: string): void {
       throw new PluginError({
         code: 'invalid-path',
         plugin: PLUGIN_NAME,
-        hookName: 'workspace:apply',
+        hookName: 'workspace:apply-internal',
         message: `path may not include a .git segment: ${JSON.stringify(path)}`,
       });
     }
@@ -764,8 +765,13 @@ export function registerWorkspaceGitHooks(
     return resolveHead(gitdir);
   }
 
+  // The PUBLIC `workspace:apply` is the @ax/core facade — it fires
+  // workspace:pre-apply (veto) + workspace:applied (notify) around our raw
+  // impl, which we register as the INTERNAL hook below.
+  registerWorkspaceApplyFacade(bus, PLUGIN_NAME);
+
   bus.registerService<WorkspaceApplyInput, WorkspaceApplyOutput>(
-    'workspace:apply',
+    'workspace:apply-internal',
     PLUGIN_NAME,
     async (ctx, input) => {
       // Validate paths up-front, BEFORE taking the mutex, so a bad input
@@ -786,7 +792,7 @@ export function registerWorkspaceGitHooks(
           throw new PluginError({
             code: 'parent-mismatch',
             plugin: PLUGIN_NAME,
-            hookName: 'workspace:apply',
+            hookName: 'workspace:apply-internal',
             message: `expected parent ${currentVersion === null ? 'null' : currentVersion}, got ${input.parent === null ? 'null' : input.parent}`,
           });
         }

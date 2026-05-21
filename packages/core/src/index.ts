@@ -12,6 +12,12 @@ export {
 } from './ipc/wire.js';
 export { encodeFrame, FrameDecoder, MAX_FRAME } from './ipc/framing.js';
 export { asWorkspaceVersion } from './workspace.js';
+export {
+  filterToPolicy,
+  POLICY_PREFIXES,
+  POLICY_EXACT_PATHS,
+} from './workspace-policy.js';
+export { registerWorkspaceApplyFacade } from './workspace-apply-facade.js';
 export { safePath, assertWithinBase } from './util/safe-path.js';
 export type {
   Bytes,

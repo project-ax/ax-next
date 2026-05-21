@@ -110,6 +110,7 @@ describe('createWorkspaceGitServerPlugin — manifest', () => {
     expect(plugin.manifest.name).toBe('@ax/workspace-git-server');
     expect(plugin.manifest.registers).toEqual([
       'workspace:apply',
+      'workspace:apply-internal',
       'workspace:apply-bundle',
       'workspace:export-baseline-bundle',
       'workspace:read',
