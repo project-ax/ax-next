@@ -30,6 +30,7 @@ import {
   type AdminAgentInput,
 } from '../../lib/admin';
 import { SkillAttachmentsSection } from './SkillAttachmentsSection';
+import { AuthoredSkillsSection } from './AuthoredSkillsSection';
 import type { Team } from '../../../mock/admin/teams';
 import type { McpServer } from '../../../mock/admin/mcp-servers';
 import { Button } from '@/components/ui/button';
@@ -478,6 +479,14 @@ export function AgentForm() {
             }}
           />
         </Card>
+      )}
+
+      {/* Authored skills — skills the agent wrote in its workspace.
+          Only meaningful once the agent exists and has a workspace. */}
+      {editing !== 'new' && (
+        <div className="mt-4">
+          <AuthoredSkillsSection agentId={editing.id} />
+        </div>
       )}
     </div>
   );
