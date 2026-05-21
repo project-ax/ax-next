@@ -118,4 +118,20 @@ describe('pollConversationTitle', () => {
     });
     expect(title).toBe('Eventually');
   });
+
+  it('does not hang on a never-resolving fetch — times out the attempt and returns null', async () => {
+    // A browser fetch has no default timeout; without the per-attempt bound a
+    // single stuck request would stall the whole poll forever. The dummy
+    // fetch ignores the abort signal, so the timeout race (not the abort) is
+    // what must win.
+    const fetchImpl = vi.fn(() => new Promise<Response>(() => {}));
+    const title = await pollConversationTitle('c-1', {
+      attempts: 2,
+      intervalMs: 0,
+      perAttemptTimeoutMs: 10,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    expect(title).toBeNull();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
 });
