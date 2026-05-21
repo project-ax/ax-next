@@ -10,6 +10,7 @@ export type PluginErrorCode =
   | 'duplicate-plugin'
   | 'timeout'
   | 'invalid-payload'
+  | 'invalid-return'
   | 'invalid-manifest'
   | 'cycle'
   | 'missing-service'

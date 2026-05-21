@@ -1,6 +1,8 @@
+import type { ZodType } from 'zod';
 import type { AgentContext } from './context.js';
 import { isRejection, PluginError, type Rejection } from './errors.js';
 import type { FireResult } from './types.js';
+import { withTimeout } from './util/with-timeout.js';
 
 export type ServiceHandler<I = unknown, O = unknown> = (
   ctx: AgentContext,
@@ -12,9 +14,19 @@ export type SubscriberHandler<P = unknown> = (
   payload: P,
 ) => Promise<P | undefined | Rejection>;
 
+/** Default per-service-call timeout. A hang backstop, not a latency SLA. */
+export const DEFAULT_SERVICE_TIMEOUT_MS = 120_000;
+
+export interface HookBusOptions {
+  /** Default timeout applied to every service call without its own override. */
+  defaultServiceTimeoutMs?: number;
+}
+
 interface RegisteredService {
   plugin: string;
   handler: ServiceHandler;
+  returns?: ZodType;
+  timeoutMs?: number;
 }
 
 interface RegisteredSubscriber {
@@ -25,8 +37,18 @@ interface RegisteredSubscriber {
 export class HookBus {
   private services = new Map<string, RegisteredService>();
   private subscribers = new Map<string, RegisteredSubscriber[]>();
+  private readonly defaultServiceTimeoutMs: number;
 
-  registerService<I, O>(hookName: string, plugin: string, handler: ServiceHandler<I, O>): void {
+  constructor(opts?: HookBusOptions) {
+    this.defaultServiceTimeoutMs = opts?.defaultServiceTimeoutMs ?? DEFAULT_SERVICE_TIMEOUT_MS;
+  }
+
+  registerService<I, O>(
+    hookName: string,
+    plugin: string,
+    handler: ServiceHandler<I, O>,
+    opts?: { returns?: ZodType<O>; timeoutMs?: number },
+  ): void {
     const existing = this.services.get(hookName);
     if (existing !== undefined) {
       throw new PluginError({
@@ -35,7 +57,10 @@ export class HookBus {
         message: `service hook '${hookName}' already registered by plugin '${existing.plugin}'`,
       });
     }
-    this.services.set(hookName, { plugin, handler: handler as ServiceHandler });
+    const record: RegisteredService = { plugin, handler: handler as ServiceHandler };
+    if (opts?.returns !== undefined) record.returns = opts.returns as ZodType;
+    if (opts?.timeoutMs !== undefined) record.timeoutMs = opts.timeoutMs;
+    this.services.set(hookName, record);
   }
 
   hasService(hookName: string): boolean {
@@ -61,8 +86,32 @@ export class HookBus {
         message: `no plugin registered for service hook '${hookName}'`,
       });
     }
+    const timeoutMs = registered.timeoutMs ?? this.defaultServiceTimeoutMs;
     try {
-      return (await registered.handler(ctx, input)) as O;
+      const result = await withTimeout(
+        registered.handler(ctx, input),
+        timeoutMs,
+        () =>
+          new PluginError({
+            code: 'timeout',
+            plugin: registered.plugin,
+            hookName,
+            message: `service hook '${hookName}' exceeded ${timeoutMs}ms`,
+          }),
+      );
+      if (registered.returns !== undefined) {
+        const parsed = registered.returns.safeParse(result);
+        if (!parsed.success) {
+          throw new PluginError({
+            code: 'invalid-return',
+            plugin: registered.plugin,
+            hookName,
+            message: `service hook '${hookName}' returned an invalid shape: ${parsed.error.message}`,
+          });
+        }
+        return parsed.data as O;
+      }
+      return result as O;
     } catch (err) {
       if (err instanceof PluginError) throw err;
       throw new PluginError({
