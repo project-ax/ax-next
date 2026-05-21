@@ -20,6 +20,7 @@ const DETAIL: SkillDetail = {
   id: 'github-api',
   description: 'Interacts with the GitHub REST API.',
   version: 1,
+  scope: 'global',
   capabilities: {
     allowedHosts: ['api.github.com'],
     credentials: [{ slot: 'GITHUB_TOKEN', kind: 'api-key', description: 'Personal access token' }],

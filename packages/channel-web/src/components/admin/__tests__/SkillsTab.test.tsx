@@ -36,6 +36,7 @@ const SKILL_A: SkillSummary = {
   id: 'github-api',
   description: 'Interacts with the GitHub REST API.',
   version: 1,
+  scope: 'global',
   capabilities: {
     allowedHosts: ['api.github.com'],
     credentials: [{ slot: 'GITHUB_TOKEN', kind: 'api-key', description: 'PAT' }],
@@ -49,6 +50,7 @@ const SKILL_B: SkillSummary = {
   id: 'slack-notify',
   description: 'Posts messages to Slack channels.',
   version: 0,
+  scope: 'global',
   capabilities: {
     allowedHosts: [],
     credentials: [],
@@ -192,6 +194,7 @@ describe('SkillsTab', () => {
         id: 'heartbeat',
         description: 'Daily check-in.',
         version: 1,
+        scope: 'global' as const,
         capabilities: { allowedHosts: [], credentials: [], mcpServers: [] },
         defaultAttached: true,
         updatedAt: '2026-05-19T00:00:00.000Z',
@@ -200,6 +203,7 @@ describe('SkillsTab', () => {
         id: 'github',
         description: 'GitHub API.',
         version: 1,
+        scope: 'global' as const,
         capabilities: { allowedHosts: ['api.github.com'], credentials: [{ slot: 'X', kind: 'api-key' }], mcpServers: [] },
         defaultAttached: false,
         updatedAt: '2026-05-19T00:00:00.000Z',
@@ -223,6 +227,7 @@ describe('SkillsTab', () => {
       id: 'github-api',
       description: 'Interacts with the GitHub REST API.',
       version: 1,
+      scope: 'global',
       capabilities: {
         allowedHosts: ['api.github.com'],
         credentials: [],

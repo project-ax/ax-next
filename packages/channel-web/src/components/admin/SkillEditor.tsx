@@ -14,6 +14,23 @@ import { Checkbox } from '@/components/ui/checkbox';
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports
 import { parseSkillManifest } from '@ax/skills/manifest';
 import { getSkill, upsertSkill, updateSkill } from '@/lib/skills';
+import type { SkillDetail } from '@ax/skills';
+
+/** Minimal API surface the editor needs — injectable for user vs admin routes. */
+export interface SkillEditorApi {
+  getSkill: (skillId: string) => Promise<SkillDetail>;
+  upsertSkill: (
+    skillMd: string,
+    opts?: { defaultAttached?: boolean },
+  ) => Promise<{ skillId: string; created: boolean }>;
+  updateSkill: (
+    skillId: string,
+    skillMd: string,
+    opts?: { defaultAttached?: boolean },
+  ) => Promise<{ skillId: string; created: boolean }>;
+}
+
+const defaultApi: SkillEditorApi = { getSkill, upsertSkill, updateSkill };
 
 const EMPTY_TEMPLATE = [
   '---',
@@ -37,9 +54,11 @@ interface Props {
   skillId?: string;
   onSaved: () => void;
   onCancel: () => void;
+  /** Override the API client (defaults to admin `/admin/skills*` functions). */
+  api?: SkillEditorApi;
 }
 
-export function SkillEditor({ skillId, onSaved, onCancel }: Props) {
+export function SkillEditor({ skillId, onSaved, onCancel, api = defaultApi }: Props) {
   const [text, setText] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(skillId !== undefined);
   const [saving, setSaving] = useState(false);
@@ -62,7 +81,7 @@ export function SkillEditor({ skillId, onSaved, onCancel }: Props) {
     let cancelled = false;
     void (async () => {
       try {
-        const detail = await getSkill(skillId);
+        const detail = await api.getSkill(skillId);
         if (cancelled) return;
         const md =
           '---\n' +
@@ -82,7 +101,11 @@ export function SkillEditor({ skillId, onSaved, onCancel }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [skillId]);
+  // `api` is an object reference; listing it as a dep is correct but
+  // callers that inline the object literal would re-run on every render.
+  // The intent is that callers pass a stable (module-level) constant.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [skillId, api]);
 
   // Parse the manifest yaml between the first two `---` fences on every change.
   const parsedResult = useMemo(() => {
@@ -114,9 +137,9 @@ export function SkillEditor({ skillId, onSaved, onCancel }: Props) {
     setServerError(null);
     try {
       if (skillId === undefined) {
-        await upsertSkill(text, { defaultAttached });
+        await api.upsertSkill(text, { defaultAttached });
       } else {
-        await updateSkill(skillId, text, { defaultAttached });
+        await api.updateSkill(skillId, text, { defaultAttached });
       }
       onSaved();
     } catch (err) {

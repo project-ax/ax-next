@@ -25,6 +25,7 @@ const GITHUB_SKILL: SkillSummary = {
   id: 'github-api',
   description: 'Interacts with the GitHub REST API.',
   version: 1,
+  scope: 'global',
   capabilities: {
     allowedHosts: ['api.github.com'],
     credentials: [{ slot: 'GITHUB_TOKEN', kind: 'api-key', description: 'PAT' }],
@@ -38,6 +39,7 @@ const SLACK_SKILL: SkillSummary = {
   id: 'slack-notify',
   description: 'Posts to Slack.',
   version: 0,
+  scope: 'global',
   capabilities: {
     allowedHosts: [],
     credentials: [],
@@ -85,6 +87,7 @@ describe('SkillAttachmentsSection', () => {
         id: 'linear-tracker',
         description: 'tracks linear issues',
         version: 1,
+        scope: 'global' as const,
         capabilities: {
           allowedHosts: [],
           credentials: [{ slot: 'LINEAR_TOKEN', kind: 'api-key' }],
