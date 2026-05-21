@@ -1620,3 +1620,21 @@ kubectl exec -n ax-next deploy/ax-next-host -- \
       subprocess. `proxy-startup.ts` now forwards env vars whose value
       is an `ax-cred:<32-hex>` placeholder.
   - All step 1–9 acceptance criteria pass.
+- **Skills distribution Phases D + E (this PR)** — walked 2026-05-21 on
+  `kind-ax-next-dev` (rebuilt `ax-next/agent:dev`, `reset-bootstrap --force`
+  to re-open `/setup` since Google-OAuth login isn't Playwright-drivable).
+  Single-user (admin) scope — multi-user alice/bob isolation and the
+  populated-promote flow aren't browser-walkable here (OAuth + workspace
+  seeding) and are covered by automated tests instead.
+  - **Phase D (My Skills):** user-menu → My Skills → New skill → installed
+    `acceptance-note` via the live-preview editor → it appears in the list.
+    `GET/POST /settings/skills` returned 200/201. DB confirmed the row landed
+    in `skills_v1_user_skills` with `owner_user_id` = the admin's id and did
+    NOT appear in `skills_v1_skills`. ✅
+  - **Phase E (Authored Skills):** the agent detail form (Admin → Agents →
+    edit) renders the "Authored Skills" section below skill attachments;
+    `GET /admin/agents/:id/authored-skills` returned 200 and the
+    `agents:list-authored-skills` hook ran (empty for an agent that has
+    authored no `.ax/skills/*/SKILL.md`, as expected). ✅
+  - 0 console errors (2 benign Radix `aria-describedby` dialog advisories,
+    consistent with the app's other dialogs).
