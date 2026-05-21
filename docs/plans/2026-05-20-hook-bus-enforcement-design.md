@@ -1,11 +1,11 @@
 # Hook-bus service-boundary enforcement — Finding 2 (Codex 2026-04-29)
 
 **Date:** 2026-05-20
-**Status:** Design approved; implementation pending plan.
+**Status:** Shipped as PR #118 (2026-05-21). This document is the design that PR implemented; the "current behavior" described below is the pre-PR state it replaced.
 **Context:** Architectural-debt finding 2 (`TODO.md` → "Architectural debt (Codex
 2026-04-29)"). The architecture spec promises that service-hook returns are
-Zod-validated and that each service hook has a timeout, but `HookBus.call`
-(`packages/core/src/hook-bus.ts:54`) only awaits the handler and casts the
+Zod-validated and that each service hook has a timeout, but at design time
+`HookBus.call` only awaited the handler and cast the
 result — no validation, no timeout. Finding 4 (shipped 2026-05-20) already
 caveated those doc claims as "not yet enforced"; this finding makes them real.
 Finding 4 also settled where per-hook declarations live: **in code at the

@@ -115,7 +115,16 @@ export interface CredentialsResolveOutput {
   };
 }
 
-/** Runtime contract for `credentials:resolve:setting`. Mirrors CredentialsResolveOutput. */
+/**
+ * Runtime contract for `credentials:resolve:setting`. Hand-mirrors the
+ * `CredentialsResolveOutput` interface. A compile-time `z.infer extends
+ * interface` guard isn't viable here (zod's `.optional()` infers `| undefined`,
+ * which `exactOptionalPropertyTypes` rejects against the interface's exact
+ * optionals; and `z.instanceof(Uint8Array)` infers a narrower `Uint8Array`
+ * generic) — so `return-schemas.test.ts` guards drift at runtime instead: a
+ * fully-populated interface-typed value must round-trip through the schema
+ * without losing fields.
+ */
 export const CredentialsResolveOutputSchema = z.object({
   value: z.string(),
   refreshed: z
@@ -668,6 +677,9 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
         async (_ctx, input) => {
           return { value: new TextDecoder().decode(input.payload) };
         },
+        // Cast required: a concrete ZodObject isn't assignable to the abstract
+        // `ZodType<O>` param. The drift guard near the schema definition is what
+        // actually enforces schema↔interface agreement.
         { returns: CredentialsResolveOutputSchema as ZodType<CredentialsResolveOutput> },
       );
 
