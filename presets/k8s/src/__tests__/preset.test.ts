@@ -517,15 +517,19 @@ describe('@ax/preset-k8s workspace backend selection', () => {
   });
 
   it("each backend registers the full bundle-aware workspace:* surface", () => {
-    // Reflex check: every backend must register all six workspace:*
-    // hooks (apply/read/list/diff + apply-bundle + export-baseline-bundle).
-    // The earlier four-hook backend (@ax/workspace-git-http) was retired
-    // 2026-05-04 because multi-turn writes silently failed without the
-    // bundle hooks. If a refactor accidentally drops a hook, this fails
-    // before bootstrap does.
+    // Reflex check: every backend must register all seven workspace:*
+    // hooks (apply + apply-internal + read/list/diff + apply-bundle +
+    // export-baseline-bundle). The earlier four-hook backend
+    // (@ax/workspace-git-http) was retired 2026-05-04 because multi-turn
+    // writes silently failed without the bundle hooks. Finding 3
+    // (2026-05-21) added `workspace:apply-internal`: `workspace:apply` is
+    // now the @ax/core policy facade and the backend's raw impl moved to
+    // the internal hook. If a refactor accidentally drops a hook, this
+    // fails before bootstrap does.
     const expected = [
       'workspace:apply',
       'workspace:apply-bundle',
+      'workspace:apply-internal',
       'workspace:diff',
       'workspace:export-baseline-bundle',
       'workspace:list',

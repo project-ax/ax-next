@@ -9,6 +9,7 @@ import picomatch from 'picomatch';
 import {
   PluginError,
   asWorkspaceVersion,
+  registerWorkspaceApplyFacade,
   type Bytes,
   type FileChange,
   type HookBus,
@@ -764,8 +765,13 @@ export function registerWorkspaceGitHooks(
     return resolveHead(gitdir);
   }
 
+  // The PUBLIC `workspace:apply` is the @ax/core facade — it fires
+  // workspace:pre-apply (veto) + workspace:applied (notify) around our raw
+  // impl, which we register as the INTERNAL hook below.
+  registerWorkspaceApplyFacade(bus, PLUGIN_NAME);
+
   bus.registerService<WorkspaceApplyInput, WorkspaceApplyOutput>(
-    'workspace:apply',
+    'workspace:apply-internal',
     PLUGIN_NAME,
     async (ctx, input) => {
       // Validate paths up-front, BEFORE taking the mutex, so a bad input

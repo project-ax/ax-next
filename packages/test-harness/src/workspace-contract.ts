@@ -12,7 +12,7 @@
 // contract itself stays storage-agnostic (Invariant 1).
 
 import { describe, it, expect } from 'vitest';
-import type { Plugin } from '@ax/core';
+import { reject, type Plugin } from '@ax/core';
 import { createTestHarness } from './harness.js';
 import type {
   WorkspaceApplyInput,
@@ -178,6 +178,39 @@ export function runWorkspaceContract(label: string, makePlugin: () => Plugin): v
       expect(diff.delta.before).toBe(v1);
       expect(diff.delta.after).toBe(v2);
       expect(diff.delta.changes[0]!.kind).toBe('modified');
+    });
+
+    it('workspace:pre-apply veto rejects the apply (facade is wired for this backend)', async () => {
+      // Finding 3: `workspace:apply` is the @ax/core facade — it fires
+      // `workspace:pre-apply` (veto) around the backend's raw impl. A
+      // registered veto must short-circuit the apply with
+      // PluginError{code:'rejected'} and NOT mutate the workspace. Running
+      // this through the shared contract proves every backend the contract
+      // covers routes its public `workspace:apply` through the facade rather
+      // than registering the raw hook directly.
+      const h = await load();
+      h.bus.subscribe('workspace:pre-apply', 'contract-veto', async () =>
+        reject({ reason: 'contract veto', source: 'contract-veto' }),
+      );
+      await expect(
+        h.bus.call('workspace:apply', h.ctx(), {
+          // `.ax/**` is policy-visible, so it survives filterToPolicy and the
+          // veto subscriber actually sees it.
+          changes: [
+            { path: '.ax/notes.md', kind: 'put', content: enc.encode('x') },
+          ],
+          parent: null,
+        }),
+      ).rejects.toMatchObject({ code: 'rejected' });
+
+      // The workspace must be untouched — the rejected apply never reached
+      // the backend impl, so the file isn't there.
+      const r = await h.bus.call<WorkspaceReadInput, WorkspaceReadOutput>(
+        'workspace:read',
+        h.ctx(),
+        { path: '.ax/notes.md' },
+      );
+      expect(r.found).toBe(false);
     });
 
     it('opaque versions: subscribers must NOT depend on version string format', async () => {

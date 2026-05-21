@@ -15,6 +15,7 @@ function makeCorePlugin(repoRoot: string): Plugin {
       version: '0.0.0',
       registers: [
         'workspace:apply',
+        'workspace:apply-internal',
         'workspace:read',
         'workspace:list',
         'workspace:diff',

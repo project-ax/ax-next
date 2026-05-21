@@ -2,6 +2,7 @@ import picomatch from 'picomatch';
 import {
   PluginError,
   asWorkspaceVersion,
+  registerWorkspaceApplyFacade,
   type Bytes,
   type FileChange,
   type Plugin,
@@ -134,6 +135,7 @@ export function createMockWorkspacePlugin(): Plugin {
       version: '0.0.0',
       registers: [
         'workspace:apply',
+        'workspace:apply-internal',
         'workspace:read',
         'workspace:list',
         'workspace:diff',
@@ -142,8 +144,12 @@ export function createMockWorkspacePlugin(): Plugin {
       subscribes: [],
     },
     init({ bus }) {
+      // The PUBLIC `workspace:apply` is the @ax/core facade (pre-apply +
+      // applied around the raw impl); the raw impl is `workspace:apply-internal`.
+      registerWorkspaceApplyFacade(bus, PLUGIN_NAME);
+
       bus.registerService<WorkspaceApplyInput, WorkspaceApplyOutput>(
-        'workspace:apply',
+        'workspace:apply-internal',
         PLUGIN_NAME,
         async (ctx, input) => {
           if (input.parent !== latest) {
