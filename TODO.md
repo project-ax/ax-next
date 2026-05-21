@@ -33,9 +33,9 @@ Sources scanned (2026-05-19): `MEMORY.md`, recent `docs/plans/*followup*`,
 
 ## Skills (Phase 1 follow-ups from PR #96)
 
-- [ ] **System-prompt fold for skill descriptions.** SDK-only today (SDK indexes description into prompt + invokes `Skill` tool on demand).
-- [ ] **MCP-skill bundling.** Reserved `capabilities.mcpServers` currently rejects with `capability-deferred`.
-- [ ] **Skill versioning / upgrade flow.** `version` field stored, only consumed at parse-time today.
+- [ ] **System-prompt fold for skill descriptions** (Phase A — **PARKED**). SDK-only today (SDK indexes description into prompt + invokes `Skill` tool on demand). Formally parked in `docs/plans/2026-05-20-skills-capability-lifecycle-impl.md` — trigger to un-park is either `packages/agent-native-runner/` gaining `src/` or `packages/test-harness/` adding a real-LLM code path. No code lands until then; when the trigger fires, write a fresh `docs/plans/YYYY-MM-DD-skills-system-prompt-fold-impl.md`.
+- [x] ~~**MCP-skill bundling.**~~ Shipped in PR #113 (merged 2026-05-21, `b9bab96b`) — `capabilities.mcpServers` manifest grammar (stdio + http, command allowlist `npx|node|bun|uvx|python|python3`, args/env capped 32×256, https-only http URL with host folded into `allowedHosts`, ≤8 servers/skill). Orchestrator unions per-skill `mcpServers` into the sandbox payload; both sandbox impls re-validate with a transport-conditional zod `.refine()`; SDK runner + subprocess sandbox materialize per-skill `.mcp.json` (mode 0444). Security-checklist note at `docs/plans/2026-05-20-skills-mcp-bundling-security-note.md`. Phase A above is the only remaining piece of the original three capability items.
+- [x] ~~**Skill versioning / upgrade flow.**~~ Shipped in PR #114 (merged 2026-05-21, `dbe07d3c`) — additive `source_url` column + top-level `sourceUrl:` manifest grammar (https-only, HOSTNAME_RE host); new `skills:check-for-updates` service hook (storage-agnostic, alternate-impl-friendly) + `POST /admin/skills/:id/check-update` + `POST /admin/skills/:id/refresh-from-source` routes; SkillsTab fires a per-skill check on mount and surfaces an "Update available: v{n}" badge + Update button. Latest-wins, no per-attachment pinning (locked decision — `docs/plans/2026-05-20-skills-versioning-design-note.md`).
 - [ ] **User-installable skills** (`/settings/skills*` + scope on `skills:list/get`). Admin-only today.
 - [ ] **Workspace → installed "promote" flow.** Agent writes `.ax/skills/x/SKILL.md` sans capabilities → admin button promotes with chosen grants.
 - [ ] **Automated e2e canary for skill-install** (real Postgres testcontainer + mocked GitHub server). Today the proof is the manual scenario in MANUAL-ACCEPTANCE.md.
@@ -69,12 +69,12 @@ These wait on stated triggers — don't ship pre-emptively.
 - [ ] **Bulk "all credentials" admin inventory view.** Design §3 non-goal; revisit when an operator needs a single audit surface.
 - [x] ~~**Drift guard for the 3× `refForDestination` duplication.**~~ Shipped in PR #111 — `@ax/credentials` now exports `KNOWN_DESTINATION_FIXTURES`; each of the three copies (`refs.ts`, `channel-web/lib/credentials.ts`, `credentials-admin-routes/destination-routes.ts`) has a drift test that runs its local `refForDestination` against the fixture set, so silent divergence breaks CI.
 
-## Phase 6 PR-A follow-ups (open since 2026-04-29)
+## Phase 6 PR-A follow-ups (all shipped 2026-04-29, same day as PR-A)
 
-- [ ] **Phase 6 PR-B (a.k.a. 6.6).** Rewrite `claude-sdk-runner.e2e.test.ts` and `presets/k8s/__tests__/{acceptance,multi-tenant-acceptance}.test.ts` against a stub Anthropic backend. Parked tests still skipped.
-- [ ] **Phase 7 — kernel-type audit.** `LlmRequest` / `LlmResponse` / `ToolCall` / `ToolDescriptor` / `ToolPreCall*` in `@ax/core` + `@ax/ipc-protocol`. Switch `@ax/audit-log` subscription from `chat:end` → `event.http-egress`. Narrow `AgentMessage` 3 roles → 2.
-- [ ] **Merge `@ax/tool-dispatcher` → `@ax/mcp-client`** to own the host-tool catalog. Earlier reality-check failed (mcp-client + test-harness + sdk-runner all consume `tool:register` / `tool:list`).
-- [ ] **Merge `@ax/agent-runner-core` → `@ax/agent-claude-sdk-runner`** (IpcClient, DiffAccumulator, SessionInvalidError, toWireChanges). Phase 5's deferred decision still holds.
+- [x] ~~**Phase 6 PR-B (a.k.a. 6.6).** Rewrite `claude-sdk-runner.e2e.test.ts` and `presets/k8s/__tests__/{acceptance,multi-tenant-acceptance}.test.ts` against a stub Anthropic backend.~~ Shipped in PR #25 — five e2e tests rebuilt on the `@ax/test-harness` stub runner (`claude-sdk-runner.e2e.test.ts` → `chat-pipeline.e2e.test.ts`; new `mcp-stdio.e2e.test.ts`; re-enabled CLI `e2e.test.ts`; both preset acceptance suites). Nothing skipped now except the gated real-Anthropic e2e (`credential-proxy.e2e.test.ts`, `describe.skipIf`), which the plan carved out.
+- [x] ~~**Phase 7 — kernel-type audit.** `LlmRequest` / `LlmResponse` / `ToolCall` / `ToolDescriptor` / `ToolPreCall*` in `@ax/core` + `@ax/ipc-protocol`. Switch `@ax/audit-log` subscription from `chat:end` → `event.http-egress`. Narrow `AgentMessage` 3 roles → 2.~~ Shipped in PR #26 — deleted the `Llm{Request,Response,Call*Schema}` orphans, narrowed `AgentMessage.role` to `user|assistant`, and inverted audit-log to `subscribes: ['event.http-egress']`. The audit's verdict on `ToolCall`/`ToolDescriptor`/`ToolPreCall*` was deliberate-keep: they stay dual-layer (wire-agnostic shape in `@ax/core`, zod schema in `@ax/ipc-protocol`) because core may not import the wire layer — see the cross-reference comment in `core/src/types.ts`.
+- [x] ~~**Merge `@ax/tool-dispatcher` → `@ax/mcp-client`** to own the host-tool catalog.~~ Shipped in PR #28 — catalog plugin absorbed into `@ax/mcp-client`, package deleted.
+- [x] ~~**Merge `@ax/agent-runner-core` → `@ax/agent-claude-sdk-runner`** (IpcClient, DiffAccumulator, SessionInvalidError, toWireChanges).~~ Shipped in PR #27 — surface area absorbed into `@ax/ipc-protocol` + `@ax/agent-claude-sdk-runner`, package deleted.
 
 ## Architectural debt (Codex 2026-04-29)
 
