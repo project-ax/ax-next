@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>btshrnzs0</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-vpulim-dev-ai-ax-next/13a2e5d5-ebd8-4cfa-8016-a13fde67c4ba/tasks/btshrnzs0.output</output-file>
+<status>completed</status>
+<summary>Background command "Poll until CodeRabbit check settles (background)" completed (exit code 0)</summary>
+</task-notification>
