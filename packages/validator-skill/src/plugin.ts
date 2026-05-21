@@ -109,13 +109,19 @@ export function createValidatorSkillPlugin(): Plugin {
             // parse because audit-list paths are unambiguous rejects
             // regardless of payload.
             //
-            // NOTE: this veto presumes every workspace:pre-apply caller
-            // is agent-authored (the bundle wire is the agent path; no
-            // host-internal caller writes to the workspace through this
-            // hook today). If a host-internal caller is ever added that
-            // legitimately needs to write these paths, plumb an actor
-            // field through PreApplyPayload at that point and gate this
-            // check on `actor !== 'host'`. YAGNI until then.
+            // NOTE: this SDK-config veto fires for EVERY
+            // workspace:pre-apply caller, regardless of who initiated the
+            // apply. Originally the agent bundle wire was the only caller;
+            // since Finding 3 (the workspace:apply facade, PR #119)
+            // host-internal callers fire pre-apply too — @ax/conversations
+            // drop-turn (`.claude/projects/**/*.jsonl`) and @ax/attachments
+            // commit (`.ax/uploads/**`). Neither writes a protected
+            // SDK-config path, so there is no veto regression, and vetoing
+            // these paths regardless of caller is the safer default. If a
+            // host-internal caller is ever added that LEGITIMATELY needs to
+            // write one of the protected paths, plumb an `actor` field
+            // through PreApplyPayload at that point and gate this check on
+            // `actor !== 'host'`. YAGNI until then.
             if (isProtectedSdkConfigPath(c.path)) {
               return reject({
                 reason:
