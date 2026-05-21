@@ -34,6 +34,8 @@ afterEach(async () => {
     const k = opened.pop()!;
     try {
       await k.schema.dropTable('auth_providers').ifExists().execute();
+      await k.schema.dropTable('auth_better_v1_verifications').ifExists().execute();
+      await k.schema.dropTable('auth_better_v1_accounts').ifExists().execute();
       await k.schema.dropTable('auth_better_v1_sessions').ifExists().execute();
       await k.schema.dropTable('auth_better_v1_users').ifExists().execute();
     } catch {
@@ -206,6 +208,76 @@ describe('runAuthBetterMigration', () => {
     // pg surfaces check_violation as code '23514'.
     expect(caught).toBeDefined();
     expect((caught as { code?: string } | undefined)?.code).toBe('23514');
+  });
+
+  it('creates auth_better_v1_accounts with the better-auth account columns', async () => {
+    const db = makeKysely();
+    await runAuthBetterMigration(db);
+    const result = await sql<{ column_name: string }>`
+      SELECT column_name FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'auth_better_v1_accounts'
+      ORDER BY column_name`.execute(db);
+    expect(result.rows.map((r) => r.column_name).sort()).toEqual(
+      ['access_token','access_token_expires_at','account_id','created_at','id',
+       'id_token','password','provider_id','refresh_token','refresh_token_expires_at',
+       'scope','updated_at','user_id'].sort());
+  });
+
+  it('creates auth_better_v1_verifications with the better-auth verification columns', async () => {
+    const db = makeKysely();
+    await runAuthBetterMigration(db);
+    const result = await sql<{ column_name: string }>`
+      SELECT column_name FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'auth_better_v1_verifications'
+      ORDER BY column_name`.execute(db);
+    expect(result.rows.map((r) => r.column_name).sort()).toEqual(
+      ['created_at','expires_at','id','identifier','updated_at','value'].sort());
+  });
+
+  it('accounts cascade-delete with their user', async () => {
+    const db = makeKysely();
+    await runAuthBetterMigration(db);
+    const now = new Date();
+    await db.insertInto('auth_better_v1_users').values({
+      id:'u1', email:'a@example.com', email_verified:true, name:'A',
+      image:null, role:'user', created_at:now, updated_at:now }).execute();
+    await db.insertInto('auth_better_v1_accounts').values({
+      id:'acc1', user_id:'u1', account_id:'g1', provider_id:'google',
+      access_token:null, refresh_token:null, id_token:null,
+      access_token_expires_at:null, refresh_token_expires_at:null,
+      scope:null, password:null, created_at:now, updated_at:now }).execute();
+    await db.deleteFrom('auth_better_v1_users').where('id','=','u1').execute();
+    const remaining = await db.selectFrom('auth_better_v1_accounts').selectAll().execute();
+    expect(remaining).toHaveLength(0);
+  });
+
+  it('accounts reject duplicate (provider_id, account_id)', async () => {
+    const db = makeKysely();
+    await runAuthBetterMigration(db);
+    const now = new Date();
+    await db.insertInto('auth_better_v1_users').values({
+      id:'u1', email:'a@example.com', email_verified:true, name:'A',
+      image:null, role:'user', created_at:now, updated_at:now }).execute();
+    await db.insertInto('auth_better_v1_accounts').values({
+      id:'acc1', user_id:'u1', account_id:'g1', provider_id:'google',
+      access_token:null, refresh_token:null, id_token:null,
+      access_token_expires_at:null, refresh_token_expires_at:null,
+      scope:null, password:null, created_at:now, updated_at:now }).execute();
+
+    let caught: unknown;
+    try {
+      // Same (provider_id, account_id), different id — must collide on the unique index.
+      await db.insertInto('auth_better_v1_accounts').values({
+        id:'acc2', user_id:'u1', account_id:'g1', provider_id:'google',
+        access_token:null, refresh_token:null, id_token:null,
+        access_token_expires_at:null, refresh_token_expires_at:null,
+        scope:null, password:null, created_at:now, updated_at:now }).execute();
+    } catch (err) {
+      caught = err;
+    }
+    // pg surfaces unique_violation as code '23505'.
+    expect(caught).toBeDefined();
+    expect((caught as { code?: string } | undefined)?.code).toBe('23505');
   });
 
   it('migrations are idempotent', async () => {

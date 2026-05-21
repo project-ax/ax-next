@@ -2,9 +2,15 @@ import { sql, type Kysely } from 'kysely';
 
 /**
  * Per-plugin migration. @ax/auth-better owns:
- *   auth_better_v1_users      — identity row (better-auth's user shape).
- *   auth_better_v1_sessions   — HTTP login session (better-auth's session shape).
- *   auth_providers            — runtime-configurable OAuth provider config.
+ *   auth_better_v1_users          — identity row (better-auth's user shape).
+ *   auth_better_v1_sessions       — HTTP login session (better-auth's session shape).
+ *   auth_better_v1_accounts       — OAuth account links (better-auth's account shape).
+ *                                   The three token columns (access_token, refresh_token,
+ *                                   id_token) are TEXT because encryptOAuthTokens (a later
+ *                                   task) stores AES-256-GCM ciphertext as a string.
+ *   auth_better_v1_verifications  — Email/magic-link verification tokens (better-auth's
+ *                                   verification shape).
+ *   auth_providers                — runtime-configurable OAuth provider config.
  *
  * `auth_better_v1_*` is the schema-versioned prefix for this plugin's user/session
  * concept; future shape changes are forward-only via a `v2` side-table.
@@ -46,6 +52,17 @@ export interface AuthBetterDatabase {
     created_at: Date;
     updated_at: Date;
   };
+  auth_better_v1_accounts: {
+    id: string; user_id: string; account_id: string; provider_id: string;
+    access_token: string | null; refresh_token: string | null; id_token: string | null;
+    access_token_expires_at: Date | null; refresh_token_expires_at: Date | null;
+    scope: string | null; password: string | null;
+    created_at: Date; updated_at: Date;
+  };
+  auth_better_v1_verifications: {
+    id: string; identifier: string; value: string; expires_at: Date;
+    created_at: Date; updated_at: Date;
+  };
 }
 
 export async function runAuthBetterMigration<DB>(db: Kysely<DB>): Promise<void> {
@@ -86,5 +103,44 @@ export async function runAuthBetterMigration<DB>(db: Kysely<DB>): Promise<void> 
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
+  `.execute(db);
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS auth_better_v1_accounts (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES auth_better_v1_users(id) ON DELETE CASCADE,
+      account_id TEXT NOT NULL,
+      provider_id TEXT NOT NULL,
+      access_token TEXT,
+      refresh_token TEXT,
+      id_token TEXT,
+      access_token_expires_at TIMESTAMPTZ,
+      refresh_token_expires_at TIMESTAMPTZ,
+      scope TEXT,
+      password TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `.execute(db);
+
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS auth_better_v1_accounts_provider_account
+      ON auth_better_v1_accounts (provider_id, account_id)
+  `.execute(db);
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS auth_better_v1_verifications (
+      id TEXT PRIMARY KEY,
+      identifier TEXT NOT NULL,
+      value TEXT NOT NULL,
+      expires_at TIMESTAMPTZ NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `.execute(db);
+
+  await sql`
+    CREATE INDEX IF NOT EXISTS auth_better_v1_verifications_identifier
+      ON auth_better_v1_verifications (identifier)
   `.execute(db);
 }

@@ -3,7 +3,7 @@
  * the only auth impl).
  *
  * Endpoints (host: ax-next serve, mounted via @ax/http-server):
- *   GET  /auth/sign-in/google  — server 302-redirects to Google OIDC
+ *   POST /auth/sign-in/social  — { provider: 'google' } → { url } to navigate to
  *   GET  /auth/callback/google — server-side; sets cookie + 302 to /
  *   GET  /admin/me             — returns { user: BackendUser } for the calling session
  *   POST /admin/sign-out       — clears cookie (idempotent)
@@ -79,12 +79,38 @@ export async function getSession(): Promise<AuthSession | null> {
   }
 }
 
-export function signInWithGoogle(): void {
-  // Synchronous nav — server 302-redirects to Google. The fetch+JSON
-  // exchange the v1 UI used was needed when better-auth synthesized the
-  // authorize URL server-side and returned it; openid-client builds the
-  // URL in the route handler and emits the redirect itself.
-  window.location.href = '/auth/sign-in/google';
+export async function signInWithGoogle(): Promise<void> {
+  // better-auth has no `GET /sign-in/google` route. Social sign-in is a
+  // POST to `/auth/sign-in/social` carrying the provider in the body;
+  // better-auth builds the Google authorize URL and hands it back as
+  // `{ url }` for us to navigate to (it does NOT 302 the POST itself,
+  // since the browser issued it via fetch). `callbackURL` is where
+  // better-auth lands the user after `/auth/callback/google` completes.
+  //
+  // CSRF: send `X-Requested-With: ax-admin` like every other
+  // state-changing call (see file header) so the http-server gate passes
+  // regardless of origin.
+  const res = await fetch('/auth/sign-in/social', {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Requested-With': 'ax-admin',
+    },
+    body: JSON.stringify({ provider: 'google', callbackURL: '/' }),
+  });
+  if (!res.ok) {
+    // Most likely the Google provider isn't configured (better-auth
+    // returns 404 PROVIDER_NOT_FOUND) — surface it rather than navigate
+    // to `undefined`. The LoginPage CTA is fire-and-forget, so a thrown
+    // error just logs; there's no inline error surface yet.
+    throw new Error(`social sign-in failed: HTTP ${res.status}`);
+  }
+  const { url } = (await res.json()) as { url?: string };
+  if (typeof url !== 'string' || url.length === 0) {
+    throw new Error('social sign-in response missing redirect url');
+  }
+  window.location.href = url;
 }
 
 export async function signOut(): Promise<void> {

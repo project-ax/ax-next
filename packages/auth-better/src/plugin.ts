@@ -33,6 +33,7 @@ import {
   type HandlerHandle,
   type ProviderRow,
 } from './handler.js';
+import { sessionTokenALS } from './session-bridge.js';
 import {
   createProvidersStore,
   type CredentialsEnvelope,
@@ -72,6 +73,13 @@ export interface AuthBetterConfig {
    * port-forward debugging.
    */
   trustedOrigins?: string[];
+  /**
+   * Stable secret for the underlying better-auth instance (OAuth state +
+   * at-rest OAuth-token encryption). MUST be stable across restarts or
+   * encrypted tokens become undecryptable. Falls back to better-auth's
+   * BETTER_AUTH_SECRET/AUTH_SECRET env read when omitted.
+   */
+  secret?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -109,6 +117,7 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
   // already captured by the closure, but pinning it here is one less
   // hop and makes the rebuild call site read straight.
   const trustedOrigins = config.trustedOrigins;
+  const secret = config.secret;
 
   const PROVIDERS_CHANGED_KEY = `${PLUGIN_NAME}/providers-changed`;
   const RESET_CLEANUP_KEY = `${PLUGIN_NAME}/bootstrap-reset-cleanup`;
@@ -186,6 +195,7 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
         database: localDb,
         providers,
         ...(trustedOrigins !== undefined ? { trustedOrigins } : {}),
+        ...(secret !== undefined ? { secret } : {}),
       });
       const localHandle = handle;
 
@@ -204,6 +214,7 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
             database: localDb,
             providers: next,
             ...(trustedOrigins !== undefined ? { trustedOrigins } : {}),
+            ...(secret !== undefined ? { secret } : {}),
           });
           return undefined;
         },
@@ -290,7 +301,7 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
       const splatMethods: HttpMethod[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
       for (const method of splatMethods) {
         const handler = async (req: HttpRequest, res: HttpResponse): Promise<void> => {
-          await forwardToBetterAuth(localHandle, req, res);
+          await forwardToBetterAuth(localHandle, req, res, { sessionCookieName, sessionLifetimeSeconds });
         };
         const { unregister } = await bus.call<HttpRegisterRouteInput, HttpRegisterRouteOutput>(
           'http:register-route',
@@ -426,6 +437,7 @@ async function loadProviders(
         clientId: r.client_id,
         clientSecret: plaintext,
         ...(r.discovery_url !== null ? { discoveryUrl: r.discovery_url } : {}),
+        ...(r.allowed_domains !== null ? { allowedDomains: r.allowed_domains } : {}),
       });
     }
     // Unknown kinds are dropped — defensive against a forward-compat row
@@ -656,10 +668,13 @@ function rowToUser(row: {
 // join below for the RFC/UA-compatibility rationale.
 // ---------------------------------------------------------------------------
 
+interface BridgeOpts { sessionCookieName: string; sessionLifetimeSeconds: number; }
+
 async function forwardToBetterAuth(
   handle: HandlerHandle,
   req: HttpRequest,
   res: HttpResponse,
+  bridge: BridgeOpts,
 ): Promise<void> {
   // Synthesize an absolute URL — better-auth's internal router parses
   // it via WHATWG URL. Hostname doesn't matter; better-auth keys off
@@ -671,10 +686,7 @@ async function forwardToBetterAuth(
 
   // Fetch.Request rejects bodies on GET (and HEAD, which @ax/http-server
   // doesn't expose anyway). Pass body only when there's something to send.
-  const init: RequestInit = {
-    method: req.method,
-    headers: webHeadersFrom(req.headers),
-  };
+  const init: RequestInit = { method: req.method, headers: webHeadersFrom(req.headers) };
   if (req.method !== 'GET' && req.body.length > 0) {
     // Node's undici fetch accepts a Buffer/Uint8Array as body even
     // though the lib.dom typing of `BodyInit` doesn't include Buffer
@@ -683,9 +695,12 @@ async function forwardToBetterAuth(
     init.body = req.body as unknown as ArrayBuffer;
   }
 
+  // Run the better-auth call inside the ALS so session.create.after
+  // (in handler.ts) can write the minted token into box.token.
+  const box: { token?: string } = {};
   let webResponse: Response;
   try {
-    webResponse = await handle.current()(new Request(url, init));
+    webResponse = await sessionTokenALS.run(box, () => handle.current()(new Request(url, init)));
   } catch (err) {
     // If better-auth's adapter init failed (handler.ts catches the
     // construction-side rejection but request-time rejections still
@@ -695,9 +710,7 @@ async function forwardToBetterAuth(
     // log line entirely. Method + path is enough to correlate with
     // upstream http-server access logs.
     void err;
-    process.stderr.write(
-      `[ax/auth-better] handler error on ${req.method} ${req.path}\n`,
-    );
+    process.stderr.write(`[ax/auth-better] handler error on ${req.method} ${req.path}\n`);
     res.status(500).json({ error: 'auth-handler-failed' });
     return;
   }
@@ -714,7 +727,25 @@ async function forwardToBetterAuth(
     // better-auth doesn't always set one; we forward whatever it gave us.
     res.header(name, value);
   }
-  if (setCookies.length > 0) {
+
+  if (box.token !== undefined) {
+    // Session-creating response (OAuth callback / email sign-in or sign-up —
+    // better-auth auto-signs-in on sign-up): re-issue the session token as our
+    // http-server-signed cookie. better-auth's own
+    // Set-Cookies on this response (its `ax_better_auth.session_token` session
+    // cookie + short-lived OAuth-state cookie) are intentionally dropped — its
+    // session cookie is replaced by ours; its state cookie self-expires.
+    // (The header-copy loop above already skipped every better-auth set-cookie,
+    // so setSignedCookie writes the only cookie on this response — we simply
+    // don't forward setCookies here.)
+    res.setSignedCookie(bridge.sessionCookieName, box.token, {
+      path: '/', sameSite: 'Lax',
+      ...(process.env['NODE_ENV'] === 'production' ? { secure: true } : {}),
+      maxAge: bridge.sessionLifetimeSeconds,
+    });
+  } else if (setCookies.length > 0) {
+    // Non-session responses (e.g. /sign-in/social sets the OAuth-state cookie):
+    // forward better-auth's cookies unchanged.
     // http-server's response writer stores headers in a Map
     // (last-write-wins), so calling res.header('set-cookie', …) once
     // per cookie would silently drop all but the last value. Until
@@ -732,12 +763,8 @@ async function forwardToBetterAuth(
   }
 
   const buf = Buffer.from(await webResponse.arrayBuffer());
-  if (buf.length === 0) {
-    res.end();
-  } else {
-    // res.body() preserves any prior content-type from the loop above.
-    res.body(buf);
-  }
+  if (buf.length === 0) res.end();
+  else res.body(buf);
 }
 
 function webHeadersFrom(in_: Record<string, string>): Headers {

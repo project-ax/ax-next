@@ -2,9 +2,9 @@
  * LoginPage — unauthenticated landing.
  *
  * Centered card with the brand mark, a one-line blurb, and a single
- * "Sign in with Google" CTA. Clicking navigates to
- * `/auth/sign-in/google` (handled by @ax/auth-better); the server
- * 302-redirects to Google, then back via `/auth/callback/google`
+ * "Sign in with Google" CTA. Clicking POSTs `/auth/sign-in/social`
+ * (handled by @ax/auth-better) and navigates to the Google authorize
+ * URL it returns; Google redirects back via `/auth/callback/google`,
  * which sets the signed session cookie and lands the user back at `/`.
  *
  * Google-only by design for Week 9.5 — additional providers (SAML,
@@ -23,7 +23,12 @@ export function LoginPage() {
         </p>
         <button
           type="button"
-          onClick={signInWithGoogle}
+          onClick={() => {
+            // Fire-and-forget: signInWithGoogle navigates on success and
+            // throws on a misconfigured provider (no inline error surface
+            // yet). `void` keeps the onClick handler `() => void`.
+            void signInWithGoogle();
+          }}
           className="
             w-full px-3.5 py-2.5 rounded-lg cursor-pointer text-center
             bg-primary text-primary-foreground shadow-sm
