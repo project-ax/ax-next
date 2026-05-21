@@ -167,6 +167,8 @@ interface AgentsResolveOutput {
 // skillAttachments and the service is registered.
 interface SkillsResolveInput {
   skillIds: string[];
+  /** When provided, user-scoped skills for this user override same-id globals. */
+  ownerUserId?: string;
 }
 // Structural mirror of @ax/skills McpServerSpec (I2 — no cross-plugin imports).
 // The orchestrator does NOT re-validate; trust comes from skills:resolve having
@@ -841,7 +843,7 @@ export function createOrchestrator(
     if (attachments.length > 0 && bus.hasService('skills:resolve')) {
       try {
         const r = await bus.call<SkillsResolveInput, SkillsResolveOutput>(
-          'skills:resolve', ctx, { skillIds: attachments.map((a) => a.skillId) },
+          'skills:resolve', ctx, { skillIds: attachments.map((a) => a.skillId), ownerUserId: ctx.userId },
         );
         resolvedSkills = r.skills;
       } catch (err) {
@@ -917,9 +919,9 @@ export function createOrchestrator(
     if (bus.hasService('skills:list-defaults')) {
       try {
         const r = await bus.call<
-          Record<string, never>,
+          { ownerUserId?: string },
           { skills: ResolvedSkillForOrch[] }
-        >('skills:list-defaults', ctx, {});
+        >('skills:list-defaults', ctx, { ownerUserId: ctx.userId });
         defaultSkillsForUnion = r.skills;
       } catch (err) {
         // Matches the existing `ctx.logger.warn(event, fields)` convention in

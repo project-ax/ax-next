@@ -206,10 +206,12 @@ export function createAdminSkillsHandlers(deps: AdminRouteDeps): {
       const actor = await requireAdmin(deps.bus, ctx, req, res);
       if (actor === null) return;
       try {
-        const out = await deps.bus.call<Record<string, never>, SkillsListOutput>(
+        // Explicitly scope=global so the admin UI always shows only the
+        // admin-managed skill list, not individual users' private copies.
+        const out = await deps.bus.call<{ scope: 'global' }, SkillsListOutput>(
           'skills:list',
           ctx,
-          {},
+          { scope: 'global' },
         );
         res.status(200).json(out);
       } catch (err) {
@@ -228,10 +230,12 @@ export function createAdminSkillsHandlers(deps: AdminRouteDeps): {
         return;
       }
       try {
-        const detail = await deps.bus.call<{ skillId: string }, SkillsGetOutput>(
+        // Explicitly scope=global so the admin UI always shows only the
+        // admin-managed skill, not the user's private copy of the same id.
+        const detail = await deps.bus.call<{ skillId: string; scope: 'global' }, SkillsGetOutput>(
           'skills:get',
           ctx,
-          { skillId: id },
+          { skillId: id, scope: 'global' },
         );
         res.status(200).json(detail);
       } catch (err) {

@@ -10,6 +10,7 @@ import { checkForUpdates } from './check-updates.js';
 import { parseSkillManifest } from './manifest.js';
 import { runSkillsMigration, type SkillsDatabase } from './migrations.js';
 import { createSkillsStore } from './store.js';
+import { createUserSkillsStore } from './user-store.js';
 import { registerAdminSkillsRoutes } from './admin-routes.js';
 import type {
   SkillsCheckForUpdatesInput,
@@ -136,26 +137,99 @@ export function createSkillsPlugin(): Plugin {
       db = shared as Kysely<SkillsDatabase>;
       await runSkillsMigration(db);
       const store = createSkillsStore(db);
+      const userStore = createUserSkillsStore(db);
 
       bus.registerService<SkillsListInput, SkillsListOutput>(
         'skills:list',
         PLUGIN_NAME,
-        async () => ({ skills: await store.list() }),
+        async (_ctx, input) => {
+          const scope = input.scope ?? 'all';
+          const { ownerUserId } = input;
+
+          // Validate: scope=user requires ownerUserId.
+          if (scope === 'user' && !ownerUserId) {
+            throw new PluginError({
+              code: 'missing-owner',
+              plugin: PLUGIN_NAME,
+              message: 'scope=user requires ownerUserId',
+            });
+          }
+
+          const includeGlobal = scope === 'global' || scope === 'all';
+          const includeUser = (scope === 'user' || scope === 'all') && !!ownerUserId;
+
+          const globalSkills = includeGlobal ? await store.list() : [];
+          const userSkills = includeUser ? await userStore.list(ownerUserId!) : [];
+
+          // User-wins on id collision: build a map of global skills, then
+          // overlay user skills. Any id present in userSkills replaces the
+          // global row (user-scoped skills win).
+          const merged = new Map(globalSkills.map((s) => [s.id, s]));
+          for (const s of userSkills) {
+            merged.set(s.id, s);
+          }
+
+          // Stable output order: sort by id ascending.
+          const skills = [...merged.values()].sort((a, b) =>
+            a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
+          );
+
+          return { skills };
+        },
       );
 
       bus.registerService<SkillsGetInput, SkillsGetOutput>(
         'skills:get',
         PLUGIN_NAME,
         async (_ctx, input) => {
-          const found = await store.get(input.skillId);
-          if (!found) {
+          const { skillId, ownerUserId } = input;
+          const scope = input.scope ?? (ownerUserId ? 'all' : 'global');
+
+          if (scope === 'user') {
+            if (!ownerUserId) {
+              throw new PluginError({
+                code: 'missing-owner',
+                plugin: PLUGIN_NAME,
+                message: 'scope=user requires ownerUserId',
+              });
+            }
+            const found = await userStore.get(ownerUserId, skillId);
+            if (!found) {
+              throw new PluginError({
+                code: 'skill-not-found',
+                plugin: PLUGIN_NAME,
+                message: `skill '${skillId}' does not exist`,
+              });
+            }
+            return found;
+          }
+
+          if (scope === 'global') {
+            const found = await store.get(skillId);
+            if (!found) {
+              throw new PluginError({
+                code: 'skill-not-found',
+                plugin: PLUGIN_NAME,
+                message: `skill '${skillId}' does not exist`,
+              });
+            }
+            return found;
+          }
+
+          // scope === 'all' with ownerUserId: user-wins strategy.
+          if (ownerUserId) {
+            const userFound = await userStore.get(ownerUserId, skillId);
+            if (userFound) return userFound;
+          }
+          const globalFound = await store.get(skillId);
+          if (!globalFound) {
             throw new PluginError({
               code: 'skill-not-found',
               plugin: PLUGIN_NAME,
-              message: `skill '${input.skillId}' does not exist`,
+              message: `skill '${skillId}' does not exist`,
             });
           }
-          return found;
+          return globalFound;
         },
       );
 
@@ -188,6 +262,7 @@ export function createSkillsPlugin(): Plugin {
           // I-S2: default-attached skills are instruction-only in v1. Credential
           // slots imply per-agent bindings, which "everyone gets this" cannot
           // supply. Loud rejection at the host so the admin sees the cause.
+          // Applies to BOTH global and user scopes.
           if (
             input.defaultAttached === true &&
             parsed.value.capabilities.credentials.length > 0
@@ -198,6 +273,38 @@ export function createSkillsPlugin(): Plugin {
               message: `skill '${parsed.value.id}' declares credential slots; default-attached skills must be instruction-only`,
             });
           }
+
+          const scope = input.scope ?? 'global';
+
+          if (scope === 'user') {
+            const { ownerUserId } = input;
+            if (!ownerUserId) {
+              throw new PluginError({
+                code: 'missing-owner',
+                plugin: PLUGIN_NAME,
+                message: 'scope=user requires ownerUserId',
+              });
+            }
+            const skillId = parsed.value.id;
+            const r = await userStore.upsert({
+              ownerUserId,
+              id: skillId,
+              description: parsed.value.description,
+              manifestYaml: input.manifestYaml,
+              bodyMd: input.bodyMd,
+              version: parsed.value.version,
+              defaultAttached: input.defaultAttached ?? false,
+              sourceUrl: parsed.value.sourceUrl ?? null,
+            });
+            // NOTE: credential purge is intentionally SKIPPED for user-scoped skills.
+            // The `skill:<id>:<slot>` ref scheme is global-namespaced. Running purge
+            // here for a user upsert could delete the same-id GLOBAL skill's credential
+            // rows — a cross-scope deletion bug. User-scoped skill credential lifecycle
+            // is deferred until the ref scheme gains scope awareness.
+            return { skillId, created: r.created };
+          }
+
+          // scope === 'global' — existing path UNCHANGED (incl. credential purge).
 
           // Capture the previous slot list so we can purge credentials for
           // any slots that are removed by this manifest edit.
@@ -249,7 +356,11 @@ export function createSkillsPlugin(): Plugin {
         'skills:delete',
         PLUGIN_NAME,
         async (ctx, input) => {
+          const scope = input.scope ?? 'global';
+
           // I-P1-6: refuse delete when any agent has the skill attached.
+          // Conservative: apply to BOTH global and user scopes (safe — a
+          // user-scoped skill attached to an agent is still in-use).
           // Structural hasService check so this plugin doesn't form a hard dep
           // on @ax/agents — useful for stripped presets.
           if (bus.hasService('agents:any-attached-to-skill')) {
@@ -265,6 +376,26 @@ export function createSkillsPlugin(): Plugin {
               });
             }
           }
+
+          if (scope === 'user') {
+            const { ownerUserId } = input;
+            if (!ownerUserId) {
+              throw new PluginError({
+                code: 'missing-owner',
+                plugin: PLUGIN_NAME,
+                message: 'scope=user requires ownerUserId',
+              });
+            }
+            await userStore.delete(ownerUserId, input.skillId);
+            // NOTE: credential purge is intentionally SKIPPED for user-scoped skills.
+            // The `skill:<id>:<slot>` ref scheme is global-namespaced. Running purge
+            // here could delete the same-id GLOBAL skill's credential rows — a
+            // cross-scope deletion bug. User-scoped skill credential lifecycle
+            // is deferred until the ref scheme gains scope awareness.
+            return {};
+          }
+
+          // scope === 'global' — existing path UNCHANGED (incl. credential purge).
 
           // Read the skill's credential slots BEFORE deletion (we need
           // the capability list). Then delete the row first — if store.delete
@@ -300,13 +431,58 @@ export function createSkillsPlugin(): Plugin {
       bus.registerService<SkillsResolveInput, SkillsResolveOutput>(
         'skills:resolve',
         PLUGIN_NAME,
-        async (_ctx, input) => ({ skills: await store.resolve(input.skillIds) }),
+        async (_ctx, input) => {
+          const globalResolved = await store.resolve(input.skillIds);
+
+          if (!input.ownerUserId) {
+            return { skills: globalResolved };
+          }
+
+          const userResolved = await userStore.resolve(input.ownerUserId, input.skillIds);
+
+          // User-wins on id collision: start with global, overlay user rows.
+          // Preserve input order from skillIds.
+          const byId = new Map(globalResolved.map((s) => [s.id, s]));
+          for (const s of userResolved) {
+            byId.set(s.id, s);
+          }
+
+          // Preserve original input order; drop unknown ids silently.
+          const skills: typeof globalResolved = [];
+          for (const id of input.skillIds) {
+            const s = byId.get(id);
+            if (s !== undefined) skills.push(s);
+          }
+
+          return { skills };
+        },
       );
 
       bus.registerService<SkillsListDefaultsInput, SkillsListDefaultsOutput>(
         'skills:list-defaults',
         PLUGIN_NAME,
-        async () => ({ skills: await store.getDefaults() }),
+        async (_ctx, input) => {
+          const globalDefaults = await store.getDefaults();
+
+          if (!input.ownerUserId) {
+            return { skills: globalDefaults };
+          }
+
+          const userDefaults = await userStore.getDefaults(input.ownerUserId);
+
+          // User-wins on id collision.
+          const byId = new Map(globalDefaults.map((s) => [s.id, s]));
+          for (const s of userDefaults) {
+            byId.set(s.id, s);
+          }
+
+          // Sort by id ascending (stable order, matches store.getDefaults).
+          const skills = [...byId.values()].sort((a, b) =>
+            a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
+          );
+
+          return { skills };
+        },
       );
 
       bus.registerService<SkillsCheckForUpdatesInput, SkillsCheckForUpdatesOutput>(
