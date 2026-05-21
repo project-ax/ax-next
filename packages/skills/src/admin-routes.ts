@@ -7,8 +7,6 @@ import type {
   SkillsUpsertOutput,
 } from './types.js';
 import {
-  ADMIN_BODY_MAX_BYTES,
-  requireAuthenticated,
   requireAdmin,
   parseRequestBody,
   writeServiceError,
