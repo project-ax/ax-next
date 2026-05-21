@@ -79,6 +79,12 @@ import { ARTIFACT_PUBLISH_TOOL_NAME } from '@ax/tool-artifact-publish';
 // perspective.
 // ---------------------------------------------------------------------------
 
+export { createArtifactPublishExecutor } from './artifact-publish-executor.js';
+export type {
+  ArtifactPublishOutput,
+  CreateArtifactPublishExecutorOptions,
+} from './artifact-publish-executor.js';
+
 export async function main(): Promise<number> {
   let env;
   try {

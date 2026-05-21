@@ -42,7 +42,7 @@ Sources scanned (2026-05-19): `MEMORY.md`, recent `docs/plans/*followup*`,
 
 ## Attachments / artifacts
 
-- [ ] **Artifact-publish round-trip e2e via real runner.** Chip components are unit-tested; the canary in `presets/k8s/__tests__/acceptance.test.ts` seeds jsonl directly via `workspace:apply`. A runner-stub for `tool_use` / `tool_result` would be a separate slice.
+- [x] ~~**Artifact-publish round-trip e2e via real runner.**~~ Shipped — `presets/k8s/src/__tests__/acceptance.test.ts`'s "Phase 3 canary" now threads the real `createArtifactPublishExecutor` output into the seeded `tool_result.content`, with lock-down assertions on the executor↔chip/ACL contract (`artifactId` 16-hex, `downloadUrl = ax://artifact/<id>`, `path`, `mediaType`, `sizeBytes`, `sha256` 64-hex). A separate runner-stub for the SDK MCP wire (option B / Phase 6 PR-B) remains deferred.
 - [ ] **`$CLAUDE_CONFIG_DIR/sessions/` mirroring.** Today's scaffold only links `projects/`. Add a sibling symlink if a future feature needs session metadata in the workspace.
 
 ## Auth / onboarding cleanup (Phase 4 + Phase 5 follow-ups)
