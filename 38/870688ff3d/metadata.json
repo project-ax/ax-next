@@ -1,0 +1,25 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "38870688ff3d",
+  "strategy": "manual-commit",
+  "branch": "worktree-finding3-workspace-apply-facade",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "TODO.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/38/870688ff3d/0/metadata.json",
+      "transcript": "/38/870688ff3d/0/full.jsonl",
+      "content_hash": "/38/870688ff3d/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 8,
+    "cache_creation_tokens": 5663,
+    "cache_read_tokens": 856393,
+    "output_tokens": 3628,
+    "api_call_count": 4
+  }
+}
