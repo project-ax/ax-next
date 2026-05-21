@@ -3,7 +3,7 @@
   "checkpoint_id": "9d456d99876c",
   "strategy": "manual-commit",
   "branch": "worktree-fix+google-login-better-auth",
-  "checkpoints_count": 2,
+  "checkpoints_count": 3,
   "files_touched": [
     "packages/channel-web/src/__tests__/auth-signInWithGoogle.test.ts",
     "packages/channel-web/src/components/LoginPage.tsx",
@@ -15,13 +15,19 @@
       "transcript": "/9d/456d99876c/0/full.jsonl",
       "content_hash": "/9d/456d99876c/0/content_hash.txt",
       "prompt": "/9d/456d99876c/0/prompt.txt"
+    },
+    {
+      "metadata": "/9d/456d99876c/1/metadata.json",
+      "transcript": "/9d/456d99876c/1/full.jsonl",
+      "content_hash": "/9d/456d99876c/1/content_hash.txt",
+      "prompt": "/9d/456d99876c/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 13333,
-    "cache_creation_tokens": 638163,
-    "cache_read_tokens": 16259064,
-    "output_tokens": 158264,
-    "api_call_count": 115
+    "input_tokens": 25040,
+    "cache_creation_tokens": 899802,
+    "cache_read_tokens": 21797177,
+    "output_tokens": 231782,
+    "api_call_count": 157
   }
 }
