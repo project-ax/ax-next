@@ -156,7 +156,7 @@ export function createMockWorkspacePlugin(): Plugin {
             throw new PluginError({
               code: 'parent-mismatch',
               plugin: PLUGIN_NAME,
-              hookName: 'workspace:apply',
+              hookName: 'workspace:apply-internal',
               message: `expected parent ${latest === null ? 'null' : latest}, got ${input.parent === null ? 'null' : input.parent}`,
             });
           }

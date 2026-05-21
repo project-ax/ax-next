@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { HookBus } from '../hook-bus.js';
-import { PluginError, reject, type Rejection } from '../errors.js';
+import { PluginError, reject } from '../errors.js';
 import { makeAgentContext, createLogger, type AgentContext } from '../context.js';
 import { registerWorkspaceApplyFacade } from '../workspace-apply-facade.js';
 import {
@@ -258,7 +258,7 @@ describe('registerWorkspaceApplyFacade', () => {
     const parentMismatch = new PluginError({
       code: 'parent-mismatch',
       plugin: FACADE_PLUGIN,
-      hookName: 'workspace:apply',
+      hookName: 'workspace:apply-internal',
       message: 'expected parent v0, got null',
       cause: { actualParent: asWorkspaceVersion('v0') },
     });
@@ -288,4 +288,3 @@ describe('registerWorkspaceApplyFacade', () => {
 const _typecheck: (bus: HookBus, plugin: string) => void =
   registerWorkspaceApplyFacade;
 void _typecheck;
-void (null as unknown as Rejection);
