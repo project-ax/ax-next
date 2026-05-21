@@ -17,6 +17,53 @@ interface ConversationRow {
   updatedAt: string;
 }
 
+// The server auto-generates a title during the first turn (jsonl read +
+// title-LLM round-trip), so it isn't available the instant we ask. The old
+// 3×1s window often expired before the title landed and then permanently
+// cached "New Chat" until a full reload. Widen the window so the common case
+// is surfaced. Early-returns on the first poll that sees a title.
+const TITLE_POLL_ATTEMPTS = 10;
+const TITLE_POLL_INTERVAL_MS = 1000;
+
+/**
+ * Poll `GET /api/chat/conversations` for `remoteId`'s title until it's
+ * non-null or the attempts run out. Returns the title, or `null` if it never
+ * appeared in the window.
+ *
+ * `fetchImpl` / `intervalMs` are test seams — production callers use the
+ * module defaults (global `fetch`, 1s interval).
+ */
+export async function pollConversationTitle(
+  remoteId: string,
+  opts: {
+    attempts?: number;
+    intervalMs?: number;
+    fetchImpl?: typeof fetch;
+  } = {},
+): Promise<string | null> {
+  const attempts = opts.attempts ?? TITLE_POLL_ATTEMPTS;
+  const intervalMs = opts.intervalMs ?? TITLE_POLL_INTERVAL_MS;
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    await new Promise((r) => setTimeout(r, intervalMs));
+    try {
+      const res = await fetchImpl('/api/chat/conversations', {
+        credentials: 'include',
+      });
+      if (res.ok) {
+        const rows = (await res.json()) as ConversationRow[];
+        const match = Array.isArray(rows)
+          ? rows.find((c) => c.conversationId === remoteId)
+          : undefined;
+        if (match?.title) return match.title;
+      }
+    } catch {
+      /* transient — retry */
+    }
+  }
+  return null;
+}
+
 /**
  * AX-backed RemoteThreadListAdapter (Task 19).
  *
@@ -66,31 +113,11 @@ export const axThreadListAdapter: RemoteThreadListAdapter = {
   },
 
   async generateTitle(remoteId: string) {
-    // The server auto-generates the title during the first turn; we
-    // poll the conversations list briefly to surface it. After 3 tries
-    // we fall back to "New Chat" so the row never hangs in a loading
-    // state.
-    let title = 'New Chat';
-    for (let attempt = 0; attempt < 3; attempt++) {
-      await new Promise((r) => setTimeout(r, 1000));
-      try {
-        const res = await fetch('/api/chat/conversations', {
-          credentials: 'include',
-        });
-        if (res.ok) {
-          const rows = (await res.json()) as ConversationRow[];
-          const match = Array.isArray(rows)
-            ? rows.find((c) => c.conversationId === remoteId)
-            : undefined;
-          if (match?.title) {
-            title = match.title;
-            break;
-          }
-        }
-      } catch {
-        /* retry */
-      }
-    }
+    // Poll the conversations list until the server-generated title lands,
+    // falling back to "New Chat" so the row never hangs in a loading state.
+    // (Residual: a title that arrives after the poll window still needs a
+    // list() refresh to appear — tracked in TODO.md.)
+    const title = (await pollConversationTitle(remoteId)) ?? 'New Chat';
     return createAssistantStream((controller) => {
       controller.appendText(title);
       controller.close();
