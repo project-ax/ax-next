@@ -98,28 +98,32 @@ The whole point of v2 over openclaw is that we're the secure one. If a hook surf
 
 ## Plugin manifest format
 
-Each plugin's `package.json` has an `ax` field:
+Each plugin instance exposes an in-code `manifest` object, validated by `PluginManifestSchema` in `@ax/core` (`packages/core/src/plugin.ts`):
 
-```json
-{
-  "name": "@ax/sandbox-k8s",
-  "version": "0.1.0",
-  "peerDependencies": {
-    "@ax/core": "^1.0.0"
-  },
-  "ax": {
-    "registers": ["sandbox:spawn", "sandbox:kill"],
-    "calls":     ["storage:get", "storage:set", "audit:write"],
-    "configSchema": "./schema.json"
-  }
+```ts
+export function createWorkspaceGitPlugin(config: WorkspaceGitConfig): Plugin {
+  return {
+    manifest: {
+      name: '@ax/workspace-git',
+      version: '0.0.0',
+      registers: ['workspace:apply', 'workspace:read', 'workspace:diff'],
+      calls: [],
+      subscribes: [],
+    },
+    init({ bus }) {
+      /* register hooks here */
+    },
+  };
 }
 ```
 
 - **`registers`** — service hooks this plugin implements. Exactly one plugin may register each service hook; collision is a boot-time error.
 - **`calls`** — service hooks this plugin depends on. Core uses this for (a) cycle detection at boot, (b) failing fast on missing services, (c) generating a compatibility matrix.
-- **`configSchema`** — JSON schema for config the plugin accepts. Plugins receive config at construction, not via a runtime hook.
+- **`subscribes`** — subscriber hooks this plugin listens on. Declared for visibility, but subscribing creates **no** dependency — a plugin can subscribe to anything without requiring it to exist, so `subscribes` does not participate in cycle detection.
 
-**Subscriber hooks are NOT declared here.** Subscribing doesn't create a dependency — a plugin can subscribe to anything without requiring it to exist.
+Plugin config is injected at construction via `PluginInitContext.config` — there is no `configSchema` field in the manifest.
+
+> **Not a `package.json` field.** An earlier convention proposed declaring this manifest as an `ax` field in each plugin's `package.json`. It was never adopted; the in-code runtime manifest is canonical. See `docs/plans/2026-05-20-manifest-canonical-form-design.md`.
 
 ---
 
@@ -134,6 +138,8 @@ Two primitives, deliberately distinct.
 - Return shape is Zod-validated; mismatches become `PluginError`.
 - Each service hook has a timeout (configurable per hook). Exceeded = `PluginError`.
 - If the impl throws, the caller decides how to handle — retry (`llm:call`), translate to tool error (`tool:execute`), propagate (`storage:get`).
+
+> **Not yet enforced:** the Zod return-validation and per-hook-timeout bullets above are the *target* contract, not current behavior — `HookBus.call` awaits and casts today. Tracked as finding 2; see `docs/plans/2026-05-20-manifest-canonical-form-design.md`.
 
 ### `hooks.fire(event, ctx, payload) → modified` — subscriber hooks
 
@@ -280,5 +286,7 @@ The `local/no-bare-tenant-tables` ESLint rule (`eslint-rules/no-bare-tenant-tabl
 | Cycle detected | Fail fast — name both plugins. |
 | Missing service hook | Fail fast — "plugin X declares `calls: ['Y:z']` but no plugin registers it." |
 | Two plugins register same service | Fail fast — config must pick one. |
+
+> **Not yet enforced:** the "wrong return shape → Zod" and "Plugin hangs → per-hook timeout" rows are the *target* contract; `HookBus.call` does neither yet (finding 2).
 
 **Pattern:** boot-time failures are loud and prevent startup; runtime failures degrade gracefully with structured errors. The hook bus is the enforcement point — every cross-plugin interaction goes through it.
