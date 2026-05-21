@@ -101,10 +101,10 @@ export function SkillEditor({ skillId, onSaved, onCancel, api = defaultApi }: Pr
     return () => {
       cancelled = true;
     };
-  // `api` is an object reference; listing it as a dep is correct but
-  // callers that inline the object literal would re-run on every render.
-  // The intent is that callers pass a stable (module-level) constant.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+  // `api` is an object reference and is correctly listed as a dep below;
+  // callers are expected to pass a stable (module-level) constant so this
+  // effect doesn't re-run every render (the admin default and the user
+  // panel's `userSkillsApi` are both module-level constants).
   }, [skillId, api]);
 
   // Parse the manifest yaml between the first two `---` fences on every change.
