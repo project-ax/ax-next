@@ -56,7 +56,7 @@ Listed here only so the triggers are easy to find. Per the roadmap, these stay d
 
 ## UI Bugs
 
-- [x] ~~Chat session titles aren't being consistenly generated for new chats~~ — fixed (PR #120): bounded retry replaces the one-shot title gate (`@ax/conversation-titles`) + widened `generateTitle` poll window (`channel-web`).
+- [x] ~~Chat session titles aren't being consistently generated for new chats~~ — fixed (PR #120): bounded retry replaces the one-shot title gate (`@ax/conversation-titles`) + widened `generateTitle` poll window (`channel-web`).
 - [x] ~~When files are attached to a user message, that message doesn't show the attachment chip when loaded again from a previous chat session~~ — fixed (PR #120): the runner-translated text-mention is reconstructed back into an `attachment` block on the `conversations:get` read path, gated to the conversation's own `.ax/uploads/<conversationId>/` prefix.
 
 ### UI bug follow-ups
