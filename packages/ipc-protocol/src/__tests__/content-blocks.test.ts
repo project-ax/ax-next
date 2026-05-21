@@ -205,11 +205,23 @@ describe('ContentBlock schema', () => {
       expect(parseAttachmentMention(text)).toEqual(fields);
     });
 
-    it("round-trips a displayName containing ' at ' (path is no-space so it can't be swallowed)", () => {
+    it("round-trips a displayName containing ' at '", () => {
       const fields = {
         displayName: "dinner at 8 pm.txt",
         path: '.ax/uploads/cnv_x/req-y/h__dinner_at_8_pm.txt',
         mediaType: 'text/plain',
+      };
+      const parsed = parseAttachmentMention(formatAttachmentMention(fields));
+      expect(parsed).toEqual(fields);
+    });
+
+    it('round-trips a path containing spaces (paths may contain whitespace)', () => {
+      // isWorkspaceRelativePath permits spaces, so the parser must too —
+      // the greedy path capture backtracks to the final " (mediaType)".
+      const fields = {
+        displayName: 'Q4 Report.pdf',
+        path: '.ax/uploads/cnv_x/req-y/ab12__Q4 Report (final).pdf',
+        mediaType: 'application/pdf',
       };
       const parsed = parseAttachmentMention(formatAttachmentMention(fields));
       expect(parsed).toEqual(fields);

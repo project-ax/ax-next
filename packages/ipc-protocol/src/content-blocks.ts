@@ -189,22 +189,23 @@ export function formatAttachmentMention(att: AttachmentMentionFields): string {
   return `User attached '${att.displayName}' at ${att.path} (${att.mediaType})`;
 }
 
-const ATTACHMENT_MENTION_RE = /^User attached '(.*?)' at (\S+) \(([^)]+)\)$/;
+const ATTACHMENT_MENTION_RE = /^User attached '(.*?)' at (.+) \(([^)]+)\)$/;
 
 /**
  * Parse a one-line attachment mention produced by `formatAttachmentMention`,
  * or `null` if `text` isn't exactly one such mention.
  *
- * Anchoring relies on two facts the producer guarantees:
- *   - the path is workspace-relative and contains no whitespace (filenames
- *     are sanitized + the conv/turn segments are opaque ids), so `\S+` after
- *     ` at ` captures it unambiguously;
- *   - the mention is a single line — `^…$` (no `s` flag) refuses any text
- *     with embedded newlines, so a merged "user-text\nmention" block is split
- *     by the caller before reaching here.
+ * Anchoring relies on one fact the producer guarantees: the mention is a
+ * single line. `^…$` (no `s` flag) refuses any text with embedded newlines,
+ * so a merged "user-text\nmention" block is split by the caller before
+ * reaching here.
  *
- * `displayName` is matched non-greedily up to the ` at <no-space-path>` so a
- * name containing " at " can't swallow the path.
+ * `displayName` is matched non-greedily up to the first ` at `; the path is
+ * greedy and may contain spaces (workspace-relative paths are allowed to —
+ * see `isWorkspaceRelativePath`), backtracking to the final ` (<mediaType>)`
+ * which the `[^)]+` end-anchor pins. The reconstructed block is re-validated
+ * against `AttachmentBlockSchema` by the caller, so a path that slips through
+ * here but isn't workspace-relative is still rejected downstream.
  */
 export function parseAttachmentMention(
   text: string,
