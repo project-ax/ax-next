@@ -1,0 +1,42 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "beaf0ba80fed",
+  "session_id": "d0c30c14-d5d0-42ad-a7e1-bc83eec13b77",
+  "strategy": "manual-commit",
+  "created_at": "2026-05-21T03:44:26.824195Z",
+  "branch": "worktree-fix+google-login-better-auth",
+  "checkpoints_count": 2,
+  "files_touched": [],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "46eca2234685",
+  "token_usage": {
+    "input_tokens": 11600,
+    "cache_creation_tokens": 215669,
+    "cache_read_tokens": 3283656,
+    "output_tokens": 44535,
+    "api_call_count": 30
+  },
+  "session_metrics": {
+    "turn_count": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 8,
+      "user_lines_removed": 0,
+      "agent_lines_added": 120,
+      "agent_lines_removed": 11,
+      "user_added_per_file": {
+        ".claude/settings.local.json": 8
+      }
+    }
+  ]
+}
