@@ -139,7 +139,14 @@ Two primitives, deliberately distinct.
 - Each service hook has a timeout (configurable per hook). Exceeded = `PluginError`.
 - If the impl throws, the caller decides how to handle — retry (`llm:call`), translate to tool error (`tool:execute`), propagate (`storage:get`).
 
-> **Not yet enforced:** the Zod return-validation and per-hook-timeout bullets above are the *target* contract, not current behavior — `HookBus.call` awaits and casts today. Tracked as finding 2; see `docs/plans/2026-05-20-manifest-canonical-form-design.md`.
+> **Enforced (2026-05-20):** every service call is bounded by a timeout (universal 120s default, overridable). Return-shape validation runs when a hook declares a `returns` schema. Both are set at registration:
+> ```ts
+> bus.registerService('credentials:get', PLUGIN_NAME, handler, {
+>   returns: z.string(),      // optional Zod schema → PluginError('invalid-return') on mismatch
+>   timeoutMs: 300_000,       // optional override of the default; Infinity disables
+> });
+> ```
+> See `docs/plans/2026-05-20-hook-bus-enforcement-design.md`.
 
 ### `hooks.fire(event, ctx, payload) → modified` — subscriber hooks
 
@@ -287,6 +294,6 @@ The `local/no-bare-tenant-tables` ESLint rule (`eslint-rules/no-bare-tenant-tabl
 | Missing service hook | Fail fast — "plugin X declares `calls: ['Y:z']` but no plugin registers it." |
 | Two plugins register same service | Fail fast — config must pick one. |
 
-> **Not yet enforced:** the "wrong return shape → Zod" and "Plugin hangs → per-hook timeout" rows are the *target* contract; `HookBus.call` does neither yet (finding 2).
+> **Enforced (2026-05-20):** both rows are live — a universal per-hook timeout, and return-shape Zod validation for hooks that declare a `returns` schema (finding 2).
 
 **Pattern:** boot-time failures are loud and prevent startup; runtime failures degrade gracefully with structured errors. The hook bus is the enforcement point — every cross-plugin interaction goes through it.

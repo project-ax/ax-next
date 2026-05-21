@@ -2,6 +2,7 @@ import { PluginError, makeAgentContext, type Plugin } from '@ax/core';
 import { wipePreRedesignCredentials } from './wipe-pre-redesign.js';
 import type { Transaction } from 'kysely';
 import { encryptWithKey, decryptWithKey, parseKeyFromEnv } from './crypto.js';
+import { z, type ZodType } from 'zod';
 
 const PLUGIN_NAME = '@ax/credentials';
 // `:` is the separator for deterministic destination refs
@@ -65,6 +66,9 @@ export interface CredentialsGetInput {
 
 export type CredentialsGetOutput = string;
 
+/** Runtime contract for `credentials:get` — a resolved secret is a string. */
+export const CredentialsGetOutputSchema = z.string();
+
 export interface CredentialsSetInput {
   scope: CredentialScope;
   ownerId: string | null;
@@ -110,6 +114,27 @@ export interface CredentialsResolveOutput {
     metadata?: Record<string, unknown>;
   };
 }
+
+/**
+ * Runtime contract for `credentials:resolve:setting`. Hand-mirrors the
+ * `CredentialsResolveOutput` interface. A compile-time `z.infer extends
+ * interface` guard isn't viable here (zod's `.optional()` infers `| undefined`,
+ * which `exactOptionalPropertyTypes` rejects against the interface's exact
+ * optionals; and `z.instanceof(Uint8Array)` infers a narrower `Uint8Array`
+ * generic) — so `return-schemas.test.ts` guards drift at runtime instead: a
+ * fully-populated interface-typed value must round-trip through the schema
+ * without losing fields.
+ */
+export const CredentialsResolveOutputSchema = z.object({
+  value: z.string(),
+  refreshed: z
+    .object({
+      payload: z.instanceof(Uint8Array),
+      expiresAt: z.number().optional(),
+      metadata: z.record(z.unknown()).optional(),
+    })
+    .optional(),
+});
 
 export interface CredentialsListInput {
   scope?: CredentialScope;
@@ -539,6 +564,7 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
           const userId = validateUserId(input.userId);
           return doResolve(ctx, userId, ref);
         },
+        { returns: CredentialsGetOutputSchema },
       );
 
       bus.registerService<CredentialsDeleteInput, CredentialsDeleteOutput>(
@@ -651,6 +677,10 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
         async (_ctx, input) => {
           return { value: new TextDecoder().decode(input.payload) };
         },
+        // Cast required: a concrete ZodObject isn't assignable to the abstract
+        // `ZodType<O>` param. The drift guard near the schema definition is what
+        // actually enforces schema↔interface agreement.
+        { returns: CredentialsResolveOutputSchema as ZodType<CredentialsResolveOutput> },
       );
 
       // General-purpose AEAD primitive for cross-plugin reuse of the single

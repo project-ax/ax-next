@@ -28,6 +28,7 @@ export function createSandboxSubprocessPlugin(): Plugin {
         'sandbox:open-session',
         PLUGIN_NAME,
         async (ctx, raw) => openSessionImpl(ctx, raw, bus),
+        { timeoutMs: 300_000 },
       );
     },
   };

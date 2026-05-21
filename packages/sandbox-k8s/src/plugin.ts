@@ -76,6 +76,7 @@ export function createSandboxK8sPlugin(
         'sandbox:open-session',
         PLUGIN_NAME,
         impl,
+        { timeoutMs: 300_000 },
       );
     },
   };

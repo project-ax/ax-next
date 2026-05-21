@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { z } from 'zod';
 import { HookBus } from '../hook-bus.js';
 import { isRejection, PluginError, reject } from '../errors.js';
 import { makeAgentContext, createLogger } from '../context.js';
@@ -240,5 +241,93 @@ describe('HookBus — subscriber hooks', () => {
 
     await bus.fire('h', silentCtx(), {});
     expect(counter).toBe(0);
+  });
+});
+
+describe('HookBus — service-boundary enforcement', () => {
+  it('returns the value when the handler resolves within the timeout', async () => {
+    const bus = new HookBus({ defaultServiceTimeoutMs: 1000 });
+    bus.registerService('fast', 'p', async () => 'ok');
+    await expect(bus.call('fast', silentCtx(), {})).resolves.toBe('ok');
+  });
+
+  it('rejects PluginError{code:"timeout"} when the handler exceeds the default', async () => {
+    const bus = new HookBus({ defaultServiceTimeoutMs: 20 });
+    bus.registerService('hang', 'p', () => new Promise<never>(() => {}));
+    await expect(bus.call('hang', silentCtx(), {})).rejects.toMatchObject({
+      name: 'PluginError',
+      code: 'timeout',
+      hookName: 'hang',
+    });
+  });
+
+  it('honors a per-hook timeoutMs override over the default', async () => {
+    const bus = new HookBus({ defaultServiceTimeoutMs: 10_000 });
+    bus.registerService('hang', 'p', () => new Promise<never>(() => {}), { timeoutMs: 20 });
+    await expect(bus.call('hang', silentCtx(), {})).rejects.toMatchObject({ code: 'timeout' });
+  });
+
+  it('treats timeoutMs:Infinity as no timeout', async () => {
+    const bus = new HookBus({ defaultServiceTimeoutMs: 10 });
+    bus.registerService(
+      'slow',
+      'p',
+      () => new Promise<string>((resolve) => setTimeout(() => resolve('done'), 40)),
+      { timeoutMs: Number.POSITIVE_INFINITY },
+    );
+    await expect(bus.call('slow', silentCtx(), {})).resolves.toBe('done');
+  });
+
+  it('returns the parsed value when a declared returns schema matches', async () => {
+    const bus = new HookBus();
+    bus.registerService('typed', 'p', async () => 'hello', { returns: z.string() });
+    await expect(bus.call('typed', silentCtx(), {})).resolves.toBe('hello');
+  });
+
+  it('rejects PluginError{code:"invalid-return"} when the return shape is wrong', async () => {
+    const bus = new HookBus();
+    // handler lies about its shape at runtime (number, not the declared string)
+    bus.registerService('typed', 'p', async () => 123 as unknown as string, { returns: z.string() });
+    await expect(bus.call('typed', silentCtx(), {})).rejects.toMatchObject({
+      name: 'PluginError',
+      code: 'invalid-return',
+      hookName: 'typed',
+    });
+  });
+
+  it('3-arg registration is unchanged: no validation, default timeout, value passes through', async () => {
+    const bus = new HookBus();
+    bus.registerService('legacy', 'p', async () => ({ anything: true }));
+    await expect(bus.call('legacy', silentCtx(), {})).resolves.toEqual({ anything: true });
+  });
+
+  it('rejects an invalid defaultServiceTimeoutMs at construction', () => {
+    for (const bad of [NaN, -1, Number.NEGATIVE_INFINITY]) {
+      let thrown: unknown;
+      try {
+        new HookBus({ defaultServiceTimeoutMs: bad });
+      } catch (e) {
+        thrown = e;
+      }
+      expect(thrown).toMatchObject({ name: 'PluginError', code: 'invalid-payload' });
+    }
+  });
+
+  it('accepts Infinity and a finite >= 0 default at construction', () => {
+    expect(() => new HookBus({ defaultServiceTimeoutMs: Number.POSITIVE_INFINITY })).not.toThrow();
+    expect(() => new HookBus({ defaultServiceTimeoutMs: 0 })).not.toThrow();
+  });
+
+  it('rejects an invalid per-hook timeoutMs at registration', () => {
+    const bus = new HookBus();
+    for (const bad of [NaN, -1, Number.NEGATIVE_INFINITY]) {
+      let thrown: unknown;
+      try {
+        bus.registerService(`h-${bad}`, 'p', async () => 1, { timeoutMs: bad });
+      } catch (e) {
+        thrown = e;
+      }
+      expect(thrown).toMatchObject({ name: 'PluginError', code: 'invalid-payload', hookName: `h-${bad}` });
+    }
   });
 });

@@ -1,6 +1,7 @@
 import type { HookBus } from './hook-bus.js';
 import { PluginError } from './errors.js';
 import { PluginManifestSchema, type Plugin } from './plugin.js';
+import { withTimeout } from './util/with-timeout.js';
 
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 10_000;
 
@@ -140,7 +141,7 @@ async function runShutdownLoop(
       await withTimeout(
         Promise.resolve(p.shutdown()),
         timeoutMs,
-        `plugin '${p.manifest.name}' shutdown exceeded ${timeoutMs}ms`,
+        () => new Error(`plugin '${p.manifest.name}' shutdown exceeded ${timeoutMs}ms`),
       );
     } catch (err) {
       // Guard the sink itself: a structured logger that asserts on schema, a
@@ -155,30 +156,6 @@ async function runShutdownLoop(
       }
     }
   }
-}
-
-function withTimeout<T>(
-  promise: Promise<T>,
-  ms: number,
-  message: string,
-): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(message)), ms);
-    // Don't keep the event loop alive on the timer alone. Mirrors the
-    // test-harness `withTimeout` (harness.ts:128-149): a Node process
-    // otherwise idle should still be allowed to exit.
-    timer.unref?.();
-    promise.then(
-      (v) => {
-        clearTimeout(timer);
-        resolve(v);
-      },
-      (e) => {
-        clearTimeout(timer);
-        reject(e);
-      },
-    );
-  });
 }
 
 // Runs the three graph-level validations a plugin set must pass before init:

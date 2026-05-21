@@ -83,6 +83,7 @@ export function createLlmAnthropicPlugin(cfg: LlmAnthropicConfig = {}): Plugin {
         'llm:call:anthropic',
         PLUGIN_NAME,
         async (_ctx, input) => callWithRetry(client, input, cfg),
+        { timeoutMs: 300_000 },
       );
 
       bus.registerService<unknown, ModelsListSupportedOutput>(

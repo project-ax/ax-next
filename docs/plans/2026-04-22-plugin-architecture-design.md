@@ -646,7 +646,7 @@ Applies to both build-out AND steady state.
 | Required service hook missing | Boot-time check: if any plugin declares `calls: ['storage:set']` but no plugin registers `storage:set`, fail fast with a missing-service message. |
 | Two plugins register the same service hook | Boot-time error — config must pick one. (Subscribers to the same hook are fine; service hooks are exclusive.) |
 
-> **Not yet enforced (as of 2026-05-20):** the "Service plugin returns wrong shape → Zod validation" and "Plugin hangs → per-hook timeout" rows describe the *target* hook-bus contract, not current behavior. `HookBus.call` (`packages/core/src/hook-bus.ts`) awaits and casts today — no return validation, no timeout. These land with the hook-bus-enforcement work (finding 2); see `docs/plans/2026-05-20-manifest-canonical-form-design.md`.
+> **Enforced (2026-05-20):** `HookBus.call` applies a per-hook timeout to every service call — a universal default (120s), overridable per registration — converting a hang to `PluginError('timeout')`. Return-shape Zod validation runs for any hook that declares a `returns` schema at registration, converting a bad shape to `PluginError('invalid-return')`. See `docs/plans/2026-05-20-hook-bus-enforcement-design.md`.
 
 Pattern: **boot-time failures are loud and prevent startup; runtime failures degrade gracefully with structured errors.** The hook bus is the natural enforcement point — every cross-plugin interaction goes through it.
 
