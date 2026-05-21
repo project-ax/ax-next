@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@ax/core": "workspace:*",
+    "@ax/skills-parser": "workspace:*",
     "kysely": "0.28.17",
     "zod": "^3.23.8"
   },
