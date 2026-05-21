@@ -3,7 +3,7 @@
   "checkpoint_id": "109a3f1ad9b0",
   "session_id": "d0c30c14-d5d0-42ad-a7e1-bc83eec13b77",
   "strategy": "manual-commit",
-  "created_at": "2026-05-21T04:21:24.774577Z",
+  "created_at": "2026-05-21T04:23:36.467675Z",
   "branch": "worktree-fix+google-login-better-auth",
   "checkpoints_count": 1,
   "files_touched": [],
@@ -11,25 +11,13 @@
   "model": "",
   "turn_id": "159ede75e9ed",
   "token_usage": {
-    "input_tokens": 12113,
-    "cache_creation_tokens": 293915,
-    "cache_read_tokens": 8006062,
-    "output_tokens": 94413,
-    "api_call_count": 53
+    "input_tokens": 12119,
+    "cache_creation_tokens": 303594,
+    "cache_read_tokens": 8737283,
+    "output_tokens": 99647,
+    "api_call_count": 56
   },
   "session_metrics": {
     "turn_count": 5
-  },
-  "prompt_attributions": [
-    {
-      "checkpoint_number": 2,
-      "user_lines_added": 8,
-      "user_lines_removed": 0,
-      "agent_lines_added": 0,
-      "agent_lines_removed": 0,
-      "user_added_per_file": {
-        ".claude/settings.local.json": 8
-      }
-    }
-  ]
+  }
 }
