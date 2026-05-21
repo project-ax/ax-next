@@ -323,10 +323,9 @@ onboarding:
   bootstrapToken: ""    # AX_BOOTSTRAP_TOKEN
   publicBaseUrl: ""     # AX_PUBLIC_BASE_URL
 
-# ─── Auth providers ──────────────────────────────────────────────
-# Auth providers are DB-driven via @ax/auth-better — there is NO
-# `auth:` config block in values.yaml anymore. Provider rows live in
-# the `auth_providers` table and are managed at runtime from the
+# ─── Auth / better-auth ──────────────────────────────────────────
+# Auth providers are DB-driven via @ax/auth-better. Provider rows live
+# in the `auth_providers` table and are managed at runtime from the
 # admin UI at `/admin/auth` (sign in → Settings → Auth providers).
 # That UI persists changes through the providers CRUD endpoints
 # (`/admin/auth/providers/*`) and hot-reloads them into the live auth
@@ -342,7 +341,28 @@ onboarding:
 #      OIDC providers (Google, GitHub, generic).
 #
 # The legacy `auth.devBootstrap` and `auth.google` blocks were retired
-# in Phase 3 (commit history: deploy/charts/ax-next/values.yaml).
+# in Phase 3 (commit history: deploy/charts/ax-next/values.yaml). There
+# is intentionally no operator-facing `auth:` config key here — providers
+# live in the DB, and the one secret @ax/auth-better needs is generated
+# for you (see below).
+#
+# `AX_AUTH_SECRET` (read by @ax/auth-better) is the stable secret used
+# for OAuth state signing and at-rest OAuth-token encryption. You don't
+# supply it — the chart generates 32 bytes of entropy at first install
+# and stashes it in the `<release>-secrets` Secret under the `auth-secret`
+# key. A `lookup` guard keeps it stable across `helm upgrade`, so we never
+# regenerate it out from under you.
+#
+# Keep this one stable. If the secret changes, every OAuth token we
+# already encrypted with the old value becomes undecryptable — users have
+# to re-link their providers. We're paranoid about this for good reason.
+#
+# Need to supply or rename the secret yourself (e.g. your GitOps tooling
+# provisions all secrets out-of-band)? The chart reads it via a
+# `secretKeyRef` in `templates/host/deployment.yaml` — point that at your
+# own Secret/key there. There's no `existingSecret` value for it; we'd
+# rather you edit the one obvious spot than wire up an indirection that
+# silently no-ops if you typo it.
 
 # ─── Network policies ────────────────────────────────────────────
 # `enabled: true` is the safe default. Disabling is supported only for
