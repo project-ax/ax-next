@@ -21,9 +21,11 @@ import { signInWithGoogle } from '../lib/auth';
 
 const fetchMock = vi.fn();
 let originalLocation: Location;
+let originalFetch: typeof fetch;
 
 beforeEach(() => {
   fetchMock.mockReset();
+  originalFetch = globalThis.fetch;
   globalThis.fetch = fetchMock as unknown as typeof fetch;
   originalLocation = window.location;
   // jsdom's location.href isn't freely writable; swap in a plain object so
@@ -35,6 +37,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  globalThis.fetch = originalFetch;
   Object.defineProperty(window, 'location', {
     writable: true,
     value: originalLocation,

@@ -1303,13 +1303,13 @@ covering authentication for everyone who isn't the bootstrap admin.
    an OAuth 2.0 client ID (Web application). Under "Authorized redirect
    URIs", add exactly:
 
-   ```
+   ```text
    ${AX_PUBLIC_BASE_URL}/auth/callback/google
    ```
 
    For a local kind walk that uses port-forward, that's:
 
-   ```
+   ```text
    http://localhost:9090/auth/callback/google
    ```
 
@@ -1508,7 +1508,7 @@ manager (not in the repo).
 # delete them via psql if a clean slate is needed:
 kubectl exec -n ax-next deploy/ax-next-host -- \
   psql -U ax-next -d ax-next \
-  -c "DELETE FROM auth_better_v1_users WHERE provider = 'google';"
+  -c "DELETE FROM auth_better_v1_users WHERE id IN (SELECT user_id FROM auth_better_v1_accounts WHERE provider_id = 'google');"
 ```
 
 ## When this passes, do

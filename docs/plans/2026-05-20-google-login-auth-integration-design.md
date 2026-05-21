@@ -88,7 +88,7 @@ Rejected alternatives:
 ## 5. End-to-end flow
 
 ### Happy path (allowed user)
-```
+```text
 click "Sign in with Google"
  → POST /auth/sign-in/social {provider:'google', callbackURL:'/'}      [client, done]
  → better-auth: write verification(state) → return { url }
