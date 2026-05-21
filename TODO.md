@@ -80,7 +80,7 @@ These wait on stated triggers — don't ship pre-emptively.
 
 These are ordered: 4 gates 2 and 3.
 
-- [ ] **Finding 4 — plugin manifest canonical form.** Spec says core reads `package.json` `ax` field; reality is runtime manifests in code. Zero packages currently declare `"ax"` in `package.json`. **Decide first** (runtime stays canonical → update spec + `ax-conventions` skill; or `package.json` wins → migrate ~25 packages).
+- [x] ~~**Finding 4 — plugin manifest canonical form.**~~ **Decided 2026-05-20: runtime in-code manifest is canonical**, `package.json` `ax` field formally abandoned (never adopted). Spec §528–538 + `ax-conventions` skill reconciled; not-yet-enforced hook-bus claims caveated. Findings 2 and 3 now declare in code at the registration site. Design: `docs/plans/2026-05-20-manifest-canonical-form-design.md`.
 - [ ] **Finding 2 — hook bus enforces service-boundary guarantees.** `HookBus.call` currently just awaits and casts — no return-shape Zod, no per-hook timeouts. Declarations naturally live wherever finding 4 says manifests live.
 - [ ] **Finding 3 — workspace policy hooks bypassable.** `workspace:pre-apply` veto and `workspace:applied` notification fire in the IPC commit path (`workspace-commit-notify.ts:58`) but not around `workspace:apply` itself. Any in-process `bus.call('workspace:apply')` silently bypasses. Codex's facade pattern (rename → private/internal hook; new public hook wraps with pre/post fire) is the agreed shape. Land on top of finding 2.
 
