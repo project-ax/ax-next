@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import * as os from 'node:os';
-import { createHash, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 
 import {
   PostgreSqlContainer,
@@ -30,6 +30,7 @@ import {
 } from '@ax/ipc-core';
 import { createAttachmentsPlugin } from '@ax/attachments';
 import { createToolArtifactPublishPlugin } from '@ax/tool-artifact-publish';
+import { createArtifactPublishExecutor } from '@ax/agent-claude-sdk-runner';
 import { createChannelWebServerPlugin } from '@ax/channel-web/server';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createHttpServerPlugin } from '@ax/http-server';
@@ -2041,6 +2042,9 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
       const workspaceRoot = await fs.realpath(
         await fs.mkdtemp(path.join(os.tmpdir(), 'ax-phase-3-artifact-canary-')),
       );
+      const runnerCheckoutRoot = await fs.realpath(
+        await fs.mkdtemp(path.join(os.tmpdir(), 'ax-phase-3-artifact-runner-')),
+      );
 
       const originalAllowNoOrigins = process.env.AX_HTTP_ALLOW_NO_ORIGINS;
       process.env.AX_HTTP_ALLOW_NO_ORIGINS = '1';
@@ -2250,6 +2254,18 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           },
         );
 
+        // In production, materializeWorkspace clones the storage tier into
+        // /permanent so the executor sees the file; the canary skips
+        // materialize, so we stage the bytes by hand.
+        await fs.mkdir(path.dirname(path.join(runnerCheckoutRoot, ARTIFACT_PATH)), {
+          recursive: true,
+          mode: 0o755,
+        });
+        await fs.writeFile(
+          path.join(runnerCheckoutRoot, ARTIFACT_PATH),
+          ARTIFACT_BYTES,
+        );
+
         // 3. Bind a runnerSessionId so conversations:get exits the
         //    short-circuit-empty branch and reads the workspace jsonl.
         const runnerSessionId = '00000000-0000-0000-0000-00000000a3ac';
@@ -2268,16 +2284,29 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         // and tool_result both land in a single role='assistant' Turn.
         // The tool_result's `content` is a JSON string whose `path` matches
         // ARTIFACT_PATH — that's the artifact-block branch of checkPathScope.
-        const sha256 = createHash('sha256').update(ARTIFACT_BYTES).digest('hex');
-        const artifactResult = {
-          artifactId: 'art-canary-1',
-          downloadUrl: 'ax://artifact/art-canary-1',
-          path: ARTIFACT_PATH,
-          displayName: 'summary.md',
-          mediaType: 'text/markdown',
-          sizeBytes: ARTIFACT_BYTES.byteLength,
-          sha256,
-        };
+        const executor = createArtifactPublishExecutor({
+          workspaceRoot: runnerCheckoutRoot,
+        });
+        const artifactResult = await executor({
+          id: 'toolu_1',
+          name: 'artifact_publish',
+          input: {
+            path: `/permanent/${ARTIFACT_PATH}`,
+            displayName: 'summary.md',
+          },
+        });
+
+        // Lock-down: ArtifactChip + checkPathScope's artifact-block branch
+        // consume this shape.
+        expect(artifactResult.artifactId).toMatch(/^[0-9a-f]{16}$/);
+        expect(artifactResult.downloadUrl).toBe(
+          `ax://artifact/${artifactResult.artifactId}`,
+        );
+        expect(artifactResult.path).toBe(ARTIFACT_PATH);
+        expect(artifactResult.displayName).toBe('summary.md');
+        expect(artifactResult.mediaType).toBe('text/markdown');
+        expect(artifactResult.sizeBytes).toBe(ARTIFACT_BYTES.byteLength);
+        expect(artifactResult.sha256).toMatch(/^[0-9a-f]{64}$/);
         const userLine = JSON.stringify({
           type: 'user',
           message: {
@@ -2308,7 +2337,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
               },
               {
                 type: 'text',
-                text: 'Done. See [download](ax://artifact/art-canary-1).',
+                text: `Done. See [download](${artifactResult.downloadUrl}).`,
               },
             ],
           },
@@ -2385,6 +2414,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
       } finally {
         if (handle !== null) await handle.shutdown();
         await fs.rm(workspaceRoot, { recursive: true, force: true });
+        await fs.rm(runnerCheckoutRoot, { recursive: true, force: true });
         if (originalAllowNoOrigins === undefined) {
           delete process.env.AX_HTTP_ALLOW_NO_ORIGINS;
         } else {
