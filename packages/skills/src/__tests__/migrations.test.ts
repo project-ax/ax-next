@@ -169,4 +169,44 @@ describe('runSkillsMigration', () => {
       .execute();
     expect(rows).toEqual([{ skill_id: 'rerun', default_attached: false }]);
   });
+
+  it('source_url column exists and is nullable TEXT', async () => {
+    const db = makeKysely();
+    await runSkillsMigration(db);
+
+    const cols = await sql<{ column_name: string; data_type: string; is_nullable: string; column_default: string | null }>`
+      SELECT column_name, data_type, is_nullable, column_default
+        FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = 'skills_v1_skills'
+         AND column_name = 'source_url'
+    `.execute(db);
+
+    expect(cols.rows).toHaveLength(1);
+    expect(cols.rows[0]?.data_type).toBe('text');
+    expect(cols.rows[0]?.is_nullable).toBe('YES');
+    expect(cols.rows[0]?.column_default).toBeNull();
+  });
+
+  it('source_url migration is idempotent on re-run', async () => {
+    const db = makeKysely();
+    await runSkillsMigration(db);
+    await runSkillsMigration(db);
+
+    // smoke: insert with explicit NULL source_url succeeds
+    await db
+      .insertInto('skills_v1_skills')
+      .values({
+        skill_id: 'su-smoke',
+        description: 'd',
+        manifest_yaml: 'name: su-smoke\ndescription: d\n',
+        body_md: '',
+        version: 0,
+        source_url: null,
+        created_at: new Date(),
+        updated_at: new Date(),
+      })
+      .execute();
+    const r = await db.selectFrom('skills_v1_skills').selectAll().where('skill_id', '=', 'su-smoke').executeTakeFirstOrThrow();
+    expect(r.source_url).toBeNull();
+  });
 });

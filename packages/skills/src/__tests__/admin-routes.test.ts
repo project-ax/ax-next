@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import {
   PostgreSqlContainer,
   type StartedPostgreSqlContainer,
@@ -496,6 +496,40 @@ version: 1
     expect(out.skills.map((s) => s.id)).toEqual(['greeter']);
   });
 
+  it('POST /admin/skills with sourceUrl persists it and reflects it on GET', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminSkillsHandlers({ bus: h.bus });
+
+    const skillMd = `---\nname: src\ndescription: src\nsourceUrl: https://example.com/src.md\n---\nbody`;
+    const { res: r1, statusOf: s1 } = mkRes();
+    await handlers.create(mkReq({ body: { skillMd } }), r1);
+    expect(s1()).toBe(201);
+
+    const { res: r2, statusOf: s2, bodyOf: b2 } = mkRes();
+    await handlers.get(mkReq({ params: { id: 'src' } }), r2);
+    expect(s2()).toBe(200);
+    const detail = b2() as { sourceUrl?: string };
+    expect(detail.sourceUrl).toBe('https://example.com/src.md');
+  });
+
+  it('PUT /admin/skills/:id clears sourceUrl when re-upserted without one', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminSkillsHandlers({ bus: h.bus });
+
+    // Create with sourceUrl
+    await handlers.create(mkReq({ body: { skillMd: `---\nname: src2\ndescription: d\nsourceUrl: https://example.com/x.md\n---\nbody` } }), mkRes().res);
+
+    // PUT without sourceUrl
+    const { res: r2, statusOf: s2 } = mkRes();
+    await handlers.update(mkReq({ body: { skillMd: `---\nname: src2\ndescription: d\n---\nupdated body` }, params: { id: 'src2' } }), r2);
+    expect(s2()).toBe(200);
+
+    const { res: r3, bodyOf: b3 } = mkRes();
+    await handlers.get(mkReq({ params: { id: 'src2' } }), r3);
+    const detail = b3() as { sourceUrl?: string };
+    expect(detail.sourceUrl).toBeUndefined();
+  });
+
   it('PUT /admin/skills/:id with defaultAttached: true on a credentialed manifest returns 400', async () => {
     const h = await makeHarness();
     const handlers = createAdminSkillsHandlers({ bus: h.bus });
@@ -518,5 +552,96 @@ version: 1
     expect((updateBody() as { code?: string }).code).toBe(
       'default-attached-requires-no-credentials',
     );
+  });
+
+  it('POST /admin/skills/:id/check-update returns the hook output (no sourceUrl → available:false)', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminSkillsHandlers({ bus: h.bus });
+
+    // Create a skill with NO sourceUrl
+    const skillMd = `---\nname: nosrc\ndescription: nosrc\nversion: 1\n---\nbody`;
+    await handlers.create(mkReq({ body: { skillMd } }), mkRes().res);
+
+    const { res, statusOf, bodyOf } = mkRes();
+    await handlers.checkUpdate(mkReq({ params: { id: 'nosrc' } }), res);
+    expect(statusOf()).toBe(200);
+    const body = bodyOf() as { available: boolean; currentVersion: number };
+    expect(body.available).toBe(false);
+    expect(body.currentVersion).toBe(1);
+  });
+
+  it('POST /admin/skills/:id/check-update returns 404 when skill does not exist', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminSkillsHandlers({ bus: h.bus });
+    const { res, statusOf } = mkRes();
+    await handlers.checkUpdate(mkReq({ params: { id: 'missing' } }), res);
+    expect(statusOf()).toBe(404);
+  });
+
+  it('POST /admin/skills/:id/refresh-from-source returns updated:false when sourceUrl is not set', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminSkillsHandlers({ bus: h.bus });
+
+    const skillMd = `---\nname: nosrc2\ndescription: nosrc\nversion: 1\n---\nbody`;
+    await handlers.create(mkReq({ body: { skillMd } }), mkRes().res);
+
+    const { res, statusOf, bodyOf } = mkRes();
+    await handlers.refresh(mkReq({ params: { id: 'nosrc2' } }), res);
+    expect(statusOf()).toBe(200);
+    const body = bodyOf() as { updated: boolean; currentVersion: number };
+    expect(body.updated).toBe(false);
+    expect(body.currentVersion).toBe(1);
+  });
+
+  it('POST /admin/skills/:id/check-update reports an upgrade when remote version > current', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminSkillsHandlers({ bus: h.bus });
+
+    // Create a skill with a sourceUrl
+    const skillMd = `---\nname: src3\ndescription: d\nversion: 1\nsourceUrl: https://example.com/src3.md\n---\nbody`;
+    await handlers.create(mkReq({ body: { skillMd } }), mkRes().res);
+
+    const remoteBody = `---\nname: src3\ndescription: d\nversion: 5\n---\nnew body`;
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(remoteBody, { status: 200 }),
+    );
+    try {
+      const { res, statusOf, bodyOf } = mkRes();
+      await handlers.checkUpdate(mkReq({ params: { id: 'src3' } }), res);
+      expect(statusOf()).toBe(200);
+      const body = bodyOf() as { available: boolean; latestVersion?: number };
+      expect(body.available).toBe(true);
+      expect(body.latestVersion).toBe(5);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('POST /admin/skills/:id/refresh-from-source upserts when available', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminSkillsHandlers({ bus: h.bus });
+
+    const skillMd = `---\nname: src4\ndescription: d\nversion: 1\nsourceUrl: https://example.com/src4.md\n---\nbody v1`;
+    await handlers.create(mkReq({ body: { skillMd } }), mkRes().res);
+
+    const remoteBody = `---\nname: src4\ndescription: d\nversion: 2\nsourceUrl: https://example.com/src4.md\n---\nbody v2`;
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(remoteBody, { status: 200 }),
+    );
+    try {
+      const { res, statusOf, bodyOf } = mkRes();
+      await handlers.refresh(mkReq({ params: { id: 'src4' } }), res);
+      expect(statusOf()).toBe(200);
+      expect((bodyOf() as { updated: boolean }).updated).toBe(true);
+
+      // GET reflects the new body + version
+      const { res: r2, bodyOf: b2 } = mkRes();
+      await handlers.get(mkReq({ params: { id: 'src4' } }), r2);
+      const detail = b2() as { version: number; bodyMd: string };
+      expect(detail.version).toBe(2);
+      expect(detail.bodyMd).toContain('body v2');
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 });

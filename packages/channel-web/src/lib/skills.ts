@@ -105,3 +105,36 @@ export async function deleteSkill(skillId: string): Promise<void> {
   });
   await handleResponse(res);
 }
+
+export interface CheckUpdateResult {
+  available: boolean;
+  currentVersion: number;
+  latestVersion?: number;
+  latestSkillMd?: string; // present iff available === true
+}
+
+export async function checkSkillForUpdates(
+  skillId: string,
+): Promise<CheckUpdateResult> {
+  const res = await fetch(
+    `/admin/skills/${encodeURIComponent(skillId)}/check-update`,
+    { method: 'POST', headers: csrfHeader, credentials: 'include' },
+  );
+  return (await handleResponse(res)) as CheckUpdateResult;
+}
+
+export interface RefreshResult {
+  updated: boolean;
+  currentVersion?: number;
+  newVersion?: number;
+}
+
+export async function refreshSkillFromSource(
+  skillId: string,
+): Promise<RefreshResult> {
+  const res = await fetch(
+    `/admin/skills/${encodeURIComponent(skillId)}/refresh-from-source`,
+    { method: 'POST', headers: csrfHeader, credentials: 'include' },
+  );
+  return (await handleResponse(res)) as RefreshResult;
+}

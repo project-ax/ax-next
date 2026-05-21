@@ -19,7 +19,13 @@ import {
 } from '@/components/ui/dialog';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
-import { listSkills, deleteSkill } from '@/lib/skills';
+import {
+  listSkills,
+  deleteSkill,
+  checkSkillForUpdates,
+  refreshSkillFromSource,
+  type CheckUpdateResult,
+} from '@/lib/skills';
 import type { SkillSummary } from '@ax/skills';
 import { SkillEditor } from './SkillEditor';
 
@@ -29,6 +35,10 @@ export function SkillsTab() {
   const [showNew, setShowNew] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
+  const [updateInfo, setUpdateInfo] = useState<
+    Record<string, CheckUpdateResult>
+  >({});
+  const [refreshingId, setRefreshingId] = useState<string | null>(null);
 
   async function refresh() {
     setError(null);
@@ -47,6 +57,31 @@ export function SkillsTab() {
     void refresh();
   }, []);
 
+  // Fire `checkSkillForUpdates` for every skill that declares a sourceUrl.
+  // Best-effort: a broken URL on one skill must not poison the whole tab,
+  // so we swallow per-skill errors silently. The error Alert is reserved
+  // for `listSkills` / `deleteSkill` / `refreshSkillFromSource` failures
+  // (where the user took explicit action and deserves explicit feedback).
+  useEffect(() => {
+    if (!skills) return;
+    let cancelled = false;
+    for (const s of skills) {
+      if (!s.sourceUrl) continue;
+      void (async () => {
+        try {
+          const result = await checkSkillForUpdates(s.id);
+          if (cancelled) return;
+          setUpdateInfo((prev) => ({ ...prev, [s.id]: result }));
+        } catch {
+          // Silent — see comment above.
+        }
+      })();
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [skills]);
+
   async function handleDelete(skillId: string) {
     try {
       await deleteSkill(skillId);
@@ -55,6 +90,26 @@ export function SkillsTab() {
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setPendingDelete(null);
+    }
+  }
+
+  async function handleUpdate(skillId: string) {
+    setRefreshingId(skillId);
+    try {
+      await refreshSkillFromSource(skillId);
+      // Clear cached "available" state for this id so the badge disappears
+      // immediately on success; the post-refresh `listSkills` will re-trigger
+      // the check effect, which will populate fresh state if still relevant.
+      setUpdateInfo((prev) => {
+        const next = { ...prev };
+        delete next[skillId];
+        return next;
+      });
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRefreshingId(null);
     }
   }
 
@@ -108,13 +163,21 @@ export function SkillsTab() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {skills.map((s) => (
+              {skills.map((s) => {
+                const update = updateInfo[s.id];
+                const updateAvailable = update?.available === true;
+                return (
                 <TableRow key={s.id}>
                   <TableCell className="font-mono text-xs">
                     {s.id}
                     {s.defaultAttached && (
                       <Badge variant="outline" className="ml-2 text-[10px]">
                         default
+                      </Badge>
+                    )}
+                    {updateAvailable && (
+                      <Badge variant="secondary" className="ml-2 text-xs">
+                        Update available: v{update?.latestVersion}
                       </Badge>
                     )}
                   </TableCell>
@@ -153,6 +216,17 @@ export function SkillsTab() {
                     {new Date(s.updatedAt).toLocaleString()}
                   </TableCell>
                   <TableCell className="text-right">
+                    {updateAvailable && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => void handleUpdate(s.id)}
+                        disabled={refreshingId === s.id}
+                        aria-label={`Update ${s.id} to v${update?.latestVersion}`}
+                      >
+                        Update
+                      </Button>
+                    )}
                     <Button
                       variant="ghost"
                       size="sm"
@@ -171,7 +245,8 @@ export function SkillsTab() {
                     </Button>
                   </TableCell>
                 </TableRow>
-              ))}
+                );
+              })}
             </TableBody>
           </Table>
         )}

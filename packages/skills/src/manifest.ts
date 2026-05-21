@@ -20,6 +20,7 @@ export interface ParsedManifest {
   id: string;
   description: string;
   version: number;
+  sourceUrl?: string;       // optional metadata pointer for refresh
   capabilities: SkillCapabilities;
 }
 
@@ -446,6 +447,33 @@ export function parseSkillManifest(yaml: string): ParseResult {
     version = rawVersion;
   }
 
+  // Step 6.5: sourceUrl (optional, top-level — NOT a capability, it's
+  // an admin-visible pointer to where this skill came from so the
+  // refresh hook can fetch the latest manifest).
+  let sourceUrl: string | undefined;
+  if ('sourceUrl' in doc) {
+    const raw = doc['sourceUrl'];
+    if (typeof raw !== 'string') {
+      return err('invalid-manifest', '"sourceUrl" must be a string.');
+    }
+    let u: URL;
+    try {
+      u = new URL(raw);
+    } catch {
+      return err('invalid-manifest', '"sourceUrl" must be a valid URL.');
+    }
+    if (u.protocol !== 'https:') {
+      return err('invalid-manifest', '"sourceUrl" must use https://.');
+    }
+    if (IPV4_RE.test(u.hostname)) {
+      return err('invalid-manifest', '"sourceUrl" host must not be an IPv4 literal.');
+    }
+    if (!HOSTNAME_RE.test(u.hostname)) {
+      return err('invalid-manifest', '"sourceUrl" host is not a valid hostname.');
+    }
+    sourceUrl = raw;
+  }
+
   // Step 7 & 8 & 9: capabilities
   let allowedHosts: string[] = [];
   let credentials: CapabilitySlot[] = [];
@@ -501,6 +529,7 @@ export function parseSkillManifest(yaml: string): ParseResult {
       id: name,
       description,
       version,
+      ...(sourceUrl !== undefined ? { sourceUrl } : {}),
       capabilities: { allowedHosts, credentials, mcpServers },
     },
   };

@@ -254,6 +254,43 @@ version: 1
     expect(defaults[0]).toHaveProperty('manifestYaml');
   });
 
+  it('persists and reads back sourceUrl', async () => {
+    const db = makeKysely();
+    await runSkillsMigration(db);
+    const store = createSkillsStore(db);
+
+    await store.upsert({
+      id: 'su-skill',
+      description: 'd',
+      manifestYaml: 'name: su-skill\ndescription: d\n',
+      bodyMd: 'b',
+      version: 1,
+      sourceUrl: 'https://example.com/skill.md',
+    });
+    const summary = (await store.list()).find((s) => s.id === 'su-skill');
+    expect(summary?.sourceUrl).toBe('https://example.com/skill.md');
+
+    const detail = await store.get('su-skill');
+    expect(detail!.sourceUrl).toBe('https://example.com/skill.md');
+  });
+
+  it('clears sourceUrl when re-upserted without one', async () => {
+    const db = makeKysely();
+    await runSkillsMigration(db);
+    const store = createSkillsStore(db);
+
+    await store.upsert({
+      id: 'su-skill', description: 'd', manifestYaml: 'name: su-skill\ndescription: d\n',
+      bodyMd: 'b', version: 1, sourceUrl: 'https://example.com/skill.md',
+    });
+    await store.upsert({
+      id: 'su-skill', description: 'd', manifestYaml: 'name: su-skill\ndescription: d\n',
+      bodyMd: 'b', version: 2,   // no sourceUrl
+    });
+    const detail = await store.get('su-skill');
+    expect(detail!.sourceUrl).toBeUndefined();
+  });
+
   it('roundtrips capabilities.mcpServers through upsert + list + get', async () => {
     const db = makeKysely();
     await runSkillsMigration(db);

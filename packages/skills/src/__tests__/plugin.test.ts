@@ -103,6 +103,7 @@ describe('@ax/skills plugin manifest + lifecycle', () => {
         'skills:delete',
         'skills:resolve',
         'skills:list-defaults',
+        'skills:check-for-updates',
       ],
       calls: ['database:get-instance', 'http:register-route', 'auth:require-user'],
       subscribes: [],
