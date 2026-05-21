@@ -61,8 +61,10 @@ afterEach(async () => {
     }),
   });
   try {
-    // Note: auth_better_v1_sessions has no FK to users; both stand alone.
+    // FK order: auth_better_v1_{accounts,sessions} reference users; drop them (and verifications) before users.
     await sql`DROP TABLE IF EXISTS bootstrap_state`.execute(k);
+    await sql`DROP TABLE IF EXISTS auth_better_v1_verifications`.execute(k);
+    await sql`DROP TABLE IF EXISTS auth_better_v1_accounts`.execute(k);
     await sql`DROP TABLE IF EXISTS auth_better_v1_sessions`.execute(k);
     await sql`DROP TABLE IF EXISTS auth_better_v1_users`.execute(k);
     await sql`DROP TABLE IF EXISTS auth_providers`.execute(k);

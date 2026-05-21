@@ -68,6 +68,8 @@ async function dropTables(): Promise<void> {
   });
   try {
     await sql`DROP TABLE IF EXISTS bootstrap_state`.execute(k);
+    await sql`DROP TABLE IF EXISTS auth_better_v1_verifications`.execute(k);
+    await sql`DROP TABLE IF EXISTS auth_better_v1_accounts`.execute(k);
     await sql`DROP TABLE IF EXISTS auth_better_v1_sessions`.execute(k);
     await sql`DROP TABLE IF EXISTS auth_better_v1_users`.execute(k);
     await sql`DROP TABLE IF EXISTS auth_providers`.execute(k);

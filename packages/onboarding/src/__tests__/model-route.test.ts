@@ -65,6 +65,8 @@ async function dropTables(): Promise<void> {
     await sql`DROP TABLE IF EXISTS bootstrap_state`.execute(k);
     await sql`DROP TABLE IF EXISTS storage_postgres_v1_kv`.execute(k);
     await sql`DROP TABLE IF EXISTS agents_v1_agents`.execute(k);
+    await sql`DROP TABLE IF EXISTS auth_better_v1_verifications`.execute(k);
+    await sql`DROP TABLE IF EXISTS auth_better_v1_accounts`.execute(k);
     await sql`DROP TABLE IF EXISTS auth_better_v1_sessions`.execute(k);
     await sql`DROP TABLE IF EXISTS auth_better_v1_users`.execute(k);
     await sql`DROP TABLE IF EXISTS auth_providers`.execute(k);
