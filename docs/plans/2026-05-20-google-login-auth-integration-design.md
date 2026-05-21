@@ -80,8 +80,10 @@ Rejected alternatives:
 - **I4 — No half-wired window.** Client fix + backend ship in the same PR (invariant #3).
 - **I5 — Hook surface unchanged.** No new/changed service-hook signatures; this is internal
   to `@ax/auth-better`. No boundary review required.
-- **I6 — Smallest secret footprint.** Prefer not retaining OAuth access/refresh tokens; if
-  better-auth must store them, encrypt or justify (security note).
+- **I6 — OAuth tokens encrypted at rest.** Google `access_token` / `refresh_token` /
+  `id_token` are retained (we may call Google APIs as the user later) but MUST be encrypted at
+  rest — never stored plaintext. Decryption stays inside better-auth so its internal token
+  reads (e.g. refresh) still round-trip.
 
 ## 5. End-to-end flow
 
@@ -146,7 +148,9 @@ NOT NULL / type expectations (verified 1:1 against the user/session model). `ema
 - `auth_better_v1_accounts`: `id` PK, `user_id` (FK→users ON DELETE CASCADE), `account_id`,
   `provider_id`, `access_token`, `refresh_token`, `id_token`, `access_token_expires_at`,
   `refresh_token_expires_at`, `scope`, `password`, `created_at`, `updated_at`. Unique index on
-  `(provider_id, account_id)`.
+  `(provider_id, account_id)`. The three token columns hold **encrypted** values at rest (I6) —
+  column type follows the chosen encryption mechanism (TEXT if better-auth native
+  string-ciphertext; BYTEA if the envelope path is used).
 - `auth_better_v1_verifications`: `id` PK, `identifier`, `value`, `expires_at`, `created_at`,
   `updated_at`. Index on `identifier`.
 
@@ -260,9 +264,15 @@ Per the bug-fix policy, the regression test that would have caught both bugs com
 This touches auth, an untrusted-input boundary (Google-supplied email/profile → I5), new
 tables, and the "who may provision an account" trust decision → **invoke the
 `security-checklist` skill during implementation** and attach the note to the PR. Known items:
-- **OAuth token storage** — better-auth stores `access_token`/`refresh_token`/`id_token` in
-  `account` in plaintext by default. For pure authentication we don't need them retained; check
-  better-auth's option to disable/encrypt token storage and prefer not storing them (I6).
+- **OAuth token storage (decided: keep + encrypt, I6)** — better-auth stores
+  `access_token`/`refresh_token`/`id_token` in `account` in plaintext by default. We retain them
+  but encrypt at rest. Mechanism, in preference order, verified during impl: (a) better-auth's
+  native OAuth-token encryption option if 1.6.9 exposes one (decryption stays internal so token
+  refresh round-trips); else (b) `databaseHooks.account.{create,update}.before` to
+  envelope-encrypt + a read-side decrypt that keeps better-auth's internal reads on plaintext.
+  Either path requires a **stable better-auth `secret`** (env-provided, distinct from the
+  http-server cookie key) — also needed for OAuth state/verification integrity. The plan pins
+  the secret source.
 - **Domain gate is the authorization boundary** — provider/model input never sets `role`.
 - **`trustedOrigins`** must be pinned in prod (not `['*']`) so better-auth's CSRF/origin check
   is real.
@@ -273,7 +283,7 @@ tables, and the "who may provision an account" trust decision → **invoke the
 
 - `packages/auth-better/src/handler.ts` — model→table mapping, `databaseHooks`
   (user.create.before gate + session.create.after capture), pinned session-cookie name,
-  `allowed_domains` parse, optional OAuth-token-storage setting.
+  `allowed_domains` parse, stable better-auth `secret`, OAuth-token at-rest encryption (I6).
 - `packages/auth-better/src/migrations.ts` — two new tables + `AuthBetterDatabase` types.
 - `packages/auth-better/src/plugin.ts` — wrap the better-auth call in `sessionTokenALS.run`,
   bridge `ax_auth_session`, strip better-auth's session cookie.
