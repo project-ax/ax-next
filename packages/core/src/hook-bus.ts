@@ -109,6 +109,12 @@ export class HookBus {
             message: `service hook '${hookName}' returned an invalid shape: ${parsed.error.message}`,
           });
         }
+        // Return the parsed value, not the raw result: this applies any zod
+        // coercion/defaults the schema declares. Note zod object schemas
+        // *strip* undeclared keys by default, so a `returns` schema is the
+        // authoritative shape — a handler field absent from the schema is
+        // dropped here. Declare `returns` as a faithful shape assertion (add
+        // `.passthrough()` if a hook intentionally returns extra keys).
         return parsed.data as O;
       }
       return result as O;
