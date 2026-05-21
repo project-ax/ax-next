@@ -22,6 +22,17 @@ export interface HookBusOptions {
   defaultServiceTimeoutMs?: number;
 }
 
+/**
+ * A timeout is valid if it is `Infinity` (the explicit "no timeout" sentinel) or
+ * a finite, non-negative number. We reject `NaN`, negatives, and `-Infinity`
+ * loudly at config time: a negative delay clamps to ~1ms and would spuriously
+ * time out every call, while `NaN`/`-Infinity` would silently disable the timer
+ * and quietly drop the hang protection. Only `Infinity` may disable it, on purpose.
+ */
+function isValidTimeoutMs(value: number): boolean {
+  return value === Number.POSITIVE_INFINITY || (Number.isFinite(value) && value >= 0);
+}
+
 interface RegisteredService {
   plugin: string;
   handler: ServiceHandler;
@@ -40,7 +51,15 @@ export class HookBus {
   private readonly defaultServiceTimeoutMs: number;
 
   constructor(opts?: HookBusOptions) {
-    this.defaultServiceTimeoutMs = opts?.defaultServiceTimeoutMs ?? DEFAULT_SERVICE_TIMEOUT_MS;
+    const configured = opts?.defaultServiceTimeoutMs ?? DEFAULT_SERVICE_TIMEOUT_MS;
+    if (!isValidTimeoutMs(configured)) {
+      throw new PluginError({
+        code: 'invalid-payload',
+        plugin: 'core',
+        message: `HookBus defaultServiceTimeoutMs must be a non-negative finite number or Infinity (got ${configured})`,
+      });
+    }
+    this.defaultServiceTimeoutMs = configured;
   }
 
   registerService<I, O>(
@@ -59,7 +78,17 @@ export class HookBus {
     }
     const record: RegisteredService = { plugin, handler: handler as ServiceHandler };
     if (opts?.returns !== undefined) record.returns = opts.returns as ZodType;
-    if (opts?.timeoutMs !== undefined) record.timeoutMs = opts.timeoutMs;
+    if (opts?.timeoutMs !== undefined) {
+      if (!isValidTimeoutMs(opts.timeoutMs)) {
+        throw new PluginError({
+          code: 'invalid-payload',
+          plugin,
+          hookName,
+          message: `service hook '${hookName}' timeoutMs must be a non-negative finite number or Infinity (got ${opts.timeoutMs})`,
+        });
+      }
+      record.timeoutMs = opts.timeoutMs;
+    }
     this.services.set(hookName, record);
   }
 

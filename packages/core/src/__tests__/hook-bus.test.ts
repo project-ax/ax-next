@@ -300,4 +300,34 @@ describe('HookBus — service-boundary enforcement', () => {
     bus.registerService('legacy', 'p', async () => ({ anything: true }));
     await expect(bus.call('legacy', silentCtx(), {})).resolves.toEqual({ anything: true });
   });
+
+  it('rejects an invalid defaultServiceTimeoutMs at construction', () => {
+    for (const bad of [NaN, -1, Number.NEGATIVE_INFINITY]) {
+      let thrown: unknown;
+      try {
+        new HookBus({ defaultServiceTimeoutMs: bad });
+      } catch (e) {
+        thrown = e;
+      }
+      expect(thrown).toMatchObject({ name: 'PluginError', code: 'invalid-payload' });
+    }
+  });
+
+  it('accepts Infinity and a finite >= 0 default at construction', () => {
+    expect(() => new HookBus({ defaultServiceTimeoutMs: Number.POSITIVE_INFINITY })).not.toThrow();
+    expect(() => new HookBus({ defaultServiceTimeoutMs: 0 })).not.toThrow();
+  });
+
+  it('rejects an invalid per-hook timeoutMs at registration', () => {
+    const bus = new HookBus();
+    for (const bad of [NaN, -1, Number.NEGATIVE_INFINITY]) {
+      let thrown: unknown;
+      try {
+        bus.registerService(`h-${bad}`, 'p', async () => 1, { timeoutMs: bad });
+      } catch (e) {
+        thrown = e;
+      }
+      expect(thrown).toMatchObject({ name: 'PluginError', code: 'invalid-payload', hookName: `h-${bad}` });
+    }
+  });
 });
