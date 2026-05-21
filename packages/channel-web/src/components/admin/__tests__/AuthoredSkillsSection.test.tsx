@@ -154,6 +154,96 @@ describe('AuthoredSkillsSection', () => {
     });
   });
 
+  it('filters out blank credential slots before calling promoteAuthoredSkill', async () => {
+    mockList.mockResolvedValue([SKILL_CLEAN]);
+    render(<AuthoredSkillsSection agentId={AGENT_ID} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('weather-api')).toBeInTheDocument();
+    });
+
+    // Open dialog
+    fireEvent.click(screen.getByRole('button', { name: /^Promote$/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+    });
+
+    // Add a credential slot but leave it blank (simulates admin clicking Add then not filling it)
+    fireEvent.click(screen.getByRole('button', { name: /add credential/i }));
+    // The slot input appears but we do NOT fill it in (blank = should be filtered)
+    expect(screen.getByPlaceholderText(/SLOT_NAME/i)).toBeInTheDocument();
+
+    // Submit
+    const promoteButtons = screen.getAllByRole('button', { name: /^Promote$/i });
+    const dialogPromoteBtn = promoteButtons[promoteButtons.length - 1]!;
+    fireEvent.click(dialogPromoteBtn);
+
+    await waitFor(() => {
+      expect(mockPromote).toHaveBeenCalledWith(AGENT_ID, {
+        skillId: SKILL_CLEAN.id,
+        targetScope: 'global',
+        grants: {
+          allowedHosts: [],
+          // The blank credential row must be filtered out — not sent to the server.
+          credentials: [],
+          mcpServers: [],
+        },
+      });
+    });
+  });
+
+  it('submits promoteAuthoredSkill with targetScope:user when user scope is selected', async () => {
+    mockList.mockResolvedValue([SKILL_CLEAN]);
+    mockPromote.mockResolvedValue({
+      promoted: true,
+      skillId: SKILL_CLEAN.id,
+      targetScope: 'user',
+    });
+    render(<AuthoredSkillsSection agentId={AGENT_ID} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('weather-api')).toBeInTheDocument();
+    });
+
+    // Open dialog
+    fireEvent.click(screen.getByRole('button', { name: /^Promote$/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+    });
+
+    // Change target scope to 'user' via the Select (combobox → click option)
+    const scopeTrigger = screen.getByRole('combobox');
+    fireEvent.click(scopeTrigger);
+    // After click, the dropdown portal renders the options
+    const userOption = await screen.findByText(/User \(agent owner/i);
+    fireEvent.click(userOption);
+
+    // Submit the dialog
+    const promoteButtons = screen.getAllByRole('button', { name: /^Promote$/i });
+    const dialogPromoteBtn = promoteButtons[promoteButtons.length - 1]!;
+    fireEvent.click(dialogPromoteBtn);
+
+    await waitFor(() => {
+      expect(mockPromote).toHaveBeenCalledWith(AGENT_ID, {
+        skillId: SKILL_CLEAN.id,
+        targetScope: 'user',
+        grants: {
+          allowedHosts: [],
+          credentials: [],
+          mcpServers: [],
+        },
+      });
+    });
+
+    // Dialog closed after success; list refreshed
+    await waitFor(() => {
+      expect(mockList).toHaveBeenCalledTimes(2);
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
+  });
+
   it('surfaces promote error in the dialog without closing it', async () => {
     mockList.mockResolvedValue([SKILL_CLEAN]);
     mockPromote.mockRejectedValue(new Error('invalid-host: not a valid hostname'));

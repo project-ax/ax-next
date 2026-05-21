@@ -41,18 +41,17 @@ export async function listAuthoredSkills(
     sessionId: 'authored-skills-scan',
   });
 
-  let paths: string[];
-  try {
-    const r = await bus.call<{ pathGlob: string }, { paths: string[] }>(
-      'workspace:list',
-      ctx,
-      { pathGlob: '.ax/skills/*/SKILL.md' },
-    );
-    paths = r.paths;
-  } catch {
-    // Workspace unreachable / empty -> non-fatal, return nothing.
-    return [];
-  }
+  // workspace:list / workspace:read return {paths:[]} / {found:false} for a
+  // missing or empty workspace — they do NOT throw for those expected cases.
+  // Any exception from here is therefore a genuine backend outage; we let it
+  // propagate so the caller (admin route) sees a 500 rather than a misleading
+  // empty list.
+  const r = await bus.call<{ pathGlob: string }, { paths: string[] }>(
+    'workspace:list',
+    ctx,
+    { pathGlob: '.ax/skills/*/SKILL.md' },
+  );
+  const paths = r.paths;
 
   const out: AuthoredSkillSummary[] = [];
   for (const path of paths) {
@@ -63,15 +62,11 @@ export async function listAuthoredSkills(
     if (idMatch === null) continue;
     const id = idMatch[1]!;
 
-    let read: { found: true; bytes: Uint8Array } | { found: false };
-    try {
-      read = await bus.call<
-        { path: string },
-        { found: true; bytes: Uint8Array } | { found: false }
-      >('workspace:read', ctx, { path });
-    } catch {
-      continue;
-    }
+    const read = await bus.call<
+      { path: string },
+      { found: true; bytes: Uint8Array } | { found: false }
+    >('workspace:read', ctx, { path });
+    // {found:false} is the normal "deleted between list and read" case — skip.
     if (!read.found) continue;
 
     const content = new TextDecoder().decode(read.bytes);

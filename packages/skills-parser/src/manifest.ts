@@ -33,11 +33,18 @@ const SECRET_KEYS = new Set(['apiKey', 'token', 'password', 'secret']);
 // Recursively walk the parsed YAML tree looking for secret key names.
 // Arrays are traversed element-by-element; plain objects have all their keys checked.
 // The recursion does NOT conflate object keys (like "slot") with the secret-key set.
-function findSecretKey(node: unknown): string | undefined {
+//
+// js-yaml's `load()` can produce cyclic object graphs from YAML alias/anchor
+// references (e.g. `caps: &a {x: *a}`). We thread a WeakSet of visited
+// objects/arrays through the recursion so a cyclic manifest terminates instead
+// of overflowing the call stack. Non-cyclic input is unaffected.
+function findSecretKey(node: unknown, visited: WeakSet<object> = new WeakSet()): string | undefined {
   if (node === null || typeof node !== 'object') return undefined;
+  if (visited.has(node)) return undefined;
+  visited.add(node);
   if (Array.isArray(node)) {
     for (const item of node) {
-      const found = findSecretKey(item);
+      const found = findSecretKey(item, visited);
       if (found !== undefined) return found;
     }
     return undefined;
@@ -45,7 +52,7 @@ function findSecretKey(node: unknown): string | undefined {
   const obj = node as Record<string, unknown>;
   for (const key of Object.keys(obj)) {
     if (SECRET_KEYS.has(key)) return key;
-    const found = findSecretKey(obj[key]);
+    const found = findSecretKey(obj[key], visited);
     if (found !== undefined) return found;
   }
   return undefined;

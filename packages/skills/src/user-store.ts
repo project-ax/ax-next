@@ -70,6 +70,11 @@ export function createUserSkillsStore(db: Kysely<SkillsDatabase>): UserSkillsSto
 
     async upsert(input) {
       // SELECT → INSERT or UPDATE so `created` is accurate.
+      // Accepted SELECT→INSERT race: this mirrors the global store (store.ts)
+      // and the rationale documented in plugin.ts applies equally here —
+      // a concurrent insert of the same (owner_user_id, skill_id) pair would
+      // surface as a PRIMARY KEY unique-violation, which is acceptable at the
+      // admin/user (~10 skills) scale where races are astronomically rare.
       // The compound PRIMARY KEY (owner_user_id, skill_id) guards against
       // concurrent inserts for the same user+skill pair.
       const existing = await db

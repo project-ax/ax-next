@@ -491,6 +491,34 @@ describe('/settings/skills handlers', () => {
     expect(statusOf()).toBe(413);
   });
 
+  // -------------------------------------------------------------------------
+  // Global skill isolation — global skills do NOT appear in GET /settings/skills list
+  // -------------------------------------------------------------------------
+
+  it('GET /settings/skills list does NOT include global-scoped skills', async () => {
+    // Guards against handlers.list() regressing to scope:'all' or unscoped queries.
+    const h = await makeHarness({ authedUser: { id: 'alice', isAdmin: false } });
+    const handlers = createSettingsSkillsHandlers({ bus: h.bus });
+
+    // Install a global skill directly via hook (bypasses HTTP layer).
+    await h.bus.call<
+      { manifestYaml: string; bodyMd: string; scope: 'global' },
+      { skillId: string; created: boolean }
+    >('skills:upsert', h.ctx(), {
+      manifestYaml: 'name: global-tool\ndescription: Admin-installed global skill.\nversion: 1',
+      bodyMd: 'Admin body.',
+      scope: 'global',
+    });
+
+    // Alice's list must NOT include the global skill.
+    const { res, statusOf, bodyOf } = mkRes();
+    await handlers.list(mkReq({}), res);
+    expect(statusOf()).toBe(200);
+    const body = bodyOf() as { skills: Array<{ id: string; scope: string }> };
+    const globalEntry = body.skills.find((s) => s.id === 'global-tool');
+    expect(globalEntry).toBeUndefined();
+  });
+
   it('POST /settings/skills with defaultAttached: true on instruction-only skill returns 201', async () => {
     const h = await makeHarness({ authedUser: { id: 'alice', isAdmin: false } });
     const handlers = createSettingsSkillsHandlers({ bus: h.bus });

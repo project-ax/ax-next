@@ -177,4 +177,24 @@ describe('parseSkillManifest', () => {
     if (r.ok) return;
     expect(r.code).toBe('invalid-manifest');
   });
+
+  it('terminates and does not stack-overflow on a cyclic-anchor YAML manifest', () => {
+    // js-yaml load() can produce cyclic object graphs from YAML aliases
+    // (e.g. `caps: &a {x: *a}` → {caps:{x:<circular>}}). findSecretKey
+    // must NOT recurse infinitely — the WeakSet visited guard must stop it.
+    //
+    // We construct the cyclic object directly (YAML is just the vehicle) and
+    // verify parseSkillManifest returns without throwing a RangeError.
+    //
+    // The YAML below uses an anchor that references itself: js-yaml produces a
+    // real cyclic object graph for it.
+    // Note: js-yaml wraps the cycle in a mapping, so the top-level name/description
+    // fields are separate. We give valid name+description so the test reaches
+    // findSecretKey (the inline-secret scan, step 3) before bailing.
+    const cyclicYaml = 'name: x\ndescription: y\ncaps: &a\n  nested: *a\n';
+    // This must complete without throwing RangeError (stack overflow).
+    // The result is `ok:false` (invalid-manifest / missing required field or
+    // unknown shape) or `ok:true` — either is fine; what matters is termination.
+    expect(() => parseSkillManifest(cyclicYaml)).not.toThrow();
+  });
 });

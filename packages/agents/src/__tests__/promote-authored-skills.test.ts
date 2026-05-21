@@ -46,9 +46,10 @@ afterAll(async () => {
 });
 
 afterEach(async () => {
+  const closeErrors: unknown[] = [];
   while (harnesses.length > 0) {
     const h = harnesses.pop()!;
-    await h.close({ onError: () => {} });
+    await h.close({ onError: (_pluginName, e) => { closeErrors.push(e); } });
   }
   const cleanup = new (await import('pg')).default.Client({ connectionString });
   await cleanup.connect();
@@ -58,8 +59,9 @@ afterEach(async () => {
     await cleanup.query('DROP TABLE IF EXISTS skills_v1_skills');
     await cleanup.query('DROP TABLE IF EXISTS agents_v1_skill_attachments');
   } finally {
-    await cleanup.end().catch(() => {});
+    await cleanup.end();
   }
+  if (closeErrors.length > 0) throw new AggregateError(closeErrors, 'Harness teardown failed');
 });
 
 // ---------------------------------------------------------------------------

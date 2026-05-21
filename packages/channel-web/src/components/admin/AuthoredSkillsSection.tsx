@@ -88,8 +88,11 @@ function PromoteDialog({ agentId, skill, onClose, onPromoted }: PromoteDialogPro
     setSubmitting(true);
     setError(null);
     const grants: PromoteGrants = {
-      allowedHosts: allowedHosts.filter(Boolean),
-      credentials,
+      allowedHosts: allowedHosts.filter((h) => h.trim() !== ''),
+      // Filter out credential rows whose slot is empty/whitespace — these are
+      // blank entries the admin clicked "Add credential" for but never filled in.
+      // Sending them to the server causes 400s (slot fails SLOT_RE validation).
+      credentials: credentials.filter((c) => c.slot.trim() !== '').map((c) => ({ ...c, slot: c.slot.trim() })),
       mcpServers: [],
     };
     try {

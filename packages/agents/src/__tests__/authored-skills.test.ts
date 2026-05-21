@@ -272,6 +272,41 @@ describe('agents:list-authored-skills', () => {
     expect(result.skills).toEqual([]);
   });
 
+  it('propagates workspace:list backend errors instead of swallowing them', async () => {
+    // Build a harness where workspace:list THROWS (simulates a real backend
+    // outage, not a missing/empty workspace — the latter returns {paths:[]}).
+    // agents:list-authored-skills must REJECT, not return [].
+    const h = await createTestHarness({
+      services: {
+        'http:register-route': async () => ({ unregister: () => {} }),
+        'auth:require-user': async () => {
+          throw new Error('not configured');
+        },
+        // workspace:list throws to simulate a backend outage.
+        'workspace:list': async () => {
+          throw new Error('workspace-backend-unavailable');
+        },
+        // workspace:read is provided so the hasService guard passes for both.
+        'workspace:read': async () => ({ found: false }),
+      },
+      plugins: [
+        createDatabasePostgresPlugin({ connectionString }),
+        createAgentsPlugin(),
+      ],
+    });
+    harnesses.push(h);
+
+    const agentId = await createPersonalAgent(h, 'u1');
+
+    await expect(
+      h.bus.call<AgentsListAuthoredSkillsInput, AgentsListAuthoredSkillsOutput>(
+        'agents:list-authored-skills',
+        h.ctx(),
+        { agentId },
+      ),
+    ).rejects.toThrow('workspace-backend-unavailable');
+  });
+
   it('skips malformed SKILL.md files silently', async () => {
     const h = await makeHarness();
     const userId = 'u1';
