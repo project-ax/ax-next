@@ -157,4 +157,37 @@ describe('@ax/auth-better — social sign-in (Google)', () => {
     const body = (await res.json()) as { url?: string };
     expect(body.url).toMatch(/accounts\.google\.com/);
   });
+
+  it('email sign-in bridges better-auth session into a working ax_auth_session cookie', async () => {
+    const signUp = await fetch(`${stack.baseUrl}/auth/sign-up/email`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-requested-with': 'ax-admin' },
+      body: JSON.stringify({ email: 'member@example.com', password: 'correcthorsebattery', name: 'Member' }),
+    });
+    expect([200, 201]).toContain(signUp.status);
+
+    // better-auth auto-signs-in on sign-up, so the sign-up response itself
+    // bridges to ax_auth_session (its own session cookie is dropped).
+    const signUpCookie = signUp.headers.getSetCookie().join('\n');
+    expect(signUpCookie).toContain('ax_auth_session=');
+    expect(signUpCookie).not.toContain('ax_better_auth.session_token=');
+
+    const signIn = await fetch(`${stack.baseUrl}/auth/sign-in/email`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-requested-with': 'ax-admin' },
+      body: JSON.stringify({ email: 'member@example.com', password: 'correcthorsebattery' }),
+    });
+    expect(signIn.status).toBe(200);
+
+    // fetch Response: getSetCookie() returns string[]; join for substring checks.
+    const setCookie = signIn.headers.getSetCookie().join('\n');
+    expect(setCookie).toContain('ax_auth_session=');
+    expect(setCookie).not.toContain('ax_better_auth.session_token=');
+
+    const cookiePair = /ax_auth_session=[^;]+/.exec(setCookie)?.[0] ?? '';
+    const me = await fetch(`${stack.baseUrl}/admin/me`, { headers: { cookie: cookiePair } });
+    expect(me.status).toBe(200);
+    const body = (await me.json()) as { user?: { email?: string } };
+    expect(body.user?.email).toBe('member@example.com');
+  });
 });
