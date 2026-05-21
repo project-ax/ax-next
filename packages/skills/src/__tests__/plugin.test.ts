@@ -914,4 +914,95 @@ describe('@ax/skills user-scope hooks (Phase D)', () => {
     const githubSkill = skills.find((s) => s.id === 'github')!;
     expect(githubSkill.bodyMd).toBe('user github default body');
   });
+
+  // -------------------------------------------------------------------------
+  // I-2 (scope-blind in-use guard regression): a user-scope delete must NOT
+  // be refused by agents:any-attached-to-skill, because attachments match
+  // purely on skillId (no scope) — a same-id GLOBAL skill being in-use would
+  // otherwise produce a cross-scope false-positive denial. A GLOBAL-scope
+  // delete of an in-use skill must STILL throw skill-in-use.
+  // -------------------------------------------------------------------------
+
+  it('user-scope delete succeeds even when a same-id global skill is reported in-use', async () => {
+    // Bootstrap a harness whose agents:any-attached-to-skill stub always
+    // reports the skill as in-use (registered BEFORE skills boots so
+    // bus.hasService is true during init).
+    const h = await createTestHarness({
+      services: {
+        'http:register-route': httpRegisterRouteStub,
+        'auth:require-user': authRequireUserStub,
+        'agents:any-attached-to-skill': async () => ({ attached: true }),
+      },
+      plugins: [
+        createDatabasePostgresPlugin({ connectionString }),
+        createSkillsPlugin(),
+      ],
+    });
+    harnesses.push(h);
+
+    // Install a user-scope skill for alice.
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
+      manifestYaml: DEFAULT_MANIFEST,
+      bodyMd: 'alice body',
+      scope: 'user',
+      ownerUserId: 'alice',
+    });
+
+    // User-scope delete must SUCCEED despite the in-use stub (cross-scope
+    // false-positive avoided — guard is global-only now).
+    await expect(
+      h.bus.call<SkillsDeleteInput, SkillsDeleteOutput>('skills:delete', h.ctx(), {
+        skillId: 'github',
+        scope: 'user',
+        ownerUserId: 'alice',
+      }),
+    ).resolves.toEqual({});
+
+    // The user row is gone.
+    let caught: unknown;
+    try {
+      await h.bus.call<SkillsGetInput, SkillsGetOutput>('skills:get', h.ctx(), {
+        skillId: 'github',
+        scope: 'user',
+        ownerUserId: 'alice',
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('skill-not-found');
+  });
+
+  it('global-scope delete still throws skill-in-use when reported in-use', async () => {
+    const h = await createTestHarness({
+      services: {
+        'http:register-route': httpRegisterRouteStub,
+        'auth:require-user': authRequireUserStub,
+        'agents:any-attached-to-skill': async () => ({ attached: true }),
+      },
+      plugins: [
+        createDatabasePostgresPlugin({ connectionString }),
+        createSkillsPlugin(),
+      ],
+    });
+    harnesses.push(h);
+
+    // Install a GLOBAL skill.
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
+      manifestYaml: DEFAULT_MANIFEST,
+      bodyMd: 'global body',
+    });
+
+    let caught: unknown;
+    try {
+      await h.bus.call<SkillsDeleteInput, SkillsDeleteOutput>('skills:delete', h.ctx(), {
+        skillId: 'github',
+        scope: 'global',
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('skill-in-use');
+  });
 });
