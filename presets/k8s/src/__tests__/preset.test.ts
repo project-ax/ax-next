@@ -294,6 +294,9 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
     };
     const cfg = loadK8sConfigFromEnv(env);
     expect(cfg.auth?.trustedOrigins).toEqual(['https://ax.example.com']);
+    // baseURL inherits the same origin so better-auth pins OAuth
+    // redirect_uri to the canonical host (not the inbound Host header).
+    expect(cfg.auth?.baseURL).toBe('https://ax.example.com');
   });
 
   it('loadK8sConfigFromEnv leaves auth.trustedOrigins unset when AX_PUBLIC_BASE_URL is absent', () => {
@@ -311,6 +314,9 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
     };
     const cfg = loadK8sConfigFromEnv(env);
     expect(cfg.auth?.trustedOrigins).toBeUndefined();
+    // No public URL → baseURL stays unset; better-auth falls back to
+    // per-request origin resolution (the benign-warning path).
+    expect(cfg.auth?.baseURL).toBeUndefined();
   });
 
   // CodeRabbit feedback on PR #59: AX_PUBLIC_BASE_URL was used raw without
@@ -335,6 +341,9 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
     // trustedOrigins gets the origin only — better-auth's CSRF allow-list
     // doesn't accept paths.
     expect(cfg.auth?.trustedOrigins).toEqual(['https://ax.example.com']);
+    // baseURL is also stripped to origin — better-auth appends its own
+    // basePath (/auth) and a path here would corrupt redirect_uri.
+    expect(cfg.auth?.baseURL).toBe('https://ax.example.com');
     // publicBaseUrl preserves the operator's literal so the banner shows
     // what they actually intended.
     expect(cfg.onboarding?.publicBaseUrl).toBe(

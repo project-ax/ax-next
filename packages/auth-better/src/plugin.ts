@@ -74,6 +74,16 @@ export interface AuthBetterConfig {
    */
   trustedOrigins?: string[];
   /**
+   * Canonical public origin (e.g. `https://ax.example.com`) better-auth
+   * uses to build OAuth redirect URIs and validate callbacks. Set this in
+   * production so `redirect_uri` matches Google's configured callback
+   * regardless of the inbound Host header. When omitted, better-auth
+   * re-resolves the base URL per request from the request origin (and logs
+   * a benign "Base URL could not be determined" warning at construction).
+   * The `@ax/preset-k8s` wires this from `AX_PUBLIC_BASE_URL` when set.
+   */
+  baseURL?: string;
+  /**
    * Stable secret for the underlying better-auth instance (OAuth state +
    * at-rest OAuth-token encryption). MUST be stable across restarts or
    * encrypted tokens become undecryptable. Falls back to better-auth's
@@ -117,6 +127,7 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
   // already captured by the closure, but pinning it here is one less
   // hop and makes the rebuild call site read straight.
   const trustedOrigins = config.trustedOrigins;
+  const baseURL = config.baseURL;
   const secret = config.secret;
 
   const PROVIDERS_CHANGED_KEY = `${PLUGIN_NAME}/providers-changed`;
@@ -195,6 +206,7 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
         database: localDb,
         providers,
         ...(trustedOrigins !== undefined ? { trustedOrigins } : {}),
+        ...(baseURL !== undefined ? { baseURL } : {}),
         ...(secret !== undefined ? { secret } : {}),
       });
       const localHandle = handle;
@@ -214,6 +226,7 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
             database: localDb,
             providers: next,
             ...(trustedOrigins !== undefined ? { trustedOrigins } : {}),
+            ...(baseURL !== undefined ? { baseURL } : {}),
             ...(secret !== undefined ? { secret } : {}),
           });
           return undefined;
