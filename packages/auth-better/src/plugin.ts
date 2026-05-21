@@ -735,8 +735,9 @@ async function forwardToBetterAuth(
     // Set-Cookies on this response (its `ax_better_auth.session_token` session
     // cookie + short-lived OAuth-state cookie) are intentionally dropped — its
     // session cookie is replaced by ours; its state cookie self-expires.
-    // (http-server writeHead() overwrites a header-map 'set-cookie' with the
-    // setCookies[] array, so setSignedCookie alone yields the right wire output.)
+    // (The header-copy loop above already skipped every better-auth set-cookie,
+    // so setSignedCookie writes the only cookie on this response — we simply
+    // don't forward setCookies here.)
     res.setSignedCookie(bridge.sessionCookieName, box.token, {
       path: '/', sameSite: 'Lax',
       ...(process.env['NODE_ENV'] === 'production' ? { secure: true } : {}),

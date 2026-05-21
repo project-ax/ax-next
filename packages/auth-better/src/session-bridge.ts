@@ -26,8 +26,9 @@ export function emailDomain(email: string): string {
 
 /**
  * Authorization gate for Google provisioning. Empty `allowed` => open. Throws
- * better-auth's APIError (FORBIDDEN) so a rejected sign-in becomes a clean
- * callback-error redirect, not a 500. Message is generic (never echoes the list).
+ * better-auth's APIError (FORBIDDEN) so a rejected sign-in surfaces as a clean
+ * 403 from better-auth's router rather than an unhandled 500. Message is generic
+ * — never echoes the allowed list or the rejected email.
  */
 export function assertDomainAllowed(email: string, allowed: string[]): void {
   if (allowed.length === 0) return;
