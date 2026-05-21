@@ -116,8 +116,16 @@ export type AttachmentRefBlock = z.infer<typeof AttachmentRefBlockSchema>;
  *
  * The runner translates this variant to Anthropic-compatible types before
  * the LLM call (image/* → `image` block; PDF → `document` if SDK supports;
- * else text mention). This block is the canonical stored form (I4 — single
- * source of truth); the Anthropic shape is derived per LLM call.
+ * else text mention — see `formatAttachmentMention`). This block is the
+ * *intended* canonical shape for a user-attached file (I4 — single source of
+ * truth); the Anthropic shape is derived per LLM call.
+ *
+ * NOTE (runner-owned-sessions): the runner's translation is what the SDK
+ * actually persists to its native jsonl transcript, so a reopened chat's
+ * `attachment` block is reconstructed from the stored text-mention on the
+ * read path (`@ax/conversations` getConversation) — see
+ * `parseAttachmentMention`. The block below is still the canonical *render*
+ * shape the rest of the system consumes.
  *
  * `path` is workspace-relative (e.g. ".ax/uploads/<conv>/<turn>/file.pdf"),
  * not sandbox-absolute. Resolution: workspace:read(path) at current HEAD.
@@ -152,6 +160,68 @@ export const AttachmentBlockSchema = z.object({
   sizeBytes: z.number().int().nonnegative(),
 });
 export type AttachmentBlock = z.infer<typeof AttachmentBlockSchema>;
+
+// ---------------------------------------------------------------------------
+// Attachment text-mention — the lossy, model-facing form of an attachment.
+//
+// When the runner can't (or shouldn't) inline an attachment's bytes for the
+// model — a PDF without document-block support, an oversized text file, an
+// unrecognized binary — it emits this one-line mention instead of the
+// `attachment` block. Under runner-owned-sessions the SDK persists *this*
+// (not the `attachment` block) to its jsonl transcript, so the read path has
+// to turn it back into an `attachment` block to render the chip.
+//
+// `formatAttachmentMention` is the SINGLE producer of the string (the runner's
+// `attachment-translation.ts` calls it); `parseAttachmentMention` is the
+// SINGLE consumer (the conversations read path calls it). Co-locating the
+// pair here means the two ends can never drift.
+// ---------------------------------------------------------------------------
+
+export interface AttachmentMentionFields {
+  displayName: string;
+  /** Workspace-relative path, e.g. ".ax/uploads/<conv>/<turn>/<file>". */
+  path: string;
+  mediaType: string;
+}
+
+/** Render the canonical one-line attachment mention. */
+export function formatAttachmentMention(att: AttachmentMentionFields): string {
+  return `User attached '${att.displayName}' at ${att.path} (${att.mediaType})`;
+}
+
+const ATTACHMENT_MENTION_RE = /^User attached '(.*?)' at (\S+) \(([^)]+)\)$/;
+
+/**
+ * Parse a one-line attachment mention produced by `formatAttachmentMention`,
+ * or `null` if `text` isn't exactly one such mention.
+ *
+ * Anchoring relies on two facts the producer guarantees:
+ *   - the path is workspace-relative and contains no whitespace (filenames
+ *     are sanitized + the conv/turn segments are opaque ids), so `\S+` after
+ *     ` at ` captures it unambiguously;
+ *   - the mention is a single line — `^…$` (no `s` flag) refuses any text
+ *     with embedded newlines, so a merged "user-text\nmention" block is split
+ *     by the caller before reaching here.
+ *
+ * `displayName` is matched non-greedily up to the ` at <no-space-path>` so a
+ * name containing " at " can't swallow the path.
+ */
+export function parseAttachmentMention(
+  text: string,
+): AttachmentMentionFields | null {
+  const m = text.match(ATTACHMENT_MENTION_RE);
+  if (m === null) return null;
+  const [, displayName, path, mediaType] = m;
+  if (
+    displayName === undefined ||
+    path === undefined ||
+    mediaType === undefined
+  ) {
+    return null;
+  }
+  if (displayName.length === 0 || mediaType.length === 0) return null;
+  return { displayName, path, mediaType };
+}
 
 export const ContentBlockSchema = z.discriminatedUnion('type', [
   TextBlockSchema,

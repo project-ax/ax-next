@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { ContentBlockSchema } from '../content-blocks.js';
+import {
+  ContentBlockSchema,
+  formatAttachmentMention,
+  parseAttachmentMention,
+} from '../content-blocks.js';
 
 describe('ContentBlock schema', () => {
   it('parses a text block', () => {
@@ -182,6 +186,54 @@ describe('ContentBlock schema', () => {
         sizeBytes: 1,
       };
       expect(() => ContentBlockSchema.parse(block)).toThrow();
+    });
+  });
+
+  describe('attachment mention format/parse', () => {
+    it('round-trips a plain mention', () => {
+      const fields = {
+        displayName: 'Disaster Recovery Plan - v3.pdf',
+        path: '.ax/uploads/cnv_abc/req-def/a60d__Disaster_Recovery_Plan_-_v3.pdf',
+        mediaType: 'application/pdf',
+      };
+      const text = formatAttachmentMention(fields);
+      expect(text).toBe(
+        "User attached 'Disaster Recovery Plan - v3.pdf' at " +
+          '.ax/uploads/cnv_abc/req-def/a60d__Disaster_Recovery_Plan_-_v3.pdf ' +
+          '(application/pdf)',
+      );
+      expect(parseAttachmentMention(text)).toEqual(fields);
+    });
+
+    it("round-trips a displayName containing ' at ' (path is no-space so it can't be swallowed)", () => {
+      const fields = {
+        displayName: "dinner at 8 pm.txt",
+        path: '.ax/uploads/cnv_x/req-y/h__dinner_at_8_pm.txt',
+        mediaType: 'text/plain',
+      };
+      const parsed = parseAttachmentMention(formatAttachmentMention(fields));
+      expect(parsed).toEqual(fields);
+    });
+
+    it('returns null for unrelated text', () => {
+      expect(parseAttachmentMention('Summarize this file')).toBeNull();
+      expect(parseAttachmentMention('')).toBeNull();
+      expect(
+        parseAttachmentMention("User attached 'x' at /abs/path"),
+      ).toBeNull();
+    });
+
+    it('returns null when the mention is not the whole string (multi-line)', () => {
+      // A merged "user-text\nmention" block must be split by the caller; the
+      // anchored, single-line regex refuses embedded newlines so the prefix
+      // text never gets folded into the displayName.
+      const mention = formatAttachmentMention({
+        displayName: 'f.pdf',
+        path: '.ax/uploads/c/t/h__f.pdf',
+        mediaType: 'application/pdf',
+      });
+      expect(parseAttachmentMention(`Summarize this file\n${mention}`)).toBeNull();
+      expect(parseAttachmentMention(mention)).not.toBeNull();
     });
   });
 });
