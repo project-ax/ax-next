@@ -1,0 +1,40 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "96998da3a166",
+  "strategy": "manual-commit",
+  "branch": "worktree-finding3-workspace-apply-facade",
+  "checkpoints_count": 1,
+  "files_touched": [
+    ".claude/memory/decisions.md",
+    "TODO.md",
+    "packages/core/src/__tests__/workspace-apply-facade.test.ts",
+    "packages/core/src/index.ts",
+    "packages/core/src/workspace-apply-facade.ts",
+    "packages/core/src/workspace-policy.ts",
+    "packages/ipc-core/src/bundler/filter.ts",
+    "packages/test-harness/src/mock-workspace.ts",
+    "packages/test-harness/src/workspace-contract.ts",
+    "packages/workspace-git-core/src/__tests__/contract.test.ts",
+    "packages/workspace-git-core/src/impl.ts",
+    "packages/workspace-git-server/src/client/__tests__/plugin.test.ts",
+    "packages/workspace-git-server/src/client/plugin-test-only.ts",
+    "packages/workspace-git-server/src/client/plugin.ts",
+    "packages/workspace-git/src/plugin.ts",
+    "presets/k8s/src/__tests__/preset.test.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/96/998da3a166/0/metadata.json",
+      "transcript": "/96/998da3a166/0/full.jsonl",
+      "content_hash": "/96/998da3a166/0/content_hash.txt",
+      "prompt": "/96/998da3a166/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 17326,
+    "cache_creation_tokens": 620273,
+    "cache_read_tokens": 6819979,
+    "output_tokens": 88700,
+    "api_call_count": 57
+  }
+}

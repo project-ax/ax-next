@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bi58m3epl</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-vpulim-dev-ai-ax-next/abcd8291-c254-4852-b73d-dc09b4c436fe/tasks/bi58m3epl.output</output-file>
+<status>completed</status>
+<summary>Background command "Run full whole-branch test suite" completed (exit code 0)</summary>
+</task-notification>

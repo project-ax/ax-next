@@ -1,0 +1,71 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "96998da3a166",
+  "session_id": "abcd8291-c254-4852-b73d-dc09b4c436fe",
+  "strategy": "manual-commit",
+  "created_at": "2026-05-21T14:48:41.861543Z",
+  "branch": "worktree-finding3-workspace-apply-facade",
+  "checkpoints_count": 1,
+  "files_touched": [
+    ".claude/memory/decisions.md",
+    "TODO.md",
+    "packages/core/src/__tests__/workspace-apply-facade.test.ts",
+    "packages/core/src/index.ts",
+    "packages/core/src/workspace-apply-facade.ts",
+    "packages/core/src/workspace-policy.ts",
+    "packages/ipc-core/src/bundler/filter.ts",
+    "packages/test-harness/src/mock-workspace.ts",
+    "packages/test-harness/src/workspace-contract.ts",
+    "packages/workspace-git-core/src/__tests__/contract.test.ts",
+    "packages/workspace-git-core/src/impl.ts",
+    "packages/workspace-git-server/src/client/__tests__/plugin.test.ts",
+    "packages/workspace-git-server/src/client/plugin-test-only.ts",
+    "packages/workspace-git-server/src/client/plugin.ts",
+    "packages/workspace-git/src/plugin.ts",
+    "presets/k8s/src/__tests__/preset.test.ts"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "6c19bc89e211",
+  "token_usage": {
+    "input_tokens": 17326,
+    "cache_creation_tokens": 620273,
+    "cache_read_tokens": 6819979,
+    "output_tokens": 88700,
+    "api_call_count": 57
+  },
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-05-21T14:48:41.843347Z",
+    "agent_lines": 579,
+    "agent_removed": 70,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 579,
+    "total_lines_changed": 649,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 8,
+      "user_lines_removed": 0,
+      "agent_lines_added": 579,
+      "agent_lines_removed": 70,
+      "user_added_per_file": {
+        ".claude/settings.local.json": 8
+      }
+    }
+  ]
+}
