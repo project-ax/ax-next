@@ -1,5 +1,4 @@
-import { makeAgentContext, PluginError, isRejection, type AgentContext, type HookBus } from '@ax/core';
-import { z } from 'zod';
+import { makeAgentContext, type AgentContext, type HookBus } from '@ax/core';
 import type {
   SkillsCheckForUpdatesOutput,
   SkillsListOutput,
@@ -7,6 +6,33 @@ import type {
   SkillsUpsertInput,
   SkillsUpsertOutput,
 } from './types.js';
+import {
+  ADMIN_BODY_MAX_BYTES,
+  requireAuthenticated,
+  requireAdmin,
+  parseRequestBody,
+  writeServiceError,
+  splitSkillMd,
+  upsertBodySchema,
+  type RouteRequest,
+  type RouteResponse,
+} from './_routes-shared.js';
+
+// Re-export the shared plumbing so existing consumers (tests, plugin.ts) that
+// import from 'admin-routes.js' continue to compile without changes.
+export type {
+  RouteRequest,
+  RouteResponse,
+  AuthedUser,
+  ParseBodyResult,
+} from './_routes-shared.js';
+export {
+  ADMIN_BODY_MAX_BYTES,
+  requireAuthenticated,
+  requireAdmin,
+  parseRequestBody,
+  writeServiceError,
+} from './_routes-shared.js';
 
 // ---------------------------------------------------------------------------
 // /admin/skills* CRUD handlers (admin-only).
@@ -18,162 +44,9 @@ import type {
 //   PUT    /admin/skills/:id        → update from full SKILL.md
 //   DELETE /admin/skills/:id        → delete (409 if in-use)
 //
-// Shared plumbing copied locally per Invariant I2 (no cross-plugin imports):
-//   - RouteRequest / RouteResponse / AuthedUser interfaces
-//   - ADMIN_BODY_MAX_BYTES
-//   - requireAuthenticated / requireAdmin
-//   - parseRequestBody
-//   - writeServiceError (skills-specific error codes)
+// Shared plumbing lives in _routes-shared.ts (Invariant I4: one source of
+// truth per concept). Re-exported above for backward compatibility.
 // ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Duck-typed route plumbing (copied from @ax/credentials-admin-routes/shared.ts
-// — do NOT import that package, Invariant I2 forbids cross-plugin imports).
-// ---------------------------------------------------------------------------
-
-export const ADMIN_BODY_MAX_BYTES = 64 * 1024;
-
-export interface RouteRequest {
-  readonly headers: Record<string, string>;
-  readonly body: Buffer;
-  readonly cookies: Record<string, string>;
-  readonly query: Record<string, string>;
-  readonly params: Record<string, string>;
-  signedCookie(name: string): string | null;
-}
-
-export interface RouteResponse {
-  status(n: number): RouteResponse;
-  json(v: unknown): void;
-  text(s: string): void;
-  end(): void;
-}
-
-export interface AuthedUser {
-  id: string;
-  isAdmin: boolean;
-}
-
-export async function requireAuthenticated(
-  bus: HookBus,
-  ctx: AgentContext,
-  req: RouteRequest,
-  res: RouteResponse,
-): Promise<AuthedUser | null> {
-  try {
-    const result = await bus.call<
-      { req: RouteRequest },
-      { user: { id: string; isAdmin: boolean } }
-    >('auth:require-user', ctx, { req });
-    return { id: result.user.id, isAdmin: result.user.isAdmin };
-  } catch (err) {
-    if (err instanceof PluginError || isRejection(err)) {
-      res.status(401).json({ error: 'unauthenticated' });
-      return null;
-    }
-    throw err;
-  }
-}
-
-export async function requireAdmin(
-  bus: HookBus,
-  ctx: AgentContext,
-  req: RouteRequest,
-  res: RouteResponse,
-): Promise<AuthedUser | null> {
-  const actor = await requireAuthenticated(bus, ctx, req, res);
-  if (actor === null) return null;
-  if (!actor.isAdmin) {
-    res.status(403).json({ error: 'forbidden' });
-    return null;
-  }
-  return actor;
-}
-
-export type ParseBodyResult =
-  | { ok: true; value: unknown }
-  | { ok: false; status: 400 | 413; message: string };
-
-export function parseRequestBody(body: Buffer): ParseBodyResult {
-  if (body.length > ADMIN_BODY_MAX_BYTES) {
-    return { ok: false, status: 413, message: 'body-too-large' };
-  }
-  if (body.length === 0) return { ok: true, value: {} };
-  try {
-    return { ok: true, value: JSON.parse(body.toString('utf8')) };
-  } catch {
-    return { ok: false, status: 400, message: 'invalid-json' };
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Skills-specific PluginError -> HTTP status mapping
-// ---------------------------------------------------------------------------
-
-export function writeServiceError(res: RouteResponse, err: unknown): boolean {
-  if (err instanceof PluginError) {
-    if (err.code === 'skill-not-found') {
-      res.status(404).json({ error: err.message });
-      return true;
-    }
-    if (err.code === 'skill-in-use') {
-      res.status(409).json({ error: err.message, code: 'skill-in-use' });
-      return true;
-    }
-    const badRequestCodes = new Set([
-      'invalid-name',
-      'invalid-description',
-      'invalid-host',
-      'invalid-slot',
-      'duplicate-slot',
-      'invalid-kind',
-      'invalid-yaml',
-      'invalid-manifest',
-      'invalid-version',
-      'inline-secret-forbidden',
-      'invalid-mcp-command',
-      'invalid-mcp-transport',
-      'invalid-payload',
-      'default-attached-requires-no-credentials',
-    ]);
-    if (badRequestCodes.has(err.code)) {
-      res.status(400).json({ error: err.message, code: err.code });
-      return true;
-    }
-  }
-  return false;
-}
-
-// ---------------------------------------------------------------------------
-// Body schema
-// ---------------------------------------------------------------------------
-
-const SKILL_MD_MAX = 32 * 1024;
-
-const upsertBodySchema = z
-  .object({
-    skillMd: z.string().min(1).max(SKILL_MD_MAX),
-    defaultAttached: z.boolean().optional(),
-  })
-  .strict();
-
-// ---------------------------------------------------------------------------
-// SKILL.md splitter
-//
-// Expects: ---\n<frontmatter>\n---\n<body> (body optional).
-// Returns null if the fence pair is absent.
-// ---------------------------------------------------------------------------
-
-function splitSkillMd(
-  skillMd: string,
-): { manifestYaml: string; bodyMd: string } | null {
-  // Accept both LF and CRLF line endings on every fence boundary so a
-  // SKILL.md authored / copy-pasted on Windows doesn't 400 here.
-  const re = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n([\s\S]*)|$)/;
-  const m = re.exec(skillMd);
-  if (m === null) return null;
-  return { manifestYaml: m[1] ?? '', bodyMd: m[2] ?? '' };
-}
 
 // ---------------------------------------------------------------------------
 // Handlers

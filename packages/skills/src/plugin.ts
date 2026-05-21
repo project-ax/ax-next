@@ -13,6 +13,7 @@ import { createSkillsStore } from './store.js';
 import { createUserSkillsStore } from './user-store.js';
 import { mergeUserWins, compareById } from './_merge.js';
 import { registerAdminSkillsRoutes } from './admin-routes.js';
+import { registerSettingsSkillsRoutes } from './settings-routes.js';
 import type {
   SkillsCheckForUpdatesInput,
   SkillsCheckForUpdatesOutput,
@@ -483,13 +484,16 @@ export function createSkillsPlugin(): Plugin {
         },
       );
 
-      // Register admin HTTP routes. Atomic try/catch unwind: if any route
-      // registration fails after earlier ones succeeded, unwind the earlier
-      // ones before rethrowing (bootstrap marks the plugin failed and won't
+      // Register admin + settings HTTP routes. Both batches are pushed into
+      // the same routeUnregisters array inside one atomic try/catch: if any
+      // registration fails after earlier ones succeeded, all earlier ones are
+      // unwound before rethrowing (bootstrap marks the plugin failed and won't
       // call shutdown, so the unwind must happen here).
       try {
-        const unregisters = await registerAdminSkillsRoutes(bus, initCtx);
-        routeUnregisters.push(...unregisters);
+        const adminUnregisters = await registerAdminSkillsRoutes(bus, initCtx);
+        routeUnregisters.push(...adminUnregisters);
+        const settingsUnregisters = await registerSettingsSkillsRoutes(bus, initCtx);
+        routeUnregisters.push(...settingsUnregisters);
       } catch (err) {
         while (routeUnregisters.length > 0) {
           const fn = routeUnregisters.pop();
