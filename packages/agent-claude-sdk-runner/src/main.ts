@@ -43,7 +43,7 @@ import { buildSystemPrompt } from './system-prompt.js';
 import { createArtifactPublishExecutor } from './artifact-publish-executor.js';
 import { materializeInstalledSkillsFromEnv } from './installed-skills.js';
 import { DISABLED_BUILTINS, MCP_HOST_SERVER_NAME, MCP_SANDBOX_SERVER_NAME } from './tool-names.js';
-import { readLastTurnUuid } from './turn-end-uuid.js';
+import { readLastTurnUuid, waitForTurnTranscript } from './turn-end-uuid.js';
 import { ARTIFACT_PUBLISH_TOOL_NAME } from '@ax/tool-artifact-publish';
 
 // ---------------------------------------------------------------------------
@@ -245,6 +245,51 @@ export async function main(): Promise<number> {
     await client.close();
     return 2;
   }
+
+  // Per-turn transcript-flush wait (2026-05-22 conversations:get-latency fix).
+  // The Anthropic Agent SDK writes the assistant turn's jsonl line AFTER it
+  // yields `result`, so the per-turn commit in the `result` handler below
+  // would otherwise stage `/permanent` BEFORE the reply lands and ship a
+  // bundle missing it. Under idle-keepalive the warm runner doesn't drain the
+  // SDK loop (no final commit) until idle-reap, so the reply stayed unreadable
+  // via conversations:get for the whole idle window (minutes). We wait for the
+  // new assistant line before each per-turn commit so EVERY turn's bundle
+  // contains its own reply. Timeout/interval are env-tunable (tests set 0 to
+  // skip the wait); production defaults are 5 s / 50 ms. On timeout we fall
+  // through to the prior behavior — the next turn's commit or the final commit
+  // still captures the line — so the wait is a strict improvement.
+  const parsedFlushTimeout = Number.parseInt(
+    process.env.AX_TURN_FLUSH_TIMEOUT_MS ?? '',
+    10,
+  );
+  const parsedFlushInterval = Number.parseInt(
+    process.env.AX_TURN_FLUSH_INTERVAL_MS ?? '',
+    10,
+  );
+  const flushTimeoutMs = Number.isFinite(parsedFlushTimeout)
+    ? parsedFlushTimeout
+    : 5000;
+  const flushIntervalMs =
+    Number.isFinite(parsedFlushInterval) && parsedFlushInterval > 0
+      ? parsedFlushInterval
+      : 50;
+  // SDK session_id used to LOCATE the jsonl for the flush wait. Starts as the
+  // resume id (if any); set to the SDK's session_id on the first system/init.
+  // Distinct from `runnerSessionId` (which only ever holds the resume value)
+  // so the turnId-on-event behavior at the turn-end emissions stays unchanged.
+  let transcriptSessionId: string | null = runnerSessionId;
+  // The last assistant uuid as of the previous commit — the baseline the flush
+  // wait compares against. Seed it from the existing transcript on a resumed
+  // session so the first turn waits for a genuinely NEW line instead of
+  // short-circuiting on a pre-existing one.
+  let lastTranscriptUuid: string | undefined =
+    transcriptSessionId !== null
+      ? ((await readLastTurnUuid(
+          env.workspaceRoot,
+          transcriptSessionId,
+          'assistant',
+        )) ?? undefined)
+      : undefined;
 
   // Phase E (2026-05-09): the replay-at-boot path is gone. Transcripts
   // live in the runner's native ~/.claude/projects/<sessionId>.jsonl
@@ -637,6 +682,11 @@ export async function main(): Promise<number> {
         msg.subtype === 'init' &&
         !runnerSessionIdSent
       ) {
+        // Capture the SDK session_id so the per-turn flush wait can locate the
+        // jsonl. Set regardless of whether there's a conversation row to bind
+        // to — the transcript exists either way; only the host-side DB binding
+        // is conversation-scoped. Once-only (gated by !runnerSessionIdSent).
+        transcriptSessionId = msg.session_id;
         if (conversationId === null) {
           // No conversation row to bind to — flag the once-only path
           // so a re-entrant system/init can't fire spurious binds.
@@ -900,6 +950,20 @@ export async function main(): Promise<number> {
         // Failures here MUST NOT terminate the chat — `event.turn-end`
         // is still the heartbeat the host keys off.
         try {
+          // Wait for the SDK's delayed assistant-jsonl write to land so this
+          // turn's reply is captured by the commit/bundle below (see the
+          // flush comment after materialize). Skip when the turn produced no
+          // assistant content (nothing new to wait for) or when we have no
+          // session id to locate the jsonl. Bounded; falls through on timeout.
+          if (turnContentBlocks.length > 0 && transcriptSessionId !== null) {
+            const landed = await waitForTurnTranscript(
+              env.workspaceRoot,
+              transcriptSessionId,
+              lastTranscriptUuid,
+              { timeoutMs: flushTimeoutMs, intervalMs: flushIntervalMs },
+            );
+            if (landed !== undefined) lastTranscriptUuid = landed;
+          }
           const bundleB64 = await commitTurnAndBundle({
             root: env.workspaceRoot,
             reason: 'turn',

@@ -104,6 +104,23 @@ vi.mock('../git-workspace.js', async (importOriginal) => {
   };
 });
 
+// Mock the transcript-flush seam. `readLastTurnUuid` defaults to undefined
+// (the fake AX_WORKSPACE_ROOT has no jsonl — matching real behavior).
+// `waitForTurnTranscript` defaults to a fast no-op so tests that yield an
+// assistant turn don't pay a real poll/timeout; the dedicated flush-ordering
+// test overrides it to observe WHEN main() invokes it relative to the commit.
+// The wait's real polling/timeout behavior is covered in turn-end-uuid.test.ts.
+const readLastTurnUuidMock = vi.fn().mockResolvedValue(undefined);
+const waitForTurnTranscriptMock = vi.fn().mockResolvedValue(undefined);
+vi.mock('../turn-end-uuid.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../turn-end-uuid.js')>();
+  return {
+    ...actual,
+    readLastTurnUuid: readLastTurnUuidMock,
+    waitForTurnTranscript: waitForTurnTranscriptMock,
+  };
+});
+
 const COMPLETE_ENV = {
   AX_RUNNER_ENDPOINT: 'unix:///tmp/ax.sock',
   AX_SESSION_ID: 'sess-1',
@@ -291,6 +308,10 @@ beforeEach(() => {
   advanceBaselineMock.mockResolvedValue(undefined);
   rollbackToBaselineMock.mockReset();
   rollbackToBaselineMock.mockResolvedValue(undefined);
+  readLastTurnUuidMock.mockReset();
+  readLastTurnUuidMock.mockResolvedValue(undefined);
+  waitForTurnTranscriptMock.mockReset();
+  waitForTurnTranscriptMock.mockResolvedValue(undefined);
   createIpcClientMock = vi.fn();
   createInboxLoopMock = vi.fn();
 });
@@ -450,6 +471,86 @@ describe('main()', () => {
     );
 
     expect(fakeClient.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('per-turn commit waits for the assistant transcript to land before committing (keepalive durability)', async () => {
+    // Regression for the 1–2.5 min `conversations:get` lag under idle-
+    // keepalive (2026-05-22 investigation). The Anthropic SDK writes the
+    // assistant turn's jsonl AFTER yielding `result`, so the per-turn commit
+    // — which runs in the `result` handler — used to stage the workspace
+    // BEFORE the reply landed and ship a bundle missing it. Under keepalive
+    // the warm runner doesn't drain (no final commit) until idle-reap, so the
+    // reply stayed unreadable for the whole idle window. The fix waits for the
+    // new assistant line (waitForTurnTranscript) BEFORE committing, so EVERY
+    // turn's commit/bundle contains its own reply.
+    //
+    // Here we assert the control-flow ordering: main() invokes the flush wait
+    // before commitTurnAndBundle. (The wait's real polling/timeout behavior is
+    // covered by turn-end-uuid.test.ts.)
+    setEnv(COMPLETE_ENV);
+
+    const order: string[] = [];
+    waitForTurnTranscriptMock.mockImplementation(async () => {
+      order.push('flush-wait');
+      return 'asst-uuid-1';
+    });
+    commitTurnAndBundleMock.mockImplementation(async () => {
+      order.push('commit');
+      return null;
+    });
+
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          conversationId: null,
+          runnerSessionId: null,
+        };
+      }
+      if (action === 'workspace.materialize') return { bundleBytes: '' };
+      if (action === 'tool.list') return { tools: [] };
+      throw new Error(`unexpected call: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([userEntry('ping'), cancelEntry]);
+    queryMock.mockImplementation(
+      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+        return (async function* () {
+          const it = prompt[Symbol.asyncIterator]();
+          await it.next();
+          // system/init gives the runner the SDK session_id it needs to
+          // locate the jsonl for the flush wait.
+          yield systemInit('sdk-sess-1');
+          yield assistantText('pong'); // non-empty turn → flush wait fires
+          yield resultSuccess();
+          await it.next();
+        })();
+      },
+    );
+
+    const { main } = await import('../main.js');
+    const rc = await main();
+    expect(rc).toBe(0);
+
+    const firstFlush = order.indexOf('flush-wait');
+    const firstCommit = order.indexOf('commit');
+    // The flush wait ran for this turn...
+    expect(firstFlush).toBeGreaterThanOrEqual(0);
+    // ...and the per-turn commit happened only AFTER it.
+    expect(firstCommit).toBeGreaterThan(firstFlush);
+    expect(waitForTurnTranscriptMock).toHaveBeenCalledWith(
+      '/tmp/workspace',
+      'sdk-sess-1',
+      undefined,
+      expect.objectContaining({ timeoutMs: expect.any(Number) }),
+    );
   });
 
   it('bootstrap failure: missing AX_PROXY_ENDPOINT → exit 2, no chat-end, no query', async () => {
