@@ -494,3 +494,89 @@ describe('conversations:set-title', () => {
     expect(await readTitleFromDb(conv.conversationId)).toBeNull();
   });
 });
+
+describe('conversations:title-updated event', () => {
+  it('fires conversations:title-updated on a real change', async () => {
+    const { h, resolveCalls } = await makeHarness({ decide: () => 'allow' });
+    const conv = await h.bus.call<CreateInput, CreateOutput>(
+      'conversations:create',
+      h.ctx({ userId: 'userA' }),
+      { userId: 'userA', agentId: 'agt_a' },
+    );
+    resolveCalls.length = 0;
+
+    const events: Array<{ conversationId: string; userId: string; title: string }> = [];
+    h.bus.subscribe<{ conversationId: string; userId: string; title: string }>(
+      'conversations:title-updated',
+      'test/title-spy',
+      async (_ctx, payload) => {
+        events.push(payload);
+        return undefined;
+      },
+    );
+
+    await h.bus.call<SetTitleInput, SetTitleOutput>(
+      'conversations:set-title',
+      h.ctx({ userId: 'userA' }),
+      { conversationId: conv.conversationId, userId: 'userA', title: 'Hello' },
+    );
+
+    expect(events).toEqual([
+      { conversationId: conv.conversationId, userId: 'userA', title: 'Hello' },
+    ]);
+  });
+
+  it('does NOT fire on the ifNull already-titled no-op', async () => {
+    const { h } = await makeHarness({ decide: () => 'allow' });
+    const conv = await h.bus.call<CreateInput, CreateOutput>(
+      'conversations:create',
+      h.ctx({ userId: 'userA' }),
+      { userId: 'userA', agentId: 'agt_a' },
+    );
+    // First set wins.
+    await h.bus.call<SetTitleInput, SetTitleOutput>(
+      'conversations:set-title',
+      h.ctx({ userId: 'userA' }),
+      { conversationId: conv.conversationId, userId: 'userA', title: 'First', ifNull: true },
+    );
+
+    const events: unknown[] = [];
+    h.bus.subscribe(
+      'conversations:title-updated',
+      'test/title-spy',
+      async (_ctx, payload) => {
+        events.push(payload);
+        return undefined;
+      },
+    );
+
+    const out = await h.bus.call<SetTitleInput, SetTitleOutput>(
+      'conversations:set-title',
+      h.ctx({ userId: 'userA' }),
+      { conversationId: conv.conversationId, userId: 'userA', title: 'Second', ifNull: true },
+    );
+    expect(out).toEqual({ updated: false });
+    expect(events).toEqual([]);
+  });
+
+  it('does NOT fire when the conversation is not found', async () => {
+    const { h } = await makeHarness({ decide: () => 'allow' });
+    const events: unknown[] = [];
+    h.bus.subscribe(
+      'conversations:title-updated',
+      'test/title-spy',
+      async (_ctx, payload) => {
+        events.push(payload);
+        return undefined;
+      },
+    );
+    await expect(
+      h.bus.call<SetTitleInput, SetTitleOutput>(
+        'conversations:set-title',
+        h.ctx({ userId: 'userA' }),
+        { conversationId: 'cnv_missing', userId: 'userA', title: 'X' },
+      ),
+    ).rejects.toThrow();
+    expect(events).toEqual([]);
+  });
+});

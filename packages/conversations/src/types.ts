@@ -390,6 +390,19 @@ export interface FindOrCreateOutput {
   created: boolean;
 }
 
+/**
+ * Emitted on the in-process bus by the title write path
+ * (`conversations:set-title`) whenever a title actually changes. Consumed
+ * by channel-web's `/api/chat/title-events` SSE to push live titles to the
+ * sidebar. Domain-level only — no storage/transport fields (invariant #1).
+ * Subscribers in other plugins duck-type this shape (no cross-plugin import).
+ */
+export interface TitleUpdatedEvent {
+  conversationId: string;
+  userId: string;
+  title: string;
+}
+
 // ---------------------------------------------------------------------------
 // Plugin config
 // ---------------------------------------------------------------------------
