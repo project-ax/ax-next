@@ -278,6 +278,17 @@ describe('buildPodSpec', () => {
     expect(ephemeral?.emptyDir).toBeDefined();
     // No legacy `workspace` volume.
     expect(volumes.find((v) => v.name === 'workspace')).toBeUndefined();
+
+    // The mount alone is inert — the runner only wires the scratch tier
+    // into the SDK (additionalDirectories + system-prompt note) when
+    // AX_EPHEMERAL_ROOT is stamped. Assert the env points at the mount so
+    // the two halves can't drift apart.
+    const env = (
+      spec.spec as { containers: Array<{ env: Array<{ name: string; value: string }> }> }
+    ).containers[0]!.env;
+    expect(env.find((e) => e.name === 'AX_EPHEMERAL_ROOT')?.value).toBe(
+      '/ephemeral',
+    );
   });
 
   it('carries paranoid git env on the runner container', () => {

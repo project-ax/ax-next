@@ -28,6 +28,10 @@ const env = {
   AX_SESSION_ID: process.env.AX_SESSION_ID ?? null,
   AX_AUTH_TOKEN: process.env.AX_AUTH_TOKEN ?? null,
   AX_WORKSPACE_ROOT: process.env.AX_WORKSPACE_ROOT ?? null,
+  // Session-scoped scratch root (subprocess: a per-session tempdir nested
+  // in the IPC socket dir). Echoed so open-session.test.ts can assert the
+  // child saw it and that it points at a real on-disk directory.
+  AX_EPHEMERAL_ROOT: process.env.AX_EPHEMERAL_ROOT ?? null,
   // credential-proxy env (set only when proxyConfig was passed to
   // sandbox:open-session).
   AX_PROXY_ENDPOINT: process.env.AX_PROXY_ENDPOINT ?? null,

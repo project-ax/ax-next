@@ -1603,6 +1603,129 @@ kubectl exec -n ax-next deploy/ax-next-host -- \
   -c "DELETE FROM auth_better_v1_users WHERE id IN (SELECT user_id FROM auth_better_v1_accounts WHERE provider_id = 'google');"
 ```
 
+## Scenario: `/ephemeral` session scratch tier
+
+### What this proves
+
+The runner gives the agent a writable, session-scoped scratch directory
+(`/ephemeral` in k8s; a per-session tempdir in the subprocess sandbox) that
+is reachable by the SDK's file tools AND mentioned in the system prompt, and
+whose contents do NOT round-trip to the workspace. The capability is
+provisioned at the sandbox layer via the `AX_EPHEMERAL_ROOT` env var, so it's
+runner-agnostic; the claude-sdk runner translates it into the SDK's
+`additionalDirectories` + a system-prompt note.
+
+The cluster-only surfaces this proves (the unit tests can't): the emptyDir is
+actually writable by the runner's non-root uid under `readOnlyRootFilesystem`,
+the SDK honors `additionalDirectories` for a path outside cwd, the note
+reaches the live agent, and the turn-end `git add -A` (scoped to `/permanent`)
+genuinely never sees `/ephemeral`.
+
+### Prerequisites
+
+- Goldenpath cluster up, wizard walked (a bootstrap admin + Default Agent
+  exist), port-forward 9090 live.
+- Image rebuilt from the branch under test (`make image`). Verify the runner
+  code actually landed (the docker layer cache has hidden runner fixes before):
+  ```bash
+  docker run --rm --entrypoint sh ax-next/agent:dev -c \
+    "grep -rl AX_EPHEMERAL_ROOT /opt/ax-next/host/node_modules/.pnpm/*sandbox-k8s*/ && \
+     ls /opt/ax-next/host/node_modules/.pnpm/*agent-claude-sdk-runner*/node_modules/@ax/agent-claude-sdk-runner/dist/system-prompt.js"
+  ```
+
+### Headless authenticated chat (no browser)
+
+The bootstrap admin has no `auth_better_v1_accounts` row (no password/OAuth),
+and Google OAuth isn't automatable, so for a headless walk we reuse the
+existing session cookie. The serve `POST /chat` path does NOT work here — it
+uses a synthetic `serve/serve` identity that fails `agents:resolve`. Use the
+browser path (`/api/chat/messages`) with a hand-minted cookie:
+
+```bash
+# 1. A live session token + the cookie-signing key.
+PASS=$(kubectl get secret -n ax-next ax-next-postgresql -o jsonpath='{.data.postgres-password}' | base64 -d)
+TOKEN=$(kubectl exec -n ax-next ax-next-postgresql-0 -- env PGPASSWORD="$PASS" \
+  psql -U postgres -d ax_next -t -A \
+  -c "SELECT token FROM auth_better_v1_sessions WHERE expires_at > now() ORDER BY expires_at DESC LIMIT 1;")
+CKEY=$(kubectl get secret -n ax-next ax-next-secrets -o jsonpath='{.data.http-cookie-key}' | base64 -d)
+
+# 2. Sign it the way @ax/http-server does. The cookie is named
+#    `ax_auth_session` (a custom http-server-signed bridge, NOT better-auth's
+#    internal `ax_better_auth.session_token`). Wire form is
+#    `<base64url(token)>.<base64url(hmac-sha256(key, token))>`; import the real
+#    signer so key parsing (64 hex / 44 base64 → 32 bytes) can't drift.
+cat > /tmp/sign-cookie.mjs <<'EOF'
+import { signCookieValue } from '/ABS/PATH/ax-next/packages/http-server/dist/cookies.js';
+const raw = process.env.CKEY;
+const key = /^[0-9a-fA-F]{64}$/.test(raw) ? Buffer.from(raw, 'hex') : Buffer.from(raw, 'base64');
+process.stdout.write('ax_auth_session=' + signCookieValue(key, process.env.WTOKEN));
+EOF
+COOKIE=$(CKEY="$CKEY" WTOKEN="$TOKEN" node /tmp/sign-cookie.mjs)
+
+# 3. Sanity-check the cookie, then grab the agent id.
+curl -s http://localhost:9090/api/chat/agents -H "Cookie: $COOKIE"   # → [{agentId,...}]
+AGENT=agt_...   # from the line above
+
+# 4. Send a turn. conversationId:null mints a fresh conversation; reuse the
+#    returned id for follow-up turns. X-Requested-With satisfies CSRF.
+curl -s -X POST http://localhost:9090/api/chat/messages \
+  -H "Cookie: $COOKIE" -H 'Content-Type: application/json' -H 'X-Requested-With: ax-admin' \
+  -d "{\"conversationId\":null,\"agentId\":\"$AGENT\",\"contentBlocks\":[{\"type\":\"text\",\"text\":\"...\"}]}"
+# → {"conversationId":"cnv_...","reqId":"req-..."}
+
+# 5. The turn runs async; read the result by polling the conversation until a
+#    trailing assistant text turn appears:
+curl -s "http://localhost:9090/api/chat/conversations/cnv_..." -H "Cookie: $COOKIE" | jq '.turns[].contentBlocks'
+```
+
+Scrub `/tmp/sign-cookie.mjs` and any file holding `$COOKIE` afterward — that
+cookie is a live admin session.
+
+### Walk
+
+1. **Turn 1 — exercise scratch.** Send a prompt instructing the agent to
+   (a) use the Write tool to create `/ephemeral/walk-via-write.txt`,
+   (b) bash `echo ... > /ephemeral/walk-via-bash.txt && ls -la /ephemeral`,
+   (c) use the Write tool to create `ROUND_TRIP_CONTROL.txt` in the cwd.
+2. **(Optional) Catch the runner pod** while the turn runs and confirm the
+   real pod-spec env + mount:
+   ```bash
+   POD=$(kubectl get pods -n ax-next-runners --no-headers | awk '{print $1}' | head -1)
+   kubectl get pod -n ax-next-runners "$POD" \
+     -o jsonpath='{range .spec.containers[0].env[*]}{.name}={.value}{"\n"}{end}' | grep AX_EPHEMERAL_ROOT
+   ```
+3. **Turn 2 — round-trip + prompt check.** Same conversation: ask the agent,
+   without tools, whether it has a designated scratch dir (it should quote the
+   `/ephemeral` note from its system prompt), then bash `ls -la` in cwd and
+   `ls -la /ephemeral`.
+
+### Acceptance criteria
+
+- [ ] Turn-1 Write tool to `/ephemeral/...` **succeeds** (a file tool writing
+      outside cwd only works if `additionalDirectories` includes the scratch
+      root).
+- [ ] Turn-1 bash write to `/ephemeral` succeeds; `ls -la /ephemeral` shows the
+      files owned by the runner uid in a writable dir.
+- [ ] Real chat-spawned runner pod has `AX_EPHEMERAL_ROOT=/ephemeral` + the
+      `/ephemeral` mount, on the image under test.
+- [ ] Turn-2 agent quotes the scratch-directory note from its system prompt.
+- [ ] Turn-2 fresh pod: `/ephemeral` is **empty** (the turn-1 files are gone —
+      never bundled), while `ROUND_TRIP_CONTROL.txt` **persists** in cwd
+      (`/permanent`, re-materialized from the workspace).
+
+Note: `printenv AX_EPHEMERAL_ROOT` is **unset** in the agent's shell — that's
+correct, not a bug. The SDK subprocess gets a curated env (`{...anthropicEnv,
+HOME}`); `AX_EPHEMERAL_ROOT` is host→runner plumbing and the agent learns the
+path from the prompt, not the env.
+
+### Cleanup
+
+```bash
+kubectl delete pod ax-walk-ephemeral -n ax-next-runners --ignore-not-found  # if you applied a synthetic probe pod
+curl -s -X DELETE http://localhost:9090/api/chat/conversations/cnv_... \
+  -H "Cookie: $COOKIE" -H 'X-Requested-With: ax-admin'   # delete the test conversation
+```
+
 ## When this passes, do
 1. Update the PR description's acceptance section with the date + cluster
    used + a copy of the `psql` count outputs.
@@ -1638,6 +1761,21 @@ kubectl exec -n ax-next deploy/ax-next-host -- \
     authored no `.ax/skills/*/SKILL.md`, as expected). ✅
   - 0 console errors (2 benign Radix `aria-describedby` dialog advisories,
     consistent with the app's other dialogs).
+- **`/ephemeral` scratch tier (this PR)** — walked 2026-05-22 on
+  `kind-ax-next-dev` (rebuilt `ax-next/agent:dev`), via the headless
+  authenticated-chat recipe above (no browser; OAuth isn't automatable).
+  - Real chat-spawned runner pod (`ax-sandbox-…`) carried
+    `AX_EPHEMERAL_ROOT=/ephemeral` + the `/ephemeral` mount on the new image.
+  - Turn-1 Write tool wrote `/ephemeral/walk-via-write.txt` (proves
+    `additionalDirectories` is honored — a file tool reaching outside cwd);
+    bash write + `ls -la /ephemeral` confirmed both files owned by `axagent`
+    (uid 1000) in a `drwxrwxrwx` emptyDir.
+  - Turn-2 agent quoted the `/ephemeral` scratch note verbatim from its system
+    prompt; fresh-pod `ls` showed `/ephemeral` empty (turn-1 files gone, never
+    bundled) while `ROUND_TRIP_CONTROL.txt` persisted in `/permanent`.
+  - Also confirmed via the real `buildPodSpec` output applied as a pod:
+    uid-1000 writability under `readOnlyRootFilesystem` (`/` rejects writes;
+    emptyDir mounts are `drwxrwxrwx`). All acceptance criteria pass.
 
 ## Web tools (@ax/web-tools)
 

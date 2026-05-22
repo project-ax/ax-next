@@ -302,8 +302,17 @@ export async function openSessionImpl(
   const homeDir = path.join(socketDir, 'home');
   const claudeConfigDir = path.join(homeDir, '.ax', 'session');
   const installedSkillsDir = path.join(claudeConfigDir, 'skills');
+  // Session-scoped scratch root — the subprocess analogue of k8s's
+  // `/ephemeral` emptyDir. Nested inside the 0700 per-session tempdir so
+  // (a) it's writable by the runner uid, (b) it's isolated from other
+  // sessions, and (c) the existing `fs.rm(socketDir, { recursive: true })`
+  // cleanup reaps it — no separate teardown. Stamped onto the runner env as
+  // AX_EPHEMERAL_ROOT below; the runner wires it into the SDK's
+  // additionalDirectories + system prompt.
+  const ephemeralDir = path.join(socketDir, 'ephemeral');
   try {
     await fs.mkdir(installedSkillsDir, { recursive: true, mode: 0o755 });
+    await fs.mkdir(ephemeralDir, { recursive: true, mode: 0o700 });
 
     // I-P0-4: the `.claude/skills → ../.ax/skills` symlink that the SDK's
     //    `'project'` setting source walks now lives on the RUNNER side
@@ -452,6 +461,12 @@ export async function openSessionImpl(
     AX_SESSION_ID: created.sessionId,
     AX_AUTH_TOKEN: created.token,
     AX_WORKSPACE_ROOT: input.workspaceRoot,
+    // Session-scoped scratch root (mkdir'd above, inside the 0700 tempdir).
+    // The runner reads this as the SDK's extra writable directory; absent
+    // it, the runner wouldn't grant any scratch dir. Diverges from k8s
+    // (which uses the fixed `/ephemeral` mount) the same way HOME does —
+    // each provider picks a path that exists and is writable for it.
+    AX_EPHEMERAL_ROOT: ephemeralDir,
     // I-P0-3: override HOME (which is in the allowlist; sessionEnv merges
     // LAST so this wins) and set CLAUDE_CONFIG_DIR so the SDK's `'user'`
     // skill-discovery walks the host-controlled per-session dir, not the

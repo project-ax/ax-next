@@ -39,6 +39,7 @@ import { createPostToolUseHook } from './post-tool-use.js';
 import { createPreToolUseHook } from './pre-tool-use.js';
 import { setupProxy } from './proxy-startup.js';
 import { createSandboxMcpServer } from './sandbox-mcp-server.js';
+import { buildSystemPrompt } from './system-prompt.js';
 import { createArtifactPublishExecutor } from './artifact-publish-executor.js';
 import { materializeInstalledSkillsFromEnv } from './installed-skills.js';
 import { DISABLED_BUILTINS, MCP_HOST_SERVER_NAME, MCP_SANDBOX_SERVER_NAME } from './tool-names.js';
@@ -538,6 +539,21 @@ export async function main(): Promise<number> {
           HOME: env.workspaceRoot,
         },
         cwd: env.workspaceRoot,
+        // Session-scoped scratch tier. When the sandbox provided an
+        // ephemeral root (k8s: the `/ephemeral` emptyDir mount; subprocess:
+        // a per-session tempdir), grant the SDK's file tools access to it
+        // BEYOND cwd. Without this the file tools are bounded to cwd
+        // (`/permanent`), so any "temporary" file the agent writes lands in
+        // the workspace tree and gets `git add -A`'d + bundled to the host
+        // at turn end. additionalDirectories lets the agent stage throwaway
+        // work (scratch clones, build caches) somewhere that never
+        // round-trips. Omitted when the sandbox didn't wire one — no
+        // phantom directory. (The matching system-prompt note that tells
+        // the agent this directory exists is added via buildSystemPrompt
+        // below; both are gated on the same env.ephemeralRoot.)
+        ...(env.ephemeralRoot !== undefined
+          ? { additionalDirectories: [env.ephemeralRoot] }
+          : {}),
         // `Skill` is added to the allow list so the SDK auto-permits the
         // built-in Skill tool without prompting — that's the path the SDK
         // uses to invoke a skill it discovered under `settingSources`
@@ -594,10 +610,15 @@ export async function main(): Promise<number> {
         // require non-empty by validation). systemPrompt is USER-AUTHORED
         // and intended for the LLM — not interpolated into shell, paths,
         // or HTML.
-        systemPrompt:
-          agentConfig.systemPrompt.length > 0
-            ? agentConfig.systemPrompt
-            : { type: 'preset', preset: 'claude_code' },
+        //
+        // buildSystemPrompt also appends the ephemeral-scratch note when
+        // env.ephemeralRoot is set (paired with additionalDirectories
+        // above). It handles the SDK quirk that `append` is a no-op on a
+        // custom string prompt vs. the preset form.
+        systemPrompt: buildSystemPrompt(
+          agentConfig.systemPrompt,
+          env.ephemeralRoot,
+        ),
       },
     });
 

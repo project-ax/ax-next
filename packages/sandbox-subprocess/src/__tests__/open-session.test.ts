@@ -155,6 +155,16 @@ describe('sandbox:open-session', () => {
     // The token must NOT be echoed in the returned surface.
     expect(JSON.stringify(result)).not.toContain(parsed.AX_AUTH_TOKEN);
 
+    // Session-scoped scratch root: stamped onto the child env, nested in
+    // the per-session tempdir (the same 0700 dir holding the IPC socket),
+    // and present on disk before the runner spawns.
+    const socketDir = result.runnerEndpoint
+      .replace(/^unix:\/\//, '')
+      .replace(/\/ipc\.sock$/, '');
+    expect(parsed.AX_EPHEMERAL_ROOT).toBe(path.join(socketDir, 'ephemeral'));
+    const scratchStat = await fs.stat(parsed.AX_EPHEMERAL_ROOT as string);
+    expect(scratchStat.isDirectory()).toBe(true);
+
     await result.handle.kill();
     await result.handle.exited;
     await new Promise((r) => setTimeout(r, 50));

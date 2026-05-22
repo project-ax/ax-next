@@ -256,10 +256,18 @@ export function buildPodSpec(
   // defaults to /permanent if unset, but stamping it explicitly makes
   // the contract observable in `kubectl describe pod`.)
   const RUNNER_WORKSPACE_ROOT = '/permanent';
+  // Session-scoped scratch tier (the `/ephemeral` emptyDir mounted below).
+  // Stamped explicitly so the contract is observable in `kubectl describe
+  // pod` AND so the runner can wire it into the SDK's additionalDirectories
+  // + system prompt. The runner treats AX_EPHEMERAL_ROOT as optional with
+  // NO default (see @ax/agent-claude-sdk-runner env.ts), so this stamp is
+  // the only thing that turns the scratch tier on for k8s sessions.
+  const RUNNER_EPHEMERAL_ROOT = '/ephemeral';
   const env: EnvVar[] = [
     { name: 'AX_SESSION_ID', value: input.sessionId },
     { name: 'AX_AUTH_TOKEN', value: input.authToken },
     { name: 'AX_WORKSPACE_ROOT', value: RUNNER_WORKSPACE_ROOT },
+    { name: 'AX_EPHEMERAL_ROOT', value: RUNNER_EPHEMERAL_ROOT },
     { name: 'AX_RUNNER_BINARY', value: input.runnerBinary },
     { name: 'AX_RUNNER_ENDPOINT', value: input.runnerEndpoint },
     ...(input.requestId !== undefined
