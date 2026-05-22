@@ -37,7 +37,7 @@ write point for a conversation title, and it already computes
 **only when `updated === true`** (a real change), immediately before
 `return { updated: true }`:
 
-```
+```text
 conversations:title-updated  →  { conversationId: string; userId: string; title: string }
 ```
 
@@ -90,7 +90,7 @@ A single SSE connection opened once at app/sidebar mount, using
 
 ## Data flow
 
-```
+```text
 assistant turn ends
   → @ax/conversation-titles (chat:turn-end subscriber) generates title
   → conversations:set-title  (updated === true)
