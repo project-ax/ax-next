@@ -637,6 +637,11 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   const orchestratorCfg: Parameters<typeof createChatOrchestratorPlugin>[0] = {
     runnerBinary: config.chat?.runnerBinary ?? defaultRunnerBinary(),
     chatTimeoutMs: config.chat?.chatTimeoutMs ?? DEFAULT_CHAT_TIMEOUT_MS,
+    // Keepalive: the channel-web chat UI is multi-turn. Leave the runner warm
+    // between turns so a follow-up reuses it (skips pod-create + workspace
+    // re-materialize). Idle windows use orchestrator defaults (5 min / 10 s
+    // grace); the pod ceiling is sandbox-k8s activeDeadlineSeconds (6 h).
+    keepAlive: true,
   };
   if (config.chat?.oneShot !== undefined) {
     orchestratorCfg.oneShot = config.chat.oneShot;
