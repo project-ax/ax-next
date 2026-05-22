@@ -15,6 +15,7 @@ import {
   type RouteRequest,
   type RouteResponse,
 } from './sse.js';
+import { createTitleEventsHandler } from './title-events.js';
 import type { PhaseEvent, StreamChunk } from './types.js';
 
 const PLUGIN_NAME = '@ax/channel-web';
@@ -76,7 +77,7 @@ export function createChannelWebServerPlugin(
         'attachments:commit',
         'attachments:download',
       ],
-      subscribes: ['chat:stream-chunk', 'chat:phase', 'chat:turn-end'],
+      subscribes: ['chat:stream-chunk', 'chat:phase', 'chat:turn-end', 'conversations:title-updated'],
     },
 
     async init({ bus }) {
@@ -142,6 +143,24 @@ export function createChannelWebServerPlugin(
         ) => Promise<void>,
       });
       unregisterRoutes.push(routeResult.unregister);
+
+      // Live title push — per-user SSE. Surfaces a title that lands after
+      // the client's poll window without a reload (design I5: ships with
+      // its consumer in the same PR; the route auto-registers here, no
+      // preset change needed).
+      const titleEventsHandler = createTitleEventsHandler({ bus, initCtx });
+      const titleEventsRoute = await bus.call<
+        unknown,
+        { unregister: () => void }
+      >('http:register-route', initCtx, {
+        method: 'GET',
+        path: '/api/chat/title-events',
+        handler: titleEventsHandler as unknown as (
+          req: RouteRequest,
+          res: RouteResponse,
+        ) => Promise<void>,
+      });
+      unregisterRoutes.push(titleEventsRoute.unregister);
 
       // Tasks 9-13 — chat-flow REST surface (POST messages, GET/DELETE
       // conversations, GET conversations/:id, GET agents). CSRF gated
