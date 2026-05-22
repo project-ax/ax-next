@@ -24,6 +24,7 @@ export const EMPTY_CAPABILITIES: SkillCapabilities = {
   allowedHosts: [],
   credentials: [],
   mcpServers: [],
+  packages: { npm: [], pypi: [] },
 };
 
 export function parseCapabilities(
