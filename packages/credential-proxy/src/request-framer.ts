@@ -158,7 +158,12 @@ export class RequestFramer {
       this.headBuf = Buffer.alloc(0);
       const t = transformBasicAuthHead(head, this.replacer, this.canaryTokens);
       if (t.canaryToken) return { out: Buffer.concat(parts), canaryToken: t.canaryToken };
-      parts.push(t.head);
+      // Verbatim substitution over the Basic-transformed head too, so a
+      // placeholder carried verbatim in a non-Basic header (e.g. `Authorization:
+      // Bearer ax-cred:…`) is still replaced — matching the pre-framer behavior
+      // that ran `replaceAllBuffer` over the whole chunk. The Basic line already
+      // holds the re-encoded real value, so this can't double-substitute it.
+      parts.push(this.replacer.replaceAllBuffer(t.head));
       const framing = parseBodyFraming(head);
       if (framing.chunked) {
         this.phase = 'passthrough';

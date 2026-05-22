@@ -167,4 +167,15 @@ describe('RequestFramer', () => {
     const { canaryToken } = f.process(Buffer.from(h, 'latin1'));
     expect(canaryToken).toBe('CANARY-9');
   });
+
+  it('runs verbatim substitution on a placeholder carried in the head (Bearer-in-head keeps working)', () => {
+    // Regression: the head must still get verbatim placeholder substitution for
+    // non-Basic headers (the pre-framer code ran replaceAllBuffer over the whole
+    // chunk). A Bearer token in the head must reach the upstream as the real value.
+    const f = new RequestFramer(replacer, []);
+    const h = `GET / HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer ${PH}\r\n\r\n`;
+    const { out } = f.process(Buffer.from(h, 'latin1'));
+    expect(out.toString('latin1')).toContain(`Bearer ${REAL}`);
+    expect(out.toString('latin1')).not.toContain('ax-cred:');
+  });
 });

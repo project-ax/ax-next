@@ -16,7 +16,13 @@
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
-import { createServer as tlsCreate, type Server as TLSServer } from 'node:tls';
+import {
+  createServer as tlsCreate,
+  connect as tlsConnect,
+  type Server as TLSServer,
+  type TLSSocket,
+} from 'node:tls';
+import * as net from 'node:net';
 import { ProxyAgent } from 'undici';
 import { startProxyListener, type ProxyListener } from '../listener.js';
 import {
@@ -137,6 +143,115 @@ async function startCapturingUpstream(
     ),
   );
   return { port, captured, gotRequest };
+}
+
+/**
+ * Stand up a TLS upstream that captures EVERY request's Authorization header on
+ * a single keep-alive connection. Mirrors `startCapturingUpstream` but loops over
+ * pipelined requests (git sends GET /info/refs then POST /git-upload-pack on one
+ * tunnel) so we can assert the credential was substituted on BOTH heads.
+ */
+async function startMultiCapturingUpstream(
+  ca: CAKeyPair,
+  expectRequests: number,
+): Promise<{
+  port: number;
+  authorizations: string[];
+  gotAll: Promise<void>;
+}> {
+  const leaf = generateDomainCert('127.0.0.1', ca);
+  const authorizations: string[] = [];
+  let resolveAll!: () => void;
+  const gotAll = new Promise<void>((resolve) => {
+    resolveAll = resolve;
+  });
+
+  upstream = tlsCreate({ key: leaf.key, cert: leaf.cert }, (sock) => {
+    let buf = '';
+    const drain = () => {
+      // Pull as many complete requests out of `buf` as are present.
+      for (;;) {
+        const headerEnd = buf.indexOf('\r\n\r\n');
+        if (headerEnd === -1) return;
+        const header = buf.slice(0, headerEnd);
+        const lines = header.split('\r\n');
+        let contentLength = 0;
+        let authorization: string | undefined;
+        for (const line of lines.slice(1)) {
+          const idx = line.indexOf(':');
+          if (idx === -1) continue;
+          const k = line.slice(0, idx).trim().toLowerCase();
+          const v = line.slice(idx + 1).trim();
+          if (k === 'authorization') authorization = v;
+          if (k === 'content-length') contentLength = parseInt(v, 10);
+        }
+        const bodyStart = headerEnd + 4;
+        if (buf.length - bodyStart < contentLength) return; // body still arriving
+        authorizations.push(authorization ?? '');
+        buf = buf.slice(bodyStart + contentLength);
+        // Reply per request so a real HTTP client would advance; the raw test
+        // client ignores these, but harmless.
+        sock.write('HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK');
+        if (authorizations.length >= expectRequests) {
+          resolveAll();
+        }
+      }
+    };
+    sock.on('data', (d) => {
+      buf += d.toString('utf8');
+      drain();
+    });
+    sock.on('error', () => { /* ignored — abort-side errors are expected */ });
+  });
+
+  const port = await new Promise<number>((r) =>
+    upstream!.listen(0, '127.0.0.1', () =>
+      r((upstream!.address() as { port: number }).port),
+    ),
+  );
+  return { port, authorizations, gotAll };
+}
+
+/**
+ * Open a raw MITM tunnel to the proxy and hand back the inner TLS socket so a
+ * test can write hand-crafted HTTP/1.1 request heads (git-clone shape) over it.
+ * Reuses the proxy's listening port + the test CA the proxy mints leaf certs
+ * from. Resolves once the inner TLS handshake (to our minted leaf) completes.
+ */
+async function openMitmTunnel(
+  proxyPort: number,
+  upstreamHost: string,
+  upstreamPort: number,
+  ca: CAKeyPair,
+): Promise<TLSSocket> {
+  const raw = net.connect(proxyPort, '127.0.0.1');
+  await new Promise<void>((resolve, reject) => {
+    raw.once('error', reject);
+    raw.once('connect', () => resolve());
+  });
+  // CONNECT, wait for "200 Connection Established".
+  raw.write(`CONNECT ${upstreamHost}:${upstreamPort} HTTP/1.1\r\nHost: ${upstreamHost}:${upstreamPort}\r\n\r\n`);
+  await new Promise<void>((resolve, reject) => {
+    const onData = (d: Buffer) => {
+      if (d.toString('latin1').includes('200')) {
+        raw.removeListener('data', onData);
+        resolve();
+      }
+    };
+    raw.on('data', onData);
+    raw.once('error', reject);
+  });
+  // Wrap the tunnel in TLS; trust the test CA (the proxy mints a leaf from it).
+  // `servername` doubles as the cert-validation hostname for a socket-wrapped
+  // connection; the proxy's minted leaf has CN `127.0.0.1`, so it must match.
+  // (Node logs an RFC-6066 SNI-for-IP deprecation notice; harmless in tests.)
+  const inner = tlsConnect({ socket: raw, servername: upstreamHost, ca: ca.cert });
+  inner.on('error', () => { /* abort-side errors during teardown are expected */ });
+  await new Promise<void>((resolve, reject) => {
+    inner.once('secureConnect', () => resolve());
+    inner.once('error', reject);
+  });
+  return inner;
 }
 
 describe('proxy listener — HTTPS CONNECT (MITM)', () => {
@@ -302,5 +417,118 @@ describe('proxy listener — HTTPS CONNECT (MITM)', () => {
     // Bypass path means NO substitution: the upstream sees the placeholder.
     expect(upInfo.captured.authorization).toBe(`Bearer ${placeholder}`);
     expect(upInfo.captured.authorization).toContain('ax-cred:');
+  });
+
+  it('git-clone-shaped GET+POST: upstream sees the real credential in the Basic header (B)', async () => {
+    const ca = mintCA();
+    const upInfo = await startMultiCapturingUpstream(ca, 2);
+
+    // Resolve a placeholder for a git token, mirroring how a session would carry it.
+    const credMap = new CredentialPlaceholderMap();
+    const placeholder = credMap.register('GITLAB_TOKEN', 'glpat-REALSECRET');
+    const registry = new SharedCredentialRegistry();
+    registry.register('s1', credMap);
+
+    listener = await startProxyListener({
+      listen: { kind: 'tcp', host: '127.0.0.1', port: 0 },
+      registry,
+      ca,
+      sessions: new Map([
+        [
+          's1',
+          {
+            allowlist: new Set(['127.0.0.1']),
+            allowedIPs: new Set(['127.0.0.1']),
+            // No bypassMITM → MITM path.
+          },
+        ],
+      ]),
+    });
+
+    const inner = await openMitmTunnel(listener.port, '127.0.0.1', upInfo.port, ca);
+
+    // git uses Basic auth with the credential as the password (oauth2:<token>).
+    const basic = Buffer.from(`oauth2:${placeholder}`).toString('base64');
+    const get =
+      `GET /info/refs?service=git-upload-pack HTTP/1.1\r\n` +
+      `Host: 127.0.0.1:${upInfo.port}\r\n` +
+      `Authorization: Basic ${basic}\r\n\r\n`;
+    const body = '0011want abcd\n0000';
+    const post =
+      `POST /git-upload-pack HTTP/1.1\r\n` +
+      `Host: 127.0.0.1:${upInfo.port}\r\n` +
+      `Content-Length: ${Buffer.byteLength(body)}\r\n` +
+      `Authorization: Basic ${basic}\r\n\r\n` +
+      body;
+
+    // Same keep-alive tunnel: the GET (bodyless → re-arm) then the POST.
+    inner.write(get);
+    inner.write(post);
+
+    await upInfo.gotAll;
+    inner.destroy();
+
+    // Both heads must decode to the REAL credential (placeholder substituted
+    // inside the base64 Basic blob), not the ax-cred placeholder.
+    expect(upInfo.authorizations).toHaveLength(2);
+    for (const auth of upInfo.authorizations) {
+      const m = auth.match(/^Basic (\S+)$/);
+      expect(m).not.toBeNull();
+      const decoded = Buffer.from(m![1]!, 'base64').toString('utf8');
+      expect(decoded).toBe('oauth2:glpat-REALSECRET');
+      expect(decoded).not.toContain('ax-cred:');
+    }
+  });
+
+  it('blocks a canary token hidden inside a Basic blob (B canary parity)', async () => {
+    const ca = mintCA();
+    const upInfo = await startMultiCapturingUpstream(ca, 1);
+    let upstreamSawRequest = false;
+    upInfo.gotAll.then(() => {
+      upstreamSawRequest = true;
+    });
+
+    const canary = 'CANARY_TOKEN_XYZ_123';
+    const registry = new SharedCredentialRegistry();
+
+    listener = await startProxyListener({
+      listen: { kind: 'tcp', host: '127.0.0.1', port: 0 },
+      registry,
+      ca,
+      sessions: new Map([
+        [
+          's1',
+          {
+            allowlist: new Set(['127.0.0.1']),
+            allowedIPs: new Set(['127.0.0.1']),
+            canaryToken: canary,
+          },
+        ],
+      ]),
+    });
+
+    const inner = await openMitmTunnel(listener.port, '127.0.0.1', upInfo.port, ca);
+
+    // The canary is base64-buried in a Basic blob — a raw `chunk.includes`
+    // scan would be blinded; the framer must decode → scan → block.
+    const basic = Buffer.from(`oauth2:${canary}`).toString('base64');
+    const get =
+      `GET /info/refs HTTP/1.1\r\n` +
+      `Host: 127.0.0.1:${upInfo.port}\r\n` +
+      `Authorization: Basic ${basic}\r\n\r\n`;
+
+    // Expect the proxy to reply 403 over the TLS channel and tear down.
+    let sawForbidden = false;
+    inner.on('data', (d: Buffer) => {
+      if (d.toString('latin1').includes('403')) sawForbidden = true;
+    });
+    inner.write(get);
+
+    // Give the proxy a moment to respond + the (would-be) upstream to (not) see it.
+    await new Promise((r) => setTimeout(r, 100));
+    inner.destroy();
+
+    expect(upstreamSawRequest).toBe(false);
+    expect(sawForbidden).toBe(true);
   });
 });
