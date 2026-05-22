@@ -28,6 +28,7 @@ import { createToolArtifactPublishPlugin } from '@ax/tool-artifact-publish';
 import { createLlmAnthropicPlugin } from '@ax/llm-anthropic';
 import { createMemoryStrataPlugin } from '@ax/memory-strata';
 import { createMemoryStrataIndexSqlitePlugin } from '@ax/memory-strata-index-sqlite';
+import { createWebToolsPlugin } from '@ax/web-tools';
 import { createDevAgentsStubPlugin } from './dev-agents-stub.js';
 import { AxConfigSchema, type AxConfig, type AxConfigInput } from './config/schema.js';
 import { loadAxConfig } from './config/load.js';
@@ -300,6 +301,11 @@ export async function main(opts: MainOptions): Promise<number> {
   // capability used only by host plugins (titles, memory observer).
   if (process.env.ANTHROPIC_API_KEY !== undefined && process.env.ANTHROPIC_API_KEY.length > 0) {
     plugins.push(createLlmAnthropicPlugin());
+    // @ax/web-tools — host-executed web_search + web_extract backed by
+    // Anthropic's server-side web tools. Gated on the same global key as
+    // the other host-side LLM capabilities (it constructs its own
+    // Anthropic client from ANTHROPIC_API_KEY). Available to all agents.
+    plugins.push(createWebToolsPlugin());
     plugins.push(createMemoryStrataPlugin());
     // I24 — indexer loads as a pair with memory-strata (same gate). The sqlite
     // indexer shares the same DB file as storage-sqlite; each plugin owns its

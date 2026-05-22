@@ -36,6 +36,7 @@ import {
 } from '@ax/conversation-titles';
 import { createMemoryStrataPlugin } from '@ax/memory-strata';
 import { createMemoryStrataIndexPostgresPlugin } from '@ax/memory-strata-index-postgres';
+import { createWebToolsPlugin } from '@ax/web-tools';
 import { createChannelWebServerPlugin } from '@ax/channel-web/server';
 import { createOnboardingPlugin, type OnboardingConfig } from '@ax/onboarding';
 
@@ -300,6 +301,14 @@ export interface K8sPresetConfig {
      */
     trustedOrigins?: string[];
     /**
+     * Canonical public origin better-auth uses to build OAuth redirect
+     * URIs and validate callbacks. The env loader sets this to the
+     * AX_PUBLIC_BASE_URL origin when set, pinning `redirect_uri` to the
+     * canonical host (so Google's configured callback matches) and
+     * silencing better-auth's "Base URL could not be determined" warning.
+     */
+    baseURL?: string;
+    /**
      * Stable secret for better-auth (OAuth state + at-rest OAuth-token
      * encryption). MUST be stable across restarts — rotating it makes
      * existing encrypted OAuth tokens undecryptable.
@@ -539,6 +548,9 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   if (config.auth?.trustedOrigins !== undefined) {
     authBetterCfg.trustedOrigins = config.auth.trustedOrigins;
   }
+  if (config.auth?.baseURL !== undefined) {
+    authBetterCfg.baseURL = config.auth.baseURL;
+  }
   if (config.auth?.secret !== undefined) {
     authBetterCfg.secret = config.auth.secret;
   }
@@ -736,6 +748,12 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
       });
     }
     plugins.push(createLlmAnthropicPlugin());
+    // @ax/web-tools — host-executed web_search + web_extract backed by
+    // Anthropic's server-side web tools. Piggybacks on the same env gate
+    // (config.titles is set iff ANTHROPIC_API_KEY is present) because it
+    // constructs its own Anthropic client from that key. Available to all
+    // agents; the plugin's own `enabled` flag is the operator kill-switch.
+    plugins.push(createWebToolsPlugin());
     plugins.push(createConversationTitlesPlugin({ model: titleModel }));
     // @ax/memory-strata Phase 1: hot-tier markdown + Observer extracting
     // facts to permanent/memory/inbox/. Piggybacks on the same env gate
@@ -1018,6 +1036,11 @@ export function loadK8sConfigFromEnv(
   //     origins (canonical URL + localhost for debugging), they can
   //     construct config in code or set a future AX_AUTH_TRUSTED_ORIGINS
   //     env var when the need actually arises (YAGNI for now).
+  //   - baseURL — also inherits the AX_PUBLIC_BASE_URL origin. Pins the
+  //     origin better-auth uses for OAuth redirect_uri / callback
+  //     validation, so a non-canonical inbound Host can't produce a
+  //     redirect_uri that mismatches Google's allow-list, and silences
+  //     better-auth's startup "Base URL could not be determined" warning.
   //
   // Empty cfg is fine — auth-better falls through to its defaults
   // (7-day session, ['*'] trustedOrigins).
@@ -1058,6 +1081,11 @@ export function loadK8sConfigFromEnv(
       );
     }
     auth.trustedOrigins = [parsedPublicBaseUrl.origin];
+    // Same origin pins better-auth's baseURL so OAuth redirect_uri is the
+    // canonical public host (not whatever Host header arrives) and the
+    // construction-time "Base URL could not be determined" warning is
+    // silenced. better-auth wants a bare origin, so reuse `.origin`.
+    auth.baseURL = parsedPublicBaseUrl.origin;
   }
   // AX_AUTH_SECRET — stable secret for better-auth (OAuth state + at-rest
   // OAuth-token encryption). MUST be stable across restarts; a rotation

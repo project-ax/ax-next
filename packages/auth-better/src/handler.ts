@@ -35,6 +35,17 @@ export interface HandlerInput {
    */
   trustedOrigins?: string[];
   /**
+   * Canonical public origin (e.g. `https://ax.example.com`) better-auth
+   * uses to build OAuth redirect URIs and validate callbacks. When set,
+   * `redirect_uri` is pinned to this origin regardless of the inbound
+   * `Host` header — required so Google's configured callback matches even
+   * when the server is reached via a non-canonical hostname. When
+   * undefined, better-auth re-resolves the base URL per request from the
+   * request origin (see the `betterAuth` call below). Plumbed from
+   * `AX_PUBLIC_BASE_URL` in production via `AuthBetterConfig.baseURL`.
+   */
+  baseURL?: string;
+  /**
    * Stable secret for OAuth state + at-rest OAuth-token encryption.
    * MUST be stable across restarts or encrypted tokens become undecryptable.
    * Plumbed from AX_AUTH_SECRET in production (Task 6).
@@ -127,15 +138,25 @@ function build(input: HandlerInput): (req: Request) => Promise<Response> {
     // Better-auth's default basePath is `/api/auth`; override so its
     // internal router agrees with where we forward requests.
     basePath: '/auth',
-    // The OS-assigned port at boot can move between rebuilds; rather
-    // than thread a host into every rebuild, let better-auth resolve
-    // baseURL from the request's `Host` header (its `resolveBaseURL`
-    // does this when `baseURL` is undefined). `trustedOrigins` defaults
-    // to `['*']` so any test-time host:port combo is accepted —
-    // production hosts that mount this plugin SHOULD pass a concrete
-    // allow-list via `AuthBetterConfig.trustedOrigins` (e.g.,
-    // ['https://ax.example.com']). The `@ax/preset-k8s` wires this from
-    // AX_PUBLIC_BASE_URL when set.
+    // baseURL pins the origin better-auth uses to build OAuth redirect
+    // URIs and validate callbacks. When set (production: the preset wires
+    // it from AX_PUBLIC_BASE_URL), redirect_uri is the canonical public
+    // origin regardless of the inbound Host header — required so Google's
+    // configured callback matches. When UNSET (local dev / tests, where
+    // the OS-assigned port moves between boots), better-auth re-resolves
+    // the base URL per request from the synthesized request URL's origin
+    // (forwardToBetterAuth in plugin.ts builds it from the `Host` header +
+    // `x-forwarded-proto`; better-auth ≥1.6 reads `request.url`'s origin,
+    // not the bare `Host` header). In that unset case better-auth logs a
+    // construction-time "Base URL could not be determined" warning — it's
+    // benign because per-request resolution covers it; setting baseURL
+    // silences it AND makes redirect_uri robust.
+    ...(input.baseURL !== undefined ? { baseURL: input.baseURL } : {}),
+    // `trustedOrigins` bounds which origins better-auth honors for
+    // sign-in / OAuth callback / CSRF. Defaults to `['*']` so any
+    // test-time host:port combo is accepted — production hosts SHOULD pin
+    // via `AuthBetterConfig.trustedOrigins` (the preset sets it to the
+    // AX_PUBLIC_BASE_URL origin).
     trustedOrigins: input.trustedOrigins ?? ['*'],
     socialProviders: socialProviders as Parameters<typeof betterAuth>[0]['socialProviders'],
     session: {

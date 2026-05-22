@@ -45,6 +45,7 @@
     "@ax/llm-anthropic": "workspace:*",
     "@ax/memory-strata": "workspace:*",
     "@ax/memory-strata-index-sqlite": "workspace:*",
+    "@ax/web-tools": "workspace:*",
     "@ax/preset-k8s": "workspace:*",
     "@ax/test-harness": "workspace:*",
     "@ax/validator-routine": "workspace:*",

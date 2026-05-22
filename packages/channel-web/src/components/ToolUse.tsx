@@ -98,7 +98,7 @@ export const ToolGroup: FC<GroupProps> = ({ startIndex, endIndex, children }) =>
   return (
     <div
       className={cn(
-        'tgroup flex flex-col mb-3.5 max-w-[60ch] font-sans text-muted-foreground',
+        'tgroup flex flex-col my-3.5 max-w-[60ch] font-sans text-muted-foreground',
         '[&+.tgroup]:-mt-2',
         status,
         open && 'open',

@@ -27,7 +27,7 @@ import { createTestHarness, signInAsAdmin, type TestHarness } from '@ax/test-har
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createCredentialsPlugin } from '@ax/credentials';
 import { createHttpServerPlugin, type HttpServerPlugin } from '@ax/http-server';
-import { createAuthBetterPlugin } from '../plugin.js';
+import { createAuthBetterPlugin, type AuthBetterConfig } from '../plugin.js';
 import type { AuthBetterDatabase } from '../migrations.js';
 
 const COOKIE_KEY = randomBytes(32);
@@ -82,7 +82,7 @@ async function dropTables(): Promise<void> {
   }
 }
 
-async function bootStack(): Promise<BootedStack> {
+async function bootStack(authConfig: AuthBetterConfig = {}): Promise<BootedStack> {
   await dropTables();
   const http = createHttpServerPlugin({
     host: '127.0.0.1',
@@ -110,7 +110,7 @@ async function bootStack(): Promise<BootedStack> {
       createDatabasePostgresPlugin({ connectionString }),
       createCredentialsPlugin(),
       http,
-      createAuthBetterPlugin(),
+      createAuthBetterPlugin(authConfig),
     ],
   });
   const baseUrl = `http://127.0.0.1:${http.boundPort()}`;
@@ -156,6 +156,45 @@ describe('@ax/auth-better — social sign-in (Google)', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { url?: string };
     expect(body.url).toMatch(/accounts\.google\.com/);
+  });
+
+  it('pins the OAuth redirect_uri to the configured baseURL, not the request host', async () => {
+    // Regression: AX_PUBLIC_BASE_URL was plumbed into trustedOrigins but never
+    // into better-auth's baseURL, so redirect_uri was derived per-request from
+    // the inbound Host header. A request reaching the server via a
+    // non-canonical host then produced a redirect_uri that mismatched Google's
+    // configured callback. Setting baseURL pins it to the canonical origin.
+    const CANONICAL = 'https://ax.example.com';
+    const pinned = await bootStack({ baseURL: CANONICAL });
+    try {
+      const create = await fetch(`${pinned.baseUrl}/admin/auth/providers`, {
+        method: 'POST',
+        headers: {
+          cookie: pinned.cookieHeader,
+          'content-type': 'application/json',
+          'x-requested-with': 'ax-admin',
+        },
+        body: JSON.stringify({ kind: 'google', clientId: 'test-client-id', clientSecret: 'test-secret' }),
+      });
+      expect(create.status).toBe(201);
+
+      // The request lands on 127.0.0.1:<port> (pinned.baseUrl). Without the
+      // fix, redirect_uri echoes that host; with it, the canonical origin.
+      const res = await fetch(`${pinned.baseUrl}/auth/sign-in/social`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-requested-with': 'ax-admin' },
+        body: JSON.stringify({ provider: 'google', callbackURL: '/' }),
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { url?: string };
+      expect(body.url).toMatch(/accounts\.google\.com/);
+
+      const redirectUri = new URL(body.url ?? '').searchParams.get('redirect_uri');
+      expect(redirectUri).toBe(`${CANONICAL}/auth/callback/google`);
+      expect(redirectUri).not.toContain('127.0.0.1');
+    } finally {
+      await pinned.harness.close({ onError: () => {} });
+    }
   });
 
   it('email sign-in bridges better-auth session into a working ax_auth_session cookie', async () => {
