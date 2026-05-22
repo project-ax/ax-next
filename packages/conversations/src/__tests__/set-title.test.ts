@@ -579,4 +579,38 @@ describe('conversations:title-updated event', () => {
     ).rejects.toThrow();
     expect(events).toEqual([]);
   });
+
+  it('does NOT fire again when the same title is written twice (idempotent rewrite)', async () => {
+    const { h } = await makeHarness({ decide: () => 'allow' });
+    const conv = await h.bus.call<CreateInput, CreateOutput>(
+      'conversations:create',
+      h.ctx({ userId: 'userA' }),
+      { userId: 'userA', agentId: 'agt_a' },
+    );
+    const events: unknown[] = [];
+    h.bus.subscribe(
+      'conversations:title-updated',
+      'test/title-spy',
+      async (_ctx, payload) => {
+        events.push(payload);
+        return undefined;
+      },
+    );
+    // First write (no ifNull) sets title null→'Same' — fires once.
+    const first = await h.bus.call<SetTitleInput, SetTitleOutput>(
+      'conversations:set-title',
+      h.ctx({ userId: 'userA' }),
+      { conversationId: conv.conversationId, userId: 'userA', title: 'Same' },
+    );
+    expect(first).toEqual({ updated: true });
+    // Second write of the SAME value still reports updated:true (the row
+    // matched) but must NOT re-fire — nothing actually changed.
+    const second = await h.bus.call<SetTitleInput, SetTitleOutput>(
+      'conversations:set-title',
+      h.ctx({ userId: 'userA' }),
+      { conversationId: conv.conversationId, userId: 'userA', title: 'Same' },
+    );
+    expect(second).toEqual({ updated: true });
+    expect(events).toHaveLength(1);
+  });
 });
