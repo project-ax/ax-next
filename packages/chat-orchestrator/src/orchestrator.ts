@@ -523,6 +523,18 @@ export function createOrchestrator(
   // cancel entry.
   const cancelledSessions = new Set<string>();
 
+  // Keepalive: warm sandboxes whose runner is left alive between turns. The
+  // entry outlives the agent:invoke that opened it; reaped by the idle timer
+  // (Task 5), the runner floor, the force-kill, or the pod ceiling.
+  interface WarmEntry {
+    handle: OpenSessionHandle;
+    idleTimer: ReturnType<typeof setTimeout> | null;
+    graceTimer: ReturnType<typeof setTimeout> | null;
+  }
+  const warmSessions = new Map<string, WarmEntry>();
+  // Placeholder — real implementation lands in Task 5.
+  function armReapTimer(_ctx: AgentContext): void { /* no-op until Task 5 */ }
+
   // Phase 3 / I10 — sessions whose agent has at least one non-`api-key`
   // credential get `proxy:rotate-session` fired between turns. api-key-only
   // sessions stay in coarse mode (no rotation, identical to Phase 2).
@@ -842,6 +854,7 @@ export function createOrchestrator(
     }
     let proxyConfig: ProxyConfig;
     let proxyOpened = false;
+    let proxyCloseDeferredToHandle = false;
     // Default to the api.anthropic.com allowlist + the canonical
     // ANTHROPIC_API_KEY → 'provider:anthropic' credential ref when the agent
     // record carries no explicit per-row entries. The production agents
@@ -1111,6 +1124,39 @@ export function createOrchestrator(
         sandboxInput,
       );
       handle = opened.handle;
+      if (keepAlive) {
+        // Warm the session: the runner outlives this request. One handle.exited
+        // cleanup covers every reap path (graceful cancel, force kill, runner
+        // floor, ceiling): close the proxy session once and drop the registry
+        // entry. This is also why the per-invoke finally must NOT close the
+        // proxy in keepalive mode (see the finally below).
+        warmSessions.set(sessionId, { handle, idleTimer: null, graceTimer: null });
+        proxyCloseDeferredToHandle = proxyOpened;
+        const warmCtx = ctx;
+        void handle.exited
+          .then(() => {
+            const entry = warmSessions.get(sessionId);
+            if (entry !== undefined) {
+              if (entry.idleTimer !== null) clearTimeout(entry.idleTimer);
+              if (entry.graceTimer !== null) clearTimeout(entry.graceTimer);
+            }
+            warmSessions.delete(sessionId);
+            cancelledSessions.delete(sessionId);
+            if (proxyOpened) {
+              void bus
+                .call<ProxyCloseSessionInput, Record<string, never>>(
+                  'proxy:close-session', warmCtx, { sessionId: warmCtx.sessionId },
+                )
+                .catch((err: unknown) => {
+                  warmCtx.logger.warn('proxy_close_session_failed', {
+                    sessionId: warmCtx.sessionId,
+                    err: err instanceof Error ? err : new Error(String(err)),
+                  });
+                });
+            }
+          })
+          .catch(() => undefined);
+      }
     } catch (err) {
       unregisterWaiter(sessionId, ctx.reqId);
       // Best-effort: terminate the session if sandbox-subprocess managed to
@@ -1258,13 +1304,16 @@ export function createOrchestrator(
       await bus.fire('chat:end', ctx, { outcome });
     }
 
-    // 7. Kill the sandbox if it's still alive. session:terminate is fired
-    //    by sandbox-subprocess's own child-close handler, so we don't call
-    //    it here — that would double-fire.
-    try {
-      await handle.kill();
-    } catch {
-      // best-effort
+    // 7. Kill the sandbox if it's still alive — ONE-SHOT ONLY. In keepalive
+    //    mode the runner is left warm and reaped by the idle timer.
+    //    session:terminate is fired by the sandbox provider's own exit
+    //    handler, so we don't call it here — that would double-fire.
+    if (!keepAlive) {
+      try {
+        await handle.kill();
+      } catch {
+        // best-effort
+      }
     }
 
     return outcome;
@@ -1274,7 +1323,11 @@ export function createOrchestrator(
       // try (sandbox-open-failed / queue-work-failed / chat-run-timeout /
       // sandbox-exit / chat:end happy path) flows through this finally.
       // Best-effort: a failing close shouldn't mask the chat outcome.
-      if (proxyOpened) {
+      // I7 — proxy:close fires exactly once per opened proxy session. In
+      // keepalive mode a SUCCESSFUL spawn defers the close to handle.exited
+      // (Step 5); only close here when that deferral didn't happen (one-shot,
+      // or a keepalive spawn that failed before warming the handle).
+      if (proxyOpened && !proxyCloseDeferredToHandle) {
         await bus
           .call<ProxyCloseSessionInput, Record<string, never>>(
             'proxy:close-session',
@@ -1325,6 +1378,18 @@ export function createOrchestrator(
             err: err instanceof Error ? err : new Error(String(err)),
           });
         });
+    }
+
+    if (keepAlive) {
+      // Keepalive: the turn is complete. The real reply already streamed via
+      // SSE and persisted via chat:turn-end → conversations; channel-web
+      // dispatched agent:invoke fire-and-forget, so this synthesized outcome
+      // is unused by the caller. Resolve the per-request waiter, leave the
+      // runner WARM (no cancel), and arm the idle reaper (Task 5).
+      // Idempotent across the two turn-ends one user message emits.
+      resolveWaiterFor(payload?.reqId, ctx.sessionId, { kind: 'complete', messages: [] });
+      armReapTimer(ctx);
+      return;
     }
 
     // One-shot mode: the runner just finished processing the single user
