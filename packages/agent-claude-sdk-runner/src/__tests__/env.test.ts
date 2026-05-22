@@ -30,6 +30,22 @@ describe('readRunnerEnv', () => {
     });
   });
 
+  it('reads ephemeralRoot when AX_EPHEMERAL_ROOT is set, omits it otherwise', () => {
+    // Present → carried through verbatim.
+    expect(
+      readRunnerEnv({ ...PROXY_TCP, AX_EPHEMERAL_ROOT: '/ephemeral' })
+        .ephemeralRoot,
+    ).toBe('/ephemeral');
+    // Absent → the field is omitted entirely (no `/ephemeral` default).
+    // A default would be actively harmful in the subprocess sandbox, where
+    // the host root is read-only; "absent" cleanly means "no scratch tier".
+    expect('ephemeralRoot' in readRunnerEnv(PROXY_TCP)).toBe(false);
+    // Empty string is treated as unset (consistent with opt()).
+    expect(
+      'ephemeralRoot' in readRunnerEnv({ ...PROXY_TCP, AX_EPHEMERAL_ROOT: '' }),
+    ).toBe(false);
+  });
+
   it('reads proxyUnixSocket when only AX_PROXY_UNIX_SOCKET is set', () => {
     expect(readRunnerEnv(PROXY_UNIX)).toEqual({
       runnerEndpoint: 'unix:///tmp/ax.sock',

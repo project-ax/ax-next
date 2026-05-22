@@ -22,6 +22,19 @@ export interface RunnerEnv {
   authToken: string;
   workspaceRoot: string;
   /**
+   * Session-scoped scratch root the sandbox provides for throwaway files
+   * (temporary clones, build caches, intermediate artifacts) that must NOT
+   * round-trip to the host. k8s mounts `/ephemeral` (an emptyDir);
+   * subprocess creates a per-session tempdir. Optional on purpose: there is
+   * NO default (unlike `workspaceRoot`). A wrong default like `/ephemeral`
+   * would be actively harmful in the subprocess sandbox — the host root is
+   * read-only there, so writes would fail — whereas "absent" cleanly means
+   * "this sandbox didn't wire a scratch tier" and the runner simply doesn't
+   * grant the SDK an extra directory or mention one in the system prompt.
+   * Both real sandbox providers set it; ad-hoc/test callers may omit it.
+   */
+  ephemeralRoot?: string;
+  /**
    * Per-session credential-proxy TCP endpoint (subprocess sandbox).
    * Mutually exclusive with `proxyUnixSocket`. When present, the SDK calls
    * api.anthropic.com directly through HTTPS_PROXY (set by sandbox-
@@ -91,6 +104,11 @@ export function readRunnerEnv(env: NodeJS.ProcessEnv = process.env): RunnerEnv {
     // default lines up with what `pod-spec.ts` actually mounts.
     workspaceRoot: opt('AX_WORKSPACE_ROOT') ?? '/permanent',
   };
+  // No default — see the RunnerEnv.ephemeralRoot doc. Absent means "no
+  // scratch tier wired", which the runner treats as "don't widen the
+  // agent's filesystem reach".
+  const ephemeralRoot = opt('AX_EPHEMERAL_ROOT');
+  if (ephemeralRoot !== undefined) result.ephemeralRoot = ephemeralRoot;
   if (proxyEndpoint !== undefined) result.proxyEndpoint = proxyEndpoint;
   if (proxyUnixSocket !== undefined) result.proxyUnixSocket = proxyUnixSocket;
   return result;
