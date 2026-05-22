@@ -6,6 +6,7 @@ import {
   type LlmCallOutput,
   type Plugin,
 } from '@ax/core';
+import type { ContentBlock } from '@ax/ipc-protocol';
 import { buildPrompt } from './prompt.js';
 import { validateGeneratedTitle } from './validate.js';
 import type {
@@ -13,6 +14,7 @@ import type {
   GetOutput,
   SetTitleInput,
   SetTitleOutput,
+  Turn,
 } from './types.js';
 
 // Storage key the admin "Model config" tab + the onboarding wizard write
@@ -95,15 +97,71 @@ export function parseModelRef(ref: string): ParsedModelRef {
 
 /**
  * `chat:turn-end` payload shape. The bus delivers whatever the publisher
- * fired; we only care about `role`. Other fields (contentBlocks, reqId,
- * reason) may be present but are unused here — we re-read the canonical
- * transcript via `conversations:get`.
+ * fired. We re-read the canonical transcript via `conversations:get`, but
+ * also use `contentBlocks` as a fallback when that read hasn't caught up yet
+ * (see `turnsForTitle`). `contentBlocks` was validated against
+ * `ContentBlockSchema` at the IPC boundary (`EventTurnEndSchema`), so it's a
+ * `ContentBlock[]` for a real assistant turn.
  */
 interface TurnEndPayload {
   role?: 'user' | 'assistant' | 'tool';
   contentBlocks?: unknown[];
   reqId?: string;
   reason?: string;
+}
+
+/**
+ * The transcript to title from. Prefer the canonical transcript
+ * (`conversations:get`), but augment it with THIS turn's assistant blocks
+ * (carried on the `chat:turn-end` payload) when the read doesn't yet reflect
+ * an assistant turn.
+ *
+ * Why: under runner-owned-sessions the transcript lives in the runner's
+ * native jsonl, synced to the host via `workspace.commit-notify`. That sync
+ * can lag the `chat:turn-end` event by up to ~1s. On a SINGLE-turn
+ * conversation that lag is fatal — `conversations:get` returns an empty (or
+ * user-only) transcript at the ONLY moment we'd ever title the chat, because
+ * the cross-turn retry (MAX_TITLE_ATTEMPT_TURNS) only ever fires on a *later*
+ * assistant turn that never comes. The chat then stays "New Chat" forever
+ * (the title is genuinely NULL in the DB, so a reload doesn't recover it).
+ *
+ * The turn-end payload IS this just-ended assistant turn, so falling back to
+ * it makes titling independent of the jsonl-sync race. We only synthesize a
+ * turn when the read shows no assistant turn at all — once the canonical
+ * read reflects assistant turns, it's authoritative (and the spend cap below
+ * keys off it as before).
+ */
+function turnsForTitle(canonical: Turn[], payload: TurnEndPayload): Turn[] {
+  if (canonical.some((t) => t.role === 'assistant')) return canonical;
+  const blocks = assistantBlocksFromPayload(payload);
+  if (blocks.length === 0) return canonical;
+  return [
+    ...canonical,
+    {
+      turnId: '',
+      turnIndex: canonical.length,
+      role: 'assistant',
+      contentBlocks: blocks,
+      createdAt: new Date().toISOString(),
+    },
+  ];
+}
+
+/**
+ * Narrow the payload's `contentBlocks` to `ContentBlock[]`. The IPC boundary
+ * already validated them against `ContentBlockSchema`, so a light shape check
+ * (object with a string `type`) is enough to recover the type without
+ * re-deriving the schema and pulling zod into this plugin.
+ */
+function assistantBlocksFromPayload(payload: TurnEndPayload): ContentBlock[] {
+  const blocks = payload.contentBlocks;
+  if (!Array.isArray(blocks)) return [];
+  return blocks.filter(
+    (b): b is ContentBlock =>
+      typeof b === 'object' &&
+      b !== null &&
+      typeof (b as { type?: unknown }).type === 'string',
+  );
 }
 
 /**
@@ -287,19 +345,25 @@ async function handleTurnEnd(
     },
   );
   if (conv.conversation.title !== null) return;
-  if (conv.turns.length === 0) return;
+
+  // Fall back to the turn-end payload's assistant blocks when the canonical
+  // read hasn't caught up to this turn yet (single-turn jsonl-sync race —
+  // see turnsForTitle). Without this, a single-turn conversation never gets
+  // titled because the cross-turn retry below never sees a second turn.
+  const turns = turnsForTitle(conv.turns, payload);
+  if (turns.length === 0) return;
 
   // Auto-title on the first few assistant turns while still untitled — see
   // MAX_TITLE_ATTEMPT_TURNS. Past the cap we stop re-attempting so a model
   // that keeps emitting unusable titles can't drive unbounded LLM spend.
-  const assistantTurnCount = conv.turns.filter(
+  const assistantTurnCount = turns.filter(
     (t) => t.role === 'assistant',
   ).length;
   if (assistantTurnCount < 1 || assistantTurnCount > MAX_TITLE_ATTEMPT_TURNS) {
     return;
   }
 
-  const prompt = buildPrompt(conv.turns);
+  const prompt = buildPrompt(turns);
   const llmOut = await bus.call<LlmCallInput, LlmCallOutput>(
     cfg.llmCallHook,
     ctx,

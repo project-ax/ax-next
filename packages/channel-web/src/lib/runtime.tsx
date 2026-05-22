@@ -110,18 +110,23 @@ export const useAxChatRuntime = (
   // conversation A to B leaves chips still building `GET /api/files?
   // conversationId=<A>` URLs against B, which 404s.
   //
-  // `conversationRef.current` is intentionally NOT clobbered on every
-  // change: the transport sets it from the server's freshly-minted id in
-  // `handleSetConversationId`, and we'd race that here. Only clear it
-  // when the session goes null (fresh-session / agent-switch path) so
-  // the next POST mints a new conversation row instead of carrying the
-  // previous id forward.
+  // We mirror `activeSessionId` into the transport's `conversationRef` on
+  // EVERY change, not just the null case. The earlier "only clear on null"
+  // logic assumed the only way conversationRef gets a non-null value is the
+  // transport writing the server's freshly-minted id in
+  // `handleSetConversationId`. That holds for a brand-new chat — but NOT
+  // when the user selects an existing conversation from the sidebar:
+  // `setActiveSession(id)` set `activeSessionId` while `conversationRef`
+  // stayed stale (typically null right after a page refresh), so the next
+  // message POSTed `conversationId: null` and the server minted a *new*
+  // conversation — losing the history the user expected to continue.
+  // Mirroring unconditionally fixes that and is a no-op on the fresh-chat
+  // path: `handleSetConversationId` already set the ref to this exact id
+  // before `setActiveSession` triggered this effect.
   const activeSessionId = useSessionStore().activeSessionId;
   useEffect(() => {
     setActiveConversationId(activeSessionId);
-    if (activeSessionId === null) {
-      conversationRef.current = null;
-    }
+    conversationRef.current = activeSessionId;
   }, [activeSessionId]);
 
   return useRemoteThreadListRuntime({
