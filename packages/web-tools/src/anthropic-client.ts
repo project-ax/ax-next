@@ -90,3 +90,46 @@ export async function runWebSearch(
     ...(summary.length > 0 ? { summary } : {}),
   };
 }
+
+export interface WebExtractOutput {
+  url: string;
+  title?: string;
+  text: string;
+}
+
+export async function runWebExtract(
+  client: Anthropic,
+  opts: CallOpts,
+  url: string,
+  maxContentTokens: number,
+): Promise<WebExtractOutput> {
+  const blocks = await collectBlocks(
+    client,
+    opts,
+    { type: 'web_fetch_20250910', name: 'web_fetch', max_uses: 1, max_content_tokens: maxContentTokens },
+    `Fetch this URL and return its content verbatim: ${url}\nUse the web_fetch tool once, then stop.`,
+  );
+
+  const resultBlock = blocks.find((b) => b?.type === 'web_fetch_tool_result') as
+    | { content?: Record<string, unknown> }
+    | undefined;
+  const content = resultBlock?.content;
+  if (content === undefined) {
+    throw new Error('web_fetch failed: no result returned');
+  }
+  if (content.type === 'web_fetch_tool_result_error') {
+    throw new Error(`web_fetch failed: ${(content as { error_code?: string }).error_code ?? 'unknown'}`);
+  }
+
+  const doc = content.content as { source?: Record<string, unknown>; title?: unknown } | undefined;
+  const source = doc?.source;
+  if (source?.type !== 'text' || typeof source.data !== 'string') {
+    throw new Error('web_fetch: unsupported content type (only text pages are supported; PDFs/binary are not)');
+  }
+
+  return {
+    url: typeof content.url === 'string' ? (content.url as string) : url,
+    ...(typeof doc?.title === 'string' && (doc.title as string).length > 0 ? { title: doc.title as string } : {}),
+    text: source.data as string,
+  };
+}

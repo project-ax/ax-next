@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import type Anthropic from '@anthropic-ai/sdk';
-import { runWebSearch } from '../anthropic-client.js';
+import { runWebSearch, runWebExtract } from '../anthropic-client.js';
 
 // Build a fake Anthropic client whose messages.create returns the queued
 // responses in order (one per call, to exercise the pause_turn loop).
@@ -55,5 +55,58 @@ describe('runWebSearch', () => {
     };
     const client = fakeClient([errResp]);
     await expect(runWebSearch(client, { model: 'm', maxTokens: 100 }, 'x')).rejects.toThrow(/max_uses_exceeded/);
+  });
+});
+
+const FETCH_RESPONSE = {
+  stop_reason: 'end_turn',
+  content: [
+    {
+      type: 'web_fetch_tool_result',
+      tool_use_id: 'srv_2',
+      content: {
+        type: 'web_fetch_result',
+        url: 'https://example.com/article',
+        content: {
+          type: 'document',
+          title: 'Article Title',
+          source: { type: 'text', media_type: 'text/plain', data: 'Full article text.' },
+        },
+      },
+    },
+  ],
+};
+
+describe('runWebExtract', () => {
+  it('returns extracted text + title for a text/plain document', async () => {
+    const client = fakeClient([FETCH_RESPONSE]);
+    const out = await runWebExtract(client, { model: 'm', maxTokens: 1024 }, 'https://example.com/article', 50000);
+    expect(out).toEqual({
+      url: 'https://example.com/article',
+      title: 'Article Title',
+      text: 'Full article text.',
+    });
+  });
+
+  it('throws unsupported for a binary/PDF (base64) document', async () => {
+    const pdf = {
+      stop_reason: 'end_turn',
+      content: [{
+        type: 'web_fetch_tool_result',
+        tool_use_id: 's',
+        content: { type: 'web_fetch_result', url: 'https://x/p.pdf', content: { type: 'document', title: null, source: { type: 'base64', media_type: 'application/pdf', data: 'JVBER' } } },
+      }],
+    };
+    const client = fakeClient([pdf]);
+    await expect(runWebExtract(client, { model: 'm', maxTokens: 100 }, 'https://x/p.pdf', 1000)).rejects.toThrow(/unsupported/i);
+  });
+
+  it('throws a clean error on a fetch error block', async () => {
+    const errResp = {
+      stop_reason: 'end_turn',
+      content: [{ type: 'web_fetch_tool_result', tool_use_id: 's', content: { type: 'web_fetch_tool_result_error', error_code: 'url_not_accessible' } }],
+    };
+    const client = fakeClient([errResp]);
+    await expect(runWebExtract(client, { model: 'm', maxTokens: 100 }, 'https://x', 1000)).rejects.toThrow(/url_not_accessible/);
   });
 });
