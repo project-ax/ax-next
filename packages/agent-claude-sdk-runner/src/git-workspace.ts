@@ -215,6 +215,44 @@ export async function scaffoldWorkspaceSkillSurface(root: string): Promise<void>
   }
 }
 
+const WORKSPACE_GITIGNORE_HEADER = '# ax agent workspace defaults';
+/**
+ * Dependency/build artifacts that an agent's `npm install` / python run can
+ * drop into `/permanent`, and which would otherwise be `git add -A`'d and
+ * bundled to the host. `.npm/`+`.cache/` are the backstop for when the
+ * tool-cache redirect (buildToolCacheEnv) has no ephemeral root to point at.
+ */
+const WORKSPACE_GITIGNORE_ENTRIES = [
+  'node_modules/',
+  '.venv/',
+  'venv/',
+  '__pycache__/',
+  '*.py[cod]',
+  '.npm/',
+  '.cache/',
+];
+
+/**
+ * Ensure `<root>/.gitignore` carries sensible dependency/build-artifact
+ * ignores so agent tooling output doesn't get committed + bundled to the host.
+ *
+ * Idempotent and non-destructive: each entry (and the header) is only appended
+ * if not already present, so re-running never duplicates, and a user-authored
+ * `.gitignore` in the baseline is preserved (we only append what's missing).
+ * Runs AFTER materializeWorkspace clones the baseline (same ordering rationale
+ * as scaffoldWorkspaceSkillSurface) so it can see existing baseline content.
+ */
+export async function scaffoldWorkspaceGitignore(root: string): Promise<void> {
+  const gitignorePath = path.join(root, '.gitignore');
+  const existing = await fs.readFile(gitignorePath, 'utf8').catch(() => '');
+  const present = new Set(existing.split('\n').map((line) => line.trim()));
+  const missing = WORKSPACE_GITIGNORE_ENTRIES.filter((entry) => !present.has(entry));
+  if (missing.length === 0) return;
+  const leadingNewline = existing.length > 0 && !existing.endsWith('\n') ? '\n' : '';
+  const header = present.has(WORKSPACE_GITIGNORE_HEADER) ? '' : `${WORKSPACE_GITIGNORE_HEADER}\n`;
+  await fs.appendFile(gitignorePath, `${leadingNewline}${header}${missing.join('\n')}\n`);
+}
+
 /**
  * Lay down `$CLAUDE_CONFIG_DIR/projects` as a symlink pointing INTO the
  * workspace at `<workspaceRoot>/.claude/projects` so the Anthropic SDK's

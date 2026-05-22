@@ -9,6 +9,7 @@ import {
   materializeWorkspace,
   rollbackToBaseline,
   scaffoldSdkProjectsSymlink,
+  scaffoldWorkspaceGitignore,
   scaffoldWorkspaceSkillSurface,
 } from '../git-workspace.js';
 
@@ -251,6 +252,49 @@ describe('scaffoldWorkspaceSkillSurface', () => {
 
     const linkTarget = await fs.readlink(path.join(root, '.claude', 'skills'));
     expect(linkTarget).toBe('../.ax/skills');
+  });
+});
+
+describe('scaffoldWorkspaceGitignore', () => {
+  it('creates a .gitignore with node_modules + python + cache entries when absent', async () => {
+    const root = path.join(scratchRoot, 'permanent');
+    await materializeWorkspace({ root, bundleBase64: await makeBundle({}) });
+
+    await scaffoldWorkspaceGitignore(root);
+
+    const gi = await fs.readFile(path.join(root, '.gitignore'), 'utf8');
+    for (const entry of ['node_modules/', '.venv/', 'venv/', '__pycache__/', '*.py[cod]', '.npm/', '.cache/']) {
+      expect(gi).toContain(entry);
+    }
+  });
+
+  it('is idempotent — a second call adds no duplicate lines', async () => {
+    const root = path.join(scratchRoot, 'permanent');
+    await materializeWorkspace({ root, bundleBase64: await makeBundle({}) });
+
+    await scaffoldWorkspaceGitignore(root);
+    await scaffoldWorkspaceGitignore(root);
+
+    const gi = await fs.readFile(path.join(root, '.gitignore'), 'utf8');
+    const nodeModulesLines = gi.split('\n').filter((l) => l.trim() === 'node_modules/');
+    expect(nodeModulesLines).toHaveLength(1);
+  });
+
+  it('preserves a baseline .gitignore and appends only the missing entries', async () => {
+    const root = path.join(scratchRoot, 'permanent');
+    // Baseline already ignores node_modules/ and has a user entry.
+    await materializeWorkspace({
+      root,
+      bundleBase64: await makeBundle({ '.gitignore': 'node_modules/\ndist/\n' }),
+    });
+
+    await scaffoldWorkspaceGitignore(root);
+
+    const gi = await fs.readFile(path.join(root, '.gitignore'), 'utf8');
+    expect(gi).toContain('dist/'); // user entry preserved
+    expect(gi.split('\n').filter((l) => l.trim() === 'node_modules/')).toHaveLength(1); // not duplicated
+    expect(gi).toContain('__pycache__/'); // missing entry appended
+    expect(gi).toContain('.venv/');
   });
 });
 

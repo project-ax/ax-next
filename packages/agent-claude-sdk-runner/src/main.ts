@@ -32,9 +32,11 @@ import {
   materializeWorkspace,
   rollbackToBaseline,
   scaffoldSdkProjectsSymlink,
+  scaffoldWorkspaceGitignore,
   scaffoldWorkspaceSkillSurface,
 } from './git-workspace.js';
 import { createLocalDispatcher } from './local-dispatcher.js';
+import { buildToolCacheEnv } from './tool-cache-env.js';
 import { createPostToolUseHook } from './post-tool-use.js';
 import { createPreToolUseHook } from './pre-tool-use.js';
 import { setupProxy } from './proxy-startup.js';
@@ -218,6 +220,11 @@ export async function main(): Promise<number> {
     // scaffoldWorkspaceSkillSurface's doc for the regression that
     // motivated moving this off the k8s init container.
     await scaffoldWorkspaceSkillSurface(env.workspaceRoot);
+    // Ensure dependency/build artifacts (node_modules, venvs, __pycache__,
+    // fetch caches) are git-ignored so agent tooling output isn't committed +
+    // bundled back to the host. Must run AFTER the clone for the same reason
+    // as the skill-surface scaffold (it appends to any baseline .gitignore).
+    await scaffoldWorkspaceGitignore(env.workspaceRoot);
     // Phase E follow-up: redirect the SDK's turn-transcript jsonl
     // writes back into the workspace. Phase 0 set CLAUDE_CONFIG_DIR
     // OUTSIDE /permanent so the `'user'` skill-discovery source could
@@ -546,6 +553,12 @@ export async function main(): Promise<number> {
         env: {
           ...proxyStartup.anthropicEnv,
           HOME: env.workspaceRoot,
+          // Redirect npx/uvx fetch caches onto the ephemeral tier so they
+          // don't land in HOME=/permanent and get bundled to the host each
+          // turn. No-op ({}) when no ephemeral root was wired. See
+          // tool-cache-env.ts. Spread AFTER HOME so an ephemeral root always
+          // wins for the cache vars (HOME stays the workspace root).
+          ...buildToolCacheEnv(env.ephemeralRoot),
         },
         cwd: env.workspaceRoot,
         // Session-scoped scratch tier. When the sandbox provided an
