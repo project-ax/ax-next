@@ -146,6 +146,30 @@ describe('GET /api/chat/title-events', () => {
     expect(captured.streamWrites.join('')).not.toContain('Secret');
   });
 
+  it('escapes a title with newlines/quotes — cannot forge an SSE frame boundary', async () => {
+    const { bus, handler } = boot();
+    const { res, captured } = fakeRes();
+    await handler(fakeReq(), res);
+    // A model-generated (untrusted) title that tries to break out of the
+    // `data: …\n\n` frame and inject a second, forged frame.
+    const malicious = 'A"\n\ndata: {"conversationId":"forged","title":"x"}';
+    await fire(bus, { conversationId: 'cnv_x', userId: 'userA', title: malicious });
+    const out = captured.streamWrites.join('');
+    // JSON.stringify escapes the newlines/quotes, so the injected "\n\n"
+    // does NOT create a second frame: exactly one `data: ` frame is emitted.
+    const frames = out.split('\n\n').filter((s) => s.startsWith('data: '));
+    expect(frames).toHaveLength(1);
+    expect(out).not.toContain('"conversationId":"forged"');
+    // The single frame round-trips: the title decodes back to the exact
+    // input string (real newlines and quote intact), proving it stayed
+    // inside the JSON value rather than escaping into the SSE framing.
+    const payload = JSON.parse(frames[0]!.slice('data: '.length)) as {
+      conversationId: string;
+      title: string;
+    };
+    expect(payload).toEqual({ conversationId: 'cnv_x', title: malicious });
+  });
+
   it('unsubscribes on client disconnect', async () => {
     const { bus, handler } = boot();
     const { res, captured } = fakeRes();
