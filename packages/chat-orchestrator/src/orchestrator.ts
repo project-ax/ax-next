@@ -1003,23 +1003,6 @@ export function createOrchestrator(
       }
     }
 
-    // D: auto-allowlist public package registries for any declared ecosystem (I5 — no blanket access).
-    let needsNpmRegistry = false;
-    let needsPypiRegistry = false;
-    for (const attachment of attachments) {
-      const skill = skillById.get(attachment.skillId);
-      if (skill === undefined) continue;
-      const pkgs = skill.capabilities.packages;
-      if (pkgs?.npm?.length) needsNpmRegistry = true;
-      if (pkgs?.pypi?.length) needsPypiRegistry = true;
-    }
-    if (needsNpmRegistry) baseAllowSet.add('registry.npmjs.org');
-    if (needsPypiRegistry) {
-      baseAllowSet.add('pypi.org');
-      baseAllowSet.add('files.pythonhosted.org');
-    }
-
-    const unionedAllowlist = [...baseAllowSet];
     const unionedCreds = baseCreds;
 
     // 2026-05-19 defaults — union admin-curated default skills into the
@@ -1050,6 +1033,25 @@ export function createOrchestrator(
       ...resolvedSkills,
       ...defaultSkillsForUnion.filter((s) => !explicitIds.has(s.id)),
     ];
+
+    // D: auto-allowlist public package registries for any skill in the union —
+    // explicit attachments AND default-attached skills (both are materialized into
+    // the sandbox, so the agent may run npx/uvx for either). Specific hosts only,
+    // gated on skill installation (I5 — no blanket egress). Computed here (after the
+    // defaults union) so default-attached skills' declared ecosystems are covered.
+    let needsNpmRegistry = false;
+    let needsPypiRegistry = false;
+    for (const skill of unionedSkills) {
+      const pkgs = skill.capabilities.packages;
+      if (pkgs?.npm?.length) needsNpmRegistry = true;
+      if (pkgs?.pypi?.length) needsPypiRegistry = true;
+    }
+    if (needsNpmRegistry) baseAllowSet.add('registry.npmjs.org');
+    if (needsPypiRegistry) {
+      baseAllowSet.add('pypi.org');
+      baseAllowSet.add('files.pythonhosted.org');
+    }
+    const unionedAllowlist = [...baseAllowSet];
 
     const installedSkillsForSandbox: InstalledSkillForSandbox[] = unionedSkills.map((s) => ({
       id: s.id,

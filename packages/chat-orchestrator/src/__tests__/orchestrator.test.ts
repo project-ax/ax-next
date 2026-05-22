@@ -1803,6 +1803,49 @@ describe('chat-orchestrator', () => {
     expect(openIn.allowlist).not.toContain('pypi.org');
   });
 
+  it('auto-unions registry hosts for a DEFAULT-attached skill declaring packages (D)', async () => {
+    // Regression: default-attached skills are materialized into the sandbox (their
+    // SKILL.md instructs the agent to run the CLI), so a default skill's declared
+    // ecosystem must reach the registry allowlist too — not only explicit attachments.
+    const proxy = buildProxyHooks();
+    const defaultSkill: ResolvedSkill = {
+      id: 'default-cli',
+      capabilities: {
+        allowedHosts: [],
+        credentials: [],
+        packages: { npm: ['@linear/cli'], pypi: ['some-tool'] },
+      },
+      bodyMd: '# default-cli\n',
+      manifestYaml: 'name: default-cli\ndescription: dc\n',
+    };
+    const defaults = buildDefaultsHook({ skills: [defaultSkill] });
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: {
+            ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
+          },
+          // No explicit skillAttachments — the packages come purely from defaults.
+        },
+      }),
+      openSession: makeChatEndOpenSession(busRef),
+    });
+    Object.assign(mocks.services, proxy.services, defaults.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+    });
+    busRef.current = h.bus;
+    await h.bus.call<unknown, AgentOutcome>('agent:invoke', silentCtx('default-pkg-session'), { message: { role: 'user', content: 'hi' } });
+    const openIn = proxy.state.lastOpenInput as { allowlist: string[] };
+    expect(openIn.allowlist).toEqual(
+      expect.arrayContaining(['registry.npmjs.org', 'pypi.org', 'files.pythonhosted.org']),
+    );
+  });
+
   it('threads installedSkills into sandbox:open-session with correct SKILL.md content', async () => {
     const proxy = buildProxyHooks();
     const manifestYaml = 'name: github\nversion: 1.0.0\n';

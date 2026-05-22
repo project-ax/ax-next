@@ -65,18 +65,25 @@ describe('sandbox-subprocess git env', () => {
   it('stamps GIT_TERMINAL_PROMPT=0 so a missing credential fails fast (B)', async () => {
     const ws = await mkWorkspace();
     const h = await makeHarness();
-    const ctx = h.ctx();
-    const result = await h.bus.call<unknown, OpenSessionResult>(
-      'sandbox:open-session',
-      ctx,
-      { sessionId: 'git-tp-1', workspaceRoot: ws, runnerBinary: ECHO_STUB },
-    );
-    const line = await readFirstStdoutLine(result);
-    const parsed = JSON.parse(line) as Record<string, string | null>;
-    expect(parsed.GIT_TERMINAL_PROMPT).toBe('0');
-
-    await result.handle.kill();
-    await result.handle.exited;
-    await fs.rm(ws, { recursive: true, force: true });
+    let result: OpenSessionResult | undefined;
+    try {
+      const ctx = h.ctx();
+      result = await h.bus.call<unknown, OpenSessionResult>(
+        'sandbox:open-session',
+        ctx,
+        { sessionId: 'git-tp-1', workspaceRoot: ws, runnerBinary: ECHO_STUB },
+      );
+      const line = await readFirstStdoutLine(result);
+      const parsed = JSON.parse(line) as Record<string, string | null>;
+      expect(parsed.GIT_TERMINAL_PROMPT).toBe('0');
+    } finally {
+      // Always tear down the child + temp workspace, even if an assertion or
+      // parse throws — a leaked subprocess/tmpdir can destabilize later tests.
+      if (result !== undefined) {
+        await result.handle.kill();
+        await result.handle.exited;
+      }
+      await fs.rm(ws, { recursive: true, force: true });
+    }
   });
 });
