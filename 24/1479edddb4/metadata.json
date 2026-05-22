@@ -1,0 +1,23 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "241479edddb4",
+  "strategy": "manual-commit",
+  "branch": "worktree-feat+live-title-refresh-sse",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/24/1479edddb4/0/metadata.json",
+      "transcript": "/24/1479edddb4/0/full.jsonl",
+      "content_hash": "/24/1479edddb4/0/content_hash.txt",
+      "prompt": "/24/1479edddb4/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 19155,
+    "cache_creation_tokens": 891061,
+    "cache_read_tokens": 24385618,
+    "output_tokens": 183336,
+    "api_call_count": 113
+  }
+}

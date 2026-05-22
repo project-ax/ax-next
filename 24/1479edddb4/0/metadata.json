@@ -1,0 +1,35 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "241479edddb4",
+  "session_id": "aa2cd84c-f594-4575-809d-3de9d523b138",
+  "strategy": "manual-commit",
+  "created_at": "2026-05-22T02:27:24.504314Z",
+  "branch": "worktree-feat+live-title-refresh-sse",
+  "checkpoints_count": 1,
+  "files_touched": [],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "e292d779206d",
+  "token_usage": {
+    "input_tokens": 19155,
+    "cache_creation_tokens": 891061,
+    "cache_read_tokens": 24385618,
+    "output_tokens": 183336,
+    "api_call_count": 113
+  },
+  "session_metrics": {
+    "turn_count": 5
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 8,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claude/settings.local.json": 8
+      }
+    }
+  ]
+}
