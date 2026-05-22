@@ -1,7 +1,7 @@
 # Sandbox Idle-Keepalive — Design
 
 **Date:** 2026-05-22
-**Status:** Approved design, pre-implementation
+**Status:** Implemented (PR #124)
 **Scope:** Single-user (kind / `replicas: 1`). Simplest correct change; no warm-pool cap, no eviction, no operator config seam.
 
 ## Problem
