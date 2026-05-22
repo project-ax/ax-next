@@ -56,6 +56,22 @@ describe('runWebSearch', () => {
     const client = fakeClient([errResp]);
     await expect(runWebSearch(client, { model: 'm', maxTokens: 100 }, 'x')).rejects.toThrow(/max_uses_exceeded/);
   });
+
+  it('throws when the server keeps pausing past the iteration cap', async () => {
+    const paused = { stop_reason: 'pause_turn', content: [{ type: 'text', text: 'still working' }] };
+    // Never reaches end_turn — every iteration is pause_turn.
+    const client = fakeClient([paused, paused, paused, paused, paused, paused]);
+    await expect(runWebSearch(client, { model: 'm', maxTokens: 100 }, 'x')).rejects.toThrow(/pause_turn|cap/i);
+  });
+
+  it('throws when no web_search_tool_result block is returned (tool never ran)', async () => {
+    const noToolResp = {
+      stop_reason: 'end_turn',
+      content: [{ type: 'text', text: 'I answered from memory without searching.' }],
+    };
+    const client = fakeClient([noToolResp]);
+    await expect(runWebSearch(client, { model: 'm', maxTokens: 100 }, 'x')).rejects.toThrow(/no web_search_tool_result/i);
+  });
 });
 
 const FETCH_RESPONSE = {

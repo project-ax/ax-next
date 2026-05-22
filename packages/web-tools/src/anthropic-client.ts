@@ -41,10 +41,16 @@ async function collectBlocks(
     } as any);
     const content: Array<Record<string, unknown>> = Array.isArray(res?.content) ? res.content : [];
     blocks.push(...content);
-    if (res?.stop_reason !== 'pause_turn') break;
+    if (res?.stop_reason !== 'pause_turn') return blocks; // reached a terminal turn
     messages.push({ role: 'assistant', content });
   }
-  return blocks;
+  // Every iteration was a pause_turn — the server never produced a terminal
+  // turn within the cap. Surface this as an explicit error rather than
+  // returning partial/empty blocks (which would look like a successful but
+  // result-less call).
+  throw new Error(
+    `web tool failed: server kept pausing (pause_turn) past the ${MAX_PAUSE_ITERATIONS}-iteration cap without completing`,
+  );
 }
 
 export async function runWebSearch(
@@ -62,21 +68,26 @@ export async function runWebSearch(
   const resultBlock = blocks.find((b) => b?.type === 'web_search_tool_result') as
     | { content?: unknown }
     | undefined;
-  const rbContent = resultBlock?.content;
-  if (resultBlock !== undefined && !Array.isArray(rbContent)) {
+  // A completed search always returns a web_search_tool_result block (whose
+  // content is either the hits array or an in-body error). No block at all
+  // means the inner call never ran the tool — a contract breach, not an
+  // empty success.
+  if (resultBlock === undefined) {
+    throw new Error('web_search failed: no web_search_tool_result block in response');
+  }
+  const rbContent = resultBlock.content;
+  if (!Array.isArray(rbContent)) {
     const code = (rbContent as { error_code?: string } | undefined)?.error_code ?? 'unknown';
     throw new Error(`web_search failed: ${code}`);
   }
 
-  const hits: WebSearchHit[] = Array.isArray(rbContent)
-    ? (rbContent as Array<Record<string, unknown>>)
-        .filter((r) => r?.type === 'web_search_result')
-        .map((r) => ({
-          title: String(r.title ?? ''),
-          url: String(r.url ?? ''),
-          ...(typeof r.page_age === 'string' && r.page_age.length > 0 ? { age: r.page_age as string } : {}),
-        }))
-    : [];
+  const hits: WebSearchHit[] = (rbContent as Array<Record<string, unknown>>)
+    .filter((r) => r?.type === 'web_search_result')
+    .map((r) => ({
+      title: String(r.title ?? ''),
+      url: String(r.url ?? ''),
+      ...(typeof r.page_age === 'string' && r.page_age.length > 0 ? { age: r.page_age as string } : {}),
+    }));
 
   const summary = blocks
     .filter((b) => b?.type === 'text' && typeof b.text === 'string')
