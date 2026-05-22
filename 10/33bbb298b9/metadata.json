@@ -1,0 +1,25 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "1033bbb298b9",
+  "strategy": "manual-commit",
+  "branch": "worktree-credentialed-cli-and-git-auth",
+  "checkpoints_count": 0,
+  "files_touched": [
+    ".claude/memory/decisions.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/10/33bbb298b9/0/metadata.json",
+      "transcript": "/10/33bbb298b9/0/full.jsonl",
+      "content_hash": "/10/33bbb298b9/0/content_hash.txt",
+      "prompt": ""
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 8345,
+    "cache_creation_tokens": 235884,
+    "cache_read_tokens": 2391919,
+    "output_tokens": 111113,
+    "api_call_count": 23
+  }
+}
