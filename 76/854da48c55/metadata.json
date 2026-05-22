@@ -1,0 +1,25 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "76854da48c55",
+  "strategy": "manual-commit",
+  "branch": "feat/web-tools-impl",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/plans/2026-05-21-web-tools-design.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/76/854da48c55/0/metadata.json",
+      "transcript": "/76/854da48c55/0/full.jsonl",
+      "content_hash": "/76/854da48c55/0/content_hash.txt",
+      "prompt": "/76/854da48c55/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 10052,
+    "cache_creation_tokens": 652603,
+    "cache_read_tokens": 13069779,
+    "output_tokens": 124895,
+    "api_call_count": 75
+  }
+}
