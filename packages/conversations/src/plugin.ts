@@ -57,6 +57,7 @@ import type {
   SetTitleOutput,
   StoreRunnerSessionInput,
   StoreRunnerSessionOutput,
+  TitleUpdatedEvent,
   Turn,
   UnbindSessionInput,
   UnbindSessionOutput,
@@ -614,6 +615,24 @@ async function setConversationTitle(
     ...(input.ifNull === undefined ? {} : { ifNull: input.ifNull }),
   });
 
+  // Live-title push (invariant #4 — single source of truth): the only
+  // place a title is written is also the only place the change signal is
+  // emitted, so every caller (auto-title pipeline today, rename UI later)
+  // surfaces in connected sidebars with no reload. Payload is domain-level;
+  // channel-web's title-events SSE duck-types it (no cross-plugin import).
+  //
+  // Guard on `conv.title !== title`, not just `updated`: `updated` reflects
+  // that the row matched (rowCount), which is true even for an idempotent
+  // rewrite of the same value (a future rename to the current title). Only
+  // a genuine change should publish — never on the ifNull no-op or the
+  // not-found path below, and never on a same-title rewrite.
+  if (updated && conv.title !== title) {
+    await bus.fire('conversations:title-updated', ctx, {
+      conversationId: input.conversationId,
+      userId: input.userId,
+      title,
+    } satisfies TitleUpdatedEvent);
+  }
   if (updated) {
     return { updated: true };
   }

@@ -135,4 +135,20 @@ export const sessionStoreActions = {
     sessionStoreActions.newLocalConversation();
     return null;
   },
+
+  /**
+   * Apply a single title update pushed over the title-events SSE. Updates
+   * the matching row in place (no network). No-ops if the conversation
+   * isn't loaded or the title is unchanged — keeps the snapshot reference
+   * stable so subscribers don't re-render needlessly.
+   */
+  applyTitle: (conversationId: string, title: string): void => {
+    const idx = state.sessions.findIndex((s) => s.id === conversationId);
+    if (idx === -1) return;
+    const existing = state.sessions[idx]!;
+    if (existing.title === title) return;
+    const next = state.sessions.slice();
+    next[idx] = { ...existing, title };
+    set({ sessions: next });
+  },
 };

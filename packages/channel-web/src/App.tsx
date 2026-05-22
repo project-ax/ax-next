@@ -37,6 +37,7 @@ import {
 import { hydrateTheme } from './lib/theme';
 import { useAgentStore } from './lib/agent-store';
 import { sessionStoreActions } from './lib/session-store';
+import { useTitleEvents } from './lib/use-title-events';
 import { LoginPage } from './components/LoginPage';
 import { Sidebar } from './components/Sidebar';
 import { SessionHeader } from './components/SessionHeader';
@@ -130,6 +131,7 @@ export const App = () => {
 };
 
 const AppContent = ({ user }: { user: AuthUser }) => {
+  useTitleEvents();
   const { agents, selectedAgentId, pendingAgentId } = useAgentStore();
   const runtime = useAxChatRuntime(user.id);
   // `adminSettingsOpen` is set by the user menu's "Settings" entry

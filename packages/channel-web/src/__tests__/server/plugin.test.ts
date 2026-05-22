@@ -401,8 +401,19 @@ describe('@ax/channel-web server plugin (integration)', () => {
         'attachments:commit',
         'attachments:download',
       ],
-      subscribes: ['chat:stream-chunk', 'chat:phase', 'chat:turn-end'],
+      subscribes: ['chat:stream-chunk', 'chat:phase', 'chat:turn-end', 'conversations:title-updated'],
     });
+  });
+
+  it('GET /api/chat/title-events is registered (returns 401, not 404)', async () => {
+    const booted = await boot({ user: null });
+    harness = booted.harness;
+    // With user=null, auth:require-user throws unauthenticated → 401.
+    // A 404 body {"error":"not-found"} would mean the route was never
+    // registered — any other status proves the route handler ran.
+    const r = await fetch(`http://127.0.0.1:${booted.port}/api/chat/title-events`);
+    expect(r.status).toBe(401);
+    expect(await r.json()).toEqual({ error: 'unauthenticated' });
   });
 
   describe('attachments routes', () => {
