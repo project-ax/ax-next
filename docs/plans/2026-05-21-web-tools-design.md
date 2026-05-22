@@ -165,9 +165,9 @@ Anthropic's `encrypted_content` (a multi-turn citation artifact) is **stripped**
     "required": ["url"] } }
 ```
 
-Output: `{ url: string, title?: string, text: string, truncated: boolean }`.
-`truncated` is set when `maxContentTokens` clips the content. PDFs return
-extracted text; JS-rendered pages are unsupported (documented limitation).
+Output: `{ url: string, title?: string, text: string }`.
+`maxContentTokens` caps the extracted content server-side. PDFs/binary return a
+clean unsupported error; JS-rendered pages are unsupported (documented limitation).
 
 ## Host-side call specifics
 
@@ -185,6 +185,10 @@ extracted text; JS-rendered pages are unsupported (documented limitation).
   (`web_search_tool_result_error`, `web_fetch_tool_error` with codes like
   `max_uses_exceeded`, `url_not_accessible`, `unsupported_content_type`) to a
   clean tool error returned to the agent.
+- **Executor payload shape:** the `tool:execute:<name>` service hook receives the
+  full `ToolCall` (`{ id, name, input }`) and reads `call.input` for arguments —
+  mirroring `@ax/mcp-client`, not `memory-search` (whose bare-`input` read is a
+  known pre-existing bug, tracked separately).
 
 ## Security
 

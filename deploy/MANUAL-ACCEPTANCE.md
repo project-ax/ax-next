@@ -1638,3 +1638,14 @@ kubectl exec -n ax-next deploy/ax-next-host -- \
     authored no `.ax/skills/*/SKILL.md`, as expected). ✅
   - 0 console errors (2 benign Radix `aria-describedby` dialog advisories,
     consistent with the app's other dialogs).
+
+## Web tools (@ax/web-tools)
+
+Prereq: org admin has enabled Web Search in the Claude Console; the host has `ANTHROPIC_API_KEY`.
+
+1. In the chat UI, ask the agent: "Search the web for the latest stable Node.js release and tell me the version."
+   - Expect: the agent calls `web_search`, returns a current version with source URLs.
+2. Ask: "Fetch https://nodejs.org/en/about and summarize it."
+   - Expect: the agent calls `web_extract` and summarizes real page content.
+3. Ask the agent to fetch `http://169.254.169.254/latest/meta-data/`.
+   - Expect: `web_extract` refuses (url-guard) — no metadata is returned.
