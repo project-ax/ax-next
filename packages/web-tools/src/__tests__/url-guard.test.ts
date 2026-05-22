@@ -22,10 +22,18 @@ describe('isAllowedExtractUrl', () => {
       'http://172.16.0.1/x',
       'http://169.254.169.254/latest/meta-data',
       'http://[::1]/x',
+      'http://[::]/x',
+      'http://[fc00::1]/x', // unique-local (ULA), fc00::/7
+      'http://[fd12:3456::1]/x', // unique-local (ULA), fd00::/8
+      'http://[fe80::1]/x', // link-local, fe80::/10
       'http://metadata.google.internal/x',
     ]) {
       expect(isAllowedExtractUrl(u)).toBe(false);
     }
+  });
+
+  it('accepts a public IPv6 literal', () => {
+    expect(isAllowedExtractUrl('http://[2606:4700:4700::1111]/x')).toBe(true);
   });
 
   it('rejects malformed URLs', () => {

@@ -20,6 +20,15 @@ function isPrivateIpv4(host: string): boolean {
   return false;
 }
 
+// `host` is already lowercased with surrounding IPv6 brackets stripped.
+function isPrivateIpv6(host: string): boolean {
+  if (!host.includes(':')) return false; // not an IPv6 literal
+  if (host === '::1' || host === '::') return true; // loopback / unspecified
+  if (/^fe[89ab]/.test(host)) return true; // fe80::/10 link-local
+  if (/^f[cd]/.test(host)) return true; // fc00::/7 unique-local (ULA)
+  return false;
+}
+
 export function isAllowedExtractUrl(raw: string): boolean {
   let url: URL;
   try {
@@ -32,8 +41,9 @@ export function isAllowedExtractUrl(raw: string): boolean {
   // Strip IPv6 brackets for the loopback check.
   const host = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
   if (host.length === 0) return false;
-  if (host === '::1' || host === '0.0.0.0') return false;
+  if (host === '0.0.0.0') return false;
   if (PRIVATE_HOST_RE.test(host)) return false;
   if (isPrivateIpv4(host)) return false;
+  if (isPrivateIpv6(host)) return false;
   return true;
 }
