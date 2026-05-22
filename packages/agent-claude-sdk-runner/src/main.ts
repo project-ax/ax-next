@@ -399,6 +399,15 @@ export async function main(): Promise<number> {
     for (;;) {
       const entry = await inbox.next();
       if (entry.type === 'cancel') return;
+      if (entry.type === 'idle-timeout') {
+        // Host-crash floor: nobody is going to send us another message and
+        // the host idle reaper isn't around to cancel us. Drain the SDK and
+        // exit cleanly (same as cancel) — we still emit our single chat:end
+        // on the way out (main.ts tail), which the host's session:terminate
+        // path keys off.
+        process.stderr.write('runner: inbox idle floor reached; exiting\n');
+        return;
+      }
       if (entry.payload === undefined) continue;
       // Capture the host-minted reqId so subsequent stream-chunk
       // emissions correlate back to the originating request. Both fields

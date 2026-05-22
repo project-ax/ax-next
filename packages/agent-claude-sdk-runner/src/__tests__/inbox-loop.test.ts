@@ -109,3 +109,31 @@ describe('createInboxLoop', () => {
     expect(loop.cursor).toBe(5);
   });
 });
+
+// A fake IpcClient whose callGet always reports a host long-poll timeout, so
+// next() would loop forever without the idle floor.
+function alwaysTimeoutClient() {
+  return {
+    callGet: async (_action: string, params: { cursor: string }) => ({
+      type: 'timeout' as const,
+      cursor: Number(params.cursor),
+    }),
+  } as unknown as Parameters<typeof createInboxLoop>[0]['client'];
+}
+
+describe('inbox-loop idle floor', () => {
+  it('returns an idle-timeout entry once the cumulative idle floor elapses', async () => {
+    let nowMs = 1_000_000;
+    const inbox = createInboxLoop({
+      client: alwaysTimeoutClient(),
+      idleTimeoutMs: 500,
+      now: () => nowMs,
+      sleep: async (ms: number) => {
+        nowMs += ms;
+      },
+    });
+
+    const entry = await inbox.next();
+    expect(entry.type).toBe('idle-timeout');
+  });
+});
