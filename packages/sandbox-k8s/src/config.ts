@@ -41,10 +41,11 @@ export interface SandboxK8sConfig {
   cpuRequest?: string;
   /** Memory request. Default: '256Mi'. */
   memoryRequest?: string;
-  /**
-   * Hard deadline. The kubelet kills the pod after this even if the host
-   * crashes and loses its in-memory timers. Default: 3600 seconds (1h).
-   */
+  /** Hard wall-clock pod lifetime cap (seconds). Default 6 h (21600). With
+   *  idle-keepalive a warm pod can live across many turns; this is the
+   *  ceiling that bounds a continuously-active conversation and the rare
+   *  host-crash-plus-wedged-runner orphan. Idle pods are reaped far sooner
+   *  by the host idle timer / runner idle floor. */
   activeDeadlineSeconds?: number;
   /**
    * Pod-readiness poll interval (ms). Default: 250 ms. Tests override
@@ -117,7 +118,7 @@ export function resolveConfig(
     memoryLimit: raw.memoryLimit ?? '1Gi',
     cpuRequest: raw.cpuRequest ?? '100m',
     memoryRequest: raw.memoryRequest ?? '256Mi',
-    activeDeadlineSeconds: raw.activeDeadlineSeconds ?? 3600,
+    activeDeadlineSeconds: raw.activeDeadlineSeconds ?? 21600,
     readinessPollMs: raw.readinessPollMs ?? 250,
     readinessTimeoutMs: raw.readinessTimeoutMs ?? 60_000,
     proxySocketHostPath: raw.proxySocketHostPath ?? '',

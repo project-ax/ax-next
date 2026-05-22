@@ -77,10 +77,10 @@ describe('buildPodSpec', () => {
     );
   });
 
-  it('respects activeDeadlineSeconds config (default 3600, override 600)', () => {
+  it('respects activeDeadlineSeconds config (default 21600, override 600)', () => {
     const dflt = buildPodSpec('a', baseInput, baseResolved());
     expect((dflt.spec as { activeDeadlineSeconds: number }).activeDeadlineSeconds).toBe(
-      3600,
+      21600,
     );
     const custom = buildPodSpec(
       'b',

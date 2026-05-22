@@ -153,7 +153,7 @@ describe('sandbox:open-session (k8s)', () => {
     };
     expect(body.spec.runtimeClassName).toBe('gvisor');
     expect(body.spec.automountServiceAccountToken).toBe(false);
-    expect(body.spec.activeDeadlineSeconds).toBe(3600);
+    expect(body.spec.activeDeadlineSeconds).toBe(21600);
     const sc = body.spec.containers[0]!.securityContext!;
     expect(sc.runAsNonRoot).toBe(true);
     expect(sc.allowPrivilegeEscalation).toBe(false);
