@@ -549,15 +549,17 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
         return;
       }
 
-      const { out, canaryToken } = framer.process(chunk);
+      const { out, canaryToken, injected } = framer.process(chunk);
       if (canaryToken) {
         blockCanary();
         return;
       }
+      // `injected` is true only when a placeholder was actually substituted —
+      // not merely when the framer reframed buffered bytes.
+      if (injected) credentialInjected = true;
       // The framer holds bytes until end-of-head, so `out` is legitimately empty
       // while a head is still buffering — only write when there's something.
       if (out.length > 0) {
-        if (!out.equals(chunk)) credentialInjected = true;
         targetTls.write(out);
       }
     });

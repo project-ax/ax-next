@@ -1,14 +1,23 @@
 import { describe, it, expect } from 'vitest';
 import { findCanaryHit, transformBasicAuthHead, RequestFramer, type Replacer } from '../request-framer.js';
 
-// A Replacer that maps a placeholder to a real secret, mirroring SharedCredentialRegistry.
+// A Replacer that maps a placeholder to a real secret, mirroring SharedCredentialRegistry —
+// including its identity contract: replaceAllBuffer returns the SAME buffer by reference
+// when nothing was substituted (the `injected`/`credentialInjected` signal relies on this).
 function makeReplacer(map: Record<string, string>): Replacer {
   const replaceAll = (s: string) => {
     let out = s;
     for (const [ph, real] of Object.entries(map)) out = out.split(ph).join(real);
     return out;
   };
-  return { replaceAll, replaceAllBuffer: (b) => Buffer.from(replaceAll(b.toString('latin1')), 'latin1') };
+  return {
+    replaceAll,
+    replaceAllBuffer: (b) => {
+      const s = b.toString('latin1');
+      const r = replaceAll(s);
+      return r === s ? b : Buffer.from(r, 'latin1');
+    },
+  };
 }
 
 const PH = 'ax-cred:' + 'a'.repeat(32);
@@ -177,5 +186,34 @@ describe('RequestFramer', () => {
     const { out } = f.process(Buffer.from(h, 'latin1'));
     expect(out.toString('latin1')).toContain(`Bearer ${REAL}`);
     expect(out.toString('latin1')).not.toContain('ax-cred:');
+  });
+
+  describe('injected flag (audit accuracy)', () => {
+    it('reports injected=true when a Basic placeholder is substituted', () => {
+      const f = new RequestFramer(replacer, []);
+      const { injected } = f.process(Buffer.from(basicHead('GET', '/'), 'latin1'));
+      expect(injected).toBe(true);
+    });
+
+    it('reports injected=true when a Bearer placeholder in the head is substituted', () => {
+      const f = new RequestFramer(replacer, []);
+      const h = `GET / HTTP/1.1\r\nAuthorization: Bearer ${PH}\r\n\r\n`;
+      expect(f.process(Buffer.from(h, 'latin1')).injected).toBe(true);
+    });
+
+    it('reports injected=false when no placeholder is present, even though bytes are reframed', () => {
+      // The head spans two chunks: the first holds nothing (buffered), the second
+      // completes it. Output bytes differ from each input chunk (reframing), but
+      // nothing was substituted — injected must stay false (audit must not over-report).
+      const f = new RequestFramer(replacer, []);
+      const plain = 'GET / HTTP/1.1\r\nHost: x\r\nAuthorization: Basic ' +
+        Buffer.from('oauth2:not-a-placeholder').toString('base64') + '\r\n\r\n';
+      const mid = Math.floor(plain.length / 2);
+      const r1 = f.process(Buffer.from(plain.slice(0, mid), 'latin1'));
+      const r2 = f.process(Buffer.from(plain.slice(mid), 'latin1'));
+      expect(r1.injected).toBe(false);
+      expect(r2.injected).toBe(false);
+      expect(r2.out.length).toBeGreaterThan(0); // bytes WERE reframed/emitted
+    });
   });
 });

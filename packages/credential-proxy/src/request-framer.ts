@@ -71,6 +71,12 @@ export interface FramerOutput {
   out: Buffer;
   /** Non-null if a canary token appeared in a decoded Basic value — caller must block. */
   canaryToken: string | null;
+  /**
+   * True only if a credential placeholder was actually substituted in this call
+   * (Basic-decoded or verbatim). Distinct from "output differs from input" —
+   * reframing a buffered multi-chunk head also changes the bytes but injects nothing.
+   */
+  injected: boolean;
 }
 
 type Phase = 'head' | 'body-counted' | 'passthrough';
@@ -123,15 +129,26 @@ export class RequestFramer {
 
   process(chunk: Buffer): FramerOutput {
     const parts: Buffer[] = [];
+    let injected = false;
+    // Verbatim substitution that also tracks whether anything was actually
+    // replaced. `replaceAllBuffer` returns the input buffer by identity when no
+    // placeholder is present, so `!==` is a precise "a credential was injected"
+    // signal — unlike comparing final output to the input chunk (reframing alone
+    // changes the bytes without injecting anything).
+    const sub = (b: Buffer): Buffer => {
+      const r = this.replacer.replaceAllBuffer(b);
+      if (r !== b) injected = true;
+      return r;
+    };
     let working = chunk;
     for (;;) {
       if (this.phase === 'passthrough') {
-        if (working.length) parts.push(this.replacer.replaceAllBuffer(working));
+        if (working.length) parts.push(sub(working));
         break;
       }
       if (this.phase === 'body-counted') {
         const take = Math.min(working.length, this.bodyRemaining);
-        if (take > 0) parts.push(this.replacer.replaceAllBuffer(working.subarray(0, take)));
+        if (take > 0) parts.push(sub(working.subarray(0, take)));
         this.bodyRemaining -= take;
         working = working.subarray(take);
         if (this.bodyRemaining > 0) break; // need more body bytes
@@ -145,7 +162,7 @@ export class RequestFramer {
       const idx = indexOfCrlfCrlf(this.headBuf);
       if (idx < 0) {
         if (this.headBuf.length > this.maxHead) {
-          parts.push(this.replacer.replaceAllBuffer(this.headBuf));
+          parts.push(sub(this.headBuf));
           this.headBuf = Buffer.alloc(0);
           this.phase = 'passthrough';
           this.opts.onOversizedHead?.();
@@ -157,17 +174,18 @@ export class RequestFramer {
       const rest = this.headBuf.subarray(headEnd);
       this.headBuf = Buffer.alloc(0);
       const t = transformBasicAuthHead(head, this.replacer, this.canaryTokens);
-      if (t.canaryToken) return { out: Buffer.concat(parts), canaryToken: t.canaryToken };
+      if (t.canaryToken) return { out: Buffer.concat(parts), canaryToken: t.canaryToken, injected };
+      if (t.head !== head) injected = true; // a Basic placeholder was substituted
       // Verbatim substitution over the Basic-transformed head too, so a
       // placeholder carried verbatim in a non-Basic header (e.g. `Authorization:
       // Bearer ax-cred:…`) is still replaced — matching the pre-framer behavior
       // that ran `replaceAllBuffer` over the whole chunk. The Basic line already
       // holds the re-encoded real value, so this can't double-substitute it.
-      parts.push(this.replacer.replaceAllBuffer(t.head));
+      parts.push(sub(t.head));
       const framing = parseBodyFraming(head);
       if (framing.chunked) {
         this.phase = 'passthrough';
-        if (rest.length) parts.push(this.replacer.replaceAllBuffer(rest));
+        if (rest.length) parts.push(sub(rest));
         break;
       }
       if (framing.contentLength > 0) {
@@ -181,6 +199,6 @@ export class RequestFramer {
       if (rest.length === 0) break;
       working = rest;
     }
-    return { out: Buffer.concat(parts), canaryToken: null };
+    return { out: Buffer.concat(parts), canaryToken: null, injected };
   }
 }
