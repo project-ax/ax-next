@@ -77,6 +77,19 @@ export interface ChatOrchestratorConfig {
   // Week 6.5a's only caller (the CLI) is one-shot. Rather than bifurcate the
   // runner's behavior, the orchestrator owns the "this chat is done" signal.
   oneShot?: boolean;
+  /**
+   * Keepalive mode (default false). When true, a turn completes on
+   * `chat:turn-end` and the runner is LEFT WARM instead of cancelled; a
+   * per-session idle timer reaps it later (graceful cancel → force kill).
+   * The channel-web/k8s preset sets this; the CLI canary stays one-shot.
+   * Mutually exclusive in spirit with `oneShot` — when keepAlive is true the
+   * one-shot cancel path is not taken.
+   */
+  keepAlive?: boolean;
+  /** Idle window before the reaper queues a graceful cancel (ms). Default 5 min. */
+  idleWindowMs?: number;
+  /** Grace after the cancel before a force handle.kill() (ms). Default 10 s. */
+  idleGraceMs?: number;
 }
 
 export interface AgentInvokeInput {
@@ -438,7 +451,7 @@ export function createOrchestrator(
 ): {
   runAgentInvoke(ctx: AgentContext, input: AgentInvokeInput): Promise<AgentOutcome>;
   onChatEnd(ctx: AgentContext, payload: { outcome: AgentOutcome }): void;
-  onTurnEnd(ctx: AgentContext): void;
+  onTurnEnd(ctx: AgentContext, payload?: { reqId?: string }): void;
 } {
   // Waiters are tracked by ctx.reqId (server-minted, J9, unique per
   // agent:invoke). On the J6 routed path, two concurrent agent:invokes for the
@@ -479,8 +492,32 @@ export function createOrchestrator(
       if (set.size === 0) reqIdsBySession.delete(sessionId);
     }
   }
+  // Resolve the waiting deferred for a turn/chat completion. Prefer the
+  // originating reqId; fall back to the session index (the IPC server stamps
+  // a fresh ctx.reqId on runner-driven events, so the reqId lookup misses and
+  // we resolve the oldest waiter for the session — FIFO matches emit order).
+  function resolveWaiterFor(
+    reqId: string | undefined,
+    sessionId: string,
+    outcome: AgentOutcome,
+  ): void {
+    let deferred = reqId !== undefined ? waitersByReqId.get(reqId) : undefined;
+    if (deferred === undefined) {
+      const reqIds = reqIdsBySession.get(sessionId);
+      if (reqIds !== undefined && reqIds.size > 0) {
+        const firstReqId = reqIds.values().next().value as string;
+        deferred = waitersByReqId.get(firstReqId);
+      }
+    }
+    if (deferred !== undefined && !deferred.settled) {
+      deferred.resolve(outcome);
+    }
+  }
   const chatTimeoutMs = config.chatTimeoutMs ?? DEFAULT_CHAT_TIMEOUT_MS;
   const oneShot = config.oneShot ?? true;
+  const keepAlive = config.keepAlive ?? false;
+  const idleWindowMs = config.idleWindowMs ?? 5 * 60 * 1000;
+  const idleGraceMs = config.idleGraceMs ?? 10 * 1000;
   // Sessions that have already been cancelled — prevents a second
   // chat:turn-end (from a misbehaving runner) from queueing a duplicate
   // cancel entry.
@@ -1258,39 +1295,13 @@ export function createOrchestrator(
   }
 
   function onChatEnd(ctx: AgentContext, payload: { outcome: AgentOutcome }): void {
-    // Two firing paths:
-    //   1. Orchestrator self-fire (error paths) — ctx is the agent:invoke
-    //      ctx, so ctx.reqId matches a waitersByReqId entry directly.
-    //   2. IPC server fires from the runner's POST /event.chat-end —
-    //      ctx.reqId is a fresh per-request id (the IPC server stamps
-    //      it), so the reqId lookup misses. We then fall back via the
-    //      sessionId index. The fresh-spawn path always has exactly
-    //      one waiter per sessionId; on the (rare) routed-collision
-    //      case (two concurrent agent:invokes into the same alive
-    //      sandbox), there can be multiple — we resolve the OLDEST
-    //      reqId in insertion order (Set preserves it). That matches
-    //      the runner's actual emit order: it processes inbox FIFO,
-    //      so chat-end after the first user message corresponds to
-    //      the first waiter.
-    let deferred = waitersByReqId.get(ctx.reqId);
-    if (deferred === undefined) {
-      const reqIds = reqIdsBySession.get(ctx.sessionId);
-      if (reqIds !== undefined && reqIds.size > 0) {
-        const firstReqId = reqIds.values().next().value as string;
-        deferred = waitersByReqId.get(firstReqId);
-      }
-    }
-    if (deferred !== undefined && !deferred.settled) {
-      deferred.resolve(payload.outcome);
-    }
-    // Cleanup: forget we cancelled this session, in case the same sessionId
-    // gets reused by a later agent:invoke (shouldn't happen — ctx.sessionId is
-    // fresh per request in practice — but the cleanup keeps the set from
-    // growing unbounded in a long-lived host).
+    resolveWaiterFor(ctx.reqId, ctx.sessionId, payload.outcome);
+    // Forget any cancel bookkeeping for this session (set stays bounded in a
+    // long-lived host).
     cancelledSessions.delete(ctx.sessionId);
   }
 
-  function onTurnEnd(ctx: AgentContext): void {
+  function onTurnEnd(ctx: AgentContext, payload?: { reqId?: string }): void {
     // I10 — rotate proxy credentials BEFORE the one-shot cancel, so that any
     // tool-call follow-ups inside the same turn (model→tool→model) pick up
     // the refreshed token. api-key-only sessions skip rotation: their kind
