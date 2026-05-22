@@ -99,7 +99,7 @@ FROM node:20-bookworm-slim AS runtime
 # is to pin to specific package versions once the image build pipeline
 # lands.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates tini git git-lfs \
+ && apt-get install -y --no-install-recommends ca-certificates tini git git-lfs python3 \
  && rm -rf /var/lib/apt/lists/*
 # `git` is needed by the host pod's @ax/ipc-core workspace.materialize
 # handler (it runs `git bundle` to seed the runner's /permanent dir at
@@ -138,6 +138,10 @@ COPY --from=builder --chown=1000:1000 /tmp/deploy /opt/ax-next/host
 COPY --from=builder --chown=1000:1000 /workspace/packages/channel-web/dist-web /opt/ax-next/host/web
 
 WORKDIR /opt/ax-next/host
+
+# uv/uvx: ephemeral on-demand runner for skill-declared python CLIs (capabilities.packages.pypi).
+# Pinned by version tag (digest-pin is a tracked follow-up, alongside tini/ca-certificates).
+COPY --from=ghcr.io/astral-sh/uv:0.11.16 /uv /uvx /usr/local/bin/
 
 USER 1000:1000
 
