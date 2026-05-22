@@ -61,4 +61,4 @@ Listed here only so the triggers are easy to find. Per the roadmap, these stay d
 
 ### UI bug follow-ups
 
-- [ ] **Live title refresh after the poll window.** `generateTitle` widened its poll to ~10s, but a title that lands *after* the window still needs a sidebar `list()` refresh (page nav/reload) to surface — there's no push channel. Pick up if users report a stale "New Chat" that the backend has actually titled. Real fix is a server→client title-update signal (SSE/websocket) or a low-frequency background `list()` poll.
+- [x] ~~**Live title refresh after the poll window.** `generateTitle` widened its poll to ~10s, but a title that lands *after* the window still needs a sidebar `list()` refresh (page nav/reload) to surface — there's no push channel.~~ — fixed: the title write point (`conversations:set-title`) fires `conversations:title-updated`; a per-user SSE (`GET /api/chat/title-events`) pushes it to the sidebar (live in-place row update + `list()` resync on connect). The ~10s client poll stays as the active-thread fast path. Design: `docs/plans/2026-05-21-live-title-refresh-sse-design.md`.
