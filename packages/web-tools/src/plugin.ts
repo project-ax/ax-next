@@ -38,14 +38,36 @@ export function createWebToolsPlugin(cfg: WebToolsConfig = {}): Plugin {
     async init({ bus }) {
       if (!enabled) return;
 
-      const apiKey = cfg.apiKey ?? process.env.ANTHROPIC_API_KEY;
+      const apiKey = (cfg.apiKey ?? process.env.ANTHROPIC_API_KEY)?.trim();
       if (apiKey === undefined || apiKey.length === 0) {
         throw new PluginError({
           code: 'init-failed',
           plugin: PLUGIN_NAME,
           hookName: 'init',
           message:
-            'ANTHROPIC_API_KEY not set and cfg.apiKey not provided — refusing to init (set cfg.enabled=false to disable web tools)',
+            'ANTHROPIC_API_KEY not set/blank and cfg.apiKey not provided — refusing to init (set cfg.enabled=false to disable web tools)',
+        });
+      }
+
+      // Fail fast on out-of-range numeric config rather than deferring to a
+      // downstream Anthropic API error.
+      if (cfg.timeoutMs !== undefined && !(Number.isFinite(cfg.timeoutMs) && cfg.timeoutMs > 0)) {
+        throw new PluginError({
+          code: 'init-failed',
+          plugin: PLUGIN_NAME,
+          hookName: 'init',
+          message: `timeoutMs must be a positive number, got ${String(cfg.timeoutMs)}`,
+        });
+      }
+      if (
+        cfg.maxContentTokens !== undefined &&
+        !(Number.isInteger(cfg.maxContentTokens) && cfg.maxContentTokens > 0)
+      ) {
+        throw new PluginError({
+          code: 'init-failed',
+          plugin: PLUGIN_NAME,
+          hookName: 'init',
+          message: `maxContentTokens must be a positive integer, got ${String(cfg.maxContentTokens)}`,
         });
       }
 

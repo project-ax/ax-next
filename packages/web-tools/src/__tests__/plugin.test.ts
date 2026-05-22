@@ -49,4 +49,31 @@ describe('createWebToolsPlugin', () => {
       if (prev !== undefined) process.env.ANTHROPIC_API_KEY = prev;
     }
   });
+
+  it('throws at init when apiKey is whitespace-only', async () => {
+    const { bus } = busWithDispatcher();
+    await expect(
+      createWebToolsPlugin({ apiKey: '   ', clientFactory: fakeFactory }).init({ bus, config: {} as never }),
+    ).rejects.toThrow(/ANTHROPIC_API_KEY|apiKey/i);
+  });
+
+  it('throws at init for a non-positive timeoutMs', async () => {
+    const { bus } = busWithDispatcher();
+    await expect(
+      createWebToolsPlugin({ apiKey: 'sk-ant-x', timeoutMs: 0, clientFactory: fakeFactory }).init({
+        bus,
+        config: {} as never,
+      }),
+    ).rejects.toThrow(/timeoutMs/);
+  });
+
+  it('throws at init for an invalid maxContentTokens', async () => {
+    const { bus } = busWithDispatcher();
+    await expect(
+      createWebToolsPlugin({ apiKey: 'sk-ant-x', maxContentTokens: -1, clientFactory: fakeFactory }).init({
+        bus,
+        config: {} as never,
+      }),
+    ).rejects.toThrow(/maxContentTokens/);
+  });
 });
