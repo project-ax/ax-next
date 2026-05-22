@@ -43,6 +43,7 @@
     { "path": "../../packages/validator-skill" },
     { "path": "../../packages/routines" },
     { "path": "../../packages/routines-admin-routes" },
-    { "path": "../../packages/tool-artifact-publish" }
+    { "path": "../../packages/tool-artifact-publish" },
+    { "path": "../../packages/web-tools" }
   ]
 }

@@ -946,6 +946,7 @@ describe('createK8sPlugins — conditional title plugins', () => {
     const names = plugins.map((p) => p.manifest.name);
     expect(names).not.toContain('@ax/llm-anthropic');
     expect(names).not.toContain('@ax/conversation-titles');
+    expect(names).not.toContain('@ax/web-tools');
   });
 
   it('includes both plugins when cfg.titles is set', () => {
@@ -956,6 +957,7 @@ describe('createK8sPlugins — conditional title plugins', () => {
     const names = plugins.map((p) => p.manifest.name);
     expect(names).toContain('@ax/llm-anthropic');
     expect(names).toContain('@ax/conversation-titles');
+    expect(names).toContain('@ax/web-tools');
   });
 
   it('passes cfg.titles.model into the conversation-titles plugin manifest', () => {
