@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { findCanaryHit, transformBasicAuthHead, type Replacer } from '../request-framer.js';
+import { findCanaryHit, transformBasicAuthHead, RequestFramer, type Replacer } from '../request-framer.js';
 
 // A Replacer that maps a placeholder to a real secret, mirroring SharedCredentialRegistry.
 function makeReplacer(map: Record<string, string>): Replacer {
@@ -86,5 +86,85 @@ describe('transformBasicAuthHead', () => {
     const out = transformBasicAuthHead(h, makeReplacer({ [PH]: 'a\r\nInjected: 1' }), []).head.toString('latin1');
     const authLine = out.split('\r\n').find((l) => /^Authorization:/i.test(l))!;
     expect(authLine).not.toContain('Injected');
+  });
+});
+
+const PH2 = 'ax-cred:' + 'b'.repeat(32);
+const REAL2 = 'glpat-SECOND';
+
+function basicHead(method: string, path: string, ...extra: string[]): string {
+  const b64 = Buffer.from(`oauth2:${PH}`).toString('base64');
+  return [`${method} ${path} HTTP/1.1`, 'Host: gitlab.com', `Authorization: Basic ${b64}`, ...extra, '', ''].join('\r\n');
+}
+
+function decodeAuth(wire: string): string {
+  const m = wire.match(/Authorization: Basic (\S+)/)!;
+  return Buffer.from(m[1], 'base64').toString('utf8');
+}
+
+describe('RequestFramer', () => {
+  const replacer = makeReplacer({ [PH]: REAL, [PH2]: REAL2 });
+
+  it('transforms a single bodyless GET head', () => {
+    const f = new RequestFramer(replacer, []);
+    const { out } = f.process(Buffer.from(basicHead('GET', '/info/refs?service=git-upload-pack'), 'latin1'));
+    expect(decodeAuth(out.toString('latin1'))).toBe(`oauth2:${REAL}`);
+  });
+
+  it('transforms BOTH heads on a keep-alive connection (GET then POST)', () => {
+    const f = new RequestFramer(replacer, []);
+    const get = basicHead('GET', '/info/refs?service=git-upload-pack'); // no body -> re-arm
+    const body = '0011want abcd\n0000';
+    const post = basicHead('POST', '/git-upload-pack', `Content-Length: ${Buffer.byteLength(body)}`) + body;
+    const { out } = f.process(Buffer.from(get + post, 'latin1'));
+    const wire = out.toString('latin1');
+    const auths = [...wire.matchAll(/Authorization: Basic (\S+)/g)].map((m) => Buffer.from(m[1], 'base64').toString('utf8'));
+    expect(auths).toEqual([`oauth2:${REAL}`, `oauth2:${REAL}`]); // both transformed
+    expect(wire).toContain(body); // body forwarded verbatim
+  });
+
+  it('substitutes a placeholder split across two chunks (latent-bug regression)', () => {
+    const f = new RequestFramer(replacer, []);
+    const full = basicHead('GET', '/');
+    const split = Math.floor(full.length / 2);
+    const r1 = f.process(Buffer.from(full.slice(0, split), 'latin1'));
+    expect(r1.out.length).toBe(0); // held until end-of-head
+    const r2 = f.process(Buffer.from(full.slice(split), 'latin1'));
+    expect(decodeAuth(r2.out.toString('latin1'))).toBe(`oauth2:${REAL}`);
+  });
+
+  it('streams a chunked body verbatim and does not re-arm', () => {
+    const f = new RequestFramer(replacer, []);
+    const post = basicHead('POST', '/git-upload-pack', 'Transfer-Encoding: chunked');
+    const chunkedBody = `5\r\nhello\r\n0\r\n\r\n`;
+    const { out } = f.process(Buffer.from(post + chunkedBody, 'latin1'));
+    const wire = out.toString('latin1');
+    expect(decodeAuth(wire)).toBe(`oauth2:${REAL}`); // head transformed
+    expect(wire).toContain(chunkedBody); // body verbatim
+  });
+
+  it('passes an oversized head through verbatim and fires onOversizedHead', () => {
+    let oversized = false;
+    const f = new RequestFramer(replacer, [], { maxHeadBytes: 64, onOversizedHead: () => { oversized = true; } });
+    const big = 'GET / HTTP/1.1\r\nX-Pad: ' + 'z'.repeat(200); // no end-of-head within 64 bytes
+    const { out } = f.process(Buffer.from(big, 'latin1'));
+    expect(oversized).toBe(true);
+    expect(out.toString('latin1')).toContain('z'.repeat(50)); // flushed verbatim
+  });
+
+  it('runs verbatim substitution on body bytes (Bearer-in-body keeps working)', () => {
+    const f = new RequestFramer(replacer, []);
+    const body = `{"token":"${PH2}"}`;
+    const post = `POST /api HTTP/1.1\r\nHost: x\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`;
+    const { out } = f.process(Buffer.from(post, 'latin1'));
+    expect(out.toString('latin1')).toContain(`"token":"${REAL2}"`);
+  });
+
+  it('flags a canary in a Basic blob and stops at the head', () => {
+    const f = new RequestFramer(replacer, ['CANARY-9']);
+    const b64 = Buffer.from('oauth2:CANARY-9').toString('base64');
+    const h = `GET / HTTP/1.1\r\nAuthorization: Basic ${b64}\r\n\r\n`;
+    const { canaryToken } = f.process(Buffer.from(h, 'latin1'));
+    expect(canaryToken).toBe('CANARY-9');
   });
 });

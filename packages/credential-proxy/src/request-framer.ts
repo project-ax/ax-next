@@ -52,3 +52,126 @@ export function transformBasicAuthHead(
   if (!mutated) return { head, canaryToken: null };
   return { head: Buffer.from(lines.join('\r\n'), 'latin1'), canaryToken: null };
 }
+
+const DEFAULT_MAX_HEAD = 64 * 1024;
+
+export interface FramerOptions {
+  /** Cap on a single buffered request head; exceeding it falls back to verbatim passthrough. */
+  maxHeadBytes?: number;
+  /** Called once when a head exceeds `maxHeadBytes` (for logging). */
+  onOversizedHead?: () => void;
+}
+
+export interface FramerOutput {
+  /** Bytes to forward upstream (may be empty while a head is still buffering). */
+  out: Buffer;
+  /** Non-null if a canary token appeared in a decoded Basic value — caller must block. */
+  canaryToken: string | null;
+}
+
+type Phase = 'head' | 'body-counted' | 'passthrough';
+
+function indexOfCrlfCrlf(buf: Buffer): number {
+  return buf.indexOf('\r\n\r\n', 0, 'latin1');
+}
+
+interface BodyFraming {
+  contentLength: number;
+  chunked: boolean;
+}
+
+function parseBodyFraming(head: Buffer): BodyFraming {
+  let contentLength = 0;
+  let chunked = false;
+  for (const line of head.toString('latin1').split('\r\n')) {
+    const c = line.match(/^content-length:[ \t]*(\d+)[ \t]*$/i);
+    if (c) contentLength = Number(c[1]);
+    const te = line.match(/^transfer-encoding:[ \t]*(.+?)[ \t]*$/i);
+    if (te && /\bchunked\b/i.test(te[1])) chunked = true;
+  }
+  return { contentLength, chunked };
+}
+
+/**
+ * Frames the decrypted client→upstream byte stream of one MITM connection into
+ * HTTP/1.1 requests so each request head can be Basic-auth-transformed.
+ *
+ * - HEAD phase: buffer until `\r\n\r\n`, transform Basic auth, then route by framing.
+ * - Content-Length body: forward verbatim, count down, re-arm to HEAD (catches the
+ *   next pipelined/keep-alive request — e.g. git's POST after the info/refs GET).
+ * - Transfer-Encoding: chunked, or an oversized head: forward verbatim and stay in
+ *   passthrough for the rest of the connection (git's chunked POST is terminal). I1:
+ *   bodies are never rewritten beyond the existing verbatim placeholder substitution.
+ */
+export class RequestFramer {
+  private phase: Phase = 'head';
+  private headBuf: Buffer = Buffer.alloc(0);
+  private bodyRemaining = 0;
+  private readonly maxHead: number;
+
+  constructor(
+    private readonly replacer: Replacer,
+    private readonly canaryTokens: readonly string[],
+    private readonly opts: FramerOptions = {},
+  ) {
+    this.maxHead = opts.maxHeadBytes ?? DEFAULT_MAX_HEAD;
+  }
+
+  process(chunk: Buffer): FramerOutput {
+    const parts: Buffer[] = [];
+    let working = chunk;
+    for (;;) {
+      if (this.phase === 'passthrough') {
+        if (working.length) parts.push(this.replacer.replaceAllBuffer(working));
+        break;
+      }
+      if (this.phase === 'body-counted') {
+        const take = Math.min(working.length, this.bodyRemaining);
+        if (take > 0) parts.push(this.replacer.replaceAllBuffer(working.subarray(0, take)));
+        this.bodyRemaining -= take;
+        working = working.subarray(take);
+        if (this.bodyRemaining > 0) break; // need more body bytes
+        this.phase = 'head';
+        if (working.length === 0) break;
+        continue;
+      }
+      // phase === 'head'
+      this.headBuf = this.headBuf.length ? Buffer.concat([this.headBuf, working]) : working;
+      working = Buffer.alloc(0);
+      const idx = indexOfCrlfCrlf(this.headBuf);
+      if (idx < 0) {
+        if (this.headBuf.length > this.maxHead) {
+          parts.push(this.replacer.replaceAllBuffer(this.headBuf));
+          this.headBuf = Buffer.alloc(0);
+          this.phase = 'passthrough';
+          this.opts.onOversizedHead?.();
+        }
+        break; // wait for more head bytes
+      }
+      const headEnd = idx + 4;
+      const head = this.headBuf.subarray(0, headEnd);
+      const rest = this.headBuf.subarray(headEnd);
+      this.headBuf = Buffer.alloc(0);
+      const t = transformBasicAuthHead(head, this.replacer, this.canaryTokens);
+      if (t.canaryToken) return { out: Buffer.concat(parts), canaryToken: t.canaryToken };
+      parts.push(t.head);
+      const framing = parseBodyFraming(head);
+      if (framing.chunked) {
+        this.phase = 'passthrough';
+        if (rest.length) parts.push(this.replacer.replaceAllBuffer(rest));
+        break;
+      }
+      if (framing.contentLength > 0) {
+        this.phase = 'body-counted';
+        this.bodyRemaining = framing.contentLength;
+        working = rest;
+        continue;
+      }
+      // no body — re-arm for the next request head
+      this.phase = 'head';
+      if (rest.length === 0) break;
+      working = rest;
+    }
+    return { out: Buffer.concat(parts), canaryToken: null };
+  }
+}
