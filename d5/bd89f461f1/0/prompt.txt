@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bkvshqnrj</task-id>
+<tool-use-id>toolu_01Qp3YR3AUCzorEg4VN3gFLR</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-vpulim-dev-ai-ax-next/e4e0a1de-132a-4133-87be-e3ef4cf64434/tasks/bkvshqnrj.output</output-file>
+<status>completed</status>
+<summary>Background command "Background poll for CI + CodeRabbit completion" completed (exit code 0)</summary>
+</task-notification>
