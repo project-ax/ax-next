@@ -532,8 +532,46 @@ export function createOrchestrator(
     graceTimer: ReturnType<typeof setTimeout> | null;
   }
   const warmSessions = new Map<string, WarmEntry>();
-  // Placeholder — real implementation lands in Task 5.
-  function armReapTimer(_ctx: AgentContext): void { /* no-op until Task 5 */ }
+  function clearReapTimers(sessionId: string): void {
+    const entry = warmSessions.get(sessionId);
+    if (entry === undefined) return;
+    if (entry.idleTimer !== null) { clearTimeout(entry.idleTimer); entry.idleTimer = null; }
+    if (entry.graceTimer !== null) { clearTimeout(entry.graceTimer); entry.graceTimer = null; }
+  }
+
+  function armReapTimer(ctx: AgentContext): void {
+    const sessionId = ctx.sessionId;
+    const entry = warmSessions.get(sessionId);
+    // No warm handle (e.g. routed into a session this host process didn't
+    // open — after a restart). Nothing to reap from here; the runner floor /
+    // pod ceiling cover it.
+    if (entry === undefined) return;
+    clearReapTimers(sessionId);
+    entry.idleTimer = setTimeout(() => {
+      entry.idleTimer = null;
+      // Graceful first: queue a cancel so a HEALTHY runner drains and emits
+      // its single chat:end (memory-strata's consolidation trigger). Dedup so
+      // a re-arm race can't double-queue.
+      if (!cancelledSessions.has(sessionId)) {
+        cancelledSessions.add(sessionId);
+        void bus
+          .call<SessionQueueWorkInput, SessionQueueWorkOutput>(
+            'session:queue-work', ctx, { sessionId, entry: { type: 'cancel' } },
+          )
+          .catch((err) => {
+            ctx.logger.warn('keepalive_reap_cancel_failed', { sessionId, err });
+          });
+      }
+      // Force after grace: a WEDGED runner can't process the cancel.
+      // handle.kill() (→ killPod → kubelet SIGKILL) doesn't trust the runner.
+      entry.graceTimer = setTimeout(() => {
+        entry.graceTimer = null;
+        void entry.handle.kill().catch(() => undefined);
+      }, idleGraceMs);
+      entry.graceTimer.unref?.();
+    }, idleWindowMs);
+    entry.idleTimer.unref?.();
+  }
 
   // Phase 3 / I10 — sessions whose agent has at least one non-`api-key`
   // credential get `proxy:rotate-session` fired between turns. api-key-only
@@ -679,6 +717,14 @@ export function createOrchestrator(
       // and do NOT register a NEW handle.exited watcher — the existing
       // sandbox's lifecycle is owned by whoever opened it originally.
       const sessionId = routedSessionId;
+
+      // Turn starting on a warm session: cancel any pending idle reap. It is
+      // re-armed on this turn's chat:turn-end. (Narrow race: if the idle timer
+      // already fired and queued a cancel during its grace window, that cancel
+      // is in the inbox FIFO ahead of this message; the runner exits, this
+      // turn resolves terminated, and the next turn re-spawns fresh. Accepted
+      // for the simplest single-user slice.)
+      if (keepAlive) clearReapTimers(sessionId);
 
       // (1) Bind reqId on the conversation row. ctx.conversationId is
       //     known non-undefined here because we entered this branch.

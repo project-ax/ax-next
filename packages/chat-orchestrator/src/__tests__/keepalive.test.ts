@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   HookBus, makeAgentContext, createLogger,
   type AgentOutcome, type ServiceHandler,
@@ -116,5 +116,60 @@ describe('chat-orchestrator keepalive', () => {
     expect(out2).toEqual({ kind: 'complete', messages: [] });
     expect(opens).toBe(1);                          // reused — no second pod
     expect(hk.state.kills).toBe(0);
+  });
+
+  it('keepalive idle reaper: queues a graceful cancel, then force-kills after grace', async () => {
+    vi.useFakeTimers();
+    try {
+      const live = new Set<string>(['s-1']);
+      const hk = makeHandle();
+      const queued: Array<{ sessionId: string; type: string }> = [];
+      const services: Record<string, ServiceHandler> = {
+        'agents:resolve': async () => ({ agent: { ...TEST_AGENT } }),
+        'session:queue-work': async (_c, input: unknown) => {
+          const i = input as { sessionId: string; entry: { type: string } };
+          queued.push({ sessionId: i.sessionId, type: i.entry.type });
+          return { cursor: 0 };
+        },
+        'session:terminate': async () => ({}),
+        'session:is-alive': async (_c, input: unknown) => ({ alive: live.has((input as { sessionId: string }).sessionId) }),
+        'conversations:get': async (_c, input: unknown) => {
+          const i = input as { conversationId: string; userId: string };
+          return { conversation: { conversationId: i.conversationId, userId: i.userId, agentId: 'test-agent', activeSessionId: null, activeReqId: null } };
+        },
+        'conversations:bind-session': async () => undefined,
+        'sandbox:open-session': async () => ({ runnerEndpoint: 'unix:///tmp/m.sock', handle: hk.handle }),
+        'proxy:open-session': async () => ({ proxyEndpoint: 'tcp://127.0.0.1:1', caCertPem: 'CA', envMap: {} }),
+        'proxy:close-session': async () => ({}),
+      };
+      const h = await createTestHarness({
+        services,
+        plugins: [createChatOrchestratorPlugin({
+          runnerBinary: '/irrelevant', chatTimeoutMs: 5_000,
+          keepAlive: true, idleWindowMs: 1_000, idleGraceMs: 500,
+        })],
+      });
+
+      // ORDERING (important — differs from a naive write): start the invoke
+      // FIRST so the spawn completes and the warm session is registered, THEN
+      // deliver the turn-end so armReapTimer finds the warm entry to arm.
+      // Microtasks (the spawn's awaits) drain before the setImmediate macrotask
+      // (the turn-end), so by the time turn-end fires the warm session exists.
+      const p = h.bus.call<unknown, AgentOutcome>('agent:invoke',
+        ctxWith({ sessionId: 's-1', conversationId: 'conv-1', reqId: 'req-1' }),
+        { message: { role: 'user', content: 'hi' } });
+      fireTurnEnd(h.bus, 's-1', 'req-1');
+      await vi.advanceTimersByTimeAsync(0); // drain spawn, then run the turn-end immediate → arm reaper
+      await p;
+
+      expect(queued.filter((q) => q.type === 'cancel')).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(1_000);      // idle window elapses → graceful cancel
+      expect(queued.filter((q) => q.type === 'cancel')).toHaveLength(1);
+      expect(hk.state.kills).toBe(0);
+      await vi.advanceTimersByTimeAsync(500);        // grace elapses → force kill
+      expect(hk.state.kills).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
