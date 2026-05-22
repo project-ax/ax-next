@@ -77,6 +77,19 @@ export interface ChatOrchestratorConfig {
   // Week 6.5a's only caller (the CLI) is one-shot. Rather than bifurcate the
   // runner's behavior, the orchestrator owns the "this chat is done" signal.
   oneShot?: boolean;
+  /**
+   * Keepalive mode (default false). When true, a turn completes on
+   * `chat:turn-end` and the runner is LEFT WARM instead of cancelled; a
+   * per-session idle timer reaps it later (graceful cancel → force kill).
+   * The channel-web/k8s preset sets this; the CLI canary stays one-shot.
+   * Mutually exclusive in spirit with `oneShot` — when keepAlive is true the
+   * one-shot cancel path is not taken.
+   */
+  keepAlive?: boolean;
+  /** Idle window before the reaper queues a graceful cancel (ms). Default 5 min. */
+  idleWindowMs?: number;
+  /** Grace after the cancel before a force handle.kill() (ms). Default 10 s. */
+  idleGraceMs?: number;
 }
 
 export interface AgentInvokeInput {
@@ -438,7 +451,7 @@ export function createOrchestrator(
 ): {
   runAgentInvoke(ctx: AgentContext, input: AgentInvokeInput): Promise<AgentOutcome>;
   onChatEnd(ctx: AgentContext, payload: { outcome: AgentOutcome }): void;
-  onTurnEnd(ctx: AgentContext): void;
+  onTurnEnd(ctx: AgentContext, payload?: { reqId?: string }): void;
 } {
   // Waiters are tracked by ctx.reqId (server-minted, J9, unique per
   // agent:invoke). On the J6 routed path, two concurrent agent:invokes for the
@@ -479,12 +492,86 @@ export function createOrchestrator(
       if (set.size === 0) reqIdsBySession.delete(sessionId);
     }
   }
+  // Resolve the waiting deferred for a turn/chat completion. Prefer the
+  // originating reqId; fall back to the session index (the IPC server stamps
+  // a fresh ctx.reqId on runner-driven events, so the reqId lookup misses and
+  // we resolve the oldest waiter for the session — FIFO matches emit order).
+  function resolveWaiterFor(
+    reqId: string | undefined,
+    sessionId: string,
+    outcome: AgentOutcome,
+  ): void {
+    let deferred = reqId !== undefined ? waitersByReqId.get(reqId) : undefined;
+    if (deferred === undefined) {
+      const reqIds = reqIdsBySession.get(sessionId);
+      if (reqIds !== undefined && reqIds.size > 0) {
+        const firstReqId = reqIds.values().next().value as string;
+        deferred = waitersByReqId.get(firstReqId);
+      }
+    }
+    if (deferred !== undefined && !deferred.settled) {
+      deferred.resolve(outcome);
+    }
+  }
   const chatTimeoutMs = config.chatTimeoutMs ?? DEFAULT_CHAT_TIMEOUT_MS;
   const oneShot = config.oneShot ?? true;
+  const keepAlive = config.keepAlive ?? false;
+  const idleWindowMs = config.idleWindowMs ?? 5 * 60 * 1000;
+  const idleGraceMs = config.idleGraceMs ?? 10 * 1000;
   // Sessions that have already been cancelled — prevents a second
   // chat:turn-end (from a misbehaving runner) from queueing a duplicate
   // cancel entry.
   const cancelledSessions = new Set<string>();
+
+  // Keepalive: warm sandboxes whose runner is left alive between turns. The
+  // entry outlives the agent:invoke that opened it; reaped by the idle timer
+  // (Task 5), the runner floor, the force-kill, or the pod ceiling.
+  interface WarmEntry {
+    handle: OpenSessionHandle;
+    idleTimer: ReturnType<typeof setTimeout> | null;
+    graceTimer: ReturnType<typeof setTimeout> | null;
+  }
+  const warmSessions = new Map<string, WarmEntry>();
+  function clearReapTimers(sessionId: string): void {
+    const entry = warmSessions.get(sessionId);
+    if (entry === undefined) return;
+    if (entry.idleTimer !== null) { clearTimeout(entry.idleTimer); entry.idleTimer = null; }
+    if (entry.graceTimer !== null) { clearTimeout(entry.graceTimer); entry.graceTimer = null; }
+  }
+
+  function armReapTimer(ctx: AgentContext): void {
+    const sessionId = ctx.sessionId;
+    const entry = warmSessions.get(sessionId);
+    // No warm handle (e.g. routed into a session this host process didn't
+    // open — after a restart). Nothing to reap from here; the runner floor /
+    // pod ceiling cover it.
+    if (entry === undefined) return;
+    clearReapTimers(sessionId);
+    entry.idleTimer = setTimeout(() => {
+      entry.idleTimer = null;
+      // Graceful first: queue a cancel so a HEALTHY runner drains and emits
+      // its single chat:end (memory-strata's consolidation trigger). Dedup so
+      // a re-arm race can't double-queue.
+      if (!cancelledSessions.has(sessionId)) {
+        cancelledSessions.add(sessionId);
+        void bus
+          .call<SessionQueueWorkInput, SessionQueueWorkOutput>(
+            'session:queue-work', ctx, { sessionId, entry: { type: 'cancel' } },
+          )
+          .catch((err) => {
+            ctx.logger.warn('keepalive_reap_cancel_failed', { sessionId, err });
+          });
+      }
+      // Force after grace: a WEDGED runner can't process the cancel.
+      // handle.kill() (→ killPod → kubelet SIGKILL) doesn't trust the runner.
+      entry.graceTimer = setTimeout(() => {
+        entry.graceTimer = null;
+        void entry.handle.kill().catch(() => undefined);
+      }, idleGraceMs);
+      entry.graceTimer.unref?.();
+    }, idleWindowMs);
+    entry.idleTimer.unref?.();
+  }
 
   // Phase 3 / I10 — sessions whose agent has at least one non-`api-key`
   // credential get `proxy:rotate-session` fired between turns. api-key-only
@@ -630,6 +717,14 @@ export function createOrchestrator(
       // and do NOT register a NEW handle.exited watcher — the existing
       // sandbox's lifecycle is owned by whoever opened it originally.
       const sessionId = routedSessionId;
+
+      // Turn starting on a warm session: cancel any pending idle reap. It is
+      // re-armed on this turn's chat:turn-end. (Narrow race: if the idle timer
+      // already fired and queued a cancel during its grace window, that cancel
+      // is in the inbox FIFO ahead of this message; the runner exits, this
+      // turn resolves terminated, and the next turn re-spawns fresh. Accepted
+      // for the simplest single-user slice.)
+      if (keepAlive) clearReapTimers(sessionId);
 
       // (1) Bind reqId on the conversation row. ctx.conversationId is
       //     known non-undefined here because we entered this branch.
@@ -805,6 +900,7 @@ export function createOrchestrator(
     }
     let proxyConfig: ProxyConfig;
     let proxyOpened = false;
+    let proxyCloseDeferredToHandle = false;
     // Default to the api.anthropic.com allowlist + the canonical
     // ANTHROPIC_API_KEY → 'provider:anthropic' credential ref when the agent
     // record carries no explicit per-row entries. The production agents
@@ -1074,6 +1170,44 @@ export function createOrchestrator(
         sandboxInput,
       );
       handle = opened.handle;
+      if (keepAlive) {
+        // Warm the session: the runner outlives this request. One handle.exited
+        // cleanup covers every reap path (graceful cancel, force kill, runner
+        // floor, ceiling): close the proxy session once and drop the registry
+        // entry. This is also why the per-invoke finally must NOT close the
+        // proxy in keepalive mode (see the finally below).
+        warmSessions.set(sessionId, { handle, idleTimer: null, graceTimer: null });
+        proxyCloseDeferredToHandle = proxyOpened;
+        const warmCtx = ctx;
+        void handle.exited
+          .then(() => {
+            const entry = warmSessions.get(sessionId);
+            if (entry !== undefined) {
+              if (entry.idleTimer !== null) clearTimeout(entry.idleTimer);
+              if (entry.graceTimer !== null) clearTimeout(entry.graceTimer);
+            }
+            warmSessions.delete(sessionId);
+            cancelledSessions.delete(sessionId);
+            // Rotation tracking lives as long as the warm session. The
+            // per-invoke finally defers its cleanup to here (mirroring the
+            // proxy close below) so every turn on this warm session keeps
+            // rotating credentials; we drop it only once the runner exits.
+            sessionsNeedingRotation.delete(sessionId);
+            if (proxyOpened) {
+              void bus
+                .call<ProxyCloseSessionInput, Record<string, never>>(
+                  'proxy:close-session', warmCtx, { sessionId: warmCtx.sessionId },
+                )
+                .catch((err: unknown) => {
+                  warmCtx.logger.warn('proxy_close_session_failed', {
+                    sessionId: warmCtx.sessionId,
+                    err: err instanceof Error ? err : new Error(String(err)),
+                  });
+                });
+            }
+          })
+          .catch(() => undefined);
+      }
     } catch (err) {
       unregisterWaiter(sessionId, ctx.reqId);
       // Best-effort: terminate the session if sandbox-subprocess managed to
@@ -1221,23 +1355,37 @@ export function createOrchestrator(
       await bus.fire('chat:end', ctx, { outcome });
     }
 
-    // 7. Kill the sandbox if it's still alive. session:terminate is fired
-    //    by sandbox-subprocess's own child-close handler, so we don't call
-    //    it here — that would double-fire.
-    try {
-      await handle.kill();
-    } catch {
-      // best-effort
+    // 7. Kill the sandbox unless we're deliberately leaving it warm. We keep
+    //    it warm ONLY on a keepalive turn that COMPLETED. A terminated outcome
+    //    (chat-run-timeout, sandbox-exit, chat-run-error) means the runner is
+    //    wedged or already gone — and crucially `armReapTimer` only ran if a
+    //    chat:turn-end fired, which it didn't on these paths. Leaving such a
+    //    session "warm" would strand it (no idle reaper armed) until the
+    //    runner's own idle floor or the pod ceiling. So kill it now.
+    //    session:terminate is fired by the sandbox provider's own exit
+    //    handler, so we don't call it here — that would double-fire.
+    const keepWarm = keepAlive && outcome.kind === 'complete';
+    if (!keepWarm) {
+      try {
+        await handle.kill();
+      } catch {
+        // best-effort
+      }
     }
 
     return outcome;
     } finally {
-      // I7 — proxy:close-session fires exactly once per fresh-spawn path
-      // that successfully opened a proxy session. Any failure inside the
-      // try (sandbox-open-failed / queue-work-failed / chat-run-timeout /
-      // sandbox-exit / chat:end happy path) flows through this finally.
-      // Best-effort: a failing close shouldn't mask the chat outcome.
-      if (proxyOpened) {
+      // I7 — proxy:close fires exactly once per opened proxy session. We only
+      // reach this block AFTER a successful proxy:open-session (Phase 6 made
+      // the proxy mandatory and the open-failure path returns earlier), so
+      // `proxyOpened` is invariably true here — the close is gated solely on
+      // whether it was deferred to handle.exited. In keepalive mode a
+      // SUCCESSFUL spawn defers BOTH the proxy close AND the rotation-tracking
+      // cleanup to handle.exited (Step 5), so this per-invoke finally only
+      // runs them on the one-shot path and the keepalive-spawn-that-failed-
+      // before-warming path. Best-effort: a failing close shouldn't mask the
+      // chat outcome.
+      if (!proxyCloseDeferredToHandle) {
         await bus
           .call<ProxyCloseSessionInput, Record<string, never>>(
             'proxy:close-session',
@@ -1250,47 +1398,23 @@ export function createOrchestrator(
               err: err instanceof Error ? err : new Error(String(err)),
             });
           });
+        // I10 — drop the rotation flag on the non-warm paths only. A warm
+        // session must keep rotating across turns, so its cleanup is deferred
+        // to handle.exited (Step 5); clearing it here would disable
+        // proxy:rotate-session for every turn after the first.
+        sessionsNeedingRotation.delete(ctx.sessionId);
       }
-      // I10 — drop rotation flag regardless of close outcome. A late
-      // turn-end after this point is a no-op (set lookup misses).
-      sessionsNeedingRotation.delete(ctx.sessionId);
     }
   }
 
   function onChatEnd(ctx: AgentContext, payload: { outcome: AgentOutcome }): void {
-    // Two firing paths:
-    //   1. Orchestrator self-fire (error paths) — ctx is the agent:invoke
-    //      ctx, so ctx.reqId matches a waitersByReqId entry directly.
-    //   2. IPC server fires from the runner's POST /event.chat-end —
-    //      ctx.reqId is a fresh per-request id (the IPC server stamps
-    //      it), so the reqId lookup misses. We then fall back via the
-    //      sessionId index. The fresh-spawn path always has exactly
-    //      one waiter per sessionId; on the (rare) routed-collision
-    //      case (two concurrent agent:invokes into the same alive
-    //      sandbox), there can be multiple — we resolve the OLDEST
-    //      reqId in insertion order (Set preserves it). That matches
-    //      the runner's actual emit order: it processes inbox FIFO,
-    //      so chat-end after the first user message corresponds to
-    //      the first waiter.
-    let deferred = waitersByReqId.get(ctx.reqId);
-    if (deferred === undefined) {
-      const reqIds = reqIdsBySession.get(ctx.sessionId);
-      if (reqIds !== undefined && reqIds.size > 0) {
-        const firstReqId = reqIds.values().next().value as string;
-        deferred = waitersByReqId.get(firstReqId);
-      }
-    }
-    if (deferred !== undefined && !deferred.settled) {
-      deferred.resolve(payload.outcome);
-    }
-    // Cleanup: forget we cancelled this session, in case the same sessionId
-    // gets reused by a later agent:invoke (shouldn't happen — ctx.sessionId is
-    // fresh per request in practice — but the cleanup keeps the set from
-    // growing unbounded in a long-lived host).
+    resolveWaiterFor(ctx.reqId, ctx.sessionId, payload.outcome);
+    // Forget any cancel bookkeeping for this session (set stays bounded in a
+    // long-lived host).
     cancelledSessions.delete(ctx.sessionId);
   }
 
-  function onTurnEnd(ctx: AgentContext): void {
+  function onTurnEnd(ctx: AgentContext, payload?: { reqId?: string }): void {
     // I10 — rotate proxy credentials BEFORE the one-shot cancel, so that any
     // tool-call follow-ups inside the same turn (model→tool→model) pick up
     // the refreshed token. api-key-only sessions skip rotation: their kind
@@ -1314,6 +1438,18 @@ export function createOrchestrator(
             err: err instanceof Error ? err : new Error(String(err)),
           });
         });
+    }
+
+    if (keepAlive) {
+      // Keepalive: the turn is complete. The real reply already streamed via
+      // SSE and persisted via chat:turn-end → conversations; channel-web
+      // dispatched agent:invoke fire-and-forget, so this synthesized outcome
+      // is unused by the caller. Resolve the per-request waiter, leave the
+      // runner WARM (no cancel), and arm the idle reaper (Task 5).
+      // Idempotent across the two turn-ends one user message emits.
+      resolveWaiterFor(payload?.reqId, ctx.sessionId, { kind: 'complete', messages: [] });
+      armReapTimer(ctx);
+      return;
     }
 
     // One-shot mode: the runner just finished processing the single user

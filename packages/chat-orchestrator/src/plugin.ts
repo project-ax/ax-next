@@ -103,11 +103,11 @@ export function createChatOrchestratorPlugin(
         },
       );
 
-      bus.subscribe<{ reason?: string }>(
+      bus.subscribe<{ reason?: string; reqId?: string }>(
         'chat:turn-end',
         PLUGIN_NAME,
-        async (ctx) => {
-          orch.onTurnEnd(ctx);
+        async (ctx, payload) => {
+          orch.onTurnEnd(ctx, payload);
           return undefined;
         },
       );
