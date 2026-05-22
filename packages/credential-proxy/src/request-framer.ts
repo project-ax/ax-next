@@ -37,9 +37,13 @@ export function transformBasicAuthHead(
   const lines = head.toString('latin1').split('\r\n');
   let mutated = false;
   for (let i = 0; i < lines.length; i++) {
-    const m = lines[i].match(BASIC_AUTH_LINE_RE);
+    const line = lines[i];
+    if (line === undefined) continue;
+    const m = line.match(BASIC_AUTH_LINE_RE);
     if (!m) continue;
-    const [, name, scheme, b64] = m;
+    const name = m[1]!;
+    const scheme = m[2]!;
+    const b64 = m[3]!;
     const decoded = Buffer.from(b64, 'base64').toString('utf8');
     const hit = findCanaryHit(decoded, canaryTokens);
     if (hit) return { head, canaryToken: hit };
@@ -85,9 +89,9 @@ function parseBodyFraming(head: Buffer): BodyFraming {
   let chunked = false;
   for (const line of head.toString('latin1').split('\r\n')) {
     const c = line.match(/^content-length:[ \t]*(\d+)[ \t]*$/i);
-    if (c) contentLength = Number(c[1]);
+    if (c) contentLength = Number(c[1]!);
     const te = line.match(/^transfer-encoding:[ \t]*(.+?)[ \t]*$/i);
-    if (te && /\bchunked\b/i.test(te[1])) chunked = true;
+    if (te && /\bchunked\b/i.test(te[1]!)) chunked = true;
   }
   return { contentLength, chunked };
 }
