@@ -15,8 +15,14 @@ export interface McpServerSpec {
   credentials: CapabilitySlot[];
 }
 
+export interface PackagesSpec {
+  npm: string[];
+  pypi: string[];
+}
+
 export interface SkillCapabilities {
   allowedHosts: string[];
   credentials: CapabilitySlot[];
   mcpServers: McpServerSpec[];   // always present, defaults to []
+  packages: PackagesSpec;        // always present; empty arrays when none declared
 }
