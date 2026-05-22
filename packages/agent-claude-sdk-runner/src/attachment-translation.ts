@@ -31,7 +31,11 @@
 // translation function itself stays pure-function-testable.
 // ---------------------------------------------------------------------------
 
-import type { AttachmentBlock, ContentBlock } from '@ax/ipc-protocol';
+import {
+  formatAttachmentMention,
+  type AttachmentBlock,
+  type ContentBlock,
+} from '@ax/ipc-protocol';
 
 // 64 KiB. Text content under this size is inlined into the SDK prompt
 // directly so weaker models don't need to know about the Read tool. At
@@ -82,10 +86,10 @@ type AnthropicUserContentBlock =
   | Record<string, unknown>;
 
 function textMention(att: AttachmentBlock): { type: 'text'; text: string } {
-  return {
-    type: 'text',
-    text: `User attached '${att.displayName}' at ${att.path} (${att.mediaType})`,
-  };
+  // Shared producer of the mention string — the conversations read path
+  // reconstructs the `attachment` block from it via `parseAttachmentMention`,
+  // so the format must stay in lockstep. See @ax/ipc-protocol/content-blocks.
+  return { type: 'text', text: formatAttachmentMention(att) };
 }
 
 async function translateAttachment(

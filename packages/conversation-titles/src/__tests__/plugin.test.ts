@@ -231,12 +231,12 @@ describe('@ax/conversation-titles chat:turn-end subscriber', () => {
     expect(stubs.setTitleCalls).toHaveLength(0);
   });
 
-  it('is a no-op when there is more than one assistant turn (post-first turn)', async () => {
-    // Regression: subscriber must NOT retry auto-titling after the first
-    // assistant turn. If the first attempt was lost (LLM error / validation
-    // rejected), every subsequent assistant turn would otherwise re-fire,
-    // expanding LLM spend and titling from a transcript the design didn't
-    // specify.
+  it('RETRIES on a later assistant turn while still untitled (within the cap)', async () => {
+    // The first attempt can be lost transiently — conversations:get reading
+    // the jsonl before it's flushed, an llm:call error, validation rejecting
+    // the output. Earlier the one-shot gate (`assistantTurnCount === 1`) left
+    // the chat permanently untitled in that case. Now a second untitled
+    // assistant turn re-attempts. `ifNull: true` keeps it idempotent.
     const stubs = makeStubsBus();
     stubs.setGetResult({
       conversation: makeConversation({ title: null }),
@@ -245,6 +245,38 @@ describe('@ax/conversation-titles chat:turn-end subscriber', () => {
         turn('assistant', [{ type: 'text', text: 'A1' }]),
         turn('user', [{ type: 'text', text: 'Q2' }]),
         turn('assistant', [{ type: 'text', text: 'A2' }]),
+      ],
+    });
+    stubs.setLlmResult({
+      text: 'Recovered Title',
+      stopReason: 'end_turn',
+      usage: { inputTokens: 1, outputTokens: 1 },
+    });
+    const plugin = createConversationTitlesPlugin();
+    await plugin.init({ bus: stubs.bus, config: {} });
+
+    const ctx = makeCtx({ conversationId: 'c1' });
+    await stubs.bus.fire('chat:turn-end', ctx, { role: 'assistant' });
+
+    expect(stubs.getCalls).toHaveLength(1);
+    expect(stubs.llmCalls).toHaveLength(1);
+    expect(stubs.setTitleCalls).toHaveLength(1);
+    expect(stubs.setTitleCalls[0]?.title).toBe('Recovered Title');
+    expect(stubs.setTitleCalls[0]?.ifNull).toBe(true);
+  });
+
+  it('STOPS retrying past MAX_TITLE_ATTEMPT_TURNS assistant turns (spend cap)', async () => {
+    // Four assistant turns, still untitled — past the retry cap (3), so the
+    // subscriber gives up rather than calling the title LLM on every turn of
+    // a long conversation a model keeps failing to title.
+    const stubs = makeStubsBus();
+    stubs.setGetResult({
+      conversation: makeConversation({ title: null }),
+      turns: [
+        turn('assistant', [{ type: 'text', text: 'A1' }]),
+        turn('assistant', [{ type: 'text', text: 'A2' }]),
+        turn('assistant', [{ type: 'text', text: 'A3' }]),
+        turn('assistant', [{ type: 'text', text: 'A4' }]),
       ],
     });
     const plugin = createConversationTitlesPlugin();

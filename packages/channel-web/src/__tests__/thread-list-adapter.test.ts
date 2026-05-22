@@ -1,5 +1,25 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { axThreadListAdapter } from '../lib/thread-list-adapter';
+import {
+  axThreadListAdapter,
+  pollConversationTitle,
+} from '../lib/thread-list-adapter';
+
+function rowsResponse(rows: unknown) {
+  return { ok: true, json: async () => rows };
+}
+
+function convRow(conversationId: string, title: string | null) {
+  return {
+    conversationId,
+    userId: 'u',
+    agentId: 'a',
+    title,
+    activeSessionId: null,
+    activeReqId: null,
+    createdAt: '2026-05-21T00:00:00Z',
+    updatedAt: '2026-05-21T00:00:00Z',
+  };
+}
 
 const fetchMock = vi.fn();
 
@@ -52,5 +72,66 @@ describe('axThreadListAdapter', () => {
     });
     const result = await axThreadListAdapter.list!();
     expect(result.threads).toHaveLength(0);
+  });
+});
+
+describe('pollConversationTitle', () => {
+  it('returns the title once it appears on a later poll', async () => {
+    // Regression: the title-LLM round-trip can outlast the first poll. The
+    // poll must keep trying (not settle on "New Chat" after one miss) and
+    // surface the title the moment it lands.
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(rowsResponse([convRow('c-1', null)]))
+      .mockResolvedValueOnce(rowsResponse([convRow('c-1', 'Real Title')]));
+    const title = await pollConversationTitle('c-1', {
+      attempts: 5,
+      intervalMs: 0,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    expect(title).toBe('Real Title');
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns null after exhausting attempts when the title never lands', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(rowsResponse([convRow('c-1', null)]));
+    const title = await pollConversationTitle('c-1', {
+      attempts: 3,
+      intervalMs: 0,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    expect(title).toBeNull();
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it('keeps polling through transient fetch failures', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('network blip'))
+      .mockResolvedValueOnce(rowsResponse([convRow('c-1', 'Eventually')]));
+    const title = await pollConversationTitle('c-1', {
+      attempts: 5,
+      intervalMs: 0,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    expect(title).toBe('Eventually');
+  });
+
+  it('does not hang on a never-resolving fetch — times out the attempt and returns null', async () => {
+    // A browser fetch has no default timeout; without the per-attempt bound a
+    // single stuck request would stall the whole poll forever. The dummy
+    // fetch ignores the abort signal, so the timeout race (not the abort) is
+    // what must win.
+    const fetchImpl = vi.fn(() => new Promise<Response>(() => {}));
+    const title = await pollConversationTitle('c-1', {
+      attempts: 2,
+      intervalMs: 0,
+      perAttemptTimeoutMs: 10,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    expect(title).toBeNull();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 });

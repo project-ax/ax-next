@@ -518,3 +518,162 @@ describe('@ax/conversations conversations:get reads from workspace jsonl', () =>
   });
 
 });
+
+// ---------------------------------------------------------------------------
+// Attachment-chip reconstruction (UI bug fix, 2026-05-21).
+//
+// The runner translates a user's `attachment` block into a model-facing text
+// mention before the SDK writes the jsonl, so the original block is gone on
+// reopen and the chat shows raw "User attached '…' at .ax/uploads/… (…)" text
+// instead of a chip. getConversation rebuilds the `attachment` block from the
+// mention, gated to this conversation's own upload prefix.
+// ---------------------------------------------------------------------------
+function makeJsonlWithUserContent(content: unknown): Uint8Array {
+  const lines = [
+    JSON.stringify({
+      type: 'user',
+      message: { role: 'user', content },
+      uuid: 'u-1',
+      timestamp: '2026-05-21T12:00:00.000Z',
+    }),
+    JSON.stringify({
+      type: 'assistant',
+      message: {
+        id: 'm1',
+        role: 'assistant',
+        content: [{ type: 'text', text: 'ok' }],
+      },
+      uuid: 'a-1',
+      timestamp: '2026-05-21T12:00:01.000Z',
+    }),
+  ];
+  return new TextEncoder().encode(lines.join('\n'));
+}
+
+describe('@ax/conversations conversations:get reconstructs attachment chips', () => {
+  async function getWithUserContent(
+    content: unknown,
+  ): Promise<GetOutput> {
+    // Bytes are injected once we know the real conversationId (the mention
+    // path embeds it); the workspaceRead mock reads this holder when
+    // conversations:get runs, by which point it's been populated.
+    const holder: { bytes?: Uint8Array } = {};
+    const { h } = await makeHarness({
+      workspaceList: async () => ({
+        paths: ['.claude/projects/-permanent/sess-att.jsonl'],
+      }),
+      workspaceRead: async () => ({ found: true, bytes: holder.bytes! }),
+    });
+    const created = await h.bus.call<CreateInput, CreateOutput>(
+      'conversations:create',
+      h.ctx({ userId: 'userA' }),
+      { userId: 'userA', agentId: 'agt_a' },
+    );
+    await setRunnerSessionViaStore(created.conversationId, 'sess-att');
+    holder.bytes = makeJsonlWithUserContent(
+      typeof content === 'function'
+        ? (content as (id: string) => unknown)(created.conversationId)
+        : content,
+    );
+    return h.bus.call<GetInput, GetOutput>(
+      'conversations:get',
+      h.ctx({ userId: 'userA' }),
+      { conversationId: created.conversationId, userId: 'userA' },
+    );
+  }
+
+  it('rebuilds an attachment block from a standalone mention block (keeps the typed prompt)', async () => {
+    const got = await getWithUserContent((convId: string) => [
+      { type: 'text', text: 'Summarize this file' },
+      {
+        type: 'text',
+        text: `User attached 'Disaster Recovery Plan - v3.pdf' at .ax/uploads/${convId}/req-d194/a60d__Disaster_Recovery_Plan_-_v3.pdf (application/pdf)`,
+      },
+    ]);
+    const user = got.turns.find((t) => t.role === 'user');
+    expect(user?.contentBlocks).toHaveLength(2);
+    expect(user?.contentBlocks[0]).toEqual({
+      type: 'text',
+      text: 'Summarize this file',
+    });
+    const att = user?.contentBlocks[1];
+    expect(att).toMatchObject({
+      type: 'attachment',
+      displayName: 'Disaster Recovery Plan - v3.pdf',
+      mediaType: 'application/pdf',
+      sizeBytes: 0,
+    });
+    expect((att as { path: string }).path).toContain('.ax/uploads/');
+  });
+
+  it('splits a merged "prompt\\nmention" text block into [text, attachment]', async () => {
+    const got = await getWithUserContent((convId: string) => [
+      {
+        type: 'text',
+        text: `Summarize this file\nUser attached 'r.pdf' at .ax/uploads/${convId}/req-1/ab__r.pdf (application/pdf)`,
+      },
+    ]);
+    const user = got.turns.find((t) => t.role === 'user');
+    expect(user?.contentBlocks).toEqual([
+      { type: 'text', text: 'Summarize this file' },
+      {
+        type: 'attachment',
+        path: expect.stringContaining('.ax/uploads/') as unknown as string,
+        displayName: 'r.pdf',
+        mediaType: 'application/pdf',
+        sizeBytes: 0,
+      },
+    ]);
+  });
+
+  it('does NOT convert a mention whose path belongs to a different conversation (false-positive guard)', async () => {
+    const mention =
+      "User attached 'evil.pdf' at .ax/uploads/cnv_someoneelse/req-x/ab__evil.pdf (application/pdf)";
+    const got = await getWithUserContent([{ type: 'text', text: mention }]);
+    const user = got.turns.find((t) => t.role === 'user');
+    // Untouched — still a plain text block, no attachment block produced.
+    expect(user?.contentBlocks).toEqual([{ type: 'text', text: mention }]);
+  });
+
+  it('does NOT convert mentions inside an assistant turn (model cannot inject chips)', async () => {
+    const holder: { bytes?: Uint8Array } = {};
+    const { h } = await makeHarness({
+      workspaceList: async () => ({
+        paths: ['.claude/projects/-permanent/sess-att.jsonl'],
+      }),
+      workspaceRead: async () => ({ found: true, bytes: holder.bytes! }),
+    });
+    const created = await h.bus.call<CreateInput, CreateOutput>(
+      'conversations:create',
+      h.ctx({ userId: 'userA' }),
+      { userId: 'userA', agentId: 'agt_a' },
+    );
+    await setRunnerSessionViaStore(created.conversationId, 'sess-att');
+    const mention = `User attached 'x.pdf' at .ax/uploads/${created.conversationId}/req-1/ab__x.pdf (application/pdf)`;
+    holder.bytes = new TextEncoder().encode(
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          id: 'm1',
+          role: 'assistant',
+          content: [{ type: 'text', text: mention }],
+        },
+        uuid: 'a-1',
+        timestamp: '2026-05-21T12:00:00.000Z',
+      }),
+    );
+    const got = await h.bus.call<GetInput, GetOutput>(
+      'conversations:get',
+      h.ctx({ userId: 'userA' }),
+      { conversationId: created.conversationId, userId: 'userA' },
+    );
+    const assistant = got.turns.find((t) => t.role === 'assistant');
+    expect(assistant?.contentBlocks).toEqual([{ type: 'text', text: mention }]);
+  });
+
+  it('leaves a normal text-only user turn unchanged', async () => {
+    const got = await getWithUserContent([{ type: 'text', text: 'just text' }]);
+    const user = got.turns.find((t) => t.role === 'user');
+    expect(user?.contentBlocks).toEqual([{ type: 'text', text: 'just text' }]);
+  });
+});
