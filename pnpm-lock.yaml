@@ -1933,6 +1933,9 @@ importers:
       '@ax/validator-skill':
         specifier: workspace:*
         version: link:../../packages/validator-skill
+      '@ax/web-tools':
+        specifier: workspace:*
+        version: link:../../packages/web-tools
       '@ax/workspace-git':
         specifier: workspace:*
         version: link:../../packages/workspace-git

@@ -36,6 +36,7 @@ import {
 } from '@ax/conversation-titles';
 import { createMemoryStrataPlugin } from '@ax/memory-strata';
 import { createMemoryStrataIndexPostgresPlugin } from '@ax/memory-strata-index-postgres';
+import { createWebToolsPlugin } from '@ax/web-tools';
 import { createChannelWebServerPlugin } from '@ax/channel-web/server';
 import { createOnboardingPlugin, type OnboardingConfig } from '@ax/onboarding';
 
@@ -736,6 +737,12 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
       });
     }
     plugins.push(createLlmAnthropicPlugin());
+    // @ax/web-tools — host-executed web_search + web_extract backed by
+    // Anthropic's server-side web tools. Piggybacks on the same env gate
+    // (config.titles is set iff ANTHROPIC_API_KEY is present) because it
+    // constructs its own Anthropic client from that key. Available to all
+    // agents; the plugin's own `enabled` flag is the operator kill-switch.
+    plugins.push(createWebToolsPlugin());
     plugins.push(createConversationTitlesPlugin({ model: titleModel }));
     // @ax/memory-strata Phase 1: hot-tier markdown + Observer extracting
     // facts to permanent/memory/inbox/. Piggybacks on the same env gate
