@@ -50,6 +50,39 @@ export async function readLastTurnUuid(
   return undefined;
 }
 
+/**
+ * Wait for the runner-native jsonl to gain a NEW assistant line, then return
+ * its uuid. Bounded by `timeoutMs`; returns undefined on timeout.
+ *
+ * Why this exists: the Anthropic Agent SDK writes the assistant turn's jsonl
+ * line AFTER it yields the `result` message to the runner's Node loop. The
+ * runner's per-turn commit (`commitTurnAndBundle`) runs in the `result`
+ * handler, so without this wait it stages the workspace BEFORE the assistant
+ * line lands — the reply is missing from the committed bundle and only
+ * becomes durable (readable via `conversations:get`) at the NEXT turn's
+ * commit or at session-close. Under idle-keepalive that defers the assistant
+ * reply's durability by the whole idle window (minutes). Polling the jsonl
+ * for the new line and committing only after it lands closes that gap.
+ *
+ * `sinceUuid` is the last assistant uuid committed before this turn (undefined
+ * when the transcript had no assistant line yet, e.g. a fresh session's first
+ * turn). The poll resolves as soon as the last assistant uuid differs from it.
+ */
+export async function waitForTurnTranscript(
+  workspaceRoot: string,
+  sessionId: string,
+  sinceUuid: string | undefined,
+  opts: { timeoutMs: number; intervalMs: number },
+): Promise<string | undefined> {
+  const start = Date.now();
+  for (;;) {
+    const uuid = await readLastTurnUuid(workspaceRoot, sessionId, 'assistant');
+    if (uuid !== undefined && uuid !== sinceUuid) return uuid;
+    if (Date.now() - start >= opts.timeoutMs) return undefined;
+    await new Promise((resolve) => setTimeout(resolve, opts.intervalMs));
+  }
+}
+
 async function locateJsonl(
   workspaceRoot: string,
   sessionId: string,
