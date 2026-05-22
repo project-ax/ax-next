@@ -47,7 +47,9 @@ export async function registerWebExtract(bus: HookBus, backend: WebExtractBacken
           code: 'invalid-payload',
           plugin: PLUGIN_NAME,
           hookName: 'tool:execute:web_extract',
-          message: `web_extract: url not allowed (must be a public http(s) URL): ${url}`,
+          // Don't echo the raw caller-supplied URL — it may carry tokens in
+          // query params and could land in host logs (info leak / log injection).
+          message: 'web_extract: url not allowed (must be a public http(s) URL, not an internal/private address)',
         });
       }
       return backend.run(url);
