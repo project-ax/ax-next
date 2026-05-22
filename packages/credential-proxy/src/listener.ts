@@ -43,6 +43,7 @@ import type { AddressInfo } from 'node:net';
 import { resolveAndCheck, BlockedIPError, type Resolver } from './private-ip.js';
 import type { SharedCredentialRegistry } from './registry.js';
 import { generateDomainCert, type CAKeyPair } from './ca.js';
+import { RequestFramer, findCanaryHit } from './request-framer.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -504,37 +505,63 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
     // mid-tunnel under our model.
     const canaryTokens = collectCanaryTokens(sessions);
 
-    // client → (canary scan, then credential substitute) → upstream
+    // One framer per connection: it frames the decrypted client→upstream byte
+    // stream into HTTP/1.1 requests so each request head's Basic-auth value can
+    // be decoded → canary-scanned → placeholder-substituted → re-base64-encoded.
+    // Bodies keep the existing per-chunk verbatim substitution (registry is a
+    // valid Replacer). Re-encoding base64 cannot emit CR/LF, so a substituted
+    // value can't inject headers (I1/§4.5).
+    const framer = new RequestFramer(registry, canaryTokens, {
+      // Oversized head → verbatim passthrough. Log the event only; never the
+      // bytes (no-secret-logging, I7 / §4.5).
+      onOversizedHead: () => { /* bounded-head fallback engaged — no value logged */ },
+    });
+
+    // Shared canary-block path — used by both the raw-chunk scan (parity with
+    // the pre-framer behavior) and the framer's decoded-Basic-blob hit. Emits
+    // the SAME 403 audit + tears down the tunnel. Never logs the decoded value.
+    const blockCanary = () => {
+      audit(stampSession({
+        action: 'proxy_request',
+        method: 'CONNECT',
+        url: target,
+        status: 403,
+        requestBytes,
+        responseBytes: 0,
+        durationMs: Date.now() - startTime,
+        blocked: 'canary_detected',
+      }, allowingSession));
+      // Send a 403 over the TLS channel before tearing down.
+      clientTls.write('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n');
+      clientTls.end();
+      targetTls.destroy();
+    };
+
+    // client → (canary scan, then per-request Basic-auth transform) → upstream
     clientTls.on('data', (chunk: Buffer) => {
       requestBytes += chunk.length;
 
-      // Canary scan first — substitution doesn't affect canary detection,
-      // but checking before substitution means we see the bytes the model
-      // actually wrote (the placeholder→real swap is on the credential
-      // bytes, not on canaries).
-      for (const token of canaryTokens) {
-        if (chunk.includes(token)) {
-          audit(stampSession({
-            action: 'proxy_request',
-            method: 'CONNECT',
-            url: target,
-            status: 403,
-            requestBytes,
-            responseBytes: 0,
-            durationMs: Date.now() - startTime,
-            blocked: 'canary_detected',
-          }, allowingSession));
-          // Send a 403 over the TLS channel before tearing down.
-          clientTls.write('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n');
-          clientTls.end();
-          targetTls.destroy();
-          return;
-        }
+      // Raw-chunk canary scan first — catches a canary that appears verbatim in
+      // any byte the model wrote (body, Bearer header, etc). The framer's decode
+      // pass additionally catches one base64-buried in a Basic blob.
+      if (findCanaryHit(chunk, canaryTokens)) {
+        blockCanary();
+        return;
       }
 
-      const replaced = registry.replaceAllBuffer(chunk);
-      if (replaced !== chunk) credentialInjected = true;
-      targetTls.write(replaced);
+      const { out, canaryToken, injected } = framer.process(chunk);
+      if (canaryToken) {
+        blockCanary();
+        return;
+      }
+      // `injected` is true only when a placeholder was actually substituted —
+      // not merely when the framer reframed buffered bytes.
+      if (injected) credentialInjected = true;
+      // The framer holds bytes until end-of-head, so `out` is legitimately empty
+      // while a head is still buffering — only write when there's something.
+      if (out.length > 0) {
+        targetTls.write(out);
+      }
     });
 
     // upstream → client (no substitution on response — placeholders should

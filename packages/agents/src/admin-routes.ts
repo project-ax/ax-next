@@ -693,6 +693,7 @@ export function createAdminAgentRouteHandlers(deps: AdminRouteDeps) {
           allowedHosts: body.grants.allowedHosts,
           credentials: body.grants.credentials,
           mcpServers: body.grants.mcpServers as never[],
+          packages: { npm: [], pypi: [] },
         },
       });
 

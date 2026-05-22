@@ -1551,6 +1551,8 @@ describe('chat-orchestrator', () => {
         allowedHosts: string[];
         credentials: Array<{ slot: string; kind: 'api-key' }>;
       }>;
+      // D: optional in test fixtures so existing tests don't need to declare it.
+      packages?: { npm?: string[]; pypi?: string[] };
     };
     bodyMd: string;
     manifestYaml: string;
@@ -1675,6 +1677,173 @@ describe('chat-orchestrator', () => {
       ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
       GITHUB_TOKEN: { ref: 'gh-pat', kind: 'api-key' },
     });
+  });
+
+  it('auto-unions registry.npmjs.org when a skill declares packages.npm (D)', async () => {
+    const proxy = buildProxyHooks();
+    const skillsHooks = buildSkillsHooks({
+      skills: {
+        linear: {
+          id: 'linear',
+          capabilities: {
+            allowedHosts: [],
+            credentials: [],
+            packages: { npm: ['@linear/cli'] },
+          },
+          bodyMd: 'Use the Linear CLI.',
+          manifestYaml: 'name: linear\nversion: 1.0.0\n',
+        },
+      },
+    });
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: {
+            ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
+          },
+          skillAttachments: [{ skillId: 'linear', credentialBindings: {} }],
+        },
+      }),
+      openSession: makeChatEndOpenSession(busRef),
+    });
+    Object.assign(mocks.services, proxy.services, skillsHooks.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+    });
+    busRef.current = h.bus;
+    await h.bus.call<unknown, AgentOutcome>('agent:invoke', silentCtx('npm-pkg-session'), { message: { role: 'user', content: 'hi' } });
+    const openIn = proxy.state.lastOpenInput as { allowlist: string[] };
+    expect(openIn.allowlist).toContain('registry.npmjs.org');
+  });
+
+  it('auto-unions pypi.org + files.pythonhosted.org for packages.pypi (D)', async () => {
+    const proxy = buildProxyHooks();
+    const skillsHooks = buildSkillsHooks({
+      skills: {
+        pyskill: {
+          id: 'pyskill',
+          capabilities: {
+            allowedHosts: [],
+            credentials: [],
+            packages: { pypi: ['some-tool'] },
+          },
+          bodyMd: 'Use the some-tool CLI.',
+          manifestYaml: 'name: pyskill\nversion: 1.0.0\n',
+        },
+      },
+    });
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: {
+            ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
+          },
+          skillAttachments: [{ skillId: 'pyskill', credentialBindings: {} }],
+        },
+      }),
+      openSession: makeChatEndOpenSession(busRef),
+    });
+    Object.assign(mocks.services, proxy.services, skillsHooks.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+    });
+    busRef.current = h.bus;
+    await h.bus.call<unknown, AgentOutcome>('agent:invoke', silentCtx('pypi-pkg-session'), { message: { role: 'user', content: 'hi' } });
+    const openIn = proxy.state.lastOpenInput as { allowlist: string[] };
+    expect(openIn.allowlist).toEqual(expect.arrayContaining(['pypi.org', 'files.pythonhosted.org']));
+  });
+
+  it('unions no registry hosts when no packages are declared (D)', async () => {
+    const proxy = buildProxyHooks();
+    const skillsHooks = buildSkillsHooks({
+      skills: {
+        nopkgs: {
+          id: 'nopkgs',
+          capabilities: {
+            allowedHosts: ['api.example.com'],
+            credentials: [],
+            packages: { npm: [], pypi: [] },
+          },
+          bodyMd: 'A skill with no packages.',
+          manifestYaml: 'name: nopkgs\nversion: 1.0.0\n',
+        },
+      },
+    });
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: {
+            ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
+          },
+          skillAttachments: [{ skillId: 'nopkgs', credentialBindings: {} }],
+        },
+      }),
+      openSession: makeChatEndOpenSession(busRef),
+    });
+    Object.assign(mocks.services, proxy.services, skillsHooks.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+    });
+    busRef.current = h.bus;
+    await h.bus.call<unknown, AgentOutcome>('agent:invoke', silentCtx('nopkgs-session'), { message: { role: 'user', content: 'hi' } });
+    const openIn = proxy.state.lastOpenInput as { allowlist: string[] };
+    expect(openIn.allowlist).not.toContain('registry.npmjs.org');
+    expect(openIn.allowlist).not.toContain('pypi.org');
+  });
+
+  it('auto-unions registry hosts for a DEFAULT-attached skill declaring packages (D)', async () => {
+    // Regression: default-attached skills are materialized into the sandbox (their
+    // SKILL.md instructs the agent to run the CLI), so a default skill's declared
+    // ecosystem must reach the registry allowlist too — not only explicit attachments.
+    const proxy = buildProxyHooks();
+    const defaultSkill: ResolvedSkill = {
+      id: 'default-cli',
+      capabilities: {
+        allowedHosts: [],
+        credentials: [],
+        packages: { npm: ['@linear/cli'], pypi: ['some-tool'] },
+      },
+      bodyMd: '# default-cli\n',
+      manifestYaml: 'name: default-cli\ndescription: dc\n',
+    };
+    const defaults = buildDefaultsHook({ skills: [defaultSkill] });
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: {
+            ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
+          },
+          // No explicit skillAttachments — the packages come purely from defaults.
+        },
+      }),
+      openSession: makeChatEndOpenSession(busRef),
+    });
+    Object.assign(mocks.services, proxy.services, defaults.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+    });
+    busRef.current = h.bus;
+    await h.bus.call<unknown, AgentOutcome>('agent:invoke', silentCtx('default-pkg-session'), { message: { role: 'user', content: 'hi' } });
+    const openIn = proxy.state.lastOpenInput as { allowlist: string[] };
+    expect(openIn.allowlist).toEqual(
+      expect.arrayContaining(['registry.npmjs.org', 'pypi.org', 'files.pythonhosted.org']),
+    );
   });
 
   it('threads installedSkills into sandbox:open-session with correct SKILL.md content', async () => {

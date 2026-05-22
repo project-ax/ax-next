@@ -1,5 +1,5 @@
 import { load as yamlLoad, YAMLException } from 'js-yaml';
-import type { CapabilitySlot, McpServerSpec, SkillCapabilities } from './capabilities.js';
+import type { CapabilitySlot, McpServerSpec, PackagesSpec, SkillCapabilities } from './capabilities.js';
 
 export type ManifestCode =
   | 'invalid-yaml'
@@ -14,7 +14,9 @@ export type ManifestCode =
   | 'duplicate-slot'
   | 'invalid-kind'
   | 'invalid-mcp-command'
-  | 'invalid-mcp-transport';
+  | 'invalid-mcp-transport'
+  | 'invalid-package'
+  | 'unsupported-package-ecosystem';
 
 export interface ParsedManifest {
   id: string;
@@ -381,6 +383,45 @@ function parseMcpServers(raw: unknown, allowedHostsAcc: Set<string>): McpServers
   return { ok: true, value: out };
 }
 
+const PACKAGES_PER_ECOSYSTEM_MAX = 32;
+const PACKAGE_NAME_LEN_MAX = 214; // npm's hard limit; generous for pypi
+const SUPPORTED_ECOSYSTEMS = ['npm', 'pypi'] as const;
+// npm: optional @scope/, then lowercase name; pypi: PEP 503-ish name. Both block whitespace
+// and shell metacharacters by construction (defense in depth on top of I4's no-shell rule).
+const NPM_NAME_RE = /^(@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
+const PYPI_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+type PackagesResult =
+  | { ok: true; value: PackagesSpec }
+  | { ok: false; code: ManifestCode; message: string };
+
+function parsePackagesCapability(raw: unknown): PackagesResult {
+  if (raw === undefined || raw === null) return { ok: true, value: { npm: [], pypi: [] } };
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ok: false, code: 'invalid-package', message: 'capabilities.packages must be a mapping of ecosystem to name list' };
+  }
+  const out: PackagesSpec = { npm: [], pypi: [] };
+  for (const [eco, names] of Object.entries(raw as Record<string, unknown>)) {
+    if (!(SUPPORTED_ECOSYSTEMS as readonly string[]).includes(eco)) {
+      return { ok: false, code: 'unsupported-package-ecosystem', message: `package ecosystem '${eco}' is not supported yet (supported: ${SUPPORTED_ECOSYSTEMS.join(', ')})` };
+    }
+    if (!Array.isArray(names)) {
+      return { ok: false, code: 'invalid-package', message: `capabilities.packages.${eco} must be an array of package names` };
+    }
+    if (names.length > PACKAGES_PER_ECOSYSTEM_MAX) {
+      return { ok: false, code: 'invalid-package', message: `capabilities.packages.${eco} exceeds ${PACKAGES_PER_ECOSYSTEM_MAX} entries` };
+    }
+    const re = eco === 'npm' ? NPM_NAME_RE : PYPI_NAME_RE;
+    for (const name of names) {
+      if (typeof name !== 'string' || name.length === 0 || name.length > PACKAGE_NAME_LEN_MAX || !re.test(name)) {
+        return { ok: false, code: 'invalid-package', message: `invalid ${eco} package name: ${JSON.stringify(name)}` };
+      }
+    }
+    out[eco as 'npm' | 'pypi'] = names as string[];
+  }
+  return { ok: true, value: out };
+}
+
 // Matches wildcard host patterns like *.example.com inside an
 // allowedHosts entry, before YAML parsing. YAML treats bare `*` as an
 // alias sigil, so the parser would throw YAMLException instead of
@@ -481,10 +522,11 @@ export function parseSkillManifest(yaml: string): ParseResult {
     sourceUrl = raw;
   }
 
-  // Step 7 & 8 & 9: capabilities
+  // Step 7 & 8 & 9 & 10: capabilities
   let allowedHosts: string[] = [];
   let credentials: CapabilitySlot[] = [];
   let mcpServers: McpServerSpec[] = [];
+  let packages: PackagesSpec = { npm: [], pypi: [] };
 
   if ('capabilities' in doc) {
     const rawCaps = doc['capabilities'];
@@ -528,6 +570,11 @@ export function parseSkillManifest(yaml: string): ParseResult {
       if (!r.ok) return err(r.code, r.message);
       credentials = r.value;
     }
+
+    // Step 10: packages (npm/pypi name-only lists)
+    const pkgResult = parsePackagesCapability(caps['packages']);
+    if (!pkgResult.ok) return err(pkgResult.code, pkgResult.message);
+    packages = pkgResult.value;
   }
 
   return {
@@ -537,7 +584,7 @@ export function parseSkillManifest(yaml: string): ParseResult {
       description,
       version,
       ...(sourceUrl !== undefined ? { sourceUrl } : {}),
-      capabilities: { allowedHosts, credentials, mcpServers },
+      capabilities: { allowedHosts, credentials, mcpServers, packages },
     },
   };
 }

@@ -363,4 +363,33 @@ capabilities:
     expect(github?.capabilities.allowedHosts).toEqual(['api.github.com']);
     expect(github?.capabilities.credentials[0]?.slot).toBe('GITHUB_TOKEN');
   });
+
+  it('skills:resolve carries capabilities.packages through from the stored manifest (D)', async () => {
+    const db = makeKysely();
+    await runSkillsMigration(db);
+    const store = createSkillsStore(db);
+
+    const linearManifest = `name: linear
+description: Linear CLI skill.
+version: 1
+capabilities:
+  allowedHosts:
+    - api.linear.app
+  packages:
+    npm:
+      - "@linear/cli"
+`;
+    await store.upsert({
+      id: 'linear',
+      description: 'Linear CLI skill.',
+      manifestYaml: linearManifest,
+      bodyMd: '# Linear\n',
+      version: 1,
+    });
+
+    const resolved = await store.resolve(['linear']);
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0]?.capabilities.packages.npm).toEqual(['@linear/cli']);
+    expect(resolved[0]?.capabilities.packages.pypi).toEqual([]);
+  });
 });
