@@ -118,6 +118,122 @@ describe('chat-orchestrator keepalive', () => {
     expect(hk.state.kills).toBe(0);
   });
 
+  it('keepalive: a terminated turn (timeout) kills the runner instead of stranding it warm', async () => {
+    vi.useFakeTimers();
+    try {
+      const hk = makeHandle();
+      const services: Record<string, ServiceHandler> = {
+        'agents:resolve': async () => ({ agent: { ...TEST_AGENT } }),
+        'session:queue-work': async () => ({ cursor: 0 }),
+        'session:terminate': async () => ({}),
+        'session:is-alive': async () => ({ alive: false }),
+        'conversations:get': async (_c, input: unknown) => {
+          const i = input as { conversationId: string; userId: string };
+          return { conversation: { conversationId: i.conversationId, userId: i.userId, agentId: 'test-agent', activeSessionId: null, activeReqId: null } };
+        },
+        'conversations:bind-session': async () => undefined,
+        'sandbox:open-session': async () => ({ runnerEndpoint: 'unix:///tmp/m.sock', handle: hk.handle }),
+        'proxy:open-session': async () => ({ proxyEndpoint: 'tcp://127.0.0.1:1', caCertPem: 'CA', envMap: {} }),
+        'proxy:close-session': async () => ({}),
+      };
+      const h = await createTestHarness({
+        services,
+        plugins: [createChatOrchestratorPlugin({
+          runnerBinary: '/irrelevant', chatTimeoutMs: 1_000,
+          keepAlive: true, idleWindowMs: 60_000, idleGraceMs: 1_000,
+        })],
+      });
+
+      // No chat:turn-end is fired → the turn times out (terminated outcome).
+      // A terminated keepalive turn never armed the idle reaper, so the
+      // orchestrator must kill the handle here rather than leave it warm.
+      const p = h.bus.call<unknown, AgentOutcome>('agent:invoke',
+        ctxWith({ sessionId: 's-1', conversationId: 'conv-1', reqId: 'req-1' }),
+        { message: { role: 'user', content: 'hi' } });
+      await vi.advanceTimersByTimeAsync(0);      // drain the spawn
+      await vi.advanceTimersByTimeAsync(1_000);  // chat timeout elapses
+      const out = await p;
+
+      expect(out.kind).toBe('terminated');
+      expect(hk.state.kills).toBe(1);            // killed, NOT stranded warm
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keepalive: credential rotation keeps firing on the 2nd warm turn (tracking survives the per-invoke finally)', async () => {
+    // Agent with a refreshable (non-api-key) credential → the session is
+    // flagged for proxy:rotate-session. The flag must outlive the first
+    // agent:invoke's finally so subsequent turns on the SAME warm runner keep
+    // rotating; clearing it per-invoke would disable rotation after turn 1.
+    const ROTATING_AGENT = {
+      ...TEST_AGENT,
+      allowedHosts: ['api.example.com'],
+      requiredCredentials: { TOKEN: { ref: 'oauth:foo', kind: 'oauth' } },
+    };
+    const conv: Record<string, { activeSessionId: string | null }> = {
+      'conv-1': { activeSessionId: null },
+    };
+    const live = new Set<string>();
+    const hk = makeHandle();
+    const rotates: string[] = [];
+
+    const services: Record<string, ServiceHandler> = {
+      'agents:resolve': async () => ({ agent: { ...ROTATING_AGENT } }),
+      'session:queue-work': async () => ({ cursor: 0 }),
+      'session:terminate': async () => ({}),
+      'session:is-alive': async (_c, input: unknown) => ({
+        alive: live.has((input as { sessionId: string }).sessionId),
+      }),
+      'conversations:get': async (_c, input: unknown) => {
+        const i = input as { conversationId: string; userId: string };
+        return { conversation: {
+          conversationId: i.conversationId, userId: i.userId, agentId: 'test-agent',
+          activeSessionId: conv[i.conversationId]!.activeSessionId, activeReqId: null,
+        } };
+      },
+      'conversations:bind-session': async (_c, input: unknown) => {
+        const i = input as { sessionId: string };
+        conv['conv-1']!.activeSessionId = i.sessionId;
+        live.add(i.sessionId);
+        return undefined;
+      },
+      'sandbox:open-session': async () => ({ runnerEndpoint: 'unix:///tmp/m.sock', handle: hk.handle }),
+      'proxy:open-session': async () => ({ proxyEndpoint: 'tcp://127.0.0.1:1', caCertPem: 'CA', envMap: {} }),
+      'proxy:close-session': async () => ({}),
+      'proxy:rotate-session': async (c: unknown) => {
+        rotates.push((c as { sessionId: string }).sessionId);
+        return { envMap: {} };
+      },
+    };
+
+    const h = await createTestHarness({
+      services,
+      plugins: [createChatOrchestratorPlugin({
+        runnerBinary: '/irrelevant', chatTimeoutMs: 5_000,
+        keepAlive: true, idleWindowMs: 60_000, idleGraceMs: 1_000,
+      })],
+    });
+
+    const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+    // Turn 1 — fresh spawn; onTurnEnd rotates once.
+    fireTurnEnd(h.bus, 's-1', 'req-1');
+    await h.bus.call<unknown, AgentOutcome>('agent:invoke',
+      ctxWith({ sessionId: 's-1', conversationId: 'conv-1', reqId: 'req-1' }),
+      { message: { role: 'user', content: 'hi' } });
+    await flush();
+    expect(rotates).toHaveLength(1);
+
+    // Turn 2 — routed into the warm session; rotation must fire again.
+    fireTurnEnd(h.bus, 's-1', 'req-2');
+    await h.bus.call<unknown, AgentOutcome>('agent:invoke',
+      ctxWith({ sessionId: 's-1', conversationId: 'conv-1', reqId: 'req-2' }),
+      { message: { role: 'user', content: 'again' } });
+    await flush();
+    expect(rotates).toHaveLength(2);
+  });
+
   it('keepalive idle reaper: queues a graceful cancel, then force-kills after grace', async () => {
     vi.useFakeTimers();
     try {

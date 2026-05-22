@@ -1188,6 +1188,11 @@ export function createOrchestrator(
             }
             warmSessions.delete(sessionId);
             cancelledSessions.delete(sessionId);
+            // Rotation tracking lives as long as the warm session. The
+            // per-invoke finally defers its cleanup to here (mirroring the
+            // proxy close below) so every turn on this warm session keeps
+            // rotating credentials; we drop it only once the runner exits.
+            sessionsNeedingRotation.delete(sessionId);
             if (proxyOpened) {
               void bus
                 .call<ProxyCloseSessionInput, Record<string, never>>(
@@ -1350,11 +1355,17 @@ export function createOrchestrator(
       await bus.fire('chat:end', ctx, { outcome });
     }
 
-    // 7. Kill the sandbox if it's still alive — ONE-SHOT ONLY. In keepalive
-    //    mode the runner is left warm and reaped by the idle timer.
+    // 7. Kill the sandbox unless we're deliberately leaving it warm. We keep
+    //    it warm ONLY on a keepalive turn that COMPLETED. A terminated outcome
+    //    (chat-run-timeout, sandbox-exit, chat-run-error) means the runner is
+    //    wedged or already gone — and crucially `armReapTimer` only ran if a
+    //    chat:turn-end fired, which it didn't on these paths. Leaving such a
+    //    session "warm" would strand it (no idle reaper armed) until the
+    //    runner's own idle floor or the pod ceiling. So kill it now.
     //    session:terminate is fired by the sandbox provider's own exit
     //    handler, so we don't call it here — that would double-fire.
-    if (!keepAlive) {
+    const keepWarm = keepAlive && outcome.kind === 'complete';
+    if (!keepWarm) {
       try {
         await handle.kill();
       } catch {
@@ -1364,16 +1375,17 @@ export function createOrchestrator(
 
     return outcome;
     } finally {
-      // I7 — proxy:close-session fires exactly once per fresh-spawn path
-      // that successfully opened a proxy session. Any failure inside the
-      // try (sandbox-open-failed / queue-work-failed / chat-run-timeout /
-      // sandbox-exit / chat:end happy path) flows through this finally.
-      // Best-effort: a failing close shouldn't mask the chat outcome.
-      // I7 — proxy:close fires exactly once per opened proxy session. In
-      // keepalive mode a SUCCESSFUL spawn defers the close to handle.exited
-      // (Step 5); only close here when that deferral didn't happen (one-shot,
-      // or a keepalive spawn that failed before warming the handle).
-      if (proxyOpened && !proxyCloseDeferredToHandle) {
+      // I7 — proxy:close fires exactly once per opened proxy session. We only
+      // reach this block AFTER a successful proxy:open-session (Phase 6 made
+      // the proxy mandatory and the open-failure path returns earlier), so
+      // `proxyOpened` is invariably true here — the close is gated solely on
+      // whether it was deferred to handle.exited. In keepalive mode a
+      // SUCCESSFUL spawn defers BOTH the proxy close AND the rotation-tracking
+      // cleanup to handle.exited (Step 5), so this per-invoke finally only
+      // runs them on the one-shot path and the keepalive-spawn-that-failed-
+      // before-warming path. Best-effort: a failing close shouldn't mask the
+      // chat outcome.
+      if (!proxyCloseDeferredToHandle) {
         await bus
           .call<ProxyCloseSessionInput, Record<string, never>>(
             'proxy:close-session',
@@ -1386,10 +1398,12 @@ export function createOrchestrator(
               err: err instanceof Error ? err : new Error(String(err)),
             });
           });
+        // I10 — drop the rotation flag on the non-warm paths only. A warm
+        // session must keep rotating across turns, so its cleanup is deferred
+        // to handle.exited (Step 5); clearing it here would disable
+        // proxy:rotate-session for every turn after the first.
+        sessionsNeedingRotation.delete(ctx.sessionId);
       }
-      // I10 — drop rotation flag regardless of close outcome. A late
-      // turn-end after this point is a no-op (set lookup misses).
-      sessionsNeedingRotation.delete(ctx.sessionId);
     }
   }
 

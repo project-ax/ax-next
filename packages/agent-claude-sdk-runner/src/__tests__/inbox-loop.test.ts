@@ -136,4 +136,48 @@ describe('inbox-loop idle floor', () => {
     const entry = await inbox.next();
     expect(entry.type).toBe('idle-timeout');
   });
+
+  it('idle floor wins while the poll is still in flight: returns idle-timeout, abandoned poll rejection does not leak', async () => {
+    // The race case finding C / B flag: sleep() (the idle floor) resolves
+    // FIRST, then the in-flight poll rejects later (e.g. SessionInvalidError).
+    // next() must return idle-timeout cleanly — it must NOT throw the
+    // abandoned poll's rejection, and that rejection must not surface as an
+    // unhandled rejection.
+    let unhandled = 0;
+    const onUnhandled = (): void => {
+      unhandled += 1;
+    };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      let nowMs = 1_000_000;
+      // callGet returns a promise that rejects on a real later macrotask —
+      // i.e. the poll is still in flight when the idle floor wins, then fails.
+      const client = {
+        callGet: () =>
+          new Promise((_resolve, reject) =>
+            setTimeout(() => reject(new Error('late poll reject')), 10),
+          ),
+      } as unknown as Parameters<typeof createInboxLoop>[0]['client'];
+
+      const inbox = createInboxLoop({
+        client,
+        idleTimeoutMs: 1,
+        now: () => nowMs,
+        // Resolves on the next microtask (advancing the clock), so the idle
+        // floor wins the race before the 10ms poll rejection.
+        sleep: async (ms: number) => {
+          nowMs += ms;
+        },
+      });
+
+      const entry = await inbox.next();
+      expect(entry).toEqual({ type: 'idle-timeout' });
+
+      // Let the abandoned poll reject, then confirm nothing leaked.
+      await new Promise((r) => setTimeout(r, 25));
+      expect(unhandled).toBe(0);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
 });

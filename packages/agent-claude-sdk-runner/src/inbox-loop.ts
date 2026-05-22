@@ -94,6 +94,14 @@ export function createInboxLoop(opts: InboxLoopOptions): InboxLoop {
       const pollP = opts.client.callGet('session.next-message', {
         cursor: String(cursor),
       }) as Promise<WireResponse>;
+      // When the idle floor wins the race below, pollP is abandoned in-flight.
+      // `Promise.race` already attaches a rejection handler to it (so a late
+      // reject doesn't go unhandled), but we make that explicit — matching the
+      // same belt-and-suspenders pattern in channel-web's thread-list-adapter —
+      // so a future refactor away from Promise.race can't reintroduce a
+      // dangling rejection. A real terminal error still propagates: when pollP
+      // WINS, its rejection flows out through `await Promise.race` below.
+      pollP.catch(() => undefined);
       const idleP = sleep(remaining).then(() => IDLE_SENTINEL);
 
       const raw = await Promise.race([pollP, idleP]);
