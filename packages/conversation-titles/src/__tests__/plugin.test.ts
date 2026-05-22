@@ -320,7 +320,11 @@ describe('@ax/conversation-titles chat:turn-end subscriber', () => {
     expect(stubs.setTitleCalls).toHaveLength(0);
   });
 
-  it('is a no-op when the transcript is empty', async () => {
+  it('is a no-op when the transcript is empty AND the payload has no blocks', async () => {
+    // A genuinely-empty heartbeat turn (no contentBlocks on the payload) has
+    // nothing to title from — stay quiet. This is distinct from the
+    // jsonl-sync-race case below, where the payload DOES carry the assistant
+    // turn's blocks.
     const stubs = makeStubsBus();
     stubs.setGetResult({
       conversation: makeConversation({ title: null }),
@@ -335,6 +339,106 @@ describe('@ax/conversation-titles chat:turn-end subscriber', () => {
     expect(stubs.getCalls).toHaveLength(1);
     expect(stubs.llmCalls).toHaveLength(0);
     expect(stubs.setTitleCalls).toHaveLength(0);
+  });
+
+  it('titles a single-turn chat from the payload when conversations:get lags (jsonl-sync race)', async () => {
+    // Repro of the "chat stays New Chat" bug: under runner-owned-sessions the
+    // jsonl is synced to the host AFTER chat:turn-end can fire, so the first
+    // (and on a single-turn chat, ONLY) title attempt reads an empty
+    // transcript. Before the fix the subscriber bailed at turns.length===0 and
+    // the chat was never titled. The turn-end payload carries the just-ended
+    // assistant turn's blocks, so titling falls back to those.
+    const stubs = makeStubsBus();
+    stubs.setGetResult({
+      conversation: makeConversation({ title: null }),
+      turns: [], // canonical read hasn't caught up to this turn yet
+    });
+    stubs.setLlmResult({
+      text: 'Ocean Haiku',
+      stopReason: 'end_turn',
+      usage: { inputTokens: 1, outputTokens: 1 },
+    });
+    const plugin = createConversationTitlesPlugin();
+    await plugin.init({ bus: stubs.bus, config: {} });
+
+    const ctx = makeCtx({ conversationId: 'c1' });
+    await stubs.bus.fire('chat:turn-end', ctx, {
+      role: 'assistant',
+      contentBlocks: [
+        { type: 'text', text: 'Here is a haiku:\nSilent ocean waves' },
+      ],
+    });
+
+    expect(stubs.getCalls).toHaveLength(1);
+    expect(stubs.llmCalls).toHaveLength(1);
+    expect(stubs.setTitleCalls).toHaveLength(1);
+    expect(stubs.setTitleCalls[0]?.title).toBe('Ocean Haiku');
+    expect(stubs.setTitleCalls[0]?.ifNull).toBe(true);
+  });
+
+  it('includes the user prompt when the read has the user turn but not the assistant turn yet', async () => {
+    // Partial-read window: conversations:get reflects the user turn but not
+    // the assistant turn the jsonl sync is still catching up on. Titling
+    // should combine the user prompt (from the read) with the assistant blocks
+    // (from the payload) so the title gets full context.
+    const stubs = makeStubsBus();
+    stubs.setGetResult({
+      conversation: makeConversation({ title: null }),
+      turns: [turn('user', [{ type: 'text', text: 'create a haiku' }])],
+    });
+    stubs.setLlmResult({
+      text: 'Haiku Request',
+      stopReason: 'end_turn',
+      usage: { inputTokens: 1, outputTokens: 1 },
+    });
+    const plugin = createConversationTitlesPlugin();
+    await plugin.init({ bus: stubs.bus, config: {} });
+
+    const ctx = makeCtx({ conversationId: 'c1' });
+    await stubs.bus.fire('chat:turn-end', ctx, {
+      role: 'assistant',
+      contentBlocks: [{ type: 'text', text: 'Morning frost falls soft' }],
+    });
+
+    expect(stubs.llmCalls).toHaveLength(1);
+    const content = stubs.llmCalls[0]?.messages[0]?.content;
+    expect(content).toContain('User: create a haiku');
+    expect(content).toContain('Assistant: Morning frost falls soft');
+    expect(stubs.setTitleCalls).toHaveLength(1);
+    expect(stubs.setTitleCalls[0]?.title).toBe('Haiku Request');
+  });
+
+  it('does NOT double-count the assistant turn when the read already reflects it', async () => {
+    // When conversations:get HAS the assistant turn, the payload fallback must
+    // not append a duplicate — the canonical read stays authoritative (and the
+    // MAX_TITLE_ATTEMPT_TURNS spend cap keys off it).
+    const stubs = makeStubsBus();
+    stubs.setGetResult({
+      conversation: makeConversation({ title: null }),
+      turns: [
+        turn('user', [{ type: 'text', text: 'Q' }]),
+        turn('assistant', [{ type: 'text', text: 'A' }]),
+      ],
+    });
+    stubs.setLlmResult({
+      text: 'Some Title',
+      stopReason: 'end_turn',
+      usage: { inputTokens: 1, outputTokens: 1 },
+    });
+    const plugin = createConversationTitlesPlugin();
+    await plugin.init({ bus: stubs.bus, config: {} });
+
+    const ctx = makeCtx({ conversationId: 'c1' });
+    await stubs.bus.fire('chat:turn-end', ctx, {
+      role: 'assistant',
+      contentBlocks: [{ type: 'text', text: 'A' }],
+    });
+
+    expect(stubs.llmCalls).toHaveLength(1);
+    // Exactly one "Assistant:" line in the prompt — the canonical turn, not a
+    // duplicate from the payload.
+    const content = String(stubs.llmCalls[0]?.messages[0]?.content);
+    expect(content.match(/Assistant:/g)?.length ?? 0).toBe(1);
   });
 
   it('happy path: reads transcript, calls llm, writes set-title with ifNull=true', async () => {

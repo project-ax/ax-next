@@ -56,12 +56,7 @@ Listed here only so the triggers are easy to find. Per the roadmap, these stay d
 
 ## UI Bugs
 
-- [x] ~~Chat session titles aren't being consistently generated for new chats~~ — fixed (PR #120): bounded retry replaces the one-shot title gate (`@ax/conversation-titles`) + widened `generateTitle` poll window (`channel-web`).
-- [x] ~~When files are attached to a user message, that message doesn't show the attachment chip when loaded again from a previous chat session~~ — fixed (PR #120): the runner-translated text-mention is reconstructed back into an `attachment` block on the `conversations:get` read path, gated to the conversation's own `.ax/uploads/<conversationId>/` prefix.
-
-### UI bug follow-ups
-
-- [x] ~~**Live title refresh after the poll window.** `generateTitle` widened its poll to ~10s, but a title that lands *after* the window still needs a sidebar `list()` refresh (page nav/reload) to surface — there's no push channel.~~ — fixed: the title write point (`conversations:set-title`) fires `conversations:title-updated`; a per-user SSE (`GET /api/chat/title-events`) pushes it to the sidebar (live in-place row update + `list()` resync on connect). The ~10s client poll stays as the active-thread fast path. Design: `docs/plans/2026-05-21-live-title-refresh-sse-design.md`.
+- [x] ~~**Errors resume old session and a chat title bug**~~ — fixed (PR #125). BUG 2/3: `channel-web/runtime.tsx` only cleared `conversationRef` on null and never set it on sidebar-select, so selecting an old chat then sending POSTed `conversationId:null` → a new conversation (lost history). Now mirrors `activeSessionId` into the ref unconditionally. BUG 1: single-turn chats stayed "New Chat" because the runner jsonl syncs ~1s after `chat:turn-end`, so `conversations:get` is empty at the only title attempt — `@ax/conversation-titles` now falls back to the turn-end payload's assistant `contentBlocks`.
 
 ## Web tools (@ax/web-tools, PR for `feat/web-tools-impl`)
 
