@@ -20,13 +20,18 @@ function stubClientFactory() {
         }],
       };
     }
-    return {
-      stop_reason: 'end_turn',
-      content: [{
-        type: 'web_fetch_tool_result', tool_use_id: 's',
-        content: { type: 'web_fetch_result', url: 'https://a.com', content: { type: 'document', title: 'A', source: { type: 'text', media_type: 'text/plain', data: 'hello' } } },
-      }],
-    };
+    if (toolType.startsWith('web_fetch')) {
+      return {
+        stop_reason: 'end_turn',
+        content: [{
+          type: 'web_fetch_tool_result', tool_use_id: 's',
+          content: { type: 'web_fetch_result', url: 'https://a.com', content: { type: 'document', title: 'A', source: { type: 'text', media_type: 'text/plain', data: 'hello' } } },
+        }],
+      };
+    }
+    // Fail fast: an unexpected tool type means a contract regression, not a
+    // case the canary should silently absorb by returning a fetch result.
+    throw new Error(`Unexpected tool type in stub: ${toolType}`);
   });
   return () => ({ messages: { create } }) as never;
 }
@@ -46,7 +51,10 @@ describe('web-tools canary (real tool-dispatcher)', () => {
 
     const search = await bus.call('tool:execute:web_search', ctx(), { id: 'c1', name: 'web_search', input: { query: 'cats' } });
     expect(search).toMatchObject({ results: [{ title: 'A', url: 'https://a.com' }] });
-    expect(JSON.stringify(search)).not.toContain('"X"');
+    // Anthropic's encrypted_content citation artifact must never reach the agent.
+    for (const result of (search as { results: Array<Record<string, unknown>> }).results) {
+      expect(result).not.toHaveProperty('encrypted_content');
+    }
 
     const extract = await bus.call('tool:execute:web_extract', ctx(), { id: 'c2', name: 'web_extract', input: { url: 'https://a.com' } });
     expect(extract).toMatchObject({ url: 'https://a.com', title: 'A', text: 'hello' });
