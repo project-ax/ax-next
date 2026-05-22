@@ -203,6 +203,7 @@ interface ResolvedSkillForOrch {
     allowedHosts: string[];
     credentials: Array<{ slot: string; kind: string; description?: string }>;
     mcpServers: McpServerSpecForOrch[];
+    packages?: { npm?: string[]; pypi?: string[] };
   };
   bodyMd: string;
   manifestYaml: string;
@@ -1000,6 +1001,22 @@ export function createOrchestrator(
         baseCreds[slotDef.slot] = { ref, kind: slotDef.kind };
         slotOwners.set(slotDef.slot, skill.id);
       }
+    }
+
+    // D: auto-allowlist public package registries for any declared ecosystem (I5 — no blanket access).
+    let needsNpmRegistry = false;
+    let needsPypiRegistry = false;
+    for (const attachment of attachments) {
+      const skill = skillById.get(attachment.skillId);
+      if (skill === undefined) continue;
+      const pkgs = skill.capabilities.packages;
+      if (pkgs?.npm?.length) needsNpmRegistry = true;
+      if (pkgs?.pypi?.length) needsPypiRegistry = true;
+    }
+    if (needsNpmRegistry) baseAllowSet.add('registry.npmjs.org');
+    if (needsPypiRegistry) {
+      baseAllowSet.add('pypi.org');
+      baseAllowSet.add('files.pythonhosted.org');
     }
 
     const unionedAllowlist = [...baseAllowSet];
