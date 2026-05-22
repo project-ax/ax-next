@@ -571,6 +571,9 @@ importers:
       '@ax/validator-skill':
         specifier: workspace:*
         version: link:../validator-skill
+      '@ax/web-tools':
+        specifier: workspace:*
+        version: link:../web-tools
       '@ax/workspace-git':
         specifier: workspace:*
         version: link:../workspace-git
