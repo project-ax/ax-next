@@ -45,8 +45,12 @@ service hook).
 
 - **Zero SSRF surface for us.** Anthropic does all fetching. The host only
   ever POSTs to `api.anthropic.com` — already the trusted, allowlisted
-  endpoint. No private-IP guards, no DNS-rebind defense, no HTML-extraction
-  library to own and keep current.
+  endpoint. The hard SSRF protections we'd otherwise own — DNS-rebind defense
+  on a live fetch path, an HTML-extraction library to keep current — aren't
+  needed, because our host never fetches arbitrary URLs. We still apply a
+  lightweight `url-guard` (reject non-`http(s)` + private/loopback/link-local/metadata
+  hosts) on the agent-supplied `web_extract` URL as belt-and-suspenders and to
+  keep the tool's contract honest ("extract a public page", not "probe an address").
 - **No third-party dependency, no new credential.** Reuses the global host
   Anthropic key the system already manages (same source as `@ax/llm-anthropic`).
 - **Exfil isolation.** The fetch runs in a *separate, minimal-context* host
