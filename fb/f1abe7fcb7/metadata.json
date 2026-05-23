@@ -1,0 +1,23 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "fbf1abe7fcb7",
+  "strategy": "manual-commit",
+  "branch": "worktree-chat-qa-sweep",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/fb/f1abe7fcb7/0/metadata.json",
+      "transcript": "/fb/f1abe7fcb7/0/full.jsonl",
+      "content_hash": "/fb/f1abe7fcb7/0/content_hash.txt",
+      "prompt": "/fb/f1abe7fcb7/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 35464,
+    "cache_creation_tokens": 1342941,
+    "cache_read_tokens": 57237900,
+    "output_tokens": 311484,
+    "api_call_count": 205
+  }
+}

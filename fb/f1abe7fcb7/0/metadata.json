@@ -1,0 +1,39 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "fbf1abe7fcb7",
+  "session_id": "3c3833f9-b6d8-4fa4-8cd7-67eb7050d87d",
+  "strategy": "manual-commit",
+  "created_at": "2026-05-23T12:50:51.475981Z",
+  "branch": "worktree-chat-qa-sweep",
+  "checkpoints_count": 1,
+  "files_touched": [],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "911cae1099ec",
+  "token_usage": {
+    "input_tokens": 35464,
+    "cache_creation_tokens": 1342941,
+    "cache_read_tokens": 57237900,
+    "output_tokens": 311484,
+    "api_call_count": 205
+  },
+  "session_metrics": {
+    "turn_count": 4
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 9,
+      "user_lines_removed": 1,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claude/settings.local.json": 8,
+        "docs/plans/2026-05-23-chat-transcript-loss-fix-impl.md": 1
+      },
+      "user_removed_per_file": {
+        "docs/plans/2026-05-23-chat-transcript-loss-fix-impl.md": 1
+      }
+    }
+  ]
+}
