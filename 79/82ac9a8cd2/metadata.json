@@ -1,0 +1,25 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "7982ac9a8cd2",
+  "strategy": "manual-commit",
+  "branch": "worktree-chat-qa-sweep",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "docs/plans/2026-05-23-chat-transcript-loss-fix-impl.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/79/82ac9a8cd2/0/metadata.json",
+      "transcript": "/79/82ac9a8cd2/0/full.jsonl",
+      "content_hash": "/79/82ac9a8cd2/0/content_hash.txt",
+      "prompt": "/79/82ac9a8cd2/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 35891,
+    "cache_creation_tokens": 1360311,
+    "cache_read_tokens": 60001832,
+    "output_tokens": 321761,
+    "api_call_count": 210
+  }
+}
