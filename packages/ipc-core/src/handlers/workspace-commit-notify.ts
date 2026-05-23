@@ -23,6 +23,29 @@ import {
 } from '../errors.js';
 import type { ActionHandler } from './types.js';
 
+// Pull the re-sync envelope fields out of a parent-mismatch PluginError's
+// `cause`. Both backends signal a concurrent-writer advance the same way:
+//   - multi-replica (@ax/workspace-git-server): cause carries BOTH
+//     actualParent + baselineBundleBytes (mismatch detected at export).
+//   - single-replica (@ax/workspace-git-core): cause carries ONLY actualParent
+//     (mismatch detected at apply-bundle's parent-CAS); the handler fetches the
+//     bundle separately via workspace:export-baseline-bundle.
+// Either way the runner needs the (actualParent, baselineBundleBytes) PAIR to
+// rebase its turn and retry.
+function resyncEnvelopeFromCause(
+  cause: unknown,
+): { actualParent?: string; baselineBundleBytes?: string } {
+  const out: { actualParent?: string; baselineBundleBytes?: string } = {};
+  if (cause !== null && typeof cause === 'object') {
+    const c = cause as Record<string, unknown>;
+    if (typeof c.actualParent === 'string') out.actualParent = c.actualParent;
+    if (typeof c.baselineBundleBytes === 'string') {
+      out.baselineBundleBytes = c.baselineBundleBytes;
+    }
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // POST /workspace.commit-notify (Phase 3 — real implementation, Slice 6d)
 //
@@ -148,18 +171,22 @@ export const workspaceCommitNotifyHandler: ActionHandler = async (
     // the runner can rebase and retry (mirrors the apply-bundle
     // parent-mismatch handling below).
     if (err instanceof PluginError && err.code === 'parent-mismatch') {
-      const cause = err.cause as Record<string, unknown> | undefined;
+      const env = resyncEnvelopeFromCause(err.cause);
       const body: Record<string, unknown> = {
         accepted: false as const,
         reason: `parent-mismatch: ${err.message}`,
       };
-      if (cause !== null && typeof cause === 'object') {
-        if (typeof cause.actualParent === 'string') {
-          body.actualParent = cause.actualParent;
-        }
-        if (typeof cause.baselineBundleBytes === 'string') {
-          body.baselineBundleBytes = cause.baselineBundleBytes;
-        }
+      // Only forward the PAIR — the runner ignores actualParent without a
+      // bundle. The multi-replica backend supplies both here; if it ever
+      // supplies only actualParent, this degrades to a bare veto rather than
+      // mis-signalling (the apply-bundle catch below handles the bundle-fetch
+      // case for the single-replica backend).
+      if (
+        env.actualParent !== undefined &&
+        env.baselineBundleBytes !== undefined
+      ) {
+        body.actualParent = env.actualParent;
+        body.baselineBundleBytes = env.baselineBundleBytes;
       }
       const checked = WorkspaceCommitNotifyResponseSchema.safeParse(body);
       if (!checked.success) {
@@ -289,17 +316,70 @@ export const workspaceCommitNotifyHandler: ActionHandler = async (
       applied = out;
     } catch (err) {
       if (err instanceof PluginError && err.code === 'parent-mismatch') {
-        const body = {
+        // A concurrent writer advanced the mirror past the runner's parent. On
+        // the multi-replica backend the mismatch surfaces earlier (at export)
+        // WITH a bundle; on the single-replica backend it surfaces HERE with
+        // only actualParent. Fetch a baseline bundle AT that head (via the
+        // hook — NO direct backend import, invariant #2) so BOTH backends
+        // return the full re-sync envelope instead of a bare veto.
+        const env = resyncEnvelopeFromCause(err.cause);
+        if (
+          env.actualParent !== undefined &&
+          env.baselineBundleBytes === undefined
+        ) {
+          try {
+            const out = await bus.call<
+              WorkspaceExportBaselineBundleInput,
+              WorkspaceExportBaselineBundleOutput
+            >('workspace:export-baseline-bundle', ctx, {
+              version: env.actualParent as WorkspaceVersion,
+            });
+            env.baselineBundleBytes = out.bundleBytes;
+          } catch (exportErr) {
+            // Yet another writer advanced past actualParent between the apply
+            // and this export. If export reports the fresher head + bundle,
+            // forward THAT; otherwise fall back to a bare veto (the runner
+            // rolls back this turn and retries from a fresh materialize).
+            if (
+              exportErr instanceof PluginError &&
+              exportErr.code === 'parent-mismatch'
+            ) {
+              const fresher = resyncEnvelopeFromCause(exportErr.cause);
+              if (fresher.actualParent !== undefined) {
+                env.actualParent = fresher.actualParent;
+              }
+              if (fresher.baselineBundleBytes !== undefined) {
+                env.baselineBundleBytes = fresher.baselineBundleBytes;
+              }
+            } else {
+              logInternalError(
+                ctx.logger,
+                'workspace.commit-notify',
+                exportErr,
+              );
+            }
+          }
+        }
+        const body: Record<string, unknown> = {
           accepted: false as const,
           reason: `parent-mismatch: ${err.message}`,
         };
+        // Only forward the PAIR — the runner ignores actualParent without a
+        // bundle.
+        if (
+          env.actualParent !== undefined &&
+          env.baselineBundleBytes !== undefined
+        ) {
+          body.actualParent = env.actualParent;
+          body.baselineBundleBytes = env.baselineBundleBytes;
+        }
         const checked = WorkspaceCommitNotifyResponseSchema.safeParse(body);
         if (!checked.success) {
           logInternalError(
             ctx.logger,
             'workspace.commit-notify',
             new Error(
-              `response shape drift (parent-mismatch): ${checked.error.message}`,
+              `response shape drift (apply-bundle parent-mismatch): ${checked.error.message}`,
             ),
           );
           return internalError();
