@@ -60,7 +60,7 @@ import { spawn } from 'node:child_process';
 import * as fs from 'node:fs/promises';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { asWorkspaceVersion, PluginError } from '@ax/core';
 import {
@@ -98,6 +98,23 @@ async function git(
     child.once('error', reject);
     child.once('close', (code) => resolve({ code, stdout, stderr }));
   });
+}
+
+/**
+ * Like `git()`, but throws on a non-zero exit so an environmental git
+ * failure (missing binary, EROFS tempdir, etc.) surfaces at the failing
+ * command rather than as a confusing downstream error.
+ */
+async function gitOrThrow(
+  args: readonly string[],
+  cwd?: string,
+  env?: NodeJS.ProcessEnv,
+): Promise<SpawnResult> {
+  const r = await git(args, cwd, env);
+  if (r.code !== 0) {
+    throw new Error(`git ${args.join(' ')} exited ${r.code}: ${r.stderr}`);
+  }
+  return r;
 }
 
 // Matches git-engine.ts's BASELINE_ENV (must stay in sync — determinism contract).
@@ -149,36 +166,31 @@ async function buildRunnerWorkspace(args: {
   //    in git-engine.ts — fixed dates, fixed author env, core.fileMode=false).
   const baselineDir = join(root, 'baseline');
   await fs.mkdir(baselineDir, { recursive: true });
-  await git(['init', '-b', 'main', baselineDir], undefined, SIM_BASELINE_ENV);
-  await git(['-C', baselineDir, 'config', 'core.fileMode', 'false'], undefined, SIM_BASELINE_ENV);
-  await git(['-C', baselineDir, 'commit', '--allow-empty', '-m', 'baseline'], undefined, SIM_BASELINE_ENV);
+  await gitOrThrow(['init', '-b', 'main', baselineDir], undefined, SIM_BASELINE_ENV);
+  await gitOrThrow(['-C', baselineDir, 'config', 'core.fileMode', 'false'], undefined, SIM_BASELINE_ENV);
+  await gitOrThrow(['-C', baselineDir, 'commit', '--allow-empty', '-m', 'baseline'], undefined, SIM_BASELINE_ENV);
   const baselineBundle = join(root, 'baseline.bundle');
-  await git(['-C', baselineDir, 'bundle', 'create', baselineBundle, 'main'], undefined, SIM_BASELINE_ENV);
-  const baselineOid = (await git(['-C', baselineDir, 'rev-parse', 'HEAD'], undefined, SIM_BASELINE_ENV)).stdout.trim();
+  await gitOrThrow(['-C', baselineDir, 'bundle', 'create', baselineBundle, 'main'], undefined, SIM_BASELINE_ENV);
+  const baselineOid = (await gitOrThrow(['-C', baselineDir, 'rev-parse', 'HEAD'], undefined, SIM_BASELINE_ENV)).stdout.trim();
 
   // 2. Clone into working tree.
   const wt = join(root, 'wt');
-  await git(['clone', '--branch', 'main', baselineBundle, wt]);
-  await git(['-C', wt, 'update-ref', 'refs/heads/baseline', 'HEAD']);
-  await git(['-C', wt, 'config', 'user.name', 'ax-runner']);
-  await git(['-C', wt, 'config', 'user.email', 'ax-runner@example.com']);
+  await gitOrThrow(['clone', '--branch', 'main', baselineBundle, wt]);
+  await gitOrThrow(['-C', wt, 'update-ref', 'refs/heads/baseline', 'HEAD']);
+  await gitOrThrow(['-C', wt, 'config', 'user.name', 'ax-runner']);
+  await gitOrThrow(['-C', wt, 'config', 'user.email', 'ax-runner@example.com']);
 
-  // 3. Write turn files (do NOT commit — let caller bundle separately).
+  // 3. Write turn files, then stage + commit them (this is the turn commit
+  //    on top of the baseline; the caller bundles `baseline..main` from it).
   for (const [p, content] of Object.entries(turnFiles)) {
     const abs = join(wt, p);
-    await fs.mkdir(join(wt, require_dirname(p)), { recursive: true });
+    await fs.mkdir(join(wt, dirname(p)), { recursive: true });
     await fs.writeFile(abs, content);
   }
-  await git(['-C', wt, 'add', '-A']);
-  await git(['-C', wt, 'commit', '-m', 'turn']);
+  await gitOrThrow(['-C', wt, 'add', '-A']);
+  await gitOrThrow(['-C', wt, 'commit', '-m', 'turn']);
 
   return { wt, baselineCommit: baselineOid };
-}
-
-/** Minimal dirname that doesn't need path.dirname import */
-function require_dirname(p: string): string {
-  const i = p.lastIndexOf('/');
-  return i === -1 ? '.' : p.slice(0, i);
 }
 
 // ---------------------------------------------------------------------------
@@ -236,30 +248,27 @@ describe('git-engine — concurrent attachments:commit must not drop chat turns'
     'PART A: exportBaselineBundle(V1) returns parent-mismatch+actualParent+bundle when mirror advanced to V2 out-of-band',
     async () => {
       // -----------------------------------------------------------------------
-      // Setup: build a runner workspace + turn bundle (T2) on top of V0.
-      // Then drive the host mirror through:
+      // Setup: drive the host mirror through:
       //   V0 (empty baseline) → V1 (chat turn T1 accepted)
       //                       → V2 (concurrent attachment apply, disjoint path)
-      // The runner still holds parentVersion=V1 when it sends T2.
+      // The runner still holds parentVersion=V1 when it sends its NEXT turn,
+      // so its next commit-notify exports baseline at V1 — but the mirror is
+      // already at V2. PART A asserts that mismatch is reported as a re-sync
+      // signal, not a 500. (We don't need a runner T2 bundle here:
+      // exportBaselineBundle is the trigger, the mirror state is what matters.)
       // -----------------------------------------------------------------------
       const wsId = 'ws-concurrent-attach-regression';
       const tmpRoot = mkdtempSync(join(tmpdir(), 'ax-runner-sim-'));
 
-      let turnBundle: string;
-      let baselineCommit: string;
-      let v1: string;
-      let v2: string;
-
       try {
         // --- Step 1: Simulate runner's first turn (T1) against empty workspace.
         // Build runner workspace with a chat turn file (.ax/projects/…/t1.jsonl).
-        const { wt: wt1, baselineCommit: b0 } = await buildRunnerWorkspace({
+        const { wt: wt1, baselineCommit } = await buildRunnerWorkspace({
           root: join(tmpRoot, 'turn1'),
           turnFiles: {
             '.ax/projects/proj1/t1.jsonl': '{"role":"assistant","text":"hello"}\n',
           },
         });
-        baselineCommit = b0;
 
         const t1BundleB64 = await buildTurnBundle(wt1);
 
@@ -270,7 +279,7 @@ describe('git-engine — concurrent attachments:commit must not drop chat turns'
           parent: null,
           reason: 'turn 1',
         });
-        v1 = r1.version as string;
+        const v1 = r1.version as string;
         expect(v1).toMatch(/^[0-9a-f]{40}$/);
 
         // --- Step 2: Out-of-band attachment apply → V2.
@@ -287,70 +296,55 @@ describe('git-engine — concurrent attachments:commit must not drop chat turns'
           parent: asWorkspaceVersion(v1),
           reason: 'attachment upload',
         });
-        v2 = r2.version as string;
+        const v2 = r2.version as string;
         expect(v2).toMatch(/^[0-9a-f]{40}$/);
         expect(v2).not.toBe(v1);
 
-        // --- Step 3: Build runner's T2 turn (STILL on top of V1, unaware of V2).
-        // Runner's baseline is V1; it commits a new turn on top of it.
-        const { wt: wt2 } = await buildRunnerWorkspace({
-          root: join(tmpRoot, 'turn2'),
-          turnFiles: {
-            '.ax/projects/proj1/t2.jsonl': '{"role":"assistant","text":"world"}\n',
-          },
-        });
-        // wt2 was built off the deterministic empty baseline. We need to rebase it
-        // onto V1 so the parent is correct. For the test's purpose we use the
-        // already-committed wt2 as the T2 bundle (stale parent=b0).
-        // We'll call exportBaselineBundle with version=V1 to trigger the
-        // parent-mismatch signal.
-        turnBundle = await buildTurnBundle(wt2);
+        // ---------------------------------------------------------------------
+        // PART A: Call exportBaselineBundle(wsId, { version: V1 }).
+        // The mirror is now at V2. This MUST throw PluginError{code:'parent-mismatch'}
+        // with cause.actualParent===V2 and cause.baselineBundleBytes non-empty.
+        //
+        // PRE-FIX behaviour: exportBaselineBundle would call exportMirrorBundle
+        // which calls git rev-parse + verifies headOid===oid. When oid !== head,
+        // the OLD code threw a plain Error("mirror head … concurrent writer"),
+        // NOT a PluginError — so the handler escalated to 500 and the runner
+        // looped forever. The pre-fix exportMirrorBundle did NOT bundle the
+        // current head, so the runner had no way to resync.
+        //
+        // POST-FIX behaviour: exportBaselineBundle detects oid !== head, bundles
+        // the CURRENT head (V2), and throws PluginError{code:'parent-mismatch'}
+        // with cause.actualParent=V2 and cause.baselineBundleBytes=<bundle@V2>.
+        // ---------------------------------------------------------------------
+        const err = await harness.engine
+          .exportBaselineBundle(wsId, { version: asWorkspaceVersion(v1) })
+          .catch((e: unknown) => e);
+
+        // The export MUST fail — accepted at V1 when mirror is at V2 is wrong.
+        expect(err).toBeInstanceOf(PluginError);
+        const pe = err as PluginError;
+        expect(pe.code).toBe('parent-mismatch');
+
+        const cause = pe.cause as {
+          actualParent: string;
+          baselineBundleBytes: string;
+        };
+
+        // actualParent MUST be V2 (the real mirror head after the attachment apply).
+        expect(cause.actualParent).toBe(v2);
+
+        // baselineBundleBytes MUST be a real (non-trivial) git bundle.
+        expect(typeof cause.baselineBundleBytes).toBe('string');
+        expect(cause.baselineBundleBytes.length).toBeGreaterThan(100);
+
+        // Sanity: the bundle bytes are valid base64.
+        const bundleBytes = Buffer.from(cause.baselineBundleBytes, 'base64');
+        // A valid git bundle starts with "# v2 git bundle\n" or "# v3 git bundle\n".
+        const header = bundleBytes.slice(0, 20).toString('ascii');
+        expect(header).toMatch(/^# v[23] git bundle/);
       } finally {
         await fs.rm(tmpRoot, { recursive: true, force: true });
       }
-
-      // -----------------------------------------------------------------------
-      // PART A: Call exportBaselineBundle(wsId, { version: V1 }).
-      // The mirror is now at V2. This MUST throw PluginError{code:'parent-mismatch'}
-      // with cause.actualParent===V2 and cause.baselineBundleBytes non-empty.
-      //
-      // PRE-FIX behaviour: exportBaselineBundle would call exportMirrorBundle
-      // which calls git rev-parse + verifies headOid===oid. When oid !== head,
-      // the OLD code threw a plain Error("mirror head … concurrent writer"),
-      // NOT a PluginError — so the handler escalated to 500 and the runner
-      // looped forever. The pre-fix exportMirrorBundle did NOT bundle the
-      // current head, so the runner had no way to resync.
-      //
-      // POST-FIX behaviour: exportBaselineBundle detects oid !== head, bundles
-      // the CURRENT head (V2), and throws PluginError{code:'parent-mismatch'}
-      // with cause.actualParent=V2 and cause.baselineBundleBytes=<bundle@V2>.
-      // -----------------------------------------------------------------------
-      const err = await harness.engine
-        .exportBaselineBundle(wsId, { version: asWorkspaceVersion(v1) })
-        .catch((e: unknown) => e);
-
-      // The export MUST fail — accepted at V1 when mirror is at V2 is wrong.
-      expect(err).toBeInstanceOf(PluginError);
-      const pe = err as PluginError;
-      expect(pe.code).toBe('parent-mismatch');
-
-      const cause = pe.cause as {
-        actualParent: string;
-        baselineBundleBytes: string;
-      };
-
-      // actualParent MUST be V2 (the real mirror head after the attachment apply).
-      expect(cause.actualParent).toBe(v2);
-
-      // baselineBundleBytes MUST be a real (non-trivial) git bundle.
-      expect(typeof cause.baselineBundleBytes).toBe('string');
-      expect(cause.baselineBundleBytes.length).toBeGreaterThan(100);
-
-      // Sanity: the bundle bytes are valid base64.
-      const bundleBytes = Buffer.from(cause.baselineBundleBytes, 'base64');
-      // A valid git bundle starts with "# v2 git bundle\n" or "# v3 git bundle\n".
-      const header = bundleBytes.slice(0, 20).toString('ascii');
-      expect(header).toMatch(/^# v[23] git bundle/);
     },
     30_000,
   );
