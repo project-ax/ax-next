@@ -20,6 +20,17 @@ function makeCtx(workspaceRoot: string) {
 }
 
 /**
+ * Wrap a bare tool input in the host-execution `ToolCall` envelope
+ * `{ id, name, input }` — the exact shape the `tool.execute-host` IPC handler
+ * forwards to the `tool:execute:<name>` service hook (see ipc-core
+ * `tool-execute-host.ts`). Calling the hook with bare input would mask the
+ * `call.input` extraction bug this suite is meant to catch.
+ */
+function asToolCall(input: Record<string, unknown>) {
+  return { id: 'call-1', name: 'memory_note', input };
+}
+
+/**
  * Build a bus wired with a stub `tool:register` that records the last
  * registered descriptor.
  */
@@ -100,12 +111,12 @@ describe('tools/memory-note', () => {
       await registerMemoryNote(bus);
 
       const ctx = makeCtx(workspaceRoot);
-      const out = await bus.call('tool:execute:memory_note', ctx, {
+      const out = await bus.call('tool:execute:memory_note', ctx, asToolCall({
         subject: 'react',
         content: 'User has used React for 5 years',
         factType: 'preference',
         confidence: 0.9,
-      });
+      }));
 
       expect(out).toEqual({ ok: true, path: expect.stringContaining('inbox/') });
 
@@ -125,10 +136,10 @@ describe('tools/memory-note', () => {
       await registerMemoryNote(bus);
 
       const ctx = makeCtx(workspaceRoot);
-      const out = await bus.call('tool:execute:memory_note', ctx, {
+      const out = await bus.call('tool:execute:memory_note', ctx, asToolCall({
         subject: 'creds',
         content: 'My API key is sk-ant-XXXXXXXXXXXXXXXXXXXXX',
-      });
+      }));
 
       expect(out).toEqual({
         rejected: true,
@@ -152,10 +163,10 @@ describe('tools/memory-note', () => {
       await registerMemoryNote(bus);
 
       const ctx = makeCtx(workspaceRoot);
-      const out = await bus.call('tool:execute:memory_note', ctx, {
+      const out = await bus.call('tool:execute:memory_note', ctx, asToolCall({
         subject: 'sk-ant-XXXXXXXXXXXXXXXXXXXXX',
         content: 'A perfectly innocuous-looking fact body.',
-      });
+      }));
 
       expect(out).toEqual({
         rejected: true,
@@ -177,12 +188,12 @@ describe('tools/memory-note', () => {
       await registerMemoryNote(bus);
 
       const ctx = makeCtx(workspaceRoot);
-      const out = await bus.call('tool:execute:memory_note', ctx, {
+      const out = await bus.call('tool:execute:memory_note', ctx, asToolCall({
         // subject hits anthropic-api-key; content hits email — both kinds
         // must surface so the agent can see exactly what the gate rejected.
         subject: 'sk-ant-XXXXXXXXXXXXXXXXXXXXX',
         content: 'My address is alice@example.com',
-      });
+      }));
 
       expect(out).toMatchObject({
         rejected: true,
@@ -204,11 +215,11 @@ describe('tools/memory-note', () => {
       await registerMemoryNote(bus);
 
       const ctx = makeCtx(workspaceRoot);
-      const out = await bus.call('tool:execute:memory_note', ctx, {
+      const out = await bus.call('tool:execute:memory_note', ctx, asToolCall({
         subject: 'misc',
         content: 'Some generic fact',
         factType: 'invalid-type',
-      });
+      }));
 
       expect(out).toMatchObject({ ok: true });
 
@@ -223,11 +234,11 @@ describe('tools/memory-note', () => {
       await registerMemoryNote(bus);
 
       const ctx = makeCtx(workspaceRoot);
-      const out = await bus.call('tool:execute:memory_note', ctx, {
+      const out = await bus.call('tool:execute:memory_note', ctx, asToolCall({
         subject: 'misc',
         content: 'Another fact',
         confidence: 1.5,
-      });
+      }));
 
       expect(out).toMatchObject({ ok: true });
 
@@ -240,11 +251,11 @@ describe('tools/memory-note', () => {
       await registerMemoryNote(bus);
 
       const ctx = makeCtx(workspaceRoot);
-      const out = await bus.call('tool:execute:memory_note', ctx, {
+      const out = await bus.call('tool:execute:memory_note', ctx, asToolCall({
         subject: 'misc',
         content: 'Yet another fact',
         confidence: NaN,
-      });
+      }));
 
       expect(out).toMatchObject({ ok: true });
 
@@ -259,10 +270,10 @@ describe('tools/memory-note', () => {
       await registerMemoryNote(bus);
 
       const ctx = makeCtx(workspaceRoot);
-      const out = await bus.call('tool:execute:memory_note', ctx, {
+      const out = await bus.call('tool:execute:memory_note', ctx, asToolCall({
         subject: '',
         content: 'x',
-      });
+      }));
 
       expect(out).toEqual({ error: 'invalid-input' });
     });
@@ -272,9 +283,9 @@ describe('tools/memory-note', () => {
       await registerMemoryNote(bus);
 
       const ctx = makeCtx(workspaceRoot);
-      const out = await bus.call('tool:execute:memory_note', ctx, {
+      const out = await bus.call('tool:execute:memory_note', ctx, asToolCall({
         content: 'x',
-      });
+      }));
 
       expect(out).toEqual({ error: 'invalid-input' });
     });
@@ -284,9 +295,9 @@ describe('tools/memory-note', () => {
       await registerMemoryNote(bus);
 
       const ctx = makeCtx(workspaceRoot);
-      const out = await bus.call('tool:execute:memory_note', ctx, {
+      const out = await bus.call('tool:execute:memory_note', ctx, asToolCall({
         subject: 'x',
-      });
+      }));
 
       expect(out).toEqual({ error: 'invalid-input' });
     });
@@ -296,10 +307,10 @@ describe('tools/memory-note', () => {
       await registerMemoryNote(bus);
 
       const ctx = makeCtx(workspaceRoot);
-      const out = await bus.call('tool:execute:memory_note', ctx, {
+      const out = await bus.call('tool:execute:memory_note', ctx, asToolCall({
         subject: 'x',
         content: '',
-      });
+      }));
 
       expect(out).toEqual({ error: 'invalid-input' });
     });
@@ -311,10 +322,10 @@ describe('tools/memory-note', () => {
       await registerMemoryNote(bus);
 
       const ctx = makeCtx(workspaceRoot);
-      const out = await bus.call('tool:execute:memory_note', ctx, {
+      const out = await bus.call('tool:execute:memory_note', ctx, asToolCall({
         subject: 'node',
         content: 'User prefers Node.js for backend',
-      });
+      }));
 
       expect(out).toMatchObject({ ok: true });
 
@@ -327,10 +338,10 @@ describe('tools/memory-note', () => {
       await registerMemoryNote(bus);
 
       const ctx = makeCtx(workspaceRoot);
-      const out = await bus.call('tool:execute:memory_note', ctx, {
+      const out = await bus.call('tool:execute:memory_note', ctx, asToolCall({
         subject: 'node',
         content: 'User prefers Node.js for backend',
-      });
+      }));
 
       expect(out).toMatchObject({ ok: true });
 
@@ -345,10 +356,10 @@ describe('tools/memory-note', () => {
       await registerMemoryNote(bus);
 
       const ctx = makeCtx(workspaceRoot);
-      await bus.call('tool:execute:memory_note', ctx, {
+      await bus.call('tool:execute:memory_note', ctx, asToolCall({
         subject: 'test',
         content: 'A well-known fact',
-      });
+      }));
 
       const fm = await readFirstInboxFrontmatter(workspaceRoot);
       expect(fm['source_messages']).toBe(0);

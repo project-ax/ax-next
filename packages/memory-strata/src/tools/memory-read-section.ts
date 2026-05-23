@@ -45,12 +45,16 @@ export async function registerMemoryReadSection(bus: HookBus): Promise<void> {
   await bus.call('tool:register', initCtx, MEMORY_READ_SECTION_DESCRIPTOR);
 
   bus.registerService<
-    { docId?: unknown; header?: unknown },
+    { input?: unknown },
     { body: string } | { error: string }
   >(
     'tool:execute:memory_read_section',
     PLUGIN_NAME,
-    async (ctx, input) => {
+    async (ctx, call) => {
+      // The `tool.execute-host` IPC handler forwards the full ToolCall
+      // `{ id, name, input }` to this hook (see ipc-core tool-execute-host.ts).
+      // The model-supplied arguments live under `call.input`, not on `call`.
+      const input = (call?.input ?? {}) as { docId?: unknown; header?: unknown };
       const docId = typeof input?.docId === 'string' ? input.docId : '';
       const header = typeof input?.header === 'string' ? input.header.trim() : '';
 

@@ -24,6 +24,17 @@ function makeCtx() {
 }
 
 /**
+ * Wrap a bare tool input in the host-execution `ToolCall` envelope
+ * `{ id, name, input }` — the exact shape the `tool.execute-host` IPC handler
+ * forwards to the `tool:execute:<name>` service hook (see ipc-core
+ * `tool-execute-host.ts`). Calling the hook with bare input would mask the
+ * `call.input` extraction bug this suite is meant to catch.
+ */
+function asToolCall(input: Record<string, unknown>) {
+  return { id: 'call-1', name: 'memory_search', input };
+}
+
+/**
  * Build a bus wired with:
  *  - a stub `tool:register` that records the last registered descriptor
  *  - a stub `memory:index:search` that records captured inputs and returns
@@ -89,7 +100,7 @@ describe('tools/memory-search', () => {
       await registerMemorySearch(bus);
 
       const ctx = makeCtx();
-      const out = await bus.call('tool:execute:memory_search', ctx, { query: 'react' });
+      const out = await bus.call('tool:execute:memory_search', ctx, asToolCall({ query: 'react' }));
 
       expect(out).toEqual({ results: FIXTURE_RESULTS });
     });
@@ -99,7 +110,7 @@ describe('tools/memory-search', () => {
       await registerMemorySearch(bus);
 
       const ctx = makeCtx();
-      await bus.call('tool:execute:memory_search', ctx, { query: 'foo' });
+      await bus.call('tool:execute:memory_search', ctx, asToolCall({ query: 'foo' }));
 
       expect(capturedSearchInputs).toHaveLength(1);
       expect((capturedSearchInputs[0] as Record<string, unknown>).topK).toBe(5);
@@ -110,7 +121,7 @@ describe('tools/memory-search', () => {
       await registerMemorySearch(bus);
 
       const ctx = makeCtx();
-      await bus.call('tool:execute:memory_search', ctx, { query: 'foo', topK: 10 });
+      await bus.call('tool:execute:memory_search', ctx, asToolCall({ query: 'foo', topK: 10 }));
 
       expect(capturedSearchInputs).toHaveLength(1);
       expect((capturedSearchInputs[0] as Record<string, unknown>).topK).toBe(10);
@@ -126,7 +137,7 @@ describe('tools/memory-search', () => {
         await registerMemorySearch(bus);
 
         const ctx = makeCtx();
-        await bus.call('tool:execute:memory_search', ctx, { query: 'foo', topK: input });
+        await bus.call('tool:execute:memory_search', ctx, asToolCall({ query: 'foo', topK: input }));
 
         expect((capturedSearchInputs[0] as Record<string, unknown>).topK).toBe(expected);
       });
@@ -136,7 +147,7 @@ describe('tools/memory-search', () => {
         await registerMemorySearch(bus);
 
         const ctx = makeCtx();
-        await bus.call('tool:execute:memory_search', ctx, { query: 'foo', topK: 'banana' });
+        await bus.call('tool:execute:memory_search', ctx, asToolCall({ query: 'foo', topK: 'banana' }));
 
         expect((capturedSearchInputs[0] as Record<string, unknown>).topK).toBe(5);
       });
@@ -147,10 +158,10 @@ describe('tools/memory-search', () => {
       await registerMemorySearch(bus);
 
       const ctx = makeCtx();
-      await bus.call('tool:execute:memory_search', ctx, {
+      await bus.call('tool:execute:memory_search', ctx, asToolCall({
         query: 'foo',
         categoryFilter: 'preference',
-      });
+      }));
 
       expect(capturedSearchInputs).toHaveLength(1);
       expect((capturedSearchInputs[0] as Record<string, unknown>).categoryFilter).toBe(
@@ -163,7 +174,7 @@ describe('tools/memory-search', () => {
       await registerMemorySearch(bus);
 
       const ctx = makeCtx();
-      await bus.call('tool:execute:memory_search', ctx, { query: 'foo' });
+      await bus.call('tool:execute:memory_search', ctx, asToolCall({ query: 'foo' }));
 
       expect(capturedSearchInputs).toHaveLength(1);
       expect(

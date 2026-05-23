@@ -24,6 +24,17 @@ function makeCtx(workspaceRoot: string) {
 }
 
 /**
+ * Wrap a bare tool input in the host-execution `ToolCall` envelope
+ * `{ id, name, input }` — the exact shape the `tool.execute-host` IPC handler
+ * forwards to the `tool:execute:<name>` service hook (see ipc-core
+ * `tool-execute-host.ts`). Calling the hook with bare input would mask the
+ * `call.input` extraction bug this suite is meant to catch.
+ */
+function asToolCall(input: Record<string, unknown>) {
+  return { id: 'call-1', name: 'memory_read_section', input };
+}
+
+/**
  * Build a bus wired with a stub `tool:register` that records the last
  * registered descriptor.
  */
@@ -132,10 +143,10 @@ describe('tools/memory-read-section', () => {
       await writeMultiSectionDoc(workspaceRoot, 'preference', 'react');
 
       const ctx = makeCtx(workspaceRoot);
-      const out = await bus.call('tool:execute:memory_read_section', ctx, {
+      const out = await bus.call('tool:execute:memory_read_section', ctx, asToolCall({
         docId: 'preference/react',
         header: 'Facts',
-      });
+      }));
 
       expect(out).toEqual({
         body: '- Prefers React over Vue\n- Uses hooks extensively',
@@ -150,9 +161,9 @@ describe('tools/memory-read-section', () => {
       await writeMultiSectionDoc(workspaceRoot, 'preference', 'react');
 
       const ctx = makeCtx(workspaceRoot);
-      const out = await bus.call('tool:execute:memory_read_section', ctx, {
+      const out = await bus.call('tool:execute:memory_read_section', ctx, asToolCall({
         docId: 'preference/react',
-      });
+      }));
 
       expect((out as { body: string }).body).toContain('## Facts');
       expect((out as { body: string }).body).toContain('## Open Questions');
@@ -165,9 +176,9 @@ describe('tools/memory-read-section', () => {
       await registerMemoryReadSection(bus);
 
       const ctx = makeCtx(workspaceRoot);
-      const out = await bus.call('tool:execute:memory_read_section', ctx, {
+      const out = await bus.call('tool:execute:memory_read_section', ctx, asToolCall({
         docId: 'preference/nonexistent',
-      });
+      }));
 
       expect(out).toEqual({ error: 'doc-not-found' });
     });
@@ -191,10 +202,10 @@ describe('tools/memory-read-section', () => {
       });
 
       const ctx = makeCtx(workspaceRoot);
-      const out = await bus.call('tool:execute:memory_read_section', ctx, {
+      const out = await bus.call('tool:execute:memory_read_section', ctx, asToolCall({
         docId: 'preference/react',
         header: 'NonExistentSection',
-      });
+      }));
 
       expect(out).toEqual({ error: 'header-not-found' });
     });
@@ -217,7 +228,7 @@ describe('tools/memory-read-section', () => {
         await registerMemoryReadSection(bus);
 
         const ctx = makeCtx(workspaceRoot);
-        const out = await bus.call('tool:execute:memory_read_section', ctx, { docId });
+        const out = await bus.call('tool:execute:memory_read_section', ctx, asToolCall({ docId }));
 
         expect(out).toEqual({ error: 'invalid-docId' });
       });
@@ -230,9 +241,9 @@ describe('tools/memory-read-section', () => {
       await registerMemoryReadSection(bus);
 
       const ctx = makeCtx(workspaceRoot);
-      const out = await bus.call('tool:execute:memory_read_section', ctx, {
+      const out = await bus.call('tool:execute:memory_read_section', ctx, asToolCall({
         docId: 'unknown-category/foo',
-      });
+      }));
 
       expect(out).toEqual({ error: 'invalid-docId' });
     });

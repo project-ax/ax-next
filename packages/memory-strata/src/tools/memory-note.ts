@@ -54,14 +54,23 @@ export async function registerMemoryNote(bus: HookBus): Promise<void> {
   await bus.call('tool:register', initCtx, MEMORY_NOTE_DESCRIPTOR);
 
   bus.registerService<
-    { subject?: unknown; content?: unknown; factType?: unknown; confidence?: unknown },
+    { input?: unknown },
     | { ok: true; path: string }
     | { rejected: true; reason: 'sensitive'; kinds: string[] }
     | { error: string }
   >(
     'tool:execute:memory_note',
     PLUGIN_NAME,
-    async (ctx, input) => {
+    async (ctx, call) => {
+      // The `tool.execute-host` IPC handler forwards the full ToolCall
+      // `{ id, name, input }` to this hook (see ipc-core tool-execute-host.ts).
+      // The model-supplied arguments live under `call.input`, not on `call`.
+      const input = (call?.input ?? {}) as {
+        subject?: unknown;
+        content?: unknown;
+        factType?: unknown;
+        confidence?: unknown;
+      };
       // Validate subject + content are non-empty strings.
       const subject = typeof input?.subject === 'string' ? input.subject.trim() : '';
       const content = typeof input?.content === 'string' ? input.content.trim() : '';
