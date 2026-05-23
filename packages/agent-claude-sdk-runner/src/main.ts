@@ -37,6 +37,7 @@ import {
 } from './git-workspace.js';
 import { createLocalDispatcher } from './local-dispatcher.js';
 import { buildToolCacheEnv } from './tool-cache-env.js';
+import { buildPythonVenvEnv, scaffoldPythonVenv } from './python-venv.js';
 import { createPostToolUseHook } from './post-tool-use.js';
 import { createPreToolUseHook } from './pre-tool-use.js';
 import { setupProxy } from './proxy-startup.js';
@@ -205,6 +206,9 @@ export async function main(): Promise<number> {
   // reject our thin bundle with "Repository lacks these prerequisite
   // commits".
   let initialBaselineCommit: string;
+  // Set true once the session Python venv exists (created or pre-present).
+  // Gates the venv env wiring + system-prompt note below.
+  let pythonVenvReady = false;
   try {
     const matResp = (await client.call(
       'workspace.materialize',
@@ -244,6 +248,13 @@ export async function main(): Promise<number> {
     const claudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
     if (claudeConfigDir) {
       await scaffoldSdkProjectsSymlink(env.workspaceRoot, claudeConfigDir);
+    }
+    // Create a session-scoped Python venv on the ephemeral tier so the agent's
+    // `pip install` + `import` Just Work (uv seeds pip; the image has no
+    // python3-pip). Best-effort + gated on the ephemeral tier — a venv failure
+    // must not abort the session. See python-venv.ts.
+    if (env.ephemeralRoot) {
+      pythonVenvReady = await scaffoldPythonVenv(env.ephemeralRoot);
     }
   } catch (err) {
     process.stderr.write(
@@ -604,6 +615,19 @@ export async function main(): Promise<number> {
           // tool-cache-env.ts. Spread AFTER HOME so an ephemeral root always
           // wins for the cache vars (HOME stays the workspace root).
           ...buildToolCacheEnv(env.ephemeralRoot),
+          // Activate the session Python venv (PATH + VIRTUAL_ENV + pip CA
+          // trust) so `pip install` reaches the venv and trusts the proxy
+          // MITM CA. Gated on the scaffold actually succeeding (pythonVenvReady).
+          // Spread AFTER anthropicEnv so PATH/VIRTUAL_ENV win. caCertFile is the
+          // same proxy CA PEM the Node/uv tools already trust (SSL_CERT_FILE /
+          // NODE_EXTRA_CA_CERTS, forwarded by proxy-startup). See python-venv.ts.
+          ...buildPythonVenvEnv({
+            ephemeralRoot: pythonVenvReady ? env.ephemeralRoot : undefined,
+            currentPath: proxyStartup.anthropicEnv.PATH,
+            caCertFile:
+              proxyStartup.anthropicEnv.SSL_CERT_FILE ??
+              proxyStartup.anthropicEnv.NODE_EXTRA_CA_CERTS,
+          }),
         },
         cwd: env.workspaceRoot,
         // Session-scoped scratch tier. When the sandbox provided an
@@ -685,6 +709,7 @@ export async function main(): Promise<number> {
         systemPrompt: buildSystemPrompt(
           agentConfig.systemPrompt,
           env.ephemeralRoot,
+          pythonVenvReady,
         ),
       },
     });

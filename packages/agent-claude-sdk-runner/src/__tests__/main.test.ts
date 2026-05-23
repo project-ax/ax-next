@@ -104,6 +104,15 @@ vi.mock('../git-workspace.js', async (importOriginal) => {
   };
 });
 
+// Mock ONLY the venv scaffold (it spawns `uv`) so these unit tests stay
+// hermetic. `buildPythonVenvEnv` / `pythonVenvDir` stay real via `...actual`
+// so the env-literal assertions below exercise the real env builder.
+const scaffoldPythonVenvMock = vi.fn().mockResolvedValue(true);
+vi.mock('../python-venv.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../python-venv.js')>();
+  return { ...actual, scaffoldPythonVenv: scaffoldPythonVenvMock };
+});
+
 // Mock the transcript-flush seam. `readLastTurnUuid` defaults to undefined
 // (the fake AX_WORKSPACE_ROOT has no jsonl — matching real behavior).
 // `waitForTurnTranscript` defaults to a fast no-op so tests that yield an
@@ -312,6 +321,8 @@ beforeEach(() => {
   readLastTurnUuidMock.mockResolvedValue(undefined);
   waitForTurnTranscriptMock.mockReset();
   waitForTurnTranscriptMock.mockResolvedValue(undefined);
+  scaffoldPythonVenvMock.mockReset();
+  scaffoldPythonVenvMock.mockResolvedValue(true);
   createIpcClientMock = vi.fn();
   createInboxLoopMock = vi.fn();
 });
@@ -2329,6 +2340,106 @@ describe('main()', () => {
       expect(rc).toBe(0);
 
       expect(process.env.HOME).toBe(homeBefore);
+    });
+  });
+
+  describe('Python venv activation', () => {
+    // Same scaffolding as the HOME-redirect happy path, but with an ephemeral
+    // root + a forwarded proxy CA so buildPythonVenvEnv produces the full set.
+    function venvEnv() {
+      return {
+        ...COMPLETE_ENV,
+        AX_EPHEMERAL_ROOT: '/ephemeral',
+        SSL_CERT_FILE: '/etc/ax/proxy-ca.crt',
+      };
+    }
+    function wireClient() {
+      fakeClient = buildFakeClient();
+      fakeClient.call.mockImplementation(async (action: string) => {
+        if (action === 'session.get-config') {
+          return {
+            userId: 'u-test',
+            agentId: 'a-test',
+            agentConfig: {
+              systemPrompt: '',
+              allowedTools: [],
+              mcpConfigIds: [],
+              model: 'claude-sonnet-4-7',
+            },
+            conversationId: null,
+            runnerSessionId: null,
+          };
+        }
+        if (action === 'workspace.materialize') return { bundleBytes: '' };
+        if (action === 'tool.list') return { tools: [] };
+        throw new Error(`unexpected call: ${action}`);
+      });
+      fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
+      queryMock.mockImplementation(
+        ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+          return (async function* () {
+            const it = prompt[Symbol.asyncIterator]();
+            await it.next();
+            yield assistantText('ok');
+            yield resultSuccess();
+            await it.next();
+          })();
+        },
+      );
+    }
+
+    it('activates the venv in the SDK env when scaffold succeeds', async () => {
+      setEnv(venvEnv());
+      scaffoldPythonVenvMock.mockResolvedValue(true);
+      wireClient();
+
+      const { main } = await import('../main.js');
+      expect(await main()).toBe(0);
+
+      expect(scaffoldPythonVenvMock).toHaveBeenCalledWith('/ephemeral');
+      const queryArg = queryMock.mock.calls[0]?.[0] as {
+        options: { env: Record<string, string> };
+      };
+      expect(queryArg.options.env.VIRTUAL_ENV).toBe('/ephemeral/py');
+      expect(queryArg.options.env.PATH.startsWith('/ephemeral/py/bin:')).toBe(
+        true,
+      );
+      expect(queryArg.options.env.PIP_CERT).toBe('/etc/ax/proxy-ca.crt');
+      expect(queryArg.options.env.REQUESTS_CA_BUNDLE).toBe(
+        '/etc/ax/proxy-ca.crt',
+      );
+    });
+
+    it('does NOT activate the venv when scaffold fails', async () => {
+      setEnv(venvEnv());
+      scaffoldPythonVenvMock.mockResolvedValue(false);
+      wireClient();
+
+      const { main } = await import('../main.js');
+      expect(await main()).toBe(0);
+
+      const queryArg = queryMock.mock.calls[0]?.[0] as {
+        options: { env: Record<string, string> };
+      };
+      expect(queryArg.options.env.VIRTUAL_ENV).toBeUndefined();
+      expect(queryArg.options.env.PATH.startsWith('/ephemeral/py/bin')).toBe(
+        false,
+      );
+    });
+
+    it('does not scaffold or activate when no ephemeral root is wired', async () => {
+      setEnv(COMPLETE_ENV); // no AX_EPHEMERAL_ROOT
+      scaffoldPythonVenvMock.mockResolvedValue(true);
+      wireClient();
+
+      const { main } = await import('../main.js');
+      expect(await main()).toBe(0);
+
+      expect(scaffoldPythonVenvMock).not.toHaveBeenCalled();
+      const queryArg = queryMock.mock.calls[0]?.[0] as {
+        options: { env: Record<string, string> };
+      };
+      expect(queryArg.options.env.VIRTUAL_ENV).toBeUndefined();
     });
   });
 
