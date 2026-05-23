@@ -256,25 +256,42 @@ export async function main(): Promise<number> {
   }
 
   // Create a session-scoped Python venv on the ephemeral tier so the agent's
-  // `pip install` + `import` Just Work (uv seeds pip; the image has no
-  // python3-pip). Best-effort + gated on the ephemeral tier. See python-venv.ts.
+  // `pip install` + `import` Just Work. The image bakes a relocatable, pre-
+  // seeded venv template; scaffoldPythonVenv copies it onto the ephemeral tier
+  // OFFLINE (~1s) — see python-venv.ts. (Fallback when no template is baked:
+  // an online `uv venv --seed`, which fetches from pypi and is slow/may hang
+  // when pypi egress is denied — local dev only.)
   //
-  // NON-BLOCKING (and OUTSIDE the materialize try): `uv venv --seed` fetches
-  // the seed wheels from pypi and can take 5-23s — or hang — when pypi egress
-  // is denied (the default for most agents). Awaiting it on the startup path
-  // would delay the FIRST turn on every cold pod (the chat looks "stuck"). So
-  // we fire-and-forget: `pythonVenvReady` flips when/if the scaffold succeeds,
-  // and turns before then simply skip the venv env wiring (the feature is
-  // opt-in via `pip install`; an early turn that doesn't touch Python loses
-  // nothing). A venv failure must NOT abort the session — hence not in the try.
+  // BOUNDED-WAIT (and OUTSIDE the materialize try — a venv failure must NOT
+  // abort the session): we wait up to `venvReadyWaitMs` so the fast baked-
+  // template copy resolves before the FIRST turn (so its `pip` is on PATH),
+  // while the slow online fallback (or a hung uv) exceeds the budget and stays
+  // non-blocking — `pythonVenvReady` flips when/if it later succeeds, and turns
+  // before then simply skip the venv env wiring (opt-in via `pip install`). This
+  // bound is what keeps a denied-pypi fallback from stalling the cold-start
+  // turn. AX_VENV_READY_WAIT_MS tunes it (tests set 0 to assert non-blocking).
   if (env.ephemeralRoot) {
-    void scaffoldPythonVenv(env.ephemeralRoot)
+    const parsedVenvWait = Number.parseInt(
+      process.env.AX_VENV_READY_WAIT_MS ?? '',
+      10,
+    );
+    const venvReadyWaitMs = Number.isFinite(parsedVenvWait)
+      ? parsedVenvWait
+      : 5000;
+    const scaffoldDone = scaffoldPythonVenv(env.ephemeralRoot)
       .then((ok) => {
         pythonVenvReady = ok;
       })
       .catch(() => {
         /* scaffoldPythonVenv never throws; defensive */
       });
+    await Promise.race([
+      scaffoldDone,
+      new Promise<void>((resolve) => {
+        const t = setTimeout(resolve, venvReadyWaitMs);
+        t.unref?.();
+      }),
+    ]);
   }
 
   // Per-turn transcript-flush wait (2026-05-22 conversations:get-latency fix).
