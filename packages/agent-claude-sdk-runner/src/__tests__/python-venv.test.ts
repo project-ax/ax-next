@@ -124,4 +124,20 @@ describe('scaffoldPythonVenv', () => {
       scaffoldPythonVenv(root, { uvBin: path.join(tmp, 'nope') }),
     ).resolves.toBe(false);
   });
+
+  it('returns false (kills the child) when uv exceeds the timeout', async () => {
+    const root = path.join(tmp, 'ephemeral');
+    await fs.mkdir(root, { recursive: true });
+    // A uv stand-in that hangs well past the timeout. The timer must fire,
+    // SIGKILL the child, and resolve(false) — modelling the real-world case
+    // where `uv venv --seed` blocks on a denied pypi host for 5-23s.
+    const uvBin = await writeFakeUv('sleep 30');
+    const started = Date.now();
+    await expect(
+      scaffoldPythonVenv(root, { uvBin, timeoutMs: 200 }),
+    ).resolves.toBe(false);
+    // The timer (200ms) fired and killed the child; we are NOT waiting on the
+    // 30s sleep. Give generous headroom for CI scheduling.
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
 });
