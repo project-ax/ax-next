@@ -41,7 +41,7 @@ to *any* concurrent writer, not just attachments.
    from a transcript ending on a dangling `tool_result` ⇒ injects `Continue from where you
    left off.` / `No response requested.`; uncommitted turns are lost.
 
-## Design Decision (resolve before Task 3)
+## Design Decision — RESOLVED: Option A (fetch-and-rebase), approved 2026-05-23
 
 The runner must rebuild its baseline at the advanced head before it can replay its turn.
 `materializeWorkspace` clones a bundle into an **empty** dir, so it can't re-clone in place
@@ -390,3 +390,27 @@ leaks. Patch is internal to the bundle wire; no boundary-review-required hook ad
 - Whether `attachments:commit` *should* share the chat mirror at all (vs a dedicated
   attachment store) — deeper design question; this fix makes the shared-mirror case correct
   regardless.
+
+### Follow-ups surfaced by the final whole-implementation review (2026-05-23)
+
+The fix as built is **server-backend-specific** (it's where the bug was observed). Two gaps
+remain for "robust to ANY concurrent writer" to fully hold — track these:
+
+- **F-1 — single-replica `@ax/workspace-git` (workspace-git-core) backend still drops the
+  turn.** That backend's `export-baseline-bundle` bundles a stale-but-reachable OID with no
+  strict-HEAD check (`workspace-git-core/src/impl.ts:238-260`), so it does NOT raise
+  parent-mismatch on export. The mismatch surfaces later at `apply-bundle`'s CAS, and the
+  handler's apply-bundle parent-mismatch catch (`workspace-commit-notify.ts:~291`) returns a
+  **bare** `{accepted:false}` with no `actualParent`/`baselineBundleBytes` — so the runner
+  treats it as a true veto and rolls back (original bug, unfixed on single-replica). Fix:
+  forward the re-sync envelope from the apply-bundle catch too (the apply-bundle
+  `parent-mismatch` PluginError already carries `actualParent`; it additionally needs a
+  bundle@actualParent). Then the runner's existing re-sync loop handles it for both backends.
+- **F-2 — the runner's final/idle commit call site has no re-sync.** `main.ts:~1156` (the
+  post-`result` "final commit" that captures the SDK's late jsonl write, per PR #127) only
+  logs on `!accepted`; it doesn't re-sync/retry. A concurrent attachment racing that commit
+  drops the final turn's tail (narrower, same bug class). Fix: extract the bounded re-sync
+  loop (Task 4) into a shared helper and use it at both the per-turn and final-commit sites.
+
+Neither blocks the per-turn server-backend fix (the observed production bug), but both should
+land before claiming the general "any concurrent writer, any backend" guarantee.
