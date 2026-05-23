@@ -925,6 +925,9 @@ importers:
       '@ax/test-harness':
         specifier: workspace:*
         version: link:../test-harness
+      '@ax/workspace-git-core':
+        specifier: workspace:*
+        version: link:../workspace-git-core
       '@types/node':
         specifier: ^25.6.0
         version: 25.6.0
