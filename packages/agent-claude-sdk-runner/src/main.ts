@@ -247,19 +247,34 @@ export async function main(): Promise<number> {
     if (claudeConfigDir) {
       await scaffoldSdkProjectsSymlink(env.workspaceRoot, claudeConfigDir);
     }
-    // Create a session-scoped Python venv on the ephemeral tier so the agent's
-    // `pip install` + `import` Just Work (uv seeds pip; the image has no
-    // python3-pip). Best-effort + gated on the ephemeral tier — a venv failure
-    // must not abort the session. See python-venv.ts.
-    if (env.ephemeralRoot) {
-      pythonVenvReady = await scaffoldPythonVenv(env.ephemeralRoot);
-    }
   } catch (err) {
     process.stderr.write(
       `runner: workspace.materialize failed: ${err instanceof Error ? err.message : String(err)}\n`,
     );
     await client.close();
     return 2;
+  }
+
+  // Create a session-scoped Python venv on the ephemeral tier so the agent's
+  // `pip install` + `import` Just Work (uv seeds pip; the image has no
+  // python3-pip). Best-effort + gated on the ephemeral tier. See python-venv.ts.
+  //
+  // NON-BLOCKING (and OUTSIDE the materialize try): `uv venv --seed` fetches
+  // the seed wheels from pypi and can take 5-23s — or hang — when pypi egress
+  // is denied (the default for most agents). Awaiting it on the startup path
+  // would delay the FIRST turn on every cold pod (the chat looks "stuck"). So
+  // we fire-and-forget: `pythonVenvReady` flips when/if the scaffold succeeds,
+  // and turns before then simply skip the venv env wiring (the feature is
+  // opt-in via `pip install`; an early turn that doesn't touch Python loses
+  // nothing). A venv failure must NOT abort the session — hence not in the try.
+  if (env.ephemeralRoot) {
+    void scaffoldPythonVenv(env.ephemeralRoot)
+      .then((ok) => {
+        pythonVenvReady = ok;
+      })
+      .catch(() => {
+        /* scaffoldPythonVenv never throws; defensive */
+      });
   }
 
   // Per-turn transcript-flush wait (2026-05-22 conversations:get-latency fix).

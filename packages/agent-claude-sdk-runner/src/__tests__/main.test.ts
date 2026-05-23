@@ -2445,6 +2445,37 @@ describe('main()', () => {
       };
       expect(queryArg.options.env.VIRTUAL_ENV).toBeUndefined();
     });
+
+    it('startup does NOT block on the venv scaffold (turn proceeds while it is still pending)', async () => {
+      // Regression for the cold-start stall: `uv venv --seed` fetches seed
+      // wheels from pypi and stalls ~5-23s (or hangs) when pypi egress is
+      // denied. If the scaffold is awaited on the startup path it blocks the
+      // FIRST turn on every cold pod. A never-resolving scaffold models the
+      // worst case: pre-fix `main()` awaits it and the turn never runs (test
+      // times out); post-fix the scaffold is fire-and-forget so the turn
+      // proceeds (just without the venv env wired, which is fine — the venv
+      // is opt-in via `pip install`).
+      setEnv(venvEnv());
+      scaffoldPythonVenvMock.mockReturnValue(new Promise<boolean>(() => {})); // never resolves
+      wireClient();
+
+      const { main } = await import('../main.js');
+      // Completes within the normal test timeout (no await on the scaffold).
+      expect(await main()).toBe(0);
+
+      // The scaffold WAS kicked off (fire-and-forget), just not awaited.
+      expect(scaffoldPythonVenvMock).toHaveBeenCalledWith('/ephemeral');
+      // The turn ran before the scaffold resolved, so the venv env was NOT
+      // wired this turn (pythonVenvReady never flipped).
+      const queryArg = queryMock.mock.calls[0]?.[0] as {
+        options: { env: Record<string, string> };
+      };
+      expect(queryArg.options.env.VIRTUAL_ENV).toBeUndefined();
+
+      // Reset so later tests get the default resolved-true behavior.
+      scaffoldPythonVenvMock.mockReset();
+      scaffoldPythonVenvMock.mockResolvedValue(true);
+    });
   });
 
   it('Phase 2: query receives BOTH host and sandbox MCP servers when artifact_publish is in the catalog', async () => {
