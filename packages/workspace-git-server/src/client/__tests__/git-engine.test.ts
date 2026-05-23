@@ -22,7 +22,7 @@ import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { asWorkspaceVersion } from '@ax/core';
+import { asWorkspaceVersion, PluginError } from '@ax/core';
 import {
   createWorkspaceGitServer,
   type WorkspaceGitServer,
@@ -764,5 +764,51 @@ describe('git-engine — delta.author plumbing (issue #80)', () => {
       author,
     );
     expect(result.delta.author).toEqual(author);
+  });
+});
+
+describe('git-engine — exportBaselineBundle parent-mismatch', () => {
+  it('throws parent-mismatch PluginError with actualParent+baselineBundleBytes when mirror advanced past requested version', async () => {
+    // Scenario: the mirror is seeded (turn 1 applied), then
+    // exportBaselineBundle is called with the ORIGINAL (stale) version
+    // (e.g., the runner's parent from before the attachment plugin
+    // advanced the mirror). The engine must:
+    //   - NOT return a bundle
+    //   - Throw PluginError{code:'parent-mismatch'}
+    //   - Set cause.actualParent = the new mirror head
+    //   - Set cause.baselineBundleBytes = non-empty base64 bundle at the new head
+    const workspaceId = 'wsengineexport001';
+
+    // Turn 1: land a commit so the mirror has a real head.
+    const sim1 = await simulateTurn({
+      baselineFiles: [],
+      turnFiles: { 'a.txt': 'hello' },
+    });
+    const r1 = await harness.engine.applyBundle(workspaceId, {
+      bundleBytes: sim1.bundleB64,
+      baselineCommit: sim1.baselineCommit,
+      parent: null,
+      reason: 'turn 1',
+    });
+    const turn1Version = r1.version; // the actual mirror head after turn 1
+
+    // Now export with a STALE version (parent before turn 1).
+    // The stale version is the baseline commit OID the runner had
+    // before turn 1 landed — this simulates the concurrent-writer race.
+    // The engine should throw parent-mismatch, not return a bundle.
+    const staleVersion = asWorkspaceVersion(sim1.baselineCommit);
+    const err = await harness.engine
+      .exportBaselineBundle(workspaceId, { version: staleVersion })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(PluginError);
+    const pe = err as PluginError;
+    expect(pe.code).toBe('parent-mismatch');
+    // cause.actualParent must equal the real mirror head (turn 1's tip).
+    const cause = pe.cause as { actualParent: string; baselineBundleBytes: string };
+    expect(cause.actualParent).toBe(turn1Version);
+    // baselineBundleBytes must be present and non-empty (a real git bundle).
+    expect(typeof cause.baselineBundleBytes).toBe('string');
+    expect(cause.baselineBundleBytes.length).toBeGreaterThan(0);
   });
 });

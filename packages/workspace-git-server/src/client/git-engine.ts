@@ -1309,10 +1309,28 @@ export function createGitEngine(opts: GitEngineOptions): GitEngine {
           }
           return { bundleBytes: empty.bundleBytes };
         }
-        // Mirror non-empty: undefined → bundle HEAD; oid → bundle that
-        // oid (exportMirrorBundle verifies oid == HEAD and throws on
-        // mismatch — that's a real concurrent-writer race, not the
-        // empty-seed case).
+        // Mirror non-empty: undefined → bundle HEAD.
+        // version=oid and oid === head → bundle that oid (happy path).
+        // version=oid and oid !== head → concurrent writer advanced the
+        // mirror past the caller's version. Bundle the CURRENT head so
+        // the caller can re-sync, then throw a parent-mismatch PluginError
+        // inline carrying both actualParent (the real head) and
+        // baselineBundleBytes (the bundle at that head). We throw inline
+        // rather than delegating to a parentMismatch helper because this
+        // path must attach baselineBundleBytes — the helper doesn't.
+        // The caller learns exactly what it needs to rebase and retry.
+        if (input.version !== undefined && (input.version as string) !== head) {
+          const baselineBundleBytes = await exportMirrorBundle(handle.dir, head);
+          throw new PluginError({
+            code: 'parent-mismatch',
+            plugin: PLUGIN_NAME,
+            message: `mirror head ${head} does not match requested version ${input.version as string} (concurrent writer or stale version)`,
+            cause: {
+              actualParent: asWorkspaceVersion(head),
+              baselineBundleBytes,
+            },
+          });
+        }
         const oid = input.version === undefined ? head : (input.version as string);
         const bundleBytes = await exportMirrorBundle(handle.dir, oid);
         return { bundleBytes };

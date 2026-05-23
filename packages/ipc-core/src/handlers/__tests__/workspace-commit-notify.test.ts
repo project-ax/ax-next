@@ -164,6 +164,79 @@ describe('workspace.commit-notify handler — backend gate', () => {
     expect(result.status).toBe(500);
   });
 
+  it('returns accepted:false + actualParent + baselineBundleBytes on parent-mismatch from export-baseline-bundle', async () => {
+    // Simulate the concurrent-writer race: the export-baseline-bundle service
+    // throws a PluginError{code:'parent-mismatch'} because the mirror advanced
+    // past the runner's parent version. The handler must:
+    //   - NOT return a 500
+    //   - Return status 200 with accepted:false
+    //   - Propagate actualParent and baselineBundleBytes from err.cause
+    //
+    // This mirrors the EXISTING apply-bundle parent-mismatch handling
+    // (lines ~258-274 in workspace-commit-notify.ts).
+    const { PluginError: PE } = await import('@ax/core');
+    const probe: Plugin = {
+      manifest: {
+        name: '@ax/test-parent-mismatch-probe',
+        version: '0.0.0',
+        registers: [
+          'workspace:apply-bundle',
+          'workspace:export-baseline-bundle',
+        ],
+        calls: [],
+        subscribes: [],
+      },
+      init({ bus: pluginBus }) {
+        pluginBus.registerService(
+          'workspace:export-baseline-bundle',
+          '@ax/test-parent-mismatch-probe',
+          async () => {
+            throw new PE({
+              code: 'parent-mismatch',
+              plugin: '@ax/test-parent-mismatch-probe',
+              message: 'mirror head newhead does not match requested version oldhead',
+              cause: {
+                actualParent: 'newhead',
+                baselineBundleBytes: 'AAAA',
+              },
+            });
+          },
+        );
+        pluginBus.registerService(
+          'workspace:apply-bundle',
+          '@ax/test-parent-mismatch-probe',
+          async () => ({
+            version: 'v-probe' as WorkspaceVersion,
+            delta: {
+              before: null,
+              after: 'v-probe' as WorkspaceVersion,
+              changes: [],
+            },
+          }),
+        );
+      },
+    };
+    const { bus, ctx } = await makeEnv([probe]);
+    const result = await workspaceCommitNotifyHandler(
+      {
+        parentVersion: 'oldhead',
+        reason: 'turn',
+        bundleBytes: 'UEFDSwAAAAA=',
+      },
+      ctx,
+      bus,
+    );
+    expect(result.status).toBe(200);
+    const body = result.body as {
+      accepted: false;
+      actualParent: string;
+      baselineBundleBytes: string;
+    };
+    expect(body.accepted).toBe(false);
+    expect(body.actualParent).toBe('newhead');
+    expect(body.baselineBundleBytes).toBe('AAAA');
+  });
+
   it('proceeds past the gate when both Phase 3 hooks are registered', async () => {
     // Probe plugin: registers both export-baseline-bundle (returns a
     // synthetic empty bundle string — handler will then fail in

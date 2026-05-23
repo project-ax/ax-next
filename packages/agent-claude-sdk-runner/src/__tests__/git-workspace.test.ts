@@ -7,6 +7,7 @@ import {
   advanceBaseline,
   commitTurnAndBundle,
   materializeWorkspace,
+  resyncBaselineAndReplay,
   rollbackToBaseline,
   scaffoldSdkProjectsSymlink,
   scaffoldWorkspaceGitignore,
@@ -618,5 +619,167 @@ describe('rollbackToBaseline', () => {
 
     const head = (await git(['-C', root, 'rev-parse', 'HEAD'])).stdout.trim();
     expect(head).toBe(baselineOid);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resyncBaselineAndReplay — concurrent-writer advance recovery.
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a bundle of a repo that already has the prerequisite B0 commit
+ * (i.e. the advanced-mirror scenario). The bundle is a "thin" bundle
+ * relative to B0 — but since we use `git bundle create … main` without
+ * prerequisite exclusion here the bundle is self-contained (has all
+ * objects). That's fine: the fetch target already has B0, so git is
+ * happy to fetch even a fat bundle.
+ *
+ * Returns { bundleBase64, newHead } where newHead is the OID of the
+ * tip commit that represents the concurrent writer's advance.
+ */
+async function makeAdvancedMirrorBundle(
+  b0Oid: string,
+  baseRoot: string,
+  advancedFile: string,
+  advancedContent: string,
+): Promise<{ bundleBase64: string; newHead: string }> {
+  // Build the "advanced mirror" in a separate temp dir. The mirror starts
+  // from a clone of the runner's workspace, but then resets to B0 so
+  // the concurrent writer's commit is a sibling of T1 (both children of
+  // B0) — NOT a descendant of T1. This is critical: if the mirror's main
+  // were descended from T1, `git rebase --onto B1 B0 main` would treat T1
+  // as "already applied" and drop it (its patch would already be present
+  // in B1's ancestry), producing a no-op rebase that moves main to B1
+  // without replaying T1. The host mirror in production branches off B0
+  // independently of the runner's turn, so the test must reflect that.
+  const mirrorDir = await fs.mkdtemp(path.join(tmpdir(), 'ax-mirror-'));
+  try {
+    await git(['clone', baseRoot, mirrorDir]);
+    await git(['-C', mirrorDir, 'config', 'user.email', 'test@example.com']);
+    await git(['-C', mirrorDir, 'config', 'user.name', 'test']);
+    // Reset the mirror to B0 so the concurrent commit is a sibling of T1,
+    // not a descendant. This mirrors the real production scenario: the host
+    // storage tier branched from B0 independently of the runner's turn.
+    await git(['-C', mirrorDir, 'reset', '--hard', b0Oid]);
+    // Concurrent writer adds a file on a DIFFERENT path than our turn.
+    const absPath = path.join(mirrorDir, advancedFile);
+    await fs.mkdir(path.dirname(absPath), { recursive: true });
+    await fs.writeFile(absPath, advancedContent);
+    await git(['-C', mirrorDir, 'add', '-A']);
+    await git(['-C', mirrorDir, 'commit', '-m', 'concurrent writer advance']);
+    const newHead = (
+      await git(['-C', mirrorDir, 'rev-parse', 'HEAD'])
+    ).stdout.trim();
+    // Bundle all of `main` (B0→B1 — a self-contained bundle with only the
+    // baseline and the concurrent writer's commit, not T1).
+    const bundleFile = path.join(mirrorDir, 'mirror.bundle');
+    await git(['-C', mirrorDir, 'bundle', 'create', bundleFile, 'main']);
+    const bytes = await fs.readFile(bundleFile);
+    return { bundleBase64: bytes.toString('base64'), newHead };
+  } finally {
+    await fs.rm(mirrorDir, { recursive: true, force: true });
+  }
+}
+
+describe('resyncBaselineAndReplay', () => {
+  it('happy path: disjoint-path rebase replays turn commit onto advanced baseline', async () => {
+    // Step 1: Build runner workspace with a turn commit on top of B0.
+    //
+    //   B0 (seed.txt)  ← refs/heads/baseline
+    //   └─ T1 (a.jsonl) ← HEAD/main (the turn commit)
+    const { root, baselineOid: b0Oid } = await setupMaterializedWorkspace({
+      baselineFiles: { 'seed.txt': 'seed\n' },
+    });
+    // Turn commit touching a.jsonl (disjoint from the concurrent writer's path).
+    await fs.writeFile(path.join(root, 'a.jsonl'), '{"turn":1}\n');
+    await commitTurnAndBundle({ root, reason: 'turn 1' });
+
+    // Confirm the turn commit landed (HEAD ≠ B0).
+    const headAfterTurn = (
+      await git(['-C', root, 'rev-parse', 'HEAD'])
+    ).stdout.trim();
+    expect(headAfterTurn).not.toBe(b0Oid);
+
+    // Step 2: Build the advanced mirror — concurrent writer added att/file.txt
+    // on top of B0. This simulates what the host returns as
+    // { accepted: false, actualParent: B1, baselineBundleBytes: <B1 bundle> }.
+    const { bundleBase64: baselineBundleBytes, newHead: b1Oid } =
+      await makeAdvancedMirrorBundle(b0Oid, root, 'att/file.txt', 'attachment\n');
+
+    // Step 3: Call resyncBaselineAndReplay.
+    await resyncBaselineAndReplay({
+      root,
+      baselineBundleBytes,
+      oldBaseline: b0Oid,
+      newBaseline: b1Oid,
+    });
+
+    // Step 4: Assertions.
+
+    // refs/heads/baseline must now point at B1.
+    const baselineAfter = (
+      await git(['-C', root, 'rev-parse', 'refs/heads/baseline'])
+    ).stdout.trim();
+    expect(baselineAfter).toBe(b1Oid);
+
+    // Both the concurrent writer's file AND the turn's file must be in
+    // the working tree.
+    expect(
+      await fs.readFile(path.join(root, 'att', 'file.txt'), 'utf8'),
+    ).toBe('attachment\n');
+    expect(
+      await fs.readFile(path.join(root, 'a.jsonl'), 'utf8'),
+    ).toBe('{"turn":1}\n');
+    // Baseline file is still there too.
+    expect(
+      await fs.readFile(path.join(root, 'seed.txt'), 'utf8'),
+    ).toBe('seed\n');
+
+    // baseline..main must contain exactly 1 commit (the replayed turn).
+    const log = (
+      await git(['-C', root, 'log', '--oneline', `${b1Oid}..main`])
+    ).stdout.trim();
+    const logLines = log.split('\n').filter(Boolean);
+    expect(logLines).toHaveLength(1);
+  });
+
+  it('conflict path: same-path change throws and leaves repo non-mid-rebase', async () => {
+    // Both the concurrent writer AND the turn touch the same file — this
+    // produces an irreconcilable conflict. resyncBaselineAndReplay must
+    // throw and leave the repo in a usable state (not mid-rebase).
+    const { root, baselineOid: b0Oid } = await setupMaterializedWorkspace({
+      baselineFiles: { 'shared.txt': 'base\n' },
+    });
+    // Turn commit modifies shared.txt.
+    await fs.writeFile(path.join(root, 'shared.txt'), 'turn-edit\n');
+    await commitTurnAndBundle({ root, reason: 'turn 1' });
+
+    // Concurrent writer also modifies shared.txt differently.
+    const { bundleBase64: baselineBundleBytes, newHead: b1Oid } =
+      await makeAdvancedMirrorBundle(b0Oid, root, 'shared.txt', 'concurrent-edit\n');
+
+    // Must throw.
+    await expect(
+      resyncBaselineAndReplay({
+        root,
+        baselineBundleBytes,
+        oldBaseline: b0Oid,
+        newBaseline: b1Oid,
+      }),
+    ).rejects.toThrow(/resync rebase conflict/);
+
+    // Repo must not be mid-rebase — git status and rev-parse must work.
+    const revParseResult = await git(['-C', root, 'rev-parse', 'HEAD']);
+    expect(revParseResult.code).toBe(0);
+    expect(revParseResult.stdout.trim()).toMatch(/^[0-9a-f]{40}$/);
+
+    // No REBASE_HEAD present (rebase was aborted).
+    let rebaseHead = true;
+    try {
+      await fs.stat(path.join(root, '.git', 'REBASE_HEAD'));
+    } catch {
+      rebaseHead = false;
+    }
+    expect(rebaseHead).toBe(false);
   });
 });

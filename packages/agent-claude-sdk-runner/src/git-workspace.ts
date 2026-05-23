@@ -456,3 +456,78 @@ export async function rollbackToBaseline(root: string): Promise<void> {
     'git reset --hard baseline',
   );
 }
+
+/**
+ * Recover from a concurrent-writer advance: the storage tier moved its head
+ * from `oldBaseline` to `newBaseline` while our turn committed on top of
+ * `oldBaseline`. Fetch the new baseline and replay our turn commit(s) onto it
+ * so the next `commit-notify` ships `newBaseline..HEAD`.
+ *
+ * The `baselineBundleBytes` are the base64-encoded git bundle of the advanced
+ * storage state (shipped by the host in the `accepted:false` response). Fetching
+ * this bundle brings `newBaseline` into the local object store so
+ * `git rebase --onto newBaseline` can resolve it.
+ *
+ * Disjoint paths (concurrent writer's file vs our turn's file) ⇒ clean rebase.
+ * A real conflict (same path touched by both) ⇒ the rebase is aborted (leaving
+ * the tree usable) and an error is thrown so the caller can surface a loud
+ * turn failure.
+ */
+export async function resyncBaselineAndReplay(input: {
+  root: string;
+  baselineBundleBytes: string;
+  oldBaseline: string;
+  newBaseline: string;
+}): Promise<void> {
+  const { root, baselineBundleBytes, oldBaseline, newBaseline } = input;
+
+  // Write the host-provided bundle to a temp file. Matches the same temp-bundle
+  // pattern used by materializeWorkspace: place in os.tmpdir() (always writable
+  // in both k8s and subprocess sandboxes; the parent of `root` may be read-only).
+  const bundlePath = path.join(
+    os.tmpdir(),
+    `ax-resync-${Date.now()}-${Math.random().toString(36).slice(2, 10)}.bundle`,
+  );
+  await fs.writeFile(bundlePath, Buffer.from(baselineBundleBytes, 'base64'));
+  try {
+    // Fetch the bundle into the runner's local repo so the `newBaseline`
+    // object is reachable. `git fetch <bundle> main` writes FETCH_HEAD only
+    // (no local ref is updated). The rebase below uses the raw `newBaseline`
+    // OID directly, so no refspec is needed — don't add one.
+    await expectOk(
+      await runGit(['-C', root, 'fetch', bundlePath, 'main']),
+      'git fetch resync bundle',
+    );
+
+    // Replay: git rebase --onto <newBaseline> <oldBaseline> main
+    //   --onto newBaseline  : set the new parent for the replayed commits
+    //   oldBaseline         : the upstream from which our turn diverged
+    //   main                : the branch to rebase (our turn's HEAD)
+    //
+    // This replays the commits in `oldBaseline..main` onto `newBaseline`.
+    // For disjoint-path changes this is always clean. For same-path changes
+    // git will stop with a conflict marker and a non-zero exit.
+    const rebase = await runGit([
+      '-C', root,
+      'rebase', '--onto', newBaseline, oldBaseline, 'main',
+    ]);
+    if (rebase.code !== 0) {
+      // Conflict — abort to restore the pre-rebase state so the repo is usable.
+      await runGit(['-C', root, 'rebase', '--abort']);
+      throw new Error(`resync rebase conflict: ${rebase.stderr}`);
+    }
+
+    // Pin refs/heads/baseline to the new storage head so subsequent turns'
+    // `baseline..main` bundles are computed against the right starting point.
+    await expectOk(
+      await runGit([
+        '-C', root,
+        'update-ref', 'refs/heads/baseline', newBaseline,
+      ]),
+      'git update-ref baseline -> newBaseline',
+    );
+  } finally {
+    // Best-effort cleanup of the temp bundle file.
+    await fs.rm(bundlePath, { force: true });
+  }
+}

@@ -93,6 +93,7 @@ const materializeMock = vi.fn().mockResolvedValue({ baselineCommit: 'mock-baseli
 const commitTurnAndBundleMock = vi.fn().mockResolvedValue(null);
 const advanceBaselineMock = vi.fn().mockResolvedValue(undefined);
 const rollbackToBaselineMock = vi.fn().mockResolvedValue(undefined);
+const resyncBaselineAndReplayMock = vi.fn().mockResolvedValue(undefined);
 vi.mock('../git-workspace.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../git-workspace.js')>();
   return {
@@ -101,6 +102,7 @@ vi.mock('../git-workspace.js', async (importOriginal) => {
     commitTurnAndBundle: commitTurnAndBundleMock,
     advanceBaseline: advanceBaselineMock,
     rollbackToBaseline: rollbackToBaselineMock,
+    resyncBaselineAndReplay: resyncBaselineAndReplayMock,
   };
 });
 
@@ -317,6 +319,8 @@ beforeEach(() => {
   advanceBaselineMock.mockResolvedValue(undefined);
   rollbackToBaselineMock.mockReset();
   rollbackToBaselineMock.mockResolvedValue(undefined);
+  resyncBaselineAndReplayMock.mockReset();
+  resyncBaselineAndReplayMock.mockResolvedValue(undefined);
   readLastTurnUuidMock.mockReset();
   readLastTurnUuidMock.mockResolvedValue(undefined);
   waitForTurnTranscriptMock.mockReset();
@@ -2754,5 +2758,268 @@ describe('main()', () => {
         queryArg.options.env.HOME,
       );
     });
+  });
+
+  it('Phase 3 turn end: concurrent-writer advance → resync + retry → host accepts second attempt', async () => {
+    // Regression for the stuck-loop bug: when workspace.commit-notify returns
+    // accepted:false with actualParent+baselineBundleBytes (the concurrent-writer
+    // advance case), the runner should call resyncBaselineAndReplay, re-bundle,
+    // and retry the commit-notify with the new parentVersion. On accept it
+    // advances baseline. True veto (no actualParent) and network errors are
+    // unchanged.
+    setEnv(COMPLETE_ENV);
+
+    // First commitTurnAndBundle returns the initial bundle; after resync it
+    // returns a rebased bundle.
+    commitTurnAndBundleMock
+      .mockResolvedValueOnce('BUNDLE_FIRST')
+      .mockResolvedValueOnce('BUNDLE_REBASED');
+
+    let commitNotifyCallCount = 0;
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u',
+          agentId: 'a',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          conversationId: null,
+          runnerSessionId: null,
+        };
+      }
+      if (action === 'workspace.materialize') return { bundleBytes: 'B64' };
+      if (action === 'tool.list') return { tools: [] };
+      if (action === 'workspace.commit-notify') {
+        commitNotifyCallCount++;
+        if (commitNotifyCallCount === 1) {
+          // Concurrent writer advanced the mirror: resync path
+          return {
+            accepted: false,
+            actualParent: 'newhead',
+            baselineBundleBytes: 'BBBB',
+          };
+        }
+        // Second attempt: accept
+        return { accepted: true, version: 'newhead2' };
+      }
+      throw new Error(`unexpected: ${action}`);
+    });
+
+    fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
+    queryMock.mockImplementation(
+      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+        return (async function* () {
+          const it = prompt[Symbol.asyncIterator]();
+          await it.next();
+          yield assistantText('done');
+          yield resultSuccess();
+          await it.next();
+        })();
+      },
+    );
+
+    const { main } = await import('../main.js');
+    const rc = await main();
+    expect(rc).toBe(0);
+
+    // resyncBaselineAndReplay was called once with the original parentVersion
+    // as oldBaseline and 'newhead' as newBaseline.
+    expect(resyncBaselineAndReplayMock).toHaveBeenCalledTimes(1);
+    expect(resyncBaselineAndReplayMock).toHaveBeenCalledWith({
+      root: '/tmp/workspace',
+      baselineBundleBytes: 'BBBB',
+      oldBaseline: 'mock-baseline-oid',
+      newBaseline: 'newhead',
+    });
+
+    // Two commit-notify calls were made.
+    const commitCalls = fakeClient.call.mock.calls.filter(
+      (c) => c[0] === 'workspace.commit-notify',
+    );
+    expect(commitCalls).toHaveLength(2);
+
+    // First call used the original parentVersion (materialize-time OID).
+    expect(commitCalls[0]?.[1]).toEqual({
+      parentVersion: 'mock-baseline-oid',
+      reason: 'turn',
+      bundleBytes: 'BUNDLE_FIRST',
+    });
+
+    // Second call used the concurrent writer's new head as parentVersion.
+    expect(commitCalls[1]?.[1]).toEqual({
+      parentVersion: 'newhead',
+      reason: 'turn',
+      bundleBytes: 'BUNDLE_REBASED',
+    });
+
+    // After accept, baseline was advanced (not rolled back).
+    expect(advanceBaselineMock).toHaveBeenCalledTimes(1);
+    expect(rollbackToBaselineMock).not.toHaveBeenCalled();
+  });
+
+  it('Phase 3 turn end: concurrent-writer advance → resync → empty rebased bundle promotes parentVersion (next turn uses new baseline)', async () => {
+    // Regression for the `reb === null` path: after a resync, if the rebased
+    // turn produces no new commit (commitTurnAndBundle returns null) the runner
+    // must promote parentVersion to the new baseline. Otherwise the NEXT turn's
+    // commit-notify would send the stale parent and trigger a spurious re-sync.
+    setEnv(COMPLETE_ENV);
+
+    // Turn 1: initial bundle, then null after resync (empty rebased bundle).
+    // Turn 2: a normal bundle.
+    commitTurnAndBundleMock
+      .mockResolvedValueOnce('BUNDLE_FIRST')
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce('BUNDLE_TURN2');
+
+    let commitNotifyCallCount = 0;
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u',
+          agentId: 'a',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          conversationId: null,
+          runnerSessionId: null,
+        };
+      }
+      if (action === 'workspace.materialize') return { bundleBytes: 'B64' };
+      if (action === 'tool.list') return { tools: [] };
+      if (action === 'workspace.commit-notify') {
+        commitNotifyCallCount++;
+        if (commitNotifyCallCount === 1) {
+          // Turn 1: concurrent writer advanced the mirror → resync envelope.
+          return {
+            accepted: false,
+            actualParent: 'newhead',
+            baselineBundleBytes: 'BBBB',
+          };
+        }
+        // Turn 2's commit-notify accepts.
+        return { accepted: true, version: 'newhead2' };
+      }
+      throw new Error(`unexpected: ${action}`);
+    });
+
+    fakeInbox = buildFakeInbox([userEntry('hi'), userEntry('hi2'), cancelEntry]);
+    queryMock.mockImplementation(
+      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+        return (async function* () {
+          const it = prompt[Symbol.asyncIterator]();
+          await it.next(); // pull turn 1
+          yield assistantText('done1');
+          yield resultSuccess();
+          await it.next(); // pull turn 2
+          yield assistantText('done2');
+          yield resultSuccess();
+          await it.next(); // pull → cancel
+        })();
+      },
+    );
+
+    const { main } = await import('../main.js');
+    const rc = await main();
+    expect(rc).toBe(0);
+
+    // Resync ran once for turn 1.
+    expect(resyncBaselineAndReplayMock).toHaveBeenCalledTimes(1);
+    expect(resyncBaselineAndReplayMock).toHaveBeenCalledWith({
+      root: '/tmp/workspace',
+      baselineBundleBytes: 'BBBB',
+      oldBaseline: 'mock-baseline-oid',
+      newBaseline: 'newhead',
+    });
+
+    const commitCalls = fakeClient.call.mock.calls.filter(
+      (c) => c[0] === 'workspace.commit-notify',
+    );
+    // Turn 1 made ONE commit-notify (reb===null breaks before any retry).
+    // Turn 2 made the second.
+    expect(commitCalls).toHaveLength(2);
+    expect(commitCalls[0]?.[1]).toEqual({
+      parentVersion: 'mock-baseline-oid',
+      reason: 'turn',
+      bundleBytes: 'BUNDLE_FIRST',
+    });
+    // THE REGRESSION ASSERTION: turn 2 uses the promoted baseline ('newhead'),
+    // NOT the stale 'mock-baseline-oid'.
+    expect(commitCalls[1]?.[1]).toEqual({
+      parentVersion: 'newhead',
+      reason: 'turn',
+      bundleBytes: 'BUNDLE_TURN2',
+    });
+
+    // Turn 2's accept advanced baseline; nothing was rolled back.
+    expect(advanceBaselineMock).toHaveBeenCalledTimes(1);
+    expect(rollbackToBaselineMock).not.toHaveBeenCalled();
+  });
+
+  it('Phase 3 turn end: concurrent-writer advance with no actualParent (true veto) → rollback, no resync', async () => {
+    // A rejected commit-notify with NO actualParent is a true policy veto —
+    // not a concurrent-writer race. The runner must rollback (unchanged behavior).
+    setEnv(COMPLETE_ENV);
+    commitTurnAndBundleMock.mockResolvedValueOnce('BUNDLE_VETO2');
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u',
+          agentId: 'a',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          conversationId: null,
+          runnerSessionId: null,
+        };
+      }
+      if (action === 'workspace.materialize') return { bundleBytes: 'B64' };
+      if (action === 'tool.list') return { tools: [] };
+      if (action === 'workspace.commit-notify') {
+        // True veto: no actualParent
+        return { accepted: false, reason: 'security veto' };
+      }
+      throw new Error(`unexpected: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
+    const stderrSpy = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation(() => true);
+    queryMock.mockImplementation(
+      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+        return (async function* () {
+          const it = prompt[Symbol.asyncIterator]();
+          await it.next();
+          yield assistantText('done');
+          yield resultSuccess();
+          await it.next();
+        })();
+      },
+    );
+    try {
+      const { main } = await import('../main.js');
+      expect(await main()).toBe(0);
+      // No resync attempted on a true veto.
+      expect(resyncBaselineAndReplayMock).not.toHaveBeenCalled();
+      // Rollback called.
+      expect(rollbackToBaselineMock).toHaveBeenCalledTimes(1);
+      expect(advanceBaselineMock).not.toHaveBeenCalled();
+      const stderrText = stderrSpy.mock.calls.map((c) => String(c[0])).join('');
+      expect(stderrText).toContain('security veto');
+    } finally {
+      stderrSpy.mockRestore();
+    }
   });
 });

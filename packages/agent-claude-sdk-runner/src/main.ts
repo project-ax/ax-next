@@ -30,6 +30,7 @@ import {
   advanceBaseline,
   commitTurnAndBundle,
   materializeWorkspace,
+  resyncBaselineAndReplay,
   rollbackToBaseline,
   scaffoldSdkProjectsSymlink,
   scaffoldWorkspaceGitignore,
@@ -1002,36 +1003,96 @@ export async function main(): Promise<number> {
             );
             if (landed !== undefined) lastTranscriptUuid = landed;
           }
-          const bundleB64 = await commitTurnAndBundle({
+          let bundleB64 = await commitTurnAndBundle({
             root: env.workspaceRoot,
             reason: 'turn',
           });
           if (bundleB64 !== null) {
-            try {
-              const resp = (await client.call('workspace.commit-notify', {
-                parentVersion,
-                reason: 'turn',
-                bundleBytes: bundleB64,
-              })) as WorkspaceCommitNotifyResponse;
+            // Bounded re-sync + retry loop. On a concurrent-writer advance the
+            // host returns accepted:false with actualParent + baselineBundleBytes.
+            // We rebase our turn commit onto the new head and retry (up to
+            // MAX_RESYNC_ATTEMPTS times). A true policy veto (no actualParent)
+            // rolls back immediately. A network/5xx error keeps the tree intact
+            // for accumulation next turn.
+            const MAX_RESYNC_ATTEMPTS = 3;
+            let attempt = 0;
+            let pv: string | null = parentVersion;
+            for (;;) {
+              let resp: WorkspaceCommitNotifyResponse;
+              try {
+                resp = (await client.call('workspace.commit-notify', {
+                  parentVersion: pv,
+                  reason: 'turn',
+                  bundleBytes: bundleB64,
+                })) as WorkspaceCommitNotifyResponse;
+              } catch (err) {
+                // Network / 5xx / timeout: keep the working tree intact
+                // so the next turn's accumulated changes flow as one
+                // bundle. Don't advance baseline; don't rollback. Same
+                // trade-off the legacy accumulator path made.
+                process.stderr.write(
+                  `runner: commit-notify failed: ${err instanceof Error ? err.message : String(err)}\n`,
+                );
+                break;
+              }
               if (resp.accepted) {
                 parentVersion = resp.version as unknown as string;
                 await advanceBaseline(env.workspaceRoot);
+                break;
+              }
+              // Concurrent-writer advance → re-sync + retry (bounded).
+              // pv must be non-null: resyncBaselineAndReplay needs the old
+              // baseline OID to compute the rebase upstream.
+              if (resp.actualParent && resp.baselineBundleBytes && pv !== null && attempt < MAX_RESYNC_ATTEMPTS) {
+                attempt++;
+                try {
+                  await resyncBaselineAndReplay({
+                    root: env.workspaceRoot,
+                    baselineBundleBytes: resp.baselineBundleBytes,
+                    oldBaseline: pv,
+                    newBaseline: resp.actualParent,
+                  });
+                } catch (e) {
+                  process.stderr.write(
+                    `runner: resync failed (${e instanceof Error ? e.message : String(e)})\n`,
+                  );
+                  break;
+                }
+                pv = resp.actualParent;
+                const reb = await commitTurnAndBundle({
+                  root: env.workspaceRoot,
+                  reason: 'turn',
+                });
+                if (reb === null) {
+                  // Replay produced no new commit — the workspace is already
+                  // aligned to the advanced baseline (resyncBaselineAndReplay
+                  // re-pinned `baseline` to `pv`). Promote `parentVersion` now
+                  // so the NEXT turn's commit-notify uses the new baseline
+                  // instead of triggering a spurious re-sync against a stale
+                  // parent.
+                  parentVersion = pv;
+                  break;
+                }
+                // parentVersion stays at its last-accepted value until the
+                // retried commit-notify below is accepted (then advanced from
+                // resp.version).
+                bundleB64 = reb;
+                continue;
+              }
+              // Retries exhausted on concurrent-writer rejection vs. true veto:
+              // log distinctly so an operator can tell a stuck re-sync from a
+              // policy rejection.
+              if (resp.actualParent && attempt >= MAX_RESYNC_ATTEMPTS) {
+                process.stderr.write(
+                  `runner: commit-notify re-sync exhausted after ${attempt} attempts; rolling back turn\n`,
+                );
               } else {
-                // Host vetoed — surface to stderr (the host's log sink)
-                // and rollback so the agent's next turn starts clean.
                 process.stderr.write(
                   `runner: workspace rejected: ${resp.reason}\n`,
                 );
-                await rollbackToBaseline(env.workspaceRoot);
               }
-            } catch (err) {
-              // Network / 5xx / timeout: keep the working tree intact
-              // so the next turn's accumulated changes flow as one
-              // bundle. Don't advance baseline; don't rollback. Same
-              // trade-off the legacy accumulator path made.
-              process.stderr.write(
-                `runner: commit-notify failed: ${err instanceof Error ? err.message : String(err)}\n`,
-              );
+              await rollbackToBaseline(env.workspaceRoot);
+              break;
             }
           }
         } catch (err) {

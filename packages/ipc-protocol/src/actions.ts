@@ -198,6 +198,14 @@ export const WorkspaceCommitNotifyResponseSchema = z.discriminatedUnion(
     z.object({
       accepted: z.literal(false),
       reason: z.string(),
+      // Re-sync envelope (optional; present only on a parent-mismatch rejection):
+      // the storage tier's current head + a baseline bundle at that head, so the
+      // runner can rebase its turn onto it and retry. Opaque to the runner.
+      // `baselineBundleBytes` reuses the canonical-base64 validator (same as the
+      // request `bundleBytes`) so a malformed payload fails at the protocol
+      // boundary rather than later in the runner's `git fetch`.
+      actualParent: z.string().optional(),
+      baselineBundleBytes: BundleBytesSchema.optional(),
     }),
   ],
 );
