@@ -1,0 +1,57 @@
+run the skill
+
+---
+
+continue
+
+---
+
+Fold the fixes in and then start the investigation
+
+---
+
+A, subagent driven
+
+---
+
+<task-notification>
+<task-id>a717bae68a3a6b706</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-vpulim-dev-ai-ax-next/3c3833f9-b6d8-4fa4-8cd7-67eb7050d87d/tasks/a717bae68a3a6b706.output</output-file>
+<status>completed</status>
+<summary>Agent "Implement Task 5: E2E regression" completed</summary>
+<result>All five review issues fixed in the same file, both tests still pass, build clean, committed.
+
+**New commit SHA:** `c8074c31`
+
+**What changed (per review item):**
+1. **Dead code removed** — deleted the unused `turnBundle` var and the entire PART A `wt2` setup block (Step 3). PART A now only drives the mirror to V2 via the out-of-band `apply`, since `exportBaselineBundle` is the actual trigger.
+2. **try-scope / definite assignment** — restructured PART A so all assertions run *inside* the `try` block (the `finally` now only does temp-dir cleanup). `baselineCommit`/`v1`/`v2` are now `const`, assigned at point of use; no more uninitialized-on-early-throw risk.
+3. **Wrong comment fixed** — `buildRunnerWorkspace`'s "do NOT commit" comment corrected to describe what the code does (writes turn files, then `git add -A` + commit).
+4. **`require_dirname` removed** — replaced with stdlib `dirname` (added to the existing `node:path` import); custom helper + misleading comment deleted.
+5. **git error checks** — added a `gitOrThrow` wrapper (throws on non-zero exit, like `buildTurnBundle`) and switched all 7 `buildRunnerWorkspace` git calls to it. PART B's `fetch`/`rebase` calls stay on plain `git()` deliberately because the test already asserts on their `.code` (those assertions are load-bearing).
+
+**Test output:**
+```
+✓ PART A: exportBaselineBundle(V1) returns parent-mismatch+actualParent+bundle ... 847ms
+✓ PART B (full loop): resync + retry succeeds; both attachment file and turn file persist 1386ms
+Tests  2 passed (2)   [isolated]
+Tests  497 passed (497)   [full suite]
+```
+Build: clean (`tsc --build` no errors).</result>
+<usage><total_tokens>138890</total_tokens><tool_uses>12</tool_uses><duration_ms>132294</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>bh7vhfhbv</task-id>
+<tool-use-id>toolu_012Ko2A4V7CKHbr2fjkNLeae</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-vpulim-dev-ai-ax-next/3c3833f9-b6d8-4fa4-8cd7-67eb7050d87d/tasks/bh7vhfhbv.output</output-file>
+<status>completed</status>
+<summary>Background command "Whole-repo test suite" completed (exit code 0)</summary>
+</task-notification>
+
+---
+
+Address pr 131 comments

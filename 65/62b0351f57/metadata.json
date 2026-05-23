@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "6562b0351f57",
+  "strategy": "manual-commit",
+  "branch": "feat/chat-qa-sweep-skill",
+  "checkpoints_count": 1,
+  "files_touched": [
+    ".claude/skills/chat-qa-sweep/SKILL.md",
+    ".claude/skills/chat-qa-sweep/references/scenario-catalog.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/65/62b0351f57/0/metadata.json",
+      "transcript": "/65/62b0351f57/0/full.jsonl",
+      "content_hash": "/65/62b0351f57/0/content_hash.txt",
+      "prompt": "/65/62b0351f57/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 36727,
+    "cache_creation_tokens": 1427495,
+    "cache_read_tokens": 79090557,
+    "output_tokens": 366456,
+    "api_call_count": 242
+  }
+}
