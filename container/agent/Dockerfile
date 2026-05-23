@@ -143,6 +143,16 @@ WORKDIR /opt/ax-next/host
 # Pinned by version tag (digest-pin is a tracked follow-up, alongside tini/ca-certificates).
 COPY --from=ghcr.io/astral-sh/uv:0.11.16 /uv /uvx /usr/local/bin/
 
+# Bake a relocatable, pre-seeded Python venv (pip/setuptools/wheel) so runner
+# sessions get a working venv OFFLINE — copied to the ephemeral tier at runtime
+# (see python-venv.ts). uv 0.11.16's `--seed` fetches the seed wheels from pypi,
+# which the egress-locked sandbox can't reach at runtime; doing it at BUILD time
+# (pypi reachable) + `--relocatable` (location-independent scripts) means the
+# runtime copy needs no network and works for every agent. Build now REQUIRES
+# pypi reachable at image-build time.
+RUN uv venv --seed --relocatable /opt/ax-python-venv-template \
+ && chown -R 1000:1000 /opt/ax-python-venv-template
+
 USER 1000:1000
 
 # The host pod listens here. Runner pods don't expose ports inbound — they

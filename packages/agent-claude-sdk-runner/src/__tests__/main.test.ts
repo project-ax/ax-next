@@ -2445,6 +2445,64 @@ describe('main()', () => {
       };
       expect(queryArg.options.env.VIRTUAL_ENV).toBeUndefined();
     });
+
+    it('startup does NOT block on the venv scaffold (turn proceeds while it is still pending)', async () => {
+      // Regression for the cold-start stall: `uv venv --seed` fetches seed
+      // wheels from pypi and stalls ~5-23s (or hangs) when pypi egress is
+      // denied. The startup wait for the scaffold is BOUNDED (AX_VENV_READY_WAIT_MS,
+      // 0 here) so a never-resolving scaffold (worst case) can't block the FIRST
+      // turn: pre-fix `main()` awaited it unboundedly and the turn never ran
+      // (test times out); post-fix the bounded race lets the turn proceed (just
+      // without the venv env wired, which is fine — opt-in via `pip install`).
+      setEnv({ ...venvEnv(), AX_VENV_READY_WAIT_MS: '0' });
+      scaffoldPythonVenvMock.mockReturnValue(new Promise<boolean>(() => {})); // never resolves
+      wireClient();
+
+      const { main } = await import('../main.js');
+      // Completes within the normal test timeout (no await on the scaffold).
+      expect(await main()).toBe(0);
+
+      // The scaffold WAS kicked off (fire-and-forget), just not awaited.
+      expect(scaffoldPythonVenvMock).toHaveBeenCalledWith('/ephemeral');
+      // The turn ran before the scaffold resolved, so the venv env was NOT
+      // wired this turn (pythonVenvReady never flipped).
+      const queryArg = queryMock.mock.calls[0]?.[0] as {
+        options: { env: Record<string, string> };
+      };
+      expect(queryArg.options.env.VIRTUAL_ENV).toBeUndefined();
+
+      // Reset so later tests get the default resolved-true behavior.
+      scaffoldPythonVenvMock.mockReset();
+      scaffoldPythonVenvMock.mockResolvedValue(true);
+    });
+
+    it('bounded-wait holds for a fast (non-instant) scaffold so turn 1 gets the venv', async () => {
+      // The baked-template copy isn't instantaneous (~1s in-cluster). The
+      // bounded wait must hold long enough for it to resolve so the FIRST
+      // turn's SDK env has the venv on PATH (otherwise `pip` is missing on
+      // turn 1). Model a ~20ms scaffold under a generous budget and assert
+      // VIRTUAL_ENV is wired this turn — the inverse of the never-resolves
+      // case above.
+      setEnv({ ...venvEnv(), AX_VENV_READY_WAIT_MS: '2000' });
+      scaffoldPythonVenvMock.mockReturnValue(
+        new Promise<boolean>((resolve) => {
+          const t = setTimeout(() => resolve(true), 20);
+          t.unref?.();
+        }),
+      );
+      wireClient();
+
+      const { main } = await import('../main.js');
+      expect(await main()).toBe(0);
+
+      const queryArg = queryMock.mock.calls[0]?.[0] as {
+        options: { env: Record<string, string> };
+      };
+      expect(queryArg.options.env.VIRTUAL_ENV).toBe('/ephemeral/py');
+
+      scaffoldPythonVenvMock.mockReset();
+      scaffoldPythonVenvMock.mockResolvedValue(true);
+    });
   });
 
   it('Phase 2: query receives BOTH host and sandbox MCP servers when artifact_publish is in the catalog', async () => {
