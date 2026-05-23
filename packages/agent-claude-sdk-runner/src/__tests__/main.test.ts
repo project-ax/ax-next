@@ -3022,4 +3022,100 @@ describe('main()', () => {
       stderrSpy.mockRestore();
     }
   });
+
+  it('F-2: FINAL commit-notify re-syncs on a concurrent-writer advance (was log-only)', async () => {
+    // Regression for F-2: the post-`result` final/idle commit used to only log
+    // on !accepted, so a concurrent writer racing the final commit silently
+    // dropped the final turn's tail. After the fix, the final commit runs the
+    // same shared re-sync+retry helper as the per-turn commit.
+    //
+    // The per-turn commit produces NO bundle (commitTurnAndBundle → null), so
+    // no per-turn commit-notify fires. The FINAL commit produces a bundle, the
+    // host returns the concurrent-writer envelope, the helper re-syncs +
+    // re-bundles + retries, and the retry is accepted.
+    setEnv(COMPLETE_ENV);
+    commitTurnAndBundleMock
+      .mockResolvedValueOnce(null) // per-turn: empty → no per-turn commit-notify
+      .mockResolvedValueOnce('BUNDLE_FINAL') // final commit
+      .mockResolvedValueOnce('BUNDLE_FINAL_REBASED'); // re-bundle after resync
+
+    let commitNotifyCallCount = 0;
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u',
+          agentId: 'a',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          conversationId: null,
+          runnerSessionId: null,
+        };
+      }
+      if (action === 'workspace.materialize') return { bundleBytes: 'B64' };
+      if (action === 'tool.list') return { tools: [] };
+      if (action === 'workspace.commit-notify') {
+        commitNotifyCallCount++;
+        if (commitNotifyCallCount === 1) {
+          // Concurrent writer advanced the mirror under the final commit.
+          return {
+            accepted: false,
+            actualParent: 'v2',
+            baselineBundleBytes: 'BBBB',
+          };
+        }
+        return { accepted: true, version: 'v2' };
+      }
+      throw new Error(`unexpected: ${action}`);
+    });
+
+    fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
+    queryMock.mockImplementation(
+      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+        return (async function* () {
+          const it = prompt[Symbol.asyncIterator]();
+          await it.next();
+          yield assistantText('done');
+          yield resultSuccess();
+          await it.next();
+        })();
+      },
+    );
+
+    const { main } = await import('../main.js');
+    expect(await main()).toBe(0);
+
+    // The FINAL commit re-synced exactly once, against the materialize baseline.
+    expect(resyncBaselineAndReplayMock).toHaveBeenCalledTimes(1);
+    expect(resyncBaselineAndReplayMock).toHaveBeenCalledWith({
+      root: '/tmp/workspace',
+      baselineBundleBytes: 'BBBB',
+      oldBaseline: 'mock-baseline-oid',
+      newBaseline: 'v2',
+    });
+
+    const commitCalls = fakeClient.call.mock.calls.filter(
+      (c) => c[0] === 'workspace.commit-notify',
+    );
+    // Two commit-notify calls: the rejected final + the accepted retry.
+    expect(commitCalls).toHaveLength(2);
+    expect(commitCalls[0]?.[1]).toEqual({
+      parentVersion: 'mock-baseline-oid',
+      reason: 'turn',
+      bundleBytes: 'BUNDLE_FINAL',
+    });
+    // The retry used the concurrent writer's new head + the re-bundle.
+    expect(commitCalls[1]?.[1]).toEqual({
+      parentVersion: 'v2',
+      reason: 'turn',
+      bundleBytes: 'BUNDLE_FINAL_REBASED',
+    });
+
+    expect(advanceBaselineMock).toHaveBeenCalledTimes(1);
+    expect(rollbackToBaselineMock).not.toHaveBeenCalled();
+  });
 });
