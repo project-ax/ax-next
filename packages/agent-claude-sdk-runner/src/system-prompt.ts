@@ -46,21 +46,43 @@ export function ephemeralScratchNote(ephemeralRoot: string): string {
 }
 
 /**
+ * Operational note telling the agent a session-scoped Python virtualenv is
+ * active so `pip install` + `import` work. Fixed runner-authored prose for
+ * the LLM — no untrusted input. Paired with the venv created by
+ * `scaffoldPythonVenv` (python-venv.ts) and the PATH/VIRTUAL_ENV env it sets.
+ */
+export function pythonVenvNote(): string {
+  return [
+    `Python: a session-scoped virtual environment is already active.`,
+    `Use \`pip install <pkg>\` to add Python dependencies and \`python <script>.py\` to run them —`,
+    `installed packages are importable immediately.`,
+    `The environment is discarded when the session ends, and installs are limited to the`,
+    `package registries your agent is permitted to reach.`,
+  ].join(' ');
+}
+
+/**
  * Build the SDK `systemPrompt` value from the agent's frozen prompt and the
  * optional ephemeral scratch root.
  *
- * - Empty agent prompt => `claude_code` preset (with the scratch note
- *   appended via the SDK's native `append` when a root is present).
- * - Non-empty agent prompt => the verbatim string, with the scratch note
- *   concatenated ourselves (the preset `append` is a no-op on strings).
- * - No ephemeral root => unchanged: verbatim string or bare preset.
+ * Appends up to two runner-authored notes when their gates are set: the
+ * ephemeral-scratch note (when `ephemeralRoot` is present) and the python-venv
+ * note (when `pythonVenvActive`). Both are joined with the prompt the same way:
+ * - Empty agent prompt => `claude_code` preset (notes via the SDK's native
+ *   `append`).
+ * - Non-empty agent prompt => the verbatim string with the notes concatenated
+ *   ourselves (the preset `append` is a no-op on strings).
+ * - No notes => unchanged: verbatim string or bare preset.
  */
 export function buildSystemPrompt(
   agentSystemPrompt: string,
   ephemeralRoot: string | undefined,
+  pythonVenvActive = false,
 ): SdkSystemPrompt {
-  const note =
-    ephemeralRoot !== undefined ? ephemeralScratchNote(ephemeralRoot) : '';
+  const notes: string[] = [];
+  if (ephemeralRoot !== undefined) notes.push(ephemeralScratchNote(ephemeralRoot));
+  if (pythonVenvActive) notes.push(pythonVenvNote());
+  const note = notes.join('\n\n');
 
   if (agentSystemPrompt.length > 0) {
     return note.length > 0
