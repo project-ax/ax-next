@@ -31,7 +31,7 @@ Cleanup is `DELETE /api/chat/conversations/:id` (soft-delete, idempotent → 204
 
 Only one real coupling — don't over-serialize the rest:
 
-```
+```text
 #3 (npx, leaves a tool-call) ─┐
                               ├─► same session ──► #8 (reload it: assert tool-call + attachment, continue)
 #5 (upload, leaves attachment)┘                         ▲

@@ -8,7 +8,7 @@ with a reason), not a blank.
 
 ## 1. Header
 
-```
+```text
 # chat-qa-sweep — <date> — <git sha / branch under test>
 Cluster: ax-next-dev (kind)   Image: <tag>   Agent under test: <name/id>
 Summary: <N> PASS · <N> GLITCH · <N> FAIL · <N> SKIP
@@ -47,7 +47,7 @@ have shown the error but didn't).
 
 Every GLITCH and FAIL gets an entry — the table is the index, this is the detail:
 
-```
+```text
 ### [FAIL] #8(c) — old attachment chip not downloadable on reload
 Symptom:   clicking the reconstructed AttachmentChip did nothing.
 Evidence:  screenshot reload-08.png; browser_network_requests shows no fetch on click;
@@ -77,7 +77,7 @@ most important thing for the reader to know.
 For each non-PASS, one line: **real bug** vs **environment/test-setup**, and where it goes
 next.
 
-```
+```text
 - #8(c) FAIL  → real bug (read-path chip download). Hand to k8s-acceptance-loop + regression test.
 - #4 SKIP     → environment (no skill attached to the test agent). Re-run after attaching one.
 - C  GLITCH   → real bug (provider error shows raw stack instead of friendly Alert copy).

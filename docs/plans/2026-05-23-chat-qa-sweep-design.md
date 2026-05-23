@@ -42,7 +42,7 @@ levers + restore discipline, and the report format.
 
 ## File layout
 
-```
+```text
 .claude/skills/chat-qa-sweep/
   SKILL.md                    # when to use, run model, per-scenario protocol, stop/report rules
   references/

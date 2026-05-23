@@ -53,7 +53,7 @@ Go run `k8s-acceptance-loop` §3 first. Don't half-run the battery against a sic
 
 ## The run model
 
-```
+```text
 preconditions  →  happy-path battery  →  fault battery  →  report
    (§ k8s)         (cluster healthy)     (inject→observe
                                           →RESTORE→confirm)
