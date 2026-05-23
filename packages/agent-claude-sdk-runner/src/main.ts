@@ -1063,9 +1063,19 @@ export async function main(): Promise<number> {
                   root: env.workspaceRoot,
                   reason: 'turn',
                 });
-                // parentVersion intentionally stays stale here; the next
-                // turn's re-sync will re-advance it once the new bundle lands.
-                if (reb === null) break; // nothing to ship after replay
+                if (reb === null) {
+                  // Replay produced no new commit — the workspace is already
+                  // aligned to the advanced baseline (resyncBaselineAndReplay
+                  // re-pinned `baseline` to `pv`). Promote `parentVersion` now
+                  // so the NEXT turn's commit-notify uses the new baseline
+                  // instead of triggering a spurious re-sync against a stale
+                  // parent.
+                  parentVersion = pv;
+                  break;
+                }
+                // parentVersion stays at its last-accepted value until the
+                // retried commit-notify below is accepted (then advanced from
+                // resp.version).
                 bundleB64 = reb;
                 continue;
               }

@@ -2862,6 +2862,108 @@ describe('main()', () => {
     expect(rollbackToBaselineMock).not.toHaveBeenCalled();
   });
 
+  it('Phase 3 turn end: concurrent-writer advance → resync → empty rebased bundle promotes parentVersion (next turn uses new baseline)', async () => {
+    // Regression for the `reb === null` path: after a resync, if the rebased
+    // turn produces no new commit (commitTurnAndBundle returns null) the runner
+    // must promote parentVersion to the new baseline. Otherwise the NEXT turn's
+    // commit-notify would send the stale parent and trigger a spurious re-sync.
+    setEnv(COMPLETE_ENV);
+
+    // Turn 1: initial bundle, then null after resync (empty rebased bundle).
+    // Turn 2: a normal bundle.
+    commitTurnAndBundleMock
+      .mockResolvedValueOnce('BUNDLE_FIRST')
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce('BUNDLE_TURN2');
+
+    let commitNotifyCallCount = 0;
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u',
+          agentId: 'a',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          conversationId: null,
+          runnerSessionId: null,
+        };
+      }
+      if (action === 'workspace.materialize') return { bundleBytes: 'B64' };
+      if (action === 'tool.list') return { tools: [] };
+      if (action === 'workspace.commit-notify') {
+        commitNotifyCallCount++;
+        if (commitNotifyCallCount === 1) {
+          // Turn 1: concurrent writer advanced the mirror → resync envelope.
+          return {
+            accepted: false,
+            actualParent: 'newhead',
+            baselineBundleBytes: 'BBBB',
+          };
+        }
+        // Turn 2's commit-notify accepts.
+        return { accepted: true, version: 'newhead2' };
+      }
+      throw new Error(`unexpected: ${action}`);
+    });
+
+    fakeInbox = buildFakeInbox([userEntry('hi'), userEntry('hi2'), cancelEntry]);
+    queryMock.mockImplementation(
+      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+        return (async function* () {
+          const it = prompt[Symbol.asyncIterator]();
+          await it.next(); // pull turn 1
+          yield assistantText('done1');
+          yield resultSuccess();
+          await it.next(); // pull turn 2
+          yield assistantText('done2');
+          yield resultSuccess();
+          await it.next(); // pull → cancel
+        })();
+      },
+    );
+
+    const { main } = await import('../main.js');
+    const rc = await main();
+    expect(rc).toBe(0);
+
+    // Resync ran once for turn 1.
+    expect(resyncBaselineAndReplayMock).toHaveBeenCalledTimes(1);
+    expect(resyncBaselineAndReplayMock).toHaveBeenCalledWith({
+      root: '/tmp/workspace',
+      baselineBundleBytes: 'BBBB',
+      oldBaseline: 'mock-baseline-oid',
+      newBaseline: 'newhead',
+    });
+
+    const commitCalls = fakeClient.call.mock.calls.filter(
+      (c) => c[0] === 'workspace.commit-notify',
+    );
+    // Turn 1 made ONE commit-notify (reb===null breaks before any retry).
+    // Turn 2 made the second.
+    expect(commitCalls).toHaveLength(2);
+    expect(commitCalls[0]?.[1]).toEqual({
+      parentVersion: 'mock-baseline-oid',
+      reason: 'turn',
+      bundleBytes: 'BUNDLE_FIRST',
+    });
+    // THE REGRESSION ASSERTION: turn 2 uses the promoted baseline ('newhead'),
+    // NOT the stale 'mock-baseline-oid'.
+    expect(commitCalls[1]?.[1]).toEqual({
+      parentVersion: 'newhead',
+      reason: 'turn',
+      bundleBytes: 'BUNDLE_TURN2',
+    });
+
+    // Turn 2's accept advanced baseline; nothing was rolled back.
+    expect(advanceBaselineMock).toHaveBeenCalledTimes(1);
+    expect(rollbackToBaselineMock).not.toHaveBeenCalled();
+  });
+
   it('Phase 3 turn end: concurrent-writer advance with no actualParent (true veto) → rollback, no resync', async () => {
     // A rejected commit-notify with NO actualParent is a true policy veto —
     // not a concurrent-writer race. The runner must rollback (unchanged behavior).

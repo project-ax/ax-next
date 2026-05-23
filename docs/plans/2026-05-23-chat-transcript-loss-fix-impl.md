@@ -103,6 +103,12 @@ it('accepted:false carries optional re-sync envelope', () => {
     actualParent: 'deadbeef', baselineBundleBytes: 'AAAA',
   });
   expect(resync.success).toBe(true);
+  // round-trip the new keys so the test goes RED pre-change (unknown keys are
+  // stripped → these are undefined until the schema is widened).
+  if (resync.success && resync.data.accepted === false) {
+    expect(resync.data.actualParent).toBe('deadbeef');
+    expect(resync.data.baselineBundleBytes).toBe('AAAA');
+  }
   // back-compat: bare rejection still valid
   expect(WorkspaceCommitNotifyResponseSchema.safeParse(
     { accepted: false, reason: 'bundle author verification failed' },
@@ -153,13 +159,16 @@ it('commit-notify surfaces parent-mismatch as accepted:false + re-sync envelope'
   const bus = makeBusWith({
     'workspace:export-baseline-bundle': () => {
       throw new PluginError({ code: 'parent-mismatch', plugin: 'x',
-        message: 'mirror advanced', cause: { actualParent: 'newhead' } });
+        message: 'mirror advanced',
+        cause: { actualParent: 'newhead', baselineBundleBytes: 'AAAA' } });
     },
   });
   const res = await workspaceCommitNotifyHandler(
     { parentVersion: 'oldhead', reason: 'turn', bundleBytes: 'AAAA' }, ctx, bus);
   expect(res.status).toBe(200);
-  expect(res.body).toMatchObject({ accepted: false, actualParent: 'newhead' });
+  expect(res.body).toMatchObject({
+    accepted: false, actualParent: 'newhead', baselineBundleBytes: 'AAAA',
+  });
 });
 ```
 
