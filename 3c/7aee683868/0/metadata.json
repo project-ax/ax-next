@@ -1,0 +1,23 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "3c7aee683868",
+  "session_id": "3c3833f9-b6d8-4fa4-8cd7-67eb7050d87d",
+  "strategy": "manual-commit",
+  "created_at": "2026-05-23T12:00:04.929084Z",
+  "branch": "worktree-chat-qa-sweep",
+  "checkpoints_count": 1,
+  "files_touched": [],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "ed07bce57e2c",
+  "token_usage": {
+    "input_tokens": 35123,
+    "cache_creation_tokens": 1278148,
+    "cache_read_tokens": 45457267,
+    "output_tokens": 274651,
+    "api_call_count": 182
+  },
+  "session_metrics": {
+    "turn_count": 3
+  }
+}
