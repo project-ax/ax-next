@@ -490,10 +490,10 @@ export async function resyncBaselineAndReplay(input: {
   );
   await fs.writeFile(bundlePath, Buffer.from(baselineBundleBytes, 'base64'));
   try {
-    // Fetch the bundle into the runner's local repo so `newBaseline` is
-    // reachable. The bundle ships refs/heads/main pointing at `newBaseline`
-    // (the concurrent writer's tip). After this fetch, the object for
-    // `newBaseline` exists in the local object store.
+    // Fetch the bundle into the runner's local repo so the `newBaseline`
+    // object is reachable. `git fetch <bundle> main` writes FETCH_HEAD only
+    // (no local ref is updated). The rebase below uses the raw `newBaseline`
+    // OID directly, so no refspec is needed — don't add one.
     await expectOk(
       await runGit(['-C', root, 'fetch', bundlePath, 'main']),
       'git fetch resync bundle',

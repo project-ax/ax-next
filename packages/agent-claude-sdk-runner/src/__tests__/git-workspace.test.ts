@@ -773,7 +773,7 @@ describe('resyncBaselineAndReplay', () => {
     expect(revParseResult.code).toBe(0);
     expect(revParseResult.stdout.trim()).toMatch(/^[0-9a-f]{40}$/);
 
-    // No MERGE_HEAD or REBASE_HEAD present (rebase was aborted).
+    // No REBASE_HEAD present (rebase was aborted).
     let rebaseHead = true;
     try {
       await fs.stat(path.join(root, '.git', 'REBASE_HEAD'));

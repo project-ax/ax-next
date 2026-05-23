@@ -743,7 +743,32 @@ describe('git-engine — delta.author plumbing (issue #80)', () => {
     expect(result.delta.author).toBeUndefined();
   });
 
-  it('exportBaselineBundle: throws parent-mismatch PluginError with actualParent+baselineBundleBytes when mirror advanced past requested version', async () => {
+  it('applyBundle: author passed in is reflected on the returned delta', async () => {
+    const sim = await simulateTurn({
+      baselineFiles: [],
+      turnFiles: { 'a.txt': 'a' },
+    });
+    const author = {
+      agentId: 'agt_bundle_author',
+      userId: 'usr_bundle_author',
+      sessionId: 'req-bundle-001',
+    };
+    const result = await harness.engine.applyBundle(
+      'wsengineauthor003',
+      {
+        bundleBytes: sim.bundleB64,
+        baselineCommit: sim.baselineCommit,
+        parent: null,
+        reason: 'bundle-author-smoke',
+      },
+      author,
+    );
+    expect(result.delta.author).toEqual(author);
+  });
+});
+
+describe('git-engine — exportBaselineBundle parent-mismatch', () => {
+  it('throws parent-mismatch PluginError with actualParent+baselineBundleBytes when mirror advanced past requested version', async () => {
     // Scenario: the mirror is seeded (turn 1 applied), then
     // exportBaselineBundle is called with the ORIGINAL (stale) version
     // (e.g., the runner's parent from before the attachment plugin
@@ -785,28 +810,5 @@ describe('git-engine — delta.author plumbing (issue #80)', () => {
     // baselineBundleBytes must be present and non-empty (a real git bundle).
     expect(typeof cause.baselineBundleBytes).toBe('string');
     expect(cause.baselineBundleBytes.length).toBeGreaterThan(0);
-  });
-
-  it('applyBundle: author passed in is reflected on the returned delta', async () => {
-    const sim = await simulateTurn({
-      baselineFiles: [],
-      turnFiles: { 'a.txt': 'a' },
-    });
-    const author = {
-      agentId: 'agt_bundle_author',
-      userId: 'usr_bundle_author',
-      sessionId: 'req-bundle-001',
-    };
-    const result = await harness.engine.applyBundle(
-      'wsengineauthor003',
-      {
-        bundleBytes: sim.bundleB64,
-        baselineCommit: sim.baselineCommit,
-        parent: null,
-        reason: 'bundle-author-smoke',
-      },
-      author,
-    );
-    expect(result.delta.author).toEqual(author);
   });
 });

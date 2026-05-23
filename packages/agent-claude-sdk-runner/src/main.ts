@@ -1010,9 +1010,11 @@ export async function main(): Promise<number> {
           if (bundleB64 !== null) {
             // Bounded re-sync + retry loop. On a concurrent-writer advance the
             // host returns accepted:false with actualParent + baselineBundleBytes.
-            // We rebase our turn commit onto the new head and retry (up to 3×).
-            // A true policy veto (no actualParent) rolls back immediately.
-            // A network/5xx error keeps the tree intact for accumulation next turn.
+            // We rebase our turn commit onto the new head and retry (up to
+            // MAX_RESYNC_ATTEMPTS times). A true policy veto (no actualParent)
+            // rolls back immediately. A network/5xx error keeps the tree intact
+            // for accumulation next turn.
+            const MAX_RESYNC_ATTEMPTS = 3;
             let attempt = 0;
             let pv: string | null = parentVersion;
             for (;;) {
@@ -1039,13 +1041,15 @@ export async function main(): Promise<number> {
                 break;
               }
               // Concurrent-writer advance → re-sync + retry (bounded).
-              if (resp.actualParent && resp.baselineBundleBytes && attempt < 3) {
+              // pv must be non-null: resyncBaselineAndReplay needs the old
+              // baseline OID to compute the rebase upstream.
+              if (resp.actualParent && resp.baselineBundleBytes && pv !== null && attempt < MAX_RESYNC_ATTEMPTS) {
                 attempt++;
                 try {
                   await resyncBaselineAndReplay({
                     root: env.workspaceRoot,
                     baselineBundleBytes: resp.baselineBundleBytes,
-                    oldBaseline: pv as string,
+                    oldBaseline: pv,
                     newBaseline: resp.actualParent,
                   });
                 } catch (e) {
@@ -1059,15 +1063,24 @@ export async function main(): Promise<number> {
                   root: env.workspaceRoot,
                   reason: 'turn',
                 });
+                // parentVersion intentionally stays stale here; the next
+                // turn's re-sync will re-advance it once the new bundle lands.
                 if (reb === null) break; // nothing to ship after replay
                 bundleB64 = reb;
                 continue;
               }
-              // True veto (no actualParent) or retries exhausted → roll back
-              // this turn so the agent's next turn starts clean.
-              process.stderr.write(
-                `runner: workspace rejected: ${resp.reason}\n`,
-              );
+              // Retries exhausted on concurrent-writer rejection vs. true veto:
+              // log distinctly so an operator can tell a stuck re-sync from a
+              // policy rejection.
+              if (resp.actualParent && attempt >= MAX_RESYNC_ATTEMPTS) {
+                process.stderr.write(
+                  `runner: commit-notify re-sync exhausted after ${attempt} attempts; rolling back turn\n`,
+                );
+              } else {
+                process.stderr.write(
+                  `runner: workspace rejected: ${resp.reason}\n`,
+                );
+              }
               await rollbackToBaseline(env.workspaceRoot);
               break;
             }
