@@ -198,6 +198,11 @@ export const WorkspaceCommitNotifyResponseSchema = z.discriminatedUnion(
     z.object({
       accepted: z.literal(false),
       reason: z.string(),
+      // Re-sync envelope (optional; present only on a parent-mismatch rejection):
+      // the storage tier's current head + a baseline bundle at that head, so the
+      // runner can rebase its turn onto it and retry. Opaque to the runner.
+      actualParent: z.string().optional(),
+      baselineBundleBytes: z.string().optional(),
     }),
   ],
 );
