@@ -31,8 +31,8 @@ export type CommitNotifyOutcome = 'accepted' | 'rolled-back' | 'kept';
  *
  *  - accepted              → advanceBaseline; return the new version ('accepted').
  *  - concurrent-writer      → resyncBaselineAndReplay + re-bundle + retry, up to
- *    envelope                 MAX_RESYNC_ATTEMPTS. reb===null (turn absorbed) →
- *                             promote parentVersion to the new head ('accepted').
+ *    envelope                 MAX_RESYNC_ATTEMPTS. An empty re-bundle (turn
+ *                             absorbed) → promote parentVersion to the new head ('accepted').
  *  - true veto / exhausted  → rollbackToBaseline ('rolled-back'); parentVersion unchanged.
  *  - network/5xx/resync-fail→ keep the working tree ('kept'); parentVersion unchanged.
  */
@@ -45,13 +45,13 @@ export async function commitNotifyWithResync(input: {
 }): Promise<{ parentVersion: string | null; outcome: CommitNotifyOutcome }> {
   const { client, root, reason } = input;
   let bundleB64 = input.bundleBytes;
-  let pv: string | null = input.parentVersion;
+  let currentParentVersion: string | null = input.parentVersion;
   let attempt = 0;
   for (;;) {
     let resp: WorkspaceCommitNotifyResponse;
     try {
       resp = (await client.call('workspace.commit-notify', {
-        parentVersion: pv,
+        parentVersion: currentParentVersion,
         reason,
         bundleBytes: bundleB64,
       })) as WorkspaceCommitNotifyResponse;
@@ -68,16 +68,21 @@ export async function commitNotifyWithResync(input: {
       await advanceBaseline(root);
       return { parentVersion: resp.version as unknown as string, outcome: 'accepted' };
     }
-    // Concurrent-writer advance → re-sync + retry (bounded). pv must be
-    // non-null: resyncBaselineAndReplay needs the old baseline OID to compute
-    // the rebase upstream.
-    if (resp.actualParent && resp.baselineBundleBytes && pv !== null && attempt < MAX_RESYNC_ATTEMPTS) {
+    // Concurrent-writer advance → re-sync + retry (bounded). currentParentVersion
+    // must be non-null: resyncBaselineAndReplay needs the old baseline OID to
+    // compute the rebase upstream.
+    if (
+      resp.actualParent &&
+      resp.baselineBundleBytes &&
+      currentParentVersion !== null &&
+      attempt < MAX_RESYNC_ATTEMPTS
+    ) {
       attempt++;
       try {
         await resyncBaselineAndReplay({
           root,
           baselineBundleBytes: resp.baselineBundleBytes,
-          oldBaseline: pv,
+          oldBaseline: currentParentVersion,
           newBaseline: resp.actualParent,
         });
       } catch (e) {
@@ -86,17 +91,17 @@ export async function commitNotifyWithResync(input: {
         );
         return { parentVersion: input.parentVersion, outcome: 'kept' };
       }
-      pv = resp.actualParent;
-      const reb = await commitTurnAndBundle({ root, reason });
-      if (reb === null) {
+      currentParentVersion = resp.actualParent;
+      const rebasedBundleBytes = await commitTurnAndBundle({ root, reason });
+      if (rebasedBundleBytes === null) {
         // Replay produced no new commit — the workspace is already aligned to
-        // the advanced baseline (resyncBaselineAndReplay re-pinned `baseline`
-        // to `pv`). Promote `parentVersion` now so the NEXT turn's commit-notify
-        // uses the new baseline instead of triggering a spurious re-sync against
-        // a stale parent.
-        return { parentVersion: pv, outcome: 'accepted' };
+        // the advanced baseline (resyncBaselineAndReplay re-pinned `baseline` to
+        // currentParentVersion). Promote `parentVersion` now so the NEXT turn's
+        // commit-notify uses the new baseline instead of triggering a spurious
+        // re-sync against a stale parent.
+        return { parentVersion: currentParentVersion, outcome: 'accepted' };
       }
-      bundleB64 = reb;
+      bundleB64 = rebasedBundleBytes;
       continue;
     }
     // Retries exhausted on concurrent-writer rejection vs. true veto: log
