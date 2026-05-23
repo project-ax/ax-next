@@ -743,6 +743,69 @@ describe('resyncBaselineAndReplay', () => {
     expect(logLines).toHaveLength(1);
   });
 
+  it('survives a dirty working tree (live SDK appends to the turn jsonl after commit)', async () => {
+    // Regression: on a live runner the Claude Agent SDK keeps appending to
+    // the session transcript jsonl AFTER commitTurnAndBundle snapshots it, so
+    // by the time the re-sync rebase runs the working tree is DIRTY. Without
+    // --autostash, `git rebase` aborts ("local changes would be overwritten")
+    // and the turn is lost. Every prior fixture used a CLEAN tree, so only a
+    // live cluster reproduced this. Here we simulate the SDK's post-commit
+    // append and assert the resync still lands.
+    //
+    //   B0 (seed.txt)  ← refs/heads/baseline
+    //   └─ T1 (a.jsonl) ← HEAD/main (the turn commit)
+    //   + unstaged append to a.jsonl in the working tree (the live write)
+    const { root, baselineOid: b0Oid } = await setupMaterializedWorkspace({
+      baselineFiles: { 'seed.txt': 'seed\n' },
+    });
+    // Turn commit touching a.jsonl (disjoint from the concurrent writer's path).
+    await fs.writeFile(path.join(root, 'a.jsonl'), '{"turn":1}\n');
+    await commitTurnAndBundle({ root, reason: 'turn 1' });
+
+    // Simulate the live SDK appending more transcript AFTER the per-turn
+    // commit: a.jsonl is now dirty (tracked, modified, unstaged).
+    await fs.appendFile(path.join(root, 'a.jsonl'), '{"turn":1,"more":true}\n');
+
+    // Advanced mirror — concurrent writer added att/file.txt on top of B0.
+    const { bundleBase64: baselineBundleBytes, newHead: b1Oid } =
+      await makeAdvancedMirrorBundle(b0Oid, root, 'att/file.txt', 'attachment\n');
+
+    // Must NOT throw even though the working tree is dirty.
+    await resyncBaselineAndReplay({
+      root,
+      baselineBundleBytes,
+      oldBaseline: b0Oid,
+      newBaseline: b1Oid,
+    });
+
+    // refs/heads/baseline must now point at B1.
+    const baselineAfter = (
+      await git(['-C', root, 'rev-parse', 'refs/heads/baseline'])
+    ).stdout.trim();
+    expect(baselineAfter).toBe(b1Oid);
+
+    // Both the concurrent writer's file AND the turn's file must be present.
+    expect(
+      await fs.readFile(path.join(root, 'att', 'file.txt'), 'utf8'),
+    ).toBe('attachment\n');
+    expect(
+      await fs.readFile(path.join(root, 'seed.txt'), 'utf8'),
+    ).toBe('seed\n');
+
+    // baseline..main must contain exactly the 1 replayed turn commit.
+    const log = (
+      await git(['-C', root, 'log', '--oneline', `${b1Oid}..main`])
+    ).stdout.trim();
+    const logLines = log.split('\n').filter(Boolean);
+    expect(logLines).toHaveLength(1);
+
+    // The dirty append must be preserved in the working tree: --autostash
+    // re-applies it on top of the rebased state. a.jsonl therefore contains
+    // BOTH the committed turn line AND the live append.
+    const aJsonl = await fs.readFile(path.join(root, 'a.jsonl'), 'utf8');
+    expect(aJsonl).toBe('{"turn":1}\n{"turn":1,"more":true}\n');
+  });
+
   it('conflict path: same-path change throws and leaves repo non-mid-rebase', async () => {
     // Both the concurrent writer AND the turn touch the same file — this
     // produces an irreconcilable conflict. resyncBaselineAndReplay must

@@ -472,6 +472,12 @@ export async function rollbackToBaseline(root: string): Promise<void> {
  * A real conflict (same path touched by both) ⇒ the rebase is aborted (leaving
  * the tree usable) and an error is thrown so the caller can surface a loud
  * turn failure.
+ *
+ * The working tree may be DIRTY when this runs: on a live runner the Claude
+ * Agent SDK keeps appending to the session transcript jsonl after the per-turn
+ * commit snapshotted it. The rebase uses `--autostash` so those uncommitted
+ * writes are stashed before and re-applied after — without it git would abort
+ * the rebase and the turn would be lost.
  */
 export async function resyncBaselineAndReplay(input: {
   root: string;
@@ -499,7 +505,17 @@ export async function resyncBaselineAndReplay(input: {
       'git fetch resync bundle',
     );
 
-    // Replay: git rebase --onto <newBaseline> <oldBaseline> main
+    // Replay: git rebase --autostash --onto <newBaseline> <oldBaseline> main
+    //   --autostash         : stash any dirty tracked changes before the
+    //                         rebase and re-apply them after. On a LIVE runner
+    //                         the Claude Agent SDK keeps appending to the
+    //                         session transcript jsonl AFTER commitTurnAndBundle
+    //                         snapshots it, so by the time this re-sync runs the
+    //                         working tree is dirty. Without --autostash git
+    //                         aborts ("local changes would be overwritten").
+    //                         For append-only/disjoint jsonl the stash re-applies
+    //                         cleanly. (Fixtures with clean trees never hit this;
+    //                         only a live cluster reproduced it.)
     //   --onto newBaseline  : set the new parent for the replayed commits
     //   oldBaseline         : the upstream from which our turn diverged
     //   main                : the branch to rebase (our turn's HEAD)
@@ -509,7 +525,7 @@ export async function resyncBaselineAndReplay(input: {
     // git will stop with a conflict marker and a non-zero exit.
     const rebase = await runGit([
       '-C', root,
-      'rebase', '--onto', newBaseline, oldBaseline, 'main',
+      'rebase', '--autostash', '--onto', newBaseline, oldBaseline, 'main',
     ]);
     if (rebase.code !== 0) {
       // Conflict — abort to restore the pre-rebase state so the repo is usable.
