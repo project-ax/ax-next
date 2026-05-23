@@ -1,3 +1,7 @@
+import { mkdtempSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { Kysely, PostgresDialect } from 'kysely';
 import {
@@ -5,7 +9,22 @@ import {
   type StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
 import pg from 'pg';
-import { HookBus, PluginError, makeAgentContext } from '@ax/core';
+import {
+  HookBus,
+  PluginError,
+  bootstrap,
+  makeAgentContext,
+  type Plugin,
+  type WorkspaceApplyInput,
+  type WorkspaceApplyOutput,
+  type WorkspaceReadInput,
+  type WorkspaceReadOutput,
+} from '@ax/core';
+// Test-only cross-plugin import (eslint no-restricted-imports is OFF in
+// __tests__): we drive the REAL single-replica workspace backend through the
+// attachments commit path to prove the parent-mismatch → rebase recovery works
+// end-to-end against a real backend, not just a mock that echoes actualParent.
+import { registerWorkspaceGitHooks } from '@ax/workspace-git-core';
 import {
   runAttachmentsMigration,
   type AttachmentsDatabase,
@@ -332,5 +351,121 @@ describe('attachments:commit handler', () => {
     } catch (err) {
       expect(err).toBeInstanceOf(PluginError);
     }
+  });
+});
+
+// Test-only Plugin shim for the REAL single-replica backend (modeled on
+// packages/workspace-git-core/src/__tests__/contract.test.ts). The manifest's
+// `registers` lists the public `workspace:apply` facade + the internal hooks
+// registerWorkspaceGitHooks installs.
+function makeCorePlugin(repoRoot: string): Plugin {
+  return {
+    manifest: {
+      name: '@ax/workspace-git-core-attachments-test-shim',
+      version: '0.0.0',
+      registers: [
+        'workspace:apply',
+        'workspace:apply-internal',
+        'workspace:read',
+        'workspace:list',
+        'workspace:diff',
+      ],
+      calls: [],
+      subscribes: [],
+    },
+    init({ bus }) {
+      registerWorkspaceGitHooks(bus, { repoRoot });
+    },
+  };
+}
+
+describe('attachments:commit against the REAL single-replica workspace-git-core backend (F-1 sibling)', () => {
+  const enc = new TextEncoder();
+  const dec = new TextDecoder();
+  const repoRoots: string[] = [];
+
+  afterEach(async () => {
+    for (const r of repoRoots.splice(0)) {
+      await rm(r, { recursive: true, force: true });
+    }
+  });
+
+  async function makeRealBackendBus(): Promise<HookBus> {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'ax-attach-core-'));
+    repoRoots.push(repoRoot);
+    const bus = new HookBus();
+    await bootstrap({ bus, plugins: [makeCorePlugin(repoRoot)], config: {} });
+    return bus;
+  }
+
+  it('recovers from parent-mismatch by rebasing on the echoed actualParent and commits the attachment', async () => {
+    const { store } = await freshSetup();
+    const bus = await makeRealBackendBus();
+    const ctx = makeCtx('u-real');
+
+    // Advance the shared mirror OUT OF BAND first (as a prior turn or another
+    // attachment would), so the head is non-null. The commit handler starts at
+    // parent:null and must rebase onto this head via the backend's echoed
+    // actualParent — exactly the production single-replica scenario.
+    const seed = await bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>(
+      'workspace:apply',
+      ctx,
+      {
+        changes: [{ path: '.ax/seed', kind: 'put', content: enc.encode('prior turn') }],
+        parent: null,
+      },
+    );
+    const v1 = seed.version;
+    expect(v1).toMatch(/^[0-9a-f]{40}$/);
+
+    await store.insertTemp({
+      attachmentId: 'a-real',
+      userId: 'u-real',
+      bytes: Buffer.from('hello world'),
+      displayName: 'greeting.txt',
+      mediaType: 'text/plain',
+      sizeBytes: 11,
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+
+    const handler = createCommitHandler({ store, bus });
+
+    // Pre-fix: the real backend throws parent-mismatch with NO cause, so the
+    // handler's retry guard (`'actualParent' in err.cause`) is false → it
+    // re-throws and this call REJECTS (the production 500). Post-fix: the
+    // backend echoes actualParent=v1, the handler rebases and commits at a
+    // child of v1.
+    const result = await handler(ctx, {
+      attachmentId: 'a-real',
+      conversationId: 'c-real',
+      turnId: 't-1',
+    });
+
+    expect(result.path).toMatch(
+      /^\.ax\/uploads\/c-real\/t-1\/[a-f0-9]{8}__greeting\.txt$/,
+    );
+
+    // The attachment landed in the workspace at the rebased head.
+    const readAttachment = await bus.call<WorkspaceReadInput, WorkspaceReadOutput>(
+      'workspace:read',
+      ctx,
+      { path: result.path },
+    );
+    expect(readAttachment.found).toBe(true);
+    if (readAttachment.found) {
+      expect(dec.decode(readAttachment.bytes)).toBe('hello world');
+    }
+
+    // The out-of-band seed (v1) survived — proving the handler rebased ONTO it
+    // rather than clobbering history with a fresh parent:null commit.
+    const readSeed = await bus.call<WorkspaceReadInput, WorkspaceReadOutput>(
+      'workspace:read',
+      ctx,
+      { path: '.ax/seed' },
+    );
+    expect(readSeed.found).toBe(true);
+
+    // The temp row is consumed only on a successful apply.
+    expect(await store.getTemp('a-real')).toBeNull();
   });
 });

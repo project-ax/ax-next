@@ -27,6 +27,7 @@
     "@ax/conversations": "workspace:*",
     "@ax/database-postgres": "workspace:*",
     "@ax/test-harness": "workspace:*",
+    "@ax/workspace-git-core": "workspace:*",
     "@testcontainers/postgresql": "11.14.0",
     "@types/node": "^25.6.0",
     "@types/pg": "8.20.0",
