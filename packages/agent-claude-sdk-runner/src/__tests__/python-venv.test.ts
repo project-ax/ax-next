@@ -89,11 +89,54 @@ describe('scaffoldPythonVenv', () => {
     return p;
   }
 
-  it('creates the venv via `uv venv --seed` and returns true', async () => {
+  it('copies the baked template when present (offline) and does NOT spawn uv', async () => {
+    const root = path.join(tmp, 'ephemeral');
+    await fs.mkdir(root, { recursive: true });
+
+    // A minimal fake baked venv: pyvenv.cfg marker, a bin/pip "script", and a
+    // symlink (representative of a real venv's internal symlinks) so we can
+    // assert verbatimSymlinks preserved it as a link.
+    const template = path.join(tmp, 'template');
+    await fs.mkdir(path.join(template, 'bin'), { recursive: true });
+    await fs.writeFile(path.join(template, 'pyvenv.cfg'), 'home = /usr/bin\n');
+    await fs.writeFile(path.join(template, 'bin', 'pip'), '#!/bin/sh\n', {
+      mode: 0o755,
+    });
+    await fs.symlink('pip', path.join(template, 'bin', 'pip3'));
+
+    // A uvBin that would FAIL the test if scaffold ever spawned it: it drops a
+    // sentinel. We assert the sentinel was never written.
+    const sentinel = path.join(tmp, 'uv-ran');
+    const uvBin = await writeFakeUv(`: > "${sentinel}"; mkdir -p "$3"`);
+
+    await expect(
+      scaffoldPythonVenv(root, { uvBin, templateDir: template }),
+    ).resolves.toBe(true);
+
+    const venvDir = pythonVenvDir(root);
+    await expect(
+      fs.access(path.join(venvDir, 'pyvenv.cfg')),
+    ).resolves.toBeUndefined();
+    await expect(
+      fs.readFile(path.join(venvDir, 'bin', 'pip'), 'utf8'),
+    ).resolves.toBe('#!/bin/sh\n');
+    // verbatimSymlinks: the internal symlink was copied AS a symlink, not
+    // dereferenced into a regular file.
+    const st = await fs.lstat(path.join(venvDir, 'bin', 'pip3'));
+    expect(st.isSymbolicLink()).toBe(true);
+    await expect(fs.access(sentinel)).rejects.toThrow(); // uv NOT spawned
+  });
+
+  it('falls back to `uv venv --seed` when no template is present', async () => {
     const root = path.join(tmp, 'ephemeral');
     await fs.mkdir(root, { recursive: true });
     const uvBin = await writeFakeUv('mkdir -p "$3" && : > "$3/pyvenv.cfg"');
-    await expect(scaffoldPythonVenv(root, { uvBin })).resolves.toBe(true);
+    await expect(
+      scaffoldPythonVenv(root, {
+        uvBin,
+        templateDir: path.join(tmp, 'no-such-template'),
+      }),
+    ).resolves.toBe(true);
     await expect(
       fs.access(path.join(pythonVenvDir(root), 'pyvenv.cfg')),
     ).resolves.toBeUndefined();
