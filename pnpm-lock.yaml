@@ -205,6 +205,9 @@ importers:
       '@ax/test-harness':
         specifier: workspace:*
         version: link:../test-harness
+      '@ax/workspace-git-core':
+        specifier: workspace:*
+        version: link:../workspace-git-core
       '@testcontainers/postgresql':
         specifier: 11.14.0
         version: 11.14.0

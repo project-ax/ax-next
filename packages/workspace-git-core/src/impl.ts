@@ -794,6 +794,15 @@ export function registerWorkspaceGitHooks(
             plugin: PLUGIN_NAME,
             hookName: 'workspace:apply-internal',
             message: `expected parent ${currentVersion === null ? 'null' : currentVersion}, got ${input.parent === null ? 'null' : input.parent}`,
+            // The freshly-read mirror head so a rebase-on-mismatch consumer
+            // (attachments:commit, which starts parent:null then retries with
+            // the echoed actualParent) can recover — mirrors the apply-bundle
+            // parent-CAS (Site 1, below) and the multi-replica backend's
+            // `parentMismatch` contract. The `workspace:apply` facade forwards
+            // this error UNCHANGED, so the cause must originate here.
+            // `currentVersion` may be null (empty mirror); that is the correct
+            // echo — the caller then retries with parent:null.
+            cause: { actualParent: currentVersion },
           });
         }
 
