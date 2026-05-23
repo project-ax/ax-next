@@ -1,0 +1,18 @@
+<task-notification>
+<task-id>b6herv1kh</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-vpulim-dev-ai-ax-next/68c74b95-fcfd-4c1d-bf2c-04047cdef18b/tasks/b6herv1kh.output</output-file>
+<status>completed</status>
+<summary>Background command "cd /Users/vpulim/dev/ai/ax-next/.claude/worktrees/f1-f2-resync-followups
+for i in $(seq 1 30); do
+  sleep 60
+  cr=$(gh pr view 133 --json reviews,comments --jq '[.reviews[],.comments[]] | map(select(.author.login=="coderabbitai")) | last | .body' 2&gt;/dev/null)
+  cr_done=no
+  if [ -n "$cr" ] &amp;&amp; ! echo "$cr" | grep -qi "currently reviewing\|review in progress\|the review is in progress"; then cr_done=yes; fi
+  checks=$(gh pr checks 133 2&gt;/dev/null)
+  ci_pending=$(echo "$checks" | grep -c "pending")
+  echo "[poll $i] coderabbit_done=$cr_done ci_pending_count=$ci_pending"
+  if [ "$cr_done" = "yes" ] &amp;&amp; [ "$ci_pending" -eq 0 ]; then echo "BOTH_READY"; break; fi
+done
+echo "=== final CI ==="; gh pr checks 133 2&gt;&amp;1 | head" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,23 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "ea534e745e4b",
+  "strategy": "manual-commit",
+  "branch": "worktree-f1-f2-resync-followups",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/ea/534e745e4b/0/metadata.json",
+      "transcript": "/ea/534e745e4b/0/full.jsonl",
+      "content_hash": "/ea/534e745e4b/0/content_hash.txt",
+      "prompt": "/ea/534e745e4b/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 9713,
+    "cache_creation_tokens": 669504,
+    "cache_read_tokens": 10640340,
+    "output_tokens": 115558,
+    "api_call_count": 60
+  }
+}
