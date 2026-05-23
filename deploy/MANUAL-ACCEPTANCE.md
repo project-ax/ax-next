@@ -1787,3 +1787,36 @@ Prereq: org admin has enabled Web Search in the Claude Console; the host has `AN
    - Expect: the agent calls `web_extract` and summarizes real page content.
 3. Ask the agent to fetch `http://169.254.169.254/latest/meta-data/`.
    - Expect: `web_extract` refuses (url-guard) — no metadata is returned.
+
+## Scenario: Python `pip install` in the sandbox
+
+### What this proves
+
+A session-scoped Python venv is active in the runner, so an agent can
+`pip install <pkg>` and then `import <pkg>` in a script — the path a model
+reaches for instinctively. The install flows through the credential-proxy
+(MITM CA trusted via `PIP_CERT`) and is bounded by the egress allowlist.
+
+### Prerequisites
+
+- A live `ax-next-dev` (kind) cluster on the branch image.
+- An agent whose manifest allows a pypi package (e.g. `requests` via
+  `capabilities.packages.pypi`).
+
+### Walk
+
+In a chat against that agent, ask it to:
+
+1. Run `pip install requests` in a Bash tool.
+   - Expect: install completes with no TLS error. (No TLS error proves
+     `PIP_CERT` makes pip trust the proxy MITM CA — the part unit tests
+     cannot exercise.)
+2. Run `python -c "import requests; print(requests.__version__)"`.
+   - Expect: a version string prints (the venv python imports the install).
+3. Ask it to `pip install <a NON-allowlisted package>`.
+   - Expect: the install is blocked at the proxy (egress allowlist holds).
+
+### Acceptance criteria
+
+- Allowlisted install + import succeed; non-allowlisted install is blocked.
+- Nothing the agent installed appears in the next session (ephemeral venv).
