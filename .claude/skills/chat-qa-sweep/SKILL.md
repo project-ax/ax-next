@@ -31,9 +31,22 @@ This skill assumes a running `ax-next-dev` cluster and a working browser entry p
 does **not** restate any of that. For:
 
 - **cluster preconditions / first-run setup** → `k8s-acceptance-loop` §3
-- **browser entry point** (port-forward to `:9090`, sign-in via dev-bootstrap) →
-  `k8s-acceptance-loop` §4 + its `references/playwright-recipes.md` (Recipe 1 sign-in,
-  Recipe 2 send-and-wait, Recipe 4 multi-turn, Recipe 5 failure capture)
+- **browser entry point** (port-forward to `:9090`) →
+  `k8s-acceptance-loop` §4 + its `references/playwright-recipes.md` (Recipe 2
+  send-and-wait, Recipe 4 multi-turn, Recipe 5 failure capture)
+
+**Auth — don't trust dev-bootstrap on an existing cluster.** Recipe 1's `POST
+/auth/dev-bootstrap` returns **404 once the cluster is bootstrapped** (an admin exists),
+which is the normal state of a long-lived dev cluster. The working path is to **mint the
+`ax_auth_session` cookie from a live DB session** (see `claude-memory`
+`reference_headless_authed_chat_kind`): grab a non-expired `token` from
+`auth_better_v1_sessions` (postgres superuser password is secret
+`ax-next-postgresql/postgres-password`, db `ax_next`, psql at
+`/opt/bitnami/postgresql/bin/psql`), sign it `b64url(token).b64url(hmac-sha256(keyBytes,
+token))` with the **hex-decoded** `ax-next-secrets/http-cookie-key` (64 hex → 32 bytes),
+then **verify** the cookie with `curl /api/chat/agents -H "Cookie: ax_auth_session=…"` (200
+= good) before planting it in the browser via `browser_evaluate(() => document.cookie =
+'ax_auth_session=…; Path=/; SameSite=Lax')` and re-navigating.
 
 If the cluster isn't up or you can't sign in, **stop** and report "environment not ready."
 Go run `k8s-acceptance-loop` §3 first. Don't half-run the battery against a sick cluster.

@@ -89,20 +89,34 @@ The baseline contract: a user message always gets a completed assistant turn.
 
 ## 5. Upload attachment  → leaves an attachment for #8 (same session as #3)
 
-- **Steps:** attach a small known file in the composer (`browser_file_upload`) → pending
-  chip shows (`AttachmentComposerChip`) → submit.
-- **PASS:** chip shows pre-send; after send it reconstructs as a downloadable
-  `AttachmentChip` on the message; the POST carries an `attachment_ref`; the agent can
-  reference the file.
+The Attach button opens a **menu** ("Attach file…") that then triggers the file chooser —
+two clicks, not one. Also: `browser_file_upload` only accepts paths under its **allowed
+roots** (the worktree / `.playwright-mcp/`), so write the test file *there*, not `/tmp`.
+Make the content carry a unique marker (e.g. `QA-SWEEP-MARKER-7788`) so you can prove it
+reached the agent.
+
+- **Steps:** click Attach → "Attach file…" → `browser_file_upload` a small marked file →
+  pending chip shows (`AttachmentComposerChip`) and Send enables → send a prompt that forces
+  the agent to read the file ("what is the marker code in the attached file?").
+- **PASS:** chip shows pre-send; after send it renders as an `AttachmentChip` on the
+  message; the POST carries an `attachment_ref` (`POST /api/attachments → 200` in the
+  network log); the agent's reply quotes the marker.
 - **Watch for:** chip vanishing on send; upload 4xx/5xx; `[attachment: unknown]` fallback;
   agent unaware of the file.
 
-## 6. Download attachment (needs #5)
+## 6. Download attachment
 
-- **Steps:** click the `AttachmentChip` from #5.
-- **PASS:** a download fires (`browser_network_requests` shows `GET /api/files?path=…`
-  2xx); content matches what was uploaded.
-- **Watch for:** dead chip (no handler); 404 on the blob; wrong/empty file.
+The **user's own** attachment chip (composer chip and the chip on the user message) is
+**display-only** — a `div`, no anchor/handler — so clicking it does nothing, by design (you
+uploaded it; why download it). Test download against a chip the *system reconstructs*: the
+reloaded chip in #8(c), or an **artifact** chip from #7.
+
+- **Steps:** in the reloaded #8 session (or on a #7 artifact), click the reconstructed chip.
+- **PASS:** a download fires — confirm a `2xx` blob fetch in `browser_network_requests`
+  (verify the actual path against the network log; the endpoint is not assumed here);
+  content matches what was uploaded/published.
+- **Watch for:** dead chip (no handler) where one *should* download; 404 on the blob;
+  wrong/empty file.
 
 ## 7. Artifact creation + attach to response (standalone)
 

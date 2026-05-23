@@ -23,11 +23,14 @@ white-screen — is the bug this battery exists to catch.
    cluster while the script looks like it succeeded. Capture the live value first; restore
    that.
 
-Cluster handles (same as `k8s-acceptance-loop`):
+Cluster handles (verified on `ax-next-dev` 2026-05-23 — the host label is **not**
+`…/component`):
 - host: namespace `ax-next`, `deploy/ax-next-host`, label
-  `app.kubernetes.io/component=ax-next-host`
+  **`app.kubernetes.io/name=ax-next-host`** (equivalently `ax.io/plane=ingress`)
 - runners: namespace `ax-next-runners`, label
-  `app.kubernetes.io/component=ax-next-runner`
+  `app.kubernetes.io/component=ax-next-runner` (equivalently `ax.io/plane=execution`); pods
+  are named `ax-sandbox-*` and are **idle-reaped** when warm-idle — "no runner pods" is
+  normal between turns; spawn one by sending a message first
 - helm release `ax-next`; public port-forward `svc/ax-next-host 9090:9090`
 
 **Before each fault:** confirm a clean baseline — host `Ready`, port-forward alive
