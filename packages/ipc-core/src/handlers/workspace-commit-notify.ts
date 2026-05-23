@@ -141,6 +141,39 @@ export const workspaceCommitNotifyHandler: ActionHandler = async (
     >('workspace:export-baseline-bundle', ctx, { version: parent });
     baselineBundleBytes = out.bundleBytes;
   } catch (err) {
+    // parent-mismatch: a concurrent writer (e.g. the attachments plugin)
+    // advanced the mirror past the runner's parent version between the
+    // runner's materialize and now. Return accepted:false with the
+    // storage tier's current head + a baseline bundle at that head so
+    // the runner can rebase and retry (mirrors the apply-bundle
+    // parent-mismatch handling below).
+    if (err instanceof PluginError && err.code === 'parent-mismatch') {
+      const cause = err.cause as Record<string, unknown> | undefined;
+      const body: Record<string, unknown> = {
+        accepted: false as const,
+        reason: `parent-mismatch: ${err.message}`,
+      };
+      if (cause !== null && typeof cause === 'object') {
+        if (typeof cause.actualParent === 'string') {
+          body.actualParent = cause.actualParent;
+        }
+        if (typeof cause.baselineBundleBytes === 'string') {
+          body.baselineBundleBytes = cause.baselineBundleBytes;
+        }
+      }
+      const checked = WorkspaceCommitNotifyResponseSchema.safeParse(body);
+      if (!checked.success) {
+        logInternalError(
+          ctx.logger,
+          'workspace.commit-notify',
+          new Error(
+            `response shape drift (export-baseline parent-mismatch): ${checked.error.message}`,
+          ),
+        );
+        return internalError();
+      }
+      return { status: 200, body: checked.data };
+    }
     logInternalError(ctx.logger, 'workspace.commit-notify', err);
     return internalError();
   }
