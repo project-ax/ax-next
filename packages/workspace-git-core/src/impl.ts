@@ -1028,6 +1028,15 @@ export function registerWorkspaceGitHooks(
             plugin: PLUGIN_NAME,
             hookName: 'workspace:apply-bundle',
             message: `expected parent ${currentVersion}, got ${input.parent === null ? 'null' : input.parent}`,
+            // The freshly-read mirror head, so commit-notify can re-sync the
+            // runner (mirror the multi-replica backend's parentMismatch
+            // contract). This is a genuine concurrent-writer advance: a
+            // disjoint writer moved the mirror past the runner's parent. The
+            // Sites below are post-CAS integrity checks where head already ==
+            // parent (no concurrent advance) — they stay bare (no actualParent)
+            // so the handler doesn't trigger a useless re-sync retry against
+            // the same head.
+            cause: { actualParent: currentVersion },
           });
         }
 
