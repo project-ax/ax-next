@@ -39,12 +39,20 @@ export async function registerMemorySearch(bus: HookBus): Promise<void> {
   // descriptor; this service hook is what the agent's tool.execute-host call
   // routes to.
   bus.registerService<
-    { query?: unknown; topK?: unknown; categoryFilter?: unknown },
+    { input?: unknown },
     { results: Array<{ docId: string; category: string; slug: string; summary: string; score: number }> }
   >(
     'tool:execute:memory_search',
     PLUGIN_NAME,
-    async (ctx, input) => {
+    async (ctx, call) => {
+      // The `tool.execute-host` IPC handler forwards the full ToolCall
+      // `{ id, name, input }` to this hook (see ipc-core tool-execute-host.ts).
+      // The model-supplied arguments live under `call.input`, not on `call`.
+      const input = (call?.input ?? {}) as {
+        query?: unknown;
+        topK?: unknown;
+        categoryFilter?: unknown;
+      };
       const topKRaw = Number(input?.topK ?? 5);
       const topK = Number.isFinite(topKRaw)
         ? Math.max(1, Math.min(Math.trunc(topKRaw), 20))
