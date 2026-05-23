@@ -16,9 +16,10 @@
 // ---------------------------------------------------------------------------
 
 import { mkdtempSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect } from 'vitest';
 import { createTestHarness } from '@ax/test-harness';
 import {
   PluginError,
@@ -53,8 +54,17 @@ function makeCorePlugin(repoRoot: string): Plugin {
   };
 }
 
+const repoRoots: string[] = [];
+
+afterEach(async () => {
+  for (const r of repoRoots.splice(0)) {
+    await rm(r, { recursive: true, force: true });
+  }
+});
+
 async function load() {
   const repoRoot = mkdtempSync(join(tmpdir(), 'ax-ws-core-ap-'));
+  repoRoots.push(repoRoot);
   return createTestHarness({ plugins: [makeCorePlugin(repoRoot)] });
 }
 
