@@ -98,6 +98,18 @@ ax-next tracks `.claude/memory/` in git, so commit memory changes with the work 
 
 ---
 
+## Parallel agents: write to your own worktree/branch copy, never the shared main checkout
+
+auto-ship runs several `yolo-ship` agents at once, and they have at times all operated on the **same** main checkout (`/home/vpulim/dev/ai/ax-next`). Two agents appending to `.claude/memory/decisions.md` there race — one's `git add` + commit overwrites the other's rows, **silently dropping them** (the TASK-7 bug; first seen on the ARCH-3 run, which worked around it by committing memory to its branch copy).
+
+So when you're an agent working a task: **write + commit memory only in your own worktree/branch copy, never the shared main checkout.** Because memory is committed and tracked, `git worktree add` carries the files into your worktree, your rows land on PR merge through auto-ship's serialized queue, and a genuine concurrent edit to the same lines surfaces as an ordinary git merge conflict (visible, resolvable) instead of a silent loss. A solo human editing memory on `main` with no agents in flight is fine — the hazard is specifically the *shared checkout under parallelism*.
+
+If you're not sure which tree you're in, run `scripts/memory-write-target.sh`: it prints the correct `.claude/memory` dir for your current working tree (your own copy, primary or linked) and warns — with `--check` it exits nonzero — when you're standing in the shared main checkout while linked worktrees exist.
+
+This reverses, for the parallel-agent case, the older "write decisions.md to the main checkout" guidance that predated `.claude/memory/` being committed (when a fresh worktree's copy was empty). It no longer is: the tracked files travel into every worktree.
+
+---
+
 ## Hygiene — lazy, threshold-triggered
 
 Runs at read phase only when a file crosses ~150 lines. Not every session.

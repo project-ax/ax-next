@@ -42,6 +42,7 @@ jobs:
             echo "No affected workspace packages — package tests skipped (typecheck + lint already ran; full suite runs on merge to main)."
           fi
           pnpm test:eslint-rules
+          pnpm test:scripts
       - name: Test (full suite)
         if: github.event_name != 'pull_request'
         run: pnpm test
