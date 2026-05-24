@@ -14,6 +14,16 @@
 //                            workspace HTTP transport. Pure schemas + codec
 //                            helpers + per-action timeouts. Imported by
 //                            both the host plugin and the pod-side server.
+//   @ax/sandbox-protocol  — same class again: the shared zod contract for the
+//                            `sandbox:open-session` payload (ProxyConfig,
+//                            installed skills, MCP server specs, the input
+//                            envelope). Pure schemas + inferred types, no
+//                            @ax/core dep. Imported by both sandbox backends
+//                            (@ax/sandbox-k8s, @ax/sandbox-subprocess) for
+//                            boundary re-validation and by @ax/chat-orchestrator
+//                            (type-only) to construct the payload. Single
+//                            source of truth that keeps the two backends from
+//                            drifting in validation strictness.
 //   @ax/ipc-core          — kernel-adjacent shared library: transport-agnostic
 //                           IPC dispatcher, auth middleware, body reader,
 //                           response/error helpers, and per-action handlers.
@@ -122,6 +132,7 @@ export default tseslint.config(
                 '!@ax/test-harness',
                 '!@ax/ipc-protocol',
                 '!@ax/workspace-protocol',
+                '!@ax/sandbox-protocol',
                 '!@ax/ipc-core',
                 '!@ax/agent-claude-sdk-runner-host',
                 '!@ax/validator-routine',
@@ -129,7 +140,7 @@ export default tseslint.config(
               ],
               allowTypeImports: true,
               message:
-                'Cross-plugin runtime imports are forbidden. Plugins communicate through the hook bus only. See CLAUDE.md invariant 2. Type-only imports (`import type {...}` / `export type {...}`) are allowed — boundary types are how plugins agree on a shared contract without runtime coupling. The only @ax/* runtime imports allowed in plugin code are @ax/core, @ax/test-harness, @ax/ipc-protocol + @ax/workspace-protocol (wire schemas), @ax/ipc-core (transport-agnostic IPC library), @ax/agent-claude-sdk-runner-host (pure-function jsonl→Turn[] parser), @ax/validator-routine (pure-function routine frontmatter parser shared between the validator and the routines plugin), and @ax/skills-parser (pure-function SKILL.md parser + capability types shared between @ax/skills and @ax/agents)',
+                'Cross-plugin runtime imports are forbidden. Plugins communicate through the hook bus only. See CLAUDE.md invariant 2. Type-only imports (`import type {...}` / `export type {...}`) are allowed — boundary types are how plugins agree on a shared contract without runtime coupling. The only @ax/* runtime imports allowed in plugin code are @ax/core, @ax/test-harness, @ax/ipc-protocol + @ax/workspace-protocol + @ax/sandbox-protocol (wire schemas), @ax/ipc-core (transport-agnostic IPC library), @ax/agent-claude-sdk-runner-host (pure-function jsonl→Turn[] parser), @ax/validator-routine (pure-function routine frontmatter parser shared between the validator and the routines plugin), and @ax/skills-parser (pure-function SKILL.md parser + capability types shared between @ax/skills and @ax/agents)',
             },
           ],
         },

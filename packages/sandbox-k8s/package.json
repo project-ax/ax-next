@@ -19,8 +19,8 @@
   },
   "dependencies": {
     "@ax/core": "workspace:*",
-    "@kubernetes/client-node": "1.4.0",
-    "zod": "^3.23.8"
+    "@ax/sandbox-protocol": "workspace:*",
+    "@kubernetes/client-node": "1.4.0"
   },
   "devDependencies": {
     "@ax/session-inmemory": "workspace:*",

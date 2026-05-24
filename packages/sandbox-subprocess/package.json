@@ -19,7 +19,7 @@
   },
   "dependencies": {
     "@ax/core": "workspace:*",
-    "zod": "^3.23.8"
+    "@ax/sandbox-protocol": "workspace:*"
   },
   "devDependencies": {
     "@ax/ipc-server": "workspace:*",
