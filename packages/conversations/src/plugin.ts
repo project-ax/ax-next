@@ -31,6 +31,10 @@ import {
   validateWorkspaceRefForFreeze,
   type ConversationStore,
 } from './store.js';
+import {
+  GetMetadataOutputSchema,
+  StoreRunnerSessionOutputSchema,
+} from './types.js';
 import type {
   BindSessionInput,
   BindSessionOutput,
@@ -254,6 +258,7 @@ export function createConversationsPlugin(
         PLUGIN_NAME,
         async (ctx, input) =>
           getConversationMetadata(localStore, bus, ctx, input),
+        { returns: GetMetadataOutputSchema },
       );
 
       // Phase B (2026-04-29). Idempotent first-bind. Mirrors the
@@ -265,6 +270,7 @@ export function createConversationsPlugin(
         'conversations:store-runner-session',
         PLUGIN_NAME,
         async (ctx, input) => storeRunnerSession(localStore, ctx, input),
+        { returns: StoreRunnerSessionOutputSchema },
       );
 
       // Phase F (2026-05-03). Post-creation title update. Same ACL

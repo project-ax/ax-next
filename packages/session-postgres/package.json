@@ -20,7 +20,8 @@
   "dependencies": {
     "@ax/core": "workspace:*",
     "kysely": "0.28.17",
-    "pg": "8.20.0"
+    "pg": "8.20.0",
+    "zod": "^3.23.8"
   },
   "devDependencies": {
     "@ax/test-harness": "workspace:*",

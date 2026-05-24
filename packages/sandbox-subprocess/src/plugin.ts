@@ -1,7 +1,17 @@
 import type { Plugin } from '@ax/core';
+import { OpenSessionResultSchema } from '@ax/sandbox-protocol';
+import type { ZodType } from 'zod';
 import { openSessionImpl, type OpenSessionResult } from './open-session.js';
 
 const PLUGIN_NAME = '@ax/sandbox-subprocess';
+
+// `.passthrough()` schema infers `{ runnerEndpoint: string } & {[k]: unknown}`,
+// which can't be proven assignable to `OpenSessionResult` (its `handle` is a
+// typed live object). The schema deliberately doesn't model the handle — it
+// only asserts `runnerEndpoint` and passes everything else through untouched —
+// so we cast it to the hook's output type for `registerService`.
+const OPEN_SESSION_RETURNS =
+  OpenSessionResultSchema as unknown as ZodType<OpenSessionResult>;
 
 export function createSandboxSubprocessPlugin(): Plugin {
   return {
@@ -28,7 +38,7 @@ export function createSandboxSubprocessPlugin(): Plugin {
         'sandbox:open-session',
         PLUGIN_NAME,
         async (ctx, raw) => openSessionImpl(ctx, raw, bus),
-        { timeoutMs: 300_000 },
+        { timeoutMs: 300_000, returns: OPEN_SESSION_RETURNS },
       );
     },
   };

@@ -18,7 +18,8 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@ax/core": "workspace:*"
+    "@ax/core": "workspace:*",
+    "zod": "^3.23.8"
   },
   "devDependencies": {
     "@ax/test-harness": "workspace:*",

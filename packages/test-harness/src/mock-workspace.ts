@@ -3,6 +3,8 @@ import {
   PluginError,
   asWorkspaceVersion,
   registerWorkspaceApplyFacade,
+  WorkspaceListOutputSchema,
+  WorkspaceReadOutputSchema,
   type Bytes,
   type FileChange,
   type Plugin,
@@ -211,6 +213,7 @@ export function createMockWorkspacePlugin(): Plugin {
           if (bytes === undefined) return { found: false };
           return { found: true, bytes: copyBytes(bytes), version };
         },
+        { returns: WorkspaceReadOutputSchema },
       );
 
       bus.registerService<WorkspaceListInput, WorkspaceListOutput>(
@@ -228,6 +231,7 @@ export function createMockWorkspacePlugin(): Plugin {
           }
           return { paths };
         },
+        { returns: WorkspaceListOutputSchema },
       );
 
       bus.registerService<WorkspaceDiffInput, WorkspaceDiffOutput>(

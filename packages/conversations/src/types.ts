@@ -1,5 +1,6 @@
 import type { ContentBlock } from '@ax/ipc-protocol';
 import { ContentBlockSchema } from '@ax/ipc-protocol';
+import { z, type ZodType } from 'zod';
 
 /**
  * @ax/conversations public types.
@@ -244,6 +245,34 @@ export interface GetMetadataOutput {
   createdAt: string;
 }
 
+// ---------------------------------------------------------------------------
+// Runtime `returns` contract for `conversations:get-metadata` (ARCH-6).
+//
+// This hook is IPC-reachable — the host's `session.get-config` IPC handler
+// (@ax/ipc-core) enriches its wire response with `runnerSessionId` via a
+// `conversations:get-metadata` round-trip, so the runner reads this shape
+// indirectly. Validating the handler's return at the bus boundary catches a
+// malformed projection before it crosses to the runner.
+//
+// All fields are storage-agnostic (I1): the nullable strings are opaque ids
+// / ISO-8601 timestamps, never backend identifiers. `runnerSessionId` is the
+// opaque runner-native id (no `sdk_session_id` leak). Cast to
+// `ZodType<GetMetadataOutput>` because `.nullable()` infers `| null` shapes
+// the interface's exact `| null` fields won't directly absorb; the drift-guard
+// test enforces field-for-field agreement.
+// ---------------------------------------------------------------------------
+export const GetMetadataOutputSchema = z.object({
+  conversationId: z.string(),
+  userId: z.string(),
+  agentId: z.string(),
+  runnerType: z.string().nullable(),
+  runnerSessionId: z.string().nullable(),
+  workspaceRef: z.string().nullable(),
+  title: z.string().nullable(),
+  lastActivityAt: z.string().nullable(),
+  createdAt: z.string(),
+}) as unknown as ZodType<GetMetadataOutput>;
+
 /**
  * Phase B (2026-04-29). Bind the runner's native session id to a
  * conversation row exactly once. Called by the runner-plugin's host-side
@@ -269,6 +298,16 @@ export interface StoreRunnerSessionInput {
   runnerSessionId: string;
 }
 export type StoreRunnerSessionOutput = void;
+
+/**
+ * Runtime `returns` contract for `conversations:store-runner-session` (ARCH-6).
+ * IPC-reachable — the host's `conversation.store-runner-session` IPC handler
+ * forwards the runner's first-turn session-id bind through this hook. The
+ * handler resolves to `undefined` (void); `z.void()` accepts `undefined` and
+ * rejects an accidental non-empty return (which would signal a handler bug).
+ */
+export const StoreRunnerSessionOutputSchema =
+  z.void() as unknown as ZodType<StoreRunnerSessionOutput>;
 
 /**
  * Phase F (2026-05-03). Update an existing conversation row's title

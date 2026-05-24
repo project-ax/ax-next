@@ -155,9 +155,44 @@ export interface CredentialsListOutput {
   credentials: CredentialMeta[];
 }
 
+/**
+ * Runtime `returns` contract for `credentials:list` (ARCH-6). Extends the
+ * existing `credentials:get` / `credentials:resolve:setting` schema rollout to
+ * the remaining metadata read on this security-boundary plugin. The schema
+ * NEVER carries plaintext or ciphertext — only metadata (`scope`, `ref`,
+ * `kind`, timestamps). `createdAt`/`expiresAt` are ISO-8601 strings (the
+ * handler stringifies the stored epoch ms before returning). `metadata` is an
+ * opaque per-credential record. Cast to `ZodType<CredentialsListOutput>`: the
+ * inferred optional shape can't be proven assignable under
+ * `exactOptionalPropertyTypes`; `return-schemas.test.ts` is the drift guard.
+ */
+const CredentialMetaSchema = z.object({
+  scope: z.enum(SCOPE_VALUES),
+  ownerId: z.string().nullable(),
+  ref: z.string(),
+  kind: z.string(),
+  createdAt: z.string(),
+  expiresAt: z.string().optional(),
+  metadata: z.record(z.unknown()).optional(),
+});
+
+export const CredentialsListOutputSchema = z.object({
+  credentials: z.array(CredentialMetaSchema),
+}) as unknown as ZodType<CredentialsListOutput>;
+
 export interface CredentialsListKindsOutput {
   kinds: Array<{ kind: string; flow: 'paste' | 'oauth' }>;
 }
+
+/** Runtime `returns` contract for `credentials:list-kinds` (ARCH-6). */
+export const CredentialsListKindsOutputSchema = z.object({
+  kinds: z.array(
+    z.object({
+      kind: z.string(),
+      flow: z.union([z.literal('paste'), z.literal('oauth')]),
+    }),
+  ),
+}) as unknown as ZodType<CredentialsListKindsOutput>;
 
 export type CredentialsPurgeByOwnerInput =
   | { scope: 'user'; ownerId: string }
@@ -666,6 +701,7 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
           }
           return { credentials: meta };
         },
+        { returns: CredentialsListOutputSchema },
       );
 
       bus.registerService<Record<string, never>, CredentialsListKindsOutput>(
@@ -689,6 +725,7 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
           }
           return { kinds };
         },
+        { returns: CredentialsListKindsOutputSchema },
       );
 
       bus.registerService<CredentialsResolveInput, CredentialsResolveOutput>(

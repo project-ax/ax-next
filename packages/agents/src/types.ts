@@ -7,6 +7,7 @@
  * here mentions postgres, ULIDs, or rows. `workspaceRef` is opaque to
  * subscribers; only the registering plugin's ACL gate parses it.
  */
+import { z, type ZodType } from 'zod';
 import type { Transaction } from 'kysely';
 
 /**
@@ -85,6 +86,51 @@ export interface ResolveInput {
 export interface ResolveOutput {
   agent: Agent;
 }
+
+// ---------------------------------------------------------------------------
+// Runtime `returns` contract for `agents:resolve` (ARCH-6).
+//
+// `agents:resolve` is the J1 tenant ACL gate every `conversations:*` hook
+// chains through, so its return shape is security-relevant: a malformed agent
+// flowing out (e.g. a null `ownerId` or a non-array `allowedTools`) would
+// silently widen what a caller trusts. The HookBus validates the handler's
+// return against this schema (defense-in-depth alongside the store's own
+// row shaping).
+//
+// Storage-agnostic by construction — the field names mirror the public `Agent`
+// interface (no `pg_`, `row_id`, etc.). `createdAt`/`updatedAt` are real `Date`
+// instances (`z.date()`, NOT `z.string()` — `z.string()` would reject a Date
+// and the handler returns Dates from the store). `workspaceRef` is the opaque
+// version token (I1) — validated as a nullable string, never resolved.
+//
+// Cast to `ZodType<ResolveOutput>`: zod's `.nullable()`/`.optional()` infer
+// `| undefined`/`| null` shapes that `exactOptionalPropertyTypes` won't prove
+// assignable to the interface. `return-schemas.test.ts` is the drift guard.
+// ---------------------------------------------------------------------------
+const SkillAttachmentSchema = z.object({
+  skillId: z.string(),
+  credentialBindings: z.record(z.string()),
+});
+
+const AgentSchema = z.object({
+  id: z.string(),
+  ownerId: z.string(),
+  ownerType: z.union([z.literal('user'), z.literal('team')]),
+  visibility: z.union([z.literal('personal'), z.literal('team')]),
+  displayName: z.string(),
+  systemPrompt: z.string(),
+  allowedTools: z.array(z.string()),
+  mcpConfigIds: z.array(z.string()),
+  model: z.string(),
+  workspaceRef: z.string().nullable(),
+  skillAttachments: z.array(SkillAttachmentSchema),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export const ResolveOutputSchema = z.object({
+  agent: AgentSchema,
+}) as unknown as ZodType<ResolveOutput>;
 
 export interface ListForUserInput {
   userId: string;

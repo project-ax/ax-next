@@ -1,4 +1,6 @@
 import type { Plugin } from '@ax/core';
+import { OpenSessionResultSchema } from '@ax/sandbox-protocol';
+import type { ZodType } from 'zod';
 import { resolveConfig, type SandboxK8sConfig } from './config.js';
 import { createDefaultK8sApi, type K8sCoreApi } from './k8s-api.js';
 import {
@@ -8,6 +10,14 @@ import {
 } from './open-session.js';
 
 const PLUGIN_NAME = '@ax/sandbox-k8s';
+
+// See @ax/sandbox-protocol OpenSessionResultSchema: a `.passthrough()` schema
+// that asserts only `runnerEndpoint` and lets the live `handle` ride through
+// untouched (a strict schema would strip it). Cast to the hook's output type
+// because the passthrough infer-type can't be proven assignable to the typed
+// `OpenSessionResult` (its `handle` is a live object the schema doesn't model).
+const OPEN_SESSION_RETURNS =
+  OpenSessionResultSchema as unknown as ZodType<OpenSessionResult>;
 
 export interface CreateSandboxK8sPluginOptions extends SandboxK8sConfig {
   /**
@@ -76,7 +86,7 @@ export function createSandboxK8sPlugin(
         'sandbox:open-session',
         PLUGIN_NAME,
         impl,
-        { timeoutMs: 300_000 },
+        { timeoutMs: 300_000, returns: OPEN_SESSION_RETURNS },
       );
     },
   };

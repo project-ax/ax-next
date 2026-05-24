@@ -1,6 +1,7 @@
 import { createLogger, PluginError, type Logger, type Plugin } from '@ax/core';
 import { Kysely, PostgresDialect } from 'kysely';
 import pg from 'pg';
+import { z, type ZodType } from 'zod';
 import {
   createInbox,
   type ClaimResult,
@@ -160,6 +161,71 @@ export interface SessionIsAliveInput {
 export interface SessionIsAliveOutput {
   alive: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// Runtime `returns` contracts (ARCH-6). Structurally identical to
+// @ax/session-inmemory's copy — same boundary cost as the I/O interface
+// duplication above (I2: no cross-plugin import; the bus shape is the
+// contract). Each is a per-registration, in-process shape assertion the
+// HookBus enforces on the handler's return value. Casts to `ZodType<...>`
+// bridge zod's inferred type to the interface where `.optional()`/`.nullable()`
+// can't be proven assignable; `return-schemas.test.ts` is the real drift guard.
+// ---------------------------------------------------------------------------
+const AgentMessageSchema = z.object({
+  role: z.union([z.literal('user'), z.literal('assistant')]),
+  content: z.string(),
+  contentBlocks: z.array(z.unknown()).optional(),
+  turnId: z.string().optional(),
+});
+
+export const SessionCreateOutputSchema = z.object({
+  sessionId: z.string(),
+  token: z.string(),
+}) as unknown as ZodType<SessionCreateOutput>;
+
+export const SessionResolveTokenOutputSchema = z
+  .object({
+    sessionId: z.string(),
+    workspaceRoot: z.string(),
+    userId: z.string().nullable(),
+    agentId: z.string().nullable(),
+    conversationId: z.string().nullable(),
+  })
+  .nullable() as unknown as ZodType<SessionResolveTokenOutput>;
+
+export const SessionGetConfigOutputSchema = z.object({
+  userId: z.string(),
+  agentId: z.string(),
+  agentConfig: z.object({
+    systemPrompt: z.string(),
+    allowedTools: z.array(z.string()),
+    mcpConfigIds: z.array(z.string()),
+    model: z.string(),
+  }),
+  conversationId: z.string().nullable(),
+}) as unknown as ZodType<SessionGetConfigOutput>;
+
+export const SessionQueueWorkOutputSchema = z.object({
+  cursor: z.number(),
+}) as unknown as ZodType<SessionQueueWorkOutput>;
+
+export const SessionClaimWorkOutputSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('user-message'),
+    payload: AgentMessageSchema,
+    reqId: z.string(),
+    cursor: z.number(),
+  }),
+  z.object({ type: z.literal('cancel'), cursor: z.number() }),
+  z.object({ type: z.literal('timeout'), cursor: z.number() }),
+]) as unknown as ZodType<SessionClaimWorkOutput>;
+
+export const SessionTerminateOutputSchema =
+  z.object({}).strict() as unknown as ZodType<SessionTerminateOutput>;
+
+export const SessionIsAliveOutputSchema = z.object({
+  alive: z.boolean(),
+}) as unknown as ZodType<SessionIsAliveOutput>;
 
 function requireString(
   value: unknown,
@@ -485,6 +551,7 @@ export function createSessionPostgresPlugin(
           const record = await store!.create(sessionId, workspaceRoot, validated);
           return { sessionId: record.sessionId, token: record.token };
         },
+        { returns: SessionCreateOutputSchema },
       );
 
       // ----- session:resolve-token -----
@@ -497,6 +564,7 @@ export function createSessionPostgresPlugin(
           requireString(token, 'token', hookName);
           return store!.resolveToken(token);
         },
+        { returns: SessionResolveTokenOutputSchema },
       );
 
       // ----- session:get-config -----
@@ -549,6 +617,7 @@ export function createSessionPostgresPlugin(
             conversationId: record.conversationId,
           };
         },
+        { returns: SessionGetConfigOutputSchema },
       );
 
       // ----- session:queue-work -----
@@ -572,6 +641,7 @@ export function createSessionPostgresPlugin(
           }
           return inbox!.queue(sessionId, entry);
         },
+        { returns: SessionQueueWorkOutputSchema },
       );
 
       // ----- session:claim-work -----
@@ -597,6 +667,7 @@ export function createSessionPostgresPlugin(
           }
           return inbox!.claim(sessionId, cursor, timeoutMs);
         },
+        { returns: SessionClaimWorkOutputSchema },
       );
 
       // ----- session:terminate -----
@@ -623,6 +694,7 @@ export function createSessionPostgresPlugin(
           await bus.fire('session:terminate', ctx, { sessionId });
           return {};
         },
+        { returns: SessionTerminateOutputSchema },
       );
 
       // ----- session:is-alive -----
@@ -642,6 +714,7 @@ export function createSessionPostgresPlugin(
           const record = await store!.get(sessionId);
           return { alive: record !== null && !record.terminated };
         },
+        { returns: SessionIsAliveOutputSchema },
       );
     },
 

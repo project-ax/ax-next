@@ -1,3 +1,4 @@
+import { z, type ZodType } from 'zod';
 import type { AgentMessage } from '@ax/core';
 
 // ---------------------------------------------------------------------------
@@ -196,3 +197,83 @@ export interface SessionIsAliveInput {
 export interface SessionIsAliveOutput {
   alive: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// Runtime `returns` contracts (ARCH-6).
+//
+// These hand-mirror the session service-hook OUTPUT interfaces above so the
+// HookBus validates each handler's return shape at the in-process bus
+// boundary (defense-in-depth — the runner↔host WIRE is separately validated
+// in @ax/ipc-protocol). They are a per-registration shape assertion, NOT an
+// inter-plugin contract — @ax/session-postgres carries its own structurally
+// identical copy (I2 — no cross-plugin import; the duplication is the same
+// boundary cost the I/O interfaces already pay).
+//
+// Schemas are cast to `ZodType<...Output>` where zod's inferred type can't be
+// proven assignable to the interface (e.g. `.optional()` infers `| undefined`,
+// which `exactOptionalPropertyTypes` rejects). The drift-guard test
+// (`return-schemas.test.ts`) is what actually enforces schema↔interface
+// agreement: a fully-populated interface value must round-trip without losing
+// fields, so any field added to an interface but not the schema fails the
+// build (compile error on a new required field, runtime strip on a new
+// optional one).
+// ---------------------------------------------------------------------------
+
+/** Mirrors @ax/core's `AgentMessage`. `contentBlocks` is opaque payload. */
+const AgentMessageSchema = z.object({
+  role: z.union([z.literal('user'), z.literal('assistant')]),
+  content: z.string(),
+  contentBlocks: z.array(z.unknown()).optional(),
+  turnId: z.string().optional(),
+});
+
+export const SessionCreateOutputSchema = z.object({
+  sessionId: z.string(),
+  token: z.string(),
+}) as unknown as ZodType<SessionCreateOutput>;
+
+export const SessionResolveTokenOutputSchema = z
+  .object({
+    sessionId: z.string(),
+    workspaceRoot: z.string(),
+    userId: z.string().nullable(),
+    agentId: z.string().nullable(),
+    conversationId: z.string().nullable(),
+  })
+  .nullable() as unknown as ZodType<SessionResolveTokenOutput>;
+
+export const SessionGetConfigOutputSchema = z.object({
+  userId: z.string(),
+  agentId: z.string(),
+  agentConfig: z.object({
+    systemPrompt: z.string(),
+    allowedTools: z.array(z.string()),
+    mcpConfigIds: z.array(z.string()),
+    model: z.string(),
+  }),
+  conversationId: z.string().nullable(),
+}) as unknown as ZodType<SessionGetConfigOutput>;
+
+export const SessionQueueWorkOutputSchema = z.object({
+  cursor: z.number(),
+}) as unknown as ZodType<SessionQueueWorkOutput>;
+
+/** `ClaimResult` — discriminated on `type`. Carries an opaque AgentMessage. */
+export const SessionClaimWorkOutputSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('user-message'),
+    payload: AgentMessageSchema,
+    reqId: z.string(),
+    cursor: z.number(),
+  }),
+  z.object({ type: z.literal('cancel'), cursor: z.number() }),
+  z.object({ type: z.literal('timeout'), cursor: z.number() }),
+]) as unknown as ZodType<SessionClaimWorkOutput>;
+
+/** Empty-object idempotent terminate result — no properties permitted. */
+export const SessionTerminateOutputSchema =
+  z.object({}).strict() as unknown as ZodType<SessionTerminateOutput>;
+
+export const SessionIsAliveOutputSchema = z.object({
+  alive: z.boolean(),
+}) as unknown as ZodType<SessionIsAliveOutput>;

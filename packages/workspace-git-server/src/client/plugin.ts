@@ -39,7 +39,11 @@
 // scrubber catches it before it reaches the kernel's error logger.
 // ---------------------------------------------------------------------------
 
-import { registerWorkspaceApplyFacade } from '@ax/core';
+import {
+  registerWorkspaceApplyFacade,
+  WorkspaceListOutputSchema,
+  WorkspaceReadOutputSchema,
+} from '@ax/core';
 import type { AgentContext, Plugin, WorkspaceDelta } from '@ax/core';
 import type {
   WorkspaceApplyInput,
@@ -293,6 +297,7 @@ export function createWorkspaceGitServerPlugin(
             throw _sanitizeTokenLeak(err, opts.token);
           }
         },
+        { returns: WorkspaceReadOutputSchema },
       );
 
       bus.registerService<WorkspaceListInput, WorkspaceListOutput>(
@@ -306,6 +311,7 @@ export function createWorkspaceGitServerPlugin(
             throw _sanitizeTokenLeak(err, opts.token);
           }
         },
+        { returns: WorkspaceListOutputSchema },
       );
 
       bus.registerService<WorkspaceDiffInput, WorkspaceDiffOutput>(

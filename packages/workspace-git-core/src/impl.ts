@@ -10,6 +10,8 @@ import {
   PluginError,
   asWorkspaceVersion,
   registerWorkspaceApplyFacade,
+  WorkspaceListOutputSchema,
+  WorkspaceReadOutputSchema,
   type Bytes,
   type FileChange,
   type HookBus,
@@ -888,6 +890,7 @@ export function registerWorkspaceGitHooks(
         throw err;
       }
     },
+    { returns: WorkspaceReadOutputSchema },
   );
 
   bus.registerService<WorkspaceListInput, WorkspaceListOutput>(
@@ -910,6 +913,7 @@ export function registerWorkspaceGitHooks(
       }
       return { paths };
     },
+    { returns: WorkspaceListOutputSchema },
   );
 
   bus.registerService<WorkspaceDiffInput, WorkspaceDiffOutput>(

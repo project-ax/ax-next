@@ -18,6 +18,7 @@ import {
   type AgentStore,
 } from './store.js';
 import { randomBytes } from 'node:crypto';
+import { ResolveOutputSchema } from './types.js';
 import type {
   Actor,
   Agent,
@@ -130,6 +131,7 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
         'agents:resolve',
         PLUGIN_NAME,
         async (ctx, input) => resolveAgent(localStore, bus, ctx, input),
+        { returns: ResolveOutputSchema },
       );
 
       bus.registerService<ListForUserInput, ListForUserOutput>(

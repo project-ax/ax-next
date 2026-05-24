@@ -1,6 +1,15 @@
 import { PluginError, type Plugin } from '@ax/core';
 import { createInbox } from './inbox.js';
 import { createSessionStore, UNKNOWN_SESSION } from './store.js';
+import {
+  SessionClaimWorkOutputSchema,
+  SessionCreateOutputSchema,
+  SessionGetConfigOutputSchema,
+  SessionIsAliveOutputSchema,
+  SessionQueueWorkOutputSchema,
+  SessionResolveTokenOutputSchema,
+  SessionTerminateOutputSchema,
+} from './types.js';
 import type {
   AgentConfig,
   InboxEntry,
@@ -272,6 +281,7 @@ export function createSessionInmemoryPlugin(): Plugin {
           const record = store.create(sessionId, workspaceRoot, validated);
           return { sessionId: record.sessionId, token: record.token };
         },
+        { returns: SessionCreateOutputSchema },
       );
 
       // ----- session:resolve-token -----
@@ -284,6 +294,7 @@ export function createSessionInmemoryPlugin(): Plugin {
           requireString(token, 'token', hookName);
           return store.resolveToken(token);
         },
+        { returns: SessionResolveTokenOutputSchema },
       );
 
       // ----- session:get-config -----
@@ -331,6 +342,7 @@ export function createSessionInmemoryPlugin(): Plugin {
             conversationId: record.conversationId,
           };
         },
+        { returns: SessionGetConfigOutputSchema },
       );
 
       // ----- session:queue-work -----
@@ -354,6 +366,7 @@ export function createSessionInmemoryPlugin(): Plugin {
           }
           return inbox.queue(sessionId, entry);
         },
+        { returns: SessionQueueWorkOutputSchema },
       );
 
       // ----- session:claim-work -----
@@ -382,6 +395,7 @@ export function createSessionInmemoryPlugin(): Plugin {
           }
           return inbox.claim(sessionId, cursor, timeoutMs);
         },
+        { returns: SessionClaimWorkOutputSchema },
       );
 
       // ----- session:terminate -----
@@ -409,6 +423,7 @@ export function createSessionInmemoryPlugin(): Plugin {
           await bus.fire('session:terminate', ctx, { sessionId });
           return {};
         },
+        { returns: SessionTerminateOutputSchema },
       );
 
       // ----- session:is-alive -----
@@ -430,6 +445,7 @@ export function createSessionInmemoryPlugin(): Plugin {
           const record = store.get(sessionId);
           return { alive: record !== null && !record.terminated };
         },
+        { returns: SessionIsAliveOutputSchema },
       );
     },
   };

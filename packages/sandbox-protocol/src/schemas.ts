@@ -143,3 +143,28 @@ export const OpenSessionInputSchema = z.object({
 
 export type OpenSessionInput = z.input<typeof OpenSessionInputSchema>;
 export type OpenSessionParsed = z.infer<typeof OpenSessionInputSchema>;
+
+// ---------------------------------------------------------------------------
+// `sandbox:open-session` RETURN contract (ARCH-6).
+//
+// The hook result is `{ runnerEndpoint: string; handle: OpenSessionHandle }`,
+// where `handle` is a LIVE object carrying functions + a Promise
+// (`kill(): Promise<void>`, `exited: Promise<ExitInfo>`) — the orchestrator's
+// session-lifecycle capability. The HookBus's `returns` validation strips
+// undeclared keys by default (see @ax/core hook-bus.ts), so a strict object
+// schema would SILENTLY DELETE `handle` and break teardown. We therefore use
+// `.passthrough()`: the schema asserts only the one storage-/transport-
+// agnostic serializable field that crosses the I1 boundary
+// (`runnerEndpoint`, an opaque URI) while letting the live handle ride
+// through untouched.
+//
+// Both sandbox backends register their own `OpenSessionResult` interface (each
+// declares its own `handle` shape) but share this return assertion — the
+// shape that matters at the bus boundary is identical, and the handle is
+// deliberately NOT modeled (a capability object is not a data contract).
+// ---------------------------------------------------------------------------
+export const OpenSessionResultSchema = z
+  .object({
+    runnerEndpoint: z.string().min(1),
+  })
+  .passthrough();
