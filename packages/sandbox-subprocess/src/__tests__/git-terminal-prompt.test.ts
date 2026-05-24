@@ -30,6 +30,9 @@ async function makeHarness() {
         toolCalls: [],
       }),
       'tool:list': async () => ({ tools: [] }),
+      // ipc-server's dispatcher declares workspace:read as a required call
+      // (DISPATCHER_DEPENDENCIES); this IPC-only boot never hits /workspace.read.
+      'workspace:read': async () => ({ found: false }),
     },
     plugins: [
       createSessionInmemoryPlugin(),
