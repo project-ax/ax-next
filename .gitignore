@@ -54,5 +54,5 @@ docs/plans/*
 # Brainstorming session scratch (mockups, state) — kept local
 .superpowers/
 
-# Local handoff/prompt scratch — kept local like .claude/memory/
+# Local handoff/prompt scratch — kept out of git
 .claude/prompts/

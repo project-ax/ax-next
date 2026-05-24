@@ -40,7 +40,7 @@ Default approach:
 - Treat `/Users/vpulim/.claude/projects/-Users-vpulim-dev-ai-ax-next/memory/MEMORY.md`
   as an index. Follow linked notes selectively instead of loading the whole
   directory.
-- Do not commit `.claude/memory/` files.
+- Update `.claude/memory/` as you work and **commit those changes** — these files are tracked in the repo, not gitignored. Fold a memory update into the same commit as the work that produced it (or a small follow-up commit on the branch).
 
 If the task touches architecture, hooks, plugins, security boundaries, CI/PR
 workflow, UI conventions, manual acceptance, or prior regressions, bias toward
@@ -101,7 +101,7 @@ Skills are NOT written for documentation of what the code does, conventions that
 Day-1 skills:
 
 - `ax-conventions` — the six invariants, plugin manifest format, hook bus mechanics, boundary-review checklist.
-- `claude-memory` — per-project working memory in `.claude/memory/` (gitignored). Captures project facts, decisions, patterns, mistakes, and self-observations across sessions. See `docs/plans/2026-04-23-claude-memory-skill-design.md`.
+- `claude-memory` — per-project working memory in `.claude/memory/` (committed to the repo). Captures project facts, decisions, patterns, mistakes, and self-observations across sessions. See `docs/plans/2026-04-23-claude-memory-skill-design.md`.
 - `security-checklist` — three-threat-model walk (sandbox escape, prompt injection, supply chain) producing a structured PR security note. Fires on sandbox / IPC / plugin loading / untrusted content / new-dependency changes. See `docs/plans/2026-04-23-security-checklist-skill-design.md`.
 
 Everything else is deferred until earned.
