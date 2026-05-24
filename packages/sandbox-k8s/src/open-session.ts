@@ -1,11 +1,20 @@
 import { randomUUID } from 'node:crypto';
-import { z } from 'zod';
 import {
   PluginError,
   type AgentContext,
   type HookBus,
   type Logger,
 } from '@ax/core';
+// Shared `sandbox:open-session` contract — single source of truth for the
+// payload schemas (formerly re-declared here as a structural twin of the
+// subprocess backend, which had begun to drift). See @ax/sandbox-protocol.
+// Re-exported below so existing importers of this module's
+// `OpenSessionInputSchema` keep resolving.
+import {
+  OpenSessionInputSchema,
+  type OpenSessionInput,
+  type OpenSessionParsed,
+} from '@ax/sandbox-protocol';
 import type { ResolvedSandboxK8sConfig } from './config.js';
 import type { K8sCoreApi } from './k8s-api.js';
 import { killPod } from './kill.js';
@@ -36,121 +45,19 @@ import { buildPodSpec } from './pod-spec.js';
 const PLUGIN_NAME = '@ax/sandbox-k8s';
 const HOOK_NAME = 'sandbox:open-session';
 
-// Owner triple — same shape sandbox-subprocess accepts. Forwarded to
-// session:create so the v2 row is written atomically with v1.
-export const AgentConfigSchema = z.object({
-  systemPrompt: z.string(),
-  allowedTools: z.array(z.string()),
-  mcpConfigIds: z.array(z.string()),
-  model: z.string(),
-});
-
-// ProxyConfig — see chat-orchestrator/src/orchestrator.ts for the
-// authoritative shape. Re-declared structurally here so this file stays
-// free of cross-package imports (Invariant I2). Both `endpoint` and
-// `unixSocketPath` are optional + mutually exclusive at construction
-// time (the orchestrator's `endpointToProxyConfig` enforces it). For
-// k8s today only `unixSocketPath` is meaningful — pod-spec mounts the
-// socket into the runner via hostPath. `endpoint` (TCP) is accepted
-// for forward-compat but currently unused on this side.
-export const ProxyConfigSchema = z.object({
-  endpoint: z.string().optional(),
-  unixSocketPath: z.string().optional(),
-  caCertPem: z.string().min(1),
-  envMap: z.record(z.string(), z.string()),
-});
-
-// Re-declare the installed-skill shape locally (structural duplicate of
-// sandbox-subprocess's InstalledSkillSchema — I2: no cross-plugin imports).
-//
-// Phase B (capabilities.mcpServers): each skill carries an optional list of
-// MCP server specs. This is the trust-boundary re-validation — the host-side
-// orchestrator built these from the parsed manifest but the schema here is
-// the wire-level contract for sandbox:open-session. The k8s sandbox forwards
-// these into the runner pod via AX_INSTALLED_SKILLS_JSON; the runner module
-// (agent-claude-sdk-runner/src/installed-skills.ts) writes `.mcp.json`
-// alongside SKILL.md before spawning the SDK.
-const McpServerSchema = z
-  .object({
-    name: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/),
-    transport: z.enum(['stdio', 'http']),
-    command: z.string().optional(),
-    args: z.array(z.string().max(256)).max(32).optional(),
-    env: z.record(z.string(), z.string()).optional(),
-    url: z.string().url().optional(),
-    allowedHosts: z.array(z.string()).default([]),
-    credentials: z.array(z.object({ slot: z.string(), kind: z.literal('api-key') })).default([]),
-  })
-  // Transport-specific field invariants: enforces that stdio entries carry a
-  // non-empty command and no url, and http entries carry a url and none of
-  // the stdio-only fields. Without this the schema accepted cross-contaminated
-  // shapes (e.g. transport=stdio with a url, or transport=http with command)
-  // that the manifest parser already rejects upstream — re-validate at the
-  // wire boundary so a drifted host can't smuggle one through.
-  .refine(
-    (v) => {
-      if (v.transport === 'stdio') {
-        return (
-          typeof v.command === 'string' &&
-          v.command.length > 0 &&
-          v.url === undefined
-        );
-      }
-      // transport === 'http'
-      return (
-        typeof v.url === 'string' &&
-        v.command === undefined &&
-        v.args === undefined &&
-        v.env === undefined
-      );
-    },
-    {
-      message:
-        'mcpServers entry must match its transport: stdio requires command (no url); http requires url (no command/args/env)',
-    },
-  );
-
-const InstalledSkillSchema = z.object({
-  id: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/, 'invalid skill id shape'),
-  skillMd: z.string().min(1).max(512 * 1024), // 512 KiB per-skill cap
-  mcpServers: z.array(McpServerSchema).max(8).default([]),
-});
-
-export const OpenSessionInputSchema = z.object({
-  sessionId: z.string().min(1),
-  workspaceRoot: z.string().regex(/^\//, 'workspaceRoot must be absolute'),
-  runnerBinary: z.string().regex(/^\//, 'runnerBinary must be absolute'),
-  owner: z
-    .object({
-      userId: z.string().min(1),
-      agentId: z.string().min(1),
-      agentConfig: AgentConfigSchema,
-      // Optional: ties this session to a persisted conversation row so the
-      // runner's bind-on-resume path (agent-claude-sdk-runner) can choose
-      // resume vs fresh-spawn from session:get-config alone. Forwarded
-      // verbatim into session:create so the v2 row column session_*_v2_session_agent.conversation_id
-      // is written atomically with the session — no separate UPDATE.
-      conversationId: z.string().min(1).optional(),
-    })
-    .optional(),
-  /**
-   * Per-session credential-proxy blob from the orchestrator. When
-   * present, pod-spec stamps `AX_PROXY_*`, `NODE_EXTRA_CA_CERTS`, and
-   * the credential placeholder envMap onto the runner pod, plus mounts
-   * `config.proxySocketHostPath` (if set) at `/var/run/ax`. Unset =
-   * no credential-proxy loaded; runner will fail loud at boot.
-   */
-  proxyConfig: ProxyConfigSchema.optional(),
-  /**
-   * Phase 1 (skill-install): installed skills to pass to the runner pod
-   * via AX_INSTALLED_SKILLS_JSON. The runner reads and materializes them
-   * BEFORE the SDK spawns (see @ax/agent-claude-sdk-runner main.ts).
-   */
-  installedSkills: z.array(InstalledSkillSchema).max(50).optional(),
-});
-
-export type OpenSessionInput = z.input<typeof OpenSessionInputSchema>;
-export type OpenSessionParsed = z.infer<typeof OpenSessionInputSchema>;
+// OpenSessionInputSchema + its OpenSessionInput / OpenSessionParsed types now
+// live in @ax/sandbox-protocol (imported above) — re-exported here so existing
+// importers of this module keep resolving. NOTE the behavior change from
+// adopting the shared schema: the k8s ProxyConfig validation was previously
+// lax (`endpoint`/`unixSocketPath` bare-optional, accepting neither/both); the
+// shared schema enforces exactly-one + non-empty. The production caller
+// (orchestrator's endpointToProxyConfig) always sends exactly one, so this is
+// a tightening of a latent gap, not a behavior regression.
+export {
+  OpenSessionInputSchema,
+  type OpenSessionInput,
+  type OpenSessionParsed,
+};
 
 export interface OpenSessionHandle {
   kill(): Promise<void>;

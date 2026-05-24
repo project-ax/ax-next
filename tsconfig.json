@@ -50,6 +50,7 @@
     { "path": "packages/routines" },
     { "path": "packages/tool-artifact-publish" },
     { "path": "packages/skills" },
-    { "path": "packages/skills-parser" }
+    { "path": "packages/skills-parser" },
+    { "path": "packages/sandbox-protocol" }
   ]
 }

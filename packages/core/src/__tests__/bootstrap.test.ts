@@ -11,6 +11,7 @@ const makePlugin = (
     version: '0.0.0',
     registers: [],
     calls: [],
+    optionalCalls: [],
     subscribes: [],
     ...m,
   },
@@ -99,6 +100,94 @@ describe('bootstrap', () => {
     await expect(
       bootstrap({ bus: new HookBus(), plugins: [a, b], config: {} }),
     ).rejects.toMatchObject({ name: 'PluginError', code: 'duplicate-plugin', plugin: 'dup' });
+  });
+
+  it('optionalCalls with no producer boots fine (no missing-service)', async () => {
+    // The whole distinction from `calls`: an absent optional producer must NOT
+    // fail the boot. The plugin is expected to degrade (e.g. via hasService).
+    const consumer = makePlugin({
+      name: 'consumer',
+      optionalCalls: [{ hook: 'storage:get', degradation: 'in-memory only; no persistence' }],
+    });
+    const handle = await bootstrap({
+      bus: new HookBus(),
+      plugins: [consumer],
+      config: {},
+    });
+    expect(typeof handle.shutdown).toBe('function');
+  });
+
+  it('inits the producer before an optionalCalls consumer when the producer IS present', async () => {
+    // When a producer for an optional hook exists, the optional call is a real
+    // edge: the consumer must init AFTER the producer so hasService() is true
+    // by the time the consumer's init runs.
+    const called: string[] = [];
+    const consumer = makePlugin(
+      {
+        name: 'consumer',
+        optionalCalls: [{ hook: 'storage:get', degradation: 'falls back to memory' }],
+      },
+      () => { called.push('consumer'); },
+    );
+    const producer = makePlugin(
+      { name: 'producer', registers: ['storage:get'] },
+      ({ bus }) => {
+        called.push('producer');
+        bus.registerService('storage:get', 'producer', async () => 'v');
+      },
+    );
+    // consumer listed first to prove ordering follows the (optional) call graph.
+    await bootstrap({ bus: new HookBus(), plugins: [consumer, producer], config: {} });
+    expect(called).toEqual(['producer', 'consumer']);
+  });
+
+  it('detects a cycle closed by an optionalCalls edge when the producer is present', async () => {
+    // a requires b; b optionally calls a. Both producers present → the optional
+    // edge is real and closes the cycle, which must still be detected.
+    const a = makePlugin(
+      { name: 'a', registers: ['a:do'], calls: ['b:do'] },
+      ({ bus }) => bus.registerService('a:do', 'a', async () => 0),
+    );
+    const b = makePlugin(
+      {
+        name: 'b',
+        registers: ['b:do'],
+        optionalCalls: [{ hook: 'a:do', degradation: 'skips the a:do enrichment step' }],
+      },
+      ({ bus }) => bus.registerService('b:do', 'b', async () => 0),
+    );
+    await expect(
+      bootstrap({ bus: new HookBus(), plugins: [a, b], config: {} }),
+    ).rejects.toMatchObject({ name: 'PluginError', code: 'cycle' });
+  });
+
+  it('an optionalCalls edge whose producer is absent creates no cycle and no reorder', async () => {
+    // a requires b; b optionally calls a:other which NOBODY registers. The
+    // absent optional producer adds no edge, so there is no cycle and init
+    // order is the plain producer-before-consumer (b before a).
+    const called: string[] = [];
+    const a = makePlugin(
+      { name: 'a', registers: ['a:do'], calls: ['b:do'] },
+      ({ bus }) => {
+        called.push('a');
+        bus.registerService('a:do', 'a', async () => 0);
+      },
+    );
+    const b = makePlugin(
+      {
+        name: 'b',
+        registers: ['b:do'],
+        optionalCalls: [{ hook: 'a:other', degradation: 'no a:other enrichment' }],
+      },
+      ({ bus }) => {
+        called.push('b');
+        bus.registerService('b:do', 'b', async () => 0);
+      },
+    );
+    await bootstrap({ bus: new HookBus(), plugins: [a, b], config: {} });
+    // b registers b:do which a calls → b inits before a. The dangling optional
+    // edge a:other does not flip this.
+    expect(called).toEqual(['b', 'a']);
   });
 
   it('inits producers before consumers regardless of plugin array order', async () => {

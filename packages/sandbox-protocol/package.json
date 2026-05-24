@@ -1,5 +1,5 @@
 {
-  "name": "@ax/chat-orchestrator",
+  "name": "@ax/sandbox-protocol",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -18,14 +18,9 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@ax/core": "workspace:*",
-    "@ax/sandbox-protocol": "workspace:*"
+    "zod": "^3.23.8"
   },
   "devDependencies": {
-    "@ax/ipc-server": "workspace:*",
-    "@ax/sandbox-subprocess": "workspace:*",
-    "@ax/session-inmemory": "workspace:*",
-    "@ax/test-harness": "workspace:*",
     "@types/node": "^25.6.0",
     "typescript": "^6.0.3",
     "vitest": "^4.1.4"

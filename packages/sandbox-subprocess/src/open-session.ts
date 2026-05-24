@@ -3,12 +3,20 @@ import { promises as fs, constants as fsConstants } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { Readable } from 'node:stream';
-import { z } from 'zod';
 import {
   PluginError,
   type AgentContext,
   type HookBus,
 } from '@ax/core';
+// Shared `sandbox:open-session` contract — single source of truth for the
+// payload schemas (formerly duplicated, and drifting, between the two sandbox
+// backends + the orchestrator). See @ax/sandbox-protocol. Re-exported below so
+// existing consumers of this module's `OpenSessionInputSchema` keep working.
+import {
+  OpenSessionInputSchema,
+  type OpenSessionInput,
+  type OpenSessionParsed,
+} from '@ax/sandbox-protocol';
 import { allowlistFromParent } from './env.js';
 
 // ---------------------------------------------------------------------------
@@ -44,95 +52,6 @@ async function unlockInstalledSkillsDir(installedSkillsDir: string): Promise<voi
   }
 }
 
-// Owner triple — the orchestrator resolves an agent before opening the
-// sandbox and forwards the {userId, agentId, agentConfig} so we can pass
-// it through to `session:create` atomically. Optional for back-compat
-// with non-orchestrator paths (tests, ad-hoc CLI tools).
-export const AgentConfigSchema = z.object({
-  systemPrompt: z.string(),
-  allowedTools: z.array(z.string()),
-  mcpConfigIds: z.array(z.string()),
-  model: z.string(),
-});
-
-/**
- * Proxy-session blob the orchestrator threads through `sandbox:open-session`
- * (Phase 2). When set, this plugin writes the CA cert to a per-session
- * tmpfile, injects HTTPS_PROXY / HTTP_PROXY / NODE_EXTRA_CA_CERTS / etc.
- * into the runner env, and merges `envMap` last so the per-session
- * credential placeholders win.
- *
- * Shape duplicated from `@ax/chat-orchestrator`'s `ProxyConfig` (I2 — no
- * cross-plugin imports). `endpoint` and `unixSocketPath` are mutually
- * exclusive: TCP loopback for subprocess sandbox, Unix socket path for
- * k8s. Field names are backend-agnostic (I3).
- */
-export const ProxyConfigSchema = z
-  .object({
-    endpoint: z.string().min(1).optional(),
-    unixSocketPath: z.string().min(1).optional(),
-    caCertPem: z.string().min(1),
-    envMap: z.record(z.string()),
-  })
-  .refine(
-    (v) =>
-      (v.endpoint !== undefined) !== (v.unixSocketPath !== undefined),
-    {
-      message:
-        'proxyConfig must set exactly one of endpoint or unixSocketPath',
-    },
-  );
-
-// Phase B (capabilities.mcpServers) — each skill carries an optional list of
-// MCP server specs. The orchestrator passes these through unmodified from the
-// skills:resolve output; this schema is the boundary re-validation. After
-// SKILL.md is written, if mcpServers is non-empty we materialize a
-// `.mcp.json` in the same skill dir so the SDK auto-discovers bundled MCP
-// servers via its `'project'` setting source. Structural twin of the
-// sandbox-k8s McpServerSchema (I2 — no cross-plugin imports).
-const McpServerSchema = z
-  .object({
-    name: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/),
-    transport: z.enum(['stdio', 'http']),
-    command: z.string().optional(),
-    args: z.array(z.string().max(256)).max(32).optional(),
-    env: z.record(z.string(), z.string()).optional(),
-    url: z.string().url().optional(),
-    allowedHosts: z.array(z.string()).default([]),
-    credentials: z.array(z.object({ slot: z.string(), kind: z.literal('api-key') })).default([]),
-  })
-  // Transport-specific field invariants — twin of sandbox-k8s's refine
-  // (I2: no cross-plugin imports). stdio requires a non-empty command and
-  // forbids url; http requires url and forbids command/args/env.
-  .refine(
-    (v) => {
-      if (v.transport === 'stdio') {
-        return (
-          typeof v.command === 'string' &&
-          v.command.length > 0 &&
-          v.url === undefined
-        );
-      }
-      // transport === 'http'
-      return (
-        typeof v.url === 'string' &&
-        v.command === undefined &&
-        v.args === undefined &&
-        v.env === undefined
-      );
-    },
-    {
-      message:
-        'mcpServers entry must match its transport: stdio requires command (no url); http requires url (no command/args/env)',
-    },
-  );
-
-export const InstalledSkillSchema = z.object({
-  id: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/, 'invalid skill id shape'),
-  skillMd: z.string().min(1).max(512 * 1024), // 512 KiB per-skill cap
-  mcpServers: z.array(McpServerSchema).max(8).default([]),
-});
-
 // Translate an McpServerSpec into the Anthropic SDK's `.mcp.json` shape.
 // stdio: { command, args, env }. http: { url, type: 'http' }. The SDK accepts
 // either at top level under the `mcpServers` map; the per-skill dir's
@@ -150,34 +69,15 @@ function toMcpJsonShape(s: {
   return { url: s.url, type: 'http' };
 }
 
-export const OpenSessionInputSchema = z.object({
-  sessionId: z.string().min(1),
-  workspaceRoot: z.string().regex(/^\//, 'workspaceRoot must be absolute'),
-  runnerBinary: z.string().regex(/^\//, 'runnerBinary must be absolute'),
-  owner: z
-    .object({
-      userId: z.string().min(1),
-      agentId: z.string().min(1),
-      agentConfig: AgentConfigSchema,
-      // Optional: ties this session to a persisted conversation row so the
-      // runner's bind-on-resume path (agent-claude-sdk-runner) can choose
-      // resume vs fresh-spawn from session:get-config alone. Forwarded
-      // verbatim into session:create so the v2 row's conversation_id column
-      // is written atomically with the session — no separate UPDATE.
-      conversationId: z.string().min(1).optional(),
-    })
-    .optional(),
-  proxyConfig: ProxyConfigSchema.optional(),
-  // Phase 1 (skill-install): installed skills to materialize into the
-  // per-session CLAUDE_CONFIG_DIR/skills/ directory before the runner
-  // spawns. Each entry is written to skills/<id>/SKILL.md (mode 0444);
-  // after all writes the parent dir is chmod'd to 0555 to lock against
-  // agent writes. Max 50 skills, 512 KiB each.
-  installedSkills: z.array(InstalledSkillSchema).max(50).optional(),
-});
-
-export type OpenSessionInput = z.input<typeof OpenSessionInputSchema>;
-export type OpenSessionParsed = z.infer<typeof OpenSessionInputSchema>;
+// OpenSessionInputSchema + its OpenSessionInput / OpenSessionParsed types now
+// live in @ax/sandbox-protocol (imported above) — re-exported here so existing
+// importers of this module keep resolving. The schema is the same shape this
+// plugin authored; the k8s backend converged onto it.
+export {
+  OpenSessionInputSchema,
+  type OpenSessionInput,
+  type OpenSessionParsed,
+};
 
 export interface OpenSessionHandle {
   kill(): Promise<void>;

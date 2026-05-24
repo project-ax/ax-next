@@ -1,13 +1,57 @@
 import { z } from 'zod';
 import type { HookBus } from './hook-bus.js';
 
-export const PluginManifestSchema = z.object({
-  name: z.string().min(1),
-  version: z.string().min(1),
-  registers: z.array(z.string()).default([]),
-  calls: z.array(z.string()).default([]),
-  subscribes: z.array(z.string()).default([]),
+/**
+ * One optional service-hook dependency. Unlike `calls`, an `optionalCalls`
+ * entry whose producer is absent does NOT fail the boot — the plugin is
+ * expected to detect the gap (`bus.hasService(hook)`) and degrade.
+ *
+ * `degradation` is a required, human-readable note describing what the
+ * plugin gives up when the hook is unavailable (what breaks / what the
+ * fallback is). It exists so the gap is documented at the manifest level,
+ * not buried in a code comment — and so a future compatibility matrix can
+ * surface it.
+ */
+export const OptionalCallSchema = z.object({
+  hook: z.string().min(1),
+  degradation: z.string().min(1),
 });
+
+export type OptionalCall = z.infer<typeof OptionalCallSchema>;
+
+export const PluginManifestSchema = z
+  .object({
+    name: z.string().min(1),
+    version: z.string().min(1),
+    registers: z.array(z.string()).default([]),
+    calls: z.array(z.string()).default([]),
+    /**
+     * Service hooks this plugin can call but degrades gracefully without.
+     * Non-fatal at boot when the producer is absent; still a real call-graph
+     * edge (cycle detection + init ordering) when a producer IS present.
+     * See `OptionalCallSchema`.
+     *
+     * Optional at the type level (additive field — existing manifests need no
+     * change). Bootstrap treats an absent `optionalCalls` as the empty list.
+     */
+    optionalCalls: z.array(OptionalCallSchema).optional(),
+    subscribes: z.array(z.string()).default([]),
+  })
+  .superRefine((m, ctx) => {
+    // A hook can't be both required and optional — that's a contradiction,
+    // and silently picking one would mask an author mistake. Name the
+    // offending hook so it's findable.
+    const calls = new Set(m.calls);
+    (m.optionalCalls ?? []).forEach((oc, i) => {
+      if (calls.has(oc.hook)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['optionalCalls', i, 'hook'],
+          message: `hook '${oc.hook}' is listed in both calls (required) and optionalCalls (optional); a hook can be one or the other, not both`,
+        });
+      }
+    });
+  });
 
 export type PluginManifest = z.infer<typeof PluginManifestSchema>;
 

@@ -1,4 +1,11 @@
 import { PluginError, type AgentContext, type AgentMessage, type AgentOutcome, type HookBus } from '@ax/core';
+// Shared `sandbox:open-session` contract. The orchestrator CONSTRUCTS the
+// payload (it doesn't validate — trust comes from skills:resolve / agents:resolve
+// having parsed upstream), so it imports the inferred TYPES only. Type-only
+// imports across plugins are allowed (erased at compile time); this keeps the
+// orchestrator's `AgentConfig` / `ProxyConfig` shapes pinned to the same
+// definition the sandbox backends validate against. See @ax/sandbox-protocol.
+import type { AgentConfig, ProxyConfig } from '@ax/sandbox-protocol';
 
 // ---------------------------------------------------------------------------
 // @ax/chat-orchestrator — per-chat control plane
@@ -235,15 +242,10 @@ interface ProxyCloseSessionInput {
   sessionId: string;
 }
 
-// AgentConfig sent through sandbox:open-session and persisted on the
-// session row. The session-postgres / session-inmemory plugins both
-// declare the same shape; drift is caught at the bus call site.
-interface AgentConfig {
-  systemPrompt: string;
-  allowedTools: string[];
-  mcpConfigIds: string[];
-  model: string;
-}
+// AgentConfig (sent through sandbox:open-session and persisted on the session
+// row) now comes from @ax/sandbox-protocol (type-only import above). The
+// session-postgres / session-inmemory plugins declare the same shape; drift is
+// caught at the bus call site.
 
 // conversations:* shapes — Week 10–12 Tasks 14 + 16. Duplicated here per I2
 // (no cross-plugin imports). The orchestrator reads `activeSessionId` to
@@ -306,31 +308,15 @@ interface SystemPromptAugmentOutput {
  * (when @ax/credential-proxy is loaded) and packs the resolved endpoint, CA
  * cert PEM, and per-session credential placeholder envMap into this shape.
  *
- * Field naming is deliberately backend-agnostic (I3): `endpoint` and
- * `unixSocketPath` are mutually exclusive — the subprocess sandbox uses the
- * TCP loopback form (`endpoint`); the k8s sandbox passes through the Unix
- * socket path so the runner-side bridge can convert it to a local TCP port
- * inside the sandbox. `caCertPem` is the PEM bytes; the sandbox plugin owns
- * "where on disk to write this." The orchestrator never knows or cares.
+ * The shape (`ProxyConfig`) is the shared `sandbox:open-session` contract from
+ * @ax/sandbox-protocol (type-only import above). Field naming is deliberately
+ * backend-agnostic (I3): `endpoint` (TCP loopback, subprocess) and
+ * `unixSocketPath` (k8s) are mutually exclusive — `endpointToProxyConfig`
+ * below sets exactly one, which is exactly what the shared schema's refine
+ * enforces at the sandbox boundary. `caCertPem` is the PEM bytes; the sandbox
+ * plugin owns "where on disk to write this." The orchestrator never knows.
  */
-export interface ProxyConfig {
-  /** TCP endpoint (subprocess sandbox), e.g. 'http://127.0.0.1:54321'. */
-  endpoint?: string;
-  /** Unix socket path (k8s sandbox), e.g. '/var/run/ax/proxy.sock'. */
-  unixSocketPath?: string;
-  /**
-   * MITM CA certificate PEM bytes. Sandbox runtime writes this to disk
-   * inside the sandbox and points NODE_EXTRA_CA_CERTS / SSL_CERT_FILE at
-   * the path. The orchestrator never knows the path.
-   */
-  caCertPem: string;
-  /**
-   * Env injected by `proxy:open-session`. Maps env-var names (e.g.
-   * `ANTHROPIC_API_KEY`) to `ax-cred:<hex>` placeholders the proxy
-   * recognizes. Sandbox-subprocess merges these into the runner env.
-   */
-  envMap: Record<string, string>;
-}
+// (ProxyConfig type imported from @ax/sandbox-protocol — see import above.)
 
 interface InstalledSkillForSandbox {
   id: string;
