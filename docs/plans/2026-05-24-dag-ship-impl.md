@@ -18,6 +18,7 @@
 |---|---|---|
 | `.claude/skills/dag-ship/SKILL.md` | Lean orchestration logic: prime directive, state/readiness, control loop, wave dispatch, merge queue, walk lane, failure guards, progress files, termination, safety. | Create |
 | `.claude/skills/dag-ship/references/templates.md` | Verbatim copy-don't-paraphrase artifacts: the two dispatch prompts, failure-signature normalization rules, status-dashboard format, journal line formats. | Create |
+| `.claude/skills/dag-ship/references/github-project.md` | Best-effort GitHub Projects v2 board mirror: find/create the "TO DO" board, draft-issue cards per task, state→column mapping with fallback, graceful-off. | Create |
 | `.claude/skills/yolo-ship/SKILL.md` | Add Phase 7 (auto-merge standalone / hand-off orchestrated); update autonomy-contract items 3 & 5; update ship DOT graph + exit line. | Modify |
 | `.gitignore` | Ignore the two operational tracking files. | Modify |
 | `docs/plans/2026-05-24-dag-ship-design.md` | The approved spec (already committed). | Reference only |
@@ -204,6 +205,14 @@ TODO.md + a journal row, excluded from the ready set.
 
 On resume, rebuild both from TODO.md + `gh pr list` + the journal.
 
+**Optional GitHub Project board mirror (best-effort, never load-bearing).** In
+addition to the files above, mirror progress to a Projects v2 kanban board titled
+**"TO DO"** (auto-created/reused), one draft-issue card per `[TASK-ID]`, moving
+cards across columns on the same transitions that touch the dashboard. If `gh`
+lacks the `project` scope or any board call fails, warn **once** and keep going on
+the file dashboard. Board updates are **skipped in `--dry-run`**. Full mechanics +
+state→column mapping: `references/github-project.md`.
+
 ## Termination & reporting
 
 Stop when **no ready tasks AND no in-flight tasks**. Emit a final report:
@@ -382,7 +391,130 @@ git commit -m "feat(dag-ship): add verbatim dispatch/format templates"
 
 ---
 
-## Task 3: Gitignore the operational tracking files
+## Task 3: GitHub Project board mirror — references/github-project.md
+
+Best-effort second progress mirror. SKILL.md already points here (authored in
+Task 1). Every command is non-blocking: on any failure, warn once and continue.
+
+**Files:**
+- Create: `.claude/skills/dag-ship/references/github-project.md`
+
+- [ ] **Step 1: Confirm the gh CLI supports the subcommands this recipe uses**
+
+Run: `gh project --help | grep -E 'item-create|item-edit|field-list|item-list'`
+Expected: all four subcommands listed. (If absent, the installed `gh` is too old — note it; the mirror will degrade-off at runtime regardless.)
+
+- [ ] **Step 2: Write `references/github-project.md` verbatim**
+
+````markdown
+# dag-ship — GitHub Project board mirror (best-effort)
+
+A second progress mirror on top of `.claude/dag-ship-status.md`. **Never
+load-bearing:** every command is best-effort — on any non-zero exit, log once,
+set `BOARD_OFF`, and stop touching the board for the rest of the run. Skip all of
+this in `--dry-run` (no external mutation in a dry run).
+
+## 0. Preconditions & graceful-off
+
+```bash
+# Needs the 'project' token scope. If absent, mirror is OFF.
+if ! gh auth status 2>&1 | grep -q "project"; then
+  echo "dag-ship: gh lacks 'project' scope — board mirror OFF (file dashboard only). Enable: gh auth refresh -s project"
+  # BOARD_OFF=1 — skip every step below for the rest of the run
+fi
+OWNER=$(gh repo view --json owner -q .owner.login)
+```
+
+## 1. Find-or-create the "TO DO" board (once per run)
+
+```bash
+PROJ_JSON=$(gh project list --owner "$OWNER" --format json)
+PNUM=$(echo "$PROJ_JSON" | jq -r '.projects[] | select(.title=="TO DO") | .number' | head -1)
+if [ -z "$PNUM" ] || [ "$PNUM" = "null" ]; then
+  PNUM=$(gh project create --owner "$OWNER" --title "TO DO" --format json | jq -r .number)
+fi
+PROJ_ID=$(gh project view "$PNUM" --owner "$OWNER" --format json | jq -r .id)
+```
+
+## 2. Resolve the Status field + option ids, with fallback
+
+```bash
+FIELDS=$(gh project field-list "$PNUM" --owner "$OWNER" --format json)
+STATUS_FIELD_ID=$(echo "$FIELDS" | jq -r '.fields[] | select(.name=="Status") | .id')
+echo "$FIELDS" | jq -r '.fields[] | select(.name=="Status") | .options[] | "\(.name)\t\(.id)"'
+```
+
+Build a `column-name → option-id` map from that output, then map dag-ship state →
+column, preferring the rich column and falling back to the default board:
+
+| dag-ship state | preferred column | fallback (default board) |
+|---|---|---|
+| trigger-gated | Trigger-gated | Todo |
+| blocked (unmet deps) | Blocked | Todo |
+| ready | Ready | Todo |
+| dispatched / pre-PR | In Progress | In Progress |
+| PR open (in-flight) | In Review | In Progress |
+| merged / done | Done | Done |
+| quarantined | Parked | Todo |
+
+Use the preferred option id if its name is in the map; else the fallback's; else
+skip the move (log once).
+
+### Optional one-time 7-column setup (advisory)
+
+The default board ships only `Todo / In Progress / Done`. For the richer view, add
+`Trigger-gated, Blocked, Ready, In Review, Parked` once via the UI (Project →
+Settings → Status → add options), or via GraphQL `updateProjectV2Field`
+(`singleSelectOptions` REPLACES the full set — include the existing options too).
+dag-ship works without this via the fallback mapping. For org-owned projects use
+`organization(login:)` not `user(login:)` in any GraphQL query.
+
+## 3. Find-or-create a draft card per task
+
+```bash
+ITEMS=$(gh project item-list "$PNUM" --owner "$OWNER" --format json)
+ITEM_ID=$(echo "$ITEMS" | jq -r --arg p "[$TASK_ID] " '.items[] | select(.content.title // "" | startswith($p)) | .id' | head -1)
+if [ -z "$ITEM_ID" ] || [ "$ITEM_ID" = "null" ]; then
+  ITEM_ID=$(gh project item-create "$PNUM" --owner "$OWNER" --title "[$TASK_ID] $TASK_TITLE" --format json | jq -r .id)
+fi
+```
+
+## 4. Move a card / link a PR
+
+```bash
+gh project item-edit --id "$ITEM_ID" --project-id "$PROJ_ID" \
+  --field-id "$STATUS_FIELD_ID" --single-select-option-id "$OPT_ID"
+# on PR open, append the PR link to the draft body:
+gh project item-edit --id "$ITEM_ID" --body "[$TASK_ID] $TASK_TITLE — PR: $PR_URL"
+```
+
+## When to mirror (each best-effort, AFTER the file-dashboard update)
+
+- initial scan → trigger-gated → **Trigger-gated**, unmet-deps → **Blocked**
+- dependency cleared → **Ready**
+- wave dispatch → **In Progress**
+- handoff `pr-green` / PR opened → **In Review** (+ append PR link)
+- merged → **Done**
+- quarantined (failure handling) → **Parked**
+
+Batch per-wave updates; never let a board call block dispatch or merge.
+````
+
+- [ ] **Step 3: Verify the recipe's anchors are present**
+
+Run: `grep -n 'BOARD_OFF\|title=="TO DO"\|single-select-option-id\|item-create\|Parked' .claude/skills/dag-ship/references/github-project.md`
+Expected: the graceful-off marker, the board find-or-create, the move command, card creation, and the Parked column all present.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add .claude/skills/dag-ship/references/github-project.md
+git commit -m "feat(dag-ship): GitHub Project board mirror recipe (best-effort)"
+```
+
+---
+
+## Task 4: Gitignore the operational tracking files
 
 **Files:**
 - Modify: `.gitignore`
@@ -416,7 +548,7 @@ git commit -m "chore(dag-ship): gitignore operational run-state files"
 
 ---
 
-## Task 4: yolo-ship — autonomy contract items 3 & 5
+## Task 5: yolo-ship — autonomy contract items 3 & 5
 
 **Files:**
 - Modify: `.claude/skills/yolo-ship/SKILL.md` (item 5 at line ~21, item 3 at line ~19)
@@ -463,7 +595,7 @@ git commit -m "feat(yolo-ship): auto-merge default + orchestrated-mode carve-out
 
 ---
 
-## Task 5: yolo-ship — Phase 7 (auto-merge), DOT graph, exit line
+## Task 6: yolo-ship — Phase 7 (auto-merge), DOT graph, exit line
 
 **Files:**
 - Modify: `.claude/skills/yolo-ship/SKILL.md` (ship DOT graph ~97-109, exit line ~114, add Phase 7 after Phase 6)
@@ -582,7 +714,7 @@ git commit -m "feat(yolo-ship): add Phase 7 auto-merge (standalone) / hand-off (
 
 ---
 
-## Task 6: Safe validation — dry-run readiness against the real TODO.md
+## Task 7: Safe validation — dry-run readiness against the real TODO.md
 
 No side effects (no agents dispatched, no PRs). This proves the readiness
 algorithm in SKILL.md against the actual DAG.
@@ -625,7 +757,7 @@ git commit -m "fix(dag-ship): correct readiness computation per dry-run"
 
 ---
 
-## Task 7: Guided live validation — throwaway 2-node DAG (SIDE EFFECTS)
+## Task 8: Guided live validation — throwaway 2-node DAG (SIDE EFFECTS)
 
 ⚠ **Side effects:** creates a throwaway branch + 2 real PRs + 2 merges to `main`.
 Run only when ready; it also proves the 3-deep agent nesting (dag-ship →
@@ -667,7 +799,7 @@ git commit -m "chore(dag-ship): remove 2-node self-test fixtures" || true
 
 ---
 
-## Task 8: Guided live validation — failure-breaker (SIDE EFFECTS)
+## Task 9: Guided live validation — failure-breaker (SIDE EFFECTS)
 
 ⚠ **Side effects:** dispatches an agent on a task engineered to fail twice.
 Proves the attempt cap + same-signature breaker park the task instead of looping.
@@ -706,24 +838,25 @@ git commit -m "chore(dag-ship): remove failure-breaker self-test fixture" || tru
 
 **Spec coverage** (design §1–§13 → task):
 - §1 topology (main-session orchestrator, disk state, resumable) → Task 1 (Overview + Prime directive).
-- §2 state model & readiness (mermaid edges, lanes) → Task 1 + verified in Task 6.
+- §2 state model & readiness (mermaid edges, lanes) → Task 1 + verified in Task 7.
 - §3 control loop → Task 1 (DOT).
 - §4 dispatch contract (≤150-word handoff, branch/PR naming) → Task 2 (both prompts).
 - §5 merge queue (serialized git/gh) → Task 1 (Merge queue section).
 - §6 cluster-walk lane → Task 1 + Task 2 (walk prompt).
 - §7 context discipline → Task 1 (Prime directive + red flags).
-- §8 yolo-ship mods (Phase 7, orchestrated flag, contract item 3) → Tasks 4 & 5.
-- §11 failure handling (5 guards, signature rules) → Task 1 (Failure handling) + Task 2 (signature normalization) + verified in Task 8.
-- §12 progress files (dashboard + journal) → Task 1 + Task 2 (formats) + Task 3 (gitignore).
+- §8 yolo-ship mods (Phase 7, orchestrated flag, contract item 3) → Tasks 5 & 6.
+- §11 failure handling (5 guards, signature rules) → Task 1 (Failure handling) + Task 2 (signature normalization) + verified in Task 9.
+- §12 progress files (dashboard + journal) → Task 1 + Task 2 (formats) + Task 4 (gitignore).
+- §12.1 GitHub Project board mirror (best-effort) → Task 1 (SKILL.md subsection) + Task 3 (references/github-project.md).
 - §13 out-of-scope → no task needed (exclusions).
-- §9 testing (dry-run, 2-node, failure-breaker) → Tasks 6, 7, 8.
+- §9 testing (dry-run, 2-node, failure-breaker) → Tasks 7, 8, 9.
 
-**Placeholder scan:** No "TBD"/"TODO-implement"/"add error handling" placeholders; every skill section and every yolo-ship edit shows the literal content. The throwaway fixtures in Tasks 7–8 are intentionally minimal but complete.
+**Placeholder scan:** No "TBD"/"TODO-implement"/"add error handling" placeholders; every skill section and every yolo-ship edit shows the literal content. The throwaway fixtures in Tasks 8–9 are intentionally minimal but complete.
 
-**Type/name consistency:** Handoff field names (`task/outcome/pr/headSha/mergeable/ci/signature/followups`) are identical in the design §4, the code prompt, and the walk prompt. The four file names (`.claude/dag-ship-status.md`, `.claude/dag-ship-log.md`) and markers (`🛑`, `~~`, `[TASK-ID]` PR prefix, `dag-ship/<TASK-ID>-<slug>` branch) match across SKILL.md, templates.md, the gitignore task, and the validation tasks. Caps (attempt 2, depth 2, 10 spawns, 3× dispatches) match design §11.
+**Type/name consistency:** Handoff field names (`task/outcome/pr/headSha/mergeable/ci/signature/followups`) are identical in the design §4, the code prompt, and the walk prompt. The two file names (`.claude/dag-ship-status.md`, `.claude/dag-ship-log.md`) and markers (`🛑`, `~~`, `[TASK-ID]` PR prefix, `dag-ship/<TASK-ID>-<slug>` branch) match across SKILL.md, templates.md, the gitignore task, and the validation tasks. The board column names (`Trigger-gated/Blocked/Ready/In Progress/In Review/Done/Parked`) and project title (`TO DO`) match across design §12.1, SKILL.md, and `references/github-project.md`. Caps (attempt 2, depth 2, 10 spawns, 3× dispatches) match design §11.
 
 ---
 
 ## Execution Handoff
 
-After the plan is approved, choose an execution approach (see the writing-plans handoff). Tasks 1–5 are pure authoring (safe). Task 6 is a safe dry-run. **Tasks 7–8 have real side effects** (branches, PRs, merges to `main`) — gate them behind explicit go-ahead and ideally run them on a quiet `main`.
+After the plan is approved, choose an execution approach (see the writing-plans handoff). Tasks 1–6 are pure authoring (safe). Task 7 is a safe dry-run. **Tasks 8–9 have real side effects** (branches, PRs, merges to `main`) — gate them behind explicit go-ahead and ideally run them on a quiet `main`.

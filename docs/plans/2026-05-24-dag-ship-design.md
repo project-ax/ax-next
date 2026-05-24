@@ -302,6 +302,39 @@ live feed; also the on-disk substrate for §11 (failure events carry
 done / parked / in-flight; the two files above exist purely to make progress
 easy to watch and the run cheap to resume.
 
+### 12.1 Optional GitHub Project board mirror (best-effort)
+
+In addition to the file dashboard, the orchestrator mirrors progress to a GitHub
+**Projects v2** kanban board so progress is visible in the GitHub UI. This is a
+**second, best-effort mirror** — never load-bearing. The file dashboard +
+`TODO.md` + `gh pr list` remain the source of truth; the board can lag or be off
+entirely and the run is unaffected.
+
+- **Board:** auto-create-or-reuse a project titled **"TO DO"** owned by the repo
+  owner (`gh project list/create`). No board → create it; existing "TO DO" →
+  reuse.
+- **Cards:** one **draft issue** per non-done `[TASK-ID]`, titled
+  `[TASK-ID] <task title>`, self-populated from `TODO.md` (find-or-create by
+  title prefix, so re-runs don't duplicate). On PR open, the card's body gets the
+  PR link appended.
+- **Columns:** the orchestrator reads the board's **Status** single-select
+  options (`gh project field-list --format json`) and maps dag-ship state →
+  column. Preferred 7-column scheme (one-time UI/GraphQL setup, documented in
+  `references/github-project.md`): `Trigger-gated · Blocked · Ready · In Progress
+  · In Review · Done · Parked`. If those options are absent it **falls back** to
+  the default `Todo / In Progress / Done` (Ready/Blocked/Trigger-gated/Parked →
+  Todo; In Progress/In Review → In Progress; Done → Done) so cards still move.
+- **Moves:** card status is set via `gh project item-edit
+  --single-select-option-id …` on the same transitions that touch the file
+  dashboard (dispatch → In Progress, PR open → In Review, merge → Done, quarantine
+  → Parked, deps clear → Ready).
+- **Degradation:** if `gh` lacks the `project` scope, or any board call fails,
+  emit a one-time warning (`board mirror OFF — file dashboard only; enable with
+  gh auth refresh -s project`) and continue. Board updates are **skipped in
+  `--dry-run`** (no external mutation in a dry run).
+- **Mechanics** (GA `gh project` subcommands + a documented optional GraphQL
+  column-setup snippet) live in `references/github-project.md`.
+
 ## 13. Out of scope (v1)
 
 - Auto-dispatching cluster-walk fixes can be disabled via a future
