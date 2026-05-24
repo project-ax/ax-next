@@ -75,11 +75,22 @@ export const DISPATCHER_DEPENDENCIES: DispatcherDependencies = {
     // session.get-config — returns the runner's agent config for boot.
     'session:get-config',
     // workspace.read — reads a single workspace path (no guard, no fallback).
+    // Present in both transport consumers (CLI loads @ax/workspace-git; the
+    // k8s preset loads a workspace backend) — every IPC deployment has a
+    // workspace, so required is safe here.
     'workspace:read',
-    // conversation.store-runner-session — persists the SDK session id.
-    'conversations:store-runner-session',
   ],
   optionalCalls: [
+    {
+      // NOT required: the dispatcher calls this unconditionally on the
+      // /conversation.store-runner-session route, but the route is only
+      // exercised by conversation-scoped deployments. The local CLI is
+      // single-session, never loads @ax/conversations, and never calls this
+      // route — making it required would fail the CLI's bootstrap verifyCalls.
+      hook: 'conversations:store-runner-session',
+      degradation:
+        'POST /conversation.store-runner-session returns 500 (the runner SDK session id is not persisted); the route is unreachable in single-session deployments that never call it.',
+    },
     {
       hook: 'conversations:get-metadata',
       degradation:

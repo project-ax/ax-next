@@ -265,11 +265,11 @@ describe('createListener', () => {
       // @ax/ipc-server declares required `calls` (spread from
       // DISPATCHER_DEPENDENCIES) — stub the producers the auto-loaded session
       // plugin doesn't cover, to satisfy bootstrap's verifyCalls. No request
-      // path hits them in this test.
+      // path hits them in this test. (optionalCalls like
+      // conversations:store-runner-session never fail the boot, so no stub.)
       services: {
         'tool:list': async () => ({ tools: [] }),
         'workspace:read': async () => ({ found: false }),
-        'conversations:store-runner-session': async () => undefined,
       },
       plugins: [createSessionInmemoryPlugin(), createIpcServerPlugin()],
     });
@@ -294,7 +294,6 @@ describe('createListener', () => {
       services: {
         'tool:list': async () => ({ tools: [] }),
         'workspace:read': async () => ({ found: false }),
-        'conversations:store-runner-session': async () => undefined,
       },
       plugins: [createSessionInmemoryPlugin(), createIpcServerPlugin()],
     });

@@ -20,17 +20,18 @@ import { createIpcHttpPlugin } from '../plugin.js';
 // declared REQUIRED `calls` entry is registered by SOME plugin. The harness
 // only auto-loads @ax/session-inmemory (covers session:resolve-token,
 // session:claim-work, session:get-config), so we hand-roll a tiny stub plugin
-// to register the remaining required producers (tool:list, workspace:read,
-// conversations:store-runner-session). The stub never gets called by these
-// tests (we only hit /healthz pre-auth) — its sole job is to satisfy
-// verifyCalls. optionalCalls never fail the boot, so they need no stub.
+// to register the remaining required producers (tool:list, workspace:read).
+// The stub never gets called by these tests (we only hit /healthz pre-auth) —
+// its sole job is to satisfy verifyCalls. optionalCalls (e.g.
+// conversations:store-runner-session) never fail the boot, so they need no
+// stub.
 // ---------------------------------------------------------------------------
 
 const stubProducers: Plugin = {
   manifest: {
     name: '@ax/test-stub-producers',
     version: '0.0.0',
-    registers: ['tool:list', 'workspace:read', 'conversations:store-runner-session'],
+    registers: ['tool:list', 'workspace:read'],
     calls: [],
     subscribes: [],
   },
@@ -41,11 +42,6 @@ const stubProducers: Plugin = {
     bus.registerService('workspace:read', '@ax/test-stub-producers', async () => ({
       found: false,
     }));
-    bus.registerService(
-      'conversations:store-runner-session',
-      '@ax/test-stub-producers',
-      async () => undefined,
-    );
   },
 };
 
