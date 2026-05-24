@@ -16,9 +16,9 @@ This skill orchestrates other skills. It does not re-explain them — it sequenc
 
 1. **Don't ask the user.** Make a recommendation and proceed. Escalate via `AskUserQuestion` ONLY when a decision is high-stakes **and** ambiguous **and** not inferable from code, memory, or conventions. "I want to be safe" is not a reason to ask — it's a reason to document.
 2. **Every non-trivial decision is logged** to `.claude/memory/decisions.md` (Date | Decision | Rationale | Alternatives). If you'd have asked the user, write the recommendation there instead.
-3. **Follow-up work goes in `TODO.md`** — never silently dropped. Anything you deliberately defer is a TODO line, not a memory.
+3. **Follow-up work goes in `TODO.md`** — never silently dropped. Anything you deliberately defer is a TODO line, not a memory. **Orchestrated mode:** don't edit `TODO.md` — return follow-ups in your handoff so dag-ship (the sole writer) folds them in.
 4. **Pre-PR gate is `pnpm build` + `pnpm test` + lint** — not just build+test (see [[feedback_run_lint_before_pr]], [[feedback_run_tsc_alongside_vitest]]).
-5. **Done = branch codex-reviewed clean *before* the PR + CI green.** The review runs locally with Codex (`gpt-5.5` / `xhigh` effort, read-only) before the PR exists — there is **no hosted-reviewer wait**. You do **NOT** merge. Stop at a green PR and report the link.
+5. **Done = branch codex-reviewed clean *before* the PR + CI green, then merged.** The review runs locally with Codex (`gpt-5.5` / `xhigh` effort, read-only) before the PR exists — there is **no hosted-reviewer wait**. When CI is green you **auto-merge** (Phase 7) and fast-forward local `main`. **Exception — orchestrated mode:** if dag-ship dispatched you, do **NOT** merge and do **NOT** edit `TODO.md` — stop at a green, verified-mergeable PR and return the handoff; dag-ship owns the serialized merge queue.
 
 ## Context budget (target < 300–400K tokens)
 
