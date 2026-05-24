@@ -150,6 +150,12 @@ kind load docker-image ax-next/agent:dev --name ax-next-dev
 docker build -t ax-next/git-server:dev -f container/git-server/Dockerfile .
 kind load docker-image ax-next/git-server:dev --name ax-next-dev
 
+# 3b. Prune the untagged layers each `kind load` orphans on the node.
+#     A walk loops through §5 many times; without this the kind node fills
+#     up and `docker cp` starts failing with "no space left on device".
+#     `make image` already does this automatically — the walk must too.
+make kind-prune
+
 # 4. Runner namespace (chart deliberately does NOT create it)
 kubectl get ns ax-next-runners >/dev/null 2>&1 || kubectl create namespace ax-next-runners
 
@@ -229,6 +235,13 @@ Use when the fix touches:
 ```bash
 docker build -t ax-next/agent:dev -f container/agent/Dockerfile .
 kind load docker-image ax-next/agent:dev --name ax-next-dev
+
+# Every `kind load` overwrites the `:dev` tag and leaves the previous image
+# behind as an untagged `<none>` layer. Over a long walk these pile up until
+# the kind node hits "no space left on device". `make image` prunes them
+# automatically; the walk does the same after each load. (single source of
+# truth: the prune logic lives in the Makefile's `kind-prune` target.)
+make kind-prune
 
 # If the chart changed, helm upgrade. If only image changed, restart is enough.
 helm upgrade --install ax-next deploy/charts/ax-next \
@@ -334,6 +347,7 @@ Or simpler: `helm upgrade ... --reuse-values --recreate-pods` to reset the deplo
 - **`AX_HTTP_COOKIE_KEY required` crash loop.** Issue #39 made `http.cookieKey` mandatory; the kind values default it but custom overlays must set it.
 - **`kubectl logs` shows nothing useful.** Try `--all-containers --prefix` and `--previous`. The agent image runs tini as PID 1 and node as a child; both produce log lines.
 - **Postgres pod restarts.** Bitnami's image moved repos in late 2025; the chart pins `bitnamilegacy/postgresql`. If pulls fail, override `postgresql.image.*`.
+- **`no space left on device` during `docker cp` / `kind load` mid-walk.** The kind node filled with untagged `<none>` layers from repeated rebuilds (each `kind load` orphans the prior image). Run `make kind-prune` to reclaim it; `make image` and §3b/§5 of this loop do this automatically, but a long walk can still outrun it — prune by hand if it bites. `docker exec ax-next-dev-control-plane df -h /` confirms the node's free space.
 
 ---
 
