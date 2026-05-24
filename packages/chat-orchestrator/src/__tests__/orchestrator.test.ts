@@ -621,6 +621,202 @@ describe('chat-orchestrator', () => {
     expect(turnErrors).toEqual([]);
   });
 
+  // -------------------------------------------------------------------------
+  // chat:turn-error (F2b) — a turn can end abnormally WITHOUT the chokepoint
+  // synthesizing it: the runner POSTs event.chat-end{terminated} before
+  // crashing (e.g. choking on resume of an interrupted transcript), or an
+  // early-spawn step fails. onChatEnd (the chat:end subscriber) surfaces the
+  // turn-error for the runner-reported live-crash case; the early-spawn
+  // returns fire it explicitly. The runner-reported chat:end RESTAMPS reqId,
+  // so it carries conversationId for the SSE to match instead.
+  // -------------------------------------------------------------------------
+
+  it('F2b: a runner-reported terminated chat:end fires chat:turn-error with the ORIGINAL reqId (recovered, not the restamped one)', async () => {
+    let busRef: HookBus | null = null;
+    const mocks = buildMocks({
+      openSession: async (_ctx, input: unknown) => {
+        const sessionId = (input as { sessionId: string }).sessionId;
+        // The runner crashed mid-resume and POSTed event.chat-end{terminated}
+        // before exiting. The IPC server fires chat:end with a FRESH reqId
+        // (restamped per request) + a stamped conversationId. resolveWaiterFor
+        // recovers the ORIGINAL agent:invoke reqId via the sessionId fallback,
+        // so the turn-error fires with 'r-orig' (the SSE's precise per-turn
+        // key), NOT 'r-ipc-restamped' and NOT a coarse conversationId match.
+        setImmediate(() => {
+          void busRef!.fire(
+            'chat:end',
+            makeAgentContext({
+              sessionId,
+              agentId: 'agent',
+              userId: 'user',
+              reqId: 'r-ipc-restamped',
+              conversationId: 'cnv-x',
+              logger: createLogger({ reqId: 'r-ipc-restamped', writer: () => undefined }),
+            }),
+            { outcome: { kind: 'terminated', reason: 'Error: resume boom' } },
+          );
+        });
+        return {
+          runnerEndpoint: 'unix:///tmp/crash.sock',
+          handle: { kill: async () => undefined, exited: new Promise(() => undefined) },
+        };
+      },
+    });
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 1_000 }),
+      ],
+    });
+    busRef = h.bus;
+
+    const turnErrors: Array<{ reqId?: string; reason?: string }> = [];
+    h.bus.subscribe('chat:turn-error', 'obs', async (_ctx, p: unknown) => {
+      turnErrors.push(p as { reqId?: string; reason?: string });
+      return undefined;
+    });
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      turnErrorCtx('crash-session', 'r-orig'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+
+    expect(outcome.kind).toBe('terminated');
+    // Fires with the recovered ORIGINAL reqId, not the IPC-restamped one.
+    expect(turnErrors).toEqual([
+      { reqId: 'r-orig', reason: 'Error: resume boom' },
+    ]);
+  });
+
+  it('F2b: a terminated chat:end with NO in-flight waiter does NOT fire chat:turn-error', async () => {
+    // Guards both double-fire (chokepoint already settled the deferred + fired
+    // its own turn-error) and spurious-fire (a reaped warm runner POSTs a late
+    // terminated chat:end after its turn already completed).
+    const mocks = buildMocks();
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 1_000 }),
+      ],
+    });
+    const turnErrors: unknown[] = [];
+    h.bus.subscribe('chat:turn-error', 'obs', async (_ctx, p: unknown) => {
+      turnErrors.push(p);
+      return undefined;
+    });
+    await h.bus.fire('chat:end', turnErrorCtx('ghost-sess', 'r-ghost'), {
+      outcome: { kind: 'terminated', reason: 'late-reap' },
+    });
+    expect(turnErrors).toEqual([]);
+  });
+
+  it('F2b: a completed (kind=complete) chat:end with a live waiter does NOT fire chat:turn-error', async () => {
+    // A normal completed turn resolves a live waiter — wasInFlight is true,
+    // but a 'complete' outcome must NEVER surface as a turn-error.
+    let busRef: HookBus | null = null;
+    const mocks = buildMocks({
+      openSession: async (_ctx, input: unknown) => {
+        const sessionId = (input as { sessionId: string }).sessionId;
+        setImmediate(() => {
+          void busRef!.fire(
+            'chat:end',
+            makeAgentContext({
+              sessionId,
+              agentId: 'agent',
+              userId: 'user',
+              reqId: 'r-ipc-restamped',
+              conversationId: 'cnv-ok',
+              logger: createLogger({ reqId: 'r-ipc-restamped', writer: () => undefined }),
+            }),
+            { outcome: { kind: 'complete', messages: [{ role: 'assistant', content: 'ok' }] } },
+          );
+        });
+        return {
+          runnerEndpoint: 'unix:///tmp/ok.sock',
+          handle: { kill: async () => undefined, exited: new Promise(() => undefined) },
+        };
+      },
+    });
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 1_000 }),
+      ],
+    });
+    busRef = h.bus;
+    const turnErrors: unknown[] = [];
+    h.bus.subscribe('chat:turn-error', 'obs', async (_ctx, p: unknown) => {
+      turnErrors.push(p);
+      return undefined;
+    });
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      turnErrorCtx('ok-session-2', 'r-orig'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+    expect(turnErrors).toEqual([]);
+  });
+
+  it('F2b: early-spawn sandbox-open-failed fires chat:turn-error with the originating reqId', async () => {
+    const mocks = buildMocks({
+      openSession: async () => {
+        throw new Error('open boom');
+      },
+    });
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 1_000 }),
+      ],
+    });
+    const turnErrors: Array<{ reqId?: string; reason?: string }> = [];
+    h.bus.subscribe('chat:turn-error', 'obs', async (_ctx, p: unknown) => {
+      turnErrors.push(p as { reqId?: string; reason?: string });
+      return undefined;
+    });
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      turnErrorCtx('open-fail-sess', 'r-open'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('terminated');
+    expect((outcome as { reason: string }).reason).toBe('sandbox-open-failed');
+    expect(turnErrors).toEqual([
+      { reqId: 'r-open', reason: 'sandbox-open-failed' },
+    ]);
+  });
+
+  it('F2b: early-spawn queue-work-failed fires chat:turn-error with the originating reqId', async () => {
+    const mocks = buildMocks({
+      queueWork: async () => {
+        throw new Error('queue boom');
+      },
+    });
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 1_000 }),
+      ],
+    });
+    const turnErrors: Array<{ reqId?: string; reason?: string }> = [];
+    h.bus.subscribe('chat:turn-error', 'obs', async (_ctx, p: unknown) => {
+      turnErrors.push(p as { reqId?: string; reason?: string });
+      return undefined;
+    });
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      turnErrorCtx('queue-fail-sess', 'r-queue'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('terminated');
+    expect((outcome as { reason: string }).reason).toBe('queue-work-failed');
+    expect(turnErrors).toEqual([
+      { reqId: 'r-queue', reason: 'queue-work-failed' },
+    ]);
+  });
+
   it('chat:end fires exactly once across all exit paths', async () => {
     // We already assert single-fire in each scenario above; this is a
     // parametrized sweep so a regression in any one path lights up loudly.

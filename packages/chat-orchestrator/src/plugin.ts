@@ -106,7 +106,7 @@ export function createChatOrchestratorPlugin(
         'chat:end',
         PLUGIN_NAME,
         async (ctx, payload) => {
-          orch.onChatEnd(ctx, payload);
+          await orch.onChatEnd(ctx, payload);
           return undefined; // pass-through; no transform, no veto.
         },
       );

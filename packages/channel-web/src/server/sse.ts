@@ -287,13 +287,17 @@ export function createSseHandler(deps: SseHandlerDeps) {
     );
 
     // 4c-bis) Attach the turn-error subscriber. The orchestrator fires
-    // `chat:turn-error` (carrying the ORIGINAL agent:invoke reqId) when a
-    // turn ends abnormally — the runner died mid-turn or wedged past the
-    // chat timeout — instead of the normal `chat:turn-end`. Without this
-    // the stream would never get a terminal frame and the client's
-    // "Thinking…" spinner hangs forever (the keepalive heartbeat keeps the
-    // connection open). Match by reqId (the precise per-turn key the
-    // orchestrator carries), emit an `error` frame, evict, and close.
+    // `chat:turn-error` when a turn ends abnormally — the runner died mid-turn,
+    // wedged past the chat timeout, an early-spawn step failed, OR the runner
+    // itself reported a terminated outcome (F2b) — instead of the normal
+    // `chat:turn-end`. Without this the stream would never get a terminal frame
+    // and the client's "Thinking…" spinner hangs forever (the keepalive
+    // heartbeat keeps the connection open). Match by reqId — the precise
+    // per-turn key. Every orchestrator fire site carries the ORIGINAL
+    // agent:invoke reqId (the F2b onChatEnd path passes the reqId
+    // resolveWaiterFor recovered, since the IPC server restamps ctx.reqId), so
+    // a turn-error never closes a co-resident turn's stream on the same
+    // conversation. Emit an `error` frame, evict, and close.
     deps.bus.subscribe<{ reqId?: string; reason?: string }>(
       'chat:turn-error',
       turnErrorSubKey,

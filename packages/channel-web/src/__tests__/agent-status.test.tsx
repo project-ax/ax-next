@@ -32,9 +32,10 @@ import {
   useLocalRuntime,
 } from '@assistant-ui/react';
 import type { ReactNode } from 'react';
-import { AgentStatus } from '../components/AgentStatus';
+import { AgentStatus, RunningEffect } from '../components/AgentStatus';
 import {
   agentStatusActions,
+  getAgentStatusSnapshot,
 } from '../lib/agent-status-store';
 
 const StubRuntimeProvider = ({ children }: { children: ReactNode }) => {
@@ -201,5 +202,58 @@ describe('AgentStatus', () => {
     expect(cancelled).toBe(1);
     const row = container.querySelector('.agent-status');
     expect(row?.classList.contains('visible')).toBe(false);
+  });
+
+  // ---------------------------------------------------------------------------
+  // RunningEffect — the auto-pump that shows "Thinking…" while a turn is in
+  // flight and hides on finish. F1 regression: before the fix, a stale 'error'
+  // mode (set by a prior turn's turn-error, #137) never reset when the NEXT
+  // turn started, so the error row stuck through every later turn until a full
+  // page reload. RunningEffect only mounts inside <ThreadPrimitive.If running>
+  // in the app, so we mount it directly here to drive the turn-start/turn-end
+  // transitions.
+  // ---------------------------------------------------------------------------
+
+  it('F1: a stale error row resets to "Thinking…" when a new turn starts (RunningEffect mounts)', () => {
+    // A prior turn errored — the row is stuck in error mode with a retry.
+    act(() =>
+      agentStatusActions.error('The agent stopped unexpectedly. Retry to continue.', {
+        retry: () => undefined,
+      }),
+    );
+    expect(getAgentStatusSnapshot().mode).toBe('error');
+
+    // The user starts a new turn → RunningEffect mounts.
+    render(<RunningEffect />);
+
+    const snap = getAgentStatusSnapshot();
+    expect(snap.mode).toBe('working');
+    expect(snap.text).toBe('Thinking…');
+    // The error's retry handler must be cleared so the row no longer shows a
+    // retry button on the fresh working turn.
+    expect(snap.retry).toBeNull();
+  });
+
+  it('F1: a working turn hides the row when RunningEffect unmounts (turn ends cleanly)', () => {
+    const { unmount } = render(<RunningEffect />);
+    // Mount put us in working mode.
+    expect(getAgentStatusSnapshot().mode).toBe('working');
+    act(() => unmount());
+    expect(getAgentStatusSnapshot().mode).toBe('hidden');
+  });
+
+  it('F1: an error set DURING a running turn PERSISTS after the turn ends (unmount keeps it)', () => {
+    const { unmount } = render(<RunningEffect />);
+    expect(getAgentStatusSnapshot().mode).toBe('working');
+    // The turn errors mid-flight (turn-error → agentStatusActions.error).
+    act(() =>
+      agentStatusActions.error('The agent stopped unexpectedly. Retry to continue.', {
+        retry: () => undefined,
+      }),
+    );
+    // Turn ends (RunningEffect unmounts) — the error must NOT be hidden; the
+    // persistent red+retry row is the whole point of #137.
+    act(() => unmount());
+    expect(getAgentStatusSnapshot().mode).toBe('error');
   });
 });
