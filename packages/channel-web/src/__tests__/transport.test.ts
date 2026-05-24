@@ -250,6 +250,51 @@ describe('AxChatTransport SSE chunk parsing', () => {
     expect(finish).toBeTruthy();
     expect(finish?.finishReason).toBe('stop');
   });
+
+  // Fault A — the host emits an `error` SSE frame (instead of `done`) when a
+  // turn ends abnormally. The transport must terminate the turn as ERRORED
+  // (an AI-SDK `error` chunk) so `running` flips false and the runtime's
+  // onError can flip the status row to error+retry — NOT silently finish as
+  // if the turn completed, and NOT hang.
+  test('error frame closes any open part and emits an error chunk (terminates, no silent finish)', async () => {
+    const transport = new AxChatTransport({ getAgentId: () => 'a' });
+    const body =
+      `data: {"reqId":"r1","text":"partial","kind":"text"}\n\n` +
+      `data: {"reqId":"r1","error":"sandbox-terminated"}\n\n`;
+    const chunks = await drain(asProcess(transport)(sseStream(body))) as Array<{
+      type: string;
+      errorText?: string;
+    }>;
+    const types = chunks.map((c) => c.type);
+    // The open text part is closed before the error.
+    expect(types).toContain('text-end');
+    // The turn ends as an error, NOT a normal finish.
+    expect(types).toContain('error');
+    expect(types).not.toContain('finish');
+    expect(types[types.length - 1]).toBe('error');
+    const errorChunk = chunks.find((c) => c.type === 'error') as
+      | { errorText: string }
+      | undefined;
+    expect(typeof errorChunk?.errorText).toBe('string');
+    expect(errorChunk!.errorText.length).toBeGreaterThan(0);
+    // The default, user-facing wording for an unmapped reason code.
+    expect(errorChunk!.errorText).toBe(
+      'The agent stopped unexpectedly. Retry to continue.',
+    );
+  });
+
+  test('error frame maps a known reason code to a friendly label', async () => {
+    const transport = new AxChatTransport({ getAgentId: () => 'a' });
+    const body = `data: {"reqId":"r1","error":"chat-run-timeout"}\n\n`;
+    const chunks = await drain(asProcess(transport)(sseStream(body))) as Array<{
+      type: string;
+      errorText?: string;
+    }>;
+    const errorChunk = chunks.find((c) => c.type === 'error') as
+      | { errorText: string }
+      | undefined;
+    expect(errorChunk?.errorText).toBe('The agent timed out. Retry to continue.');
+  });
 });
 
 describe('AxChatTransport SSE phase parsing', () => {

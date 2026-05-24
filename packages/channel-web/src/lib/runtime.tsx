@@ -15,6 +15,7 @@ import { sessionStoreActions, useSessionStore } from './session-store';
 import { useThinkingStore } from './thinking-store';
 import { AxAttachmentAdapter } from './ax-attachment-adapter';
 import { setActiveConversationId } from './use-conversation-id';
+import { applyTurnError } from './turn-error';
 
 const useChatThreadRuntime = (transport: AxChatTransport): AssistantRuntime => {
   const id = useAuiState(({ threadListItem }) => threadListItem.id);
@@ -37,7 +38,22 @@ const useChatThreadRuntime = (transport: AxChatTransport): AssistantRuntime => {
   // is enough.
   const attachments = useMemo(() => new AxAttachmentAdapter(), []);
 
-  const chat = useChat({ id, transport });
+  // Fault A — when a turn ends abnormally the transport emits an AI-SDK
+  // `error` chunk; useChat raises it to `onError`. Flip the status row to
+  // error+retry. `chatRef` lets the retry handler reach `regenerate()`
+  // (which re-runs the last user turn against a fresh sandbox) without a
+  // construction-order chicken-and-egg.
+  const chatRef = useRef<ReturnType<typeof useChat> | null>(null);
+  const chat = useChat({
+    id,
+    transport,
+    onError: (error) => {
+      applyTurnError(error, () => {
+        void chatRef.current?.regenerate();
+      });
+    },
+  });
+  chatRef.current = chat;
   return useAISDKRuntime(chat, {
     adapters: { history, attachments },
   });
