@@ -1,6 +1,11 @@
 export {
   dispatch,
+  DISPATCHER_PATHS,
 } from './dispatcher.js';
+export {
+  DISPATCHER_DEPENDENCIES,
+  type DispatcherDependencies,
+} from './dependencies.js';
 export {
   authenticate,
   type AuthResult,

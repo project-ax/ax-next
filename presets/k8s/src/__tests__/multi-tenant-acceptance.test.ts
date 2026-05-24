@@ -154,6 +154,26 @@ const PLUGINS_TO_DROP = new Set<string>([
   '@ax/skills',
 ]);
 
+// Stub producers for the dispatcher's required deps this canary drops.
+// @ax/ipc-server declares manifest.calls spread from @ax/ipc-core's
+// DISPATCHER_DEPENDENCIES, which includes workspace:read +
+// conversations:store-runner-session. This local-backend canary drops
+// @ax/workspace-git and @ax/conversations to stay postgres-free, so bootstrap's
+// verifyCalls needs a no-op producer for each. Neither is on the chat path here.
+function createDispatcherDepsStubPlugin(hooks: string[]): Plugin {
+  const name = '@ax/preset-k8s/test/dispatcher-deps-stub';
+  return {
+    manifest: { name, version: '0.0.0', registers: hooks, calls: [], subscribes: [] },
+    init({ bus }) {
+      for (const hook of hooks) {
+        bus.registerService(hook, name, async () =>
+          hook === 'workspace:read' ? { found: false } : undefined,
+        );
+      }
+    },
+  };
+}
+
 const AGENTS_RESOLVE_PLUGIN_NAME = '@ax/preset-k8s/test/discriminating-agents-resolve';
 
 function createDiscriminatingAgentsResolvePlugin(): Plugin {
@@ -360,6 +380,10 @@ describe('@ax/preset-k8s multi-tenant ACL gate (stub runner)', () => {
         createSessionInmemoryPlugin(),
         createSandboxSubprocessPlugin(),
         createIpcServerPlugin(),
+        createDispatcherDepsStubPlugin([
+          'workspace:read',
+          'conversations:store-runner-session',
+        ]),
         createMultiTenantProxyPlugin({
           scriptByAgentId: new Map([
             ['agent-A', scriptA],

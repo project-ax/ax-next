@@ -262,10 +262,14 @@ describe('createListener', () => {
     const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'ax-ipc-test-'));
     const socketPath = path.join(tempDir, 'ipc.sock');
     const h = await createTestHarness({
-      // @ax/ipc-server declares calls on `tool:list` — stub it to satisfy
-      // bootstrap's verifyCalls. No request path hits it in this test.
+      // @ax/ipc-server declares required `calls` (spread from
+      // DISPATCHER_DEPENDENCIES) — stub the producers the auto-loaded session
+      // plugin doesn't cover, to satisfy bootstrap's verifyCalls. No request
+      // path hits them in this test.
       services: {
         'tool:list': async () => ({ tools: [] }),
+        'workspace:read': async () => ({ found: false }),
+        'conversations:store-runner-session': async () => undefined,
       },
       plugins: [createSessionInmemoryPlugin(), createIpcServerPlugin()],
     });
@@ -289,6 +293,8 @@ describe('createListener', () => {
     const h = await createTestHarness({
       services: {
         'tool:list': async () => ({ tools: [] }),
+        'workspace:read': async () => ({ found: false }),
+        'conversations:store-runner-session': async () => undefined,
       },
       plugins: [createSessionInmemoryPlugin(), createIpcServerPlugin()],
     });

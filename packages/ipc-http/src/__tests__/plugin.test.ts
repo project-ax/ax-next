@@ -1,6 +1,7 @@
 import * as net from 'node:net';
 import { describe, it, expect } from 'vitest';
 import type { Plugin } from '@ax/core';
+import { DISPATCHER_DEPENDENCIES } from '@ax/ipc-core';
 import { createTestHarness } from '@ax/test-harness';
 import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
 import { createIpcHttpPlugin } from '../plugin.js';
@@ -11,29 +12,40 @@ import { createIpcHttpPlugin } from '../plugin.js';
 // Validates:
 //   1. Listener actually binds at init() (real fetch against /healthz).
 //   2. Manifest declares no service-hook registrations.
-//   3. Manifest declares the dispatcher-required `calls` (mirrors
-//      @ax/ipc-server, since both share @ax/ipc-core's dispatcher).
+//   3. Manifest's `calls` / `optionalCalls` are spread verbatim from
+//      @ax/ipc-core's DISPATCHER_DEPENDENCIES (the dispatcher is the source of
+//      truth; both transports stamp the same set).
 //
 // `verifyCalls` (in @ax/core/bootstrap) is unconditional — it asserts every
-// declared `calls` entry is registered by SOME plugin. The harness only
-// auto-loads @ax/session-inmemory (covers session:resolve-token and
-// session:claim-work), so we hand-roll a tiny stub plugin to register
-// `tool:list`. The stub never gets called by these tests (we only hit
-// /healthz pre-auth) — its sole job is to satisfy verifyCalls.
+// declared REQUIRED `calls` entry is registered by SOME plugin. The harness
+// only auto-loads @ax/session-inmemory (covers session:resolve-token,
+// session:claim-work, session:get-config), so we hand-roll a tiny stub plugin
+// to register the remaining required producers (tool:list, workspace:read,
+// conversations:store-runner-session). The stub never gets called by these
+// tests (we only hit /healthz pre-auth) — its sole job is to satisfy
+// verifyCalls. optionalCalls never fail the boot, so they need no stub.
 // ---------------------------------------------------------------------------
 
-const stubTools: Plugin = {
+const stubProducers: Plugin = {
   manifest: {
-    name: '@ax/test-stub-tools',
+    name: '@ax/test-stub-producers',
     version: '0.0.0',
-    registers: ['tool:list'],
+    registers: ['tool:list', 'workspace:read', 'conversations:store-runner-session'],
     calls: [],
     subscribes: [],
   },
   init({ bus }) {
-    bus.registerService('tool:list', '@ax/test-stub-tools', async () => ({
+    bus.registerService('tool:list', '@ax/test-stub-producers', async () => ({
       tools: [],
     }));
+    bus.registerService('workspace:read', '@ax/test-stub-producers', async () => ({
+      found: false,
+    }));
+    bus.registerService(
+      'conversations:store-runner-session',
+      '@ax/test-stub-producers',
+      async () => undefined,
+    );
   },
 };
 
@@ -57,7 +69,7 @@ describe('createIpcHttpPlugin', () => {
     const port = await pickFreePort();
     const plugin = createIpcHttpPlugin({ host: '127.0.0.1', port });
     const harness = await createTestHarness({
-      plugins: [createSessionInmemoryPlugin(), stubTools, plugin],
+      plugins: [createSessionInmemoryPlugin(), stubProducers, plugin],
     });
 
     try {
@@ -77,15 +89,17 @@ describe('createIpcHttpPlugin', () => {
     expect(plugin.manifest.registers).toEqual([]);
   });
 
-  it('manifest declares the dispatcher-required calls', () => {
+  it('manifest.calls is spread verbatim from DISPATCHER_DEPENDENCIES.requiredCalls', () => {
     const plugin = createIpcHttpPlugin({ host: '127.0.0.1', port: 0 });
-    // Mirrors @ax/ipc-server's manifest.calls — same dispatcher backs both.
-    expect(plugin.manifest.calls).toEqual(
-      expect.arrayContaining([
-        'session:resolve-token',
-        'session:claim-work',
-        'tool:list',
-      ]),
-    );
+    expect(plugin.manifest.calls).toEqual([
+      ...DISPATCHER_DEPENDENCIES.requiredCalls,
+    ]);
+  });
+
+  it('manifest.optionalCalls is spread verbatim from DISPATCHER_DEPENDENCIES.optionalCalls', () => {
+    const plugin = createIpcHttpPlugin({ host: '127.0.0.1', port: 0 });
+    expect(plugin.manifest.optionalCalls).toEqual([
+      ...DISPATCHER_DEPENDENCIES.optionalCalls,
+    ]);
   });
 });

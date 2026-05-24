@@ -112,6 +112,21 @@ EVENTS.set('/event.stream-chunk', {
   fire: fireEventStreamChunk,
 });
 
+// The complete set of request paths the dispatcher routes: the GET-only
+// session.next-message, every POST action, and every fire-and-forget event.
+// Exported so the dependency-sync test can assert the routing table is
+// non-empty and matches the handler set whose service calls feed
+// DISPATCHER_DEPENDENCIES — without re-hardcoding the path list in the test.
+export const DISPATCHER_PATHS: {
+  readonly get: readonly string[];
+  readonly actions: readonly string[];
+  readonly events: readonly string[];
+} = {
+  get: ['/session.next-message'],
+  actions: [...ACTIONS.keys()],
+  events: [...EVENTS.keys()],
+};
+
 function isErr(r: HandlerResult): r is HandlerErr {
   // An OK body is whatever the handler returned; the error body has the
   // { error: { code, message } } envelope. We treat any result with that

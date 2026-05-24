@@ -257,6 +257,41 @@ function createPermissiveAgentsStubPlugin(): Plugin {
   };
 }
 
+// Stub producers for the dispatcher's required service-hook dependencies that
+// these chat-path canaries deliberately DROP. @ax/ipc-server (the unix-socket
+// transport these canaries swap in for ipc-http) declares
+// `manifest.calls` spread from @ax/ipc-core's DISPATCHER_DEPENDENCIES — which
+// includes `workspace:read` + `conversations:store-runner-session`. The
+// canaries drop @ax/workspace-git (local backend) and @ax/conversations to
+// stay postgres-free, so bootstrap's verifyCalls would fail without a producer.
+// None of these hooks are on the chat path these canaries exercise, so a no-op
+// stub satisfies the boot check. Each call site passes only the SUBSET it's
+// actually missing (passing a hook a real plugin already registers would trip
+// bootstrap's duplicate-service guard).
+function createDispatcherDepsStubPlugin(hooks: string[]): Plugin {
+  const name = '@ax/preset-k8s/test/dispatcher-deps-stub';
+  return {
+    manifest: {
+      name,
+      version: '0.0.0',
+      registers: hooks,
+      calls: [],
+      subscribes: [],
+    },
+    init({ bus }) {
+      for (const hook of hooks) {
+        bus.registerService(hook, name, async () => {
+          // workspace:read returns { found: false }; everything else returns
+          // undefined. Neither path is reached by these canaries — the stub's
+          // only job is to satisfy verifyCalls.
+          if (hook === 'workspace:read') return { found: false };
+          return undefined;
+        });
+      }
+    },
+  };
+}
+
 // Sentinel content the runner emits — searching for it in
 // outcome.messages[].content is the load-bearing assertion that the
 // chat actually ran (vs. a wiring-only happy path).
@@ -390,6 +425,14 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         createSandboxSubprocessPlugin(),
         // IPC listener the runner subprocess connects back to.
         createIpcServerPlugin(),
+        // ipc-server's dispatcher requires workspace:read +
+        // conversations:store-runner-session producers (DISPATCHER_DEPENDENCIES).
+        // The local-backend canary drops @ax/workspace-git AND @ax/conversations,
+        // so stub both. Not on this canary's chat path.
+        createDispatcherDepsStubPlugin([
+          'workspace:read',
+          'conversations:store-runner-session',
+        ]),
         // proxy:open-session / proxy:close-session — no-op stand-in that
         // injects the encoded script via envMap.
         createTestProxyPlugin({ script }),
@@ -566,6 +609,10 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           createSessionInmemoryPlugin(),
           createSandboxSubprocessPlugin(),
           createIpcServerPlugin(),
+          // git-protocol backend keeps @ax/workspace-git-server (provides
+          // workspace:read), but @ax/conversations is dropped — stub the one
+          // missing dispatcher dep. Not on this canary's chat path.
+          createDispatcherDepsStubPlugin(['conversations:store-runner-session']),
           createTestProxyPlugin({ script }),
           createPermissiveAgentsStubPlugin(),
           createMcpClientPlugin(),
@@ -826,6 +873,10 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         createSessionInmemoryPlugin(),
         createSandboxSubprocessPlugin(),
         createIpcServerPlugin(),
+        // git-protocol backend keeps @ax/workspace-git-server (provides
+        // workspace:read), but @ax/conversations is dropped — stub the one
+        // missing dispatcher dep. Not on this canary's chat path.
+        createDispatcherDepsStubPlugin(['conversations:store-runner-session']),
         createTestProxyPlugin({
           script: { entries: [{ kind: 'finish', reason: 'end_turn' }] },
         }),
