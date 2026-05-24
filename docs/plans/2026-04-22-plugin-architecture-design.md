@@ -4,6 +4,18 @@
 **Date:** 2026-04-22
 **Branch:** `feat/chat-observability` (legacy reference); v2 ships in a new monorepo
 
+> **This is the founding design, not the current state.** It's the brainstorm
+> that set the shape (tiny kernel, hook bus, everything-else-a-plugin,
+> deployment-via-plugin-selection) and it's still the best read for the *why*
+> behind the boundaries. But the system as-built diverged in one big way: the
+> kernel does **not** run a chat loop. The model turn-loop moved out of the host
+> into a sandboxed runner, and per-chat orchestration moved into the
+> `@ax/chat-orchestrator` plugin (registering `agent:invoke`, not the `chat:run`
+> Section 3 describes). For what is true *today* — the host/runner split, IPC
+> action boundaries, transcript source-of-truth, and which hooks are stable vs.
+> transitional — read **`docs/plans/2026-05-24-current-architecture.md`**. When
+> the two disagree about what the code does, the current-state doc wins.
+
 ---
 
 ## TL;DR

@@ -6,7 +6,7 @@ This file provides guidance to Claude Code when working with code in this reposi
 
 - **Name:** ax-next — AX v2, greenfield rewrite
 - **Shape:** Monorepo (pnpm + changesets + tsconfig refs). Each package is a plugin; `@ax/core` is the kernel. Scaffolding is Week 1 of build — not yet wired up.
-- **Architecture spec:** `docs/plans/2026-04-22-plugin-architecture-design.md`
+- **Architecture spec:** `docs/plans/2026-04-22-plugin-architecture-design.md` (founding design / the *why*). For current as-built state — host/runner split, `@ax/chat-orchestrator`, IPC boundaries, transcript source-of-truth, stable-vs-transitional hooks — see `docs/plans/2026-05-24-current-architecture.md`.
 - **Conventions spec:** `docs/plans/2026-04-23-v2-claude-md-and-skills.md`
 
 ## Legacy reference
