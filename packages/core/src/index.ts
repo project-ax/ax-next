@@ -11,7 +11,11 @@ export {
   type WireResponse,
 } from './ipc/wire.js';
 export { encodeFrame, FrameDecoder, MAX_FRAME } from './ipc/framing.js';
-export { asWorkspaceVersion } from './workspace.js';
+export {
+  asWorkspaceVersion,
+  WorkspaceReadOutputSchema,
+  WorkspaceListOutputSchema,
+} from './workspace.js';
 export {
   filterToPolicy,
   POLICY_PREFIXES,

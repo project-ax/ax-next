@@ -4,6 +4,7 @@ import {
   InstalledSkillSchema,
   McpServerSchema,
   OpenSessionInputSchema,
+  OpenSessionResultSchema,
   ProxyConfigSchema,
 } from '../schemas.js';
 
@@ -379,5 +380,38 @@ describe('OpenSessionInputSchema', () => {
       },
     });
     expect(result.success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// `sandbox:open-session` RETURN contract (ARCH-6). The result carries a LIVE
+// `handle` (functions + Promise). A strict object schema would strip it; the
+// `.passthrough()` schema must keep it intact while still asserting the
+// opaque `runnerEndpoint`.
+// ---------------------------------------------------------------------------
+describe('OpenSessionResultSchema', () => {
+  it('accepts a result with a non-empty runnerEndpoint', () => {
+    expect(
+      OpenSessionResultSchema.safeParse({ runnerEndpoint: 'unix:///run/ax.sock' }).success,
+    ).toBe(true);
+  });
+
+  it('rejects a missing or empty runnerEndpoint', () => {
+    expect(OpenSessionResultSchema.safeParse({}).success).toBe(false);
+    expect(OpenSessionResultSchema.safeParse({ runnerEndpoint: '' }).success).toBe(false);
+  });
+
+  it('PRESERVES the live handle through validation (passthrough, not strip)', () => {
+    const handle = {
+      kill: () => Promise.resolve(),
+      exited: Promise.resolve({ code: 0 }),
+    };
+    const result = { runnerEndpoint: 'http://10.0.0.1:7777', handle };
+    const parsed = OpenSessionResultSchema.parse(result) as typeof result;
+    // The handle object must survive by reference — a strict schema would
+    // have dropped it, breaking the orchestrator's session teardown.
+    expect(parsed.handle).toBe(handle);
+    expect(typeof parsed.handle.kill).toBe('function');
+    expect(parsed.runnerEndpoint).toBe('http://10.0.0.1:7777');
   });
 });

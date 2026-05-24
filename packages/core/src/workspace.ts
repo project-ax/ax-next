@@ -11,6 +11,8 @@
 // `git diff-tree`).
 // ---------------------------------------------------------------------------
 
+import { z, type ZodType } from 'zod';
+
 export type WorkspaceVersion = string & { readonly __brand: 'WorkspaceVersion' };
 
 export const asWorkspaceVersion = (s: string): WorkspaceVersion =>
@@ -88,6 +90,30 @@ export type WorkspaceReadOutput =
   | { found: true; bytes: Bytes; version?: WorkspaceVersion }
   | { found: false };
 
+// ---------------------------------------------------------------------------
+// Runtime `returns` contracts for the IPC-reachable workspace read hooks
+// (ARCH-6). These live in `@ax/core` because the SHAPES already live here and
+// are storage-neutral — `WorkspaceVersion` is a compile-time brand over a
+// plain string, so the schema validates it as `z.string()` (an opaque token,
+// never resolved as a path). Every workspace backend that registers these
+// hooks (git-core, git-server client, the test-harness mock) imports the
+// schema from here, keeping one source of truth (I4).
+//
+// `version` is branded `WorkspaceVersion` on the TS type but `z.string()` on
+// the schema; zod can't reconstruct the brand, so we cast the exported schema
+// to `ZodType<...Output>` for assignability against `registerService<I,O>`'s
+// `returns?: ZodType<O>` param. The drift-guard test (round-trip a
+// fully-populated value) is what actually enforces schema↔interface agreement.
+// ---------------------------------------------------------------------------
+export const WorkspaceReadOutputSchema = z.discriminatedUnion('found', [
+  z.object({
+    found: z.literal(true),
+    bytes: z.instanceof(Uint8Array),
+    version: z.string().optional(),
+  }),
+  z.object({ found: z.literal(false) }),
+]) as unknown as ZodType<WorkspaceReadOutput>;
+
 export interface WorkspaceListInput {
   version?: WorkspaceVersion;
   pathGlob?: string;
@@ -95,6 +121,9 @@ export interface WorkspaceListInput {
 export interface WorkspaceListOutput {
   paths: string[];
 }
+export const WorkspaceListOutputSchema = z.object({
+  paths: z.array(z.string()),
+}) as unknown as ZodType<WorkspaceListOutput>;
 
 export interface WorkspaceDiffInput {
   from: WorkspaceVersion | null;
