@@ -1702,5 +1702,11 @@ describe('POST /api/chat/messages — attachment_ref handling', () => {
     expect(await r.json()).toEqual({ error: 'attachment-total-too-large' });
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(booted.chatRunCaptures).toHaveLength(0);
-  });
+    // This case allocates and stores two real 60 MiB buffers (120 MiB total)
+    // through the SQLite-backed temp store, then POSTs both through a full HTTP
+    // harness. That throughput sits right at vitest's 5 s default timeout and
+    // flaked at 5187 ms on a loaded CI runner. Give it explicit headroom so the
+    // deadline tracks the work, not the runner's mood. (Every other test here
+    // fits the default — only the 120 MiB payload needs this.)
+  }, 30_000);
 });
