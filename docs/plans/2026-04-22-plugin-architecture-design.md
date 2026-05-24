@@ -532,12 +532,15 @@ manifest: {
   name: '@ax/sandbox-k8s',
   version: '0.3.2',
   registers: ['sandbox:spawn', 'sandbox:kill'],
-  calls: ['storage:get', 'storage:set', 'audit:write'],
+  calls: ['storage:get', 'storage:set'],
+  optionalCalls: [
+    { hook: 'audit:write', degradation: 'spawns still happen, just unaudited' },
+  ],
   subscribes: [],
 }
 ```
 
-`bootstrap()` reads these manifests off the already-imported plugin instances and uses them for: (a) cycle detection at load, (b) failing fast on missing services, (c) generating a compatibility matrix. Plugin config is injected at construction via `PluginInitContext.config`, not declared in the manifest — there is no `configSchema` field.
+`bootstrap()` reads these manifests off the already-imported plugin instances and uses them for: (a) cycle detection at load, (b) failing fast on missing **required** services (`calls`), (c) generating a compatibility matrix. `calls` are required — a missing producer fails the boot. `optionalCalls` declare hooks the plugin can call but **degrades gracefully without**: each is `{ hook, degradation }` with a required human-readable degradation note, an absent producer is non-fatal (the plugin guards with `bus.hasService` and falls back), and a present producer still forms a real call-graph edge (cycle detection + init ordering). A hook may be in `calls` or `optionalCalls`, never both. Plugin config is injected at construction via `PluginInitContext.config`, not declared in the manifest — there is no `configSchema` field.
 
 > **Manifest source of truth:** an earlier draft of this spec described an `ax` field in each plugin's `package.json`. That was never adopted — the in-code runtime manifest is canonical. See `docs/plans/2026-05-20-manifest-canonical-form-design.md`.
 
