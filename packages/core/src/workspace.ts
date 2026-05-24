@@ -125,6 +125,56 @@ export const WorkspaceListOutputSchema = z.object({
   paths: z.array(z.string()),
 }) as unknown as ZodType<WorkspaceListOutput>;
 
+// ---------------------------------------------------------------------------
+// ARCH-12: runtime `returns` contracts for the write-path workspace hooks
+// `workspace:apply` (validated once at the @ax/core facade) and
+// `workspace:diff` (validated at each backend's registration).
+//
+// `WorkspaceChange` carries LAZY `contentBefore?/contentAfter?: () => Promise<Bytes>`
+// functions. A strict zod object schema strips undeclared keys (hook-bus.ts —
+// "object schemas *strip* undeclared keys by default"), which would silently
+// delete those fns and (a) break the cross-backend `workspace-contract.ts`
+// assertion `expect(typeof ch.contentAfter).toBe('function')` and (b) sever
+// subscribers' content access (e.g. `@ax/routines` sync reading
+// `change.contentAfter`). So the change-element schema validates only the
+// serializable data fields (`path`, `kind`) and `.passthrough()`es the rest —
+// zod 3 passthrough keeps function-valued keys by REFERENCE IDENTITY (verified
+// against zod 3.25.76), so the lazy fns ride through `.parse()` untouched. This
+// is the same `.passthrough()` reasoning as `sandbox:open-session`'s handle.
+//
+// `WorkspaceVersion` is a compile-time brand over string, so `before`/`after`
+// validate as `z.string()` (an opaque token, never resolved as a path). The
+// schemas are cast to `ZodType<...>` for assignability against
+// `registerService<I,O>`'s `returns?: ZodType<O>` param; the drift-guard tests
+// (round-trip a fully-populated value, assert fn refs survive) enforce
+// schema↔interface agreement.
+// ---------------------------------------------------------------------------
+const WorkspaceChangeSchema = z
+  .object({
+    path: z.string(),
+    kind: z.enum(['added', 'modified', 'deleted']),
+  })
+  .passthrough();
+
+export const WorkspaceDeltaSchema = z.object({
+  before: z.string().nullable(),
+  after: z.string(),
+  reason: z.string().optional(),
+  author: z
+    .object({
+      agentId: z.string().optional(),
+      userId: z.string().optional(),
+      sessionId: z.string().optional(),
+    })
+    .optional(),
+  changes: z.array(WorkspaceChangeSchema),
+}) as unknown as ZodType<WorkspaceDelta>;
+
+export const WorkspaceApplyOutputSchema = z.object({
+  version: z.string(),
+  delta: WorkspaceDeltaSchema as unknown as ZodType<WorkspaceDelta>,
+}) as unknown as ZodType<WorkspaceApplyOutput>;
+
 export interface WorkspaceDiffInput {
   from: WorkspaceVersion | null;
   to: WorkspaceVersion;
@@ -132,3 +182,6 @@ export interface WorkspaceDiffInput {
 export interface WorkspaceDiffOutput {
   delta: WorkspaceDelta;
 }
+export const WorkspaceDiffOutputSchema = z.object({
+  delta: WorkspaceDeltaSchema as unknown as ZodType<WorkspaceDelta>,
+}) as unknown as ZodType<WorkspaceDiffOutput>;

@@ -15,6 +15,9 @@ export {
   asWorkspaceVersion,
   WorkspaceReadOutputSchema,
   WorkspaceListOutputSchema,
+  WorkspaceDeltaSchema,
+  WorkspaceApplyOutputSchema,
+  WorkspaceDiffOutputSchema,
 } from './workspace.js';
 export {
   filterToPolicy,
