@@ -1575,6 +1575,9 @@ importers:
       kysely:
         specifier: 0.28.17
         version: 0.28.17
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
     devDependencies:
       '@ax/database-postgres':
         specifier: workspace:*
@@ -1606,6 +1609,9 @@ importers:
       kysely:
         specifier: ^0.28.17
         version: 0.28.17
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
     devDependencies:
       '@ax/test-harness':
         specifier: workspace:*

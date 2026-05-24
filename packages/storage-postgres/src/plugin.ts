@@ -1,5 +1,6 @@
 import { makeAgentContext, PluginError, type Plugin } from '@ax/core';
 import { sql, type Kysely, type Transaction } from 'kysely';
+import { z, type ZodType } from 'zod';
 import { runStorageMigration, type StorageDatabase } from './migrations.js';
 
 /**
@@ -24,6 +25,22 @@ export interface StorageSetInput {
   /** Optional transaction handle from db:transact's run callback. */
   tx?: Transaction<unknown>;
 }
+
+// Runtime `returns` contracts for the data-returning `storage:*` hooks
+// (ARCH-13). Structurally identical to @ax/storage-sqlite's copy (the I2
+// two-backend pattern); `storage:set` / `db:transact` return `void` and so get
+// no schema. The kv contract is opaque bytes (`Uint8Array`), no backend vocab.
+export const StorageGetOutputSchema = z.object({
+  value: z.instanceof(Uint8Array).optional(),
+}) as unknown as ZodType<{ value: Uint8Array | undefined }>;
+
+export const StorageListPrefixOutputSchema = z.object({
+  entries: z.array(z.object({ key: z.string(), value: z.instanceof(Uint8Array) })),
+});
+
+export const StorageDeletePrefixOutputSchema = z.object({
+  deleted: z.number(),
+});
 
 export function createStoragePostgresPlugin(): Plugin {
   let db: Kysely<StorageDatabase> | undefined;
@@ -79,6 +96,7 @@ export function createStoragePostgresPlugin(): Plugin {
           // pg returns BYTEA as Buffer; expose as Uint8Array at the edge.
           return { value: new Uint8Array(row.value) };
         },
+        { returns: StorageGetOutputSchema },
       );
 
       bus.registerService<StorageSetInput, void>(
@@ -143,7 +161,7 @@ export function createStoragePostgresPlugin(): Plugin {
         return {
           entries: rows.map((r) => ({ key: r.key, value: new Uint8Array(r.value) })),
         };
-      });
+      }, { returns: StorageListPrefixOutputSchema });
 
       bus.registerService<{ prefix: string }, { deleted: number }>(
         'storage:delete-prefix',
@@ -166,6 +184,7 @@ export function createStoragePostgresPlugin(): Plugin {
             .executeTakeFirst();
           return { deleted: Number(result.numDeletedRows ?? 0) };
         },
+        { returns: StorageDeletePrefixOutputSchema },
       );
     },
   };
