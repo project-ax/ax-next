@@ -453,6 +453,7 @@ export function createOrchestrator(
   runAgentInvoke(ctx: AgentContext, input: AgentInvokeInput): Promise<AgentOutcome>;
   onChatEnd(ctx: AgentContext, payload: { outcome: AgentOutcome }): void;
   onTurnEnd(ctx: AgentContext, payload?: { reqId?: string }): void;
+  onSessionTerminate(ctx: AgentContext, payload: { sessionId?: string }): Promise<void>;
 } {
   // Waiters are tracked by ctx.reqId (server-minted, J9, unique per
   // agent:invoke). On the J6 routed path, two concurrent agent:invokes for the
@@ -514,6 +515,60 @@ export function createOrchestrator(
       deferred.resolve(outcome);
     }
   }
+
+  // Fault A — signal the channel SSE that a turn ended abnormally (the
+  // runner died mid-turn or wedged past the chat timeout) so the client
+  // flips out of the "Thinking…" spinner into an error+retry state. Without
+  // this the SSE only ever gets a terminal frame on a NORMAL chat:turn-end;
+  // a terminated turn fires chat:end (audit) but no turn-end, so the stream
+  // hangs forever (the 25 s SSE keepalive keeps it open). The only
+  // subscriber today is @ax/channel-web's per-connection SSE handler, which
+  // matches by reqId — so the reqId must be the originating agent:invoke
+  // reqId. Observation-only broadcast; a no-op when no SSE is attached.
+  async function fireTurnError(
+    ctx: AgentContext,
+    reqId: string,
+    reason: string,
+  ): Promise<void> {
+    // Log so operators can confirm the host detected the abnormal end and
+    // signalled the client — the previously-silent path is what made Fault A
+    // hard to diagnose. (The `reason` is orchestrator vocabulary, e.g.
+    // `sandbox-terminated`; the matching `pod_exited`/`pod_killed` lines come
+    // from the sandbox provider's own exit watcher.)
+    ctx.logger.info('chat_turn_error', { reqId, reason });
+    await bus.fire('chat:turn-error', ctx, { reqId, reason });
+  }
+
+  // Fault A (routed/warm path) — a sandbox that dies mid-turn re-broadcasts
+  // session:terminate (the session store fires it after the teardown service
+  // work; see session-postgres/session-inmemory). The fresh-spawn path
+  // catches death promptly via handle.exited, but the routed path does NOT
+  // watch exited (the handle isn't ours) — it would otherwise hang until the
+  // 10-min chatTimeoutMs. So surface the error promptly for any in-flight
+  // (unsettled) turn on this session.
+  //
+  // We do NOT resolve/reject the deferred here: the existing bounded-timeout
+  // path still produces the single chat:end (audit invariant). The SSE
+  // closes on the first error frame, so the later duplicate turn-error from
+  // that timeout path is a harmless no-op. Completed turns whose waiter is
+  // already settled (or unregistered) are skipped — no spurious error.
+  async function onSessionTerminate(
+    ctx: AgentContext,
+    payload: { sessionId?: string },
+  ): Promise<void> {
+    const sessionId = payload?.sessionId;
+    if (typeof sessionId !== 'string' || sessionId.length === 0) return;
+    const reqIds = reqIdsBySession.get(sessionId);
+    if (reqIds === undefined) return;
+    // Snapshot — fireTurnError must not be confused by concurrent mutation
+    // of the live Set during the await.
+    for (const reqId of [...reqIds]) {
+      const deferred = waitersByReqId.get(reqId);
+      if (deferred === undefined || deferred.settled) continue;
+      await fireTurnError(ctx, reqId, 'sandbox-terminated');
+    }
+  }
+
   const chatTimeoutMs = config.chatTimeoutMs ?? DEFAULT_CHAT_TIMEOUT_MS;
   const oneShot = config.oneShot ?? true;
   const keepAlive = config.keepAlive ?? false;
@@ -809,6 +864,13 @@ export function createOrchestrator(
       }
 
       if (!resolvedByChatEndSubscriber) {
+        // Fault A — surface the abnormal end on the SSE (e.g. the routed
+        // turn timed out waiting for a runner that wedged). session:terminate
+        // covers the prompt pod-death case; this covers the timeout/error
+        // case where no session:terminate fires.
+        if (outcome.kind === 'terminated') {
+          await fireTurnError(ctx, ctx.reqId, outcome.reason);
+        }
         await bus.fire('chat:end', ctx, { outcome });
       }
       // No handle.kill() — we did not open this sandbox.
@@ -1371,6 +1433,14 @@ export function createOrchestrator(
     //    Fire it ourselves so audit-log etc. always see exactly one
     //    chat:end per agent:invoke.
     if (!resolvedByChatEndSubscriber) {
+      // Fault A — the turn ended abnormally (sandbox exited before chat:end,
+      // or the runner wedged past chatTimeoutMs). Signal the SSE BEFORE
+      // chat:end so the client flips out of the spinner. (session:terminate
+      // also covers pod-death promptly; firing here is the harmless dup or
+      // the only signal on the timeout/error path.)
+      if (outcome.kind === 'terminated') {
+        await fireTurnError(ctx, ctx.reqId, outcome.reason);
+      }
       await bus.fire('chat:end', ctx, { outcome });
     }
 
@@ -1506,7 +1576,7 @@ export function createOrchestrator(
       });
   }
 
-  return { runAgentInvoke, onChatEnd, onTurnEnd };
+  return { runAgentInvoke, onChatEnd, onTurnEnd, onSessionTerminate };
 }
 
 // A distinct error type so the runAgentInvoke finally block can tell "we timed out"

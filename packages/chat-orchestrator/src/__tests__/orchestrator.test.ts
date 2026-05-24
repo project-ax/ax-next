@@ -405,6 +405,222 @@ describe('chat-orchestrator', () => {
     expect(endFires[0]).toEqual(outcome);
   });
 
+  // -------------------------------------------------------------------------
+  // chat:turn-error (Fault A) — when a turn ends abnormally the orchestrator
+  // must signal the channel SSE so the client's "Thinking…" spinner flips to
+  // an error instead of hanging forever. The SSE matches by reqId, so the
+  // payload must carry the originating reqId.
+  // -------------------------------------------------------------------------
+
+  function turnErrorCtx(sessionId: string, reqId: string) {
+    return makeAgentContext({
+      sessionId,
+      agentId: 'test-agent',
+      userId: 'test-user',
+      reqId,
+      logger: createLogger({ reqId, writer: () => undefined }),
+    });
+  }
+
+  it('fresh-spawn sandbox-exit fires chat:turn-error with the originating reqId', async () => {
+    const mocks = buildMocks({
+      openSession: async () => ({
+        runnerEndpoint: 'unix:///tmp/short.sock',
+        handle: {
+          kill: async () => undefined,
+          exited: Promise.resolve({ code: 143, signal: 'SIGTERM' }),
+        },
+      }),
+    });
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinary: '/irrelevant',
+          chatTimeoutMs: 1_000,
+        }),
+      ],
+    });
+
+    const turnErrors: Array<{ reqId?: string; reason?: string }> = [];
+    h.bus.subscribe('chat:turn-error', 'obs', async (_ctx, p: unknown) => {
+      turnErrors.push(p as { reqId?: string; reason?: string });
+      return undefined;
+    });
+
+    await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      turnErrorCtx('short-lived', 'r-exit'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+
+    expect(turnErrors).toEqual([
+      { reqId: 'r-exit', reason: 'sandbox-exit-before-chat-end' },
+    ]);
+  });
+
+  it('wedged-runner timeout fires chat:turn-error(chat-run-timeout)', async () => {
+    // Default mock: exited never resolves, no chat:end → the bounded
+    // chatTimeoutMs path synthesizes the terminated outcome.
+    const mocks = buildMocks();
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinary: '/irrelevant',
+          chatTimeoutMs: 50,
+        }),
+      ],
+    });
+
+    const turnErrors: Array<{ reqId?: string; reason?: string }> = [];
+    h.bus.subscribe('chat:turn-error', 'obs', async (_ctx, p: unknown) => {
+      turnErrors.push(p as { reqId?: string; reason?: string });
+      return undefined;
+    });
+
+    await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      turnErrorCtx('wedged', 'r-timeout'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+
+    expect(turnErrors).toEqual([
+      { reqId: 'r-timeout', reason: 'chat-run-timeout' },
+    ]);
+  });
+
+  it('session:terminate while a turn is in-flight fires chat:turn-error(sandbox-terminated) promptly', async () => {
+    // Default mock: exited never resolves, no chat:end → the turn stays
+    // in-flight (the routed/warm path doesn't watch exited; it would
+    // otherwise wait the full chatTimeoutMs). A session:terminate broadcast
+    // (fired by the sandbox provider's exit handler on pod death) must
+    // surface the error promptly.
+    const mocks = buildMocks();
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinary: '/irrelevant',
+          chatTimeoutMs: 10_000,
+        }),
+      ],
+    });
+
+    const turnErrors: Array<{ reqId?: string; reason?: string }> = [];
+    h.bus.subscribe('chat:turn-error', 'obs', async (_ctx, p: unknown) => {
+      turnErrors.push(p as { reqId?: string; reason?: string });
+      return undefined;
+    });
+
+    const ctx = turnErrorCtx('sess-live', 'r-live');
+    const invokePromise = h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      ctx,
+      { message: { role: 'user', content: 'hi' } },
+    );
+    // Let the orchestrator reach the in-flight state (sandbox opened +
+    // message enqueued + waiter registered).
+    while (mocks.calls.sessionQueueWork === 0) {
+      await new Promise((r) => setImmediate(r));
+    }
+
+    // The pod died — the session store re-broadcasts session:terminate.
+    await h.bus.fire('session:terminate', ctx, { sessionId: 'sess-live' });
+
+    expect(turnErrors).toEqual([
+      { reqId: 'r-live', reason: 'sandbox-terminated' },
+    ]);
+
+    // Resolve the still-pending invoke so the test doesn't leak a timer.
+    await h.bus.fire('chat:end', ctx, {
+      outcome: { kind: 'terminated', reason: 'sandbox-terminated' },
+    });
+    await invokePromise;
+  });
+
+  it('session:terminate with no in-flight turn does NOT fire chat:turn-error', async () => {
+    const mocks = buildMocks();
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinary: '/irrelevant',
+          chatTimeoutMs: 1_000,
+        }),
+      ],
+    });
+
+    const turnErrors: unknown[] = [];
+    h.bus.subscribe('chat:turn-error', 'obs', async (_ctx, p: unknown) => {
+      turnErrors.push(p);
+      return undefined;
+    });
+
+    await h.bus.fire(
+      'session:terminate',
+      turnErrorCtx('ghost', 'r-ghost'),
+      { sessionId: 'ghost' },
+    );
+
+    expect(turnErrors).toEqual([]);
+  });
+
+  it('a completed turn does NOT fire chat:turn-error', async () => {
+    const expectedOutcome: AgentOutcome = {
+      kind: 'complete',
+      messages: [{ role: 'assistant', content: 'done' }],
+    };
+    let busRef: HookBus | null = null;
+    const mocks = buildMocks({
+      openSession: async (ctx, input: unknown) => {
+        const sessionId = (input as { sessionId: string }).sessionId;
+        const originatingReqId = ctx.reqId;
+        setImmediate(() => {
+          void busRef!.fire(
+            'chat:end',
+            makeAgentContext({
+              sessionId,
+              agentId: 'agent',
+              userId: 'user',
+              reqId: originatingReqId,
+              logger: createLogger({ reqId: originatingReqId, writer: () => undefined }),
+            }),
+            { outcome: expectedOutcome },
+          );
+        });
+        return {
+          runnerEndpoint: 'unix:///tmp/ok.sock',
+          handle: { kill: async () => undefined, exited: new Promise(() => undefined) },
+        };
+      },
+    });
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinary: '/irrelevant',
+          chatTimeoutMs: 1_000,
+        }),
+      ],
+    });
+    busRef = h.bus;
+
+    const turnErrors: unknown[] = [];
+    h.bus.subscribe('chat:turn-error', 'obs', async (_ctx, p: unknown) => {
+      turnErrors.push(p);
+      return undefined;
+    });
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      turnErrorCtx('ok-session', 'r-ok'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome).toEqual(expectedOutcome);
+    expect(turnErrors).toEqual([]);
+  });
+
   it('chat:end fires exactly once across all exit paths', async () => {
     // We already assert single-fire in each scenario above; this is a
     // parametrized sweep so a regression in any one path lights up loudly.

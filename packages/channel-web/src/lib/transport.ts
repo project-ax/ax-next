@@ -59,6 +59,26 @@ const PHASE_LABELS: Record<string, string> = {
   'sandbox-starting': 'Starting sandbox…',
 };
 
+/**
+ * Default user-facing wording for an abnormal turn end (Fault A — the
+ * runner died mid-turn or wedged past the chat timeout). Exported so the
+ * runtime's `onError` can fall back to the same string when the AI-SDK
+ * error carries no message. Kept here (client-side) so wording/i18n is one
+ * place, mirroring PHASE_LABELS.
+ */
+export const DEFAULT_TURN_ERROR =
+  'The agent stopped unexpectedly. Retry to continue.';
+
+/**
+ * Map a wire turn-error reason code (backend-agnostic, from the orchestrator)
+ * to a user-facing label. Unknown codes fall back to DEFAULT_TURN_ERROR —
+ * forward-compat with newer server builds that emit a code the client
+ * doesn't yet recognize.
+ */
+const ERROR_LABELS: Record<string, string> = {
+  'chat-run-timeout': 'The agent timed out. Retry to continue.',
+};
+
 /** Shape of one SSE `data:` JSON payload. Matches `SseFrame` in src/server/types.ts. */
 type SseFrame =
   | { reqId: string; kind: 'text'; text: string }
@@ -78,7 +98,8 @@ type SseFrame =
       isError?: boolean;
     }
   | { reqId: string; phase: string }
-  | { reqId: string; done: true };
+  | { reqId: string; done: true }
+  | { reqId: string; error: string };
 
 interface AxChatTransportOptions {
   /**
@@ -441,6 +462,22 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
               if ('done' in frame && frame.done === true) {
                 closeOpen(controller);
                 controller.enqueue({ type: 'finish', finishReason: 'stop' });
+                finished = true;
+                return;
+              }
+              // error frame (Fault A) — the turn ended abnormally (runner
+              // died mid-turn / wedged past the timeout). Close any open
+              // part, then emit an AI-SDK `error` chunk so the turn ends as
+              // ERRORED (running flips false) and the runtime's onError can
+              // surface error+retry — NOT a silent `finish` that looks like
+              // success, and NOT an indefinite spinner. `error` is a
+              // backend-agnostic reason code we map to a friendly label.
+              if ('error' in frame && typeof frame.error === 'string') {
+                closeOpen(controller);
+                controller.enqueue({
+                  type: 'error',
+                  errorText: ERROR_LABELS[frame.error] ?? DEFAULT_TURN_ERROR,
+                });
                 finished = true;
                 return;
               }
