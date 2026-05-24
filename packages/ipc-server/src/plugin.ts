@@ -1,4 +1,5 @@
 import { PluginError, type Plugin } from '@ax/core';
+import { DISPATCHER_DEPENDENCIES } from '@ax/ipc-core';
 import { createListener, type Listener } from './listener.js';
 
 const PLUGIN_NAME = '@ax/ipc-server';
@@ -61,25 +62,27 @@ export function createIpcServerPlugin(): Plugin {
       name: PLUGIN_NAME,
       version: '0.0.0',
       registers: ['ipc:start', 'ipc:stop'],
-      // The dispatcher (Task 4) calls these synchronous service hooks.
-      // Subscriber hooks fired by the dispatcher (`llm:pre-call`,
-      // `llm:post-call`, `tool:pre-call`, `tool:post-call`, `chat:turn-end`,
-      // `chat:end`) are NOT declared here — subscriber hooks don't require
+      // `calls` / `optionalCalls` are spread from @ax/ipc-core's
+      // `DISPATCHER_DEPENDENCIES` — the single source of truth for the service
+      // hooks the shared dispatcher transitively invokes. We don't
+      // hand-maintain a per-transport list (that's how it drifted: it declared
+      // only session/tool and omitted the workspace, conversation, and
+      // session-config services the handlers reach).
+      //
+      // Subscriber hooks fired by the dispatcher (`tool:pre-call`,
+      // `tool:post-call`, `chat:turn-end`, `chat:end`, `chat:stream-chunk`,
+      // `workspace:applied`) are NOT declared — subscriber hooks don't require
       // a registered service and `bus.fire` with no subscribers is a safe
       // no-op.
       //
       // `tool:execute:<name>` service hooks are looked up *dynamically* via
-      // `bus.hasService(...)` at dispatch time. They are deliberately NOT
-      // listed in `calls` — we can't enumerate every tool name at manifest
-      // time, and the verifyCalls startup check only enforces named hooks.
-      // This is the same "dynamic service hook" exception that the
-      // tool-dispatcher plugin (in @ax/mcp-client) uses for per-tool
-      // `tool:execute:<name>` routes.
-      calls: [
-        'session:resolve-token',
-        'session:claim-work',
-        'tool:list',
-      ],
+      // `bus.hasService(...)` at dispatch time (DISPATCHER_DEPENDENCIES.
+      // dynamicCallPatterns). They are deliberately NOT in `calls` — we can't
+      // enumerate every tool name at manifest time, and verifyCalls only
+      // enforces named hooks. Same "dynamic service hook" exception the
+      // tool-dispatcher plugin (in @ax/mcp-client) uses.
+      calls: [...DISPATCHER_DEPENDENCIES.requiredCalls],
+      optionalCalls: [...DISPATCHER_DEPENDENCIES.optionalCalls],
       subscribes: [],
     },
     init({ bus }) {

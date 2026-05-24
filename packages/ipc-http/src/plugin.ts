@@ -1,4 +1,5 @@
 import type { Plugin } from '@ax/core';
+import { DISPATCHER_DEPENDENCIES } from '@ax/ipc-core';
 import { createHttpListener, type HttpListener } from './listener.js';
 
 const PLUGIN_NAME = '@ax/ipc-http';
@@ -14,13 +15,17 @@ const PLUGIN_NAME = '@ax/ipc-http';
 // scoped. The kernel-shutdown lifecycle calls Plugin.shutdown() on SIGTERM
 // to close the listener cleanly.
 //
-// `calls` declares the hooks the dispatcher transitively invokes — the same
-// set @ax/ipc-server lists, since both plugins share @ax/ipc-core's
-// dispatcher. Subscriber hooks the dispatcher fires (`llm:pre-call`,
-// `llm:post-call`, `tool:pre-call`, `tool:post-call`, etc.) are NOT
-// declared — subscriber hooks don't need a registered service and `bus.fire`
-// with no subscribers is a safe no-op. `tool:execute:<name>` is dynamically
-// resolved at dispatch time (same exception @ax/ipc-server documents).
+// `calls` / `optionalCalls` are spread from @ax/ipc-core's
+// `DISPATCHER_DEPENDENCIES` — the single source of truth for the hooks the
+// shared dispatcher transitively invokes (the same set @ax/ipc-server stamps,
+// since both wrap the same dispatcher). We don't hand-maintain a per-transport
+// list: that's exactly how the two manifests drifted from the dispatcher.
+// Subscriber hooks the dispatcher fires (`tool:pre-call`, `tool:post-call`,
+// `chat:turn-end`, `chat:end`, `chat:stream-chunk`, `workspace:applied`) are
+// NOT declared — subscriber hooks don't need a registered service and
+// `bus.fire` with no subscribers is a safe no-op. `tool:execute:<name>` is
+// resolved dynamically at dispatch time (DISPATCHER_DEPENDENCIES.
+// dynamicCallPatterns) and is deliberately not in `calls`.
 // ---------------------------------------------------------------------------
 
 export interface CreateIpcHttpPluginOptions {
@@ -39,11 +44,8 @@ export function createIpcHttpPlugin(
       name: PLUGIN_NAME,
       version: '0.0.0',
       registers: [],
-      calls: [
-        'session:resolve-token',
-        'session:claim-work',
-        'tool:list',
-      ],
+      calls: [...DISPATCHER_DEPENDENCIES.requiredCalls],
+      optionalCalls: [...DISPATCHER_DEPENDENCIES.optionalCalls],
       subscribes: [],
     },
     async init({ bus }) {
