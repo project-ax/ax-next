@@ -50,8 +50,10 @@ lives on disk:
 
 - **Done** = the task line is struck through (`~~`) in `TODO.md`.
 - **In-flight** = an open PR whose title is prefixed `[TASK-ID]`.
-- **Parked/quarantined** = a `🛑 [TASK-ID]` line in `TODO.md` + a row in the log.
-- **Attempt history** = `.claude/dag-ship-log.md` (gitignored, operational).
+- **Parked/quarantined** = a `🛑 [TASK-ID]` line in `TODO.md` + a journal row.
+- **Attempt history** = the event journal `.claude/dag-ship-log.md` (gitignored).
+- **Glanceable progress** = the dashboard `.claude/dag-ship-status.md` — a
+  derived mirror, not a source of truth (see §13).
 
 Because state is fully reconstructable from `TODO.md` + `gh pr list` +
 `.claude/dag-ship-log.md`, **the run is resumable**: kill the session, re-invoke
@@ -232,9 +234,10 @@ dag-ship-dispatched agent gets the deferred-handoff behavior.
 The dangerous case: a walk (or any task) fails → a follow-up "fix" is added to
 `TODO.md` → the normal loop dispatches and merges it → the original task
 re-runs → it fails the **same way** → another follow-up is added → forever. Five
-layered guards prevent this. All state is on disk
-(`.claude/dag-ship-log.md`, schema `task | attempt | outcome | signature |
-parent | depth | ts`), so the guards survive a resume.
+layered guards prevent this. All state is on disk in the append-only event
+journal `.claude/dag-ship-log.md` (each failure event carries
+`attempt | outcome | signature | parent | depth | ts`, so attempt counts are a
+grep), and the guards survive a resume.
 
 **1. Failure signature + same-signature breaker (the core fix).**
 Every failing agent/walk returns a **normalized failure signature** in its
@@ -275,7 +278,31 @@ quarantined, both enumerated in the final report.
 
 ---
 
-## 12. Out of scope (v1)
+## 12. Progress tracking & observability
+
+Two files, distinct roles, both gitignored, both `cat`/`tail`/`watch`-able from
+any terminal independent of the Claude session.
+
+**`.claude/dag-ship-status.md` — the dashboard.** Overwritten on every state
+change. A single snapshot: a header line with counts + a progress bar + the
+budget meters (§11), then sections for in-flight (with PR# + CI state), ready,
+blocked (with the blocking edge), parked (`🛑` + signature), and done (with
+closing PR#). It is a **derived mirror**, never a source of truth — on resume
+the orchestrator rebuilds it from `TODO.md` + `gh pr list` + the journal, so it
+can never be stale-but-wrong. Watch with `watch -n5 cat
+.claude/dag-ship-status.md`.
+
+**`.claude/dag-ship-log.md` — the event journal.** Append-only timeline of every
+state transition (`run start`, `wave N dispatch`, `pr-green`, `merged`,
+`walk-pass`, `failed … → PARKED`, etc.). Human-readable and `tail -f`-able for a
+live feed; also the on-disk substrate for §11 (failure events carry
+`attempt/outcome/signature/parent/depth`, so attempt counts are a grep).
+
+`TODO.md` (struck-through / `🛑`) and `gh pr list` remain the source of truth for
+done / parked / in-flight; the two files above exist purely to make progress
+easy to watch and the run cheap to resume.
+
+## 13. Out of scope (v1)
 
 - Auto-dispatching cluster-walk fixes can be disabled via a future
   human-only toggle; v1 lets the §11 guards govern it.
