@@ -83,7 +83,15 @@ export function createChatOrchestratorPlugin(
       // inbox after the first user message completes — the runner is
       // persistent by design, so without this signal it would block
       // forever on inbox.next() and the agent:invoke would time out.
-      subscribes: ['chat:end', 'chat:turn-end'],
+      //
+      // We listen to `session:terminate` (Fault A) so a sandbox that dies
+      // mid-turn on the routed/warm path — which doesn't watch handle.exited
+      // — surfaces a turn-error on the SSE promptly instead of hanging until
+      // chatTimeoutMs. (session:terminate is ALSO in `calls` — the
+      // orchestrator both requests teardown and observes the broadcast the
+      // session store re-fires; the bus keeps the service + subscriber lanes
+      // separate.)
+      subscribes: ['chat:end', 'chat:turn-end', 'session:terminate'],
     },
     init({ bus }) {
       const orch = createOrchestrator(bus, config);
@@ -109,6 +117,15 @@ export function createChatOrchestratorPlugin(
         async (ctx, payload) => {
           orch.onTurnEnd(ctx, payload);
           return undefined;
+        },
+      );
+
+      bus.subscribe<{ sessionId?: string }>(
+        'session:terminate',
+        PLUGIN_NAME,
+        async (ctx, payload) => {
+          await orch.onSessionTerminate(ctx, payload);
+          return undefined; // observation-only; never vetoes teardown.
         },
       );
     },
