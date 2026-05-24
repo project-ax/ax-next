@@ -603,13 +603,16 @@ export async function main(): Promise<number> {
   // a resumed session is already bound on the host.
   //
   // Failure handling distinguishes two cases:
-  //   - 409 conflict (HOOK_REJECTED): the host already bound this conversation
-  //     to a DIFFERENT id — a concurrent fresh-boot race in which another
-  //     runner won. We are the loser; our transcript is an orphan and
-  //     continuing to stream/commit under it would diverge the conversation.
-  //     RE-THROW so the run terminates (host chat:end outcome `terminated`,
-  //     surfaced by F2b) rather than silently committing an orphan. The host's
-  //     once-only bind invariant relies on the loser stopping here.
+  //   - definitive host rejection (4xx IpcRequestError — don't-retry per the
+  //     IPC taxonomy): the conversation can't be bound to this id. The chief
+  //     case is 409 conflict (HOOK_REJECTED) — the host already bound this
+  //     conversation to a DIFFERENT id, a concurrent fresh-boot race in which
+  //     another runner won; we are the loser and continuing to stream/commit
+  //     under our orphan transcript would diverge the conversation. (404/400
+  //     are likewise unrecoverable.) RE-THROW so the run terminates (host
+  //     chat:end outcome `terminated`, surfaced by F2b) rather than silently
+  //     committing an orphan. The host's once-only bind invariant relies on
+  //     the loser stopping here.
   //   - anything else (network / 5xx / timeout): transient — leave the flag
   //     unset so the next accepted commit (or the final commit) retries; the
   //     turn already streamed to the user, so failing the run now would be
@@ -632,11 +635,15 @@ export async function main(): Promise<number> {
       });
       runnerSessionIdSent = true;
     } catch (err) {
-      // 409 = the conversation is owned by a different runner session. Not
-      // retryable; terminate rather than orphan. (commitNotifyWithResync
-      // swallows its own IPC errors, so a 409 in the surrounding commit try
-      // can only originate from this bind.)
-      if (err instanceof IpcRequestError && err.status === 409) {
+      // 4xx (e.g. 409 conflict, 404 not-found) is a definitive host rejection —
+      // not retryable; terminate rather than orphan. (commitNotifyWithResync
+      // swallows its own IPC errors, so a 4xx in the surrounding commit try can
+      // only originate from this bind.) 5xx was already retried by the client.
+      if (
+        err instanceof IpcRequestError &&
+        err.status >= 400 &&
+        err.status < 500
+      ) {
         throw err;
       }
       process.stderr.write(
@@ -1123,10 +1130,17 @@ export async function main(): Promise<number> {
             }
           }
         } catch (err) {
-          // A 409 from bindRunnerSessionIfNeeded (conversation owned by another
-          // session) is terminal — propagate it past this commit-failure catch
-          // so the run ends `terminated` instead of silently orphaning.
-          if (err instanceof IpcRequestError && err.status === 409) throw err;
+          // A 4xx from bindRunnerSessionIfNeeded (e.g. conversation owned by
+          // another session) is terminal — propagate it past this
+          // commit-failure catch so the run ends `terminated` instead of
+          // silently orphaning.
+          if (
+            err instanceof IpcRequestError &&
+            err.status >= 400 &&
+            err.status < 500
+          ) {
+            throw err;
+          }
           // commitTurnAndBundle itself failed (git binary missing,
           // /permanent in a weird state, etc.). Non-fatal; the next
           // turn will retry.
@@ -1245,9 +1259,15 @@ export async function main(): Promise<number> {
         }
       }
     } catch (err) {
-      // Propagate a terminal bind conflict (409) past this best-effort catch so
-      // the run ends `terminated` rather than orphaning (see the per-turn site).
-      if (err instanceof IpcRequestError && err.status === 409) throw err;
+      // Propagate a terminal bind rejection (4xx) past this best-effort catch
+      // so the run ends `terminated` rather than orphaning (see per-turn site).
+      if (
+        err instanceof IpcRequestError &&
+        err.status >= 400 &&
+        err.status < 500
+      ) {
+        throw err;
+      }
       process.stderr.write(`runner: final commitTurnAndBundle failed: ${err instanceof Error ? err.message : String(err)}\n`);
     }
   } catch (err) {
