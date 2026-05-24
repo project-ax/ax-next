@@ -187,26 +187,74 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
     };
   }
 
-  // The production-bound plugins the OLD canary used to DROP. Keeping all of
-  // them in a real boot is the whole point of this lane — if a future refactor
-  // pulls one out of the preset, the boot test below fails loudly.
+  // The UNCONDITIONAL production plugins createK8sPlugins always assembles for
+  // this config shape (the config-gated ones — credentials-admin-routes,
+  // static-files, and the titles branch llm-anthropic/web-tools/
+  // conversation-titles/memory-strata* — are deliberately NOT here; they're
+  // pinned separately where the config turns them on). Most of these are
+  // plugins the OLD canary used to DROP: keeping every one in a real boot is
+  // the whole point of this lane, so if a future refactor pulls any out of the
+  // preset the drift-guard test below fails loudly.
   const REQUIRED_PROD_PLUGINS = [
     '@ax/database-postgres',
     '@ax/storage-postgres',
+    '@ax/credentials-store-db',
+    '@ax/credentials',
+    '@ax/credential-proxy',
     '@ax/eventbus-postgres',
     '@ax/session-postgres',
-    '@ax/credential-proxy',
+    '@ax/workspace-git',
+    '@ax/audit-log',
+    '@ax/routines',
+    '@ax/routines-admin-routes',
     '@ax/sandbox-k8s',
     '@ax/ipc-http',
     '@ax/http-server',
     '@ax/auth-better',
-    '@ax/channel-web',
-    '@ax/conversations',
+    '@ax/onboarding',
+    '@ax/teams',
+    '@ax/chat-orchestrator',
+    '@ax/mcp-client',
     '@ax/agents',
     '@ax/skills',
+    '@ax/admin-settings-routes',
+    '@ax/conversations',
     '@ax/attachments',
-    '@ax/workspace-git',
+    '@ax/channel-web',
   ] as const;
+
+  it(
+    'createK8sPlugins assembles the full production plugin set (drift guard, pre-splice)',
+    () => {
+      const config = makeConfig('postgres://stub:5432/stub');
+      // Assert against the PRE-SPLICE preset output — NOT the post-splice list
+      // (buildProdAssemblyWithFakeK8s re-adds @ax/sandbox-k8s unconditionally,
+      // which would mask the preset itself dropping it). This is a pure
+      // manifest check; no init() runs, so it needs no postgres / docker and
+      // catches production-assembly drift even when the testcontainer lane is
+      // unavailable.
+      const presetPlugins = createK8sPlugins(config);
+      const names = presetPlugins.map((p) => p.manifest.name);
+      const nameSet = new Set(names);
+      for (const required of REQUIRED_PROD_PLUGINS) {
+        expect(nameSet.has(required)).toBe(true);
+      }
+      // Exactly one sandbox plugin in the real preset output — guards against
+      // both a drop and an accidental double-push.
+      expect(names.filter((n) => n === '@ax/sandbox-k8s')).toHaveLength(1);
+      // The titles branch is on (config.titles set), so its gated plugins must
+      // also be present — pins the ANTHROPIC_API_KEY-driven production path.
+      for (const gated of [
+        '@ax/llm-anthropic',
+        '@ax/web-tools',
+        '@ax/conversation-titles',
+        '@ax/memory-strata',
+        '@ax/memory-strata-index-postgres',
+      ]) {
+        expect(nameSet.has(gated)).toBe(true);
+      }
+    },
+  );
 
   it(
     'boots the full createK8sPlugins assembly against postgres with a fake k8s api',
@@ -215,11 +263,6 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
       const connectionString = await ensurePostgresStarted();
       const config = makeConfig(connectionString);
       const plugins = buildProdAssemblyWithFakeK8s(config);
-
-      const names = new Set(plugins.map((p) => p.manifest.name));
-      for (const required of REQUIRED_PROD_PLUGINS) {
-        expect(names.has(required)).toBe(true);
-      }
 
       const bus = new HookBus();
       const handle = await bootstrap({ bus, plugins, config: {} });
