@@ -89,6 +89,18 @@ If you write infrastructure (IPC transport, sandbox provider, bridge, etc.) that
 
 Whenever you fix a bug that wasn't caught by an existing test, you MUST add a test that would have caught it the first time. No exception. The test goes in before the fix is considered done.
 
+## TODO.md DAG Policy
+
+`TODO.md` opens with a **Parallelization DAG** (a mermaid graph plus the "Parallel batches" / "Not actionable" prose) that mirrors the task list one-to-one: every task carries a stable ID (`ARCH-n`, `CLI-n`, `SYNC-n`, `FAULTA-n`, …) that appears both as a `[ID]` tag on the task and as a node in the graph.
+
+**Any edit to `TODO.md`'s task list MUST update the DAG in the same change. No exception.** A task list that has drifted from its graph is worse than no graph — it tells agents to parallelize work that actually collides. If you touch the list, you own the graph. Concretely:
+
+- **Add a task** → assign a stable ID, tag the task `[ID]`, add a matching graph node, place it in the right box (default = free-floating/parallelizable; the `⚠` cluster box if it drives the shared `kind-ax-next-dev` cluster; the `🚫` box if it's trigger-gated and must not be started yet), wire any solid edges (`A --> B`, hard sequencing — B builds on a surface A creates) or dashed edges (`A -.-> B`, soft ordering / merge-churn), and add it to the batch prose.
+- **Complete or remove a task** → strike it through or remove it AND delete its node, any edges touching it, and its mention in the batch prose / `classDef` lines.
+- **Re-scope a task** (its dependencies, trigger, or cluster status change) → move the node between boxes and fix its edges + prose to match.
+
+The DAG is only load-bearing if it stays true. Verify the graph still parses and that every `[ID]` tag has exactly one node and vice versa before considering a `TODO.md` edit done.
+
 ## Skills
 
 v2 is friction-driven. A skill gets written only when:
