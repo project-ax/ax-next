@@ -127,12 +127,26 @@ const RunningHook = () => (
   </ThreadPrimitive.If>
 );
 
-const RunningEffect = () => {
+/**
+ * Exported for direct mount/unmount testing — in the app it only mounts
+ * inside `<ThreadPrimitive.If running>`, so a unit test can't easily force
+ * the "a turn is running" state without it.
+ */
+export const RunningEffect = () => {
   useEffect(() => {
-    if (getAgentStatusSnapshot().mode === 'hidden') {
+    // A new turn is starting. Show "Thinking…" unless we're already in the
+    // working state (idempotent re-mount). Crucially this ALSO resets a
+    // STALE 'error' row back to working — an error set by a prior turn
+    // (#137's turn-error → agentStatusActions.error) must not stick across
+    // the next turn. Without this the error row persists through every
+    // later turn / new session until a full page reload.
+    if (getAgentStatusSnapshot().mode !== 'working') {
       agentStatusActions.show('Thinking…');
     }
     return () => {
+      // Hide only if still working. An error set DURING this turn must
+      // persist after the turn ends (red dot + retry) — that persistence is
+      // the whole point of #137, so we never clear 'error' on unmount.
       const snap = getAgentStatusSnapshot();
       if (snap.mode === 'working') {
         agentStatusActions.hide();
