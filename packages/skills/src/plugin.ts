@@ -14,6 +14,15 @@ import { createUserSkillsStore } from './user-store.js';
 import { mergeUserWins, compareById } from './_merge.js';
 import { registerAdminSkillsRoutes } from './admin-routes.js';
 import { registerSettingsSkillsRoutes } from './settings-routes.js';
+import {
+  SkillsCheckForUpdatesOutputSchema,
+  SkillsDeleteOutputSchema,
+  SkillsGetOutputSchema,
+  SkillsListDefaultsOutputSchema,
+  SkillsListOutputSchema,
+  SkillsResolveOutputSchema,
+  SkillsUpsertOutputSchema,
+} from './types.js';
 import type {
   SkillsCheckForUpdatesInput,
   SkillsCheckForUpdatesOutput,
@@ -178,6 +187,7 @@ export function createSkillsPlugin(): Plugin {
 
           return { skills };
         },
+        { returns: SkillsListOutputSchema },
       );
 
       bus.registerService<SkillsGetInput, SkillsGetOutput>(
@@ -228,6 +238,7 @@ export function createSkillsPlugin(): Plugin {
           }
           return globalFound;
         },
+        { returns: SkillsGetOutputSchema },
       );
 
       bus.registerService<SkillsUpsertInput, SkillsUpsertOutput>(
@@ -340,6 +351,7 @@ export function createSkillsPlugin(): Plugin {
 
           return { skillId, created: r.created };
         },
+        { returns: SkillsUpsertOutputSchema },
       );
 
       bus.registerService<SkillsDeleteInput, SkillsDeleteOutput>(
@@ -419,6 +431,7 @@ export function createSkillsPlugin(): Plugin {
           }
           return {};
         },
+        { returns: SkillsDeleteOutputSchema },
       );
 
       bus.registerService<SkillsResolveInput, SkillsResolveOutput>(
@@ -443,6 +456,7 @@ export function createSkillsPlugin(): Plugin {
 
           return { skills };
         },
+        { returns: SkillsResolveOutputSchema },
       );
 
       bus.registerService<SkillsListDefaultsInput, SkillsListDefaultsOutput>(
@@ -464,6 +478,7 @@ export function createSkillsPlugin(): Plugin {
 
           return { skills };
         },
+        { returns: SkillsListDefaultsOutputSchema },
       );
 
       bus.registerService<SkillsCheckForUpdatesInput, SkillsCheckForUpdatesOutput>(
@@ -482,6 +497,7 @@ export function createSkillsPlugin(): Plugin {
           // "Illegal invocation" in some node versions.
           return checkForUpdates(detail, { fetch: globalThis.fetch.bind(globalThis) });
         },
+        { returns: SkillsCheckForUpdatesOutputSchema },
       );
 
       // Register admin + settings HTTP routes. Both batches are pushed into

@@ -6,6 +6,7 @@
  * no field here mentions postgres, rows, or any storage detail.
  */
 
+import { z, type ZodType } from 'zod';
 import type { SkillCapabilities } from '@ax/skills-parser';
 export type { CapabilitySlot, McpServerSpec, SkillCapabilities } from '@ax/skills-parser';
 
@@ -108,3 +109,103 @@ export interface SkillsCheckForUpdatesOutput {
   latestVersion?: number;    // when sourceUrl is set, the version we successfully fetched
   latestSkillMd?: string;    // present iff available === true (the freshly-fetched body)
 }
+
+// ---------------------------------------------------------------------------
+// Runtime `returns` contracts for the `skills:*` service hooks (ARCH-13,
+// the non-IPC / non-boundary long tail spun out of ARCH-6 #150).
+//
+// Same recipe as ARCH-6's credentials precedent: a per-registration in-process
+// shape assertion (NOT an inter-plugin wire — that's @ax/ipc-protocol),
+// co-located with the I/O interfaces above. The HookBus validates the handler's
+// return against the schema and strips undeclared keys (hook-bus.ts:141-147),
+// so each schema is a faithful shape of the public interface.
+//
+// Storage-agnostic by construction — every field name mirrors the interface
+// (no postgres/row vocab). `version`/`currentVersion`/`latestVersion` are plain
+// numbers; `updatedAt` is an ISO-8601 string (the interfaces declare `string`,
+// NOT `Date`, so `z.string()` is correct here — unlike agents/teams which
+// return real `Date` instances). Cast to `ZodType<…>` because zod's
+// `.optional()` infers `| undefined` shapes that `exactOptionalPropertyTypes`
+// won't prove directly assignable to the interface; `return-schemas.test.ts` is
+// the drift guard.
+// ---------------------------------------------------------------------------
+const CapabilitySlotSchema = z.object({
+  slot: z.string(),
+  kind: z.literal('api-key'),
+  description: z.string().optional(),
+});
+
+const McpServerSpecSchema = z.object({
+  name: z.string(),
+  transport: z.union([z.literal('stdio'), z.literal('http')]),
+  command: z.string().optional(),
+  args: z.array(z.string()).optional(),
+  env: z.record(z.string()).optional(),
+  url: z.string().optional(),
+  allowedHosts: z.array(z.string()),
+  credentials: z.array(CapabilitySlotSchema),
+});
+
+const SkillCapabilitiesSchema = z.object({
+  allowedHosts: z.array(z.string()),
+  credentials: z.array(CapabilitySlotSchema),
+  mcpServers: z.array(McpServerSpecSchema),
+  packages: z.object({
+    npm: z.array(z.string()),
+    pypi: z.array(z.string()),
+  }),
+});
+
+const SkillSummarySchema = z.object({
+  id: z.string(),
+  description: z.string(),
+  version: z.number(),
+  capabilities: SkillCapabilitiesSchema,
+  defaultAttached: z.boolean(),
+  sourceUrl: z.string().optional(),
+  updatedAt: z.string(),
+  scope: z.union([z.literal('global'), z.literal('user')]),
+  ownerUserId: z.string().optional(),
+});
+
+const SkillDetailSchema = SkillSummarySchema.extend({
+  bodyMd: z.string(),
+  manifestYaml: z.string(),
+});
+
+const ResolvedSkillSchema = z.object({
+  id: z.string(),
+  capabilities: SkillCapabilitiesSchema,
+  bodyMd: z.string(),
+  manifestYaml: z.string(),
+});
+
+export const SkillsListOutputSchema = z.object({
+  skills: z.array(SkillSummarySchema),
+}) as unknown as ZodType<SkillsListOutput>;
+
+export const SkillsGetOutputSchema = SkillDetailSchema as unknown as ZodType<SkillsGetOutput>;
+
+export const SkillsUpsertOutputSchema = z.object({
+  skillId: z.string(),
+  created: z.boolean(),
+}) as unknown as ZodType<SkillsUpsertOutput>;
+
+export const SkillsDeleteOutputSchema = z
+  .object({})
+  .strict() as unknown as ZodType<SkillsDeleteOutput>;
+
+export const SkillsResolveOutputSchema = z.object({
+  skills: z.array(ResolvedSkillSchema),
+}) as unknown as ZodType<SkillsResolveOutput>;
+
+export const SkillsListDefaultsOutputSchema = z.object({
+  skills: z.array(ResolvedSkillSchema),
+}) as unknown as ZodType<SkillsListDefaultsOutput>;
+
+export const SkillsCheckForUpdatesOutputSchema = z.object({
+  available: z.boolean(),
+  currentVersion: z.number(),
+  latestVersion: z.number().optional(),
+  latestSkillMd: z.string().optional(),
+}) as unknown as ZodType<SkillsCheckForUpdatesOutput>;
