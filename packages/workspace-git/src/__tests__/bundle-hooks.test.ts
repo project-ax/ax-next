@@ -19,17 +19,19 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   asWorkspaceVersion,
-  type WorkspaceApplyBundleInput,
-  type WorkspaceApplyBundleOutput,
   type WorkspaceApplyInput,
   type WorkspaceApplyOutput,
-  type WorkspaceExportBaselineBundleInput,
-  type WorkspaceExportBaselineBundleOutput,
   type WorkspaceListInput,
   type WorkspaceListOutput,
   type WorkspaceReadInput,
   type WorkspaceReadOutput,
 } from '@ax/core';
+import type {
+  WorkspaceApplyBundleInput,
+  WorkspaceApplyBundleOutput,
+  WorkspaceExportBaselineBundleInput,
+  WorkspaceExportBaselineBundleOutput,
+} from '@ax/workspace-bundle-protocol';
 import { createTestHarness, type TestHarness } from '@ax/test-harness';
 import { createWorkspaceGitPlugin } from '../plugin.js';
 

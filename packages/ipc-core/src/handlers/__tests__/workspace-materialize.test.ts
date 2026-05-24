@@ -12,9 +12,11 @@ import {
   type Plugin,
   type WorkspaceApplyInput,
   type WorkspaceApplyOutput,
-  type WorkspaceExportBaselineBundleInput,
-  type WorkspaceExportBaselineBundleOutput,
 } from '@ax/core';
+import type {
+  WorkspaceExportBaselineBundleInput,
+  WorkspaceExportBaselineBundleOutput,
+} from '@ax/workspace-bundle-protocol';
 import { createMockWorkspacePlugin } from '@ax/test-harness';
 import {
   buildBaselineBundle,
