@@ -332,6 +332,15 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
         AX_WORKSPACE_ROOT: path.join(tmp, 'repo-env'),
         AX_HTTP_HOST: '127.0.0.1',
         AX_HTTP_PORT: '0',
+        // PORT drives @ax/ipc-http's bind port via loadK8sConfigFromEnv. We
+        // pass a real value (exercising the loader's PORT parse/validate
+        // branch — it deliberately REJECTS 0, unlike AX_HTTP_PORT) and then
+        // override config.ipc.port to 0 below before any listener binds. If we
+        // omitted PORT entirely, ipc.port would stay unset and createK8sPlugins
+        // would bind the real ipc-http listener to its default 8080 — an
+        // EADDRINUSE hazard on any host already using that port, breaking the
+        // lane's hermeticity.
+        PORT: '8080',
         AX_HTTP_COOKIE_KEY: randomBytes(32).toString('hex'),
         AX_HTTP_ALLOWED_ORIGINS: '',
         AX_PROXY_SOCKET_PATH: path.join(tmp, 'proxy-env.sock'),
@@ -344,6 +353,11 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
       expect(config.database.connectionString).toBe(connectionString);
       expect(config.workspace.backend).toBe('local');
       expect(config.titles).toBeDefined(); // ANTHROPIC_API_KEY present
+      expect(config.ipc.port).toBe(8080); // loader parsed PORT before override
+      // Override to an OS-assigned port so the real ipc-http listener binds
+      // hermetically (the loader can't express ephemeral 0 for ipc; it rejects
+      // PORT<=0). Everything else stays exactly as the loader built it.
+      config.ipc.port = 0;
 
       const plugins = buildProdAssemblyWithFakeK8s(config);
       const bus = new HookBus();
