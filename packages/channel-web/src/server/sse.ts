@@ -176,6 +176,7 @@ export function createSseHandler(deps: SseHandlerDeps) {
     const chunkSubKey = `${PLUGIN_NAME}/sse-chunk/${subscriberSuffix}`;
     const phaseSubKey = `${PLUGIN_NAME}/sse-phase/${subscriberSuffix}`;
     const turnEndSubKey = `${PLUGIN_NAME}/sse-turn-end/${subscriberSuffix}`;
+    const turnErrorSubKey = `${PLUGIN_NAME}/sse-turn-error/${subscriberSuffix}`;
 
     const cleanup = (): void => {
       if (closed) return;
@@ -189,6 +190,7 @@ export function createSseHandler(deps: SseHandlerDeps) {
       deps.bus.unsubscribe('chat:stream-chunk', chunkSubKey);
       deps.bus.unsubscribe('chat:phase', phaseSubKey);
       deps.bus.unsubscribe('chat:turn-end', turnEndSubKey);
+      deps.bus.unsubscribe('chat:turn-error', turnErrorSubKey);
     };
 
     stream.onClose(() => {
@@ -273,6 +275,31 @@ export function createSseHandler(deps: SseHandlerDeps) {
         // sweep in chunk-buffer is the fallback for browsers that
         // never get here (closed mid-stream).
         safeWrite({ reqId, done: true });
+        deps.buffer.evictReqId(reqId);
+        cleanup();
+        try {
+          stream.close();
+        } catch {
+          // already closed
+        }
+        return undefined;
+      },
+    );
+
+    // 4c-bis) Attach the turn-error subscriber. The orchestrator fires
+    // `chat:turn-error` (carrying the ORIGINAL agent:invoke reqId) when a
+    // turn ends abnormally — the runner died mid-turn or wedged past the
+    // chat timeout — instead of the normal `chat:turn-end`. Without this
+    // the stream would never get a terminal frame and the client's
+    // "Thinking…" spinner hangs forever (the keepalive heartbeat keeps the
+    // connection open). Match by reqId (the precise per-turn key the
+    // orchestrator carries), emit an `error` frame, evict, and close.
+    deps.bus.subscribe<{ reqId?: string; reason?: string }>(
+      'chat:turn-error',
+      turnErrorSubKey,
+      async (_ctx, payload) => {
+        if (payload.reqId !== reqId) return undefined;
+        safeWrite({ reqId, error: payload.reason ?? 'unknown' });
         deps.buffer.evictReqId(reqId);
         cleanup();
         try {

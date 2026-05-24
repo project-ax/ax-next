@@ -59,12 +59,22 @@ export type PhaseKind = 'sandbox-starting';
  *
  *   - chunk frame: `{ reqId, text, kind }`        — content delta.
  *   - phase frame: `{ reqId, phase }`             — out-of-band agent state.
- *   - done  frame: `{ reqId, done: true }`         — turn terminator.
+ *   - done  frame: `{ reqId, done: true }`         — normal turn terminator.
+ *   - error frame: `{ reqId, error }`             — abnormal turn terminator.
+ *
+ * The `error` frame closes the stream when a turn ends WITHOUT a normal
+ * `chat:turn-end` (the runner died mid-turn or wedged past the chat
+ * timeout). `error` is a stable, backend-agnostic reason code (e.g.
+ * `sandbox-terminated`, `chat-run-timeout`) — NOT a pod name / exit code;
+ * the client maps it to a user-facing label. Without it the client's
+ * "Thinking…" spinner hangs forever (the 25 s keepalive keeps the
+ * connection open).
  */
 export type SseFrame =
   | StreamChunk
   | { reqId: string; phase: PhaseKind }
-  | { reqId: string; done: true };
+  | { reqId: string; done: true }
+  | { reqId: string; error: string };
 
 /**
  * Payload for the `chat:phase` subscriber hook. Matches the SSE phase

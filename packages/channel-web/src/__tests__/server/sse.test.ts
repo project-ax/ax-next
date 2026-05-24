@@ -418,6 +418,66 @@ describe('@ax/channel-web SSE handler', () => {
     }
   });
 
+  // -----------------------------------------------------------------------
+  // chat:turn-error — the terminated-turn terminator (Fault A). The
+  // orchestrator fires this with the ORIGINAL agent:invoke ctx.reqId when a
+  // turn ends abnormally (sandbox death / wedged-runner timeout) instead of
+  // firing chat:turn-end. The SSE handler matches by reqId (NOT
+  // conversationId — the orchestrator carries the original reqId, so the
+  // precise per-turn join key is available) and emits an `error` frame +
+  // closes, so the client flips out of the "Thinking…" spinner.
+  // -----------------------------------------------------------------------
+
+  it('turn-error: when chat:turn-error fires with the matching reqId, SSE emits an error frame and closes', async () => {
+    const { bus, initCtx, handler, buffer } = bootHandler();
+    try {
+      const req = fakeReq();
+      const { res, captured } = fakeRes();
+      await handler(req, res);
+      await bus.fire<StreamChunk>('chat:stream-chunk', initCtx, {
+        reqId: 'r-test',
+        text: 'partial',
+        kind: 'text',
+      });
+
+      await bus.fire('chat:turn-error', initCtx, {
+        reqId: 'r-test',
+        reason: 'sandbox-terminated',
+      });
+
+      const frames = captured.streamWrites.filter((s) => s.startsWith('data:'));
+      const last = frames[frames.length - 1]!;
+      expect(JSON.parse(last.slice(6).trim())).toEqual({
+        reqId: 'r-test',
+        error: 'sandbox-terminated',
+      });
+      expect(captured.streamClosed).toBe(true);
+    } finally {
+      buffer.dispose();
+    }
+  });
+
+  it('turn-error with a non-matching reqId does not close us', async () => {
+    const { bus, initCtx, handler, buffer } = bootHandler();
+    try {
+      const req = fakeReq();
+      const { res, captured } = fakeRes();
+      await handler(req, res);
+
+      await bus.fire('chat:turn-error', initCtx, {
+        reqId: 'r-other',
+        reason: 'sandbox-terminated',
+      });
+
+      expect(captured.streamClosed).toBe(false);
+      expect(
+        captured.streamWrites.filter((s) => s.startsWith('data:')),
+      ).toEqual([]);
+    } finally {
+      buffer.dispose();
+    }
+  });
+
   it('client disconnect unsubscribes both bus subscriptions', async () => {
     const { bus, initCtx, handler, buffer } = bootHandler();
     try {

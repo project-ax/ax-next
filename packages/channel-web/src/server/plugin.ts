@@ -77,7 +77,7 @@ export function createChannelWebServerPlugin(
         'attachments:commit',
         'attachments:download',
       ],
-      subscribes: ['chat:stream-chunk', 'chat:phase', 'chat:turn-end', 'conversations:title-updated'],
+      subscribes: ['chat:stream-chunk', 'chat:phase', 'chat:turn-end', 'chat:turn-error', 'conversations:title-updated'],
     },
 
     async init({ bus }) {
@@ -116,6 +116,16 @@ export function createChannelWebServerPlugin(
       bus.subscribe<{ reqId?: string }>(
         'chat:turn-end',
         `${PLUGIN_NAME}/turn-end-evictor`,
+        createTurnEndEvictor(localBuffer),
+      );
+
+      // Turn-error evictor — same role as the turn-end evictor, for the
+      // abnormal-termination path. A turn that errors out with no SSE
+      // listener attached still needs its buffered chunks dropped; the
+      // payload carries `reqId` so the same evictor factory works.
+      bus.subscribe<{ reqId?: string }>(
+        'chat:turn-error',
+        `${PLUGIN_NAME}/turn-error-evictor`,
         createTurnEndEvictor(localBuffer),
       );
 
@@ -198,6 +208,10 @@ export function createChannelWebServerPlugin(
       busRef?.unsubscribe(
         'chat:turn-end',
         `${PLUGIN_NAME}/turn-end-evictor`,
+      );
+      busRef?.unsubscribe(
+        'chat:turn-error',
+        `${PLUGIN_NAME}/turn-error-evictor`,
       );
       busRef = undefined;
       // Stop the chunk buffer's sweep timer.
