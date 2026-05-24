@@ -91,10 +91,14 @@ after the first plan print — no dispatch, no board writes.
 1. Refresh `.claude/dag-ship-status.md`; append `wave N dispatch …` to
    `.claude/dag-ship-log.md`; move each dispatched card → **In Progress** on the
    board mirror (see Board mirror, below).
-2. **Code lane:** in a SINGLE message, launch one **background** agent per ready
-   code task (`Agent`, `run_in_background: true`, `subagent_type: general-purpose`)
-   using the **code-lane dispatch prompt** in `references/templates.md`.
-   Background + one message ⇒ concurrent + you're notified on completion.
+2. **Code lane:** in a SINGLE message, launch up to **`--max-parallel`** (default
+   **3**) **background** agents for ready code tasks (`Agent`,
+   `run_in_background: true`, `subagent_type: general-purpose`) using the
+   **code-lane dispatch prompt** in `references/templates.md`. Background + one
+   message ⇒ concurrent + you're notified on completion. **If the ready set
+   exceeds the cap, dispatch the first N and leave the rest pending** — fill a
+   freed slot when a PR merges (the cap bounds concurrent CI runs + token burst;
+   each in-flight agent is a full `yolo-ship` run with its own CI + Codex pass).
 3. **Walk lane:** launch **one** walk agent (serialized) using the **walk-lane
    dispatch prompt**; do not start the next walk until the current finishes.
 4. Record each dispatch (task ID) in the journal.
@@ -196,6 +200,11 @@ walk-filed follow-ups. TODO.md remains the durable record.
 
 - `--dry-run` prints the wave/lane plan + skip-list and stops — no dispatch.
 - The plan is printed before wave 1 regardless; a watching human can interrupt.
+- **Cost/throughput dial:** `--max-parallel N` (default 3) bounds concurrent
+  in-flight agents/PRs — each is a full `yolo-ship` run with its own CI + Codex
+  pass. Lower it to smooth CI/token burst, raise it to drain a wide DAG faster.
+  (yolo-ship itself tiers Codex effort + subagent model to each task's risk/size —
+  see its Phase 3/5 — so small tasks are already cheaper per node.)
 - First-ever validation: point dag-ship at a throwaway 2-node DAG before the real
   TODO.md (design §9), and at a deliberately-failing node to confirm the breaker
   parks it.

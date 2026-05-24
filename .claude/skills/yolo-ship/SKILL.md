@@ -46,7 +46,7 @@ The orchestrator (you) holds only: the plan file, project memory, and one-paragr
 - If the task touches a sandbox boundary, IPC, plugin loading, untrusted content, or new dependencies, note that Phase 3 must run security-checklist.
 
 ### Phase 3 — Implement (subagent-driven)
-- **REQUIRED:** Use superpowers:subagent-driven-development — dispatch one subagent per plan task. Each subagent uses superpowers:test-driven-development (test first) and returns a summary.
+- **REQUIRED:** Use superpowers:subagent-driven-development — dispatch one subagent per plan task. Each subagent uses superpowers:test-driven-development (test first) and returns a summary. **Tier the subagent's model to the task** (its model-selection guidance): the cheapest/fastest model for mechanical 1–2 file tasks with a clear spec, a standard model for multi-file integration, the most capable only for design/judgment. Don't run every mechanical task on the top model.
 - After each task, review the returned diff against the plan (superpowers:requesting-code-review / receiving-code-review). Don't rubber-stamp; verify claims.
 - New hook surface or sensitive boundary touched → run security-checklist before moving on.
 
@@ -61,26 +61,30 @@ This replaces waiting on a hosted reviewer. Review the **whole branch** locally 
 
 ```dot
 digraph codex_review {
-    "Run codex review (gpt-5.5 / xhigh / read-only)" [shape=box];
+    "Run codex review (gpt-5.5 / effort tiered by risk / read-only)" [shape=box];
     "Actionable findings?" [shape=diamond];
     "Fix (test-first) + log any rejected" [shape=box];
     "Proceed to PR (Phase 6)" [shape=doublecircle];
 
-    "Run codex review (gpt-5.5 / xhigh / read-only)" -> "Actionable findings?";
+    "Run codex review (gpt-5.5 / effort tiered by risk / read-only)" -> "Actionable findings?";
     "Actionable findings?" -> "Fix (test-first) + log any rejected" [label="yes"];
-    "Fix (test-first) + log any rejected" -> "Run codex review (gpt-5.5 / xhigh / read-only)";
+    "Fix (test-first) + log any rejected" -> "Run codex review (gpt-5.5 / effort tiered by risk / read-only)";
     "Actionable findings?" -> "Proceed to PR (Phase 6)" [label="no"];
 }
 ```
 
 - **REQUIRED:** Use skill-codex:codex to drive the review — but in **fixed-config, autonomous mode**. The codex skill normally asks the user (via `AskUserQuestion`) which model + reasoning effort to use and for permission to pass `--skip-git-repo-check`; under the autonomy contract you do **NOT** ask. Pin the config and pre-authorize the flag:
-  - model: **`gpt-5.5`**
-  - reasoning effort: **`xhigh`**
-  - sandbox: **`read-only`** (this is a review pass, not an edit pass)
+  - model: **`gpt-5.5`**, sandbox: **`read-only`** (this is a review pass, not an edit pass)
+  - **reasoning effort — tier it to the diff's risk** (effort is the cost knob; don't pay `xhigh` for a one-liner):
+    - **`xhigh`** — diff touches a sandbox boundary, IPC transport, plugin loading/manifests, untrusted-input handling, a hook surface, DB schema/migrations, capabilities, or spans many packages (the invariant-5 / boundary-review surfaces).
+    - **`medium`** — ordinary single-concern code change with no boundary/security surface.
+    - **skip Codex entirely** — docs/comment/config-only or other non-code diffs; the PR's CodeRabbit + CodeQL + semgrep + gitleaks already cover those. Log the skip in `decisions.md`.
+    - When unsure, round **up** a tier.
 - Run it from the worktree (cwd = the branch under review). Point Codex at the **whole-branch diff against `main`** — the same surface CI and a human reviewer would see, not just the last task:
   ```bash
+  # $EFFORT = xhigh | medium, chosen per the risk tier above
   codex exec --skip-git-repo-check -m gpt-5.5 \
-    --config model_reasoning_effort="xhigh" \
+    --config model_reasoning_effort="$EFFORT" \
     --sandbox read-only \
     "Act as a critical code reviewer. Review the changes on this branch: run \`git diff main...HEAD\` (merge-base diff) and inspect the touched files. Flag, by severity with file:line: correctness bugs, security issues (sandbox/IPC/untrusted-input boundaries, capability over-grant), silent failures / swallowed errors, missing regression tests for bug fixes, and AX-convention/invariant violations. Be specific. Do not rubber-stamp; if you find nothing, say why the diff is sound." 2>/dev/null
   ```
@@ -149,7 +153,8 @@ the merge. Then you are done.
 | "I'll defer this but it's obvious" | Obvious-to-you ≠ tracked. Put it in `TODO.md` or it's lost. |
 | "CI will probably pass, I'll wrap up" | Not done until `gh pr checks` is actually green. Verify, don't assume. |
 | "I'll skip the codex review, lint+test passed" | The pre-PR gate now *includes* a Codex review. Tests prove behavior; the review catches design/security/convention issues tests don't. |
-| "I'll ask the user which model for codex" | yolo-ship pins `gpt-5.5` + `xhigh` read-only. Don't fall through to skill-codex's interactive `AskUserQuestion` — that breaks the autonomy contract. |
+| "I'll ask the user which model for codex" | yolo-ship pins `gpt-5.5` read-only and tiers the *effort* by risk (xhigh for boundary/security/schema/multi-file, medium ordinary, skip docs). Don't fall through to skill-codex's interactive `AskUserQuestion` — that breaks the autonomy contract. |
+| "Small change, but I'll run xhigh + the full local suite to be safe" | Tier it. `xhigh` + full ceremony on a one-liner is the waste we're cutting; reserve the heavy path for boundary/security/schema/multi-file diffs. |
 | "Codex flagged it but I think it's fine" | Verify each finding (receiving-code-review). Fix real ones; log rejected ones in `decisions.md` with the reason. Silent dismissal isn't allowed. |
 | "I'll review locally after I open the PR" | The review is the gate *before* the PR. Open it only once Codex is clean. |
 | "dag-ship dispatched me but I'll merge anyway" | Orchestrated mode = stop at a green PR + hand off. Self-merging races the other agents and corrupts the serialized queue. |
