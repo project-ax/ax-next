@@ -77,12 +77,12 @@ digraph codex_review {
   - model: **`gpt-5.5`**, sandbox: **`read-only`** (this is a review pass, not an edit pass)
   - **reasoning effort — tier it to the diff's risk** (effort is the cost knob; don't pay `xhigh` for a one-liner):
     - **`xhigh`** — diff touches a sandbox boundary, IPC transport, plugin loading/manifests, untrusted-input handling, a hook surface, DB schema/migrations, capabilities, or spans many packages (the invariant-5 / boundary-review surfaces).
-    - **`medium`** — ordinary single-concern code change with no boundary/security surface.
+    - **`high`** — ordinary single-concern code change with no boundary/security surface.
     - **skip Codex entirely** — docs/comment/config-only or other non-code diffs; the PR's CodeRabbit + CodeQL + semgrep + gitleaks already cover those. Log the skip in `decisions.md`.
     - When unsure, round **up** a tier.
 - Run it from the worktree (cwd = the branch under review). Point Codex at the **whole-branch diff against `main`** — the same surface CI and a human reviewer would see, not just the last task:
   ```bash
-  # $EFFORT = xhigh | medium, chosen per the risk tier above
+  # $EFFORT = xhigh | high, chosen per the risk tier above
   codex exec --skip-git-repo-check -m gpt-5.5 \
     --config model_reasoning_effort="$EFFORT" \
     --sandbox read-only \
@@ -153,7 +153,7 @@ the merge. Then you are done.
 | "I'll defer this but it's obvious" | Obvious-to-you ≠ tracked. Put it in `TODO.md` or it's lost. |
 | "CI will probably pass, I'll wrap up" | Not done until `gh pr checks` is actually green. Verify, don't assume. |
 | "I'll skip the codex review, lint+test passed" | The pre-PR gate now *includes* a Codex review. Tests prove behavior; the review catches design/security/convention issues tests don't. |
-| "I'll ask the user which model for codex" | yolo-ship pins `gpt-5.5` read-only and tiers the *effort* by risk (xhigh for boundary/security/schema/multi-file, medium ordinary, skip docs). Don't fall through to skill-codex's interactive `AskUserQuestion` — that breaks the autonomy contract. |
+| "I'll ask the user which model for codex" | yolo-ship pins `gpt-5.5` read-only and tiers the *effort* by risk (xhigh for boundary/security/schema/multi-file, high ordinary, skip docs). Don't fall through to skill-codex's interactive `AskUserQuestion` — that breaks the autonomy contract. |
 | "Small change, but I'll run xhigh + the full local suite to be safe" | Tier it. `xhigh` + full ceremony on a one-liner is the waste we're cutting; reserve the heavy path for boundary/security/schema/multi-file diffs. |
 | "Codex flagged it but I think it's fine" | Verify each finding (receiving-code-review). Fix real ones; log rejected ones in `decisions.md` with the reason. Silent dismissal isn't allowed. |
 | "I'll review locally after I open the PR" | The review is the gate *before* the PR. Open it only once Codex is clean. |
