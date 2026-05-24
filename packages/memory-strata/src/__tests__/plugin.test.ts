@@ -335,27 +335,57 @@ describe('Consolidator wiring (chat:end subscriber, I10)', () => {
   });
 
   it('serializes consolidator passes per-agent — pass 2 waits for pass 1 fs work to settle before starting (C4)', async () => {
-    // Strategy: inject a controlled slow consolidation via a second workspace
-    // root that has a docs/ directory with temporarily restricted permissions,
-    // causing pass 1 to fail slowly. We use resolveOrder to observe which
-    // order the underlying runConsolidation calls complete.
+    // What this guards (I10): a second consolidation pass must NOT start
+    // mutating inbox/ + docs/ while the prior pass's underlying fs work is
+    // still in flight. The chat:end closure detaches `runConsolidation` and
+    // only awaits a bounded `raceTimeout` wrapper, so without the explicit
+    // `await prior` serialization, pass 2 would read the inbox concurrently
+    // with pass 1 and double-process the same observation.
     //
-    // Simpler approach that avoids timing tricks: use inflightWork serialization
-    // semantics directly. We verify the OBSERVABLE outcome — after both passes
-    // settle, the inbox is empty (one promotion happened, not zero or two) and
-    // the doc is consistent (exactly one fact, not zero or duplicated).
-    //
-    // Two chat:end events. Pass 1 fires after debounce. We use flush() to
-    // drain pass 1, then fire a second chat:end and flush() again. Between
-    // them we seed a SECOND inbox observation with the same subject so if
-    // concurrent mutation happened, the doc would get a duplicate fact.
+    // DETERMINISM (the C4-flake fix): the old version slept setTimeout(50) and
+    // hoped the detached fs work finished — it raced the loaded runner and the
+    // serialization was never actually exercised (pass 1 finished before
+    // pass 2 ran, so removing `await prior` still passed). Here we instead:
+    //   1. GATE pass 1 mid-flight via a controllable `memory:index:upsert`
+    //      service — the consolidator awaits `memory:doc:written` (→ reindexer
+    //      → memory:index:upsert) AFTER writing the doc but BEFORE deleting the
+    //      promoted inbox file, so blocking that call freezes pass 1 with
+    //      obs-serial-1 still present in the inbox. `gateEntered` tells us the
+    //      pass is deterministically parked there — no sleep.
+    //   2. Seed obs-serial-2 and fire pass 2 WHILE pass 1 is parked. With
+    //      serialization, pass 2's runner blocks on pass 1's inflightWork.
+    //   3. Release the gate; `settle()` awaits the REAL detached fs work of
+    //      both passes (not the bounded raceTimeout wrapper flush() resolves on).
+    // If serialization regresses, pass 2 re-reads obs-serial-1 before pass 1
+    // deletes it → it gets promoted twice (duplicate fact in the doc) or the
+    // double-delete throws — either way the assertions below go red.
+    let releaseGate: () => void = () => {};
+    const gatePromise = new Promise<void>((resolve) => { releaseGate = resolve; });
+    let signalEntered: () => void = () => {};
+    const gateEntered = new Promise<void>((resolve) => { signalEntered = resolve; });
+    let upsertCalls = 0;
+
     const bus = buildBus({ llmText: '[]', agent: fakeAgent() });
+    // Gate the FIRST memory:index:upsert (pass 1's doc-written reindex) so pass 1
+    // parks mid-flight; later calls pass straight through.
+    bus.registerService('memory:index:upsert', 'test-gate-indexer', async () => {
+      upsertCalls += 1;
+      if (upsertCalls === 1) {
+        signalEntered();
+        await gatePromise;
+      }
+      return { ok: true as const };
+    });
+
     let capturedDebouncer: Debouncer | undefined;
+    let settle: ((agentId: string) => Promise<void>) | undefined;
     const plugin = createMemoryStrataPlugin({
       consolidatorDebounceMs: 10,
-      consolidatorTimeoutMs: 1, // tight timeout — pass 1 times out
+      // Generous timeout: timing is driven by the gate, not by a tight deadline.
+      consolidatorTimeoutMs: 5_000,
       testHooks: {
         onDebouncerCreated(d) { capturedDebouncer = d; },
+        onConsolidationSettleReady(s) { settle = s; },
       },
     });
     await plugin.init?.({ bus, config: {} });
@@ -370,37 +400,79 @@ describe('Consolidator wiring (chat:end subscriber, I10)', () => {
       kind: 'complete',
       messages: [{ role: 'user', content: 'hello' }, { role: 'assistant', content: 'hi' }],
     };
-    const ctx = makeCtx(workspaceRoot);
-
-    // Fire chat:end #1 — pass 1 is scheduled and will time out.
-    await bus.fire('chat:end', ctx, { outcome });
-    // Give the debounce timer a moment to fire.
-    await new Promise((r) => setTimeout(r, 50));
-
-    // Seed observation 2 with the same subject (a duplicate) BEFORE flush so
-    // we can confirm the second pass re-reads the post-pass-1 inbox state.
-    await seedInboxObservation(workspaceRoot, 'obs-serial-2', {
-      subject: 'serialization',
-      fact: 'User also enjoys Rust.', // distinct fact so not deduped
+    // Capture warn events so we can assert NO consolidator failure was logged.
+    // The serialized path never errors; a racy (unserialized) pass 2 re-reads
+    // obs-serial-1 before pass 1 deletes it and one of them ENOENTs on the
+    // double-delete — which runConsolidation catches + logs (swallowed) as
+    // `memory_strata_consolidator_failed`. Asserting the log stays empty makes
+    // the test fail on that race directly, not only via the corrupted end-state.
+    const warnEvents: string[] = [];
+    const ctx = makeAgentContext({
+      sessionId: 'test-session',
+      agentId: 'test-agent',
+      userId: 'test-user',
+      workspace: { rootPath: workspaceRoot },
+      logger: {
+        debug: () => {},
+        info: () => {},
+        warn: (msg: string) => { warnEvents.push(msg); },
+        error: () => {},
+        child: function () { return this; },
+      } as unknown as import('@ax/core').Logger,
     });
 
-    // Flush: waits for the debounced run + underlying work to settle.
-    await capturedDebouncer!.flush();
-
-    // Fire chat:end #2 — pass 2 is scheduled; it must wait for pass 1 to
-    // have settled before mutating inbox/ or docs/.
+    // Fire chat:end #1 + flush() to force-fire the debounce timer immediately
+    // (no sleep). Do NOT await the flush yet — pass 1 will park on the gate.
     await bus.fire('chat:end', ctx, { outcome });
-    await new Promise((r) => setTimeout(r, 50));
-    await capturedDebouncer!.flush();
+    const flush1 = capturedDebouncer!.flush();
+    // Deterministically wait until pass 1 is parked mid-flight (doc written,
+    // obs-serial-1 not yet deleted).
+    await gateEntered;
 
-    // After both passes the inbox must be empty (both observations consumed
-    // exactly once) and the doc must contain exactly one or two facts (not
-    // zero, not duplicated). The key invariant: no ENOENT / corrupt state.
+    // Seed observation 2 (same subject, distinct fact) while pass 1 is parked.
+    await seedInboxObservation(workspaceRoot, 'obs-serial-2', {
+      subject: 'serialization',
+      fact: 'User also enjoys Rust.',
+    });
+
+    // Fire chat:end #2 + flush() WHILE pass 1 is still parked. With
+    // serialization pass 2's runner blocks on pass 1's inflightWork; without it
+    // pass 2 starts now and races pass 1 on the same inbox files.
+    await bus.fire('chat:end', ctx, { outcome });
+    const flush2 = capturedDebouncer!.flush();
+
+    // Let pass 1 finish (delete obs-serial-1), then drain everything via the
+    // explicit settle signal — the REAL detached fs work, not the bounded wrapper.
+    releaseGate();
+    await Promise.all([flush1, flush2]);
+    await settle!(ctx.agentId);
+
+    // After both passes the inbox must be empty (each observation consumed
+    // exactly once) and the doc must exist + reference the subject. A
+    // serialization regression leaves obs-serial-1 re-read by pass 2 → a
+    // duplicate fact or a leftover inbox file.
     const docPath = join(workspaceRoot, docFile('preference', 'serialization'));
     const raw = await readFile(docPath, 'utf8');
     expect(raw).toContain('serialization');
-    // Inbox must be cleared.
+    // Each fact promoted exactly once. We count the `## Facts` bullet lines
+    // (the body fact list) rather than raw-string occurrences, because the
+    // first fact also appears in the frontmatter `summary:` field — a clean
+    // pass already writes it there once. A serialization regression that
+    // re-promotes obs-serial-1 adds a SECOND `- User prefers TypeScript.`
+    // bullet, which this catches.
+    const factBullets = raw
+      .split('\n')
+      .filter((line) => line.trimStart().startsWith('- User'));
+    expect(factBullets.filter((l) => l.includes('User prefers TypeScript.'))).toHaveLength(1);
+    expect(factBullets.filter((l) => l.includes('User also enjoys Rust.'))).toHaveLength(1);
+    expect(factBullets).toHaveLength(2);
+    // Inbox must be cleared — both observations consumed exactly once.
     const inboxEntries = await readdir(join(workspaceRoot, INBOX_DIR));
     expect(inboxEntries).toHaveLength(0);
+    // Serialized passes never error. A racy pass 2 trips an ENOENT double-delete
+    // that runConsolidation catches + logs (then swallows) — assert it stayed
+    // silent so the test fails on the race even if the end-state happened to
+    // reconcile.
+    expect(warnEvents.some((e) => e.includes('memory_strata_consolidator_failed'))).toBe(false);
   });
 });
