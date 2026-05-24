@@ -1,23 +1,24 @@
-# dag-ship templates — copy these literally, do not paraphrase
+# auto-ship templates — copy these literally, do not paraphrase
 
 ## Code-lane dispatch prompt
 
 Dispatch via `Agent` with `run_in_background: true`,
 `subagent_type: "general-purpose"`. Substitute `<TASK-ID>`, `<TASK-TITLE>`,
-`<TASK-BODY>` (copy the task's line from TODO.md), `<short-slug>`:
+`<TASK-BODY>` (the card's title + body from the board), `<short-slug>`:
 
-> You are shipping ONE task from this repo's `TODO.md`, end to end, under
-> orchestration by dag-ship.
+> You are shipping ONE card from this repo's "TO DO" project board, end to end,
+> under orchestration by auto-ship.
 >
 > **Task <TASK-ID>:** <TASK-TITLE>
 > <TASK-BODY>
 >
 > Run the `yolo-ship` skill on this task with these ORCHESTRATED-MODE overrides:
-> - Branch: `dag-ship/<TASK-ID>-<short-slug>`. PR title MUST start with
+> - Branch: `auto-ship/<TASK-ID>-<short-slug>`. PR title MUST start with
 >   `[<TASK-ID>] `. Base `main`.
 > - **Do NOT merge.** Stop at a green, verified-mergeable PR (yolo-ship ends at
->   Phase 6 for you). dag-ship merges it through a serialized queue.
-> - **Do NOT edit `TODO.md`.** Return deferred follow-ups in your handoff instead.
+>   Phase 6 for you). auto-ship merges it through a serialized queue.
+> - **Do NOT edit the board.** Return deferred follow-ups in your handoff instead;
+>   auto-ship (the sole board writer) creates the cards.
 > - Otherwise follow yolo-ship exactly: worktree, self-answering brainstorm,
 >   written plan, subagent-driven TDD, build+test+lint gate, local Codex review,
 >   open PR, drive CI green.
@@ -39,8 +40,8 @@ Dispatch via `Agent` with `run_in_background: true`,
 
 Dispatch ONE at a time (serialized). Substitute as above:
 
-> You are running ONE manual-acceptance walk from `TODO.md` under dag-ship,
-> against the kind cluster.
+> You are running ONE manual-acceptance walk from this repo's "TO DO" board (a
+> `(walk)`-titled card) under auto-ship, against the kind cluster.
 >
 > **Task <TASK-ID>:** <TASK-TITLE>
 > <TASK-BODY>
@@ -74,36 +75,14 @@ Shape: `<lane>:<TASK-ID>:<where>:<symptom>`.
   — e.g. `walk:CLI-1:git-clone:auth-403`
 - Agent gave up: `agent:<TASK-ID>:<phase>:gave-up`
 
-## Status dashboard format — `.claude/dag-ship-status.md` (overwrite each change)
+## Journal line formats — `.claude/auto-ship-log.md` (append-only)
 
-```
-# dag-ship — live status
-_updated <YYYY-MM-DD HH:MM:SS> · wave <N> · started <HH:MM:SS>_
-
-<done>/<total> done · <k> in-flight · <k> ready · <k> blocked · <k> parked  (+<k> trigger-gated, skipped)
-<progress-bar>   budget: <d>/<dmax> dispatches · <s>/<smax> spawns
-
-## in-flight
-<TASK-ID>  <state: ci|merging|walk-running>  <#PR|->  <ci: green|red|pending|->
-
-## ready (next)
-<TASK-ID>   (deps clear)
-
-## blocked
-<TASK-ID> <- <blocking TASK-ID(s)>
-
-## parked 🛑
-<TASK-ID>  (<N> attempts — <signature>)
-
-## done ✅
-<TASK-ID> #<PR> · <TASK-ID> #<PR> · …
-```
-
-## Journal line formats — `.claude/dag-ship-log.md` (append-only)
+The board is the live dashboard; this journal is the failure ledger + timeline the
+loop-breakers read (and a resume rebuilds attempt history from).
 
 ```
 <HH:MM:SS>  run start · actionable=<k> · budget <dmax> dispatches / <smax> spawns
-<HH:MM:SS>  wave <N> dispatch · <TASK-ID> <TASK-ID> …
+<HH:MM:SS>  dispatch · <TASK-ID> <TASK-ID> …
 <HH:MM:SS>  <TASK-ID>  pr-green #<n> mergeable=<y|n>
 <HH:MM:SS>  <TASK-ID>  merged #<n> -> main (ff)
 <HH:MM:SS>  <TASK-ID>  walk-pass | walk-fail

@@ -89,17 +89,39 @@ If you write infrastructure (IPC transport, sandbox provider, bridge, etc.) that
 
 Whenever you fix a bug that wasn't caught by an existing test, you MUST add a test that would have caught it the first time. No exception. The test goes in before the fix is considered done.
 
-## TODO.md DAG Policy
+## Task Board Policy
 
-`TODO.md` opens with a **Parallelization DAG** (a mermaid graph plus the "Parallel batches" / "Not actionable" prose) that mirrors the task list one-to-one: every task carries a stable ID (`ARCH-n`, `CLI-n`, `SYNC-n`, `FAULTA-n`, …) that appears both as a `[ID]` tag on the task and as a node in the graph.
+Tracked work lives on the GitHub **"TO DO"** Projects v2 board (org `project-ax`,
+project **#1**, linked to this repo's Projects tab) — **not** in a `TODO.md` file.
+The board is the single source of truth. **Both humans and Claude Code agents edit
+it.** There is no committed task list and no mermaid DAG to keep in sync.
 
-**Any edit to `TODO.md`'s task list MUST update the DAG in the same change. No exception.** A task list that has drifted from its graph is worse than no graph — it tells agents to parallelize work that actually collides. If you touch the list, you own the graph. Concretely:
+**Lanes (the `Status` field):**
 
-- **Add a task** → assign a stable ID, tag the task `[ID]`, add a matching graph node, place it in the right box (default = free-floating/parallelizable; the `⚠` cluster box if it drives the shared `kind-ax-next-dev` cluster; the `🚫` box if it's trigger-gated and must not be started yet), wire any solid edges (`A --> B`, hard sequencing — B builds on a surface A creates) or dashed edges (`A -.-> B`, soft ordering / merge-churn), and add it to the batch prose.
-- **Complete or remove a task** → strike it through or remove it AND delete its node, any edges touching it, and its mention in the batch prose / `classDef` lines.
-- **Re-scope a task** (its dependencies, trigger, or cluster status change) → move the node between boxes and fix its edges + prose to match.
+- **Backlog** — gated / not-yet-actionable / wait-until-earned work. The orchestrator never pulls from here. New work the team isn't ready to start lands here. `(walk)`-tagged manual-acceptance walks live here too (they aren't `yolo-ship`-able — see below).
+- **To Do** — the actionable inbox. Anyone drops a card here; the `auto-ship` orchestrator drains it.
+- **In Progress** — a `yolo-ship` agent is building it.
+- **In Review** — its PR is open, queued for the serialized merge.
+- **Done** — merged.
+- **Parked** — quarantined by the failure breaker (see the `auto-ship` skill).
 
-The DAG is only load-bearing if it stays true. Verify the graph still parses and that every `[ID]` tag has exactly one node and vice versa before considering a `TODO.md` edit done.
+**Card shape:**
+
+- **Title** is prefixed with a stable `[TASK-ID]` (`ARCH-n`, `CLI-n`, `SYNC-n`, `FAULTA-n`, or a fresh `TASK-n`). Walk cards also carry `(walk)` in the title.
+- **Dependencies** live in the **"Depends on"** text field as space/comma-separated Task IDs. Empty = *not yet analyzed*; `none` = *analyzed, no deps*. Don't conflate the two.
+
+**Readiness is derived, not a lane.** A To Do card is *ready* iff every Task ID in
+its "Depends on" points at a **Done** card. Dangling references (the dep card no
+longer exists) are pruned during review, not treated as a block.
+
+**Dependency hygiene.** Anyone may add a card or hand-set its deps. When the To Do
+lane changes, the orchestrator reviews the whole lane: it analyzes + writes deps for
+any card whose "Depends on" is still empty (writing `none` when there are none), and
+prunes any referenced Task ID whose card has vanished. Keep the field honest — a
+stale dep silently blocks a ready task.
+
+The `auto-ship` skill owns draining the board (monitor To Do → review deps → ship up
+to 3 ready cards at a time via `yolo-ship`). See `.claude/skills/auto-ship/`.
 
 ## Skills
 

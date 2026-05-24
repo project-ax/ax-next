@@ -1,8 +1,20 @@
-# dag-ship — design
+# auto-ship — design
+
+> **REVISED 2026-05-24 — source of truth moved off `TODO.md` onto the GitHub "TO DO"
+> board.** `TODO.md` is deleted; the org `project-ax` Projects v2 board (#1) is now the
+> single source of truth. Dependencies live in a per-card **"Depends on"** field
+> (Task IDs), readiness is derived from it, the lane set is **Backlog · To Do ·
+> In Progress · In Review · Done · Parked**, and the orchestrator runs **continuously**
+> — a token-free bash poller watches the To Do lane once a minute and re-invokes it on
+> change. The board sections below describe the original best-effort *mirror*; the
+> shipped skill (`.claude/skills/auto-ship/`) is the current spec. The control-loop /
+> merge-queue / failure-breaker shape is unchanged; only the state store and the
+> watch-trigger are new. Sections that say "`TODO.md` strike-through / mermaid DAG"
+> now mean "board lane move / `Depends on` field".
 
 **Date:** 2026-05-24
-**Status:** approved design, pre-implementation
-**Related:** `.claude/skills/yolo-ship/SKILL.md` (modified by this work), `TODO.md` (the DAG this skill drains)
+**Status:** approved design, pre-implementation — see the revision banner above
+**Related:** `.claude/skills/yolo-ship/SKILL.md` (modified by this work), the "TO DO" project board (the work this skill drains)
 
 ## Problem
 
@@ -15,9 +27,9 @@ orchestrator's own context ballooning, and without spinning forever on failures.
 
 This requires two deliverables:
 
-1. **`dag-ship`** — a new user-invocable orchestrator skill.
+1. **`auto-ship`** — a new user-invocable orchestrator skill.
 2. **`yolo-ship` edits** — an auto-merge phase for standalone runs, plus an
-   *orchestrated mode* that defers the merge to dag-ship and stops touching
+   *orchestrated mode* that defers the merge to auto-ship and stops touching
    `TODO.md`.
 
 ## Decisions (from brainstorming)
@@ -27,11 +39,11 @@ This requires two deliverables:
 | Q1 | Which task classes to auto-dispatch | **Code tasks + cluster walks.** Only the 🚫 trigger-gated set is skipped. |
 | Q2 | Where merge + conflict-resolution lives | **Orchestrator owns the merge queue** (serialized). |
 | Q3 | TODO.md write contention | **Orchestrator is the sole writer.** Agents return follow-ups in their handoff. |
-| Q4 | Skill name | **`dag-ship`.** |
+| Q4 | Skill name | **`auto-ship`.** |
 
 **Reconciliation of Q2 with the top-line "modify yolo-ship to auto-merge" ask:**
 yolo-ship gains a self-merge phase that is its standalone default; under
-dag-ship it is suppressed (dag-ship passes an orchestrated flag) so the
+auto-ship it is suppressed (auto-ship passes an orchestrated flag) so the
 orchestrator can serialize all merges. The merge *mechanism* is documented once;
 the *queue / ordering / serialization / TODO.md reconciliation* is owned by the
 orchestrator.
@@ -42,7 +54,7 @@ orchestrator.
 
 **Chosen: main-session orchestrator with all durable state externalized to disk.**
 
-The `/dag-ship` session **is** the orchestrator. It dispatches background
+The `/auto-ship` session **is** the orchestrator. It dispatches background
 `yolo-ship` agents, merges completed PRs through a serialized queue, updates
 `TODO.md`, recomputes the ready set, and repeats. Its in-memory footprint is
 only the edge-map plus one line per in-flight task. Everything that matters
@@ -51,13 +63,13 @@ lives on disk:
 - **Done** = the task line is struck through (`~~`) in `TODO.md`.
 - **In-flight** = an open PR whose title is prefixed `[TASK-ID]`.
 - **Parked/quarantined** = a `🛑 [TASK-ID]` line in `TODO.md` + a journal row.
-- **Attempt history** = the event journal `.claude/dag-ship-log.md` (gitignored).
-- **Glanceable progress** = the dashboard `.claude/dag-ship-status.md` — a
+- **Attempt history** = the event journal `.claude/auto-ship-log.md` (gitignored).
+- **Glanceable progress** = the dashboard `.claude/auto-ship-status.md` — a
   derived mirror, not a source of truth (see §13).
 
 Because state is fully reconstructable from `TODO.md` + `gh pr list` +
-`.claude/dag-ship-log.md`, **the run is resumable**: kill the session, re-invoke
-`/dag-ship`, and it rebuilds and continues. This is also the escape hatch for
+`.claude/auto-ship-log.md`, **the run is resumable**: kill the session, re-invoke
+`/auto-ship`, and it rebuilds and continues. This is also the escape hatch for
 very long runs — when context grows, end and re-enter.
 
 Rejected alternatives: (B) a dedicated background orchestrator agent — frees the
@@ -123,7 +135,7 @@ first plan print.
 Each code-lane agent is dispatched (background) with a prompt that pins:
 
 - Run `/yolo-ship` on **exactly one** task ID.
-- Branch `dag-ship/<TASK-ID>-<slug>`; PR title prefixed `[<TASK-ID>]`; base `main`.
+- Branch `auto-ship/<TASK-ID>-<slug>`; PR title prefixed `[<TASK-ID>]`; base `main`.
 - **Orchestrated mode:** stop at a **green + verified-mergeable** PR. Do **NOT**
   merge. Do **NOT** edit `TODO.md`.
 - Return a **structured handoff, ≤150 words**:
@@ -150,7 +162,7 @@ One PR at a time:
 4. Fast-forward local `main` (`git checkout main && git pull --ff-only`).
 5. Strike the task line in `TODO.md`, append the closing PR ref, and fold in the
    agent's reported follow-ups (orchestrator is the sole `TODO.md` writer, Q3).
-6. Record `merged` in `.claude/dag-ship-log.md`.
+6. Record `merged` in `.claude/auto-ship-log.md`.
 
 Serialization makes conflicts rare and resolvable; only one writer ever touches
 `main` or `TODO.md`.
@@ -185,7 +197,7 @@ Hard rules baked into the skill:
   accumulating across waves.
 - It enforces the **≤150-word** structured handoff from every agent.
 - Because all state is on disk, the run is **resumable** — the explicit
-  long-run escape hatch is "end the session and re-invoke `/dag-ship`."
+  long-run escape hatch is "end the session and re-invoke `/auto-ship`."
 
 ---
 
@@ -193,24 +205,24 @@ Hard rules baked into the skill:
 
 1. **New Phase 7 — auto-merge when green** (standalone default): runs the §5
    merge routine on its own PR. Satisfies the literal "auto-merge" ask.
-2. **Orchestrated flag** (set by dag-ship's dispatch prompt): skip Phase 7;
+2. **Orchestrated flag** (set by auto-ship's dispatch prompt): skip Phase 7;
    emit the §4 handoff instead.
 3. **Autonomy-contract item 3 changes under orchestration:** do not write
    `TODO.md`; return deferred follow-ups in the handoff so the orchestrator (the
    sole writer) folds them in.
 
 These are additive: a human running `/yolo-ship` directly gets auto-merge; a
-dag-ship-dispatched agent gets the deferred-handoff behavior.
+auto-ship-dispatched agent gets the deferred-handoff behavior.
 
 ---
 
 ## 9. Testing & safety
 
-- `dag-ship --dry-run` prints the full wave/lane plan + skip-list and stops (no
+- `auto-ship --dry-run` prints the full wave/lane plan + skip-list and stops (no
   dispatch). The plan is always printed before wave 1 regardless.
 - Validate the skill end-to-end against a **throwaway 2-node DAG** (one with a
   dependency on the other) before pointing it at the real `TODO.md` — this also
-  proves the 3-deep agent nesting (dag-ship → yolo-ship → its subagents) works.
+  proves the 3-deep agent nesting (auto-ship → yolo-ship → its subagents) works.
 - Validate the §11 breaker with a deliberately-failing throwaway task (assert it
   parks after the cap, no infinite loop).
 
@@ -235,7 +247,7 @@ The dangerous case: a walk (or any task) fails → a follow-up "fix" is added to
 `TODO.md` → the normal loop dispatches and merges it → the original task
 re-runs → it fails the **same way** → another follow-up is added → forever. Five
 layered guards prevent this. All state is on disk in the append-only event
-journal `.claude/dag-ship-log.md` (each failure event carries
+journal `.claude/auto-ship-log.md` (each failure event carries
 `attempt | outcome | signature | parent | depth | ts`, so attempt counts are a
 grep), and the guards survive a resume.
 
@@ -283,16 +295,16 @@ quarantined, both enumerated in the final report.
 Two files, distinct roles, both gitignored, both `cat`/`tail`/`watch`-able from
 any terminal independent of the Claude session.
 
-**`.claude/dag-ship-status.md` — the dashboard.** Overwritten on every state
+**`.claude/auto-ship-status.md` — the dashboard.** Overwritten on every state
 change. A single snapshot: a header line with counts + a progress bar + the
 budget meters (§11), then sections for in-flight (with PR# + CI state), ready,
 blocked (with the blocking edge), parked (`🛑` + signature), and done (with
 closing PR#). It is a **derived mirror**, never a source of truth — on resume
 the orchestrator rebuilds it from `TODO.md` + `gh pr list` + the journal, so it
 can never be stale-but-wrong. Watch with `watch -n5 cat
-.claude/dag-ship-status.md`.
+.claude/auto-ship-status.md`.
 
-**`.claude/dag-ship-log.md` — the event journal.** Append-only timeline of every
+**`.claude/auto-ship-log.md` — the event journal.** Append-only timeline of every
 state transition (`run start`, `wave N dispatch`, `pr-green`, `merged`,
 `walk-pass`, `failed … → PARKED`, etc.). Human-readable and `tail -f`-able for a
 live feed; also the on-disk substrate for §11 (failure events carry
@@ -319,7 +331,7 @@ entirely and the run is unaffected.
   title prefix, so re-runs don't duplicate). On PR open, the card's body gets the
   PR link appended.
 - **Columns:** the orchestrator reads the board's **Status** single-select
-  options (`gh project field-list --format json`) and maps dag-ship state →
+  options (`gh project field-list --format json`) and maps auto-ship state →
   column. On a fresh board the orchestrator **auto-defines** the 7-column scheme via
   `updateProjectV2Field` (verified working; documented in
   `references/github-project.md`): `Trigger-gated · Blocked · Ready · In Progress
@@ -342,5 +354,5 @@ entirely and the run is unaffected.
 - Auto-dispatching cluster-walk fixes can be disabled via a future
   human-only toggle; v1 lets the §11 guards govern it.
 - Per-package registry tightening, Go toolchain, and the other 🚫 trigger-gated
-  TODO items are never touched by dag-ship.
+  TODO items are never touched by auto-ship.
 - Cross-repo / multi-DAG orchestration. One `TODO.md`, one repo.

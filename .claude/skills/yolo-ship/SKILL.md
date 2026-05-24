@@ -16,9 +16,9 @@ This skill orchestrates other skills. It does not re-explain them — it sequenc
 
 1. **Don't ask the user.** Make a recommendation and proceed. Escalate via `AskUserQuestion` ONLY when a decision is high-stakes **and** ambiguous **and** not inferable from code, memory, or conventions. "I want to be safe" is not a reason to ask — it's a reason to document.
 2. **Every non-trivial decision is logged** to `.claude/memory/decisions.md` (Date | Decision | Rationale | Alternatives). If you'd have asked the user, write the recommendation there instead.
-3. **Follow-up work goes in `TODO.md`** — never silently dropped. Anything you deliberately defer is a TODO line, not a memory. **Orchestrated mode:** don't edit `TODO.md` — return follow-ups in your handoff so dag-ship (the sole writer) folds them in.
+3. **Follow-up work is tracked, never silently dropped.** Anything you deliberately defer becomes a card on the **"TO DO"** project board (To Do, or Backlog if it's gated) — not a memory. **Orchestrated mode:** don't touch the board — return follow-ups in your handoff so auto-ship (the sole board writer) creates the cards.
 4. **Pre-PR gate is `pnpm build` + `pnpm test` + lint** — not just build+test (see [[feedback_run_lint_before_pr]], [[feedback_run_tsc_alongside_vitest]]).
-5. **Done = branch codex-reviewed clean *before* the PR + CI green, then merged.** The review runs locally with Codex (`gpt-5.5` / `xhigh` effort, read-only) before the PR exists — there is **no hosted-reviewer wait**. When CI is green you **auto-merge** (Phase 7) and fast-forward local `main`. **Exception — orchestrated mode:** if dag-ship dispatched you, do **NOT** merge and do **NOT** edit `TODO.md` — stop at a green, verified-mergeable PR and return the handoff; dag-ship owns the serialized merge queue.
+5. **Done = branch codex-reviewed clean *before* the PR + CI green, then merged.** The review runs locally with Codex (`gpt-5.5` / `xhigh` effort, read-only) before the PR exists — there is **no hosted-reviewer wait**. When CI is green you **auto-merge** (Phase 7) and fast-forward local `main`. **Exception — orchestrated mode:** if auto-ship dispatched you, do **NOT** merge and do **NOT** touch the board — stop at a green, verified-mergeable PR and return the handoff; auto-ship owns the serialized merge queue and all board writes.
 
 ## Context budget (target < 300–400K tokens)
 
@@ -54,7 +54,7 @@ The orchestrator (you) holds only: the plan file, project memory, and one-paragr
 - **REQUIRED:** Use superpowers:verification-before-completion — run the real commands, read the real output. Evidence before claims.
 - Run `pnpm build && pnpm test` (or `--filter @ax/<plugin>`) **and** lint. tsc must be clean, not just vitest ([[feedback_run_tsc_alongside_vitest]]).
 - Do a **whole-branch** review, not just per-task — a shared-table FK or repo-wide teardown break only shows on the full build ([[feedback_new_fk_breaks_downstream_test_teardown]]).
-- Write every deferred item into `TODO.md`.
+- Track every deferred item as a card on the **"TO DO"** board (To Do, or Backlog if gated) — or, in orchestrated mode, return it in your handoff for auto-ship to file.
 
 ### Phase 5 — Local Codex review (before the PR exists)
 This replaces waiting on a hosted reviewer. Review the **whole branch** locally with Codex *before* any PR is opened, and address findings in a loop until the review is clean.
@@ -122,10 +122,10 @@ digraph ship {
 How this phase behaves depends on **mode**:
 
 - **Standalone** (a human ran `/yolo-ship` directly) — **default: auto-merge.**
-- **Orchestrated** (dag-ship dispatched you — the dispatch prompt says so) — **do
-  NOT merge, do NOT touch `TODO.md`.** Stop at the green, verified-mergeable PR
-  and return your handoff. dag-ship's serialized merge queue does the merge +
-  local-main update + `TODO.md` strike. This is how dag-ship safely serializes
+- **Orchestrated** (auto-ship dispatched you — the dispatch prompt says so) — **do
+  NOT merge, do NOT touch the board.** Stop at the green, verified-mergeable PR
+  and return your handoff. auto-ship's serialized merge queue does the merge +
+  local-main update + board move (→ Done). This is how auto-ship safely serializes
   many parallel agents.
 
 **Standalone auto-merge:**
@@ -141,8 +141,8 @@ the branch, `git rebase origin/main`, resolve conflicts, push, wait for CI to
 re-green (`gh pr checks <n>`), then merge. A non-trivial rebase changes the diff —
 re-run the Phase 5 Codex review on the new diff before merging.
 
-After merging: strike the task in `TODO.md`, append `— shipped: #<n>`, and report
-the merge. Then you are done.
+After merging: move the task's card → **Done** on the "TO DO" board (append
+`— shipped: #<n>` to its body), and report the merge. Then you are done.
 
 ## Red flags — you are rationalizing
 
@@ -150,14 +150,14 @@ the merge. Then you are done.
 |---|---|
 | "I'll ask the user to be safe" | Document a recommendation in `decisions.md` and proceed. Asking is the exception, not the default. |
 | "I'll skip lint, build+test passed" | The gate is build+test+**lint**. tsc/lint catch what vitest tolerates. |
-| "I'll defer this but it's obvious" | Obvious-to-you ≠ tracked. Put it in `TODO.md` or it's lost. |
+| "I'll defer this but it's obvious" | Obvious-to-you ≠ tracked. File a board card (or hand it off) or it's lost. |
 | "CI will probably pass, I'll wrap up" | Not done until `gh pr checks` is actually green. Verify, don't assume. |
 | "I'll skip the codex review, lint+test passed" | The pre-PR gate now *includes* a Codex review. Tests prove behavior; the review catches design/security/convention issues tests don't. |
 | "I'll ask the user which model for codex" | yolo-ship pins `gpt-5.5` read-only and tiers the *effort* by risk (xhigh for boundary/security/schema/multi-file, high ordinary, skip docs). Don't fall through to skill-codex's interactive `AskUserQuestion` — that breaks the autonomy contract. |
 | "Small change, but I'll run xhigh + the full local suite to be safe" | Tier it. `xhigh` + full ceremony on a one-liner is the waste we're cutting; reserve the heavy path for boundary/security/schema/multi-file diffs. |
 | "Codex flagged it but I think it's fine" | Verify each finding (receiving-code-review). Fix real ones; log rejected ones in `decisions.md` with the reason. Silent dismissal isn't allowed. |
 | "I'll review locally after I open the PR" | The review is the gate *before* the PR. Open it only once Codex is clean. |
-| "dag-ship dispatched me but I'll merge anyway" | Orchestrated mode = stop at a green PR + hand off. Self-merging races the other agents and corrupts the serialized queue. |
+| "auto-ship dispatched me but I'll merge anyway" | Orchestrated mode = stop at a green PR + hand off. Self-merging races the other agents and corrupts the serialized queue. |
 | "I'll implement inline, subagents are overhead" | Inline implementation blows the context budget. Dispatch per task. |
 | "This decision is too small to log" | If you'd have asked the user about it, it's big enough to log. |
 
@@ -172,4 +172,4 @@ the merge. Then you are done.
 | Verify | superpowers:verification-before-completion, superpowers:requesting-code-review |
 | Codex review (pre-PR) | skill-codex:codex (`gpt-5.5` / `xhigh` / read-only), superpowers:receiving-code-review |
 | Ship | commit-commands:commit-push-pr, superpowers:systematic-debugging, `gh`, `ScheduleWakeup` |
-| Merge (Phase 7) | `gh pr merge --squash`, `git pull --ff-only` (standalone); hand off to dag-ship (orchestrated) |
+| Merge (Phase 7) | `gh pr merge --squash`, `git pull --ff-only` (standalone); hand off to auto-ship (orchestrated) |

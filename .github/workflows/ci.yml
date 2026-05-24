@@ -28,7 +28,7 @@ jobs:
       - run: pnpm lint
       # Tests: affected packages + dependents on PRs (fast feedback); full suite on
       # push to main (cross-package backstop — a shared-table break only shows on the
-      # full run; auto-merge relies on this main gate, see dag-ship merge queue).
+      # full run; auto-merge relies on this main gate, see auto-ship merge queue).
       - name: Test (affected packages + dependents)
         if: github.event_name == 'pull_request'
         env:

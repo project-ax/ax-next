@@ -57,6 +57,8 @@ docs/plans/*
 # Local handoff/prompt scratch — kept out of git
 .claude/prompts/
 
-# dag-ship operational run state (regenerated from TODO.md + gh on resume)
-.claude/dag-ship-status.md
-.claude/dag-ship-log.md
+# auto-ship operational run state (regenerated from the "TO DO" board + gh on resume)
+.claude/auto-ship-status.md
+.claude/auto-ship-log.md
+.claude/auto-ship-todo-snapshot.txt
+.claude/auto-ship-board-poll.sh

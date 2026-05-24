@@ -2,16 +2,6 @@
   "hooks": {
     "PostToolUse": [
       {
-        "matcher": "Edit|Write|MultiEdit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/check-todo-dag.mjs\"",
-            "statusMessage": "Checking TODO.md DAG sync"
-          }
-        ]
-      },
-      {
         "matcher": "Task",
         "hooks": [
           {

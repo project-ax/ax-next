@@ -1,14 +1,14 @@
-# dag-ship Implementation Plan
+# auto-ship Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Authoring tasks also use superpowers:writing-skills.
 
-**Goal:** Build a `dag-ship` orchestrator skill that drains the `TODO.md` DAG in parallel waves, and modify `yolo-ship` to auto-merge green PRs (suppressed under dag-ship's serialized queue).
+**Goal:** Build a `auto-ship` orchestrator skill that drains the `TODO.md` DAG in parallel waves, and modify `yolo-ship` to auto-merge green PRs (suppressed under auto-ship's serialized queue).
 
-**Architecture:** `dag-ship` is a user-invocable skill the main session follows as orchestrator. It computes the ready set from the `TODO.md` mermaid edge-map + strike-throughs + `gh pr list`, dispatches one background `yolo-ship` agent per ready code task (serialized walk agents for cluster lane), serially merges the green PRs, folds strike-throughs/follow-ups back into `TODO.md`, and loops. All state is on disk so the run is resumable. Failure loops are prevented by a failure-signature breaker + attempt/depth/global caps.
+**Architecture:** `auto-ship` is a user-invocable skill the main session follows as orchestrator. It computes the ready set from the `TODO.md` mermaid edge-map + strike-throughs + `gh pr list`, dispatches one background `yolo-ship` agent per ready code task (serialized walk agents for cluster lane), serially merges the green PRs, folds strike-throughs/follow-ups back into `TODO.md`, and loops. All state is on disk so the run is resumable. Failure loops are prevented by a failure-signature breaker + attempt/depth/global caps.
 
 **Tech Stack:** Claude Code skills (markdown + frontmatter), `references/` sub-files (existing pattern: chat-qa-sweep, k8s-acceptance-loop), the `Agent` tool (background + parallel), `gh` CLI, `git`. No compiled code — the skill is followed by Claude; verification is a safe dry-run reasoning check plus two guided side-effecting live runs.
 
-**Spec:** `docs/plans/2026-05-24-dag-ship-design.md` (§1–§13).
+**Spec:** `docs/plans/2026-05-24-auto-ship-design.md` (§1–§13).
 
 ---
 
@@ -16,40 +16,40 @@
 
 | File | Responsibility | Action |
 |---|---|---|
-| `.claude/skills/dag-ship/SKILL.md` | Lean orchestration logic: prime directive, state/readiness, control loop, wave dispatch, merge queue, walk lane, failure guards, progress files, termination, safety. | Create |
-| `.claude/skills/dag-ship/references/templates.md` | Verbatim copy-don't-paraphrase artifacts: the two dispatch prompts, failure-signature normalization rules, status-dashboard format, journal line formats. | Create |
-| `.claude/skills/dag-ship/references/github-project.md` | Best-effort GitHub Projects v2 board mirror: find/create the "TO DO" board, draft-issue cards per task, state→column mapping with fallback, graceful-off. | Create |
+| `.claude/skills/auto-ship/SKILL.md` | Lean orchestration logic: prime directive, state/readiness, control loop, wave dispatch, merge queue, walk lane, failure guards, progress files, termination, safety. | Create |
+| `.claude/skills/auto-ship/references/templates.md` | Verbatim copy-don't-paraphrase artifacts: the two dispatch prompts, failure-signature normalization rules, status-dashboard format, journal line formats. | Create |
+| `.claude/skills/auto-ship/references/github-project.md` | Best-effort GitHub Projects v2 board mirror: find/create the "TO DO" board, draft-issue cards per task, state→column mapping with fallback, graceful-off. | Create |
 | `.claude/skills/yolo-ship/SKILL.md` | Add Phase 7 (auto-merge standalone / hand-off orchestrated); update autonomy-contract items 3 & 5; update ship DOT graph + exit line. | Modify |
 | `.gitignore` | Ignore the two operational tracking files. | Modify |
-| `docs/plans/2026-05-24-dag-ship-design.md` | The approved spec (already committed). | Reference only |
+| `docs/plans/2026-05-24-auto-ship-design.md` | The approved spec (already committed). | Reference only |
 
 `SKILL.md` keeps process/decision logic; `references/templates.md` holds the literal text the orchestrator copies. Split by responsibility, mirroring the repo's existing multi-file skills.
 
 ---
 
-## Task 1: Create dag-ship skill directory + SKILL.md
+## Task 1: Create auto-ship skill directory + SKILL.md
 
 **Files:**
-- Create: `.claude/skills/dag-ship/SKILL.md`
+- Create: `.claude/skills/auto-ship/SKILL.md`
 
 - [ ] **Step 1: Announce sub-skill** — Use `superpowers:writing-skills` for this and Task 2 (frontmatter rules, description-triggering, structure).
 
 - [ ] **Step 2: Create the directory**
 
 ```bash
-mkdir -p .claude/skills/dag-ship/references
+mkdir -p .claude/skills/auto-ship/references
 ```
 
 - [ ] **Step 3: Write `SKILL.md` verbatim**
 
 ````markdown
 ---
-name: dag-ship
-description: Use when asked to autonomously drain the TODO.md task DAG in parallel — read the dependency graph, ship every task that has no unmet dependency via yolo-ship in parallel waves, auto-merge the green PRs through a serialized queue, recompute the newly-unblocked tasks, and loop until the DAG is empty. Triggers on "drain the TODO DAG", "ship all the ready TODO tasks in parallel", "run dag-ship", "work the TODO.md graph autonomously", "fan out the backlog and ship it". For a SINGLE task, use yolo-ship instead.
+name: auto-ship
+description: Use when asked to autonomously drain the TODO.md task DAG in parallel — read the dependency graph, ship every task that has no unmet dependency via yolo-ship in parallel waves, auto-merge the green PRs through a serialized queue, recompute the newly-unblocked tasks, and loop until the DAG is empty. Triggers on "drain the TODO DAG", "ship all the ready TODO tasks in parallel", "run auto-ship", "work the TODO.md graph autonomously", "fan out the backlog and ship it". For a SINGLE task, use yolo-ship instead.
 user-invocable: true
 ---
 
-# dag-ship — drain the TODO.md DAG in parallel waves
+# auto-ship — drain the TODO.md DAG in parallel waves
 
 ## Overview
 
@@ -63,10 +63,10 @@ or quarantined work.
 You are the **orchestrator**. You dispatch agents; you do not implement. Heavy
 work lives in subagents so your context stays lean. All durable state lives **on
 disk** (TODO.md + open PRs + two tracking files), so a run is fully **resumable**:
-if your context grows, end the session and re-invoke `/dag-ship` — it rebuilds
+if your context grows, end the session and re-invoke `/auto-ship` — it rebuilds
 and continues.
 
-Design: `docs/plans/2026-05-24-dag-ship-design.md`. Verbatim templates:
+Design: `docs/plans/2026-05-24-auto-ship-design.md`. Verbatim templates:
 `references/templates.md`.
 
 ## Prime directive — context discipline
@@ -81,7 +81,7 @@ Never read task source, diffs, or agent transcripts into your context. Enforce a
 | "Let me peek at the diff to check it" | The agent + CI + Codex already did. You hold a one-line status. |
 | "I'll remember what wave 1 did" | Re-read TODO.md. Cross-wave memory is the trap; disk is truth. |
 | "I'll merge these two at once to be fast" | The merge queue is serialized. One PR at a time, always. |
-| "Context is getting big, push through" | End + re-invoke `/dag-ship`. State is on disk; resume is free. |
+| "Context is getting big, push through" | End + re-invoke `/auto-ship`. State is on disk; resume is free. |
 
 ## State model & readiness
 
@@ -106,7 +106,7 @@ Two lanes:
 ## Control loop
 
 ```dot
-digraph dagship {
+digraph autoship {
   "Print plan" [shape=box];
   "Recompute ready set (TODO.md + gh + journal)" [shape=box];
   "Any ready?" [shape=diamond];
@@ -131,8 +131,8 @@ no dispatch.
 
 ## Dispatching a wave
 
-1. Refresh `.claude/dag-ship-status.md`; append `wave N dispatch …` to
-   `.claude/dag-ship-log.md`.
+1. Refresh `.claude/auto-ship-status.md`; append `wave N dispatch …` to
+   `.claude/auto-ship-log.md`.
 2. **Code lane:** in a SINGLE message, launch one **background** agent per ready
    code task (`Agent`, `run_in_background: true`, `subagent_type: general-purpose`)
    using the **code-lane dispatch prompt** in `references/templates.md`.
@@ -197,11 +197,11 @@ TODO.md + a journal row, excluded from the ready set.
 
 ## Progress files (both gitignored)
 
-- `.claude/dag-ship-status.md` — the **dashboard**, overwritten on every state
+- `.claude/auto-ship-status.md` — the **dashboard**, overwritten on every state
   change (format in `references/templates.md`). Watch: `watch -n5 cat
-  .claude/dag-ship-status.md`.
-- `.claude/dag-ship-log.md` — the **journal**, append-only timeline + failure
-  ledger. Watch: `tail -f .claude/dag-ship-log.md`.
+  .claude/auto-ship-status.md`.
+- `.claude/auto-ship-log.md` — the **journal**, append-only timeline + failure
+  ledger. Watch: `tail -f .claude/auto-ship-log.md`.
 
 On resume, rebuild both from TODO.md + `gh pr list` + the journal.
 
@@ -223,7 +223,7 @@ walk-filed follow-ups. TODO.md remains the durable record.
 
 - `--dry-run` prints the wave/lane plan + skip-list and stops — no dispatch.
 - The plan is printed before wave 1 regardless; a watching human can interrupt.
-- First-ever validation: point dag-ship at a throwaway 2-node DAG before the real
+- First-ever validation: point auto-ship at a throwaway 2-node DAG before the real
   TODO.md (design §9), and at a deliberately-failing node to confirm the breaker
   parks it.
 
@@ -240,14 +240,14 @@ walk-filed follow-ups. TODO.md remains the durable record.
 
 - [ ] **Step 4: Verify the skill is well-formed and discoverable**
 
-Run: `head -5 .claude/skills/dag-ship/SKILL.md`
-Expected: valid YAML frontmatter with `name: dag-ship`, a `description:` starting with "Use when", and `user-invocable: true`.
+Run: `head -5 .claude/skills/auto-ship/SKILL.md`
+Expected: valid YAML frontmatter with `name: auto-ship`, a `description:` starting with "Use when", and `user-invocable: true`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add .claude/skills/dag-ship/SKILL.md
-git commit -m "feat(dag-ship): add DAG-draining orchestrator skill (SKILL.md)"
+git add .claude/skills/auto-ship/SKILL.md
+git commit -m "feat(auto-ship): add DAG-draining orchestrator skill (SKILL.md)"
 ```
 
 ---
@@ -255,12 +255,12 @@ git commit -m "feat(dag-ship): add DAG-draining orchestrator skill (SKILL.md)"
 ## Task 2: Create references/templates.md
 
 **Files:**
-- Create: `.claude/skills/dag-ship/references/templates.md`
+- Create: `.claude/skills/auto-ship/references/templates.md`
 
 - [ ] **Step 1: Write `references/templates.md` verbatim**
 
 ````markdown
-# dag-ship templates — copy these literally, do not paraphrase
+# auto-ship templates — copy these literally, do not paraphrase
 
 ## Code-lane dispatch prompt
 
@@ -269,16 +269,16 @@ Dispatch via `Agent` with `run_in_background: true`,
 `<TASK-BODY>` (copy the task's line from TODO.md), `<short-slug>`:
 
 > You are shipping ONE task from this repo's `TODO.md`, end to end, under
-> orchestration by dag-ship.
+> orchestration by auto-ship.
 >
 > **Task <TASK-ID>:** <TASK-TITLE>
 > <TASK-BODY>
 >
 > Run the `yolo-ship` skill on this task with these ORCHESTRATED-MODE overrides:
-> - Branch: `dag-ship/<TASK-ID>-<short-slug>`. PR title MUST start with
+> - Branch: `auto-ship/<TASK-ID>-<short-slug>`. PR title MUST start with
 >   `[<TASK-ID>] `. Base `main`.
 > - **Do NOT merge.** Stop at a green, verified-mergeable PR (yolo-ship ends at
->   Phase 6 for you). dag-ship merges it through a serialized queue.
+>   Phase 6 for you). auto-ship merges it through a serialized queue.
 > - **Do NOT edit `TODO.md`.** Return deferred follow-ups in your handoff instead.
 > - Otherwise follow yolo-ship exactly: worktree, self-answering brainstorm,
 >   written plan, subagent-driven TDD, build+test+lint gate, local Codex review,
@@ -301,7 +301,7 @@ Dispatch via `Agent` with `run_in_background: true`,
 
 Dispatch ONE at a time (serialized). Substitute as above:
 
-> You are running ONE manual-acceptance walk from `TODO.md` under dag-ship,
+> You are running ONE manual-acceptance walk from `TODO.md` under auto-ship,
 > against the kind cluster.
 >
 > **Task <TASK-ID>:** <TASK-TITLE>
@@ -336,10 +336,10 @@ Shape: `<lane>:<TASK-ID>:<where>:<symptom>`.
   — e.g. `walk:CLI-1:git-clone:auth-403`
 - Agent gave up: `agent:<TASK-ID>:<phase>:gave-up`
 
-## Status dashboard format — `.claude/dag-ship-status.md` (overwrite each change)
+## Status dashboard format — `.claude/auto-ship-status.md` (overwrite each change)
 
 ```
-# dag-ship — live status
+# auto-ship — live status
 _updated <YYYY-MM-DD HH:MM:SS> · wave <N> · started <HH:MM:SS>_
 
 <done>/<total> done · <k> in-flight · <k> ready · <k> blocked · <k> parked  (+<k> trigger-gated, skipped)
@@ -361,7 +361,7 @@ _updated <YYYY-MM-DD HH:MM:SS> · wave <N> · started <HH:MM:SS>_
 <TASK-ID> #<PR> · <TASK-ID> #<PR> · …
 ```
 
-## Journal line formats — `.claude/dag-ship-log.md` (append-only)
+## Journal line formats — `.claude/auto-ship-log.md` (append-only)
 
 ```
 <HH:MM:SS>  run start · actionable=<k> · budget <dmax> dispatches / <smax> spawns
@@ -376,17 +376,17 @@ _updated <YYYY-MM-DD HH:MM:SS> · wave <N> · started <HH:MM:SS>_
 
 - [ ] **Step 2: Verify both dispatch prompts and all format blocks are present** (targeted anchors — avoid header counts, since the dashboard sample itself contains `##` lines)
 
-Run: `grep -n 'Code-lane dispatch prompt\|Walk-lane dispatch prompt\|Failure-signature normalization\|Status dashboard format\|Journal line formats' .claude/skills/dag-ship/references/templates.md`
+Run: `grep -n 'Code-lane dispatch prompt\|Walk-lane dispatch prompt\|Failure-signature normalization\|Status dashboard format\|Journal line formats' .claude/skills/auto-ship/references/templates.md`
 Expected: one match for each of the five section headers.
 
-Run: `grep -n 'ORCHESTRATED-MODE\|walk-pass\|sig=<signature>\|budget:' .claude/skills/dag-ship/references/templates.md`
+Run: `grep -n 'ORCHESTRATED-MODE\|walk-pass\|sig=<signature>\|budget:' .claude/skills/auto-ship/references/templates.md`
 Expected: matches in the code prompt, walk prompt, journal, and dashboard respectively.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add .claude/skills/dag-ship/references/templates.md
-git commit -m "feat(dag-ship): add verbatim dispatch/format templates"
+git add .claude/skills/auto-ship/references/templates.md
+git commit -m "feat(auto-ship): add verbatim dispatch/format templates"
 ```
 
 ---
@@ -397,7 +397,7 @@ Best-effort second progress mirror. SKILL.md already points here (authored in
 Task 1). Every command is non-blocking: on any failure, warn once and continue.
 
 **Files:**
-- Create: `.claude/skills/dag-ship/references/github-project.md`
+- Create: `.claude/skills/auto-ship/references/github-project.md`
 
 - [ ] **Step 1: Confirm the gh CLI supports the subcommands this recipe uses**
 
@@ -407,9 +407,9 @@ Expected: all four subcommands listed. (If absent, the installed `gh` is too old
 - [ ] **Step 2: Write `references/github-project.md` verbatim**
 
 ````markdown
-# dag-ship — GitHub Project board mirror (best-effort)
+# auto-ship — GitHub Project board mirror (best-effort)
 
-A second progress mirror on top of `.claude/dag-ship-status.md`. **Never
+A second progress mirror on top of `.claude/auto-ship-status.md`. **Never
 load-bearing:** every command is best-effort — on any non-zero exit, log once,
 set `BOARD_OFF`, and stop touching the board for the rest of the run. Skip all of
 this in `--dry-run` (no external mutation in a dry run).
@@ -419,7 +419,7 @@ this in `--dry-run` (no external mutation in a dry run).
 ```bash
 # Needs the 'project' token scope. If absent, mirror is OFF.
 if ! gh auth status 2>&1 | grep -q "project"; then
-  echo "dag-ship: gh lacks 'project' scope — board mirror OFF (file dashboard only). Enable: gh auth refresh -s project"
+  echo "auto-ship: gh lacks 'project' scope — board mirror OFF (file dashboard only). Enable: gh auth refresh -s project"
   # BOARD_OFF=1 — skip every step below for the rest of the run
 fi
 OWNER=$(gh repo view --json owner -q .owner.login)
@@ -444,10 +444,10 @@ STATUS_FIELD_ID=$(echo "$FIELDS" | jq -r '.fields[] | select(.name=="Status") | 
 echo "$FIELDS" | jq -r '.fields[] | select(.name=="Status") | .options[] | "\(.name)\t\(.id)"'
 ```
 
-Build a `column-name → option-id` map from that output, then map dag-ship state →
+Build a `column-name → option-id` map from that output, then map auto-ship state →
 column, preferring the rich column and falling back to the default board:
 
-| dag-ship state | preferred column | fallback (default board) |
+| auto-ship state | preferred column | fallback (default board) |
 |---|---|---|
 | trigger-gated | Trigger-gated | Todo |
 | blocked (unmet deps) | Blocked | Todo |
@@ -466,7 +466,7 @@ The default board ships only `Todo / In Progress / Done`. For the richer view, a
 `Trigger-gated, Blocked, Ready, In Review, Parked` once via the UI (Project →
 Settings → Status → add options), or via GraphQL `updateProjectV2Field`
 (`singleSelectOptions` REPLACES the full set — include the existing options too).
-dag-ship works without this via the fallback mapping. For org-owned projects use
+auto-ship works without this via the fallback mapping. For org-owned projects use
 `organization(login:)` not `user(login:)` in any GraphQL query.
 
 ## 3. Find-or-create a draft card per task
@@ -502,14 +502,14 @@ Batch per-wave updates; never let a board call block dispatch or merge.
 
 - [ ] **Step 3: Verify the recipe's anchors are present**
 
-Run: `grep -n 'BOARD_OFF\|title=="TO DO"\|single-select-option-id\|item-create\|Parked' .claude/skills/dag-ship/references/github-project.md`
+Run: `grep -n 'BOARD_OFF\|title=="TO DO"\|single-select-option-id\|item-create\|Parked' .claude/skills/auto-ship/references/github-project.md`
 Expected: the graceful-off marker, the board find-or-create, the move command, card creation, and the Parked column all present.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add .claude/skills/dag-ship/references/github-project.md
-git commit -m "feat(dag-ship): GitHub Project board mirror recipe (best-effort)"
+git add .claude/skills/auto-ship/references/github-project.md
+git commit -m "feat(auto-ship): GitHub Project board mirror recipe (best-effort)"
 ```
 
 ---
@@ -521,7 +521,7 @@ git commit -m "feat(dag-ship): GitHub Project board mirror recipe (best-effort)"
 
 - [ ] **Step 1: Confirm they're not already ignored**
 
-Run: `git check-ignore .claude/dag-ship-status.md .claude/dag-ship-log.md; echo "exit $?"`
+Run: `git check-ignore .claude/auto-ship-status.md .claude/auto-ship-log.md; echo "exit $?"`
 Expected: `exit 1` (not yet ignored).
 
 - [ ] **Step 2: Append ignore rules**
@@ -529,21 +529,21 @@ Expected: `exit 1` (not yet ignored).
 Add these lines to `.gitignore`:
 
 ```
-# dag-ship operational run state (regenerated from TODO.md + gh on resume)
-.claude/dag-ship-status.md
-.claude/dag-ship-log.md
+# auto-ship operational run state (regenerated from TODO.md + gh on resume)
+.claude/auto-ship-status.md
+.claude/auto-ship-log.md
 ```
 
 - [ ] **Step 3: Verify**
 
-Run: `git check-ignore .claude/dag-ship-status.md .claude/dag-ship-log.md; echo "exit $?"`
+Run: `git check-ignore .claude/auto-ship-status.md .claude/auto-ship-log.md; echo "exit $?"`
 Expected: both paths printed, `exit 0`.
 
 - [ ] **Step 4: Commit**
 
 ```bash
 git add .gitignore
-git commit -m "chore(dag-ship): gitignore operational run-state files"
+git commit -m "chore(auto-ship): gitignore operational run-state files"
 ```
 
 ---
@@ -564,7 +564,7 @@ Find (exact):
 Replace with:
 
 ```
-5. **Done = branch codex-reviewed clean *before* the PR + CI green, then merged.** The review runs locally with Codex (`gpt-5.5` / `xhigh` effort, read-only) before the PR exists — there is **no hosted-reviewer wait**. When CI is green you **auto-merge** (Phase 7) and fast-forward local `main`. **Exception — orchestrated mode:** if dag-ship dispatched you, do **NOT** merge and do **NOT** edit `TODO.md` — stop at a green, verified-mergeable PR and return the handoff; dag-ship owns the serialized merge queue.
+5. **Done = branch codex-reviewed clean *before* the PR + CI green, then merged.** The review runs locally with Codex (`gpt-5.5` / `xhigh` effort, read-only) before the PR exists — there is **no hosted-reviewer wait**. When CI is green you **auto-merge** (Phase 7) and fast-forward local `main`. **Exception — orchestrated mode:** if auto-ship dispatched you, do **NOT** merge and do **NOT** edit `TODO.md` — stop at a green, verified-mergeable PR and return the handoff; auto-ship owns the serialized merge queue.
 ```
 
 - [ ] **Step 2: Extend autonomy-contract item 3 with the orchestrated-mode carve-out**
@@ -578,7 +578,7 @@ Find (exact):
 Replace with:
 
 ```
-3. **Follow-up work goes in `TODO.md`** — never silently dropped. Anything you deliberately defer is a TODO line, not a memory. **Orchestrated mode:** don't edit `TODO.md` — return follow-ups in your handoff so dag-ship (the sole writer) folds them in.
+3. **Follow-up work goes in `TODO.md`** — never silently dropped. Anything you deliberately defer is a TODO line, not a memory. **Orchestrated mode:** don't edit `TODO.md` — return follow-ups in your handoff so auto-ship (the sole writer) folds them in.
 ```
 
 - [ ] **Step 3: Verify**
@@ -644,10 +644,10 @@ Insert:
 How this phase behaves depends on **mode**:
 
 - **Standalone** (a human ran `/yolo-ship` directly) — **default: auto-merge.**
-- **Orchestrated** (dag-ship dispatched you — the dispatch prompt says so) — **do
+- **Orchestrated** (auto-ship dispatched you — the dispatch prompt says so) — **do
   NOT merge, do NOT touch `TODO.md`.** Stop at the green, verified-mergeable PR
-  and return your handoff. dag-ship's serialized merge queue does the merge +
-  local-main update + `TODO.md` strike. This is how dag-ship safely serializes
+  and return your handoff. auto-ship's serialized merge queue does the merge +
+  local-main update + `TODO.md` strike. This is how auto-ship safely serializes
   many parallel agents.
 
 **Standalone auto-merge:**
@@ -679,7 +679,7 @@ Replace with:
 
 ```
 | Ship | commit-commands:commit-push-pr, superpowers:systematic-debugging, `gh`, `ScheduleWakeup` |
-| Merge (Phase 7) | `gh pr merge --squash`, `git pull --ff-only` (standalone); hand off to dag-ship (orchestrated) |
+| Merge (Phase 7) | `gh pr merge --squash`, `git pull --ff-only` (standalone); hand off to auto-ship (orchestrated) |
 ```
 
 - [ ] **Step 5: Add a red-flags row for the new merge behavior**
@@ -694,7 +694,7 @@ Replace with:
 
 ```
 | "I'll review locally after I open the PR" | The review is the gate *before* the PR. Open it only once Codex is clean. |
-| "dag-ship dispatched me but I'll merge anyway" | Orchestrated mode = stop at a green PR + hand off. Self-merging races the other agents and corrupts the serialized queue. |
+| "auto-ship dispatched me but I'll merge anyway" | Orchestrated mode = stop at a green PR + hand off. Self-merging races the other agents and corrupts the serialized queue. |
 ```
 
 - [ ] **Step 6: Verify the edits are coherent**
@@ -723,7 +723,7 @@ algorithm in SKILL.md against the actual DAG.
 
 - [ ] **Step 1: Invoke the skill in dry-run mode**
 
-Invoke `/dag-ship --dry-run` (or, following the skill, compute and print the plan
+Invoke `/auto-ship --dry-run` (or, following the skill, compute and print the plan
 from `TODO.md` without dispatching).
 
 - [ ] **Step 2: Assert the printed plan**
@@ -746,14 +746,14 @@ identically to a solid edge, so FAULTA-4 is NOT ready until FAULTA-1 is done).
 Expected skipped (🚫 trigger-gated, never dispatched): CLI-4, CLI-5, CLI-6,
 CLI-7, FAULTA-2, FAULTA-3, FAULTA-5.
 
-Expected: **no agents dispatched**; no `dag-ship-status.md`/`-log.md` writes
+Expected: **no agents dispatched**; no `auto-ship-status.md`/`-log.md` writes
 beyond the dry-run plan print (dry-run may print but must not start a wave).
 
 - [ ] **Step 3: If the computed sets differ from the above, fix SKILL.md's readiness rules** (re-read the §2 "ready iff" definition and the mermaid edge interpretation) and re-run Step 1. Commit any fix:
 
 ```bash
-git add .claude/skills/dag-ship/SKILL.md
-git commit -m "fix(dag-ship): correct readiness computation per dry-run"
+git add .claude/skills/auto-ship/SKILL.md
+git commit -m "fix(auto-ship): correct readiness computation per dry-run"
 ```
 
 ---
@@ -761,10 +761,10 @@ git commit -m "fix(dag-ship): correct readiness computation per dry-run"
 ## Task 8: Guided live validation — throwaway 2-node DAG (SIDE EFFECTS)
 
 ⚠ **Side effects:** creates a throwaway branch + 2 real PRs + 2 merges to `main`.
-Run only when ready; it also proves the 3-deep agent nesting (dag-ship →
+Run only when ready; it also proves the 3-deep agent nesting (auto-ship →
 yolo-ship → its subagents) and the serialized merge queue.
 
-**Files:** Create (throwaway): `docs/plans/_dagship-selftest-TODO.md`
+**Files:** Create (throwaway): `docs/plans/_autoship-selftest-TODO.md`
 
 - [ ] **Step 1: Write a 2-node throwaway DAG** with trivial, real-but-harmless tasks (each appends a line to a scratch file), one depending on the other:
 
@@ -776,24 +776,24 @@ graph TD
   TESTB["TESTB · append B line"]
   TESTA --> TESTB
 ```
-- [ ] **[TESTA] Append the line `selftest-A` to `docs/plans/_dagship-scratch.txt`** (create the file if absent).
-- [ ] **[TESTB] Append the line `selftest-B` to `docs/plans/_dagship-scratch.txt`.**
+- [ ] **[TESTA] Append the line `selftest-A` to `docs/plans/_autoship-scratch.txt`** (create the file if absent).
+- [ ] **[TESTB] Append the line `selftest-B` to `docs/plans/_autoship-scratch.txt`.**
 ````
 
-- [ ] **Step 2: Run dag-ship against the throwaway file** (point the skill at `docs/plans/_dagship-selftest-TODO.md` instead of `TODO.md` for this run).
+- [ ] **Step 2: Run auto-ship against the throwaway file** (point the skill at `docs/plans/_autoship-selftest-TODO.md` instead of `TODO.md` for this run).
 
 - [ ] **Step 3: Assert behavior**
   - Wave 1 dispatches **only** TESTA (TESTB blocked by the edge).
-  - TESTA's PR title starts `[TESTA] `, branch `dag-ship/TESTA-…`, merges via the serialized queue, `main` fast-forwarded, TESTA struck through.
+  - TESTA's PR title starts `[TESTA] `, branch `auto-ship/TESTA-…`, merges via the serialized queue, `main` fast-forwarded, TESTA struck through.
   - Wave 2 then dispatches TESTB; it merges; TESTB struck through.
-  - `dag-ship-status.md` showed the transition; `dag-ship-log.md` has `merged #` lines for both.
+  - `auto-ship-status.md` showed the transition; `auto-ship-log.md` has `merged #` lines for both.
   - Terminates cleanly (no ready, no in-flight).
 
 - [ ] **Step 4: Clean up the throwaway artifacts**
 
 ```bash
-git rm -f docs/plans/_dagship-selftest-TODO.md docs/plans/_dagship-scratch.txt 2>/dev/null
-git commit -m "chore(dag-ship): remove 2-node self-test fixtures" || true
+git rm -f docs/plans/_autoship-selftest-TODO.md docs/plans/_autoship-scratch.txt 2>/dev/null
+git commit -m "chore(auto-ship): remove 2-node self-test fixtures" || true
 ```
 
 (If the self-test merged the scratch edits to `main`, revert those trivial commits or leave the scratch file deleted — note it in the run report.)
@@ -805,7 +805,7 @@ git commit -m "chore(dag-ship): remove 2-node self-test fixtures" || true
 ⚠ **Side effects:** dispatches an agent on a task engineered to fail twice.
 Proves the attempt cap + same-signature breaker park the task instead of looping.
 
-**Files:** Create (throwaway): `docs/plans/_dagship-failtest-TODO.md`
+**Files:** Create (throwaway): `docs/plans/_autoship-failtest-TODO.md`
 
 - [ ] **Step 1: Write a 1-node DAG with an impossible task**
 
@@ -818,19 +818,19 @@ graph TD
 - [ ] **[FAILX] Make `pnpm test` pass while ALSO adding a test that asserts `expect(1).toBe(2)`** (intentionally unsatisfiable — the agent cannot produce a green PR).
 ````
 
-- [ ] **Step 2: Run dag-ship against the failtest file.**
+- [ ] **Step 2: Run auto-ship against the failtest file.**
 
 - [ ] **Step 3: Assert behavior**
   - FAILX is dispatched, the agent returns `outcome: failed` with a `signature`.
-  - dag-ship records attempt=1, re-dispatches (attempt 2), gets the **same**
+  - auto-ship records attempt=1, re-dispatches (attempt 2), gets the **same**
     signature → **quarantines** FAILX: `🛑 [FAILX] (parked after 2 attempts — <signature>)` written to the failtest file + a `-> PARKED` journal line.
   - The loop **terminates** (no infinite re-dispatch); final report lists FAILX as parked.
 
 - [ ] **Step 4: Clean up**
 
 ```bash
-git rm -f docs/plans/_dagship-failtest-TODO.md 2>/dev/null
-git commit -m "chore(dag-ship): remove failure-breaker self-test fixture" || true
+git rm -f docs/plans/_autoship-failtest-TODO.md 2>/dev/null
+git commit -m "chore(auto-ship): remove failure-breaker self-test fixture" || true
 ```
 
 ---
@@ -854,7 +854,7 @@ git commit -m "chore(dag-ship): remove failure-breaker self-test fixture" || tru
 
 **Placeholder scan:** No "TBD"/"TODO-implement"/"add error handling" placeholders; every skill section and every yolo-ship edit shows the literal content. The throwaway fixtures in Tasks 8–9 are intentionally minimal but complete.
 
-**Type/name consistency:** Handoff field names (`task/outcome/pr/headSha/mergeable/ci/signature/followups`) are identical in the design §4, the code prompt, and the walk prompt. The two file names (`.claude/dag-ship-status.md`, `.claude/dag-ship-log.md`) and markers (`🛑`, `~~`, `[TASK-ID]` PR prefix, `dag-ship/<TASK-ID>-<slug>` branch) match across SKILL.md, templates.md, the gitignore task, and the validation tasks. The board column names (`Trigger-gated/Blocked/Ready/In Progress/In Review/Done/Parked`) and project title (`TO DO`) match across design §12.1, SKILL.md, and `references/github-project.md`. Caps (attempt 2, depth 2, 10 spawns, 3× dispatches) match design §11.
+**Type/name consistency:** Handoff field names (`task/outcome/pr/headSha/mergeable/ci/signature/followups`) are identical in the design §4, the code prompt, and the walk prompt. The two file names (`.claude/auto-ship-status.md`, `.claude/auto-ship-log.md`) and markers (`🛑`, `~~`, `[TASK-ID]` PR prefix, `auto-ship/<TASK-ID>-<slug>` branch) match across SKILL.md, templates.md, the gitignore task, and the validation tasks. The board column names (`Trigger-gated/Blocked/Ready/In Progress/In Review/Done/Parked`) and project title (`TO DO`) match across design §12.1, SKILL.md, and `references/github-project.md`. Caps (attempt 2, depth 2, 10 spawns, 3× dispatches) match design §11.
 
 ---
 

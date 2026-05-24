@@ -140,7 +140,7 @@ export const axThreadListAdapter: RemoteThreadListAdapter = {
     // Poll the conversations list until the server-generated title lands,
     // falling back to "New Chat" so the row never hangs in a loading state.
     // (Residual: a title that arrives after the poll window still needs a
-    // list() refresh to appear — tracked in TODO.md.)
+    // list() refresh to appear — tracked on the "TO DO" project board.)
     const title = (await pollConversationTitle(remoteId)) ?? 'New Chat';
     return createAssistantStream((controller) => {
       controller.appendText(title);
