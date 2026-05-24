@@ -211,6 +211,21 @@ export function createAuthBetterPlugin(config: AuthBetterConfig = {}): Plugin {
       });
       const localHandle = handle;
 
+      // Drain better-auth's async adapter-init BEFORE init() returns.
+      // better-auth resolves its database adapter on a background promise
+      // (`auth.$context`, surfaced here as `handle.ready()`) that runs a
+      // schema-introspection query. Leaving it unawaited means that query
+      // can still be in flight when the shared pg.Pool / Postgres
+      // testcontainer is torn down at the end of a test — the dying
+      // connection then surfaces as `57P01` →
+      // `BetterAuthError: Failed to initialize database adapter`. That race
+      // only loses under full-suite concurrency (the background init runs
+      // slower), which is why only the push-to-main full suite saw it
+      // (TASK-8). Awaiting `ready()` drains the query so nothing races
+      // teardown — and a genuine boot-time DB failure now fails boot loudly
+      // (better posture) instead of surfacing on the first user request.
+      await localHandle.ready();
+
       // 4) Subscribe to providers-changed for hot-reload -----------------
       // Task 1.5's CRUD routes fire `auth:providers-changed` after every
       // insert/update/delete; we re-read the table and rebuild the

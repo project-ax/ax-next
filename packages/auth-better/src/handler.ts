@@ -63,12 +63,38 @@ export interface HandlerInput {
 export interface HandlerHandle {
   current(): (req: Request) => Promise<Response>;
   rebuild(input: HandlerInput): void;
+  /**
+   * Resolves when the CURRENT instance's better-auth adapter-init settles.
+   *
+   * better-auth resolves its database adapter asynchronously on the
+   * `auth.$context` promise (a background query that introspects the schema
+   * via the kysely adapter). If that query is left unawaited it can still be
+   * in flight when the shared pg.Pool / Postgres testcontainer is torn down,
+   * and the dying connection surfaces as `57P01` →
+   * `BetterAuthError: Failed to initialize database adapter` (TASK-8: the
+   * flaky full-suite teardown). Callers (the plugin's `init()`) await
+   * `ready()` so the adapter is fully initialized before they report ready —
+   * draining the background query so nothing races teardown, and surfacing a
+   * genuine boot-time DB failure at boot instead of on the first request.
+   *
+   * Tracks the live instance: after a successful `rebuild()`, `ready()`
+   * resolves on the NEW instance's adapter-init. A failed `rebuild()` keeps
+   * the old instance and its (already-settled) readiness.
+   */
+  ready(): Promise<void>;
+}
+
+/** Internal: a built handler plus the better-auth `$context` adapter-init promise. */
+interface BuiltHandler {
+  handler: (req: Request) => Promise<Response>;
+  /** better-auth's `auth.$context` — resolves when the adapter is initialized. */
+  context: Promise<unknown>;
 }
 
 export function createBetterAuthHandler(input: HandlerInput): HandlerHandle {
-  let instance = build(input);
+  let built = build(input);
   return {
-    current: () => instance,
+    current: () => built.handler,
     rebuild: (next: HandlerInput) => {
       // Build the new one BEFORE replacing — if construction throws,
       // the old instance keeps serving. This covers I10's "no kernel
@@ -76,8 +102,7 @@ export function createBetterAuthHandler(input: HandlerInput): HandlerHandle {
       // typo'd config: requests in flight don't suddenly hit a broken
       // handler.
       try {
-        const built = build(next);
-        instance = built;
+        built = build(next);
       } catch (err) {
         // Log and keep the old instance live. Phase 1.5 will surface
         // this back to the admin UI via the CRUD response so the user
@@ -89,10 +114,24 @@ export function createBetterAuthHandler(input: HandlerInput): HandlerHandle {
         );
       }
     },
+    // Await the LIVE instance's adapter-init. Read `built` lazily (inside the
+    // thunk, not at closure-capture time) so a `rebuild()` between calls is
+    // reflected.
+    ready: () =>
+      built.context.then(
+        () => undefined,
+        // Re-throw so the caller (init) sees a boot-time DB failure. The
+        // .catch() inside build() prevents this same rejection from ALSO
+        // becoming an unhandled rejection — ready() is the explicit await
+        // seam; the swallow there is the safety net.
+        (err) => {
+          throw err;
+        },
+      ),
   };
 }
 
-function build(input: HandlerInput): (req: Request) => Promise<Response> {
+function build(input: HandlerInput): BuiltHandler {
   // better-auth's `socialProviders` is a typed map keyed by built-in
   // provider names (google, github, …). We populate the keys we know;
   // `oidc` is not a built-in and gets wired through a generic plugin
@@ -272,12 +311,22 @@ function build(input: HandlerInput): (req: Request) => Promise<Response> {
   // moment of rebuild), the promise rejects with no listener attached,
   // which surfaces as an unhandled rejection. Attach a no-op catch so
   // the wrapper holds the contract: "rebuild() never crashes the
-  // process". The actual failure surfaces lazily at the first request,
-  // where `handler()` awaits `$context` and the rejection re-throws —
-  // exactly where we want it (per-request 500 instead of process exit).
+  // process".
+  //
+  // We ALSO surface `$context` itself (via `HandlerHandle.ready()`) so the
+  // plugin's `init()` can AWAIT this adapter-init before reporting ready.
+  // Without that await the introspection query runs in the background,
+  // unawaited, and can still be in flight when the shared pg.Pool / Postgres
+  // testcontainer is torn down — the dying connection then surfaces as
+  // `57P01` → `BetterAuthError: Failed to initialize database adapter`
+  // (TASK-8's flaky full-suite teardown). Awaiting drains it. The `.catch()`
+  // below stays as the safety net (so `ready()` going unawaited, or a
+  // rebuild-side failure, never crashes the process); `ready()` re-throws
+  // the SAME settled value to its caller, which is fine — both observers
+  // share one promise.
   auth.$context.catch((err) => {
     console.error('[auth-better] adapter init deferred failure', err);
   });
 
-  return auth.handler;
+  return { handler: auth.handler, context: auth.$context };
 }
