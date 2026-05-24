@@ -530,6 +530,12 @@ export function createOrchestrator(
     reqId: string,
     reason: string,
   ): Promise<void> {
+    // Log so operators can confirm the host detected the abnormal end and
+    // signalled the client — the previously-silent path is what made Fault A
+    // hard to diagnose. (The `reason` is orchestrator vocabulary, e.g.
+    // `sandbox-terminated`; the matching `pod_exited`/`pod_killed` lines come
+    // from the sandbox provider's own exit watcher.)
+    ctx.logger.info('chat_turn_error', { reqId, reason });
     await bus.fire('chat:turn-error', ctx, { reqId, reason });
   }
 

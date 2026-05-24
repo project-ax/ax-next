@@ -1867,3 +1867,13 @@ pod death — that's the signal the host keys off.
 - Retry re-sends and the next turn completes; subsequent normal messages
   work.
 - No infinite spinner, no white screen.
+- Host logs confirm the orchestrator detected the death and signalled the
+  client (not just the UI):
+  ```bash
+  kubectl logs -n ax-next deploy/ax-next-host | grep -E 'pod_(exited|killed)|chat_turn_error'
+  ```
+  Expect `pod_exited`/`pod_killed` (the sandbox watcher saw the death) AND a
+  `chat_turn_error` line with `reason` `sandbox-terminated` (routed/warm path)
+  or `sandbox-exit-before-chat-end` (fresh-spawn). Note `chat:turn-error` is
+  an internal bus event, surfaced in logs as the `chat_turn_error` message —
+  the `reason` is orchestrator vocabulary, not the `pod_*` exit code.
