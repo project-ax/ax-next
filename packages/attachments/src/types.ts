@@ -7,6 +7,8 @@
  * Postgres) that would register the same hooks with the same shapes.
  */
 
+import { z, type ZodType } from 'zod';
+
 // Service hook payloads.
 
 export interface StoreTempInput {
@@ -53,6 +55,41 @@ export interface DownloadOutput {
   sizeBytes: number;
   displayName: string;
 }
+
+// ---------------------------------------------------------------------------
+// Runtime `returns` contracts for the `attachments:*` service hooks (ARCH-13).
+//
+// Storage-agnostic by construction (I1): `attachmentId`/`path` are opaque ids,
+// `expiresAt` is an ISO-8601 string, `sizeBytes` a byte count. `sha256` is the
+// attachment's OWN content digest (the storage-agnostic identity the alternate
+// `@ax/attachments-pg-bytea-only` impl would compute identically), NOT a git
+// sha / backend pointer — so it stays. `DownloadOutput.bytes` is a Node
+// `Buffer`, which is a `Uint8Array` subclass, so `z.instanceof(Uint8Array)`
+// accepts it and lets the bytes ride through by reference. Cast to `ZodType<…>`
+// because the interface declares `Buffer` (a structural superset of the schema's
+// inferred `Uint8Array`); the drift-guard test enforces field-for-field
+// agreement.
+// ---------------------------------------------------------------------------
+export const StoreTempOutputSchema = z.object({
+  attachmentId: z.string(),
+  sizeBytes: z.number(),
+  expiresAt: z.string(),
+}) as unknown as ZodType<StoreTempOutput>;
+
+export const CommitOutputSchema = z.object({
+  path: z.string(),
+  sha256: z.string(),
+  mediaType: z.string(),
+  sizeBytes: z.number(),
+  displayName: z.string(),
+}) as unknown as ZodType<CommitOutput>;
+
+export const DownloadOutputSchema = z.object({
+  bytes: z.instanceof(Uint8Array),
+  mediaType: z.string(),
+  sizeBytes: z.number(),
+  displayName: z.string(),
+}) as unknown as ZodType<DownloadOutput>;
 
 // Plugin config.
 

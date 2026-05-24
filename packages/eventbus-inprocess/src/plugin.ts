@@ -1,4 +1,5 @@
 import { PluginError, type Plugin } from '@ax/core';
+import { z, type ZodType } from 'zod';
 
 /**
  * @ax/eventbus-inprocess — in-process, same-node eventbus.
@@ -41,6 +42,17 @@ export interface EventbusSubscribeInput {
 export interface EventbusSubscription {
   unsubscribe: () => void;
 }
+
+// Runtime `returns` contract for `eventbus:subscribe` (ARCH-13). The result is
+// a LIVE handle ({ unsubscribe: () => void }) — a `.passthrough()` empty-object
+// schema asserts nothing structural and lets the function ride through by
+// reference (the HookBus strips undeclared keys, and modeling the fn with
+// z.function() would WRAP it and break identity — same posture as ARCH-6's
+// sandbox:open-session handle / http:register-route). `eventbus:emit` returns
+// `void`, so it gets no schema. @ax/eventbus-postgres carries an identical copy.
+export const EventbusSubscriptionSchema = z
+  .object({})
+  .passthrough() as unknown as ZodType<EventbusSubscription>;
 
 interface ChannelEntry {
   token: symbol;
@@ -108,6 +120,7 @@ export function createEventbusInprocessPlugin(): Plugin {
             },
           };
         },
+        { returns: EventbusSubscriptionSchema },
       );
     },
   };

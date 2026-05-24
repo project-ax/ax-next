@@ -10,7 +10,10 @@ import {
 import { startJanitor, type JanitorHandle } from './janitor.js';
 import {
   type AttachmentsConfig,
+  CommitOutputSchema,
   DEFAULT_JANITOR_INTERVAL_SECONDS,
+  DownloadOutputSchema,
+  StoreTempOutputSchema,
 } from './types.js';
 
 const PLUGIN_NAME = '@ax/attachments';
@@ -92,9 +95,14 @@ export function createAttachmentsPlugin(
         'attachments:store-temp',
         PLUGIN_NAME,
         storeTempHandler,
+        { returns: StoreTempOutputSchema },
       );
-      bus.registerService('attachments:commit', PLUGIN_NAME, commitHandler);
-      bus.registerService('attachments:download', PLUGIN_NAME, downloadHandler);
+      bus.registerService('attachments:commit', PLUGIN_NAME, commitHandler, {
+        returns: CommitOutputSchema,
+      });
+      bus.registerService('attachments:download', PLUGIN_NAME, downloadHandler, {
+        returns: DownloadOutputSchema,
+      });
 
       // 5) Start the janitor. The interval defaults to 5 minutes; tests
       //    can override via `janitorIntervalSeconds`.

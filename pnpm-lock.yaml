@@ -852,6 +852,9 @@ importers:
       '@ax/core':
         specifier: workspace:*
         version: link:../core
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
     devDependencies:
       '@ax/test-harness':
         specifier: workspace:*
@@ -874,6 +877,9 @@ importers:
       pg:
         specifier: 8.20.0
         version: 8.20.0
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
     devDependencies:
       '@ax/test-harness':
         specifier: workspace:*
@@ -1240,6 +1246,9 @@ importers:
       kysely:
         specifier: 0.28.17
         version: 0.28.17
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
     devDependencies:
       '@ax/agents':
         specifier: workspace:*
