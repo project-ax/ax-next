@@ -30,9 +30,11 @@
 #     (PVC mount) and /tmp (emptyDir) only.
 #
 # CI follow-up: pin the base image by digest (`debian:bookworm-slim@sha256:...`)
-# and pin the `git` package version (`git=1:2.39.x-y`) once the chart's image
-# build pipeline lands. For now we use tag-only + unpinned `git` so local
-# builds keep working as Debian rolls patch releases.
+# and pin the `git` package version (`git=1:2.39.x-y`). The `docker-build` CI
+# lane (.github/workflows/ci.yml) now builds this image, so once those pins land
+# they're exercised on every change (a rotted apt pin turns CI red, not silent).
+# For now we use tag-only + unpinned `git` so local builds keep working as
+# Debian rolls patch releases.
 
 # -----------------------------------------------------------------------------
 # Stage 1: builder — pnpm deploy resolves workspace:* deps into a self-

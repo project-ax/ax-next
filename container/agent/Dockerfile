@@ -104,8 +104,9 @@ FROM node:20-bookworm-slim AS runtime
 # (resolved from the signed Packages index); refresh them in lockstep when the
 # base image rolls to a newer point release. Caveat: a hard `=version` pin
 # breaks the build once a point release supersedes one of these and drops the
-# old from the pocket — there is no docker-build step in CI today to catch
-# that, so a CI image-build guard is the tracked follow-up.
+# old from the pocket. The `docker-build` CI lane (.github/workflows/ci.yml)
+# builds this image on every change that touches it, so such a rot turns CI red
+# instead of failing silently — bump the pins here when it does.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       ca-certificates=20230311+deb12u1 \

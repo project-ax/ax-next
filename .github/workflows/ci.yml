@@ -116,6 +116,99 @@ jobs:
           AX_REQUIRE_HELM: '1'
         run: pnpm --filter @ax/chart-tests test
 
+  # Builds the container images so the Dockerfile pins are exercised on every
+  # change that touches them. Without this lane the hard apt `=version` pins in
+  # container/agent/Dockerfile (ca-certificates=, tini=, git=, git-lfs=,
+  # python3=) silently ROT: when Debian ships a point release the superseded
+  # .deb leaves the bookworm/main pocket, so `apt-get install pkg=oldver` 404s
+  # and the image build breaks — undetected, because nothing in CI built the
+  # image. A `docker build` is the only thing that re-resolves the apt index +
+  # exercises the digest pins. Build-only (push:false, load:false): a pure
+  # compile-the-Dockerfile guard with no registry creds and no artifact leaving
+  # the runner. The deploy-to-cluster path stays the gated (walk)
+  # k8s-acceptance-loop's job. Scoped to image-relevant paths (affected-package
+  # philosophy) — the multi-minute build only runs when a Dockerfile or the
+  # workspace graph the builds consume changes. The workflow file itself is in
+  # scope so changes to THIS lane are exercised by the PR that makes them.
+  docker-build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0 # need the base commit to diff changed paths on PRs
+      - name: Detect image-relevant changes
+        id: changes
+        env:
+          # Routed through env (not inlined into the script) per the workflow-
+          # injection guidance — both are GitHub-controlled, not user input,
+          # but the env-var convention keeps the script free of `${{ }}`.
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          # On push to main, always build. On a PR, build only when a
+          # Dockerfile or the workspace graph the builds consume changed. The
+          # builds `COPY . .` then `pnpm install`/`pnpm deploy`, so they depend
+          # on the Dockerfiles (container/**), the lockfile + root manifest +
+          # pnpm-workspace.yaml (these three define the workspace graph pnpm
+          # resolves), every workspace package's source (packages/**), and
+          # presets/** (pulled into the @ax/cli deploy tree).
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+            echo "Push event — building images."
+            exit 0
+          fi
+          changed=$(git diff --name-only "$BASE_SHA"...HEAD)
+          if printf '%s\n' "$changed" | grep -Eq '^(container/|packages/|presets/|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|\.github/workflows/ci\.yml$)'; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+            echo "Image-relevant files changed — building images."
+          else
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+            echo "No image-relevant changes — skipping docker build."
+          fi
+      - name: Set up Docker Buildx
+        if: steps.changes.outputs.relevant == 'true'
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+      # Build the agent image first — it carries the rotting apt `=version`
+      # pins, and its full multi-stage build runs the runtime stage's
+      # apt-get install (the line that 404s when a pin rots). push/load both
+      # false = build + discard; no registry secret, no daemon load needed.
+      #
+      # Caching is split deliberately: the GHA layer cache lets the EXPENSIVE
+      # `builder` stage (pnpm install + tsc + deploy) be reused across runs,
+      # but `no-cache-filters: runtime` forces the `runtime` stage to rebuild
+      # every run. The runtime stage is where the `apt-get update && install
+      # ...=version` line lives — if it were cache-satisfiable, a rotted pin
+      # would NOT be caught when only packages/lockfile/source changed (the
+      # apt RUN layer's cache key is base-digest + command string, neither of
+      # which moves on a source-only change), defeating the whole guard. So we
+      # always re-resolve the apt index in the runtime stage while still
+      # caching the costly build. (Both Dockerfiles name their final stage
+      # `runtime`.)
+      - name: Build agent image (verifies apt/digest pins)
+        if: steps.changes.outputs.relevant == 'true'
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          file: container/agent/Dockerfile
+          push: false
+          load: false
+          no-cache-filters: runtime
+          cache-from: type=gha,scope=agent
+          cache-to: type=gha,mode=max,scope=agent
+      - name: Build git-server image
+        if: steps.changes.outputs.relevant == 'true'
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          file: container/git-server/Dockerfile
+          push: false
+          load: false
+          no-cache-filters: runtime
+          cache-from: type=gha,scope=git-server
+          cache-to: type=gha,mode=max,scope=git-server
+
   semgrep:
     runs-on: ubuntu-latest
     permissions:
