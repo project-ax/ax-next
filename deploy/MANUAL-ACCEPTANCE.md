@@ -1820,3 +1820,50 @@ In a chat against that agent, ask it to:
 
 - Allowlisted install + import succeed; non-allowlisted install is blocked.
 - Nothing the agent installed appears in the next session (ephemeral venv).
+
+## Scenario: sandbox death mid-turn → error+retry (Fault A)
+
+### What this proves
+
+When the serving runner dies mid-turn, the host emits a `chat:turn-error`
+on the SSE so the client's "Thinking…" spinner flips to a visible error
+with a **retry** button — instead of hanging indefinitely (the bug
+chat-qa-sweep found: the SSE got no `done`/error frame, so the spinner +
+Stop persisted ~indefinitely, recoverable only by manual Stop).
+
+This is a HOST-side TypeScript change, so it rides the fast hostPath dist
+loop (no image rebuild). The runner already fires `session:terminate` on
+pod death — that's the signal the host keys off.
+
+### Prerequisites
+
+- A live `ax-next-dev` (kind) cluster on the branch dist (channel-web +
+  chat-orchestrator).
+- The chat UI open in a browser (Playwright MCP or manual).
+
+### Walk
+
+1. Start a new chat and send a message that takes a few seconds (e.g. "write
+   a 300-word story"). While the "Thinking…" spinner is showing:
+2. Kill the serving runner pod:
+   `kubectl -n ax-next-runners delete pod <serving-pod> --now`
+   (find it: `kubectl -n ax-next-runners get pods`).
+3. Within a second or two, observe the `AgentStatus` row flip from
+   "Thinking…" (blue, breathing) to a **red error row** reading "The agent
+   stopped unexpectedly. Retry to continue." with a **retry** button — NOT
+   a hung spinner. Host logs show `pod_exited` + `pod_killed`.
+4. Click **retry**. A fresh sandbox spawns, replays history, and answers —
+   the turn completes normally.
+5. (Warm-reuse variant) Send a second message on the same conversation so it
+   routes into the warm session, then kill the pod again mid-turn. Same
+   prompt error+retry should appear promptly (the `session:terminate`
+   subscriber covers the routed path — without it this case would hang until
+   the 10-min chat timeout).
+
+### Acceptance criteria
+
+- The spinner flips to a red error+retry row within ~1-2 s of the pod kill,
+  on BOTH the fresh-spawn (turn 1) and warm-reuse (turn 2+) paths.
+- Retry re-sends and the next turn completes; subsequent normal messages
+  work.
+- No infinite spinner, no white screen.
