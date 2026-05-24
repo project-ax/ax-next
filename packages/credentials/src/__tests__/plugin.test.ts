@@ -347,6 +347,80 @@ describe('@ax/credentials plugin', () => {
     ).rejects.toThrow(/AX_CREDENTIALS_KEY/);
   });
 
+  it('declares storage:* as optionalCalls (with degradation notes), not required calls', async () => {
+    const plugin = createCredentialsPlugin();
+    const storageHooks = ['storage:get', 'storage:set', 'storage:delete-prefix'];
+    // The wipe-once storage hooks must NOT be in required `calls` (that would
+    // break store-blob-only harnesses), and MUST be advertised as optionalCalls
+    // so the dependency is visible at the manifest level.
+    for (const h of storageHooks) {
+      expect(plugin.manifest.calls).not.toContain(h);
+    }
+    const optionalCalls = plugin.manifest.optionalCalls ?? [];
+    const optionalHooks = optionalCalls.map((oc) => oc.hook);
+    expect(optionalHooks).toEqual(expect.arrayContaining(storageHooks));
+    // Every optional call carries a non-empty degradation note.
+    for (const oc of optionalCalls) {
+      expect(oc.degradation.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('boots when only credentials:store-blob:* is provided and no storage:* backend exists', async () => {
+    // Proves the non-fatal optionalCalls path end-to-end: a stub provides the
+    // REQUIRED store-blob surface but NO storage:* hooks. Pre-ARCH-4 this would
+    // have failed verifyCalls if storage:* were in `calls`; now the wipe-once
+    // routine is gated on hasService and the boot succeeds.
+    const blob = new Map<string, Uint8Array>();
+    const storeBlobStub = {
+      manifest: {
+        name: 'store-blob-stub',
+        version: '0.0.0',
+        registers: [
+          'credentials:store-blob:get',
+          'credentials:store-blob:put',
+          'credentials:store-blob:list',
+          'credentials:store-blob:purge-by-owner',
+        ],
+        calls: [],
+        subscribes: [],
+      },
+      async init({ bus }: { bus: HookBus }) {
+        bus.registerService(
+          'credentials:store-blob:put',
+          'store-blob-stub',
+          async (_c, { ref, blob: b }: { ref: string; blob: Uint8Array }) => {
+            blob.set(ref, b);
+          },
+        );
+        bus.registerService(
+          'credentials:store-blob:get',
+          'store-blob-stub',
+          async (_c, { ref }: { ref: string }) => ({ blob: blob.get(ref) }),
+        );
+        bus.registerService(
+          'credentials:store-blob:list',
+          'store-blob-stub',
+          async () => ({ entries: [] }),
+        );
+        bus.registerService(
+          'credentials:store-blob:purge-by-owner',
+          'store-blob-stub',
+          async () => ({ purged: 0 }),
+        );
+      },
+    };
+    const bus = new HookBus();
+    const handle = await bootstrap({
+      bus,
+      plugins: [storeBlobStub, createCredentialsPlugin()],
+      config: {},
+    });
+    // No storage backend was registered — the wipe routine is skipped, not fatal.
+    expect(bus.hasService('storage:get')).toBe(false);
+    expect(bus.hasService('credentials:get')).toBe(true);
+    await handle.shutdown();
+  });
+
   it('credentials:get dispatches to credentials:resolve:<kind> when sub-service is registered', async () => {
     const bus = new HookBus();
     let captured:

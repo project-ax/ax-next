@@ -108,6 +108,9 @@ export function createWorkspaceGitPlugin(config: WorkspaceGitConfig): Plugin {
       version: '0.0.0',
       registers: ['workspace:apply', 'workspace:read', 'workspace:diff'],
       calls: [],
+      optionalCalls: [
+        // { hook: 'audit:write', degradation: 'applies still happen, just unaudited' },
+      ],
       subscribes: [],
     },
     init({ bus }) {
@@ -118,7 +121,8 @@ export function createWorkspaceGitPlugin(config: WorkspaceGitConfig): Plugin {
 ```
 
 - **`registers`** — service hooks this plugin implements. Exactly one plugin may register each service hook; collision is a boot-time error.
-- **`calls`** — service hooks this plugin depends on. Core uses this for (a) cycle detection at boot, (b) failing fast on missing services, (c) generating a compatibility matrix.
+- **`calls`** — service hooks this plugin **requires**. Core uses this for (a) cycle detection at boot, (b) failing fast on missing services, (c) generating a compatibility matrix. A `calls` entry with no producer is a boot-time `missing-service` error.
+- **`optionalCalls`** — service hooks this plugin can call but **degrades gracefully without**. Each entry is `{ hook, degradation }`, where `degradation` is a required human-readable note describing what the plugin gives up when the hook is absent. An absent producer for an optional call is **not** fatal (the plugin is expected to guard with `bus.hasService(hook)` and fall back), but when a producer **is** present the optional call is a real call-graph edge — it counts toward cycle detection and init ordering exactly like `calls`. A hook may appear in `calls` **or** `optionalCalls`, never both (boot rejects the contradiction). Use this instead of a bare code comment so the optional dependency is visible at the manifest level (and in the compatibility matrix). Example: `@ax/credentials` lists `storage:get`/`storage:set`/`storage:delete-prefix` here — its first-boot wipe routine uses them when a storage backend exists and is skipped otherwise.
 - **`subscribes`** — subscriber hooks this plugin listens on. Declared for visibility, but subscribing creates **no** dependency — a plugin can subscribe to anything without requiring it to exist, so `subscribes` does not participate in cycle detection.
 
 Plugin config is injected at construction via `PluginInitContext.config` — there is no `configSchema` field in the manifest.

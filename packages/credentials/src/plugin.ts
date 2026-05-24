@@ -278,10 +278,30 @@ export function createCredentialsPlugin(config: CredentialsPluginConfig = {}): P
         'credentials:store-blob:put',
         'credentials:store-blob:list',
         'credentials:store-blob:purge-by-owner',
-        // storage:get / storage:set / storage:delete-prefix are called only
-        // when bus.hasService('storage:get') is true (the wipe-once routine
-        // on first boot). They are not declared here so that test harnesses
-        // that only stub credentials:store-blob:* pass verifyCalls().
+      ],
+      // storage:get / storage:set / storage:delete-prefix are called only when
+      // a producer is present (gated by bus.hasService) by the wipe-once
+      // pre-redesign-credentials routine on first boot. They are OPTIONAL, not
+      // required: test harnesses that only stub credentials:store-blob:* must
+      // still pass verifyCalls(), and a deployment with no `storage:*` backend
+      // simply skips the one-time wipe. Declared here (rather than buried in a
+      // comment) so the optional dependency is visible at the manifest level.
+      optionalCalls: [
+        {
+          hook: 'storage:get',
+          degradation:
+            'one-time pre-redesign credential wipe is skipped; new installs have nothing to wipe, so no functional impact',
+        },
+        {
+          hook: 'storage:set',
+          degradation:
+            'wipe-once completion marker is not persisted, so the wipe scan re-runs (and finds nothing) on each boot until a storage backend is present',
+        },
+        {
+          hook: 'storage:delete-prefix',
+          degradation:
+            'stale pre-redesign credential rows are not purged from the legacy storage prefix; harmless on installs that never had them',
+        },
       ],
       subscribes: [],
     },

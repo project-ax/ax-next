@@ -160,11 +160,15 @@ async function runShutdownLoop(
 
 // Runs the three graph-level validations a plugin set must pass before init:
 //   1. no two plugins register the same service hook (duplicate-producer),
-//   2. every declared `calls` entry that a peer produces is wired into the graph,
+//   2. every declared `calls` / present-producer `optionalCalls` entry is wired
+//      into the graph,
 //   3. the resulting inter-plugin call graph is acyclic.
 // Returns the graph so `topologicalOrder` can consume it without rebuilding.
 // Missing-service checks happen AFTER init (see `verifyCalls`) because a plugin
-// may register at init-time; they are not part of the manifest-only graph.
+// may register at init-time; they are not part of the manifest-only graph. Note
+// `optionalCalls` participate in the graph (cycle detection + init ordering)
+// only when a producer is present — they are never *required*, so an absent
+// optional producer is invisible here and skipped by `verifyCalls`.
 function validateDependencyGraph(plugins: Plugin[]): Map<string, string[]> {
   const producers = checkDuplicateRegisters(plugins);
   const graph = buildCallGraph(plugins, producers);
@@ -209,7 +213,14 @@ function buildCallGraph(plugins: Plugin[], producers: Map<string, string>): Map<
   const graph = new Map<string, string[]>();
   for (const p of plugins) {
     const out: string[] = [];
-    for (const c of p.manifest.calls) {
+    // Required `calls` and present-producer `optionalCalls` are both real
+    // dependency edges: each must init after its producer and each counts
+    // toward cycle detection. The difference is only at verifyCalls time — an
+    // absent REQUIRED producer fails the boot, an absent OPTIONAL one does not.
+    // Here, both kinds add an edge ONLY when a producer exists (the `prod !==
+    // undefined` guard), so a dangling optional call adds nothing.
+    const optionalHooks = p.manifest.optionalCalls?.map((oc) => oc.hook) ?? [];
+    for (const c of [...p.manifest.calls, ...optionalHooks]) {
       const prod = producers.get(c);
       if (prod !== undefined && prod !== p.manifest.name) out.push(prod);
     }
@@ -265,6 +276,10 @@ function topologicalOrder(plugins: Plugin[], graph: Map<string, string[]>): Plug
   return order;
 }
 
+// Fails the boot if any REQUIRED `calls` hook has no registered producer.
+// `optionalCalls` are deliberately NOT checked here: a missing optional
+// producer is the expected degraded path (the plugin guards with
+// `bus.hasService(hook)` and falls back), so it must never fail the boot.
 function verifyCalls(plugins: Plugin[], bus: HookBus): void {
   for (const p of plugins) {
     for (const hook of p.manifest.calls) {
