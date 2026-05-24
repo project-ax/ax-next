@@ -1,4 +1,5 @@
 import type { SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import { IpcRequestError } from '@ax/ipc-protocol';
 import type { IpcClient, IpcClientOptions } from '@ax/ipc-protocol';
 import type {
   InboxLoop,
@@ -2048,16 +2049,20 @@ describe('main()', () => {
       });
     });
 
-    it('F2a: bind IPC failure is non-fatal and self-heals — runner still exits 0 and the next accepted commit retries the bind', async () => {
+    it('F2a: a transient bind failure is non-fatal and self-heals on the NEXT turn’s accepted commit (final bundle is null)', async () => {
       // F2a (supersedes the Phase E FATAL posture): the bind now fires AFTER
       // the turn already streamed to the user (post-accepted-commit), so
-      // terminating the run on a bind failure would be incoherent — the user
-      // saw a complete reply. Instead the failure is logged and the flag is
-      // left unset, so the next accepted commit (here the post-`result` final
-      // commit) retries. A transient host blip thus heals within the same run
-      // rather than crashing the chat.
+      // terminating on a TRANSIENT bind failure would be incoherent. The
+      // failure is logged and the flag left unset, so a LATER accepted commit
+      // retries. This models production: the per-turn commit captures the turn,
+      // the final drain commit is empty (null) — so the retry must come from
+      // turn 2's commit, not the final one.
       setEnv(COMPLETE_ENV);
-      commitTurnAndBundleMock.mockResolvedValue('YnVuZGxl');
+      // turn-1 per-turn bundle, turn-2 per-turn bundle, final drain → null.
+      commitTurnAndBundleMock
+        .mockResolvedValueOnce('YnVuZGxl-1')
+        .mockResolvedValueOnce('YnVuZGxl-2')
+        .mockResolvedValue(null);
       let bindAttempts = 0;
       fakeClient = buildFakeClient();
       fakeClient.call.mockImplementation(async (action: string) => {
@@ -2082,19 +2087,23 @@ describe('main()', () => {
         }
         if (action === 'conversation.store-runner-session') {
           bindAttempts++;
+          // Transient (NOT a 409) on the first attempt; succeeds on the second.
           if (bindAttempts === 1) throw new Error('host returned 503');
           return { ok: true };
         }
         throw new Error(`unexpected call: ${action}`);
       });
-      fakeInbox = buildFakeInbox([userEntry('go'), cancelEntry]);
+      fakeInbox = buildFakeInbox([userEntry('one'), userEntry('two'), cancelEntry]);
       queryMock.mockImplementation(
         ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
           return (async function* () {
             const it = prompt[Symbol.asyncIterator]();
             await it.next();
             yield systemInit('sdk-sess-fail');
-            yield assistantText('reply the user saw');
+            yield assistantText('turn one reply');
+            yield resultSuccess();
+            await it.next();
+            yield assistantText('turn two reply');
             yield resultSuccess();
             await it.next();
           })();
@@ -2106,12 +2115,11 @@ describe('main()', () => {
       // Non-fatal: the run completes despite the first bind failing.
       expect(rc).toBe(0);
 
-      // The failed bind was retried (per-turn commit failed → final commit
-      // succeeded) and eventually bound.
+      // Retried on turn 2's accepted commit and eventually bound.
       const bindCalls = fakeClient.call.mock.calls.filter(
         (c) => c[0] === 'conversation.store-runner-session',
       );
-      expect(bindCalls.length).toBeGreaterThanOrEqual(2);
+      expect(bindCalls.length).toBe(2);
       expect(bindCalls.at(-1)?.[1]).toEqual({
         conversationId: 'cnv-3',
         runnerSessionId: 'sdk-sess-fail',
@@ -2124,6 +2132,76 @@ describe('main()', () => {
       expect(chatEnds).toHaveLength(1);
       const payload = chatEnds[0]?.[1] as { outcome: { kind: string } };
       expect(payload.outcome.kind).toBe('complete');
+    });
+
+    it('F2a: a 409 bind CONFLICT is terminal — the losing runner exits 1 (terminated) instead of orphaning its transcript', async () => {
+      // A concurrent fresh-boot race: another runner already bound this
+      // conversation to a DIFFERENT id, so our store-runner-session is rejected
+      // 409. Retrying is futile and continuing would commit an orphan
+      // transcript — the run must terminate so the loser stops.
+      setEnv(COMPLETE_ENV);
+      commitTurnAndBundleMock.mockResolvedValue('YnVuZGxl');
+      fakeClient = buildFakeClient();
+      fakeClient.call.mockImplementation(async (action: string) => {
+        if (action === 'session.get-config') {
+          return {
+            userId: 'u-test',
+            agentId: 'a-test',
+            agentConfig: {
+              systemPrompt: '',
+              allowedTools: [],
+              mcpConfigIds: [],
+              model: 'claude-sonnet-4-7',
+            },
+            conversationId: 'cnv-conflict',
+            runnerSessionId: null,
+          };
+        }
+        if (action === 'workspace.materialize') return { bundleBytes: '' };
+        if (action === 'tool.list') return { tools: [] };
+        if (action === 'workspace.commit-notify') {
+          return { accepted: true, version: 'v1', delta: null };
+        }
+        if (action === 'conversation.store-runner-session') {
+          throw new IpcRequestError(
+            'HOOK_REJECTED',
+            409,
+            'runner_session_id already bound to a different value for conversation',
+          );
+        }
+        throw new Error(`unexpected call: ${action}`);
+      });
+      fakeInbox = buildFakeInbox([userEntry('go'), cancelEntry]);
+      queryMock.mockImplementation(
+        ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+          return (async function* () {
+            const it = prompt[Symbol.asyncIterator]();
+            await it.next();
+            yield systemInit('sdk-sess-loser');
+            yield assistantText('reply');
+            yield resultSuccess();
+            await it.next();
+          })();
+        },
+      );
+
+      const { main } = await import('../main.js');
+      const rc = await main();
+      // Terminal: the run exits non-zero.
+      expect(rc).toBe(1);
+
+      const chatEnds = fakeClient.event.mock.calls.filter(
+        (c) => c[0] === 'event.chat-end',
+      );
+      expect(chatEnds).toHaveLength(1);
+      const payload = chatEnds[0]?.[1] as {
+        outcome: { kind: string; reason?: string };
+      };
+      expect(payload.outcome.kind).toBe('terminated');
+      expect(payload.outcome.reason).toContain('IpcRequestError');
+      expect(payload.outcome.reason).toContain(
+        'already bound to a different value',
+      );
     });
   });
 

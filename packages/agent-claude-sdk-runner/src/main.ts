@@ -8,6 +8,7 @@ import {
 import { createInboxLoop } from './inbox-loop.js';
 import {
   createIpcClient,
+  IpcRequestError,
   type AgentMessage,
   type ContentBlock,
   type ImageBlock,
@@ -599,10 +600,20 @@ export async function main(): Promise<number> {
   // to a host-accepted commit makes `runner_session_id` set IFF a resumable
   // transcript exists → a killed-before-commit turn leaves it NULL → the retry
   // starts fresh cleanly. Gated to the fresh-boot case (`runnerSessionId` null);
-  // a resumed session is already bound on the host. Bind failure is
-  // self-healing — leave the flag unset so the next accepted commit (or the
-  // final commit) retries; the turn already streamed to the user, so failing
-  // the run now would be incoherent.
+  // a resumed session is already bound on the host.
+  //
+  // Failure handling distinguishes two cases:
+  //   - 409 conflict (HOOK_REJECTED): the host already bound this conversation
+  //     to a DIFFERENT id — a concurrent fresh-boot race in which another
+  //     runner won. We are the loser; our transcript is an orphan and
+  //     continuing to stream/commit under it would diverge the conversation.
+  //     RE-THROW so the run terminates (host chat:end outcome `terminated`,
+  //     surfaced by F2b) rather than silently committing an orphan. The host's
+  //     once-only bind invariant relies on the loser stopping here.
+  //   - anything else (network / 5xx / timeout): transient — leave the flag
+  //     unset so the next accepted commit (or the final commit) retries; the
+  //     turn already streamed to the user, so failing the run now would be
+  //     incoherent.
   async function bindRunnerSessionIfNeeded(): Promise<void> {
     const convId = conversationId;
     const sdkSessionId = transcriptSessionId;
@@ -621,6 +632,13 @@ export async function main(): Promise<number> {
       });
       runnerSessionIdSent = true;
     } catch (err) {
+      // 409 = the conversation is owned by a different runner session. Not
+      // retryable; terminate rather than orphan. (commitNotifyWithResync
+      // swallows its own IPC errors, so a 409 in the surrounding commit try
+      // can only originate from this bind.)
+      if (err instanceof IpcRequestError && err.status === 409) {
+        throw err;
+      }
       process.stderr.write(
         `runner: conversation.store-runner-session failed (will retry on next commit): ${err instanceof Error ? err.message : String(err)}\n`,
       );
@@ -1105,6 +1123,10 @@ export async function main(): Promise<number> {
             }
           }
         } catch (err) {
+          // A 409 from bindRunnerSessionIfNeeded (conversation owned by another
+          // session) is terminal — propagate it past this commit-failure catch
+          // so the run ends `terminated` instead of silently orphaning.
+          if (err instanceof IpcRequestError && err.status === 409) throw err;
           // commitTurnAndBundle itself failed (git binary missing,
           // /permanent in a weird state, etc.). Non-fatal; the next
           // turn will retry.
@@ -1223,6 +1245,9 @@ export async function main(): Promise<number> {
         }
       }
     } catch (err) {
+      // Propagate a terminal bind conflict (409) past this best-effort catch so
+      // the run ends `terminated` rather than orphaning (see the per-turn site).
+      if (err instanceof IpcRequestError && err.status === 409) throw err;
       process.stderr.write(`runner: final commitTurnAndBundle failed: ${err instanceof Error ? err.message : String(err)}\n`);
     }
   } catch (err) {
