@@ -126,6 +126,14 @@ Review**. After the merge: strike the task line in TODO.md, append `— shipped:
 writer**), append `merged #<n>` to the journal, and move the card → **Done** on
 the board. **Never** merge two PRs concurrently.
 
+**Cross-package backstop (auto-merge safety).** PR CI runs only affected-package
+tests for speed (`.github/workflows/ci.yml`), so the **push-to-main full suite** is
+what catches cross-package breakage (e.g. a shared-table teardown that no single
+package's tests exercise — see `feedback_new_fk_breaks_downstream_test_teardown`).
+After a merge, check the **main** CI run (`gh run list --branch main --limit 1`); if
+it goes **red**, **HALT the run and report** — do not merge more PRs onto a broken
+`main`. Resume only once main is green again.
+
 ## Cluster-walk lane
 
 Pre-flight: `kubectl --context kind-ax-next-dev get nodes`. If the cluster is
