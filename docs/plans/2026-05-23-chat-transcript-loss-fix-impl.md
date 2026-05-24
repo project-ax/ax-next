@@ -405,8 +405,18 @@ leaks. Patch is internal to the bundle wire; no boundary-review-required hook ad
 The fix as built is **server-backend-specific** (it's where the bug was observed). Two gaps
 remain for "robust to ANY concurrent writer" to fully hold — track these:
 
+> **STATUS 2026-05-23 — BOTH DONE.** Implemented in PR for `worktree-f1-f2-resync-followups`
+> (impl plan: `docs/plans/2026-05-23-f1-f2-resync-followups-impl.md`). F-1: workspace-git-core's
+> apply-bundle parent-CAS (Site 1 only) now carries `cause.actualParent`, and the commit-notify
+> apply-bundle catch fetches a bundle@actualParent via the `workspace:export-baseline-bundle`
+> hook and forwards the full re-sync envelope (real-backend integration test
+> `workspace-commit-notify-core-resync.test.ts`). F-2: the per-turn loop is extracted into
+> `commit-notify-resync.ts::commitNotifyWithResync` and called at BOTH the per-turn AND the
+> final/idle commit sites (helper unit test + final-commit regression test in `main.test.ts`).
+> Whole-repo build + test green, lint clean. Cluster re-walk tracked in `TODO.md`.
+
 - **F-1 — single-replica `@ax/workspace-git` (workspace-git-core) backend still drops the
-  turn.** That backend's `export-baseline-bundle` bundles a stale-but-reachable OID with no
+  turn.** ✅ DONE. That backend's `export-baseline-bundle` bundles a stale-but-reachable OID with no
   strict-HEAD check (`workspace-git-core/src/impl.ts:238-260`), so it does NOT raise
   parent-mismatch on export. The mismatch surfaces later at `apply-bundle`'s CAS, and the
   handler's apply-bundle parent-mismatch catch (`workspace-commit-notify.ts:~291`) returns a
@@ -415,9 +425,9 @@ remain for "robust to ANY concurrent writer" to fully hold — track these:
   forward the re-sync envelope from the apply-bundle catch too (the apply-bundle
   `parent-mismatch` PluginError already carries `actualParent`; it additionally needs a
   bundle@actualParent). Then the runner's existing re-sync loop handles it for both backends.
-- **F-2 — the runner's final/idle commit call site has no re-sync.** `main.ts:~1156` (the
+- **F-2 — the runner's final/idle commit call site has no re-sync.** ✅ DONE. `main.ts:~1156` (the
   post-`result` "final commit" that captures the SDK's late jsonl write, per PR #127) only
-  logs on `!accepted`; it doesn't re-sync/retry. A concurrent attachment racing that commit
+  logged on `!accepted`; it didn't re-sync/retry. A concurrent attachment racing that commit
   drops the final turn's tail (narrower, same bug class). Fix: extract the bounded re-sync
   loop (Task 4) into a shared helper and use it at both the per-turn and final-commit sites.
 
