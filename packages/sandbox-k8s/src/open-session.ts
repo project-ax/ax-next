@@ -206,6 +206,15 @@ export function createOpenSession(deps: OpenSessionDeps) {
         ...(input.installedSkills !== undefined && input.installedSkills.length > 0
           ? { installedSkills: input.installedSkills }
           : {}),
+        // Debug: forward the opt-in per-turn commit/resync trace flag from the
+        // host env (set AX_COMMIT_TRACE=1 on the host deployment) into the
+        // runner pod, so commit-trace.ts's decision trace is reachable in k8s
+        // — the path was otherwise observable only on failure (the TASK-11
+        // diagnosis blocker). Forwards ONLY this one debug boolean, nothing
+        // else from the host env; off (absent) by default.
+        ...(process.env.AX_COMMIT_TRACE !== undefined
+          ? { extraEnv: { AX_COMMIT_TRACE: process.env.AX_COMMIT_TRACE } }
+          : {}),
       }, deps.config);
     } catch (err) {
       podLog.error('pod_spec_build_failed', {

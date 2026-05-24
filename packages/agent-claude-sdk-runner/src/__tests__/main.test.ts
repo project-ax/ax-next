@@ -118,12 +118,13 @@ vi.mock('../python-venv.js', async (importOriginal) => {
 
 // Mock the transcript-flush seam. `readLastTurnUuid` defaults to undefined
 // (the fake AX_WORKSPACE_ROOT has no jsonl — matching real behavior).
-// `waitForTurnTranscript` defaults to a fast no-op so tests that yield an
-// assistant turn don't pay a real poll/timeout; the dedicated flush-ordering
-// test overrides it to observe WHEN main() invokes it relative to the commit.
-// The wait's real polling/timeout behavior is covered in turn-end-uuid.test.ts.
+// `waitForTranscriptUuid` defaults to a fast no-op (true = landed) so tests
+// that yield an assistant turn don't pay a real poll/timeout; the dedicated
+// flush-ordering test overrides it to observe WHEN main() invokes it relative
+// to the commit, and WHICH uuid it targets. The wait's real polling/timeout
+// behavior is covered in turn-end-uuid.test.ts.
 const readLastTurnUuidMock = vi.fn().mockResolvedValue(undefined);
-const waitForTurnTranscriptMock = vi.fn().mockResolvedValue(undefined);
+const waitForTranscriptUuidMock = vi.fn().mockResolvedValue(true);
 // F2a resume guard: default to "resumable" so the resume-path tests below see
 // `resume` passed through; the guard test overrides it to false. The fake
 // AX_WORKSPACE_ROOT has no real jsonl, so the real impl would always report
@@ -134,7 +135,7 @@ vi.mock('../turn-end-uuid.js', async (importOriginal) => {
   return {
     ...actual,
     readLastTurnUuid: readLastTurnUuidMock,
-    waitForTurnTranscript: waitForTurnTranscriptMock,
+    waitForTranscriptUuid: waitForTranscriptUuidMock,
     hasResumableTranscript: hasResumableTranscriptMock,
   };
 });
@@ -183,10 +184,10 @@ function buildFakeInbox(entries: InboxLoopEntry[]): FakeInbox {
   return { next, cursor: 0 } as FakeInbox;
 }
 
-function assistantText(text: string): SDKMessage {
+function assistantText(text: string, uuid = 'msg-uuid'): SDKMessage {
   return {
     type: 'assistant',
-    uuid: 'msg-uuid',
+    uuid,
     session_id: 'sess-1',
     parent_tool_use_id: null,
     message: {
@@ -208,10 +209,10 @@ function assistantText(text: string): SDKMessage {
   } as unknown as SDKMessage;
 }
 
-function assistantBlocks(content: unknown[]): SDKMessage {
+function assistantBlocks(content: unknown[], uuid = 'msg-uuid'): SDKMessage {
   return {
     type: 'assistant',
-    uuid: 'msg-uuid',
+    uuid,
     session_id: 'sess-1',
     parent_tool_use_id: null,
     message: {
@@ -330,8 +331,8 @@ beforeEach(() => {
   resyncBaselineAndReplayMock.mockResolvedValue(undefined);
   readLastTurnUuidMock.mockReset();
   readLastTurnUuidMock.mockResolvedValue(undefined);
-  waitForTurnTranscriptMock.mockReset();
-  waitForTurnTranscriptMock.mockResolvedValue(undefined);
+  waitForTranscriptUuidMock.mockReset();
+  waitForTranscriptUuidMock.mockResolvedValue(true);
   hasResumableTranscriptMock.mockReset();
   hasResumableTranscriptMock.mockResolvedValue(true);
   scaffoldPythonVenvMock.mockReset();
@@ -497,26 +498,31 @@ describe('main()', () => {
     expect(fakeClient.close).toHaveBeenCalledTimes(1);
   });
 
-  it('per-turn commit waits for the assistant transcript to land before committing (keepalive durability)', async () => {
-    // Regression for the 1–2.5 min `conversations:get` lag under idle-
-    // keepalive (2026-05-22 investigation). The Anthropic SDK writes the
-    // assistant turn's jsonl AFTER yielding `result`, so the per-turn commit
-    // — which runs in the `result` handler — used to stage the workspace
-    // BEFORE the reply landed and ship a bundle missing it. Under keepalive
-    // the warm runner doesn't drain (no final commit) until idle-reap, so the
-    // reply stayed unreadable for the whole idle window. The fix waits for the
-    // new assistant line (waitForTurnTranscript) BEFORE committing, so EVERY
-    // turn's commit/bundle contains its own reply.
+  it('per-turn commit waits for the turn FINAL assistant line (not the intermediate tool_use line) before committing (TASK-11 / keepalive durability)', async () => {
+    // Regression for TASK-11 + the 1–2.5 min `conversations:get` lag under
+    // idle-keepalive. The Anthropic SDK writes the turn's FINAL assistant line
+    // to the jsonl AFTER yielding `result`, so the per-turn commit — which runs
+    // in the `result` handler — used to stage the workspace BEFORE the reply
+    // landed and ship a bundle missing it. Under keepalive the warm runner
+    // doesn't drain (no final commit) until idle-reap, so the reply stayed
+    // unreadable for the whole idle window.
     //
-    // Here we assert the control-flow ordering: main() invokes the flush wait
-    // before commitTurnAndBundle. (The wait's real polling/timeout behavior is
-    // covered by turn-end-uuid.test.ts.)
+    // The original fix waited for "any NEW assistant line", but a TOOL-using
+    // turn emits an INTERMEDIATE tool_use assistant line BEFORE the closing
+    // text — so the wait short-circuited on the tool_use line and the commit
+    // STILL dropped the closing text (the persisted `[user, tool_use,
+    // tool_result]` shape in TASK-11). The fix waits for the SPECIFIC uuid of
+    // the turn's LAST assistant message (SDKAssistantMessage.uuid).
+    //
+    // Here we drive a tool turn (tool_use msg uuid='A' → tool_result → closing
+    // text msg uuid='B' → result) and assert: (1) the wait runs before the
+    // commit, and (2) it targets 'B' (the final message), NOT 'A'.
     setEnv(COMPLETE_ENV);
 
     const order: string[] = [];
-    waitForTurnTranscriptMock.mockImplementation(async () => {
+    waitForTranscriptUuidMock.mockImplementation(async () => {
       order.push('flush-wait');
-      return 'asst-uuid-1';
+      return true;
     });
     commitTurnAndBundleMock.mockImplementation(async () => {
       order.push('commit');
@@ -543,7 +549,7 @@ describe('main()', () => {
       if (action === 'tool.list') return { tools: [] };
       throw new Error(`unexpected call: ${action}`);
     });
-    fakeInbox = buildFakeInbox([userEntry('ping'), cancelEntry]);
+    fakeInbox = buildFakeInbox([userEntry('run date'), cancelEntry]);
     queryMock.mockImplementation(
       ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
         return (async function* () {
@@ -552,7 +558,14 @@ describe('main()', () => {
           // system/init gives the runner the SDK session_id it needs to
           // locate the jsonl for the flush wait.
           yield systemInit('sdk-sess-1');
-          yield assistantText('pong'); // non-empty turn → flush wait fires
+          // A tool turn: intermediate tool_use assistant line (uuid 'A')...
+          yield assistantBlocks([
+            { type: 'tool_use', id: 'tu-1', name: 'Bash', input: { command: 'date' } },
+          ], 'A-tooluse');
+          // ...the SDK echoes the tool_result back as a user message...
+          yield userToolResult('tu-1', 'Sun May 24 ...');
+          // ...then the turn's FINAL assistant line (uuid 'B') — written lazily.
+          yield assistantText('The date was Sun May 24.', 'B-closingtext');
           yield resultSuccess();
           await it.next();
         })();
@@ -569,11 +582,19 @@ describe('main()', () => {
     expect(firstFlush).toBeGreaterThanOrEqual(0);
     // ...and the per-turn commit happened only AFTER it.
     expect(firstCommit).toBeGreaterThan(firstFlush);
-    expect(waitForTurnTranscriptMock).toHaveBeenCalledWith(
+    // ...and it waited for the turn's FINAL assistant uuid ('B'), NOT the
+    // intermediate tool_use line ('A'). This is the TASK-11 guard.
+    expect(waitForTranscriptUuidMock).toHaveBeenCalledWith(
       '/tmp/workspace',
       'sdk-sess-1',
-      undefined,
+      'B-closingtext',
       expect.objectContaining({ timeoutMs: expect.any(Number) }),
+    );
+    expect(waitForTranscriptUuidMock).not.toHaveBeenCalledWith(
+      '/tmp/workspace',
+      'sdk-sess-1',
+      'A-tooluse',
+      expect.anything(),
     );
   });
 

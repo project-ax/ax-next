@@ -92,6 +92,40 @@ describe('sandbox:open-session (k8s)', () => {
     expect(env.AX_REQUEST_ID).toBeDefined();
   });
 
+  it('forwards AX_COMMIT_TRACE into the runner pod env only when set on the host', async () => {
+    // The opt-in per-turn commit/resync trace (commit-trace.ts) is gated on
+    // AX_COMMIT_TRACE in the RUNNER process; the runner pod env only carries it
+    // if the host sets it. This makes the trace reachable in k8s (the TASK-11
+    // diagnosis blocker) without forwarding any other host env to the sandbox.
+    const prior = process.env.AX_COMMIT_TRACE;
+    const envFor = async (): Promise<Record<string, string>> => {
+      const api = makeMockK8sApi();
+      api.setReadResponses(readyPod());
+      const h = await makeHarness(api);
+      await h.bus.call<unknown, OpenSessionResult>('sandbox:open-session', h.ctx(), {
+        sessionId: 'sess-1',
+        workspaceRoot: '/tmp/ws',
+        runnerBinary: '/opt/ax/runner.js',
+      });
+      const body = api.creates[0]!.body as {
+        spec: { containers: Array<{ env: Array<{ name: string; value: string }> }> };
+      };
+      return Object.fromEntries(
+        body.spec.containers[0]!.env.map((e) => [e.name, e.value]),
+      );
+    };
+    try {
+      process.env.AX_COMMIT_TRACE = '1';
+      expect((await envFor()).AX_COMMIT_TRACE).toBe('1');
+
+      delete process.env.AX_COMMIT_TRACE;
+      expect((await envFor()).AX_COMMIT_TRACE).toBeUndefined();
+    } finally {
+      if (prior === undefined) delete process.env.AX_COMMIT_TRACE;
+      else process.env.AX_COMMIT_TRACE = prior;
+    }
+  });
+
   it('per-pod child logger is constructed with podName + pid bindings before createNamespacedPod fires', async () => {
     // We assert the binding shape by tapping ctx.logger.child via a
     // wrapping logger that records calls. The mock api throws on create,
