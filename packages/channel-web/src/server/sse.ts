@@ -287,18 +287,29 @@ export function createSseHandler(deps: SseHandlerDeps) {
     );
 
     // 4c-bis) Attach the turn-error subscriber. The orchestrator fires
-    // `chat:turn-error` (carrying the ORIGINAL agent:invoke reqId) when a
-    // turn ends abnormally — the runner died mid-turn or wedged past the
-    // chat timeout — instead of the normal `chat:turn-end`. Without this
-    // the stream would never get a terminal frame and the client's
-    // "Thinking…" spinner hangs forever (the keepalive heartbeat keeps the
-    // connection open). Match by reqId (the precise per-turn key the
-    // orchestrator carries), emit an `error` frame, evict, and close.
+    // `chat:turn-error` when a turn ends abnormally — the runner died mid-turn,
+    // wedged past the chat timeout, an early-spawn step failed, OR the runner
+    // itself reported a terminated outcome (F2b) — instead of the normal
+    // `chat:turn-end`. Without this the stream would never get a terminal frame
+    // and the client's "Thinking…" spinner hangs forever (the keepalive
+    // heartbeat keeps the connection open).
+    //
+    // We match by EITHER the originating reqId OR conversationId:
+    //   - reqId: the precise per-turn key, carried by the orchestrator-fired
+    //     paths (fresh-spawn chokepoint, session:terminate, early-spawn
+    //     returns) which all hold the original agent:invoke reqId.
+    //   - conversationId: the runner-reported path (F2b) is fired from
+    //     onChatEnd, but the IPC server RESTAMPS ctx.reqId per request — so
+    //     reqId can't match. ctx.conversationId IS stamped, so we match on it,
+    //     mirroring the done-frame chat:turn-end subscriber above.
     deps.bus.subscribe<{ reqId?: string; reason?: string }>(
       'chat:turn-error',
       turnErrorSubKey,
-      async (_ctx, payload) => {
-        if (payload.reqId !== reqId) return undefined;
+      async (ctx, payload) => {
+        const matchesReqId = payload.reqId === reqId;
+        const matchesConversation =
+          ctx.conversationId !== undefined && ctx.conversationId === conversationId;
+        if (!matchesReqId && !matchesConversation) return undefined;
         safeWrite({ reqId, error: payload.reason ?? 'unknown' });
         deps.buffer.evictReqId(reqId);
         cleanup();
