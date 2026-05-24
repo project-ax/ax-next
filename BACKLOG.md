@@ -44,3 +44,7 @@ Listed here only so the triggers are easy to find. Per the roadmap, these stay d
 ## Web tools (@ax/web-tools, PR for `feat/web-tools-impl`)
 
 - [ ] **Web-tools cost/usage metering + per-agent search-spend visibility.** YAGNI now (plan "Out of scope"). Add a usage-metering subscriber hook if operators need per-agent web-search spend (web search bills ~$10/1k). Trigger: an operator asks for the visibility.
+
+## Ideas
+
+- [ ] .bashrc in HOME that adds a bin/ directory to the PATH in /permanent so that binaries can be found
