@@ -18,9 +18,12 @@ agents both edit the board live; you react to whatever lands in To Do.
 
 You are the **orchestrator**. You dispatch agents; you do not implement. Heavy work
 lives in subagents so your context stays lean. All durable state lives **on the
-board** (+ open PRs + a local failure journal), so a run is fully **resumable**: if
-your context grows, end the session and re-invoke `/auto-ship` — it rebuilds from the
-board and continues.
+board** (+ open PRs + a local failure journal), so a run is fully **resumable** — and
+**crash-safe**: if the CLI dies mid-flight, its agents and poller die with it,
+stranding cards in In Progress / In Review. Re-invoke `/auto-ship` and the run-start
+**reconcile** pass recovers every orphan from board + PR ground truth
+(`references/github-project.md` §7) before draining further. The same path handles a
+clean resume when your context grows.
 
 Design: `docs/plans/2026-05-24-auto-ship-design.md` (revised — board-as-source-of-truth).
 Board mechanics + the poller: `references/github-project.md`. Dispatch/handoff
@@ -29,9 +32,12 @@ templates: `references/templates.md`.
 ## Prime directive — context discipline
 
 Hold **only** the ready set (task IDs + deps) and **≤1 line of status per in-flight
-card**. Never read task source, diffs, or agent transcripts into your context.
-Enforce a **≤150-word structured handoff** from every dispatched agent. After every
-merge, **re-derive** state from the board — do not accumulate across passes.
+card**. Never read task source, diffs, or agent transcripts into your context. Card
+**bodies** (including the live progress block, §6) are never read into your context
+either — the `append_progress` read-modify-write stays **shell-side**, surfacing only
+`progress: …` to you. Enforce a **≤150-word structured handoff** from every dispatched
+agent. After every merge, **re-derive** state from the board — do not accumulate
+across passes.
 
 | Thought | Reality |
 |---|---|
@@ -65,8 +71,11 @@ yolo-shipped** — see Cluster-walk lane.
 ## Control loop
 
 At run start: resolve the board, ensure the 6-lane `Status` set + the `Depends on`
-field exist (`references/github-project.md` §1–2), print the plan, launch the poller,
-then idle. You then run the same pass on **every wake**:
+field exist (`references/github-project.md` §1–2), write the poller **and** the
+progress helper (`.claude/auto-ship-progress.sh`, §6) + take the owner lock (§7),
+**reconcile any orphaned in-flight cards** (§7 — this is the crash/resume recovery
+step), print the plan, launch the poller, then idle. You then run the same pass on
+**every wake**:
 
 ```dot
 digraph autoship {
@@ -92,7 +101,10 @@ Three wake signals, all run the same pass:
 
 1. **Board change** — the poller (below) exits when the To Do lane changes.
 2. **Agent completion** — a dispatched background agent finishes (a PR is ready / a slot frees).
-3. **Run start / resume.**
+3. **Run start / resume** — and **only** this wake additionally runs the §7
+   reconcile pass *first*. A fresh invocation owns no live agents, so every In
+   Progress / In Review card is by definition an orphan to recover; a board-change or
+   agent-done wake has live tracked agents and must **not** reconcile.
 
 **Print the plan before the first dispatch** (ready set + skip-list + lane plan) so a
 watching human can interrupt. `--dry-run` runs one review+recompute pass, prints the
@@ -131,11 +143,13 @@ first launch fires right away (empty snapshot) — that's the run-start review.
 Fill every open slot, **topmost ready card in the To Do lane first** (ties: oldest
 card). For each:
 
-1. Move the card → **In Progress** (`references/github-project.md` §4).
+1. Move the card → **In Progress** (`references/github-project.md` §4). No body
+   seeding needed — the agent's first phase line creates the progress block (§6).
 2. Launch a **background** `general-purpose` agent running `yolo-ship` in
    **orchestrated mode** on that one card (`Agent`, `run_in_background: true`), using
    the **code-lane dispatch prompt** in `references/templates.md` — pass the card's
-   `[TASK-ID]`, title, and body.
+   `[TASK-ID]`, title, body, its **item node id** (`<ITEM-ID>`), and the **absolute
+   path** to `.claude/auto-ship-progress.sh` so it reports progress live on its card.
 3. Append `dispatch <TASK-ID>` + timestamp to `.claude/auto-ship-log.md`.
 
 Launch all slot-fills in a **SINGLE message** (concurrent). If ready cards exceed
@@ -160,11 +174,14 @@ gh pr merge <n> --squash --delete-branch
 git checkout main && git pull --ff-only
 ```
 
-On a `pr-green` handoff (PR open, pre-merge): move the card → **In Review** and append
-the PR link to the card body. After the merge: move the card → **Done**, append
-`merged #<n>` to the journal, and **create a new To Do card for each follow-up** the
-agent reported (set its deps; you are the **sole** board writer — agents never touch
-it). **Never** merge two PRs concurrently.
+On a `pr-green` handoff (PR open, pre-merge): move the card → **In Review** (the agent
+already logged `PR #<n> opened` in its progress block — you no longer append a link).
+After the merge: move the card → **Done**, `append_progress … "merged #<n> ✅"` on the
+card, append `merged #<n>` to the journal, and **create a new To Do card for each
+follow-up** the agent reported (set its deps). You are the **sole writer of the
+routing fields** (`Status`, `Depends on`) and the sole card-mover; the only thing an
+agent writes is the progress block of its own In-Progress card (§6). **Never** merge
+two PRs concurrently.
 
 **Cross-package backstop (auto-merge safety).** PR CI runs only affected-package
 tests for speed (`.github/workflows/ci.yml`), so the **push-to-main full suite** is
@@ -206,20 +223,31 @@ survive a resume):
 4. **Global breaker:** halt + report if a run exceeds **10** auto-spawned cards OR **3×** the initial actionable-card count in total dispatches.
 5. **Stall detector:** a pass that leaves the Done-count unchanged AND the ready-set identical → halt + report.
 
-Quarantine is visible: move the card → **Parked**, prefix its title `🛑`, append the
-attempt count + signature to its body, and add a journal row. Excluded from the ready set.
+Quarantine is visible: move the card → **Parked**, prefix its title `🛑`,
+`append_progress … "🛑 parked — attempt=<N> sig=<signature>"` on the card (§6), and
+add a journal row. Excluded from the ready set.
 
 ## Progress & observability
 
-The **board is the dashboard** — every state is visible in the GitHub Projects UI.
-Locally, two gitignored files only:
+The **board is the dashboard** — every state is visible in the GitHub Projects UI,
+now down to a **live per-card heartbeat**: each In-Progress card's body carries the
+delimited progress block (§6) the building agent appends to at every phase boundary
+(`brainstorm done`, `task k/N done`, `codex review clean`, `PR #<n> opened`, `CI green
+✅`), with `⚠`-prefixed exception lines (codex findings, CI red, blocked) and the §7
+recovery audit trail. Open a card to read its story; the kanban tiles stay clean
+(Projects v2 renders the body only in the detail pane).
+
+Locally, gitignored only:
 
 - `.claude/auto-ship-log.md` — append-only journal + failure ledger (dispatches,
-  merges, attempt counts, signatures). The loop-breakers read it; a resume rebuilds
-  attempt history from it.
+  merges, attempt counts, signatures, crash-recoveries). The loop-breakers read it; a
+  resume rebuilds attempt history from it.
 - `.claude/auto-ship-todo-snapshot.txt` — the poller's last-seen To Do hash.
+- `.claude/auto-ship-progress.sh` — the shell-side `append_progress` helper (§6).
+- `.claude/auto-ship-owner.lock` — the single-instance heartbeat (§7).
 
-On resume, rebuild the ready set from the **board** + `gh pr list` + the journal.
+On resume, rebuild the ready set from the **board** + `gh pr list` + the journal, and
+run the §7 reconcile to recover orphaned in-flight cards.
 
 ## Termination
 
@@ -251,6 +279,9 @@ in-flight, and any walk-filed follow-ups.
 | "The walk failed; I'll re-file the fix again" | Same signature ⇒ quarantine. Re-filing the same failure is the loop you must not create. |
 | "Two PRs are green, merge both now" | Serialized queue. One at a time, rebase-on-conflict. |
 | "I'll skip the plan print, the ready set looks obvious" | Print it first. Auto-merging to main is high blast-radius. |
-| "I'll let the agent move its own card / set its deps" | Agents never write the board. You are the sole writer (avoids conflicts). |
+| "I'll let the agent move its own card / set its deps" | Agents never write the **routing fields** (`Status`, `Depends on`) or another card. The one thing an agent writes is the progress block of its own In-Progress card (§6); you own all routing + moves. |
+| "I'll read the card body to see how far it got" | Never pull a body into context — the `append_progress` RMW is shell-side (§6). For recovery you key off the `Status` lane + PR ground truth (§7), not the body. |
+| "Re-invoked after a crash — I'll just start dispatching" | Run the §7 reconcile **first**: orphaned In Progress / In Review cards (PR → merge queue; no PR → reset to To Do) before draining, or they wedge slots forever. |
+| "An In-Progress card looks stuck, I'll re-dispatch it" | Only on a **run-start** wake (no live agents). On a board-change/agent-done wake those agents are live — reconciling would double-dispatch. |
 | "I'll poll the board myself each minute" | That burns tokens. The background poller is token-free and re-invokes you on change. |
 | "This walk card is ready, I'll yolo-ship it" | `(walk)` cards run via the serialized k8s-acceptance-loop, never yolo-ship. |

@@ -57,8 +57,7 @@ docs/plans/*
 # Local handoff/prompt scratch — kept out of git
 .claude/prompts/
 
-# auto-ship operational run state (regenerated from the "TO DO" board + gh on resume)
-.claude/auto-ship-status.md
-.claude/auto-ship-log.md
-.claude/auto-ship-todo-snapshot.txt
-.claude/auto-ship-board-poll.sh
+# auto-ship operational run state (regenerated from the "TO DO" board + gh on resume).
+# Wildcard so new run-state files (progress helper, owner lock, …) are covered too;
+# the committed skill lives under .claude/skills/auto-ship/ and is NOT matched by this.
+.claude/auto-ship-*

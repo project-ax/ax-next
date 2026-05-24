@@ -112,15 +112,19 @@ gh project item-edit --id "$ITEM_ID" --project-id "$PROJ_ID" \
 # set / rewrite its deps:
 gh project item-edit --id "$ITEM_ID" --project-id "$PROJ_ID" \
   --field-id "$DEPS_FIELD_ID" --text "$DEPS"      # e.g. "ARCH-4 ARCH-5"  or  "none"
-
-# on PR open, append the PR link to the card body:
-gh project item-edit --id "$ITEM_ID" --body "$TASK_BODY — PR: $PR_URL"
 ```
+
+The card **body** is written through a different door — the delimited progress block
+(§6), never `--body` whole-replace. The orchestrator does **not** append a PR link to
+the body any more: the building agent logs `PR #<n> opened` into its own progress
+block, so there is only ever one body writer at a time (§6).
 
 Transitions (orchestrator, AFTER the journal write): dependency cleared / card lands
 in To Do → leave in **To Do**; dispatch → **In Progress**; `pr-green` / PR open →
-**In Review** (+ append PR link); merged → **Done**; quarantined → **Parked** (+ `🛑`
-title prefix). Walk cards stay in **Backlog** unless a human moves them to To Do.
+**In Review** (the agent already logged `PR #<n> opened` in the block); merged →
+**Done** (`append_progress … "merged #<n> ✅"`); quarantined → **Parked** (+ `🛑`
+title prefix + `append_progress … "🛑 parked — <signature>"`). Walk cards stay in
+**Backlog** unless a human moves them to To Do.
 
 ## 5. The poller (token-free To Do watcher)
 
@@ -153,3 +157,149 @@ the **end** of each pass — after all board writes, before re-launching the pol
 recompute the hash and overwrite `.claude/auto-ship-todo-snapshot.txt` with it, so the
 poller's next compare sees no change and sleeps. The first launch has an empty
 snapshot, so it fires immediately → that's the run-start review.
+
+The poller hashes **only the To Do lane**. All progress-block writes (§6) land on
+**In Progress** cards, so they never trip the poller — no self-trigger from the live
+heartbeat.
+
+## 6. The progress block (live per-card heartbeat)
+
+Each card body carries a delimited, append-only progress log that the *building
+agent* writes as it moves through yolo-ship's phases. It is the board-visible
+heartbeat + exception feed for a watching human — and, after a crash, the recovery
+audit trail (§7). The markers fence off a region; **everything outside them — the
+human-authored description, hand notes — is always preserved**:
+
+```
+<original task description — never touched>
+
+<!-- AUTOSHIP-PROGRESS:START -->
+### Progress
+- 14:05 brainstorm done — approach: …
+- 14:42 PR #210 opened
+- 14:55 ⚠ CI red — preset.test
+<!-- AUTOSHIP-PROGRESS:END -->
+```
+
+Lines are `- HH:MM <text>`; **exceptions get a leading `⚠`** so a human can scan a
+card for trouble. The per-phase line catalogue lives in yolo-ship's **Progress
+reporting** section.
+
+**One writer at a time — structural, not locked.** The body has exactly one writer
+at any instant:
+
+- the **agent** owns it while the card is **In Progress** (append-only, its own card only);
+- the **orchestrator** writes it only at **terminal** transitions (→ Done, → Parked),
+  by which point the agent has returned its handoff and exited;
+- the orchestrator no longer appends the PR link itself — the agent logs
+  `PR #<n> opened` in the block (one fewer body writer).
+
+The agent **never** touches `Status` or `Depends on` (routing stays
+orchestrator-owned) and **never** writes another card.
+
+**Token discipline — the read-modify-write stays in shell.** The body grows with
+each line, so it must **never** be read into the model's context. `append_progress`
+fetches the body, splices the block, and writes it back **entirely in shell**,
+surfacing only `progress: …` / `skip` to the model. Write it next to the poller at
+run start (`.claude/auto-ship-progress.sh`, gitignored); the orchestrator sources it
+for its terminal writes, and the dispatch prompt passes its **absolute path** to each
+agent.
+
+```bash
+cat > .claude/auto-ship-progress.sh <<'SH'
+#!/usr/bin/env bash
+# append_progress <project-item-node-id> "<line>"
+# Best-effort, shell-side RMW of the delimited block in a draft-issue card body.
+# The body NEVER enters the model's context — only "progress:"/"skip" is echoed.
+# A failed write is non-fatal: progress is observability, never a ship blocker.
+append_progress() {
+  local item="$1" line="$2" now; now=$(date +%H:%M)
+  local START='<!-- AUTOSHIP-PROGRESS:START -->'
+  local END='<!-- AUTOSHIP-PROGRESS:END -->'
+  local entry="- $now $line"
+  local q='query($i:ID!){node(id:$i){... on ProjectV2Item{content{... on DraftIssue{id body}}}}}'
+  local json cid body
+  json=$(gh api graphql -f query="$q" -f i="$item" 2>/dev/null) || { echo "progress: skip (read)"; return 0; }
+  cid=$(printf '%s' "$json" | jq -r '.data.node.content.id // empty')
+  body=$(printf '%s' "$json" | jq -r '.data.node.content.body // ""')
+  [ -z "$cid" ] && { echo "progress: skip (not a draft-issue card)"; return 0; }
+  local nb
+  if printf '%s' "$body" | grep -qF "$START"; then
+    nb=$(printf '%s' "$body" | awk -v e="$entry" -v end="$END" '$0==end{print e} {print}')
+  else
+    nb=$(printf '%s\n\n%s\n### Progress\n%s\n%s' "$body" "$START" "$entry" "$END")
+  fi
+  gh api graphql -f query='mutation($d:ID!,$b:String!){updateProjectV2DraftIssue(input:{draftIssueId:$d,body:$b}){draftIssue{id}}}' \
+    -f d="$cid" -f b="$nb" >/dev/null 2>&1 \
+    && echo "progress: $entry" || echo "progress: skip (write)"
+}
+SH
+chmod +x .claude/auto-ship-progress.sh
+```
+
+Shell state does **not** persist across Bash calls, so `source` + call go in the
+**same** invocation each time:
+
+```bash
+source .claude/auto-ship-progress.sh && append_progress "$ITEM_ID" "merged #$PR ✅"
+```
+
+(Cards are **draft issues** — auto-ship creates them with `gh project item-create
+--title --body` — so the read/write target the `DraftIssue` content node. A card that
+is a linked real issue/PR is skipped, harmlessly.)
+
+## 7. Crash recovery — reconcile orphaned in-flight cards (run-start wake only)
+
+If the CLI running auto-ship dies, the dispatched agents and the poller die with it,
+stranding cards in **In Progress** / **In Review** with no agent — and, because the
+concurrency cap counts them as in-flight, they would silently consume slots forever.
+A *fresh* `/auto-ship` therefore cannot own any live agents — so on the
+**run-start / resume wake only** (never a board-change or agent-done wake) it
+reconciles every In Progress + In Review card against ground truth, with **no risk of
+reaping a live agent**.
+
+**Single-instance guard** (don't reconcile a still-live sibling's cards — refresh it
+every pass as a heartbeat):
+
+```bash
+LOCK=.claude/auto-ship-owner.lock
+if [ -f "$LOCK" ] && [ "$(( $(date +%s) - $(cat "$LOCK") ))" -lt 900 ]; then
+  echo "auto-ship: recent owner lock ($(cat "$LOCK")) — another run may be live; refusing to reconcile. rm $LOCK to override."; exit 1
+fi
+date +%s > "$LOCK"
+```
+
+**Reconcile.** The policy leans on yolo-ship opening the PR only in **Phase 6** — so a
+PR's existence ⇒ Phases 0–5 finished, the work is not lost:
+
+```bash
+# in-flight cards: TASK-ID (from title) + item node id
+echo "$ITEMS" | jq -r '.items[] | select(.status=="In Progress" or .status=="In Review")
+  | "\(.title)\t\(.id)"'
+# per card, by [TASK-ID]: is there an open PR titled "[TASK-ID] …"?
+gh pr list --state open --search "[$TASK_ID] in:title" \
+  --json number,mergeable,statusCheckRollup,headRefName
+```
+
+| Orphan | Action |
+|---|---|
+| PR exists (In Review, or In Progress) | move/keep → **In Review**; the serialized merge queue takes it (green+mergeable → merge; not-mergeable/red → rebase + re-green). `append_progress … "⚠ orchestrator restarted — PR #<n> found, routing to merge"`. |
+| In Progress, **no** PR | agent died pre-Phase-6 → move → **To Do** for a fresh re-dispatch; clean up the abandoned worktree/branch (below); `append_progress … "⚠ orchestrator restarted — no PR, reset to To Do"`. **Not** an attempt against the cap (a crash ≠ a task failure), but journal it (`recovered`) so the global breaker still bounds crash-loops. |
+
+**Abandoned-branch cleanup** (no-PR reset only — never when a PR exists, that work
+ships):
+
+```bash
+for b in $(git branch --list "auto-ship/$TASK_ID-*" --format '%(refname:short)'); do
+  wt=$(git worktree list --porcelain | awk -v b="$b" '/^worktree /{w=$2} /^branch /{if($2=="refs/heads/"b) print w}')
+  [ -n "$wt" ] && git worktree remove --force "$wt" 2>/dev/null
+  git branch -D "$b" 2>/dev/null
+  git push origin --delete "$b" 2>/dev/null || true   # harmless if never pushed
+done
+git worktree prune
+```
+
+Reconciliation keys off the **`Status` lane + PR ground truth**, not the progress
+block — so a crash mid-body-write is tolerated. The journal
+(`.claude/auto-ship-log.md`) survives on disk, so **attempt counts rebuild across the
+crash**: a card that already burned an attempt does not get a free reset.

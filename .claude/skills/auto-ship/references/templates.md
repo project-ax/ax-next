@@ -4,7 +4,9 @@
 
 Dispatch via `Agent` with `run_in_background: true`,
 `subagent_type: "general-purpose"`. Substitute `<TASK-ID>`, `<TASK-TITLE>`,
-`<TASK-BODY>` (the card's title + body from the board), `<short-slug>`:
+`<TASK-BODY>` (the card's title + body from the board), `<short-slug>`, `<ITEM-ID>`
+(the card's project-item node id), `<PROGRESS-HELPER-PATH>` (absolute path to the
+`.claude/auto-ship-progress.sh` written at run start):
 
 > You are shipping ONE card from this repo's "TO DO" project board, end to end,
 > under orchestration by auto-ship.
@@ -17,8 +19,16 @@ Dispatch via `Agent` with `run_in_background: true`,
 >   `[<TASK-ID>] `. Base `main`.
 > - **Do NOT merge.** Stop at a green, verified-mergeable PR (yolo-ship ends at
 >   Phase 6 for you). auto-ship merges it through a serialized queue.
-> - **Do NOT edit the board.** Return deferred follow-ups in your handoff instead;
->   auto-ship (the sole board writer) creates the cards.
+> - **Do NOT edit the board's routing fields** (`Status`, `Depends on`) and never
+>   touch another card. auto-ship owns routing. Return deferred follow-ups in your
+>   handoff instead; auto-ship creates the cards.
+> - **Report progress live on your card.** This card is item `<ITEM-ID>`. At each
+>   yolo-ship phase boundary, append a one-line heartbeat to its progress block —
+>   in a SINGLE Bash call: `source <PROGRESS-HELPER-PATH> && append_progress
+>   "<ITEM-ID>" "<line>"`. Use the per-phase lines in yolo-ship's **Progress
+>   reporting** section; prefix exceptions (codex findings, CI red, blocked) with
+>   `⚠`. Best-effort: a failed progress write must NEVER block the ship. The helper
+>   does the read-modify-write in shell — do not read the card body into your context.
 > - Otherwise follow yolo-ship exactly: worktree, self-answering brainstorm,
 >   written plan, subagent-driven TDD, build+test+lint gate, local Codex review,
 >   open PR, drive CI green.
@@ -87,5 +97,6 @@ loop-breakers read (and a resume rebuilds attempt history from).
 <HH:MM:SS>  <TASK-ID>  merged #<n> -> main (ff)
 <HH:MM:SS>  <TASK-ID>  walk-pass | walk-fail
 <HH:MM:SS>  <TASK-ID>  failed attempt=<N> sig=<signature> parent=<id|-> depth=<d> [-> PARKED]
+<HH:MM:SS>  <TASK-ID>  recovered (crash) -> {merge|To Do}    # run-start reconcile, §7
 <HH:MM:SS>  HALT · <reason: global-breaker|stall|cluster-down>
 ```
