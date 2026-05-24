@@ -3,6 +3,7 @@ import {
   PluginError,
   asWorkspaceVersion,
   registerWorkspaceApplyFacade,
+  WorkspaceDiffOutputSchema,
   WorkspaceListOutputSchema,
   WorkspaceReadOutputSchema,
   type Bytes,
@@ -272,6 +273,7 @@ export function createMockWorkspacePlugin(): Plugin {
           );
           return { delta };
         },
+        { returns: WorkspaceDiffOutputSchema },
       );
     },
   };

@@ -217,6 +217,71 @@ describe('registerWorkspaceApplyFacade', () => {
     expect(errLog).toHaveBeenCalled();
   });
 
+  it('(f2) ARCH-12: a malformed internal delta is REJECTED before workspace:applied observes it', async () => {
+    // Codex P2 regression: the facade's `returns` schema is enforced by
+    // HookBus only AFTER the facade handler returns. The facade fires
+    // `workspace:applied` from inside the handler — so without an explicit
+    // pre-fire validation, a malformed `apply-internal` delta would reach
+    // `applied` subscribers (e.g. @ax/routines sync) before `invalid-return`
+    // is raised. The fix validates the apply output before firing `applied`.
+    const bus = new HookBus();
+    // A structurally-invalid delta: `kind` is not a WorkspaceChangeKind.
+    const malformed = {
+      version: asWorkspaceVersion('v1'),
+      delta: {
+        before: null,
+        after: asWorkspaceVersion('v1'),
+        changes: [{ path: 'x', kind: 'bogus' }],
+      },
+    } as unknown as WorkspaceApplyOutput;
+    bus.registerService<WorkspaceApplyInput, WorkspaceApplyOutput>(
+      'workspace:apply-internal',
+      FACADE_PLUGIN,
+      async () => malformed,
+    );
+    const appliedSubscriber = vi.fn(async () => undefined);
+    bus.subscribe<WorkspaceDelta>('workspace:applied', 'indexer', appliedSubscriber);
+    registerWorkspaceApplyFacade(bus, FACADE_PLUGIN);
+
+    const err = await bus
+      .call('workspace:apply', silentCtx(), { changes: [policyChange], parent: null })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(PluginError);
+    expect((err as PluginError).code).toBe('invalid-return');
+    expect((err as PluginError).hookName).toBe('workspace:apply');
+    // The malformed delta must NEVER have reached the observe-only subscriber.
+    expect(appliedSubscriber).not.toHaveBeenCalled();
+  });
+
+  it('(f3) ARCH-12: a valid apply output still fires workspace:applied with the SAME delta object', async () => {
+    // The pre-fire validation must not clone/replace the delta — subscribers
+    // (and test (e)) rely on getting the backend's delta object, incl. the
+    // lazy contentBefore/contentAfter fns that .passthrough() preserves.
+    const bus = new HookBus();
+    const output = makeOutput('v1');
+    bus.registerService<WorkspaceApplyInput, WorkspaceApplyOutput>(
+      'workspace:apply-internal',
+      FACADE_PLUGIN,
+      async () => output,
+    );
+    let appliedDelta: WorkspaceDelta | undefined;
+    bus.subscribe<WorkspaceDelta>('workspace:applied', 'indexer', async (_ctx, delta) => {
+      appliedDelta = delta;
+      return undefined;
+    });
+    registerWorkspaceApplyFacade(bus, FACADE_PLUGIN);
+
+    const out = await bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>(
+      'workspace:apply',
+      silentCtx(),
+      { changes: [policyChange], parent: null },
+    );
+
+    expect(appliedDelta).toBe(output.delta);
+    expect(out).toBe(output);
+  });
+
   it('(g) ctx is passed through unchanged to pre-apply / internal / applied', async () => {
     const bus = new HookBus();
     const ctx = silentCtx({ userId: 'specific-user', agentId: 'specific-agent' });
