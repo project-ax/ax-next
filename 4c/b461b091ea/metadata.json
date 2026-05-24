@@ -1,0 +1,23 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "4cb461b091ea",
+  "strategy": "manual-commit",
+  "branch": "worktree-fault-a-sse-turn-error",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/4c/b461b091ea/0/metadata.json",
+      "transcript": "/4c/b461b091ea/0/full.jsonl",
+      "content_hash": "/4c/b461b091ea/0/content_hash.txt",
+      "prompt": "/4c/b461b091ea/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 14459,
+    "cache_creation_tokens": 809865,
+    "cache_read_tokens": 31608338,
+    "output_tokens": 162849,
+    "api_call_count": 127
+  }
+}

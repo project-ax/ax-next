@@ -1,0 +1,19 @@
+<task-notification>
+<task-id>bo9id1y32</task-id>
+<summary>Monitor event: "PR #137 checks (CI + CodeRabbit) reaching terminal state"</summary>
+<event>Analyze (actions): pass
+Analyze (javascript-typescript): pass
+CodeQL: pass
+gitleaks: pass
+semgrep: pass</event>
+If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>bo9id1y32</task-id>
+<summary>Monitor event: "PR #137 checks (CI + CodeRabbit) reaching terminal state"</summary>
+<event>CodeRabbit: pass</event>
+If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
+</task-notification>

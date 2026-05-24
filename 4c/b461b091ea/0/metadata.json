@@ -1,0 +1,42 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "4cb461b091ea",
+  "session_id": "65d3ecf8-0e82-4bf0-a4d5-a58285b960df",
+  "strategy": "manual-commit",
+  "created_at": "2026-05-24T01:04:10.092247Z",
+  "branch": "worktree-fault-a-sse-turn-error",
+  "checkpoints_count": 1,
+  "files_touched": [],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "0f4ec45d22d8",
+  "token_usage": {
+    "input_tokens": 14459,
+    "cache_creation_tokens": 809865,
+    "cache_read_tokens": 31608338,
+    "output_tokens": 162849,
+    "api_call_count": 127
+  },
+  "session_metrics": {
+    "turn_count": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 8,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claude/settings.local.json": 8
+      }
+    }
+  ]
+}
