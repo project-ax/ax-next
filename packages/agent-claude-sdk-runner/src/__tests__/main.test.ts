@@ -123,12 +123,18 @@ vi.mock('../python-venv.js', async (importOriginal) => {
 // The wait's real polling/timeout behavior is covered in turn-end-uuid.test.ts.
 const readLastTurnUuidMock = vi.fn().mockResolvedValue(undefined);
 const waitForTurnTranscriptMock = vi.fn().mockResolvedValue(undefined);
+// F2a resume guard: default to "resumable" so the resume-path tests below see
+// `resume` passed through; the guard test overrides it to false. The fake
+// AX_WORKSPACE_ROOT has no real jsonl, so the real impl would always report
+// false and strip every resume — mock it out like the other transcript reads.
+const hasResumableTranscriptMock = vi.fn().mockResolvedValue(true);
 vi.mock('../turn-end-uuid.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../turn-end-uuid.js')>();
   return {
     ...actual,
     readLastTurnUuid: readLastTurnUuidMock,
     waitForTurnTranscript: waitForTurnTranscriptMock,
+    hasResumableTranscript: hasResumableTranscriptMock,
   };
 });
 
@@ -325,6 +331,8 @@ beforeEach(() => {
   readLastTurnUuidMock.mockResolvedValue(undefined);
   waitForTurnTranscriptMock.mockReset();
   waitForTurnTranscriptMock.mockResolvedValue(undefined);
+  hasResumableTranscriptMock.mockReset();
+  hasResumableTranscriptMock.mockResolvedValue(true);
   scaffoldPythonVenvMock.mockReset();
   scaffoldPythonVenvMock.mockResolvedValue(true);
   createIpcClientMock = vi.fn();
@@ -1800,8 +1808,11 @@ describe('main()', () => {
   // ---------------------------------------------------------------------
 
   describe('Phase C: runner_session_id binding', () => {
-    it('happy path: bound conversation → captures system/init session_id and POSTs conversation.store-runner-session exactly once', async () => {
+    it('happy path: bound conversation → captures system/init session_id and POSTs conversation.store-runner-session once, AFTER the first host-accepted turn-end commit (F2a)', async () => {
       setEnv(COMPLETE_ENV);
+      // F2a: the bind is deferred to a durable commit, so the turn must
+      // actually ship + get accepted for the bind to fire.
+      commitTurnAndBundleMock.mockResolvedValue('YnVuZGxl');
       fakeClient = buildFakeClient();
       fakeClient.call.mockImplementation(async (action: string) => {
         if (action === 'session.get-config') {
@@ -1820,6 +1831,9 @@ describe('main()', () => {
         }
         if (action === 'workspace.materialize') return { bundleBytes: '' };
         if (action === 'tool.list') return { tools: [] };
+        if (action === 'workspace.commit-notify') {
+          return { accepted: true, version: 'v1', delta: null };
+        }
         if (action === 'conversation.store-runner-session') {
           return { ok: true };
         }
@@ -1851,6 +1865,71 @@ describe('main()', () => {
         conversationId: 'cnv-1',
         runnerSessionId: 'sdk-sess-abc',
       });
+      // The bind must come AFTER an accepted commit-notify (durability first).
+      const order = fakeClient.call.mock.calls.map((c) => c[0]);
+      const firstCommit = order.indexOf('workspace.commit-notify');
+      const bindIdx = order.indexOf('conversation.store-runner-session');
+      expect(firstCommit).toBeGreaterThanOrEqual(0);
+      expect(bindIdx).toBeGreaterThan(firstCommit);
+    });
+
+    it('F2a regression: a turn killed before any commit (no accepted commit) does NOT bind — so the retry never resumes a phantom session', async () => {
+      // This is the heart of F2a: binding at system/init persisted
+      // runner_session_id ~1s into the turn, BEFORE the transcript was durable.
+      // A turn killed in that window left a stale binding that crashed the
+      // retry's query({resume}) with "No conversation found". With the bind
+      // deferred to a host-accepted commit, a turn with no committed transcript
+      // (commitTurnAndBundle returns null → no commit-notify) leaves the row
+      // UNBOUND, so the host returns runner_session_id=null on the retry and the
+      // fresh runner starts clean instead of resuming nothing.
+      setEnv(COMPLETE_ENV);
+      // Default commitTurnAndBundleMock → null (no diff → no commit-notify),
+      // simulating a turn that never reached a durable commit.
+      fakeClient = buildFakeClient();
+      fakeClient.call.mockImplementation(async (action: string) => {
+        if (action === 'session.get-config') {
+          return {
+            userId: 'u-test',
+            agentId: 'a-test',
+            agentConfig: {
+              systemPrompt: '',
+              allowedTools: [],
+              mcpConfigIds: [],
+              model: 'claude-sonnet-4-7',
+            },
+            conversationId: 'cnv-killed',
+            runnerSessionId: null,
+          };
+        }
+        if (action === 'workspace.materialize') return { bundleBytes: '' };
+        if (action === 'tool.list') return { tools: [] };
+        if (action === 'conversation.store-runner-session') {
+          throw new Error('runner must NOT bind before a durable commit (F2a)');
+        }
+        throw new Error(`unexpected call: ${action}`);
+      });
+      fakeInbox = buildFakeInbox([userEntry('go'), cancelEntry]);
+      queryMock.mockImplementation(
+        ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+          return (async function* () {
+            const it = prompt[Symbol.asyncIterator]();
+            await it.next();
+            yield systemInit('sdk-sess-phantom');
+            yield assistantText('partial');
+            yield resultSuccess();
+            await it.next();
+          })();
+        },
+      );
+
+      const { main } = await import('../main.js');
+      const rc = await main();
+      expect(rc).toBe(0);
+
+      const bindCalls = fakeClient.call.mock.calls.filter(
+        (c) => c[0] === 'conversation.store-runner-session',
+      );
+      expect(bindCalls).toHaveLength(0);
     });
 
     it('no conversation: conversationId is null → no conversation.store-runner-session call', async () => {
@@ -1904,12 +1983,13 @@ describe('main()', () => {
       expect(bindCalls).toHaveLength(0);
     });
 
-    it('multiple system/init: only the FIRST triggers the bind (re-entrant init defense)', async () => {
-      // The SDK's resume(sessionId) flow can re-emit system/init within
-      // the same query(). We only build resume() in a later task, but
-      // the runner code path must defend today — the first init is the
-      // load-bearing one for the bind.
+    it('multiple system/init: binds the FIRST captured session_id exactly once (re-entrant init defense)', async () => {
+      // The SDK's resume(sessionId) flow can re-emit system/init within the
+      // same query(). The FIRST init is the load-bearing one — its session_id
+      // is captured into transcriptSessionId and a later init must NOT change
+      // it. The bind itself fires once, after the first accepted commit (F2a).
       setEnv(COMPLETE_ENV);
+      commitTurnAndBundleMock.mockResolvedValue('YnVuZGxl');
       fakeClient = buildFakeClient();
       fakeClient.call.mockImplementation(async (action: string) => {
         if (action === 'session.get-config') {
@@ -1928,6 +2008,9 @@ describe('main()', () => {
         }
         if (action === 'workspace.materialize') return { bundleBytes: '' };
         if (action === 'tool.list') return { tools: [] };
+        if (action === 'workspace.commit-notify') {
+          return { accepted: true, version: 'v1', delta: null };
+        }
         if (action === 'conversation.store-runner-session') {
           return { ok: true };
         }
@@ -1965,15 +2048,17 @@ describe('main()', () => {
       });
     });
 
-    it('Phase E: bind IPC failure is FATAL — runner exits non-zero with chat-end outcome.kind=terminated', async () => {
-      // Phase E (2026-05-09): the bind call is the only durable link
-      // from the conversation row to the workspace jsonl. If we let it
-      // fail silently, `conversations:get` permanently returns turns=[]
-      // for this conversation (it short-circuits on `runnerSessionId ===
-      // null`) and no future runner can resume(). Failing the run loud
-      // surfaces the breakage in the host's chat:end outcome instead of
-      // hiding it.
+    it('F2a: bind IPC failure is non-fatal and self-heals — runner still exits 0 and the next accepted commit retries the bind', async () => {
+      // F2a (supersedes the Phase E FATAL posture): the bind now fires AFTER
+      // the turn already streamed to the user (post-accepted-commit), so
+      // terminating the run on a bind failure would be incoherent — the user
+      // saw a complete reply. Instead the failure is logged and the flag is
+      // left unset, so the next accepted commit (here the post-`result` final
+      // commit) retries. A transient host blip thus heals within the same run
+      // rather than crashing the chat.
       setEnv(COMPLETE_ENV);
+      commitTurnAndBundleMock.mockResolvedValue('YnVuZGxl');
+      let bindAttempts = 0;
       fakeClient = buildFakeClient();
       fakeClient.call.mockImplementation(async (action: string) => {
         if (action === 'session.get-config') {
@@ -1992,8 +2077,13 @@ describe('main()', () => {
         }
         if (action === 'workspace.materialize') return { bundleBytes: '' };
         if (action === 'tool.list') return { tools: [] };
+        if (action === 'workspace.commit-notify') {
+          return { accepted: true, version: 'v1', delta: null };
+        }
         if (action === 'conversation.store-runner-session') {
-          throw new Error('host returned 503');
+          bindAttempts++;
+          if (bindAttempts === 1) throw new Error('host returned 503');
+          return { ok: true };
         }
         throw new Error(`unexpected call: ${action}`);
       });
@@ -2004,7 +2094,7 @@ describe('main()', () => {
             const it = prompt[Symbol.asyncIterator]();
             await it.next();
             yield systemInit('sdk-sess-fail');
-            yield assistantText('should not reach the wire');
+            yield assistantText('reply the user saw');
             yield resultSuccess();
             await it.next();
           })();
@@ -2013,22 +2103,27 @@ describe('main()', () => {
 
       const { main } = await import('../main.js');
       const rc = await main();
-      // FATAL: runner exits non-zero.
-      expect(rc).toBe(1);
+      // Non-fatal: the run completes despite the first bind failing.
+      expect(rc).toBe(0);
 
-      // chat-end carries the failure shape so the host operator sees it.
+      // The failed bind was retried (per-turn commit failed → final commit
+      // succeeded) and eventually bound.
+      const bindCalls = fakeClient.call.mock.calls.filter(
+        (c) => c[0] === 'conversation.store-runner-session',
+      );
+      expect(bindCalls.length).toBeGreaterThanOrEqual(2);
+      expect(bindCalls.at(-1)?.[1]).toEqual({
+        conversationId: 'cnv-3',
+        runnerSessionId: 'sdk-sess-fail',
+      });
+
+      // chat-end outcome is a normal completion, NOT terminated.
       const chatEnds = fakeClient.event.mock.calls.filter(
         (c) => c[0] === 'event.chat-end',
       );
       expect(chatEnds).toHaveLength(1);
-      const payload = chatEnds[0]?.[1] as {
-        outcome: { kind: string; reason?: string };
-      };
-      expect(payload.outcome.kind).toBe('terminated');
-      expect(payload.outcome.reason).toContain(
-        'conversation.store-runner-session failed',
-      );
-      expect(payload.outcome.reason).toContain('host returned 503');
+      const payload = chatEnds[0]?.[1] as { outcome: { kind: string } };
+      expect(payload.outcome.kind).toBe('complete');
     });
   });
 
@@ -2108,6 +2203,67 @@ describe('main()', () => {
       expect(sdkSawMessages).toEqual([
         { role: 'user', content: 'live message' },
       ]);
+    });
+
+    it('F2a guard: runnerSessionId set but NO resumable transcript → OMITS options.resume (starts fresh, never crashes)', async () => {
+      // The SDK hard-crashes (exit 1, "No conversation found with session ID")
+      // if asked to resume a session whose materialized transcript has no
+      // parseable user/assistant message. The runner checks
+      // hasResumableTranscript first and demotes the resume to a fresh start.
+      setEnv(COMPLETE_ENV);
+      hasResumableTranscriptMock.mockResolvedValue(false);
+      fakeClient = buildFakeClient();
+      fakeClient.call.mockImplementation(async (action: string) => {
+        if (action === 'session.get-config') {
+          return {
+            userId: 'u-test',
+            agentId: 'a-test',
+            agentConfig: {
+              systemPrompt: '',
+              allowedTools: [],
+              mcpConfigIds: [],
+              model: 'claude-sonnet-4-7',
+            },
+            conversationId: 'cnv-stale',
+            runnerSessionId: 'sdk-sess-missing',
+          };
+        }
+        if (action === 'workspace.materialize') return { bundleBytes: '' };
+        if (action === 'tool.list') return { tools: [] };
+        if (action === 'conversation.store-runner-session') {
+          return { ok: true };
+        }
+        throw new Error(`unexpected call: ${action}`);
+      });
+      fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
+      queryMock.mockImplementation(
+        ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+          return (async function* () {
+            const it = prompt[Symbol.asyncIterator]();
+            await it.next();
+            yield systemInit('fresh-id');
+            yield assistantText('ok');
+            yield resultSuccess();
+            await it.next();
+          })();
+        },
+      );
+
+      const { main } = await import('../main.js');
+      const rc = await main();
+      expect(rc).toBe(0);
+
+      // The guard was consulted with the workspace root + the bound session id.
+      expect(hasResumableTranscriptMock).toHaveBeenCalledWith(
+        '/tmp/workspace',
+        'sdk-sess-missing',
+      );
+      // resume was stripped → query started fresh (no crash).
+      expect(queryMock).toHaveBeenCalledTimes(1);
+      const queryArg = queryMock.mock.calls[0]?.[0] as {
+        options: { resume?: string };
+      };
+      expect(queryArg.options.resume).toBeUndefined();
     });
 
     it('runnerSessionId null on session.get-config: omits options.resume', async () => {
