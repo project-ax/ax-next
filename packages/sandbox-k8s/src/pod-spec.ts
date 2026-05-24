@@ -226,6 +226,18 @@ export function buildPodSpec(
       name: 'SSL_CERT_FILE',
       value: '/var/run/ax/proxy-ca/ca.crt',
     });
+    // TASK-12: NODE_EXTRA_CA_CERTS / SSL_CERT_FILE only steer Node's TLS
+    // (the SDK's undici fetch). The `git` binary the Bash tool spawns is
+    // libcurl/OpenSSL-backed and reads NEITHER — it verifies the proxy's
+    // MITM cert against GIT_SSL_CAINFO. Without this, `git clone` over the
+    // credential proxy dies with `SSL certificate problem: unable to get
+    // local issuer certificate` (the CLI-1 walk-fail). Stamp the SAME CA
+    // path the Node vars use; the runner forwards GIT_SSL_CAINFO into the
+    // SDK subprocess via the GIT_ prefix allowlist (see proxy-startup.ts).
+    proxyEnv.push({
+      name: 'GIT_SSL_CAINFO',
+      value: '/var/run/ax/proxy-ca/ca.crt',
+    });
     if (pc.endpoint !== undefined) {
       proxyEnv.push({ name: 'AX_PROXY_ENDPOINT', value: pc.endpoint });
       proxyEnv.push({ name: 'HTTPS_PROXY', value: pc.endpoint });

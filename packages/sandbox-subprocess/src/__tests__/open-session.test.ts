@@ -501,6 +501,13 @@ describe('sandbox:open-session', () => {
     expect(parsed.HTTP_PROXY).toBeNull();
     // CA still lands.
     expect(parsed.NODE_EXTRA_CA_CERTS).toMatch(/ax-mitm-ca\.pem$/);
+    // TASK-12 regression: the `git` binary the Bash tool spawns is
+    // libcurl/OpenSSL-backed and reads NEITHER NODE_EXTRA_CA_CERTS nor
+    // SSL_CERT_FILE — it verifies the proxy MITM cert against
+    // GIT_SSL_CAINFO. Must point at the SAME per-session CA file as the
+    // Node-side vars, or `git clone` over the proxy fails with
+    // `SSL certificate problem: unable to get local issuer certificate`.
+    expect(parsed.GIT_SSL_CAINFO).toBe(parsed.NODE_EXTRA_CA_CERTS);
 
     await result.handle.kill();
     await result.handle.exited;
@@ -525,6 +532,9 @@ describe('sandbox:open-session', () => {
     expect(parsed.AX_PROXY_UNIX_SOCKET).toBeNull();
     expect(parsed.NODE_EXTRA_CA_CERTS).toBeNull();
     expect(parsed.SSL_CERT_FILE).toBeNull();
+    // No proxy → no MITM cert → git uses its normal trust store. Pinning a
+    // nonexistent CA path here would break the non-proxied git path.
+    expect(parsed.GIT_SSL_CAINFO).toBeNull();
     expect(parsed.ANTHROPIC_API_KEY).toBeNull();
     await result.handle.kill();
     await result.handle.exited;

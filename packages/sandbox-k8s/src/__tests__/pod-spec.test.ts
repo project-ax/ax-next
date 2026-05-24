@@ -348,6 +348,33 @@ describe('buildPodSpec', () => {
       );
     });
 
+    it('stamps GIT_SSL_CAINFO at the proxy CA path so git trusts the MITM cert (TASK-12)', () => {
+      // TASK-12 regression: NODE_EXTRA_CA_CERTS / SSL_CERT_FILE only steer
+      // Node's TLS (the SDK's undici fetch). The `git` binary the Bash tool
+      // spawns is libcurl/OpenSSL-backed and reads NEITHER of those — it
+      // verifies the proxy's MITM cert against GIT_SSL_CAINFO (or
+      // http.sslCAInfo config). Without this stamp, `git clone` over the
+      // credential proxy dies with `SSL certificate problem: unable to get
+      // local issuer certificate`, which is exactly the CLI-1 walk-fail.
+      const spec = buildPodSpec('p', proxyInput, baseResolved());
+      const env = (
+        spec.spec as { containers: Array<{ env: Array<{ name: string; value: string }> }> }
+      ).containers[0]!.env;
+      const byName = (n: string) => env.find((e) => e.name === n)?.value;
+      expect(byName('GIT_SSL_CAINFO')).toBe('/var/run/ax/proxy-ca/ca.crt');
+    });
+
+    it('does NOT stamp GIT_SSL_CAINFO when proxyConfig is absent (no MITM, no extra CA)', () => {
+      // Outside a proxied session git talks to the in-cluster workspace git
+      // server over plain HTTP / its own trust store — pinning a CA path
+      // that doesn't exist would break it. Only stamp when the proxy is on.
+      const spec = buildPodSpec('p', baseInput, baseResolved());
+      const env = (
+        spec.spec as { containers: Array<{ env: Array<{ name: string }> }> }
+      ).containers[0]!.env;
+      expect(env.find((e) => e.name === 'GIT_SSL_CAINFO')).toBeUndefined();
+    });
+
     it('mounts the proxy socket dir at /var/run/ax via hostPath when proxySocketHostPath is set', () => {
       // The mount is what makes the host pod's Unix socket reachable
       // from the runner pod — without it, the env stamps point at a
