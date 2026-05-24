@@ -19,6 +19,8 @@ import { fileURLToPath } from 'node:url';
 import { loadAll } from 'js-yaml';
 import { beforeAll, describe, expect, it } from 'vitest';
 
+import { HELM_REQUIRED_MESSAGE, resolveHelmGate } from './helm-required.js';
+
 const here = dirname(fileURLToPath(import.meta.url));
 const chartDir = resolve(here, '..');
 
@@ -94,12 +96,24 @@ function helmTemplateExpectFailure(extraArgs: readonly string[]): {
   return { status: r.status ?? -1, stderr: r.stderr ?? '' };
 }
 
-const describeIfHelm = HELM ? describe : describe.skip;
+const GATE = resolveHelmGate(HELM, process.env.AX_REQUIRE_HELM);
+const describeIfHelm = GATE.mode === 'run' ? describe : describe.skip;
 
-if (!HELM) {
+if (GATE.mode === 'skip') {
   console.warn(
     'helm CLI not available; chart-render tests skipped — run with helm in PATH for full coverage',
   );
+}
+
+// AX_REQUIRE_HELM=1 (CI's helm-render lane): helm absent is a hard failure, not
+// a silent skip. This is the regression guard — without it, dropping helm from
+// CI would make the guard suite green-but-empty again (the TASK-1 defect).
+if (GATE.mode === 'require-missing') {
+  describe('chart-render guards: helm required', () => {
+    it('helm must be installed when AX_REQUIRE_HELM is set', () => {
+      throw new Error(HELM_REQUIRED_MESSAGE);
+    });
+  });
 }
 
 const STS_NAME = 'ax-test-ax-next-git-server-experimental';
