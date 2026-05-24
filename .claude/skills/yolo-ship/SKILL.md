@@ -8,7 +8,7 @@ user-invocable: true
 
 ## Overview
 
-One task → one worktree → phases (**brainstorm → design → implement → codex-review → ship**). The heavy work (codebase reads, per-task implementation) is pushed to **subagents** so your own context stays lean. You make and **document** decisions instead of asking the user. Before the PR ever opens you review the whole branch locally with Codex (`gpt-5.5` at `xhigh` reasoning effort) and address its findings; then you open the PR and you are not done until it is **CI-green**.
+One task → one worktree → phases (**brainstorm → design → implement → codex-review → ship**). The heavy work (codebase reads, per-task implementation) is pushed to **subagents** so your own context stays lean. You make and **document** decisions instead of asking the user. Before the PR ever opens you review the whole branch locally with the `codex:review` native reviewer and address its findings; then you open the PR and you are not done until it is **CI-green**.
 
 This skill orchestrates other skills. It does not re-explain them — it sequences them and adds the autonomy contract + the ship loop.
 
@@ -18,7 +18,7 @@ This skill orchestrates other skills. It does not re-explain them — it sequenc
 2. **Every non-trivial decision is logged** to `.claude/memory/decisions.md` (Date | Decision | Rationale | Alternatives). If you'd have asked the user, write the recommendation there instead.
 3. **Follow-up work is tracked, never silently dropped.** Anything you deliberately defer becomes a card on the **"TO DO"** project board (To Do, or Backlog if it's gated) — not a memory. **Orchestrated mode:** don't touch the board's **routing** (`Status`, `Depends on`) or other cards — auto-ship owns those; return follow-ups in your handoff so auto-ship creates the cards. The one thing you *do* write is the **progress block of your own card** (see Progress reporting).
 4. **Pre-PR gate is `pnpm build` + `pnpm test` + lint** — not just build+test (see [[feedback_run_lint_before_pr]], [[feedback_run_tsc_alongside_vitest]]).
-5. **Done = branch codex-reviewed clean *before* the PR + CI green, then merged.** The review runs locally with Codex (`gpt-5.5` / `xhigh` effort, read-only) before the PR exists — there is **no hosted-reviewer wait**. When CI is green you **auto-merge** (Phase 7) and fast-forward local `main`. **Exception — orchestrated mode:** if auto-ship dispatched you, do **NOT** merge and do **NOT** touch the board — stop at a green, verified-mergeable PR and return the handoff; auto-ship owns the serialized merge queue and all board writes.
+5. **Done = branch codex-reviewed clean *before* the PR + CI green, then merged.** The review runs locally via the `codex:review` native reviewer before the PR exists — there is **no hosted-reviewer wait**. When CI is green you **auto-merge** (Phase 7) and fast-forward local `main`. **Exception — orchestrated mode:** if auto-ship dispatched you, do **NOT** merge and do **NOT** touch the board — stop at a green, verified-mergeable PR and return the handoff; auto-ship owns the serialized merge queue and all board writes.
 
 ## Context budget (target < 300–400K tokens)
 
@@ -96,41 +96,31 @@ Per-phase line catalogue (prefix exceptions with `⚠`):
 - **Progress:** `build+test+lint green` (or `⚠ gate red — <tool/suite>`).
 
 ### Phase 5 — Local Codex review (before the PR exists)
-This replaces waiting on a hosted reviewer. Review the **whole branch** locally with Codex *before* any PR is opened, and address findings in a loop until the review is clean.
+This replaces waiting on a hosted reviewer. Review the **whole branch** locally with the `codex:review` native reviewer *before* any PR is opened, and address findings in a loop until the review is clean.
 
 ```dot
 digraph codex_review {
-    "Run codex review (gpt-5.5 / effort tiered by risk / read-only)" [shape=box];
+    "Run codex:review (whole branch vs main)" [shape=box];
     "Actionable findings?" [shape=diamond];
     "Fix (test-first) + log any rejected" [shape=box];
     "Proceed to PR (Phase 6)" [shape=doublecircle];
 
-    "Run codex review (gpt-5.5 / effort tiered by risk / read-only)" -> "Actionable findings?";
+    "Run codex:review (whole branch vs main)" -> "Actionable findings?";
     "Actionable findings?" -> "Fix (test-first) + log any rejected" [label="yes"];
-    "Fix (test-first) + log any rejected" -> "Run codex review (gpt-5.5 / effort tiered by risk / read-only)";
+    "Fix (test-first) + log any rejected" -> "Run codex:review (whole branch vs main)";
     "Actionable findings?" -> "Proceed to PR (Phase 6)" [label="no"];
 }
 ```
 
-- **REQUIRED:** Use skill-codex:codex to drive the review — but in **fixed-config, autonomous mode**. The codex skill normally asks the user (via `AskUserQuestion`) which model + reasoning effort to use and for permission to pass `--skip-git-repo-check`; under the autonomy contract you do **NOT** ask. Pin the config and pre-authorize the flag:
-  - model: **`gpt-5.5`**, sandbox: **`read-only`** (this is a review pass, not an edit pass)
-  - **reasoning effort — tier it to the diff's risk** (effort is the cost knob; don't pay `xhigh` for a one-liner):
-    - **`xhigh`** — diff touches a sandbox boundary, IPC transport, plugin loading/manifests, untrusted-input handling, a hook surface, DB schema/migrations, capabilities, or spans many packages (the invariant-5 / boundary-review surfaces).
-    - **`high`** — ordinary single-concern code change with no boundary/security surface.
-    - **skip Codex entirely** — docs/comment/config-only or other non-code diffs; the PR's CodeRabbit + CodeQL + semgrep + gitleaks already cover those. Log the skip in `decisions.md`.
-    - When unsure, round **up** a tier.
-- Run it from the worktree (cwd = the branch under review). Point Codex at the **whole-branch diff against `main`** — the same surface CI and a human reviewer would see, not just the last task:
+- **REQUIRED:** Drive the review with the codex plugin's **`codex:review` native reviewer** — the same built-in reviewer behind the `/codex:review` command. Point it at the **whole-branch diff against `main`** (merge-base `main...HEAD`) — the surface CI and a human reviewer see, not just the last task — and run it **foreground (`--wait`)** so it is non-interactive and never stops to ask wait-vs-background (the autonomy contract). Run it from the worktree (cwd = the branch under review):
   ```bash
-  # $EFFORT = xhigh | high, chosen per the risk tier above
-  codex exec --skip-git-repo-check -m gpt-5.5 \
-    --config model_reasoning_effort="$EFFORT" \
-    --sandbox read-only \
-    "Act as a critical code reviewer. Review the changes on this branch: run \`git diff main...HEAD\` (merge-base diff) and inspect the touched files. Flag, by severity with file:line: correctness bugs, security issues (sandbox/IPC/untrusted-input boundaries, capability over-grant), silent failures / swallowed errors, missing regression tests for bug fixes, and AX-convention/invariant violations. Be specific. Do not rubber-stamp; if you find nothing, say why the diff is sound." 2>/dev/null
+  # the native reviewer behind /codex:review; --wait = foreground + non-interactive
+  CODEX_ROOT="$(ls -d "$HOME"/.claude/plugins/cache/openai-codex/codex/*/ | sort -V | tail -1)"
+  node "${CODEX_ROOT}scripts/codex-companion.mjs" review --wait --scope branch --base main
   ```
-- **Address findings with receiving-code-review discipline** — verify each one; fix the real issues with targeted commits (test-first for bugs, per Bug Fix Policy [[feedback_targeted_followup_commits]]), and log in `decisions.md` any finding you deliberately reject and why (silent dismissal isn't allowed). Then **re-run the review** until it returns no actionable findings — either a fresh `codex exec` or resume to keep its context:
-  ```bash
-  echo "I pushed fixes for those. Re-review the current branch diff against main and confirm the findings are resolved or list what remains." | codex exec --skip-git-repo-check resume --last 2>/dev/null
-  ```
+  The native reviewer **manages its own model + reasoning effort** — there is no effort knob to tier, no `--sandbox`/`--skip-git-repo-check` to pre-authorize, and no `AskUserQuestion` to fall through to. It also takes **no custom prompt**: if a diff genuinely needs AX-invariant / boundary-specific framing or a challenge to the chosen *approach*, drive the sibling reviewer instead — `node "${CODEX_ROOT}scripts/codex-companion.mjs" adversarial-review --wait --scope branch --base main "<focus text>"` — and note the choice in `decisions.md`.
+- **When to skip:** docs/comment/config-only or other non-code diffs — the PR's CodeRabbit + CodeQL + semgrep + gitleaks already cover those. Log the skip in `decisions.md`. Any code change gets reviewed.
+- **Address findings with receiving-code-review discipline** — verify each one; fix the real issues with targeted commits (test-first for bugs, per Bug Fix Policy [[feedback_targeted_followup_commits]]), and log in `decisions.md` any finding you deliberately reject and why (silent dismissal isn't allowed). Then **re-run the same `review` command** on the updated branch — each run re-reads the current `main...HEAD` diff — until it returns no actionable findings.
 - Codex is a **colleague, not an authority** — treat its claims critically: push back on wrong ones (model names, recent APIs, anything you can verify) rather than blindly deferring.
 - Only when the codex review is clean do you proceed to Phase 6 and open the PR.
 - **Progress:** `⚠ codex flagged <M> — addressing` when you start fixing, then `codex review clean` once the loop closes.
@@ -195,8 +185,8 @@ reporting), then report the merge. Then you are done.
 | "I'll defer this but it's obvious" | Obvious-to-you ≠ tracked. File a board card (or hand it off) or it's lost. |
 | "CI will probably pass, I'll wrap up" | Not done until `gh pr checks` is actually green. Verify, don't assume. |
 | "I'll skip the codex review, lint+test passed" | The pre-PR gate now *includes* a Codex review. Tests prove behavior; the review catches design/security/convention issues tests don't. |
-| "I'll ask the user which model for codex" | yolo-ship pins `gpt-5.5` read-only and tiers the *effort* by risk (xhigh for boundary/security/schema/multi-file, high ordinary, skip docs). Don't fall through to skill-codex's interactive `AskUserQuestion` — that breaks the autonomy contract. |
-| "Small change, but I'll run xhigh + the full local suite to be safe" | Tier it. `xhigh` + full ceremony on a one-liner is the waste we're cutting; reserve the heavy path for boundary/security/schema/multi-file diffs. |
+| "I'll let codex:review stop and ask me wait-or-background" | Always pass `--wait` so the native reviewer runs foreground + non-interactive. The interactive wait/background prompt breaks the autonomy contract. |
+| "Docs-only tweak, but I'll run the full review to be safe" | Skip `codex:review` for docs/comment/config-only diffs (CodeRabbit/CodeQL/semgrep/gitleaks cover those) and log the skip. The native reviewer picks its own model/effort, so there's no tier to pad — just don't review non-code. |
 | "Codex flagged it but I think it's fine" | Verify each finding (receiving-code-review). Fix real ones; log rejected ones in `decisions.md` with the reason. Silent dismissal isn't allowed. |
 | "I'll review locally after I open the PR" | The review is the gate *before* the PR. Open it only once Codex is clean. |
 | "auto-ship dispatched me but I'll merge anyway" | Orchestrated mode = stop at a green PR + hand off. Self-merging races the other agents and corrupts the serialized queue. |
@@ -212,7 +202,7 @@ reporting), then report the merge. Then you are done.
 | Design | superpowers:writing-plans, ax-conventions, security-checklist |
 | Implement | superpowers:subagent-driven-development, superpowers:test-driven-development |
 | Verify | superpowers:verification-before-completion, superpowers:requesting-code-review |
-| Codex review (pre-PR) | skill-codex:codex (`gpt-5.5` / `xhigh` / read-only), superpowers:receiving-code-review |
+| Codex review (pre-PR) | `codex:review` native reviewer (whole branch vs `main`, `--wait`), superpowers:receiving-code-review |
 | Ship | commit-commands:commit-push-pr, superpowers:systematic-debugging, `gh`, `ScheduleWakeup` |
 | Merge (Phase 7) | `gh pr merge --squash`, `git pull --ff-only` (standalone); hand off to auto-ship (orchestrated) |
 | Progress (every phase) | `append_progress` heartbeat to the card's progress block — auto-ship `references/github-project.md` §6; best-effort, shell-side, own card only |
