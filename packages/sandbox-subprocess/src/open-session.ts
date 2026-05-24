@@ -445,6 +445,13 @@ export async function openSessionImpl(
     }
     sessionEnv.NODE_EXTRA_CA_CERTS = caPath;
     sessionEnv.SSL_CERT_FILE = caPath;
+    // TASK-12: the `git` binary the Bash tool spawns is libcurl/OpenSSL-
+    // backed and reads NEITHER NODE_EXTRA_CA_CERTS nor SSL_CERT_FILE — it
+    // verifies the proxy MITM cert against GIT_SSL_CAINFO. Point it at the
+    // same per-session CA file, or `git clone` over the proxy fails with
+    // `SSL certificate problem: unable to get local issuer certificate`.
+    // Mirrors the k8s side (pod-spec.ts stamps the fixed /var/run/ax path).
+    sessionEnv.GIT_SSL_CAINFO = caPath;
     if (input.proxyConfig.endpoint !== undefined) {
       sessionEnv.HTTPS_PROXY = input.proxyConfig.endpoint;
       sessionEnv.HTTP_PROXY = input.proxyConfig.endpoint;

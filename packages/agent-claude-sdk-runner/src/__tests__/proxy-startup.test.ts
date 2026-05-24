@@ -19,6 +19,7 @@ const ENV_KEYS_TO_SAVE = [
   'AX_SESSION_ID',
   'GITHUB_TOKEN',
   'SOME_REAL_SECRET',
+  'GIT_SSL_CAINFO',
 ] as const;
 
 describe('setupProxy', () => {
@@ -205,6 +206,29 @@ describe('setupProxy', () => {
       'ax-cred:fedcba9876543210fedcba9876543210',
     );
     expect(out.anthropicEnv.SOME_REAL_SECRET).toBeUndefined();
+  });
+
+  it('forwards GIT_SSL_CAINFO into the SDK subprocess env so the Bash tool git trusts the proxy MITM cert (TASK-12)', async () => {
+    // TASK-12: the model's `git clone` runs inside the SDK subprocess via
+    // the Bash tool. That subprocess's env is built from anthropicEnv, NOT
+    // the runner's process.env. git (libcurl/OpenSSL) verifies the proxy
+    // MITM cert against GIT_SSL_CAINFO — NODE_EXTRA_CA_CERTS / SSL_CERT_FILE
+    // only steer Node's TLS. The sandbox stamps GIT_SSL_CAINFO onto the
+    // runner env; this asserts the runner forwards it through to the SDK
+    // subprocess (the GIT_ prefix allowlist carries it). Without it, git
+    // clone over the proxy dies with `unable to get local issuer
+    // certificate` — the CLI-1 walk-fail.
+    process.env.ANTHROPIC_API_KEY = 'ax-cred:0123456789abcdef0123456789abcdef';
+    process.env.GIT_SSL_CAINFO = '/var/run/ax/proxy-ca/ca.crt';
+    const env: RunnerEnv = {
+      runnerEndpoint: 'unix:///tmp/x.sock',
+      sessionId: 's',
+      authToken: 'ipc-bearer',
+      workspaceRoot: '/ws',
+      proxyEndpoint: 'http://127.0.0.1:54321',
+    };
+    const out = await setupProxy(env);
+    expect(out.anthropicEnv.GIT_SSL_CAINFO).toBe('/var/run/ax/proxy-ca/ca.crt');
   });
 
   it('throws when both proxyEndpoint and proxyUnixSocket are set (mutually exclusive)', async () => {

@@ -40,6 +40,11 @@ const env = {
   HTTP_PROXY: process.env.HTTP_PROXY ?? null,
   NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS ?? null,
   SSL_CERT_FILE: process.env.SSL_CERT_FILE ?? null,
+  // TASK-12: git (libcurl/OpenSSL) verifies the proxy MITM cert against
+  // GIT_SSL_CAINFO, NOT the Node-side NODE_EXTRA_CA_CERTS / SSL_CERT_FILE.
+  // Echoed so open-session.test.ts can assert it points at the per-session
+  // CA file whenever proxyConfig is present.
+  GIT_SSL_CAINFO: process.env.GIT_SSL_CAINFO ?? null,
   // Test assertion only needs to know the placeholder is `ax-cred:<hex>`
   // shape (Phase 2 substitution) vs. unset. Echo a presence-only marker
   // so a real key — set in process.env by an over-eager test runner or
