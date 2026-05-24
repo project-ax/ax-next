@@ -14,6 +14,13 @@ import {
   validateRole,
   type TeamStore,
 } from './store.js';
+import {
+  AddMemberOutputSchema,
+  CreateTeamOutputSchema,
+  IsMemberOutputSchema,
+  ListForUserOutputSchema,
+  ListMembersOutputSchema,
+} from './types.js';
 import type {
   AddMemberInput,
   AddMemberOutput,
@@ -117,24 +124,28 @@ export function createTeamsPlugin(
         'teams:create',
         PLUGIN_NAME,
         async (_ctx, input) => createTeam(localStore, input),
+        { returns: CreateTeamOutputSchema },
       );
 
       bus.registerService<ListForUserInput, ListForUserOutput>(
         'teams:list-for-user',
         PLUGIN_NAME,
         async (_ctx, input) => listForUser(localStore, input),
+        { returns: ListForUserOutputSchema },
       );
 
       bus.registerService<IsMemberInput, IsMemberOutput>(
         'teams:is-member',
         PLUGIN_NAME,
         async (_ctx, input) => isMember(localStore, input),
+        { returns: IsMemberOutputSchema },
       );
 
       bus.registerService<AddMemberInput, AddMemberOutput>(
         'teams:add-member',
         PLUGIN_NAME,
         async (_ctx, input) => addMember(localStore, input),
+        { returns: AddMemberOutputSchema },
       );
 
       bus.registerService<RemoveMemberInput, RemoveMemberOutput>(
@@ -147,6 +158,7 @@ export function createTeamsPlugin(
         'teams:list-members',
         PLUGIN_NAME,
         async (_ctx, input) => listMembers(localStore, input),
+        { returns: ListMembersOutputSchema },
       );
 
       // Mount /admin/teams* last — http:register-route and auth:require-user

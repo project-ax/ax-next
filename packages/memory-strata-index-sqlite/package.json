@@ -20,7 +20,8 @@
   "dependencies": {
     "@ax/core": "workspace:*",
     "better-sqlite3": "^11.3.0",
-    "kysely": "^0.28.17"
+    "kysely": "^0.28.17",
+    "zod": "^3.23.8"
   },
   "devDependencies": {
     "@ax/memory-strata-index-contract": "workspace:*",

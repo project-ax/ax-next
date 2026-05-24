@@ -8,6 +8,8 @@
  * `display_name` are all generic.
  */
 
+import { z, type ZodType } from 'zod';
+
 export type TeamRole = 'admin' | 'member';
 
 export interface Team {
@@ -104,3 +106,54 @@ export interface ListMembersInput {
 export interface ListMembersOutput {
   members: Membership[];
 }
+
+// ---------------------------------------------------------------------------
+// Runtime `returns` contracts for the `teams:*` service hooks (ARCH-13).
+//
+// `teams:is-member` is the gate @ax/agents' `checkAccess` chains through for
+// team-visibility agent reads, so a malformed membership flowing out is
+// authz-relevant — same defense-in-depth motive as ARCH-6's agents:resolve.
+//
+// Storage-agnostic: field names mirror the public `Team`/`Membership`
+// interfaces (no `team_id`/row vocab). `createdAt`/`joinedAt` are real `Date`
+// instances (`z.date()`, NOT `z.string()`). `teams:remove-member` returns
+// `void` and so gets no schema. Cast to `ZodType<…>` (zod's `.optional()`
+// infers `| undefined` the interface won't directly absorb); the drift-guard
+// test enforces field-for-field agreement.
+// ---------------------------------------------------------------------------
+const TeamRoleSchema = z.union([z.literal('admin'), z.literal('member')]);
+
+const TeamSchema = z.object({
+  id: z.string(),
+  displayName: z.string(),
+  createdBy: z.string(),
+  createdAt: z.date(),
+});
+
+const MembershipSchema = z.object({
+  teamId: z.string(),
+  userId: z.string(),
+  role: TeamRoleSchema,
+  joinedAt: z.date(),
+});
+
+export const CreateTeamOutputSchema = z.object({
+  team: TeamSchema,
+}) as unknown as ZodType<CreateTeamOutput>;
+
+export const ListForUserOutputSchema = z.object({
+  teams: z.array(TeamSchema),
+}) as unknown as ZodType<ListForUserOutput>;
+
+export const IsMemberOutputSchema = z.object({
+  member: z.boolean(),
+  role: TeamRoleSchema.optional(),
+}) as unknown as ZodType<IsMemberOutput>;
+
+export const AddMemberOutputSchema = z.object({
+  membership: MembershipSchema,
+}) as unknown as ZodType<AddMemberOutput>;
+
+export const ListMembersOutputSchema = z.object({
+  members: z.array(MembershipSchema),
+}) as unknown as ZodType<ListMembersOutput>;

@@ -1,3 +1,4 @@
+import { z, type ZodType } from 'zod';
 import type { SignedCookieOptions } from './cookies.js';
 
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
@@ -159,6 +160,27 @@ export interface HttpRegisterRouteOutput {
   /** Idempotent; second call no-ops. */
   unregister(): void;
 }
+
+// ---------------------------------------------------------------------------
+// Runtime `returns` contract for `http:register-route` (ARCH-13).
+//
+// This hook returns a LIVE capability handle — `{ unregister(): void }` is a
+// function the caller invokes on shutdown to tear the route down. The HookBus's
+// `returns` validation strips undeclared keys (hook-bus.ts:141-147), so a
+// strict `z.object` would SILENTLY DELETE `unregister` and break route
+// lifecycle. We therefore use `.passthrough()` on an EMPTY object: it asserts
+// nothing structural and lets the live handle ride through by reference —
+// exactly the posture ARCH-6 used for `sandbox:open-session`'s `handle`.
+//
+// We deliberately do NOT model `unregister` with `z.function()`: zod wraps a
+// validated function in a NEW proxy, which breaks the caller's
+// `handle === returned` identity (proven by the drift-guard test). A capability
+// object is not a data contract — the right move is to not model it and let it
+// pass through untouched.
+// ---------------------------------------------------------------------------
+export const HttpRegisterRouteOutputSchema = z
+  .object({})
+  .passthrough() as unknown as ZodType<HttpRegisterRouteOutput>;
 
 /**
  * Subscriber payload for `http:request`, fired before handler dispatch.

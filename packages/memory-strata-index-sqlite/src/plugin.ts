@@ -1,6 +1,7 @@
 import { PluginError, type Plugin } from '@ax/core';
 import type { Database as BetterSqliteDb } from 'better-sqlite3';
 import { type Kysely } from 'kysely';
+import { z, type ZodType } from 'zod';
 import { openDatabase, type Database } from './schema.js';
 import { upsert, search, deleteOne, clearAll } from './queries.js';
 import type {
@@ -9,6 +10,28 @@ import type {
   SearchOutput,
   DeleteInput,
 } from '@ax/memory-strata-index-contract';
+
+// ---------------------------------------------------------------------------
+// Runtime `returns` contract for `memory:index:search` (ARCH-13). The upsert /
+// delete / clear hooks return `void` and so get no schema. The I/O types come
+// from @ax/memory-strata-index-contract, but that package imports vitest at the
+// top (it ships the shared `runIndexContract` suite), so a runtime schema can't
+// live there — each backend carries its own structurally-identical copy (the
+// I2 two-backend pattern; @ax/memory-strata-index-postgres mirrors this). The
+// shape is storage-agnostic: `docId`/`category`/`slug`/`summary`/`score` are
+// neutral, no FTS5/pgvector vocab.
+// ---------------------------------------------------------------------------
+export const SearchOutputSchema = z.object({
+  results: z.array(
+    z.object({
+      docId: z.string(),
+      category: z.string(),
+      slug: z.string(),
+      summary: z.string(),
+      score: z.number(),
+    }),
+  ),
+}) as unknown as ZodType<SearchOutput>;
 
 // Hard upper bound on `topK`. Above this, FTS5's per-row scoring cost
 // grows without surfacing additional useful results — and `LIMIT -1` in
@@ -99,6 +122,7 @@ export function createMemoryStrataIndexSqlitePlugin(
           const results = await search(db!, input.query, topK, input.categoryFilter);
           return { results };
         },
+        { returns: SearchOutputSchema },
       );
 
       bus.registerService<DeleteInput, void>(

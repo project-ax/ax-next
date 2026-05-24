@@ -10,6 +10,15 @@ import { createFireRoutine, type PendingFires } from './fire.js';
 import { applySilenceLogic } from './silence.js';
 import { parseRoutineRow } from './parse-routine.js';
 import { durationToSeconds } from '@ax/validator-routine';
+import {
+  FireNowOutputSchema,
+  ListOutputSchema,
+  RecentFiresOutputSchema,
+  RoutinesDeleteDefaultOutputSchema,
+  RoutinesGetDefaultOutputSchema,
+  RoutinesListDefaultsOutputSchema,
+  RoutinesUpsertDefaultOutputSchema,
+} from './types.js';
 import type {
   RoutinesConfig,
   FireNowInput,
@@ -213,6 +222,7 @@ export function createRoutinesPlugin(
           const routines = await localStore.list(filter);
           return { routines };
         },
+        { returns: ListOutputSchema },
       );
 
       bus.registerService<RecentFiresInput, RecentFiresOutput>(
@@ -221,6 +231,7 @@ export function createRoutinesPlugin(
           const fires = await localStore.recentFires(input);
           return { fires };
         },
+        { returns: RecentFiresOutputSchema },
       );
 
       bus.registerService<FireNowInput, FireNowOutput>(
@@ -258,6 +269,7 @@ export function createRoutinesPlugin(
             conversationId: result.conversationId ?? null,
           };
         },
+        { returns: FireNowOutputSchema },
       );
 
       bus.registerService<RoutinesListDefaultsInput, RoutinesListDefaultsOutput>(
@@ -275,6 +287,7 @@ export function createRoutinesPlugin(
             })),
           };
         },
+        { returns: RoutinesListDefaultsOutputSchema },
       );
 
       bus.registerService<RoutinesGetDefaultInput, RoutinesGetDefaultOutput>(
@@ -303,6 +316,7 @@ export function createRoutinesPlugin(
             promptBody: row.promptBody,
           };
         },
+        { returns: RoutinesGetDefaultOutputSchema },
       );
 
       bus.registerService<RoutinesUpsertDefaultInput, RoutinesUpsertDefaultOutput>(
@@ -353,6 +367,7 @@ export function createRoutinesPlugin(
             sourceMd: input.sourceMd,
           });
         },
+        { returns: RoutinesUpsertDefaultOutputSchema },
       );
 
       bus.registerService<RoutinesDeleteDefaultInput, RoutinesDeleteDefaultOutput>(
@@ -361,6 +376,7 @@ export function createRoutinesPlugin(
           await localStore.deleteDefault(input.defaultRoutineId);
           return {};
         },
+        { returns: RoutinesDeleteDefaultOutputSchema },
       );
 
       // Re-mount webhook routes from DB before opening for traffic. After a

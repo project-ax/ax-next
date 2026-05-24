@@ -21,7 +21,8 @@
     "@ax/http-server": "workspace:*",
     "@ax/validator-routine": "workspace:*",
     "croner": "8.1.2",
-    "kysely": "0.28.17"
+    "kysely": "0.28.17",
+    "zod": "^3.23.8"
   },
   "devDependencies": {
     "@ax/database-postgres": "workspace:*",

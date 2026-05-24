@@ -18,6 +18,7 @@ import {
 import { createRateLimiter } from './rate-limit.js';
 import { createBootstrapSessionStore } from './sessions.js';
 import { createOnboardingRouteHandlers, type RouteRequest, type RouteResponse } from './routes.js';
+import { BootstrapResetOutputSchema, BootstrapStatusOutputSchema } from './types.js';
 import type {
   BootstrapCompleteInput,
   BootstrapResetInput,
@@ -182,6 +183,7 @@ export function createOnboardingPlugin(config: OnboardingConfig): Plugin {
           }
           return { status: row.status };
         },
+        { returns: BootstrapStatusOutputSchema },
       );
 
       // bootstrap:complete service hook -----------------------------------
@@ -227,6 +229,7 @@ export function createOnboardingPlugin(config: OnboardingConfig): Plugin {
             previousStatus: result.previousStatus,
           };
         },
+        { returns: BootstrapResetOutputSchema },
       );
 
       // /setup/claim route -----------------------------------------------

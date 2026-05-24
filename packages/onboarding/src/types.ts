@@ -1,3 +1,4 @@
+import { z, type ZodType } from 'zod';
 import type { Transaction } from 'kysely';
 
 export interface OnboardingConfig {
@@ -58,3 +59,39 @@ export type BootstrapResetOutput =
       previousStatus: 'pending' | 'claimed' | 'completed' | null;
     }
   | { ok: false; reason: 'completed-without-force' };
+
+// ---------------------------------------------------------------------------
+// Runtime `returns` contracts for the data-returning `bootstrap:*` hooks
+// (ARCH-13). `bootstrap:complete` returns `void`, so it gets no schema.
+//
+// Storage-agnostic: `status` is the I6 state enum, `completedAt` is a real
+// `Date` (the store returns a Date; `z.date()`, NOT `z.string()`), and the
+// reset result mirrors the public discriminated union (the freshly-minted
+// `token`/`baseUrl` are operator-facing, never persisted by the hook). Cast to
+// `ZodType<…>` because zod's `.optional()`/`.nullable()` infer union shapes the
+// interface won't directly absorb; the drift-guard test enforces agreement.
+// ---------------------------------------------------------------------------
+export const BootstrapStatusOutputSchema = z.object({
+  status: z.union([
+    z.literal('pending'),
+    z.literal('claimed'),
+    z.literal('completed'),
+    z.literal('uninitialized'),
+  ]),
+  completedAt: z.date().optional(),
+}) as unknown as ZodType<BootstrapStatusOutput>;
+
+export const BootstrapResetOutputSchema = z.discriminatedUnion('ok', [
+  z.object({
+    ok: z.literal(true),
+    token: z.string(),
+    baseUrl: z.string(),
+    previousStatus: z
+      .union([z.literal('pending'), z.literal('claimed'), z.literal('completed')])
+      .nullable(),
+  }),
+  z.object({
+    ok: z.literal(false),
+    reason: z.literal('completed-without-force'),
+  }),
+]) as unknown as ZodType<BootstrapResetOutput>;

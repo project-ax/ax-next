@@ -852,6 +852,9 @@ importers:
       '@ax/core':
         specifier: workspace:*
         version: link:../core
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
     devDependencies:
       '@ax/test-harness':
         specifier: workspace:*
@@ -874,6 +877,9 @@ importers:
       pg:
         specifier: 8.20.0
         version: 8.20.0
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
     devDependencies:
       '@ax/test-harness':
         specifier: workspace:*
@@ -899,6 +905,9 @@ importers:
       '@ax/core':
         specifier: workspace:*
         version: link:../core
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
     devDependencies:
       '@ax/test-harness':
         specifier: workspace:*
@@ -1026,10 +1035,13 @@ importers:
     dependencies:
       '@anthropic-ai/sdk':
         specifier: ^0.91.1
-        version: 0.91.1(zod@4.3.6)
+        version: 0.91.1(zod@3.25.76)
       '@ax/core':
         specifier: workspace:*
         version: link:../core
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
     devDependencies:
       '@types/node':
         specifier: ^25.6.0
@@ -1160,6 +1172,9 @@ importers:
       kysely:
         specifier: 0.28.17
         version: 0.28.17
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
     devDependencies:
       '@ax/database-postgres':
         specifier: workspace:*
@@ -1200,6 +1215,9 @@ importers:
       kysely:
         specifier: ^0.28.17
         version: 0.28.17
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
     devDependencies:
       '@ax/memory-strata-index-contract':
         specifier: workspace:*
@@ -1228,6 +1246,9 @@ importers:
       kysely:
         specifier: 0.28.17
         version: 0.28.17
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
     devDependencies:
       '@ax/agents':
         specifier: workspace:*
@@ -1292,6 +1313,9 @@ importers:
       kysely:
         specifier: 0.28.17
         version: 0.28.17
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
     devDependencies:
       '@ax/database-postgres':
         specifier: workspace:*
@@ -1572,6 +1596,9 @@ importers:
       kysely:
         specifier: 0.28.17
         version: 0.28.17
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
     devDependencies:
       '@ax/database-postgres':
         specifier: workspace:*
@@ -1603,6 +1630,9 @@ importers:
       kysely:
         specifier: ^0.28.17
         version: 0.28.17
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
     devDependencies:
       '@ax/test-harness':
         specifier: workspace:*
@@ -1628,6 +1658,9 @@ importers:
       kysely:
         specifier: 0.28.17
         version: 0.28.17
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
     devDependencies:
       '@ax/auth-better':
         specifier: workspace:*

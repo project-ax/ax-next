@@ -20,6 +20,7 @@ import {
 } from './cookies.js';
 import { createCsrfSubscriber } from './csrf.js';
 import {
+  HttpRegisterRouteOutputSchema,
   MAX_BODY_BYTES,
   type ClearCookieOptions,
   type HttpMethod,
@@ -204,6 +205,7 @@ export function createHttpServerPlugin(
           }
           return { unregister };
         },
+        { returns: HttpRegisterRouteOutputSchema },
       );
 
       const srv = http.createServer((req, res) => {

@@ -1,6 +1,7 @@
 import { PluginError, type Plugin } from '@ax/core';
 import { openDatabase, type Database } from './schema.js';
 import { sql, type Kysely, type Transaction } from 'kysely';
+import { z, type ZodType } from 'zod';
 
 const PLUGIN_NAME = '@ax/storage-sqlite';
 
@@ -19,6 +20,29 @@ export interface StorageSetInput {
   /** Optional transaction handle from db:transact's run callback. */
   tx?: Transaction<unknown>;
 }
+
+// ---------------------------------------------------------------------------
+// Runtime `returns` contracts for the data-returning `storage:*` hooks
+// (ARCH-13). `storage:set` and `db:transact` return `void`, so they get no
+// schema (nothing to validate). The kv contract is `{ key, value: Uint8Array }`
+// — opaque bytes, no backend vocab (Invariant 1; @ax/storage-postgres carries a
+// structurally-identical copy, the I2 two-backend pattern). `z.instanceof(
+// Uint8Array)` accepts the Uint8Array the handler exposes at the edge (it wraps
+// the raw row buffer in `new Uint8Array(...)`). The drift-guard
+// `return-schemas.test.ts` round-trips a populated value and asserts the bytes
+// survive by reference.
+// ---------------------------------------------------------------------------
+export const StorageGetOutputSchema = z.object({
+  value: z.instanceof(Uint8Array).optional(),
+}) as unknown as ZodType<{ value: Uint8Array | undefined }>;
+
+export const StorageListPrefixOutputSchema = z.object({
+  entries: z.array(z.object({ key: z.string(), value: z.instanceof(Uint8Array) })),
+});
+
+export const StorageDeletePrefixOutputSchema = z.object({
+  deleted: z.number(),
+});
 
 export function createStorageSqlitePlugin(config: StorageSqliteConfig): Plugin {
   let db: Kysely<Database> | undefined;
@@ -52,6 +76,7 @@ export function createStorageSqlitePlugin(config: StorageSqliteConfig): Plugin {
           if (row === undefined) return { value: undefined };
           return { value: new Uint8Array(row.value) };
         },
+        { returns: StorageGetOutputSchema },
       );
 
       bus.registerService<StorageSetInput, void>(
@@ -111,7 +136,7 @@ export function createStorageSqlitePlugin(config: StorageSqliteConfig): Plugin {
         return {
           entries: rows.map((r) => ({ key: r.key, value: new Uint8Array(r.value) })),
         };
-      });
+      }, { returns: StorageListPrefixOutputSchema });
 
       bus.registerService<{ prefix: string }, { deleted: number }>(
         'storage:delete-prefix',
@@ -134,6 +159,7 @@ export function createStorageSqlitePlugin(config: StorageSqliteConfig): Plugin {
             .executeTakeFirst();
           return { deleted: Number(result.numDeletedRows ?? 0) };
         },
+        { returns: StorageDeletePrefixOutputSchema },
       );
     },
     async shutdown() {

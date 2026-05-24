@@ -1,4 +1,5 @@
 import { createLogger, PluginError, type Logger, type Plugin } from '@ax/core';
+import { z, type ZodType } from 'zod';
 import { Listener } from './listener.js';
 
 /**
@@ -56,6 +57,15 @@ export interface EventbusSubscribeInput {
 export interface EventbusSubscription {
   unsubscribe: () => void;
 }
+
+// Runtime `returns` contract for `eventbus:subscribe` (ARCH-13). LIVE handle —
+// `.passthrough()` empty-object schema lets the `unsubscribe` function ride
+// through by reference (don't model it with z.function() — that breaks
+// identity). Identical to @ax/eventbus-inprocess's copy; `eventbus:emit`
+// returns `void`, so no schema.
+export const EventbusSubscriptionSchema = z
+  .object({})
+  .passthrough() as unknown as ZodType<EventbusSubscription>;
 
 export function createEventbusPostgresPlugin(
   config: EventbusPostgresConfig,
@@ -159,6 +169,7 @@ export function createEventbusPostgresPlugin(
             },
           };
         },
+        { returns: EventbusSubscriptionSchema },
       );
     },
     async shutdown() {
