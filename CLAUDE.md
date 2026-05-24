@@ -27,6 +27,25 @@ pnpm test --filter @ax/<plugin>
 
 (Tooling lands in Week 1–2 per architecture doc Section 10.)
 
+## Codex Memory Bootstrap
+
+Project-local memory lives in `.claude/memory/`. For any substantial Codex task,
+inspect that directory first and load only the memory needed for the task.
+
+Default approach:
+
+- Read small repo-local memory files directly when they are relevant:
+  `context.md`, `patterns.md`, `mistakes.md`, and `meta.md`.
+- Search `decisions.md` for task-relevant terms before reading large sections.
+- Treat `/Users/vpulim/.claude/projects/-Users-vpulim-dev-ai-ax-next/memory/MEMORY.md`
+  as an index. Follow linked notes selectively instead of loading the whole
+  directory.
+- Do not commit `.claude/memory/` files.
+
+If the task touches architecture, hooks, plugins, security boundaries, CI/PR
+workflow, UI conventions, manual acceptance, or prior regressions, bias toward
+reading more memory before editing.
+
 ## The invariants (read before touching code)
 
 1. **Hook surface is transport-agnostic and storage-agnostic.** No git/sqlite/k8s vocabulary in hook payloads. If a payload field name only makes sense for one backend, it leaks. (See workspace abstraction — architecture doc Section 4.5.)
@@ -116,7 +135,3 @@ When generating or editing any user-facing content (README, SECURITY.md, docs, e
 **Bad:** "If you don't understand why this matters, you probably shouldn't be deploying to production."
 
 **Bad:** "Simply configure your TLS mutual authentication with certificate pinning." (nothing about this is "simply")
-
-### Golden rule
-
-We're a nervous crab peeking through its claws — but behind those claws, we know exactly what we're doing.

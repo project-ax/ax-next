@@ -8,7 +8,7 @@ user-invocable: true
 
 ## Overview
 
-One task → one worktree → four phases (**brainstorm → design → implement → ship**). The heavy work (codebase reads, per-task implementation) is pushed to **subagents** so your own context stays lean. You make and **document** decisions instead of asking the user. You are not done until the PR is **CI-green and review-clean** — you wait for CodeRabbit, address it, and fix failing tests in a loop.
+One task → one worktree → phases (**brainstorm → design → implement → codex-review → ship**). The heavy work (codebase reads, per-task implementation) is pushed to **subagents** so your own context stays lean. You make and **document** decisions instead of asking the user. Before the PR ever opens you review the whole branch locally with Codex (`gpt-5.5` at `xhigh` reasoning effort) and address its findings; then you open the PR and you are not done until it is **CI-green**.
 
 This skill orchestrates other skills. It does not re-explain them — it sequences them and adds the autonomy contract + the ship loop.
 
@@ -18,7 +18,7 @@ This skill orchestrates other skills. It does not re-explain them — it sequenc
 2. **Every non-trivial decision is logged** to `.claude/memory/decisions.md` (Date | Decision | Rationale | Alternatives). If you'd have asked the user, write the recommendation there instead.
 3. **Follow-up work goes in `TODO.md`** — never silently dropped. Anything you deliberately defer is a TODO line, not a memory.
 4. **Pre-PR gate is `pnpm build` + `pnpm test` + lint** — not just build+test (see [[feedback_run_lint_before_pr]], [[feedback_run_tsc_alongside_vitest]]).
-5. **Done = CI green + CodeRabbit comments addressed + no new actionable comments.** You do **NOT** merge. Stop at a green, review-clean PR and report the link.
+5. **Done = branch codex-reviewed clean *before* the PR + CI green.** The review runs locally with Codex (`gpt-5.5` / `xhigh` effort, read-only) before the PR exists — there is **no hosted-reviewer wait**. You do **NOT** merge. Stop at a green PR and report the link.
 
 ## Context budget (target < 300–400K tokens)
 
@@ -56,46 +56,62 @@ The orchestrator (you) holds only: the plan file, project memory, and one-paragr
 - Do a **whole-branch** review, not just per-task — a shared-table FK or repo-wide teardown break only shows on the full build ([[feedback_new_fk_breaks_downstream_test_teardown]]).
 - Write every deferred item into `TODO.md`.
 
-### Phase 5 — Ship: PR + CodeRabbit + CI loop
-This is where you must not stop early. Follow the loop below until both conditions are green.
+### Phase 5 — Local Codex review (before the PR exists)
+This replaces waiting on a hosted reviewer. Review the **whole branch** locally with Codex *before* any PR is opened, and address findings in a loop until the review is clean.
+
+```dot
+digraph codex_review {
+    "Run codex review (gpt-5.5 / xhigh / read-only)" [shape=box];
+    "Actionable findings?" [shape=diamond];
+    "Fix (test-first) + log any rejected" [shape=box];
+    "Proceed to PR (Phase 6)" [shape=doublecircle];
+
+    "Run codex review (gpt-5.5 / xhigh / read-only)" -> "Actionable findings?";
+    "Actionable findings?" -> "Fix (test-first) + log any rejected" [label="yes"];
+    "Fix (test-first) + log any rejected" -> "Run codex review (gpt-5.5 / xhigh / read-only)";
+    "Actionable findings?" -> "Proceed to PR (Phase 6)" [label="no"];
+}
+```
+
+- **REQUIRED:** Use skill-codex:codex to drive the review — but in **fixed-config, autonomous mode**. The codex skill normally asks the user (via `AskUserQuestion`) which model + reasoning effort to use and for permission to pass `--skip-git-repo-check`; under the autonomy contract you do **NOT** ask. Pin the config and pre-authorize the flag:
+  - model: **`gpt-5.5`**
+  - reasoning effort: **`xhigh`**
+  - sandbox: **`read-only`** (this is a review pass, not an edit pass)
+- Run it from the worktree (cwd = the branch under review). Point Codex at the **whole-branch diff against `main`** — the same surface CI and a human reviewer would see, not just the last task:
+  ```bash
+  codex exec --skip-git-repo-check -m gpt-5.5 \
+    --config model_reasoning_effort="xhigh" \
+    --sandbox read-only \
+    "Act as a critical code reviewer. Review the changes on this branch: run \`git diff main...HEAD\` (merge-base diff) and inspect the touched files. Flag, by severity with file:line: correctness bugs, security issues (sandbox/IPC/untrusted-input boundaries, capability over-grant), silent failures / swallowed errors, missing regression tests for bug fixes, and AX-convention/invariant violations. Be specific. Do not rubber-stamp; if you find nothing, say why the diff is sound." 2>/dev/null
+  ```
+- **Address findings with receiving-code-review discipline** — verify each one; fix the real issues with targeted commits (test-first for bugs, per Bug Fix Policy [[feedback_targeted_followup_commits]]), and log in `decisions.md` any finding you deliberately reject and why (silent dismissal isn't allowed). Then **re-run the review** until it returns no actionable findings — either a fresh `codex exec` or resume to keep its context:
+  ```bash
+  echo "I pushed fixes for those. Re-review the current branch diff against main and confirm the findings are resolved or list what remains." | codex exec --skip-git-repo-check resume --last 2>/dev/null
+  ```
+- Codex is a **colleague, not an authority** — treat its claims critically: push back on wrong ones (model names, recent APIs, anything you can verify) rather than blindly deferring.
+- Only when the codex review is clean do you proceed to Phase 6 and open the PR.
+
+### Phase 6 — Ship: open the PR + drive CI green
+The branch is already codex-reviewed and clean, so there is **no hosted-reviewer wait** here. Open the PR and take CI to green.
 
 ```dot
 digraph ship {
-    "Open PR" [shape=box];
-    "CodeRabbit done?" [shape=diamond];
-    "Wait (poll)" [shape=box];
-    "Actionable comments?" [shape=diamond];
-    "Address + push follow-up commit" [shape=box];
+    "Open PR (base main)" [shape=box];
     "CI green?" [shape=diamond];
     "Fix failing tests + push" [shape=box];
     "Done: report PR link (do NOT merge)" [shape=doublecircle];
 
-    "Open PR" -> "CodeRabbit done?";
-    "CodeRabbit done?" -> "Wait (poll)" [label="no"];
-    "Wait (poll)" -> "CodeRabbit done?";
-    "CodeRabbit done?" -> "Actionable comments?" [label="yes"];
-    "Actionable comments?" -> "Address + push follow-up commit" [label="yes"];
-    "Address + push follow-up commit" -> "CI green?";
-    "Actionable comments?" -> "CI green?" [label="no"];
+    "Open PR (base main)" -> "CI green?";
     "CI green?" -> "Fix failing tests + push" [label="no"];
-    "Fix failing tests + push" -> "CodeRabbit done?";
+    "Fix failing tests + push" -> "CI green?";
     "CI green?" -> "Done: report PR link (do NOT merge)" [label="yes"];
 }
 ```
 
-- **Open the PR against `main`:** use commit-commands:commit-push-pr (or superpowers:finishing-a-development-branch → PR option). **CodeRabbit only reviews PRs whose base is `main`** — target any other branch and it never reviews. Pass `--base main` explicitly; don't stack onto a feature branch. Boundary review answers belong in the PR body if hooks changed.
-- **Wait for CodeRabbit** (`coderabbitai[bot]`). It first posts a "Currently reviewing…" placeholder, then edits in the real review (usually a few minutes). Detect completion:
-  ```bash
-  gh pr view <n> --json reviews,comments \
-    --jq '[.reviews[],.comments[]] | map(select(.author.login=="coderabbitai")) | last | .body' \
-    | grep -qiv "currently reviewing\|review in progress"
-  ```
-  While waiting, do **not** busy-spin in context. Either poll with short sleeps (~270s, keeps the prompt cache warm) or use `ScheduleWakeup` (~600s+) and let the run resume.
-- **Mind the review budget.** CodeRabbit rate-limits reviews (~3–5 per hour, refilling over time) and **re-reviews on every push** — each push spends one review. The remaining count + refill ETA appear at the bottom of every review walkthrough (e.g. "2/5 reviews remaining, refill in 42 minutes"). Check quota **without** spending a review by commenting `@coderabbitai reviews remaining?` (or `@coderabbitai rate limit`). Read the budget before you push.
-- **Batch fixes; push once per cycle.** Address *all* outstanding CodeRabbit comments **and** all CI/test failures, commit them granularly (targeted follow-up commits, not amend — [[feedback_targeted_followup_commits]]), then push the batch in a single shot so CodeRabbit consumes one review, not one per comment. If the budget is exhausted, `ScheduleWakeup` for the stated refill window and push then — pushing into a rate-limited void just skips the review.
-- **Address comments** with receiving-code-review discipline — verify each suggestion; push back in the PR thread on ones that are wrong, fix the rest. Minor + "ready to merge" means ship ([[feedback_minor_issues_non_blocking]]).
-- **CI:** `gh pr checks <n>`. On red, use superpowers:systematic-debugging — fix the root cause, add a regression test (Bug Fix Policy). Fold the fix into the same batched push above.
-- After each batched push, re-check CodeRabbit (it re-reviews the new commits) and CI. **Exit only when CI is green AND no unaddressed actionable CodeRabbit comments remain.** Then report the PR link and stop.
+- **Open the PR against `main`:** use commit-commands:commit-push-pr (or superpowers:finishing-a-development-branch → PR option). Pass `--base main` explicitly; don't stack onto a feature branch. Boundary review answers belong in the PR body if hooks changed.
+- **CI:** `gh pr checks <n>`. On red, use superpowers:systematic-debugging — fix the root cause, add a regression test (Bug Fix Policy), commit granularly ([[feedback_targeted_followup_commits]]) and push. While waiting on CI, do **not** busy-spin in context — poll with short sleeps (~270s, keeps the prompt cache warm) or use `ScheduleWakeup` (~600s+) and let the run resume.
+- A push that changes the diff materially invalidates the earlier codex review — if you fix more than a trivial test flake, re-run the Phase 5 review on the new diff before declaring done.
+- **Exit only when CI is green.** Then report the PR link and stop. You do **NOT** merge.
 
 ## Red flags — you are rationalizing
 
@@ -105,9 +121,10 @@ digraph ship {
 | "I'll skip lint, build+test passed" | The gate is build+test+**lint**. tsc/lint catch what vitest tolerates. |
 | "I'll defer this but it's obvious" | Obvious-to-you ≠ tracked. Put it in `TODO.md` or it's lost. |
 | "CI will probably pass, I'll wrap up" | Not done until `gh pr checks` is actually green. Verify, don't assume. |
-| "CodeRabbit is slow, I'll skip waiting" | Waiting for the review is the task. Poll/Schedule and come back. |
-| "I'll push each fix as I make it" | CodeRabbit re-reviews every push and caps at ~3–5/hr. Batch fixes, push once per cycle, check `@coderabbitai reviews remaining?` first. |
-| "I'll base this PR on my other branch" | CodeRabbit only reviews PRs against `main`. Any other base = no review. |
+| "I'll skip the codex review, lint+test passed" | The pre-PR gate now *includes* a Codex review. Tests prove behavior; the review catches design/security/convention issues tests don't. |
+| "I'll ask the user which model for codex" | yolo-ship pins `gpt-5.5` + `xhigh` read-only. Don't fall through to skill-codex's interactive `AskUserQuestion` — that breaks the autonomy contract. |
+| "Codex flagged it but I think it's fine" | Verify each finding (receiving-code-review). Fix real ones; log rejected ones in `decisions.md` with the reason. Silent dismissal isn't allowed. |
+| "I'll review locally after I open the PR" | The review is the gate *before* the PR. Open it only once Codex is clean. |
 | "I'll implement inline, subagents are overhead" | Inline implementation blows the context budget. Dispatch per task. |
 | "This decision is too small to log" | If you'd have asked the user about it, it's big enough to log. |
 
@@ -120,4 +137,5 @@ digraph ship {
 | Design | superpowers:writing-plans, ax-conventions, security-checklist |
 | Implement | superpowers:subagent-driven-development, superpowers:test-driven-development |
 | Verify | superpowers:verification-before-completion, superpowers:requesting-code-review |
-| Ship | commit-commands:commit-push-pr, superpowers:receiving-code-review, superpowers:systematic-debugging, `gh`, `ScheduleWakeup` |
+| Codex review (pre-PR) | skill-codex:codex (`gpt-5.5` / `xhigh` / read-only), superpowers:receiving-code-review |
+| Ship | commit-commands:commit-push-pr, superpowers:systematic-debugging, `gh`, `ScheduleWakeup` |
