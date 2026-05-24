@@ -81,13 +81,16 @@ digraph dagship {
 ```
 
 **Print the plan before wave 1** (and refresh the dashboard on every recompute)
-so a watching human can interrupt. `--dry-run` stops after the first plan print —
-no dispatch.
+so a watching human can interrupt. **Also set up the board mirror at run start**
+(before wave 1) — see Board mirror, below; it is best-effort but easy to forget,
+so treat it as a fixed run-start step, not an afterthought. `--dry-run` stops
+after the first plan print — no dispatch, no board writes.
 
 ## Dispatching a wave
 
 1. Refresh `.claude/dag-ship-status.md`; append `wave N dispatch …` to
-   `.claude/dag-ship-log.md`.
+   `.claude/dag-ship-log.md`; move each dispatched card → **In Progress** on the
+   board mirror (see Board mirror, below).
 2. **Code lane:** in a SINGLE message, launch one **background** agent per ready
    code task (`Agent`, `run_in_background: true`, `subagent_type: general-purpose`)
    using the **code-lane dispatch prompt** in `references/templates.md`.
@@ -113,9 +116,11 @@ gh pr merge <n> --squash --delete-branch
 git checkout main && git pull --ff-only
 ```
 
-Then: strike the task line in TODO.md, append `— shipped: #<n>`, fold the agent's
-reported follow-ups into TODO.md (you are the **sole writer**), append
-`merged #<n>` to the journal. **Never** merge two PRs concurrently.
+On receiving a `pr-green` handoff (PR open, pre-merge), move the card → **In
+Review**. After the merge: strike the task line in TODO.md, append `— shipped:
+#<n>`, fold the agent's reported follow-ups into TODO.md (you are the **sole
+writer**), append `merged #<n>` to the journal, and move the card → **Done** on
+the board. **Never** merge two PRs concurrently.
 
 ## Cluster-walk lane
 
@@ -148,7 +153,8 @@ resume):
    the ready-set identical → halt + report.
 
 Quarantine is visible: `🛑 [TASK-ID] (parked after N attempts — <signature>)` in
-TODO.md + a journal row, excluded from the ready set.
+TODO.md + a journal row + the card moved → **Parked** on the board, excluded from
+the ready set.
 
 ## Progress files (both gitignored)
 
@@ -160,13 +166,25 @@ TODO.md + a journal row, excluded from the ready set.
 
 On resume, rebuild both from TODO.md + `gh pr list` + the journal.
 
-**Optional GitHub Project board mirror (best-effort, never load-bearing).** In
-addition to the files above, mirror progress to a Projects v2 kanban board titled
-**"TO DO"** (auto-created/reused), one draft-issue card per `[TASK-ID]`, moving
-cards across columns on the same transitions that touch the dashboard. If `gh`
-lacks the `project` scope or any board call fails, warn **once** and keep going on
-the file dashboard. Board updates are **skipped in `--dry-run`**. Full mechanics +
-state→column mapping: `references/github-project.md`.
+## Board mirror (GitHub Projects v2 — best-effort, never load-bearing)
+
+A second progress mirror on top of the files above, so progress is visible in the
+GitHub UI. **It is best-effort but it is NOT optional to *attempt*** — wire it into
+the loop at the points below; do not let it slip (the easy failure mode is the
+orchestrator skipping it because it's "just a mirror"). Full mechanics + the
+state→column mapping live in `references/github-project.md`.
+
+- **Run start (once, before wave 1):** find-or-create the **"TO DO"** Projects v2
+  board, **link it to the repo** (`gh project link <n> --repo <owner>/<repo>` so it
+  shows under the repo's Projects tab), ensure the 7-column Status set exists, and
+  create one draft-issue card per `[TASK-ID]` placed in its initial column
+  (Trigger-gated / Blocked / Ready).
+- **Per transition** (each best-effort, AFTER the file-dashboard update):
+  dependency cleared → **Ready**; wave dispatch → **In Progress**; `pr-green` /
+  PR open → **In Review**; merged → **Done**; quarantined → **Parked**.
+- **Degrade-off:** if `gh` lacks the `project` scope or any board call fails, warn
+  **once** (`board mirror OFF — file dashboard only; enable: gh auth refresh -s
+  project`) and continue on the file dashboard. **Skipped entirely in `--dry-run`.**
 
 ## Termination & reporting
 
@@ -191,3 +209,4 @@ walk-filed follow-ups. TODO.md remains the durable record.
 | "Two PRs are green, merge both now" | Serialized queue. One at a time, rebase-on-conflict. |
 | "I'll skip the dry-run, the DAG looks obvious" | Print the plan first. Auto-merging to main is high blast-radius. |
 | "I'll edit TODO.md from the agent to save a step" | Agents never write TODO.md. You are the sole writer (avoids conflicts). |
+| "The board's just a mirror, I'll skip it" | Set it up at run start and move cards on every transition. Skipping it silently is the exact gap that makes progress invisible (it has bitten this skill before). |

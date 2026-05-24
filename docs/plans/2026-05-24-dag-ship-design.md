@@ -311,18 +311,20 @@ In addition to the file dashboard, the orchestrator mirrors progress to a GitHub
 entirely and the run is unaffected.
 
 - **Board:** auto-create-or-reuse a project titled **"TO DO"** owned by the repo
-  owner (`gh project list/create`). No board → create it; existing "TO DO" →
-  reuse.
+  owner (`gh project list/create`), then **link it to the repo** (`gh project
+  link`) so it surfaces under the repo's Projects tab. (v2 boards are owned by the
+  org/user, never the repo — linking is the only way to put one "in" a repo.)
 - **Cards:** one **draft issue** per non-done `[TASK-ID]`, titled
   `[TASK-ID] <task title>`, self-populated from `TODO.md` (find-or-create by
   title prefix, so re-runs don't duplicate). On PR open, the card's body gets the
   PR link appended.
 - **Columns:** the orchestrator reads the board's **Status** single-select
   options (`gh project field-list --format json`) and maps dag-ship state →
-  column. Preferred 7-column scheme (one-time UI/GraphQL setup, documented in
+  column. On a fresh board the orchestrator **auto-defines** the 7-column scheme via
+  `updateProjectV2Field` (verified working; documented in
   `references/github-project.md`): `Trigger-gated · Blocked · Ready · In Progress
-  · In Review · Done · Parked`. If those options are absent it **falls back** to
-  the default `Todo / In Progress / Done` (Ready/Blocked/Trigger-gated/Parked →
+  · In Review · Done · Parked`. On a pre-existing board it does NOT clobber columns; if those options
+  are absent it **falls back** to the default `Todo / In Progress / Done` (Ready/Blocked/Trigger-gated/Parked →
   Todo; In Progress/In Review → In Progress; Done → Done) so cards still move.
 - **Moves:** card status is set via `gh project item-edit
   --single-select-option-id …` on the same transitions that touch the file
