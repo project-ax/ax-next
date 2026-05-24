@@ -10,6 +10,7 @@ import {
   PluginError,
   asWorkspaceVersion,
   registerWorkspaceApplyFacade,
+  WorkspaceDiffOutputSchema,
   WorkspaceListOutputSchema,
   WorkspaceReadOutputSchema,
   type Bytes,
@@ -970,6 +971,7 @@ export function registerWorkspaceGitHooks(
       );
       return { delta };
     },
+    { returns: WorkspaceDiffOutputSchema },
   );
 
   bus.registerService<

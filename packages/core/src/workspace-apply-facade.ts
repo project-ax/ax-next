@@ -1,6 +1,7 @@
 import { PluginError } from './errors.js';
 import type { HookBus } from './hook-bus.js';
 import { filterToPolicy } from './workspace-policy.js';
+import { WorkspaceApplyOutputSchema } from './workspace.js';
 import type {
   FileChange,
   WorkspaceApplyInput,
@@ -120,5 +121,11 @@ export function registerWorkspaceApplyFacade(
 
       return applied;
     },
+    // ARCH-12: validate the public write-path output once here, at the
+    // backend-agnostic facade — it returns the backend's `apply-internal`
+    // result unchanged, so a schema on the facade covers every backend
+    // (one source of truth, I4). The schema `.passthrough()`es the delta's
+    // change objects so the lazy `contentBefore`/`contentAfter` fns survive.
+    { returns: WorkspaceApplyOutputSchema },
   );
 }
