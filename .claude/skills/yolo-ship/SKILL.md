@@ -99,19 +99,46 @@ digraph ship {
     "Open PR (base main)" [shape=box];
     "CI green?" [shape=diamond];
     "Fix failing tests + push" [shape=box];
-    "Done: report PR link (do NOT merge)" [shape=doublecircle];
+    "CI green -> Phase 7 (merge)" [shape=doublecircle];
 
     "Open PR (base main)" -> "CI green?";
     "CI green?" -> "Fix failing tests + push" [label="no"];
     "Fix failing tests + push" -> "CI green?";
-    "CI green?" -> "Done: report PR link (do NOT merge)" [label="yes"];
+    "CI green?" -> "CI green -> Phase 7 (merge)" [label="yes"];
 }
 ```
 
 - **Open the PR against `main`:** use commit-commands:commit-push-pr (or superpowers:finishing-a-development-branch → PR option). Pass `--base main` explicitly; don't stack onto a feature branch. Boundary review answers belong in the PR body if hooks changed.
 - **CI:** `gh pr checks <n>`. On red, use superpowers:systematic-debugging — fix the root cause, add a regression test (Bug Fix Policy), commit granularly ([[feedback_targeted_followup_commits]]) and push. While waiting on CI, do **not** busy-spin in context — poll with short sleeps (~270s, keeps the prompt cache warm) or use `ScheduleWakeup` (~600s+) and let the run resume.
 - A push that changes the diff materially invalidates the earlier codex review — if you fix more than a trivial test flake, re-run the Phase 5 review on the new diff before declaring done.
-- **Exit only when CI is green.** Then report the PR link and stop. You do **NOT** merge.
+- **When CI is green, proceed to Phase 7** (auto-merge standalone, or hand off under orchestration). Do not declare done at a green PR — merging (or handing off) is the terminal step now.
+
+### Phase 7 — Merge: auto-merge (standalone) or hand off (orchestrated)
+
+How this phase behaves depends on **mode**:
+
+- **Standalone** (a human ran `/yolo-ship` directly) — **default: auto-merge.**
+- **Orchestrated** (dag-ship dispatched you — the dispatch prompt says so) — **do
+  NOT merge, do NOT touch `TODO.md`.** Stop at the green, verified-mergeable PR
+  and return your handoff. dag-ship's serialized merge queue does the merge +
+  local-main update + `TODO.md` strike. This is how dag-ship safely serializes
+  many parallel agents.
+
+**Standalone auto-merge:**
+
+```bash
+gh pr view <n> --json mergeable,statusCheckRollup    # must be green + mergeable
+gh pr merge <n> --squash --delete-branch
+git checkout main && git pull --ff-only
+```
+
+If the PR is **not mergeable** because `main` moved while you worked: check out
+the branch, `git rebase origin/main`, resolve conflicts, push, wait for CI to
+re-green (`gh pr checks <n>`), then merge. A non-trivial rebase changes the diff —
+re-run the Phase 5 Codex review on the new diff before merging.
+
+After merging: strike the task in `TODO.md`, append `— shipped: #<n>`, and report
+the merge. Then you are done.
 
 ## Red flags — you are rationalizing
 
@@ -125,6 +152,7 @@ digraph ship {
 | "I'll ask the user which model for codex" | yolo-ship pins `gpt-5.5` + `xhigh` read-only. Don't fall through to skill-codex's interactive `AskUserQuestion` — that breaks the autonomy contract. |
 | "Codex flagged it but I think it's fine" | Verify each finding (receiving-code-review). Fix real ones; log rejected ones in `decisions.md` with the reason. Silent dismissal isn't allowed. |
 | "I'll review locally after I open the PR" | The review is the gate *before* the PR. Open it only once Codex is clean. |
+| "dag-ship dispatched me but I'll merge anyway" | Orchestrated mode = stop at a green PR + hand off. Self-merging races the other agents and corrupts the serialized queue. |
 | "I'll implement inline, subagents are overhead" | Inline implementation blows the context budget. Dispatch per task. |
 | "This decision is too small to log" | If you'd have asked the user about it, it's big enough to log. |
 
@@ -139,3 +167,4 @@ digraph ship {
 | Verify | superpowers:verification-before-completion, superpowers:requesting-code-review |
 | Codex review (pre-PR) | skill-codex:codex (`gpt-5.5` / `xhigh` / read-only), superpowers:receiving-code-review |
 | Ship | commit-commands:commit-push-pr, superpowers:systematic-debugging, `gh`, `ScheduleWakeup` |
+| Merge (Phase 7) | `gh pr merge --squash`, `git pull --ff-only` (standalone); hand off to dag-ship (orchestrated) |
