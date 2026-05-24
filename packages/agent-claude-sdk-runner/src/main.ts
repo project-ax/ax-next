@@ -8,6 +8,7 @@ import {
 import { createInboxLoop } from './inbox-loop.js';
 import {
   createIpcClient,
+  IpcRequestError,
   type AgentMessage,
   type ContentBlock,
   type ImageBlock,
@@ -44,7 +45,11 @@ import { buildSystemPrompt } from './system-prompt.js';
 import { createArtifactPublishExecutor } from './artifact-publish-executor.js';
 import { materializeInstalledSkillsFromEnv } from './installed-skills.js';
 import { DISABLED_BUILTINS, MCP_HOST_SERVER_NAME, MCP_SANDBOX_SERVER_NAME } from './tool-names.js';
-import { readLastTurnUuid, waitForTurnTranscript } from './turn-end-uuid.js';
+import {
+  hasResumableTranscript,
+  readLastTurnUuid,
+  waitForTurnTranscript,
+} from './turn-end-uuid.js';
 import { ARTIFACT_PUBLISH_TOOL_NAME } from '@ax/tool-artifact-publish';
 
 // ---------------------------------------------------------------------------
@@ -560,6 +565,93 @@ export async function main(): Promise<number> {
     | { name: string; message: string; stack?: string }
     | undefined;
 
+  // F2a resume guard (defense-in-depth). `query({ resume: X })` hard-crashes
+  // the runner (`exit 1` → chat-end `terminated`) with "No conversation found
+  // with session ID: X" whenever the bound session has NO parseable transcript
+  // in the materialized workspace. The host bind is now deferred to the first
+  // durable commit (see bindRunnerSessionIfNeeded), so a bound id should always
+  // have a transcript — but if a materialize/git regression ever drops it, omit
+  // `resume` and start fresh instead of crashing. Verified against the live SDK
+  // (0.2.119) on 2026-05-24: a missing/empty/metadata-only/garbage transcript
+  // is exactly what triggers the crash; a real user/assistant transcript
+  // resumes cleanly even with a truncated trailing line.
+  let resumeSessionId = runnerSessionId;
+  if (
+    runnerSessionId !== null &&
+    !(await hasResumableTranscript(env.workspaceRoot, runnerSessionId))
+  ) {
+    process.stderr.write(
+      'runner: bound runner session has no resumable transcript in the workspace; starting fresh instead of resuming\n',
+    );
+    resumeSessionId = null;
+    // `transcriptSessionId` was seeded to the (stale) resume id above; the SDK
+    // will mint a FRESH session id now that we omit `resume`, so clear it back
+    // to null so the system/init handler re-captures the new id. Otherwise the
+    // turn-end flush wait would poll the wrong (non-existent) jsonl.
+    transcriptSessionId = null;
+  }
+
+  // F2a root fix: bind the conversation row → runner-native transcript ONCE,
+  // after the first host-ACCEPTED turn-end commit — NOT at `system/init`.
+  // Binding at init persisted `runner_session_id` ~1s into the turn, BEFORE the
+  // transcript is durable on the host (commits fire only at turn-end). A turn
+  // killed in that window left a binding that points at nothing, so the retry's
+  // `query({ resume })` crashed with "No conversation found". Deferring the bind
+  // to a host-accepted commit makes `runner_session_id` set IFF a resumable
+  // transcript exists → a killed-before-commit turn leaves it NULL → the retry
+  // starts fresh cleanly. Gated to the fresh-boot case (`runnerSessionId` null);
+  // a resumed session is already bound on the host.
+  //
+  // Failure handling distinguishes two cases:
+  //   - definitive host rejection (4xx IpcRequestError — don't-retry per the
+  //     IPC taxonomy): the conversation can't be bound to this id. The chief
+  //     case is 409 conflict (HOOK_REJECTED) — the host already bound this
+  //     conversation to a DIFFERENT id, a concurrent fresh-boot race in which
+  //     another runner won; we are the loser and continuing to stream/commit
+  //     under our orphan transcript would diverge the conversation. (404/400
+  //     are likewise unrecoverable.) RE-THROW so the run terminates (host
+  //     chat:end outcome `terminated`, surfaced by F2b) rather than silently
+  //     committing an orphan. The host's once-only bind invariant relies on
+  //     the loser stopping here.
+  //   - anything else (network / 5xx / timeout): transient — leave the flag
+  //     unset so the next accepted commit (or the final commit) retries; the
+  //     turn already streamed to the user, so failing the run now would be
+  //     incoherent.
+  async function bindRunnerSessionIfNeeded(): Promise<void> {
+    const convId = conversationId;
+    const sdkSessionId = transcriptSessionId;
+    if (
+      runnerSessionIdSent ||
+      convId === null ||
+      runnerSessionId !== null ||
+      sdkSessionId === null
+    ) {
+      return;
+    }
+    try {
+      await client.call('conversation.store-runner-session', {
+        conversationId: convId,
+        runnerSessionId: sdkSessionId,
+      });
+      runnerSessionIdSent = true;
+    } catch (err) {
+      // 4xx (e.g. 409 conflict, 404 not-found) is a definitive host rejection —
+      // not retryable; terminate rather than orphan. (commitNotifyWithResync
+      // swallows its own IPC errors, so a 4xx in the surrounding commit try can
+      // only originate from this bind.) 5xx was already retried by the client.
+      if (
+        err instanceof IpcRequestError &&
+        err.status >= 400 &&
+        err.status < 500
+      ) {
+        throw err;
+      }
+      process.stderr.write(
+        `runner: conversation.store-runner-session failed (will retry on next commit): ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
+  }
+
   try {
     const queryIter = query({
       prompt: userMessages(),
@@ -570,8 +662,10 @@ export async function main(): Promise<number> {
         // below). Spread-conditional so the field is OMITTED on first
         // boot — the SDK's `resume?: string` typing is "string or
         // missing", not "string or null"; passing `undefined` would be
-        // a type-level rather than a wire-level signal.
-        ...(runnerSessionId !== null ? { resume: runnerSessionId } : {}),
+        // a type-level rather than a wire-level signal. `resumeSessionId` is
+        // `runnerSessionId` unless the F2a guard above demoted it to null
+        // (bound id with no resumable transcript → start fresh).
+        ...(resumeSessionId !== null ? { resume: resumeSessionId } : {}),
         // ANTHROPIC_API_KEY is the `ax-cred:<hex>` placeholder (substituted
         // by the credential-proxy mid-flight); no ANTHROPIC_BASE_URL — SDK
         // calls api.anthropic.com directly through HTTPS_PROXY.
@@ -745,45 +839,22 @@ export async function main(): Promise<number> {
     });
 
     for await (const msg of queryIter) {
-      if (
-        msg.type === 'system' &&
-        msg.subtype === 'init' &&
-        !runnerSessionIdSent
-      ) {
+      if (msg.type === 'system' && msg.subtype === 'init') {
         // Capture the SDK session_id so the per-turn flush wait can locate the
-        // jsonl. Set regardless of whether there's a conversation row to bind
-        // to — the transcript exists either way; only the host-side DB binding
-        // is conversation-scoped. Once-only (gated by !runnerSessionIdSent).
-        transcriptSessionId = msg.session_id;
-        if (conversationId === null) {
-          // No conversation row to bind to — flag the once-only path
-          // so a re-entrant system/init can't fire spurious binds.
-          runnerSessionIdSent = true;
-        } else {
-          // Phase E (2026-05-09): this write is the ONLY durable link
-          // from the conversation row to the workspace jsonl. After the
-          // bind, `conversations:get` reads the transcript via
-          // `runnerSessionId`-keyed glob; before the bind, it short-
-          // circuits to `turns: []` because there's nothing to look up.
-          // If this fails AND we continue, the conversation is silently
-          // empty forever — no future read sees the jsonl, and no future
-          // boot can resume() because the row's `runner_session_id`
-          // stays NULL. Fail the run instead so the host's `chat:end`
-          // outcome is `terminated` and the operator notices.
-          try {
-            await client.call('conversation.store-runner-session', {
-              conversationId,
-              runnerSessionId: msg.session_id,
-            });
-          } catch (err) {
-            throw new Error(
-              `conversation.store-runner-session failed: ${err instanceof Error ? err.message : String(err)}`,
-            );
-          }
-          // Set AFTER the successful await — on retry-after-recoverable
-          // throw (none today, but future-proof), the next system/init
-          // would correctly re-attempt the bind.
-          runnerSessionIdSent = true;
+        // jsonl. The FIRST init wins — `query({ resume })` can re-emit
+        // system/init within the same run, and a re-entrant init must not
+        // change the captured id. On a resumed session `transcriptSessionId`
+        // is already seeded to the resume id (and equals msg.session_id), so
+        // the null-gate is a no-op there.
+        //
+        // The host bind (`conversation.store-runner-session`) is NOT done here
+        // anymore — it's deferred to the first host-accepted turn-end commit
+        // (bindRunnerSessionIfNeeded). Binding at init persisted the binding
+        // before the transcript was durable on the host, so a turn killed in
+        // that window left a stale `runner_session_id` that crashed the
+        // retry's resume (F2a).
+        if (transcriptSessionId === null) {
+          transcriptSessionId = msg.session_id;
         }
         continue;
       }
@@ -1051,8 +1122,25 @@ export async function main(): Promise<number> {
               reason: 'turn',
             });
             parentVersion = result.parentVersion;
+            // F2a: the transcript is now durable on the host — bind the
+            // conversation row to it (once, fresh-boot only). See
+            // bindRunnerSessionIfNeeded.
+            if (result.outcome === 'accepted') {
+              await bindRunnerSessionIfNeeded();
+            }
           }
         } catch (err) {
+          // A 4xx from bindRunnerSessionIfNeeded (e.g. conversation owned by
+          // another session) is terminal — propagate it past this
+          // commit-failure catch so the run ends `terminated` instead of
+          // silently orphaning.
+          if (
+            err instanceof IpcRequestError &&
+            err.status >= 400 &&
+            err.status < 500
+          ) {
+            throw err;
+          }
           // commitTurnAndBundle itself failed (git binary missing,
           // /permanent in a weird state, etc.). Non-fatal; the next
           // turn will retry.
@@ -1163,8 +1251,23 @@ export async function main(): Promise<number> {
           reason: 'turn',
         });
         parentVersion = result.parentVersion;
+        // F2a: last chance to bind once the final commit is durable (e.g. when
+        // the per-turn commit-notify was 'kept'/'rolled-back' but this one was
+        // accepted). Once-only via bindRunnerSessionIfNeeded.
+        if (result.outcome === 'accepted') {
+          await bindRunnerSessionIfNeeded();
+        }
       }
     } catch (err) {
+      // Propagate a terminal bind rejection (4xx) past this best-effort catch
+      // so the run ends `terminated` rather than orphaning (see per-turn site).
+      if (
+        err instanceof IpcRequestError &&
+        err.status >= 400 &&
+        err.status < 500
+      ) {
+        throw err;
+      }
       process.stderr.write(`runner: final commitTurnAndBundle failed: ${err instanceof Error ? err.message : String(err)}\n`);
     }
   } catch (err) {

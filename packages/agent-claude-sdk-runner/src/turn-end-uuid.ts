@@ -83,6 +83,50 @@ export async function waitForTurnTranscript(
   }
 }
 
+/**
+ * F2a: returns true iff the runner-native jsonl for `sessionId` contains at
+ * least one parseable conversation message — a line whose `type` is `'user'`
+ * or `'assistant'`. The SDK's `query({ resume: sessionId })` throws
+ * `"No conversation found with session ID: <sessionId>"` — which crashes the
+ * runner (`exit 1`) — when no such line exists (jsonl missing, empty,
+ * metadata-only, or only truncated/garbage message lines). Confirmed against
+ * the live SDK (0.2.119) on 2026-05-24.
+ *
+ * Callers gate `resume` on this so a bound session that has no resumable
+ * transcript in the materialized workspace degrades to a fresh start instead
+ * of a hard exit. Mirrors `locateJsonl`'s readdir-walk (the SDK encodes cwd
+ * into the project dir name, which we don't know a priori).
+ *
+ * Unlike `readLastTurnUuid`, this does NOT fail closed on a malformed line: it
+ * scans for ANY valid user/assistant message, so a truncated tail line must
+ * not mask an earlier durable message.
+ */
+export async function hasResumableTranscript(
+  workspaceRoot: string,
+  sessionId: string,
+): Promise<boolean> {
+  const jsonlPath = await locateJsonl(workspaceRoot, sessionId);
+  if (jsonlPath === null) return false;
+  let text: string;
+  try {
+    text = await readFile(jsonlPath, 'utf-8');
+  } catch {
+    return false;
+  }
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+    try {
+      const o = JSON.parse(trimmed) as { type?: string };
+      if (o.type === 'user' || o.type === 'assistant') return true;
+    } catch {
+      // Truncated/garbage line — doesn't count as a resumable message; skip.
+      continue;
+    }
+  }
+  return false;
+}
+
 async function locateJsonl(
   workspaceRoot: string,
   sessionId: string,

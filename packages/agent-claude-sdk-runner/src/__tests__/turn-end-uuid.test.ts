@@ -8,7 +8,17 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readLastTurnUuid, waitForTurnTranscript } from '../turn-end-uuid.js';
+import {
+  hasResumableTranscript,
+  readLastTurnUuid,
+  waitForTurnTranscript,
+} from '../turn-end-uuid.js';
+
+function writeJsonl(root: string, sessionId: string, body: string): void {
+  const projDir = join(root, '.claude', 'projects', 'my-proj');
+  mkdirSync(projDir, { recursive: true });
+  writeFileSync(join(projDir, `${sessionId}.jsonl`), body);
+}
 
 describe('readLastTurnUuid', () => {
   it('returns the uuid of the last assistant line in the jsonl', async () => {
@@ -68,6 +78,110 @@ describe('readLastTurnUuid', () => {
         ].join('\n') + '\n',
       );
       expect(await readLastTurnUuid(root, 'sess', 'assistant')).toBeUndefined();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('hasResumableTranscript', () => {
+  // F2a: `query({ resume: X })` hard-crashes with "No conversation found with
+  // session ID: X" whenever the jsonl for X has NO parseable user/assistant
+  // message. These cases mirror the live SDK repro matrix (2026-05-24): the
+  // first five throw on resume, the last three resume cleanly.
+
+  it('returns false when the projects dir / jsonl is missing', async () => {
+    expect(await hasResumableTranscript('/does/not/exist', 'sess')).toBe(false);
+  });
+
+  it('returns false for an empty jsonl', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'ax-runner-resumable-'));
+    try {
+      writeJsonl(root, 'sess', '');
+      expect(await hasResumableTranscript(root, 'sess')).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('returns false for a metadata-only jsonl (no user/assistant lines)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'ax-runner-resumable-'));
+    try {
+      writeJsonl(
+        root,
+        'sess',
+        [
+          JSON.stringify({ type: 'queue-operation', operation: 'enqueue' }),
+          JSON.stringify({ type: 'queue-operation', operation: 'dequeue' }),
+          JSON.stringify({ type: 'ai-title', aiTitle: 'x' }),
+        ].join('\n') + '\n',
+      );
+      expect(await hasResumableTranscript(root, 'sess')).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('returns false when the only user line is truncated mid-write', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'ax-runner-resumable-'));
+    try {
+      writeJsonl(
+        root,
+        'sess',
+        JSON.stringify({ type: 'queue-operation' }) +
+          '\n' +
+          '{"type":"user","message":{"role":"user","content":[{', // truncated
+      );
+      expect(await hasResumableTranscript(root, 'sess')).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('returns false for an all-garbage jsonl', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'ax-runner-resumable-'));
+    try {
+      writeJsonl(root, 'sess', '{this is not valid json\n');
+      expect(await hasResumableTranscript(root, 'sess')).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('returns true for a lone user line', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'ax-runner-resumable-'));
+    try {
+      writeJsonl(
+        root,
+        'sess',
+        JSON.stringify({ type: 'queue-operation' }) +
+          '\n' +
+          JSON.stringify({
+            type: 'user',
+            message: { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+            uuid: 'u1',
+          }) +
+          '\n',
+      );
+      expect(await hasResumableTranscript(root, 'sess')).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('returns true for a user + assistant transcript even with a truncated trailing metadata line', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'ax-runner-resumable-'));
+    try {
+      writeJsonl(
+        root,
+        'sess',
+        JSON.stringify({ type: 'user', uuid: 'u1' }) +
+          '\n' +
+          JSON.stringify({ type: 'assistant', uuid: 'a1', message: { id: 'm1' } }) +
+          '\n' +
+          '{"type":"last-prompt","lastP', // truncated trailing line
+      );
+      expect(await hasResumableTranscript(root, 'sess')).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
