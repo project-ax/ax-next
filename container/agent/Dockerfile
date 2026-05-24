@@ -42,9 +42,16 @@
 #     ~/.ax/proxy-ca, so the home dir needs to be writable OR the chart
 #     overrides AX_PROXY_CA_DIR onto a mounted volume).
 #
-# CI follow-up: pin the base image by digest (`node:20-bookworm-slim@sha256:...`)
-# once the image build pipeline lands. Tag-only for now so local builds keep
-# working as Node rolls patch releases.
+# Base image: digest-pinned (content-addressed). Both stages pin
+# `node:20-bookworm-slim` to the multi-arch OCI index digest below so a
+# mutated/re-pushed tag can't swap the bytes out from under us; the
+# `20-bookworm-slim` tag stays inline for human eyes. The `docker-build` CI
+# lane (.github/workflows/ci.yml) builds this image on every change that
+# touches it, so the pin is exercised on every PR. To bump Node: pick the new
+# tag, re-resolve its index digest with
+# `docker buildx imagetools inspect node:<tag>` (the top-level `Digest:`, NOT a
+# per-platform manifest digest — that would lock the image to one arch), and
+# update both FROM lines + this comment in lockstep.
 
 # -----------------------------------------------------------------------------
 # Stage 1: builder — pnpm deploy resolves workspace:* deps into a self-
@@ -52,7 +59,7 @@
 # walk transitively, so this also builds @ax/agent-claude-sdk-runner +
 # every other workspace dep on the cli's path).
 # -----------------------------------------------------------------------------
-FROM node:20-bookworm-slim AS builder
+FROM node:20-bookworm-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0 AS builder
 
 # pnpm via corepack — the version pinned in the repo's root package.json
 # packageManager field is picked up automatically once that file is on disk.
@@ -91,7 +98,7 @@ RUN pnpm install --frozen-lockfile \
 # -----------------------------------------------------------------------------
 # Stage 2: runtime — slim base, no toolchain, deployed tree only.
 # -----------------------------------------------------------------------------
-FROM node:20-bookworm-slim AS runtime
+FROM node:20-bookworm-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0 AS runtime
 
 # ca-certificates: HTTPS_PROXY → credential-proxy → api.anthropic.com.
 # tini: clean PID-1 reaping for the short-lived Claude SDK children the
