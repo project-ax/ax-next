@@ -631,15 +631,17 @@ describe('chat-orchestrator', () => {
   // so it carries conversationId for the SSE to match instead.
   // -------------------------------------------------------------------------
 
-  it('F2b: a runner-reported terminated chat:end (restamped reqId) fires chat:turn-error carrying conversationId', async () => {
+  it('F2b: a runner-reported terminated chat:end fires chat:turn-error with the ORIGINAL reqId (recovered, not the restamped one)', async () => {
     let busRef: HookBus | null = null;
     const mocks = buildMocks({
       openSession: async (_ctx, input: unknown) => {
         const sessionId = (input as { sessionId: string }).sessionId;
         // The runner crashed mid-resume and POSTed event.chat-end{terminated}
         // before exiting. The IPC server fires chat:end with a FRESH reqId
-        // (restamped per request) but stamps ctx.conversationId — so the
-        // turn-error can only join the SSE by conversationId.
+        // (restamped per request) + a stamped conversationId. resolveWaiterFor
+        // recovers the ORIGINAL agent:invoke reqId via the sessionId fallback,
+        // so the turn-error fires with 'r-orig' (the SSE's precise per-turn
+        // key), NOT 'r-ipc-restamped' and NOT a coarse conversationId match.
         setImmediate(() => {
           void busRef!.fire(
             'chat:end',
@@ -669,10 +671,8 @@ describe('chat-orchestrator', () => {
     busRef = h.bus;
 
     const turnErrors: Array<{ reqId?: string; reason?: string }> = [];
-    const turnErrorConvIds: Array<string | undefined> = [];
-    h.bus.subscribe('chat:turn-error', 'obs', async (ctx, p: unknown) => {
+    h.bus.subscribe('chat:turn-error', 'obs', async (_ctx, p: unknown) => {
       turnErrors.push(p as { reqId?: string; reason?: string });
-      turnErrorConvIds.push(ctx.conversationId);
       return undefined;
     });
 
@@ -683,11 +683,10 @@ describe('chat-orchestrator', () => {
     );
 
     expect(outcome.kind).toBe('terminated');
+    // Fires with the recovered ORIGINAL reqId, not the IPC-restamped one.
     expect(turnErrors).toEqual([
-      { reqId: 'r-ipc-restamped', reason: 'Error: resume boom' },
+      { reqId: 'r-orig', reason: 'Error: resume boom' },
     ]);
-    // The SSE matches a runner-reported turn-error by conversationId.
-    expect(turnErrorConvIds).toEqual(['cnv-x']);
   });
 
   it('F2b: a terminated chat:end with NO in-flight waiter does NOT fire chat:turn-error', async () => {

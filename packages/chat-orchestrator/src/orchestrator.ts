@@ -499,29 +499,36 @@ export function createOrchestrator(
   // a fresh ctx.reqId on runner-driven events, so the reqId lookup misses and
   // we resolve the oldest waiter for the session — FIFO matches emit order).
   //
-  // Returns true iff this call resolved a previously-UNSETTLED waiter — i.e.
-  // this chat:end was the one that ended a turn the caller/SSE was still
-  // waiting on. onChatEnd (F2b) keys turn-error surfacing off this so a late
-  // chat:end (chokepoint already settled the deferred, or a reaped warm runner
-  // POSTing after a completed turn) doesn't re-fire a spurious turn-error.
+  // Returns the ORIGINAL waiter reqId iff this call resolved a previously-
+  // UNSETTLED waiter — i.e. this chat:end was the one that ended a turn the
+  // caller/SSE was still waiting on (undefined otherwise). onChatEnd (F2b)
+  // surfaces a turn-error keyed on this:
+  //   - the original reqId lets it fire chat:turn-error with the PRECISE
+  //     per-turn key even when the IPC server restamped ctx.reqId — so the SSE
+  //     matches the exact turn, not the whole conversation (two concurrent
+  //     invokes can share a sessionId — see the waiter-map comment above).
+  //   - undefined (no live waiter) means a late chat:end — the chokepoint
+  //     already settled the deferred + fired its own turn-error, or a reaped
+  //     warm runner POSTed after a completed turn — so no (spurious) re-fire.
   function resolveWaiterFor(
     reqId: string | undefined,
     sessionId: string,
     outcome: AgentOutcome,
-  ): boolean {
+  ): string | undefined {
+    let resolvedReqId = reqId;
     let deferred = reqId !== undefined ? waitersByReqId.get(reqId) : undefined;
     if (deferred === undefined) {
       const reqIds = reqIdsBySession.get(sessionId);
       if (reqIds !== undefined && reqIds.size > 0) {
-        const firstReqId = reqIds.values().next().value as string;
-        deferred = waitersByReqId.get(firstReqId);
+        resolvedReqId = reqIds.values().next().value as string;
+        deferred = waitersByReqId.get(resolvedReqId);
       }
     }
     if (deferred !== undefined && !deferred.settled) {
       deferred.resolve(outcome);
-      return true;
+      return resolvedReqId;
     }
-    return false;
+    return undefined;
   }
 
   // Fault A — signal the channel SSE that a turn ended abnormally (the
@@ -530,12 +537,12 @@ export function createOrchestrator(
   // this the SSE only ever gets a terminal frame on a NORMAL chat:turn-end;
   // a terminated turn fires chat:end (audit) but no turn-end, so the stream
   // hangs forever (the 25 s SSE keepalive keeps it open). The subscriber is
-  // @ax/channel-web's per-connection SSE handler, which matches by reqId OR
-  // ctx.conversationId. The orchestrator-fired paths (chokepoints,
-  // session:terminate, early-spawn returns) carry the originating agent:invoke
-  // reqId; the F2b onChatEnd path carries a restamped reqId so it joins by
-  // ctx.conversationId instead. Observation-only broadcast; a no-op when no
-  // SSE is attached.
+  // @ax/channel-web's per-connection SSE handler, which matches by reqId — so
+  // `reqId` must be the originating agent:invoke reqId. Every fire site honors
+  // that: the chokepoints / session:terminate / early-spawn returns hold the
+  // original ctx.reqId, and the F2b onChatEnd path passes the original reqId
+  // that resolveWaiterFor recovered (ctx.reqId there is IPC-restamped).
+  // Observation-only broadcast; a no-op when no SSE is attached.
   async function fireTurnError(
     ctx: AgentContext,
     reqId: string,
@@ -1521,7 +1528,7 @@ export function createOrchestrator(
     ctx: AgentContext,
     payload: { outcome: AgentOutcome },
   ): Promise<void> {
-    const wasInFlight = resolveWaiterFor(ctx.reqId, ctx.sessionId, payload.outcome);
+    const resolvedReqId = resolveWaiterFor(ctx.reqId, ctx.sessionId, payload.outcome);
     // F2b — surface a turn-error when the runner itself reports a terminated
     // outcome (e.g. it POSTed event.chat-end{terminated} before crashing on a
     // resume of an interrupted transcript). That path resolves the deferred,
@@ -1530,20 +1537,22 @@ export function createOrchestrator(
     // hang on "Thinking…" / "Starting sandbox…" forever.
     //
     // Gates:
-    //   - wasInFlight: only when THIS chat:end ended a turn that was still
-    //     in flight. The chokepoint paths settle the deferred before firing
-    //     chat:end (→ false here, their own explicit fireTurnError is the one
-    //     fire), and a reaped warm runner's late terminated chat:end after a
-    //     completed turn has no live waiter (→ false, no spurious fire).
+    //   - resolvedReqId !== undefined: only when THIS chat:end ended a turn
+    //     that was still in flight. The chokepoint paths settle the deferred
+    //     before firing chat:end (→ undefined here, their own explicit
+    //     fireTurnError is the one fire), and a reaped warm runner's late
+    //     terminated chat:end after a completed turn has no live waiter (→
+    //     undefined, no spurious fire).
     //   - kind !== 'complete': a normal completed turn must NEVER surface as
     //     an error.
     //
-    // The IPC server RESTAMPS ctx.reqId per request, so this won't match the
-    // SSE by reqId — the SSE matches this path by ctx.conversationId (which
-    // the IPC listener DOES stamp), mirroring the done-frame chat:turn-end
-    // subscriber.
-    if (wasInFlight && payload.outcome.kind !== 'complete') {
-      await fireTurnError(ctx, ctx.reqId, payload.outcome.reason);
+    // The IPC server RESTAMPS ctx.reqId per request, so ctx.reqId can't join
+    // the SSE — but resolveWaiterFor recovered the ORIGINAL agent:invoke reqId
+    // (the SSE's precise per-turn key), so we fire with that. Matching by reqId
+    // (not conversationId) avoids closing a co-resident turn's stream when two
+    // concurrent invokes share a conversation.
+    if (resolvedReqId !== undefined && payload.outcome.kind !== 'complete') {
+      await fireTurnError(ctx, resolvedReqId, payload.outcome.reason);
     }
     // Forget any cancel bookkeeping for this session (set stays bounded in a
     // long-lived host).

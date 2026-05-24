@@ -478,49 +478,29 @@ describe('@ax/channel-web SSE handler', () => {
     }
   });
 
-  // F2b — a runner-reported terminated chat:end is fired by the IPC server
-  // with a RESTAMPED reqId (fresh per request) but a stamped ctx.conversationId.
-  // So onChatEnd's turn-error can't match by reqId; the SSE matches it by
-  // conversationId, mirroring the done-frame chat:turn-end subscriber.
-  it('turn-error matched by conversationId (restamped reqId) emits an error frame and closes', async () => {
+  // F2b regression — turn-error matches by reqId ONLY, never by conversationId.
+  // A runner-reported terminated chat:end restamps ctx.reqId, but the
+  // orchestrator recovers the ORIGINAL agent:invoke reqId (resolveWaiterFor)
+  // and fires with that, so this stream still terminates on its own reqId. The
+  // important property: a turn-error for a DIFFERENT reqId on the SAME
+  // conversation must NOT close this stream (two concurrent invokes can share a
+  // conversation — a conversationId match would wrongly terminate the sibling).
+  it('turn-error for a DIFFERENT reqId on the SAME conversation does not close us', async () => {
     const { bus, initCtx, handler, buffer } = bootHandler();
     try {
-      const req = fakeReq();
+      const req = fakeReq(); // reqId 'r-test', conversationId 'cnv_test'
       const { res, captured } = fakeRes();
       await handler(req, res);
 
+      // A sibling turn on the same conversation errored — fire with its reqId
+      // and the same conversationId on ctx.
       const convCtx = ctxWithConversation(initCtx, 'cnv_test');
       await bus.fire('chat:turn-error', convCtx, {
-        // reqId restamped by the IPC server → will NOT match 'r-test'.
-        reqId: 'r-restamped-by-ipc',
-        reason: 'Error: resume boom',
-      });
-
-      const frames = captured.streamWrites.filter((s) => s.startsWith('data:'));
-      const last = frames[frames.length - 1]!;
-      expect(JSON.parse(last.slice(6).trim())).toEqual({
-        reqId: 'r-test',
-        error: 'Error: resume boom',
-      });
-      expect(captured.streamClosed).toBe(true);
-    } finally {
-      buffer.dispose();
-    }
-  });
-
-  it('turn-error on a DIFFERENT conversationId (and non-matching reqId) does not close us', async () => {
-    const { bus, initCtx, handler, buffer } = bootHandler();
-    try {
-      const req = fakeReq();
-      const { res, captured } = fakeRes();
-      await handler(req, res);
-
-      const otherCtx = ctxWithConversation(initCtx, 'cnv_other');
-      await bus.fire('chat:turn-error', otherCtx, {
-        reqId: 'r-other',
+        reqId: 'r-sibling',
         reason: 'sandbox-terminated',
       });
 
+      // Our stream (r-test) stays open — only the sibling's stream should close.
       expect(captured.streamClosed).toBe(false);
       expect(
         captured.streamWrites.filter((s) => s.startsWith('data:')),

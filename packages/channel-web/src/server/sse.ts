@@ -292,24 +292,17 @@ export function createSseHandler(deps: SseHandlerDeps) {
     // itself reported a terminated outcome (F2b) — instead of the normal
     // `chat:turn-end`. Without this the stream would never get a terminal frame
     // and the client's "Thinking…" spinner hangs forever (the keepalive
-    // heartbeat keeps the connection open).
-    //
-    // We match by EITHER the originating reqId OR conversationId:
-    //   - reqId: the precise per-turn key, carried by the orchestrator-fired
-    //     paths (fresh-spawn chokepoint, session:terminate, early-spawn
-    //     returns) which all hold the original agent:invoke reqId.
-    //   - conversationId: the runner-reported path (F2b) is fired from
-    //     onChatEnd, but the IPC server RESTAMPS ctx.reqId per request — so
-    //     reqId can't match. ctx.conversationId IS stamped, so we match on it,
-    //     mirroring the done-frame chat:turn-end subscriber above.
+    // heartbeat keeps the connection open). Match by reqId — the precise
+    // per-turn key. Every orchestrator fire site carries the ORIGINAL
+    // agent:invoke reqId (the F2b onChatEnd path passes the reqId
+    // resolveWaiterFor recovered, since the IPC server restamps ctx.reqId), so
+    // a turn-error never closes a co-resident turn's stream on the same
+    // conversation. Emit an `error` frame, evict, and close.
     deps.bus.subscribe<{ reqId?: string; reason?: string }>(
       'chat:turn-error',
       turnErrorSubKey,
-      async (ctx, payload) => {
-        const matchesReqId = payload.reqId === reqId;
-        const matchesConversation =
-          ctx.conversationId !== undefined && ctx.conversationId === conversationId;
-        if (!matchesReqId && !matchesConversation) return undefined;
+      async (_ctx, payload) => {
+        if (payload.reqId !== reqId) return undefined;
         safeWrite({ reqId, error: payload.reason ?? 'unknown' });
         deps.buffer.evictReqId(reqId);
         cleanup();
