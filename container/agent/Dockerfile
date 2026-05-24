@@ -95,11 +95,24 @@ FROM node:20-bookworm-slim AS runtime
 
 # ca-certificates: HTTPS_PROXY → credential-proxy → api.anthropic.com.
 # tini: clean PID-1 reaping for the short-lived Claude SDK children the
-# runner spawns. Both pinned only to major version via apt — CI follow-up
-# is to pin to specific package versions once the image build pipeline
-# lands.
+# runner spawns.
+#
+# All five apt deps are version-pinned (was: unpinned, floated with the
+# pocket) so the install is reproducible — the signed Debian archive already
+# content-addresses each .deb by checksum on download; the pin makes WHICH
+# .deb deterministic. Versions are the current Debian bookworm/main binaries
+# (resolved from the signed Packages index); refresh them in lockstep when the
+# base image rolls to a newer point release. Caveat: a hard `=version` pin
+# breaks the build once a point release supersedes one of these and drops the
+# old from the pocket — there is no docker-build step in CI today to catch
+# that, so a CI image-build guard is the tracked follow-up.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates tini git git-lfs python3 \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates=20230311+deb12u1 \
+      tini=0.19.0-1+b3 \
+      git=1:2.39.5-0+deb12u3 \
+      git-lfs=3.3.0-1+deb12u1 \
+      python3=3.11.2-1+b1 \
  && rm -rf /var/lib/apt/lists/*
 # `git` is needed by the host pod's @ax/ipc-core workspace.materialize
 # handler (it runs `git bundle` to seed the runner's /permanent dir at
@@ -140,8 +153,11 @@ COPY --from=builder --chown=1000:1000 /workspace/packages/channel-web/dist-web /
 WORKDIR /opt/ax-next/host
 
 # uv/uvx: ephemeral on-demand runner for skill-declared python CLIs (capabilities.packages.pypi).
-# Pinned by version tag (digest-pin is a tracked follow-up, alongside tini/ca-certificates).
-COPY --from=ghcr.io/astral-sh/uv:0.11.16 /uv /uvx /usr/local/bin/
+# Digest-pinned (content-addressed) — the `0.11.16` tag stays for human eyes; the `@sha256:…`
+# is the multi-arch OCI index digest that tag resolved to, so a mutated/re-pushed tag can't
+# swap the bytes out from under us. To bump uv: pick the new tag, then re-resolve its digest
+# with `docker buildx imagetools inspect ghcr.io/astral-sh/uv:<tag>` and update both here.
+COPY --from=ghcr.io/astral-sh/uv:0.11.16@sha256:440fd6477af86a2f1b38080c539f1672cd22acb1b1a47e321dba5158ab08864d /uv /uvx /usr/local/bin/
 
 # Bake a relocatable, pre-seeded Python venv (pip/setuptools/wheel) so runner
 # sessions get a working venv OFFLINE — copied to the ephemeral tier at runtime
