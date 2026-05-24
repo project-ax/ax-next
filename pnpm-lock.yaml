@@ -1026,10 +1026,13 @@ importers:
     dependencies:
       '@anthropic-ai/sdk':
         specifier: ^0.91.1
-        version: 0.91.1(zod@4.3.6)
+        version: 0.91.1(zod@3.25.76)
       '@ax/core':
         specifier: workspace:*
         version: link:../core
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
     devDependencies:
       '@types/node':
         specifier: ^25.6.0

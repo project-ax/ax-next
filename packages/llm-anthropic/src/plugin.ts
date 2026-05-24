@@ -1,5 +1,12 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { PluginError, type LlmCallInput, type LlmCallOutput, type Plugin } from '@ax/core';
+import {
+  LlmCallOutputSchema,
+  PluginError,
+  type LlmCallInput,
+  type LlmCallOutput,
+  type Plugin,
+} from '@ax/core';
+import { z, type ZodType } from 'zod';
 import { fromAnthropicResponse, toAnthropicRequest } from './translate.js';
 
 const PLUGIN_NAME = '@ax/llm-anthropic';
@@ -13,6 +20,21 @@ export interface ModelsListSupportedOutput {
     kind: 'fast' | 'default' | 'either';
   }>;
 }
+
+// Runtime `returns` contract for `models:list-supported` (ARCH-13). The hook is
+// IPC-adjacent (the admin/settings model-picker reads it), so a malformed entry
+// flowing out would corrupt the UI's selectable set. `LlmCallOutputSchema` for
+// the sibling `llm:call:anthropic` hook lives in @ax/core (its type does too);
+// this one is registrant-local because `ModelsListSupportedOutput` is.
+export const ModelsListSupportedOutputSchema = z.object({
+  models: z.array(
+    z.object({
+      id: z.string(),
+      label: z.string(),
+      kind: z.union([z.literal('fast'), z.literal('default'), z.literal('either')]),
+    }),
+  ),
+}) as unknown as ZodType<ModelsListSupportedOutput>;
 
 // Statuses we consider transient — a 1-shot retry buys us resilience without
 // turning the plugin into a backoff library. Anything else — auth, validation,
@@ -83,7 +105,7 @@ export function createLlmAnthropicPlugin(cfg: LlmAnthropicConfig = {}): Plugin {
         'llm:call:anthropic',
         PLUGIN_NAME,
         async (_ctx, input) => callWithRetry(client, input, cfg),
-        { timeoutMs: 300_000 },
+        { returns: LlmCallOutputSchema, timeoutMs: 300_000 },
       );
 
       bus.registerService<unknown, ModelsListSupportedOutput>(
@@ -96,6 +118,7 @@ export function createLlmAnthropicPlugin(cfg: LlmAnthropicConfig = {}): Plugin {
             { id: 'claude-opus-4-7', label: 'Claude Opus 4.7', kind: 'default' },
           ],
         }),
+        { returns: ModelsListSupportedOutputSchema },
       );
     },
   };
