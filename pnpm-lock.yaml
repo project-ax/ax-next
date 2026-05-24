@@ -921,6 +921,9 @@ importers:
       '@ax/ipc-protocol':
         specifier: workspace:*
         version: link:../ipc-protocol
+      '@ax/workspace-bundle-protocol':
+        specifier: workspace:*
+        version: link:../workspace-bundle-protocol
     devDependencies:
       '@ax/ipc-server':
         specifier: workspace:*
@@ -1764,6 +1767,22 @@ importers:
         specifier: ^4.1.4
         version: 4.1.5(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(jsdom@26.1.0)(vite@8.0.10(@types/node@25.6.0)(esbuild@0.27.7)(jiti@1.21.7)(tsx@4.21.0)(yaml@2.8.3))
 
+  packages/workspace-bundle-protocol:
+    dependencies:
+      '@ax/core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@types/node':
+        specifier: ^25.6.0
+        version: 25.6.0
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^4.1.4
+        version: 4.1.5(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(jsdom@26.1.0)(vite@8.0.10(@types/node@25.6.0)(esbuild@0.27.7)(jiti@1.21.7)(tsx@4.21.0)(yaml@2.8.3))
+
   packages/workspace-git:
     dependencies:
       '@ax/core':
@@ -1776,6 +1795,9 @@ importers:
       '@ax/test-harness':
         specifier: workspace:*
         version: link:../test-harness
+      '@ax/workspace-bundle-protocol':
+        specifier: workspace:*
+        version: link:../workspace-bundle-protocol
       '@types/node':
         specifier: ^25.6.0
         version: 25.6.0
@@ -1791,6 +1813,9 @@ importers:
       '@ax/core':
         specifier: workspace:*
         version: link:../core
+      '@ax/workspace-bundle-protocol':
+        specifier: workspace:*
+        version: link:../workspace-bundle-protocol
       isomorphic-git:
         specifier: 1.37.5
         version: 1.37.5
@@ -1819,6 +1844,9 @@ importers:
       '@ax/core':
         specifier: workspace:*
         version: link:../core
+      '@ax/workspace-bundle-protocol':
+        specifier: workspace:*
+        version: link:../workspace-bundle-protocol
       zod:
         specifier: ^3.23.8
         version: 3.25.76

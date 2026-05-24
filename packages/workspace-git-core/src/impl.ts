@@ -13,22 +13,24 @@ import {
   type Bytes,
   type FileChange,
   type HookBus,
-  type WorkspaceApplyBundleInput,
-  type WorkspaceApplyBundleOutput,
   type WorkspaceApplyInput,
   type WorkspaceApplyOutput,
   type WorkspaceChange,
   type WorkspaceDelta,
   type WorkspaceDiffInput,
   type WorkspaceDiffOutput,
-  type WorkspaceExportBaselineBundleInput,
-  type WorkspaceExportBaselineBundleOutput,
   type WorkspaceListInput,
   type WorkspaceListOutput,
   type WorkspaceReadInput,
   type WorkspaceReadOutput,
   type WorkspaceVersion,
 } from '@ax/core';
+import type {
+  WorkspaceApplyBundleInput,
+  WorkspaceApplyBundleOutput,
+  WorkspaceExportBaselineBundleInput,
+  WorkspaceExportBaselineBundleOutput,
+} from '@ax/workspace-bundle-protocol';
 /**
  * Config for `registerWorkspaceGitHooks`. `repoRoot` is the absolute path to
  * the bare git repo's parent directory; `<repoRoot>/repo.git` is materialized

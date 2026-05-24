@@ -55,12 +55,8 @@ import {
   PluginError,
   type Bytes,
   type FileChange,
-  type WorkspaceApplyBundleInput,
-  type WorkspaceApplyBundleOutput,
   type WorkspaceApplyInput,
   type WorkspaceApplyOutput,
-  type WorkspaceExportBaselineBundleInput,
-  type WorkspaceExportBaselineBundleOutput,
   type WorkspaceChange,
   type WorkspaceDelta,
   type WorkspaceDiffInput,
@@ -70,6 +66,12 @@ import {
   type WorkspaceReadInput,
   type WorkspaceReadOutput,
 } from '@ax/core';
+import type {
+  WorkspaceApplyBundleInput,
+  WorkspaceApplyBundleOutput,
+  WorkspaceExportBaselineBundleInput,
+  WorkspaceExportBaselineBundleOutput,
+} from '@ax/workspace-bundle-protocol';
 import type { MirrorCache } from './mirror-cache.js';
 import type { RepoLifecycleClient } from './repo-lifecycle.js';
 
@@ -91,7 +93,7 @@ const AUTHOR_ENV = {
 // `packages/ipc-core/src/handlers/workspace-materialize.ts` — the OIDs
 // produced on both sides have to be bit-identical for the runner's thin
 // bundle to find its prerequisite. The `WorkspaceApplyBundleInput` type
-// comment in `@ax/core/src/workspace.ts` is the contract.
+// comment in `@ax/workspace-bundle-protocol` is the contract.
 //
 // We intentionally don't import the constant from ipc-core (would
 // violate I2 — no cross-plugin imports). We duplicate it here and pin

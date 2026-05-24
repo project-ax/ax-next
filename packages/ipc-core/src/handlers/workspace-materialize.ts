@@ -2,13 +2,15 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type {
-  WorkspaceExportBaselineBundleInput,
-  WorkspaceExportBaselineBundleOutput,
   WorkspaceListInput,
   WorkspaceListOutput,
   WorkspaceReadInput,
   WorkspaceReadOutput,
 } from '@ax/core';
+import type {
+  WorkspaceExportBaselineBundleInput,
+  WorkspaceExportBaselineBundleOutput,
+} from '@ax/workspace-bundle-protocol';
 import {
   WorkspaceMaterializeRequestSchema,
   WorkspaceMaterializeResponseSchema,

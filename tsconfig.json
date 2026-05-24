@@ -51,6 +51,7 @@
     { "path": "packages/tool-artifact-publish" },
     { "path": "packages/skills" },
     { "path": "packages/skills-parser" },
-    { "path": "packages/sandbox-protocol" }
+    { "path": "packages/sandbox-protocol" },
+    { "path": "packages/workspace-bundle-protocol" }
   ]
 }

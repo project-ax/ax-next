@@ -1,13 +1,15 @@
 import {
   PluginError,
   type FileChange,
-  type WorkspaceApplyBundleInput,
-  type WorkspaceApplyBundleOutput,
   type WorkspaceApplyOutput,
-  type WorkspaceExportBaselineBundleInput,
-  type WorkspaceExportBaselineBundleOutput,
   type WorkspaceVersion,
 } from '@ax/core';
+import type {
+  WorkspaceApplyBundleInput,
+  WorkspaceApplyBundleOutput,
+  WorkspaceExportBaselineBundleInput,
+  WorkspaceExportBaselineBundleOutput,
+} from '@ax/workspace-bundle-protocol';
 import {
   WorkspaceCommitNotifyRequestSchema,
   WorkspaceCommitNotifyResponseSchema,

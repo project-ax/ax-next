@@ -24,6 +24,18 @@
 //                            (type-only) to construct the payload. Single
 //                            source of truth that keeps the two backends from
 //                            drifting in validation strictness.
+//   @ax/workspace-bundle-protocol
+//                         — the git-runner bundle-wire contract: payload types
+//                           for the OPTIONAL git thin-bundle fast-path hooks
+//                           (workspace:apply-bundle, :export-baseline-bundle).
+//                           These carry git vocabulary (bundleBytes,
+//                           baselineCommit), so they live here rather than in
+//                           the storage-neutral @ax/core kernel (invariant I1).
+//                           Pure TS types (no zod — consumed only as in-process
+//                           hook-bus generics; the untrusted WIRE shape is
+//                           @ax/ipc-protocol). Imported by the git workspace
+//                           backends and the host's commit-notify / materialize
+//                           handlers; a non-git backend never imports it.
 //   @ax/ipc-core          — kernel-adjacent shared library: transport-agnostic
 //                           IPC dispatcher, auth middleware, body reader,
 //                           response/error helpers, and per-action handlers.
@@ -133,6 +145,7 @@ export default tseslint.config(
                 '!@ax/ipc-protocol',
                 '!@ax/workspace-protocol',
                 '!@ax/sandbox-protocol',
+                '!@ax/workspace-bundle-protocol',
                 '!@ax/ipc-core',
                 '!@ax/agent-claude-sdk-runner-host',
                 '!@ax/validator-routine',
@@ -140,7 +153,7 @@ export default tseslint.config(
               ],
               allowTypeImports: true,
               message:
-                'Cross-plugin runtime imports are forbidden. Plugins communicate through the hook bus only. See CLAUDE.md invariant 2. Type-only imports (`import type {...}` / `export type {...}`) are allowed — boundary types are how plugins agree on a shared contract without runtime coupling. The only @ax/* runtime imports allowed in plugin code are @ax/core, @ax/test-harness, @ax/ipc-protocol + @ax/workspace-protocol + @ax/sandbox-protocol (wire schemas), @ax/ipc-core (transport-agnostic IPC library), @ax/agent-claude-sdk-runner-host (pure-function jsonl→Turn[] parser), @ax/validator-routine (pure-function routine frontmatter parser shared between the validator and the routines plugin), and @ax/skills-parser (pure-function SKILL.md parser + capability types shared between @ax/skills and @ax/agents)',
+                'Cross-plugin runtime imports are forbidden. Plugins communicate through the hook bus only. See CLAUDE.md invariant 2. Type-only imports (`import type {...}` / `export type {...}`) are allowed — boundary types are how plugins agree on a shared contract without runtime coupling. The only @ax/* runtime imports allowed in plugin code are @ax/core, @ax/test-harness, @ax/ipc-protocol + @ax/workspace-protocol + @ax/sandbox-protocol + @ax/workspace-bundle-protocol (wire / hook-bus contracts), @ax/ipc-core (transport-agnostic IPC library), @ax/agent-claude-sdk-runner-host (pure-function jsonl→Turn[] parser), @ax/validator-routine (pure-function routine frontmatter parser shared between the validator and the routines plugin), and @ax/skills-parser (pure-function SKILL.md parser + capability types shared between @ax/skills and @ax/agents)',
             },
           ],
         },

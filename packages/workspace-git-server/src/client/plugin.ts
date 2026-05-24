@@ -42,19 +42,21 @@
 import { registerWorkspaceApplyFacade } from '@ax/core';
 import type { AgentContext, Plugin, WorkspaceDelta } from '@ax/core';
 import type {
-  WorkspaceApplyBundleInput,
-  WorkspaceApplyBundleOutput,
   WorkspaceApplyInput,
   WorkspaceApplyOutput,
   WorkspaceDiffInput,
   WorkspaceDiffOutput,
-  WorkspaceExportBaselineBundleInput,
-  WorkspaceExportBaselineBundleOutput,
   WorkspaceListInput,
   WorkspaceListOutput,
   WorkspaceReadInput,
   WorkspaceReadOutput,
 } from '@ax/core';
+import type {
+  WorkspaceApplyBundleInput,
+  WorkspaceApplyBundleOutput,
+  WorkspaceExportBaselineBundleInput,
+  WorkspaceExportBaselineBundleOutput,
+} from '@ax/workspace-bundle-protocol';
 import { createGitEngine, type GitEngine } from './git-engine.js';
 import {
   createMirrorCache,
