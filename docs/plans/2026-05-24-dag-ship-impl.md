@@ -738,9 +738,10 @@ Expected blocked, with the blocking edge shown:
 - ARCH-7 ← ARCH-6
 - CLI-2 ← CLI-3
 
-Expected cluster-walk lane (serialized): CLI-1, SYNC-1, SYNC-2, FAULTA-1,
-FAULTA-4 ready-but-serialized; CLI-2 blocked (above); FAULTA-4 notes the dashed
-`FAULTA-1 -.-> FAULTA-4` ordering.
+Expected cluster-walk lane (serialized, run one at a time): **CLI-1, SYNC-1,
+SYNC-2, FAULTA-1** ready-but-serialized. Blocked walks: **CLI-2 ← CLI-3** and
+**FAULTA-4 ← FAULTA-1** (the dashed `FAULTA-1 -.-> FAULTA-4` edge gates dispatch
+identically to a solid edge, so FAULTA-4 is NOT ready until FAULTA-1 is done).
 
 Expected skipped (🚫 trigger-gated, never dispatched): CLI-4, CLI-5, CLI-6,
 CLI-7, FAULTA-2, FAULTA-3, FAULTA-5.
