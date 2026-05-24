@@ -44,6 +44,8 @@ across passes.
 | "Let me peek at the diff to check it" | The agent + CI + Codex already did. You hold a one-line status. |
 | "I'll remember what I dispatched last pass" | Re-read the board. Cross-pass memory is the trap; the board is truth. |
 | "I'll merge these two at once to be fast" | The merge queue is serialized. One PR at a time, always. |
+| "I'll `item-list` again for that id / body / snapshot" | **One** board read per pass (`item-list` is a heavy GraphQL query); bind `$ITEMS` / `board_snapshot` and reuse it for the ready set, ids, bodies, and snapshot. Re-querying per item exhausted the 5000/hr GraphQL budget and stalled the loop for ~6 min. |
+| "I'll fire three `item-edit`s to move these cards" | Collapse coincident writes into one aliased mutation with `board_batch` (§2b/§4). N field writes → 1 request. |
 | "Context is getting big, push through" | End + re-invoke `/auto-ship`. State is on the board; resume is free. |
 
 ## Board = state model & readiness
@@ -71,11 +73,11 @@ yolo-shipped** — see Cluster-walk lane.
 ## Control loop
 
 At run start: resolve the board, ensure the 6-lane `Status` set + the `Depends on`
-field exist (`references/github-project.md` §1–2), write the poller **and** the
-progress helper (`.claude/auto-ship-progress.sh`, §6) + take the owner lock (§7),
-**reconcile any orphaned in-flight cards** (§7 — this is the crash/resume recovery
-step), print the plan, launch the poller, then idle. You then run the same pass on
-**every wake**:
+field exist (`references/github-project.md` §1–2), write the poller, the progress
+helper (`.claude/auto-ship-progress.sh`, §6), **and** the batched board helper
+(`.claude/auto-ship-board.sh`, §2b) + take the owner lock (§7), **reconcile any
+orphaned in-flight cards** (§7 — this is the crash/resume recovery step), print the
+plan, launch the poller, then idle. You then run the same pass on **every wake**:
 
 ```dot
 digraph autoship {
@@ -146,10 +148,15 @@ card). For each:
 1. Move the card → **In Progress** (`references/github-project.md` §4). No body
    seeding needed — the agent's first phase line creates the progress block (§6).
 2. Launch a **background** `general-purpose` agent running `yolo-ship` in
-   **orchestrated mode** on that one card (`Agent`, `run_in_background: true`), using
-   the **code-lane dispatch prompt** in `references/templates.md` — pass the card's
-   `[TASK-ID]`, title, body, its **item node id** (`<ITEM-ID>`), and the **absolute
-   path** to `.claude/auto-ship-progress.sh` so it reports progress live on its card.
+   **orchestrated mode** on that one card (`Agent`, `run_in_background: true`,
+   **`isolation: "worktree"`**), using the **code-lane dispatch prompt** in
+   `references/templates.md` — pass the card's `[TASK-ID]`, title, body, its **item
+   node id** (`<ITEM-ID>`), and the **absolute path** to `.claude/auto-ship-progress.sh`
+   so it reports progress live on its card. **`isolation: "worktree"` is mandatory** —
+   it gives each agent its own git worktree so no agent ever works in the shared main
+   checkout (concurrent agents on the main checkout clobber each other's HEAD/working
+   tree + `.claude/memory` — the ARCH-2 incident). The orchestrator's own checkout
+   stays on `main` for the serialized merge queue.
 3. Append `dispatch <TASK-ID>` + timestamp to `.claude/auto-ship-log.md`.
 
 Launch all slot-fills in a **SINGLE message** (concurrent). If ready cards exceed
@@ -253,6 +260,8 @@ Locally, gitignored only:
   resume rebuilds attempt history from it.
 - `.claude/auto-ship-todo-snapshot.txt` — the poller's last-seen To Do hash.
 - `.claude/auto-ship-progress.sh` — the shell-side `append_progress` helper (§6).
+- `.claude/auto-ship-board.sh` — the batched board helpers `board_snapshot` + `board_batch` (§2b).
+- `.claude/auto-ship-board.json` — the once-per-pass board snapshot cache (§3).
 - `.claude/auto-ship-owner.lock` — the single-instance heartbeat (§7).
 
 On resume, rebuild the ready set from the **board** + `gh pr list` + the journal, and

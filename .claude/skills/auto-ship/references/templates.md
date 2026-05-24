@@ -15,6 +15,11 @@ Dispatch via `Agent` with `run_in_background: true`,
 > <TASK-BODY>
 >
 > Run the `yolo-ship` skill on this task with these ORCHESTRATED-MODE overrides:
+> - **Work ONLY in your own isolated worktree.** You were dispatched with
+>   `isolation: "worktree"`, so you start in a dedicated git worktree — confirm
+>   `git rev-parse --show-toplevel` is NOT the primary checkout, and NEVER
+>   `git checkout -b`, commit, or `git switch` in the shared main checkout (it would
+>   clobber the orchestrator and sibling agents). Create your branch in the worktree.
 > - Branch: `auto-ship/<TASK-ID>-<short-slug>`. PR title MUST start with
 >   `[<TASK-ID>] `. Base `main`.
 > - **Do NOT merge.** Stop at a green, verified-mergeable PR (yolo-ship ends at

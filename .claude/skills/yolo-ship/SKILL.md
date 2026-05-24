@@ -49,7 +49,11 @@ documented in `.claude/skills/auto-ship/references/github-project.md` §6.
 **Rules:** *best-effort* — a failed progress write must **never** abort the ship.
 *Shell-side* — the helper does the read-modify-write in shell; never read the card
 body into your context (it grows every line). *Own card only* — append to your own
-card; never touch `Status` or `Depends on` (auto-ship owns routing).
+card; never touch `Status` or `Depends on` (auto-ship owns routing). *Budget-frugal* —
+each write is a GraphQL read+write and the org-wide GraphQL budget (5000 pts/hr) is
+shared across every concurrent agent + the orchestrator; post **only at the catalogued
+phase boundaries below** (plus `⚠` exceptions), never a finer-grained running
+commentary — extra heartbeats burn shared budget that the merge queue needs.
 
 Per-phase line catalogue (prefix exceptions with `⚠`):
 
@@ -66,8 +70,22 @@ Per-phase line catalogue (prefix exceptions with `⚠`):
 ## The phases
 
 ### Phase 0 — Isolate
-- **REQUIRED:** Use superpowers:using-git-worktrees (or the `EnterWorktree` tool) to create a fresh worktree + branch for this task. All work happens there.
-- **REQUIRED:** Use claude-memory — read `.claude/memory/` so prior decisions/mistakes/patterns inform the work.
+- **REQUIRED — one worktree per task, NEVER the main checkout.** All work happens in a
+  dedicated git worktree, never the primary checkout. Concurrent agents that
+  `git checkout -b` in the shared main checkout clobber each other's HEAD, working
+  tree, and `.claude/memory` writes (the ARCH-2 incident: a second agent observed
+  "HEAD there is on ARCH-2's branch" in the main checkout).
+  - **Orchestrated with `isolation: "worktree"`** (how auto-ship dispatches you): you
+    already start in your own isolated worktree — confirm it, then create your branch
+    there: `git switch -c auto-ship/<TASK-ID>-<slug>`.
+  - **Otherwise:** create one with superpowers:using-git-worktrees / the `EnterWorktree`
+    tool at `.claude/worktrees/<TASK-ID>` (inside the repo, gitignored) and `cd` into it.
+  - **Guard before the first commit:** `git rev-parse --show-toplevel` MUST NOT be the
+    primary checkout root. If it is, STOP and make the worktree — never `git checkout -b`,
+    commit, or `git switch` in the main checkout under any circumstance.
+- **REQUIRED:** Use claude-memory — read `.claude/memory/` so prior decisions/mistakes/patterns
+  inform the work. Commit memory updates to YOUR worktree/branch copy only, never the
+  main checkout (TASK-7 convention; `scripts/memory-write-target.sh` resolves the right dir).
 
 ### Phase 1 — Brainstorm (run it autonomously)
 - **REQUIRED:** Use superpowers:brainstorming — but in self-answering mode. Generate the questions it would ask the user, then answer each one yourself from the codebase, `.claude/memory/`, CLAUDE.md, and architecture docs. Log each material answer to `decisions.md`.

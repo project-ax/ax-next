@@ -84,14 +84,70 @@ projects, GraphQL that walks from the owner uses `organization(login:)` not
 `user(login:)`; walking from the project node id — `node(id:$PROJ_ID){... on
 ProjectV2{...}}` — avoids that branch.)
 
-## 3. Read the board (each loop pass)
+## 2b. The batched board helper (written at run start)
+
+Write this next to the poller (§5) and progress helper (§6) at run start (gitignored).
+It centralizes the two GraphQL-frugal primitives: `board_snapshot` (one cached read per
+pass, §3) and `board_batch` (many field writes in one aliased mutation, §4).
 
 ```bash
-ITEMS=$(gh project item-list "$PNUM" --owner "$OWNER" --format json)
-# To Do cards + their deps  (the gh JSON key for "Depends on" is lowercased: "depends on")
-echo "$ITEMS" | jq -r '.items[] | select(.status=="To Do")
-  | "\(.title)\tdeps=\(."depends on" // "")"'
+cat > .claude/auto-ship-board.sh <<'SH'
+#!/usr/bin/env bash
+# Batched GitHub Projects v2 helpers — keep GraphQL call volume low (5000 pts/hr).
+BOARD_CACHE=.claude/auto-ship-board.json
+# board_snapshot — fetch the WHOLE board once, cache to disk, echo the path. Non-zero on
+# a rate-limited/empty read so callers don't act on garbage. Reuse the cache all pass.
+board_snapshot() {
+  local j
+  j=$(gh project item-list 1 --owner project-ax --format json --limit 200 2>/dev/null) || return 1
+  printf '%s' "$j" | jq -e '.items | type=="array" and length>0' >/dev/null 2>&1 || return 1
+  printf '%s' "$j" > "$BOARD_CACHE"; echo "$BOARD_CACHE"
+}
+# board_batch <projectId> <op>...  — ONE aliased mutation for many writes.
+#   op: "<itemId>|<fieldId>|single|<optionId>"  or  "<itemId>|<fieldId>|text|<value>"
+board_batch() {
+  local proj="$1"; shift
+  [ "$#" -eq 0 ] && { echo "board_batch: no ops"; return 2; }
+  local decl="mutation(\$p:ID!" sel="" i=0; local -a args=(-f "p=$proj")
+  local op item field kind val
+  for op in "$@"; do
+    i=$((i+1)); item=${op%%|*}; op=${op#*|}; field=${op%%|*}; op=${op#*|}; kind=${op%%|*}; val=${op#*|}
+    decl+=",\$it$i:ID!,\$fd$i:ID!,\$v$i:String!"
+    args+=(-f "it$i=$item" -f "fd$i=$field" -f "v$i=$val")
+    if [ "$kind" = "single" ]; then
+      sel+=" a$i:updateProjectV2ItemFieldValue(input:{projectId:\$p,itemId:\$it$i,fieldId:\$fd$i,value:{singleSelectOptionId:\$v$i}}){projectV2Item{id}}"
+    else
+      sel+=" a$i:updateProjectV2ItemFieldValue(input:{projectId:\$p,itemId:\$it$i,fieldId:\$fd$i,value:{text:\$v$i}}){projectV2Item{id}}"
+    fi
+  done
+  gh api graphql -f query="${decl}){${sel} }" "${args[@]}" >/dev/null 2>&1 \
+    && echo "board_batch: $i write(s) in 1 request" || { echo "board_batch: FAILED"; return 1; }
+}
+SH
+chmod +x .claude/auto-ship-board.sh
 ```
+
+## 3. Read the board (each loop pass) — ONE read, reuse it
+
+`gh project item-list` is a **heavy GraphQL query** (it returns every item with its
+field values *and* `.content.body`). The GraphQL budget is **5000 points/hour**, so
+calling it 3–5× per pass — once for the ready set, again per item id, again per body,
+again for the snapshot hash — **exhausts the budget** (this happened; the whole loop
+stalled for ~6 min). **Read the whole board exactly once per pass** and derive
+everything from that single JSON:
+
+```bash
+ITEMS=$(gh project item-list "$PNUM" --owner "$OWNER" --format json --limit 200)   # the ONLY board read this pass
+# ready set + deps:
+echo "$ITEMS" | jq -r '.items[] | select(.status=="To Do") | "\(.title)\tdeps=\(."depends on" // "")"'
+# an item's node id AND its body come from the SAME JSON — never re-query for them:
+echo "$ITEMS" | jq -r --arg p "[$TASK_ID] " '.items[] | select(.title|startswith($p)) | "\(.id)\t\(.content.body // "")"'
+```
+
+Bind `$ITEMS` once; jq it for the ready set, dispatch ids+bodies, the §5 snapshot hash,
+and the §7 reconcile — **do not call `gh project item-list` again within the pass.**
+(The run-start helper `.claude/auto-ship-board.sh` provides `board_snapshot`, which
+caches the read to `.claude/auto-ship-board.json` for exactly this reuse.)
 
 `.status` is the lane name (e.g. `"To Do"`). `."depends on"` is the dependency field
 (empty = un-analyzed; `none` = analyzed-no-deps; else space/comma-separated Task IDs).
@@ -112,6 +168,25 @@ gh project item-edit --id "$ITEM_ID" --project-id "$PROJ_ID" \
 # set / rewrite its deps:
 gh project item-edit --id "$ITEM_ID" --project-id "$PROJ_ID" \
   --field-id "$DEPS_FIELD_ID" --text "$DEPS"      # e.g. "ARCH-4 ARCH-5"  or  "none"
+```
+
+**Batch multi-writes into ONE GraphQL request.** Each `gh project item-edit` is its own
+GraphQL mutation, so moving 3 cards = 3 calls and "create card → set Status → set deps"
+= 3 calls. When more than one field write happens together, use **`board_batch`** (from
+`.claude/auto-ship-board.sh`, written at run start) — it sends all the writes as a
+single aliased mutation. A single `item-edit` is fine for a lone write; reach for
+`board_batch` whenever ≥2 writes coincide (slot-fill moves, follow-up create+route,
+terminal move):
+
+```bash
+source .claude/auto-ship-board.sh
+# fill 3 slots → In Progress in ONE request (vs 3 item-edit calls):
+board_batch "$PROJ_ID" "$ID1|$STATUS_FIELD_ID|single|$INPROG" \
+                       "$ID2|$STATUS_FIELD_ID|single|$INPROG" \
+                       "$ID3|$STATUS_FIELD_ID|single|$INPROG"
+# a new follow-up card's Status + Depends on in ONE request (create still separate):
+ID=$(gh project item-create "$PNUM" --owner "$OWNER" --title "$T" --body "$B" --format json | jq -r .id)
+board_batch "$PROJ_ID" "$ID|$STATUS_FIELD_ID|single|$TODO" "$ID|$DEPS_FIELD_ID|text|none"
 ```
 
 The card **body** is written through a different door — the delimited progress block
