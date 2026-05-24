@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>by5kg5v12</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-vpulim-dev-ai-ax-next/3effe131-78ca-4b20-93ae-529c0bc98c46/tasks/by5kg5v12.output</output-file>
+<status>completed</status>
+<summary>Background command "Run Codex whole-branch review" completed (exit code 0)</summary>
+</task-notification>

@@ -1,0 +1,25 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "6ea59c1569fe",
+  "strategy": "manual-commit",
+  "branch": "worktree-f2a-resume-no-conversation-fix",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "TODO.md"
+  ],
+  "sessions": [
+    {
+      "metadata": "/6e/a59c1569fe/0/metadata.json",
+      "transcript": "/6e/a59c1569fe/0/full.jsonl",
+      "content_hash": "/6e/a59c1569fe/0/content_hash.txt",
+      "prompt": "/6e/a59c1569fe/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 12704,
+    "cache_creation_tokens": 675172,
+    "cache_read_tokens": 29982910,
+    "output_tokens": 194712,
+    "api_call_count": 128
+  }
+}

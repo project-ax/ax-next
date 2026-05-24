@@ -1,0 +1,56 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "6ea59c1569fe",
+  "session_id": "3effe131-78ca-4b20-93ae-529c0bc98c46",
+  "strategy": "manual-commit",
+  "created_at": "2026-05-24T10:36:15.156039Z",
+  "branch": "worktree-f2a-resume-no-conversation-fix",
+  "checkpoints_count": 1,
+  "files_touched": [
+    "TODO.md"
+  ],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "45870be23b1d",
+  "token_usage": {
+    "input_tokens": 12704,
+    "cache_creation_tokens": 675172,
+    "cache_read_tokens": 29982910,
+    "output_tokens": 194712,
+    "api_call_count": 128
+  },
+  "session_metrics": {
+    "turn_count": 1
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-05-24T10:36:15.12442Z",
+    "agent_lines": 3,
+    "agent_removed": 1,
+    "human_added": 120,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 123,
+    "total_lines_changed": 140,
+    "agent_percentage": 2.857142857142857,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 8,
+      "user_lines_removed": 0,
+      "agent_lines_added": 3,
+      "agent_lines_removed": 1,
+      "user_added_per_file": {
+        ".claude/settings.local.json": 8
+      }
+    }
+  ]
+}
