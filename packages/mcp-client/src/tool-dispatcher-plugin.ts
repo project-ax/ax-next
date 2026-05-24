@@ -1,8 +1,36 @@
 import { PluginError, type Plugin, type ToolDescriptor } from '@ax/core';
+import { z, type ZodType } from 'zod';
 import { ToolCatalog } from './catalog.js';
 import { filterByAgentScope, type AgentToolScope } from './scope.js';
 
 const PLUGIN_NAME = '@ax/tool-dispatcher';
+
+// ---------------------------------------------------------------------------
+// Runtime `returns` contracts for the dispatcher's two data hooks (ARCH-13).
+//
+// `tool:list` is the single source of truth for the agent runtime's catalog
+// (I4), so a malformed descriptor flowing out would mis-shape what the model
+// can call. The descriptor schema mirrors @ax/core's `ToolDescriptor` interface
+// (and stays in lockstep with @ax/ipc-protocol's `ToolDescriptorSchema`, the
+// cross-boundary wire shape — see the note on `ToolDescriptor` in core/types).
+// `inputSchema` stays an opaque JSON-Schema record (no zod-version coupling).
+// The dynamic `tool:execute:${name}` hooks return `{ output: unknown }` and are
+// deliberately left unvalidated — the payload is opaque tool output.
+// ---------------------------------------------------------------------------
+const ToolDescriptorSchema = z.object({
+  name: z.string(),
+  description: z.string().optional(),
+  inputSchema: z.record(z.unknown()),
+  executesIn: z.union([z.literal('sandbox'), z.literal('host')]),
+});
+
+export const ToolRegisterOutputSchema = z.object({
+  ok: z.literal(true),
+}) as unknown as ZodType<{ ok: true }>;
+
+export const ToolListOutputSchema = z.object({
+  tools: z.array(ToolDescriptorSchema),
+}) as unknown as ZodType<{ tools: ToolDescriptor[] }>;
 
 /**
  * Tool dispatcher — owns the single source of truth for the tool catalog
@@ -79,6 +107,7 @@ export function createToolDispatcherPlugin(): Plugin {
           catalog.register(input);
           return { ok: true };
         },
+        { returns: ToolRegisterOutputSchema },
       );
 
       bus.registerService<Record<string, never>, { tools: ToolDescriptor[] }>(
@@ -118,6 +147,7 @@ export function createToolDispatcherPlugin(): Plugin {
           };
           return { tools: filterByAgentScope(all, scope) };
         },
+        { returns: ToolListOutputSchema },
       );
     },
   };
