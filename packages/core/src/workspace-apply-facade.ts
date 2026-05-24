@@ -102,6 +102,28 @@ export function registerWorkspaceApplyFacade(
         input,
       );
 
+      // ARCH-12: validate the write-path output HERE, before the observe-only
+      // `workspace:applied` notify — not via the service-hook `returns` option.
+      // The `returns` option is enforced by HookBus only AFTER this handler
+      // returns, but the handler fires `workspace:applied` with `applied.delta`
+      // first; a malformed backend delta would otherwise reach observers (e.g.
+      // @ax/routines sync) before `invalid-return` is raised. Validating up
+      // front makes the facade the unbypassable chokepoint for both the
+      // subscriber boundary AND the caller. The schema `.passthrough()`es the
+      // delta's change objects, so the lazy `contentBefore`/`contentAfter` fns
+      // survive; we fire/return the ORIGINAL `applied` (not the reparsed
+      // value) so subscribers and callers keep the backend's exact object
+      // references — the validation is a gate, not a transform.
+      const check = WorkspaceApplyOutputSchema.safeParse(applied);
+      if (!check.success) {
+        throw new PluginError({
+          code: 'invalid-return',
+          plugin,
+          hookName: 'workspace:apply',
+          message: `workspace:apply returned an invalid shape: ${check.error.message}`,
+        });
+      }
+
       // 3. applied (observe-only). A post-fact rejection means a subscriber
       //    tried to veto something already landed — log it, never throw.
       const post = await bus.fire<WorkspaceDelta>(
@@ -121,11 +143,5 @@ export function registerWorkspaceApplyFacade(
 
       return applied;
     },
-    // ARCH-12: validate the public write-path output once here, at the
-    // backend-agnostic facade — it returns the backend's `apply-internal`
-    // result unchanged, so a schema on the facade covers every backend
-    // (one source of truth, I4). The schema `.passthrough()`es the delta's
-    // change objects so the lazy `contentBefore`/`contentAfter` fns survive.
-    { returns: WorkspaceApplyOutputSchema },
   );
 }
