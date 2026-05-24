@@ -42,6 +42,20 @@ Default approach:
   directory.
 - Update `.claude/memory/` as you work and **commit those changes** — these files are tracked in the repo, not gitignored. Fold a memory update into the same commit as the work that produced it (or a small follow-up commit on the branch).
 
+**Parallel-agent rule (read this if auto-ship dispatched you).** Write + commit
+`.claude/memory/` **only in your own worktree/branch copy — never the shared main
+checkout** (`/home/vpulim/dev/ai/ax-next`). auto-ship runs several `yolo-ship` agents
+at once; they have at times all operated on the same main checkout, and a concurrent
+write there **silently dropped another agent's appended rows** (the bug TASK-7 fixes).
+Your branch copy is the safe target: it's tracked, so `git worktree add` carries it in,
+your rows land on PR merge through the serialized queue, and a genuine clash surfaces as
+a normal git merge conflict instead of a silent overwrite. (A solo human editing memory
+on `main` with no agents running is fine — the hazard is specifically the shared
+checkout under parallelism.) Unsure where you are? Run
+`scripts/memory-write-target.sh` — it prints the right `.claude/memory` dir for your
+current tree and warns (with `--check`, exits nonzero) if you're in the shared main
+checkout while linked worktrees exist.
+
 If the task touches architecture, hooks, plugins, security boundaries, CI/PR
 workflow, UI conventions, manual acceptance, or prior regressions, bias toward
 reading more memory before editing.
