@@ -28,8 +28,12 @@ gitServerImage:
   pullPolicy: IfNotPresent
 
 # ─── Replicas ─────────────────────────────────────────────────────
-# Single replica only this slice; HPA + multi-replica session affinity
-# arrive in a follow-up PR.
+# Single replica ONLY, and the chart enforces it: `helm template` FAILS for
+# replicas > 1 (see ax-next.validateHostReplicas in _helpers.tpl). The web
+# chat surface streams SSE over an in-process per-reqId chunk buffer
+# (@ax/channel-web), and the host PVC is RWO with a Recreate rollout — neither
+# survives a second replica. Multi-replica chat is gated on a distributed
+# stream broker (a tracked follow-up); don't bump this until that ships.
 replicas: 1
 
 # ─── Namespace for runner pods ────────────────────────────────────

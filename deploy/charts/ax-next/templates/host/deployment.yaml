@@ -1,4 +1,5 @@
 {{- include "ax-next.validateWorkspaceBackend" . -}}
+{{- include "ax-next.validateHostReplicas" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -8,8 +9,10 @@ metadata:
     {{- include "ax-next.componentLabels" (dict "component" "host" "context" $) | nindent 4 }}
     ax.io/plane: ingress
 spec:
-  # Single-replica only this slice. Multi-replica + HPA arrives in a
-  # follow-up PR once session-affinity routing is wired through.
+  # Single-replica only — enforced at render time by
+  # ax-next.validateHostReplicas (template FAILS for replicas > 1). The web
+  # chat surface's SSE chunk buffer is in-process; multi-replica needs a
+  # distributed stream broker first (tracked follow-up).
   replicas: {{ .Values.replicas | default 1 }}
   strategy:
     type: Recreate   # PVC is RWO; we can't have two pods mounting at once.

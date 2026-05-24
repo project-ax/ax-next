@@ -444,3 +444,43 @@ describeIfHelm('ax-next chart: titles.model wiring', () => {
     expect(found?.value).toBe('anthropic/claude-sonnet-4-7');
   });
 });
+
+describeIfHelm('ax-next chart: single-replica chat guard (ARCH-1)', () => {
+  // The web chat surface is single-replica-only: @ax/channel-web buffers SSE
+  // chunks in an in-process per-reqId ring (chunk-buffer.ts) and the
+  // chat:stream-chunk fan-in is replica-local. `replicas: 1` + Recreate are
+  // the chart defaults, but without a render-time guard `--set replicas=2`
+  // would ship a valid-looking Deployment that silently breaks chat. The
+  // guard makes the unsupported config fail loudly at `helm template`.
+
+  it('replicas unset (default): host Deployment renders with replicas: 1', () => {
+    const docs = helmTemplate([]);
+    const host = docs.find(
+      (d) => d.kind === 'Deployment' && d.metadata?.name === 'ax-test-ax-next-host',
+    );
+    expect(host, 'host Deployment renders').toBeDefined();
+    expect(host?.spec?.replicas).toBe(1);
+  });
+
+  it('replicas=1 (explicit): renders fine with replicas: 1', () => {
+    const docs = helmTemplate(['--set', 'replicas=1']);
+    const host = docs.find(
+      (d) => d.kind === 'Deployment' && d.metadata?.name === 'ax-test-ax-next-host',
+    );
+    expect(host?.spec?.replicas).toBe(1);
+  });
+
+  it('replicas=2 → render fails with the single-replica chat message', () => {
+    const r = helmTemplateExpectFailure(['--set', 'replicas=2']);
+    expect(r.status, 'helm template should fail').not.toBe(0);
+    expect(r.stderr).toMatch(/replicas must be 1/);
+    // Names the actual gap so the operator knows WHY, not just THAT.
+    expect(r.stderr).toMatch(/chat/i);
+  });
+
+  it('replicas=5 → render also fails (any value > 1)', () => {
+    const r = helmTemplateExpectFailure(['--set', 'replicas=5']);
+    expect(r.status, 'helm template should fail').not.toBe(0);
+    expect(r.stderr).toMatch(/replicas must be 1/);
+  });
+});

@@ -29,9 +29,11 @@ const PLUGIN_NAME = '@ax/channel-web';
 // — those slices land here so channel-web's wire surface stays in one
 // place.
 //
-// Single-replica only (J8). Multi-replica fan-out is a Week 13+ slice
-// that swaps the in-process chunk buffer for a redis stream / pg
-// logical replication path; the SSE handler stays the same.
+// Single-replica only (J8) — the chunk buffer is in-process. The k8s
+// chart enforces this by failing `helm template` for replicas > 1
+// (ax-next.validateHostReplicas, ARCH-1). Multi-replica fan-out is a
+// tracked follow-up that swaps the in-process chunk buffer for a redis
+// stream / pg-logical replication path; the SSE handler stays the same.
 //
 // Manifest:
 //   - registers: nothing (the API surface is HTTP routes, not bus hooks).

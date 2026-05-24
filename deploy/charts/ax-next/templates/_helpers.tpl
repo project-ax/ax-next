@@ -193,6 +193,32 @@ Invoked from `host/deployment.yaml`, which always renders.
 {{- end -}}
 
 {{/*
+ax-next.validateHostReplicas — fail-fast guard for the single-replica chat
+constraint (ARCH-1).
+
+The web chat surface is single-replica-only: @ax/channel-web streams SSE over
+an IN-PROCESS per-reqId chunk ring buffer (packages/channel-web/src/server/
+chunk-buffer.ts), and the chat:stream-chunk fan-in is replica-local. With
+replicas > 1, an SSE reconnect can land on a replica that never buffered the
+turn, and the live chunk subscriber on a different replica never fires — chat
+silently breaks. The host PVC (workspace.backend=local) is also RWO and the
+Deployment strategy is Recreate, so multi-replica isn't supported at the
+storage tier either.
+
+So we refuse to render a multi-replica host until a distributed stream broker
+(and a multi-replica workspace backend) lands. Better to fail the `helm
+template` than to ship a valid-looking Deployment that drops chat streams.
+
+Invoked from host/deployment.yaml, which always renders.
+*/}}
+{{- define "ax-next.validateHostReplicas" -}}
+{{- $replicas := .Values.replicas | default 1 | int -}}
+{{- if gt $replicas 1 -}}
+{{- fail (printf "replicas must be 1: the web chat surface is single-replica-only (in-process SSE chunk buffer); got %d. Multi-replica chat needs a distributed stream broker — pin replicas to 1 until that ships." $replicas) -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 Auth providers are DB-driven via @ax/auth-better (Phase 3 onboarding).
 Provider rows live in the `auth_providers` table managed by
 /admin/auth/providers/* CRUD; nothing in the chart's env stamping speaks

@@ -781,6 +781,9 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // J8: single-replica only. The chunk-buffer behind /api/chat/stream
   // is in-process; multi-replica fan-out is a future slice that swaps
   // it for redis / pg-logical without changing the SSE handler shape.
+  // The chart enforces the pin — ax-next.validateHostReplicas FAILS
+  // `helm template` for replicas > 1 (ARCH-1) — so this stays honest:
+  // nobody can ship a multi-replica host while this buffer is in-process.
   plugins.push(createChannelWebServerPlugin());
 
   // ----- 11. static-files (optional, MUST be last) ----------------------
