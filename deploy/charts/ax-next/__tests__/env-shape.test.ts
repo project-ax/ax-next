@@ -29,6 +29,8 @@ import { fileURLToPath } from 'node:url';
 import { loadAll } from 'js-yaml';
 import { beforeAll, describe, expect, it } from 'vitest';
 
+import { HELM_REQUIRED_MESSAGE, resolveHelmGate } from './helm-required.js';
+
 const here = dirname(fileURLToPath(import.meta.url));
 const chartDir = resolve(here, '..');
 const repoRoot = resolve(here, '../../../..');
@@ -81,12 +83,23 @@ function helmTemplate(extraArgs: readonly string[]): K8sDoc[] {
   );
 }
 
-const describeIfHelm = HELM ? describe : describe.skip;
+const GATE = resolveHelmGate(HELM, process.env.AX_REQUIRE_HELM);
+const describeIfHelm = GATE.mode === 'run' ? describe : describe.skip;
 
-if (!HELM) {
+if (GATE.mode === 'skip') {
   console.warn(
     'helm CLI not available; env-shape tests skipped — run with helm in PATH for full coverage',
   );
+}
+
+// AX_REQUIRE_HELM=1 (CI's helm-render lane): helm absent is a hard failure, not
+// a silent skip. Mirrors render.test.ts — see helm-required.ts.
+if (GATE.mode === 'require-missing') {
+  describe('chart env-shape: helm required', () => {
+    it('helm must be installed when AX_REQUIRE_HELM is set', () => {
+      throw new Error(HELM_REQUIRED_MESSAGE);
+    });
+  });
 }
 
 /**
