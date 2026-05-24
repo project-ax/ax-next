@@ -1,5 +1,6 @@
 import { makeAgentContext, PluginError, type Plugin } from '@ax/core';
 import { type Kysely } from 'kysely';
+import { z, type ZodType } from 'zod';
 import { runIndexMigration, type MemoryStrataIndexDatabase } from './migrations.js';
 import { upsert, search, deleteOne, clearAll } from './queries.js';
 import type {
@@ -8,6 +9,22 @@ import type {
   SearchOutput,
   DeleteInput,
 } from '@ax/memory-strata-index-contract';
+
+// Runtime `returns` contract for `memory:index:search` (ARCH-13). Postgres peer
+// of @ax/memory-strata-index-sqlite — structurally identical (the I2
+// two-backend pattern); upsert/delete/clear return `void`, so no schema. The
+// shape is storage-agnostic (no tsvector/pgvector vocab).
+export const SearchOutputSchema = z.object({
+  results: z.array(
+    z.object({
+      docId: z.string(),
+      category: z.string(),
+      slug: z.string(),
+      summary: z.string(),
+      score: z.number(),
+    }),
+  ),
+}) as unknown as ZodType<SearchOutput>;
 
 // Hard upper bound on `topK`. Postgres tsvector queries scale with the
 // result set; clamping protects against runaway costly queries.
@@ -127,6 +144,7 @@ export function createMemoryStrataIndexPostgresPlugin(): Plugin {
           const results = await search(db!, input.query, topK, input.categoryFilter);
           return { results };
         },
+        { returns: SearchOutputSchema },
       );
 
       bus.registerService<DeleteInput, void>(
