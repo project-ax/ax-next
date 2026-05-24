@@ -1,0 +1,25 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "51c1ca098de7",
+  "strategy": "manual-commit",
+  "branch": "worktree-f2a-resume-no-conversation-fix",
+  "checkpoints_count": 0,
+  "files_touched": [
+    "packages/agent-claude-sdk-runner/src/main.ts"
+  ],
+  "sessions": [
+    {
+      "metadata": "/51/c1ca098de7/0/metadata.json",
+      "transcript": "/51/c1ca098de7/0/full.jsonl",
+      "content_hash": "/51/c1ca098de7/0/content_hash.txt",
+      "prompt": "/51/c1ca098de7/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 151,
+    "cache_creation_tokens": 10397,
+    "cache_read_tokens": 4063593,
+    "output_tokens": 8163,
+    "api_call_count": 11
+  }
+}
