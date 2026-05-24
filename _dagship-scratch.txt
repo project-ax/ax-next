@@ -1,1 +1,2 @@
 selftest-A
+selftest-B
