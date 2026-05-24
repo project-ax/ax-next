@@ -1,0 +1,42 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "f33b6158ea3b",
+  "session_id": "0dff258e-02e9-42b6-8848-1040eb793264",
+  "strategy": "manual-commit",
+  "created_at": "2026-05-24T03:00:16.030613Z",
+  "branch": "worktree-fault-a-followups-f1-f2b",
+  "checkpoints_count": 1,
+  "files_touched": [],
+  "agent": "Claude Code",
+  "model": "",
+  "turn_id": "d67d80862c41",
+  "token_usage": {
+    "input_tokens": 12183,
+    "cache_creation_tokens": 626063,
+    "cache_read_tokens": 21372972,
+    "output_tokens": 134563,
+    "api_call_count": 107
+  },
+  "session_metrics": {
+    "turn_count": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 8,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".claude/settings.local.json": 8
+      }
+    }
+  ]
+}

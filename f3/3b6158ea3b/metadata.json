@@ -1,0 +1,23 @@
+{
+  "cli_version": "0.5.5",
+  "checkpoint_id": "f33b6158ea3b",
+  "strategy": "manual-commit",
+  "branch": "worktree-fault-a-followups-f1-f2b",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "sessions": [
+    {
+      "metadata": "/f3/3b6158ea3b/0/metadata.json",
+      "transcript": "/f3/3b6158ea3b/0/full.jsonl",
+      "content_hash": "/f3/3b6158ea3b/0/content_hash.txt",
+      "prompt": "/f3/3b6158ea3b/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 12183,
+    "cache_creation_tokens": 626063,
+    "cache_read_tokens": 21372972,
+    "output_tokens": 134563,
+    "api_call_count": 107
+  }
+}
