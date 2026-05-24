@@ -34,8 +34,10 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          if pnpm --filter "...[$BASE_SHA]" list --depth -1 --parseable | grep -q . ; then
-            pnpm --filter "...[$BASE_SHA]" run test
+          # '!{.}' excludes the workspace ROOT project — its `test` script is the full
+          # recursive `pnpm -r run test`, which any root-level file change would otherwise trigger.
+          if pnpm --filter "...[$BASE_SHA]" --filter '!{.}' list --depth -1 --parseable | grep -q . ; then
+            pnpm --filter "...[$BASE_SHA]" --filter '!{.}' run test
           else
             echo "No affected workspace packages — package tests skipped (typecheck + lint already ran; full suite runs on merge to main)."
           fi
