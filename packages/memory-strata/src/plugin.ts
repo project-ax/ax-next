@@ -46,9 +46,19 @@ export interface MemoryStrataConfig {
   /**
    * Test-only seam — captures the per-plugin Debouncer so tests can
    * call `flush()` deterministically. NOT for production use.
+   *
+   * `onConsolidationSettleReady` hands tests a `settle(agentId)` fn that
+   * awaits the agent's most-recent underlying `runConsolidation` promise —
+   * the REAL fs work, not the bounded `raceTimeout` wrapper that
+   * `Debouncer.flush()` resolves on. The consolidator detaches its fs work
+   * (it keeps running past `consolidatorTimeoutMs`), so `flush()` alone is
+   * NOT a complete settle signal; a test that asserts on inbox/doc state
+   * must `await settle(agentId)` after `flush()` or it races the detached
+   * work. Production code never calls `settle`.
    */
   testHooks?: {
     onDebouncerCreated?(debouncer: Debouncer): void;
+    onConsolidationSettleReady?(settle: (agentId: string) => Promise<void>): void;
   };
 }
 
@@ -104,6 +114,28 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
   // the underlying work keeps mutating inbox/ and docs/; if a new chat:end
   // arrives before that work settles, two passes race on the same files.
   const inflightWork = new Map<string, Promise<unknown>>();
+
+  // Test-only: the most-recent underlying `runConsolidation` promise per agent.
+  // Unlike `inflightWork` (deleted when a pass settles), this is NOT cleared, so
+  // a test can always await the latest pass's REAL fs work — the work the
+  // consolidator detaches and that outlives the bounded `raceTimeout` wrapper
+  // `Debouncer.flush()` resolves on. Never read by production code.
+  const lastWork = new Map<string, Promise<unknown>>();
+  // Settle: await the agent's latest consolidation work, looping until no newer
+  // pass has been scheduled (so a settle that races a freshly-fired pass still
+  // waits for it). Resolves immediately if no pass ever ran.
+  const settleConsolidation = async (agentId: string): Promise<void> => {
+    let awaited: Promise<unknown> | undefined;
+    // Bounded loop: each scheduled pass replaces `lastWork` at most once per
+    // flush; we re-await only while the tracked promise actually changed.
+    for (let i = 0; i < 100; i++) {
+      const current = lastWork.get(agentId);
+      if (current === undefined || current === awaited) return;
+      awaited = current;
+      try { await current; } catch { /* pass errors already logged */ }
+    }
+  };
+  cfg.testHooks?.onConsolidationSettleReady?.(settleConsolidation);
 
   return {
     manifest: {
@@ -221,6 +253,9 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
             ctx,
           });
           inflightWork.set(ctx.agentId, work);
+          // Test-only settle handle: record the latest underlying work so a
+          // test can await the REAL fs work after flush() (see lastWork above).
+          lastWork.set(ctx.agentId, work);
           // Detach: the inflight slot is cleared when the underlying work settles,
           // independent of when our caller stops awaiting (via raceTimeout).
           void work

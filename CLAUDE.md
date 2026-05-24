@@ -98,7 +98,7 @@ it.** There is no committed task list and no mermaid DAG to keep in sync.
 
 **Lanes (the `Status` field):**
 
-- **Backlog** — gated / not-yet-actionable / wait-until-earned work. The orchestrator never pulls from here. New work the team isn't ready to start lands here. `(walk)`-tagged manual-acceptance walks live here too (they aren't `yolo-ship`-able — see below).
+- **Backlog** — gated / not-yet-actionable / wait-until-earned work. The orchestrator never pulls from here. New work the team isn't ready to start lands here. Dep-gated `(walk)`-tagged manual-acceptance walks wait here too; once their deps are met they move to **To Do** and auto-drain via the serialized walk lane (`k8s-acceptance-loop` drives Playwright against the cluster — they aren't `yolo-ship`-able, and they're gated only on cluster reachability, never on a human — see below).
 - **To Do** — the actionable inbox. Anyone drops a card here; the `auto-ship` orchestrator drains it.
 - **In Progress** — a `yolo-ship` agent is building it.
 - **In Review** — its PR is open, queued for the serialized merge.

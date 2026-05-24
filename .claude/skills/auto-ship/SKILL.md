@@ -192,20 +192,29 @@ check the **main** run (`gh run list --branch main --limit 1`); if it goes **red
 
 ## Cluster-walk lane (`(walk)` cards)
 
-Manual-acceptance walks (cards with **`(walk)`** in the title) are **not**
-yolo-shippable — they need a human + the `kind-ax-next-dev` cluster +
-`k8s-acceptance-loop`, run **one at a time**. They live in **Backlog** and are **not
-auto-drained**. When the user moves a walk card to **To Do** (or asks), run it via the
-**serialized** walk lane (one `k8s-acceptance-loop` agent, never concurrent with
-another walk), using the **walk-lane dispatch prompt** in `references/templates.md`:
+Manual-acceptance walks (cards with **`(walk)`** in the title) are **auto-drained, not
+human-gated** — `k8s-acceptance-loop` drives the UI through Playwright MCP against the
+cluster autonomously, so no human is in the loop. They are **not** yolo-shippable
+(they run via `k8s-acceptance-loop`, never `yolo-ship`) and run **one at a time** — a
+**serialized** walk lane, never concurrent with another walk — and they **never
+consume a code slot** (a walk runs in parallel with up to `--max-parallel` code
+cards). A ready `(walk)` card (deps satisfied) is drained like any other ready card;
+route it to the walk lane instead of the code lane. Deps-gated walks may sit in
+**Backlog** until earned, then move to **To Do** like any card.
 
-- Pre-flight `kubectl --context kind-ax-next-dev get nodes`; if the cluster is down,
-  leave the card in To Do with a note and keep draining the code lane.
+The **only** gate is cluster reachability — there is no human-approval gate:
+
+- Pre-flight `kubectl --context kind-ax-next-dev get nodes`. If the cluster — or
+  `kubectl` / `kind` / the container runtime (e.g. a stopped Docker daemon) — is
+  **unreachable**, this is an *environment limit*, not a human gate: leave the walk
+  where it is with a note, keep draining the code lane, and resume walks once the
+  cluster is reachable. Do **not** quarantine a walk for an unreachable cluster.
+- Dispatch ONE walk at a time via the **walk-lane dispatch prompt** in
+  `references/templates.md` (one background `k8s-acceptance-loop` agent), moving the
+  card → **In Progress** for the duration.
 - Rebuild the agent image first for image-baked walks (per [[docker-build-cache-runner-fixes]]).
 - **Pass** → move the card → **Done**. **Fail** → create a new To Do card carrying
   `parent` + the failure signature; the normal loop picks it up under Failure handling.
-
-Walks never consume a code slot.
 
 ## Failure handling & loop prevention
 

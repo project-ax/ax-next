@@ -10,8 +10,8 @@ The state↔lane map:
 
 | auto-ship state | lane (`Status`) |
 |---|---|
-| gated / not-yet-actionable / `(walk)` | **Backlog** |
-| actionable, awaiting dispatch | **To Do** |
+| gated / not-yet-actionable | **Backlog** |
+| actionable, awaiting dispatch (incl. ready `(walk)` cards) | **To Do** |
 | dispatched, agent building, pre-PR | **In Progress** |
 | PR open, queued for merge | **In Review** |
 | merged / done | **Done** |
