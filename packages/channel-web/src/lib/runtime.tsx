@@ -15,7 +15,13 @@ import { sessionStoreActions, useSessionStore } from './session-store';
 import { useThinkingStore } from './thinking-store';
 import { AxAttachmentAdapter } from './ax-attachment-adapter';
 import { setActiveConversationId } from './use-conversation-id';
-import { applyTurnError } from './turn-error';
+import {
+  applyTurnError,
+  autoRetryTurn,
+  shouldAutoRetry,
+  RETRYING_STATUS,
+} from './turn-error';
+import { agentStatusActions } from './agent-status-store';
 
 const useChatThreadRuntime = (transport: AxChatTransport): AssistantRuntime => {
   const id = useAuiState(({ threadListItem }) => threadListItem.id);
@@ -38,38 +44,62 @@ const useChatThreadRuntime = (transport: AxChatTransport): AssistantRuntime => {
   // is enough.
   const attachments = useMemo(() => new AxAttachmentAdapter(), []);
 
-  // Turn-end error handling. By the time the transport hands us an AI-SDK
-  // `error` chunk, automatic recovery has already been tried and failed:
+  // Turn-end error handling (TASK-24). The transport hands us an AI-SDK
+  // `error` chunk in two shapes, which we treat DIFFERENTLY:
   //
-  //   - Mid-turn SSE drop (host restart / network blip) → the transport
-  //     AUTO-RECONNECTS to the same reqId first (bounded, loss-free via the
-  //     TASK-23 per-chunk seq dedup), showing a "reconnecting…" status. It
-  //     never re-POSTs, so there's no duplicate-turn risk. We only see a
-  //     CONNECTION_LOST `error` chunk if every reconnect attempt also dropped
-  //     (or the host said the reqId is gone) — at which point the MANUAL retry
-  //     banner is the honest fallback.
-  //   - Fault A — an orchestrator-terminated turn (server `error` SSE frame,
-  //     e.g. the runner died or timed out) with a mapped friendly label. The
-  //     turn is definitively over; the manual retry button re-runs it.
+  //   - Fault A — an orchestrator `error` SSE frame: the turn is PROVABLY DEAD
+  //     (the runner died / timed out and the orchestrator fired chat:turn-error,
+  //     which clears the conversation's active_session_id). Auto-retrying the
+  //     whole turn here is SAFE — `regenerate()` re-POSTs and routes to a FRESH
+  //     sandbox (no live runner to duplicate into). We auto-retry ONCE with a
+  //     visible "Retrying…" status so the user sees the recovery, falling back
+  //     to the manual banner if the retry also fails.
+  //   - CONNECTION_LOST — a bare mid-turn SSE drop (host bounce / network blip).
+  //     The runner's state is UNKNOWN: it may still be alive (Task-24's 2-min
+  //     IPC retry deadline keeps it running across a host restart), so an
+  //     auto-`regenerate()` could DUPLICATE the turn, and a silent same-reqId
+  //     resume could TRUNCATE (the host chunk-buffer + its per-reqId seq cursor
+  //     are in-memory and reset on a host restart — a replay re-minted from seq
+  //     1 would be silently deduped against the client's higher last-seen seq).
+  //     Neither auto-recovery is loss-free AND duplicate-free here, so we keep
+  //     the honest MANUAL retry banner. The turn itself is NOT lost — Task-24's
+  //     commit-notify deadline makes the transcript durable, so it hydrates on
+  //     reload. (A loss-free auto-recovery for this case needs durable/seq-
+  //     stable runner→host events — tracked as a follow-up.)
   //
-  // The retry BUTTON re-runs the last user turn via `regenerate()` — a
-  // deliberate user action, so re-POSTing a fresh turn is acceptable there
-  // (the dead session's active_session_id was cleared, so it routes to a fresh
-  // sandbox).
-  //
-  // `chatRef` lets the retry handler reach `regenerate()` without a
-  // construction-order chicken-and-egg.
+  // `chatRef` lets both handlers reach `regenerate()` without a
+  // construction-order chicken-and-egg. `autoRetriedRef` bounds the auto-retry
+  // to once per turn so a persistently-dead backend can't loop forever.
   const chatRef = useRef<ReturnType<typeof useChat> | null>(null);
+  const autoRetriedRef = useRef(false);
   const chat = useChat({
     id,
     transport,
     onError: (error) => {
-      applyTurnError(error, () => {
+      const regenerate = () => {
         void chatRef.current?.regenerate();
-      });
+      };
+      if (shouldAutoRetry(error, autoRetriedRef.current)) {
+        // Provably-dead turn (orchestrator error frame), not yet retried →
+        // safe to auto-retry the whole turn once, with a visible status.
+        autoRetriedRef.current = true;
+        agentStatusActions.show(RETRYING_STATUS);
+        autoRetryTurn(regenerate);
+        return;
+      }
+      // CONNECTION_LOST (runner maybe alive), or the auto-retry already fired
+      // and failed again → honest manual banner.
+      applyTurnError(error, regenerate);
     },
   });
   chatRef.current = chat;
+  // Reset the per-turn auto-retry guard whenever a new turn starts streaming
+  // (a fresh send clears the previous turn's "already auto-retried" state).
+  useEffect(() => {
+    if (chat.status === 'streaming' || chat.status === 'submitted') {
+      autoRetriedRef.current = false;
+    }
+  }, [chat.status]);
   return useAISDKRuntime(chat, {
     adapters: { history, attachments },
   });

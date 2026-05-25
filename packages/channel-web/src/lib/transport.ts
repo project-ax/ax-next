@@ -87,35 +87,6 @@ export const DEFAULT_TURN_ERROR =
 export const CONNECTION_LOST = 'Connection lost. Retry to continue.';
 
 /**
- * Status shown WHILE the transport auto-reconnects a dropped mid-turn SSE
- * stream to the SAME reqId (TASK-24). This is an honest recovery in progress:
- * the runner survives a host restart (the 2-min IPC retry deadline) and keeps
- * streaming to the host's per-reqId buffer, so a same-reqId GET re-open
- * replays it loss-free (TASK-23 seq dedup). We re-open the SAME reqId rather
- * than re-POST `regenerate()` — a re-POST would route into the still-alive
- * runner and DUPLICATE the turn (the FAULTA-5 hazard). The CONNECTION_LOST
- * banner only appears if every reconnect attempt also drops.
- */
-export const RECONNECTING_STATUS = 'Session interrupted — reconnecting…';
-
-/** How many same-reqId re-opens to attempt on a mid-turn drop before giving
- *  up to the CONNECTION_LOST banner. */
-const MAX_RECONNECTS = 5;
-
-/** Backoff (ms) before each reconnect attempt. Short and bounded — the host
- *  restart the runner rides out is usually seconds; the per-attempt SSE open
- *  has its own timeout. attempt N (0-indexed) waits backoff[N] (last value
- *  repeats if attempts exceed the array). */
-const RECONNECT_BACKOFF_MS = [500, 1000, 2000, 4000, 8000];
-
-/** Sentinel a reopen() returns when the SSE GET failed TRANSIENTLY (host still
- *  restarting: thrown connection error or a 5xx). Distinct from a body
- *  (recovered) and from null (definitive gone) so buildTurnStream keeps
- *  retrying within the budget instead of giving up on the bounce. */
-const RECONNECT_RETRY = Symbol('reconnect-retry');
-type RetrySentinel = typeof RECONNECT_RETRY;
-
-/**
  * Map a wire turn-error reason code (backend-agnostic, from the orchestrator)
  * to a user-facing label. Unknown codes fall back to DEFAULT_TURN_ERROR —
  * forward-compat with newer server builds that emit a code the client
@@ -190,23 +161,6 @@ interface AxChatTransportOptions {
    * a global override.
    */
   fetch?: typeof fetch;
-  /**
-   * Auto-reconnect tuning for a mid-turn SSE drop (TASK-24). Optional —
-   * production uses the defaults; tests override to make the loop fast and
-   * observable. NONE of these re-POST: the reconnect is always a same-reqId
-   * GET re-open, so the duplicate-turn invariant (one POST per turn) holds.
-   */
-  reconnect?: {
-    /** Max same-reqId re-opens before surfacing the banner. Default 5. */
-    maxAttempts?: number;
-    /** Per-attempt backoff (ms). Default [500,1000,2000,4000,8000]. */
-    backoffMs?: number[];
-    /** Sleep seam — defaults to setTimeout. Tests pass a no-op. */
-    sleep?: (ms: number) => Promise<void>;
-    /** Fired once per reconnect attempt so the UI can show a status.
-     *  Defaults to setting RECONNECTING_STATUS on the agent-status row. */
-    onReconnecting?: () => void;
-  };
 }
 
 const AX_ATTACHMENT_URL_PREFIX = 'ax://attachment/';
@@ -293,7 +247,6 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
   private readonly getConversationIdFn: (() => string | null) | undefined;
   private readonly setConversationIdFn: ((id: string) => void) | undefined;
   private readonly getAgentIdFn: (() => string | null) | undefined;
-  private readonly reconnectOpts: AxChatTransportOptions['reconnect'];
 
   /**
    * Local fallback for the conversation id when the caller hasn't wired
@@ -319,7 +272,6 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
     this.getConversationIdFn = opts.getConversationId;
     this.setConversationIdFn = opts.setConversationId;
     this.getAgentIdFn = opts.getAgentId;
-    this.reconnectOpts = opts.reconnect;
     // user opt is accepted for backward-compat with runtime.tsx callers
     // but unused on the AX wire (auth lives in cookies, not the body).
     void opts.user;
@@ -410,50 +362,24 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
     // Phase 2: SSE. Open the stream for the minted reqId and feed its body to
     // buildTurnStream. A FAILED open here is a request-time error (the turn may
     // or may not have started) — surface it as a thrown rejection so the
-    // runtime shows the banner rather than re-POSTing (which could duplicate a
-    // started turn).
-    const streamUrl = `${this.streamApi}/${encodeURIComponent(postOut.reqId)}`;
-    const openSse = async (): Promise<Response> => {
-      const init: RequestInit = {
-        method: 'GET',
-        headers: { accept: 'text/event-stream' },
-        credentials: 'include',
-      };
-      if (abortSignal) init.signal = abortSignal;
-      return this.fetchImpl(streamUrl, init);
+    // runtime shows the banner rather than auto-retrying (which could
+    // duplicate a started turn).
+    const sseInit: RequestInit = {
+      method: 'GET',
+      headers: { accept: 'text/event-stream' },
+      credentials: 'include',
     };
-    const sseResp = await openSse();
+    if (abortSignal) sseInit.signal = abortSignal;
+    const sseResp = await this.fetchImpl(
+      `${this.streamApi}/${encodeURIComponent(postOut.reqId)}`,
+      sseInit,
+    );
     if (!sseResp.ok || !sseResp.body) {
       throw new Error(
         `chat-flow SSE open failed: ${sseResp.status} ${sseResp.statusText}`,
       );
     }
-    // On a mid-turn drop, re-open the SAME reqId (NOT a re-POST → no duplicate
-    // turn). Three outcomes drive buildTurnStream's loop:
-    //   - a body                → recovered; resume streaming.
-    //   - 'retry' (Codex P1)    → the open FAILED transiently (the host is
-    //     still restarting: fetch threw ECONNREFUSED, or a transient 5xx/502/503
-    //     from an ingress). This is the host-bounce window the whole change
-    //     exists to survive — keep backing off and retrying WITHIN the budget,
-    //     don't give up.
-    //   - null                  → DEFINITIVE: the host says the reqId is gone
-    //     (404/410) or another non-transient non-OK. Stop early → banner; no
-    //     point burning the budget on something that won't come back.
-    const reopen = async (): Promise<ReadableStream<Uint8Array> | RetrySentinel | null> => {
-      try {
-        const r = await openSse();
-        if (r.ok && r.body) return r.body;
-        // 5xx (incl. 502/503 gateway-while-warming) is transient → retry.
-        if (r.status >= 500) return RECONNECT_RETRY;
-        // 404/410/other 4xx → the reqId is gone or unauthorized; definitive.
-        return null;
-      } catch {
-        // The GET itself threw (connection refused while the host is down) —
-        // the canonical bounce signal. Transient → retry within the budget.
-        return RECONNECT_RETRY;
-      }
-    };
-    return this.buildTurnStream(sseResp.body, abortSignal, reopen);
+    return this.buildTurnStream(sseResp.body, abortSignal);
   }
 
   /**
@@ -492,93 +418,58 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
   }
 
   /**
-   * Stream one turn's SSE body to the AI SDK, AUTO-RECONNECTING the SAME reqId
-   * on a mid-turn drop (TASK-24). A drop is a `done`-less close or a hard body
-   * error (Faults B/D — host restart / network blip). Recovery:
+   * Stream one turn's SSE body to the AI SDK. On a non-terminal drop (Faults
+   * B/D — graceful `done`-less close or a hard body error) emit the
+   * CONNECTION_LOST `error` chunk so the runtime surfaces the error banner
+   * with a manual-retry (`regenerate`) affordance — NOT a silent finish
+   * (the FAULTA-5 bug).
    *
-   *   1. On `lost`, if not aborted and the reconnect budget isn't spent, fire
-   *      the `onReconnecting` status ("Session interrupted — reconnecting…"),
-   *      back off, then `reopen()` — a same-reqId GET re-open. The SHARED
-   *      `ParseCtx` carries `lastSeq` across attempts, so the host's per-reqId
-   *      buffer replay is deduped EXACTLY (TASK-23): frames at/below last-seen
-   *      seq are skipped, a contiguity gap surfaces the banner. So a reconnect
-   *      is loss-free AND duplicate-free.
-   *   2. We re-open the SAME reqId, NOT `regenerate()`-re-POST. A re-POST would
-   *      mint a fresh agent:invoke that routes into the still-alive runner (the
-   *      2-min IPC retry deadline keeps it alive across a host restart) and
-   *      DUPLICATE the turn — the FAULTA-5 hazard. The one-POST-per-turn
-   *      invariant holds: only the GET re-opens.
-   *   3. If `reopen()` returns null (host says the reqId is gone) or the budget
-   *      is exhausted, fall back to the CONNECTION_LOST `error` chunk → the
-   *      runtime's manual-retry banner. Silent loss is never acceptable.
+   * Why NOT an automatic silent reconnect/regenerate:
+   *   - A client-side `regenerate()` re-POSTs → mints a fresh reqId +
+   *     `agent:invoke` and can DUPLICATE a still-running server turn (a client
+   *     SSE disconnect doesn't terminate the runner). Never do that
+   *     automatically.
+   *   - A GET-only same-reqId reconnect replays the server's per-reqId ring
+   *     buffer (sse.ts), which is BOUNDED (chunk-buffer.ts: last 256 chunks).
+   *     TASK-23 added a host-minted monotonic per-chunk `seq` to the wire, so
+   *     `consumeSseAttempt` can now dedup a replayed partial buffer EXACTLY
+   *     (skip frames at/below the last-seen seq) and DETECT a gap (a seq that
+   *     jumps past last-seen + 1 after content already streamed = the buffer
+   *     dropped frames the client never saw). On such a gap it falls back to
+   *     this same CONNECTION_LOST banner — silent loss is worse than a banner.
+   *
+   * So a drop deterministically surfaces the banner; the user's explicit retry
+   * (a deliberate action) re-runs the turn. The seq dedup/gap infra (TASK-23)
+   * is the ENABLING half of FAULTA-5's envisioned "silent retry first": the
+   * client can now resume a same-reqId reconnect loss-free. FOLLOW-UP (still
+   * open): actually wiring the automatic same-reqId re-open of
+   * /api/chat/stream/:reqId mid-turn (the consuming UX) on top of this infra —
+   * deferred so this PR ships the loss-free primitive without changing the
+   * drop-handling UX in the same change.
    *
    * An ABORT (user pressed Stop / component teardown) is NOT connection loss:
-   * close the stream WITHOUT an error chunk and WITHOUT reconnecting so the
-   * SDK's normal abort handling runs and no spurious banner appears.
+   * close the stream WITHOUT an error chunk so the SDK's normal abort handling
+   * runs and no spurious retry banner appears.
    */
   private buildTurnStream(
     body: ReadableStream<Uint8Array>,
     abortSignal: AbortSignal | undefined,
-    reopen: () => Promise<ReadableStream<Uint8Array> | RetrySentinel | null>,
   ): ReadableStream<UIMessageChunk> {
-    const ctx = createParseCtx(); // shared across attempts → lastSeq dedup persists
-    const maxAttempts = this.reconnectOpts?.maxAttempts ?? MAX_RECONNECTS;
-    const backoffMs = this.reconnectOpts?.backoffMs ?? RECONNECT_BACKOFF_MS;
-    const sleep =
-      this.reconnectOpts?.sleep ??
-      ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
-    const onReconnecting =
-      this.reconnectOpts?.onReconnecting ??
-      (() => agentStatusActions.set(RECONNECTING_STATUS));
+    const ctx = createParseCtx();
     return new ReadableStream<UIMessageChunk>({
       async start(controller) {
-        let current: ReadableStream<Uint8Array> = body;
-        // `attempt` counts reconnect ATTEMPTS (each one — whether the open
-        // succeeds, transiently fails, or is consumed by a drop — uses one
-        // budget slot), so a host that's down for the whole budget can't loop
-        // forever.
-        let attempt = 0;
-        for (;;) {
-          const reason = await consumeSseAttempt(current, ctx, controller);
-          if (reason === 'done' || reason === 'server-error') {
-            // Terminal chunk already enqueued by the attempt.
-            controller.close();
-            return;
-          }
-          // reason === 'lost' — dropped without a terminal frame.
-          if (abortSignal?.aborted) {
-            // Intentional cancellation — close cleanly, no banner, no reconnect.
-            ctx.closeOpen(controller);
-            controller.close();
-            return;
-          }
-          if (attempt >= maxAttempts) break; // budget spent → banner
-
-          // A partial `data:` line from the dead connection sits in ctx.carry;
-          // it's garbage now and would corrupt the first replayed frame on the
-          // resumed stream (Codex P2). Drop it — but KEEP lastSeq / open-part
-          // state so the seq dedup still aligns the replay.
-          ctx.carry = '';
-
-          // Re-open the SAME reqId, retrying TRANSIENT open failures (host still
-          // restarting) within the budget; stop early only on a definitive
-          // not-found (Codex P1).
-          let next: ReadableStream<Uint8Array> | RetrySentinel | null = RECONNECT_RETRY;
-          while (attempt < maxAttempts) {
-            onReconnecting();
-            const wait = backoffMs[Math.min(attempt, backoffMs.length - 1)] ?? 0;
-            attempt += 1;
-            if (wait > 0) await sleep(wait);
-            if (abortSignal?.aborted) {
-              ctx.closeOpen(controller);
-              controller.close();
-              return;
-            }
-            next = await reopen();
-            if (next !== RECONNECT_RETRY) break; // got a body, or a definitive null
-          }
-          if (next === null || next === RECONNECT_RETRY) break; // gone, or budget spent mid-retry → banner
-          current = next;
+        const reason = await consumeSseAttempt(body, ctx, controller);
+        if (reason === 'done' || reason === 'server-error') {
+          // Terminal chunk already enqueued by the attempt.
+          controller.close();
+          return;
+        }
+        // reason === 'lost' — dropped without a terminal frame.
+        if (abortSignal?.aborted) {
+          // Intentional cancellation — close cleanly, no banner.
+          ctx.closeOpen(controller);
+          controller.close();
+          return;
         }
         ctx.closeOpen(controller);
         controller.enqueue({ type: 'error', errorText: CONNECTION_LOST });
