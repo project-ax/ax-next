@@ -62,13 +62,24 @@ const useChatThreadRuntime = (transport: AxChatTransport): AssistantRuntime => {
         isFirstFailure: !silentRetriedRef.current,
         silentRetry: () => {
           silentRetriedRef.current = true;
-          void chatRef.current?.regenerate();
+          // Defer the regenerate() to a fresh task. The AI SDK calls onError
+          // from INSIDE the failed request's catch, BEFORE its finally clears
+          // `activeResponse` (and our onFinish reset runs). Calling
+          // regenerate() synchronously here re-enters makeRequest and sets a
+          // NEW activeResponse, which the original request's finally then
+          // nukes — losing the retry's abort handle and skipping its
+          // onFinish reset. A macrotask lets the failed request fully unwind
+          // first, so the retry owns a clean lifecycle.
+          setTimeout(() => {
+            void chatRef.current?.regenerate();
+          }, 0);
         },
         showError: (e) =>
           applyTurnError(e, () => {
             // Manual retry from the banner button: reset the silent-retry
             // budget so a fresh drop on the regenerated turn can silently
-            // retry again before re-surfacing the banner.
+            // retry again before re-surfacing the banner. The banner click is
+            // already outside the request lifecycle, so no defer is needed.
             silentRetriedRef.current = false;
             void chatRef.current?.regenerate();
           }),

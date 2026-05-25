@@ -25,9 +25,28 @@ export function applyTurnError(error: unknown, retry: () => void): void {
   agentStatusActions.error(text, { retry });
 }
 
-/** True iff this error is the transport's `done`-less-close sentinel. */
+/**
+ * True iff this error is a recoverable connection loss (Faults B/D):
+ *
+ *   - The transport's `done`-less-close sentinel (CONNECTION_LOST) — a
+ *     GRACEFUL stream close with no terminal frame (host bounce; SSE body
+ *     ended cleanly). Our transport flush() raises this.
+ *   - A HARD fetch/network failure `TypeError` — a mid-turn network drop
+ *     errors the fetch body ReadableStream, so the transport's flush() is
+ *     SKIPPED and the AI SDK surfaces the raw fetch error to onError
+ *     ("Failed to fetch", "NetworkError when attempting to fetch the
+ *     resource", etc.). This mirrors the AI SDK's own disconnect heuristic
+ *     (`chat.ts`: a TypeError whose message includes "fetch"/"network" is
+ *     flagged `isDisconnect`). We retry these silently too.
+ */
 function isConnectionLost(error: unknown): boolean {
-  return error instanceof Error && error.message === CONNECTION_LOST;
+  if (!(error instanceof Error)) return false;
+  if (error.message === CONNECTION_LOST) return true;
+  if (error instanceof TypeError) {
+    const m = error.message.toLowerCase();
+    return m.includes('fetch') || m.includes('network');
+  }
+  return false;
 }
 
 export interface HandleTurnErrorArgs {

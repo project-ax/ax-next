@@ -107,4 +107,62 @@ describe('handleTurnError — Faults B/D silent-retry then banner', () => {
     expect(silentRetry).not.toHaveBeenCalled();
     expect(showError).toHaveBeenCalledTimes(1);
   });
+
+  // Fault D — a HARD network drop mid-turn doesn't reach our flush() (the
+  // fetch body ReadableStream errors, so the TransformStream flush is
+  // skipped). The AI SDK surfaces the raw fetch TypeError to onError
+  // ("Failed to fetch" / network error). handleTurnError must treat THAT
+  // as connection-lost too, so a genuine network drop still gets the first
+  // silent retry instead of the banner.
+  it('silently retries on a fetch-failure TypeError (hard network drop, first failure)', () => {
+    const silentRetry = vi.fn();
+    const showError = vi.fn();
+    handleTurnError({
+      error: new TypeError('Failed to fetch'),
+      isFirstFailure: true,
+      silentRetry,
+      showError,
+    });
+    expect(silentRetry).toHaveBeenCalledTimes(1);
+    expect(showError).not.toHaveBeenCalled();
+  });
+
+  it('matches a network-error TypeError (NetworkError when attempting to fetch resource)', () => {
+    const silentRetry = vi.fn();
+    const showError = vi.fn();
+    handleTurnError({
+      error: new TypeError('NetworkError when attempting to fetch the resource'),
+      isFirstFailure: true,
+      silentRetry,
+      showError,
+    });
+    expect(silentRetry).toHaveBeenCalledTimes(1);
+    expect(showError).not.toHaveBeenCalled();
+  });
+
+  it('shows the banner on a SECOND fetch-failure TypeError (one silent retry max)', () => {
+    const silentRetry = vi.fn();
+    const showError = vi.fn();
+    handleTurnError({
+      error: new TypeError('Failed to fetch'),
+      isFirstFailure: false,
+      silentRetry,
+      showError,
+    });
+    expect(silentRetry).not.toHaveBeenCalled();
+    expect(showError).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT treat an unrelated TypeError as connection-lost → banner', () => {
+    const silentRetry = vi.fn();
+    const showError = vi.fn();
+    handleTurnError({
+      error: new TypeError('Cannot read properties of undefined'),
+      isFirstFailure: true,
+      silentRetry,
+      showError,
+    });
+    expect(silentRetry).not.toHaveBeenCalled();
+    expect(showError).toHaveBeenCalledTimes(1);
+  });
 });
