@@ -592,6 +592,24 @@ async function consumeSseAttempt(
     )
     .getReader();
 
+  // True once we've actively cancelled the reader (a LOCALLY-detected seq gap;
+  // TASK-23 / Codex P2). `reader.cancel()` already releases the lock, so the
+  // finally must NOT also `releaseLock()` or it throws. Cancelling here
+  // propagates upstream through the pipe to the underlying HTTP body, so the
+  // SSE request actually closes — otherwise the browser would leave it open and
+  // the server would keep its per-connection subscribers/writes alive until the
+  // turn ends or times out, even though the client already showed the banner.
+  let cancelledForGap = false;
+  const cancelForGap = async (): Promise<'lost'> => {
+    cancelledForGap = true;
+    try {
+      await reader.cancel();
+    } catch {
+      // Body already closed/errored — nothing to cancel.
+    }
+    return 'lost';
+  };
+
   try {
     for (;;) {
       const { done, value } = await reader.read();
@@ -664,13 +682,14 @@ async function consumeSseAttempt(
           if (ctx.lastSeq === 0) {
             // First seq-bearing content frame for this stream. A clean start is
             // seq 1; anything higher means the buffer head was dropped before
-            // this client connected → loss, not a valid baseline.
+            // this client connected → loss, not a valid baseline. The body is
+            // still open, so cancel it (we won't read any more of it).
             if (seq > 1) {
-              return 'lost';
+              return await cancelForGap();
             }
           } else if (seq > ctx.lastSeq + 1) {
             // Hole in the sequence after content already streamed → loss.
-            return 'lost';
+            return await cancelForGap();
           }
           ctx.lastSeq = seq;
         }
@@ -739,7 +758,12 @@ async function consumeSseAttempt(
     // Hard body error (network drop mid-consumption) with no terminal frame.
     return 'lost';
   } finally {
-    reader.releaseLock();
+    // `reader.cancel()` (the locally-detected gap path) already released the
+    // lock — calling releaseLock() again would throw. Only release on the
+    // non-cancel exits (done / terminal frame / body error).
+    if (!cancelledForGap) {
+      reader.releaseLock();
+    }
   }
 }
 

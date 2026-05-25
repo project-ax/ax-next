@@ -528,6 +528,53 @@ describe('AxChatTransport SSE chunk parsing', () => {
     expect(types).not.toContain('error');
   });
 
+  test('a locally-detected seq gap CANCELS the SSE body (no leaked open request; Codex P2)', async () => {
+    const transport = new AxChatTransport({ getAgentId: () => 'a' });
+    // A body that streams seq 1, 2, then a HOLE (seq 7), then would keep
+    // emitting forever if not cancelled. We assert the gap path cancels the
+    // underlying stream rather than leaving it open.
+    let cancelled = false;
+    let pulls = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        const enc = new TextEncoder();
+        if (pulls === 0) {
+          controller.enqueue(
+            enc.encode(
+              `data: {"reqId":"r1","text":"a","kind":"text","seq":1}\n\n` +
+                `data: {"reqId":"r1","text":"b","kind":"text","seq":2}\n\n` +
+                `data: {"reqId":"r1","text":"jumped","kind":"text","seq":7}\n\n`,
+            ),
+          );
+          pulls += 1;
+          return;
+        }
+        // If the gap path did NOT cancel, the consumer would keep pulling.
+        controller.enqueue(enc.encode(`data: {"reqId":"r1","text":"more","kind":"text","seq":8}\n\n`));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const chunks = await drain(asProcess(transport)(body)) as Array<{
+      type: string;
+      delta?: string;
+      errorText?: string;
+    }>;
+    // The contiguous prefix streamed, then the gap surfaced CONNECTION_LOST.
+    expect(chunks.filter((c) => c.type === 'text-delta').map((c) => c.delta)).toEqual([
+      'a',
+      'b',
+    ]);
+    const errorChunk = chunks.find((c) => c.type === 'error') as
+      | { errorText: string }
+      | undefined;
+    expect(errorChunk?.errorText).toBe(CONNECTION_LOST);
+    // The underlying body was cancelled — not left open for the server to keep
+    // feeding per-connection subscribers until turn-end/timeout.
+    expect(cancelled).toBe(true);
+  });
+
   test('tool frames also participate in seq dedup', async () => {
     const transport = new AxChatTransport({ getAgentId: () => 'a' });
     // A replayed tool-use frame (seq 1) after a text frame at seq 2 must dedup.

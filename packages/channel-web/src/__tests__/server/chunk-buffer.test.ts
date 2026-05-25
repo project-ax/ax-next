@@ -429,4 +429,24 @@ describe('@ax/channel-web ChunkBuffer', () => {
       buf.dispose();
     }
   });
+
+  // Codex P2 (TASK-23): a cursor-only shell that is NEVER revived or evicted
+  // (a runner crashed before firing any terminal hook) must not leak forever —
+  // it's reaped once it ages past SHELL_MAX_AGE_MS (15 min).
+  it('an orphaned cursor shell is reaped after SHELL_MAX_AGE_MS (no permanent leak)', () => {
+    const buf = createChunkBuffer();
+    try {
+      buf.append({ reqId: 'r1', text: 'a', kind: 'text' }); // seq 1 → cursor exists
+      // First sweep past IDLE_TTL converts it to a cursor-only shell (kept).
+      vi.advanceTimersByTime(91_000);
+      // Still a live cursor: a revival continues monotonically.
+      // (We don't revive it here — we let it age out as an orphan instead.)
+      // Advance well past the 15-min shell ceiling with no revival/evict.
+      vi.advanceTimersByTime(16 * 60_000);
+      // The orphaned shell is gone → a recycled reqId re-seeds at seq 1.
+      expect(buf.append({ reqId: 'r1', text: 'new', kind: 'text' }).seq).toBe(1);
+    } finally {
+      buf.dispose();
+    }
+  });
 });

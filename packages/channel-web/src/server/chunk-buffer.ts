@@ -38,6 +38,17 @@ const MAX_CHUNKS_PER_REQ_ID = 256;
 const IDLE_TTL_MS = 60_000;
 const SWEEP_INTERVAL_MS = 30_000;
 
+// Hard ceiling on how long a cursor-only shell (a TTL-reclaimed entry whose
+// monotonic seq we keep so a still-live quiet turn doesn't reset to 1 — Codex
+// P1) may linger without being revived or explicitly evicted. A real turn fires
+// its terminal chat:turn-end / chat:turn-error within the chat run timeout
+// (DEFAULT_CHAT_TIMEOUT_MS = 10 min in @ax/chat-orchestrator), which evicts the
+// reqId; this ceiling sits comfortably above that so a legitimately-quiet live
+// turn is never dropped early, while a genuinely orphaned shell — a runner that
+// crashed before firing any terminal hook, or a malformed event — is still
+// reaped instead of leaking one map entry per abandoned reqId (Codex P2).
+const SHELL_MAX_AGE_MS = 15 * 60_000;
+
 interface BufferEntry {
   chunks: StreamChunk[];
   /**
@@ -59,12 +70,23 @@ interface BufferEntry {
    * True once the IDLE_TTL sweep has reclaimed this entry's heavy fields
    * (chunk array, phase, turn-error) but KEPT the `nextSeq` cursor alive
    * (Codex P1, TASK-23). A reclaimed shell holds only the monotonic cursor; it
-   * is NOT swept again (that would reset seq mid-turn) — it is dropped only by
-   * `evictReqId`. FAULTA-5 guarantees every turn fires a terminal
-   * chat:turn-end / chat:turn-error, which evicts the reqId, so shells are
-   * reliably reclaimed at turn end and don't accumulate.
+   * is NOT swept on the normal IDLE_TTL cadence (that would reset seq mid-turn)
+   * — it is dropped by `evictReqId` (the real turn boundary), by a later stored
+   * turn-error, or, as a backstop against a runner that crashed before firing
+   * any terminal hook, once it ages past SHELL_MAX_AGE_MS (see `reclaimedAtMs`).
+   * FAULTA-5 guarantees every turn fires a terminal chat:turn-end /
+   * chat:turn-error, which evicts the reqId, so shells are reliably reclaimed at
+   * turn end and don't accumulate in the common case.
    */
   reclaimed: boolean;
+  /**
+   * Wall-clock ms when this entry became a reclaimed cursor-only shell, or null
+   * if it isn't a shell. The sweep drops a shell once it's older than
+   * SHELL_MAX_AGE_MS so a genuinely orphaned shell (a runner that crashed before
+   * firing any terminal hook) can't leak indefinitely (Codex P2). Reset to null
+   * when a new chunk revives the shell.
+   */
+  reclaimedAtMs: number | null;
   /**
    * Latest phase event for this reqId, or null. Phase is single-slot
    * (only one in-flight phase at a time today) and is automatically
@@ -161,10 +183,19 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
         continue;
       }
       if (entry.reclaimed) {
-        // Already a cursor-only shell for a still-live, long-quiet turn — leave
-        // it. Resetting it now would let the counter restart at 1 underneath a
-        // connected client (Codex P1). Only evictReqId (the real turn boundary)
-        // or a later turn-error drops it.
+        // Already a cursor-only shell for a (presumed) still-live, long-quiet
+        // turn — normally left alone, because resetting it would let the counter
+        // restart at 1 underneath a connected client (Codex P1). BUT a shell
+        // that has lingered past SHELL_MAX_AGE_MS without being revived or
+        // evicted is almost certainly orphaned (a runner that crashed before any
+        // terminal hook), so reap it to bound memory (Codex P2). A legitimate
+        // turn fires its terminal hook (→ evictReqId) well within that ceiling.
+        if (
+          entry.reclaimedAtMs !== null &&
+          now() - entry.reclaimedAtMs > SHELL_MAX_AGE_MS
+        ) {
+          map.delete(reqId);
+        }
         continue;
       }
       if (entry.nextSeq > 1) {
@@ -175,6 +206,7 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
         entry.chunks = [];
         entry.phase = null;
         entry.reclaimed = true;
+        entry.reclaimedAtMs = now();
         continue;
       }
       // Never minted a content seq (only a phase, or an empty entry) → no
@@ -193,6 +225,7 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
           chunks: [stamped],
           nextSeq: 2,
           reclaimed: false,
+          reclaimedAtMs: null,
           phase: null,
           turnError: null,
           lastWriteMs: now(),
@@ -205,6 +238,7 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
       // continued monotonically, so a connected client accepts this frame
       // contiguously (or sees a gap → banner) — never a silent dedup.
       existing.reclaimed = false;
+      existing.reclaimedAtMs = null;
       const stamped: StreamChunk = { ...chunk, seq };
       existing.chunks.push(stamped);
       // Hard cap — drop the oldest. Array.shift() is O(n) but n ≤ 256
@@ -234,6 +268,7 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
           chunks: [],
           nextSeq: 1,
           reclaimed: false,
+          reclaimedAtMs: null,
           phase,
           turnError: null,
           lastWriteMs: now(),
@@ -257,6 +292,7 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
           chunks: [],
           nextSeq: 1,
           reclaimed: false,
+          reclaimedAtMs: null,
           phase: null,
           turnError: reason,
           lastWriteMs: now(),
