@@ -1,5 +1,5 @@
 {
-  "note": "ARCH-11 shared golden vectors for the MCP-server-entry drift guard. Both @ax/sandbox-protocol's McpServerSchema (the host contract) and @ax/agent-claude-sdk-runner's hand-rolled validateMcpEntry (sandbox-side defense-in-depth, intentionally NOT importing the schema) are asserted against THIS one file. Each vector declares its expected verdict PER SIDE: `schema` (McpServerSchema.safeParse(.value).success) and `runner` (validateMcpEntry(.value) returns vs throws). `core: true` vectors test the security-critical shape rules that MUST NEVER diverge — both sides assert schema === runner for those. `core: false` vectors encode the two KNOWN, intentional asymmetries (documented on validateMcpEntry): (a) the runner ignores allowedHosts/credentials, and (b) the runner additionally caps env to <=32 entries and <=256-char keys/values while McpServerSchema's z.record(z.string(),z.string()) caps neither — so the runner (the last gate) is a strict-superset REJECTER, the safe direction. If either validator flips a verdict on any vector, one of the two drift suites fails -> CI red, forcing a conscious fixture + cross-reference update. Note: every vector includes allowedHosts/credentials so McpServerSchema sees them explicitly; the runner ignores them either way.",
+  "note": "ARCH-11 shared golden vectors for the MCP-server-entry drift guard. Both @ax/sandbox-protocol's McpServerSchema (the host contract) and @ax/agent-claude-sdk-runner's hand-rolled validateMcpEntry (sandbox-side defense-in-depth, intentionally NOT importing the schema) are asserted against THIS one file. Each vector declares its expected verdict PER SIDE: `schema` (McpServerSchema.safeParse(.value).success) and `runner` (validateMcpEntry(.value) returns vs throws). `core: true` vectors test the security-critical shape rules that MUST NEVER diverge — both sides assert schema === runner for those. TASK-18 CLOSED ASYMMETRY (b): McpServerSchema now caps env to <=32 entries and <=256-char keys/values, matching validateMcpEntry (and the upstream @ax/skills-parser manifest parser), so the three env-oversize vectors are now SYMMETRIC (both reject) and promoted to core. The ONE remaining `core: false` vector encodes the surviving intentional asymmetry (a): the runner ignores allowedHosts/credentials (it only emits name/transport/command/args/env/url into .mcp.json), so a value the schema rejects PURELY on a malformed allowedHosts/credentials field is still accepted by the runner. That direction (schema rejects, runner accepts) is benign here precisely because the runner discards those fields — it cannot smuggle anything through them. If either validator flips a verdict on any vector, one of the two drift suites fails -> CI red, forcing a conscious fixture + cross-reference update. Note: every vector includes allowedHosts/credentials so McpServerSchema sees them explicitly; the runner ignores them either way.",
   "vectors": [
     {
       "desc": "valid stdio entry",
@@ -128,25 +128,32 @@
       "value": { "name": "srv", "transport": "stdio", "command": "npx", "env": { "K": 42 }, "allowedHosts": [], "credentials": [] }
     },
     {
-      "desc": "ASYMMETRY: env with more than 32 entries (schema caps none; runner caps <=32)",
-      "core": false,
-      "schema": "accept",
+      "desc": "env with more than 32 entries (TASK-18: now symmetric — both reject)",
+      "core": true,
+      "schema": "reject",
       "runner": "reject",
       "value": { "name": "srv", "transport": "stdio", "command": "npx", "env": { "K0": "v", "K1": "v", "K2": "v", "K3": "v", "K4": "v", "K5": "v", "K6": "v", "K7": "v", "K8": "v", "K9": "v", "K10": "v", "K11": "v", "K12": "v", "K13": "v", "K14": "v", "K15": "v", "K16": "v", "K17": "v", "K18": "v", "K19": "v", "K20": "v", "K21": "v", "K22": "v", "K23": "v", "K24": "v", "K25": "v", "K26": "v", "K27": "v", "K28": "v", "K29": "v", "K30": "v", "K31": "v", "K32": "v" }, "allowedHosts": [], "credentials": [] }
     },
     {
-      "desc": "ASYMMETRY: env key over 256 chars (schema caps none; runner caps <=256)",
-      "core": false,
-      "schema": "accept",
+      "desc": "env key over 256 chars (TASK-18: now symmetric — both reject)",
+      "core": true,
+      "schema": "reject",
       "runner": "reject",
       "value": { "name": "srv", "transport": "stdio", "command": "npx", "env": { "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk": "v" }, "allowedHosts": [], "credentials": [] }
     },
     {
-      "desc": "ASYMMETRY: env value over 256 chars (schema caps none; runner caps <=256)",
-      "core": false,
-      "schema": "accept",
+      "desc": "env value over 256 chars (TASK-18: now symmetric — both reject)",
+      "core": true,
+      "schema": "reject",
       "runner": "reject",
       "value": { "name": "srv", "transport": "stdio", "command": "npx", "env": { "K": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv" }, "allowedHosts": [], "credentials": [] }
+    },
+    {
+      "desc": "ASYMMETRY (a): malformed allowedHosts (non-string entry) — schema rejects, runner ignores allowedHosts so accepts",
+      "core": false,
+      "schema": "reject",
+      "runner": "accept",
+      "value": { "name": "srv", "transport": "stdio", "command": "npx", "allowedHosts": [42], "credentials": [] }
     },
     {
       "desc": "non-object entry (null)",

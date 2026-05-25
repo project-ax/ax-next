@@ -28,6 +28,16 @@ import { z } from 'zod';
 /** Skill / MCP-server id shape — lowercase, digit/hyphen, ≤64 chars. */
 const ID_RE = /^[a-z][a-z0-9-]{0,63}$/;
 
+// TASK-18 — env caps, identical to the runner's `validateMcpEntry`
+// (MCP_ENV_MAX / MCP_ENV_LEN_MAX in @ax/agent-claude-sdk-runner's
+// installed-skills.ts) AND to the upstream manifest parser
+// (@ax/skills-parser's manifest.ts). The env map of an stdio MCP server flows
+// into the spawned process's environment, so an unbounded record is a
+// resource/abuse vector. Capping here lets the HOST reject oversize env at the
+// wire boundary instead of leaning on the runner (the last gate) to catch it.
+const MCP_ENV_MAX = 32;
+const MCP_ENV_LEN_MAX = 256;
+
 // Owner triple's agentConfig — forwarded into `session:create` so the v2
 // session row is written atomically. The session-postgres / session-inmemory
 // plugins declare the same shape; the orchestrator constructs it.
@@ -50,7 +60,21 @@ export const McpServerSchema = z
     transport: z.enum(['stdio', 'http']),
     command: z.string().optional(),
     args: z.array(z.string().max(256)).max(32).optional(),
-    env: z.record(z.string(), z.string()).optional(),
+    // env keys + values are length-capped via the record's key/value schemas;
+    // the entry-count cap (z.record has no `.max`) is enforced by the
+    // `.superRefine` below so the failure carries a clear, field-pathed issue.
+    env: z
+      .record(z.string().max(MCP_ENV_LEN_MAX), z.string().max(MCP_ENV_LEN_MAX))
+      .superRefine((rec, ctx) => {
+        const count = Object.keys(rec).length;
+        if (count > MCP_ENV_MAX) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `env may declare at most ${MCP_ENV_MAX} entries, got ${count}`,
+          });
+        }
+      })
+      .optional(),
     url: z.string().url().optional(),
     allowedHosts: z.array(z.string()).default([]),
     credentials: z

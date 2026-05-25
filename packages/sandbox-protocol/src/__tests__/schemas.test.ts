@@ -137,6 +137,48 @@ describe('McpServerSchema', () => {
     });
     expect(result.success).toBe(false);
   });
+
+  // TASK-18 — env caps now match the runner's validateMcpEntry
+  // (MCP_ENV_MAX=32, MCP_ENV_LEN_MAX=256) and the upstream manifest parser, so
+  // the host rejects oversize env early instead of leaning on the runner (the
+  // last gate). A future loosening of these caps flips one of these.
+  it('accepts an env with exactly 32 entries (boundary)', () => {
+    const env: Record<string, string> = {};
+    for (let i = 0; i < 32; i++) env[`K${i}`] = 'v';
+    const result = McpServerSchema.safeParse({ ...validStdioServer(), env });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects an env with more than 32 entries', () => {
+    const env: Record<string, string> = {};
+    for (let i = 0; i < 33; i++) env[`K${i}`] = 'v';
+    const result = McpServerSchema.safeParse({ ...validStdioServer(), env });
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts an env key/value at exactly 256 chars (boundary)', () => {
+    const result = McpServerSchema.safeParse({
+      ...validStdioServer(),
+      env: { ['k'.repeat(256)]: 'v'.repeat(256) },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects an env key longer than 256 chars', () => {
+    const result = McpServerSchema.safeParse({
+      ...validStdioServer(),
+      env: { ['k'.repeat(257)]: 'v' },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an env value longer than 256 chars', () => {
+    const result = McpServerSchema.safeParse({
+      ...validStdioServer(),
+      env: { K: 'v'.repeat(257) },
+    });
+    expect(result.success).toBe(false);
+  });
 });
 
 // --- InstalledSkillSchema ---------------------------------------------------
