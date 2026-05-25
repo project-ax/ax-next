@@ -522,7 +522,7 @@ set_needs_input() {
   # question and give it its own answer slot so the human edits a clean list.
   items=$(printf '%s' "$questions" | awk '{ gsub(/\\n/, "\n"); print }' \
             | awk 'NF { printf "**Q%d.** %s\n- _your answer_\n\n", ++n, $0 }')
-  block=$(printf '%s\n### ⚠ Needs input before this can ship\n\nAnswer each question on its own line below (replace the `_…_` placeholder), then drag this card back to **To Do**.\n\n%s%s' \
+  block=$(printf '%s\n### ⚠ Needs input before this can ship\n\nAnswer each question on its own line below (replace the `_…_` placeholder), then drag this card back to **To Do**.\n\n%s\n%s' \
             "$START" "$items" "$END")
   # drop any prior block (markers inclusive), then append the fresh one
   stripped=$(printf '%s' "$body" | awk -v s="$START" -v e="$END" 'BEGIN{k=0} $0==s{k=1} k==0{print} $0==e{k=0}')
