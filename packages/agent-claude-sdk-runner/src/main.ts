@@ -327,10 +327,13 @@ export async function main(): Promise<number> {
     Number.isFinite(parsedFlushInterval) && parsedFlushInterval > 0
       ? parsedFlushInterval
       : 50;
-  // SDK session_id used to LOCATE the jsonl for the flush wait. Starts as the
-  // resume id (if any); set to the SDK's session_id on the first system/init.
-  // Distinct from `runnerSessionId` (which only ever holds the resume value)
-  // so the turnId-on-event behavior at the turn-end emissions stays unchanged.
+  // SDK session_id used to LOCATE the jsonl for the flush wait AND for the
+  // turn-end turnId reads. Starts as the resume id (if any); set to the SDK's
+  // session_id on the first system/init. Distinct from `runnerSessionId`, which
+  // only ever holds the resume value (null on a fresh first turn). The turn-end
+  // emissions read turnIds from THIS id, not `runnerSessionId`, so a first turn
+  // (where `runnerSessionId` is null but the SDK has minted a real session)
+  // still surfaces a turnId for first-turn consumers (FAULTA-3).
   let transcriptSessionId: string | null = runnerSessionId;
 
   // Phase E (2026-05-09): the replay-at-boot path is gone. Transcripts
@@ -1202,9 +1205,17 @@ export async function main(): Promise<number> {
           // `type: 'user'`, so we look up the uuid of the LAST 'user'
           // line for this session. Best-effort: undefined-on-miss is
           // fine because subscribers gracefully skip without a turnId.
+          // Read via `transcriptSessionId` (the SDK's real session id,
+          // captured at system/init) — NOT the boot `runnerSessionId`,
+          // which is null on a conversation's first turn (it only ever
+          // holds a *resume* value). On a fresh first turn the jsonl lives
+          // under the freshly-minted SDK id, so `runnerSessionId` would
+          // emit no turnId and a first-turn consumer (e.g. @ax/routines
+          // silence-token dropping a per-fire conversation's first turn)
+          // couldn't refer back to it. (FAULTA-3)
           const turnId =
-            runnerSessionId !== null
-              ? await readLastTurnUuid(env.workspaceRoot, runnerSessionId, 'user')
+            transcriptSessionId !== null
+              ? await readLastTurnUuid(env.workspaceRoot, transcriptSessionId, 'user')
               : undefined;
           await client
             .event('event.turn-end', {
@@ -1232,12 +1243,17 @@ export async function main(): Promise<number> {
         turnLastAssistantUuid = undefined;
         // Look up the uuid of the LAST 'assistant' line so subscribers
         // (e.g., @ax/routines silence-token logic) can refer back to
-        // this specific turn via conversations:drop-turn.
+        // this specific turn via conversations:drop-turn. Read via
+        // `transcriptSessionId` (the SDK's real session id), NOT the boot
+        // `runnerSessionId` — see the role='tool' turn-end above; on a
+        // fresh first turn `runnerSessionId` is null, so reading it would
+        // emit no turnId and a routine silencing its per-fire
+        // conversation's first turn couldn't drop it. (FAULTA-3)
         const assistantTurnId =
-          runnerSessionId !== null
+          transcriptSessionId !== null
             ? await readLastTurnUuid(
                 env.workspaceRoot,
-                runnerSessionId,
+                transcriptSessionId,
                 'assistant',
               )
             : undefined;
