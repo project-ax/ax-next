@@ -343,4 +343,117 @@ describe('createIpcClient', () => {
       client.event('event.turn-end', { reason: 'complete' }),
     ).resolves.toBeUndefined();
   });
+
+  // ── maxElapsedMs wall-clock retry deadline (TASK-24) ──
+  //
+  // A host OOMKill + pod reschedule + boot takes longer than the old
+  // ~3 s / 6-attempt retry budget, so the client used to give up and the
+  // runner either dropped the turn (commit-notify → `kept`) or crashed
+  // (session.next-message poll threw → exit 1). The default `maxElapsedMs`
+  // (2 min) keeps the transient-error retry loop going long enough to ride
+  // out the restart. We drive a FAKE clock via `now` + zero-wait backoff so
+  // these run instantly without real timers.
+  describe('maxElapsedMs deadline', () => {
+    it('default retries an ECONNREFUSED far past the old 6-attempt budget (~2 min wall-clock)', async () => {
+      // Dead unix socket → connect fails transiently every attempt. With the
+      // default maxElapsedMs (120_000) and no explicit maxRetries, the client
+      // keeps retrying until the fake clock crosses the deadline.
+      const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'ax-arc-dl-'));
+      const deadSocketPath = path.join(tempDir, 'nope.sock');
+      try {
+        let clock = 0;
+        let attempts = 0;
+        const client = createIpcClient({
+          runnerEndpoint: `unix://${deadSocketPath}`,
+          token: 'tok-abc',
+          now: () => clock,
+          // Advance the fake clock by the would-be backoff; return 0 so the
+          // real setTimeout is instant. Count attempts via the backoff calls
+          // (one per retry decision).
+          retryBackoff: (attempt) => {
+            attempts = attempt + 1; // attempt is 0-indexed retry number
+            clock += Math.min(100 * 2 ** attempt, 30_000);
+            return 0;
+          },
+        });
+        await expect(client.call('workspace.commit-notify', {})).rejects.toBeInstanceOf(
+          HostUnavailableError,
+        );
+        // Old hard cap was 6 total tries; the deadline lets it go much further.
+        expect(attempts).toBeGreaterThan(8);
+        // The accumulated backoff must have reached the 2-min ballpark before
+        // giving up (within one 30 s backoff step of the cap).
+        expect(clock).toBeGreaterThanOrEqual(120_000 - 30_000);
+      } finally {
+        await fsp.rm(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('a short maxElapsedMs gives up quickly', async () => {
+      const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'ax-arc-dl2-'));
+      const deadSocketPath = path.join(tempDir, 'nope.sock');
+      try {
+        let clock = 0;
+        const client = createIpcClient({
+          runnerEndpoint: `unix://${deadSocketPath}`,
+          token: 'tok-abc',
+          maxElapsedMs: 500,
+          now: () => clock,
+          retryBackoff: (attempt) => {
+            clock += Math.min(100 * 2 ** attempt, 30_000);
+            return 0;
+          },
+        });
+        await expect(client.call('workspace.commit-notify', {})).rejects.toBeInstanceOf(
+          HostUnavailableError,
+        );
+        // 100 + 200 = 300 < 500 <= 100+200+400 → stops at ~3 attempts.
+        expect(clock).toBeLessThan(1000);
+      } finally {
+        await fsp.rm(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('an explicit maxRetries still caps attempts even under a generous deadline', async () => {
+      // Existing callers (and tests) pass maxRetries as a hard cap; that must
+      // keep working — the loop exits on whichever of {count, deadline} comes
+      // first.
+      const server = await startFakeServer();
+      servers.push(server);
+      server.setHandler((_req, res) => {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { code: 'INTERNAL', message: 'boom' } }));
+      });
+      const client = createIpcClient({
+        runnerEndpoint: `unix://${server.socketPath}`,
+        token: 'tok-abc',
+        maxRetries: 2,
+        maxElapsedMs: 120_000,
+        retryBackoff: () => 5,
+      });
+      await expect(client.call('tool.list', {})).rejects.toBeInstanceOf(
+        IpcRequestError,
+      );
+      // Initial + 2 retries = 3 attempts — maxRetries still bounds it.
+      expect(server.callCount()).toBe(3);
+    });
+
+    it('does not wait out the deadline on a non-transient 4xx', async () => {
+      const server = await startFakeServer();
+      servers.push(server);
+      server.setHandler((_req, res) => {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { code: 'NOT_FOUND', message: 'x' } }));
+      });
+      const client = createIpcClient({
+        runnerEndpoint: `unix://${server.socketPath}`,
+        token: 'tok-abc',
+        maxElapsedMs: 120_000,
+      });
+      await expect(client.call('tool.list', {})).rejects.toBeInstanceOf(
+        IpcRequestError,
+      );
+      expect(server.callCount()).toBe(1); // 4xx is never retried
+    });
+  });
 });

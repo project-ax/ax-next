@@ -96,8 +96,27 @@ export interface IpcClientOptions {
   timeouts?: Partial<Record<IpcActionName, number>>;
   /** Defaults to an exponential-backoff schedule (100 → 30_000 ms cap). */
   retryBackoff?: (attempt: number) => number;
-  /** Max retry attempts on connection-level errors / 5xx. Default: 5. */
+  /**
+   * Hard cap on retry attempts (on top of the first try) for connection-level
+   * errors / 5xx. When set, the loop stops after this many retries regardless
+   * of the wall-clock deadline. When UNSET it defaults to effectively
+   * unbounded (Number.MAX_SAFE_INTEGER) so `maxElapsedMs` is the binding
+   * constraint — that's what lets the runner ride out a host restart. Existing
+   * callers that pass a number keep their exact attempt-count semantics.
+   */
   maxRetries?: number;
+  /**
+   * Wall-clock ceiling (ms) for the transient-error retry SERIES. Retries on
+   * connection-level / 5xx errors keep going (at the backoff cadence, capped
+   * at 30 s/attempt) until this much real time has elapsed since the first
+   * attempt, then the final error is rethrown. This is the knob that lets the
+   * runner survive a host OOMKill → reschedule → boot instead of giving up
+   * after the old ~3 s / 6-attempt budget and dropping the turn (commit-notify)
+   * or crashing (session.next-message poll). Default 120_000 (2 min). Distinct
+   * from the per-attempt wire timeout in IPC_TIMEOUTS_MS — that bounds ONE
+   * request; this bounds the whole retry series.
+   */
+  maxElapsedMs?: number;
   /** Testable seam. */
   now?: () => number;
 }
@@ -142,6 +161,10 @@ function defaultBackoff(attempt: number): number {
   // the first retry waits 100 ms.
   return Math.min(100 * 2 ** attempt, 30_000);
 }
+
+/** Default wall-clock ceiling for the transient-error retry series: 2 min.
+ *  Long enough to ride out a host OOMKill → pod reschedule → boot. */
+const DEFAULT_MAX_ELAPSED_MS = 120_000;
 
 interface RawResponse {
   status: number;
@@ -289,7 +312,14 @@ function parseErrorEnvelope(
 }
 
 export function createIpcClient(opts: IpcClientOptions): IpcClient {
-  const maxRetries = opts.maxRetries ?? 5;
+  // Default to effectively-unbounded attempts so `maxElapsedMs` (the 2-min
+  // wall-clock deadline) is the binding constraint for callers (like the
+  // runner) that don't set an explicit cap. Callers that DO pass maxRetries
+  // keep their exact attempt-count semantics — the loop exits on whichever of
+  // {count, deadline} fires first.
+  const maxRetries = opts.maxRetries ?? Number.MAX_SAFE_INTEGER;
+  const maxElapsedMs = opts.maxElapsedMs ?? DEFAULT_MAX_ELAPSED_MS;
+  const now = opts.now ?? Date.now;
   const backoff = opts.retryBackoff ?? defaultBackoff;
   // Resolve the transport target ONCE at construction. parseRunnerEndpoint
   // (in @ax/ipc-protocol) throws RunnerEndpointError on an invalid URI;
@@ -321,20 +351,32 @@ export function createIpcClient(opts: IpcClientOptions): IpcClient {
   };
 
   // Retry loop. `shouldRetry` decides whether the error is transient and
-  // another attempt is warranted. We run up to `maxRetries + 1` total
-  // attempts (the initial + N retries).
+  // another attempt is warranted. The loop stops on whichever fires first:
+  //   - a non-transient error (incl. 4xx PluginError) → throw immediately;
+  //   - the attempt-count cap `maxRetries` (defaults to unbounded);
+  //   - the wall-clock deadline `maxElapsedMs` (default 2 min) — the next
+  //     retry's backoff would land us at/past the deadline, so give up now.
+  // The deadline is what lets the runner survive a host restart: a transient
+  // ECONNREFUSED keeps retrying at ≤30 s cadence for up to 2 min instead of
+  // bailing after the old ~3 s budget.
   const withRetry = async <T>(
     shouldRetry: (err: unknown) => boolean,
     fn: () => Promise<T>,
   ): Promise<T> => {
+    const start = now();
     let lastErr: unknown;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
         return await fn();
       } catch (err) {
         lastErr = err;
+        // Non-transient (incl. PluginError 4xx) → throw immediately.
+        // Attempt-count cap reached → exhausted, rethrow.
         if (!shouldRetry(err) || attempt === maxRetries) throw err;
+        // Wall-clock deadline: if the next backoff would push us at/past the
+        // ceiling, don't take it — rethrow the last transient error now.
         const wait = backoff(attempt);
+        if (now() - start + wait >= maxElapsedMs) throw err;
         if (wait > 0) {
           await new Promise<void>((resolve) => setTimeout(resolve, wait));
         }
