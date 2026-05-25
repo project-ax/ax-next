@@ -212,7 +212,11 @@ describe('multi-replica concurrency', () => {
       await shutdown(a);
       await shutdown(b);
     }
-  });
+    // Two plugins spawning real git subprocesses and racing the same parent
+    // through a parent-mismatch retry settles at ~2.7 s and varies under load —
+    // give the real-subprocess concurrency extra headroom above vitest's 5 s
+    // default so a loaded CI runner can't flake it, per PR #146. (TASK-5)
+  }, 20_000);
 });
 
 // --- Helpers --------------------------------------------------------------
