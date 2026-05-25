@@ -12,6 +12,7 @@ import {
   createPhaseFillSubscriber,
   createSseHandler,
   createTurnEndEvictor,
+  createTurnErrorFillSubscriber,
   type RouteRequest,
   type RouteResponse,
   type RouteStream,
@@ -206,6 +207,13 @@ function bootHandler(opts: BootOpts = {}) {
     'chat:turn-end',
     '@ax/channel-web/turn-end-evictor',
     createTurnEndEvictor(buffer),
+  );
+  // Plugin-side turn-error fill — stores the terminal error so a connect after
+  // the error fired can replay it (TASK-22 pre-SSE-connect race).
+  bus.subscribe(
+    'chat:turn-error',
+    '@ax/channel-web/turn-error-fill',
+    createTurnErrorFillSubscriber(buffer),
   );
 
   const handler = createSseHandler({ bus, initCtx, buffer });
@@ -452,6 +460,62 @@ describe('@ax/channel-web SSE handler', () => {
         error: 'sandbox-terminated',
       });
       expect(captured.streamClosed).toBe(true);
+    } finally {
+      buffer.dispose();
+    }
+  });
+
+  // TASK-22 — the pre-SSE-connect race. channel-web returns 202 to
+  // POST /api/chat/messages and the browser opens GET /api/chat/stream/:reqId
+  // SEPARATELY. A fast session-open failure (e.g. a credential-resolution
+  // error rejecting proxy:open-session) fires chat:turn-error BEFORE that
+  // EventSource connects and installs the live subscriber. The plugin-level
+  // turn-error-fill subscriber stored the reason, so the handler must replay
+  // the error frame on connect and close — NOT hang on keepalives. This is the
+  // exact silent-hang the host-side fireTurnError was meant to surface; the
+  // live-subscriber-only path would have dropped the event.
+  it('turn-error fired BEFORE connect → replays the error frame on connect and closes', async () => {
+    const { bus, initCtx, handler, buffer } = bootHandler();
+    try {
+      // Terminal error fires while NO SSE client is connected — the fast
+      // credential/session-open failure case (no chunks, no phase, just the
+      // error).
+      await bus.fire('chat:turn-error', initCtx, {
+        reqId: 'r-test',
+        reason: 'proxy-open-failed',
+      });
+
+      // Now the browser's EventSource connects.
+      const req = fakeReq();
+      const { res, captured } = fakeRes();
+      await handler(req, res);
+
+      const frames = captured.streamWrites.filter((s) => s.startsWith('data:'));
+      // The replayed error frame is the only data frame, and the stream closes.
+      expect(frames.map((f) => JSON.parse(f.slice(6).trim()))).toEqual([
+        { reqId: 'r-test', error: 'proxy-open-failed' },
+      ]);
+      expect(captured.streamClosed).toBe(true);
+    } finally {
+      buffer.dispose();
+    }
+  });
+
+  it('turn-error fired before connect for a DIFFERENT reqId does not replay', async () => {
+    const { bus, initCtx, handler, buffer } = bootHandler();
+    try {
+      await bus.fire('chat:turn-error', initCtx, {
+        reqId: 'r-other',
+        reason: 'proxy-open-failed',
+      });
+      const req = fakeReq();
+      const { res, captured } = fakeRes();
+      await handler(req, res);
+      // Our reqId ('r-test') had no buffered error → no replay, stream stays open.
+      expect(
+        captured.streamWrites.filter((s) => s.startsWith('data:')),
+      ).toEqual([]);
+      expect(captured.streamClosed).toBe(false);
     } finally {
       buffer.dispose();
     }

@@ -216,4 +216,77 @@ describe('@ax/channel-web ChunkBuffer', () => {
       buf.dispose();
     }
   });
+
+  // TASK-22 — terminal turn-error replay slot. Stored so an SSE handler that
+  // connects AFTER the orchestrator fired chat:turn-error (the pre-SSE-connect
+  // race, acute for fast credential/session-open failures) still replays the
+  // error frame instead of hanging.
+  it('appendTurnError + tailTurnError returns the stored reason', () => {
+    const buf = createChunkBuffer();
+    try {
+      buf.appendTurnError('r1', 'proxy-open-failed');
+      expect(buf.tailTurnError('r1')).toBe('proxy-open-failed');
+    } finally {
+      buf.dispose();
+    }
+  });
+
+  it('tailTurnError is null for unknown reqIds and reqIds with no error yet', () => {
+    const buf = createChunkBuffer();
+    try {
+      expect(buf.tailTurnError('r-unknown')).toBeNull();
+      buf.append({ reqId: 'r1', text: 'a', kind: 'text' });
+      expect(buf.tailTurnError('r1')).toBeNull();
+    } finally {
+      buf.dispose();
+    }
+  });
+
+  it('appendTurnError creates an entry when the error is the very first event', () => {
+    // Fast pre-SSE-connect failures emit no chunks or phase at all — the
+    // turn-error is the only event for the reqId, so the slot must self-create.
+    const buf = createChunkBuffer();
+    try {
+      buf.appendTurnError('r-fast', 'proxy-open-failed');
+      expect(buf.tailTurnError('r-fast')).toBe('proxy-open-failed');
+      expect(buf.tail('r-fast')).toEqual([]);
+    } finally {
+      buf.dispose();
+    }
+  });
+
+  it('turn-error is keyed by reqId — different reqIds do not bleed', () => {
+    const buf = createChunkBuffer();
+    try {
+      buf.appendTurnError('r1', 'proxy-open-failed');
+      expect(buf.tailTurnError('r2')).toBeNull();
+      expect(buf.tailTurnError('r1')).toBe('proxy-open-failed');
+    } finally {
+      buf.dispose();
+    }
+  });
+
+  it('evictReqId clears a stored turn-error', () => {
+    const buf = createChunkBuffer();
+    try {
+      buf.appendTurnError('r1', 'proxy-open-failed');
+      buf.evictReqId('r1');
+      expect(buf.tailTurnError('r1')).toBeNull();
+    } finally {
+      buf.dispose();
+    }
+  });
+
+  it('sweep timer reaps a stored turn-error after IDLE_TTL (connect window closed)', () => {
+    const buf = createChunkBuffer();
+    try {
+      buf.appendTurnError('r1', 'proxy-open-failed');
+      expect(buf.tailTurnError('r1')).toBe('proxy-open-failed');
+      // Past IDLE_TTL_MS (60s) + a sweep interval (30s) → entry reaped.
+      vi.advanceTimersByTime(91_000);
+      expect(buf.tailTurnError('r1')).toBeNull();
+    } finally {
+      buf.dispose();
+    }
+  });
 });

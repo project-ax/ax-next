@@ -668,6 +668,12 @@ export function createOrchestrator(
         kind: 'terminated',
         reason: `chat:start:${startResult.reason}`,
       };
+      // TASK-22 — pre-waiter early-return: surface on the SSE so the client
+      // doesn't hang. channel-web dispatches agent:invoke fire-and-forget and
+      // returns 202; the synchronous outcome here never reaches the client, so
+      // the SSE is the only signal. Without fireTurnError a vetoed chat:start
+      // would leave the client spinning on "Thinking…" forever.
+      await fireTurnError(ctx, ctx.reqId, outcome.reason);
       await bus.fire('chat:end', ctx, { outcome });
       return outcome;
     }
@@ -699,6 +705,10 @@ export function createOrchestrator(
         reason: `agent-resolve:${code}`,
         error: err,
       };
+      // TASK-22 — pre-waiter early-return: surface on the SSE so the client
+      // doesn't hang (coarse `reason` only — the ACL code, not the raw err;
+      // see the chat:start note above).
+      await fireTurnError(ctx, ctx.reqId, outcome.reason);
       await bus.fire('chat:end', ctx, { outcome });
       return outcome;
     }
@@ -966,6 +976,13 @@ export function createOrchestrator(
         kind: 'terminated',
         reason: 'proxy-hooks-misconfigured',
       };
+      // TASK-22 — surface on the SSE BEFORE chat:end. These pre-waiter
+      // early-returns run before registerWaiter below, so onChatEnd's F2b
+      // fallback can't recover them (no live waiter) — without an explicit
+      // fireTurnError the client would hang on "Thinking…" forever. ctx.reqId
+      // is the originating agent:invoke reqId (never IPC-restamped on this
+      // synchronous path), so the SSE matches the exact turn.
+      await fireTurnError(ctx, ctx.reqId, outcome.reason);
       await bus.fire('chat:end', ctx, { outcome });
       return outcome;
     }
@@ -980,6 +997,9 @@ export function createOrchestrator(
         kind: 'terminated',
         reason: 'proxy-not-loaded',
       };
+      // TASK-22 — pre-waiter early-return: surface on the SSE so the client
+      // doesn't hang (see the proxy-hooks-misconfigured note above).
+      await fireTurnError(ctx, ctx.reqId, outcome.reason);
       await bus.fire('chat:end', ctx, { outcome });
       return outcome;
     }
@@ -1009,6 +1029,9 @@ export function createOrchestrator(
         kind: 'terminated',
         reason: 'agent-proxy-config-incomplete',
       };
+      // TASK-22 — pre-waiter early-return: surface on the SSE so the client
+      // doesn't hang (see the proxy-hooks-misconfigured note above).
+      await fireTurnError(ctx, ctx.reqId, outcome.reason);
       await bus.fire('chat:end', ctx, { outcome });
       return outcome;
     }
@@ -1033,6 +1056,11 @@ export function createOrchestrator(
           reason: 'skill-resolve-failed',
           error: err,
         };
+        // TASK-22 — pre-waiter early-return: surface on the SSE so the client
+        // doesn't hang (see the proxy-hooks-misconfigured note above). Only the
+        // coarse `reason` crosses to the client; the raw `err` stays on the
+        // audit chat:end outcome.
+        await fireTurnError(ctx, ctx.reqId, outcome.reason);
         await bus.fire('chat:end', ctx, { outcome });
         return outcome;
       }
@@ -1067,6 +1095,9 @@ export function createOrchestrator(
             reason: 'skill-binding-missing',
             error: new Error(`skill '${skill.id}' attachment is missing binding for slot '${slotDef.slot}'`),
           };
+          // TASK-22 — pre-waiter early-return: surface on the SSE so the client
+          // doesn't hang (coarse `reason` only; see note above).
+          await fireTurnError(ctx, ctx.reqId, outcome.reason);
           await bus.fire('chat:end', ctx, { outcome });
           return outcome;
         }
@@ -1079,6 +1110,9 @@ export function createOrchestrator(
               `slot '${slotDef.slot}' on skill '${skill.id}' collides with existing owner '${existing}'`,
             ),
           };
+          // TASK-22 — pre-waiter early-return: surface on the SSE so the client
+          // doesn't hang (coarse `reason` only; see note above).
+          await fireTurnError(ctx, ctx.reqId, outcome.reason);
           await bus.fire('chat:end', ctx, { outcome });
           return outcome;
         }
@@ -1220,6 +1254,17 @@ export function createOrchestrator(
         reason: 'proxy-open-failed',
         error: err,
       };
+      // TASK-22 — credential resolution failure at session-open. This is the
+      // path the chat-qa-sweep fault battery hit: `proxy:open-session` throws
+      // (the runtime provider key can't be resolved/decrypted), and without an
+      // explicit fireTurnError the turn hung at "Thinking…" forever — the
+      // waiter isn't registered until AFTER this block, so onChatEnd's F2b
+      // fallback finds no live waiter and skips its turn-error fire too.
+      // Surface on the SSE BEFORE chat:end so the client flips to error+retry.
+      // Only the coarse `reason` crosses to the (untrusted) client; the raw
+      // `err` stays on the audit chat:end outcome (no credential/decryption
+      // detail leaks).
+      await fireTurnError(ctx, ctx.reqId, outcome.reason);
       await bus.fire('chat:end', ctx, { outcome });
       return outcome;
     }

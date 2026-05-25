@@ -47,6 +47,16 @@ interface BufferEntry {
    * streaming text, "Starting sandbox…" is no longer the truth.
    */
   phase: PhaseKind | null;
+  /**
+   * Terminal turn-error reason for this reqId, or null. Single-slot. Stored
+   * so an SSE handler that attaches AFTER the orchestrator fired
+   * `chat:turn-error` (the pre-SSE-connect race — acute for fast session-open
+   * failures like a credential-resolution error, which reject before the
+   * browser opens `/api/chat/stream/:reqId`) still replays the terminal error
+   * frame on connect instead of hanging on keepalives forever. The IDLE_TTL
+   * sweep reaps it like any other entry once the connect window passes.
+   */
+  turnError: string | null;
   /** Wall-clock ms at the most recent append. */
   lastWriteMs: number;
 }
@@ -60,10 +70,20 @@ export interface ChunkBuffer {
    *  Refreshes the entry's TTL. Ignored if a content chunk has already
    *  arrived for this reqId (phase is pre-content only). */
   appendPhase(reqId: string, phase: PhaseKind): void;
+  /**
+   * Record the terminal turn-error reason for a reqId so an SSE handler that
+   * connects after the error fired can replay it. Replaces any prior slot and
+   * refreshes the entry's TTL; creates the entry if absent (the error may be
+   * the very first event for this reqId — fast pre-SSE-connect failures emit
+   * no chunks or phase at all).
+   */
+  appendTurnError(reqId: string, reason: string): void;
   /** Snapshot of the current chunks for a reqId, in insertion order. */
   tail(reqId: string): readonly StreamChunk[];
   /** Latest phase for a reqId, or null. Cleared by the first content chunk. */
   tailPhase(reqId: string): PhaseKind | null;
+  /** Terminal turn-error reason for a reqId, or null. */
+  tailTurnError(reqId: string): string | null;
   /** Drop the entry for `reqId`. Idempotent. */
   evictReqId(reqId: string): void;
   /** Stop the sweep timer. Safe to call multiple times. */
@@ -113,6 +133,7 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
         map.set(chunk.reqId, {
           chunks: [chunk],
           phase: null,
+          turnError: null,
           lastWriteMs: now(),
         });
         return;
@@ -140,6 +161,7 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
         map.set(reqId, {
           chunks: [],
           phase,
+          turnError: null,
           lastWriteMs: now(),
         });
         return;
@@ -147,6 +169,21 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
       // Already past pre-content window — phase is no longer relevant.
       if (existing.chunks.length > 0) return;
       existing.phase = phase;
+      existing.lastWriteMs = now();
+    },
+
+    appendTurnError(reqId, reason) {
+      const existing = map.get(reqId);
+      if (existing === undefined) {
+        map.set(reqId, {
+          chunks: [],
+          phase: null,
+          turnError: reason,
+          lastWriteMs: now(),
+        });
+        return;
+      }
+      existing.turnError = reason;
       existing.lastWriteMs = now();
     },
 
@@ -161,6 +198,10 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
 
     tailPhase(reqId) {
       return map.get(reqId)?.phase ?? null;
+    },
+
+    tailTurnError(reqId) {
+      return map.get(reqId)?.turnError ?? null;
     },
 
     evictReqId(reqId) {
