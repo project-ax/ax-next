@@ -99,6 +99,85 @@ describe('proxy listener — HTTP forwarding', () => {
     expect(res.status).toBe(403);
   });
 
+  it('returns 413 when a plain-HTTP request body exceeds the cap (does not buffer it all)', async () => {
+    // A large upload through the HTTP-forward path used to be read into one
+    // unbounded Buffer.concat — an OOM vector on a memory-tight host (TASK-24).
+    // The cap returns 413 and the upstream never sees the body. We use a small
+    // cap so the test stays fast.
+    let upstreamSawBytes = 0;
+    upstream = httpCreate((req, res) => {
+      req.on('data', (c: Buffer) => {
+        upstreamSawBytes += c.length;
+      });
+      req.on('end', () => res.end('OK'));
+    });
+    const upPort = await new Promise<number>((r) =>
+      upstream!.listen(0, '127.0.0.1', () => r((upstream!.address() as { port: number }).port)),
+    );
+
+    const registry = new SharedCredentialRegistry();
+    listener = await startProxyListener({
+      listen: { kind: 'tcp', host: '127.0.0.1', port: 0 },
+      registry,
+      ca: mintCA(),
+      maxHttpRequestBodyBytes: 1024, // tiny cap for the test
+      sessions: new Map([
+        ['s1', { allowlist: new Set(['127.0.0.1']), allowedIPs: new Set(['127.0.0.1']) }],
+      ]),
+    });
+
+    const dispatcher = new ProxyAgent({
+      uri: `http://127.0.0.1:${listener.port}`,
+      proxyTunnel: false,
+    });
+    const big = Buffer.alloc(1024 * 8, 0x61); // 8 KiB > 1 KiB cap
+    const res = await fetch(`http://127.0.0.1:${upPort}/up`, {
+      method: 'POST',
+      body: big,
+      dispatcher,
+    } as RequestInit);
+    expect(res.status).toBe(413);
+    // The upstream must NOT have received the oversized body.
+    expect(upstreamSawBytes).toBe(0);
+  });
+
+  it('forwards a plain-HTTP request body that is under the cap', async () => {
+    let received = '';
+    upstream = httpCreate((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (c: Buffer) => chunks.push(c));
+      req.on('end', () => {
+        received = Buffer.concat(chunks).toString('utf8');
+        res.end('OK');
+      });
+    });
+    const upPort = await new Promise<number>((r) =>
+      upstream!.listen(0, '127.0.0.1', () => r((upstream!.address() as { port: number }).port)),
+    );
+
+    const registry = new SharedCredentialRegistry();
+    listener = await startProxyListener({
+      listen: { kind: 'tcp', host: '127.0.0.1', port: 0 },
+      registry,
+      ca: mintCA(),
+      maxHttpRequestBodyBytes: 1024,
+      sessions: new Map([
+        ['s1', { allowlist: new Set(['127.0.0.1']), allowedIPs: new Set(['127.0.0.1']) }],
+      ]),
+    });
+    const dispatcher = new ProxyAgent({
+      uri: `http://127.0.0.1:${listener.port}`,
+      proxyTunnel: false,
+    });
+    const res = await fetch(`http://127.0.0.1:${upPort}/up`, {
+      method: 'POST',
+      body: 'small body',
+      dispatcher,
+    } as RequestInit);
+    expect(res.status).toBe(200);
+    expect(received).toBe('small body');
+  });
+
   it('returns 403 for private-IP target without allowedIPs override', async () => {
     const registry = new SharedCredentialRegistry();
     listener = await startProxyListener({

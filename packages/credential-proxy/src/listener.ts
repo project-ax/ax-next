@@ -167,6 +167,15 @@ export interface ProxyListenerOptions {
   onAudit?: (entry: ProxyAuditEntry) => void;
   /** Optional DNS resolver override — for tests. Default: dns.promises.lookup. */
   resolver?: Resolver;
+  /**
+   * Max bytes the plain-HTTP forward path buffers for a single request body
+   * before returning 413. The HTTP path reads the whole body into memory to
+   * re-forward via fetch; without a cap one large upload OOMs a memory-tight
+   * host (TASK-24). Default 16 MiB — generous for any legitimate API request
+   * body. Large *downloads* (responses) are streamed, not buffered, and the
+   * MITM path is backpressure-bounded, so this only governs plain-HTTP uploads.
+   */
+  maxHttpRequestBodyBytes?: number;
 }
 
 export interface ProxyListener {
@@ -257,8 +266,14 @@ function collectCanaryTokens(sessions: Map<string, SessionConfig>): string[] {
 
 // ── Listener ─────────────────────────────────────────────────────────
 
+/** Default cap on a single plain-HTTP forwarded request body: 16 MiB. Over
+ *  this we 413 rather than let one upload OOM the host (TASK-24). */
+const DEFAULT_MAX_HTTP_REQUEST_BODY_BYTES = 16 * 1024 * 1024;
+
 export async function startProxyListener(opts: ProxyListenerOptions): Promise<ProxyListener> {
   const { listen, sessions, onAudit, resolver, registry, ca } = opts;
+  const maxHttpRequestBodyBytes =
+    opts.maxHttpRequestBodyBytes ?? DEFAULT_MAX_HTTP_REQUEST_BODY_BYTES;
   const activeSockets = new Set<net.Socket>();
 
   function audit(entry: ProxyAuditEntry): void {
@@ -334,10 +349,36 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
       // (DNS rebinding defense). See SECURITY note on resolveAndCheck.
       const resolvedIP = await resolveAndCheck(hostname, allowingSession.allowedIPs, resolver);
 
-      // Read request body
+      // Read request body, CAPPED so one large upload can't OOM the host
+      // (TASK-24). The HTTP path must buffer the whole body to re-forward it
+      // via fetch; over the cap we abort with 413 and never touch the upstream.
       const chunks: Buffer[] = [];
+      let bodyBytes = 0;
+      let oversized = false;
       for await (const chunk of req) {
+        bodyBytes += (chunk as Buffer).length;
+        if (bodyBytes > maxHttpRequestBodyBytes) {
+          oversized = true;
+          break;
+        }
         chunks.push(chunk as Buffer);
+      }
+      if (oversized) {
+        // Drain the rest so the inbound socket can close cleanly, then 413.
+        req.resume();
+        audit(stampSession({
+          action: 'proxy_request',
+          method,
+          url,
+          status: 413,
+          requestBytes: bodyBytes,
+          responseBytes: 0,
+          durationMs: Date.now() - startTime,
+          blocked: 'request_body_too_large',
+        }, allowingSession));
+        res.writeHead(413, { 'Content-Type': 'text/plain' });
+        res.end('Request body exceeds the proxy limit.');
+        return;
       }
       const body = Buffer.concat(chunks);
       requestBytes = body.length;
