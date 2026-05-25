@@ -177,6 +177,38 @@ export interface ProxyListener {
   stop(): void;
 }
 
+// ── Allowlist-miss message ───────────────────────────────────────────
+
+/**
+ * The actionable body returned when a request is denied because its host is in
+ * no session's allowlist. Shared by the HTTP-forward and HTTPS-CONNECT deny
+ * paths so the two can't drift — a binary-download CLI fails over CONNECT, an
+ * API call over HTTP, and both deserve the same guidance (TASK-25).
+ *
+ * The second sentence calls out the prebuilt-binary case specifically: many
+ * npm CLIs (esbuild / swc / biome / @schpet/linear-cli, …) are a thin wrapper
+ * that downloads a platform binary from a GitHub release — `github.com` →
+ * `release-assets.githubusercontent.com` — and those hosts are NOT
+ * auto-allowlisted by `capabilities.packages.npm`. The author has to declare
+ * them in the skill's `allowedHosts`. See
+ * docs/plans/2026-05-22-credentialed-cli-tools-and-git-auth-design.md.
+ *
+ * `hostname` is caller-controlled (the request target), so it goes in the
+ * BODY only — never a header — and the CONNECT/HTTP callers stamp a
+ * Content-Length from the byte length. Node's HTTP parser already rejects
+ * CR/LF in the request target before either handler runs, so a hostname can't
+ * forge a header here regardless.
+ */
+function allowlistMissBody(hostname: string): string {
+  return (
+    `Egress to ${hostname} was blocked: it is not in any session allowlist. ` +
+    `To fix, install a skill that declares this domain in its allowedHosts, ` +
+    `or ask an admin to approve it. ` +
+    `(Heads-up: some CLIs download a prebuilt binary from a GitHub release — ` +
+    `those need github.com AND release-assets.githubusercontent.com in allowedHosts.)`
+  );
+}
+
 // ── Allowlist check ──────────────────────────────────────────────────
 
 /**
@@ -293,9 +325,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
           blocked: `domain_denied: ${hostname}`,
         });
         res.writeHead(403, { 'Content-Type': 'text/plain' });
-        res.end(
-          `Domain ${hostname} is not in any session allowlist. Install a skill that declares this domain, or ask an admin to approve it.`,
-        );
+        res.end(allowlistMissBody(hostname));
         return;
       }
 
@@ -666,7 +696,22 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
       // Allowlist gate (I2): hostname must be in some session's allowlist.
       const allowingSession = findAllowingSession(hostname, sessions);
       if (!allowingSession) {
-        clientSocket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+        // Write an ACTIONABLE 403 (not a bare status line): a binary-download
+        // CLI fails over CONNECT, and a body-less denial surfaces as an opaque
+        // error to the agent and the user. Mirror the HTTP path's guidance via
+        // the shared `allowlistMissBody` so the two can't drift (TASK-25). The
+        // body carries the caller-controlled hostname; Content-Length is the
+        // body's byte length, and the hostname is in the body (never a header).
+        const body = allowlistMissBody(hostname);
+        const bodyLen = Buffer.byteLength(body);
+        clientSocket.write(
+          `HTTP/1.1 403 Forbidden\r\n` +
+            `Content-Type: text/plain\r\n` +
+            `Content-Length: ${bodyLen}\r\n` +
+            `Connection: close\r\n` +
+            `\r\n` +
+            body,
+        );
         clientSocket.end();
         // No matching session — same shape as the HTTP allowlist-miss case.
         audit({

@@ -85,6 +85,32 @@ async function connectThroughProxy(
   });
 }
 
+/**
+ * Send a CONNECT through the proxy and resolve the FULL raw response the proxy
+ * wrote back (status line + headers + body), reading until the socket closes.
+ * Used to assert the actionable body the proxy writes on an allowlist-miss 403
+ * — `connectThroughProxy` rejects with only the status line, so it can't see
+ * the body.
+ */
+async function connectCaptureBlockedResponse(
+  proxyHost: string,
+  proxyPort: number,
+  target: string,
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const sock = net.connect(proxyPort, proxyHost, () => {
+      sock.write(`CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n\r\n`);
+    });
+    let acc = '';
+    sock.on('data', (chunk: Buffer) => {
+      acc += chunk.toString('utf8');
+    });
+    sock.on('end', () => resolve(acc));
+    sock.on('close', () => resolve(acc));
+    sock.on('error', reject);
+  });
+}
+
 describe('proxy listener — HTTPS CONNECT (bypass / raw tunnel)', () => {
   it('passes raw TLS bytes through when target is in bypassMITM', async () => {
     // 1. Stand up a TLS upstream that writes a known string after handshake.
@@ -169,6 +195,50 @@ describe('proxy listener — HTTPS CONNECT (bypass / raw tunnel)', () => {
     await expect(
       connectThroughProxy('127.0.0.1', listener.port, `127.0.0.1:${upPort}`),
     ).rejects.toThrow(/403/);
+  });
+
+  // TASK-25 — a binary-download CLI (e.g. one that fetches a prebuilt binary
+  // from a GitHub release) hits the egress lock as an HTTPS CONNECT to a host
+  // the skill never allowlisted. The proxy used to reply with a BARE
+  // `403 Forbidden` and no body, so the failing tool surfaced an opaque denial
+  // and neither the agent nor a human could tell what to do. The 403 must now
+  // carry an actionable message: which host was denied, and how to fix it.
+  it('CONNECT allowlist-miss 403 carries an actionable body naming the host + the fix', async () => {
+    const registry = new SharedCredentialRegistry();
+    listener = await startProxyListener({
+      listen: { kind: 'tcp', host: '127.0.0.1', port: 0 },
+      registry,
+      ca: { key: 'unused-key', cert: 'unused-cert' }, // deny happens before any TLS/CA use
+      sessions: new Map([
+        [
+          's1',
+          {
+            allowlist: new Set(['registry.npmjs.org']), // github.com is NOT allowlisted
+            allowedIPs: new Set(['127.0.0.1']),
+          },
+        ],
+      ]),
+    });
+
+    const response = await connectCaptureBlockedResponse(
+      '127.0.0.1',
+      listener.port,
+      'github.com:443',
+    );
+
+    // Status line is still a 403.
+    expect(response).toMatch(/^HTTP\/1\.1 403\b/);
+    // Body names the denied host so the reader knows exactly what failed.
+    expect(response).toContain('github.com');
+    // Body is actionable: it points at the skill allowlist as the fix.
+    expect(response.toLowerCase()).toContain('allowlist');
+    // Body, not a header: the host string lands after the header terminator,
+    // so a hostname can never forge a response header.
+    const headerEnd = response.indexOf('\r\n\r\n');
+    expect(headerEnd).toBeGreaterThan(-1);
+    expect(response.slice(headerEnd + 4)).toContain('github.com');
+    // A Content-Length is present so well-behaved clients render the body.
+    expect(response.toLowerCase()).toMatch(/content-length:\s*\d+/);
   });
 
   it('returns 403 for CONNECT to a private IP without allowedIPs override', async () => {
