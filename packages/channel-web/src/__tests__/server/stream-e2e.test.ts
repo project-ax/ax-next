@@ -355,12 +355,13 @@ describe('@ax/channel-web stream e2e (chat:stream-chunk → SSE)', () => {
 
     const received = await readUntil(r, (s) => s.includes('"done":true'));
 
-    // Two chunk frames + one done frame, in order.
+    // Two chunk frames + one done frame, in order. TASK-23: content frames
+    // now carry the host-minted monotonic per-reqId seq (1, then 2).
     expect(received).toContain(
-      'data: {"reqId":"rE1","text":"hello","kind":"text"}\n\n',
+      'data: {"reqId":"rE1","text":"hello","kind":"text","seq":1}\n\n',
     );
     expect(received).toContain(
-      'data: {"reqId":"rE1","text":" world","kind":"text"}\n\n',
+      'data: {"reqId":"rE1","text":" world","kind":"text","seq":2}\n\n',
     );
     expect(received).toContain('data: {"reqId":"rE1","done":true}\n\n');
 

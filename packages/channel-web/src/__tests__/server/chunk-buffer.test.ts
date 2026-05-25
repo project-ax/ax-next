@@ -289,4 +289,183 @@ describe('@ax/channel-web ChunkBuffer', () => {
       buf.dispose();
     }
   });
+
+  // -----------------------------------------------------------------------
+  // TASK-23 — per-chunk monotonic sequence number for loss-free silent
+  // turn-resume. `append` mints the next per-reqId seq (1-based), stamps it
+  // on the buffered frame, and RETURNS the stamped frame so the buffer-fill
+  // subscriber can propagate the same seq to live SSE listeners. The client
+  // dedups replayed frames at/below its last-seen seq.
+  // -----------------------------------------------------------------------
+
+  it('append mints a 1-based monotonic seq per reqId and returns the stamped frame', () => {
+    const buf = createChunkBuffer();
+    try {
+      const a = buf.append({ reqId: 'r1', text: 'a', kind: 'text' });
+      const b = buf.append({ reqId: 'r1', text: 'b', kind: 'text' });
+      const c = buf.append({ reqId: 'r1', text: 'c', kind: 'text' });
+      expect(a.seq).toBe(1);
+      expect(b.seq).toBe(2);
+      expect(c.seq).toBe(3);
+    } finally {
+      buf.dispose();
+    }
+  });
+
+  it('seq is independent per reqId (each starts at 1)', () => {
+    const buf = createChunkBuffer();
+    try {
+      expect(buf.append({ reqId: 'r1', text: 'a', kind: 'text' }).seq).toBe(1);
+      expect(buf.append({ reqId: 'r2', text: 'A', kind: 'text' }).seq).toBe(1);
+      expect(buf.append({ reqId: 'r1', text: 'b', kind: 'text' }).seq).toBe(2);
+      expect(buf.append({ reqId: 'r2', text: 'B', kind: 'text' }).seq).toBe(2);
+    } finally {
+      buf.dispose();
+    }
+  });
+
+  it('tail returns frames carrying their stored seq', () => {
+    const buf = createChunkBuffer();
+    try {
+      buf.append({ reqId: 'r1', text: 'a', kind: 'text' });
+      buf.append({ reqId: 'r1', text: 'b', kind: 'text' });
+      const tail = buf.tail('r1');
+      expect(tail.map((c) => c.seq)).toEqual([1, 2]);
+    } finally {
+      buf.dispose();
+    }
+  });
+
+  it('seq survives the MAX_CHUNKS cap shift — it keeps counting past the dropped head', () => {
+    // Insert 260 with a 256 cap: the buffer drops the oldest 4, but seq keeps
+    // climbing monotonically. The retained tail's first frame is seq 5 and the
+    // last is seq 260 — so a reconnecting client sees a HOLE (its last-seen seq
+    // is below 5) and falls back to the banner (the loss-detection contract).
+    const buf = createChunkBuffer();
+    try {
+      let last: number | undefined;
+      for (let i = 0; i < 260; i += 1) {
+        last = buf.append({ reqId: 'r1', text: String(i), kind: 'text' }).seq;
+      }
+      expect(last).toBe(260);
+      const tail = buf.tail('r1');
+      expect(tail).toHaveLength(256);
+      expect(tail[0]!.seq).toBe(5);
+      expect(tail[255]!.seq).toBe(260);
+    } finally {
+      buf.dispose();
+    }
+  });
+
+  it('a recycled reqId after eviction re-seeds seq at 1 (a fresh turn starts over)', () => {
+    const buf = createChunkBuffer();
+    try {
+      buf.append({ reqId: 'r1', text: 'a', kind: 'text' });
+      expect(buf.append({ reqId: 'r1', text: 'b', kind: 'text' }).seq).toBe(2);
+      buf.evictReqId('r1');
+      // Entry gone → the next append re-creates it and the counter restarts.
+      expect(buf.append({ reqId: 'r1', text: 'fresh', kind: 'text' }).seq).toBe(1);
+    } finally {
+      buf.dispose();
+    }
+  });
+
+  // Codex P1 (TASK-23): the IDLE_TTL sweep used to fully delete a still-live
+  // reqId entry (e.g. a >60s-quiet tool call mid-turn), and the NEXT live chunk
+  // recreated it at seq 1. A browser still connected with lastSeq > 0 would then
+  // treat that reset seq as a duplicate and SILENTLY DROP the chunk (and every
+  // chunk until the counter caught up) — exactly the silent loss this task
+  // exists to prevent. The sweep must reclaim the heavy chunk array but KEEP the
+  // monotonic seq cursor alive; only evictReqId (the real turn-end) resets it.
+  it('TTL sweep reclaims chunks but KEEPS the seq cursor monotonic (no mid-turn reset)', () => {
+    const buf = createChunkBuffer();
+    try {
+      buf.append({ reqId: 'r1', text: 'a', kind: 'text' }); // seq 1
+      expect(buf.append({ reqId: 'r1', text: 'b', kind: 'text' }).seq).toBe(2);
+      // A long-quiet tool call: no append for >IDLE_TTL while the SSE
+      // connection is still open. The sweep runs and reclaims the chunks.
+      vi.advanceTimersByTime(91_000);
+      expect(buf.tail('r1')).toEqual([]); // chunk memory reclaimed
+      // The next live chunk MUST continue the cursor (seq 3), NOT reset to 1 —
+      // otherwise a connected client silently dedups it.
+      expect(buf.append({ reqId: 'r1', text: 'c', kind: 'text' }).seq).toBe(3);
+    } finally {
+      buf.dispose();
+    }
+  });
+
+  it('evictReqId (true turn-end) DOES reset the cursor even after a prior TTL sweep', () => {
+    const buf = createChunkBuffer();
+    try {
+      buf.append({ reqId: 'r1', text: 'a', kind: 'text' }); // seq 1
+      vi.advanceTimersByTime(91_000); // TTL sweep keeps the cursor
+      buf.append({ reqId: 'r1', text: 'b', kind: 'text' }); // seq 2 (continued)
+      buf.evictReqId('r1'); // real turn-end → full reset
+      expect(buf.append({ reqId: 'r1', text: 'fresh', kind: 'text' }).seq).toBe(1);
+    } finally {
+      buf.dispose();
+    }
+  });
+
+  // Codex P2 (TASK-23): a content turn that ends via chat:turn-error with NO
+  // SSE listener attached stores the error (turn-error-fill subscriber) but no
+  // per-connection evictor runs. On TTL the entry must be FULLY DELETED (the
+  // seq cursor is dead — no chunks follow a turn-error), not preserved as a
+  // cursor shell forever, which would leak one entry per abandoned failed turn.
+  it('TTL sweep fully reaps a content entry that ended with a stored turn-error (no shell leak)', () => {
+    const buf = createChunkBuffer();
+    try {
+      buf.append({ reqId: 'r1', text: 'partial', kind: 'text' }); // seq 1, content
+      buf.appendTurnError('r1', 'sandbox-terminated'); // terminal error, no listener
+      expect(buf.tailTurnError('r1')).toBe('sandbox-terminated');
+      // Past TTL + a sweep → the terminated entry is GONE, not a lingering shell.
+      vi.advanceTimersByTime(91_000);
+      expect(buf.tailTurnError('r1')).toBeNull();
+      expect(buf.tail('r1')).toEqual([]);
+      // Proof it was a FULL delete (not a kept cursor shell): a recycled reqId
+      // re-seeds at seq 1.
+      expect(buf.append({ reqId: 'r1', text: 'new-turn', kind: 'text' }).seq).toBe(1);
+    } finally {
+      buf.dispose();
+    }
+  });
+
+  // Codex P2 (TASK-23): a cursor-only shell that is NEVER revived or evicted
+  // (a runner crashed before firing any terminal hook) must not leak forever —
+  // it's reaped once it ages past the shell ceiling (default 15 min).
+  it('an orphaned cursor shell is reaped after the default shell ceiling (no permanent leak)', () => {
+    const buf = createChunkBuffer();
+    try {
+      buf.append({ reqId: 'r1', text: 'a', kind: 'text' }); // seq 1 → cursor exists
+      // First sweep past IDLE_TTL converts it to a cursor-only shell (kept).
+      vi.advanceTimersByTime(91_000);
+      // Still a live cursor: a revival continues monotonically.
+      // (We don't revive it here — we let it age out as an orphan instead.)
+      // Advance well past the 15-min default shell ceiling with no revival/evict.
+      vi.advanceTimersByTime(16 * 60_000);
+      // The orphaned shell is gone → a recycled reqId re-seeds at seq 1.
+      expect(buf.append({ reqId: 'r1', text: 'new', kind: 'text' }).seq).toBe(1);
+    } finally {
+      buf.dispose();
+    }
+  });
+
+  // Codex P2 round 2 (TASK-23): the shell ceiling is configurable so it can be
+  // sized ABOVE an operator-raised chat timeout. A still-live quiet turn whose
+  // shell age is below the configured ceiling must KEEP its cursor (no reset →
+  // no silent loss); only past the configured ceiling is it reaped.
+  it('shellMaxAgeMs is honored — a shell below the configured ceiling keeps its cursor', () => {
+    // 30-min ceiling (e.g. AX_CHAT_TIMEOUT_MS raised to 25 min + slack).
+    const buf = createChunkBuffer({ shellMaxAgeMs: 30 * 60_000 });
+    try {
+      buf.append({ reqId: 'r1', text: 'a', kind: 'text' }); // seq 1
+      vi.advanceTimersByTime(91_000); // → cursor-only shell
+      // 20 min later (past the 15-min default, but UNDER the 30-min config):
+      // the cursor MUST survive, so a revival continues at seq 2 — not reset to 1.
+      vi.advanceTimersByTime(20 * 60_000);
+      expect(buf.append({ reqId: 'r1', text: 'b', kind: 'text' }).seq).toBe(2);
+    } finally {
+      buf.dispose();
+    }
+  });
 });

@@ -38,8 +38,59 @@ const MAX_CHUNKS_PER_REQ_ID = 256;
 const IDLE_TTL_MS = 60_000;
 const SWEEP_INTERVAL_MS = 30_000;
 
+// DEFAULT ceiling on how long a cursor-only shell (a TTL-reclaimed entry whose
+// monotonic seq we keep so a still-live quiet turn doesn't reset to 1 — Codex
+// P1) may linger without being revived or explicitly evicted, used when the
+// caller doesn't pass `shellMaxAgeMs`. A real turn fires its terminal
+// chat:turn-end / chat:turn-error within the chat run timeout
+// (DEFAULT_CHAT_TIMEOUT_MS = 10 min in @ax/chat-orchestrator), which evicts the
+// reqId; this default sits comfortably above that so a legitimately-quiet live
+// turn is never dropped early, while a genuinely orphaned shell — a runner that
+// crashed before firing any terminal hook, or a malformed event — is still
+// reaped instead of leaking one map entry per abandoned reqId (Codex P2). When
+// operators raise AX_CHAT_TIMEOUT_MS above this, the channel-web plugin passes a
+// larger `shellMaxAgeMs` derived from that timeout so the ceiling always stays
+// above the max live turn duration (Codex P2 round 2).
+const SHELL_MAX_AGE_MS = 15 * 60_000;
+
 interface BufferEntry {
   chunks: StreamChunk[];
+  /**
+   * Next per-reqId monotonic sequence number to mint (1-based). Incremented on
+   * every `append` and stamped onto the buffered frame (TASK-23). Keeps
+   * climbing past the MAX_CHUNKS cap drop, so a client whose last-seen seq
+   * falls below the retained tail's first seq detects the hole and falls back
+   * to the visible banner rather than silently rendering a truncated reply.
+   *
+   * It also SURVIVES the IDLE_TTL sweep (the entry becomes a lightweight
+   * cursor-only shell — see `reclaimed`) so a still-live turn that goes quiet
+   * past the TTL (e.g. a long tool call) never has its counter reset to 1
+   * underneath a connected client — a reset would make the client silently
+   * dedup the post-quiet chunks as duplicates. Only `evictReqId` (the real
+   * turn-end / turn-error boundary) resets the cursor.
+   */
+  nextSeq: number;
+  /**
+   * True once the IDLE_TTL sweep has reclaimed this entry's heavy fields
+   * (chunk array, phase, turn-error) but KEPT the `nextSeq` cursor alive
+   * (Codex P1, TASK-23). A reclaimed shell holds only the monotonic cursor; it
+   * is NOT swept on the normal IDLE_TTL cadence (that would reset seq mid-turn)
+   * — it is dropped by `evictReqId` (the real turn boundary), by a later stored
+   * turn-error, or, as a backstop against a runner that crashed before firing
+   * any terminal hook, once it ages past SHELL_MAX_AGE_MS (see `reclaimedAtMs`).
+   * FAULTA-5 guarantees every turn fires a terminal chat:turn-end /
+   * chat:turn-error, which evicts the reqId, so shells are reliably reclaimed at
+   * turn end and don't accumulate in the common case.
+   */
+  reclaimed: boolean;
+  /**
+   * Wall-clock ms when this entry became a reclaimed cursor-only shell, or null
+   * if it isn't a shell. The sweep drops a shell once it's older than
+   * SHELL_MAX_AGE_MS so a genuinely orphaned shell (a runner that crashed before
+   * firing any terminal hook) can't leak indefinitely (Codex P2). Reset to null
+   * when a new chunk revives the shell.
+   */
+  reclaimedAtMs: number | null;
   /**
    * Latest phase event for this reqId, or null. Phase is single-slot
    * (only one in-flight phase at a time today) and is automatically
@@ -62,10 +113,14 @@ interface BufferEntry {
 }
 
 export interface ChunkBuffer {
-  /** Push a chunk into the per-reqId ring. Refreshes the entry's TTL.
-   *  Also evicts any pending phase slot — phase belongs to the pre-content
-   *  window only, so the first content chunk supersedes it. */
-  append(chunk: StreamChunk): void;
+  /** Push a chunk into the per-reqId ring. Mints + stamps the next per-reqId
+   *  monotonic `seq` (1-based; TASK-23) and RETURNS the seq-stamped frame so
+   *  the buffer-fill subscriber can propagate the SAME seq to live SSE
+   *  listeners (the dedup cursor must be identical on the replay and live
+   *  paths). Refreshes the entry's TTL. Also evicts any pending phase slot —
+   *  phase belongs to the pre-content window only, so the first content chunk
+   *  supersedes it. */
+  append(chunk: StreamChunk): StreamChunk;
   /** Set the latest phase for a reqId. Replaces any prior phase slot.
    *  Refreshes the entry's TTL. Ignored if a content chunk has already
    *  arrived for this reqId (phase is pre-content only). */
@@ -100,12 +155,26 @@ export interface ChunkBufferOptions {
    */
   setInterval?: typeof setInterval;
   clearInterval?: typeof clearInterval;
+  /**
+   * Max age (ms) of a reclaimed cursor-only shell before the sweep reaps it as
+   * an orphan (TASK-23 / Codex P2). MUST exceed the maximum live turn duration
+   * — i.e. the configured chat timeout — or a legitimately-quiet-but-still-live
+   * turn could have its seq cursor reset to 1 mid-turn, silently dropping
+   * output for a connected client. The channel-web plugin derives this from its
+   * `chatTimeoutMs` config (+ slack); defaults to SHELL_MAX_AGE_MS when unset.
+   * A value at/below 0 is treated as the default.
+   */
+  shellMaxAgeMs?: number;
 }
 
 export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
   const now = opts.now ?? (() => Date.now());
   const setIntervalFn = opts.setInterval ?? setInterval;
   const clearIntervalFn = opts.clearInterval ?? clearInterval;
+  const shellMaxAgeMs =
+    opts.shellMaxAgeMs !== undefined && opts.shellMaxAgeMs > 0
+      ? opts.shellMaxAgeMs
+      : SHELL_MAX_AGE_MS;
 
   const map = new Map<string, BufferEntry>();
   let timer: ReturnType<typeof setInterval> | null = setIntervalFn(() => {
@@ -120,9 +189,47 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
   function sweep(): void {
     const cutoff = now() - IDLE_TTL_MS;
     for (const [reqId, entry] of map) {
-      if (entry.lastWriteMs <= cutoff) {
+      if (entry.lastWriteMs > cutoff) continue;
+      // A TERMINATED turn (a terminal turn-error is stored) is fully dropped
+      // once its replay window passes — its seq cursor is dead (no more chunks
+      // will follow a turn-error), so there's nothing to preserve and keeping a
+      // shell would leak one entry per abandoned failed turn that no SSE
+      // listener ever evicted (Codex P2). This precedes the reclaimed check so
+      // a previously-reclaimed entry that later took a turn-error still reaps.
+      if (entry.turnError !== null) {
         map.delete(reqId);
+        continue;
       }
+      if (entry.reclaimed) {
+        // Already a cursor-only shell for a (presumed) still-live, long-quiet
+        // turn — normally left alone, because resetting it would let the counter
+        // restart at 1 underneath a connected client (Codex P1). BUT a shell
+        // that has lingered past SHELL_MAX_AGE_MS without being revived or
+        // evicted is almost certainly orphaned (a runner that crashed before any
+        // terminal hook), so reap it to bound memory (Codex P2). A legitimate
+        // turn fires its terminal hook (→ evictReqId) well within that ceiling.
+        if (
+          entry.reclaimedAtMs !== null &&
+          now() - entry.reclaimedAtMs > shellMaxAgeMs
+        ) {
+          map.delete(reqId);
+        }
+        continue;
+      }
+      if (entry.nextSeq > 1) {
+        // This reqId minted at least one chunk seq → a client may be tracking
+        // a lastSeq for it. Reclaim the heavy fields to free memory but KEEP
+        // the monotonic cursor so a revival (e.g. a tool-result after a long
+        // quiet tool call) continues the sequence instead of resetting to 1.
+        entry.chunks = [];
+        entry.phase = null;
+        entry.reclaimed = true;
+        entry.reclaimedAtMs = now();
+        continue;
+      }
+      // Never minted a content seq (only a phase, or an empty entry) → no
+      // cursor worth preserving; drop it outright.
+      map.delete(reqId);
     }
   }
 
@@ -130,18 +237,34 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
     append(chunk) {
       const existing = map.get(chunk.reqId);
       if (existing === undefined) {
+        // Fresh reqId — seq starts at 1; nextSeq advances to 2.
+        const stamped: StreamChunk = { ...chunk, seq: 1 };
         map.set(chunk.reqId, {
-          chunks: [chunk],
+          chunks: [stamped],
+          nextSeq: 2,
+          reclaimed: false,
+          reclaimedAtMs: null,
           phase: null,
           turnError: null,
           lastWriteMs: now(),
         });
-        return;
+        return stamped;
       }
-      existing.chunks.push(chunk);
+      const seq = existing.nextSeq;
+      existing.nextSeq = seq + 1;
+      // Revive a cursor-only shell (TTL-reclaimed mid-turn): the cursor
+      // continued monotonically, so a connected client accepts this frame
+      // contiguously (or sees a gap → banner) — never a silent dedup.
+      existing.reclaimed = false;
+      existing.reclaimedAtMs = null;
+      const stamped: StreamChunk = { ...chunk, seq };
+      existing.chunks.push(stamped);
       // Hard cap — drop the oldest. Array.shift() is O(n) but n ≤ 256
       // and we only shift on overflow; not worth a circular-buffer
-      // structure for this slice.
+      // structure for this slice. NOTE: nextSeq keeps climbing across the
+      // drop, so the retained tail's first seq sits ABOVE a reconnecting
+      // client's last-seen seq → the client detects the hole and surfaces
+      // the banner instead of silently rendering a truncated reply (TASK-23).
       if (existing.chunks.length > MAX_CHUNKS_PER_REQ_ID) {
         existing.chunks.splice(
           0,
@@ -153,6 +276,7 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
       // flicker back to a stale label.
       existing.phase = null;
       existing.lastWriteMs = now();
+      return stamped;
     },
 
     appendPhase(reqId, phase) {
@@ -160,14 +284,21 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
       if (existing === undefined) {
         map.set(reqId, {
           chunks: [],
+          nextSeq: 1,
+          reclaimed: false,
+          reclaimedAtMs: null,
           phase,
           turnError: null,
           lastWriteMs: now(),
         });
         return;
       }
-      // Already past pre-content window — phase is no longer relevant.
-      if (existing.chunks.length > 0) return;
+      // Already past pre-content window — phase is no longer relevant. We gate
+      // on `nextSeq > 1` (any content seq ever minted) rather than the current
+      // chunk count, because a TTL-reclaimed shell has an empty `chunks` array
+      // yet has already streamed content — a stray late phase must still be
+      // ignored there.
+      if (existing.chunks.length > 0 || existing.nextSeq > 1) return;
       existing.phase = phase;
       existing.lastWriteMs = now();
     },
@@ -177,6 +308,9 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
       if (existing === undefined) {
         map.set(reqId, {
           chunks: [],
+          nextSeq: 1,
+          reclaimed: false,
+          reclaimedAtMs: null,
           phase: null,
           turnError: reason,
           lastWriteMs: now(),

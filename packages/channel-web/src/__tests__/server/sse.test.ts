@@ -295,8 +295,10 @@ describe('@ax/channel-web SSE handler', () => {
 
       const frames = captured.streamWrites.filter((s) => s.startsWith('data:'));
       expect(frames).toHaveLength(1);
+      // TASK-23: the buffer-fill subscriber stamps the host-minted seq onto
+      // the live payload, so the wire frame now carries seq:1.
       expect(frames[0]).toBe(
-        'data: {"reqId":"r-test","text":"hello","kind":"text"}\n\n',
+        'data: {"reqId":"r-test","text":"hello","kind":"text","seq":1}\n\n',
       );
     } finally {
       buffer.dispose();
@@ -708,9 +710,86 @@ describe('@ax/channel-web SSE handler', () => {
       expect(frames[0]).toBe(
         'data: {"reqId":"r-test","phase":"sandbox-starting"}\n\n',
       );
+      // TASK-23: the content chunk carries the host-minted seq:1 (the phase
+      // frame above is out-of-band and never stamped).
       expect(frames[1]).toBe(
-        'data: {"reqId":"r-test","text":"hi","kind":"text"}\n\n',
+        'data: {"reqId":"r-test","text":"hi","kind":"text","seq":1}\n\n',
       );
+    } finally {
+      buffer.dispose();
+    }
+  });
+
+  // -----------------------------------------------------------------------
+  // TASK-23 — per-chunk monotonic seq on the SSE wire. The buffer-fill
+  // subscriber stamps the seq the ChunkBuffer minted onto the live
+  // chat:stream-chunk payload (by returning it from the subscriber), so the
+  // per-connection live subscriber and the replay tail carry the SAME seq.
+  // The client dedups replayed frames at/below its last-seen seq.
+  // -----------------------------------------------------------------------
+
+  it('live chunk frames carry a host-minted monotonic seq', async () => {
+    const { bus, initCtx, handler, buffer } = bootHandler();
+    try {
+      const req = fakeReq();
+      const { res, captured } = fakeRes();
+      await handler(req, res);
+
+      await bus.fire<StreamChunk>('chat:stream-chunk', initCtx, {
+        reqId: 'r-test',
+        text: 'a',
+        kind: 'text',
+      });
+      await bus.fire<StreamChunk>('chat:stream-chunk', initCtx, {
+        reqId: 'r-test',
+        text: 'b',
+        kind: 'text',
+      });
+
+      const frames = captured.streamWrites
+        .filter((s) => s.startsWith('data:'))
+        .map((f) => JSON.parse(f.slice(6).trim()));
+      expect(frames).toEqual([
+        { reqId: 'r-test', text: 'a', kind: 'text', seq: 1 },
+        { reqId: 'r-test', text: 'b', kind: 'text', seq: 2 },
+      ]);
+    } finally {
+      buffer.dispose();
+    }
+  });
+
+  it('replayed frames carry their stored seq, then a live frame continues the count', async () => {
+    const { bus, initCtx, handler, buffer } = bootHandler();
+    try {
+      // Three chunks BEFORE the SSE client connects.
+      for (const text of ['a', 'b', 'c']) {
+        await bus.fire<StreamChunk>('chat:stream-chunk', initCtx, {
+          reqId: 'r-test',
+          text,
+          kind: 'text',
+        });
+      }
+
+      const req = fakeReq();
+      const { res, captured } = fakeRes();
+      await handler(req, res);
+
+      // Live fourth chunk.
+      await bus.fire<StreamChunk>('chat:stream-chunk', initCtx, {
+        reqId: 'r-test',
+        text: 'd',
+        kind: 'text',
+      });
+
+      const frames = captured.streamWrites
+        .filter((s) => s.startsWith('data:'))
+        .map((f) => JSON.parse(f.slice(6).trim()));
+      expect(frames.map((f) => [f.text, f.seq])).toEqual([
+        ['a', 1],
+        ['b', 2],
+        ['c', 3],
+        ['d', 4],
+      ]);
     } finally {
       buffer.dispose();
     }
