@@ -42,17 +42,44 @@ export interface CreatePreToolUseHookOptions {
 
 // The workspace-relative namespace every uploaded attachment lives under
 // (`@ax/attachments` commits to `.ax/uploads/<conv>/<turn>/<file>`). It's our
-// own convention, so ANY tool path referencing it must resolve under the
-// agent's workspace root — that makes it a safe, deterministic re-root key.
+// own convention, so a path referencing it must resolve under the agent's
+// workspace root — that makes it a safe, deterministic re-root key.
 const UPLOADS_SEGMENT = '.ax/uploads/';
-// A maximal non-whitespace run that contains the uploads segment — i.e. a
-// single path token (whether bare, scheme-wrapped, or wrongly absolute).
-const UPLOADS_TOKEN_RE = /\S*\.ax\/uploads\/\S*/g;
+// The path-bearing input fields of the builtin file tools (Read/Write/Edit →
+// file_path, NotebookEdit → notebook_path, Glob/Grep/LS → path). We rewrite
+// ONLY these — never free-text fields like Edit's old_string/new_string,
+// Write's content, or a Bash description, which could legitimately *mention*
+// `.ax/uploads/` as text and must not be mangled.
+const PATH_INPUT_KEYS = new Set(['file_path', 'path', 'notebook_path']);
 
 /**
- * Re-root any attachment path a tool is about to touch to the absolute
- * workspace path, so file tools (Read, Bash `cat`, Edit, …) open the real
- * file regardless of how the model rooted it.
+ * If `value` is a path that references the `.ax/uploads/` attachment namespace
+ * as a path segment, return it re-rooted at `<root>/.ax/uploads/...`; else
+ * null (leave the value alone).
+ *
+ * Matches the segment at a path boundary (start of string or after a `/`) so
+ * `foo.ax/uploads/x` is NOT treated as an attachment, and refuses any `..`
+ * segment so a crafted `.ax/uploads/../../etc/x` can't be re-rooted out of the
+ * workspace. Idempotent on an already-correct `<root>/.ax/uploads/...` path.
+ */
+function rerootUploadsPath(value: string, root: string): string | null {
+  let idx = -1;
+  if (value.startsWith(UPLOADS_SEGMENT)) {
+    idx = 0;
+  } else {
+    const j = value.indexOf(`/${UPLOADS_SEGMENT}`);
+    if (j >= 0) idx = j + 1;
+  }
+  if (idx < 0) return null;
+  const rel = value.slice(idx); // `.ax/uploads/<...>`
+  if (rel.split('/').includes('..')) return null;
+  return `${root}/${rel}`;
+}
+
+/**
+ * Re-root attachment paths a tool is about to touch to the absolute workspace
+ * path, so file tools (Read, Edit, …) open the real file regardless of how the
+ * model rooted it.
  *
  * Why this is needed: an uploaded attachment is referenced by a
  * workspace-relative path (`.ax/uploads/...`). Because that path starts with a
@@ -64,13 +91,12 @@ const UPLOADS_TOKEN_RE = /\S*\.ax\/uploads\/\S*/g;
  * anyway — and even mistook the URI for a web resource. So we resolve by the
  * `.ax/uploads/` namespace marker, which the model can't strip away.)
  *
- * For every top-level string field (file_path, command, path, …) we replace
- * each path token containing `.ax/uploads/` with `<workspaceRoot>/` + the
- * substring from `.ax/uploads/` onward. This handles a home-prefixed
- * (`/home/user/.ax/uploads/x`), bare (`.ax/uploads/x`), or already-correct
- * (`/permanent/.ax/uploads/x`, idempotent) reference, and an embedded one in a
- * Bash command (`cat /home/user/.ax/uploads/x` → `cat /permanent/.ax/uploads/x`).
- * Returns the (possibly new) input and whether anything changed.
+ * Rewrites ONLY the structured path fields (`PATH_INPUT_KEYS`) as a whole-value
+ * re-root — handling a home-prefixed (`/home/user/.ax/uploads/x`), bare
+ * (`.ax/uploads/x`), or already-correct (`/permanent/.ax/uploads/x`,
+ * idempotent) reference. Free-text fields (a Bash command, an Edit's
+ * old_string, etc.) are left untouched; the system-prompt workspace note (see
+ * system-prompt.ts) steers the model to emit the right path for those.
  */
 export function resolveAttachmentPaths(
   input: unknown,
@@ -84,21 +110,10 @@ export function resolveAttachmentPaths(
   let changed = false;
   const out: Record<string, unknown> = { ...src };
   for (const [key, value] of Object.entries(src)) {
-    if (typeof value !== 'string' || !value.includes(UPLOADS_SEGMENT)) continue;
-    const rewritten = value.replace(UPLOADS_TOKEN_RE, (token) => {
-      const rel = token.slice(token.indexOf(UPLOADS_SEGMENT));
-      // Security: only re-root traversal-free attachment paths. A legit
-      // committed attachment is `.ax/uploads/<conv>/<turn>/<file>` (no `..`);
-      // refusing `..` segments stops a crafted `.ax/uploads/../../etc/x` from
-      // being re-rooted out of the workspace. The re-root happens AFTER the
-      // host's tool:pre-call adjudicated the original path, so it must not
-      // widen reach. Non-attachment escapes are unaffected (the agent could
-      // already Read any sandbox path directly; we just don't ENABLE one here).
-      if (rel.split('/').includes('..')) return token;
-      return `${root}/${rel}`;
-    });
-    if (rewritten !== value) {
-      out[key] = rewritten;
+    if (!PATH_INPUT_KEYS.has(key) || typeof value !== 'string') continue;
+    const rerooted = rerootUploadsPath(value, root);
+    if (rerooted !== null && rerooted !== value) {
+      out[key] = rerooted;
       changed = true;
     }
   }
@@ -128,13 +143,19 @@ export function createPreToolUseHook(
       };
     }
 
+    // Re-root any `.ax/uploads/` attachment path BEFORE adjudication, so the
+    // host's tool:pre-call sees (and policy-checks) the real path the tool will
+    // actually open — not the model's mis-rooted one. The re-rooted input is
+    // also what we forward to the SDK on allow.
+    const resolved = resolveAttachmentPaths(input.tool_input, workspaceRoot);
+
     let parsed: ToolPreCallResponse;
     try {
       const raw = await opts.client.call('tool.pre-call', {
         call: {
           id: toolUseID ?? idGen(),
           name: klass.axName,
-          input: input.tool_input,
+          input: resolved.input,
         },
       });
       parsed = ToolPreCallResponseSchema.parse(raw) as ToolPreCallResponse;
@@ -174,19 +195,19 @@ export function createPreToolUseHook(
         permissionDecision: 'allow',
       },
     };
-    // Start from the host's modified input if it supplied one, else the
-    // original. Either way, re-root any `.ax/uploads/` attachment path to the
-    // absolute workspace path so file tools open the real file. Forward
-    // updatedInput when the host modified it OR we rewrote a path.
+    // Forward updatedInput when the host transformed the call (its
+    // modifiedCall.input was computed against the already-resolved input we
+    // sent, so it wins) OR when we re-rooted an attachment path.
     const hostModified =
       parsed.modifiedCall?.input !== undefined &&
       parsed.modifiedCall.input !== null &&
       typeof parsed.modifiedCall.input === 'object';
-    const baseInput = hostModified
-      ? (parsed.modifiedCall!.input as Record<string, unknown>)
-      : (input.tool_input as Record<string, unknown>);
-    const resolved = resolveAttachmentPaths(baseInput, workspaceRoot);
-    if (hostModified || resolved.changed) {
+    if (hostModified) {
+      out.hookSpecificOutput.updatedInput = parsed.modifiedCall!.input as Record<
+        string,
+        unknown
+      >;
+    } else if (resolved.changed) {
       out.hookSpecificOutput.updatedInput = resolved.input;
     }
     return out;

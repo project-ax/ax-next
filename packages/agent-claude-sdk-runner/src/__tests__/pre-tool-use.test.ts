@@ -172,12 +172,14 @@ describe('createPreToolUseHook', () => {
     });
   });
 
-  it('re-roots a home-prefixed .ax/uploads attachment path to the workspace root', async () => {
+  it('re-roots a home-prefixed .ax/uploads path AND lets the host adjudicate the resolved path', async () => {
     // The bug: the model resolves the workspace-relative `.ax/uploads/...`
     // attachment path under a home dir (`.ax` reads as a home dotfile), so
     // `Read /home/user/.ax/uploads/...` fails. The hook must rewrite it to
-    // /permanent/.ax/uploads/... via updatedInput so the file actually opens.
-    const { client } = mkClient(async () => ({ verdict: 'allow' }));
+    // /permanent/.ax/uploads/... via updatedInput so the file actually opens —
+    // and the rewrite happens BEFORE tool:pre-call, so the host policy-checks
+    // the real path (not the mis-rooted one).
+    const { client, calls } = mkClient(async () => ({ verdict: 'allow' }));
     const hook = createPreToolUseHook({
       client,
       workspaceRoot: '/permanent',
@@ -191,6 +193,10 @@ describe('createPreToolUseHook', () => {
       'tu_abc',
       HOOK_OPTS,
     );
+    // The host saw the RESOLVED path, not the model's mis-rooted one.
+    expect((calls[0]!.payload as { call: { input: unknown } }).call.input).toEqual({
+      file_path: '/permanent/.ax/uploads/cnv_x/req-y/h__report.pdf',
+    });
     expect(out).toEqual({
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
@@ -265,16 +271,49 @@ describe('resolveAttachmentPaths', () => {
     });
   });
 
-  it('re-roots a path embedded in a Bash command in place', () => {
+  it('re-roots the path/notebook_path fields too (Glob/Grep/NotebookEdit)', () => {
+    expect(
+      resolveAttachmentPaths({ path: '/home/user/.ax/uploads/c/t' }, '/permanent'),
+    ).toEqual({ changed: true, input: { path: '/permanent/.ax/uploads/c/t' } });
     expect(
       resolveAttachmentPaths(
-        { command: 'pdftotext /home/user/.ax/uploads/c/t/h__f.pdf -' },
+        { notebook_path: '.ax/uploads/c/t/n.ipynb' },
         '/permanent',
       ),
     ).toEqual({
       changed: true,
-      input: { command: 'pdftotext /permanent/.ax/uploads/c/t/h__f.pdf -' },
+      input: { notebook_path: '/permanent/.ax/uploads/c/t/n.ipynb' },
     });
+  });
+
+  it('does NOT rewrite free-text fields — only structured path fields', () => {
+    // An Edit's old_string/new_string, Write's content, or a Bash command/
+    // description may legitimately MENTION `.ax/uploads/…` as text; rewriting
+    // them would corrupt the edit/command. Only path-bearing keys are touched.
+    expect(
+      resolveAttachmentPaths(
+        {
+          file_path: '/home/user/.ax/uploads/c/t/f.txt',
+          old_string: 'see .ax/uploads/c/t/f.txt for details',
+          command: 'cat /home/user/.ax/uploads/c/t/f.txt',
+        },
+        '/permanent',
+      ),
+    ).toEqual({
+      changed: true,
+      input: {
+        file_path: '/permanent/.ax/uploads/c/t/f.txt',
+        old_string: 'see .ax/uploads/c/t/f.txt for details',
+        command: 'cat /home/user/.ax/uploads/c/t/f.txt',
+      },
+    });
+  });
+
+  it('does not match `.ax/uploads/` unless it is a path segment', () => {
+    // `foo.ax/uploads/x` is not the attachment namespace — must be left alone.
+    expect(
+      resolveAttachmentPaths({ file_path: 'foo.ax/uploads/x' }, '/permanent'),
+    ).toEqual({ changed: false, input: { file_path: 'foo.ax/uploads/x' } });
   });
 
   it('is idempotent on an already-correct workspace path (changed=false)', () => {
