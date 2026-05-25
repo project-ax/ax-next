@@ -12,7 +12,11 @@
  * only care about chunk parsing.
  */
 import { afterEach, beforeEach, describe, it, test, expect, vi } from 'vitest';
-import { AxChatTransport, toContentBlocksForTesting } from '../lib/transport';
+import {
+  AxChatTransport,
+  toContentBlocksForTesting,
+  CONNECTION_LOST,
+} from '../lib/transport';
 import {
   agentStatusActions,
   getAgentStatusSnapshot,
@@ -242,13 +246,32 @@ describe('AxChatTransport SSE chunk parsing', () => {
     expect(deltas).toEqual(['after']);
   });
 
-  test('flush emits finish if stream closes without an explicit done frame', async () => {
+  // Faults B/D (FAULTA-5) — the stream closes mid-turn with NO terminal
+  // frame (host bounce: the process died and the replica-local chunk buffer
+  // is gone; network drop: the TCP connection was severed). Previously
+  // flush() synthesized a finish/stop, which looked like a SUCCESSFUL turn
+  // and silently dropped the half-streamed answer. It MUST instead close any
+  // open part and emit an `error` chunk carrying the CONNECTION_LOST sentinel
+  // so the runtime can silently retry (then surface the banner) — NOT a
+  // silent finish, and NOT a hang.
+  test('done-less close emits a connection-lost error chunk, not a silent finish', async () => {
     const transport = new AxChatTransport({ getAgentId: () => 'a' });
     const body = `data: {"reqId":"r1","text":"stub","kind":"text"}\n\n`;
-    const chunks = await drain(asProcess(transport)(sseStream(body))) as Array<{ type: string; finishReason?: string }>;
-    const finish = chunks.find((c) => c.type === 'finish') as { finishReason: string } | undefined;
-    expect(finish).toBeTruthy();
-    expect(finish?.finishReason).toBe('stop');
+    const chunks = await drain(asProcess(transport)(sseStream(body))) as Array<{
+      type: string;
+      errorText?: string;
+    }>;
+    const types = chunks.map((c) => c.type);
+    // The open text part is closed before the error.
+    expect(types).toContain('text-end');
+    // It ends as an error, NOT a finish.
+    expect(types).toContain('error');
+    expect(types).not.toContain('finish');
+    expect(types[types.length - 1]).toBe('error');
+    const errorChunk = chunks.find((c) => c.type === 'error') as
+      | { errorText: string }
+      | undefined;
+    expect(errorChunk?.errorText).toBe(CONNECTION_LOST);
   });
 
   // Fault A — the host emits an `error` SSE frame (instead of `done`) when a

@@ -70,6 +70,19 @@ export const DEFAULT_TURN_ERROR =
   'The agent stopped unexpectedly. Retry to continue.';
 
 /**
+ * Sentinel error text for a `done`-less stream close (Faults B/D — the host
+ * bounced or the network dropped mid-turn, so the SSE connection died before
+ * any terminal `done`/`error` frame arrived). This is an INTERNAL
+ * @ax/channel-web contract (NOT a hook payload) shared between this file and
+ * the runtime's onError — exactly like DEFAULT_TURN_ERROR. The runtime
+ * matches `error.message === CONNECTION_LOST` to decide a SILENT retry (first
+ * failure) vs surfacing the error banner (second failure); the wording also
+ * doubles as the transient "retrying…" label and, if the silent retry is
+ * exhausted, the banner text.
+ */
+export const CONNECTION_LOST = 'Connection lost. Retrying…';
+
+/**
  * Map a wire turn-error reason code (backend-agnostic, from the orchestrator)
  * to a user-facing label. Unknown codes fall back to DEFAULT_TURN_ERROR —
  * forward-compat with newer server builds that emit a code the client
@@ -372,7 +385,9 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
    *     row's visibility; phases just relabel it). On the first content
    *     chunk we swap back to "Thinking…" — phases are pre-content only.
    *   - done frame → close any open part, emit `finish`.
-   *   - stream close (no done frame) → same finish posture.
+   *   - stream close (no done frame) → close any open part, emit an `error`
+   *     chunk (CONNECTION_LOST) so the runtime can silently retry then
+   *     surface the banner — Faults B/D, NOT a silent finish.
    */
   protected processResponseStream(
     stream: ReadableStream<Uint8Array>,
@@ -569,11 +584,17 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
           },
           flush(controller) {
             if (finished) return;
-            // Stream closed without an explicit done frame — close any
-            // open parts and synthesize a finish so the runtime returns
-            // to ready state instead of hanging.
+            // Faults B/D — the stream closed WITHOUT a terminal `done` or
+            // `error` frame: a host bounce (process died → the replica-local
+            // chunk buffer is gone) or a network drop (TCP severed) killed
+            // the connection mid-turn. We must NOT synthesize a finish/stop
+            // here — that looks like a successful turn and silently drops the
+            // half-streamed answer (the FAULTA-5 bug). Close any open part
+            // and emit an `error` chunk carrying the CONNECTION_LOST sentinel;
+            // the runtime's onError silently retries once (regenerate → fresh
+            // reqId + sandbox), then surfaces the error banner if that fails.
             closeOpen(controller);
-            controller.enqueue({ type: 'finish', finishReason: 'stop' });
+            controller.enqueue({ type: 'error', errorText: CONNECTION_LOST });
             finished = true;
           },
         }),
