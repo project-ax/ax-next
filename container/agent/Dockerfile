@@ -36,7 +36,10 @@
 #   - tini as PID 1 (ENTRYPOINT is `tini --` only — see CMD/ENTRYPOINT note
 #     near the bottom). SIGTERM reaches Node cleanly; orphaned grandchildren
 #     of the Claude SDK runner subprocess get reaped instead of zombifying.
-#   - apt lists wiped after install; no compilers; no curl/openssl from apt.
+#   - apt lists wiped after install; no compilers; no openssl CLI from apt.
+#     curl IS installed (see the runtime apt block) — it's egress-bounded by
+#     the same NetworkPolicy + credential-proxy as every other tool, so it
+#     grants no reach the agent didn't already have.
 #   - readOnlyRootFilesystem-compatible: writes only go to /tmp (emptyDir)
 #     and /home/axagent (writable; the credential-proxy CA dir defaults to
 #     ~/.ax/proxy-ca, so the home dir needs to be writable OR the chart
@@ -101,10 +104,16 @@ RUN pnpm install --frozen-lockfile \
 FROM node:20-bookworm-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0 AS runtime
 
 # ca-certificates: HTTPS_PROXY → credential-proxy → api.anthropic.com.
+# curl: general-purpose HTTP client for agent Bash sessions. It adds NO new
+# network reach — runner pods are egress-fenced by the `sandbox-restrict`
+# NetworkPolicy to the host IPC port + DNS only (no direct internet), so curl
+# can reach exactly what node/git/uv already can: the credential-proxy's
+# allowlist via HTTPS_PROXY, and nothing else. A `curl --noproxy` direct
+# attempt is dropped at the network layer, not trusted to env vars.
 # tini: clean PID-1 reaping for the short-lived Claude SDK children the
 # runner spawns.
 #
-# All five apt deps are version-pinned (was: unpinned, floated with the
+# All six apt deps are version-pinned (was: unpinned, floated with the
 # pocket) so the install is reproducible — the signed Debian archive already
 # content-addresses each .deb by checksum on download; the pin makes WHICH
 # .deb deterministic. Versions are the current Debian bookworm/main binaries
@@ -117,6 +126,7 @@ FROM node:20-bookworm-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       ca-certificates=20230311+deb12u1 \
+      curl=7.88.1-10+deb12u14 \
       tini=0.19.0-1+b3 \
       git=1:2.39.5-0+deb12u3 \
       git-lfs=3.3.0-1+deb12u1 \
