@@ -114,7 +114,10 @@ into the prompt.
 > Then edit the body (the ONLY thing you write):
 > - **underspecified** → splice in the needs-input block with your specific questions,
 >   one per line, via `source <PROGRESS-HELPER-PATH> && set_needs_input "<ITEM-ID>"
->   "<question>\n<question>"` (it does the shell-side splice + START/END markers).
+>   $'<question 1>\n<question 2>\n…'`. Use `$'…'` ANSI-C quoting (NOT plain `"…"`) so each
+>   `\n` is a real newline — the helper renders one answer-ready block per question and
+>   splices the START/END markers. (Plain double quotes would pass a literal `\n` and
+>   jam every question into one line; the helper now tolerates that, but don't rely on it.)
 > - **specified but a needs-input block exists** (the user answered) → fold the Q&A
 >   into a durable `## Clarifications` section *outside* the `AUTOSHIP-NEEDS-INPUT`
 >   markers and delete the block, so the builder sees the answers as spec and nothing

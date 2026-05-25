@@ -474,13 +474,21 @@ discipline as the progress block (§6), human description preserved outside the 
 ```
 <!-- AUTOSHIP-NEEDS-INPUT:START -->
 ### ⚠ Needs input before this can ship
-auto-ship can't proceed without a few decisions. Fill in the blanks, then drag this
-card back to **To Do**.
 
-- [ ] **<question>:** _<your answer>_
-- [ ] **<question>:** _<your answer>_
+Answer each question on its own line below (replace the `_…_` placeholder), then drag
+this card back to **To Do**.
+
+**Q1.** <question>
+- _your answer_
+
+**Q2.** <question>
+- _your answer_
 <!-- AUTOSHIP-NEEDS-INPUT:END -->
 ```
+
+One question per **rendered block**, each with its own answer slot — never collapse
+multiple questions into a single line. A human filling this in shouldn't have to
+untangle a paragraph; the helper below does the splitting for you (see the quoting note).
 
 The **triage agent** writes this block directly for the underspec path (it's already
 reading the body, and no other writer owns a To Do / Needs-Input card). When re-triage
@@ -495,21 +503,27 @@ it at run start, so the body never enters the orchestrator's context:
 
 ```bash
 cat >> .claude/auto-ship-progress.sh <<'SH'
-# set_needs_input <project-item-node-id> "<questions, one per line>"
+# set_needs_input <project-item-node-id> "<questions — one per line>"
 # Shell-side RMW: replace/splice the NEEDS-INPUT block in a draft-issue body.
+# Questions may be separated by real newlines (use $'q1\nq2' ANSI-C quoting) OR by a
+# literal backslash-n — both are normalized so each question becomes its own
+# answer-ready block. A "q1\nq2" double-quoted string used to collapse into one item.
 set_needs_input() {
   local item="$1" questions="$2"
   local START='<!-- AUTOSHIP-NEEDS-INPUT:START -->'
   local END='<!-- AUTOSHIP-NEEDS-INPUT:END -->'
   local q='query($i:ID!){node(id:$i){... on ProjectV2Item{content{... on DraftIssue{id body}}}}}'
-  local json cid body checks block stripped nb
+  local json cid body items block stripped nb
   json=$(gh api graphql -f query="$q" -f i="$item" 2>/dev/null) || { echo "needs-input: skip (read)"; return 0; }
   cid=$(printf '%s' "$json" | jq -r '.data.node.content.id // empty')
   body=$(printf '%s' "$json" | jq -r '.data.node.content.body // ""')
   [ -z "$cid" ] && { echo "needs-input: skip (not a draft-issue card)"; return 0; }
-  checks=$(printf '%s' "$questions" | sed 's/^/- [ ] /')
-  block=$(printf '%s\n### ⚠ Needs input before this can ship\nFill in the blanks, then drag this card back to **To Do**.\n\n%s\n%s' \
-            "$START" "$checks" "$END")
+  # normalize literal "\n" -> real newline (defensive), drop blanks, number each
+  # question and give it its own answer slot so the human edits a clean list.
+  items=$(printf '%s' "$questions" | awk '{ gsub(/\\n/, "\n"); print }' \
+            | awk 'NF { printf "**Q%d.** %s\n- _your answer_\n\n", ++n, $0 }')
+  block=$(printf '%s\n### ⚠ Needs input before this can ship\n\nAnswer each question on its own line below (replace the `_…_` placeholder), then drag this card back to **To Do**.\n\n%s%s' \
+            "$START" "$items" "$END")
   # drop any prior block (markers inclusive), then append the fresh one
   stripped=$(printf '%s' "$body" | awk -v s="$START" -v e="$END" 'BEGIN{k=0} $0==s{k=1} k==0{print} $0==e{k=0}')
   nb=$(printf '%s\n\n%s' "$stripped" "$block")
