@@ -1,0 +1,166 @@
+{
+  "note": "ARCH-11 shared golden vectors for the MCP-server-entry drift guard. Both @ax/sandbox-protocol's McpServerSchema (the host contract) and @ax/agent-claude-sdk-runner's hand-rolled validateMcpEntry (sandbox-side defense-in-depth, intentionally NOT importing the schema) are asserted against THIS one file. Each vector declares its expected verdict PER SIDE: `schema` (McpServerSchema.safeParse(.value).success) and `runner` (validateMcpEntry(.value) returns vs throws). `core: true` vectors test the security-critical shape rules that MUST NEVER diverge — both sides assert schema === runner for those. `core: false` vectors encode the two KNOWN, intentional asymmetries (documented on validateMcpEntry): (a) the runner ignores allowedHosts/credentials, and (b) the runner additionally caps env to <=32 entries and <=256-char keys/values while McpServerSchema's z.record(z.string(),z.string()) caps neither — so the runner (the last gate) is a strict-superset REJECTER, the safe direction. If either validator flips a verdict on any vector, one of the two drift suites fails -> CI red, forcing a conscious fixture + cross-reference update. Note: every vector includes allowedHosts/credentials so McpServerSchema sees them explicitly; the runner ignores them either way.",
+  "vectors": [
+    {
+      "desc": "valid stdio entry",
+      "core": true,
+      "schema": "accept",
+      "runner": "accept",
+      "value": { "name": "github", "transport": "stdio", "command": "npx", "args": ["-y", "pkg"], "env": { "TOKEN": "x" }, "allowedHosts": [], "credentials": [] }
+    },
+    {
+      "desc": "valid http entry",
+      "core": true,
+      "schema": "accept",
+      "runner": "accept",
+      "value": { "name": "remote", "transport": "http", "url": "https://mcp.example.com", "allowedHosts": [], "credentials": [] }
+    },
+    {
+      "desc": "name with uppercase (fails id regex)",
+      "core": true,
+      "schema": "reject",
+      "runner": "reject",
+      "value": { "name": "GitHub", "transport": "stdio", "command": "npx", "allowedHosts": [], "credentials": [] }
+    },
+    {
+      "desc": "name with leading digit (fails id regex)",
+      "core": true,
+      "schema": "reject",
+      "runner": "reject",
+      "value": { "name": "9srv", "transport": "stdio", "command": "npx", "allowedHosts": [], "credentials": [] }
+    },
+    {
+      "desc": "name over 64 chars (fails id regex)",
+      "core": true,
+      "schema": "reject",
+      "runner": "reject",
+      "value": { "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "transport": "stdio", "command": "npx", "allowedHosts": [], "credentials": [] }
+    },
+    {
+      "desc": "transport neither stdio nor http",
+      "core": true,
+      "schema": "reject",
+      "runner": "reject",
+      "value": { "name": "srv", "transport": "websocket", "command": "npx", "allowedHosts": [], "credentials": [] }
+    },
+    {
+      "desc": "stdio entry missing command",
+      "core": true,
+      "schema": "reject",
+      "runner": "reject",
+      "value": { "name": "srv", "transport": "stdio", "allowedHosts": [], "credentials": [] }
+    },
+    {
+      "desc": "stdio entry with empty command",
+      "core": true,
+      "schema": "reject",
+      "runner": "reject",
+      "value": { "name": "srv", "transport": "stdio", "command": "", "allowedHosts": [], "credentials": [] }
+    },
+    {
+      "desc": "stdio entry that also sets url (cross-contamination)",
+      "core": true,
+      "schema": "reject",
+      "runner": "reject",
+      "value": { "name": "srv", "transport": "stdio", "command": "npx", "url": "https://evil.example.com", "allowedHosts": [], "credentials": [] }
+    },
+    {
+      "desc": "http entry missing url",
+      "core": true,
+      "schema": "reject",
+      "runner": "reject",
+      "value": { "name": "remote", "transport": "http", "allowedHosts": [], "credentials": [] }
+    },
+    {
+      "desc": "http entry that also sets command (cross-contamination)",
+      "core": true,
+      "schema": "reject",
+      "runner": "reject",
+      "value": { "name": "remote", "transport": "http", "url": "https://mcp.example.com", "command": "npx", "allowedHosts": [], "credentials": [] }
+    },
+    {
+      "desc": "http entry that also sets args (cross-contamination)",
+      "core": true,
+      "schema": "reject",
+      "runner": "reject",
+      "value": { "name": "remote", "transport": "http", "url": "https://mcp.example.com", "args": ["x"], "allowedHosts": [], "credentials": [] }
+    },
+    {
+      "desc": "http entry that also sets env (cross-contamination)",
+      "core": true,
+      "schema": "reject",
+      "runner": "reject",
+      "value": { "name": "remote", "transport": "http", "url": "https://mcp.example.com", "env": { "K": "v" }, "allowedHosts": [], "credentials": [] }
+    },
+    {
+      "desc": "args array with more than 32 entries",
+      "core": true,
+      "schema": "reject",
+      "runner": "reject",
+      "value": { "name": "srv", "transport": "stdio", "command": "npx", "args": ["a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9", "a10", "a11", "a12", "a13", "a14", "a15", "a16", "a17", "a18", "a19", "a20", "a21", "a22", "a23", "a24", "a25", "a26", "a27", "a28", "a29", "a30", "a31", "a32"], "allowedHosts": [], "credentials": [] }
+    },
+    {
+      "desc": "individual arg longer than 256 chars",
+      "core": true,
+      "schema": "reject",
+      "runner": "reject",
+      "value": { "name": "srv", "transport": "stdio", "command": "npx", "args": ["xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"], "allowedHosts": [], "credentials": [] }
+    },
+    {
+      "desc": "http url that is not a valid URL",
+      "core": true,
+      "schema": "reject",
+      "runner": "reject",
+      "value": { "name": "remote", "transport": "http", "url": "not a url", "allowedHosts": [], "credentials": [] }
+    },
+    {
+      "desc": "env is an array, not a record",
+      "core": true,
+      "schema": "reject",
+      "runner": "reject",
+      "value": { "name": "srv", "transport": "stdio", "command": "npx", "env": ["nope"], "allowedHosts": [], "credentials": [] }
+    },
+    {
+      "desc": "env value is not a string",
+      "core": true,
+      "schema": "reject",
+      "runner": "reject",
+      "value": { "name": "srv", "transport": "stdio", "command": "npx", "env": { "K": 42 }, "allowedHosts": [], "credentials": [] }
+    },
+    {
+      "desc": "ASYMMETRY: env with more than 32 entries (schema caps none; runner caps <=32)",
+      "core": false,
+      "schema": "accept",
+      "runner": "reject",
+      "value": { "name": "srv", "transport": "stdio", "command": "npx", "env": { "K0": "v", "K1": "v", "K2": "v", "K3": "v", "K4": "v", "K5": "v", "K6": "v", "K7": "v", "K8": "v", "K9": "v", "K10": "v", "K11": "v", "K12": "v", "K13": "v", "K14": "v", "K15": "v", "K16": "v", "K17": "v", "K18": "v", "K19": "v", "K20": "v", "K21": "v", "K22": "v", "K23": "v", "K24": "v", "K25": "v", "K26": "v", "K27": "v", "K28": "v", "K29": "v", "K30": "v", "K31": "v", "K32": "v" }, "allowedHosts": [], "credentials": [] }
+    },
+    {
+      "desc": "ASYMMETRY: env key over 256 chars (schema caps none; runner caps <=256)",
+      "core": false,
+      "schema": "accept",
+      "runner": "reject",
+      "value": { "name": "srv", "transport": "stdio", "command": "npx", "env": { "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk": "v" }, "allowedHosts": [], "credentials": [] }
+    },
+    {
+      "desc": "ASYMMETRY: env value over 256 chars (schema caps none; runner caps <=256)",
+      "core": false,
+      "schema": "accept",
+      "runner": "reject",
+      "value": { "name": "srv", "transport": "stdio", "command": "npx", "env": { "K": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv" }, "allowedHosts": [], "credentials": [] }
+    },
+    {
+      "desc": "non-object entry (null)",
+      "core": true,
+      "schema": "reject",
+      "runner": "reject",
+      "value": null
+    },
+    {
+      "desc": "non-object entry (array)",
+      "core": true,
+      "schema": "reject",
+      "runner": "reject",
+      "value": []
+    }
+  ]
+}

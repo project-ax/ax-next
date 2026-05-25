@@ -58,7 +58,31 @@ const MCP_ENV_LEN_MAX = 256;
 // schema already enforced this upstream, but the runner re-checks at the
 // trust boundary — a buggy or compromised host process could otherwise spawn
 // arbitrary commands inside the sandbox via .mcp.json.
-function validateMcpEntry(value: unknown): {
+//
+// DRIFT GUARD (ARCH-11): this hand-rolled validator deliberately duplicates
+// `@ax/sandbox-protocol`'s `McpServerSchema` rather than importing it — the
+// runner stays independent of the host contract package so the re-validation
+// is genuine defense-in-depth (invariant I2 — no cross-plugin imports across
+// the trust boundary). To keep the two in sync without coupling them, both are
+// asserted against ONE shared golden-vectors fixture
+// (`@ax/sandbox-protocol`'s `src/__tests__/fixtures/mcp-server-golden-vectors.json`):
+//   - the schema side: sandbox-protocol's `mcp-server-drift.test.ts`
+//   - the runner side: this package's `__tests__/mcp-server-drift.test.ts`
+//     (reads the fixture by repo-root-relative path — NO package import).
+// If either validator's verdict on a vector flips, one suite fails → CI red.
+// Exported solely so that drift test can drive it; it is a pure function (no
+// I/O), so exporting grants no runtime capability.
+//
+// Two KNOWN, intentional divergences from `McpServerSchema` (encoded as
+// non-`core` vectors in the fixture, NOT treated as drift):
+//   1. This validator ignores `allowedHosts` / `credentials` — they don't
+//      affect the `.mcp.json` shape the runner emits (only name/transport/
+//      command/args/env/url do), so it neither reads nor validates them.
+//   2. This validator additionally caps env to ≤32 entries and ≤256-char keys
+//      and values; `McpServerSchema`'s `z.record(z.string(), z.string())` caps
+//      neither. The runner is the LAST gate, so being stricter is the safe
+//      direction (a follow-up may tighten the schema to match).
+export function validateMcpEntry(value: unknown): {
   name: string;
   transport: 'stdio' | 'http';
   command?: string;
