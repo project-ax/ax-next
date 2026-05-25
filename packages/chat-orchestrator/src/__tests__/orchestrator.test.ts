@@ -1499,6 +1499,136 @@ describe('chat-orchestrator', () => {
     expect(mocks.calls.sandboxOpen).toBe(0);
   });
 
+  // TASK-22 — credential resolution failure at session-open must SURFACE a
+  // turn error to the client, not hang it. When `proxy:open-session` throws
+  // (the runtime Anthropic key can't be resolved/decrypted), the orchestrator
+  // returns terminated(proxy-open-failed) and fires chat:end — but it ALSO
+  // fires chat:turn-error so the channel-web SSE writes a terminal error frame
+  // and the client flips out of "Thinking…". Before the fix this path fired
+  // chat:end only; because the per-turn waiter is registered AFTER the proxy-
+  // open block, onChatEnd's F2b fallback found no live waiter and skipped its
+  // turn-error fire too — so NOTHING surfaced and the turn hung forever.
+  it('TASK-22: proxy:open-session failure (credential resolution) fires chat:turn-error with the originating reqId', async () => {
+    const proxy = buildProxyHooks({
+      // Simulate `credentials:get` / decrypt failing inside the proxy plugin —
+      // the orchestrator only sees the open-session call reject.
+      openThrows: new Error('credential resolution failed: cannot decrypt provider:anthropic'),
+    });
+    const mocks = buildMocks();
+    Object.assign(mocks.services, proxy.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 1_000 }),
+      ],
+    });
+    const turnErrors: Array<{ reqId?: string; reason?: string }> = [];
+    h.bus.subscribe('chat:turn-error', 'obs', async (_ctx, p: unknown) => {
+      turnErrors.push(p as { reqId?: string; reason?: string });
+      return undefined;
+    });
+    const endFires: AgentOutcome[] = [];
+    h.bus.subscribe('chat:end', 'end-obs', async (_ctx, p: unknown) => {
+      endFires.push((p as { outcome: AgentOutcome }).outcome);
+      return undefined;
+    });
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      turnErrorCtx('cred-fail-sess', 'r-cred'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+
+    expect(outcome.kind).toBe('terminated');
+    expect((outcome as { reason: string }).reason).toBe('proxy-open-failed');
+    // The fix: a turn-error MUST surface, keyed on the originating reqId so the
+    // SSE matches the exact turn and closes the stream (error + retry).
+    expect(turnErrors).toEqual([{ reqId: 'r-cred', reason: 'proxy-open-failed' }]);
+    // chat:end still fires exactly once (audit invariant) — unchanged.
+    expect(endFires).toHaveLength(1);
+    // No sandbox/runner is ever spawned on this path.
+    expect(mocks.calls.sandboxOpen).toBe(0);
+    // The raw credential-resolution error must NOT leak to the SSE — only the
+    // coarse `reason` enum crosses to the (untrusted) client. The full error
+    // stays on the audit chat:end outcome.
+    expect((endFires[0] as { error?: unknown }).error).toBeInstanceOf(Error);
+    expect(turnErrors[0]).not.toHaveProperty('error');
+  });
+
+  // TASK-22 — sibling pre-waiter early-return: same swallow-the-error class.
+  // A skewed/missing proxy config (proxy-hooks-misconfigured) must also surface
+  // a turn error rather than hang. Locks the whole class, not just the
+  // credential path the QA sweep happened to trip.
+  it('TASK-22: proxy-hooks-misconfigured fires chat:turn-error with the originating reqId', async () => {
+    const mocks = buildMocks({ omitProxyStubs: true });
+    // Register ONLY open (no close) → open/close skew → proxy-hooks-misconfigured.
+    mocks.services['proxy:open-session'] = async () => ({
+      proxyEndpoint: 'tcp://127.0.0.1:1',
+      caCertPem: '',
+      envMap: {},
+    });
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 1_000 }),
+      ],
+    });
+    const turnErrors: Array<{ reqId?: string; reason?: string }> = [];
+    h.bus.subscribe('chat:turn-error', 'obs', async (_ctx, p: unknown) => {
+      turnErrors.push(p as { reqId?: string; reason?: string });
+      return undefined;
+    });
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      turnErrorCtx('skew-sess', 'r-skew'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+
+    expect(outcome.kind).toBe('terminated');
+    expect((outcome as { reason: string }).reason).toBe('proxy-hooks-misconfigured');
+    expect(turnErrors).toEqual([{ reqId: 'r-skew', reason: 'proxy-hooks-misconfigured' }]);
+    expect(mocks.calls.sandboxOpen).toBe(0);
+  });
+
+  // TASK-22 — earliest pre-waiter early-return: a failed agents:resolve (ACL
+  // forbidden / not-found / internal) is dispatched fire-and-forget by
+  // channel-web (202 returned; the synchronous outcome is discarded), so the
+  // SSE is the only client signal. It must surface a turn-error, not hang.
+  it('TASK-22: agents:resolve failure fires chat:turn-error with the originating reqId', async () => {
+    const mocks = buildMocks({
+      agentsResolve: async () => {
+        throw new PluginError({
+          code: 'forbidden',
+          plugin: '@ax/agents',
+          message: 'agent not reachable by this user',
+        });
+      },
+    });
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 1_000 }),
+      ],
+    });
+    const turnErrors: Array<{ reqId?: string; reason?: string }> = [];
+    h.bus.subscribe('chat:turn-error', 'obs', async (_ctx, p: unknown) => {
+      turnErrors.push(p as { reqId?: string; reason?: string });
+      return undefined;
+    });
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      turnErrorCtx('acl-fail-sess', 'r-acl'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+
+    expect(outcome.kind).toBe('terminated');
+    expect((outcome as { reason: string }).reason).toBe('agent-resolve:forbidden');
+    expect(turnErrors).toEqual([{ reqId: 'r-acl', reason: 'agent-resolve:forbidden' }]);
+    expect(mocks.calls.sandboxOpen).toBe(0);
+  });
+
   it('terminates with proxy-hooks-misconfigured when only proxy:open-session is registered', async () => {
     // A skewed preset that wires open without close would leak sessions
     // on every invoke. We refuse to enable proxy mode in that case and
