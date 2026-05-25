@@ -427,13 +427,28 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
    * close (host bounce) or a hard body error (network drop). Reconnect is a
    * GET-only re-subscribe; it NEVER re-POSTs, so a still-running server turn
    * is never duplicated (the original P1: a re-POST mints a fresh reqId +
-   * agent:invoke). The server replays its per-reqId buffer on reconnect
-   * (sse.ts), so we SKIP the content chunks already emitted to avoid
-   * double-rendering. Bounded at MAX_RECONNECTS; when the reconnect GET fails
-   * (Fault B — the host bounced, reqId+buffer gone → 404), the cap is
-   * exhausted, or the turn outgrew the server's replay window (so we can't
-   * dedup cleanly — see SERVER_REPLAY_WINDOW), we emit CONNECTION_LOST so the
-   * runtime surfaces the error banner with a manual-retry affordance.
+   * agent:invoke).
+   *
+   * SILENT RECONNECT IS GATED ON `emittedContent === 0` (no content shown
+   * yet). The server replays its per-reqId ring buffer on reconnect, but that
+   * buffer only retains a bounded tail (chunk-buffer.ts: last 256 chunks). If
+   * we had already shown content and the agent kept streaming past the buffer
+   * while we were disconnected, the replay tail would NO LONGER start from the
+   * chunk after our last-seen one — and the wire carries no per-chunk sequence
+   * number, so we CANNOT tell where the replay begins. Count-based dedup would
+   * then silently drop output (Codex rounds 5–7). So we only auto-reconnect
+   * BEFORE any content has streamed (the common "blip before the first token"
+   * case — sandbox-starting, proxy idle-cull, tab refocus), where the replay
+   * is necessarily complete-from-the-start and dedup is a no-op. Once content
+   * has streamed, a drop surfaces the error banner (manual retry) instead of
+   * risking a lossy resume. (A server-side per-chunk sequence number would let
+   * us dedup an arbitrary partial replay exactly and resume mid-content —
+   * tracked as a follow-up.)
+   *
+   * Bounded at MAX_RECONNECTS. When the reconnect GET fails (Fault B — host
+   * bounced, reqId+buffer gone → 404), the cap is exhausted, or content has
+   * already streamed, we emit CONNECTION_LOST so the runtime surfaces the
+   * error banner with a manual-retry affordance.
    *
    * An ABORT (user pressed Stop / component teardown) is NOT connection loss:
    * we close the stream WITHOUT an error chunk so the SDK's normal abort
@@ -456,15 +471,11 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
         };
         let body: ReadableStream<Uint8Array> | null = firstBody;
         for (let attempt = 0; ; attempt++) {
-          // On a reconnect the server replays the buffer tail; skip the
-          // content chunks we've already shown so the message doesn't
-          // duplicate. Also clear any partial `data:` line stranded by the
-          // drop — otherwise the stale fragment would corrupt the first
-          // replayed frame's JSON parse (Codex round 5).
-          if (attempt > 0) {
-            ctx.skipContent = ctx.emittedContent;
-            ctx.carry = '';
-          }
+          // Pre-content reconnect only (see method doc): nothing was emitted,
+          // so the replay is complete-from-the-start — no dedup needed. Clear
+          // any partial `data:` line stranded by the drop so it can't corrupt
+          // the replayed frames' JSON parse.
+          if (attempt > 0) ctx.carry = '';
           const reason = await consumeSseAttempt(body, ctx, controller);
           if (reason === 'done' || reason === 'server-error') {
             // Terminal chunk already enqueued by the attempt.
@@ -482,12 +493,10 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
           }
           if (
             attempt + 1 >= MAX_RECONNECTS ||
-            // The server ring buffer only retains its last
-            // SERVER_REPLAY_WINDOW chunks; once we've emitted more than that,
-            // a reconnect's partial replay can't be deduped by count without
-            // silently dropping NEW content (Codex round 5). Give up the
-            // silent reconnect and surface the banner instead.
-            ctx.emittedContent > SERVER_REPLAY_WINDOW
+            // Content already streamed → a reconnect's partial replay can't be
+            // safely deduped without silent loss (no wire sequence number).
+            // Surface the banner instead of resuming lossily (Codex r5–7).
+            ctx.emittedContent > 0
           ) {
             endWithBanner();
             return;
@@ -526,19 +535,6 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
  *  blip without looping forever on a real outage. */
 const MAX_RECONNECTS = 3;
 
-/**
- * Conservative bound on how many content chunks the server replays on
- * reconnect. The host's per-reqId ring buffer (chunk-buffer.ts) retains its
- * last 256 chunks; we stay safely under that. Once we've emitted more than
- * this, a reconnect's replay is a PARTIAL tail that count-based dedup can't
- * align — skipping `emittedContent` would eat live chunks (silent loss). So
- * beyond this window we stop silently reconnecting and surface the banner.
- * (We don't import the server constant — Invariant I2; we mirror it
- * conservatively. A server-side per-chunk sequence number would let us dedup
- * a partial replay exactly; that's a tracked follow-up.)
- */
-const SERVER_REPLAY_WINDOW = 200;
-
 /** End-reason of a single SSE attempt. */
 type AttemptEnd = 'done' | 'server-error' | 'lost';
 
@@ -549,12 +545,12 @@ interface ParseCtx {
   openThinking: string | null;
   contentSeen: boolean;
   carry: string;
-  /** Total content chunks (text/thinking deltas + tool frames) emitted so
-   *  far across all attempts — the dedup cursor for reconnect replay. */
+  /** Count of content chunks (text/thinking deltas + tool frames) emitted so
+   *  far across attempts. Drives the "have we shown anything yet?" gate that
+   *  decides whether a drop is silently reconnectable (pre-content) or must
+   *  surface the banner (content already streamed — a partial replay can't be
+   *  safely deduped). */
   emittedContent: number;
-  /** On a reconnect attempt, skip this many replayed content chunks before
-   *  forwarding (and re-counting) new ones. */
-  skipContent: number;
   closeOpen(controller: { enqueue(c: UIMessageChunk): void }): void;
 }
 
@@ -567,7 +563,6 @@ function createParseCtx(): ParseCtx {
     contentSeen: false,
     carry: '',
     emittedContent: 0,
-    skipContent: 0,
     closeOpen(controller) {
       if (ctx.openText !== null) {
         controller.enqueue({ type: 'text-end', id: ctx.openText });
@@ -602,9 +597,8 @@ async function consumeSseAttempt(
   ctx: ParseCtx,
   controller: { enqueue(c: UIMessageChunk): void },
 ): Promise<AttemptEnd> {
-  // Emit one NEW (non-replayed) content chunk and advance the dedup cursor.
-  // Replayed chunks are dropped UPSTREAM (the skip-gate in the frame loop),
-  // before any text-start/-end framing — so this only ever sees live content.
+  // Emit one content chunk and advance the content counter (the
+  // "have we shown anything yet?" gate the reconnect logic reads).
   const enqueueContent = (chunk: UIMessageChunk): void => {
     controller.enqueue(chunk);
     ctx.emittedContent += 1;
@@ -689,23 +683,6 @@ async function consumeSseAttempt(
           if (ctx.contentSeen) continue; // pre-content only
           const label = PHASE_LABELS[frame.phase];
           if (label !== undefined) agentStatusActions.set(label);
-          continue;
-        }
-        // Replay dedup — for a CONTENT-bearing frame we've already shown
-        // (reconnect replays the buffer tail), drop it BEFORE any side
-        // effects. Doing the skip here, not inside enqueueContent, prevents
-        // ensureOpenForKind/closeOpen from injecting stray text-start/-end or
-        // closing the live part for a chunk that's being deduped away (Codex
-        // round 6). `contentSeen` is already true on a replay, so the status
-        // relabel below is a no-op regardless.
-        const isContentFrame =
-          'kind' in frame &&
-          (frame.kind === 'text' ||
-            frame.kind === 'thinking' ||
-            frame.kind === 'tool-use' ||
-            frame.kind === 'tool-result');
-        if (isContentFrame && ctx.skipContent > 0) {
-          ctx.skipContent -= 1;
           continue;
         }
         // text/thinking chunk
