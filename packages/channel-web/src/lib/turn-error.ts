@@ -80,14 +80,26 @@ export function lastUserMessageId(
 }
 
 /**
- * Auto-retry the whole turn (provably-dead path). Invokes `retry`
- * (`chat.regenerate()`) immediately; the caller has already shown
+ * Auto-retry the whole turn (provably-dead path). The caller has already shown
  * `RETRYING_STATUS` and bounded this to once per turn. If the retry itself
  * fails, the runtime's onError fires again and falls through to
  * `applyTurnError` (the manual banner).
+ *
+ * DEFERRED, not inline (Codex): this runs from `useChat`'s `onError`, which the
+ * AI SDK fires BEFORE the failed request's `setStatus('error')` + the `finally`
+ * that clears `activeResponse`. Calling `regenerate()` synchronously here lets
+ * the OLD request's teardown overwrite the retry's status/activeResponse — the
+ * retry shows the error state or loses its active response. Scheduling on a
+ * macrotask (default `setTimeout(…, 0)`) lets the current error callback fully
+ * unwind first. `schedule` is an injectable seam for tests.
  */
-export function autoRetryTurn(retry: () => void): void {
-  retry();
+export function autoRetryTurn(
+  retry: () => void,
+  schedule: (fn: () => void) => void = (fn) => {
+    setTimeout(fn, 0);
+  },
+): void {
+  schedule(retry);
 }
 
 /**

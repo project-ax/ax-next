@@ -84,13 +84,23 @@ export class SessionInvalidError extends Error {
 }
 
 export class HostUnavailableError extends Error {
-  constructor(message: string, cause?: unknown) {
+  /**
+   * Whether a retry could plausibly succeed. Connection-level failures
+   * (ECONNREFUSED, timeout, …) are retryable (the default). A DETERMINISTIC
+   * failure — e.g. the response body exceeded the client's size cap — is NOT:
+   * re-fetching transfers the same too-large bytes and fails the same way, so
+   * with the 2-min retry deadline it would stall the runner for the full
+   * window. The retry loop checks this flag so such errors fail fast.
+   */
+  readonly retryable: boolean;
+  constructor(message: string, cause?: unknown, opts?: { retryable?: boolean }) {
     // Use Error's options-bag cause field (ES2022) so stack traces chain
     // naturally. Only pass the options object when we actually have a
     // cause — exactOptionalPropertyTypes won't let `cause: undefined`
     // slip through.
     super(message, cause !== undefined ? { cause } : undefined);
     this.name = 'HostUnavailableError';
+    this.retryable = opts?.retryable ?? true;
   }
 }
 

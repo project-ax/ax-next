@@ -108,9 +108,27 @@ describe('autoRetryTurn', () => {
     agentStatusActions.reset();
   });
 
-  it('invokes the retry callback (re-runs the whole turn)', () => {
+  it('DEFERS the retry (does not call it synchronously — avoids racing useChat cleanup)', () => {
+    // Codex round-4 P1: onError runs before the failed request's setStatus
+    // ('error') + activeResponse-clearing finally. A synchronous regenerate
+    // would be overwritten by that teardown. autoRetryTurn must schedule, not
+    // call inline. We inject a capturing scheduler to prove it defers.
+    const retry = vi.fn();
+    let scheduled: (() => void) | null = null;
+    autoRetryTurn(retry, (fn) => {
+      scheduled = fn;
+    });
+    expect(retry).not.toHaveBeenCalled(); // not inline
+    expect(scheduled).toBeTypeOf('function');
+    scheduled!(); // simulate the macrotask firing after onError unwinds
+    expect(retry).toHaveBeenCalledTimes(1);
+  });
+
+  it('the default scheduler eventually fires the retry (macrotask)', async () => {
     const retry = vi.fn();
     autoRetryTurn(retry);
+    expect(retry).not.toHaveBeenCalled(); // deferred, not inline
+    await new Promise((r) => setTimeout(r, 5));
     expect(retry).toHaveBeenCalledTimes(1);
   });
 

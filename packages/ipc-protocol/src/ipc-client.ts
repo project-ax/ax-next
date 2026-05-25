@@ -119,6 +119,18 @@ export interface IpcClientOptions {
   maxElapsedMs?: number;
   /** Testable seam. */
   now?: () => number;
+  /**
+   * Test-only override of the single-request transport (`requestOnce`).
+   * Underscore-prefixed so it stays off the real surface. When set, the
+   * retry loop calls THIS instead of issuing a real HTTP request — lets tests
+   * drive the loop's retry/deadline/retryable-classification logic without a
+   * live server. Production code never sets it.
+   */
+  __requestOnce?: (opts: {
+    method: 'GET' | 'POST';
+    pathWithQuery: string;
+    timeoutMs: number;
+  }) => Promise<{ status: number; body: Buffer }>;
 }
 
 export interface IpcClient {
@@ -151,7 +163,10 @@ const TRANSIENT_ERRNOS = new Set<string>([
 ]);
 
 function isTransientConnectionError(err: unknown): boolean {
-  if (err instanceof HostUnavailableError) return true;
+  // A HostUnavailableError is retryable UNLESS it flagged itself otherwise
+  // (e.g. a deterministic over-cap response body — retrying just re-transfers
+  // the same too-large bytes).
+  if (err instanceof HostUnavailableError) return err.retryable;
   const code = (err as NodeJS.ErrnoException | undefined)?.code;
   return code !== undefined && TRANSIENT_ERRNOS.has(code);
 }
@@ -260,7 +275,14 @@ function requestOnce(
           const message = overflowed
             ? 'response body exceeded cap'
             : 'response stream error';
-          settle(() => reject(new HostUnavailableError(message, err)));
+          // An over-cap response is DETERMINISTIC — retrying re-fetches the
+          // same too-large bytes and fails identically, so mark it
+          // non-retryable. Otherwise the 2-min retry deadline would stall the
+          // runner re-transferring a large workspace.read for the full window
+          // (Codex). A bare stream error stays retryable (could be transient).
+          settle(() =>
+            reject(new HostUnavailableError(message, err, { retryable: !overflowed })),
+          );
         });
       },
     );
@@ -427,14 +449,20 @@ export function createIpcClient(opts: IpcClientOptions): IpcClient {
         return false;
       },
       async () => {
-        const raw = await requestOnce({
-          target,
-          method: 'POST',
-          pathWithQuery: `/${action}`,
-          token: opts.token,
-          body,
-          timeoutMs,
-        });
+        const raw = opts.__requestOnce
+          ? await opts.__requestOnce({
+              method: 'POST',
+              pathWithQuery: `/${action}`,
+              timeoutMs,
+            })
+          : await requestOnce({
+              target,
+              method: 'POST',
+              pathWithQuery: `/${action}`,
+              token: opts.token,
+              body,
+              timeoutMs,
+            });
         if (raw.status >= 200 && raw.status < 300) {
           return parseSuccessBody(action, raw.body);
         }

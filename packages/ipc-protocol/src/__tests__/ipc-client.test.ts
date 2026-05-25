@@ -455,5 +455,57 @@ describe('createIpcClient', () => {
       );
       expect(server.callCount()).toBe(1); // 4xx is never retried
     });
+
+    it('a HostUnavailableError flagged non-retryable is NOT retried under the generous deadline', async () => {
+      // The DETERMINISTIC over-cap response path (requestOnce) surfaces a
+      // HostUnavailableError with `retryable: false`; the retry loop must fail
+      // it fast instead of re-transferring the same too-large bytes for the
+      // whole 2-min deadline (Codex round-4 P2). We drive the loop directly via
+      // a `__requestOnce` test seam that rejects with such an error and assert
+      // it is attempted exactly once.
+      let attempts = 0;
+      const client = createIpcClient({
+        runnerEndpoint: 'unix:///tmp/unused.sock',
+        token: 'tok-abc',
+        maxElapsedMs: 120_000,
+        retryBackoff: () => 0,
+        __requestOnce: async () => {
+          attempts += 1;
+          throw new HostUnavailableError('response body exceeded cap', undefined, {
+            retryable: false,
+          });
+        },
+      });
+      const err = await client.call('tool.list', {}).then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(HostUnavailableError);
+      expect((err as HostUnavailableError).message).toContain('cap');
+      expect(attempts).toBe(1); // non-retryable → exactly one attempt
+    });
+
+    it('a HostUnavailableError that IS retryable still retries (connection-level default)', async () => {
+      let attempts = 0;
+      let clock = 0;
+      const client = createIpcClient({
+        runnerEndpoint: 'unix:///tmp/unused.sock',
+        token: 'tok-abc',
+        maxRetries: 3,
+        now: () => clock,
+        retryBackoff: (a) => {
+          clock += 10;
+          return 0;
+        },
+        __requestOnce: async () => {
+          attempts += 1;
+          throw new HostUnavailableError('connect failed: ECONNREFUSED'); // retryable default
+        },
+      });
+      await expect(client.call('tool.list', {})).rejects.toBeInstanceOf(
+        HostUnavailableError,
+      );
+      expect(attempts).toBe(4); // initial + 3 retries
+    });
   });
 });
