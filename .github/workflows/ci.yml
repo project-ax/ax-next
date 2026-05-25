@@ -34,10 +34,26 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
+          # The @ax/agent-claude-sdk-runner MCP-validator drift guard (ARCH-11)
+          # asserts the runner's hand-rolled validateMcpEntry against the SAME
+          # golden-vectors fixture that @ax/sandbox-protocol's McpServerSchema is
+          # asserted against — DELIBERATELY without a pnpm dependency edge (the
+          # runner must not import the host contract package; the independence is
+          # the point). That means `...[$BASE_SHA]` (affected + dependents) will
+          # NOT select the runner when a PR only touches the shared fixture or
+          # the schema, so the runner half of the guard would otherwise be
+          # invisible until the post-merge full run. Force it in whenever
+          # sandbox-protocol changes so a drift-introducing fixture/schema edit
+          # fails the PR, not main.
+          extra=()
+          if git diff --name-only "$BASE_SHA"...HEAD | grep -Eq '^packages/sandbox-protocol/'; then
+            extra=(--filter @ax/agent-claude-sdk-runner)
+            echo "sandbox-protocol changed — also running @ax/agent-claude-sdk-runner (ARCH-11 cross-boundary drift guard)."
+          fi
           # '!{.}' excludes the workspace ROOT project — its `test` script is the full
           # recursive `pnpm -r run test`, which any root-level file change would otherwise trigger.
-          if pnpm --filter "...[$BASE_SHA]" --filter '!{.}' list --depth -1 --parseable | grep -q . ; then
-            pnpm --filter "...[$BASE_SHA]" --filter '!{.}' run test
+          if pnpm --filter "...[$BASE_SHA]" "${extra[@]}" --filter '!{.}' list --depth -1 --parseable | grep -q . ; then
+            pnpm --filter "...[$BASE_SHA]" "${extra[@]}" --filter '!{.}' run test
           else
             echo "No affected workspace packages — package tests skipped (typecheck + lint already ran; full suite runs on merge to main)."
           fi
