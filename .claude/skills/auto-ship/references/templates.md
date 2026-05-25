@@ -27,6 +27,12 @@ Dispatch via `Agent` with `run_in_background: true`,
 > - **Do NOT edit the board's routing fields** (`Status`, `Depends on`) and never
 >   touch another card. auto-ship owns routing. Return deferred follow-ups in your
 >   handoff instead; auto-ship creates the cards.
+> - **If you hit a decision only a human can own** — a product / scope / requirements
+>   choice you cannot responsibly self-answer — **stop**, do NOT open a PR, and return
+>   `outcome: blocked` with `needs-input:` listing the specific questions. This is
+>   **not** a failure (it doesn't count as an attempt); auto-ship routes the card to the
+>   Needs Input lane for the human. Reserve it for genuine human-owned decisions, not
+>   technical unknowns you can resolve by reading the code.
 > - **Report progress live on your card.** This card is item `<ITEM-ID>`. At each
 >   yolo-ship phase boundary, append a one-line heartbeat to its progress block —
 >   in a SINGLE Bash call: `source <PROGRESS-HELPER-PATH> && append_progress
@@ -41,12 +47,14 @@ Dispatch via `Agent` with `run_in_background: true`,
 > Return ONLY this handoff, ≤150 words:
 > ```
 > task: <TASK-ID>
-> outcome: pr-green | failed
+> outcome: pr-green | failed | blocked
 > pr: <#> | -
 > headSha: <sha> | -
 > mergeable: y | n | -
 > ci: green | red | pending
 > signature: <normalized failure signature> | -    # required iff outcome=failed
+> needs-input: | -                                  # required iff outcome=blocked
+>   - <one question per line — a decision only a human can make>
 > followups:
 >   - <one line each, or "none">
 > ```
@@ -76,6 +84,50 @@ Dispatch ONE at a time (serialized). Substitute as above:
 >   - <one line each, or "none">    # for walk-fail: the bug to fix
 > ```
 
+## Triage dispatch prompt
+
+Dispatch ONE `general-purpose` agent **without** a worktree (board-only, no code).
+Substitute `<CANDIDATES>` — one `"<ITEM-ID> <TASK-ID>"` per line — and
+`<PROGRESS-HELPER-PATH>` (absolute path to `.claude/auto-ship-progress.sh`, which
+carries `set_needs_input`). The agent fetches bodies itself; do **not** paste bodies
+into the prompt.
+
+> You are the **triage agent** for auto-ship. For each candidate card below, fetch its
+> body from the board and judge two things. Do NOT write code, open a worktree, or
+> touch any lane / `Status` / `Depends on` field — auto-ship owns routing.
+>
+> Candidates (`<ITEM-ID> <TASK-ID>` per line):
+> <CANDIDATES>
+>
+> Fetch each body:
+> `gh api graphql -f query='query($i:ID!){node(id:$i){... on ProjectV2Item{content{... on DraftIssue{id body}}}}}' -f i="<ITEM-ID>"`
+>
+> 1. **walk?** — is this a manual-acceptance walk (the body asks to *verify behaviour
+>    in the running UI / cluster by hand*, not write code)? → `walk: y`, else `n`.
+> 2. **specified vs underspecified** — a card is **specified** iff a competent engineer
+>    could build it to a mergeable PR **without making a product / scope / requirements
+>    decision only the requester can own**. Missing *technical* detail the agent can
+>    discover by reading the code is NOT underspecified. Missing *decisions* (which of
+>    two behaviours, ambiguous acceptance criteria, which system to integrate, unclear
+>    scope) ARE. Hold a **high bar** — over-flagging stalls the autonomous loop.
+>
+> Then edit the body (the ONLY thing you write):
+> - **underspecified** → splice in the needs-input block with your specific questions,
+>   one per line, via `source <PROGRESS-HELPER-PATH> && set_needs_input "<ITEM-ID>"
+>   "<question>\n<question>"` (it does the shell-side splice + START/END markers).
+> - **specified but a needs-input block exists** (the user answered) → fold the Q&A
+>   into a durable `## Clarifications` section *outside* the `AUTOSHIP-NEEDS-INPUT`
+>   markers and delete the block, so the builder sees the answers as spec and nothing
+>   is lost.
+> - **specified, no block** → leave the body untouched.
+>
+> Return ONLY this handoff, ≤150 words:
+> ```
+> triage:
+>   - id: <ITEM-ID> task: <TASK-ID> walk: y|n verdict: specified | needs-input
+>   - …
+> ```
+
 ## Failure-signature normalization
 
 Build a stable, low-cardinality string so the same root cause hashes identically
@@ -97,11 +149,14 @@ loop-breakers read (and a resume rebuilds attempt history from).
 
 ```
 <HH:MM:SS>  run start · actionable=<k> · budget <dmax> dispatches / <smax> spawns
+<HH:MM:SS>  <TASK-ID>  id-assigned [TASK-n]                  # triage gave an untagged card an ID
+<HH:MM:SS>  <TASK-ID>  triaged clean | needs-input | walk    # triage verdict; `clean` skips re-triage
 <HH:MM:SS>  dispatch · <TASK-ID> <TASK-ID> …
 <HH:MM:SS>  <TASK-ID>  pr-green #<n> mergeable=<y|n>
 <HH:MM:SS>  <TASK-ID>  merged #<n> -> main (ff)
 <HH:MM:SS>  <TASK-ID>  walk-pass | walk-fail
 <HH:MM:SS>  <TASK-ID>  failed attempt=<N> sig=<signature> parent=<id|-> depth=<d> [-> PARKED]
+<HH:MM:SS>  <TASK-ID>  blocked -> Needs Input                # agent escalation; NOT a failure attempt
 <HH:MM:SS>  <TASK-ID>  recovered (crash) -> {merge|To Do}    # run-start reconcile, §7
 <HH:MM:SS>  HALT · <reason: global-breaker|stall|cluster-down>
 ```

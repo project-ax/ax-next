@@ -57,11 +57,18 @@ at run start (`references/github-project.md` §0–2).
 - **Card** — title prefixed `[TASK-ID]`; dependencies in the **"Depends on"** field
   (`gh` JSON key `"depends on"`): space/comma-separated Task IDs. **Empty = not yet
   analyzed; `none` = analyzed, no deps.** Don't conflate the two.
-- **Lane** = the `Status` field: **Backlog · To Do · In Progress · In Review · Done · Parked**.
+- **Lane** = the `Status` field: **Backlog · To Do · Needs Input · In Progress · In Review · Done · Parked**.
 - **In-flight** — cards in **In Progress** or **In Review** (each has, or will have, an
   open PR titled `[TASK-ID]…` — `gh pr list`).
 - **Done** — Done lane (merged). **Parked** — quarantined (see Failure handling),
   excluded from the ready set.
+- **Needs Input** — blocked on a human: triage found the card underspecified (it
+  injects fill-in-the-blank fields — see **Triage gate**), or a building agent
+  escalated a decision only a human can make (the `blocked` outcome — see Failure
+  handling). The orchestrator never pulls from it; it's **excluded from the ready
+  set**, **not counted toward the in-flight cap**, and **ignored by §7 reconcile** (no
+  live agent owns it). The user fills the card in and drags it back to **To Do**, which
+  re-runs triage.
 
 A To Do card is **ready** iff every Task ID in its "Depends on" points at a **Done**
 card (empty / `none` / all-Done ⇒ ready). **`(walk)`-titled cards are never
@@ -72,16 +79,17 @@ yolo-shipped** — see Cluster-walk lane.
 
 ## Control loop
 
-At run start: resolve the board, ensure the 6-lane `Status` set + the `Depends on`
-field exist (`references/github-project.md` §1–2), write the poller, the progress
-helper (`.claude/auto-ship-progress.sh`, §6), **and** the batched board helper
-(`.claude/auto-ship-board.sh`, §2b) + take the owner lock (§7), **reconcile any
+At run start: resolve the board, ensure the 7-lane `Status` set + the `Depends on`
+field exist (`references/github-project.md` §1–2), write the poller, the progress +
+needs-input helpers (`.claude/auto-ship-progress.sh`, §6/§8), **and** the batched board
+helper (`.claude/auto-ship-board.sh`, §2b) + take the owner lock (§7), **reconcile any
 orphaned in-flight cards** (§7 — this is the crash/resume recovery step), print the
 plan, launch the poller, then idle. You then run the same pass on **every wake**:
 
 ```dot
 digraph autoship {
   "Wake (board change | agent done | run start)" [shape=box];
+  "Triage new/untagged To Do cards (assign ID, walk-tag; underspec -> Needs Input)" [shape=box];
   "Review To Do deps (analyze empty, prune dangling)" [shape=box];
   "Recompute ready set + open slots" [shape=box];
   "Open slots AND ready cards?" [shape=diamond];
@@ -90,7 +98,8 @@ digraph autoship {
   "Refresh snapshot + re-arm poller + idle" [shape=doublecircle];
 
   "Wake (board change | agent done | run start)" -> "Merged PRs? serialized merge queue -> move cards";
-  "Merged PRs? serialized merge queue -> move cards" -> "Review To Do deps (analyze empty, prune dangling)";
+  "Merged PRs? serialized merge queue -> move cards" -> "Triage new/untagged To Do cards (assign ID, walk-tag; underspec -> Needs Input)";
+  "Triage new/untagged To Do cards (assign ID, walk-tag; underspec -> Needs Input)" -> "Review To Do deps (analyze empty, prune dangling)";
   "Review To Do deps (analyze empty, prune dangling)" -> "Recompute ready set + open slots";
   "Recompute ready set + open slots" -> "Open slots AND ready cards?";
   "Open slots AND ready cards?" -> "Fill slots: move -> In Progress, dispatch yolo-ship (parallel)" [label="yes"];
@@ -111,6 +120,30 @@ Three wake signals, all run the same pass:
 **Print the plan before the first dispatch** (ready set + skip-list + lane plan) so a
 watching human can interrupt. `--dry-run` runs one review+recompute pass, prints the
 plan, and stops — **no dispatch, no board writes, no poller**.
+
+## Triage gate (first review step, on every To Do change)
+
+Before dependency review, normalize the To Do lane. A card is a **triage candidate**
+iff it has no current `triaged <TASK-ID> clean` row in the journal — that one rule
+catches brand-new human cards, follow-ups auto-ship just created, and cards
+re-promoted from **Needs Input**. Zero candidates ⇒ skip (no agent, no cost). Triage
+runs **synchronously** at the top of the pass and **doesn't consume a code slot**.
+
+1. **Assign IDs (shell-side, no body read).** Any candidate whose title doesn't match
+   `^\[(ARCH|CLI|SYNC|FAULTA|TASK)-[0-9]+\] ` is untagged → give it the next
+   `[TASK-n]` (max `[TASK-<num>]` on the board + 1) and rewrite the title.
+2. **Dispatch the triage agent** (`references/templates.md` › Triage dispatch prompt) —
+   one lightweight `general-purpose` agent, **no worktree**, passed only the candidate
+   **item-ids + TASK-IDs**. It fetches bodies itself (bodies never enter your context),
+   judges **walk-ness** and **specified-vs-underspecified**, and writes the needs-input
+   block into underspecified bodies (or folds answers into the spec + strips the block
+   when a re-triaged card is now answered). Bar for underspecified: a human-owned
+   **decision** is missing — not mere brevity, and not technical detail the agent can
+   read from the code.
+3. **Apply the verdict (you, shell-side).** Append `(walk)` where flagged; move
+   `needs-input` cards → **Needs Input** and journal `triaged <id> needs-input`; leave
+   `specified` cards in **To Do** and journal `triaged <id> clean` (so they're never
+   re-triaged). Mechanics + the `set_needs_input` helper: `references/github-project.md` §8.
 
 ## Dependency review (on every To Do change)
 
@@ -243,6 +276,16 @@ Quarantine is visible: move the card → **Parked**, prefix its title `🛑`,
 `append_progress … "🛑 parked — attempt=<N> sig=<signature>"` on the card (§6), and
 add a journal row. Excluded from the ready set.
 
+**Blocked agents → Needs Input (not a failure).** A dispatched agent that hits a
+decision only a human can own returns `outcome: blocked` with a `needs-input:` list
+(`references/templates.md`). This is **not** a failure: move the in-flight card →
+**Needs Input**, write the questions into its body with `set_needs_input`
+(`references/github-project.md` §8 — shell-side, so the body stays out of your
+context), clean up the abandoned worktree/branch (§7 cleanup — there's no PR), and
+journal `blocked <id>`. It does **not** count as an attempt and the same-signature
+breaker doesn't apply (a human is now in the loop). It re-enters through the triage
+gate when the user answers and drags it back to To Do.
+
 ## Progress & observability
 
 The **board is the dashboard** — every state is visible in the GitHub Projects UI,
@@ -259,7 +302,7 @@ Locally, gitignored only:
   merges, attempt counts, signatures, crash-recoveries). The loop-breakers read it; a
   resume rebuilds attempt history from it.
 - `.claude/auto-ship-todo-snapshot.txt` — the poller's last-seen To Do hash.
-- `.claude/auto-ship-progress.sh` — the shell-side `append_progress` helper (§6).
+- `.claude/auto-ship-progress.sh` — the shell-side body-RMW helpers `append_progress` (§6) + `set_needs_input` (§8).
 - `.claude/auto-ship-board.sh` — the batched board helpers `board_snapshot` + `board_batch` (§2b).
 - `.claude/auto-ship-board.json` — the once-per-pass board snapshot cache (§3).
 - `.claude/auto-ship-owner.lock` — the single-instance heartbeat (§7).
@@ -288,6 +331,9 @@ in-flight, and any walk-filed follow-ups.
 - First-ever validation: point auto-ship at a throwaway 2-card To Do (one depending on
   the other) before the real board, and at a deliberately-failing card to confirm the
   breaker parks it.
+- Triage validation: drop an **untagged** card and a deliberately **underspecified**
+  one into To Do; confirm triage assigns the next `[TASK-n]` to the first and routes
+  the second to **Needs Input** with fill-in-the-blank fields (never into the ready set).
 
 ## Red flags — you are rationalizing
 
@@ -299,6 +345,8 @@ in-flight, and any walk-filed follow-ups.
 | "I'll skip the plan print, the ready set looks obvious" | Print it first. Auto-merging to main is high blast-radius. |
 | "I'll let the agent move its own card / set its deps" | Agents never write the **routing fields** (`Status`, `Depends on`) or another card. The one thing an agent writes is the progress block of its own In-Progress card (§6); you own all routing + moves. |
 | "I'll read the card body to see how far it got" | Never pull a body into context — the `append_progress` RMW is shell-side (§6). For recovery you key off the `Status` lane + PR ground truth (§7), not the body. |
+| "I'll read the body to judge if a new card is underspecified" | Triage's body read happens in the **dispatched triage agent**, never your context. You assign IDs from titles only and act on the agent's compact verdict + the journal. |
+| "This untagged To Do card looks ready, I'll dispatch it" | Un-triaged cards pass the triage gate first — ID assigned, walk-tagged, underspec routed to Needs Input. Never dispatch a card with no `triaged … clean` row. |
 | "Re-invoked after a crash — I'll just start dispatching" | Run the §7 reconcile **first**: orphaned In Progress / In Review cards (PR → merge queue; no PR → reset to To Do) before draining, or they wedge slots forever. |
 | "An In-Progress card looks stuck, I'll re-dispatch it" | Only on a **run-start** wake (no live agents). On a board-change/agent-done wake those agents are live — reconciling would double-dispatch. |
 | "I'll poll the board myself each minute" | That burns tokens. The background poller is token-free and re-invokes you on change. |

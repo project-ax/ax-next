@@ -114,6 +114,7 @@ it.** There is no committed task list and no mermaid DAG to keep in sync.
 
 - **Backlog** — gated / not-yet-actionable / wait-until-earned work. The orchestrator never pulls from here. New work the team isn't ready to start lands here. Dep-gated `(walk)`-tagged manual-acceptance walks wait here too; once their deps are met they move to **To Do** and auto-drain via the serialized walk lane (`k8s-acceptance-loop` drives Playwright against the cluster — they aren't `yolo-ship`-able, and they're gated only on cluster reachability, never on a human — see below).
 - **To Do** — the actionable inbox. Anyone drops a card here; the `auto-ship` orchestrator drains it.
+- **Needs Input** — blocked on a human. A card auto-ship's triage gate found underspecified (it injects fill-in-the-blank fields into the card body), or one a building agent escalated because it hit a decision only a human can make. The orchestrator never pulls from here. Fill in the card and drag it back to **To Do**; triage re-checks it and, if complete, it rejoins the flow.
 - **In Progress** — a `yolo-ship` agent is building it.
 - **In Review** — its PR is open, queued for the serialized merge.
 - **Done** — merged.
@@ -121,7 +122,7 @@ it.** There is no committed task list and no mermaid DAG to keep in sync.
 
 **Card shape:**
 
-- **Title** is prefixed with a stable `[TASK-ID]` (`ARCH-n`, `CLI-n`, `SYNC-n`, `FAULTA-n`, or a fresh `TASK-n`). Walk cards also carry `(walk)` in the title.
+- **Title** is prefixed with a stable `[TASK-ID]` (`ARCH-n`, `CLI-n`, `SYNC-n`, `FAULTA-n`, or a fresh `TASK-n`). Walk cards also carry `(walk)` in the title. A card dropped into **To Do** without a stable ID is fine — auto-ship's triage gate assigns the next `[TASK-n]` (and adds `(walk)` if it detects a manual-acceptance walk) the first time it sees the card.
 - **Dependencies** live in the **"Depends on"** text field as space/comma-separated Task IDs. Empty = *not yet analyzed*; `none` = *analyzed, no deps*. Don't conflate the two.
 
 **Readiness is derived, not a lane.** A To Do card is *ready* iff every Task ID in

@@ -12,6 +12,7 @@ The state↔lane map:
 |---|---|
 | gated / not-yet-actionable | **Backlog** |
 | actionable, awaiting dispatch (incl. ready `(walk)` cards) | **To Do** |
+| blocked on a human (triage-underspec OR agent-blocked) | **Needs Input** |
 | dispatched, agent building, pre-PR | **In Progress** |
 | PR open, queued for merge | **In Review** |
 | merged / done | **Done** |
@@ -54,24 +55,25 @@ DEPS_FIELD_ID=$(echo "$FIELDS"   | jq -r '.fields[] | select(.name=="Depends on"
 echo "$FIELDS" | jq -r '.fields[] | select(.name=="Status") | .options[] | "\(.name)\t\(.id)"'
 ```
 
-Expected six lanes — **Backlog, To Do, In Progress, In Review, Done, Parked**. If the
-`Depends on` field is missing, create it (text):
+Expected seven lanes — **Backlog, To Do, Needs Input, In Progress, In Review, Done,
+Parked**. If the `Depends on` field is missing, create it (text):
 
 ```bash
 [ -z "$DEPS_FIELD_ID" ] && gh project field-create "$PNUM" --owner "$OWNER" \
   --name "Depends on" --data-type TEXT
 ```
 
-### 2a. (Re)define the 6-lane set — empty board only
+### 2a. (Re)define the 7-lane set — empty board only
 
 `singleSelectOptions` **REPLACES the entire option set**, which would unset every
 card's status. Run this **only** on a board with no cards (initial setup); otherwise
-the six lanes already exist and you just map names → ids in §2.
+the seven lanes already exist and you just map names → ids in §2.
 
 ```bash
 gh api graphql -f query='mutation($f:ID!){updateProjectV2Field(input:{fieldId:$f,singleSelectOptions:[
   {name:"Backlog",color:GRAY,description:"Gated / not-yet-actionable; orchestrator never pulls"},
   {name:"To Do",color:YELLOW,description:"Actionable inbox; orchestrator drains dep-free cards"},
+  {name:"Needs Input",color:PINK,description:"Blocked on a human — fill in the card and drag back to To Do"},
   {name:"In Progress",color:BLUE,description:"A yolo-ship agent is building it"},
   {name:"In Review",color:PURPLE,description:"PR open, queued for the serial merge"},
   {name:"Done",color:GREEN,description:"Merged"},
@@ -198,8 +200,11 @@ Transitions (orchestrator, AFTER the journal write): dependency cleared / card l
 in To Do → leave in **To Do**; dispatch → **In Progress**; `pr-green` / PR open →
 **In Review** (the agent already logged `PR #<n> opened` in the block); merged →
 **Done** (`append_progress … "merged #<n> ✅"`); quarantined → **Parked** (+ `🛑`
-title prefix + `append_progress … "🛑 parked — <signature>"`). Walk cards stay in
-**Backlog** unless a human moves them to To Do.
+title prefix + `append_progress … "🛑 parked — <signature>"`); triage-underspec or an
+agent `blocked` handoff → **Needs Input** (the fill-in-the-blank block lands in the
+body via `set_needs_input`, §8 — **not** a failure attempt). **Needs Input → To Do is
+a human drag**, never an orchestrator write; it re-enters via the triage gate (§8).
+Walk cards stay in **Backlog** unless a human moves them to To Do.
 
 ## 5. The poller (token-free To Do watcher)
 
@@ -331,7 +336,8 @@ concurrency cap counts them as in-flight, they would silently consume slots fore
 A *fresh* `/auto-ship` therefore cannot own any live agents — so on the
 **run-start / resume wake only** (never a board-change or agent-done wake) it
 reconciles every In Progress + In Review card against ground truth, with **no risk of
-reaping a live agent**.
+reaping a live agent**. (Cards in **Needs Input** are *not* in-flight — no agent owns
+them — so reconcile never touches them; they wait on the human.)
 
 **Single-instance guard** (don't reconcile a still-live sibling's cards — refresh it
 every pass as a heartbeat):
@@ -378,3 +384,112 @@ Reconciliation keys off the **`Status` lane + PR ground truth**, not the progres
 block — so a crash mid-body-write is tolerated. The journal
 (`.claude/auto-ship-log.md`) survives on disk, so **attempt counts rebuild across the
 crash**: a card that already burned an attempt does not get a free reset.
+
+## 8. Triage gate — auto-assign IDs + catch underspecified cards
+
+Runs as the **first step of the review phase** on every To Do-change wake, *before*
+dependency review. Three jobs: give untagged cards a stable ID, tag walks, and route
+underspecified cards to **Needs Input**.
+
+### 8.1 Candidate detection (shell-side — no body read)
+
+A To Do card is a **triage candidate** this pass iff it has **no current `triaged
+<TASK-ID> clean` row** in the journal (`.claude/auto-ship-log.md`). That one rule
+covers all three sources without the orchestrator ever reading a body:
+
+- brand-new human cards (also need an ID — §8.2),
+- follow-up cards auto-ship created from agent handoffs (have IDs, never triaged),
+- cards re-promoted from **Needs Input → To Do** (latest row is `needs-input` /
+  `blocked`, not `clean` → re-evaluated).
+
+Zero candidates ⇒ dispatch **no** triage agent (steady-state passes cost nothing).
+Triage runs **synchronously** at the top of the pass and **does not consume a code
+slot** (like a walk).
+
+```bash
+# candidates = To Do cards whose TASK-ID has no later `triaged … clean` in the journal
+echo "$ITEMS" | jq -r '.items[] | select(.status=="To Do") | "\(.title)\t\(.id)"'
+# (cross-reference each TASK-ID against .claude/auto-ship-log.md — titles only, never bodies)
+```
+
+### 8.2 ID assignment + walk tag (orchestrator, shell-side)
+
+**Untagged** = the title does not match `^\[(ARCH|CLI|SYNC|FAULTA|TASK)-[0-9]+\] `.
+For each untagged candidate, assign the next **`TASK-n`** (n = max existing
+`[TASK-<num>]` across the whole board + 1; sequential for several in one pass,
+computed from the already-bound `$ITEMS` so there's no race) and rewrite the title:
+
+```bash
+NEXT=$(echo "$ITEMS" | jq -r '.items[].title | capture("\\[TASK-(?<n>[0-9]+)\\]").n // empty' \
+        | sort -n | tail -1); NEXT=$(( ${NEXT:-0} + 1 ))
+gh project item-edit --id "$ITEM_ID" --title "[TASK-$NEXT] $ORIGINAL_TITLE"
+```
+
+The `(walk)` tag is appended **after** the triage agent's verdict (it needs the body).
+Per convention a walk card carries **both** the ID **and** `(walk)` — never one instead
+of the other. A human who pre-tagged `(walk)` keeps it.
+
+### 8.3 The needs-input block + `set_needs_input` helper
+
+Underspecified cards get a delimited block spliced into the body — same one-writer
+discipline as the progress block (§6), human description preserved outside the markers:
+
+```
+<!-- AUTOSHIP-NEEDS-INPUT:START -->
+### ⚠ Needs input before this can ship
+auto-ship can't proceed without a few decisions. Fill in the blanks, then drag this
+card back to **To Do**.
+
+- [ ] **<question>:** _<your answer>_
+- [ ] **<question>:** _<your answer>_
+<!-- AUTOSHIP-NEEDS-INPUT:END -->
+```
+
+The **triage agent** writes this block directly for the underspec path (it's already
+reading the body, and no other writer owns a To Do / Needs-Input card). When re-triage
+finds the answers sufficient, the agent **folds the Q&A into the durable description**
+(a `## Clarifications` section outside the markers) and removes the block — the
+dispatched builder then sees the answers as spec, and nothing the user typed is lost.
+
+The **orchestrator** writes the block only for the `blocked` outcome (SKILL.md ›
+Failure handling), where the questions arrive in the agent's handoff. It uses
+`set_needs_input` — a shell-side body-RMW sibling of `append_progress`, written next to
+it at run start, so the body never enters the orchestrator's context:
+
+```bash
+cat >> .claude/auto-ship-progress.sh <<'SH'
+# set_needs_input <project-item-node-id> "<questions, one per line>"
+# Shell-side RMW: replace/splice the NEEDS-INPUT block in a draft-issue body.
+set_needs_input() {
+  local item="$1" questions="$2"
+  local START='<!-- AUTOSHIP-NEEDS-INPUT:START -->'
+  local END='<!-- AUTOSHIP-NEEDS-INPUT:END -->'
+  local q='query($i:ID!){node(id:$i){... on ProjectV2Item{content{... on DraftIssue{id body}}}}}'
+  local json cid body checks block stripped nb
+  json=$(gh api graphql -f query="$q" -f i="$item" 2>/dev/null) || { echo "needs-input: skip (read)"; return 0; }
+  cid=$(printf '%s' "$json" | jq -r '.data.node.content.id // empty')
+  body=$(printf '%s' "$json" | jq -r '.data.node.content.body // ""')
+  [ -z "$cid" ] && { echo "needs-input: skip (not a draft-issue card)"; return 0; }
+  checks=$(printf '%s' "$questions" | sed 's/^/- [ ] /')
+  block=$(printf '%s\n### ⚠ Needs input before this can ship\nFill in the blanks, then drag this card back to **To Do**.\n\n%s\n%s' \
+            "$START" "$checks" "$END")
+  # drop any prior block (markers inclusive), then append the fresh one
+  stripped=$(printf '%s' "$body" | awk -v s="$START" -v e="$END" 'BEGIN{k=0} $0==s{k=1} k==0{print} $0==e{k=0}')
+  nb=$(printf '%s\n\n%s' "$stripped" "$block")
+  gh api graphql -f query='mutation($d:ID!,$b:String!){updateProjectV2DraftIssue(input:{draftIssueId:$d,body:$b}){draftIssue{id}}}' \
+    -f d="$cid" -f b="$nb" >/dev/null 2>&1 && echo "needs-input: set" || echo "needs-input: skip (write)"
+}
+SH
+```
+
+### 8.4 The triage agent
+
+Dispatch ONE lightweight `general-purpose` agent (**no worktree** — it touches only the
+board via `gh`, never code), passing only the candidate **item-ids + assigned
+TASK-IDs**. It fetches each body itself, so bodies never enter the orchestrator's
+context. It judges walk-ness and specified-vs-underspecified, writes/strips the
+needs-input block, and returns a compact per-card verdict. Prompt + handoff schema:
+`references/templates.md` › **Triage dispatch prompt**. The orchestrator then applies
+the verdict shell-side: append `(walk)` where flagged; move underspecified → **Needs
+Input** and journal `triaged <id> needs-input`; leave specified in **To Do** and
+journal `triaged <id> clean`.
