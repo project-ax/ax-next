@@ -471,6 +471,11 @@ describe('main()', () => {
           ANTHROPIC_API_KEY: string;
           HOME?: string;
           PATH?: string;
+          TERM?: string;
+          COLUMNS?: string;
+          LINES?: string;
+          FORCE_COLOR?: string;
+          CI?: string;
         };
       };
     };
@@ -524,6 +529,27 @@ describe('main()', () => {
         `${COMPLETE_ENV.AX_WORKSPACE_ROOT}/bin:`,
       ),
     ).toBe(false);
+
+    // TASK-26: terminal-hint env reaches the SDK Bash tool's child so
+    // TTY-detecting CLIs (cliffy/Deno, ink, chalk, CI-aware tools) emit
+    // output in the detached, no-controlling-TTY sandbox shell. A regression
+    // that drops the buildTtyHintEnv() spread fails here.
+    //
+    // FORCE_COLOR / CI are NOT in proxy-startup ENV_ALLOWLIST, so the
+    // buildTtyHintEnv() default is never overridden by a forwarded value —
+    // assert the exact value.
+    expect(queryArg.options.env.FORCE_COLOR).toBe('1');
+    expect(queryArg.options.env.CI).toBe('1');
+    // TERM / COLUMNS / LINES ARE in the allowlist, so a real forwarded value
+    // (e.g. the test host's TTY TERM) wins over the default FLOOR by design
+    // (spread-FIRST, "floor not clamp"). The production sandbox has no TTY, so
+    // these resolve to the buildTtyHintEnv() defaults; either way the contract
+    // is that the Bash child always SEES them (never undefined). Assert
+    // presence, not the exact default.
+    expect(queryArg.options.env.TERM).toBeDefined();
+    expect(queryArg.options.env.TERM?.length).toBeGreaterThan(0);
+    expect(queryArg.options.env.COLUMNS).toBeDefined();
+    expect(queryArg.options.env.LINES).toBeDefined();
 
     expect(fakeClient.close).toHaveBeenCalledTimes(1);
   });
