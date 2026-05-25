@@ -70,17 +70,19 @@ export const DEFAULT_TURN_ERROR =
   'The agent stopped unexpectedly. Retry to continue.';
 
 /**
- * Sentinel error text for a `done`-less stream close (Faults B/D — the host
- * bounced or the network dropped mid-turn, so the SSE connection died before
- * any terminal `done`/`error` frame arrived). This is an INTERNAL
- * @ax/channel-web contract (NOT a hook payload) shared between this file and
- * the runtime's onError — exactly like DEFAULT_TURN_ERROR. The runtime
- * matches `error.message === CONNECTION_LOST` to decide a SILENT retry (first
- * failure) vs surfacing the error banner (second failure); the wording also
- * doubles as the transient "retrying…" label and, if the silent retry is
- * exhausted, the banner text.
+ * User-facing banner text for a `done`-less stream close (Faults B/D — the
+ * host bounced or the network dropped mid-turn, so the SSE connection died
+ * before any terminal `done`/`error` frame arrived). The transport emits this
+ * as an AI-SDK `error` chunk; the runtime's onError renders it on the
+ * AgentStatus error row, which shows a "retry" button alongside.
+ *
+ * Wording is MANUAL-retry copy ("Retry to continue.", mirroring
+ * DEFAULT_TURN_ERROR) — there is NO automatic retry/reconnect on this path
+ * (a loss-free silent resume needs a server-side per-chunk sequence number;
+ * see the transport's buildTurnStream doc). Saying "Retrying…" would be a lie
+ * that leaves the user waiting instead of clicking retry.
  */
-export const CONNECTION_LOST = 'Connection lost. Retrying…';
+export const CONNECTION_LOST = 'Connection lost. Retry to continue.';
 
 /**
  * Map a wire turn-error reason code (backend-agnostic, from the orchestrator)
