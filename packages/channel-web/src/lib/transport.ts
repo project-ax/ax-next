@@ -639,24 +639,36 @@ async function consumeSseAttempt(
           continue;
         }
         // TASK-23 — per-chunk seq dedup + gap detection (content frames only).
-        // The host stamps a monotonic per-reqId `seq` on every content frame.
+        // The host stamps a monotonic per-reqId `seq` (minted from 1) on every
+        // content frame.
         //   - seq <= lastSeq  → a replayed duplicate; SKIP it (exact dedup of a
         //     partial buffer replay — this is what makes a same-reqId reconnect
         //     loss-free instead of double-rendering the replayed tail).
-        //   - lastSeq > 0 && seq > lastSeq + 1 → a contiguity GAP: the bounded
-        //     256-chunk buffer dropped frames the client never saw. Surface the
-        //     CONNECTION_LOST banner (return 'lost') — silent loss is worse than
-        //     a banner (the FAULTA-5 invariant). The FIRST content frame
-        //     (lastSeq 0) may legitimately start at any seq — connect-time buffer
-        //     truncation is not a mid-stream loss — so it just sets the baseline.
+        //   - the FIRST seq-bearing content frame with seq > 1 → the bounded
+        //     256-frame buffer already dropped the head (seq 1..seq-1) before
+        //     THIS client ever saw it. Servers always mint from 1, so a first
+        //     frame above 1 is proof of a truncated head → surface the
+        //     CONNECTION_LOST banner (return 'lost') rather than rendering the
+        //     tail as a complete answer and silently omitting the head (Codex
+        //     P2). A first frame at exactly seq 1 is the clean start.
+        //   - lastSeq > 0 && seq > lastSeq + 1 → a mid-stream contiguity GAP:
+        //     the buffer dropped frames the client never saw. Same banner.
         //   - otherwise → accept and advance lastSeq.
-        // Frames WITHOUT a numeric seq (older server build) bypass this entirely.
+        // Frames WITHOUT a numeric seq (older server build) bypass this entirely
+        // and stream as before (forward-compat — no dedup, no gap detection).
         if ('kind' in frame && typeof (frame as { seq?: unknown }).seq === 'number') {
           const seq = (frame as { seq: number }).seq;
           if (seq <= ctx.lastSeq) {
             continue; // duplicate replayed frame — already shown
           }
-          if (ctx.lastSeq > 0 && seq > ctx.lastSeq + 1) {
+          if (ctx.lastSeq === 0) {
+            // First seq-bearing content frame for this stream. A clean start is
+            // seq 1; anything higher means the buffer head was dropped before
+            // this client connected → loss, not a valid baseline.
+            if (seq > 1) {
+              return 'lost';
+            }
+          } else if (seq > ctx.lastSeq + 1) {
             // Hole in the sequence after content already streamed → loss.
             return 'lost';
           }

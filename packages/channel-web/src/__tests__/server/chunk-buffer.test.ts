@@ -406,4 +406,27 @@ describe('@ax/channel-web ChunkBuffer', () => {
       buf.dispose();
     }
   });
+
+  // Codex P2 (TASK-23): a content turn that ends via chat:turn-error with NO
+  // SSE listener attached stores the error (turn-error-fill subscriber) but no
+  // per-connection evictor runs. On TTL the entry must be FULLY DELETED (the
+  // seq cursor is dead — no chunks follow a turn-error), not preserved as a
+  // cursor shell forever, which would leak one entry per abandoned failed turn.
+  it('TTL sweep fully reaps a content entry that ended with a stored turn-error (no shell leak)', () => {
+    const buf = createChunkBuffer();
+    try {
+      buf.append({ reqId: 'r1', text: 'partial', kind: 'text' }); // seq 1, content
+      buf.appendTurnError('r1', 'sandbox-terminated'); // terminal error, no listener
+      expect(buf.tailTurnError('r1')).toBe('sandbox-terminated');
+      // Past TTL + a sweep → the terminated entry is GONE, not a lingering shell.
+      vi.advanceTimersByTime(91_000);
+      expect(buf.tailTurnError('r1')).toBeNull();
+      expect(buf.tail('r1')).toEqual([]);
+      // Proof it was a FULL delete (not a kept cursor shell): a recycled reqId
+      // re-seeds at seq 1.
+      expect(buf.append({ reqId: 'r1', text: 'new-turn', kind: 'text' }).seq).toBe(1);
+    } finally {
+      buf.dispose();
+    }
+  });
 });

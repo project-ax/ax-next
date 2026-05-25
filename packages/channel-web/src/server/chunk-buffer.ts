@@ -150,10 +150,21 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
     const cutoff = now() - IDLE_TTL_MS;
     for (const [reqId, entry] of map) {
       if (entry.lastWriteMs > cutoff) continue;
+      // A TERMINATED turn (a terminal turn-error is stored) is fully dropped
+      // once its replay window passes — its seq cursor is dead (no more chunks
+      // will follow a turn-error), so there's nothing to preserve and keeping a
+      // shell would leak one entry per abandoned failed turn that no SSE
+      // listener ever evicted (Codex P2). This precedes the reclaimed check so
+      // a previously-reclaimed entry that later took a turn-error still reaps.
+      if (entry.turnError !== null) {
+        map.delete(reqId);
+        continue;
+      }
       if (entry.reclaimed) {
-        // Already a cursor-only shell — leave it. Resetting it now would let a
-        // still-live but long-quiet turn's counter restart at 1 (Codex P1).
-        // Only evictReqId (the real turn boundary) drops it.
+        // Already a cursor-only shell for a still-live, long-quiet turn — leave
+        // it. Resetting it now would let the counter restart at 1 underneath a
+        // connected client (Codex P1). Only evictReqId (the real turn boundary)
+        // or a later turn-error drops it.
         continue;
       }
       if (entry.nextSeq > 1) {
@@ -163,12 +174,11 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
         // quiet tool call) continues the sequence instead of resetting to 1.
         entry.chunks = [];
         entry.phase = null;
-        entry.turnError = null;
         entry.reclaimed = true;
         continue;
       }
-      // Never minted a content seq (only a phase or a pre-content turn-error,
-      // or an empty entry) → no cursor worth preserving; drop it outright.
+      // Never minted a content seq (only a phase, or an empty entry) → no
+      // cursor worth preserving; drop it outright.
       map.delete(reqId);
     }
   }

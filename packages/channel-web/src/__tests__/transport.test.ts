@@ -462,14 +462,11 @@ describe('AxChatTransport SSE chunk parsing', () => {
     expect(errorChunk?.errorText).toBe(CONNECTION_LOST);
   });
 
-  test('the FIRST content frame may start at any seq (connect-time truncation is not a mid-stream gap)', async () => {
+  test('a clean stream whose FIRST content frame is seq 1 streams normally', async () => {
     const transport = new AxChatTransport({ getAgentId: () => 'a' });
-    // A fresh connection whose buffer head was already dropped before connect:
-    // the first frame is seq 5. With no prior last-seen seq, this is the
-    // connect-time baseline, NOT a mid-stream loss — it must stream normally.
     const body =
-      `data: {"reqId":"r1","text":"a","kind":"text","seq":5}\n\n` +
-      `data: {"reqId":"r1","text":"b","kind":"text","seq":6}\n\n` +
+      `data: {"reqId":"r1","text":"a","kind":"text","seq":1}\n\n` +
+      `data: {"reqId":"r1","text":"b","kind":"text","seq":2}\n\n` +
       `data: {"reqId":"r1","done":true}\n\n`;
     const chunks = await drain(asProcess(transport)(sseStream(body))) as Array<{
       type: string;
@@ -482,6 +479,32 @@ describe('AxChatTransport SSE chunk parsing', () => {
     const types = chunks.map((c) => c.type);
     expect(types[types.length - 1]).toBe('finish');
     expect(types).not.toContain('error');
+  });
+
+  test('a FIRST content frame above seq 1 means a truncated head → CONNECTION_LOST (Codex P2)', async () => {
+    const transport = new AxChatTransport({ getAgentId: () => 'a' });
+    // A fresh connection whose buffer head was already dropped before connect:
+    // the first seq-bearing content frame is seq 257 (the 256-cap dropped
+    // 1..256). Servers mint from 1, so seq 257 first is PROOF the head is gone
+    // — surface the banner rather than rendering the tail as a complete answer.
+    const body =
+      `data: {"reqId":"r1","text":"tail-only","kind":"text","seq":257}\n\n` +
+      `data: {"reqId":"r1","done":true}\n\n`;
+    const chunks = await drain(asProcess(transport)(sseStream(body))) as Array<{
+      type: string;
+      delta?: string;
+      errorText?: string;
+    }>;
+    const types = chunks.map((c) => c.type);
+    // The truncated tail must NOT render as a finished answer.
+    expect(chunks.some((c) => c.type === 'text-delta')).toBe(false);
+    expect(types).toContain('error');
+    expect(types).not.toContain('finish');
+    expect(types[types.length - 1]).toBe('error');
+    const errorChunk = chunks.find((c) => c.type === 'error') as
+      | { errorText: string }
+      | undefined;
+    expect(errorChunk?.errorText).toBe(CONNECTION_LOST);
   });
 
   test('frames WITHOUT seq pass through unchanged (older-server forward-compat)', async () => {
