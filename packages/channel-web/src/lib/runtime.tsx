@@ -42,19 +42,16 @@ const useChatThreadRuntime = (transport: AxChatTransport): AssistantRuntime => {
   // two shapes:
   //
   //   - Fault A — an orchestrator-terminated turn (server `error` SSE frame)
-  //     with a mapped friendly label. A reconnect wouldn't help.
-  //   - Faults B/D (FAULTA-5) — a CONNECTION_LOST sentinel, emitted only AFTER
-  //     the transport has EXHAUSTED its transparent same-reqId reconnect
-  //     attempts (host bounce / sustained network drop). The transport already
-  //     did the silent recovery (idempotent GET reconnects, never a re-POST),
-  //     so by the time onError fires here the silent retry is spent.
+  //     with a mapped friendly label.
+  //   - Faults B/D (FAULTA-5) — a CONNECTION_LOST sentinel when the SSE stream
+  //     dropped mid-turn without a terminal frame (host bounce / network drop).
   //
-  // Either way the right move now is the SAME: flip the status row to error
-  // mode with a manual retry. The retry button re-runs the last user turn via
-  // `regenerate()` — a deliberate user action, so re-POSTing a fresh turn is
-  // acceptable here (unlike an automatic retry, which could duplicate a live
-  // turn — that's why silent recovery lives in the transport as reconnect,
-  // not here as regenerate).
+  // Both flip the status row to error mode with a MANUAL retry. We don't auto-
+  // retry: a `regenerate()` re-POSTs and could duplicate a still-running server
+  // turn, and a loss-free silent resume needs a server-side per-chunk sequence
+  // number the SSE wire doesn't yet carry (see transport `buildTurnStream`).
+  // The retry BUTTON re-runs the last user turn via `regenerate()` — a
+  // deliberate user action, so re-POSTing a fresh turn is acceptable there.
   //
   // `chatRef` lets the retry handler reach `regenerate()` without a
   // construction-order chicken-and-egg.
