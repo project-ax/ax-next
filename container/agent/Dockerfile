@@ -147,6 +147,37 @@ RUN userdel --remove node 2>/dev/null || true \
  && mkdir -p /opt/ax-next/host \
  && chown -R 1000:1000 /opt/ax-next
 
+# Persisted PATH convention: put `$HOME/bin` on PATH so binaries the agent
+# installs there are found in later sessions.
+#
+# IMPORTANT — the load-bearing path is NOT this file. At runtime the agent's
+# `$HOME` is the git-bundled workspace tier (`/permanent`, set on the SDK
+# subprocess by the runner — see agent-claude-sdk-runner/src/main.ts), and the
+# SDK's Bash tool runs a NON-INTERACTIVE shell that does NOT source `.bashrc`.
+# So `$HOME/bin` actually reaches the agent's PATH via the explicit subprocess
+# env the runner builds (home-bin-env.ts). This `.bashrc` exists for any
+# INTERACTIVE / `BASH_ENV`-driven shell and as the human-discoverable
+# convention.
+#
+# We APPEND `$HOME/bin` (not prepend) for the same reason home-bin-env.ts does:
+# `$HOME` is a model-writable, restored-across-sessions dir, so a leading entry
+# would let an injected `$HOME/bin/git` (etc.) persistently shadow the trusted
+# image binary. Appending keeps installed tools discoverable while the system
+# bins win on name collisions. Idempotent: the `case` guard skips the append if
+# `$HOME/bin` is already on PATH (no unbounded growth on re-source). Keep this
+# in sync with home-bin-env.ts — the Dockerfile-guard test
+# (scripts/__tests__/dockerfile-home-bin-path.test.js) asserts it stays present.
+RUN printf '%s\n' \
+      '# ax agent: ensure $HOME/bin (persisted workspace tier) is on PATH' \
+      'case ":$PATH:" in' \
+      '  *":$HOME/bin:"*) ;;' \
+      '  *) PATH="$PATH:$HOME/bin" ;;' \
+      'esac' \
+      'export PATH' \
+      > /home/axagent/.bashrc \
+ && chown 1000:1000 /home/axagent/.bashrc \
+ && chmod 0644 /home/axagent/.bashrc
+
 COPY --from=builder --chown=1000:1000 /tmp/deploy /opt/ax-next/host
 
 # Stable path for the channel-web SPA bundle. `pnpm deploy --legacy`
