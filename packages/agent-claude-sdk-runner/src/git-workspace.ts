@@ -342,11 +342,17 @@ export async function scaffoldSdkProjectsSymlink(
 // ---------------------------------------------------------------------------
 
 /**
- * Stage `/permanent`, commit if non-empty, build a thin bundle of the
- * new commit(s).
+ * Stage `/permanent`, commit any working-tree changes, and build a thin
+ * bundle of the commits in `baseline..main`.
  *
- * Returns the bundle as base64 bytes, OR null if the turn wrote nothing
- * (no staged changes after `git add -A`). Caller should skip the
+ * Returns the bundle as base64 bytes, OR null when `baseline..main` is empty —
+ * i.e. nothing to ship. That covers an empty turn (no staged changes AND no
+ * prior commit) AND a re-sync replay whose commit became empty because its
+ * content was already in the advanced baseline (a true absorb). The gate is
+ * the commit RANGE, not the working-tree staged diff: after
+ * `resyncBaselineAndReplay` the tree is clean but `main` carries the replayed
+ * turn commit, which still needs shipping (returning null there would let the
+ * caller drop it as "absorbed" — the bug this gate fixes). Caller skips the
  * commit-notify IPC call when null.
  */
 export async function commitTurnAndBundle(input: {
