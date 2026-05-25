@@ -493,7 +493,7 @@ describe('createIpcClient', () => {
         token: 'tok-abc',
         maxRetries: 3,
         now: () => clock,
-        retryBackoff: (a) => {
+        retryBackoff: () => {
           clock += 10;
           return 0;
         },
@@ -506,6 +506,43 @@ describe('createIpcClient', () => {
         HostUnavailableError,
       );
       expect(attempts).toBe(4); // initial + 3 retries
+    });
+
+    it('a persistent HTTP 5xx is capped at a SMALL count, not stretched to the 2-min deadline', async () => {
+      // A deterministic application 5xx (tool internal error, schema drift)
+      // won't heal by waiting, so it gets a small finite cap (MAX_5XX_RETRIES)
+      // even under the generous default deadline — otherwise the runner stalls
+      // for minutes re-issuing the same failing call (Codex round-5 P2).
+      let attempts = 0;
+      let clock = 0;
+      const client = createIpcClient({
+        runnerEndpoint: 'unix:///tmp/unused.sock',
+        token: 'tok-abc',
+        // No maxRetries → default unbounded; the 5xx CAP must bind, not the
+        // 2-min wall-clock.
+        maxElapsedMs: 120_000,
+        now: () => clock,
+        retryBackoff: () => {
+          clock += 10; // tiny — nowhere near the 120_000 deadline
+          return 0;
+        },
+        __requestOnce: async () => {
+          attempts += 1;
+          return {
+            status: 500,
+            body: Buffer.from(
+              JSON.stringify({ error: { code: 'INTERNAL', message: 'boom' } }),
+            ),
+          };
+        },
+      });
+      await expect(client.call('tool.list', {})).rejects.toBeInstanceOf(
+        IpcRequestError,
+      );
+      // initial + MAX_5XX_RETRIES (3) = 4 attempts — bounded by the 5xx cap,
+      // NOT the (never-reached) wall-clock deadline.
+      expect(attempts).toBe(4);
+      expect(clock).toBeLessThan(1_000); // gave up promptly, didn't burn ~2 min
     });
   });
 });

@@ -1,22 +1,16 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import {
-  applyTurnError,
-  autoRetryTurn,
-  shouldAutoRetry,
-  lastUserMessageId,
-  RETRYING_STATUS,
-} from '../lib/turn-error';
+import { applyTurnError } from '../lib/turn-error';
 import {
   agentStatusActions,
   getAgentStatusSnapshot,
 } from '../lib/agent-status-store';
-import { CONNECTION_LOST, DEFAULT_TURN_ERROR } from '../lib/transport';
+import { DEFAULT_TURN_ERROR } from '../lib/transport';
 
-// The runtime's onError glue (TASK-24): a PROVABLY-DEAD turn (orchestrator
-// `error` frame) auto-retries the whole turn via autoRetryTurn with a visible
-// RETRYING_STATUS; a CONNECTION_LOST drop (runner maybe alive) surfaces
-// applyTurnError's manual-retry banner instead, since neither auto-recovery is
-// loss-free AND duplicate-free there.
+// applyTurnError is the runtime's onError glue: it flips the agent-status row
+// to error mode with a retry handler so a turn that ended in an error chunk
+// (Fault A orchestrator-terminated, OR a CONNECTION_LOST sentinel after the
+// transport exhausted its transparent reconnects) surfaces as error+retry
+// instead of a hung spinner or a silent finalize.
 
 describe('applyTurnError', () => {
   afterEach(() => {
@@ -44,102 +38,5 @@ describe('applyTurnError', () => {
   it('falls back to the default message for an Error with an empty message', () => {
     applyTurnError(new Error(''), () => undefined);
     expect(getAgentStatusSnapshot().text).toBe(DEFAULT_TURN_ERROR);
-  });
-});
-
-describe('shouldAutoRetry', () => {
-  it('auto-retries a provably-dead orchestrator terminal-error frame (the mapped labels only)', () => {
-    expect(shouldAutoRetry(new Error(DEFAULT_TURN_ERROR), false)).toBe(true);
-    expect(shouldAutoRetry(new Error('The agent timed out. Retry to continue.'), false)).toBe(true);
-  });
-
-  it('does NOT auto-retry a CONNECTION_LOST drop (runner may still be alive → duplicate/truncation risk)', () => {
-    expect(shouldAutoRetry(new Error(CONNECTION_LOST), false)).toBe(false);
-  });
-
-  it('does NOT auto-retry a sendMessages REJECTION (unknown server state, not a terminal frame)', () => {
-    // A POST/SSE-open failure carries an arbitrary message — NOT one of the
-    // orchestrator terminal-error labels — so it must NOT auto-retry (it could
-    // duplicate a turn that already started server-side). Codex round-3 P2.
-    expect(
-      shouldAutoRetry(new Error('chat-flow SSE open failed: 503 Service Unavailable'), false),
-    ).toBe(false);
-    expect(shouldAutoRetry(new Error('chat-flow POST failed: 500'), false)).toBe(false);
-    expect(shouldAutoRetry(new Error('NetworkError when attempting to fetch resource.'), false)).toBe(false);
-  });
-
-  it('does NOT auto-retry a second time for the same turn (bounded to once)', () => {
-    expect(shouldAutoRetry(new Error(DEFAULT_TURN_ERROR), true)).toBe(false);
-  });
-});
-
-describe('lastUserMessageId', () => {
-  it('returns the id of the last user message', () => {
-    expect(
-      lastUserMessageId([
-        { role: 'user', id: 'u1' },
-        { role: 'assistant', id: 'a1' },
-        { role: 'user', id: 'u2' },
-        { role: 'assistant', id: 'a2' },
-      ]),
-    ).toBe('u2');
-  });
-
-  it('returns null when there is no user message or the list is undefined', () => {
-    expect(lastUserMessageId([{ role: 'assistant', id: 'a1' }])).toBeNull();
-    expect(lastUserMessageId([])).toBeNull();
-    expect(lastUserMessageId(undefined)).toBeNull();
-  });
-
-  it('a regenerate (same last user message id) reads as already-retried; a new turn (new id) resets', () => {
-    // The runtime keys the once-per-turn auto-retry guard off this id: a
-    // regenerate re-runs the SAME last user message (id unchanged → bounded),
-    // a fresh send appends a new one (id changes → fresh budget). Codex r3 P2.
-    const turn1 = [{ role: 'user', id: 'u1' }];
-    const afterRegen = [{ role: 'user', id: 'u1' }, { role: 'assistant', id: 'a1-partial' }];
-    expect(lastUserMessageId(turn1)).toBe(lastUserMessageId(afterRegen)); // same turn
-    const turn2 = [...afterRegen, { role: 'user', id: 'u2' }];
-    expect(lastUserMessageId(turn2)).not.toBe(lastUserMessageId(turn1)); // new turn
-  });
-});
-
-describe('autoRetryTurn', () => {
-  afterEach(() => {
-    agentStatusActions.reset();
-  });
-
-  it('DEFERS the retry (does not call it synchronously — avoids racing useChat cleanup)', () => {
-    // Codex round-4 P1: onError runs before the failed request's setStatus
-    // ('error') + activeResponse-clearing finally. A synchronous regenerate
-    // would be overwritten by that teardown. autoRetryTurn must schedule, not
-    // call inline. We inject a capturing scheduler to prove it defers.
-    const retry = vi.fn();
-    let scheduled: (() => void) | null = null;
-    autoRetryTurn(retry, (fn) => {
-      scheduled = fn;
-    });
-    expect(retry).not.toHaveBeenCalled(); // not inline
-    expect(scheduled).toBeTypeOf('function');
-    scheduled!(); // simulate the macrotask firing after onError unwinds
-    expect(retry).toHaveBeenCalledTimes(1);
-  });
-
-  it('the default scheduler eventually fires the retry (macrotask)', async () => {
-    const retry = vi.fn();
-    autoRetryTurn(retry);
-    expect(retry).not.toHaveBeenCalled(); // deferred, not inline
-    await new Promise((r) => setTimeout(r, 5));
-    expect(retry).toHaveBeenCalledTimes(1);
-  });
-
-  it('RETRYING_STATUS is honest "retrying" copy (not the same as the manual-retry banner)', () => {
-    // The runtime shows RETRYING_STATUS as a WORKING row (a retry is in flight),
-    // distinct from applyTurnError's ERROR row (manual retry needed).
-    expect(RETRYING_STATUS).toMatch(/retry/i);
-    agentStatusActions.show(RETRYING_STATUS);
-    const snap = getAgentStatusSnapshot();
-    expect(snap.mode).toBe('working');
-    expect(snap.text).toBe(RETRYING_STATUS);
-    expect(snap.retry).toBeNull(); // no manual-retry button while auto-retrying
   });
 });

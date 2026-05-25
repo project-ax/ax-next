@@ -217,7 +217,10 @@ describe('event.http-egress emission', () => {
    * + the event-capture plugin, in that load order. Returns the kernel
    * handle so the test can drive `proxy:open-session` etc.
    */
-  async function boot(extraPlugins: Plugin[] = []): Promise<KernelHandle> {
+  async function boot(
+    extraPlugins: Plugin[] = [],
+    proxyOpts: { maxHttpRequestBodyBytes?: number } = {},
+  ): Promise<KernelHandle> {
     return bootstrap({
       bus,
       plugins: [
@@ -225,6 +228,9 @@ describe('event.http-egress emission', () => {
         createCredentialProxyPlugin({
           listen: { kind: 'tcp', host: '127.0.0.1', port: 0 },
           caDir,
+          ...(proxyOpts.maxHttpRequestBodyBytes !== undefined
+            ? { maxHttpRequestBodyBytes: proxyOpts.maxHttpRequestBodyBytes }
+            : {}),
         }),
         eventCapturePlugin(captured),
         ...extraPlugins,
@@ -393,6 +399,51 @@ describe('event.http-egress emission', () => {
       expect(ev.userId).toBe('');
       expect(ev.classification).toBe('other');
       expect(ev.credentialInjected).toBe(false);
+    } finally {
+      await new Promise<void>((r) => upstream.close(() => r()));
+    }
+  });
+
+  it('fires for an over-cap upload with blockedReason=request-body-too-large + status 413 (TASK-24)', async () => {
+    // A plain-HTTP upload over the per-request body cap is a local DoS guard,
+    // but audit/security subscribers should still see it as a policy-blocked
+    // egress (a mapped blockedReason on the 413) rather than an undefined
+    // reason. Boot the kernel with a tiny cap so the test is fast.
+    const upstream: HTTPServer = httpCreate((_req, res) => res.end('SHOULD NOT REACH'));
+    const upPort = await new Promise<number>((r) =>
+      upstream.listen(0, '127.0.0.1', () => r((upstream.address() as { port: number }).port)),
+    );
+    try {
+      kernel = await boot([], { maxHttpRequestBodyBytes: 1024 });
+      await bus.call('credentials:set', ctx(), { ref: 'r1', userId: 'u1', value: 'sk-secret' });
+      const opened = await bus.call<unknown, { proxyEndpoint: string }>(
+        'proxy:open-session',
+        ctx(),
+        {
+          sessionId: 's1',
+          userId: 'u1',
+          agentId: 'a1',
+          allowlist: ['127.0.0.1'],
+          allowedIPs: ['127.0.0.1'],
+          credentials: { ANTHROPIC_API_KEY: { ref: 'r1', kind: 'api-key' } },
+        },
+      );
+      const proxyPort = parseInt(opened.proxyEndpoint.split(':').pop()!, 10);
+      const dispatcher = new ProxyAgent({
+        uri: `http://127.0.0.1:${proxyPort}`,
+        proxyTunnel: false,
+      });
+      const res = await fetch(`http://127.0.0.1:${upPort}/up`, {
+        method: 'POST',
+        body: Buffer.alloc(8 * 1024, 0x61), // 8 KiB > 1 KiB cap
+        dispatcher,
+      } as RequestInit);
+      expect(res.status).toBe(413);
+
+      await new Promise<void>((r) => setImmediate(r));
+      const ev = captured.find((e) => e.status === 413);
+      expect(ev).toBeDefined();
+      expect(ev!.blockedReason).toBe('request-body-too-large');
     } finally {
       await new Promise<void>((r) => upstream.close(() => r()));
     }

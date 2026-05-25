@@ -15,14 +15,7 @@ import { sessionStoreActions, useSessionStore } from './session-store';
 import { useThinkingStore } from './thinking-store';
 import { AxAttachmentAdapter } from './ax-attachment-adapter';
 import { setActiveConversationId } from './use-conversation-id';
-import {
-  applyTurnError,
-  autoRetryTurn,
-  shouldAutoRetry,
-  lastUserMessageId,
-  RETRYING_STATUS,
-} from './turn-error';
-import { agentStatusActions } from './agent-status-store';
+import { applyTurnError } from './turn-error';
 
 const useChatThreadRuntime = (transport: AxChatTransport): AssistantRuntime => {
   const id = useAuiState(({ threadListItem }) => threadListItem.id);
@@ -46,66 +39,41 @@ const useChatThreadRuntime = (transport: AxChatTransport): AssistantRuntime => {
   const attachments = useMemo(() => new AxAttachmentAdapter(), []);
 
   // Turn-end error handling (TASK-24). The transport hands us an AI-SDK
-  // `error` chunk in two shapes, which we treat DIFFERENTLY:
-  //
-  //   - Fault A — an orchestrator `error` SSE frame: the turn is PROVABLY DEAD
-  //     (the runner died / timed out and the orchestrator fired chat:turn-error,
-  //     which clears the conversation's active_session_id). Auto-retrying the
-  //     whole turn here is SAFE — `regenerate()` re-POSTs and routes to a FRESH
-  //     sandbox (no live runner to duplicate into). We auto-retry ONCE with a
-  //     visible "Retrying…" status so the user sees the recovery, falling back
-  //     to the manual banner if the retry also fails.
+  // `error` chunk when a turn ends abnormally:
+  //   - Fault A — an orchestrator `error` SSE frame (runner died / timed out).
   //   - CONNECTION_LOST — a bare mid-turn SSE drop (host bounce / network blip).
-  //     The runner's state is UNKNOWN: it may still be alive (Task-24's 2-min
-  //     IPC retry deadline keeps it running across a host restart), so an
-  //     auto-`regenerate()` could DUPLICATE the turn, and a silent same-reqId
-  //     resume could TRUNCATE (the host chunk-buffer + its per-reqId seq cursor
-  //     are in-memory and reset on a host restart — a replay re-minted from seq
-  //     1 would be silently deduped against the client's higher last-seen seq).
-  //     Neither auto-recovery is loss-free AND duplicate-free here, so we keep
-  //     the honest MANUAL retry banner. The turn itself is NOT lost — Task-24's
-  //     commit-notify deadline makes the transcript durable, so it hydrates on
-  //     reload. (A loss-free auto-recovery for this case needs durable/seq-
-  //     stable runner→host events — tracked as a follow-up.)
   //
-  // `chatRef` lets both handlers reach `regenerate()` without a
-  // construction-order chicken-and-egg.
+  // Both surface the MANUAL-retry banner. We deliberately do NOT auto-retry:
+  // with the current non-idempotent / non-transactional turn model there is no
+  // client-side auto-retry that is both loss-free AND duplicate-free —
+  //   * a same-reqId silent resume TRUNCATES across a host restart (the host
+  //     chunk-buffer + its per-reqId seq cursor are in-memory and reset to 1,
+  //     so a replay is silently deduped against the client's higher last-seen
+  //     seq);
+  //   * an auto-`regenerate()` re-runs the whole turn, which can DUPLICATE a
+  //     turn whose runner is still alive (the IPC retry deadline keeps it
+  //     running across a host restart) AND re-run non-idempotent host-tool side
+  //     effects that already happened before the runner died.
+  // The user's explicit retry (the banner button) is the consent that makes a
+  // re-run acceptable. Crucially, the reported "turn silently lost" bug is fixed
+  // REGARDLESS: TASK-24's commit-notify retry deadline makes the runner survive
+  // a host restart and the turn COMMIT, so the durable transcript hydrates on
+  // reload instead of vanishing. A true auto-retry is a tracked follow-up gated
+  // on turn-level idempotency (server-side dedupe of a re-invoked reqId) +
+  // durable/seq-stable runner→host events.
   //
-  // Bounding the auto-retry to ONCE per turn is subtle: we must NOT reset the
-  // guard on a `chat.status` transition, because the auto-`regenerate()` ITSELF
-  // drives status through submitted/streaming — that would clear the guard
-  // before the retry's own failure reaches onError, allowing an unbounded retry
-  // loop against a persistently-dead backend (Codex). Instead we key the guard
-  // off the LAST USER MESSAGE id: a genuinely new turn appends a new user
-  // message (id changes → guard resets), whereas a `regenerate()` re-runs the
-  // SAME last user message (id unchanged → guard stays set → exactly one
-  // auto-retry). `lastRetriedUserMsgId` records which turn we've already
-  // auto-retried.
+  // `chatRef` lets the retry button reach `regenerate()` without a
+  // construction-order chicken-and-egg. `regenerate()` re-runs the last user
+  // turn; the dead session's active_session_id was cleared by
+  // session:terminate, so it routes to a fresh sandbox.
   const chatRef = useRef<ReturnType<typeof useChat> | null>(null);
-  const lastRetriedUserMsgId = useRef<string | null>(null);
   const chat = useChat({
     id,
     transport,
     onError: (error) => {
-      const regenerate = () => {
+      applyTurnError(error, () => {
         void chatRef.current?.regenerate();
-      };
-      const lastUserMsgId = lastUserMessageId(chatRef.current?.messages);
-      const alreadyRetried =
-        lastUserMsgId !== null && lastRetriedUserMsgId.current === lastUserMsgId;
-      if (shouldAutoRetry(error, alreadyRetried)) {
-        // Provably-dead turn (orchestrator error frame), not yet retried for
-        // THIS user message → safe to auto-retry the whole turn once, with a
-        // visible status.
-        lastRetriedUserMsgId.current = lastUserMsgId;
-        agentStatusActions.show(RETRYING_STATUS);
-        autoRetryTurn(regenerate);
-        return;
-      }
-      // CONNECTION_LOST / sendMessages rejection (runner maybe alive), or the
-      // auto-retry already fired for this turn and failed again → honest manual
-      // banner.
-      applyTurnError(error, regenerate);
+      });
     },
   });
   chatRef.current = chat;

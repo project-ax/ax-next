@@ -71,7 +71,12 @@ export interface HttpEgressEvent {
   durationMs: number;
   credentialInjected: boolean;
   classification: 'llm' | 'mcp' | 'other';
-  blockedReason?: 'allowlist' | 'private-ip' | 'canary' | 'tls-error';
+  blockedReason?:
+    | 'allowlist'
+    | 'private-ip'
+    | 'canary'
+    | 'tls-error'
+    | 'request-body-too-large';
   timestamp: number;
 }
 
@@ -108,10 +113,14 @@ function classifyCredentials(
  * isn't a block (or carries an unrecognized reason — we don't fabricate).
  *
  * Vocabulary:
- * - `domain_denied: …`     → `'allowlist'`  (allowlist miss)
+ * - `domain_denied: …`        → `'allowlist'`  (allowlist miss)
  * - `Blocked: …` (BlockedIPError) → `'private-ip'`
- * - `canary_detected`      → `'canary'`
- * - `tls_error: …`         → `'tls-error'`
+ * - `canary_detected`         → `'canary'`
+ * - `tls_error: …`            → `'tls-error'`
+ * - `request_body_too_large`  → `'request-body-too-large'` (TASK-24 — a local
+ *   proxy DoS guard, NOT a remote/policy block, but audit/security subscribers
+ *   should still see it as a policy-blocked egress rather than an undefined
+ *   reason on a bare 413).
  * - anything else (`invalid_target`, `Proxy error: …`) → undefined
  *   (these surface as a non-2xx `status` instead).
  */
@@ -123,6 +132,7 @@ function mapBlockedReason(
   if (blocked.startsWith('Blocked:')) return 'private-ip';
   if (blocked === 'canary_detected') return 'canary';
   if (blocked.startsWith('tls_error:')) return 'tls-error';
+  if (blocked === 'request_body_too_large') return 'request-body-too-large';
   return undefined;
 }
 
@@ -168,6 +178,12 @@ function parseHostPath(method: string, url: string): { host: string; path: strin
 export interface CredentialProxyConfig {
   listen: { kind: 'unix'; path: string } | { kind: 'tcp'; host?: string; port?: number };
   caDir?: string;
+  /**
+   * Max bytes the plain-HTTP forward path buffers for a single request body
+   * before returning 413 (TASK-24 — DoS guard so one large upload can't OOM
+   * the host). Defaults to the listener's 16 MiB. Operator-tunable.
+   */
+  maxHttpRequestBodyBytes?: number;
 }
 
 // ── Hook payload types (Phase 1a — Task 11 may revise audit shape) ────
@@ -322,6 +338,9 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
         sessions,
         ca,
         onAudit,
+        ...(config.maxHttpRequestBodyBytes !== undefined
+          ? { maxHttpRequestBodyBytes: config.maxHttpRequestBodyBytes }
+          : {}),
       });
       endpointString = buildEndpointString(config.listen, listener);
 
