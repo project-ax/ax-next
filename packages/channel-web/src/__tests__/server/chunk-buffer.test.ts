@@ -369,4 +369,41 @@ describe('@ax/channel-web ChunkBuffer', () => {
       buf.dispose();
     }
   });
+
+  // Codex P1 (TASK-23): the IDLE_TTL sweep used to fully delete a still-live
+  // reqId entry (e.g. a >60s-quiet tool call mid-turn), and the NEXT live chunk
+  // recreated it at seq 1. A browser still connected with lastSeq > 0 would then
+  // treat that reset seq as a duplicate and SILENTLY DROP the chunk (and every
+  // chunk until the counter caught up) — exactly the silent loss this task
+  // exists to prevent. The sweep must reclaim the heavy chunk array but KEEP the
+  // monotonic seq cursor alive; only evictReqId (the real turn-end) resets it.
+  it('TTL sweep reclaims chunks but KEEPS the seq cursor monotonic (no mid-turn reset)', () => {
+    const buf = createChunkBuffer();
+    try {
+      buf.append({ reqId: 'r1', text: 'a', kind: 'text' }); // seq 1
+      expect(buf.append({ reqId: 'r1', text: 'b', kind: 'text' }).seq).toBe(2);
+      // A long-quiet tool call: no append for >IDLE_TTL while the SSE
+      // connection is still open. The sweep runs and reclaims the chunks.
+      vi.advanceTimersByTime(91_000);
+      expect(buf.tail('r1')).toEqual([]); // chunk memory reclaimed
+      // The next live chunk MUST continue the cursor (seq 3), NOT reset to 1 —
+      // otherwise a connected client silently dedups it.
+      expect(buf.append({ reqId: 'r1', text: 'c', kind: 'text' }).seq).toBe(3);
+    } finally {
+      buf.dispose();
+    }
+  });
+
+  it('evictReqId (true turn-end) DOES reset the cursor even after a prior TTL sweep', () => {
+    const buf = createChunkBuffer();
+    try {
+      buf.append({ reqId: 'r1', text: 'a', kind: 'text' }); // seq 1
+      vi.advanceTimersByTime(91_000); // TTL sweep keeps the cursor
+      buf.append({ reqId: 'r1', text: 'b', kind: 'text' }); // seq 2 (continued)
+      buf.evictReqId('r1'); // real turn-end → full reset
+      expect(buf.append({ reqId: 'r1', text: 'fresh', kind: 'text' }).seq).toBe(1);
+    } finally {
+      buf.dispose();
+    }
+  });
 });
