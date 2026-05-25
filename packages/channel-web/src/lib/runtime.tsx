@@ -15,7 +15,7 @@ import { sessionStoreActions, useSessionStore } from './session-store';
 import { useThinkingStore } from './thinking-store';
 import { AxAttachmentAdapter } from './ax-attachment-adapter';
 import { setActiveConversationId } from './use-conversation-id';
-import { applyTurnError, handleTurnError } from './turn-error';
+import { applyTurnError, createRetryBudget, handleTurnError } from './turn-error';
 
 const useChatThreadRuntime = (transport: AxChatTransport): AssistantRuntime => {
   const id = useAuiState(({ threadListItem }) => threadListItem.id);
@@ -41,57 +41,61 @@ const useChatThreadRuntime = (transport: AxChatTransport): AssistantRuntime => {
   // Fault A — an orchestrator-terminated turn surfaces an `error` chunk;
   // useChat raises it to `onError` and we flip the status row to error+retry.
   //
-  // Faults B/D (FAULTA-5) — a `done`-less close (host bounce / network drop)
-  // surfaces the CONNECTION_LOST sentinel. `handleTurnError` SILENTLY retries
-  // it ONCE (regenerate → fresh reqId + sandbox), then shows the error banner
-  // if the retry also fails. `silentRetriedRef` tracks the single silent
-  // attempt spent per turn; `onFinish` resets it when a turn finishes cleanly
-  // so the next genuine drop gets its own silent retry.
+  // Faults B/D (FAULTA-5) — a `done`-less close (host bounce; SSE body ended
+  // with no terminal frame) surfaces the CONNECTION_LOST sentinel, and a hard
+  // network drop surfaces a fetch `TypeError`. `handleTurnError` SILENTLY
+  // retries either ONCE per turn (regenerate → fresh reqId + sandbox), then
+  // shows the error banner if the retry also fails.
+  //
+  // `budgetRef` scopes the one-retry cap PER USER TURN, keyed on the last user
+  // message id: a silent `regenerate()` re-runs the SAME last user turn so the
+  // key is unchanged and the budget persists across the retry; a new
+  // submission appends a new user message (new id) so the budget resets — the
+  // cap never leaks across turns after an outage.
   //
   // `chatRef` lets the retry handlers reach `regenerate()` (which re-runs the
   // last user turn against a fresh sandbox) without a construction-order
   // chicken-and-egg.
   const chatRef = useRef<ReturnType<typeof useChat> | null>(null);
-  const silentRetriedRef = useRef(false);
+  const budgetRef = useRef(createRetryBudget());
+  /** Id of the latest user message — the per-turn budget key. */
+  const lastUserTurnKey = (): string | null => {
+    const msgs = chatRef.current?.messages ?? [];
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i];
+      if (m?.role === 'user') return m.id;
+    }
+    return null;
+  };
   const chat = useChat({
     id,
     transport,
     onError: (error) => {
       handleTurnError({
         error,
-        isFirstFailure: !silentRetriedRef.current,
+        turnKey: lastUserTurnKey(),
+        budget: budgetRef.current,
         silentRetry: () => {
-          silentRetriedRef.current = true;
           // Defer the regenerate() to a fresh task. The AI SDK calls onError
           // from INSIDE the failed request's catch, BEFORE its finally clears
-          // `activeResponse` (and our onFinish reset runs). Calling
-          // regenerate() synchronously here re-enters makeRequest and sets a
-          // NEW activeResponse, which the original request's finally then
-          // nukes — losing the retry's abort handle and skipping its
-          // onFinish reset. A macrotask lets the failed request fully unwind
-          // first, so the retry owns a clean lifecycle.
+          // `activeResponse`. Calling regenerate() synchronously here re-enters
+          // makeRequest and sets a NEW activeResponse, which the original
+          // request's finally then nukes — losing the retry's abort handle and
+          // skipping its onFinish. A macrotask lets the failed request fully
+          // unwind first, so the retry owns a clean lifecycle.
           setTimeout(() => {
             void chatRef.current?.regenerate();
           }, 0);
         },
+        // Manual retry from the banner button re-runs the same last user turn.
+        // The budget is already keyed per-turn, so a fresh drop on a LATER
+        // turn still gets its own silent retry; the banner click itself is
+        // outside the request lifecycle, so no defer is needed.
         showError: (e) =>
           applyTurnError(e, () => {
-            // Manual retry from the banner button: reset the silent-retry
-            // budget so a fresh drop on the regenerated turn can silently
-            // retry again before re-surfacing the banner. The banner click is
-            // already outside the request lifecycle, so no defer is needed.
-            silentRetriedRef.current = false;
             void chatRef.current?.regenerate();
           }),
       });
-    },
-    onFinish: ({ isError, isAbort, isDisconnect }) => {
-      // Only a CLEAN finish resets the silent-retry budget. onFinish also
-      // fires on error/abort/disconnect (with the flags set) — resetting
-      // there would defeat the single-retry cap on a persistent outage.
-      if (!isError && !isAbort && !isDisconnect) {
-        silentRetriedRef.current = false;
-      }
     },
   });
   chatRef.current = chat;

@@ -49,6 +49,48 @@ function isConnectionLost(error: unknown): boolean {
   return false;
 }
 
+/**
+ * Per-TURN silent-retry budget. The one-retry cap must be scoped to a single
+ * user turn, NOT leaked across later turns: after a connection-lost turn
+ * spends its silent retry and that retry ALSO fails, the budget must reset
+ * when the user starts a fresh turn — otherwise that fresh turn's first drop
+ * would skip its own silent retry and go straight to the banner.
+ *
+ * We key the budget to the failing turn's identity (`turnKey`) — the runtime
+ * passes the last user message id. A silent `regenerate()` re-runs the SAME
+ * last user turn, so the key is unchanged and the budget correctly persists
+ * across the retry; a new submission appends a new user message (new id), so
+ * the key changes and the budget resets. Pure + framework-free so it's
+ * unit-testable without rendering `useChat`.
+ */
+export interface RetryBudget {
+  /**
+   * Returns true iff a silent retry is still available for `turnKey`, and —
+   * when it returns true — spends it (so the next call for the same key
+   * returns false). A new `turnKey` resets the budget. A `null`/`undefined`
+   * key (no user turn to attribute) is treated as a single shared turn.
+   */
+  consume(turnKey: string | null | undefined): boolean;
+}
+
+export function createRetryBudget(): RetryBudget {
+  let currentKey: string | null = null;
+  let spent = false;
+  return {
+    consume(turnKey) {
+      const key = turnKey ?? null;
+      if (key !== currentKey) {
+        // Fresh turn — reset the budget to this turn.
+        currentKey = key;
+        spent = false;
+      }
+      if (spent) return false;
+      spent = true;
+      return true;
+    },
+  };
+}
+
 export interface HandleTurnErrorArgs {
   /**
    * The error raised to useChat's onError. The AI SDK reconstructs a plain
@@ -56,8 +98,13 @@ export interface HandleTurnErrorArgs {
    * `error.message` rather than an Error subclass (which wouldn't survive).
    */
   error: unknown;
-  /** True if no silent retry has been spent for the current turn yet. */
-  isFirstFailure: boolean;
+  /**
+   * Identity of the failing user turn (the runtime passes the last user
+   * message id). Used to scope the silent-retry budget per-turn.
+   */
+  turnKey: string | null | undefined;
+  /** Per-turn silent-retry budget (see `createRetryBudget`). */
+  budget: RetryBudget;
   /** Re-run the last user turn silently (the runtime's `regenerate()`). */
   silentRetry: () => void;
   /** Surface the error banner with a (manual) retry affordance. */
@@ -67,16 +114,19 @@ export interface HandleTurnErrorArgs {
 /**
  * Decide between a silent retry and the error banner for a failed turn.
  *
- *   - connection-lost (Faults B/D) AND first failure → SILENT retry: set a
- *     transient working-mode "Connection lost. Retrying…" label (no banner)
- *     and call `silentRetry()`.
- *   - connection-lost AND already retried once → error banner.
+ *   - connection-lost (Faults B/D) AND a silent retry is still available for
+ *     this turn → SILENT retry: set a transient working-mode "Connection
+ *     lost. Retrying…" label (no banner) and call `silentRetry()`.
+ *   - connection-lost AND the turn's silent retry was already spent → banner.
  *   - any other error (Fault A / orchestrator-terminated) → error banner
- *     immediately, regardless of attempt count.
+ *     immediately; does NOT spend the connection-lost budget.
+ *
+ * The budget is consumed ONLY on the connection-lost path, so a Fault A
+ * error never burns a later genuine drop's silent retry.
  */
 export function handleTurnError(args: HandleTurnErrorArgs): void {
-  const { error, isFirstFailure, silentRetry, showError } = args;
-  if (isConnectionLost(error) && isFirstFailure) {
+  const { error, turnKey, budget, silentRetry, showError } = args;
+  if (isConnectionLost(error) && budget.consume(turnKey)) {
     // Transient working-mode label — NOT the persistent red error banner.
     // The row stays in working mode so the next turn's RunningEffect hides
     // it cleanly on success (and the AgentStatus error-persistence rule for
