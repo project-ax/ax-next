@@ -264,6 +264,40 @@ function collectCanaryTokens(sessions: Map<string, SessionConfig>): string[] {
   return [...tokens];
 }
 
+/** Minimal pausable source the backpressure pump needs. */
+export interface PausableSource {
+  pause(): void;
+  resume(): void;
+}
+/** Minimal writable sink the backpressure pump needs. */
+export interface BackpressureSink {
+  /** Returns false when the internal buffer is full (Node stream contract). */
+  write(chunk: Buffer): boolean;
+  once(event: 'drain', listener: () => void): void;
+}
+
+/**
+ * Write `chunk` to `dest`, applying backpressure: when `dest.write` returns
+ * false (its buffer is full), pause `src` until `dest` emits `'drain'`, then
+ * resume. This bounds the host's per-connection memory to the sink's
+ * highWaterMark instead of letting a slow consumer accumulate an unbounded
+ * write queue — the multi-MB-download OOM vector (TASK-24). Both MITM pumps
+ * (download upstream→client, and the framed client→upstream write) route
+ * through this so neither can balloon host memory on a slow peer.
+ */
+export function writeWithBackpressure(
+  src: PausableSource,
+  dest: BackpressureSink,
+  chunk: Buffer,
+): void {
+  if (chunk.length === 0) return;
+  const ok = dest.write(chunk);
+  if (!ok) {
+    src.pause();
+    dest.once('drain', () => src.resume());
+  }
+}
+
 // ── Listener ─────────────────────────────────────────────────────────
 
 /** Default cap on a single plain-HTTP forwarded request body: 16 MiB. Over
@@ -630,16 +664,20 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
       if (injected) credentialInjected = true;
       // The framer holds bytes until end-of-head, so `out` is legitimately empty
       // while a head is still buffering — only write when there's something.
+      // Backpressure-aware: a slow upstream can't grow the host's write queue
+      // unboundedly (TASK-24).
       if (out.length > 0) {
-        targetTls.write(out);
+        writeWithBackpressure(clientTls, targetTls, out);
       }
     });
 
     // upstream → client (no substitution on response — placeholders should
-    // never originate upstream).
+    // never originate upstream). Backpressure-aware so a slow client (the
+    // common case for a multi-MB download into a runner pod) can't pile the
+    // response up in the host's socket buffer and OOM it (TASK-24).
     targetTls.on('data', (chunk: Buffer) => {
       responseBytes += chunk.length;
-      clientTls.write(chunk);
+      writeWithBackpressure(targetTls, clientTls, chunk);
     });
 
     // Flush any inner-TLS bytes the client sent before our upstream socket
