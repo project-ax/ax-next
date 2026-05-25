@@ -879,4 +879,139 @@ describe('AxChatTransport sendMessages two-phase exchange', () => {
     const err = chunks.find((c) => c.type === 'error') as { errorText: string } | undefined;
     expect(err?.errorText).toBe(CONNECTION_LOST);
   });
+
+  // Codex round 5 — an ABORT (user Stop / teardown) is NOT connection loss.
+  // The body read rejects (AbortError), the attempt ends 'lost', but because
+  // abortSignal.aborted is true we close WITHOUT an error chunk — no spurious
+  // retry banner.
+  test('an aborted request closes cleanly with NO error chunk (not a connection-lost banner)', async () => {
+    const ac = new AbortController();
+    let getCount = 0;
+    const fetchFn = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = typeof url === 'string' ? url : String(url);
+      void init;
+      if (u.includes('/api/chat/messages')) {
+        return new Response(JSON.stringify({ conversationId: 'c1', reqId: 'req-1' }), {
+          status: 202,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      getCount += 1;
+      // A body that emits one frame then, on the next pull, aborts + errors —
+      // exactly how the AI SDK's AbortController teardown surfaces.
+      let step = 0;
+      const aborting = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (step === 0) {
+            step = 1;
+            controller.enqueue(
+              new TextEncoder().encode(`data: {"reqId":"req-1","text":"x","kind":"text"}\n\n`),
+            );
+            return;
+          }
+          ac.abort();
+          controller.error(new DOMException('aborted', 'AbortError'));
+        },
+      });
+      return new Response(aborting, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    });
+    const transport = new AxChatTransport({
+      fetch: fetchFn as unknown as typeof fetch,
+      getAgentId: () => 'a',
+    });
+    const stream = await transport.sendMessages({
+      messages: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }],
+      abortSignal: ac.signal,
+    } as unknown as Parameters<typeof transport.sendMessages>[0]);
+    const chunks = (await drain(stream)) as Array<{ type: string }>;
+    const types = chunks.map((c) => c.type);
+    expect(types).not.toContain('error'); // NO connection-lost banner on abort
+    expect(getCount).toBe(1); // did not reconnect after the abort
+  });
+
+  // Codex round 5 — a drop mid-`data:` line must not corrupt the reconnect.
+  // The partial fragment in ctx.carry is cleared before the reconnect parses
+  // the replayed buffer, so no replayed frame is dropped.
+  test('reconnect after a mid-line drop clears the stale carry (no dropped frame)', async () => {
+    let getCount = 0;
+    const fetchFn = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = typeof url === 'string' ? url : String(url);
+      void init;
+      if (u.includes('/api/chat/messages')) {
+        return new Response(JSON.stringify({ conversationId: 'c1', reqId: 'req-1' }), {
+          status: 202,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      getCount += 1;
+      if (getCount === 1) {
+        // One full frame, then a PARTIAL second `data:` line, then close.
+        return new Response(
+          sseStream(
+            `data: {"reqId":"req-1","text":"one","kind":"text"}\n\n` +
+              `data: {"reqId":"req-1","text":"tw`, // truncated mid-line
+          ),
+          { status: 200, headers: { 'content-type': 'text/event-stream' } },
+        );
+      }
+      // Reconnect replays "one" (deduped) then the FULL second frame + done.
+      return new Response(
+        sseStream(
+          `data: {"reqId":"req-1","text":"one","kind":"text"}\n\n` +
+            `data: {"reqId":"req-1","text":"two","kind":"text"}\n\n` +
+            `data: {"reqId":"req-1","done":true}\n\n`,
+        ),
+        { status: 200, headers: { 'content-type': 'text/event-stream' } },
+      );
+    });
+    const transport = new AxChatTransport({
+      fetch: fetchFn as unknown as typeof fetch,
+      getAgentId: () => 'a',
+    });
+    const stream = await transport.sendMessages({
+      messages: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }],
+    } as unknown as Parameters<typeof transport.sendMessages>[0]);
+    const chunks = (await drain(stream)) as Array<{ type: string; delta?: string }>;
+    const deltas = chunks.filter((c) => c.type === 'text-delta').map((c) => c.delta);
+    // "one" emitted on attempt 1 (the truncated "tw" never parsed). Reconnect
+    // dedups "one" and emits "two" — assembled text is "onetwo", NOT corrupted.
+    expect(deltas.join('')).toBe('onetwo');
+    expect(chunks[chunks.length - 1]?.type).toBe('finish');
+  });
+
+  // Codex round 5 — a turn that streamed MORE chunks than the server's replay
+  // window can't be deduped by count on reconnect (the replay is a partial
+  // tail; skipping the full lifetime count would eat live chunks). The
+  // transport must NOT attempt the lossy reconnect — it surfaces the banner so
+  // the user re-runs manually, rather than silently dropping output.
+  test('does NOT silently reconnect past the server replay window — surfaces the banner', async () => {
+    // Attempt 1 streams 201 frames (> SERVER_REPLAY_WINDOW=200) then drops.
+    let manyFrames = '';
+    for (let i = 0; i < 201; i++) {
+      manyFrames += `data: {"reqId":"req-1","text":"c${i}","kind":"text"}\n\n`;
+    }
+    const mock = makeReconnectFetchMock([
+      { body: manyFrames }, // 201 content chunks, no done → drop
+      { body: `data: {"reqId":"req-1","text":"REPLAY","kind":"text"}\n\n` }, // must NOT be reached
+    ]);
+    const transport = new AxChatTransport({ fetch: mock.fetchFn, getAgentId: () => 'a' });
+    const stream = await transport.sendMessages({
+      messages: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }],
+    } as unknown as Parameters<typeof transport.sendMessages>[0]);
+    const chunks = (await drain(stream)) as Array<{ type: string; delta?: string; errorText?: string }>;
+
+    expect(mock.postCount).toBe(1);
+    // It did NOT reconnect (only the initial GET) — beyond the replay window.
+    expect(mock.getCount).toBe(1);
+    // The 201 already-streamed frames are intact, then the banner (no REPLAY).
+    const deltas = chunks.filter((c) => c.type === 'text-delta').map((c) => c.delta);
+    expect(deltas).toHaveLength(201);
+    expect(deltas).not.toContain('REPLAY');
+    expect(chunks[chunks.length - 1]?.type).toBe('error');
+    const err = chunks.find((c) => c.type === 'error') as { errorText: string } | undefined;
+    expect(err?.errorText).toBe(CONNECTION_LOST);
+  });
 });

@@ -430,9 +430,14 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
    * agent:invoke). The server replays its per-reqId buffer on reconnect
    * (sse.ts), so we SKIP the content chunks already emitted to avoid
    * double-rendering. Bounded at MAX_RECONNECTS; when the reconnect GET fails
-   * (Fault B — the host bounced, reqId+buffer gone → 404) or the cap is
-   * exhausted, we emit CONNECTION_LOST so the runtime surfaces the error
-   * banner with a manual-retry affordance.
+   * (Fault B — the host bounced, reqId+buffer gone → 404), the cap is
+   * exhausted, or the turn outgrew the server's replay window (so we can't
+   * dedup cleanly — see SERVER_REPLAY_WINDOW), we emit CONNECTION_LOST so the
+   * runtime surfaces the error banner with a manual-retry affordance.
+   *
+   * An ABORT (user pressed Stop / component teardown) is NOT connection loss:
+   * we close the stream WITHOUT an error chunk so the SDK's normal abort
+   * handling runs and no spurious retry banner appears.
    */
   private buildReconnectingStream(
     reqId: string,
@@ -444,25 +449,47 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
     const ctx = createParseCtx();
     return new ReadableStream<UIMessageChunk>({
       async start(controller) {
+        const endWithBanner = (): void => {
+          ctx.closeOpen(controller);
+          controller.enqueue({ type: 'error', errorText: CONNECTION_LOST });
+          controller.close();
+        };
         let body: ReadableStream<Uint8Array> | null = firstBody;
         for (let attempt = 0; ; attempt++) {
           // On a reconnect the server replays the buffer tail; skip the
           // content chunks we've already shown so the message doesn't
-          // duplicate.
-          ctx.skipContent = attempt === 0 ? 0 : ctx.emittedContent;
+          // duplicate. Also clear any partial `data:` line stranded by the
+          // drop — otherwise the stale fragment would corrupt the first
+          // replayed frame's JSON parse (Codex round 5).
+          if (attempt > 0) {
+            ctx.skipContent = ctx.emittedContent;
+            ctx.carry = '';
+          }
           const reason = await consumeSseAttempt(body, ctx, controller);
           if (reason === 'done' || reason === 'server-error') {
             // Terminal chunk already enqueued by the attempt.
             controller.close();
             return;
           }
-          // reason === 'lost' — the connection dropped without a terminal
-          // frame. Reconnect to the SAME reqId (GET-only) unless we've hit
-          // the cap.
-          if (attempt + 1 >= MAX_RECONNECTS || abortSignal?.aborted) {
+          // reason === 'lost' — the connection dropped (graceful or hard)
+          // without a terminal frame.
+          if (abortSignal?.aborted) {
+            // Intentional cancellation — NOT an error. Close cleanly so the
+            // SDK's abort path runs and no retry banner shows.
             ctx.closeOpen(controller);
-            controller.enqueue({ type: 'error', errorText: CONNECTION_LOST });
             controller.close();
+            return;
+          }
+          if (
+            attempt + 1 >= MAX_RECONNECTS ||
+            // The server ring buffer only retains its last
+            // SERVER_REPLAY_WINDOW chunks; once we've emitted more than that,
+            // a reconnect's partial replay can't be deduped by count without
+            // silently dropping NEW content (Codex round 5). Give up the
+            // silent reconnect and surface the banner instead.
+            ctx.emittedContent > SERVER_REPLAY_WINDOW
+          ) {
+            endWithBanner();
             return;
           }
           let resp: Response;
@@ -470,17 +497,13 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
             resp = await open(reqId, abortSignal);
           } catch {
             // The reconnect GET itself failed (host unreachable) → give up.
-            ctx.closeOpen(controller);
-            controller.enqueue({ type: 'error', errorText: CONNECTION_LOST });
-            controller.close();
+            endWithBanner();
             return;
           }
           if (!resp.ok || !resp.body) {
             // 404/410 etc. — the turn is gone (Fault B host bounce evicted
             // the reqId). Surface the banner; the user can re-POST manually.
-            ctx.closeOpen(controller);
-            controller.enqueue({ type: 'error', errorText: CONNECTION_LOST });
-            controller.close();
+            endWithBanner();
             return;
           }
           body = resp.body;
@@ -494,6 +517,19 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
  *  error banner. Three GETs (initial + 2 reconnects) span a brief proxy/tab
  *  blip without looping forever on a real outage. */
 const MAX_RECONNECTS = 3;
+
+/**
+ * Conservative bound on how many content chunks the server replays on
+ * reconnect. The host's per-reqId ring buffer (chunk-buffer.ts) retains its
+ * last 256 chunks; we stay safely under that. Once we've emitted more than
+ * this, a reconnect's replay is a PARTIAL tail that count-based dedup can't
+ * align — skipping `emittedContent` would eat live chunks (silent loss). So
+ * beyond this window we stop silently reconnecting and surface the banner.
+ * (We don't import the server constant — Invariant I2; we mirror it
+ * conservatively. A server-side per-chunk sequence number would let us dedup
+ * a partial replay exactly; that's a tracked follow-up.)
+ */
+const SERVER_REPLAY_WINDOW = 200;
 
 /** End-reason of a single SSE attempt. */
 type AttemptEnd = 'done' | 'server-error' | 'lost';
