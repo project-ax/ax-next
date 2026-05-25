@@ -5,6 +5,7 @@ import {
   resyncBaselineAndReplay,
   rollbackToBaseline,
 } from './git-workspace.js';
+import { commitTrace } from './commit-trace.js';
 
 // ---------------------------------------------------------------------------
 // Shared commit-notify re-sync+retry helper.
@@ -47,14 +48,23 @@ export async function commitNotifyWithResync(input: {
   let bundleB64 = input.bundleBytes;
   let currentParentVersion: string | null = input.parentVersion;
   let attempt = 0;
+  commitTrace(
+    `[commit-trace] commit-notify enter reason=${reason} parent=${currentParentVersion ?? 'null'} bundleB64Len=${bundleB64.length}\n`,
+  );
   for (;;) {
     let resp: WorkspaceCommitNotifyResponse;
     try {
+      commitTrace(
+        `[commit-trace] → workspace.commit-notify call parent=${currentParentVersion ?? 'null'} attempt=${attempt}\n`,
+      );
       resp = (await client.call('workspace.commit-notify', {
         parentVersion: currentParentVersion,
         reason,
         bundleBytes: bundleB64,
       })) as WorkspaceCommitNotifyResponse;
+      commitTrace(
+        `[commit-trace] ← commit-notify resp accepted=${resp.accepted} version=${(resp as { version?: string }).version ?? '-'} actualParent=${(resp as { actualParent?: string }).actualParent ?? '-'} hasBundle=${(resp as { baselineBundleBytes?: string }).baselineBundleBytes !== undefined} reason=${(resp as { reason?: string }).reason ?? '-'}\n`,
+      );
     } catch (err) {
       // Network / 5xx / timeout: keep the working tree intact so the next
       // turn's accumulated changes flow as one bundle. Don't advance baseline;
@@ -66,6 +76,9 @@ export async function commitNotifyWithResync(input: {
     }
     if (resp.accepted) {
       await advanceBaseline(root);
+      commitTrace(
+        `[commit-trace] outcome=accepted version=${resp.version as unknown as string} (after attempt=${attempt})\n`,
+      );
       return { parentVersion: resp.version as unknown as string, outcome: 'accepted' };
     }
     // Concurrent-writer advance → re-sync + retry (bounded). currentParentVersion
@@ -78,6 +91,9 @@ export async function commitNotifyWithResync(input: {
       attempt < MAX_RESYNC_ATTEMPTS
     ) {
       attempt++;
+      commitTrace(
+        `[commit-trace] concurrent-writer: parent=${currentParentVersion} actualParent=${resp.actualParent} → resync+replay (attempt=${attempt})\n`,
+      );
       try {
         await resyncBaselineAndReplay({
           root,
@@ -89,16 +105,23 @@ export async function commitNotifyWithResync(input: {
         process.stderr.write(
           `runner: resync failed (${e instanceof Error ? e.message : String(e)})\n`,
         );
+        commitTrace(`[commit-trace] outcome=kept (resync threw)\n`);
         return { parentVersion: input.parentVersion, outcome: 'kept' };
       }
       currentParentVersion = resp.actualParent;
       const rebasedBundleBytes = await commitTurnAndBundle({ root, reason });
+      commitTrace(
+        `[commit-trace] resync replayed; rebundle=${rebasedBundleBytes === null ? 'EMPTY(absorbed)' : `${rebasedBundleBytes.length}B`}\n`,
+      );
       if (rebasedBundleBytes === null) {
         // Replay produced no new commit — the workspace is already aligned to
         // the advanced baseline (resyncBaselineAndReplay re-pinned `baseline` to
         // currentParentVersion). Promote `parentVersion` now so the NEXT turn's
         // commit-notify uses the new baseline instead of triggering a spurious
         // re-sync against a stale parent.
+        commitTrace(
+          `[commit-trace] outcome=accepted (turn absorbed; promoted parent=${currentParentVersion})\n`,
+        );
         return { parentVersion: currentParentVersion, outcome: 'accepted' };
       }
       bundleB64 = rebasedBundleBytes;
@@ -114,6 +137,9 @@ export async function commitNotifyWithResync(input: {
       process.stderr.write(`runner: workspace rejected: ${resp.reason}\n`);
     }
     await rollbackToBaseline(root);
+    commitTrace(
+      `[commit-trace] outcome=rolled-back (actualParent=${resp.actualParent ?? '-'} attempt=${attempt})\n`,
+    );
     return { parentVersion: input.parentVersion, outcome: 'rolled-back' };
   }
 }

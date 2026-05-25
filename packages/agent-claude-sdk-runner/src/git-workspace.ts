@@ -28,6 +28,7 @@ import { spawn } from 'node:child_process';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { commitTrace } from './commit-trace.js';
 
 interface SpawnResult {
   code: number | null;
@@ -341,11 +342,17 @@ export async function scaffoldSdkProjectsSymlink(
 // ---------------------------------------------------------------------------
 
 /**
- * Stage `/permanent`, commit if non-empty, build a thin bundle of the
- * new commit(s).
+ * Stage `/permanent`, commit any working-tree changes, and build a thin
+ * bundle of the commits in `baseline..main`.
  *
- * Returns the bundle as base64 bytes, OR null if the turn wrote nothing
- * (no staged changes after `git add -A`). Caller should skip the
+ * Returns the bundle as base64 bytes, OR null when `baseline..main` is empty —
+ * i.e. nothing to ship. That covers an empty turn (no staged changes AND no
+ * prior commit) AND a re-sync replay whose commit became empty because its
+ * content was already in the advanced baseline (a true absorb). The gate is
+ * the commit RANGE, not the working-tree staged diff: after
+ * `resyncBaselineAndReplay` the tree is clean but `main` carries the replayed
+ * turn commit, which still needs shipping (returning null there would let the
+ * caller drop it as "absorbed" — the bug this gate fixes). Caller skips the
  * commit-notify IPC call when null.
  */
 export async function commitTurnAndBundle(input: {
@@ -360,32 +367,51 @@ export async function commitTurnAndBundle(input: {
   // Write/Edit/MultiEdit tools.
   await expectOk(await runGit(['-C', root, 'add', '-A']), 'git add');
 
-  // Empty-turn detection: `git diff --cached --quiet` exits 0 when
+  // Working-tree-change detection: `git diff --cached --quiet` exits 0 when
   // there are no staged changes, 1 when there are. We use this rather
   // than parsing `git status` output — exit code is an authoritative
-  // signal that doesn't depend on porcelain format stability.
+  // signal that doesn't depend on porcelain format stability. Commit only
+  // when there's something staged; an empty `git commit` would refuse.
   const status = await runGit(
     ['-C', root, 'diff', '--cached', '--quiet'],
     {},
   );
-  if (status.code === 0) {
-    // Empty turn — no commits, no bundle.
-    return null;
-  }
-  if (status.code !== 1) {
+  if (status.code === 1) {
+    // Commit. Author + committer come from the pod-spec env (ax-runner
+    // pinned). The host bundler verifies this; a missing or wrong
+    // identity would surface as accepted:false at the host.
+    await expectOk(
+      await runGit(['-C', root, 'commit', '-m', reason]),
+      'git commit',
+    );
+  } else if (status.code !== 0) {
     // Anything other than 0 or 1 is an error from git itself.
     throw new Error(
       `git diff --cached --quiet failed (exit=${status.code}): ${status.stderr}`,
     );
   }
 
-  // Commit. Author + committer come from the pod-spec env (ax-runner
-  // pinned). The host bundler verifies this; a missing or wrong
-  // identity would surface as accepted:false at the host.
-  await expectOk(
-    await runGit(['-C', root, 'commit', '-m', reason]),
-    'git commit',
+  // Decide whether there's anything to SHIP by the commit range
+  // `baseline..main`, NOT by whether the working tree had changes. These
+  // diverge after a re-sync replay: resyncBaselineAndReplay rebases the
+  // turn's commit onto the advanced baseline and re-pins `baseline`, leaving
+  // a CLEAN working tree but a non-empty `baseline..main` (the replayed
+  // commit still needs shipping). The old "empty staged diff ⇒ return null"
+  // wrongly reported that as nothing-to-ship, and the re-sync caller read the
+  // null as "turn absorbed ⇒ accepted" — silently dropping the turn (TASK-11,
+  // the post-attachment turn lost on reload). Gate on the range so BOTH a
+  // freshly-committed turn AND a re-sync-replayed commit are shipped; return
+  // null only when `baseline..main` is genuinely empty (an empty turn, or a
+  // replay whose commit became empty because its content was already in the
+  // advanced baseline — a true absorb).
+  const range = await runGit(
+    ['-C', root, 'rev-list', '--count', 'refs/heads/baseline..main'],
+    {},
   );
+  await expectOk(range, 'git rev-list baseline..main');
+  if (range.stdout.toString('utf8').trim() === '0') {
+    return null;
+  }
 
   // Bundle `baseline..main main` — thin bundle with the new tip ref.
   //   - `baseline..main` is the rev range (commits since the last
@@ -500,10 +526,14 @@ export async function resyncBaselineAndReplay(input: {
     // object is reachable. `git fetch <bundle> main` writes FETCH_HEAD only
     // (no local ref is updated). The rebase below uses the raw `newBaseline`
     // OID directly, so no refspec is needed — don't add one.
+    commitTrace(
+      `[commit-trace]   resync: fetch bundle (old=${oldBaseline} new=${newBaseline})\n`,
+    );
     await expectOk(
       await runGit(['-C', root, 'fetch', bundlePath, 'main']),
       'git fetch resync bundle',
     );
+    commitTrace(`[commit-trace]   resync: fetch ok → rebase --autostash\n`);
 
     // Replay: git rebase --autostash --onto <newBaseline> <oldBaseline> main
     //   --autostash         : stash any dirty tracked changes before the
@@ -527,6 +557,9 @@ export async function resyncBaselineAndReplay(input: {
       '-C', root,
       'rebase', '--autostash', '--onto', newBaseline, oldBaseline, 'main',
     ]);
+    commitTrace(
+      `[commit-trace]   resync: rebase exit=${rebase.code}${rebase.code !== 0 ? ` stderr=${rebase.stderr.slice(0, 200)}` : ''}\n`,
+    );
     if (rebase.code !== 0) {
       // Conflict — abort to restore the pre-rebase state so the repo is usable.
       await runGit(['-C', root, 'rebase', '--abort']);
