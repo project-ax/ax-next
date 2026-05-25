@@ -26,27 +26,26 @@ export function applyTurnError(error: unknown, retry: () => void): void {
 }
 
 /**
- * True iff this error is a recoverable connection loss (Faults B/D):
+ * True iff this error is a recoverable connection loss that is SAFE to retry
+ * silently (Faults B/D).
  *
- *   - The transport's `done`-less-close sentinel (CONNECTION_LOST) — a
- *     GRACEFUL stream close with no terminal frame (host bounce; SSE body
- *     ended cleanly). Our transport flush() raises this.
- *   - A HARD fetch/network failure `TypeError` — a mid-turn network drop
- *     errors the fetch body ReadableStream, so the transport's flush() is
- *     SKIPPED and the AI SDK surfaces the raw fetch error to onError
- *     ("Failed to fetch", "NetworkError when attempting to fetch the
- *     resource", etc.). This mirrors the AI SDK's own disconnect heuristic
- *     (`chat.ts`: a TypeError whose message includes "fetch"/"network" is
- *     flagged `isDisconnect`). We retry these silently too.
+ * We match ONLY the transport's `CONNECTION_LOST` sentinel. The transport is
+ * the single authority for "this drop is safe to silently retry": it raises
+ * the sentinel both on a graceful `done`-less close (host bounce; SSE body
+ * ended with no terminal frame) AND on a hard mid-stream body error (network
+ * drop while consuming the established stream). Crucially, both happen only
+ * AFTER the SSE stream exists, so a silent `regenerate()` just re-runs an
+ * already-started turn.
+ *
+ * We deliberately do NOT treat a raw fetch/network `TypeError` as
+ * connection-lost: that can surface from the non-idempotent
+ * `POST /api/chat/messages` or the initial `GET` (which run BEFORE the stream
+ * exists). If the POST already reached the host, a silent re-POST would
+ * create a DUPLICATE conversation/turn/agent invocation. Those failures fall
+ * through to the error banner (manual retry), not a silent replay.
  */
 function isConnectionLost(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  if (error.message === CONNECTION_LOST) return true;
-  if (error instanceof TypeError) {
-    const m = error.message.toLowerCase();
-    return m.includes('fetch') || m.includes('network');
-  }
-  return false;
+  return error instanceof Error && error.message === CONNECTION_LOST;
 }
 
 /**
@@ -127,11 +126,15 @@ export interface HandleTurnErrorArgs {
 export function handleTurnError(args: HandleTurnErrorArgs): void {
   const { error, turnKey, budget, silentRetry, showError } = args;
   if (isConnectionLost(error) && budget.consume(turnKey)) {
-    // Transient working-mode label — NOT the persistent red error banner.
-    // The row stays in working mode so the next turn's RunningEffect hides
-    // it cleanly on success (and the AgentStatus error-persistence rule for
-    // #137 doesn't latch it open).
-    agentStatusActions.set(CONNECTION_LOST);
+    // FORCE working mode with the transient "Connection lost. Retrying…"
+    // label — NOT the persistent red error banner. We use `show()` (not the
+    // label-only `set()`): if a PRIOR error row is still visible when this
+    // silent retry begins (e.g. the fetch failed before RunningEffect cleared
+    // the previous turn's error), `set()` would only swap the text and leave
+    // `mode: 'error'` + the old retry/dismiss handlers — so the "silent" path
+    // would still show the red banner. `show()` flips to working mode and
+    // clears those handlers, keeping the automatic retry genuinely silent.
+    agentStatusActions.show(CONNECTION_LOST);
     silentRetry();
     return;
   }

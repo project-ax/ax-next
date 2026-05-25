@@ -404,7 +404,11 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
      *  once. */
     let contentSeen = false;
 
-    const closeOpen = (controller: TransformStreamDefaultController<UIMessageChunk>): void => {
+    // Accept either a TransformStream or a ReadableStream controller — the
+    // helper only enqueues, and the outer error-catching ReadableStream
+    // reuses it to close open parts before the connection-lost terminal.
+    type Enqueuer = { enqueue(chunk: UIMessageChunk): void };
+    const closeOpen = (controller: Enqueuer): void => {
       if (openText !== null) {
         controller.enqueue({ type: 'text-end', id: openText });
         openText = null;
@@ -449,7 +453,7 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
       return openThinking;
     };
 
-    return stream
+    const parsed = stream
       .pipeThrough(new TextDecoderStream() as ReadableWritablePair<string, Uint8Array>)
       .pipeThrough(
         new TransformStream<string, UIMessageChunk>({
@@ -584,14 +588,14 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
           },
           flush(controller) {
             if (finished) return;
-            // Faults B/D — the stream closed WITHOUT a terminal `done` or
-            // `error` frame: a host bounce (process died → the replica-local
-            // chunk buffer is gone) or a network drop (TCP severed) killed
-            // the connection mid-turn. We must NOT synthesize a finish/stop
-            // here — that looks like a successful turn and silently drops the
-            // half-streamed answer (the FAULTA-5 bug). Close any open part
-            // and emit an `error` chunk carrying the CONNECTION_LOST sentinel;
-            // the runtime's onError silently retries once (regenerate → fresh
+            // Faults B/D — the stream closed GRACEFULLY but WITHOUT a terminal
+            // `done` or `error` frame: a host bounce (process died → the
+            // replica-local chunk buffer is gone) ended the SSE body cleanly
+            // mid-turn. We must NOT synthesize a finish/stop here — that looks
+            // like a successful turn and silently drops the half-streamed
+            // answer (the FAULTA-5 bug). Close any open part and emit an
+            // `error` chunk carrying the CONNECTION_LOST sentinel; the
+            // runtime's onError silently retries once (regenerate → fresh
             // reqId + sandbox), then surfaces the error banner if that fails.
             closeOpen(controller);
             controller.enqueue({ type: 'error', errorText: CONNECTION_LOST });
@@ -599,6 +603,46 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
           },
         }),
       );
+
+    // Wrap the parsed stream so a HARD mid-stream drop (Fault D — the fetch
+    // body ReadableStream ERRORS while we're consuming it, e.g. the TCP
+    // connection is severed) is converted into the SAME CONNECTION_LOST
+    // `error` chunk rather than rejecting the stream. Crucially, this means
+    // ONLY errors that occur AFTER the SSE stream was established (i.e.
+    // during body consumption) become connection-lost — the non-idempotent
+    // `POST /api/chat/messages` and the initial `GET` in sendMessages happen
+    // BEFORE this stream exists, so a network failure THERE surfaces as a
+    // plain rejection (→ error banner, NO silent re-POST), avoiding a
+    // duplicate conversation/turn if the POST already reached the host. The
+    // transport is thus the single authority for "this drop is safe to
+    // silently retry"; the runtime keys its silent-retry decision solely on
+    // the CONNECTION_LOST sentinel.
+    return new ReadableStream<UIMessageChunk>({
+      async start(controller) {
+        const reader = parsed.getReader();
+        try {
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            controller.enqueue(value);
+          }
+          controller.close();
+        } catch {
+          // The body errored mid-consumption. If a terminal chunk was already
+          // emitted (done/error/flush ran), `finished` is true and we just
+          // close. Otherwise synthesize the connection-lost terminal so the
+          // turn ends as a retryable error, not a hang or a raw fetch reject.
+          if (!finished) {
+            closeOpen(controller);
+            controller.enqueue({ type: 'error', errorText: CONNECTION_LOST });
+            finished = true;
+          }
+          controller.close();
+        } finally {
+          reader.releaseLock();
+        }
+      },
+    });
   }
 }
 

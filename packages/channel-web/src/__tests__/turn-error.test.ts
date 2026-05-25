@@ -155,13 +155,13 @@ describe('handleTurnError — Faults B/D silent-retry then banner', () => {
     expect(showError).toHaveBeenCalledTimes(1);
   });
 
-  // Fault D — a HARD network drop mid-turn doesn't reach our flush() (the
-  // fetch body ReadableStream errors, so the TransformStream flush is
-  // skipped). The AI SDK surfaces the raw fetch TypeError to onError
-  // ("Failed to fetch" / network error). handleTurnError must treat THAT
-  // as connection-lost too, so a genuine network drop still gets the first
-  // silent retry instead of the banner.
-  it('silently retries on a fetch-failure TypeError (hard network drop, first failure)', () => {
+  // IDEMPOTENCY GUARD — a raw fetch/network `TypeError` is NOT treated as
+  // connection-lost. It can surface from the non-idempotent POST or the
+  // initial GET (both run BEFORE the SSE stream exists); a silent re-POST
+  // could duplicate the conversation/turn. Only the transport-controlled
+  // CONNECTION_LOST sentinel (raised exclusively after the stream is
+  // established) is silently retried. A pre-stream fetch TypeError → banner.
+  it('does NOT silently retry a raw fetch-failure TypeError → banner (idempotency guard)', () => {
     const silentRetry = vi.fn();
     const showError = vi.fn();
     handleTurnError({
@@ -171,11 +171,11 @@ describe('handleTurnError — Faults B/D silent-retry then banner', () => {
       silentRetry,
       showError,
     });
-    expect(silentRetry).toHaveBeenCalledTimes(1);
-    expect(showError).not.toHaveBeenCalled();
+    expect(silentRetry).not.toHaveBeenCalled();
+    expect(showError).toHaveBeenCalledTimes(1);
   });
 
-  it('matches a network-error TypeError (NetworkError when attempting to fetch resource)', () => {
+  it('does NOT silently retry a NetworkError TypeError → banner (idempotency guard)', () => {
     const silentRetry = vi.fn();
     const showError = vi.fn();
     handleTurnError({
@@ -185,22 +185,38 @@ describe('handleTurnError — Faults B/D silent-retry then banner', () => {
       silentRetry,
       showError,
     });
-    expect(silentRetry).toHaveBeenCalledTimes(1);
-    expect(showError).not.toHaveBeenCalled();
+    expect(silentRetry).not.toHaveBeenCalled();
+    expect(showError).toHaveBeenCalledTimes(1);
   });
 
-  it('does NOT treat an unrelated TypeError as connection-lost → banner', () => {
+  // The silent-retry path must FORCE working mode even when a prior error
+  // banner is still on screen (e.g. the previous turn's error hadn't been
+  // cleared yet). Using the label-only set() would leave mode:'error' + the
+  // stale retry/dismiss handlers, so the "silent" retry would still show the
+  // red banner. show() flips to working mode and clears those handlers.
+  it('forces working mode (clears a stale error banner) on the silent-retry path', () => {
+    // Pre-seed a visible error row from a prior turn.
+    const staleRetry = vi.fn();
+    agentStatusActions.error('a previous turn died', { retry: staleRetry });
+    expect(getAgentStatusSnapshot().mode).toBe('error');
+
     const silentRetry = vi.fn();
     const showError = vi.fn();
     handleTurnError({
-      error: new TypeError('Cannot read properties of undefined'),
+      error: new Error(CONNECTION_LOST),
       turnKey: TURN,
       budget: createRetryBudget(),
       silentRetry,
       showError,
     });
-    expect(silentRetry).not.toHaveBeenCalled();
-    expect(showError).toHaveBeenCalledTimes(1);
+
+    const snap = getAgentStatusSnapshot();
+    expect(snap.mode).toBe('working'); // forced back to working, NOT error
+    expect(snap.text).toBe(CONNECTION_LOST);
+    expect(snap.retry).toBeNull(); // stale retry/dismiss handlers cleared
+    expect(snap.dismiss).toBeNull();
+    expect(silentRetry).toHaveBeenCalledTimes(1);
+    expect(showError).not.toHaveBeenCalled();
   });
 });
 

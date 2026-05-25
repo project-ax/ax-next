@@ -274,6 +274,79 @@ describe('AxChatTransport SSE chunk parsing', () => {
     expect(errorChunk?.errorText).toBe(CONNECTION_LOST);
   });
 
+  // Fault D (hard network drop) — the fetch body ReadableStream ERRORS
+  // mid-consumption (TCP severed). The TransformStream flush() does NOT run
+  // on an upstream error, so the transport's outer error-catching wrapper
+  // must convert the rejection into the SAME CONNECTION_LOST `error` chunk —
+  // never a raw rejection (which would skip the silent retry) and never a
+  // silent finish. It also closes any open text part first.
+  test('mid-stream body error converts to a connection-lost error chunk (not a rejection)', async () => {
+    const transport = new AxChatTransport({ getAgentId: () => 'a' });
+    // Emit one text frame on the first pull (fully processed), then ERROR on
+    // the next pull — mirroring a TCP reset after some bytes have streamed.
+    let step = 0;
+    const erroring = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (step === 0) {
+          step = 1;
+          controller.enqueue(
+            new TextEncoder().encode(
+              `data: {"reqId":"r1","text":"partial","kind":"text"}\n\n`,
+            ),
+          );
+          return;
+        }
+        controller.error(new TypeError('network error: connection reset'));
+      },
+    });
+    const chunks = await drain(asProcess(transport)(erroring)) as Array<{
+      type: string;
+      delta?: string;
+      errorText?: string;
+    }>;
+    const types = chunks.map((c) => c.type);
+    // The partial text streamed, the open part is closed, then connection-lost.
+    expect(chunks.some((c) => c.type === 'text-delta' && c.delta === 'partial')).toBe(true);
+    expect(types).toContain('text-end'); // open part closed
+    expect(types).toContain('error');
+    expect(types).not.toContain('finish');
+    expect(types[types.length - 1]).toBe('error');
+    const errorChunk = chunks.find((c) => c.type === 'error') as
+      | { errorText: string }
+      | undefined;
+    expect(errorChunk?.errorText).toBe(CONNECTION_LOST);
+  });
+
+  // A body error AFTER a terminal `done` frame must NOT emit a second
+  // (error) chunk — the turn already finished cleanly; the late error is the
+  // server closing the connection after the done.
+  test('body error after a done frame does not append a spurious error chunk', async () => {
+    const transport = new AxChatTransport({ getAgentId: () => 'a' });
+    let step = 0;
+    const afterDone = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (step === 0) {
+          step = 1;
+          controller.enqueue(
+            new TextEncoder().encode(
+              `data: {"reqId":"r1","text":"hi","kind":"text"}\n\n` +
+                `data: {"reqId":"r1","done":true}\n\n`,
+            ),
+          );
+          return;
+        }
+        controller.error(new TypeError('socket closed'));
+      },
+    });
+    const chunks = await drain(asProcess(transport)(afterDone)) as Array<{
+      type: string;
+    }>;
+    const types = chunks.map((c) => c.type);
+    expect(types).toContain('finish');
+    expect(types).not.toContain('error');
+    expect(types[types.length - 1]).toBe('finish');
+  });
+
   // Fault A — the host emits an `error` SSE frame (instead of `done`) when a
   // turn ends abnormally. The transport must terminate the turn as ERRORED
   // (an AI-SDK `error` chunk) so `running` flips false and the runtime's
