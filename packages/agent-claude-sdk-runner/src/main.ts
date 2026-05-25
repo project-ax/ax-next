@@ -841,6 +841,7 @@ export async function main(): Promise<number> {
         // custom string prompt vs. the preset form.
         systemPrompt: buildSystemPrompt(
           agentConfig.systemPrompt,
+          env.workspaceRoot,
           env.ephemeralRoot,
           pythonVenvReady,
         ),

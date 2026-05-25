@@ -30,6 +30,28 @@ export type SdkSystemPrompt =
   | { type: 'preset'; preset: 'claude_code'; append?: string };
 
 /**
+ * Operational note telling the agent where its workspace is and how to resolve
+ * workspace-relative paths — fixed runner-authored prose for the LLM.
+ *
+ * Without this the model treats an attachment path like `.ax/uploads/…` as a
+ * home dotfile and reads it under `~`/`/home/<user>/…` instead of the workspace
+ * root, so the read fails (the runner's PreToolUse hook re-roots it as a
+ * safety net — see `resolveAttachmentPaths` — but stating the root up front
+ * makes the model emit the right path directly). `workspaceRoot` is
+ * host-controlled (AX_WORKSPACE_ROOT), never model/user/tool input.
+ */
+export function workspaceNote(workspaceRoot: string): string {
+  return [
+    `Workspace: \`${workspaceRoot}\` is your current working directory and the`,
+    `root of your workspace — everything you create, and every file shared with`,
+    `you, lives under it. Workspace-relative paths shown to you (for example a`,
+    `user-attached file at \`.ax/uploads/…\`) are relative to \`${workspaceRoot}\`:`,
+    `open them as \`${workspaceRoot}/.ax/uploads/…\` (or as a path relative to your`,
+    `working directory) — NEVER under a home directory like \`~\` or \`/home/…\`.`,
+  ].join(' ');
+}
+
+/**
  * Operational note telling the agent that `ephemeralRoot` is throwaway
  * scratch — written for the LLM, kept short and direct.
  */
@@ -62,32 +84,32 @@ export function pythonVenvNote(): string {
 }
 
 /**
- * Build the SDK `systemPrompt` value from the agent's frozen prompt and the
- * optional ephemeral scratch root.
+ * Build the SDK `systemPrompt` value from the agent's frozen prompt, the
+ * workspace root, and the optional ephemeral scratch root.
  *
- * Appends up to two runner-authored notes when their gates are set: the
- * ephemeral-scratch note (when `ephemeralRoot` is present) and the python-venv
- * note (when `pythonVenvActive`). Both are joined with the prompt the same way:
+ * Always appends the workspace note (the root is always known); also appends
+ * the ephemeral-scratch note (when `ephemeralRoot` is present) and the
+ * python-venv note (when `pythonVenvActive`). Notes are joined with the prompt
+ * the same way:
  * - Empty agent prompt => `claude_code` preset (notes via the SDK's native
  *   `append`).
  * - Non-empty agent prompt => the verbatim string with the notes concatenated
  *   ourselves (the preset `append` is a no-op on strings).
- * - No notes => unchanged: verbatim string or bare preset.
  */
 export function buildSystemPrompt(
   agentSystemPrompt: string,
+  workspaceRoot: string,
   ephemeralRoot: string | undefined,
   pythonVenvActive = false,
 ): SdkSystemPrompt {
-  const notes: string[] = [];
+  const notes: string[] = [workspaceNote(workspaceRoot)];
   if (ephemeralRoot !== undefined) notes.push(ephemeralScratchNote(ephemeralRoot));
   if (pythonVenvActive) notes.push(pythonVenvNote());
+  // `note` is always non-empty (the workspace note is unconditional).
   const note = notes.join('\n\n');
 
   if (agentSystemPrompt.length > 0) {
-    return note.length > 0
-      ? `${agentSystemPrompt}\n\n${note}`
-      : agentSystemPrompt;
+    return `${agentSystemPrompt}\n\n${note}`;
   }
 
   return note.length > 0

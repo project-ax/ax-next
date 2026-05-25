@@ -464,7 +464,7 @@ describe('main()', () => {
         disallowedTools: string[];
         mcpServers: Record<string, unknown>;
         settingSources: string[];
-        systemPrompt: { type: string; preset: string };
+        systemPrompt: { type: string; preset: string; append?: string };
         env: { ANTHROPIC_BASE_URL?: string; ANTHROPIC_API_KEY: string };
       };
     };
@@ -485,10 +485,13 @@ describe('main()', () => {
     // skills/ discovery (a narrow symlink to .ax/skills, gated by
     // validator-skill against .claude/settings.json / CLAUDE.md / etc.).
     expect(queryArg.options.settingSources).toEqual(['user', 'project']);
-    expect(queryArg.options.systemPrompt).toEqual({
+    expect(queryArg.options.systemPrompt).toMatchObject({
       type: 'preset',
       preset: 'claude_code',
     });
+    // The workspace note is always appended (steers attachment-path resolution
+    // away from home dirs); it references the `.ax/uploads/` namespace.
+    expect(queryArg.options.systemPrompt.append).toContain('.ax/uploads');
     expect(queryArg.options.env.ANTHROPIC_BASE_URL).toBeUndefined();
     expect(queryArg.options.env.ANTHROPIC_API_KEY).toBe(
       COMPLETE_ENV.ANTHROPIC_API_KEY,
