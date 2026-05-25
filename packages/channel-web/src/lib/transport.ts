@@ -518,12 +518,11 @@ function createParseCtx(): ParseCtx {
  *                      with a mapped label was enqueued.
  *   - 'lost'         — the body ended (gracefully OR with an error) WITHOUT a
  *                      terminal frame (Faults B/D). NO terminal chunk is
- *                      enqueued here — the caller decides reconnect vs. emit
- *                      CONNECTION_LOST.
+ *                      enqueued here — the caller (`buildTurnStream`) emits
+ *                      CONNECTION_LOST (or closes cleanly on abort).
  *
- * Cross-attempt dedup: `ctx.skipContent` content chunks are dropped (the
- * server replays the buffer tail on reconnect); each forwarded content chunk
- * bumps `ctx.emittedContent`.
+ * Each forwarded content chunk bumps `ctx.emittedContent` (the "have we shown
+ * anything yet?" counter).
  */
 async function consumeSseAttempt(
   body: ReadableStream<Uint8Array>,
