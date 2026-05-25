@@ -49,14 +49,17 @@ gh project link "$PNUM" --owner "$OWNER" --repo "$REPO" 2>/dev/null || true   # 
 
 ```bash
 FIELDS=$(gh project field-list "$PNUM" --owner "$OWNER" --format json)
-STATUS_FIELD_ID=$(echo "$FIELDS" | jq -r '.fields[] | select(.name=="Status") | .id')
-DEPS_FIELD_ID=$(echo "$FIELDS"   | jq -r '.fields[] | select(.name=="Depends on") | .id')
+STATUS_FIELD_ID=$(printf '%s' "$FIELDS" | jq -r '.fields[] | select(.name=="Status") | .id')
+DEPS_FIELD_ID=$(printf '%s' "$FIELDS"   | jq -r '.fields[] | select(.name=="Depends on") | .id')
 # build a lane-name → option-id map:
-echo "$FIELDS" | jq -r '.fields[] | select(.name=="Status") | .options[] | "\(.name)\t\(.id)"'
+printf '%s' "$FIELDS" | jq -r '.fields[] | select(.name=="Status") | .options[] | "\(.name)\t\(.id)"'
 ```
 
 Expected seven lanes — **Backlog, To Do, Needs Input, In Progress, In Review, Done,
-Parked**. If the `Depends on` field is missing, create it (text):
+Parked**. If a lane is **missing** from an existing board (e.g. **Needs Input** on a
+board created before that lane existed), add it with the **additive** path in §2a —
+**never** the full-replace, which clears every card's Status. If the `Depends on`
+field is missing, create it (text):
 
 ```bash
 [ -z "$DEPS_FIELD_ID" ] && gh project field-create "$PNUM" --owner "$OWNER" \
@@ -85,6 +88,33 @@ gh api graphql -f query='mutation($f:ID!){updateProjectV2Field(input:{fieldId:$f
 projects, GraphQL that walks from the owner uses `organization(login:)` not
 `user(login:)`; walking from the project node id — `node(id:$PROJ_ID){... on
 ProjectV2{...}}` — avoids that branch.)
+
+**Adding ONE lane to a POPULATED board (additive — preserves every card's Status).**
+The full-replace above is **empty-board-only**. To add a lane to a board that already
+has cards, re-send **every existing option with its `id`** (updated in place) plus the
+new id-less option (created). `name` / `color` / `description` are all required, and
+`field-list` omits colors, so read the options via GraphQL first. (Equivalently: add
+the option in the Projects web UI — same in-place effect, zero scripting risk.)
+
+```bash
+# read existing options WITH color+description (field-list returns neither)
+OPTS=$(gh api graphql -f query='query($f:ID!){node(id:$f){... on ProjectV2SingleSelectField{options{id name color description}}}}' \
+  -f f="$STATUS_FIELD_ID" | jq '.data.node.options')
+# build the request body: keep all existing ids/colors, insert "Needs Input" after "To Do"
+BODY=$(jq -nc --arg f "$STATUS_FIELD_ID" --argjson opts "$OPTS" '
+  ($opts | map({id,name,color,description})) as $e
+  | ($e | map(.name) | index("To Do")) as $i
+  | {query:"mutation($f:ID!,$o:[ProjectV2SingleSelectFieldOptionInput!]!){updateProjectV2Field(input:{fieldId:$f,singleSelectOptions:$o}){projectV2Field{... on ProjectV2SingleSelectField{options{id name}}}}}",
+     variables:{f:$f, o:($e[0:$i+1]
+       + [{name:"Needs Input",color:"PINK",description:"Blocked on a human — fill in the card and drag back to To Do"}]
+       + $e[$i+1:])}}')
+printf '%s' "$BODY" | gh api graphql --input -   # existing ids re-sent ⇒ item values preserved
+```
+
+Each existing option carries its `id`, so GitHub updates it in place; only the id-less
+`Needs Input` is created — no card loses its Status. (The option input type accepts an
+optional `id`; a full-replace **without** ids regenerates them and clears assignments —
+that's the §2a hazard.)
 
 ## 2b. The batched board helper (written at run start)
 
@@ -141,15 +171,22 @@ everything from that single JSON:
 ```bash
 ITEMS=$(gh project item-list "$PNUM" --owner "$OWNER" --format json --limit 200)   # the ONLY board read this pass
 # ready set + deps:
-echo "$ITEMS" | jq -r '.items[] | select(.status=="To Do") | "\(.title)\tdeps=\(."depends on" // "")"'
+printf '%s' "$ITEMS" | jq -r '.items[] | select(.status=="To Do") | "\(.title)\tdeps=\(."depends on" // "")"'
 # an item's node id AND its body come from the SAME JSON — never re-query for them:
-echo "$ITEMS" | jq -r --arg p "[$TASK_ID] " '.items[] | select(.title|startswith($p)) | "\(.id)\t\(.content.body // "")"'
+printf '%s' "$ITEMS" | jq -r --arg p "[$TASK_ID] " '.items[] | select(.title|startswith($p)) | "\(.id)\t\(.content.body // "")"'
 ```
 
 Bind `$ITEMS` once; jq it for the ready set, dispatch ids+bodies, the §5 snapshot hash,
 and the §7 reconcile — **do not call `gh project item-list` again within the pass.**
 (The run-start helper `.claude/auto-ship-board.sh` provides `board_snapshot`, which
 caches the read to `.claude/auto-ship-board.json` for exactly this reuse.)
+
+**Re-emit captured JSON with `printf '%s'`, never `echo`.** `echo "$ITEMS"` interprets
+backslash escapes (zsh, and bash under `xpg_echo`), so a card body containing literal
+`\n` / `\t` is mangled into raw control bytes and `jq` dies with *"control characters …
+must be escaped"*. `printf '%s' "$ITEMS" | jq …` (used throughout this doc) prints the
+JSON verbatim. (The `board_snapshot` / poller pipes feed `gh … | jq` directly, so
+they're already safe.)
 
 `.status` is the lane name (e.g. `"To Do"`). `."depends on"` is the dependency field
 (empty = un-analyzed; `none` = analyzed-no-deps; else space/comma-separated Task IDs).
@@ -158,7 +195,7 @@ caches the read to `.claude/auto-ship-board.json` for exactly this reuse.)
 
 ```bash
 # find-or-create a card by [TASK-ID] prefix:
-ITEM_ID=$(echo "$ITEMS" | jq -r --arg p "[$TASK_ID] " \
+ITEM_ID=$(printf '%s' "$ITEMS" | jq -r --arg p "[$TASK_ID] " \
   '.items[] | select(.title // "" | startswith($p)) | .id' | head -1)
 [ -z "$ITEM_ID" ] && ITEM_ID=$(gh project item-create "$PNUM" --owner "$OWNER" \
   --title "[$TASK_ID] $TASK_TITLE" --body "$TASK_BODY" --format json | jq -r .id)
@@ -355,7 +392,7 @@ PR's existence ⇒ Phases 0–5 finished, the work is not lost:
 
 ```bash
 # in-flight cards: TASK-ID (from title) + item node id
-echo "$ITEMS" | jq -r '.items[] | select(.status=="In Progress" or .status=="In Review")
+printf '%s' "$ITEMS" | jq -r '.items[] | select(.status=="In Progress" or .status=="In Review")
   | "\(.title)\t\(.id)"'
 # per card, by [TASK-ID]: is there an open PR titled "[TASK-ID] …"?
 gh pr list --state open --search "[$TASK_ID] in:title" \
@@ -408,7 +445,7 @@ slot** (like a walk).
 
 ```bash
 # candidates = To Do cards whose TASK-ID has no later `triaged … clean` in the journal
-echo "$ITEMS" | jq -r '.items[] | select(.status=="To Do") | "\(.title)\t\(.id)"'
+printf '%s' "$ITEMS" | jq -r '.items[] | select(.status=="To Do") | "\(.title)\t\(.id)"'
 # (cross-reference each TASK-ID against .claude/auto-ship-log.md — titles only, never bodies)
 ```
 
@@ -420,7 +457,7 @@ For each untagged candidate, assign the next **`TASK-n`** (n = max existing
 computed from the already-bound `$ITEMS` so there's no race) and rewrite the title:
 
 ```bash
-NEXT=$(echo "$ITEMS" | jq -r '.items[].title | capture("\\[TASK-(?<n>[0-9]+)\\]").n // empty' \
+NEXT=$(printf '%s' "$ITEMS" | jq -r '.items[].title | capture("\\[TASK-(?<n>[0-9]+)\\]").n // empty' \
         | sort -n | tail -1); NEXT=$(( ${NEXT:-0} + 1 ))
 gh project item-edit --id "$ITEM_ID" --title "[TASK-$NEXT] $ORIGINAL_TITLE"
 ```
