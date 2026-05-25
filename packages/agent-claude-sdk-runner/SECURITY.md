@@ -10,6 +10,23 @@ This package is the sandbox-side runner that wraps `@anthropic-ai/claude-agent-s
 
 - **Supply chain:** One new runtime dependency: `@anthropic-ai/claude-agent-sdk`, exact-pinned to `0.2.119`. `npm view @anthropic-ai/claude-agent-sdk@0.2.119 scripts` returned empty — no `preinstall` / `postinstall` / `prepare` / `install` hooks run at `pnpm install` time. Direct deps: `@anthropic-ai/sdk@^0.81.0`, `@modelcontextprotocol/sdk@^1.29.0`. Maintainers are all `*-anthropic` npm accounts (plus long-standing contributors with anthropic.com emails). Platform-specific optional binaries (`claude-agent-sdk-{darwin,linux,win32}-{arm64,x64}[-musl]`) carry the `claude` CLI binary per platform — same integrity-hashed `.tgz` shape as the parent. Peer-dep: the SDK peer-requires `zod@^4.0.0`; we ship `zod@^3.23.8`, which produces a peer-dep warning. Runtime works today (Zod v3's compat story + the SDK's passthrough-shape pattern), but we accept the warning consciously rather than silently.
 
+### TASK-26 — TTY env-hints for the Bash child
+
+- **Sandbox:** Adds 5 fixed-name / fixed-value terminal-hint env vars
+  (`TERM`, `COLUMNS`, `LINES`, `FORCE_COLOR`, `CI`) to the SDK Bash tool's child
+  env (`tty-hint-env.ts`). No caller / model input influences the names or
+  values — they're compile-time constants in a pure helper. No new filesystem
+  path, network destination, process, or handle becomes reachable; the Bash tool
+  already spawns arbitrary model-requested commands, so these hints grant nothing
+  new. We rejected a pseudo-TTY (which WOULD widen the boundary: a `/dev/pts`
+  master/slave kernel object + ioctl surface + interactive control channel for
+  untrusted Bash) on invariant-#5 grounds. No capability widened.
+- **Injection:** N/A — the helper takes no input and returns constants; it
+  touches no model, tool, user, or external string. (Bash *output* is untrusted
+  as always, but this change only affects whether the tool produces output, not
+  how that output is handled downstream.)
+- **Supply chain:** N/A — no `package.json` change, no new dependency.
+
 ## `@anthropic-ai/claude-agent-sdk` pin posture
 
 - Current specifier: `0.2.119` (exact-pinned; bump intentional). The SDK is pre-1.0 and shipping frequently, so we expect to bump often — but each bump is a deliberate act, not a silent pickup via caret range. Re-run `security-checklist` on every bump.
@@ -34,6 +51,46 @@ See `docs/notes/2026-05-17-sdk-setting-sources-audit.md` for the full audit of f
 ## Enabled built-ins
 
 `Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`, `TodoWrite`. All filesystem-scoped to `cwd = workspaceRoot` (set on the `query()` call). `Bash` gets the same process-spawn constraints as the sandbox-provider imposes on the parent — the subprocess sandbox today means "same uid, same network stack, same filesystem"; the k8s sandbox (Week 7–9) will tighten that. `TodoWrite` writes into the SDK's in-memory session state, not disk.
+
+## Terminal output / no-TTY compatibility (TASK-26)
+
+The `Bash` tool runs a **fully-detached, no-controlling-TTY** shell. Plenty of
+CLIs check "am I talking to a terminal?" and, finding no, write **nothing** —
+the tool exits 0 and the agent gets an empty result with no error. We hit this
+with `@schpet/linear-cli` (a cliffy/Deno binary): even plain `--help`, no network
+involved, produced zero stdout. Its network calls worked fine; the binary just
+rendered nothing into the void.
+
+The fix is **env-hints, not a pseudo-TTY**. `main.ts` stamps a small set of
+terminal-hint env vars onto the SDK `query()` env the Bash child inherits (see
+`tty-hint-env.ts`): `TERM=xterm-256color`, `COLUMNS=120`, `LINES=40`,
+`FORCE_COLOR=1`, `CI=1`. These flip the common terminal detectors so the tools
+emit output (plain or colored). They're inert constant strings — they change zero
+capabilities. We deliberately did **not** allocate a pseudo-TTY: a real
+`/dev/pts` master/slave is a kernel object plus an ioctl surface plus an
+interactive control channel, and handing that to untrusted, model-driven Bash
+widens the sandbox boundary for no good reason (capability minimization,
+invariant #5). The hints are a default *floor*, not a clamp — they're spread
+FIRST, so if the host ever genuinely has a TTY (and forwards a real
+`TERM`/`COLUMNS`/`LINES` through `proxy-startup.ts`'s allowlist), the real value
+wins.
+
+Which CLI output shapes work vs. not:
+
+- **Plain-pipe writers — always worked, unaffected.** Tools that just write to
+  stdout no matter what: `echo`, `cat`, `git`, and most Go/Rust tools using plain
+  `println!` / `fmt.Println`. These never cared about a TTY.
+- **TTY/terminal-detecting writers — fixed by the env-hints.** cliffy/Deno
+  (`isTerminal()`), ink, chalk / `supports-color`, and CI-aware tools that
+  suppress output when they think no one's watching. Previously emitted nothing;
+  now emit (plain or colored) output.
+- **Hard pty-only tools — still won't work, and that's intended.** Full-screen
+  TUIs and interactive prompts that call `ioctl(TIOCGWINSZ)` or open `/dev/tty`
+  directly and refuse to run without a real terminal: interactive `vim` / `top`,
+  password prompts, and the like. They need an actual pty, which we've ruled out
+  on security grounds. These are interactive tools that don't belong in a
+  detached agent shell anyway — if you need one in a script, reach for its
+  non-interactive flags (`--batch`, `--no-pager`, piping input) instead.
 
 ## Known scope limits
 

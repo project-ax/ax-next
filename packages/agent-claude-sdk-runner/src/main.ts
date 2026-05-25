@@ -38,6 +38,7 @@ import { commitTrace } from './commit-trace.js';
 import { createLocalDispatcher } from './local-dispatcher.js';
 import { buildToolCacheEnv } from './tool-cache-env.js';
 import { buildHomeBinEnv } from './home-bin-env.js';
+import { buildTtyHintEnv } from './tty-hint-env.js';
 import { buildPythonVenvEnv, scaffoldPythonVenv } from './python-venv.js';
 import { createPostToolUseHook } from './post-tool-use.js';
 import { createPreToolUseHook } from './pre-tool-use.js';
@@ -745,6 +746,17 @@ export async function main(): Promise<number> {
         //     refactor adds CLAUDE_CONFIG_DIR after the spread it would
         //     break I-P0-1.
         env: {
+          // TASK-26: terminal-hint env for the Bash tool's detached,
+          // no-controlling-TTY child shell. TTY-detecting CLIs (cliffy/Deno
+          // e.g. @schpet/linear-cli, ink, chalk, CI-aware tools) emit ZERO
+          // stdout — even plain `--help` — when they detect they're not on a
+          // terminal; these inert hint strings flip the common detectors so
+          // they emit output. Spread FIRST so they're a default FLOOR: a
+          // genuinely-forwarded TERM/COLUMNS/LINES from the host (carried in
+          // proxyStartup.anthropicEnv, if the host ever has a real TTY) wins
+          // via the later last-write spread. NOT a pseudo-TTY (capability
+          // minimization, I5 — see tty-hint-env.ts / SECURITY.md).
+          ...buildTtyHintEnv(),
           ...proxyStartup.anthropicEnv,
           HOME: env.workspaceRoot,
           // Redirect npx/uvx fetch caches onto the ephemeral tier so they
