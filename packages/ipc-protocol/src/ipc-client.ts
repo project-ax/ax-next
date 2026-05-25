@@ -379,22 +379,48 @@ export function createIpcClient(opts: IpcClientOptions): IpcClient {
     return IPC_TIMEOUTS_MS[action];
   };
 
+  // Per-action wall-clock budget for the CONNECTION-error retry series.
+  //
+  // The long (2-min) restart-survival budget is ONLY for actions where a retry
+  // after a host restart is safe to replay:
+  //   - workspace.commit-notify  — parentVersion-idempotent host-side;
+  //   - session.next-message     — a cursor poll, no side effect;
+  //   - workspace.materialize / workspace.read / session.get-config /
+  //     conversation.store-runner-session — reads / idempotent upserts.
+  // `tool.execute-host` is NON-IDEMPOTENT: a host tool (MCP mutation,
+  // memory_note write, …) may have completed its external side effect before
+  // the response was lost, so replaying it across a 2-min window would DUPLICATE
+  // the action (Codex). It (and the cheap veto `tool.pre-call` / `tool.list`)
+  // keep a SHORT budget — a couple of quick connection retries, no long wait.
+  const SHORT_BUDGET_ACTIONS: ReadonlySet<IpcActionName> = new Set<IpcActionName>([
+    'tool.execute-host',
+    'tool.pre-call',
+    'tool.list',
+  ]);
+  const SHORT_ELAPSED_BUDGET_MS = 3_000;
+  const elapsedBudgetFor = (action: IpcActionName): number =>
+    SHORT_BUDGET_ACTIONS.has(action) ? SHORT_ELAPSED_BUDGET_MS : maxElapsedMs;
+
   // Retry loop. `classify` decides whether/how an error retries:
   //   - 'no'        → not retryable; throw immediately (incl. 4xx, schema
   //                   drift, deterministic over-cap responses).
   //   - 'connection'→ a host-unavailable / connection-level failure. Bounded by
-  //                   the WALL-CLOCK deadline `maxElapsedMs` (default 2 min): a
-  //                   transient ECONNREFUSED keeps retrying at ≤30 s cadence so
-  //                   the runner rides out a host OOMKill→reschedule→boot.
+  //                   the WALL-CLOCK budget `elapsedBudgetMs`: for the
+  //                   runner-lifecycle actions (commit-notify, the inbox poll,
+  //                   reads) it's the full 2 min so the runner rides out a host
+  //                   OOMKill→reschedule→boot; for the NON-IDEMPOTENT
+  //                   `tool.execute-host` it's SHORT (a tool that completed an
+  //                   external side effect host-side but lost the response must
+  //                   NOT be replayed across a 2-min window — Codex).
   //   - '5xx'       → a host APPLICATION error (HTTP 5xx envelope). DETERMINISTIC
-  //                   failures (tool.execute-host internal error, schema drift)
-  //                   live here — they won't self-heal by waiting, so we cap
-  //                   them to a SMALL attempt count rather than stretching to
-  //                   the 2-min deadline and stalling the runner (Codex).
+  //                   failures (tool internal error, schema drift) live here —
+  //                   they won't self-heal by waiting, so we cap them to a SMALL
+  //                   attempt count rather than stretching to the deadline.
   // The loop also honors `maxRetries` as a hard attempt cap (default unbounded
-  // so the deadline / 5xx-cap govern; explicit callers keep exact counts).
+  // so the budget / 5xx-cap govern; explicit callers keep exact counts).
   const withRetry = async <T>(
     classify: (err: unknown) => 'no' | 'connection' | '5xx',
+    elapsedBudgetMs: number,
     fn: () => Promise<T>,
   ): Promise<T> => {
     const start = now();
@@ -412,13 +438,13 @@ export function createIpcClient(opts: IpcClientOptions): IpcClient {
         const wait = backoff(attempt);
         if (kind === '5xx') {
           // Deterministic application error → small finite cap, not the
-          // 2-min wall-clock window.
+          // wall-clock window.
           fiveXxAttempts += 1;
           if (fiveXxAttempts > MAX_5XX_RETRIES) throw err;
         } else {
           // 'connection' → wall-clock bounded: if the next backoff would push
-          // us at/past the deadline, give up now.
-          if (now() - start + wait >= maxElapsedMs) throw err;
+          // us at/past the budget, give up now.
+          if (now() - start + wait >= elapsedBudgetMs) throw err;
         }
         if (wait > 0) {
           await new Promise<void>((resolve) => setTimeout(resolve, wait));
@@ -474,6 +500,7 @@ export function createIpcClient(opts: IpcClientOptions): IpcClient {
 
     return withRetry(
       classifyRetry,
+      elapsedBudgetFor(action),
       async () => {
         const raw = opts.__requestOnce
           ? await opts.__requestOnce({
@@ -506,6 +533,7 @@ export function createIpcClient(opts: IpcClientOptions): IpcClient {
 
     return withRetry(
       classifyRetry,
+      elapsedBudgetFor(action),
       async () => {
         const raw = opts.__requestOnce
           ? await opts.__requestOnce({ method: 'GET', pathWithQuery, timeoutMs })

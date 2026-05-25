@@ -389,6 +389,59 @@ describe('createIpcClient', () => {
       }
     });
 
+    it('tool.execute-host does NOT get the 2-min budget (non-idempotent → short, avoids replaying a side effect)', async () => {
+      // A host tool may have completed its external side effect before the
+      // response was lost; replaying it across a 2-min window would duplicate
+      // the action (Codex). tool.execute-host keeps a SHORT connection budget.
+      let attempts = 0;
+      let clock = 0;
+      const client = createIpcClient({
+        runnerEndpoint: 'unix:///tmp/unused.sock',
+        token: 'tok-abc',
+        maxElapsedMs: 120_000, // default long — the per-action short budget must still bind
+        now: () => clock,
+        retryBackoff: (a) => {
+          attempts = a + 1;
+          clock += Math.min(100 * 2 ** a, 30_000);
+          return 0;
+        },
+        __requestOnce: async () => {
+          throw new HostUnavailableError('connect failed: ECONNREFUSED');
+        },
+      });
+      await expect(client.call('tool.execute-host', {})).rejects.toBeInstanceOf(
+        HostUnavailableError,
+      );
+      // Short 3s budget: 100+200+400+800+1600 = 3100 > 3000 → gives up around
+      // the 4th–5th attempt, NOT the dozens a 2-min budget would allow.
+      expect(attempts).toBeLessThanOrEqual(5);
+      expect(clock).toBeLessThan(10_000);
+    });
+
+    it('workspace.commit-notify DOES get the long budget (idempotent → safe to ride out a restart)', async () => {
+      let attempts = 0;
+      let clock = 0;
+      const client = createIpcClient({
+        runnerEndpoint: 'unix:///tmp/unused.sock',
+        token: 'tok-abc',
+        maxElapsedMs: 120_000,
+        now: () => clock,
+        retryBackoff: (a) => {
+          attempts = a + 1;
+          clock += Math.min(100 * 2 ** a, 30_000);
+          return 0;
+        },
+        __requestOnce: async () => {
+          throw new HostUnavailableError('connect failed: ECONNREFUSED');
+        },
+      });
+      await expect(
+        client.call('workspace.commit-notify', {}),
+      ).rejects.toBeInstanceOf(HostUnavailableError);
+      expect(attempts).toBeGreaterThan(8); // rides out the full ~2 min
+      expect(clock).toBeGreaterThanOrEqual(120_000 - 30_000);
+    });
+
     it('a short maxElapsedMs gives up quickly', async () => {
       const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'ax-arc-dl2-'));
       const deadSocketPath = path.join(tempDir, 'nope.sock');

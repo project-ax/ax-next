@@ -20,7 +20,15 @@ interface HttpEgressEvent {
   durationMs: number;
   credentialInjected: boolean;
   classification: 'llm' | 'mcp' | 'other';
-  blockedReason?: 'allowlist' | 'private-ip' | 'canary' | 'tls-error';
+  // Keep in sync with @ax/credential-proxy's HttpEgressEvent.blockedReason
+  // (structural mirror per I2 — the bus is the contract, not the type).
+  // `'request-body-too-large'` added with the TASK-24 plain-HTTP body cap.
+  blockedReason?:
+    | 'allowlist'
+    | 'private-ip'
+    | 'canary'
+    | 'tls-error'
+    | 'request-body-too-large';
   timestamp: number;
 }
 
