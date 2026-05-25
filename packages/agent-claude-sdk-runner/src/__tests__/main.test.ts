@@ -1145,6 +1145,98 @@ describe('main()', () => {
     });
   });
 
+  it('FAULTA-3: fresh first turn (runnerSessionId null) still emits turnId — read via transcriptSessionId, not the boot runnerSessionId', async () => {
+    // On a conversation's FIRST turn the boot runnerSessionId is null (it only
+    // ever holds a *resume* value). The turn-end turnId reads MUST use the SDK's
+    // real session id captured at system/init (transcriptSessionId) so a real
+    // consumer — @ax/routines silence-token → conversations:drop-turn keyed on
+    // payload.turnId, where a per-fire routine's response IS the conversation's
+    // first turn — can refer back to this turn. Before the fix the reads were
+    // gated on `runnerSessionId !== null`, so on a fresh boot readLastTurnUuid
+    // was never called and no turnId was attached.
+    setEnv(COMPLETE_ENV);
+    // Distinct uuids per turn-role so we can prove the right read fed each one.
+    readLastTurnUuidMock.mockImplementation(
+      async (_root: string, _sessionId: string, kind: 'user' | 'assistant') =>
+        kind === 'assistant' ? 'asst-turn-uuid' : 'tool-turn-uuid',
+    );
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          // Fresh conversation, no prior runner session bound → first turn.
+          conversationId: 'cnv-fresh',
+          runnerSessionId: null,
+        };
+      }
+      if (action === 'workspace.materialize') return { bundleBytes: '' };
+      if (action === 'tool.list') return { tools: [] };
+      if (action === 'conversation.store-runner-session') return { ok: true };
+      throw new Error(`unexpected call: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([userEntry('do work'), cancelEntry]);
+    queryMock.mockImplementation(
+      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+        return (async function* () {
+          const it = prompt[Symbol.asyncIterator]();
+          await it.next();
+          // The SDK mints a fresh session id and announces it at init; this is
+          // the id the turn-end turnId reads must target.
+          yield systemInit('sdk-fresh-id');
+          // A tool turn so BOTH turn-end emissions fire (role=tool + role=assistant).
+          yield assistantBlocks([
+            { type: 'tool_use', id: 'tu_1', name: 'Bash', input: { command: 'pwd' } },
+          ]);
+          yield userToolResult('tu_1', '/tmp/work');
+          yield assistantBlocks([{ type: 'text', text: 'done' }]);
+          yield resultSuccess();
+          await it.next();
+        })();
+      },
+    );
+
+    const { main } = await import('../main.js');
+    const rc = await main();
+    expect(rc).toBe(0);
+
+    // Both turn-end turnId reads targeted the SDK session id (transcriptSessionId),
+    // NOT the (null) boot runnerSessionId.
+    expect(readLastTurnUuidMock).toHaveBeenCalledWith(
+      '/tmp/workspace',
+      'sdk-fresh-id',
+      'user',
+    );
+    expect(readLastTurnUuidMock).toHaveBeenCalledWith(
+      '/tmp/workspace',
+      'sdk-fresh-id',
+      'assistant',
+    );
+
+    const turnEnds = fakeClient.event.mock.calls.filter(
+      (c) => c[0] === 'event.turn-end',
+    );
+    expect(turnEnds).toHaveLength(2);
+    // role=tool turn-end carries the 'user'-line turnId.
+    expect(turnEnds[0]?.[1]).toMatchObject({
+      role: 'tool',
+      turnId: 'tool-turn-uuid',
+    });
+    // role=assistant turn-end carries the 'assistant'-line turnId — this is the
+    // one @ax/routines drops on a silenced first turn.
+    expect(turnEnds[1]?.[1]).toMatchObject({
+      role: 'assistant',
+      turnId: 'asst-turn-uuid',
+    });
+  });
+
   it('tool_result with mixed text+image content: both blocks survive into the role=tool turn-end', async () => {
     // ToolResultBlock.content is `string | (TextBlock | ImageBlock)[]`.
     // A tool that returns image content (screenshot tool, Read on a
