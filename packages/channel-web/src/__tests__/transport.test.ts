@@ -691,29 +691,28 @@ describe('AxChatTransport sendMessages two-phase exchange', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // Faults B/D — transparent same-reqId RECONNECT (FAULTA-5).
+  // Faults B/D — done-less / dropped close surfaces the banner (FAULTA-5).
   //
-  // A mid-turn drop (graceful done-less close OR a hard body error) is
-  // recovered by re-GETting the SAME reqId — NEVER a re-POST (which would mint
-  // a new reqId + agent:invoke and duplicate a live server turn). Silent
-  // reconnect is gated on PRE-CONTENT (nothing emitted yet): the server's
-  // replay buffer is bounded, the wire has no per-chunk sequence number, so a
-  // drop AFTER content has streamed can't be safely deduped and instead
-  // surfaces the error banner (CONNECTION_LOST) for a manual retry.
+  // A mid-turn drop (graceful done-less close OR a hard body error) ends the
+  // turn as a CONNECTION_LOST `error` chunk → the runtime's error banner with a
+  // manual retry — NOT a silent finish (the bug). The transport does NOT
+  // auto-reconnect or re-POST: a re-POST could duplicate a live server turn,
+  // and a GET-only buffer replay can silently lose output if the agent outran
+  // the server's bounded ring buffer while disconnected (no wire sequence
+  // number to align a partial replay). One POST + one GET per turn, always.
+  // An ABORT (Stop / teardown) closes cleanly with no banner.
   // ---------------------------------------------------------------------------
 
   /**
-   * Fetch mock with one POST and a SCRIPTED sequence of SSE GET responses
-   * (one per attempt). Pass a status to simulate a failed reconnect GET.
-   * Counts POSTs to prove no duplicate turn is created.
+   * Fetch mock: one POST (counted, to prove no duplicate turn) + one SSE GET
+   * whose body is the given string. Counts GETs to prove no reconnect.
    */
-  function makeReconnectFetchMock(sseAttempts: Array<{ body?: string; status?: number }>) {
+  function makeDropFetchMock(sseBody: string) {
     let postCount = 0;
     let getCount = 0;
-    const calls: Array<{ url: string; method: string }> = [];
     const fetchFn = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
       const u = typeof url === 'string' ? url : url instanceof URL ? url.toString() : '';
-      calls.push({ url: u, method: init?.method ?? 'GET' });
+      void init;
       if (u.includes('/api/chat/messages')) {
         postCount += 1;
         return new Response(JSON.stringify({ conversationId: 'c1', reqId: 'req-1' }), {
@@ -721,22 +720,14 @@ describe('AxChatTransport sendMessages two-phase exchange', () => {
           headers: { 'content-type': 'application/json' },
         });
       }
-      if (u.includes('/api/chat/stream/')) {
-        const attempt = sseAttempts[getCount] ?? sseAttempts[sseAttempts.length - 1]!;
-        getCount += 1;
-        if (attempt.status && attempt.status >= 400) {
-          return new Response('not found', { status: attempt.status });
-        }
-        return new Response(sseStream(attempt.body ?? ''), {
-          status: 200,
-          headers: { 'content-type': 'text/event-stream' },
-        });
-      }
-      throw new Error(`unexpected fetch ${u}`);
+      getCount += 1;
+      return new Response(sseStream(sseBody), {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
     });
     return {
       fetchFn: fetchFn as unknown as typeof fetch,
-      calls,
       get postCount() {
         return postCount;
       },
@@ -746,38 +737,29 @@ describe('AxChatTransport sendMessages two-phase exchange', () => {
     };
   }
 
-  test('reconnects to the SAME reqId (GET, no re-POST) on a PRE-CONTENT drop and resumes to finish', async () => {
-    // Attempt 1: a phase frame (no content) then closes WITHOUT done (drop).
-    // Attempt 2 (reconnect): streams content + done. Nothing was emitted on
-    // attempt 1, so there is nothing to dedup — the resume is clean.
-    const mock = makeReconnectFetchMock([
-      { body: `data: {"reqId":"req-1","phase":"sandbox-starting"}\n\n` },
-      {
-        body:
-          `data: {"reqId":"req-1","text":"Hello","kind":"text"}\n\n` +
-          `data: {"reqId":"req-1","done":true}\n\n`,
-      },
-    ]);
+  test('a done-less drop ends the turn as CONNECTION_LOST (banner), one POST + one GET, no reconnect', async () => {
+    // Streams a content chunk, then closes WITHOUT a done frame.
+    const mock = makeDropFetchMock(`data: {"reqId":"req-1","text":"partial","kind":"text"}\n\n`);
     const transport = new AxChatTransport({ fetch: mock.fetchFn, getAgentId: () => 'a' });
     const stream = await transport.sendMessages({
       messages: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }],
     } as unknown as Parameters<typeof transport.sendMessages>[0]);
-    const chunks = (await drain(stream)) as Array<{ type: string; delta?: string }>;
+    const chunks = (await drain(stream)) as Array<{ type: string; delta?: string; errorText?: string }>;
 
-    // Exactly ONE POST ever (no duplicate turn); two GETs (initial + reconnect).
-    expect(mock.postCount).toBe(1);
-    expect(mock.getCount).toBe(2);
-    // The reconnect GET targets the SAME reqId.
-    expect(
-      mock.calls.filter((c) => c.method === 'GET').every((c) => c.url.includes('/stream/req-1')),
-    ).toBe(true);
+    expect(mock.postCount).toBe(1); // no duplicate turn
+    expect(mock.getCount).toBe(1); // no reconnect
+    // The partial content that DID stream is preserved.
     const deltas = chunks.filter((c) => c.type === 'text-delta').map((c) => c.delta);
-    expect(deltas.join('')).toBe('Hello');
-    expect(chunks[chunks.length - 1]?.type).toBe('finish');
-    expect(chunks.some((c) => c.type === 'error')).toBe(false);
+    expect(deltas).toEqual(['partial']);
+    const types = chunks.map((c) => c.type);
+    expect(types).toContain('text-end'); // open part closed before the error
+    expect(types).not.toContain('finish');
+    expect(types[types.length - 1]).toBe('error');
+    const err = chunks.find((c) => c.type === 'error') as { errorText: string } | undefined;
+    expect(err?.errorText).toBe(CONNECTION_LOST);
   });
 
-  test('PRE-CONTENT reconnect also recovers a HARD body error (network drop), still no re-POST', async () => {
+  test('a hard body error mid-stream (network drop) also surfaces CONNECTION_LOST, no reconnect', async () => {
     let getCount = 0;
     let postCount = 0;
     const fetchFn = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
@@ -791,26 +773,23 @@ describe('AxChatTransport sendMessages two-phase exchange', () => {
         });
       }
       getCount += 1;
-      if (getCount === 1) {
-        // A body that ERRORS before any content frame (pre-content drop).
-        const erroring = new ReadableStream<Uint8Array>({
-          start(controller) {
-            controller.error(new TypeError('network error'));
-          },
-        });
-        return new Response(erroring, {
-          status: 200,
-          headers: { 'content-type': 'text/event-stream' },
-        });
-      }
-      // Reconnect: content + done.
-      return new Response(
-        sseStream(
-          `data: {"reqId":"req-1","text":"answer","kind":"text"}\n\n` +
-            `data: {"reqId":"req-1","done":true}\n\n`,
-        ),
-        { status: 200, headers: { 'content-type': 'text/event-stream' } },
-      );
+      let step = 0;
+      const erroring = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (step === 0) {
+            step = 1;
+            controller.enqueue(
+              new TextEncoder().encode(`data: {"reqId":"req-1","text":"part","kind":"text"}\n\n`),
+            );
+            return;
+          }
+          controller.error(new TypeError('network error'));
+        },
+      });
+      return new Response(erroring, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
     });
     const transport = new AxChatTransport({
       fetch: fetchFn as unknown as typeof fetch,
@@ -819,34 +798,12 @@ describe('AxChatTransport sendMessages two-phase exchange', () => {
     const stream = await transport.sendMessages({
       messages: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }],
     } as unknown as Parameters<typeof transport.sendMessages>[0]);
-    const chunks = (await drain(stream)) as Array<{ type: string; delta?: string }>;
-
-    expect(postCount).toBe(1); // never re-POSTs
-    expect(getCount).toBe(2); // initial + one reconnect
-    const deltas = chunks.filter((c) => c.type === 'text-delta').map((c) => c.delta);
-    expect(deltas.join('')).toBe('answer');
-    expect(chunks[chunks.length - 1]?.type).toBe('finish');
-  });
-
-  test('a drop AFTER content has streamed surfaces the banner (no lossy resume, no re-POST)', async () => {
-    // Attempt 1 streams a content chunk THEN drops. Because content was shown,
-    // a partial replay can't be safely deduped → surface the banner, do NOT
-    // reconnect.
-    const mock = makeReconnectFetchMock([
-      { body: `data: {"reqId":"req-1","text":"partial","kind":"text"}\n\n` }, // content then drop
-      { body: `data: {"reqId":"req-1","text":"SHOULD-NOT-APPEAR","kind":"text"}\n\n` },
-    ]);
-    const transport = new AxChatTransport({ fetch: mock.fetchFn, getAgentId: () => 'a' });
-    const stream = await transport.sendMessages({
-      messages: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }],
-    } as unknown as Parameters<typeof transport.sendMessages>[0]);
     const chunks = (await drain(stream)) as Array<{ type: string; delta?: string; errorText?: string }>;
 
-    expect(mock.postCount).toBe(1); // no duplicate turn
-    expect(mock.getCount).toBe(1); // did NOT reconnect (content already shown)
+    expect(postCount).toBe(1);
+    expect(getCount).toBe(1); // no reconnect
     const deltas = chunks.filter((c) => c.type === 'text-delta').map((c) => c.delta);
-    expect(deltas).toEqual(['partial']); // the shown content is intact
-    expect(deltas).not.toContain('SHOULD-NOT-APPEAR'); // no lossy replay
+    expect(deltas).toEqual(['part']); // streamed content preserved
     const types = chunks.map((c) => c.type);
     expect(types).not.toContain('finish');
     expect(types[types.length - 1]).toBe('error');
@@ -854,50 +811,40 @@ describe('AxChatTransport sendMessages two-phase exchange', () => {
     expect(err?.errorText).toBe(CONNECTION_LOST);
   });
 
-  test('surfaces CONNECTION_LOST (banner) when the pre-content reconnect GET 404s — turn gone', async () => {
-    const mock = makeReconnectFetchMock([
-      { body: `data: {"reqId":"req-1","phase":"sandbox-starting"}\n\n` }, // pre-content drop
-      { status: 404 }, // reconnect: reqId+buffer evicted by a host bounce
-    ]);
+  test('a clean done frame finishes normally (no banner) — one POST + one GET', async () => {
+    const mock = makeDropFetchMock(
+      `data: {"reqId":"req-1","text":"hello","kind":"text"}\n\n` +
+        `data: {"reqId":"req-1","done":true}\n\n`,
+    );
     const transport = new AxChatTransport({ fetch: mock.fetchFn, getAgentId: () => 'a' });
     const stream = await transport.sendMessages({
       messages: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }],
     } as unknown as Parameters<typeof transport.sendMessages>[0]);
-    const chunks = (await drain(stream)) as Array<{ type: string; errorText?: string }>;
-
-    expect(mock.postCount).toBe(1); // still no duplicate turn
-    const types = chunks.map((c) => c.type);
-    expect(types).not.toContain('finish');
-    expect(types[types.length - 1]).toBe('error');
-    const err = chunks.find((c) => c.type === 'error') as { errorText: string } | undefined;
-    expect(err?.errorText).toBe(CONNECTION_LOST);
-  });
-
-  test('gives up after MAX_RECONNECTS repeated pre-content drops and surfaces CONNECTION_LOST', async () => {
-    // Every attempt is a pre-content drop (phase frame, no content, no done).
-    const mock = makeReconnectFetchMock([
-      { body: `data: {"reqId":"req-1","phase":"sandbox-starting"}\n\n` },
-      { body: `data: {"reqId":"req-1","phase":"sandbox-starting"}\n\n` },
-      { body: `data: {"reqId":"req-1","phase":"sandbox-starting"}\n\n` },
-      { body: `data: {"reqId":"req-1","phase":"sandbox-starting"}\n\n` },
-    ]);
-    const transport = new AxChatTransport({ fetch: mock.fetchFn, getAgentId: () => 'a' });
-    const stream = await transport.sendMessages({
-      messages: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }],
-    } as unknown as Parameters<typeof transport.sendMessages>[0]);
-    const chunks = (await drain(stream)) as Array<{ type: string; errorText?: string }>;
+    const chunks = (await drain(stream)) as Array<{ type: string; delta?: string }>;
 
     expect(mock.postCount).toBe(1);
-    // Bounded: initial + (MAX_RECONNECTS-1) reconnects = at most MAX_RECONNECTS GETs.
-    expect(mock.getCount).toBeLessThanOrEqual(3);
-    const types = chunks.map((c) => c.type);
-    expect(types[types.length - 1]).toBe('error');
+    expect(mock.getCount).toBe(1);
+    expect(chunks.filter((c) => c.type === 'text-delta').map((c) => c.delta).join('')).toBe('hello');
+    expect(chunks[chunks.length - 1]?.type).toBe('finish');
+    expect(chunks.some((c) => c.type === 'error')).toBe(false);
+  });
+
+  test('a server error frame (Fault A) surfaces its mapped label, not CONNECTION_LOST', async () => {
+    const mock = makeDropFetchMock(`data: {"reqId":"req-1","error":"chat-run-timeout"}\n\n`);
+    const transport = new AxChatTransport({ fetch: mock.fetchFn, getAgentId: () => 'a' });
+    const stream = await transport.sendMessages({
+      messages: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }],
+    } as unknown as Parameters<typeof transport.sendMessages>[0]);
+    const chunks = (await drain(stream)) as Array<{ type: string; errorText?: string }>;
+
+    expect(mock.getCount).toBe(1); // no reconnect on a server error either
     const err = chunks.find((c) => c.type === 'error') as { errorText: string } | undefined;
-    expect(err?.errorText).toBe(CONNECTION_LOST);
+    expect(err?.errorText).toBe('The agent timed out. Retry to continue.');
+    expect(err?.errorText).not.toBe(CONNECTION_LOST);
   });
 
   // An ABORT (user Stop / teardown) is NOT connection loss — close cleanly,
-  // no banner. Here the abort lands during the first attempt's body read.
+  // no banner. The abort lands during the body read.
   test('an aborted request closes cleanly with NO error chunk (not a connection-lost banner)', async () => {
     const ac = new AbortController();
     let getCount = 0;
@@ -939,46 +886,7 @@ describe('AxChatTransport sendMessages two-phase exchange', () => {
       abortSignal: ac.signal,
     } as unknown as Parameters<typeof transport.sendMessages>[0]);
     const chunks = (await drain(stream)) as Array<{ type: string }>;
-    const types = chunks.map((c) => c.type);
-    expect(types).not.toContain('error'); // NO connection-lost banner on abort
-    expect(getCount).toBe(1); // did not reconnect after the abort
-  });
-
-  // Codex round 6 — an abort that lands WHILE the pre-content reconnect GET is
-  // pending (fetch rejects with AbortError) must close cleanly, NOT a banner.
-  test('an abort during the reconnect GET closes cleanly with NO error chunk', async () => {
-    const ac = new AbortController();
-    let getCount = 0;
-    const fetchFn = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
-      const u = typeof url === 'string' ? url : String(url);
-      void init;
-      if (u.includes('/api/chat/messages')) {
-        return new Response(JSON.stringify({ conversationId: 'c1', reqId: 'req-1' }), {
-          status: 202,
-          headers: { 'content-type': 'application/json' },
-        });
-      }
-      getCount += 1;
-      if (getCount === 1) {
-        // First GET: a phase frame (pre-content) then a graceful close → lost.
-        return new Response(
-          sseStream(`data: {"reqId":"req-1","phase":"sandbox-starting"}\n\n`),
-          { status: 200, headers: { 'content-type': 'text/event-stream' } },
-        );
-      }
-      // Reconnect GET: the user aborted in the meantime → reject as AbortError.
-      ac.abort();
-      throw new DOMException('aborted', 'AbortError');
-    });
-    const transport = new AxChatTransport({
-      fetch: fetchFn as unknown as typeof fetch,
-      getAgentId: () => 'a',
-    });
-    const stream = await transport.sendMessages({
-      messages: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }],
-      abortSignal: ac.signal,
-    } as unknown as Parameters<typeof transport.sendMessages>[0]);
-    const chunks = (await drain(stream)) as Array<{ type: string }>;
-    expect(chunks.map((c) => c.type)).not.toContain('error'); // no banner on abort
+    expect(chunks.map((c) => c.type)).not.toContain('error'); // NO banner on abort
+    expect(getCount).toBe(1); // no reconnect
   });
 });

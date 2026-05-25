@@ -271,10 +271,10 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
   /**
    * Override the AI SDK's `sendMessages` to drive the two-phase flow:
    *  1. POST /api/chat/messages with the latest user turn → mint reqId.
-   *  2. open the SSE stream at /api/chat/stream/:reqId and stream it,
-   *     transparently RECONNECTING to the SAME reqId if the connection
-   *     drops mid-turn (Faults B/D) — never a re-POST, so a live server
-   *     turn is never duplicated.
+   *  2. open the SSE stream at /api/chat/stream/:reqId and stream it via
+   *     buildTurnStream, which on a mid-turn drop (Faults B/D) surfaces the
+   *     CONNECTION_LOST error chunk (→ runtime banner + manual retry) instead
+   *     of a silent finish (the FAULTA-5 bug).
    */
   override async sendMessages(
     options: Parameters<HttpChatTransport<UIMessage>['sendMessages']>[0],
@@ -349,47 +349,34 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
     this.localConversationId = postOut.conversationId;
     this.setConversationIdFn?.(postOut.conversationId);
 
-    // Phase 2: SSE. Open the stream for the minted reqId and stream it with
-    // transparent same-reqId reconnect (see buildReconnectingStream). The
-    // FIRST GET failing is a request-time error (the turn may or may not have
-    // started) — surface it as a thrown rejection so the runtime shows the
-    // banner rather than silently re-POSTing.
-    const firstResp = await this.openSseStream(postOut.reqId, abortSignal);
-    if (!firstResp.ok || !firstResp.body) {
-      throw new Error(
-        `chat-flow SSE open failed: ${firstResp.status} ${firstResp.statusText}`,
-      );
-    }
-    return this.buildReconnectingStream(
-      postOut.reqId,
-      firstResp.body,
-      abortSignal,
-    );
-  }
-
-  /** GET the SSE stream for a reqId. Used for both the initial open and
-   *  every transparent reconnect. */
-  private openSseStream(
-    reqId: string,
-    abortSignal: AbortSignal | undefined,
-  ): Promise<Response> {
+    // Phase 2: SSE. Open the stream for the minted reqId and feed its body to
+    // buildTurnStream. A FAILED open here is a request-time error (the turn may
+    // or may not have started) — surface it as a thrown rejection so the
+    // runtime shows the banner rather than auto-retrying (which could
+    // duplicate a started turn).
     const sseInit: RequestInit = {
       method: 'GET',
       headers: { accept: 'text/event-stream' },
       credentials: 'include',
     };
     if (abortSignal) sseInit.signal = abortSignal;
-    return this.fetchImpl(
-      `${this.streamApi}/${encodeURIComponent(reqId)}`,
+    const sseResp = await this.fetchImpl(
+      `${this.streamApi}/${encodeURIComponent(postOut.reqId)}`,
       sseInit,
     );
+    if (!sseResp.ok || !sseResp.body) {
+      throw new Error(
+        `chat-flow SSE open failed: ${sseResp.status} ${sseResp.statusText}`,
+      );
+    }
+    return this.buildTurnStream(sseResp.body, abortSignal);
   }
 
   /**
-   * Single-attempt parse of one SSE body into UIMessageChunks. Kept as the
-   * unit-test entry point and used (with no reconnect) when only chunk
-   * parsing matters. Each `data:` line is a JSON `SseFrame`; lines split
-   * across decoder chunks are stitched via a `carry` buffer.
+   * Single-attempt parse of one SSE body into UIMessageChunks. The unit-test
+   * entry point, and the core of `buildTurnStream`. Each `data:` line is a
+   * JSON `SseFrame`; lines split across decoder chunks are stitched via a
+   * `carry` buffer.
    *
    * Emission policy:
    *   - text-kind chunk → text-delta under id `text-N`.
@@ -400,9 +387,8 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
    *     chunk with a mapped friendly label.
    *   - stream close / body error with no terminal frame (Faults B/D) → close
    *     any open part, emit an `error` chunk (CONNECTION_LOST). NOT a silent
-   *     finish — that's the FAULTA-5 bug. (In the live path `sendMessages`
-   *     RECONNECTS to the same reqId before this terminal is reached; see
-   *     `buildReconnectingStream`.)
+   *     finish — that's the FAULTA-5 bug. The runtime turns the CONNECTION_LOST
+   *     chunk into the error banner with a manual-retry affordance.
    */
   protected processResponseStream(
     stream: ReadableStream<Uint8Array>,
@@ -422,118 +408,63 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
   }
 
   /**
-   * Stream the SSE for `reqId`, transparently RECONNECTING to the SAME reqId
-   * if the connection drops mid-turn (Faults B/D) — a graceful `done`-less
-   * close (host bounce) or a hard body error (network drop). Reconnect is a
-   * GET-only re-subscribe; it NEVER re-POSTs, so a still-running server turn
-   * is never duplicated (the original P1: a re-POST mints a fresh reqId +
-   * agent:invoke).
+   * Stream one turn's SSE body to the AI SDK. On a non-terminal drop (Faults
+   * B/D — graceful `done`-less close or a hard body error) emit the
+   * CONNECTION_LOST `error` chunk so the runtime surfaces the error banner
+   * with a manual-retry (`regenerate`) affordance — NOT a silent finish
+   * (the FAULTA-5 bug).
    *
-   * SILENT RECONNECT IS GATED ON `emittedContent === 0` (no content shown
-   * yet). The server replays its per-reqId ring buffer on reconnect, but that
-   * buffer only retains a bounded tail (chunk-buffer.ts: last 256 chunks). If
-   * we had already shown content and the agent kept streaming past the buffer
-   * while we were disconnected, the replay tail would NO LONGER start from the
-   * chunk after our last-seen one — and the wire carries no per-chunk sequence
-   * number, so we CANNOT tell where the replay begins. Count-based dedup would
-   * then silently drop output (Codex rounds 5–7). So we only auto-reconnect
-   * BEFORE any content has streamed (the common "blip before the first token"
-   * case — sandbox-starting, proxy idle-cull, tab refocus), where the replay
-   * is necessarily complete-from-the-start and dedup is a no-op. Once content
-   * has streamed, a drop surfaces the error banner (manual retry) instead of
-   * risking a lossy resume. (A server-side per-chunk sequence number would let
-   * us dedup an arbitrary partial replay exactly and resume mid-content —
-   * tracked as a follow-up.)
+   * Why NOT an automatic silent reconnect/regenerate:
+   *   - A client-side `regenerate()` re-POSTs → mints a fresh reqId +
+   *     `agent:invoke` and can DUPLICATE a still-running server turn (a client
+   *     SSE disconnect doesn't terminate the runner). Never do that
+   *     automatically.
+   *   - A GET-only same-reqId reconnect replays the server's per-reqId ring
+   *     buffer (sse.ts), but that buffer is BOUNDED (chunk-buffer.ts: last 256
+   *     chunks) and the wire carries NO per-chunk sequence number. If the agent
+   *     streams past the buffer while the client is disconnected, the replay
+   *     attaches to a truncated tail and the client would render it as a
+   *     complete answer — silently omitting the earlier chunks (Codex rounds
+   *     5–8). With no cursor proving the replay starts at the beginning, an
+   *     automatic resume can SILENTLY LOSE output, which we refuse to ship.
    *
-   * Bounded at MAX_RECONNECTS. When the reconnect GET fails (Fault B — host
-   * bounced, reqId+buffer gone → 404), the cap is exhausted, or content has
-   * already streamed, we emit CONNECTION_LOST so the runtime surfaces the
-   * error banner with a manual-retry affordance.
+   * So a drop deterministically surfaces the banner; the user's explicit retry
+   * (a deliberate action) re-runs the turn. FOLLOW-UP: a server-side per-chunk
+   * sequence number on the SSE wire would let the client dedup an arbitrary
+   * partial replay exactly and resume silently mid-turn without loss — that's
+   * the correct way to deliver a transparent "silent retry first".
    *
    * An ABORT (user pressed Stop / component teardown) is NOT connection loss:
-   * we close the stream WITHOUT an error chunk so the SDK's normal abort
-   * handling runs and no spurious retry banner appears.
+   * close the stream WITHOUT an error chunk so the SDK's normal abort handling
+   * runs and no spurious retry banner appears.
    */
-  private buildReconnectingStream(
-    reqId: string,
-    firstBody: ReadableStream<Uint8Array>,
+  private buildTurnStream(
+    body: ReadableStream<Uint8Array>,
     abortSignal: AbortSignal | undefined,
   ): ReadableStream<UIMessageChunk> {
-    const open = (r: string, sig: AbortSignal | undefined): Promise<Response> =>
-      this.openSseStream(r, sig);
     const ctx = createParseCtx();
     return new ReadableStream<UIMessageChunk>({
       async start(controller) {
-        const endWithBanner = (): void => {
-          ctx.closeOpen(controller);
-          controller.enqueue({ type: 'error', errorText: CONNECTION_LOST });
+        const reason = await consumeSseAttempt(body, ctx, controller);
+        if (reason === 'done' || reason === 'server-error') {
+          // Terminal chunk already enqueued by the attempt.
           controller.close();
-        };
-        let body: ReadableStream<Uint8Array> | null = firstBody;
-        for (let attempt = 0; ; attempt++) {
-          // Pre-content reconnect only (see method doc): nothing was emitted,
-          // so the replay is complete-from-the-start — no dedup needed. Clear
-          // any partial `data:` line stranded by the drop so it can't corrupt
-          // the replayed frames' JSON parse.
-          if (attempt > 0) ctx.carry = '';
-          const reason = await consumeSseAttempt(body, ctx, controller);
-          if (reason === 'done' || reason === 'server-error') {
-            // Terminal chunk already enqueued by the attempt.
-            controller.close();
-            return;
-          }
-          // reason === 'lost' — the connection dropped (graceful or hard)
-          // without a terminal frame.
-          if (abortSignal?.aborted) {
-            // Intentional cancellation — NOT an error. Close cleanly so the
-            // SDK's abort path runs and no retry banner shows.
-            ctx.closeOpen(controller);
-            controller.close();
-            return;
-          }
-          if (
-            attempt + 1 >= MAX_RECONNECTS ||
-            // Content already streamed → a reconnect's partial replay can't be
-            // safely deduped without silent loss (no wire sequence number).
-            // Surface the banner instead of resuming lossily (Codex r5–7).
-            ctx.emittedContent > 0
-          ) {
-            endWithBanner();
-            return;
-          }
-          let resp: Response;
-          try {
-            resp = await open(reqId, abortSignal);
-          } catch {
-            // The reconnect GET rejected. If the user aborted WHILE it was
-            // pending, that's an intentional cancel (AbortError) — close
-            // cleanly, no banner (Codex round 6). Otherwise the host is
-            // unreachable → give up with the banner.
-            if (abortSignal?.aborted) {
-              ctx.closeOpen(controller);
-              controller.close();
-              return;
-            }
-            endWithBanner();
-            return;
-          }
-          if (!resp.ok || !resp.body) {
-            // 404/410 etc. — the turn is gone (Fault B host bounce evicted
-            // the reqId). Surface the banner; the user can re-POST manually.
-            endWithBanner();
-            return;
-          }
-          body = resp.body;
+          return;
         }
+        // reason === 'lost' — dropped without a terminal frame.
+        if (abortSignal?.aborted) {
+          // Intentional cancellation — close cleanly, no banner.
+          ctx.closeOpen(controller);
+          controller.close();
+          return;
+        }
+        ctx.closeOpen(controller);
+        controller.enqueue({ type: 'error', errorText: CONNECTION_LOST });
+        controller.close();
       },
     });
   }
 }
-
-/** Maximum transparent same-reqId reconnect attempts before surfacing the
- *  error banner. Three GETs (initial + 2 reconnects) span a brief proxy/tab
- *  blip without looping forever on a real outage. */
-const MAX_RECONNECTS = 3;
 
 /** End-reason of a single SSE attempt. */
 type AttemptEnd = 'done' | 'server-error' | 'lost';
