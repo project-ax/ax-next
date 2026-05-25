@@ -154,6 +154,52 @@ capabilities:
 
 In `chat-orchestrator` (where `unionedAllowlist` is built, `orchestrator.ts:971-1006`): when any attached skill declares `packages.npm`, union `registry.npmjs.org`; when any declares `packages.pypi`, union `pypi.org` + `files.pythonhosted.org`. The user/author never hand-allowlists a registry (I5).
 
+#### 5.3.1 Gotcha for skill authors: CLIs that download a prebuilt binary from GitHub releases
+
+The auto-allowlist above covers the **registry** host, and that's it. But a whole
+class of popular npm CLIs aren't pure JavaScript — they ship a thin JS wrapper that,
+at install or first run, downloads a **platform-specific prebuilt binary** from a
+**GitHub release**. esbuild, swc, biome, and `@schpet/linear-cli` all do this. The
+download is `github.com` → 302 redirect → `release-assets.githubusercontent.com`.
+
+Neither of those two hosts is auto-allowlisted. So even though `registry.npmjs.org`
+is reachable and the package's JS wrapper installs fine, the binary download hits the
+egress lock and 403s — and the tool never actually runs. The download happens deep
+inside `npx`, so without the fix below the failure looked like an opaque "couldn't
+download" error with no hint about *why*.
+
+**What an author does about it.** If your skill's CLI downloads a prebuilt binary from
+GitHub releases (when in doubt, assume a Rust/Go/native CLI does), declare both hosts
+in the skill's `allowedHosts` alongside the package:
+
+```yaml
+capabilities:
+  packages:
+    npm: ['@schpet/linear-cli']
+  allowedHosts:
+    - github.com                          # the release page (issues the 302)
+    - release-assets.githubusercontent.com  # where the binary actually lives
+```
+
+**How to recognize the symptom.** The agent reports the CLI failing to install or run
+with a 403 / download error. The proxy audit log (`event.http-egress`, persisted by
+`@ax/audit-log`) shows an `allowlist` block for `github.com` or
+`release-assets.githubusercontent.com`. As of TASK-25 the egress denial itself is no
+longer silent: the proxy returns a 403 whose body names the blocked host and tells the
+reader to add it to a skill's `allowedHosts` (it even calls out this exact
+binary-download case), on both the HTTP and HTTPS-CONNECT paths — see
+`allowlistMissBody` in `packages/credential-proxy/src/listener.ts`. So the failing
+tool's output carries the fix, not just a bare 403.
+
+**Why we don't just auto-allowlist these by default.** It's tempting — it would make
+this whole class of CLIs Just Work. But `github.com` /
+`release-assets.githubusercontent.com` are *general-purpose* hosts (every repo, every
+release, every gist asset lives behind them), so auto-unioning them for any skill that
+declares `packages.npm` would meaningfully widen the default egress surface for a
+prompt-injected agent. That's a security-owner call, deliberately deferred to a
+separate card — not something this design opts everyone into. Authors opt in
+per-skill, with eyes open, via `allowedHosts`.
+
 ### 5.4 Runtime
 
 - **node:** no install step — the agent runs `npx <name>`, which fetches-and-runs on demand using the npx cache (works as non-root). npm support is therefore *just the registry allowlist*.
