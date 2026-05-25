@@ -367,19 +367,26 @@ export function createBufferFillSubscriber(buffer: ChunkBuffer) {
   return async function (
     _ctx: AgentContext,
     payload: StreamChunk,
-  ): Promise<undefined> {
+  ): Promise<StreamChunk | undefined> {
     // Defensive: a malformed event from the bus shouldn't tear down the
     // host. The schema validation already happened in the IPC handler
     // (Task 5); this is belt-and-braces.
     if (typeof payload?.reqId !== 'string' || typeof payload?.kind !== 'string') {
       return undefined;
     }
+    // TASK-23: `buffer.append` mints + stamps the host-minted per-reqId seq and
+    // returns the stamped frame. We RETURN it from the subscriber so the bus
+    // propagates the seq-stamped payload to the per-connection live SSE
+    // subscriber (and any downstream subscriber) — the documented bus merge
+    // contract (`result !== undefined → current = result`), NOT an implicit
+    // in-place mutation. The replay path reads the same stamped frame from
+    // `tail()`, so the live and replay cursors are identical and the client
+    // can dedup an arbitrary partial replay exactly.
     if (payload.kind === 'text' || payload.kind === 'thinking') {
       if (typeof (payload as { text?: unknown }).text !== 'string') {
         return undefined;
       }
-      buffer.append(payload as StreamChunk);
-      return undefined;
+      return buffer.append(payload as StreamChunk);
     }
     if (payload.kind === 'tool-use') {
       const p = payload as {
@@ -396,8 +403,7 @@ export function createBufferFillSubscriber(buffer: ChunkBuffer) {
       ) {
         return undefined;
       }
-      buffer.append(payload as StreamChunk);
-      return undefined;
+      return buffer.append(payload as StreamChunk);
     }
     if (payload.kind === 'tool-result') {
       const p = payload as {
@@ -412,8 +418,7 @@ export function createBufferFillSubscriber(buffer: ChunkBuffer) {
       ) {
         return undefined;
       }
-      buffer.append(payload as StreamChunk);
-      return undefined;
+      return buffer.append(payload as StreamChunk);
     }
     return undefined;
   };

@@ -391,6 +391,138 @@ describe('AxChatTransport SSE chunk parsing', () => {
       | undefined;
     expect(errorChunk?.errorText).toBe('The agent timed out. Retry to continue.');
   });
+
+  // -----------------------------------------------------------------------
+  // TASK-23 — per-chunk seq dedup + gap detection (the enabling infra for a
+  // loss-free silent turn-resume; FAULTA-5 follow-up). The host stamps a
+  // monotonic per-reqId `seq` on every content frame. The client:
+  //   - SKIPS any frame whose seq is at/below its last-seen seq (exact dedup
+  //     of a replayed partial buffer — what makes a same-reqId reconnect
+  //     loss-free instead of double-rendering the replayed tail);
+  //   - on a contiguity GAP (a frame whose seq jumps past last-seen + 1 AFTER
+  //     content was already shown — the bounded 256-chunk buffer dropped
+  //     frames the client never saw) falls back to the visible CONNECTION_LOST
+  //     banner (silent loss is worse than a banner — the FAULTA-5 invariant);
+  //   - passes frames WITHOUT seq through unchanged (forward-compat with an
+  //     older server build that never stamps seq).
+  // -----------------------------------------------------------------------
+
+  test('frames at/below the last-seen seq are deduped (exact replay dedup)', async () => {
+    const transport = new AxChatTransport({ getAgentId: () => 'a' });
+    // Simulate a same-body replay overlap: seq 1,2,3 then a REPLAY of 2,3
+    // (duplicate seqs) then live 4. The duplicates must not re-emit.
+    const body =
+      `data: {"reqId":"r1","text":"a","kind":"text","seq":1}\n\n` +
+      `data: {"reqId":"r1","text":"b","kind":"text","seq":2}\n\n` +
+      `data: {"reqId":"r1","text":"c","kind":"text","seq":3}\n\n` +
+      `data: {"reqId":"r1","text":"b-dup","kind":"text","seq":2}\n\n` +
+      `data: {"reqId":"r1","text":"c-dup","kind":"text","seq":3}\n\n` +
+      `data: {"reqId":"r1","text":"d","kind":"text","seq":4}\n\n` +
+      `data: {"reqId":"r1","done":true}\n\n`;
+    const chunks = await drain(asProcess(transport)(sseStream(body))) as Array<{
+      type: string;
+      delta?: string;
+    }>;
+    const deltas = chunks.filter((c) => c.type === 'text-delta').map((c) => c.delta);
+    // The two duplicate frames (seq 2,3) are dropped; only 1,2,3,4 stream once.
+    expect(deltas).toEqual(['a', 'b', 'c', 'd']);
+    const types = chunks.map((c) => c.type);
+    expect(types[types.length - 1]).toBe('finish');
+    expect(types).not.toContain('error');
+  });
+
+  test('a seq gap after content surfaces CONNECTION_LOST (bounded-buffer loss)', async () => {
+    const transport = new AxChatTransport({ getAgentId: () => 'a' });
+    // seq 1,2 stream, then the next frame is seq 7 — a 4-frame hole (the
+    // server's 256-cap dropped frames the client never saw). The client must
+    // surface the banner rather than silently render a truncated reply.
+    const body =
+      `data: {"reqId":"r1","text":"a","kind":"text","seq":1}\n\n` +
+      `data: {"reqId":"r1","text":"b","kind":"text","seq":2}\n\n` +
+      `data: {"reqId":"r1","text":"jumped","kind":"text","seq":7}\n\n` +
+      `data: {"reqId":"r1","done":true}\n\n`;
+    const chunks = await drain(asProcess(transport)(sseStream(body))) as Array<{
+      type: string;
+      delta?: string;
+      errorText?: string;
+    }>;
+    const types = chunks.map((c) => c.type);
+    // The contiguous prefix (a, b) streamed; then the gap terminates as an error.
+    expect(chunks.filter((c) => c.type === 'text-delta').map((c) => c.delta)).toEqual([
+      'a',
+      'b',
+    ]);
+    expect(types).toContain('text-end'); // open part closed before the error
+    expect(types).toContain('error');
+    expect(types).not.toContain('finish');
+    expect(types[types.length - 1]).toBe('error');
+    const errorChunk = chunks.find((c) => c.type === 'error') as
+      | { errorText: string }
+      | undefined;
+    expect(errorChunk?.errorText).toBe(CONNECTION_LOST);
+  });
+
+  test('the FIRST content frame may start at any seq (connect-time truncation is not a mid-stream gap)', async () => {
+    const transport = new AxChatTransport({ getAgentId: () => 'a' });
+    // A fresh connection whose buffer head was already dropped before connect:
+    // the first frame is seq 5. With no prior last-seen seq, this is the
+    // connect-time baseline, NOT a mid-stream loss — it must stream normally.
+    const body =
+      `data: {"reqId":"r1","text":"a","kind":"text","seq":5}\n\n` +
+      `data: {"reqId":"r1","text":"b","kind":"text","seq":6}\n\n` +
+      `data: {"reqId":"r1","done":true}\n\n`;
+    const chunks = await drain(asProcess(transport)(sseStream(body))) as Array<{
+      type: string;
+      delta?: string;
+    }>;
+    expect(chunks.filter((c) => c.type === 'text-delta').map((c) => c.delta)).toEqual([
+      'a',
+      'b',
+    ]);
+    const types = chunks.map((c) => c.type);
+    expect(types[types.length - 1]).toBe('finish');
+    expect(types).not.toContain('error');
+  });
+
+  test('frames WITHOUT seq pass through unchanged (older-server forward-compat)', async () => {
+    const transport = new AxChatTransport({ getAgentId: () => 'a' });
+    // No seq anywhere — exactly today's wire from a pre-TASK-23 server. No
+    // dedup, no gap detection: every delta streams.
+    const body =
+      `data: {"reqId":"r1","text":"a","kind":"text"}\n\n` +
+      `data: {"reqId":"r1","text":"b","kind":"text"}\n\n` +
+      `data: {"reqId":"r1","done":true}\n\n`;
+    const chunks = await drain(asProcess(transport)(sseStream(body))) as Array<{
+      type: string;
+      delta?: string;
+    }>;
+    expect(chunks.filter((c) => c.type === 'text-delta').map((c) => c.delta)).toEqual([
+      'a',
+      'b',
+    ]);
+    const types = chunks.map((c) => c.type);
+    expect(types[types.length - 1]).toBe('finish');
+    expect(types).not.toContain('error');
+  });
+
+  test('tool frames also participate in seq dedup', async () => {
+    const transport = new AxChatTransport({ getAgentId: () => 'a' });
+    // A replayed tool-use frame (seq 1) after a text frame at seq 2 must dedup.
+    const body =
+      `data: {"reqId":"r1","kind":"tool-use","toolCallId":"t1","toolName":"Read","input":{"path":"x"},"seq":1}\n\n` +
+      `data: {"reqId":"r1","text":"ok","kind":"text","seq":2}\n\n` +
+      `data: {"reqId":"r1","kind":"tool-use","toolCallId":"t1","toolName":"Read","input":{"path":"x"},"seq":1}\n\n` +
+      `data: {"reqId":"r1","done":true}\n\n`;
+    const chunks = await drain(asProcess(transport)(sseStream(body))) as Array<{
+      type: string;
+      toolCallId?: string;
+    }>;
+    // Only ONE tool-input-available despite the duplicate seq-1 tool frame.
+    expect(chunks.filter((c) => c.type === 'tool-input-available')).toHaveLength(1);
+    const types = chunks.map((c) => c.type);
+    expect(types[types.length - 1]).toBe('finish');
+    expect(types).not.toContain('error');
+  });
 });
 
 describe('AxChatTransport SSE phase parsing', () => {

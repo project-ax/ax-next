@@ -41,6 +41,14 @@ const SWEEP_INTERVAL_MS = 30_000;
 interface BufferEntry {
   chunks: StreamChunk[];
   /**
+   * Next per-reqId monotonic sequence number to mint (1-based). Incremented on
+   * every `append` and stamped onto the buffered frame (TASK-23). Keeps
+   * climbing past the MAX_CHUNKS cap drop, so a client whose last-seen seq
+   * falls below the retained tail's first seq detects the hole and falls back
+   * to the visible banner rather than silently rendering a truncated reply.
+   */
+  nextSeq: number;
+  /**
    * Latest phase event for this reqId, or null. Phase is single-slot
    * (only one in-flight phase at a time today) and is automatically
    * evicted as soon as any content chunk lands — once the model is
@@ -62,10 +70,14 @@ interface BufferEntry {
 }
 
 export interface ChunkBuffer {
-  /** Push a chunk into the per-reqId ring. Refreshes the entry's TTL.
-   *  Also evicts any pending phase slot — phase belongs to the pre-content
-   *  window only, so the first content chunk supersedes it. */
-  append(chunk: StreamChunk): void;
+  /** Push a chunk into the per-reqId ring. Mints + stamps the next per-reqId
+   *  monotonic `seq` (1-based; TASK-23) and RETURNS the seq-stamped frame so
+   *  the buffer-fill subscriber can propagate the SAME seq to live SSE
+   *  listeners (the dedup cursor must be identical on the replay and live
+   *  paths). Refreshes the entry's TTL. Also evicts any pending phase slot —
+   *  phase belongs to the pre-content window only, so the first content chunk
+   *  supersedes it. */
+  append(chunk: StreamChunk): StreamChunk;
   /** Set the latest phase for a reqId. Replaces any prior phase slot.
    *  Refreshes the entry's TTL. Ignored if a content chunk has already
    *  arrived for this reqId (phase is pre-content only). */
@@ -130,18 +142,27 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
     append(chunk) {
       const existing = map.get(chunk.reqId);
       if (existing === undefined) {
+        // Fresh reqId — seq starts at 1; nextSeq advances to 2.
+        const stamped: StreamChunk = { ...chunk, seq: 1 };
         map.set(chunk.reqId, {
-          chunks: [chunk],
+          chunks: [stamped],
+          nextSeq: 2,
           phase: null,
           turnError: null,
           lastWriteMs: now(),
         });
-        return;
+        return stamped;
       }
-      existing.chunks.push(chunk);
+      const seq = existing.nextSeq;
+      existing.nextSeq = seq + 1;
+      const stamped: StreamChunk = { ...chunk, seq };
+      existing.chunks.push(stamped);
       // Hard cap — drop the oldest. Array.shift() is O(n) but n ≤ 256
       // and we only shift on overflow; not worth a circular-buffer
-      // structure for this slice.
+      // structure for this slice. NOTE: nextSeq keeps climbing across the
+      // drop, so the retained tail's first seq sits ABOVE a reconnecting
+      // client's last-seen seq → the client detects the hole and surfaces
+      // the banner instead of silently rendering a truncated reply (TASK-23).
       if (existing.chunks.length > MAX_CHUNKS_PER_REQ_ID) {
         existing.chunks.splice(
           0,
@@ -153,6 +174,7 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
       // flicker back to a stale label.
       existing.phase = null;
       existing.lastWriteMs = now();
+      return stamped;
     },
 
     appendPhase(reqId, phase) {
@@ -160,6 +182,7 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
       if (existing === undefined) {
         map.set(reqId, {
           chunks: [],
+          nextSeq: 1,
           phase,
           turnError: null,
           lastWriteMs: now(),
@@ -177,6 +200,7 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
       if (existing === undefined) {
         map.set(reqId, {
           chunks: [],
+          nextSeq: 1,
           phase: null,
           turnError: reason,
           lastWriteMs: now(),

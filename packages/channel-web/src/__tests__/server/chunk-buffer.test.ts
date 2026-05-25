@@ -289,4 +289,84 @@ describe('@ax/channel-web ChunkBuffer', () => {
       buf.dispose();
     }
   });
+
+  // -----------------------------------------------------------------------
+  // TASK-23 — per-chunk monotonic sequence number for loss-free silent
+  // turn-resume. `append` mints the next per-reqId seq (1-based), stamps it
+  // on the buffered frame, and RETURNS the stamped frame so the buffer-fill
+  // subscriber can propagate the same seq to live SSE listeners. The client
+  // dedups replayed frames at/below its last-seen seq.
+  // -----------------------------------------------------------------------
+
+  it('append mints a 1-based monotonic seq per reqId and returns the stamped frame', () => {
+    const buf = createChunkBuffer();
+    try {
+      const a = buf.append({ reqId: 'r1', text: 'a', kind: 'text' });
+      const b = buf.append({ reqId: 'r1', text: 'b', kind: 'text' });
+      const c = buf.append({ reqId: 'r1', text: 'c', kind: 'text' });
+      expect(a.seq).toBe(1);
+      expect(b.seq).toBe(2);
+      expect(c.seq).toBe(3);
+    } finally {
+      buf.dispose();
+    }
+  });
+
+  it('seq is independent per reqId (each starts at 1)', () => {
+    const buf = createChunkBuffer();
+    try {
+      expect(buf.append({ reqId: 'r1', text: 'a', kind: 'text' }).seq).toBe(1);
+      expect(buf.append({ reqId: 'r2', text: 'A', kind: 'text' }).seq).toBe(1);
+      expect(buf.append({ reqId: 'r1', text: 'b', kind: 'text' }).seq).toBe(2);
+      expect(buf.append({ reqId: 'r2', text: 'B', kind: 'text' }).seq).toBe(2);
+    } finally {
+      buf.dispose();
+    }
+  });
+
+  it('tail returns frames carrying their stored seq', () => {
+    const buf = createChunkBuffer();
+    try {
+      buf.append({ reqId: 'r1', text: 'a', kind: 'text' });
+      buf.append({ reqId: 'r1', text: 'b', kind: 'text' });
+      const tail = buf.tail('r1');
+      expect(tail.map((c) => c.seq)).toEqual([1, 2]);
+    } finally {
+      buf.dispose();
+    }
+  });
+
+  it('seq survives the MAX_CHUNKS cap shift — it keeps counting past the dropped head', () => {
+    // Insert 260 with a 256 cap: the buffer drops the oldest 4, but seq keeps
+    // climbing monotonically. The retained tail's first frame is seq 5 and the
+    // last is seq 260 — so a reconnecting client sees a HOLE (its last-seen seq
+    // is below 5) and falls back to the banner (the loss-detection contract).
+    const buf = createChunkBuffer();
+    try {
+      let last: number | undefined;
+      for (let i = 0; i < 260; i += 1) {
+        last = buf.append({ reqId: 'r1', text: String(i), kind: 'text' }).seq;
+      }
+      expect(last).toBe(260);
+      const tail = buf.tail('r1');
+      expect(tail).toHaveLength(256);
+      expect(tail[0]!.seq).toBe(5);
+      expect(tail[255]!.seq).toBe(260);
+    } finally {
+      buf.dispose();
+    }
+  });
+
+  it('a recycled reqId after eviction re-seeds seq at 1 (a fresh turn starts over)', () => {
+    const buf = createChunkBuffer();
+    try {
+      buf.append({ reqId: 'r1', text: 'a', kind: 'text' });
+      expect(buf.append({ reqId: 'r1', text: 'b', kind: 'text' }).seq).toBe(2);
+      buf.evictReqId('r1');
+      // Entry gone → the next append re-creates it and the counter restarts.
+      expect(buf.append({ reqId: 'r1', text: 'fresh', kind: 'text' }).seq).toBe(1);
+    } finally {
+      buf.dispose();
+    }
+  });
 });

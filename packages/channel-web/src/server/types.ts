@@ -16,16 +16,29 @@ export type StreamChunkKind = 'text' | 'thinking' | 'tool-use' | 'tool-result';
  * `text`, `input` (a string-keyed object), and `output` are UNTRUSTED
  * model / tool output (Invariant J2) — JSON-encoded into SSE frames here,
  * sanitized at render in the browser.
+ *
+ * `seq` (TASK-23) is a HOST-minted monotonic per-reqId chunk cursor stamped
+ * by the `ChunkBuffer` as each chunk is buffered (see chunk-buffer.ts). It is
+ * NOT carried on the `@ax/ipc-protocol` IPC wire — the runner never supplies
+ * it (the host buffer is the sole authority, so untrusted runner content can't
+ * steer the client's dedup cursor — Invariant I5). It is therefore OPTIONAL on
+ * this type: a chunk straight off the IPC dispatch (before the buffer-fill
+ * subscriber stamps it) has no `seq`; once buffered/forwarded it does. The
+ * client dedups replayed frames at/below its last-seen `seq` and falls back to
+ * the visible CONNECTION_LOST banner on a contiguity gap that exceeds the
+ * bounded buffer. `seq` is a plain monotonic int → transport/storage-agnostic
+ * (Invariant I1).
  */
 export type StreamChunk =
-  | { reqId: string; kind: 'text'; text: string }
-  | { reqId: string; kind: 'thinking'; text: string }
+  | { reqId: string; kind: 'text'; text: string; seq?: number }
+  | { reqId: string; kind: 'thinking'; text: string; seq?: number }
   | {
       reqId: string;
       kind: 'tool-use';
       toolCallId: string;
       toolName: string;
       input: Record<string, unknown>;
+      seq?: number;
     }
   | {
       reqId: string;
@@ -33,6 +46,7 @@ export type StreamChunk =
       toolCallId: string;
       output: string;
       isError?: boolean;
+      seq?: number;
     };
 
 /**
@@ -57,7 +71,9 @@ export type PhaseKind = 'sandbox-starting';
  * browser parses verbatim. The three variants are deliberately disjoint
  * so the client can `switch` on a single discriminator.
  *
- *   - chunk frame: `{ reqId, text, kind }`        — content delta.
+ *   - chunk frame: `{ reqId, text, kind, seq? }`  — content delta (`seq` is the
+ *                                                   host-minted per-reqId cursor
+ *                                                   the client dedups on; TASK-23).
  *   - phase frame: `{ reqId, phase }`             — out-of-band agent state.
  *   - done  frame: `{ reqId, done: true }`         — normal turn terminator.
  *   - error frame: `{ reqId, error }`             — abnormal turn terminator.

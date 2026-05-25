@@ -334,7 +334,8 @@ describe('@ax/channel-web server plugin (integration)', () => {
       if (done) break;
       received += decoder.decode(value, { stream: true });
     }
-    expect(received).toContain('data: {"reqId":"r-test","text":"hello","kind":"text"}\n\n');
+    // TASK-23: the first content chunk for this reqId carries the host-minted seq:1.
+    expect(received).toContain('data: {"reqId":"r-test","text":"hello","kind":"text","seq":1}\n\n');
     ac.abort();
     try {
       await reader.cancel();

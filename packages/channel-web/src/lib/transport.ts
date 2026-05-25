@@ -77,10 +77,12 @@ export const DEFAULT_TURN_ERROR =
  * AgentStatus error row, which shows a "retry" button alongside.
  *
  * Wording is MANUAL-retry copy ("Retry to continue.", mirroring
- * DEFAULT_TURN_ERROR) — there is NO automatic retry/reconnect on this path
- * (a loss-free silent resume needs a server-side per-chunk sequence number;
- * see the transport's buildTurnStream doc). Saying "Retrying…" would be a lie
- * that leaves the user waiting instead of clicking retry.
+ * DEFAULT_TURN_ERROR) — there is NO automatic retry/reconnect on this path yet.
+ * TASK-23 shipped the loss-free primitive (the host-minted per-chunk `seq` the
+ * client dedups on; see the transport's buildTurnStream doc), but the automatic
+ * same-reqId re-open that would consume it is a tracked follow-up — until that
+ * lands this stays manual-retry copy. Saying "Retrying…" would be a lie that
+ * leaves the user waiting instead of clicking retry.
  */
 export const CONNECTION_LOST = 'Connection lost. Retry to continue.';
 
@@ -94,16 +96,21 @@ const ERROR_LABELS: Record<string, string> = {
   'chat-run-timeout': 'The agent timed out. Retry to continue.',
 };
 
-/** Shape of one SSE `data:` JSON payload. Matches `SseFrame` in src/server/types.ts. */
+/** Shape of one SSE `data:` JSON payload. Matches `SseFrame` in src/server/types.ts.
+ *  `seq` (TASK-23) is the host-minted monotonic per-reqId cursor on content
+ *  frames; the client dedups replayed frames at/below its last-seen seq and
+ *  falls back to the CONNECTION_LOST banner on a contiguity gap. Optional —
+ *  an older server build that never stamps seq parses (and behaves) as before. */
 type SseFrame =
-  | { reqId: string; kind: 'text'; text: string }
-  | { reqId: string; kind: 'thinking'; text: string }
+  | { reqId: string; kind: 'text'; text: string; seq?: number }
+  | { reqId: string; kind: 'thinking'; text: string; seq?: number }
   | {
       reqId: string;
       kind: 'tool-use';
       toolCallId: string;
       toolName: string;
       input: Record<string, unknown>;
+      seq?: number;
     }
   | {
       reqId: string;
@@ -111,6 +118,7 @@ type SseFrame =
       toolCallId: string;
       output: string;
       isError?: boolean;
+      seq?: number;
     }
   | { reqId: string; phase: string }
   | { reqId: string; done: true }
@@ -422,19 +430,22 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
    *     SSE disconnect doesn't terminate the runner). Never do that
    *     automatically.
    *   - A GET-only same-reqId reconnect replays the server's per-reqId ring
-   *     buffer (sse.ts), but that buffer is BOUNDED (chunk-buffer.ts: last 256
-   *     chunks) and the wire carries NO per-chunk sequence number. If the agent
-   *     streams past the buffer while the client is disconnected, the replay
-   *     attaches to a truncated tail and the client would render it as a
-   *     complete answer — silently omitting the earlier chunks (Codex rounds
-   *     5–8). With no cursor proving the replay starts at the beginning, an
-   *     automatic resume can SILENTLY LOSE output, which we refuse to ship.
+   *     buffer (sse.ts), which is BOUNDED (chunk-buffer.ts: last 256 chunks).
+   *     TASK-23 added a host-minted monotonic per-chunk `seq` to the wire, so
+   *     `consumeSseAttempt` can now dedup a replayed partial buffer EXACTLY
+   *     (skip frames at/below the last-seen seq) and DETECT a gap (a seq that
+   *     jumps past last-seen + 1 after content already streamed = the buffer
+   *     dropped frames the client never saw). On such a gap it falls back to
+   *     this same CONNECTION_LOST banner — silent loss is worse than a banner.
    *
    * So a drop deterministically surfaces the banner; the user's explicit retry
-   * (a deliberate action) re-runs the turn. FOLLOW-UP: a server-side per-chunk
-   * sequence number on the SSE wire would let the client dedup an arbitrary
-   * partial replay exactly and resume silently mid-turn without loss — that's
-   * the correct way to deliver a transparent "silent retry first".
+   * (a deliberate action) re-runs the turn. The seq dedup/gap infra (TASK-23)
+   * is the ENABLING half of FAULTA-5's envisioned "silent retry first": the
+   * client can now resume a same-reqId reconnect loss-free. FOLLOW-UP (still
+   * open): actually wiring the automatic same-reqId re-open of
+   * /api/chat/stream/:reqId mid-turn (the consuming UX) on top of this infra —
+   * deferred so this PR ships the loss-free primitive without changing the
+   * drop-handling UX in the same change.
    *
    * An ABORT (user pressed Stop / component teardown) is NOT connection loss:
    * close the stream WITHOUT an error chunk so the SDK's normal abort handling
@@ -484,6 +495,15 @@ interface ParseCtx {
    *  surface the banner (content already streamed — a partial replay can't be
    *  safely deduped). */
   emittedContent: number;
+  /** Highest host-minted content `seq` seen so far across attempts (TASK-23).
+   *  0 = no seq-bearing content frame yet. A frame with `seq <= lastSeq` is a
+   *  replay duplicate (skip it — exact dedup). A frame with `seq > lastSeq + 1`
+   *  AFTER lastSeq > 0 is a contiguity gap: the bounded buffer dropped frames
+   *  the client never saw, so we surface the CONNECTION_LOST banner rather than
+   *  silently rendering a truncated reply. The FIRST content frame (lastSeq 0)
+   *  may start at any seq — connect-time buffer truncation is not a mid-stream
+   *  loss. Frames with no seq (older server) never touch this and always pass. */
+  lastSeq: number;
   closeOpen(controller: { enqueue(c: UIMessageChunk): void }): void;
 }
 
@@ -496,6 +516,7 @@ function createParseCtx(): ParseCtx {
     contentSeen: false,
     carry: '',
     emittedContent: 0,
+    lastSeq: 0,
     closeOpen(controller) {
       if (ctx.openText !== null) {
         controller.enqueue({ type: 'text-end', id: ctx.openText });
@@ -616,6 +637,30 @@ async function consumeSseAttempt(
           const label = PHASE_LABELS[frame.phase];
           if (label !== undefined) agentStatusActions.set(label);
           continue;
+        }
+        // TASK-23 — per-chunk seq dedup + gap detection (content frames only).
+        // The host stamps a monotonic per-reqId `seq` on every content frame.
+        //   - seq <= lastSeq  → a replayed duplicate; SKIP it (exact dedup of a
+        //     partial buffer replay — this is what makes a same-reqId reconnect
+        //     loss-free instead of double-rendering the replayed tail).
+        //   - lastSeq > 0 && seq > lastSeq + 1 → a contiguity GAP: the bounded
+        //     256-chunk buffer dropped frames the client never saw. Surface the
+        //     CONNECTION_LOST banner (return 'lost') — silent loss is worse than
+        //     a banner (the FAULTA-5 invariant). The FIRST content frame
+        //     (lastSeq 0) may legitimately start at any seq — connect-time buffer
+        //     truncation is not a mid-stream loss — so it just sets the baseline.
+        //   - otherwise → accept and advance lastSeq.
+        // Frames WITHOUT a numeric seq (older server build) bypass this entirely.
+        if ('kind' in frame && typeof (frame as { seq?: unknown }).seq === 'number') {
+          const seq = (frame as { seq: number }).seq;
+          if (seq <= ctx.lastSeq) {
+            continue; // duplicate replayed frame — already shown
+          }
+          if (ctx.lastSeq > 0 && seq > ctx.lastSeq + 1) {
+            // Hole in the sequence after content already streamed → loss.
+            return 'lost';
+          }
+          ctx.lastSeq = seq;
         }
         // text/thinking chunk
         if (
