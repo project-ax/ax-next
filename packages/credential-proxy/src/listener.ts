@@ -385,21 +385,41 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
 
       // Read request body, CAPPED so one large upload can't OOM the host
       // (TASK-24). The HTTP path must buffer the whole body to re-forward it
-      // via fetch; over the cap we abort with 413 and never touch the upstream.
-      const chunks: Buffer[] = [];
-      let bodyBytes = 0;
-      let oversized = false;
-      for await (const chunk of req) {
-        bodyBytes += (chunk as Buffer).length;
-        if (bodyBytes > maxHttpRequestBodyBytes) {
-          oversized = true;
-          break;
-        }
-        chunks.push(chunk as Buffer);
-      }
+      // via fetch; over the cap we stop accumulating, keep DRAINING to end (so
+      // we never touch the upstream and the socket closes cleanly), then 413.
+      //
+      // We read via 'data'/'end' events, NOT `for await (const chunk of req)`:
+      // breaking out of the async iterator calls its return(), which DESTROYS
+      // the IncomingMessage — a destroyed readable can reset the socket before
+      // the 413 reaches the client, especially on a chunked/streaming upload
+      // (Codex P2). Event-draining keeps the stream alive until 'end'.
+      const { body, oversized, bodyBytes } = await new Promise<{
+        body: Buffer;
+        oversized: boolean;
+        bodyBytes: number;
+      }>((resolve, reject) => {
+        const collected: Buffer[] = [];
+        let total = 0;
+        let over = false;
+        req.on('data', (chunk: Buffer) => {
+          total += chunk.length;
+          if (total > maxHttpRequestBodyBytes) {
+            // Past the cap: stop buffering (free what we held) but keep the
+            // stream flowing so it drains cleanly to 'end' — no destroy.
+            if (!over) {
+              over = true;
+              collected.length = 0;
+            }
+            return;
+          }
+          collected.push(chunk);
+        });
+        req.on('end', () =>
+          resolve({ body: Buffer.concat(collected), oversized: over, bodyBytes: total }),
+        );
+        req.on('error', reject);
+      });
       if (oversized) {
-        // Drain the rest so the inbound socket can close cleanly, then 413.
-        req.resume();
         audit(stampSession({
           action: 'proxy_request',
           method,
@@ -414,7 +434,6 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
         res.end('Request body exceeds the proxy limit.');
         return;
       }
-      const body = Buffer.concat(chunks);
       requestBytes = body.length;
 
       // Forward headers (strip hop-by-hop and encoding headers — fetch handles these).

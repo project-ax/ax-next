@@ -141,6 +141,54 @@ describe('proxy listener — HTTP forwarding', () => {
     expect(upstreamSawBytes).toBe(0);
   });
 
+  it('returns 413 for a CHUNKED streaming upload over the cap (no destroyed-stream reset; Codex P2)', async () => {
+    // A chunked (no Content-Length) upload that keeps sending past the cap. The
+    // earlier `break` out of the async iterator destroyed the IncomingMessage,
+    // so the 413 could race a socket reset and the client saw a connection
+    // error instead. The fix keeps draining the body without destroying it, so
+    // the 413 lands cleanly.
+    upstream = httpCreate((_req, res) => res.end('SHOULD NOT REACH'));
+    const upPort = await new Promise<number>((r) =>
+      upstream!.listen(0, '127.0.0.1', () => r((upstream!.address() as { port: number }).port)),
+    );
+    const registry = new SharedCredentialRegistry();
+    listener = await startProxyListener({
+      listen: { kind: 'tcp', host: '127.0.0.1', port: 0 },
+      registry,
+      ca: mintCA(),
+      maxHttpRequestBodyBytes: 4096,
+      sessions: new Map([
+        ['s1', { allowlist: new Set(['127.0.0.1']), allowedIPs: new Set(['127.0.0.1']) }],
+      ]),
+    });
+    const dispatcher = new ProxyAgent({
+      uri: `http://127.0.0.1:${listener.port}`,
+      proxyTunnel: false,
+    });
+    // A chunked body that emits 16 x 1 KiB chunks with small gaps so the cap
+    // (4 KiB) trips well before the stream ends — exercises the mid-stream path.
+    let emitted = 0;
+    const chunked = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        if (emitted >= 16) {
+          controller.close();
+          return;
+        }
+        emitted += 1;
+        controller.enqueue(new Uint8Array(1024).fill(0x62));
+        await new Promise((r) => setTimeout(r, 5));
+      },
+    });
+    const res = await fetch(`http://127.0.0.1:${upPort}/stream-up`, {
+      method: 'POST',
+      body: chunked,
+      duplex: 'half',
+      dispatcher,
+    } as RequestInit);
+    // The key assertion: a clean 413, not a thrown connection error.
+    expect(res.status).toBe(413);
+  });
+
   it('forwards a plain-HTTP request body that is under the cap', async () => {
     let received = '';
     upstream = httpCreate((req, res) => {

@@ -1164,6 +1164,164 @@ describe('AxChatTransport sendMessages two-phase exchange', () => {
     expect(err?.errorText).not.toBe(CONNECTION_LOST);
   });
 
+  // Codex P1 — the reconnect GET that THROWS (host still restarting:
+  // ECONNREFUSED) or returns a transient 5xx must NOT be treated as terminal.
+  // It's exactly the host-bounce window this change exists to survive: keep
+  // backing off and retrying within the budget, then recover when the host
+  // comes back. Only a definitive 404/410 (reqId gone) ends it early.
+  test('a reconnect GET that throws (host still down) keeps retrying within budget and recovers', async () => {
+    let postCount = 0;
+    let getCount = 0;
+    const fetchFn = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = typeof url === 'string' ? url : String(url);
+      void init;
+      if (u.includes('/api/chat/messages')) {
+        postCount += 1;
+        return new Response(JSON.stringify({ conversationId: 'c1', reqId: 'req-1' }), {
+          status: 202,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      getCount += 1;
+      if (getCount === 1) {
+        // First open succeeds, streams seq 1, then drops (no done).
+        return new Response(
+          sseStream(`data: {"reqId":"req-1","text":"a","kind":"text","seq":1}\n\n`),
+          { status: 200, headers: { 'content-type': 'text/event-stream' } },
+        );
+      }
+      if (getCount === 2) {
+        // Reconnect #1: host still restarting → fetch THROWS (ECONNREFUSED).
+        throw new TypeError('fetch failed: ECONNREFUSED');
+      }
+      if (getCount === 3) {
+        // Reconnect #2: transient gateway error while the host warms up.
+        return new Response('bad gateway', { status: 502 });
+      }
+      // Reconnect #3: host is back; replay seq 1 (deduped) + seq 2 + done.
+      return new Response(
+        sseStream(
+          `data: {"reqId":"req-1","text":"a","kind":"text","seq":1}\n\n` +
+            `data: {"reqId":"req-1","text":"b","kind":"text","seq":2}\n\n` +
+            `data: {"reqId":"req-1","done":true}\n\n`,
+        ),
+        { status: 200, headers: { 'content-type': 'text/event-stream' } },
+      );
+    });
+    const transport = new AxChatTransport({
+      fetch: fetchFn as unknown as typeof fetch,
+      getAgentId: () => 'a',
+      reconnect: { sleep: async () => {}, maxAttempts: 5 },
+    });
+    const stream = await transport.sendMessages({
+      messages: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }],
+    } as unknown as Parameters<typeof transport.sendMessages>[0]);
+    const chunks = (await drain(stream)) as Array<{ type: string; delta?: string }>;
+
+    expect(postCount).toBe(1); // never re-POSTs through the bounce
+    expect(getCount).toBe(4); // initial + 3 reconnect attempts (2 failed, 1 ok)
+    const text = chunks.filter((c) => c.type === 'text-delta').map((c) => c.delta).join('');
+    expect(text).toBe('ab'); // recovered loss-free
+    const types = chunks.map((c) => c.type);
+    expect(types[types.length - 1]).toBe('finish');
+    expect(types).not.toContain('error'); // no banner — recovery succeeded
+  });
+
+  // Codex P1 — a definitive 404 (reqId genuinely gone) still ends early without
+  // exhausting the whole budget on something that will never come back.
+  test('a reconnect GET that 404s (reqId gone) ends early without burning the whole budget', async () => {
+    let getCount = 0;
+    const fetchFn = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = typeof url === 'string' ? url : String(url);
+      void init;
+      if (u.includes('/api/chat/messages')) {
+        return new Response(JSON.stringify({ conversationId: 'c1', reqId: 'req-1' }), {
+          status: 202,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      getCount += 1;
+      if (getCount === 1) {
+        return new Response(
+          sseStream(`data: {"reqId":"req-1","text":"a","kind":"text","seq":1}\n\n`),
+          { status: 200, headers: { 'content-type': 'text/event-stream' } },
+        );
+      }
+      return new Response('gone', { status: 404 }); // definitive
+    });
+    const transport = new AxChatTransport({
+      fetch: fetchFn as unknown as typeof fetch,
+      getAgentId: () => 'a',
+      reconnect: { sleep: async () => {}, maxAttempts: 5 },
+    });
+    const stream = await transport.sendMessages({
+      messages: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }],
+    } as unknown as Parameters<typeof transport.sendMessages>[0]);
+    const chunks = (await drain(stream)) as Array<{ type: string; errorText?: string }>;
+
+    expect(getCount).toBe(2); // initial + ONE 404 reopen → stop (no budget burn)
+    const err = chunks.find((c) => c.type === 'error') as { errorText: string } | undefined;
+    expect(err?.errorText).toBe(CONNECTION_LOST);
+  });
+
+  // Codex P2 — a drop in the MIDDLE of an SSE `data:` line leaves a partial in
+  // ctx.carry. The reconnect loop reuses the parse ctx, so without clearing the
+  // carry the stale bytes prefix the first replayed frame and EAT it (the
+  // concatenated line fails JSON.parse → skipped). Here that swallows the only
+  // copy of the first new frame, dropping content. The carry must be reset
+  // between attempts (lastSeq/open-part state preserved).
+  test('a drop mid-SSE-line does not eat the first replayed frame (carry reset)', async () => {
+    let getCount = 0;
+    const fetchFn = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = typeof url === 'string' ? url : String(url);
+      void init;
+      if (u.includes('/api/chat/messages')) {
+        return new Response(JSON.stringify({ conversationId: 'c1', reqId: 'req-1' }), {
+          status: 202,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      getCount += 1;
+      if (getCount === 1) {
+        // Drop in the MIDDLE of the very first frame's line — nothing complete
+        // streamed, but a partial `data: {…` lands in ctx.carry.
+        return new Response(
+          sseStream(`data: {"reqId":"req-1","text":"AAAA`), // truncated mid-line, no \n
+          { status: 200, headers: { 'content-type': 'text/event-stream' } },
+        );
+      }
+      // Reconnect: full clean stream from seq 1. If the stale carry is NOT
+      // cleared, it prefixes the first replayed line → that line fails to parse
+      // → seq-1 frame "alpha" is EATEN, leaving only "beta".
+      return new Response(
+        sseStream(
+          `data: {"reqId":"req-1","text":"alpha","kind":"text","seq":1}\n\n` +
+            `data: {"reqId":"req-1","text":"beta","kind":"text","seq":2}\n\n` +
+            `data: {"reqId":"req-1","done":true}\n\n`,
+        ),
+        { status: 200, headers: { 'content-type': 'text/event-stream' } },
+      );
+    });
+    const transport = new AxChatTransport({
+      fetch: fetchFn as unknown as typeof fetch,
+      getAgentId: () => 'a',
+      reconnect: { sleep: async () => {} },
+    });
+    const stream = await transport.sendMessages({
+      messages: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }],
+    } as unknown as Parameters<typeof transport.sendMessages>[0]);
+    const chunks = (await drain(stream)) as Array<{ type: string; delta?: string }>;
+
+    expect(getCount).toBe(2); // one reconnect
+    const text = chunks.filter((c) => c.type === 'text-delta').map((c) => c.delta).join('');
+    // With the carry cleared, BOTH replayed frames stream. Without the fix the
+    // stale `data: {"reqId":"req-1","text":"AAAA` prefix eats "alpha" → "beta".
+    expect(text).toBe('alphabeta');
+    const types = chunks.map((c) => c.type);
+    expect(types[types.length - 1]).toBe('finish');
+    expect(types).not.toContain('error');
+  });
+
   // An ABORT (user Stop / teardown) is NOT connection loss — close cleanly,
   // no banner. The abort lands during the body read.
   test('an aborted request closes cleanly with NO error chunk (not a connection-lost banner)', async () => {

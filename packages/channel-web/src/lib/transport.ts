@@ -108,6 +108,13 @@ const MAX_RECONNECTS = 5;
  *  repeats if attempts exceed the array). */
 const RECONNECT_BACKOFF_MS = [500, 1000, 2000, 4000, 8000];
 
+/** Sentinel a reopen() returns when the SSE GET failed TRANSIENTLY (host still
+ *  restarting: thrown connection error or a 5xx). Distinct from a body
+ *  (recovered) and from null (definitive gone) so buildTurnStream keeps
+ *  retrying within the budget instead of giving up on the bounce. */
+const RECONNECT_RETRY = Symbol('reconnect-retry');
+type RetrySentinel = typeof RECONNECT_RETRY;
+
 /**
  * Map a wire turn-error reason code (backend-agnostic, from the orchestrator)
  * to a user-facing label. Unknown codes fall back to DEFAULT_TURN_ERROR —
@@ -422,17 +429,28 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
       );
     }
     // On a mid-turn drop, re-open the SAME reqId (NOT a re-POST → no duplicate
-    // turn). Returns null when the host says the reqId is gone (non-OK / no
-    // body) so buildTurnStream falls back to the banner instead of spinning.
-    const reopen = async (): Promise<ReadableStream<Uint8Array> | null> => {
+    // turn). Three outcomes drive buildTurnStream's loop:
+    //   - a body                → recovered; resume streaming.
+    //   - 'retry' (Codex P1)    → the open FAILED transiently (the host is
+    //     still restarting: fetch threw ECONNREFUSED, or a transient 5xx/502/503
+    //     from an ingress). This is the host-bounce window the whole change
+    //     exists to survive — keep backing off and retrying WITHIN the budget,
+    //     don't give up.
+    //   - null                  → DEFINITIVE: the host says the reqId is gone
+    //     (404/410) or another non-transient non-OK. Stop early → banner; no
+    //     point burning the budget on something that won't come back.
+    const reopen = async (): Promise<ReadableStream<Uint8Array> | RetrySentinel | null> => {
       try {
         const r = await openSse();
-        if (!r.ok || !r.body) return null;
-        return r.body;
-      } catch {
-        // A reconnect GET that itself throws (network still down) → treat as a
-        // failed attempt; buildTurnStream's bound governs whether to retry.
+        if (r.ok && r.body) return r.body;
+        // 5xx (incl. 502/503 gateway-while-warming) is transient → retry.
+        if (r.status >= 500) return RECONNECT_RETRY;
+        // 404/410/other 4xx → the reqId is gone or unauthorized; definitive.
         return null;
+      } catch {
+        // The GET itself threw (connection refused while the host is down) —
+        // the canonical bounce signal. Transient → retry within the budget.
+        return RECONNECT_RETRY;
       }
     };
     return this.buildTurnStream(sseResp.body, abortSignal, reopen);
@@ -501,7 +519,7 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
   private buildTurnStream(
     body: ReadableStream<Uint8Array>,
     abortSignal: AbortSignal | undefined,
-    reopen: () => Promise<ReadableStream<Uint8Array> | null>,
+    reopen: () => Promise<ReadableStream<Uint8Array> | RetrySentinel | null>,
   ): ReadableStream<UIMessageChunk> {
     const ctx = createParseCtx(); // shared across attempts → lastSeq dedup persists
     const maxAttempts = this.reconnectOpts?.maxAttempts ?? MAX_RECONNECTS;
@@ -514,9 +532,14 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
       (() => agentStatusActions.set(RECONNECTING_STATUS));
     return new ReadableStream<UIMessageChunk>({
       async start(controller) {
-        let current: ReadableStream<Uint8Array> | null = body;
-        for (let attempt = 0; ; attempt++) {
-          const reason = await consumeSseAttempt(current!, ctx, controller);
+        let current: ReadableStream<Uint8Array> = body;
+        // `attempt` counts reconnect ATTEMPTS (each one — whether the open
+        // succeeds, transiently fails, or is consumed by a drop — uses one
+        // budget slot), so a host that's down for the whole budget can't loop
+        // forever.
+        let attempt = 0;
+        for (;;) {
+          const reason = await consumeSseAttempt(current, ctx, controller);
           if (reason === 'done' || reason === 'server-error') {
             // Terminal chunk already enqueued by the attempt.
             controller.close();
@@ -530,17 +553,32 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
             return;
           }
           if (attempt >= maxAttempts) break; // budget spent → banner
-          // Surface the recovery, back off, then re-open the SAME reqId.
-          onReconnecting();
-          const wait = backoffMs[Math.min(attempt, backoffMs.length - 1)] ?? 0;
-          if (wait > 0) await sleep(wait);
-          if (abortSignal?.aborted) {
-            ctx.closeOpen(controller);
-            controller.close();
-            return;
+
+          // A partial `data:` line from the dead connection sits in ctx.carry;
+          // it's garbage now and would corrupt the first replayed frame on the
+          // resumed stream (Codex P2). Drop it — but KEEP lastSeq / open-part
+          // state so the seq dedup still aligns the replay.
+          ctx.carry = '';
+
+          // Re-open the SAME reqId, retrying TRANSIENT open failures (host still
+          // restarting) within the budget; stop early only on a definitive
+          // not-found (Codex P1).
+          let next: ReadableStream<Uint8Array> | RetrySentinel | null = RECONNECT_RETRY;
+          while (attempt < maxAttempts) {
+            onReconnecting();
+            const wait = backoffMs[Math.min(attempt, backoffMs.length - 1)] ?? 0;
+            attempt += 1;
+            if (wait > 0) await sleep(wait);
+            if (abortSignal?.aborted) {
+              ctx.closeOpen(controller);
+              controller.close();
+              return;
+            }
+            next = await reopen();
+            if (next !== RECONNECT_RETRY) break; // got a body, or a definitive null
           }
-          current = await reopen();
-          if (current === null) break; // host says the reqId is gone → banner
+          if (next === null || next === RECONNECT_RETRY) break; // gone, or budget spent mid-retry → banner
+          current = next;
         }
         ctx.closeOpen(controller);
         controller.enqueue({ type: 'error', errorText: CONNECTION_LOST });
