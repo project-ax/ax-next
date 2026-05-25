@@ -331,6 +331,21 @@ interface InstalledSkillForSandbox {
    * cross-skill union; the `.mcp.json` shape is per-directory).
    */
   mcpServers: McpServerSpecForOrch[];
+  /**
+   * TASK-14 (CLI-1 part 2) — the skill's top-level `capabilities.allowedHosts`
+   * + `capabilities.credentials` slots, forwarded so the runner can wire
+   * skill-declared credentials into `git`'s HTTP Basic auth (a host-scoped
+   * `url.<base>.insteadOf` rewrite carrying the `ax-cred:<hex>` placeholder for
+   * each credentialed host). Without this, `git clone https://<host>/...` over
+   * the proxy bails with "could not read Username" because git — unlike the
+   * model's explicit `$SLOT` curl usage — never sends the placeholder. Only the
+   * opaque placeholder is wired (real secrets stay host-side, I1); the rewrite
+   * is scoped to the declared hosts only (I5). The orchestrator already has
+   * both arrays from `skills:resolve`; threading them avoids re-parsing the
+   * SKILL.md YAML at the runner's trust boundary.
+   */
+  allowedHosts: string[];
+  credentials: Array<{ slot: string; kind: 'api-key' }>;
 }
 
 interface OpenSessionInput {
@@ -1130,6 +1145,15 @@ export function createOrchestrator(
       // (older impl, structural shape mismatch). No cross-skill union — each
       // skill stays its own group because `.mcp.json` is per-directory.
       mcpServers: s.capabilities.mcpServers ?? [],
+      // TASK-14 — top-level allowedHosts + credential slots so the runner can
+      // wire git HTTP Basic auth for the skill's credentialed hosts. The only
+      // credential kind the manifest grammar permits is 'api-key' (see
+      // @ax/skills CapabilitySlotSchema), so narrow the forwarded kind.
+      allowedHosts: s.capabilities.allowedHosts ?? [],
+      credentials: (s.capabilities.credentials ?? []).map((c) => ({
+        slot: c.slot,
+        kind: 'api-key' as const,
+      })),
     }));
 
     try {

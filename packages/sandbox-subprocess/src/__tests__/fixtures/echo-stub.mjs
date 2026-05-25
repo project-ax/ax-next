@@ -73,6 +73,12 @@ const env = {
   GIT_CONFIG_COUNT: process.env.GIT_CONFIG_COUNT ?? null,
   GIT_CONFIG_KEY_0: process.env.GIT_CONFIG_KEY_0 ?? null,
   GIT_CONFIG_VALUE_0: process.env.GIT_CONFIG_VALUE_0 ?? null,
+  // TASK-14: skill git-credential wiring stamps a `url.<base>.insteadOf`
+  // rewrite at the next free GIT_CONFIG index (1, after safe.directory at 0).
+  // Echoed so the git-credentials regression test can assert the placeholder
+  // reached the child env.
+  GIT_CONFIG_KEY_1: process.env.GIT_CONFIG_KEY_1 ?? null,
+  GIT_CONFIG_VALUE_1: process.env.GIT_CONFIG_VALUE_1 ?? null,
 };
 process.stdout.write(JSON.stringify(env) + '\n');
 

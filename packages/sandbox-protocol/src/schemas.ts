@@ -95,6 +95,18 @@ export const InstalledSkillSchema = z.object({
   id: z.string().regex(ID_RE, 'invalid skill id shape'),
   skillMd: z.string().min(1).max(512 * 1024),
   mcpServers: z.array(McpServerSchema).max(8).default([]),
+  // TASK-14 (CLI-1 part 2) — the skill's top-level allowedHosts + credential
+  // slots, forwarded so the runner can wire skill-declared credentials into
+  // `git`'s HTTP Basic auth (a host-scoped `url.<base>.insteadOf` rewrite
+  // carrying the `ax-cred:<hex>` placeholder). Trust-boundary re-validation:
+  // the host orchestrator built these from the parsed manifest, but the
+  // sandbox re-checks at the wire. Default `[]` for back-compat with
+  // pre-TASK-14 callers (tests, ad-hoc CLI) that don't set them.
+  allowedHosts: z.array(z.string().max(256)).max(64).default([]),
+  credentials: z
+    .array(z.object({ slot: z.string().max(64), kind: z.literal('api-key') }))
+    .max(32)
+    .default([]),
 });
 export type InstalledSkill = z.infer<typeof InstalledSkillSchema>;
 
