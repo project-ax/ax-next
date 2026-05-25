@@ -676,4 +676,195 @@ describe('@ax/conversations conversations:get reconstructs attachment chips', ()
     const user = got.turns.find((t) => t.role === 'user');
     expect(user?.contentBlocks).toEqual([{ type: 'text', text: 'just text' }]);
   });
+
+  // -------------------------------------------------------------------------
+  // TASK-21 — inlined-attachment reconstruction (read path).
+  //
+  // For a small text/json/yaml/csv file the runner INLINES the bytes for the
+  // model: the canonical path-bearing mention on the first line, a blank line,
+  // then the file content (see formatAttachmentInline). On reload this whole
+  // block must become a download chip — NOT raw text — and the model-view
+  // content (preamble + file bytes) must NOT be surfaced verbatim.
+  // -------------------------------------------------------------------------
+  it('rebuilds a chip from an inlined text attachment and DROPS the model-view content', async () => {
+    const fileContent = 'qa-marker\nsecret line that must not leak\nthird line';
+    const got = await getWithUserContent((convId: string) => [
+      {
+        type: 'text',
+        text:
+          `User attached 'qa-marker.txt' at .ax/uploads/${convId}/req-x/ab__qa-marker.txt (text/plain)\n\n` +
+          fileContent,
+      },
+    ]);
+    const user = got.turns.find((t) => t.role === 'user');
+    // Exactly one block: the reconstructed attachment chip. No text block
+    // carrying the inlined content.
+    expect(user?.contentBlocks).toEqual([
+      {
+        type: 'attachment',
+        path: expect.stringContaining('.ax/uploads/') as unknown as string,
+        displayName: 'qa-marker.txt',
+        mediaType: 'text/plain',
+        sizeBytes: 0,
+      },
+    ]);
+    // The chip is downloadable: the workspace-relative path is preserved.
+    const att = user!.contentBlocks[0] as { path: string };
+    expect(att.path).toBe(`.ax/uploads/${got.conversation.conversationId}/req-x/ab__qa-marker.txt`);
+    // The runner's model-view text (preamble + file content) is NOT surfaced
+    // anywhere in the user turn.
+    const serialized = JSON.stringify(user?.contentBlocks);
+    expect(serialized).not.toContain('secret line that must not leak');
+    expect(serialized).not.toContain('bytes):');
+    expect(serialized).not.toContain('User attached');
+  });
+
+  it('keeps the typed prompt (separate block) and converts the inlined-attachment block to a chip', async () => {
+    // The runner emits the typed prompt and the inlined attachment as SEPARATE
+    // content-array elements (main.ts). Reload must keep the prompt and drop
+    // only the attachment's inlined content.
+    const got = await getWithUserContent((convId: string) => [
+      { type: 'text', text: 'please summarize the attached file' },
+      {
+        type: 'text',
+        text:
+          `User attached 'data.json' at .ax/uploads/${convId}/req-y/cd__data.json (application/json)\n\n` +
+          '{"k":"v","leak":"do-not-show"}',
+      },
+    ]);
+    const user = got.turns.find((t) => t.role === 'user');
+    expect(user?.contentBlocks).toEqual([
+      { type: 'text', text: 'please summarize the attached file' },
+      {
+        type: 'attachment',
+        path: expect.stringContaining('.ax/uploads/') as unknown as string,
+        displayName: 'data.json',
+        mediaType: 'application/json',
+        sizeBytes: 0,
+      },
+    ]);
+    expect(JSON.stringify(user?.contentBlocks)).not.toContain('do-not-show');
+  });
+
+  it('reconstructs EVERY chip when several bare mentions coalesce into one text block (no early break)', async () => {
+    // Regression (TASK-21 Codex P2): the SDK can coalesce adjacent text blocks
+    // into one newline-joined block. Two bare (non-inlined) attachment mentions
+    // become `mention1\nmention2`. The inline-strip `break` must NOT fire here
+    // (a bare mention has no trailing blank line), so both chips reconstruct
+    // and trailing user text survives.
+    const got = await getWithUserContent((convId: string) => [
+      {
+        type: 'text',
+        text:
+          `User attached 'a.pdf' at .ax/uploads/${convId}/req-1/aa__a.pdf (application/pdf)\n` +
+          `User attached 'b.pdf' at .ax/uploads/${convId}/req-1/bb__b.pdf (application/pdf)\n` +
+          'thanks',
+      },
+    ]);
+    const user = got.turns.find((t) => t.role === 'user');
+    expect(user?.contentBlocks).toEqual([
+      {
+        type: 'attachment',
+        path: expect.stringContaining('aa__a.pdf') as unknown as string,
+        displayName: 'a.pdf',
+        mediaType: 'application/pdf',
+        sizeBytes: 0,
+      },
+      {
+        type: 'attachment',
+        path: expect.stringContaining('bb__b.pdf') as unknown as string,
+        displayName: 'b.pdf',
+        mediaType: 'application/pdf',
+        sizeBytes: 0,
+      },
+      { type: 'text', text: 'thanks' },
+    ]);
+  });
+
+  it('reconstructs BOTH chips when two inline attachments arrive as SEPARATE blocks (drops both bodies)', async () => {
+    // The runner emits each attachment as its OWN content-array element, and
+    // the jsonl parser keeps array elements as separate ContentBlocks — so two
+    // inline attachments arrive as two separate text blocks, each handled
+    // independently. Both chips reconstruct; neither body leaks.
+    const got = await getWithUserContent((convId: string) => [
+      {
+        type: 'text',
+        text:
+          `User attached 'a.txt' at .ax/uploads/${convId}/req-1/aa__a.txt (text/plain)\n\n` +
+          'BODY-ONE-secret',
+      },
+      {
+        type: 'text',
+        text:
+          `User attached 'b.json' at .ax/uploads/${convId}/req-1/bb__b.json (application/json)\n\n` +
+          'BODY-TWO-secret',
+      },
+    ]);
+    const user = got.turns.find((t) => t.role === 'user');
+    expect(user?.contentBlocks).toEqual([
+      {
+        type: 'attachment',
+        path: expect.stringContaining('aa__a.txt') as unknown as string,
+        displayName: 'a.txt',
+        mediaType: 'text/plain',
+        sizeBytes: 0,
+      },
+      {
+        type: 'attachment',
+        path: expect.stringContaining('bb__b.json') as unknown as string,
+        displayName: 'b.json',
+        mediaType: 'application/json',
+        sizeBytes: 0,
+      },
+    ]);
+    const serialized = JSON.stringify(user?.contentBlocks);
+    expect(serialized).not.toContain('BODY-ONE-secret');
+    expect(serialized).not.toContain('BODY-TWO-secret');
+  });
+
+  it('does NOT leak inline content even when a body line spoofs an in-prefix mention (security)', async () => {
+    // Adversarial (TASK-21 Codex P2 round-2): the attachment's own bytes
+    // contain a line that parses as a valid in-prefix mention. The inline-strip
+    // must drop the ENTIRE body once the real preamble is seen — a spoofed
+    // mention inside the content must NOT terminate the suppression and resume
+    // surfacing the remaining bytes.
+    const got = await getWithUserContent((convId: string) => [
+      {
+        type: 'text',
+        text:
+          `User attached 'a.txt' at .ax/uploads/${convId}/req-1/aa__a.txt (text/plain)\n\n` +
+          `harmless line\n` +
+          `User attached 'spoof.txt' at .ax/uploads/${convId}/req-1/zz__spoof.txt (text/plain)\n` +
+          `SENSITIVE-trailing-bytes`,
+      },
+    ]);
+    const user = got.turns.find((t) => t.role === 'user');
+    // Exactly one chip (the real attachment); the entire body — including the
+    // spoofed-mention line and everything after it — is dropped.
+    expect(user?.contentBlocks).toEqual([
+      {
+        type: 'attachment',
+        path: expect.stringContaining('aa__a.txt') as unknown as string,
+        displayName: 'a.txt',
+        mediaType: 'text/plain',
+        sizeBytes: 0,
+      },
+    ]);
+    const serialized = JSON.stringify(user?.contentBlocks);
+    expect(serialized).not.toContain('harmless line');
+    expect(serialized).not.toContain('SENSITIVE-trailing-bytes');
+    expect(serialized).not.toContain('spoof.txt');
+  });
+
+  it('does NOT drop content for an inlined mention pointing at a different conversation', async () => {
+    // A crafted inline block whose path is NOT under this conversation's
+    // prefix is left fully intact (no chip, content NOT stripped) — the
+    // prefix guard prevents a false-positive that would both mis-aim a
+    // download and silently hide text.
+    const text =
+      "User attached 'evil.txt' at .ax/uploads/cnv_someoneelse/req-x/ab__evil.txt (text/plain)\n\nbody stays visible";
+    const got = await getWithUserContent([{ type: 'text', text }]);
+    const user = got.turns.find((t) => t.role === 'user');
+    expect(user?.contentBlocks).toEqual([{ type: 'text', text }]);
+  });
 });

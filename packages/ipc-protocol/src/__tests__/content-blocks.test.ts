@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   ContentBlockSchema,
+  formatAttachmentInline,
   formatAttachmentMention,
   parseAttachmentMention,
 } from '../content-blocks.js';
@@ -246,6 +247,45 @@ describe('ContentBlock schema', () => {
       });
       expect(parseAttachmentMention(`Summarize this file\n${mention}`)).toBeNull();
       expect(parseAttachmentMention(mention)).not.toBeNull();
+    });
+  });
+
+  describe('inlined-attachment format', () => {
+    const fields = {
+      displayName: 'qa-marker.txt',
+      path: '.ax/uploads/cnv_abc/req-def/a1b2__qa-marker.txt',
+      mediaType: 'text/plain',
+    };
+
+    it("puts the canonical mention on the first line, then a blank line, then content", () => {
+      const content = 'line one\nline two';
+      const out = formatAttachmentInline(fields, content);
+      const lines = out.split('\n');
+      // First line is the canonical, path-bearing mention.
+      expect(lines[0]).toBe(formatAttachmentMention(fields));
+      expect(parseAttachmentMention(lines[0]!)).toEqual(fields);
+      // Blank separator.
+      expect(lines[1]).toBe('');
+      // Content follows verbatim.
+      expect(out.endsWith(content)).toBe(true);
+      expect(out).toContain('line one');
+      expect(out).toContain('line two');
+    });
+
+    it('the first line round-trips through parseAttachmentMention (path preserved for the read-path chip)', () => {
+      const out = formatAttachmentInline(fields, 'whatever');
+      const firstLine = out.split('\n', 1)[0]!;
+      expect(parseAttachmentMention(firstLine)).toEqual(fields);
+    });
+
+    it('preserves content that itself contains newlines and a stray "User attached" line', () => {
+      // Adversarial content: a file whose body mimics a mention. The first
+      // line is still the genuine preamble; the body is just content.
+      const content =
+        "User attached 'fake.txt' at .ax/uploads/other/x.txt (text/plain)\nreal body";
+      const out = formatAttachmentInline(fields, content);
+      expect(out.split('\n')[0]).toBe(formatAttachmentMention(fields));
+      expect(out).toContain('real body');
     });
   });
 });

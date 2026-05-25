@@ -224,6 +224,37 @@ export function parseAttachmentMention(
   return { displayName, path, mediaType };
 }
 
+// ---------------------------------------------------------------------------
+// Inlined-attachment text block — the model-facing form when the runner CAN
+// inline an attachment's bytes (a small text/json/yaml/csv file). The model
+// gets the content directly in the prompt (weak-model accommodation), but the
+// FIRST line is the canonical `formatAttachmentMention` line so the read path
+// can (a) reconstruct the download chip from the embedded path and (b) strip
+// the entire model-view block (preamble + content) instead of leaking it into
+// the user-visible transcript.
+//
+// `formatAttachmentInline` is the SINGLE producer (the runner's
+// `attachment-translation.ts` inline branch). The read path
+// (`@ax/conversations` reconstructAttachmentBlocks) is the SINGLE consumer: it
+// keys off `parseAttachmentMention` matching the FIRST line of a user-turn
+// text block. Co-locating the pair here keeps the two ends from drifting —
+// the same posture as the mention pair above. The blank line between the
+// mention and the content makes the boundary visually obvious to the model
+// and keeps the mention strictly single-line (so `parseAttachmentMention`'s
+// `^…$` anchor matches it).
+// ---------------------------------------------------------------------------
+
+/**
+ * Render an inlined-attachment text block: the canonical path-bearing mention
+ * on the first line, a blank separator, then the file content.
+ */
+export function formatAttachmentInline(
+  fields: AttachmentMentionFields,
+  content: string,
+): string {
+  return `${formatAttachmentMention(fields)}\n\n${content}`;
+}
+
 export const ContentBlockSchema = z.discriminatedUnion('type', [
   TextBlockSchema,
   ThinkingBlockSchema,
