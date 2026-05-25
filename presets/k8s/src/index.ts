@@ -784,7 +784,16 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // The chart enforces the pin — ax-next.validateHostReplicas FAILS
   // `helm template` for replicas > 1 (ARCH-1) — so this stays honest:
   // nobody can ship a multi-replica host while this buffer is in-process.
-  plugins.push(createChannelWebServerPlugin());
+  // Pass the resolved chat timeout so the SSE chunk buffer sizes its
+  // orphaned-cursor-shell reap ceiling above the max live turn duration — a
+  // shell reaped mid-turn would reset the per-chunk seq cursor and silently
+  // drop output for a connected client (TASK-23 / Codex P2). Sizing hint only;
+  // the orchestrator remains the source of truth for the timeout.
+  plugins.push(
+    createChannelWebServerPlugin({
+      chatTimeoutMs: orchestratorCfg.chatTimeoutMs ?? DEFAULT_CHAT_TIMEOUT_MS,
+    }),
+  );
 
   // ----- 11. static-files (optional, MUST be last) ----------------------
   // Serves channel-web's bundle from the same listener so cookies and

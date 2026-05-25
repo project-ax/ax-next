@@ -49,11 +49,27 @@ const PLUGIN_NAME = '@ax/channel-web';
 //     grow unbounded for streams nobody listens to).
 // ---------------------------------------------------------------------------
 
-// eslint-disable-next-line @typescript-eslint/no-empty-object-type
-export interface ChannelWebServerConfig {}
+export interface ChannelWebServerConfig {
+  /**
+   * The configured chat run timeout (ms) — the max a single turn can stay live
+   * before the orchestrator terminates it (AX_CHAT_TIMEOUT_MS; default 10 min).
+   * Used ONLY to size the chunk buffer's orphaned-cursor-shell reap ceiling so
+   * it always exceeds the max live turn duration (TASK-23 / Codex P2): a shell
+   * reaped while its turn is still streaming would reset the seq cursor to 1 and
+   * silently drop output for a connected client. Optional — the buffer falls
+   * back to its own conservative default when unset. This is NOT a fresh source
+   * of truth for the timeout (the orchestrator owns that); it's a sizing hint.
+   */
+  chatTimeoutMs?: number;
+}
+
+// How far above the configured chat timeout the cursor-shell reap ceiling sits,
+// so a turn that runs right up to the timeout still has its shell preserved
+// until the orchestrator's terminal chat:turn-error fires (which evicts it).
+const SHELL_AGE_SLACK_MS = 5 * 60_000;
 
 export function createChannelWebServerPlugin(
-  _config: ChannelWebServerConfig = {},
+  config: ChannelWebServerConfig = {},
 ): Plugin {
   let buffer: ChunkBuffer | undefined;
   const unregisterRoutes: Array<() => void> = [];
@@ -91,7 +107,15 @@ export function createChannelWebServerPlugin(
         userId: 'system',
       });
 
-      const localBuffer = createChunkBuffer();
+      // Size the cursor-shell reap ceiling above the max live turn duration
+      // (the configured chat timeout + slack) so a long-but-still-live quiet
+      // turn never has its seq cursor reset mid-stream (TASK-23 / Codex P2).
+      // When chatTimeoutMs is unset, createChunkBuffer uses its own default.
+      const localBuffer = createChunkBuffer(
+        config.chatTimeoutMs !== undefined && config.chatTimeoutMs > 0
+          ? { shellMaxAgeMs: config.chatTimeoutMs + SHELL_AGE_SLACK_MS }
+          : {},
+      );
       buffer = localBuffer;
 
       // Buffer-fill subscriber — host-side, captures every chunk

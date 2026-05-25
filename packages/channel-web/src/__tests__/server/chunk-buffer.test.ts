@@ -432,8 +432,8 @@ describe('@ax/channel-web ChunkBuffer', () => {
 
   // Codex P2 (TASK-23): a cursor-only shell that is NEVER revived or evicted
   // (a runner crashed before firing any terminal hook) must not leak forever —
-  // it's reaped once it ages past SHELL_MAX_AGE_MS (15 min).
-  it('an orphaned cursor shell is reaped after SHELL_MAX_AGE_MS (no permanent leak)', () => {
+  // it's reaped once it ages past the shell ceiling (default 15 min).
+  it('an orphaned cursor shell is reaped after the default shell ceiling (no permanent leak)', () => {
     const buf = createChunkBuffer();
     try {
       buf.append({ reqId: 'r1', text: 'a', kind: 'text' }); // seq 1 → cursor exists
@@ -441,10 +441,29 @@ describe('@ax/channel-web ChunkBuffer', () => {
       vi.advanceTimersByTime(91_000);
       // Still a live cursor: a revival continues monotonically.
       // (We don't revive it here — we let it age out as an orphan instead.)
-      // Advance well past the 15-min shell ceiling with no revival/evict.
+      // Advance well past the 15-min default shell ceiling with no revival/evict.
       vi.advanceTimersByTime(16 * 60_000);
       // The orphaned shell is gone → a recycled reqId re-seeds at seq 1.
       expect(buf.append({ reqId: 'r1', text: 'new', kind: 'text' }).seq).toBe(1);
+    } finally {
+      buf.dispose();
+    }
+  });
+
+  // Codex P2 round 2 (TASK-23): the shell ceiling is configurable so it can be
+  // sized ABOVE an operator-raised chat timeout. A still-live quiet turn whose
+  // shell age is below the configured ceiling must KEEP its cursor (no reset →
+  // no silent loss); only past the configured ceiling is it reaped.
+  it('shellMaxAgeMs is honored — a shell below the configured ceiling keeps its cursor', () => {
+    // 30-min ceiling (e.g. AX_CHAT_TIMEOUT_MS raised to 25 min + slack).
+    const buf = createChunkBuffer({ shellMaxAgeMs: 30 * 60_000 });
+    try {
+      buf.append({ reqId: 'r1', text: 'a', kind: 'text' }); // seq 1
+      vi.advanceTimersByTime(91_000); // → cursor-only shell
+      // 20 min later (past the 15-min default, but UNDER the 30-min config):
+      // the cursor MUST survive, so a revival continues at seq 2 — not reset to 1.
+      vi.advanceTimersByTime(20 * 60_000);
+      expect(buf.append({ reqId: 'r1', text: 'b', kind: 'text' }).seq).toBe(2);
     } finally {
       buf.dispose();
     }

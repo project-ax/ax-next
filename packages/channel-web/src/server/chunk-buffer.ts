@@ -38,15 +38,19 @@ const MAX_CHUNKS_PER_REQ_ID = 256;
 const IDLE_TTL_MS = 60_000;
 const SWEEP_INTERVAL_MS = 30_000;
 
-// Hard ceiling on how long a cursor-only shell (a TTL-reclaimed entry whose
+// DEFAULT ceiling on how long a cursor-only shell (a TTL-reclaimed entry whose
 // monotonic seq we keep so a still-live quiet turn doesn't reset to 1 — Codex
-// P1) may linger without being revived or explicitly evicted. A real turn fires
-// its terminal chat:turn-end / chat:turn-error within the chat run timeout
+// P1) may linger without being revived or explicitly evicted, used when the
+// caller doesn't pass `shellMaxAgeMs`. A real turn fires its terminal
+// chat:turn-end / chat:turn-error within the chat run timeout
 // (DEFAULT_CHAT_TIMEOUT_MS = 10 min in @ax/chat-orchestrator), which evicts the
-// reqId; this ceiling sits comfortably above that so a legitimately-quiet live
+// reqId; this default sits comfortably above that so a legitimately-quiet live
 // turn is never dropped early, while a genuinely orphaned shell — a runner that
 // crashed before firing any terminal hook, or a malformed event — is still
-// reaped instead of leaking one map entry per abandoned reqId (Codex P2).
+// reaped instead of leaking one map entry per abandoned reqId (Codex P2). When
+// operators raise AX_CHAT_TIMEOUT_MS above this, the channel-web plugin passes a
+// larger `shellMaxAgeMs` derived from that timeout so the ceiling always stays
+// above the max live turn duration (Codex P2 round 2).
 const SHELL_MAX_AGE_MS = 15 * 60_000;
 
 interface BufferEntry {
@@ -151,12 +155,26 @@ export interface ChunkBufferOptions {
    */
   setInterval?: typeof setInterval;
   clearInterval?: typeof clearInterval;
+  /**
+   * Max age (ms) of a reclaimed cursor-only shell before the sweep reaps it as
+   * an orphan (TASK-23 / Codex P2). MUST exceed the maximum live turn duration
+   * — i.e. the configured chat timeout — or a legitimately-quiet-but-still-live
+   * turn could have its seq cursor reset to 1 mid-turn, silently dropping
+   * output for a connected client. The channel-web plugin derives this from its
+   * `chatTimeoutMs` config (+ slack); defaults to SHELL_MAX_AGE_MS when unset.
+   * A value at/below 0 is treated as the default.
+   */
+  shellMaxAgeMs?: number;
 }
 
 export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
   const now = opts.now ?? (() => Date.now());
   const setIntervalFn = opts.setInterval ?? setInterval;
   const clearIntervalFn = opts.clearInterval ?? clearInterval;
+  const shellMaxAgeMs =
+    opts.shellMaxAgeMs !== undefined && opts.shellMaxAgeMs > 0
+      ? opts.shellMaxAgeMs
+      : SHELL_MAX_AGE_MS;
 
   const map = new Map<string, BufferEntry>();
   let timer: ReturnType<typeof setInterval> | null = setIntervalFn(() => {
@@ -192,7 +210,7 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
         // turn fires its terminal hook (→ evictReqId) well within that ceiling.
         if (
           entry.reclaimedAtMs !== null &&
-          now() - entry.reclaimedAtMs > SHELL_MAX_AGE_MS
+          now() - entry.reclaimedAtMs > shellMaxAgeMs
         ) {
           map.delete(reqId);
         }
