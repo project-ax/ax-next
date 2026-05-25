@@ -271,8 +271,10 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
   /**
    * Override the AI SDK's `sendMessages` to drive the two-phase flow:
    *  1. POST /api/chat/messages with the latest user turn → mint reqId.
-   *  2. fetch the SSE stream at /api/chat/stream/:reqId and feed it
-   *     through `processResponseStream`.
+   *  2. open the SSE stream at /api/chat/stream/:reqId and stream it,
+   *     transparently RECONNECTING to the SAME reqId if the connection
+   *     drops mid-turn (Faults B/D) — never a re-POST, so a live server
+   *     turn is never duplicated.
    */
   override async sendMessages(
     options: Parameters<HttpChatTransport<UIMessage>['sendMessages']>[0],
@@ -347,302 +349,371 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
     this.localConversationId = postOut.conversationId;
     this.setConversationIdFn?.(postOut.conversationId);
 
-    // Phase 2: SSE. We use fetch (not EventSource) so we can pass through
-    // credentials, AbortSignal, and the AI SDK's existing
-    // `processResponseStream` plumbing.
+    // Phase 2: SSE. Open the stream for the minted reqId and stream it with
+    // transparent same-reqId reconnect (see buildReconnectingStream). The
+    // FIRST GET failing is a request-time error (the turn may or may not have
+    // started) — surface it as a thrown rejection so the runtime shows the
+    // banner rather than silently re-POSTing.
+    const firstResp = await this.openSseStream(postOut.reqId, abortSignal);
+    if (!firstResp.ok || !firstResp.body) {
+      throw new Error(
+        `chat-flow SSE open failed: ${firstResp.status} ${firstResp.statusText}`,
+      );
+    }
+    return this.buildReconnectingStream(
+      postOut.reqId,
+      firstResp.body,
+      abortSignal,
+    );
+  }
+
+  /** GET the SSE stream for a reqId. Used for both the initial open and
+   *  every transparent reconnect. */
+  private openSseStream(
+    reqId: string,
+    abortSignal: AbortSignal | undefined,
+  ): Promise<Response> {
     const sseInit: RequestInit = {
       method: 'GET',
       headers: { accept: 'text/event-stream' },
       credentials: 'include',
     };
     if (abortSignal) sseInit.signal = abortSignal;
-    const sseResp = await this.fetchImpl(
-      `${this.streamApi}/${encodeURIComponent(postOut.reqId)}`,
+    return this.fetchImpl(
+      `${this.streamApi}/${encodeURIComponent(reqId)}`,
       sseInit,
     );
-    if (!sseResp.ok || !sseResp.body) {
-      throw new Error(
-        `chat-flow SSE open failed: ${sseResp.status} ${sseResp.statusText}`,
-      );
-    }
-    return this.processResponseStream(sseResp.body);
   }
 
   /**
-   * Parse the AX SSE stream. Each `data:` line is a JSON `SseFrame`.
-   * Lines split across decoder chunks are stitched via a `carry` buffer.
+   * Single-attempt parse of one SSE body into UIMessageChunks. Kept as the
+   * unit-test entry point and used (with no reconnect) when only chunk
+   * parsing matters. Each `data:` line is a JSON `SseFrame`; lines split
+   * across decoder chunks are stitched via a `carry` buffer.
    *
    * Emission policy:
-   *   - text-kind chunk → text-delta under id `text-N` (a new id is
-   *     started after each thinking interlude so the renderer can split).
-   *   - thinking-kind chunk → text-delta under id `thinking-N`. Whether
-   *     the renderer SHOWS thinking parts is a UI decision (Task 21's
-   *     toggle); the transport always emits, the UI hides by default.
-   *   - phase frame → side-channel: drives `agentStatusActions.set(label)`
-   *     directly. Phases are out-of-band agent-state metadata, not
-   *     message content, so they intentionally bypass the AI-SDK chunk
-   *     pipeline (the runtime's "running" state already drives the
-   *     row's visibility; phases just relabel it). On the first content
-   *     chunk we swap back to "Thinking…" — phases are pre-content only.
+   *   - text-kind chunk → text-delta under id `text-N`.
+   *   - thinking-kind chunk → text-delta under id `thinking-N`.
+   *   - phase frame → side-channel: drives `agentStatusActions.set(label)`.
    *   - done frame → close any open part, emit `finish`.
-   *   - stream close (no done frame) → close any open part, emit an `error`
-   *     chunk (CONNECTION_LOST) so the runtime can silently retry then
-   *     surface the banner — Faults B/D, NOT a silent finish.
+   *   - server `error` frame (Fault A) → close any open part, emit an `error`
+   *     chunk with a mapped friendly label.
+   *   - stream close / body error with no terminal frame (Faults B/D) → close
+   *     any open part, emit an `error` chunk (CONNECTION_LOST). NOT a silent
+   *     finish — that's the FAULTA-5 bug. (In the live path `sendMessages`
+   *     RECONNECTS to the same reqId before this terminal is reached; see
+   *     `buildReconnectingStream`.)
    */
   protected processResponseStream(
     stream: ReadableStream<Uint8Array>,
   ): ReadableStream<UIMessageChunk> {
-    let textCounter = 0;
-    let thinkingCounter = 0;
-    let openText: string | null = null; // active text-N id
-    let openThinking: string | null = null; // active thinking-N id
-    let finished = false;
-    let carry = '';
-    /** True once any text/thinking chunk has arrived. After that we
-     *  stop relabeling the status row from phase frames (phases are
-     *  pre-content only) and we restore the "Thinking…" label exactly
-     *  once. */
-    let contentSeen = false;
-
-    // Accept either a TransformStream or a ReadableStream controller — the
-    // helper only enqueues, and the outer error-catching ReadableStream
-    // reuses it to close open parts before the connection-lost terminal.
-    type Enqueuer = { enqueue(chunk: UIMessageChunk): void };
-    const closeOpen = (controller: Enqueuer): void => {
-      if (openText !== null) {
-        controller.enqueue({ type: 'text-end', id: openText });
-        openText = null;
-      }
-      if (openThinking !== null) {
-        controller.enqueue({ type: 'text-end', id: openThinking });
-        openThinking = null;
-      }
-    };
-
-    const ensureOpenForKind = (
-      kind: 'text' | 'thinking',
-      controller: TransformStreamDefaultController<UIMessageChunk>,
-    ): string => {
-      if (kind === 'text') {
-        // Switching from thinking → text closes the thinking part.
-        if (openThinking !== null) {
-          controller.enqueue({ type: 'text-end', id: openThinking });
-          openThinking = null;
-        }
-        if (openText === null) {
-          openText = `text-${textCounter}`;
-          textCounter++;
-          controller.enqueue({ type: 'text-start', id: openText });
-        }
-        return openText;
-      }
-      // thinking
-      if (openText !== null) {
-        controller.enqueue({ type: 'text-end', id: openText });
-        openText = null;
-      }
-      if (openThinking === null) {
-        openThinking = `thinking-${thinkingCounter}`;
-        thinkingCounter++;
-        controller.enqueue({
-          type: 'text-start',
-          id: openThinking,
-          providerMetadata: { ax: { thinking: true } },
-        });
-      }
-      return openThinking;
-    };
-
-    const parsed = stream
-      .pipeThrough(new TextDecoderStream() as ReadableWritablePair<string, Uint8Array>)
-      .pipeThrough(
-        new TransformStream<string, UIMessageChunk>({
-          transform(rawChunk, controller) {
-            if (finished) return;
-            const data = carry + rawChunk;
-            const lines = data.split('\n');
-            // Last element may be incomplete — carry it to the next chunk.
-            carry = lines.pop() ?? '';
-
-            for (const line of lines) {
-              const trimmed = line.trim();
-              if (!trimmed || trimmed.startsWith(':')) continue;
-              if (!trimmed.startsWith('data: ')) continue;
-
-              let frame: SseFrame;
-              try {
-                frame = JSON.parse(trimmed.slice(6)) as SseFrame;
-              } catch {
-                // Malformed JSON — skip. Server is the source of truth;
-                // a bad frame is a bug there, not here.
-                continue;
-              }
-
-              if ('done' in frame && frame.done === true) {
-                closeOpen(controller);
-                controller.enqueue({ type: 'finish', finishReason: 'stop' });
-                finished = true;
-                return;
-              }
-              // error frame (Fault A) — the turn ended abnormally (runner
-              // died mid-turn / wedged past the timeout). Close any open
-              // part, then emit an AI-SDK `error` chunk so the turn ends as
-              // ERRORED (running flips false) and the runtime's onError can
-              // surface error+retry — NOT a silent `finish` that looks like
-              // success, and NOT an indefinite spinner. `error` is a
-              // backend-agnostic reason code we map to a friendly label.
-              if ('error' in frame && typeof frame.error === 'string') {
-                closeOpen(controller);
-                controller.enqueue({
-                  type: 'error',
-                  errorText: ERROR_LABELS[frame.error] ?? DEFAULT_TURN_ERROR,
-                });
-                finished = true;
-                return;
-              }
-              // phase frame — out-of-band; drives the status row directly.
-              if ('phase' in frame && typeof frame.phase === 'string') {
-                if (contentSeen) continue; // pre-content only
-                const label = PHASE_LABELS[frame.phase];
-                if (label !== undefined) {
-                  agentStatusActions.set(label);
-                }
-                continue;
-              }
-              // text/thinking chunk
-              if (
-                'kind' in frame &&
-                (frame.kind === 'text' || frame.kind === 'thinking')
-              ) {
-                if (!contentSeen) {
-                  contentSeen = true;
-                  // Restore the default working label so the cleanup
-                  // posture (RunningEffect in AgentStatus.tsx) hides on
-                  // turn end. Without this swap, a turn that ran with a
-                  // phase would leave the row stuck on the phase label
-                  // while the "Thinking…"-keyed cleanup never fires.
-                  agentStatusActions.set('Thinking…');
-                }
-                const id = ensureOpenForKind(frame.kind, controller);
-                controller.enqueue({
-                  type: 'text-delta',
-                  id,
-                  delta: frame.text,
-                  ...(frame.kind === 'thinking'
-                    ? { providerMetadata: { ax: { thinking: true } } }
-                    : {}),
-                });
-                continue;
-              }
-              // tool-use frame: model issued a tool call. Close any open
-              // text/thinking part first — assistant-ui's MessageRepository
-              // expects parts to come in ordered. Then emit the AI SDK v5
-              // `tool-input-available` chunk which assistant-ui's
-              // react-ai-sdk bridge converts to a tool-call ThreadMessage
-              // part rendered by Thread.tsx via ToolGroup + ToolFallback.
-              if ('kind' in frame && frame.kind === 'tool-use') {
-                if (!contentSeen) {
-                  contentSeen = true;
-                  agentStatusActions.set('Thinking…');
-                }
-                closeOpen(controller);
-                controller.enqueue({
-                  type: 'tool-input-available',
-                  toolCallId: frame.toolCallId,
-                  toolName: frame.toolName,
-                  input: frame.input,
-                  dynamic: true,
-                });
-                continue;
-              }
-              // tool-result frame: the tool finished. Pair to the prior
-              // tool-use by toolCallId; AI SDK threads the output into the
-              // existing tool-call part and flips its state to
-              // `output-available` (or `output-error`).
-              if ('kind' in frame && frame.kind === 'tool-result') {
-                // Replay can attach mid-turn at a result chunk (no preceding
-                // text/thinking/tool-use). Flip contentSeen so subsequent
-                // phase frames don't think we're still pre-content.
-                if (!contentSeen) {
-                  contentSeen = true;
-                  agentStatusActions.set('Thinking…');
-                }
-                if (frame.isError === true) {
-                  controller.enqueue({
-                    type: 'tool-output-error',
-                    toolCallId: frame.toolCallId,
-                    errorText: frame.output || 'tool failed',
-                    dynamic: true,
-                  });
-                } else {
-                  controller.enqueue({
-                    type: 'tool-output-available',
-                    toolCallId: frame.toolCallId,
-                    output: frame.output,
-                    dynamic: true,
-                  });
-                }
-                continue;
-              }
-            }
-          },
-          flush(controller) {
-            if (finished) return;
-            // Faults B/D — the stream closed GRACEFULLY but WITHOUT a terminal
-            // `done` or `error` frame: a host bounce (process died → the
-            // replica-local chunk buffer is gone) ended the SSE body cleanly
-            // mid-turn. We must NOT synthesize a finish/stop here — that looks
-            // like a successful turn and silently drops the half-streamed
-            // answer (the FAULTA-5 bug). Close any open part and emit an
-            // `error` chunk carrying the CONNECTION_LOST sentinel; the
-            // runtime's onError silently retries once (regenerate → fresh
-            // reqId + sandbox), then surfaces the error banner if that fails.
-            closeOpen(controller);
-            controller.enqueue({ type: 'error', errorText: CONNECTION_LOST });
-            finished = true;
-          },
-        }),
-      );
-
-    // Wrap the parsed stream so a HARD mid-stream drop (Fault D — the fetch
-    // body ReadableStream ERRORS while we're consuming it, e.g. the TCP
-    // connection is severed) is converted into the SAME CONNECTION_LOST
-    // `error` chunk rather than rejecting the stream. Crucially, this means
-    // ONLY errors that occur AFTER the SSE stream was established (i.e.
-    // during body consumption) become connection-lost — the non-idempotent
-    // `POST /api/chat/messages` and the initial `GET` in sendMessages happen
-    // BEFORE this stream exists, so a network failure THERE surfaces as a
-    // plain rejection (→ error banner, NO silent re-POST), avoiding a
-    // duplicate conversation/turn if the POST already reached the host. The
-    // transport is thus the single authority for "this drop is safe to
-    // silently retry"; the runtime keys its silent-retry decision solely on
-    // the CONNECTION_LOST sentinel.
+    const ctx = createParseCtx();
     return new ReadableStream<UIMessageChunk>({
       async start(controller) {
-        const reader = parsed.getReader();
-        try {
-          for (;;) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            controller.enqueue(value);
+        const reason = await consumeSseAttempt(stream, ctx, controller);
+        if (reason === 'lost') {
+          ctx.closeOpen(controller);
+          controller.enqueue({ type: 'error', errorText: CONNECTION_LOST });
+        }
+        // 'done'/'server-error' already enqueued their terminal chunk.
+        controller.close();
+      },
+    });
+  }
+
+  /**
+   * Stream the SSE for `reqId`, transparently RECONNECTING to the SAME reqId
+   * if the connection drops mid-turn (Faults B/D) — a graceful `done`-less
+   * close (host bounce) or a hard body error (network drop). Reconnect is a
+   * GET-only re-subscribe; it NEVER re-POSTs, so a still-running server turn
+   * is never duplicated (the original P1: a re-POST mints a fresh reqId +
+   * agent:invoke). The server replays its per-reqId buffer on reconnect
+   * (sse.ts), so we SKIP the content chunks already emitted to avoid
+   * double-rendering. Bounded at MAX_RECONNECTS; when the reconnect GET fails
+   * (Fault B — the host bounced, reqId+buffer gone → 404) or the cap is
+   * exhausted, we emit CONNECTION_LOST so the runtime surfaces the error
+   * banner with a manual-retry affordance.
+   */
+  private buildReconnectingStream(
+    reqId: string,
+    firstBody: ReadableStream<Uint8Array>,
+    abortSignal: AbortSignal | undefined,
+  ): ReadableStream<UIMessageChunk> {
+    const open = (r: string, sig: AbortSignal | undefined): Promise<Response> =>
+      this.openSseStream(r, sig);
+    const ctx = createParseCtx();
+    return new ReadableStream<UIMessageChunk>({
+      async start(controller) {
+        let body: ReadableStream<Uint8Array> | null = firstBody;
+        for (let attempt = 0; ; attempt++) {
+          // On a reconnect the server replays the buffer tail; skip the
+          // content chunks we've already shown so the message doesn't
+          // duplicate.
+          ctx.skipContent = attempt === 0 ? 0 : ctx.emittedContent;
+          const reason = await consumeSseAttempt(body, ctx, controller);
+          if (reason === 'done' || reason === 'server-error') {
+            // Terminal chunk already enqueued by the attempt.
+            controller.close();
+            return;
           }
-          controller.close();
-        } catch {
-          // The body errored mid-consumption. If a terminal chunk was already
-          // emitted (done/error/flush ran), `finished` is true and we just
-          // close. Otherwise synthesize the connection-lost terminal so the
-          // turn ends as a retryable error, not a hang or a raw fetch reject.
-          if (!finished) {
-            closeOpen(controller);
+          // reason === 'lost' — the connection dropped without a terminal
+          // frame. Reconnect to the SAME reqId (GET-only) unless we've hit
+          // the cap.
+          if (attempt + 1 >= MAX_RECONNECTS || abortSignal?.aborted) {
+            ctx.closeOpen(controller);
             controller.enqueue({ type: 'error', errorText: CONNECTION_LOST });
-            finished = true;
+            controller.close();
+            return;
           }
-          controller.close();
-        } finally {
-          reader.releaseLock();
+          let resp: Response;
+          try {
+            resp = await open(reqId, abortSignal);
+          } catch {
+            // The reconnect GET itself failed (host unreachable) → give up.
+            ctx.closeOpen(controller);
+            controller.enqueue({ type: 'error', errorText: CONNECTION_LOST });
+            controller.close();
+            return;
+          }
+          if (!resp.ok || !resp.body) {
+            // 404/410 etc. — the turn is gone (Fault B host bounce evicted
+            // the reqId). Surface the banner; the user can re-POST manually.
+            ctx.closeOpen(controller);
+            controller.enqueue({ type: 'error', errorText: CONNECTION_LOST });
+            controller.close();
+            return;
+          }
+          body = resp.body;
         }
       },
     });
+  }
+}
+
+/** Maximum transparent same-reqId reconnect attempts before surfacing the
+ *  error banner. Three GETs (initial + 2 reconnects) span a brief proxy/tab
+ *  blip without looping forever on a real outage. */
+const MAX_RECONNECTS = 3;
+
+/** End-reason of a single SSE attempt. */
+type AttemptEnd = 'done' | 'server-error' | 'lost';
+
+interface ParseCtx {
+  textCounter: number;
+  thinkingCounter: number;
+  openText: string | null;
+  openThinking: string | null;
+  contentSeen: boolean;
+  carry: string;
+  /** Total content chunks (text/thinking deltas + tool frames) emitted so
+   *  far across all attempts — the dedup cursor for reconnect replay. */
+  emittedContent: number;
+  /** On a reconnect attempt, skip this many replayed content chunks before
+   *  forwarding (and re-counting) new ones. */
+  skipContent: number;
+  closeOpen(controller: { enqueue(c: UIMessageChunk): void }): void;
+}
+
+function createParseCtx(): ParseCtx {
+  const ctx: ParseCtx = {
+    textCounter: 0,
+    thinkingCounter: 0,
+    openText: null,
+    openThinking: null,
+    contentSeen: false,
+    carry: '',
+    emittedContent: 0,
+    skipContent: 0,
+    closeOpen(controller) {
+      if (ctx.openText !== null) {
+        controller.enqueue({ type: 'text-end', id: ctx.openText });
+        ctx.openText = null;
+      }
+      if (ctx.openThinking !== null) {
+        controller.enqueue({ type: 'text-end', id: ctx.openThinking });
+        ctx.openThinking = null;
+      }
+    },
+  };
+  return ctx;
+}
+
+/**
+ * Consume ONE SSE body, emitting UIMessageChunks to `controller`, and return
+ * how it ended:
+ *   - 'done'         — a `done` frame arrived; a `finish` was enqueued.
+ *   - 'server-error' — a server `error` frame (Fault A); an `error` chunk
+ *                      with a mapped label was enqueued.
+ *   - 'lost'         — the body ended (gracefully OR with an error) WITHOUT a
+ *                      terminal frame (Faults B/D). NO terminal chunk is
+ *                      enqueued here — the caller decides reconnect vs. emit
+ *                      CONNECTION_LOST.
+ *
+ * Cross-attempt dedup: `ctx.skipContent` content chunks are dropped (the
+ * server replays the buffer tail on reconnect); each forwarded content chunk
+ * bumps `ctx.emittedContent`.
+ */
+async function consumeSseAttempt(
+  body: ReadableStream<Uint8Array>,
+  ctx: ParseCtx,
+  controller: { enqueue(c: UIMessageChunk): void },
+): Promise<AttemptEnd> {
+  const enqueueContent = (chunk: UIMessageChunk): void => {
+    if (ctx.skipContent > 0) {
+      ctx.skipContent -= 1;
+      return; // replayed chunk we've already shown — drop it
+    }
+    controller.enqueue(chunk);
+    ctx.emittedContent += 1;
+  };
+
+  const ensureOpenForKind = (kind: 'text' | 'thinking'): string => {
+    if (kind === 'text') {
+      if (ctx.openThinking !== null) {
+        controller.enqueue({ type: 'text-end', id: ctx.openThinking });
+        ctx.openThinking = null;
+      }
+      if (ctx.openText === null) {
+        ctx.openText = `text-${ctx.textCounter}`;
+        ctx.textCounter += 1;
+        controller.enqueue({ type: 'text-start', id: ctx.openText });
+      }
+      return ctx.openText;
+    }
+    if (ctx.openText !== null) {
+      controller.enqueue({ type: 'text-end', id: ctx.openText });
+      ctx.openText = null;
+    }
+    if (ctx.openThinking === null) {
+      ctx.openThinking = `thinking-${ctx.thinkingCounter}`;
+      ctx.thinkingCounter += 1;
+      controller.enqueue({
+        type: 'text-start',
+        id: ctx.openThinking,
+        providerMetadata: { ax: { thinking: true } },
+      });
+    }
+    return ctx.openThinking;
+  };
+
+  const reader = body
+    .pipeThrough(
+      new TextDecoderStream() as ReadableWritablePair<string, Uint8Array>,
+    )
+    .getReader();
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) {
+        // Graceful close with no terminal frame → lost (Faults B/D).
+        return 'lost';
+      }
+      const data = ctx.carry + value;
+      const lines = data.split('\n');
+      ctx.carry = lines.pop() ?? '';
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith(':')) continue;
+        if (!trimmed.startsWith('data: ')) continue;
+
+        let frame: SseFrame;
+        try {
+          frame = JSON.parse(trimmed.slice(6)) as SseFrame;
+        } catch {
+          // Malformed JSON — skip. Server is the source of truth.
+          continue;
+        }
+
+        if ('done' in frame && frame.done === true) {
+          ctx.closeOpen(controller);
+          controller.enqueue({ type: 'finish', finishReason: 'stop' });
+          return 'done';
+        }
+        // Server `error` frame (Fault A) — orchestrator-terminated turn. NOT
+        // a connection drop: a reconnect wouldn't help, so we surface it.
+        if ('error' in frame && typeof frame.error === 'string') {
+          ctx.closeOpen(controller);
+          controller.enqueue({
+            type: 'error',
+            errorText: ERROR_LABELS[frame.error] ?? DEFAULT_TURN_ERROR,
+          });
+          return 'server-error';
+        }
+        // phase frame — out-of-band; drives the status row directly.
+        if ('phase' in frame && typeof frame.phase === 'string') {
+          if (ctx.contentSeen) continue; // pre-content only
+          const label = PHASE_LABELS[frame.phase];
+          if (label !== undefined) agentStatusActions.set(label);
+          continue;
+        }
+        // text/thinking chunk
+        if (
+          'kind' in frame &&
+          (frame.kind === 'text' || frame.kind === 'thinking')
+        ) {
+          if (!ctx.contentSeen) {
+            ctx.contentSeen = true;
+            agentStatusActions.set('Thinking…');
+          }
+          const id = ensureOpenForKind(frame.kind);
+          enqueueContent({
+            type: 'text-delta',
+            id,
+            delta: frame.text,
+            ...(frame.kind === 'thinking'
+              ? { providerMetadata: { ax: { thinking: true } } }
+              : {}),
+          });
+          continue;
+        }
+        // tool-use frame
+        if ('kind' in frame && frame.kind === 'tool-use') {
+          if (!ctx.contentSeen) {
+            ctx.contentSeen = true;
+            agentStatusActions.set('Thinking…');
+          }
+          ctx.closeOpen(controller);
+          enqueueContent({
+            type: 'tool-input-available',
+            toolCallId: frame.toolCallId,
+            toolName: frame.toolName,
+            input: frame.input,
+            dynamic: true,
+          });
+          continue;
+        }
+        // tool-result frame
+        if ('kind' in frame && frame.kind === 'tool-result') {
+          if (!ctx.contentSeen) {
+            ctx.contentSeen = true;
+            agentStatusActions.set('Thinking…');
+          }
+          if (frame.isError === true) {
+            enqueueContent({
+              type: 'tool-output-error',
+              toolCallId: frame.toolCallId,
+              errorText: frame.output || 'tool failed',
+              dynamic: true,
+            });
+          } else {
+            enqueueContent({
+              type: 'tool-output-available',
+              toolCallId: frame.toolCallId,
+              output: frame.output,
+              dynamic: true,
+            });
+          }
+          continue;
+        }
+      }
+    }
+  } catch {
+    // Hard body error (network drop mid-consumption) with no terminal frame.
+    return 'lost';
+  } finally {
+    reader.releaseLock();
   }
 }
 
