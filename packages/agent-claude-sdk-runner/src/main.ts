@@ -37,6 +37,7 @@ import { commitNotifyWithResync } from './commit-notify-resync.js';
 import { commitTrace } from './commit-trace.js';
 import { createLocalDispatcher } from './local-dispatcher.js';
 import { buildToolCacheEnv } from './tool-cache-env.js';
+import { buildHomeBinEnv } from './home-bin-env.js';
 import { buildPythonVenvEnv, scaffoldPythonVenv } from './python-venv.js';
 import { createPostToolUseHook } from './post-tool-use.js';
 import { createPreToolUseHook } from './pre-tool-use.js';
@@ -652,6 +653,19 @@ export async function main(): Promise<number> {
     }
   }
 
+  // Python venv PATH layer, computed up front so the $HOME/bin layer below can
+  // read the venv-adjusted PATH and append AFTER it (the env literal can't
+  // reference its own earlier keys). buildPythonVenvEnv returns {} when the
+  // venv isn't ready, in which case the base proxy-allowlist PATH is the input
+  // to buildHomeBinEnv. See python-venv.ts / home-bin-env.ts.
+  const pythonVenvEnv = buildPythonVenvEnv({
+    ephemeralRoot: pythonVenvReady ? env.ephemeralRoot : undefined,
+    currentPath: proxyStartup.anthropicEnv.PATH,
+    caCertFile:
+      proxyStartup.anthropicEnv.SSL_CERT_FILE ??
+      proxyStartup.anthropicEnv.NODE_EXTRA_CA_CERTS,
+  });
+
   try {
     const queryIter = query({
       prompt: userMessages(),
@@ -745,13 +759,26 @@ export async function main(): Promise<number> {
           // Spread AFTER anthropicEnv so PATH/VIRTUAL_ENV win. caCertFile is the
           // same proxy CA PEM the Node/uv tools already trust (SSL_CERT_FILE /
           // NODE_EXTRA_CA_CERTS, forwarded by proxy-startup). See python-venv.ts.
-          ...buildPythonVenvEnv({
-            ephemeralRoot: pythonVenvReady ? env.ephemeralRoot : undefined,
-            currentPath: proxyStartup.anthropicEnv.PATH,
-            caCertFile:
-              proxyStartup.anthropicEnv.SSL_CERT_FILE ??
-              proxyStartup.anthropicEnv.NODE_EXTRA_CA_CERTS,
-          }),
+          // Computed up front (above the query() literal) so the $HOME/bin
+          // layer below can append after the venv bin.
+          ...pythonVenvEnv,
+          // Put `$HOME/bin` (= <workspaceRoot>/bin, the git-bundled workspace
+          // tier — HOME above) on PATH so binaries the agent installs there
+          // PERSIST and are found in later sessions. Spread LAST and fed the
+          // post-venv PATH so it lands at the END of PATH. APPEND, not prepend
+          // (I5 / codex review): $HOME=/permanent is model-writable + restored
+          // across sessions, so prepending would let an injected
+          // `/permanent/bin/git` persistently shadow the trusted image/venv
+          // binary; appending keeps installed tools discoverable while trusted
+          // base+venv bins win on name collisions. This is the load-bearing
+          // layer: the SDK's Bash tool is a NON-INTERACTIVE shell that never
+          // sources a .bashrc, so PATH must arrive via this env. See
+          // home-bin-env.ts (and the matching .bashrc in container/agent/
+          // Dockerfile for interactive/BASH_ENV shells + discoverability).
+          ...buildHomeBinEnv(
+            env.workspaceRoot,
+            pythonVenvEnv.PATH ?? proxyStartup.anthropicEnv.PATH,
+          ),
         },
         cwd: env.workspaceRoot,
         // Session-scoped scratch tier. When the sandbox provided an

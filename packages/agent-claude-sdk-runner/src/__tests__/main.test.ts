@@ -466,7 +466,12 @@ describe('main()', () => {
         mcpServers: Record<string, unknown>;
         settingSources: string[];
         systemPrompt: { type: string; preset: string; append?: string };
-        env: { ANTHROPIC_BASE_URL?: string; ANTHROPIC_API_KEY: string };
+        env: {
+          ANTHROPIC_BASE_URL?: string;
+          ANTHROPIC_API_KEY: string;
+          HOME?: string;
+          PATH?: string;
+        };
       };
     };
     expect(queryArg.options.disallowedTools).toEqual(
@@ -497,6 +502,28 @@ describe('main()', () => {
     expect(queryArg.options.env.ANTHROPIC_API_KEY).toBe(
       COMPLETE_ENV.ANTHROPIC_API_KEY,
     );
+
+    // TASK-19: the SDK subprocess runs with HOME=<workspaceRoot>, and
+    // `$HOME/bin` (the git-bundled workspace tier, so binaries the agent
+    // installs there persist between sessions) must be on PATH — APPENDED at
+    // the END (not prepended: $HOME is model-writable + restored, so a leading
+    // entry would let an injected binary shadow trusted tools — I5). The SDK
+    // Bash tool is a non-interactive shell that never sources a .bashrc, so
+    // this env PATH is the load-bearing mechanism. A regression that drops the
+    // $HOME/bin append fails here.
+    expect(queryArg.options.env.HOME).toBe(COMPLETE_ENV.AX_WORKSPACE_ROOT);
+    expect(queryArg.options.env.PATH).toBeDefined();
+    expect(
+      queryArg.options.env.PATH?.endsWith(
+        `:${COMPLETE_ENV.AX_WORKSPACE_ROOT}/bin`,
+      ),
+    ).toBe(true);
+    // And it must NOT be at the front (the shadowing guard).
+    expect(
+      queryArg.options.env.PATH?.startsWith(
+        `${COMPLETE_ENV.AX_WORKSPACE_ROOT}/bin:`,
+      ),
+    ).toBe(false);
 
     expect(fakeClient.close).toHaveBeenCalledTimes(1);
   });
@@ -2755,7 +2782,14 @@ describe('main()', () => {
         options: { env: Record<string, string> };
       };
       expect(queryArg.options.env.VIRTUAL_ENV).toBe('/ephemeral/py');
+      // TASK-19: the venv bin stays at the FRONT (the venv must win for
+      // python/pip), and $HOME/bin (the persisted workspace tier) is APPENDED
+      // at the END — installed agent tools are discoverable but can't shadow
+      // the trusted venv/base bins.
       expect(queryArg.options.env.PATH.startsWith('/ephemeral/py/bin:')).toBe(
+        true,
+      );
+      expect(queryArg.options.env.PATH.endsWith(':/tmp/workspace/bin')).toBe(
         true,
       );
       expect(queryArg.options.env.PIP_CERT).toBe('/etc/ax/proxy-ca.crt');
