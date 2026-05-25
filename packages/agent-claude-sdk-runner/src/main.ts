@@ -789,7 +789,16 @@ export async function main(): Promise<number> {
         // input don't reach it). See pre-tool-use.ts for the rationale.
         canUseTool: createCanUseTool({ client }),
         hooks: {
-          PreToolUse: [{ hooks: [createPreToolUseHook({ client })] }],
+          PreToolUse: [
+            {
+              hooks: [
+                createPreToolUseHook({
+                  client,
+                  workspaceRoot: env.workspaceRoot,
+                }),
+              ],
+            },
+          ],
           PostToolUse: [
             {
               hooks: [
