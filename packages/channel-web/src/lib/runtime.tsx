@@ -38,20 +38,24 @@ const useChatThreadRuntime = (transport: AxChatTransport): AssistantRuntime => {
   // is enough.
   const attachments = useMemo(() => new AxAttachmentAdapter(), []);
 
-  // Turn-end error handling. The transport hands us an AI-SDK `error` chunk in
-  // two shapes:
+  // Turn-end error handling. By the time the transport hands us an AI-SDK
+  // `error` chunk, automatic recovery has already been tried and failed:
   //
-  //   - Fault A — an orchestrator-terminated turn (server `error` SSE frame)
-  //     with a mapped friendly label.
-  //   - Faults B/D (FAULTA-5) — a CONNECTION_LOST sentinel when the SSE stream
-  //     dropped mid-turn without a terminal frame (host bounce / network drop).
+  //   - Mid-turn SSE drop (host restart / network blip) → the transport
+  //     AUTO-RECONNECTS to the same reqId first (bounded, loss-free via the
+  //     TASK-23 per-chunk seq dedup), showing a "reconnecting…" status. It
+  //     never re-POSTs, so there's no duplicate-turn risk. We only see a
+  //     CONNECTION_LOST `error` chunk if every reconnect attempt also dropped
+  //     (or the host said the reqId is gone) — at which point the MANUAL retry
+  //     banner is the honest fallback.
+  //   - Fault A — an orchestrator-terminated turn (server `error` SSE frame,
+  //     e.g. the runner died or timed out) with a mapped friendly label. The
+  //     turn is definitively over; the manual retry button re-runs it.
   //
-  // Both flip the status row to error mode with a MANUAL retry. We don't auto-
-  // retry: a `regenerate()` re-POSTs and could duplicate a still-running server
-  // turn, and a loss-free silent resume needs a server-side per-chunk sequence
-  // number the SSE wire doesn't yet carry (see transport `buildTurnStream`).
   // The retry BUTTON re-runs the last user turn via `regenerate()` — a
-  // deliberate user action, so re-POSTing a fresh turn is acceptable there.
+  // deliberate user action, so re-POSTing a fresh turn is acceptable there
+  // (the dead session's active_session_id was cleared, so it routes to a fresh
+  // sandbox).
   //
   // `chatRef` lets the retry handler reach `regenerate()` without a
   // construction-order chicken-and-egg.
