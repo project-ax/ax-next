@@ -63,9 +63,33 @@ preconditions  →  happy-path battery  →  fault battery  →  report
    scenario, **record the run header** (git sha/branch under test, image tag, the agent
    you'll test) and **pre-check the agent's capabilities** so capability-gated scenarios
    don't surprise you mid-run: does it have a skill attached (#4)? `artifact_publish`
-   (#7)? npx allowlisted (#3)? Any it lacks → that scenario is a planned `SKIP`, noted now,
-   not discovered later. If the cluster/sign-in fails → stop + report "environment not
-   ready." **Port-forward:** start it as a real background process (the harness's
+   (#7)? **npx — is `registry.npmjs.org` reachable for it (#3)?** Any it lacks → that
+   scenario is a planned `SKIP`, noted now, not discovered later — **except npx, which you
+   GRANT, not skip** (see below). If the cluster/sign-in fails → stop + report "environment
+   not ready."
+   - **Granting npm egress for #3 (setup, not skip).** npm egress is skill-gated by design
+     (`chat-orchestrator` only allowlists `registry.npmjs.org` when a skill in the agent's
+     union declares `capabilities.packages.npm` — invariant #5, no blanket egress;
+     `allowedHosts` is not a persisted agent column, so a skill is the *only* lever). If the
+     test agent has no such skill, **create one via the real admin install path** so #3 tests
+     genuine npx. From the authed browser (signed in as an admin), POST a SKILL.md whose
+     frontmatter declares the capability — same code prod uses:
+     ```js
+     // browser_evaluate, admin session:
+     await fetch('/admin/skills', { method:'POST',
+       headers:{'content-type':'application/json','x-requested-with':'ax-admin'},
+       credentials:'include',
+       body: JSON.stringify({ defaultAttached: true, skillMd:
+         "---\nname: npm-runner\ndescription: Run Node CLI tools via npx by allowlisting the npm registry.\nversion: 1\ncapabilities:\n  packages:\n    npm:\n      - cowsay\n---\n# npm-runner\nRun npx tools directly with Bash; the npm registry is reachable.\n" }) });
+     ```
+     `defaultAttached: true` grants it to **every** agent (broadest — record it as a cluster
+     mutation in the report; leave it or delete after). To scope to one agent, omit
+     `defaultAttached` and attach the returned `skillId` via the agents admin route. Either
+     way, **start a NEW conversation** after granting (the allowlist is fixed at session-open;
+     warm pods reuse the old one), then confirm #3 sees real npm output (the `npm notice`
+     banner) and no 403. (A skill declaring credential slots can't be default-attached; a
+     packages-only one can.)
+   - **Port-forward:** start it as a real background process (the harness's
    background-run mechanism), not a bare `&` — shell state doesn't persist between tool
    calls, so a `&`-job from one call isn't reliably alive in the next, and the fault
    battery tears the forward down and back up repeatedly across calls.
@@ -130,11 +154,17 @@ names):
 **Know what "surfaced correctly" looks like before you inject anything.** The chat has
 client-side dev triggers (intercepted in `Composer.tsx`) that fire these surfaces on
 demand, no backend needed: `/error transient` → `AgentStatus` error+retry; `/error inline`
-→ `.msg-error`; `/error toast` → toast; `/error all` → all three. Scenario #15 uses them as
-a deterministic baseline for the presentation layer. When you inject a *real* fault later,
-its error should look like one of these — if instead you get a silent hang, empty bubble,
-or white-screen, that's a **FAIL**. Swallowed errors are the bug this battery exists to
-catch.
+→ `.msg-error`; `/error toast` → toast; `/error all` → all three. **⚠️ But these triggers
+are gated behind `if (!import.meta.env.DEV) return;` (Composer.tsx ~L112) — they fire ONLY
+in a Vite dev build. The kind cluster serves the PROD SPA, where `import.meta.env.DEV` is
+`false`, so against the cluster they are NOT intercepted: typing `/error all` just sends a
+real chat message.** So scenario #14 is an expected `SKIP` against kind (verified
+2026-05-25) — don't rely on it as your in-cluster baseline. Instead, treat the component
+contract above (AgentStatus error+retry, `.msg-error`, Toast) as the spec: when you inject a
+*real* fault, its error should look like one of those — if instead you get a silent hang,
+empty bubble, or white-screen, that's a **FAIL**. Swallowed errors are the bug this battery
+exists to catch. (The fault battery itself is the real exercise of these surfaces; #14 only
+adds value when driving the Vite dev server.)
 
 ## What this skill does NOT do
 

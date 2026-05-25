@@ -67,16 +67,38 @@ The baseline contract: a user message always gets a completed assistant turn.
 - **Watch for:** empty assistant bubble; status row stuck in `working` past the max wait
   (→ FAIL, hung spinner); 5xx on send.
 
-## 3. npx command  → leaves a tool-call for #8
+## 3. npx command (must REALLY download + run)  → leaves a tool-call for #8
 
-- **Prereq:** credentialed CLI tools enabled (npx allowlisted, PR #126).
-- **Steps:** prompt `run npx --yes cowsay@latest hi`.
-- **PASS:** a tool-use block renders with the command and its output/exit; the assistant
-  references the result.
-- **Proves it:** populated tool block (`ToolUse`) in the snapshot; `tool-use`+`tool-result`
-  SSE frames.
-- **Watch for:** tool block missing (model declined / tool unregistered — check host
-  `tool:execute` logs); output garbled; exit code swallowed.
+- **Prereq — npm egress is skill-gated (verify/grant in Phase 0):** the agent under test
+  must have a skill in its union (explicit attachment OR default-attached) whose manifest
+  declares `capabilities.packages.npm: [...]`. That, and *only* that, makes
+  `chat-orchestrator` add `registry.npmjs.org` to the turn's egress allowlist
+  (`packages/chat-orchestrator/src/orchestrator.ts` ~L1121-1133 — host-granular, so one npm
+  entry opens the whole registry; `pypi` → `pypi.org` + `files.pythonhosted.org`). A bare
+  agent with no such skill **403s on registry.npmjs.org by design** — that's the egress lock
+  working, NOT a bug. `allowedHosts` is not a persisted agent column, so the *only* lever is
+  the skill. Phase 0 grants it before this scenario runs.
+- **Steps:** prompt ``run exactly this and show me the raw output: npx --yes cowsay@latest "QA<nnnn>"``
+  (unique marker).
+- **PASS (genuine execution, not model-faked):** a tool-use block renders the bash command
+  **and** its real output — the cow saying your marker **plus** npm side-channel noise the
+  model would never invent (an `npm notice ... New major version of npm available` banner, a
+  changelog URL, `npm warn`/cache lines). That banner is the proof the package actually
+  downloaded. The assistant references the result.
+- **Proves it:** populated tool block (`ToolUse`) with the real `npm notice`/marker output in
+  the snapshot; `tool-use`+`tool-result` SSE frames; runner egress shows **no 403** on
+  registry.npmjs.org.
+- **Watch for (the failure that masquerades as a pass):** a tool block that renders but the
+  output is **"403 / registry blocked / I can't reach npm" with the model drawing the cow
+  from memory** — that's the capability NOT granted (Phase 0 missed it), a FAIL of the
+  prereq, not a pass. The model faking cowsay's ASCII is indistinguishable from a real run
+  *unless* you demand the npm side-channel noise above. Also: tool block missing (model
+  declined / tool unregistered — check host `tool:execute` logs); output garbled; exit code
+  swallowed.
+- **Negative check (optional):** a bare agent (no npm-capable skill, and no cluster
+  default-attached npm skill) should still 403 — the egress lock. NOTE: if Phase 0 granted
+  npm via a *default-attached* skill, every agent now has it and this negative baseline no
+  longer exists without a deliberately opted-out agent — say so rather than asserting it.
 - **Do this in the session you will reload in #8** (note its id).
 
 ## 4. Use a skill (standalone)
@@ -218,9 +240,18 @@ Drive the input edges that break renderers and validators.
 Confirms the three error UIs render and their actions work *before* the fault battery
 relies on them — isolates presentation bugs from backend faults.
 
-- **Steps:** send each dev trigger: `/error transient`, `/error inline`, `/error toast`,
-  `/error all`. (Also `/status` and `/status Building image…` to sanity-check the status
-  row's normal phase labels + 3s auto-hide.)
+- **⚠️ DEV-BUILD ONLY — expect this to SKIP against the kind cluster.** The `/error` and
+  `/status` triggers are intercepted in `Composer.tsx` behind `if (!import.meta.env.DEV)
+  return;` (see ~L112). The kind cluster serves the **production** SPA bundle, where
+  `import.meta.env.DEV` is `false`, so the trigger is **not** intercepted — typing
+  `/error all` sends it as a real chat message (POST 202) and no surface fires. Verified
+  2026-05-25. Against kind, record this scenario as `SKIP (dev-only triggers, prod build)`
+  and do **not** treat it as a precondition for the fault battery. To actually exercise
+  these surfaces you'd need the Vite **dev** server (`AX_BACKEND_URL=…` pointed at the
+  cluster), which is outside this sweep's in-cluster scope.
+- **Steps (dev server only):** send each dev trigger: `/error transient`, `/error inline`,
+  `/error toast`, `/error all`. (Also `/status` and `/status Building image…` to
+  sanity-check the status row's normal phase labels + 3s auto-hide.)
 - **PASS:**
   - `transient` → `.agent-status` flips to error mode with a working **retry** ("Reconnecting…"
     then hides);
