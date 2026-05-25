@@ -34,6 +34,7 @@ import {
   scaffoldWorkspaceSkillSurface,
 } from './git-workspace.js';
 import { commitNotifyWithResync } from './commit-notify-resync.js';
+import { commitTrace } from './commit-trace.js';
 import { createLocalDispatcher } from './local-dispatcher.js';
 import { buildToolCacheEnv } from './tool-cache-env.js';
 import { buildPythonVenvEnv, scaffoldPythonVenv } from './python-venv.js';
@@ -48,7 +49,7 @@ import { DISABLED_BUILTINS, MCP_HOST_SERVER_NAME, MCP_SANDBOX_SERVER_NAME } from
 import {
   hasResumableTranscript,
   readLastTurnUuid,
-  waitForTurnTranscript,
+  waitForTranscriptUuid,
 } from './turn-end-uuid.js';
 import { ARTIFACT_PUBLISH_TOOL_NAME } from '@ax/tool-artifact-publish';
 
@@ -331,18 +332,6 @@ export async function main(): Promise<number> {
   // Distinct from `runnerSessionId` (which only ever holds the resume value)
   // so the turnId-on-event behavior at the turn-end emissions stays unchanged.
   let transcriptSessionId: string | null = runnerSessionId;
-  // The last assistant uuid as of the previous commit — the baseline the flush
-  // wait compares against. Seed it from the existing transcript on a resumed
-  // session so the first turn waits for a genuinely NEW line instead of
-  // short-circuiting on a pre-existing one.
-  let lastTranscriptUuid: string | undefined =
-    transcriptSessionId !== null
-      ? ((await readLastTurnUuid(
-          env.workspaceRoot,
-          transcriptSessionId,
-          'assistant',
-        )) ?? undefined)
-      : undefined;
 
   // Phase E (2026-05-09): the replay-at-boot path is gone. Transcripts
   // live in the runner's native ~/.claude/projects/<sessionId>.jsonl
@@ -470,6 +459,14 @@ export async function main(): Promise<number> {
   //     (Task 9), so we deliberately skip plain-text user blocks here.
   let turnContentBlocks: ContentBlock[] = [];
   let turnToolResultBlocks: ContentBlock[] = [];
+  // The uuid of the turn's MOST-RECENT assistant message (SDKAssistantMessage
+  // .uuid). The SDK assigns this id to the jsonl line it writes for the
+  // message. The per-turn commit waits for THIS uuid to land in the jsonl
+  // before staging, so the turn's closing-text line is durable even on a
+  // tool-using turn (whose intermediate tool_use line lands first). Reset at
+  // each `result` boundary; the gate skips the wait when the turn produced no
+  // assistant message. See waitForTranscriptUuid (TASK-11).
+  let turnLastAssistantUuid: string | undefined;
 
   // Most-recent host-minted reqId from the inbox (J9). Set when a user
   // message arrives; read by `event.stream-chunk` emissions during the
@@ -870,6 +867,12 @@ export async function main(): Promise<number> {
       }
       if (msg.type === 'assistant') {
         const assistant: SDKAssistantMessage = msg;
+        // Record this assistant message's uuid as the turn's latest — the
+        // per-turn commit waits for the LAST one's jsonl line before staging
+        // (the SDK flushes the final assistant line after `result`). On a
+        // tool-using turn this advances tool_use → … → closing-text so the
+        // wait targets the closing text, not the intermediate tool_use line.
+        turnLastAssistantUuid = assistant.uuid;
         // Only plain text blocks round-trip into host history. Tool-use
         // blocks stay inside the SDK's session — the host observes tool
         // activity via event.tool-post-call, not via the transcript.
@@ -1099,24 +1102,40 @@ export async function main(): Promise<number> {
         // Failures here MUST NOT terminate the chat — `event.turn-end`
         // is still the heartbeat the host keys off.
         try {
-          // Wait for the SDK's delayed assistant-jsonl write to land so this
-          // turn's reply is captured by the commit/bundle below (see the
-          // flush comment after materialize). Skip when the turn produced no
-          // assistant content (nothing new to wait for) or when we have no
-          // session id to locate the jsonl. Bounded; falls through on timeout.
-          if (turnContentBlocks.length > 0 && transcriptSessionId !== null) {
-            const landed = await waitForTurnTranscript(
+          // Wait for the SDK's delayed FINAL-assistant-jsonl write to land so
+          // this turn's closing reply is captured by the commit/bundle below
+          // (see the flush comment after materialize). We wait for the SPECIFIC
+          // uuid of the turn's last assistant message — NOT "any new line",
+          // which a tool-using turn's intermediate tool_use line would satisfy
+          // prematurely, dropping the closing text (TASK-11). Skip when the
+          // turn produced no assistant message (nothing to wait for) or when we
+          // have no session id to locate the jsonl. Bounded; falls through on
+          // timeout (the final/idle commit is the safety net).
+          commitTrace(
+            `[commit-trace] per-turn result: session=${transcriptSessionId ?? 'null'} contentBlocks=${turnContentBlocks.length} toolResults=${turnToolResultBlocks.length} finalAsstUuid=${turnLastAssistantUuid ?? '-'} parent=${parentVersion ?? 'null'}\n`,
+          );
+          if (turnLastAssistantUuid !== undefined && transcriptSessionId !== null) {
+            const landed = await waitForTranscriptUuid(
               env.workspaceRoot,
               transcriptSessionId,
-              lastTranscriptUuid,
+              turnLastAssistantUuid,
               { timeoutMs: flushTimeoutMs, intervalMs: flushIntervalMs },
             );
-            if (landed !== undefined) lastTranscriptUuid = landed;
+            commitTrace(
+              `[commit-trace] waitForTranscriptUuid target=${turnLastAssistantUuid} ${landed ? 'LANDED' : 'TIMEOUT (final line never flushed)'}\n`,
+            );
+          } else {
+            commitTrace(
+              `[commit-trace] waitForTranscriptUuid SKIPPED (finalAsstUuid=${turnLastAssistantUuid ?? '-'} session=${transcriptSessionId ?? 'null'})\n`,
+            );
           }
           const bundleB64 = await commitTurnAndBundle({
             root: env.workspaceRoot,
             reason: 'turn',
           });
+          commitTrace(
+            `[commit-trace] per-turn commitTurnAndBundle → ${bundleB64 === null ? 'EMPTY (no staged diff; commit-notify SKIPPED)' : `${bundleB64.length}B`}\n`,
+          );
           if (bundleB64 !== null) {
             // Bounded re-sync + retry. On a concurrent-writer advance the host
             // returns accepted:false with actualParent + baselineBundleBytes;
@@ -1132,6 +1151,9 @@ export async function main(): Promise<number> {
               reason: 'turn',
             });
             parentVersion = result.parentVersion;
+            commitTrace(
+              `[commit-trace] per-turn DONE outcome=${result.outcome} parent=${parentVersion ?? 'null'}\n`,
+            );
             // F2a: the transcript is now durable on the host — bind the
             // conversation row to it (once, fresh-boot only). See
             // bindRunnerSessionIfNeeded.
@@ -1204,6 +1226,10 @@ export async function main(): Promise<number> {
 
         const assistantBlocks = turnContentBlocks;
         turnContentBlocks = [];
+        // Reset the turn's final-assistant-uuid tracker so the NEXT turn's
+        // flush wait is gated on its own assistant message (an empty turn with
+        // no assistant message then correctly skips the wait).
+        turnLastAssistantUuid = undefined;
         // Look up the uuid of the LAST 'assistant' line so subscribers
         // (e.g., @ax/routines silence-token logic) can refer back to
         // this specific turn via conversations:drop-turn.
@@ -1243,11 +1269,17 @@ export async function main(): Promise<number> {
     // SDK flushed everything before `result`), `git add -A` produces an
     // empty diff and no commit is created (commitTurnAndBundle short-
     // circuits on empty diffs).
+    commitTrace(
+      `[commit-trace] for-await drained → final commit (parent=${parentVersion ?? 'null'})\n`,
+    );
     try {
       const finalBundle = await commitTurnAndBundle({
         root: env.workspaceRoot,
         reason: 'turn',
       });
+      commitTrace(
+        `[commit-trace] final commitTurnAndBundle → ${finalBundle === null ? 'EMPTY (no staged diff; commit-notify SKIPPED)' : `${finalBundle.length}B`}\n`,
+      );
       if (finalBundle !== null) {
         // Run the SAME bounded re-sync+retry helper as the per-turn commit. A
         // concurrent writer racing this final/idle commit advances the mirror;
@@ -1261,6 +1293,9 @@ export async function main(): Promise<number> {
           reason: 'turn',
         });
         parentVersion = result.parentVersion;
+        commitTrace(
+          `[commit-trace] final DONE outcome=${result.outcome} parent=${parentVersion ?? 'null'}\n`,
+        );
         // F2a: last chance to bind once the final commit is durable (e.g. when
         // the per-turn commit-notify was 'kept'/'rolled-back' but this one was
         // accepted). Once-only via bindRunnerSessionIfNeeded.

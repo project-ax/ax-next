@@ -51,36 +51,76 @@ export async function readLastTurnUuid(
 }
 
 /**
- * Wait for the runner-native jsonl to gain a NEW assistant line, then return
- * its uuid. Bounded by `timeoutMs`; returns undefined on timeout.
+ * Wait until the runner-native jsonl for `sessionId` contains a line whose
+ * `uuid` equals `targetUuid`. Returns true once present, false on timeout
+ * (bounded by `timeoutMs`).
  *
- * Why this exists: the Anthropic Agent SDK writes the assistant turn's jsonl
- * line AFTER it yields the `result` message to the runner's Node loop. The
- * runner's per-turn commit (`commitTurnAndBundle`) runs in the `result`
- * handler, so without this wait it stages the workspace BEFORE the assistant
- * line lands — the reply is missing from the committed bundle and only
- * becomes durable (readable via `conversations:get`) at the NEXT turn's
- * commit or at session-close. Under idle-keepalive that defers the assistant
- * reply's durability by the whole idle window (minutes). Polling the jsonl
- * for the new line and committing only after it lands closes that gap.
+ * Why this exists: the Anthropic Agent SDK writes the turn's FINAL assistant
+ * jsonl line AFTER it yields the `result` message to the runner's Node loop.
+ * The runner's per-turn commit (`commitTurnAndBundle`) runs in the `result`
+ * handler, so without this wait it stages the workspace BEFORE the closing
+ * line lands — the reply is missing from the committed bundle and only becomes
+ * durable (readable via `conversations:get`) at the NEXT turn's commit or at
+ * session-close. Under idle-keepalive that defers durability by the whole idle
+ * window (minutes). Polling for the line and committing only after it lands
+ * closes that gap.
  *
- * `sinceUuid` is the last assistant uuid committed before this turn (undefined
- * when the transcript had no assistant line yet, e.g. a fresh session's first
- * turn). The poll resolves as soon as the last assistant uuid differs from it.
+ * `targetUuid` is the uuid of the turn's LAST assistant message — captured
+ * in-band from `SDKAssistantMessage.uuid` (the same id the SDK writes to the
+ * jsonl line). We wait for THIS SPECIFIC line, NOT merely "any new assistant
+ * line": a tool-using turn writes an INTERMEDIATE tool_use assistant line
+ * DURING the turn, so a "wait for any new line" check short-circuits on it and
+ * the per-turn commit drops the closing-text line that lands afterward
+ * (TASK-11 — the persisted `[user, tool_use, tool_result]` shape). Targeting
+ * the final message's uuid is robust to any number of intermediate lines.
  */
-export async function waitForTurnTranscript(
+export async function waitForTranscriptUuid(
   workspaceRoot: string,
   sessionId: string,
-  sinceUuid: string | undefined,
+  targetUuid: string,
   opts: { timeoutMs: number; intervalMs: number },
-): Promise<string | undefined> {
+): Promise<boolean> {
   const start = Date.now();
   for (;;) {
-    const uuid = await readLastTurnUuid(workspaceRoot, sessionId, 'assistant');
-    if (uuid !== undefined && uuid !== sinceUuid) return uuid;
-    if (Date.now() - start >= opts.timeoutMs) return undefined;
+    if (await transcriptHasUuid(workspaceRoot, sessionId, targetUuid)) {
+      return true;
+    }
+    if (Date.now() - start >= opts.timeoutMs) return false;
     await new Promise((resolve) => setTimeout(resolve, opts.intervalMs));
   }
+}
+
+/**
+ * True iff the jsonl for `sessionId` contains a line whose `uuid` equals
+ * `targetUuid`. Scans every line (not just the tail) so an intermediate match
+ * isn't masked by later lines; tolerates a truncated/garbage trailing line
+ * (the target may be the very line still being flushed — keep polling).
+ */
+async function transcriptHasUuid(
+  workspaceRoot: string,
+  sessionId: string,
+  targetUuid: string,
+): Promise<boolean> {
+  const jsonlPath = await locateJsonl(workspaceRoot, sessionId);
+  if (jsonlPath === null) return false;
+  let text: string;
+  try {
+    text = await readFile(jsonlPath, 'utf-8');
+  } catch {
+    return false;
+  }
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+    try {
+      const o = JSON.parse(trimmed) as { uuid?: string };
+      if (o.uuid === targetUuid) return true;
+    } catch {
+      // Truncated/garbage line (possibly the target still being flushed) — skip.
+      continue;
+    }
+  }
+  return false;
 }
 
 /**

@@ -442,6 +442,37 @@ describe('commitTurnAndBundle', () => {
     expect(r).toBeNull();
   });
 
+  it('bundles an already-committed turn when the working tree is clean (re-sync replay; baseline..main non-empty) — TASK-11', async () => {
+    // After resyncBaselineAndReplay, the turn's commit sits on `main` ahead of
+    // a freshly-re-pinned `baseline`, and the working tree is CLEAN. The
+    // re-bundle must STILL ship `baseline..main`. Returning null here made the
+    // re-sync caller (commitNotifyWithResync) read it as "turn absorbed ⇒
+    // accepted" and silently drop the turn — TASK-11's post-attachment turn
+    // lost on reload. Simulate the post-rebase state: a real commit on `main`,
+    // baseline left behind, clean tree.
+    const { root } = await setupMaterializedWorkspace();
+    await fs.writeFile(path.join(root, 'replayed-turn.txt'), 'rebased\n');
+    await git(['-C', root, 'add', '-A']);
+    await git(['-C', root, 'commit', '-m', 'replayed turn']);
+    // Preconditions: clean working tree, baseline..main has exactly one commit.
+    expect((await git(['-C', root, 'status', '--porcelain'])).stdout.trim()).toBe('');
+    expect(
+      (
+        await git(['-C', root, 'rev-list', '--count', 'refs/heads/baseline..main'])
+      ).stdout.trim(),
+    ).toBe('1');
+
+    const bundleB64 = await commitTurnAndBundle({ root, reason: 'turn' });
+    // Must NOT be null — the replayed commit is real and needs shipping.
+    expect(bundleB64).not.toBeNull();
+    // And it round-trips the committed content.
+    const verifyDir = path.join(scratchRoot, 'verify-replay');
+    await git(['clone', root, verifyDir]);
+    expect(
+      await fs.readFile(path.join(verifyDir, 'replayed-turn.txt'), 'utf8'),
+    ).toBe('rebased\n');
+  });
+
   it('catches a Bash-style file create (raw fs write, no SDK tool)', async () => {
     // Phase 3 motivation: PostToolUse-based observation missed Bash
     // writes. git status sees ALL writes regardless of tool.
