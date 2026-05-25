@@ -162,7 +162,7 @@ You are the **sole writer** of the "Depends on" field's analysis. (Humans may
 hand-set deps too; you fill gaps and prune, you don't overwrite a human's explicit
 deps unless they dangle.)
 
-## The poller (token-free, ≈once a minute)
+## The poller (model-token-free, ≈once a minute — ~1 GraphQL pt/poll)
 
 Write it at run start (gitignored) and launch it **in the background** — it burns
 **no model tokens** while idle and exits (re-invoking you) the moment To Do changes.
@@ -349,5 +349,5 @@ in-flight, and any walk-filed follow-ups.
 | "This untagged To Do card looks ready, I'll dispatch it" | Un-triaged cards pass the triage gate first — ID assigned, walk-tagged, underspec routed to Needs Input. Never dispatch a card with no `triaged … clean` row. |
 | "Re-invoked after a crash — I'll just start dispatching" | Run the §7 reconcile **first**: orphaned In Progress / In Review cards (PR → merge queue; no PR → reset to To Do) before draining, or they wedge slots forever. |
 | "An In-Progress card looks stuck, I'll re-dispatch it" | Only on a **run-start** wake (no live agents). On a board-change/agent-done wake those agents are live — reconciling would double-dispatch. |
-| "I'll poll the board myself each minute" | That burns tokens. The background poller is token-free and re-invokes you on change. |
+| "I'll poll the board myself each minute" | That burns model tokens. The background poller is model-token-free (it still spends ~1 GraphQL pt/poll — see §5; never `gh project item-list`, that's ~102 pt) and re-invokes you on change. |
 | "This walk card is ready, I'll yolo-ship it" | `(walk)` cards run via the serialized k8s-acceptance-loop, never yolo-ship. |

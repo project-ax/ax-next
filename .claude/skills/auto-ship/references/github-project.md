@@ -243,21 +243,42 @@ body via `set_needs_input`, §8 — **not** a failure attempt). **Needs Input �
 a human drag**, never an orchestrator write; it re-enters via the triage gate (§8).
 Walk cards stay in **Backlog** unless a human moves them to To Do.
 
-## 5. The poller (token-free To Do watcher)
+## 5. The poller (model-token-free To Do watcher — but NOT GraphQL-free)
 
 Write this at run start and launch it with the Bash tool, `run_in_background: true`.
 It burns **no model tokens** while idle and `exit 0`s — re-invoking auto-ship — the
 moment the To Do lane changes (a card added/removed/renamed, a dep edited, a
 Backlog→To Do promote). Re-launch it after every loop pass.
 
+> **GraphQL budget — read this.** "Token-free" means **model** tokens. Each poll still
+> spends **GraphQL** points against the 5000/hr budget (§3). Do **not** poll with
+> `gh project item-list` — it fetches every item's every field value + body and cost
+> **~102 pts per call** here, so a 60s cadence is ~6120 pts/hr and an idle poller alone
+> drains the entire budget in ~49 min (this happened 2026-05-25: two consecutive hourly
+> windows exhausted). Poll with the **targeted `fieldValueByName` query below (~1 pt)**
+> instead, and pre-check the budget so the poller can never be what drains it.
+
 ```bash
 cat > .claude/auto-ship-board-poll.sh <<'SH'
 #!/usr/bin/env bash
 # Exits 0 when the To Do lane changes vs the cached snapshot (re-invokes auto-ship).
+# GraphQL-frugal: this targeted query costs ~1 pt/poll (vs ~102 for `gh project
+# item-list`, which fetches every field value + body). At 60s cadence that is ~60
+# pts/hr against the 5000/hr budget. It also refuses to poll when the budget is low,
+# so a poller can never be what drains GraphQL.
 SNAP=.claude/auto-ship-todo-snapshot.txt
+Q='query{ organization(login:"project-ax"){ projectV2(number:1){ items(first:100){ nodes{
+  id
+  content{ ... on DraftIssue{title} ... on Issue{title} ... on PullRequest{title} }
+  status: fieldValueByName(name:"Status")    { ... on ProjectV2ItemFieldSingleSelectValue{name} }
+  deps:   fieldValueByName(name:"Depends on") { ... on ProjectV2ItemFieldTextValue{text} } }}}}}'
 while true; do
-  CUR=$(gh project item-list 1 --owner project-ax --format json \
-    | jq -S '[.items[] | select(.status=="To Do") | {id, title, deps:(."depends on" // "")}]')
+  REM=$(gh api rate_limit --jq '.resources.graphql.remaining' 2>/dev/null || echo 5000)
+  if [ "${REM:-5000}" -lt 500 ]; then sleep 120; continue; fi   # free pre-check; never be the drainer
+  CUR=$(gh api graphql -f query="$Q" \
+    | jq -S '[.data.organization.projectV2.items.nodes[]
+             | select(.status.name=="To Do")
+             | {id, title:.content.title, deps:(.deps.text // "")}]')
   H=$(printf '%s' "$CUR" | { shasum 2>/dev/null || sha1sum; } | cut -d" " -f1)
   if [ "$H" != "$(cat "$SNAP" 2>/dev/null)" ]; then
     printf '%s' "$H" > "$SNAP"; echo "TO-DO CHANGED"; exit 0
@@ -267,6 +288,13 @@ done
 SH
 chmod +x .claude/auto-ship-board-poll.sh
 ```
+
+The `first:100` covers a board up to 100 items (this one is 41); the To Do lane is
+always a small subset. `fieldValueByName` pulls only the two fields the hash needs
+(Status, Depends on) instead of the whole `fieldValues` connection — that single change
+is the ~102→~1 pt collapse. The orchestrator's per-pass read (§3) still legitimately
+needs bodies, but it runs **once per pass**, not every 60s — the poller is the one that
+must stay cheap.
 
 **Snapshot-refresh discipline (avoids self-triggering):** the orchestrator's own pass
 mutates To Do (moves a card out, writes deps), which would re-trip the poller. So at
