@@ -126,7 +126,12 @@ export function createPreToolUseHook(
   const idGen = opts.idGen ?? ((): string => randomUUID());
   const { workspaceRoot } = opts;
 
-  return async (input, toolUseID) => {
+  // `HookCallback` is `(input, toolUseID, options: { signal })` — the SDK
+  // always invokes the hook with the third options arg. We don't use it, but
+  // declare it (`_options`) so the impl's arity matches the call sites (same
+  // convention as canUseTool's `_options`). Omitting it made the third
+  // argument look "superfluous" to CodeQL at every call site.
+  return async (input, toolUseID, _options) => {
     if (input.hook_event_name !== 'PreToolUse') {
       return {};
     }
