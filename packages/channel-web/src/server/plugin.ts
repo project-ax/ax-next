@@ -12,6 +12,7 @@ import {
   createPhaseFillSubscriber,
   createSseHandler,
   createTurnEndEvictor,
+  createTurnErrorFillSubscriber,
   type RouteRequest,
   type RouteResponse,
 } from './sse.js';
@@ -121,14 +122,19 @@ export function createChannelWebServerPlugin(
         createTurnEndEvictor(localBuffer),
       );
 
-      // Turn-error evictor — same role as the turn-end evictor, for the
-      // abnormal-termination path. A turn that errors out with no SSE
-      // listener attached still needs its buffered chunks dropped; the
-      // payload carries `reqId` so the same evictor factory works.
-      bus.subscribe<{ reqId?: string }>(
+      // Turn-error fill — stores the terminal error reason per reqId so an
+      // SSE handler that connects AFTER the orchestrator fired
+      // `chat:turn-error` can replay the error frame on connect instead of
+      // hanging. This is the pre-SSE-connect race, acute for fast session-open
+      // failures (e.g. a credential-resolution error that rejects
+      // `proxy:open-session` before the browser opens the stream). It replaces
+      // the prior turn-error evictor: storing (not evicting) is what makes
+      // replay possible, and the buffer's IDLE_TTL sweep reaps the entry once
+      // the connect window passes.
+      bus.subscribe<{ reqId?: string; reason?: string }>(
         'chat:turn-error',
-        `${PLUGIN_NAME}/turn-error-evictor`,
-        createTurnEndEvictor(localBuffer),
+        `${PLUGIN_NAME}/turn-error-fill`,
+        createTurnErrorFillSubscriber(localBuffer),
       );
 
       const handler = createSseHandler({
@@ -213,7 +219,7 @@ export function createChannelWebServerPlugin(
       );
       busRef?.unsubscribe(
         'chat:turn-error',
-        `${PLUGIN_NAME}/turn-error-evictor`,
+        `${PLUGIN_NAME}/turn-error-fill`,
       );
       busRef = undefined;
       // Stop the chunk buffer's sweep timer.

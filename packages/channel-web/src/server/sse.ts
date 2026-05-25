@@ -237,6 +237,29 @@ export function createSseHandler(deps: SseHandlerDeps) {
       safeWrite(chunk);
     }
 
+    // 4a-bis) Replay a buffered terminal turn-error. The orchestrator can fire
+    // `chat:turn-error` BEFORE this EventSource connected and installed the
+    // live subscriber below — especially for fast session-open failures (a
+    // credential-resolution error rejects `proxy:open-session` synchronously,
+    // before the browser's separate GET /api/chat/stream/:reqId arrives). The
+    // plugin-level turn-error fill subscriber stored the reason, so we replay
+    // the error frame on connect and close — the turn already ended, so we do
+    // NOT attach the live subscribers (there's nothing more coming). Without
+    // this the client would sit on keepalives forever — the exact silent hang
+    // this path is meant to surface.
+    const replayTurnError = deps.buffer.tailTurnError(reqId);
+    if (replayTurnError !== null) {
+      safeWrite({ reqId, error: replayTurnError });
+      deps.buffer.evictReqId(reqId);
+      cleanup();
+      try {
+        stream.close();
+      } catch {
+        // already closed
+      }
+      return;
+    }
+
     // 4b) Attach the live chunk subscriber. Filter by reqId so multiple
     // in-flight conversations sharing the same host don't bleed.
     deps.bus.subscribe<StreamChunk>(
@@ -414,6 +437,31 @@ export function createPhaseFillSubscriber(buffer: ChunkBuffer) {
       return undefined;
     }
     buffer.appendPhase(payload.reqId, payload.phase);
+    return undefined;
+  };
+}
+
+/**
+ * Sister to `createPhaseFillSubscriber`, but for `chat:turn-error`. Records the
+ * terminal error reason per reqId so an SSE handler that attaches AFTER the
+ * orchestrator already fired `chat:turn-error` still replays the error frame on
+ * connect (the pre-SSE-connect race). This is acute for fast session-open
+ * failures — a credential-resolution error rejects `proxy:open-session`
+ * synchronously, well before the browser opens `/api/chat/stream/:reqId`, so a
+ * live-subscriber-only path would drop the event and the stream would hang on
+ * keepalives forever. Replaces the buffer's turn-error evictor at the plugin
+ * level: storing the reason (rather than evicting) is what makes replay
+ * possible; the IDLE_TTL sweep reaps the entry once the connect window passes.
+ */
+export function createTurnErrorFillSubscriber(buffer: ChunkBuffer) {
+  return async function (
+    _ctx: AgentContext,
+    payload: { reqId?: string; reason?: string },
+  ): Promise<undefined> {
+    if (typeof payload?.reqId !== 'string' || payload.reqId.length === 0) {
+      return undefined;
+    }
+    buffer.appendTurnError(payload.reqId, payload.reason ?? 'unknown');
     return undefined;
   };
 }
