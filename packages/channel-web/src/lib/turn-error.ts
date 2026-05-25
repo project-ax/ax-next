@@ -29,7 +29,7 @@
  * fresh sandbox and re-answers.
  */
 import { agentStatusActions } from './agent-status-store';
-import { CONNECTION_LOST, DEFAULT_TURN_ERROR } from './transport';
+import { DEFAULT_TURN_ERROR, isOrchestratorTurnError } from './transport';
 
 /**
  * Status shown while an interrupted turn is being automatically re-run
@@ -43,17 +43,40 @@ export const RETRYING_STATUS = 'Session interrupted — retrying…';
  * Decide whether a turn-error is safe to AUTO-RETRY (re-run the whole turn) vs.
  * surface the manual banner. Pure so the runtime stays thin and this is unit-
  * testable. Auto-retry iff BOTH:
- *   - the error is NOT the CONNECTION_LOST sentinel — a CONNECTION_LOST drop
- *     means the runner may still be alive, so a re-`regenerate()` could
- *     duplicate the turn; only an orchestrator `error` frame (any other
- *     message) means the turn is provably dead → a fresh regenerate is safe;
+ *   - the error is a PROVABLY-DEAD orchestrator terminal `error` frame
+ *     (`isOrchestratorTurnError`) — a NARROW allow-list, NOT merely "not
+ *     CONNECTION_LOST". The orchestrator cleared active_session_id, so a fresh
+ *     regenerate routes to a new sandbox (no duplicate). A `sendMessages`
+ *     REJECTION (e.g. "chat-flow SSE open failed" after the POST minted a
+ *     reqId, or a POST/network failure of unknown server state) and
+ *     CONNECTION_LOST are both EXCLUDED — auto-retrying them could duplicate a
+ *     turn that may already be running (Codex);
  *   - we haven't ALREADY auto-retried this turn (`alreadyRetried` false) — the
  *     retry is bounded to once so a persistently-dead backend can't loop.
  */
 export function shouldAutoRetry(error: unknown, alreadyRetried: boolean): boolean {
   if (alreadyRetried) return false;
   const text = error instanceof Error ? error.message : '';
-  return text !== CONNECTION_LOST;
+  return isOrchestratorTurnError(text);
+}
+
+/**
+ * The id of the last `user` message in a chat message list, or null if there
+ * is none. The runtime uses this to bound the auto-retry to once PER TURN: a
+ * `regenerate()` re-runs the SAME last user message (id unchanged → already-
+ * retried), while a genuinely new turn appends a new user message (id changes →
+ * fresh retry budget). Keyed off message identity rather than `chat.status`
+ * because the auto-`regenerate()` itself churns status (Codex).
+ */
+export function lastUserMessageId(
+  messages: ReadonlyArray<{ role: string; id: string }> | undefined,
+): string | null {
+  if (!messages) return null;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m && m.role === 'user') return m.id;
+  }
+  return null;
 }
 
 /**

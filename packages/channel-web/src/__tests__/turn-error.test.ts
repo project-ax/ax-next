@@ -3,6 +3,7 @@ import {
   applyTurnError,
   autoRetryTurn,
   shouldAutoRetry,
+  lastUserMessageId,
   RETRYING_STATUS,
 } from '../lib/turn-error';
 import {
@@ -47,8 +48,8 @@ describe('applyTurnError', () => {
 });
 
 describe('shouldAutoRetry', () => {
-  it('auto-retries a provably-dead orchestrator error (any non-CONNECTION_LOST message)', () => {
-    expect(shouldAutoRetry(new Error('The agent stopped unexpectedly. Retry to continue.'), false)).toBe(true);
+  it('auto-retries a provably-dead orchestrator terminal-error frame (the mapped labels only)', () => {
+    expect(shouldAutoRetry(new Error(DEFAULT_TURN_ERROR), false)).toBe(true);
     expect(shouldAutoRetry(new Error('The agent timed out. Retry to continue.'), false)).toBe(true);
   });
 
@@ -56,9 +57,49 @@ describe('shouldAutoRetry', () => {
     expect(shouldAutoRetry(new Error(CONNECTION_LOST), false)).toBe(false);
   });
 
-  it('does NOT auto-retry a second time (bounded to once per turn)', () => {
-    // Even a provably-dead error won't auto-retry again once we've already retried.
-    expect(shouldAutoRetry(new Error('The agent stopped unexpectedly. Retry to continue.'), true)).toBe(false);
+  it('does NOT auto-retry a sendMessages REJECTION (unknown server state, not a terminal frame)', () => {
+    // A POST/SSE-open failure carries an arbitrary message — NOT one of the
+    // orchestrator terminal-error labels — so it must NOT auto-retry (it could
+    // duplicate a turn that already started server-side). Codex round-3 P2.
+    expect(
+      shouldAutoRetry(new Error('chat-flow SSE open failed: 503 Service Unavailable'), false),
+    ).toBe(false);
+    expect(shouldAutoRetry(new Error('chat-flow POST failed: 500'), false)).toBe(false);
+    expect(shouldAutoRetry(new Error('NetworkError when attempting to fetch resource.'), false)).toBe(false);
+  });
+
+  it('does NOT auto-retry a second time for the same turn (bounded to once)', () => {
+    expect(shouldAutoRetry(new Error(DEFAULT_TURN_ERROR), true)).toBe(false);
+  });
+});
+
+describe('lastUserMessageId', () => {
+  it('returns the id of the last user message', () => {
+    expect(
+      lastUserMessageId([
+        { role: 'user', id: 'u1' },
+        { role: 'assistant', id: 'a1' },
+        { role: 'user', id: 'u2' },
+        { role: 'assistant', id: 'a2' },
+      ]),
+    ).toBe('u2');
+  });
+
+  it('returns null when there is no user message or the list is undefined', () => {
+    expect(lastUserMessageId([{ role: 'assistant', id: 'a1' }])).toBeNull();
+    expect(lastUserMessageId([])).toBeNull();
+    expect(lastUserMessageId(undefined)).toBeNull();
+  });
+
+  it('a regenerate (same last user message id) reads as already-retried; a new turn (new id) resets', () => {
+    // The runtime keys the once-per-turn auto-retry guard off this id: a
+    // regenerate re-runs the SAME last user message (id unchanged → bounded),
+    // a fresh send appends a new one (id changes → fresh budget). Codex r3 P2.
+    const turn1 = [{ role: 'user', id: 'u1' }];
+    const afterRegen = [{ role: 'user', id: 'u1' }, { role: 'assistant', id: 'a1-partial' }];
+    expect(lastUserMessageId(turn1)).toBe(lastUserMessageId(afterRegen)); // same turn
+    const turn2 = [...afterRegen, { role: 'user', id: 'u2' }];
+    expect(lastUserMessageId(turn2)).not.toBe(lastUserMessageId(turn1)); // new turn
   });
 });
 

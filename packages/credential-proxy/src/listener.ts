@@ -393,14 +393,30 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
       // the IncomingMessage — a destroyed readable can reset the socket before
       // the 413 reaches the client, especially on a chunked/streaming upload
       // (Codex P2). Event-draining keeps the stream alive until 'end'.
-      const { body, oversized, bodyBytes } = await new Promise<{
+      //
+      // The promise MUST settle on EVERY terminal outcome — 'end' (complete),
+      // 'error' (stream error), OR 'close'/'aborted' WITHOUT 'end' (the client
+      // disconnected mid-upload; common after we've stopped buffering past the
+      // cap). Without the close/aborted arm the handler would hang forever and
+      // retain the collected buffers until process teardown (Codex P2). We use
+      // a `settled` guard so the first terminal event wins.
+      const { body, oversized, bodyBytes, aborted } = await new Promise<{
         body: Buffer;
         oversized: boolean;
         bodyBytes: number;
+        aborted: boolean;
       }>((resolve, reject) => {
         const collected: Buffer[] = [];
         let total = 0;
         let over = false;
+        let settled = false;
+        const finish = (
+          fn: () => void,
+        ): void => {
+          if (settled) return;
+          settled = true;
+          fn();
+        };
         req.on('data', (chunk: Buffer) => {
           total += chunk.length;
           if (total > maxHttpRequestBodyBytes) {
@@ -415,10 +431,26 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
           collected.push(chunk);
         });
         req.on('end', () =>
-          resolve({ body: Buffer.concat(collected), oversized: over, bodyBytes: total }),
+          finish(() =>
+            resolve({ body: Buffer.concat(collected), oversized: over, bodyBytes: total, aborted: false }),
+          ),
         );
-        req.on('error', reject);
+        req.on('error', (err) => finish(() => reject(err)));
+        // 'close'/'aborted' before 'end' = the client hung up mid-upload. Free
+        // the buffers and short-circuit (aborted) — there's nothing to forward.
+        const onAbort = (): void =>
+          finish(() => {
+            collected.length = 0;
+            resolve({ body: Buffer.alloc(0), oversized: over, bodyBytes: total, aborted: true });
+          });
+        req.on('aborted', onAbort);
+        req.on('close', onAbort);
       });
+      if (aborted) {
+        // Client disconnected mid-upload — nothing to forward, nothing to
+        // respond to (the socket is gone). Just release the handler.
+        return;
+      }
       if (oversized) {
         audit(stampSession({
           action: 'proxy_request',

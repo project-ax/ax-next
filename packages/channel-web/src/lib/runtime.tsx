@@ -19,6 +19,7 @@ import {
   applyTurnError,
   autoRetryTurn,
   shouldAutoRetry,
+  lastUserMessageId,
   RETRYING_STATUS,
 } from './turn-error';
 import { agentStatusActions } from './agent-status-store';
@@ -68,10 +69,20 @@ const useChatThreadRuntime = (transport: AxChatTransport): AssistantRuntime => {
   //     stable runner→host events — tracked as a follow-up.)
   //
   // `chatRef` lets both handlers reach `regenerate()` without a
-  // construction-order chicken-and-egg. `autoRetriedRef` bounds the auto-retry
-  // to once per turn so a persistently-dead backend can't loop forever.
+  // construction-order chicken-and-egg.
+  //
+  // Bounding the auto-retry to ONCE per turn is subtle: we must NOT reset the
+  // guard on a `chat.status` transition, because the auto-`regenerate()` ITSELF
+  // drives status through submitted/streaming — that would clear the guard
+  // before the retry's own failure reaches onError, allowing an unbounded retry
+  // loop against a persistently-dead backend (Codex). Instead we key the guard
+  // off the LAST USER MESSAGE id: a genuinely new turn appends a new user
+  // message (id changes → guard resets), whereas a `regenerate()` re-runs the
+  // SAME last user message (id unchanged → guard stays set → exactly one
+  // auto-retry). `lastRetriedUserMsgId` records which turn we've already
+  // auto-retried.
   const chatRef = useRef<ReturnType<typeof useChat> | null>(null);
-  const autoRetriedRef = useRef(false);
+  const lastRetriedUserMsgId = useRef<string | null>(null);
   const chat = useChat({
     id,
     transport,
@@ -79,27 +90,25 @@ const useChatThreadRuntime = (transport: AxChatTransport): AssistantRuntime => {
       const regenerate = () => {
         void chatRef.current?.regenerate();
       };
-      if (shouldAutoRetry(error, autoRetriedRef.current)) {
-        // Provably-dead turn (orchestrator error frame), not yet retried →
-        // safe to auto-retry the whole turn once, with a visible status.
-        autoRetriedRef.current = true;
+      const lastUserMsgId = lastUserMessageId(chatRef.current?.messages);
+      const alreadyRetried =
+        lastUserMsgId !== null && lastRetriedUserMsgId.current === lastUserMsgId;
+      if (shouldAutoRetry(error, alreadyRetried)) {
+        // Provably-dead turn (orchestrator error frame), not yet retried for
+        // THIS user message → safe to auto-retry the whole turn once, with a
+        // visible status.
+        lastRetriedUserMsgId.current = lastUserMsgId;
         agentStatusActions.show(RETRYING_STATUS);
         autoRetryTurn(regenerate);
         return;
       }
-      // CONNECTION_LOST (runner maybe alive), or the auto-retry already fired
-      // and failed again → honest manual banner.
+      // CONNECTION_LOST / sendMessages rejection (runner maybe alive), or the
+      // auto-retry already fired for this turn and failed again → honest manual
+      // banner.
       applyTurnError(error, regenerate);
     },
   });
   chatRef.current = chat;
-  // Reset the per-turn auto-retry guard whenever a new turn starts streaming
-  // (a fresh send clears the previous turn's "already auto-retried" state).
-  useEffect(() => {
-    if (chat.status === 'streaming' || chat.status === 'submitted') {
-      autoRetriedRef.current = false;
-    }
-  }, [chat.status]);
   return useAISDKRuntime(chat, {
     adapters: { history, attachments },
   });

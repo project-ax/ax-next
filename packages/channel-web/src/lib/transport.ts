@@ -96,6 +96,24 @@ const ERROR_LABELS: Record<string, string> = {
   'chat-run-timeout': 'The agent timed out. Retry to continue.',
 };
 
+/**
+ * True iff `text` is one of the labels the transport produces from an
+ * orchestrator terminal `error` SSE FRAME (Fault A) — i.e. a turn the
+ * orchestrator declared dead. This is the ONLY error shape it's safe to
+ * auto-retry: the orchestrator cleared the conversation's active_session_id, so
+ * a fresh regenerate routes to a new sandbox (no duplicate). Deliberately
+ * NARROW: a `sendMessages` REJECTION (e.g. "chat-flow SSE open failed" after
+ * the POST minted a reqId, or a network/POST failure of unknown server state)
+ * carries some other message and must NOT auto-retry — it could duplicate a
+ * turn that may already be running (Codex). CONNECTION_LOST is likewise
+ * excluded (it's not in this set). The set is {DEFAULT_TURN_ERROR} ∪ the mapped
+ * ERROR_LABELS values, matching exactly what `consumeSseAttempt` emits for an
+ * `error` frame.
+ */
+export function isOrchestratorTurnError(text: string): boolean {
+  return text === DEFAULT_TURN_ERROR || Object.values(ERROR_LABELS).includes(text);
+}
+
 /** Shape of one SSE `data:` JSON payload. Matches `SseFrame` in src/server/types.ts.
  *  `seq` (TASK-23) is the host-minted monotonic per-reqId cursor on content
  *  frames; the client dedups replayed frames at/below its last-seen seq and

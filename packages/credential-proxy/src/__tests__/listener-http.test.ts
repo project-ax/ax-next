@@ -226,6 +226,70 @@ describe('proxy listener — HTTP forwarding', () => {
     expect(received).toBe('small body');
   });
 
+  it('settles cleanly when the client aborts a streaming upload mid-flight (no hung handler; Codex P2)', async () => {
+    // A client that disconnects mid-upload fires 'close'/'aborted' WITHOUT
+    // 'end'. The body-drain promise must settle on those (not only on 'end'),
+    // or the handler hangs and retains buffers until process teardown. We can't
+    // easily assert "the handler returned" from outside, so we assert the
+    // listener stays HEALTHY: a second normal request through it still succeeds
+    // after an aborted one (a wedged handler/leaked socket would degrade it).
+    let upstreamHits = 0;
+    upstream = httpCreate((_req, res) => {
+      upstreamHits += 1;
+      res.end('OK');
+    });
+    const upPort = await new Promise<number>((r) =>
+      upstream!.listen(0, '127.0.0.1', () => r((upstream!.address() as { port: number }).port)),
+    );
+    const registry = new SharedCredentialRegistry();
+    listener = await startProxyListener({
+      listen: { kind: 'tcp', host: '127.0.0.1', port: 0 },
+      registry,
+      ca: mintCA(),
+      maxHttpRequestBodyBytes: 4096,
+      sessions: new Map([
+        ['s1', { allowlist: new Set(['127.0.0.1']), allowedIPs: new Set(['127.0.0.1']) }],
+      ]),
+    });
+    const dispatcher = new ProxyAgent({
+      uri: `http://127.0.0.1:${listener.port}`,
+      proxyTunnel: false,
+    });
+
+    // Abort the upload after the first chunk (mid-stream, before end).
+    const ac = new AbortController();
+    let emitted = 0;
+    const aborting = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        if (emitted >= 1) {
+          ac.abort();
+          controller.error(new DOMException('aborted', 'AbortError'));
+          return;
+        }
+        emitted += 1;
+        controller.enqueue(new Uint8Array(1024).fill(0x63));
+        await new Promise((r) => setTimeout(r, 5));
+      },
+    });
+    await expect(
+      fetch(`http://127.0.0.1:${upPort}/abort-up`, {
+        method: 'POST',
+        body: aborting,
+        duplex: 'half',
+        signal: ac.signal,
+        dispatcher,
+      } as RequestInit),
+    ).rejects.toThrow(); // the abort surfaces as a client-side rejection
+
+    // The aborted upload must NOT have reached the upstream.
+    expect(upstreamHits).toBe(0);
+
+    // The listener is still healthy: a fresh normal GET succeeds.
+    const ok = await fetch(`http://127.0.0.1:${upPort}/`, { dispatcher } as RequestInit);
+    expect(ok.status).toBe(200);
+    expect(upstreamHits).toBe(1);
+  });
+
   it('returns 403 for private-IP target without allowedIPs override', async () => {
     const registry = new SharedCredentialRegistry();
     listener = await startProxyListener({
