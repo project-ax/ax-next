@@ -15,13 +15,21 @@
  *     `defaultUrlTransform` so we don't accidentally widen the safe-URL
  *     surface (no `javascript:` injection, etc.).
  *   - `components.a` (Anchor) checks `href` for `ax://artifact/<id>`,
- *     looks up the matching `artifact_publish` tool-call result in the
- *     current message, and renders the chip. Non-ax links fall through to
+ *     looks up the matching `artifact_publish` tool-call result across the
+ *     WHOLE thread, and renders the chip. Non-ax links fall through to
  *     a regular `<a target="_blank" rel="noopener noreferrer">`.
+ *
+ * TASK-20: the lookup scans every thread message, NOT just the link's own
+ * message. The runner emits the `artifact_publish` tool result and then the
+ * closing-text link as a *separate* assistant turn, and reload
+ * (`conversations:get`) builds one renderable message per turn — so the
+ * tool-call result and the link routinely live in different messages. A
+ * current-message-only scan never found the result and rendered a dead
+ * "unknown artifact" chip on both the live turn and reload.
  */
 import type { ComponentPropsWithoutRef, FC } from 'react';
 import { MarkdownTextPrimitive } from '@assistant-ui/react-markdown';
-import { useMessage } from '@assistant-ui/react';
+import { useAui, useAuiState } from '@assistant-ui/react';
 import remarkGfm from 'remark-gfm';
 import { ArtifactChip } from './ArtifactChip';
 import { useConversationId } from '../lib/use-conversation-id';
@@ -73,44 +81,64 @@ interface ArtifactToolResult {
   sizeBytes: number;
 }
 
-function parseArtifactsFromTurn(
-  parts: readonly unknown[],
+interface ThreadMessageLikeShape {
+  content?: readonly unknown[];
+}
+
+/**
+ * Build the `artifactId → result` registry by scanning EVERY part of EVERY
+ * message in the thread (TASK-20). The published artifact's tool-call result
+ * and the markdown link that references it routinely land in different
+ * messages, so a single-message scan misses the result.
+ */
+function parseArtifactsFromThread(
+  messages: readonly unknown[],
 ): Map<string, ArtifactToolResult> {
   const map = new Map<string, ArtifactToolResult>();
-  for (const p of parts) {
-    if (!p || typeof p !== 'object') continue;
-    const obj = p as {
-      type?: unknown;
-      toolName?: unknown;
-      result?: unknown;
-    };
-    if (obj.type !== 'tool-call') continue;
-    if (obj.toolName !== 'artifact_publish') continue;
-    let parsed: unknown;
-    try {
-      parsed =
-        typeof obj.result === 'string'
-          ? JSON.parse(obj.result)
-          : obj.result;
-    } catch {
-      continue; // skip non-JSON tool_results
-    }
-    if (!parsed || typeof parsed !== 'object') continue;
-    const r = parsed as Partial<ArtifactToolResult>;
-    if (
-      typeof r.artifactId === 'string' &&
-      typeof r.path === 'string' &&
-      typeof r.displayName === 'string' &&
-      typeof r.mediaType === 'string' &&
-      typeof r.sizeBytes === 'number'
-    ) {
-      map.set(r.artifactId, {
-        artifactId: r.artifactId,
-        path: r.path,
-        displayName: r.displayName,
-        mediaType: r.mediaType,
-        sizeBytes: r.sizeBytes,
-      });
+  for (const m of messages) {
+    if (!m || typeof m !== 'object') continue;
+    const parts = (m as ThreadMessageLikeShape).content;
+    if (!Array.isArray(parts)) continue;
+    for (const p of parts) {
+      if (!p || typeof p !== 'object') continue;
+      const obj = p as {
+        type?: unknown;
+        toolName?: unknown;
+        result?: unknown;
+      };
+      if (obj.type !== 'tool-call') continue;
+      if (obj.toolName !== 'artifact_publish') continue;
+      let parsed: unknown;
+      try {
+        parsed =
+          typeof obj.result === 'string'
+            ? JSON.parse(obj.result)
+            : obj.result;
+      } catch {
+        continue; // skip non-JSON tool_results
+      }
+      if (!parsed || typeof parsed !== 'object') continue;
+      const r = parsed as Partial<ArtifactToolResult>;
+      if (
+        typeof r.artifactId === 'string' &&
+        typeof r.path === 'string' &&
+        typeof r.displayName === 'string' &&
+        typeof r.mediaType === 'string' &&
+        typeof r.sizeBytes === 'number'
+      ) {
+        // First publish of an id wins — a re-publish in a later turn carries
+        // identical content (the id is the content sha), so dedup is a no-op
+        // for correctness and keeps the earliest reference stable.
+        if (!map.has(r.artifactId)) {
+          map.set(r.artifactId, {
+            artifactId: r.artifactId,
+            path: r.path,
+            displayName: r.displayName,
+            mediaType: r.mediaType,
+            sizeBytes: r.sizeBytes,
+          });
+        }
+      }
     }
   }
   return map;
@@ -121,16 +149,27 @@ function parseArtifactsFromTurn(
 // and `children`; everything else passes through to the fallback `<a>`.
 type AnchorProps = ComponentPropsWithoutRef<'a'>;
 
-const EMPTY_PARTS: readonly unknown[] = Object.freeze([]);
+const EMPTY_MESSAGES: readonly unknown[] = Object.freeze([]);
+
+interface ThreadStateShape {
+  getState(): { messages?: readonly unknown[] };
+}
 
 const Anchor: FC<AnchorProps> = ({ href, children, ...anchorProps }) => {
   const conversationId = useConversationId();
-  const parts = useMessage(
-    (m) => (m as { content?: readonly unknown[] }).content ?? EMPTY_PARTS,
+  const aui = useAui();
+  // Reactive read of ALL thread messages — the artifact's `artifact_publish`
+  // tool-call result lives in a different message than this link (TASK-20).
+  // `aui.thread().getState().messages` is the thread's message list; reading
+  // it through `useAuiState` re-renders this anchor when the thread changes.
+  const messages = useAuiState(
+    () =>
+      (aui.thread() as unknown as ThreadStateShape).getState().messages ??
+      EMPTY_MESSAGES,
   );
   if (typeof href === 'string' && href.startsWith(AX_ARTIFACT_PREFIX)) {
     const artifactId = href.slice(AX_ARTIFACT_PREFIX.length);
-    const artifacts = parseArtifactsFromTurn(parts);
+    const artifacts = parseArtifactsFromThread(messages);
     const match = artifacts.get(artifactId);
     if (!match || conversationId === null) {
       return (
