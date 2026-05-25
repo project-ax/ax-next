@@ -269,7 +269,10 @@ describe('POST /repos', () => {
       body: big,
     });
     expect(r.status).toBe(413);
-  });
+    // Allocating + POSTing a real 2 MiB body to a booted git server and tripping
+    // the 1 MiB cap settles at a stable ~3 s — too close to vitest's 5 s default
+    // for a loaded CI runner. Explicit headroom, per PR #146. (TASK-5)
+  }, 15_000);
 
   it('spawns git with the expected argv and env on init', async () => {
     const { server, url, repoRoot } = await boot();

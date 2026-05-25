@@ -195,5 +195,9 @@ describe('multi-replica concurrent applies (production plugin)', () => {
       'replica-2.txt',
       'seed',
     ]);
-  });
+    // Three replicas spawning real git subprocesses and racing the storage tier
+    // through a parent-mismatch retry loop settles at ~2.5 s and varies under
+    // load — give the real-subprocess concurrency extra headroom above vitest's
+    // 5 s default so a loaded CI runner can't flake it, per PR #146. (TASK-5)
+  }, 20_000);
 });

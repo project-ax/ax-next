@@ -153,7 +153,10 @@ describe('@ax/http-server', () => {
       duplex: 'half',
     });
     expect(r.status).toBe(413);
-  });
+    // Streaming a 1.5 MiB chunked body over a real HTTP socket and tripping the
+    // mid-stream cap settles at a stable ~3 s — too close to vitest's 5 s default
+    // for a loaded CI runner. Explicit headroom, per PR #146. (TASK-5)
+  }, 15_000);
 
   it('returns 404 on unregistered path', async () => {
     const r = await fetch(`http://127.0.0.1:${port}/nope`);
@@ -542,7 +545,10 @@ describe('@ax/http-server', () => {
       });
       expect(r.status).toBe(413);
       expect(await r.json()).toEqual({ error: 'body-too-large' });
-    });
+      // Allocating + POSTing a real 1.5 MiB body over an HTTP socket settles at a
+      // stable ~3 s — too close to vitest's 5 s default for a loaded CI runner.
+      // Explicit headroom, per PR #146. (TASK-5)
+    }, 15_000);
   });
 
   it('res.stream() flushes headers, allows multiple writes, closes on demand', async () => {

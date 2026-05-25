@@ -153,7 +153,12 @@ describe('git-server listener — Slice 1', () => {
     );
     expect(result.status).toBe(413);
     expect(JSON.parse(result.body).error).toBe('body_too_large');
-  });
+    // Fail-fast: the server 413s on the 2 MiB Content-Length without reading the
+    // (never-sent) body, but the request still round-trips a real HTTP socket
+    // whose handshake/teardown settles at a stable ~4 s — ~80% of vitest's 5 s
+    // default. Explicit headroom so a loaded CI runner can't tip it, per PR #146.
+    // (TASK-5)
+  }, 15_000);
 
   it('POST with body > 1 MiB delivered chunked → 413 mid-stream', async () => {
     const { server, url } = await boot();
@@ -508,5 +513,9 @@ describe('git-server listener — drain', () => {
     } finally {
       __setSpawnSmartHttpForTest(null);
     }
-  });
+    // Boots a real listener, fires an in-flight request, then races close()
+    // against the child finishing — the drain bookkeeping over a real socket
+    // settles at a stable ~3 s, too close to vitest's 5 s default for a loaded
+    // CI runner. Explicit headroom, per PR #146. (TASK-5)
+  }, 15_000);
 });

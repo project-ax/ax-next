@@ -141,7 +141,12 @@ describe('readJsonBody', () => {
     const got = await h.received;
     expect(got.err).toBeInstanceOf(TooLargeError);
     expect((got.err as Error).message).toContain('1024');
-  });
+    // Fail-fast means the server rejects on the Content-Length header without
+    // ever reading the (empty) body, but the request still has to round-trip a
+    // real HTTP socket whose handshake/teardown dance settles at a stable ~4 s —
+    // ~80% of vitest's 5 s default per-test timeout. Give it explicit headroom
+    // so a loaded CI runner can't tip it over (mirrors PR #146). (TASK-5)
+  }, 15_000);
 
   it('rejects with TooLargeError when streamed body crosses the cap mid-flight', async () => {
     // We can't easily make http.request send a body that disagrees with its
