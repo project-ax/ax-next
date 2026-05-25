@@ -32,6 +32,7 @@
 // ---------------------------------------------------------------------------
 
 import {
+  formatAttachmentInline,
   formatAttachmentMention,
   type AttachmentBlock,
   type ContentBlock,
@@ -148,10 +149,24 @@ async function translateAttachment(
   // content. (mediaType is server-claimed; we trust the claim and let
   // the model handle any mismatch — same posture the design doc takes
   // on MIME-spoofing.)
+  //
+  // The preamble is the canonical `formatAttachmentMention` line (carries
+  // the workspace path) followed by the bytes — see `formatAttachmentInline`.
+  // The model still gets the full content; the path-bearing first line lets
+  // the conversations read path (`reconstructAttachmentBlocks`) rebuild the
+  // download chip on reload AND strip this whole model-view block so the raw
+  // inlined text never leaks into the user-visible transcript (TASK-21).
   const content = Buffer.from(read.bytesBase64, 'base64').toString('utf8');
   return {
     type: 'text',
-    text: `User attached '${att.displayName}' (${att.mediaType}, ${att.sizeBytes} bytes):\n\n${content}`,
+    text: formatAttachmentInline(
+      {
+        displayName: att.displayName,
+        path: att.path,
+        mediaType: att.mediaType,
+      },
+      content,
+    ),
   };
 }
 

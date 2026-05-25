@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import type { ContentBlock } from '@ax/ipc-protocol';
+import { parseAttachmentMention, type ContentBlock } from '@ax/ipc-protocol';
 import {
   MAX_INLINE_BYTES,
   translateContentBlocks,
@@ -153,7 +153,7 @@ describe('translateContentBlocks', () => {
     ]);
   });
 
-  it('inlines small text/plain attachment content with provenance preamble', async () => {
+  it('inlines small text/plain attachment content with the canonical path-bearing mention preamble', async () => {
     const body = Buffer.from('hello, this is the file content');
     const blocks: ContentBlock[] = [
       {
@@ -171,11 +171,38 @@ describe('translateContentBlocks', () => {
     expect(out).toEqual([
       {
         type: 'text',
+        // The preamble is the canonical mention (carries the path) so the
+        // read path can rebuild the chip + strip this block on reload.
         text:
-          `User attached 'notes.txt' (text/plain, ${body.length} bytes):\n\n` +
+          `User attached 'notes.txt' at .ax/uploads/c1/t1/notes.txt (text/plain)\n\n` +
           body.toString('utf8'),
       },
     ]);
+  });
+
+  it("the inlined preamble's first line round-trips through parseAttachmentMention (path preserved)", async () => {
+    const body = Buffer.from('the body');
+    const blocks: ContentBlock[] = [
+      {
+        type: 'attachment',
+        path: '.ax/uploads/c1/t1/notes.txt',
+        displayName: 'notes.txt',
+        mediaType: 'text/plain',
+        sizeBytes: body.length,
+      },
+    ];
+    const out = await translateContentBlocks(blocks, {
+      readWorkspace: fakeReader({ '.ax/uploads/c1/t1/notes.txt': body }),
+      supportsDocumentBlocks: true,
+    });
+    const block = out[0] as { type: string; text: string };
+    const firstLine = block.text.split('\n', 1)[0]!;
+    expect(parseAttachmentMention(firstLine)).toEqual({
+      displayName: 'notes.txt',
+      path: '.ax/uploads/c1/t1/notes.txt',
+      mediaType: 'text/plain',
+    });
+    expect(block.text).toContain('the body');
   });
 
   it.each([
@@ -205,6 +232,10 @@ describe('translateContentBlocks', () => {
     expect(block.type).toBe('text');
     expect(block.text).toContain(content);
     expect(block.text).toContain(mediaType);
+    // First line is the canonical path-bearing mention.
+    expect(block.text.split('\n', 1)[0]).toBe(
+      `User attached 'file' at .ax/uploads/c1/t1/file (${mediaType})`,
+    );
   });
 
   it('falls back to a text mention for text content exceeding MAX_INLINE_BYTES', async () => {

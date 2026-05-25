@@ -776,6 +776,42 @@ async function getConversation(
  * prompt and the mention on separate lines (the SDK concatenates the runner's
  * separate text blocks), so we split per line, convert only matching lines,
  * and keep the rest as text — preserving order.
+ *
+ * TASK-21 — inlined-attachment blocks. For a small text/json/yaml/csv file the
+ * runner doesn't emit the bare mention; it INLINES the file: the canonical
+ * mention on the first line, a BLANK line, then the file content (see
+ * `formatAttachmentInline`). On reload the whole thing would otherwise render
+ * as raw text — both a missing download chip AND the runner's model-view
+ * content (preamble + bytes) leaking into the user-visible transcript.
+ *
+ * Why per-block (and not per-array-element-of-the-whole-turn) is enough:
+ * the runner emits the typed prompt and EACH attachment as SEPARATE elements
+ * of the user message's content array (main.ts), and the host jsonl parser
+ * (`parseJsonlToTurns` / `normalizeContent`) keeps each array element as its
+ * OWN ContentBlock — it only ever coalesces *assistant* lines sharing a
+ * `message.id`, never user content. So two attachments arrive as two separate
+ * text blocks here, each handled independently; the only fusion we must
+ * tolerate within ONE text block is the SDK joining a typed prompt with a
+ * trailing line (the `prompt\nmention` case).
+ *
+ * We discriminate by the line *after* a converted mention:
+ *   - mention followed by a BLANK line ⇒ inlined-attachment preamble. The
+ *     blank + the file content after it is the runner's model-view text, which
+ *     must NOT reach the user. `formatAttachmentInline` always emits exactly
+ *     `mention\n\n<content>`, so the blank-line follow is the reliable signal.
+ *     Because the content is OPAQUE (it can contain anything, including lines
+ *     that themselves look like in-prefix mentions), we STOP processing this
+ *     block entirely — everything from the blank line on is dropped. We do not
+ *     try to re-parse a "next attachment" out of opaque bytes: that would let
+ *     crafted file content terminate the suppression and leak the rest of the
+ *     bytes (a real prompt-injection-flavored leak). A genuine second
+ *     attachment lands in its own separate block, so dropping the tail here
+ *     loses nothing real.
+ *   - mention NOT followed by a blank line (it's the last line, or the next
+ *     line is itself another mention / user text) ⇒ a bare mention. We convert
+ *     just that line and keep scanning. This preserves the pre-TASK-21 per-line
+ *     behavior for the bare-mention and `prompt\nmention` cases and reconstructs
+ *     every chip when several bare mentions land in one block.
  */
 function reconstructAttachmentBlocks(
   turns: Turn[],
@@ -798,7 +834,9 @@ function reconstructAttachmentBlocks(
         if (joined.length > 0) out.push({ type: 'text', text: joined });
         textBuf = [];
       };
-      for (const line of block.text.split('\n')) {
+      const lines = block.text.split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i]!;
         const mention = parseAttachmentMention(line);
         if (mention !== null && mention.path.startsWith(prefix)) {
           const parsed = AttachmentBlockSchema.safeParse({
@@ -812,6 +850,16 @@ function reconstructAttachmentBlocks(
             flushText();
             out.push(parsed.data);
             changed = true;
+            // Inlined-attachment shape: the mention is immediately followed by
+            // a blank line (the `\n\n` separator `formatAttachmentInline`
+            // always emits). The rest of the block is the runner's opaque
+            // model-view file content — STOP here and drop it so it never
+            // reaches the user. We deliberately do NOT scan back into the
+            // content for a "next" mention: crafted bytes could spoof one and
+            // resume surfacing the remaining content. A real second attachment
+            // is its own block, so nothing is lost. A bare mention has no
+            // blank-line follow, so we continue scanning this block.
+            if (lines[i + 1] === '') break;
             continue;
           }
         }
