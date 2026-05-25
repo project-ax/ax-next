@@ -601,6 +601,100 @@ describe('main()', () => {
     );
   });
 
+  it('FAULTA-3: a FRESH first turn (runnerSessionId null) still emits a turnId on event.turn-end (uses transcriptSessionId, not the boot runnerSessionId)', async () => {
+    // Regression for FAULTA-3. The turn-end emissions looked the just-written
+    // turn's uuid up via `readLastTurnUuid`, gated on `runnerSessionId !== null`.
+    // But `runnerSessionId` ONLY holds the resume value (null on a fresh first
+    // turn), so the gate short-circuited: `readLastTurnUuid` was never called
+    // and NO `turnId` rode the first turn's event.turn-end — leaving routines'
+    // silence-token / `conversations:drop-turn` with nothing to refer back to.
+    //
+    // The transcript session id (`transcriptSessionId`, captured from
+    // system/init) is the correct, present-on-a-fresh-turn source. This test
+    // drives a fresh tool turn (so BOTH the role='tool' and role='assistant'
+    // emissions fire) with runnerSessionId null + a system/init giving
+    // session_id 'sdk-sess-1', and asserts `readLastTurnUuid` is invoked with
+    // that transcript session id AND both turn-ends carry their turnId.
+    setEnv(COMPLETE_ENV);
+    // Distinct uuids per role so we can pin each turn-end to its own lookup.
+    readLastTurnUuidMock.mockImplementation(
+      async (_root: string, _sessionId: string, type: string) =>
+        type === 'user' ? 'tool-turn-uuid' : 'assistant-turn-uuid',
+    );
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            systemPrompt: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          conversationId: null,
+          // Fresh first turn: there is no prior session to resume.
+          runnerSessionId: null,
+        };
+      }
+      if (action === 'workspace.materialize') return { bundleBytes: '' };
+      if (action === 'tool.list') return { tools: [] };
+      throw new Error(`unexpected call: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([userEntry('do work'), cancelEntry]);
+    queryMock.mockImplementation(
+      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+        return (async function* () {
+          const it = prompt[Symbol.asyncIterator]();
+          await it.next();
+          // system/init gives the runner the SDK session_id (transcript id).
+          yield systemInit('sdk-sess-1');
+          // A tool turn so the role='tool' turn-end fires too.
+          yield assistantBlocks(
+            [{ type: 'tool_use', id: 'tu-1', name: 'Bash', input: { command: 'date' } }],
+            'A-tooluse',
+          );
+          yield userToolResult('tu-1', '/tmp/work');
+          yield assistantText('done', 'B-closingtext');
+          yield resultSuccess();
+          await it.next();
+        })();
+      },
+    );
+
+    const { main } = await import('../main.js');
+    const rc = await main();
+    expect(rc).toBe(0);
+
+    // The turnId lookup ran against the TRANSCRIPT session id (system/init's
+    // 'sdk-sess-1'), NOT the null boot runnerSessionId — so it was actually
+    // invoked on a fresh turn.
+    expect(readLastTurnUuidMock).toHaveBeenCalledWith(
+      '/tmp/workspace',
+      'sdk-sess-1',
+      'user',
+    );
+    expect(readLastTurnUuidMock).toHaveBeenCalledWith(
+      '/tmp/workspace',
+      'sdk-sess-1',
+      'assistant',
+    );
+
+    const turnEnds = fakeClient.event.mock.calls.filter(
+      (c) => c[0] === 'event.turn-end',
+    );
+    // Two turn-ends at this single SDK `result` boundary: tool first, then
+    // assistant — each carrying the turnId from its own lookup.
+    expect(turnEnds).toHaveLength(2);
+    const toolTurnEnd = turnEnds.find((c) => (c[1] as { role?: string }).role === 'tool');
+    const asstTurnEnd = turnEnds.find(
+      (c) => (c[1] as { role?: string }).role === 'assistant',
+    );
+    expect((toolTurnEnd?.[1] as { turnId?: string }).turnId).toBe('tool-turn-uuid');
+    expect((asstTurnEnd?.[1] as { turnId?: string }).turnId).toBe('assistant-turn-uuid');
+  });
+
   it('bootstrap failure: missing AX_PROXY_ENDPOINT → exit 2, no chat-end, no query', async () => {
     setEnv({ ...COMPLETE_ENV, AX_PROXY_ENDPOINT: undefined });
     // These get set but should never be touched — main() should return
