@@ -38,10 +38,22 @@ const useChatThreadRuntime = (transport: AxChatTransport): AssistantRuntime => {
   // is enough.
   const attachments = useMemo(() => new AxAttachmentAdapter(), []);
 
-  // Fault A — when a turn ends abnormally the transport emits an AI-SDK
-  // `error` chunk; useChat raises it to `onError`. Flip the status row to
-  // error+retry. `chatRef` lets the retry handler reach `regenerate()`
-  // (which re-runs the last user turn against a fresh sandbox) without a
+  // Turn-end error handling. The transport hands us an AI-SDK `error` chunk in
+  // two shapes:
+  //
+  //   - Fault A — an orchestrator-terminated turn (server `error` SSE frame)
+  //     with a mapped friendly label.
+  //   - Faults B/D (FAULTA-5) — a CONNECTION_LOST sentinel when the SSE stream
+  //     dropped mid-turn without a terminal frame (host bounce / network drop).
+  //
+  // Both flip the status row to error mode with a MANUAL retry. We don't auto-
+  // retry: a `regenerate()` re-POSTs and could duplicate a still-running server
+  // turn, and a loss-free silent resume needs a server-side per-chunk sequence
+  // number the SSE wire doesn't yet carry (see transport `buildTurnStream`).
+  // The retry BUTTON re-runs the last user turn via `regenerate()` — a
+  // deliberate user action, so re-POSTing a fresh turn is acceptable there.
+  //
+  // `chatRef` lets the retry handler reach `regenerate()` without a
   // construction-order chicken-and-egg.
   const chatRef = useRef<ReturnType<typeof useChat> | null>(null);
   const chat = useChat({

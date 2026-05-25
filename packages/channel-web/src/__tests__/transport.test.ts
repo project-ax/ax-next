@@ -12,7 +12,11 @@
  * only care about chunk parsing.
  */
 import { afterEach, beforeEach, describe, it, test, expect, vi } from 'vitest';
-import { AxChatTransport, toContentBlocksForTesting } from '../lib/transport';
+import {
+  AxChatTransport,
+  toContentBlocksForTesting,
+  CONNECTION_LOST,
+} from '../lib/transport';
 import {
   agentStatusActions,
   getAgentStatusSnapshot,
@@ -242,13 +246,105 @@ describe('AxChatTransport SSE chunk parsing', () => {
     expect(deltas).toEqual(['after']);
   });
 
-  test('flush emits finish if stream closes without an explicit done frame', async () => {
+  // Faults B/D (FAULTA-5) — the stream closes mid-turn with NO terminal
+  // frame (host bounce: the process died and the replica-local chunk buffer
+  // is gone; network drop: the TCP connection was severed). Previously
+  // flush() synthesized a finish/stop, which looked like a SUCCESSFUL turn
+  // and silently dropped the half-streamed answer. It MUST instead close any
+  // open part and emit an `error` chunk carrying the CONNECTION_LOST sentinel
+  // so the runtime can silently retry (then surface the banner) — NOT a
+  // silent finish, and NOT a hang.
+  test('done-less close emits a connection-lost error chunk, not a silent finish', async () => {
     const transport = new AxChatTransport({ getAgentId: () => 'a' });
     const body = `data: {"reqId":"r1","text":"stub","kind":"text"}\n\n`;
-    const chunks = await drain(asProcess(transport)(sseStream(body))) as Array<{ type: string; finishReason?: string }>;
-    const finish = chunks.find((c) => c.type === 'finish') as { finishReason: string } | undefined;
-    expect(finish).toBeTruthy();
-    expect(finish?.finishReason).toBe('stop');
+    const chunks = await drain(asProcess(transport)(sseStream(body))) as Array<{
+      type: string;
+      errorText?: string;
+    }>;
+    const types = chunks.map((c) => c.type);
+    // The open text part is closed before the error.
+    expect(types).toContain('text-end');
+    // It ends as an error, NOT a finish.
+    expect(types).toContain('error');
+    expect(types).not.toContain('finish');
+    expect(types[types.length - 1]).toBe('error');
+    const errorChunk = chunks.find((c) => c.type === 'error') as
+      | { errorText: string }
+      | undefined;
+    expect(errorChunk?.errorText).toBe(CONNECTION_LOST);
+  });
+
+  // Fault D (hard network drop) — the fetch body ReadableStream ERRORS
+  // mid-consumption (TCP severed). The TransformStream flush() does NOT run
+  // on an upstream error, so the transport's outer error-catching wrapper
+  // must convert the rejection into the SAME CONNECTION_LOST `error` chunk —
+  // never a raw rejection (which would skip the silent retry) and never a
+  // silent finish. It also closes any open text part first.
+  test('mid-stream body error converts to a connection-lost error chunk (not a rejection)', async () => {
+    const transport = new AxChatTransport({ getAgentId: () => 'a' });
+    // Emit one text frame on the first pull (fully processed), then ERROR on
+    // the next pull — mirroring a TCP reset after some bytes have streamed.
+    let step = 0;
+    const erroring = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (step === 0) {
+          step = 1;
+          controller.enqueue(
+            new TextEncoder().encode(
+              `data: {"reqId":"r1","text":"partial","kind":"text"}\n\n`,
+            ),
+          );
+          return;
+        }
+        controller.error(new TypeError('network error: connection reset'));
+      },
+    });
+    const chunks = await drain(asProcess(transport)(erroring)) as Array<{
+      type: string;
+      delta?: string;
+      errorText?: string;
+    }>;
+    const types = chunks.map((c) => c.type);
+    // The partial text streamed, the open part is closed, then connection-lost.
+    expect(chunks.some((c) => c.type === 'text-delta' && c.delta === 'partial')).toBe(true);
+    expect(types).toContain('text-end'); // open part closed
+    expect(types).toContain('error');
+    expect(types).not.toContain('finish');
+    expect(types[types.length - 1]).toBe('error');
+    const errorChunk = chunks.find((c) => c.type === 'error') as
+      | { errorText: string }
+      | undefined;
+    expect(errorChunk?.errorText).toBe(CONNECTION_LOST);
+  });
+
+  // A body error AFTER a terminal `done` frame must NOT emit a second
+  // (error) chunk — the turn already finished cleanly; the late error is the
+  // server closing the connection after the done.
+  test('body error after a done frame does not append a spurious error chunk', async () => {
+    const transport = new AxChatTransport({ getAgentId: () => 'a' });
+    let step = 0;
+    const afterDone = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (step === 0) {
+          step = 1;
+          controller.enqueue(
+            new TextEncoder().encode(
+              `data: {"reqId":"r1","text":"hi","kind":"text"}\n\n` +
+                `data: {"reqId":"r1","done":true}\n\n`,
+            ),
+          );
+          return;
+        }
+        controller.error(new TypeError('socket closed'));
+      },
+    });
+    const chunks = await drain(asProcess(transport)(afterDone)) as Array<{
+      type: string;
+    }>;
+    const types = chunks.map((c) => c.type);
+    expect(types).toContain('finish');
+    expect(types).not.toContain('error');
+    expect(types[types.length - 1]).toBe('finish');
   });
 
   // Fault A — the host emits an `error` SSE frame (instead of `done`) when a
@@ -592,5 +688,205 @@ describe('AxChatTransport sendMessages two-phase exchange', () => {
     }
     expect(calls.map((c) => c.method)).toEqual(['POST', 'GET']);
     expect(calls[0]?.url).toContain('/api/chat/messages');
+  });
+
+  // ---------------------------------------------------------------------------
+  // Faults B/D — done-less / dropped close surfaces the banner (FAULTA-5).
+  //
+  // A mid-turn drop (graceful done-less close OR a hard body error) ends the
+  // turn as a CONNECTION_LOST `error` chunk → the runtime's error banner with a
+  // manual retry — NOT a silent finish (the bug). The transport does NOT
+  // auto-reconnect or re-POST: a re-POST could duplicate a live server turn,
+  // and a GET-only buffer replay can silently lose output if the agent outran
+  // the server's bounded ring buffer while disconnected (no wire sequence
+  // number to align a partial replay). One POST + one GET per turn, always.
+  // An ABORT (Stop / teardown) closes cleanly with no banner.
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Fetch mock: one POST (counted, to prove no duplicate turn) + one SSE GET
+   * whose body is the given string. Counts GETs to prove no reconnect.
+   */
+  function makeDropFetchMock(sseBody: string) {
+    let postCount = 0;
+    let getCount = 0;
+    const fetchFn = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = typeof url === 'string' ? url : url instanceof URL ? url.toString() : '';
+      void init;
+      if (u.includes('/api/chat/messages')) {
+        postCount += 1;
+        return new Response(JSON.stringify({ conversationId: 'c1', reqId: 'req-1' }), {
+          status: 202,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      getCount += 1;
+      return new Response(sseStream(sseBody), {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    });
+    return {
+      fetchFn: fetchFn as unknown as typeof fetch,
+      get postCount() {
+        return postCount;
+      },
+      get getCount() {
+        return getCount;
+      },
+    };
+  }
+
+  test('a done-less drop ends the turn as CONNECTION_LOST (banner), one POST + one GET, no reconnect', async () => {
+    // Streams a content chunk, then closes WITHOUT a done frame.
+    const mock = makeDropFetchMock(`data: {"reqId":"req-1","text":"partial","kind":"text"}\n\n`);
+    const transport = new AxChatTransport({ fetch: mock.fetchFn, getAgentId: () => 'a' });
+    const stream = await transport.sendMessages({
+      messages: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }],
+    } as unknown as Parameters<typeof transport.sendMessages>[0]);
+    const chunks = (await drain(stream)) as Array<{ type: string; delta?: string; errorText?: string }>;
+
+    expect(mock.postCount).toBe(1); // no duplicate turn
+    expect(mock.getCount).toBe(1); // no reconnect
+    // The partial content that DID stream is preserved.
+    const deltas = chunks.filter((c) => c.type === 'text-delta').map((c) => c.delta);
+    expect(deltas).toEqual(['partial']);
+    const types = chunks.map((c) => c.type);
+    expect(types).toContain('text-end'); // open part closed before the error
+    expect(types).not.toContain('finish');
+    expect(types[types.length - 1]).toBe('error');
+    const err = chunks.find((c) => c.type === 'error') as { errorText: string } | undefined;
+    expect(err?.errorText).toBe(CONNECTION_LOST);
+  });
+
+  test('a hard body error mid-stream (network drop) also surfaces CONNECTION_LOST, no reconnect', async () => {
+    let getCount = 0;
+    let postCount = 0;
+    const fetchFn = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = typeof url === 'string' ? url : String(url);
+      void init;
+      if (u.includes('/api/chat/messages')) {
+        postCount += 1;
+        return new Response(JSON.stringify({ conversationId: 'c1', reqId: 'req-1' }), {
+          status: 202,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      getCount += 1;
+      let step = 0;
+      const erroring = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (step === 0) {
+            step = 1;
+            controller.enqueue(
+              new TextEncoder().encode(`data: {"reqId":"req-1","text":"part","kind":"text"}\n\n`),
+            );
+            return;
+          }
+          controller.error(new TypeError('network error'));
+        },
+      });
+      return new Response(erroring, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    });
+    const transport = new AxChatTransport({
+      fetch: fetchFn as unknown as typeof fetch,
+      getAgentId: () => 'a',
+    });
+    const stream = await transport.sendMessages({
+      messages: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }],
+    } as unknown as Parameters<typeof transport.sendMessages>[0]);
+    const chunks = (await drain(stream)) as Array<{ type: string; delta?: string; errorText?: string }>;
+
+    expect(postCount).toBe(1);
+    expect(getCount).toBe(1); // no reconnect
+    const deltas = chunks.filter((c) => c.type === 'text-delta').map((c) => c.delta);
+    expect(deltas).toEqual(['part']); // streamed content preserved
+    const types = chunks.map((c) => c.type);
+    expect(types).not.toContain('finish');
+    expect(types[types.length - 1]).toBe('error');
+    const err = chunks.find((c) => c.type === 'error') as { errorText: string } | undefined;
+    expect(err?.errorText).toBe(CONNECTION_LOST);
+  });
+
+  test('a clean done frame finishes normally (no banner) — one POST + one GET', async () => {
+    const mock = makeDropFetchMock(
+      `data: {"reqId":"req-1","text":"hello","kind":"text"}\n\n` +
+        `data: {"reqId":"req-1","done":true}\n\n`,
+    );
+    const transport = new AxChatTransport({ fetch: mock.fetchFn, getAgentId: () => 'a' });
+    const stream = await transport.sendMessages({
+      messages: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }],
+    } as unknown as Parameters<typeof transport.sendMessages>[0]);
+    const chunks = (await drain(stream)) as Array<{ type: string; delta?: string }>;
+
+    expect(mock.postCount).toBe(1);
+    expect(mock.getCount).toBe(1);
+    expect(chunks.filter((c) => c.type === 'text-delta').map((c) => c.delta).join('')).toBe('hello');
+    expect(chunks[chunks.length - 1]?.type).toBe('finish');
+    expect(chunks.some((c) => c.type === 'error')).toBe(false);
+  });
+
+  test('a server error frame (Fault A) surfaces its mapped label, not CONNECTION_LOST', async () => {
+    const mock = makeDropFetchMock(`data: {"reqId":"req-1","error":"chat-run-timeout"}\n\n`);
+    const transport = new AxChatTransport({ fetch: mock.fetchFn, getAgentId: () => 'a' });
+    const stream = await transport.sendMessages({
+      messages: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }],
+    } as unknown as Parameters<typeof transport.sendMessages>[0]);
+    const chunks = (await drain(stream)) as Array<{ type: string; errorText?: string }>;
+
+    expect(mock.getCount).toBe(1); // no reconnect on a server error either
+    const err = chunks.find((c) => c.type === 'error') as { errorText: string } | undefined;
+    expect(err?.errorText).toBe('The agent timed out. Retry to continue.');
+    expect(err?.errorText).not.toBe(CONNECTION_LOST);
+  });
+
+  // An ABORT (user Stop / teardown) is NOT connection loss — close cleanly,
+  // no banner. The abort lands during the body read.
+  test('an aborted request closes cleanly with NO error chunk (not a connection-lost banner)', async () => {
+    const ac = new AbortController();
+    let getCount = 0;
+    const fetchFn = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = typeof url === 'string' ? url : String(url);
+      void init;
+      if (u.includes('/api/chat/messages')) {
+        return new Response(JSON.stringify({ conversationId: 'c1', reqId: 'req-1' }), {
+          status: 202,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      getCount += 1;
+      let step = 0;
+      const aborting = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (step === 0) {
+            step = 1;
+            controller.enqueue(
+              new TextEncoder().encode(`data: {"reqId":"req-1","text":"x","kind":"text"}\n\n`),
+            );
+            return;
+          }
+          ac.abort();
+          controller.error(new DOMException('aborted', 'AbortError'));
+        },
+      });
+      return new Response(aborting, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    });
+    const transport = new AxChatTransport({
+      fetch: fetchFn as unknown as typeof fetch,
+      getAgentId: () => 'a',
+    });
+    const stream = await transport.sendMessages({
+      messages: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }],
+      abortSignal: ac.signal,
+    } as unknown as Parameters<typeof transport.sendMessages>[0]);
+    const chunks = (await drain(stream)) as Array<{ type: string }>;
+    expect(chunks.map((c) => c.type)).not.toContain('error'); // NO banner on abort
+    expect(getCount).toBe(1); // no reconnect
   });
 });

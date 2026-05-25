@@ -6,9 +6,11 @@ import {
 } from '../lib/agent-status-store';
 import { DEFAULT_TURN_ERROR } from '../lib/transport';
 
-// applyTurnError is the runtime's onError glue (Fault A): it flips the
-// agent-status row to error mode with a retry handler so a turn that died
-// mid-stream surfaces as error+retry instead of a hung spinner.
+// applyTurnError is the runtime's onError glue: it flips the agent-status row
+// to error mode with a retry handler so a turn that ended in an error chunk
+// (Fault A orchestrator-terminated, OR a CONNECTION_LOST sentinel after the
+// transport exhausted its transparent reconnects) surfaces as error+retry
+// instead of a hung spinner or a silent finalize.
 
 describe('applyTurnError', () => {
   afterEach(() => {
