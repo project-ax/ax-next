@@ -515,6 +515,54 @@ describe('sandbox:open-session', () => {
     await fs.rm(ws, { recursive: true, force: true });
   });
 
+  // TASK-14 (CLI-1 part 2) regression: a credentialed skill's allowedHost must
+  // get a git `url.<base>.insteadOf` rewrite carrying the proxy placeholder so
+  // `git clone https://<host>/...` authenticates. The original bug was the
+  // absence of any such wiring — git had the slot env var but never sent it
+  // (`could not read Username ... terminal prompts disabled`), so the egress
+  // audit showed credentialInjected:false. This locks the wiring into CI.
+  it('stamps a git insteadOf rewrite for a credentialed skill allowedHost (TASK-14)', async () => {
+    const ws = await mkWorkspace();
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    const PH = 'ax-cred:0123456789abcdef0123456789abcdef';
+    const result = await h.bus.call<unknown, OpenSessionResult>(
+      'sandbox:open-session',
+      ctx,
+      {
+        sessionId: 'git-cred-1',
+        workspaceRoot: ws,
+        runnerBinary: ECHO_STUB,
+        proxyConfig: {
+          endpoint: 'http://127.0.0.1:54321',
+          caCertPem: '-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n',
+          envMap: { GIT_TOKEN: PH },
+        },
+        installedSkills: [
+          {
+            id: 'gitclonetest',
+            skillMd: '---\nname: gitclonetest\n---\nbody',
+            allowedHosts: ['github.com'],
+            credentials: [{ slot: 'GIT_TOKEN', kind: 'api-key' }],
+          },
+        ],
+      },
+    );
+    const line = await readFirstStdoutLine(result);
+    const parsed = JSON.parse(line) as Record<string, string | null>;
+    // safe.directory stays at index 0; the cred rewrite lands at index 1.
+    expect(parsed.GIT_CONFIG_KEY_0).toBe('safe.directory');
+    expect(parsed.GIT_CONFIG_COUNT).toBe('2');
+    expect(parsed.GIT_CONFIG_KEY_1).toBe(
+      `url.https://x-access-token:${PH}@github.com/.insteadOf`,
+    );
+    expect(parsed.GIT_CONFIG_VALUE_1).toBe('https://github.com/');
+    await result.handle.kill();
+    await result.handle.exited;
+    await new Promise((r) => setTimeout(r, 50));
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
   it('does not inject any proxy env when proxyConfig is undefined', async () => {
     const ws = await mkWorkspace();
     const h = await makeHarness();

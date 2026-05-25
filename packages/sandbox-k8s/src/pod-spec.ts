@@ -13,6 +13,7 @@
 // ---------------------------------------------------------------------------
 
 import { createHash } from 'node:crypto';
+import { buildGitCredentialEnv } from '@ax/sandbox-protocol';
 import type { ResolvedSandboxK8sConfig } from './config.js';
 
 const K8S_LABEL_MAX_BYTES = 63;
@@ -111,7 +112,19 @@ export interface BuildPodSpecInput {
    * The env var is consumed BY THE RUNNER, not forwarded into the SDK
    * subprocess — it is NOT in ENV_ALLOWLIST.
    */
-  installedSkills?: Array<{ id: string; skillMd: string }>;
+  installedSkills?: Array<{
+    id: string;
+    skillMd: string;
+    /**
+     * TASK-14 (CLI-1 part 2) — the skill's top-level allowedHosts + credential
+     * slots, used to wire skill-declared credentials into `git`'s HTTP Basic
+     * auth via host-scoped `url.<base>.insteadOf` rewrites (see
+     * @ax/sandbox-protocol buildGitCredentialEnv). Optional + defaulted so
+     * pre-TASK-14 callers (tests, ad-hoc) still build a valid spec.
+     */
+    allowedHosts?: string[];
+    credentials?: Array<{ slot: string; kind: 'api-key' }>;
+  }>;
 }
 
 interface EnvVar {
@@ -196,10 +209,40 @@ export function buildPodSpec(
     // ownership; safe.directory=* is the documented escape hatch.
     // Sandbox isolation already constrains what git can reach inside
     // the pod — it sees only the explicit volume mounts.
-    { name: 'GIT_CONFIG_COUNT', value: '1' },
     { name: 'GIT_CONFIG_KEY_0', value: 'safe.directory' },
     { name: 'GIT_CONFIG_VALUE_0', value: '*' },
   ];
+
+  // TASK-14 (CLI-1 part 2): wire skill-declared credentials into git's HTTP
+  // Basic auth. For each credentialed allowedHost, stamp a host-scoped
+  // `url.https://x-access-token:<placeholder>@<host>/.insteadOf` rewrite so
+  // `git clone https://<host>/...` sends the proxy placeholder as a preemptive
+  // Basic password (the proxy substitutes it). The entries append after the
+  // safe.directory entry (index 0). The single GIT_CONFIG_COUNT is set once
+  // below from the resulting total — `gitParanoidEnv` deliberately no longer
+  // stamps its own count to avoid a duplicate env entry. Rides into the SDK
+  // subprocess via proxy-startup.ts's GIT_ env-forwarding prefix, exactly like
+  // GIT_SSL_CAINFO and the safe.directory config already do.
+  const gitCredEnv: EnvVar[] = [];
+  let gitConfigCount = 1; // index 0 is safe.directory
+  if (input.proxyConfig !== undefined && input.installedSkills !== undefined) {
+    const credEnvMap = buildGitCredentialEnv({
+      installedSkills: input.installedSkills.map((s) => ({
+        allowedHosts: s.allowedHosts ?? [],
+        credentials: s.credentials ?? [],
+      })),
+      envMap: input.proxyConfig.envMap,
+      baseCount: 1,
+    });
+    for (const [name, value] of Object.entries(credEnvMap)) {
+      if (name === 'GIT_CONFIG_COUNT') {
+        gitConfigCount = Number(value);
+        continue;
+      }
+      gitCredEnv.push({ name, value });
+    }
+  }
+  gitParanoidEnv.push({ name: 'GIT_CONFIG_COUNT', value: String(gitConfigCount) });
 
   // Per-session credential-proxy env (Phase 1a, k8s side). The runner-
   // side `setupProxy()` keys off AX_PROXY_UNIX_SOCKET (k8s) or
@@ -286,6 +329,7 @@ export function buildPodSpec(
       ? [{ name: 'AX_REQUEST_ID', value: input.requestId }]
       : []),
     ...gitParanoidEnv,
+    ...gitCredEnv,
     ...proxyEnv,
     // Phase 1: installed skills — only present when non-empty so the env
     // list has no `: undefined` entries and kubectl describe stays clean.

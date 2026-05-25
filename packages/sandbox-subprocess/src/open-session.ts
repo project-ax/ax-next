@@ -14,6 +14,7 @@ import {
 // existing consumers of this module's `OpenSessionInputSchema` keep working.
 import {
   OpenSessionInputSchema,
+  buildGitCredentialEnv,
   type OpenSessionInput,
   type OpenSessionParsed,
 } from '@ax/sandbox-protocol';
@@ -467,6 +468,25 @@ export async function openSessionImpl(
     // but be explicit so a future field collision doesn't silently do the
     // wrong thing.)
     Object.assign(sessionEnv, input.proxyConfig.envMap);
+
+    // TASK-14 (CLI-1 part 2): wire skill-declared credentials into git's HTTP
+    // Basic auth — a host-scoped `url.<base>.insteadOf` rewrite per credentialed
+    // allowedHost so `git clone https://<host>/...` sends the proxy placeholder
+    // as a preemptive Basic password (the proxy substitutes it). Appends after
+    // the safe.directory entry (index 0); the returned GIT_CONFIG_COUNT is the
+    // new total and overwrites the base count set above. Mirrors the k8s side
+    // (pod-spec.ts). The runner forwards GIT_* into the SDK subprocess.
+    Object.assign(
+      sessionEnv,
+      buildGitCredentialEnv({
+        installedSkills: (input.installedSkills ?? []).map((s) => ({
+          allowedHosts: s.allowedHosts ?? [],
+          credentials: s.credentials ?? [],
+        })),
+        envMap: input.proxyConfig.envMap,
+        baseCount: 1, // index 0 is safe.directory (set in sessionEnv above)
+      }),
+    );
   }
 
   // Allowlist FIRST, sessionEnv LAST: the parent's PATH/HOME/TZ etc. are
