@@ -298,6 +298,81 @@ export function writeWithBackpressure(
   }
 }
 
+/** Minimal readable surface the capped-body reader needs (a subset of
+ *  IncomingMessage), so it's unit-testable with a fake. */
+export interface CappedBodySource {
+  readonly destroyed: boolean;
+  readonly readableEnded: boolean;
+  on(event: 'data', listener: (chunk: Buffer) => void): unknown;
+  on(event: 'end' | 'aborted' | 'close', listener: () => void): unknown;
+  on(event: 'error', listener: (err: Error) => void): unknown;
+}
+
+export interface CappedBodyResult {
+  body: Buffer;
+  /** True iff the body exceeded `maxBytes` (caller should 413). */
+  oversized: boolean;
+  bodyBytes: number;
+  /** True iff the client hung up before a clean 'end' (caller should bail). */
+  aborted: boolean;
+}
+
+/**
+ * Read a request body into memory, CAPPED at `maxBytes` (TASK-24). Over the cap
+ * it stops accumulating but keeps draining to 'end' (no destroy — destroying
+ * the readable can reset the socket before a 413 lands). The returned promise
+ * settles on EVERY terminal outcome: 'end' (complete), 'error' (stream error),
+ * 'close'/'aborted' without 'end' (client hung up), AND the already-terminated
+ * case checked up front (the request can close while the caller was awaiting a
+ * prior async step — slow DNS — so the terminal event fired before these
+ * listeners attached and EventEmitter won't replay it; without this guard the
+ * handler hangs forever — Codex).
+ */
+export function readCappedBody(
+  req: CappedBodySource,
+  maxBytes: number,
+): Promise<CappedBodyResult> {
+  return new Promise<CappedBodyResult>((resolve, reject) => {
+    const collected: Buffer[] = [];
+    let total = 0;
+    let over = false;
+    let settled = false;
+    const finish = (fn: () => void): void => {
+      if (settled) return;
+      settled = true;
+      fn();
+    };
+    // Already-terminated guard (see doc): `destroyed` after abort/close,
+    // `readableEnded` after a clean 'end' already passed.
+    if (req.destroyed || req.readableEnded) {
+      finish(() => resolve({ body: Buffer.alloc(0), oversized: false, bodyBytes: 0, aborted: true }));
+      return;
+    }
+    req.on('data', (chunk: Buffer) => {
+      total += chunk.length;
+      if (total > maxBytes) {
+        if (!over) {
+          over = true;
+          collected.length = 0; // stop buffering; keep draining to 'end'
+        }
+        return;
+      }
+      collected.push(chunk);
+    });
+    req.on('end', () =>
+      finish(() => resolve({ body: Buffer.concat(collected), oversized: over, bodyBytes: total, aborted: false })),
+    );
+    req.on('error', (err) => finish(() => reject(err)));
+    const onAbort = (): void =>
+      finish(() => {
+        collected.length = 0;
+        resolve({ body: Buffer.alloc(0), oversized: over, bodyBytes: total, aborted: true });
+      });
+    req.on('aborted', onAbort);
+    req.on('close', onAbort);
+  });
+}
+
 // ── Listener ─────────────────────────────────────────────────────────
 
 /** Default cap on a single plain-HTTP forwarded request body: 16 MiB. Over
@@ -384,68 +459,13 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
       const resolvedIP = await resolveAndCheck(hostname, allowingSession.allowedIPs, resolver);
 
       // Read request body, CAPPED so one large upload can't OOM the host
-      // (TASK-24). The HTTP path must buffer the whole body to re-forward it
-      // via fetch; over the cap we stop accumulating, keep DRAINING to end (so
-      // we never touch the upstream and the socket closes cleanly), then 413.
-      //
-      // We read via 'data'/'end' events, NOT `for await (const chunk of req)`:
-      // breaking out of the async iterator calls its return(), which DESTROYS
-      // the IncomingMessage — a destroyed readable can reset the socket before
-      // the 413 reaches the client, especially on a chunked/streaming upload
-      // (Codex P2). Event-draining keeps the stream alive until 'end'.
-      //
-      // The promise MUST settle on EVERY terminal outcome — 'end' (complete),
-      // 'error' (stream error), OR 'close'/'aborted' WITHOUT 'end' (the client
-      // disconnected mid-upload; common after we've stopped buffering past the
-      // cap). Without the close/aborted arm the handler would hang forever and
-      // retain the collected buffers until process teardown (Codex P2). We use
-      // a `settled` guard so the first terminal event wins.
-      const { body, oversized, bodyBytes, aborted } = await new Promise<{
-        body: Buffer;
-        oversized: boolean;
-        bodyBytes: number;
-        aborted: boolean;
-      }>((resolve, reject) => {
-        const collected: Buffer[] = [];
-        let total = 0;
-        let over = false;
-        let settled = false;
-        const finish = (
-          fn: () => void,
-        ): void => {
-          if (settled) return;
-          settled = true;
-          fn();
-        };
-        req.on('data', (chunk: Buffer) => {
-          total += chunk.length;
-          if (total > maxHttpRequestBodyBytes) {
-            // Past the cap: stop buffering (free what we held) but keep the
-            // stream flowing so it drains cleanly to 'end' — no destroy.
-            if (!over) {
-              over = true;
-              collected.length = 0;
-            }
-            return;
-          }
-          collected.push(chunk);
-        });
-        req.on('end', () =>
-          finish(() =>
-            resolve({ body: Buffer.concat(collected), oversized: over, bodyBytes: total, aborted: false }),
-          ),
-        );
-        req.on('error', (err) => finish(() => reject(err)));
-        // 'close'/'aborted' before 'end' = the client hung up mid-upload. Free
-        // the buffers and short-circuit (aborted) — there's nothing to forward.
-        const onAbort = (): void =>
-          finish(() => {
-            collected.length = 0;
-            resolve({ body: Buffer.alloc(0), oversized: over, bodyBytes: total, aborted: true });
-          });
-        req.on('aborted', onAbort);
-        req.on('close', onAbort);
-      });
+      // (TASK-24). Over the cap we 413 without forwarding; a client that hangs
+      // up mid-upload (including DURING the resolveAndCheck await above) settles
+      // as `aborted`. See readCappedBody.
+      const { body, oversized, bodyBytes, aborted } = await readCappedBody(
+        req,
+        maxHttpRequestBodyBytes,
+      );
       if (aborted) {
         // Client disconnected mid-upload — nothing to forward, nothing to
         // respond to (the socket is gone). Just release the handler.
