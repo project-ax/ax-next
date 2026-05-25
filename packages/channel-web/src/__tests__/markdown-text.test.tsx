@@ -14,7 +14,7 @@
  * @vitest-environment jsdom
  */
 import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import { useEffect } from 'react';
 import {
   AssistantRuntimeProvider,
@@ -23,7 +23,10 @@ import {
   useExternalStoreRuntime,
 } from '@assistant-ui/react';
 import type { ThreadMessageLike } from '@assistant-ui/react';
+import { useAISDKRuntime } from '@assistant-ui/react-ai-sdk';
+import { useChat } from '@ai-sdk/react';
 import { MarkdownText } from '../components/MarkdownText';
+import { createAxHistoryAdapter } from '../lib/history-adapter';
 import { setActiveConversationId } from '../lib/use-conversation-id';
 
 interface SeededArtifactResult {
@@ -125,5 +128,235 @@ describe('MarkdownText ax:// URL handling', () => {
     expect(a.getAttribute('href')).toBe('https://example.com');
     expect(a.getAttribute('target')).toBe('_blank');
     expect(a.getAttribute('rel')).toBe('noopener noreferrer');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TASK-20 regression — the published artifact's `ax://artifact/<id>` link and
+// its `artifact_publish` tool-call result land in SEPARATE assistant messages
+// (the runner emits the tool result, then the closing text as a fresh turn;
+// reload's history adapter builds one renderable message per turn). The
+// resolver must scan the WHOLE thread, not just the link's own message —
+// otherwise the chip renders as a dead "unknown artifact" pill (the bug).
+// ---------------------------------------------------------------------------
+
+const ARTIFACT = {
+  artifactId: '21bea75',
+  downloadUrl: 'ax://artifact/21bea75',
+  path: 'workspace/poem.txt',
+  displayName: 'Ocean Poem',
+  mediaType: 'text/plain',
+  sizeBytes: 171,
+  sha256: 'deadbeef',
+};
+
+function ThreadRenderer() {
+  return (
+    <ThreadPrimitive.Root>
+      <ThreadPrimitive.Messages
+        components={{
+          UserMessage: () => null,
+          AssistantMessage: () => (
+            <MessagePrimitive.Root>
+              <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
+            </MessagePrimitive.Root>
+          ),
+        }}
+      />
+    </ThreadPrimitive.Root>
+  );
+}
+
+describe('MarkdownText ax://artifact resolution across messages (TASK-20)', () => {
+  it('resolves the chip when the tool-call and the link are in DIFFERENT live-turn messages', async () => {
+    // Live-turn shape: the artifact tool-call lands in one assistant
+    // UIMessage; an intervening user turn + the closing-text link land in a
+    // later assistant UIMessage. Driven through the real AI SDK runtime so
+    // the messages stay distinct (they don't coalesce the way consecutive
+    // streaming deltas in a single message do).
+    const uiMessages = [
+      { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'make a poem' }] },
+      {
+        id: 'a1',
+        role: 'assistant',
+        parts: [
+          {
+            type: 'dynamic-tool',
+            toolName: 'artifact_publish',
+            toolCallId: 't1',
+            state: 'output-available',
+            input: { path: ARTIFACT.path },
+            output: JSON.stringify(ARTIFACT),
+          },
+        ],
+      },
+      { id: 'u2', role: 'user', parts: [{ type: 'text', text: 'thanks' }] },
+      {
+        id: 'a2',
+        role: 'assistant',
+        parts: [
+          { type: 'text', text: 'Done: [Download Ocean Poem](ax://artifact/21bea75)' },
+        ],
+      },
+    ];
+
+    function LiveHarness() {
+      setActiveConversationId('c1');
+      const chat = useChat();
+      useEffect(() => {
+        chat.setMessages(uiMessages as never);
+        return () => setActiveConversationId(null);
+      }, []);
+      const runtime = useAISDKRuntime(chat);
+      return (
+        <AssistantRuntimeProvider runtime={runtime}>
+          <ThreadRenderer />
+        </AssistantRuntimeProvider>
+      );
+    }
+
+    render(<LiveHarness />);
+    // The named, downloadable chip — NOT the "unknown artifact" pill.
+    const a = await screen.findByRole('link', { name: 'Ocean Poem' });
+    expect(a.getAttribute('href')).toMatch(/\/api\/files\?/);
+    expect(screen.queryByText(/unknown artifact/i)).toBeNull();
+  });
+
+  it('resolves the chip on reload — the history adapter splits the tool turn from the closing-text turn', async () => {
+    // Reload shape: conversations:get → `createAxHistoryAdapter` →
+    // `blocksToParts` → one renderable message per turn. The artifact_publish
+    // tool turn becomes a `dynamic-tool` part in one assistant message; the
+    // closing-text link lands in a SEPARATE assistant message. We drive the
+    // adapter for real (stubbed fetch), then seed its converted output as the
+    // chat's messages — exactly what `useAISDKRuntime` imports on reload —
+    // and assert the chip resolves.
+    setActiveConversationId('c1');
+    const turns = [
+      {
+        turnId: 't0',
+        turnIndex: 0,
+        role: 'user',
+        contentBlocks: [{ type: 'text', text: 'make a poem' }],
+        createdAt: new Date().toISOString(),
+      },
+      {
+        turnId: 't1',
+        turnIndex: 1,
+        role: 'assistant',
+        contentBlocks: [
+          { type: 'tool_use', id: 'tu_1', name: 'artifact_publish', input: { path: ARTIFACT.path } },
+        ],
+        createdAt: new Date().toISOString(),
+      },
+      {
+        turnId: 't2',
+        turnIndex: 2,
+        role: 'tool',
+        contentBlocks: [
+          { type: 'tool_result', tool_use_id: 'tu_1', content: JSON.stringify(ARTIFACT) },
+        ],
+        createdAt: new Date().toISOString(),
+      },
+      {
+        turnId: 't3',
+        turnIndex: 3,
+        role: 'assistant',
+        contentBlocks: [
+          { type: 'text', text: 'Done: [Download Ocean Poem](ax://artifact/21bea75)' },
+        ],
+        createdAt: new Date().toISOString(),
+      },
+    ];
+
+    // Run the real adapter through a stubbed fetch to get the per-turn,
+    // split-message parts (the reload-path output we then feed the chat).
+    const origFetch = global.fetch;
+    global.fetch = (async () =>
+      ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          conversation: { conversationId: 'c1', title: null },
+          turns,
+        }),
+      }) as unknown as Response) as typeof fetch;
+    let reloadMessages: unknown[];
+    try {
+      const adapter = createAxHistoryAdapter(() => 'c1');
+      // `withFormat` is optional on the ThreadHistoryAdapter interface but our
+      // adapter always provides it; the no-op `decode` returns its argument so
+      // each loaded message keeps its `{ content: { role, parts } }` shape.
+      const withFmt = adapter.withFormat!({
+        format: 'ax',
+        decode: (x: unknown) => x,
+      } as never);
+      const loaded = (await withFmt.load()) as unknown as {
+        messages: Array<{ content: { role: string; parts: unknown[] } }>;
+      };
+      // Map the adapter's per-turn output to AI SDK UIMessages — the same
+      // `dynamic-tool` / text parts, kept as DISTINCT messages.
+      reloadMessages = loaded.messages.map((m, i) => ({
+        id: `m${i}`,
+        role: m.content.role,
+        parts: m.content.parts,
+      }));
+    } finally {
+      global.fetch = origFetch;
+    }
+
+    // Sanity: the adapter really did split tool from closing text across
+    // separate messages (otherwise this test wouldn't exercise the bug).
+    expect(reloadMessages.length).toBeGreaterThanOrEqual(2);
+
+    function ReloadHarness() {
+      const chat = useChat();
+      useEffect(() => {
+        chat.setMessages(reloadMessages as never);
+        return () => setActiveConversationId(null);
+      }, []);
+      const runtime = useAISDKRuntime(chat);
+      return (
+        <AssistantRuntimeProvider runtime={runtime}>
+          <ThreadRenderer />
+        </AssistantRuntimeProvider>
+      );
+    }
+
+    render(<ReloadHarness />);
+    const a = await screen.findByRole('link', { name: 'Ocean Poem' });
+    expect(a.getAttribute('href')).toMatch(/\/api\/files\?/);
+    expect(screen.queryByText(/unknown artifact/i)).toBeNull();
+  });
+
+  it('still renders "unknown artifact" when NO message in the thread published that id', async () => {
+    const uiMessages = [
+      { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'hi' }] },
+      {
+        id: 'a1',
+        role: 'assistant',
+        parts: [{ type: 'text', text: '[broken](ax://artifact/does-not-exist)' }],
+      },
+    ];
+
+    function Harness2() {
+      setActiveConversationId('c1');
+      const chat = useChat();
+      useEffect(() => {
+        chat.setMessages(uiMessages as never);
+        return () => setActiveConversationId(null);
+      }, []);
+      const runtime = useAISDKRuntime(chat);
+      return (
+        <AssistantRuntimeProvider runtime={runtime}>
+          <ThreadRenderer />
+        </AssistantRuntimeProvider>
+      );
+    }
+
+    render(<Harness2 />);
+    await waitFor(() =>
+      expect(screen.getByText(/unknown artifact/i)).toBeTruthy(),
+    );
+    expect(screen.queryByRole('link', { name: 'Ocean Poem' })).toBeNull();
   });
 });
