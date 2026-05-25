@@ -496,7 +496,15 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
           try {
             resp = await open(reqId, abortSignal);
           } catch {
-            // The reconnect GET itself failed (host unreachable) → give up.
+            // The reconnect GET rejected. If the user aborted WHILE it was
+            // pending, that's an intentional cancel (AbortError) — close
+            // cleanly, no banner (Codex round 6). Otherwise the host is
+            // unreachable → give up with the banner.
+            if (abortSignal?.aborted) {
+              ctx.closeOpen(controller);
+              controller.close();
+              return;
+            }
             endWithBanner();
             return;
           }
@@ -594,11 +602,10 @@ async function consumeSseAttempt(
   ctx: ParseCtx,
   controller: { enqueue(c: UIMessageChunk): void },
 ): Promise<AttemptEnd> {
+  // Emit one NEW (non-replayed) content chunk and advance the dedup cursor.
+  // Replayed chunks are dropped UPSTREAM (the skip-gate in the frame loop),
+  // before any text-start/-end framing — so this only ever sees live content.
   const enqueueContent = (chunk: UIMessageChunk): void => {
-    if (ctx.skipContent > 0) {
-      ctx.skipContent -= 1;
-      return; // replayed chunk we've already shown — drop it
-    }
     controller.enqueue(chunk);
     ctx.emittedContent += 1;
   };
@@ -682,6 +689,23 @@ async function consumeSseAttempt(
           if (ctx.contentSeen) continue; // pre-content only
           const label = PHASE_LABELS[frame.phase];
           if (label !== undefined) agentStatusActions.set(label);
+          continue;
+        }
+        // Replay dedup — for a CONTENT-bearing frame we've already shown
+        // (reconnect replays the buffer tail), drop it BEFORE any side
+        // effects. Doing the skip here, not inside enqueueContent, prevents
+        // ensureOpenForKind/closeOpen from injecting stray text-start/-end or
+        // closing the live part for a chunk that's being deduped away (Codex
+        // round 6). `contentSeen` is already true on a replay, so the status
+        // relabel below is a no-op regardless.
+        const isContentFrame =
+          'kind' in frame &&
+          (frame.kind === 'text' ||
+            frame.kind === 'thinking' ||
+            frame.kind === 'tool-use' ||
+            frame.kind === 'tool-result');
+        if (isContentFrame && ctx.skipContent > 0) {
+          ctx.skipContent -= 1;
           continue;
         }
         // text/thinking chunk
