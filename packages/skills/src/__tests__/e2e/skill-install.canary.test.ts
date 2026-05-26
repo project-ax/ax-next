@@ -62,6 +62,8 @@ import {
 } from '@ax/core';
 import { createAgentsPlugin } from '@ax/agents';
 import { createChatOrchestratorPlugin } from '@ax/chat-orchestrator';
+import { createToolDispatcherPlugin } from '@ax/mcp-client';
+import { createSkillBrokerPlugin } from '@ax/skill-broker';
 import { createSkillsPlugin } from '../../plugin.js';
 import { createAdminSkillsHandlers } from '../../admin-routes.js';
 import type { RouteRequest, RouteResponse } from '../../admin-routes.js';
@@ -732,4 +734,65 @@ new body from remote
     expect(detail.version).toBe(2);
     expect(detail.bodyMd).toContain('new body from remote');
   });
+});
+
+// ---------------------------------------------------------------------------
+// Case 3 (TASK-34) — the model-brokered surfacing spine reaches the real
+// catalog end-to-end. Boots the REAL @ax/skills (Postgres), the real
+// tool-dispatcher (tool:register), and the real @ax/skill-broker, then walks
+// the model→host-tool→hook path: search_catalog → skills:search-catalog and
+// request_capability → skills:get. Closes invariant #3 (no half-wired plugin)
+// for the search_catalog path: the broker is reachable from the canary.
+// ---------------------------------------------------------------------------
+describe('skill-broker canary: search_catalog + request_capability reach the real catalog', () => {
+  it('search_catalog derives tier/hosts and request_capability validates against the catalog', async () => {
+    const h = await createTestHarness({
+      services: {
+        // @ax/skills mounts admin + settings HTTP routes at init; we don't boot
+        // http-server/auth here, so stub the two calls it declares.
+        'http:register-route': httpRegisterRouteStub,
+        'auth:require-user': authRequireUserStub,
+      },
+      plugins: [
+        createDatabasePostgresPlugin({ connectionString }),
+        createToolDispatcherPlugin(),
+        createSkillsPlugin(),
+        createSkillBrokerPlugin(),
+      ],
+    });
+    harnesses.push(h);
+
+    // Install a bounded GitHub skill (host + credential slot) into the global
+    // catalog so tier derives to "bounded".
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
+      manifestYaml: GITHUB_MANIFEST,
+      bodyMd: 'Body.',
+    });
+
+    // search_catalog (model → host tool → skills:search-catalog).
+    const search = await h.bus.call('tool:execute:search_catalog', h.ctx(), {
+      name: 'search_catalog',
+      input: { intent: 'work with my github issues' },
+    });
+    const hit = (search as { skills: Array<{ id: string; tier: string; hosts: string[]; slots: string[] }> }).skills.find(
+      (s) => s.id === 'github',
+    );
+    expect(hit?.tier).toBe('bounded');
+    expect(hit?.hosts).toContain('api.github.com');
+    expect(hit?.slots).toContain('GITHUB_TOKEN');
+
+    // request_capability for a real catalog skill → structured ack.
+    const ok = await h.bus.call('tool:execute:request_capability', h.ctx(), {
+      name: 'request_capability',
+      input: { skillId: 'github' },
+    });
+    expect(ok).toEqual({ status: 'requested', skillId: 'github' });
+
+    // request_capability for an unknown skill → not-found (not an error).
+    const miss = await h.bus.call('tool:execute:request_capability', h.ctx(), {
+      name: 'request_capability',
+      input: { skillId: 'does-not-exist' },
+    });
+    expect(miss).toEqual({ status: 'not-found', skillId: 'does-not-exist' });
+  }, 60_000);
 });
