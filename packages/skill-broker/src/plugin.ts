@@ -1,6 +1,7 @@
 import type { Plugin } from '@ax/core';
 import { registerSearchCatalog } from './tools/search-catalog.js';
 import { registerRequestCapability } from './tools/request-capability.js';
+import { registerInstallAuthoredSkill } from './tools/install-authored-skill.js';
 
 const PLUGIN_NAME = '@ax/skill-broker';
 const PLUGIN_VERSION = '0.0.0';
@@ -49,15 +50,39 @@ export function createSkillBrokerPlugin(
     manifest: {
       name: PLUGIN_NAME,
       version: PLUGIN_VERSION,
-      registers: ['tool:execute:search_catalog', 'tool:execute:request_capability'],
+      registers: [
+        'tool:execute:search_catalog',
+        'tool:execute:request_capability',
+        // Open mode (TASK-39): the gated authoring tool exists ONLY when the
+        // deployment enabled allow_user_installed_skills. Conditional
+        // registration closes TASK-38's "same tools in both modes" pin.
+        ...(allowUserInstalledSkills
+          ? (['tool:execute:install_authored_skill'] as const)
+          : []),
+      ],
       // Hard deps → init-ordering edges: the dispatcher (tool:register) and the
       // catalog owner (skills:search-catalog / skills:get) must init first.
       calls: ['tool:register', 'skills:search-catalog', 'skills:get'],
+      // The authoring tool calls agents:install-authored-skill — only in open
+      // mode, and it hasService-guards + surfaces a tool error if absent, so
+      // it's optional (not a hard boot dep).
+      optionalCalls: allowUserInstalledSkills
+        ? [
+            {
+              hook: 'agents:install-authored-skill',
+              degradation:
+                'open-mode authoring is unavailable; the agent cannot install user-scoped skills',
+            },
+          ]
+        : [],
       subscribes: [],
     },
     async init({ bus }) {
       await registerSearchCatalog(bus);
       await registerRequestCapability(bus);
+      if (allowUserInstalledSkills) {
+        await registerInstallAuthoredSkill(bus);
+      }
     },
   };
 }

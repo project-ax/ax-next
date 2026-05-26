@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { HookBus, makeAgentContext, PluginError } from '@ax/core';
 import { createSkillBrokerPlugin, type SkillBrokerPlugin } from '../plugin.js';
 import { REQUEST_CAPABILITY_DESCRIPTOR } from '../tools/request-capability.js';
+import { registerInstallAuthoredSkill } from '../tools/install-authored-skill.js';
 
 const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' });
 const convCtx = makeAgentContext({
@@ -194,11 +195,10 @@ describe('createSkillBrokerPlugin — open-mode gate (allow_user_installed_skill
     expect(p.allowUserInstalledSkills).toBe(true);
   });
 
-  // Half-wired window (TASK-38): the flag is stored + exposed, but the broker
-  // registers the SAME tool set in both modes — the authoring tool that the
-  // flag gates ships in TASK-39. This pins "behaviorally inert" so a future
-  // edit that wires authoring has to update this test deliberately.
-  it('registers the same tools whether open mode is on or off', async () => {
+  // TASK-39 CLOSES the TASK-38 half-wired pin: open mode now registers the
+  // gated install_authored_skill tool; closed mode does not. Curated tools
+  // (search_catalog, request_capability) register in BOTH modes.
+  it('registers the authoring tool ONLY when open mode is on (closes the TASK-38 half-wired pin)', async () => {
     const off = busWithStubs();
     await (createSkillBrokerPlugin({ allowUserInstalledSkills: false }) as SkillBrokerPlugin).init({
       bus: off.bus,
@@ -210,6 +210,115 @@ describe('createSkillBrokerPlugin — open-mode gate (allow_user_installed_skill
       config: {} as never,
     });
     expect(off.registered.sort()).toEqual(['request_capability', 'search_catalog']);
-    expect(on.registered.sort()).toEqual(off.registered.sort());
+    expect(on.registered.sort()).toEqual(['install_authored_skill', 'request_capability', 'search_catalog']);
+  });
+
+  it('the manifest registers tool:execute:install_authored_skill only in open mode', () => {
+    const off = createSkillBrokerPlugin({ allowUserInstalledSkills: false });
+    const on = createSkillBrokerPlugin({ allowUserInstalledSkills: true });
+    expect(off.manifest.registers).not.toContain('tool:execute:install_authored_skill');
+    expect(on.manifest.registers).toContain('tool:execute:install_authored_skill');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// install_authored_skill tool (TASK-39, open-mode flow C)
+// ---------------------------------------------------------------------------
+
+function busForAuthoring() {
+  const { bus, registered } = busWithStubs();
+  const grants: unknown[] = [];
+  const cards: unknown[] = [];
+  bus.registerService('agents:install-authored-skill', 'agents', async (_c, input: unknown) => {
+    grants.push(input);
+    return {
+      description: 'Take notes',
+      hosts: ['api.example.com'],
+      slots: [{ slot: 'API_KEY', kind: 'api-key' }],
+    };
+  });
+  bus.subscribe('chat:permission-request', 'test/card', async (_c, payload) => {
+    cards.push(payload);
+    return undefined;
+  });
+  return { bus, registered, grants, cards };
+}
+
+function toolCtx() {
+  return makeAgentContext({ sessionId: 's', agentId: 'agent-1', userId: 'user-1', conversationId: 'cnv-1' });
+}
+
+describe('install_authored_skill tool', () => {
+  it('registers the descriptor', async () => {
+    const { bus, registered } = busForAuthoring();
+    await registerInstallAuthoredSkill(bus);
+    expect(registered).toContain('install_authored_skill');
+  });
+
+  it('calls agents:install-authored-skill then fires an authored permission card', async () => {
+    const { bus, grants, cards } = busForAuthoring();
+    await registerInstallAuthoredSkill(bus);
+    const out = await bus.call('tool:execute:install_authored_skill', toolCtx(), {
+      name: 'install_authored_skill',
+      input: { skillId: 'notes', hosts: ['api.example.com'], slots: ['API_KEY'] },
+    });
+    expect(out).toEqual({ status: 'requested', skillId: 'notes' });
+    expect(grants).toEqual([
+      { agentId: 'agent-1', skillId: 'notes', hosts: ['api.example.com'], slots: ['API_KEY'] },
+    ]);
+    expect(cards).toEqual([
+      {
+        skillId: 'notes',
+        description: 'Take notes',
+        hosts: ['api.example.com'],
+        slots: [{ slot: 'API_KEY', kind: 'api-key' }],
+        authored: true,
+      },
+    ]);
+  });
+
+  it('rejects a traversal-shaped skillId before reaching the agents hook', async () => {
+    const { bus, grants } = busForAuthoring();
+    await registerInstallAuthoredSkill(bus);
+    await expect(
+      bus.call('tool:execute:install_authored_skill', toolCtx(), {
+        name: 'install_authored_skill',
+        input: { skillId: '../evil', hosts: [], slots: [] },
+      }),
+    ).rejects.toThrow(/valid "skillId"|invalid/i);
+    expect(grants).toEqual([]);
+  });
+
+  it('drops malformed hosts/slots (filtered before the card)', async () => {
+    const { bus, grants } = busForAuthoring();
+    await registerInstallAuthoredSkill(bus);
+    await bus.call('tool:execute:install_authored_skill', toolCtx(), {
+      name: 'install_authored_skill',
+      input: {
+        skillId: 'notes',
+        // 'bad host!' has a space; 'api_key' (lowercase) + 'no-dashes!' fail the
+        // SCREAMING_SNAKE slot grammar that matches parseSkillManifest.
+        hosts: ['ok.example.com', 'bad host!'],
+        slots: ['API_KEY', 'api_key', 'no-dashes!'],
+      },
+    });
+    expect(grants[0]).toEqual({
+      agentId: 'agent-1',
+      skillId: 'notes',
+      hosts: ['ok.example.com'],
+      slots: ['API_KEY'],
+    });
+  });
+
+  it('surfaces a clear tool error when @ax/agents is not loaded', async () => {
+    // busWithStubs has no agents:install-authored-skill service.
+    const { bus } = busWithStubs();
+    await registerInstallAuthoredSkill(bus);
+    await expect(
+      bus.call('tool:execute:install_authored_skill', toolCtx(), {
+        name: 'install_authored_skill',
+        input: { skillId: 'notes', hosts: [], slots: [] },
+      }),
+    ).rejects.toThrow(/not available in this deployment/i);
   });
 });
