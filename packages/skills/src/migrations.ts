@@ -113,6 +113,45 @@ export async function runSkillsMigration<DB>(db: Kysely<DB>): Promise<void> {
       PRIMARY KEY (scope, owner_user_id, skill_id, path)
     )
   `.execute(db);
+
+  // skills_v1_catalog_requests — the admit-to-catalog queue (JIT §6D, §11.6).
+  // BOTH cold-start "a user needed X" requests AND share-to-catalog
+  // submissions land here. A share request is an IMMUTABLE SNAPSHOT of the
+  // source user-scoped skill at submit time: manifest_yaml/body_md verbatim
+  // (the SKILL.md index) + bundle_tree_sha (the content-addressed pointer to
+  // the extra-file bytes, NULL for a single-file skill). Snapshotting at
+  // submit guarantees the bytes the admin reviews are exactly the bytes
+  // admit promotes (no review-vs-ship drift). Cold-start rows carry NULL for
+  // all three snapshot columns. `source_owner_user_id` is the user whose
+  // editable working copy admit retires (NULL for cold-start). `status`:
+  // 'pending' | 'admitted' | 'rejected'.
+  await sql`
+    CREATE TABLE IF NOT EXISTS skills_v1_catalog_requests (
+      request_id           TEXT PRIMARY KEY,
+      kind                 TEXT NOT NULL,
+      skill_id             TEXT NOT NULL,
+      requested_by_user_id TEXT NOT NULL,
+      source_owner_user_id TEXT NULL,
+      status               TEXT NOT NULL DEFAULT 'pending',
+      description          TEXT NOT NULL DEFAULT '',
+      manifest_yaml        TEXT NULL,
+      body_md              TEXT NULL,
+      bundle_tree_sha      TEXT NULL,
+      created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      decided_at           TIMESTAMPTZ NULL,
+      decided_by_user_id   TEXT NULL
+    )
+  `.execute(db);
+
+  // Dedup: at most one PENDING request per skill_id (a decided request frees
+  // the id for re-submission). Partial unique index — the DB enforces the
+  // §13 "deduped" guarantee even under a SELECT-then-INSERT race.
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS skills_v1_catalog_requests_one_pending
+      ON skills_v1_catalog_requests (skill_id)
+      WHERE status = 'pending'
+  `.execute(db);
 }
 
 /**
@@ -184,9 +223,34 @@ export interface SkillFileRow {
   contents: string;
 }
 
+/**
+ * Admit-queue request row. A share request snapshots the source user-scoped
+ * skill (manifest_yaml/body_md verbatim + bundle_tree_sha pointer); a
+ * cold-start request leaves the snapshot columns NULL. `bundle_tree_sha` is a
+ * storage detail — never surfaced in a hook payload (bundles cross hook
+ * boundaries as files[]).
+ */
+export interface CatalogRequestRow {
+  request_id: string;
+  kind: 'share' | 'cold-start';
+  skill_id: string;
+  requested_by_user_id: string;
+  source_owner_user_id: string | null;
+  status: 'pending' | 'admitted' | 'rejected';
+  description: string;
+  manifest_yaml: string | null;
+  body_md: string | null;
+  bundle_tree_sha: string | null;
+  created_at: Date;
+  updated_at: Date;
+  decided_at: Date | null;
+  decided_by_user_id: string | null;
+}
+
 export interface SkillsDatabase {
   skills_v1_skills: SkillsRow;
   skills_v1_user_skills: UserSkillsRow;
   skills_v1_user_attachments: UserAttachmentRow;
   skills_v1_skill_files: SkillFileRow;
+  skills_v1_catalog_requests: CatalogRequestRow;
 }

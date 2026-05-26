@@ -322,3 +322,101 @@ const CatalogCandidateSchema = z.object({
 export const SkillsSearchCatalogOutputSchema = z.object({
   skills: z.array(CatalogCandidateSchema),
 }) as unknown as ZodType<SkillsSearchCatalogOutput>;
+
+// ---------------------------------------------------------------------------
+// Admit-to-catalog queue (TASK-41, JIT §6D / §11.6). The self-healing
+// catalog's admit queue: BOTH cold-start "a user needed X" requests and
+// share-to-catalog submissions land here; an admin admits a share (promote +
+// retire the author's working copy) or rejects. Storage-agnostic — a share's
+// bundle crosses the boundary as files[] (NEVER a tree sha); the snapshot's
+// content-addressed pointer is an internal storage detail. Alternate impl: a
+// generic approval queue.
+// ---------------------------------------------------------------------------
+export type CatalogSubmitInput =
+  | {
+      kind: 'share';
+      /** The catalog id to propose; must be the requester's own user-scoped skill. */
+      skillId: string;
+      /** The authenticated user sharing their own skill (host-supplied). */
+      requestedByUserId: string;
+      description?: string;
+    }
+  | {
+      kind: 'cold-start';
+      /** A proposed slug for the missing capability (dedup key). */
+      skillId: string;
+      requestedByUserId: string;
+      /** What the user wanted — free text the admin triages. */
+      description: string;
+    };
+export interface CatalogSubmitOutput {
+  requestId: string;
+  /** false when a pending request for this skillId already existed (deduped). */
+  created: boolean;
+  status: 'pending' | 'admitted' | 'rejected';
+}
+
+/** One admit-queue request as seen by the admin review surface. */
+export interface CatalogRequest {
+  requestId: string;
+  kind: 'share' | 'cold-start';
+  skillId: string;
+  requestedByUserId: string;
+  sourceOwnerUserId: string | null;
+  status: 'pending' | 'admitted' | 'rejected';
+  description: string;
+  createdAt: string;
+  /** Snapshot of the submitted bundle (share only; null for cold-start). */
+  manifestYaml: string | null;
+  bodyMd: string | null;
+  /** Extra (non-SKILL.md) files of the snapshot. [] for cold-start/single-file. */
+  files: BundleFile[];
+}
+export interface CatalogListRequestsInput {
+  /** Defaults to 'pending'. */
+  status?: 'pending' | 'admitted' | 'rejected' | 'all';
+}
+export interface CatalogListRequestsOutput {
+  requests: CatalogRequest[];
+}
+
+export interface CatalogAdmitInput {
+  requestId: string;
+  decision: 'admit' | 'reject';
+  /** The authenticated admin deciding (host-supplied). */
+  decidedByUserId: string;
+}
+export interface CatalogAdmitOutput {
+  /** The promoted catalog id (present on a successful admit). */
+  skillId?: string;
+  admitted: boolean;
+}
+
+export const CatalogSubmitOutputSchema = z.object({
+  requestId: z.string(),
+  created: z.boolean(),
+  status: z.union([z.literal('pending'), z.literal('admitted'), z.literal('rejected')]),
+}) as unknown as ZodType<CatalogSubmitOutput>;
+
+const CatalogRequestSchema = z.object({
+  requestId: z.string(),
+  kind: z.union([z.literal('share'), z.literal('cold-start')]),
+  skillId: z.string(),
+  requestedByUserId: z.string(),
+  sourceOwnerUserId: z.string().nullable(),
+  status: z.union([z.literal('pending'), z.literal('admitted'), z.literal('rejected')]),
+  description: z.string(),
+  createdAt: z.string(),
+  manifestYaml: z.string().nullable(),
+  bodyMd: z.string().nullable(),
+  files: z.array(BundleFileSchema),
+});
+
+export const CatalogListRequestsOutputSchema = z.object({
+  requests: z.array(CatalogRequestSchema),
+}) as unknown as ZodType<CatalogListRequestsOutput>;
+
+export const CatalogAdmitOutputSchema = z.object({
+  skillId: z.string().optional(),
+  admitted: z.boolean(),
+}) as unknown as ZodType<CatalogAdmitOutput>;

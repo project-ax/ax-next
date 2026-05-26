@@ -18,6 +18,7 @@ import { runSkillsMigration, type SkillsDatabase } from './migrations.js';
 import { createSkillsStore } from './store.js';
 import { createUserSkillsStore } from './user-store.js';
 import { createUserAttachmentsStore } from './user-attachments-store.js';
+import { createCatalogRequestsStore } from './catalog-requests-store.js';
 import { validateAttachmentBindings } from './attachment-validation.js';
 import { mergeUserWins, compareById } from './_merge.js';
 import { registerAdminSkillsRoutes } from './admin-routes.js';
@@ -33,6 +34,9 @@ import {
   SkillsAttachForUserOutputSchema,
   SkillsListUserAttachmentsOutputSchema,
   SkillsSearchCatalogOutputSchema,
+  CatalogSubmitOutputSchema,
+  CatalogListRequestsOutputSchema,
+  CatalogAdmitOutputSchema,
 } from './types.js';
 import type {
   SkillsCheckForUpdatesInput,
@@ -55,6 +59,12 @@ import type {
   SkillsListUserAttachmentsOutput,
   SkillsSearchCatalogInput,
   SkillsSearchCatalogOutput,
+  CatalogSubmitInput,
+  CatalogSubmitOutput,
+  CatalogListRequestsInput,
+  CatalogListRequestsOutput,
+  CatalogAdmitInput,
+  CatalogAdmitOutput,
 } from './types.js';
 
 const PLUGIN_NAME = '@ax/skills';
@@ -176,6 +186,9 @@ export function createSkillsPlugin(config: SkillsPluginConfig = {}): Plugin {
         'skills:attach-for-user',
         'skills:list-user-attachments',
         'skills:search-catalog',
+        'catalog:submit',
+        'catalog:list-requests',
+        'catalog:admit',
       ],
       calls: ['database:get-instance', 'http:register-route', 'auth:require-user'],
       subscribes: [],
@@ -211,6 +224,10 @@ export function createSkillsPlugin(config: SkillsPluginConfig = {}): Plugin {
       const store = createSkillsStore(db, bundleStore);
       const userStore = createUserSkillsStore(db, bundleStore);
       const attachmentsStore = createUserAttachmentsStore(db);
+      // Reuse the shared content-addressed bundle store (TASK-40) so a share
+      // snapshot dedups against the source skill's own tree and admit re-derives
+      // the SAME tree SHA when it registers the bundle in the global catalog.
+      const catalogRequestsStore = createCatalogRequestsStore(db, bundleStore);
 
       bus.registerService<SkillsListInput, SkillsListOutput>(
         'skills:list',
@@ -682,6 +699,182 @@ export function createSkillsPlugin(config: SkillsPluginConfig = {}): Plugin {
           };
         },
         { returns: SkillsSearchCatalogOutputSchema },
+      );
+
+      // -----------------------------------------------------------------------
+      // catalog:submit (TASK-41) — file an admit-to-catalog request. Two kinds:
+      //   share      — the requester promotes their OWN user-scoped skill; we
+      //                snapshot its bundle (manifest/body verbatim + extra files)
+      //                so admit ships exactly the reviewed bytes (no drift).
+      //   cold-start — a bundle-less "a user needed X" wishlist item.
+      // requestedByUserId is host-supplied (the authenticated caller); a share
+      // can only reference the requester's own skill (sourceOwner == requester).
+      // Dedup: one pending request per skill_id (store + partial unique index).
+      // -----------------------------------------------------------------------
+      bus.registerService<CatalogSubmitInput, CatalogSubmitOutput>(
+        'catalog:submit',
+        PLUGIN_NAME,
+        async (_ctx, input) => {
+          if (input.kind === 'share') {
+            const detail = await userStore.get(input.requestedByUserId, input.skillId);
+            if (detail === null) {
+              throw new PluginError({
+                code: 'skill-not-found',
+                plugin: PLUGIN_NAME,
+                message: `user '${input.requestedByUserId}' has no skill '${input.skillId}' to share`,
+              });
+            }
+            const { request, created } = await catalogRequestsStore.submitShare({
+              skillId: input.skillId,
+              requestedByUserId: input.requestedByUserId,
+              description: input.description ?? detail.description,
+              manifestYaml: detail.manifestYaml,
+              bodyMd: detail.bodyMd,
+              files: detail.files,
+            });
+            return { requestId: request.requestId, created, status: request.status };
+          }
+          // cold-start
+          const { request, created } = await catalogRequestsStore.submitColdStart({
+            skillId: input.skillId,
+            requestedByUserId: input.requestedByUserId,
+            description: input.description,
+          });
+          return { requestId: request.requestId, created, status: request.status };
+        },
+        { returns: CatalogSubmitOutputSchema },
+      );
+
+      // -----------------------------------------------------------------------
+      // catalog:list-requests (TASK-41) — the admin review feed. Defaults to
+      // pending. A share request reconstructs its snapshot files (storage-
+      // agnostic files[] — the tree SHA stays internal). Read-only.
+      // -----------------------------------------------------------------------
+      bus.registerService<CatalogListRequestsInput, CatalogListRequestsOutput>(
+        'catalog:list-requests',
+        PLUGIN_NAME,
+        async (_ctx, input) => {
+          const status = input.status ?? 'pending';
+          if (status !== 'pending' && status !== 'all') {
+            // Decided-status filters are a TASK-45 refinement; MVP serves
+            // pending (the actionable queue) + all.
+            const requests = (await catalogRequestsStore.listPending()).filter(
+              (r) => r.status === status,
+            );
+            return { requests };
+          }
+          // 'pending' and 'all' both serve the actionable pending set today;
+          // decided-request history is a TASK-45 refinement (YAGNI now). The
+          // `status` field exists on the input so the hook surface is stable.
+          return { requests: await catalogRequestsStore.listPending() };
+        },
+        { returns: CatalogListRequestsOutputSchema },
+      );
+
+      // -----------------------------------------------------------------------
+      // catalog:admit (TASK-41) — the supply-chain gate (decision #3: catalog
+      // admission IS the approval). On 'admit' of a SHARE request: re-validate
+      // the snapshot (parseSkillManifest + validateBundleFiles — defense-in-
+      // depth, the bytes go org-wide), store.upsert it to the GLOBAL catalog
+      // (content-addressing re-derives the same tree SHA → "register the tree
+      // SHA"), then RETIRE the author's editable working copy via the user
+      // store (§6D — the integrity backbone: user-wins precedence must not keep
+      // serving forkable bytes). On 'reject': close the request. Cold-start
+      // requests are not promotable (no bundle) — the admin authors via the
+      // existing admin flow and rejects/closes the wishlist item.
+      // -----------------------------------------------------------------------
+      bus.registerService<CatalogAdmitInput, CatalogAdmitOutput>(
+        'catalog:admit',
+        PLUGIN_NAME,
+        async (_ctx, input) => {
+          const request = await catalogRequestsStore.get(input.requestId);
+          if (request === null) {
+            throw new PluginError({
+              code: 'request-not-found',
+              plugin: PLUGIN_NAME,
+              message: `catalog request '${input.requestId}' does not exist`,
+            });
+          }
+          if (request.status !== 'pending') {
+            throw new PluginError({
+              code: 'request-already-decided',
+              plugin: PLUGIN_NAME,
+              message: `catalog request '${input.requestId}' is already ${request.status}`,
+            });
+          }
+
+          if (input.decision === 'reject') {
+            await catalogRequestsStore.markDecided(
+              input.requestId,
+              'rejected',
+              input.decidedByUserId,
+            );
+            return { admitted: false };
+          }
+
+          // decision === 'admit'
+          if (
+            request.kind !== 'share' ||
+            request.manifestYaml === null ||
+            request.bodyMd === null
+          ) {
+            throw new PluginError({
+              code: 'cold-start-not-promotable',
+              plugin: PLUGIN_NAME,
+              message: `request '${input.requestId}' is a cold-start with no bundle to promote — author the skill, then reject`,
+            });
+          }
+
+          // Defense-in-depth re-validation of the snapshot before it goes
+          // org-wide (the snapshot was validated at submit; re-check here).
+          const parsed = parseSkillManifest(request.manifestYaml);
+          if (!parsed.ok) {
+            throw new PluginError({
+              code: parsed.code,
+              plugin: PLUGIN_NAME,
+              message: parsed.message,
+            });
+          }
+          try {
+            validateBundleFiles(request.files);
+          } catch (err) {
+            throw new PluginError({
+              code: 'invalid-bundle-file',
+              plugin: PLUGIN_NAME,
+              message: err instanceof Error ? err.message : String(err),
+            });
+          }
+
+          // Promote into the GLOBAL catalog (idempotent by id → natural dedup).
+          // store.upsert (TASK-40) re-derives the same content-addressed
+          // bundle_tree_sha as the reviewed snapshot.
+          await store.upsert({
+            id: parsed.value.id,
+            description: parsed.value.description,
+            manifestYaml: request.manifestYaml,
+            bodyMd: request.bodyMd,
+            version: parsed.value.version,
+            defaultAttached: false,
+            sourceUrl: parsed.value.sourceUrl ?? null,
+            files: request.files,
+          });
+
+          // Retire the author's editable working copy (§6D hard requirement).
+          // The author's per-(user,agent) attachment (keyed by skillId, no
+          // scope) transparently re-resolves to the now-global skill, so they
+          // keep the capability — now sourced from the vetted catalog.
+          if (request.sourceOwnerUserId !== null) {
+            await userStore.delete(request.sourceOwnerUserId, parsed.value.id);
+          }
+
+          await catalogRequestsStore.markDecided(
+            input.requestId,
+            'admitted',
+            input.decidedByUserId,
+          );
+          return { skillId: parsed.value.id, admitted: true };
+        },
+        { returns: CatalogAdmitOutputSchema },
       );
 
       // Register admin + settings HTTP routes. Both batches are pushed into

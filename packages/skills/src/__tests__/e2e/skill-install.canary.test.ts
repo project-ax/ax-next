@@ -76,6 +76,10 @@ import type {
   SkillsGetOutput,
   SkillsAttachForUserInput,
   SkillsAttachForUserOutput,
+  CatalogSubmitInput,
+  CatalogSubmitOutput,
+  CatalogAdmitInput,
+  CatalogAdmitOutput,
 } from '../../types.js';
 
 // ---------------------------------------------------------------------------
@@ -109,6 +113,7 @@ afterEach(async () => {
     // shared across the whole file.)
     await cleanup.query('DROP TABLE IF EXISTS agents_v1_skill_attachments');
     await cleanup.query('DROP TABLE IF EXISTS agents_v1_agents');
+    await cleanup.query('DROP TABLE IF EXISTS skills_v1_catalog_requests');
     await cleanup.query('DROP TABLE IF EXISTS skills_v1_user_attachments');
     await cleanup.query('DROP TABLE IF EXISTS skills_v1_skill_files');
     await cleanup.query('DROP TABLE IF EXISTS skills_v1_user_skills');
@@ -1126,5 +1131,93 @@ describe('skill-install canary: open-mode authoring → user-store bundle + reti
 
     expect(fakes.proxyOpenInputs).toHaveLength(1);
     expect(fakes.proxyOpenInputs[0]!.allowlist).toContain('api.example.com');
+  }, 60_000);
+});
+
+// ---------------------------------------------------------------------------
+// Case (TASK-41) — share-to-catalog promotion + working-copy retirement (§6D)
+//
+// An author's user-scoped bundle skill is SHARED → an admin ADMITS it
+// (promote to the global catalog + retire the author's editable user copy) →
+// a fresh invoke re-resolves the author's attachment to the now-GLOBAL skill
+// and materializes it read-only into the sandbox. Proves: shipped == reviewed
+// (the bundle tree SHA registers in the global row), the user copy is retired,
+// and there is no duplicate-id collision (exactly one materialized 'github').
+// ---------------------------------------------------------------------------
+
+describe('skill-install canary: share-to-catalog promotion (§6D, real plugins)', () => {
+  it('admit promotes the author bundle to global, retires the user copy, and re-invoke materializes it', async () => {
+    const busRef: { current: HookBus | null } = { current: null };
+    const fakes = buildCaptureFakes(busRef);
+    const h = await createTestHarness({
+      services: fakes.services,
+      plugins: [
+        createDatabasePostgresPlugin({ connectionString }),
+        createAgentsPlugin(),
+        createSkillsPlugin(),
+        createChatOrchestratorPlugin({
+          runnerBinary: '/irrelevant',
+          oneShot: true,
+          chatTimeoutMs: 5_000,
+        }),
+      ],
+    });
+    harnesses.push(h);
+    busRef.current = h.bus;
+
+    // 1. Alice authors a user-scoped bundle skill and attaches it on her agent.
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
+      manifestYaml: GITHUB_MANIFEST,
+      bodyMd: 'Body.',
+      files: [{ path: 'scripts/run.py', contents: 'print("hi")' }],
+      scope: 'user',
+      ownerUserId: 'alice',
+    });
+    const agentId = await createPersonalAgent(h, 'alice');
+    await attachSkill(h, agentId, 'alice', 'github', { GITHUB_TOKEN: 'cred-ref-alice-gh' });
+
+    // 2. Share → admit.
+    const sub = await h.bus.call<CatalogSubmitInput, CatalogSubmitOutput>('catalog:submit', h.ctx(), {
+      kind: 'share',
+      skillId: 'github',
+      requestedByUserId: 'alice',
+      description: 'share',
+    });
+    const admit = await h.bus.call<CatalogAdmitInput, CatalogAdmitOutput>('catalog:admit', h.ctx(), {
+      requestId: sub.requestId,
+      decision: 'admit',
+      decidedByUserId: 'admin',
+    });
+    expect(admit).toEqual({ skillId: 'github', admitted: true });
+
+    // 3. The user copy is gone; the global catalog row carries the bundle tree SHA.
+    const probe = new (await import('pg')).default.Client({ connectionString });
+    await probe.connect();
+    try {
+      const userRows = await probe.query(
+        "SELECT skill_id FROM skills_v1_user_skills WHERE owner_user_id = 'alice' AND skill_id = 'github'",
+      );
+      expect(userRows.rows.length).toBe(0);
+      const globalRow = await probe.query(
+        "SELECT bundle_tree_sha FROM skills_v1_skills WHERE skill_id = 'github'",
+      );
+      expect(globalRow.rows[0]?.bundle_tree_sha).toMatch(/^[0-9a-f]{40}$/);
+    } finally {
+      await probe.end().catch(() => {});
+    }
+
+    // 4. Fresh invoke: the author's attachment re-resolves to the GLOBAL skill,
+    //    materialized read-only — incl. the author. No duplicate-id collision.
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      ctxFor(agentId, 'alice', 'canary-admit-walk'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+    const installed = fakes.sandboxOpenInputs.at(-1)!.installedSkills ?? [];
+    const gh = installed.filter((s) => s.id === 'github');
+    expect(gh.length).toBe(1); // exactly one — no project/user duplicate-id collision
+    expect(gh[0]!.files.find((f) => f.path === 'SKILL.md')?.contents).toContain('name: github');
+    expect(gh[0]!.files.find((f) => f.path === 'scripts/run.py')?.contents).toBe('print("hi")');
   }, 60_000);
 });
