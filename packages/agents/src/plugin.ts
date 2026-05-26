@@ -6,8 +6,9 @@ import {
   type Plugin,
 } from '@ax/core';
 import { sql, type Kysely } from 'kysely';
+import { buildSkillManifestYaml } from '@ax/skills-parser';
 import { checkAccess } from './acl.js';
-import { listAuthoredSkills } from './authored-skills.js';
+import { listAuthoredSkills, readAuthoredBundle } from './authored-skills.js';
 import { registerAdminAgentRoutes } from './admin-routes.js';
 import { runAgentsMigration, type AgentsDatabase } from './migrations.js';
 import {
@@ -18,12 +19,14 @@ import {
   type AgentStore,
 } from './store.js';
 import { randomBytes } from 'node:crypto';
-import { ResolveOutputSchema } from './types.js';
+import { AgentsInstallAuthoredSkillOutputSchema, ResolveOutputSchema } from './types.js';
 import type {
   Actor,
   Agent,
   AgentsConfig,
   AgentsCreatedEvent,
+  AgentsInstallAuthoredSkillInput,
+  AgentsInstallAuthoredSkillOutput,
   AgentsListAuthoredSkillsInput,
   AgentsListAuthoredSkillsOutput,
   AgentsResolvedEvent,
@@ -99,6 +102,7 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
         'agents:list-ids',
         'agents:list-personal-owners',
         'agents:list-authored-skills',
+        'agents:install-authored-skill',
       ],
       // database:get-instance is hard. http:register-route + auth:require-user
       // are hard NOW because we mount admin routes; the plugin won't boot
@@ -106,6 +110,29 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
       // (handled inside checkAccess via try/catch) and intentionally NOT
       // declared.
       calls: ['database:get-instance', 'http:register-route', 'auth:require-user'],
+      // Soft deps used via hasService by agents:install-authored-skill (TASK-39)
+      // and agents:list-authored-skills: presets that strip the skills/workspace
+      // plugins degrade gracefully rather than failing to boot.
+      optionalCalls: [
+        {
+          hook: 'skills:upsert',
+          degradation:
+            'open-mode authoring (agents:install-authored-skill) cannot persist a skill; agent-authored installs are unavailable',
+        },
+        {
+          hook: 'workspace:list',
+          degradation: 'authored-skill discovery + retire are skipped (no workspace backend)',
+        },
+        {
+          hook: 'workspace:read',
+          degradation: 'authored-skill bodies cannot be read (no workspace backend)',
+        },
+        {
+          hook: 'workspace:apply',
+          degradation:
+            'the .ax/skills/<id>/ draft is not retired after install (leaves a duplicate-id risk if the same id is later attached)',
+        },
+      ],
       subscribes: ['bootstrap:reset-cleanup'],
     },
 
@@ -320,6 +347,129 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
             skills: await listAuthoredSkills(bus, agent.ownerId, input.agentId),
           };
         },
+      );
+
+      // Open-mode authoring (TASK-39, flow C): the in-chat, user-approved
+      // analog of the admin promoteAuthoredSkill flow. Reads the agent-authored
+      // draft (.ax/skills/<id>/, capability-free — the validator strips caps at
+      // write time), upserts a USER-scoped skill carrying the user-REQUESTED
+      // capabilities (the tool args, surfaced on the approval card) WITH the
+      // bundle's helper files[], then retires the draft. Called host-side by
+      // @ax/skill-broker's gated install_authored_skill tool ONLY when open mode
+      // is on. skills:upsert + workspace:* are SOFT deps (hasService-guarded).
+      bus.registerService<AgentsInstallAuthoredSkillInput, AgentsInstallAuthoredSkillOutput>(
+        'agents:install-authored-skill',
+        PLUGIN_NAME,
+        async (ctx, input) => {
+          // Personal agents only — same restriction as agents:list-authored-
+          // skills (team agents have no single-owner workspace to route the
+          // read/retire through).
+          const agent = await localStore.getById(input.agentId);
+          if (agent === null || agent.ownerType !== 'user') {
+            throw new PluginError({
+              code: 'authored-skill-unsupported',
+              plugin: PLUGIN_NAME,
+              message: 'authoring is supported only for personal agents',
+            });
+          }
+          const ownerUserId = agent.ownerId;
+
+          // 1. Read the writable draft bundle (body + helper files). The
+          //    workspace-authored SKILL.md is capability-free (the validator
+          //    strips caps at the .ax/skills boundary — I-P1-2, unchanged).
+          const bundle = await readAuthoredBundle(bus, ownerUserId, input.agentId, input.skillId);
+          if (bundle === null) {
+            throw new PluginError({
+              code: 'authored-skill-not-found',
+              plugin: PLUGIN_NAME,
+              message: `no authored skill '${input.skillId}' in the workspace`,
+            });
+          }
+
+          // 2. Build the manifest from the user-REQUESTED capabilities (the
+          //    card surfaces these). Like admin promoteAuthoredSkill, the
+          //    authored file's OWN caps are NOT used (they were stripped at
+          //    write time). skills:upsert's parseSkillManifest is the single
+          //    authority that validates host/slot SHAPES (invalid-host/-slot).
+          const slots = input.slots.map((s) => ({ slot: s, kind: 'api-key' as const }));
+          const manifestYaml = buildSkillManifestYaml({
+            id: bundle.id,
+            description: bundle.description,
+            version: bundle.version,
+            capabilities: {
+              allowedHosts: input.hosts,
+              credentials: slots,
+              mcpServers: [],
+              packages: { npm: [], pypi: [] },
+            },
+          });
+
+          // 3. Upsert to the USER skill store WITH the bundle's helper files —
+          //    the first production caller of TASK-32's files[] write path
+          //    (CLOSES the half-wired window). skills:upsert validates the
+          //    manifest (invalid-host/-slot) and the files (validateBundleFiles:
+          //    traversal / .mcp.json / .claude / caps); those PluginErrors
+          //    propagate to the broker tool unchanged.
+          if (!bus.hasService('skills:upsert')) {
+            throw new PluginError({
+              code: 'skills-plugin-not-loaded',
+              plugin: PLUGIN_NAME,
+              message: 'skills:upsert is required to install an authored skill',
+            });
+          }
+          await bus.call<
+            {
+              manifestYaml: string;
+              bodyMd: string;
+              files: Array<{ path: string; contents: string }>;
+              scope: 'user';
+              ownerUserId: string;
+            },
+            { skillId: string; created: boolean }
+          >('skills:upsert', ctx, {
+            manifestYaml,
+            bodyMd: bundle.bodyMd,
+            files: bundle.files,
+            scope: 'user',
+            ownerUserId,
+          });
+
+          // 4. Retire the writable .ax/skills/<id>/ draft (the §6D cross-domain
+          //    move): the canonical copy is now the user store. Prevents the
+          //    project/user duplicate-id collision after re-spawn AND stops the
+          //    agent editing the skill between request and approval (integrity).
+          //    Best-effort; on a workspace-less preset it no-ops. We pass the
+          //    bundle's read version as `parent` to satisfy the backend's
+          //    optimistic-concurrency CAS (re-listing right before the apply so
+          //    the version reflects the just-upserted state if it changed).
+          if (bus.hasService('workspace:list') && bus.hasService('workspace:apply')) {
+            const wsCtx = makeAgentContext({
+              userId: ownerUserId,
+              agentId: input.agentId,
+              sessionId: 'authored-bundle-retire',
+            });
+            const { paths } = await bus.call<{ pathGlob: string }, { paths: string[] }>(
+              'workspace:list',
+              wsCtx,
+              { pathGlob: `.ax/skills/${input.skillId}/**` },
+            );
+            if (paths.length > 0) {
+              await bus.call<
+                {
+                  changes: Array<{ path: string; kind: 'delete' }>;
+                  parent: string | null;
+                },
+                unknown
+              >('workspace:apply', wsCtx, {
+                changes: paths.map((p) => ({ path: p, kind: 'delete' as const })),
+                parent: bundle.bundleVersion,
+              });
+            }
+          }
+
+          return { description: bundle.description, hosts: input.hosts, slots };
+        },
+        { returns: AgentsInstallAuthoredSkillOutputSchema },
       );
 
       // Mount /admin/agents[/:id]. Routes are registered LAST so the bus
