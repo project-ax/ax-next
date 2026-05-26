@@ -1,7 +1,11 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { createServer as tlsCreate, connect as tlsConnect, type Server as TLSServer } from 'node:tls';
 import * as net from 'node:net';
-import { startProxyListener, type ProxyListener } from '../listener.js';
+import {
+  startProxyListener,
+  type ProxyListener,
+  type ProxyAuditEntry,
+} from '../listener.js';
 import { SharedCredentialRegistry } from '../registry.js';
 import { generateDomainCert, type CAKeyPair } from '../ca.js';
 import forgeModule from 'node-forge';
@@ -195,6 +199,64 @@ describe('proxy listener — HTTPS CONNECT (bypass / raw tunnel)', () => {
     await expect(
       connectThroughProxy('127.0.0.1', listener.port, `127.0.0.1:${upPort}`),
     ).rejects.toThrow(/403/);
+  });
+
+  it('attributes a CONNECT allowlist-miss 403 to its session via the proxy token (TASK-52)', async () => {
+    // The k8s-relevant path: HTTPS egress arrives as a CONNECT carrying
+    // `Proxy-Authorization: Basic ax:<token>` (forwarded by the bridge). Even
+    // though the host is allowlist-MISS (no allowing session), the listener
+    // attributes the block to the session that owns the token.
+    const { key, cert } = mintTestCert('localhost');
+    upstream = tlsCreate({ key, cert }, (socket) => socket.write('SHOULD NOT REACH'));
+    const upPort = await new Promise<number>((r) =>
+      upstream!.listen(0, '127.0.0.1', () => r((upstream!.address() as { port: number }).port)),
+    );
+
+    const token = 'a'.repeat(32);
+    const audits: ProxyAuditEntry[] = [];
+    const registry = new SharedCredentialRegistry();
+    listener = await startProxyListener({
+      listen: { kind: 'tcp', host: '127.0.0.1', port: 0 },
+      registry,
+      ca: { key: 'unused-key', cert: 'unused-cert' },
+      sessions: new Map([
+        [
+          's1',
+          {
+            allowlist: new Set(['other.example.com']),
+            allowedIPs: new Set(['127.0.0.1']),
+            sessionId: 's1',
+            userId: 'u1',
+            proxyToken: token,
+          },
+        ],
+      ]),
+      onAudit: (e) => audits.push(e),
+    });
+
+    const authValue = 'Basic ' + Buffer.from('ax:' + token).toString('base64');
+    await new Promise<void>((resolve, reject) => {
+      const sock = net.connect(listener!.port, '127.0.0.1', () => {
+        sock.write(
+          `CONNECT 127.0.0.1:${upPort} HTTP/1.1\r\n` +
+            `Host: 127.0.0.1:${upPort}\r\n` +
+            `Proxy-Authorization: ${authValue}\r\n` +
+            `\r\n`,
+        );
+      });
+      let acc = '';
+      sock.on('data', (c: Buffer) => {
+        acc += c.toString('utf8');
+      });
+      sock.on('end', () => resolve());
+      sock.on('close', () => resolve());
+      sock.on('error', reject);
+    });
+
+    const block = audits.find((a) => a.blocked?.startsWith('domain_denied:'));
+    expect(block).toBeDefined();
+    expect(block!.sessionId).toBe('s1');
+    expect(block!.userId).toBe('u1');
   });
 
   // TASK-25 — a binary-download CLI (e.g. one that fetches a prebuilt binary

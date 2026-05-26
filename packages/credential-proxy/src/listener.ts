@@ -248,6 +248,73 @@ function findAllowingSession(
   return undefined;
 }
 
+// TASK-52: the per-session proxy token format, re-asserted at this trust
+// boundary (defense in depth — the runner validates independently; no shared
+// helper crosses the plugin boundary, per I2). Attribution-only.
+const PROXY_TOKEN_RE = /^[0-9a-f]{32}$/;
+
+/**
+ * Parse a `Proxy-Authorization: Basic base64("ax:<token>")` header into the
+ * 32-hex token, or undefined. ATTRIBUTION-ONLY — a malformed/absent header
+ * simply yields no attribution; it NEVER affects the allow/deny decision and
+ * can never widen egress.
+ */
+function parseProxyToken(headerValue: string | string[] | undefined): string | undefined {
+  const raw = Array.isArray(headerValue) ? headerValue[0] : headerValue;
+  if (typeof raw !== 'string' || !raw.startsWith('Basic ')) return undefined;
+  let decoded: string;
+  try {
+    decoded = Buffer.from(raw.slice('Basic '.length), 'base64').toString('utf-8');
+  } catch {
+    return undefined;
+  }
+  const sep = decoded.indexOf(':');
+  if (sep === -1) return undefined;
+  const token = decoded.slice(sep + 1);
+  return PROXY_TOKEN_RE.test(token) ? token : undefined;
+}
+
+/**
+ * Resolve a proxy token → its SessionConfig (attribution). Linear scan; the
+ * per-process session count is small. Returns undefined for an absent or
+ * unregistered (forged) token — the caller then leaves the audit unattributed,
+ * exactly as before this feature existed.
+ */
+function findSessionByProxyToken(
+  token: string | undefined,
+  sessions: Map<string, SessionConfig>,
+): SessionConfig | undefined {
+  if (token === undefined) return undefined;
+  for (const session of sessions.values()) {
+    if (session.proxyToken !== undefined && session.proxyToken === token) {
+      return session;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * TASK-52: build the session-attribution fields to spread onto a BLOCKED
+ * (allowlist-miss) audit entry, resolved from the request's Proxy-Authorization
+ * header. Returns an empty object when no token matches — the block stays
+ * unattributed (today's behavior). This is additive: it does NOT touch the
+ * allow/deny gate (findAllowingSession), so it can never widen egress.
+ */
+function blockAttribution(
+  proxyAuthHeader: string | string[] | undefined,
+  sessions: Map<string, SessionConfig>,
+): Partial<Pick<ProxyAuditEntry, 'sessionId' | 'userId' | 'classification'>> {
+  const attributed = findSessionByProxyToken(parseProxyToken(proxyAuthHeader), sessions);
+  if (attributed === undefined) return {};
+  return {
+    ...(attributed.sessionId !== undefined ? { sessionId: attributed.sessionId } : {}),
+    ...(attributed.userId !== undefined ? { userId: attributed.userId } : {}),
+    ...(attributed.classification !== undefined
+      ? { classification: attributed.classification }
+      : {}),
+  };
+}
+
 /**
  * Returns true iff ANY registered session has the hostname in `bypassMITM`.
  *
@@ -445,10 +512,11 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
       // Allowlist gate (I2): hostname must be in some session's allowlist.
       const allowingSession = findAllowingSession(hostname, sessions);
       if (!allowingSession) {
-        // No matching session → no sessionId/userId/classification to stamp.
-        // The audit just carries the block reason; the plugin's onAudit will
-        // emit the bus event with `blockedReason: 'allowlist'` and the
-        // session-attribution fields left empty.
+        // No allowing session, but the request may still carry a per-session
+        // proxy token (TASK-52) — resolve it so even this allowlist-miss 403
+        // is attributed to the session that made it. Attribution-only: a
+        // missing/forged token just leaves the fields empty (today's
+        // behavior); it never affects the allow/deny decision above.
         audit({
           action: 'proxy_request',
           method,
@@ -458,6 +526,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
           responseBytes: 0,
           durationMs: Date.now() - startTime,
           blocked: `domain_denied: ${hostname}`,
+          ...blockAttribution(req.headers['proxy-authorization'], sessions),
         });
         res.writeHead(403, { 'Content-Type': 'text/plain' });
         res.end(allowlistMissBody(hostname));
@@ -874,7 +943,9 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
             body,
         );
         clientSocket.end();
-        // No matching session — same shape as the HTTP allowlist-miss case.
+        // Same shape as the HTTP allowlist-miss case — attribute via the
+        // per-session proxy token on the CONNECT request when present
+        // (TASK-52). Node exposes the CONNECT request's headers the same way.
         audit({
           action: 'proxy_request',
           method: 'CONNECT',
@@ -884,6 +955,7 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
           responseBytes: 0,
           durationMs: Date.now() - startTime,
           blocked: `domain_denied: ${hostname}`,
+          ...blockAttribution(req.headers['proxy-authorization'], sessions),
         });
         return;
       }
