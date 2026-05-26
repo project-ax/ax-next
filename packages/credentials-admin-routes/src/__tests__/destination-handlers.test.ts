@@ -289,6 +289,85 @@ describe('destination credential handlers', () => {
     expect(stored?.ownerId).toBe('alice');
   });
 
+  // JIT P2 — service-keyed user vault. An account destination stores the
+  // shared key under account:<service> at user scope.
+  it('POST /settings/destinations/account: stores under account:<service> at user scope', async () => {
+    const bus = await makeBus({ id: 'alice', isAdmin: false });
+    const handlers = createDestinationHandlers({ bus });
+    const { res, statusOf } = mkRes();
+
+    await handlers.createSettings(
+      mkReq({
+        params: { destinationKind: 'account' },
+        body: {
+          destination: { kind: 'account', service: 'linear' },
+          scope: 'user',
+          ownerId: null,
+          kind: 'api-key',
+          payloadB64: Buffer.from('lin-secret').toString('base64'),
+        },
+      }),
+      res,
+    );
+
+    expect(statusOf()).toBe(204);
+
+    const out = await bus.call<
+      Record<string, never>,
+      { credentials: Array<{ ref: string; scope: string; ownerId: string | null; kind: string }> }
+    >(
+      'credentials:list',
+      makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'admin' }),
+      {},
+    );
+    const stored = out.credentials.find((c) => c.ref === 'account:linear');
+    expect(stored).toMatchObject({ ref: 'account:linear', scope: 'user', ownerId: 'alice', kind: 'api-key' });
+  });
+
+  it('POST /settings/destinations/account: rejects when destination.kind mismatches route param (400)', async () => {
+    const bus = await makeBus({ id: 'alice', isAdmin: false });
+    const handlers = createDestinationHandlers({ bus });
+    const { res, statusOf } = mkRes();
+
+    await handlers.createSettings(
+      mkReq({
+        params: { destinationKind: 'skill-slot' }, // route says skill-slot
+        body: {
+          destination: { kind: 'account', service: 'linear' }, // body says account
+          scope: 'user',
+          ownerId: null,
+          kind: 'api-key',
+          payloadB64: 'eA==',
+        },
+      }),
+      res,
+    );
+
+    expect(statusOf()).toBe(400);
+  });
+
+  it('POST /settings/destinations/account: rejects an invalid service slug (400)', async () => {
+    const bus = await makeBus({ id: 'alice', isAdmin: false });
+    const handlers = createDestinationHandlers({ bus });
+    const { res, statusOf } = mkRes();
+
+    await handlers.createSettings(
+      mkReq({
+        params: { destinationKind: 'account' },
+        body: {
+          destination: { kind: 'account', service: 'Linear' }, // uppercase — rejected by grammar
+          scope: 'user',
+          ownerId: null,
+          kind: 'api-key',
+          payloadB64: 'eA==',
+        },
+      }),
+      res,
+    );
+
+    expect(statusOf()).toBe(400);
+  });
+
   it('POST /settings: unauthenticated user gets 401', async () => {
     const bus = new HookBus();
     await bootstrap({

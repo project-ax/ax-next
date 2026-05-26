@@ -51,4 +51,15 @@ describe('refForDestination', () => {
       expect(() => refForDestination(d)).toThrow(PluginError);
     }
   });
+
+  // JIT P2 — service-keyed user vault.
+  it('mints account:<service> for an account destination', () => {
+    expect(refForDestination({ kind: 'account', service: 'linear' })).toBe('account:linear');
+  });
+
+  it('rejects an account service containing the ref separator', () => {
+    expect(() => refForDestination({ kind: 'account', service: 'lin:ear' })).toThrow(
+      /must not contain/,
+    );
+  });
 });
