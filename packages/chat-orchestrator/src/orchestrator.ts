@@ -219,6 +219,18 @@ interface SkillsResolveOutput {
   skills: ResolvedSkillForOrch[];
 }
 
+// skills:list-user-attachments — registered by @ax/skills (TASK-33).
+// Duplicated structurally per I2 (no @ax/skills import). Conditionally called
+// via bus.hasService — NOT declared in the manifest, same convention as
+// skills:resolve / skills:list-defaults.
+interface SkillsListUserAttachmentsInput {
+  userId: string;
+  agentId: string;
+}
+interface SkillsListUserAttachmentsOutput {
+  attachments: Array<{ skillId: string; credentialBindings: Record<string, string> }>;
+}
+
 // proxy:* shapes — duplicated structurally per I2. The orchestrator does
 // NOT import from @ax/credential-proxy; calls flow through bus.call.
 interface ProxyOpenSessionInput {
@@ -1043,7 +1055,49 @@ export function createOrchestrator(
     // agent gains access to a new credentialed host; see
     // docs/plans/2026-05-17-skill-install-workflow-design.md.
     let resolvedSkills: ResolvedSkillForOrch[] = [];
-    const attachments = agent.skillAttachments ?? [];
+
+    // TASK-33 — per-user skill attachments: a self-serve layer above the
+    // admin-managed agent-global attachments, fetched per (user, agent).
+    // Union precedence is per-user > agent-global > default-attached. Gated by
+    // hasService (same convention as skills:resolve / skills:list-defaults —
+    // conditionally called, NOT declared in the manifest): stripped presets
+    // without @ax/skills no-op. Throws are non-fatal — log + treat as empty so
+    // the session still opens on its agent-global + default skills.
+    let userAttachments: Array<{
+      skillId: string;
+      credentialBindings: Record<string, string>;
+    }> = [];
+    if (bus.hasService('skills:list-user-attachments')) {
+      try {
+        const r = await bus.call<
+          SkillsListUserAttachmentsInput,
+          SkillsListUserAttachmentsOutput
+        >('skills:list-user-attachments', ctx, {
+          userId: ctx.userId,
+          agentId: agent.id,
+        });
+        userAttachments = r.attachments;
+      } catch (err) {
+        ctx.logger.warn('skills_list_user_attachments_failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        userAttachments = [];
+      }
+    }
+
+    // Per-user wins over agent-global on skill-id collision: drop any
+    // agent-global attachment whose skillId a per-user attachment already
+    // covers, then list per-user FIRST so the credential/host merge loop below
+    // resolves it as the slot owner. The downstream resolve + credential loop +
+    // defaults filter all key off this single `attachments` list unchanged, so
+    // the three-source union and per-user-binding-wins precedence fall out here.
+    const userAttachedSkillIds = new Set(userAttachments.map((a) => a.skillId));
+    const attachments = [
+      ...userAttachments,
+      ...(agent.skillAttachments ?? []).filter(
+        (a) => !userAttachedSkillIds.has(a.skillId),
+      ),
+    ];
     if (attachments.length > 0 && bus.hasService('skills:resolve')) {
       try {
         const r = await bus.call<SkillsResolveInput, SkillsResolveOutput>(
