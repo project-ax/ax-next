@@ -358,6 +358,19 @@ export interface K8sPresetConfig {
    */
   allowUserInstalledSkills?: boolean;
   /**
+   * @ax/skills bundle byte-store location (JIT git-tree backing, TASK-40).
+   * `bundleStore.repoRoot` hosts a bare git repo (`<repoRoot>/bundles.git`)
+   * that content-addresses each skill bundle's extra (non-SKILL.md) files.
+   * Single-replica posture: the repo lives on the host PVC (same split as
+   * @ax/workspace-git local vs -server). `loadK8sConfigFromEnv` populates this
+   * from `AX_SKILLS_BUNDLE_ROOT` (a sibling dir on the workspace PVC, set only
+   * for the local backend). When absent the plugin falls back to an ephemeral
+   * temp dir + warns — non-fatal until P5 wires a multi-file write path.
+   */
+  skills?: {
+    bundleStore?: { repoRoot: string };
+  };
+  /**
    * @ax/onboarding — first-run wizard. When set, the plugin loads and
    * serves the bootstrap wizard at /setup/*. The plugin reads
    * AX_BOOTSTRAP_TOKEN from process.env automatically; set `publicBaseUrl`
@@ -697,7 +710,9 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   //
   // skills:delete soft-couples to agents:any-attached-to-skill (registered
   // by @ax/agents above) so a delete that would orphan an attachment 409s.
-  plugins.push(createSkillsPlugin());
+  // Pass the bundle-store config through when the env loader populated it
+  // (local backend → AX_SKILLS_BUNDLE_ROOT). Omitted → ephemeral fallback.
+  plugins.push(createSkillsPlugin(config.skills ?? {}));
 
   // ----- 8a'. skill broker ----------------------------------------------
   // @ax/skill-broker — always-on host tools (search_catalog +
@@ -1201,6 +1216,17 @@ export function loadK8sConfigFromEnv(
   // defaults the broker's gate to false. Mirrors AX_CREDENTIALS_ADMIN_ENABLED.
   if ((env.AX_ALLOW_USER_INSTALLED_SKILLS ?? '').toLowerCase() === 'true') {
     config.allowUserInstalledSkills = true;
+  }
+
+  // ---- skills bundle byte-store (JIT git-tree backing, TASK-40) ------------
+  // The chart stamps AX_SKILLS_BUNDLE_ROOT only for the local workspace
+  // backend (a sibling dir on the host PVC). Empty/unset → leave config.skills
+  // undefined so the plugin falls back to its ephemeral temp dir + warn.
+  // (git-protocol / multi-replica defer durable catalog storage to ARCH-9.)
+  // Treat empty string as unset — same convention as AX_WORKSPACE_ROOT.
+  const skillsBundleRoot = env.AX_SKILLS_BUNDLE_ROOT;
+  if (skillsBundleRoot !== undefined && skillsBundleRoot !== '') {
+    config.skills = { bundleStore: { repoRoot: skillsBundleRoot } };
   }
 
   // ---- titles (auto-titling subscriber) -----------------------------------

@@ -8,8 +8,12 @@
  * Row mapping delegates to _row-mappers.ts (shared with store.ts) so the
  * two stores stay in sync without duplicating parsing logic.
  */
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { Kysely } from 'kysely';
 import type { SkillsDatabase } from './migrations.js';
+import { createBundleStore, type BundleStore } from './bundle-store.js';
 import {
   rowToUserDetail,
   rowToUserResolved,
@@ -45,69 +49,18 @@ export interface UserSkillsStore {
   getDefaults(ownerUserId: string): Promise<ResolvedSkill[]>;
 }
 
-export function createUserSkillsStore(db: Kysely<SkillsDatabase>): UserSkillsStore {
-  // ---- bundle extra-file helpers (user scope: scope='user', owner=user id) ----
+export function createUserSkillsStore(
+  db: Kysely<SkillsDatabase>,
+  // Shared content-addressed bundle byte-store (see store.ts). Optional so the
+  // existing `createUserSkillsStore(db)` test call sites keep working; in
+  // production the plugin injects the SAME instance as the global store so
+  // identical bytes dedup across scopes.
+  bundleStore: BundleStore = createBundleStore(mkdtempSync(join(tmpdir(), 'ax-skills-bundles-'))),
+): UserSkillsStore {
+  // ---- bundle extra-file helpers (content-addressed git tree byte-store) ----
 
-  async function loadFiles(ownerUserId: string, skillId: string): Promise<BundleFile[]> {
-    const rows = await db
-      .selectFrom('skills_v1_skill_files')
-      .select(['path', 'contents'])
-      .where('scope', '=', 'user')
-      .where('owner_user_id', '=', ownerUserId)
-      .where('skill_id', '=', skillId)
-      .orderBy('path')
-      .execute();
-    return rows.map((r) => ({ path: r.path, contents: r.contents }));
-  }
-
-  async function loadFilesFor(
-    ownerUserId: string,
-    skillIds: string[],
-  ): Promise<Map<string, BundleFile[]>> {
-    const grouped = new Map<string, BundleFile[]>();
-    if (skillIds.length === 0) return grouped;
-    const rows = await db
-      .selectFrom('skills_v1_skill_files')
-      .select(['skill_id', 'path', 'contents'])
-      .where('scope', '=', 'user')
-      .where('owner_user_id', '=', ownerUserId)
-      .where('skill_id', 'in', skillIds)
-      .orderBy('skill_id')
-      .orderBy('path')
-      .execute();
-    for (const r of rows) {
-      const list = grouped.get(r.skill_id) ?? [];
-      list.push({ path: r.path, contents: r.contents });
-      grouped.set(r.skill_id, list);
-    }
-    return grouped;
-  }
-
-  async function replaceFiles(
-    ownerUserId: string,
-    skillId: string,
-    files: BundleFile[],
-  ): Promise<void> {
-    await db
-      .deleteFrom('skills_v1_skill_files')
-      .where('scope', '=', 'user')
-      .where('owner_user_id', '=', ownerUserId)
-      .where('skill_id', '=', skillId)
-      .execute();
-    if (files.length > 0) {
-      await db
-        .insertInto('skills_v1_skill_files')
-        .values(
-          files.map((f) => ({
-            scope: 'user' as const,
-            owner_user_id: ownerUserId,
-            skill_id: skillId,
-            path: f.path,
-            contents: f.contents,
-          })),
-        )
-        .execute();
-    }
+  async function loadFiles(treeSha: string | null): Promise<BundleFile[]> {
+    return treeSha === null ? [] : bundleStore.readTree(treeSha);
   }
 
   return {
@@ -131,10 +84,15 @@ export function createUserSkillsStore(db: Kysely<SkillsDatabase>): UserSkillsSto
         .executeTakeFirst();
 
       if (row === undefined) return null;
-      return rowToUserDetail(row, ownerUserId, await loadFiles(ownerUserId, skillId));
+      return rowToUserDetail(row, ownerUserId, await loadFiles(row.bundle_tree_sha));
     },
 
     async upsert(input) {
+      // Write the extra-file tree FIRST (only when `files` is explicitly
+      // provided) — see store.ts for the §6D metadata-only-edit rationale.
+      const filesProvided = input.files !== undefined;
+      const treeSha = filesProvided ? await bundleStore.writeTree(input.files!) : null;
+
       // SELECT → INSERT or UPDATE so `created` is accurate.
       // Accepted SELECT→INSERT race: this mirrors the global store (store.ts)
       // and the rationale documented in plugin.ts applies equally here —
@@ -164,6 +122,7 @@ export function createUserSkillsStore(db: Kysely<SkillsDatabase>): UserSkillsSto
             version: input.version,
             default_attached: input.defaultAttached ?? false,
             source_url: input.sourceUrl ?? null,
+            bundle_tree_sha: treeSha,
             created_at: now,
             updated_at: now,
           })
@@ -178,29 +137,21 @@ export function createUserSkillsStore(db: Kysely<SkillsDatabase>): UserSkillsSto
             version: input.version,
             default_attached: input.defaultAttached ?? false,
             source_url: input.sourceUrl ?? null,
+            // Only touch bundle_tree_sha when `files` was explicitly provided (§6D).
+            ...(filesProvided ? { bundle_tree_sha: treeSha } : {}),
             updated_at: new Date(),
           })
           .where('owner_user_id', '=', input.ownerUserId)
           .where('skill_id', '=', input.id)
           .execute();
       }
-
-      // Replace the extra-file set ONLY when `files` is explicitly provided
-      // (scoped to this user). `undefined` = leave current files unchanged —
-      // see the store.ts rationale (the §6D metadata-only-edit data-loss bug).
-      if (input.files !== undefined) {
-        await replaceFiles(input.ownerUserId, input.id, input.files);
-      } else if (created) {
-        await replaceFiles(input.ownerUserId, input.id, []);
-      }
       return { created };
     },
 
     async delete(ownerUserId, skillId) {
       // Silent if the row doesn't exist — the plugin layer adds the not-found
-      // error when needed. The store is the dumb persistence layer. Also drop
-      // the skill's extra files so a later re-create starts from a clean set.
-      await replaceFiles(ownerUserId, skillId, []);
+      // error when needed. The store is the dumb persistence layer. Just delete
+      // the row: orphaned bundle objects are content-addressed and harmless.
       await db
         .deleteFrom('skills_v1_user_skills')
         .where('owner_user_id', '=', ownerUserId)
@@ -217,8 +168,9 @@ export function createUserSkillsStore(db: Kysely<SkillsDatabase>): UserSkillsSto
         .orderBy('skill_id', 'asc')
         .execute();
 
-      const filesById = await loadFilesFor(ownerUserId, rows.map((r) => r.skill_id));
-      return rows.map((r) => rowToUserResolved(r, filesById.get(r.skill_id) ?? []));
+      const out: ResolvedSkill[] = [];
+      for (const r of rows) out.push(rowToUserResolved(r, await loadFiles(r.bundle_tree_sha)));
+      return out;
     },
 
     async resolve(ownerUserId, skillIds) {
@@ -232,14 +184,13 @@ export function createUserSkillsStore(db: Kysely<SkillsDatabase>): UserSkillsSto
         .execute();
 
       const byId = new Map(rows.map((r) => [r.skill_id, r]));
-      const filesById = await loadFilesFor(ownerUserId, rows.map((r) => r.skill_id));
 
       // Preserve input order; drop unknown ids silently.
       const result: ResolvedSkill[] = [];
       for (const id of skillIds) {
         const row = byId.get(id);
         if (row === undefined) continue;
-        result.push(rowToUserResolved(row, filesById.get(id) ?? []));
+        result.push(rowToUserResolved(row, await loadFiles(row.bundle_tree_sha)));
       }
       return result;
     },
