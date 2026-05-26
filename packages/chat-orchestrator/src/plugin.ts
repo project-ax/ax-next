@@ -93,7 +93,14 @@ export function createChatOrchestratorPlugin(
       // orchestrator both requests teardown and observes the broadcast the
       // session store re-fires; the bus keeps the service + subscriber lanes
       // separate.)
-      subscribes: ['chat:end', 'chat:turn-end', 'session:terminate'],
+      // We listen to `event.http-egress` (TASK-37, reactive egress wall) so an
+      // allowlist-MISS 403 the credential proxy fires — now attributed to its
+      // session by TASK-52's per-session token — becomes an in-chat host-grant
+      // permission card. Observation-only: it resolves the block's session to
+      // the in-flight turn and fires `chat:permission-request`; it never vetoes
+      // the egress audit (the proxy already returned 403) and never affects the
+      // allow/deny decision.
+      subscribes: ['chat:end', 'chat:turn-end', 'session:terminate', 'event.http-egress'],
     },
     init({ bus }) {
       const orch = createOrchestrator(bus, config);
@@ -142,6 +149,20 @@ export function createChatOrchestratorPlugin(
         async (ctx, payload) => {
           await orch.onSessionTerminate(ctx, payload);
           return undefined; // observation-only; never vetoes teardown.
+        },
+      );
+
+      bus.subscribe<{
+        sessionId: string;
+        userId: string;
+        host: string;
+        blockedReason?: string;
+      }>(
+        'event.http-egress',
+        PLUGIN_NAME,
+        async (ctx, payload) => {
+          await orch.onHttpEgress(ctx, payload as never);
+          return undefined; // observation-only; never vetoes the egress audit.
         },
       );
     },

@@ -3379,3 +3379,133 @@ describe('chat-orchestrator', () => {
     expect(skillMd?.contents).toContain('---\n# Greeter');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Reactive egress wall (TASK-37) — an allowlist-MISS 403 the credential proxy
+// fired on `event.http-egress` (now carrying a real sessionId via TASK-52's
+// per-session token) becomes an in-chat host-grant permission card. The
+// orchestrator resolves the block's sessionId → in-flight reqId via the SAME
+// reqIdsBySession map Fault A uses, dedups per (session, host), and fires the
+// TASK-35 `chat:permission-request` hook with the `{ kind: 'host' }` variant
+// stamped with reqId so the SSE matches the precise turn.
+// ---------------------------------------------------------------------------
+
+describe('chat-orchestrator — reactive egress wall (TASK-37)', () => {
+  // Drive an agent:invoke into the in-flight state (sandbox open + message
+  // enqueued + waiter registered) and leave it pending, returning the bus +
+  // the still-pending invoke promise + a teardown that settles it. The default
+  // mock's `exited` never resolves and no chat:end fires, so the turn stays
+  // in-flight (the waiter sits in reqIdsBySession keyed by ctx.sessionId).
+  async function inFlightTurn(sessionId: string, reqId: string) {
+    const mocks = buildMocks();
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinary: '/irrelevant',
+          chatTimeoutMs: 10_000,
+        }),
+      ],
+    });
+    const ctx = makeAgentContext({
+      sessionId,
+      agentId: 'test-agent',
+      userId: 'test-user',
+      reqId,
+      logger: createLogger({ reqId, writer: () => undefined }),
+    });
+    const invokePromise = h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      ctx,
+      { message: { role: 'user', content: 'hi' } },
+    );
+    while (mocks.calls.sessionQueueWork === 0) {
+      await new Promise((r) => setImmediate(r));
+    }
+    async function settle(): Promise<void> {
+      await h.bus.fire('chat:end', ctx, {
+        outcome: { kind: 'terminated', reason: 'sandbox-terminated' },
+      });
+      await invokePromise;
+    }
+    return { bus: h.bus, ctx, settle };
+  }
+
+  const egress = (over: {
+    sessionId: string;
+    userId: string;
+    host: string;
+    blockedReason?: string;
+  }) => ({
+    method: 'GET',
+    path: '/',
+    status: 403,
+    requestBytes: 0,
+    responseBytes: 0,
+    durationMs: 1,
+    credentialInjected: false,
+    classification: 'other' as const,
+    timestamp: Date.now(),
+    ...over,
+  });
+
+  it('fires a host-grant chat:permission-request when an allowlist-block carries an in-flight session', async () => {
+    const { bus, settle } = await inFlightTurn('s1', 'r1');
+    const cards: unknown[] = [];
+    bus.subscribe('chat:permission-request', 'test/capture', async (_c, p) => {
+      cards.push(p);
+      return undefined;
+    });
+
+    await bus.fire(
+      'event.http-egress',
+      makeAgentContext({ sessionId: 's1', userId: 'u1', agentId: '' }),
+      egress({ sessionId: 's1', userId: 'u1', host: 'blocked.example.com', blockedReason: 'allowlist' }),
+    );
+
+    expect(cards).toEqual([
+      { kind: 'host', host: 'blocked.example.com', sessionId: 's1', reqId: 'r1' },
+    ]);
+    await settle();
+  });
+
+  it('does NOT fire for a non-allowlist block, an empty sessionId, or a session with no in-flight turn', async () => {
+    const { bus, settle } = await inFlightTurn('s1', 'r1');
+    const cards: unknown[] = [];
+    bus.subscribe('chat:permission-request', 'test/capture', async (_c, p) => {
+      cards.push(p);
+      return undefined;
+    });
+    const fire = (sessionId: string, userId: string, host: string, blockedReason?: string) =>
+      bus.fire(
+        'event.http-egress',
+        makeAgentContext({ sessionId: sessionId || 'x', userId: userId || 'x', agentId: '' }),
+        egress({ sessionId, userId, host, blockedReason }),
+      );
+    await fire('s1', 'u1', 'h', 'private-ip'); // wrong reason
+    await fire('', '', 'h', 'allowlist'); // unattributed
+    await fire('s-noturn', 'u1', 'h', 'allowlist'); // no in-flight turn
+    expect(cards).toEqual([]);
+    await settle();
+  });
+
+  it('dedups repeated blocks for the same (session, host)', async () => {
+    const { bus, settle } = await inFlightTurn('s1', 'r1');
+    const cards: unknown[] = [];
+    bus.subscribe('chat:permission-request', 'test/capture', async (_c, p) => {
+      cards.push(p);
+      return undefined;
+    });
+    const fire = (host: string) =>
+      bus.fire(
+        'event.http-egress',
+        makeAgentContext({ sessionId: 's1', userId: 'u1', agentId: '' }),
+        egress({ sessionId: 's1', userId: 'u1', host, blockedReason: 'allowlist' }),
+      );
+    await fire('h.example.com');
+    await fire('h.example.com'); // same host → deduped
+    await fire('other.example.com'); // distinct host → new card
+    expect(cards).toHaveLength(2);
+    await settle();
+  });
+});
