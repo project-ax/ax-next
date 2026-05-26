@@ -7,6 +7,8 @@ import {
   SkillsListOutputSchema,
   SkillsResolveOutputSchema,
   SkillsUpsertOutputSchema,
+  SkillsAttachForUserOutputSchema,
+  SkillsListUserAttachmentsOutputSchema,
   type ResolvedSkill,
   type SkillCapabilities,
   type SkillDetail,
@@ -17,6 +19,8 @@ import {
   type SkillsListOutput,
   type SkillsResolveOutput,
   type SkillsUpsertOutput,
+  type SkillsAttachForUserOutput,
+  type SkillsListUserAttachmentsOutput,
 } from '../types.js';
 
 // ARCH-13 drift guard for the `skills:*` returns schemas. A fully-populated
@@ -129,5 +133,22 @@ describe('skills return schemas', () => {
     expect(
       SkillsListOutputSchema.safeParse({ skills: [{ ...summary, scope: 'team' }] }).success,
     ).toBe(false);
+  });
+
+  it('SkillsAttachForUserOutputSchema round-trips a fully-populated value', () => {
+    const v: SkillsAttachForUserOutput = { created: true };
+    expect(SkillsAttachForUserOutputSchema.parse(v)).toEqual(v);
+  });
+
+  it('SkillsListUserAttachmentsOutputSchema round-trips a fully-populated value', () => {
+    const v: SkillsListUserAttachmentsOutput = {
+      attachments: [{ skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'ref' } }],
+    };
+    expect(SkillsListUserAttachmentsOutputSchema.parse(v)).toEqual(v);
+  });
+
+  it('SkillsListUserAttachmentsOutputSchema round-trips empty attachments', () => {
+    const v: SkillsListUserAttachmentsOutput = { attachments: [] };
+    expect(SkillsListUserAttachmentsOutputSchema.parse(v)).toEqual(v);
   });
 });
