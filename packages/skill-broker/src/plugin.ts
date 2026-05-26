@@ -1,5 +1,6 @@
 import type { Plugin } from '@ax/core';
 import { registerSearchCatalog } from './tools/search-catalog.js';
+import { registerRequestCapability } from './tools/request-capability.js';
 
 const PLUGIN_NAME = '@ax/skill-broker';
 const PLUGIN_VERSION = '0.0.0';
@@ -16,7 +17,7 @@ export function createSkillBrokerPlugin(): Plugin {
     manifest: {
       name: PLUGIN_NAME,
       version: PLUGIN_VERSION,
-      registers: ['tool:execute:search_catalog'],
+      registers: ['tool:execute:search_catalog', 'tool:execute:request_capability'],
       // Hard deps → init-ordering edges: the dispatcher (tool:register) and the
       // catalog owner (skills:search-catalog / skills:get) must init first.
       calls: ['tool:register', 'skills:search-catalog', 'skills:get'],
@@ -24,6 +25,7 @@ export function createSkillBrokerPlugin(): Plugin {
     },
     async init({ bus }) {
       await registerSearchCatalog(bus);
+      await registerRequestCapability(bus);
     },
   };
 }
