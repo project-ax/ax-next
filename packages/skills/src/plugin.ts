@@ -33,6 +33,7 @@ import {
   SkillsUpsertOutputSchema,
   SkillsAttachForUserOutputSchema,
   SkillsListUserAttachmentsOutputSchema,
+  SkillsDetachForUserOutputSchema,
   SkillsSearchCatalogOutputSchema,
   CatalogSubmitOutputSchema,
   CatalogListRequestsOutputSchema,
@@ -57,6 +58,8 @@ import type {
   SkillsAttachForUserOutput,
   SkillsListUserAttachmentsInput,
   SkillsListUserAttachmentsOutput,
+  SkillsDetachForUserInput,
+  SkillsDetachForUserOutput,
   SkillsSearchCatalogInput,
   SkillsSearchCatalogOutput,
   CatalogSubmitInput,
@@ -185,6 +188,7 @@ export function createSkillsPlugin(config: SkillsPluginConfig = {}): Plugin {
         'skills:check-for-updates',
         'skills:attach-for-user',
         'skills:list-user-attachments',
+        'skills:detach-for-user',
         'skills:search-catalog',
         'catalog:submit',
         'catalog:list-requests',
@@ -654,6 +658,24 @@ export function createSkillsPlugin(config: SkillsPluginConfig = {}): Plugin {
           return { attachments };
         },
         { returns: SkillsListUserAttachmentsOutputSchema },
+      );
+
+      // -----------------------------------------------------------------------
+      // skills:detach-for-user (TASK-42) — the out-of-band twin of
+      // skills:attach-for-user (the Settings "Connections" revoke; design P6).
+      // Host-internal, NOT an IPC action — same posture as attach: the untrusted
+      // runner must never detach a user's skills. The (authenticated) caller
+      // supplies userId; the delete is keyed to the full (userId, agentId,
+      // skillId) compound key, so a user can only ever remove their own row.
+      // Idempotent: removed:false when the row was already absent.
+      // -----------------------------------------------------------------------
+      bus.registerService<SkillsDetachForUserInput, SkillsDetachForUserOutput>(
+        'skills:detach-for-user',
+        PLUGIN_NAME,
+        async (_ctx, input) => {
+          return attachmentsStore.delete(input.userId, input.agentId, input.skillId);
+        },
+        { returns: SkillsDetachForUserOutputSchema },
       );
 
       // -----------------------------------------------------------------------
