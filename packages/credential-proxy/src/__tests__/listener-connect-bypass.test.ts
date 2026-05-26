@@ -244,10 +244,8 @@ describe('proxy listener — HTTPS CONNECT (bypass / raw tunnel)', () => {
             `\r\n`,
         );
       });
-      let acc = '';
-      sock.on('data', (c: Buffer) => {
-        acc += c.toString('utf8');
-      });
+      // Drain the 403 response bytes; we assert via the audit, not the body.
+      sock.on('data', () => {});
       sock.on('end', () => resolve());
       sock.on('close', () => resolve());
       sock.on('error', reject);
