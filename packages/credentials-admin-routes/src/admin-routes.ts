@@ -33,6 +33,7 @@ export interface AdminRouteDeps {
 
 export function createAdminCredentialsHandlers(deps: AdminRouteDeps): {
   list: (req: RouteRequest, res: RouteResponse) => Promise<void>;
+  listSettings: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   kinds: (req: RouteRequest, res: RouteResponse) => Promise<void>;
 } {
   // Per-handler ctx is acceptable for MVP. A subscriber observing audit
@@ -55,6 +56,29 @@ export function createAdminCredentialsHandlers(deps: AdminRouteDeps): {
           Record<string, never>,
           { credentials: unknown[] }
         >('credentials:list', ctx, {});
+        res.status(200).json(out);
+      } catch (err) {
+        if (writeServiceError(res, err)) return;
+        throw err;
+      }
+    },
+
+    /**
+     * GET /settings/credentials — the caller's OWN user-scoped credentials
+     * (metadata only). Re-added for the Settings "Keys" surface (TASK-42); the
+     * client (`lib/credentials.ts:myCredentials.list`) already called it. The
+     * scope+ownerId are SERVER-FORCED from `auth:require-user` — never read from
+     * the body/params — so a caller can only ever list their own keys (IDOR
+     * guard). `credentials:list` returns metadata only (no secret bytes).
+     */
+    async listSettings(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const actor = await requireUser(deps.bus, ctx, req, res);
+      if (actor === null) return;
+      try {
+        const out = await deps.bus.call<
+          { scope: 'user'; ownerId: string },
+          { credentials: unknown[] }
+        >('credentials:list', ctx, { scope: 'user', ownerId: actor.id });
         res.status(200).json(out);
       } catch (err) {
         if (writeServiceError(res, err)) return;
@@ -104,6 +128,10 @@ export async function registerAdminCredentialsRoutes(
     // in @ax/http-server's router wins over parameterised patterns
     // regardless of registration order, but we list it first for readability.
     { method: 'GET', path: '/admin/credentials/kinds', handler: handlers.kinds },
+    // The Settings "Keys" surface — the caller's own user-scoped credentials.
+    // `/settings/*` is gated to any authed user; the handler server-forces
+    // scope=user + ownerId=actor.id.
+    { method: 'GET', path: '/settings/credentials', handler: handlers.listSettings },
   ];
   const unregisters: Array<() => void> = [];
   for (const route of routes) {
