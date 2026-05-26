@@ -32,6 +32,8 @@
     "@ax/agents": "workspace:*",
     "@ax/chat-orchestrator": "workspace:*",
     "@ax/database-postgres": "workspace:*",
+    "@ax/mcp-client": "workspace:*",
+    "@ax/skill-broker": "workspace:*",
     "@ax/test-harness": "workspace:*",
     "@testcontainers/postgresql": "11.14.0",
     "@types/js-yaml": "^4.0.9",

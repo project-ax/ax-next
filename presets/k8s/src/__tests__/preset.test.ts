@@ -167,6 +167,7 @@ describe('@ax/preset-k8s wiring', () => {
         '@ax/routines-admin-routes',
         '@ax/sandbox-k8s',
         '@ax/session-postgres',
+        '@ax/skill-broker',
         '@ax/skills',
         '@ax/storage-postgres',
         '@ax/teams',
@@ -195,6 +196,19 @@ describe('@ax/preset-k8s wiring', () => {
       '@ax/llm-mock',
     ]) {
       expect(names.has(forbidden)).toBe(false);
+    }
+  });
+
+  it('includes @ax/skill-broker and its calls are satisfied (TASK-34)', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const names = plugins.map((p) => p.manifest.name);
+    expect(names).toContain('@ax/skill-broker');
+
+    const broker = plugins.find((p) => p.manifest.name === '@ax/skill-broker')!;
+    const allRegisters = new Set(plugins.flatMap((p) => p.manifest.registers));
+    // tool:register, skills:search-catalog, skills:get
+    for (const dep of broker.manifest.calls) {
+      expect(allRegisters.has(dep)).toBe(true);
     }
   });
 });

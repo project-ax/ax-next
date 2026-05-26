@@ -8,6 +8,7 @@ import {
 import type { Kysely } from 'kysely';
 import { checkForUpdates } from './check-updates.js';
 import { validateBundleFiles } from './bundle-files.js';
+import { classifyTier } from './catalog-tier.js';
 import { parseSkillManifest } from './manifest.js';
 import { runSkillsMigration, type SkillsDatabase } from './migrations.js';
 import { createSkillsStore } from './store.js';
@@ -27,6 +28,7 @@ import {
   SkillsUpsertOutputSchema,
   SkillsAttachForUserOutputSchema,
   SkillsListUserAttachmentsOutputSchema,
+  SkillsSearchCatalogOutputSchema,
 } from './types.js';
 import type {
   SkillsCheckForUpdatesInput,
@@ -47,6 +49,8 @@ import type {
   SkillsAttachForUserOutput,
   SkillsListUserAttachmentsInput,
   SkillsListUserAttachmentsOutput,
+  SkillsSearchCatalogInput,
+  SkillsSearchCatalogOutput,
 } from './types.js';
 
 const PLUGIN_NAME = '@ax/skills';
@@ -154,6 +158,7 @@ export function createSkillsPlugin(): Plugin {
         'skills:check-for-updates',
         'skills:attach-for-user',
         'skills:list-user-attachments',
+        'skills:search-catalog',
       ],
       calls: ['database:get-instance', 'http:register-route', 'auth:require-user'],
       subscribes: [],
@@ -603,6 +608,51 @@ export function createSkillsPlugin(): Plugin {
           return { attachments };
         },
         { returns: SkillsListUserAttachmentsOutputSchema },
+      );
+
+      // -----------------------------------------------------------------------
+      // skills:search-catalog (TASK-34) — read-only intent→candidate matcher
+      // backing the model-facing skill broker (JIT surfacing spine, design
+      // §11.1). The untrusted `intent` is matched IN MEMORY over the global
+      // catalog (store.list()) so it never reaches SQL — a SQL-injection-shaped
+      // string is just a no-match. `tier` is DERIVED from declared capabilities
+      // (classifyTier — one source of truth, no stored column); `hosts`/`slots`
+      // are already public in the manifest.
+      // -----------------------------------------------------------------------
+      bus.registerService<SkillsSearchCatalogInput, SkillsSearchCatalogOutput>(
+        'skills:search-catalog',
+        PLUGIN_NAME,
+        async (_ctx, input) => {
+          const intent = typeof input.intent === 'string' ? input.intent.trim().toLowerCase() : '';
+          const rawLimit = typeof input.limit === 'number' ? Math.floor(input.limit) : 10;
+          const limit = Math.max(1, Math.min(50, rawLimit));
+          if (intent.length === 0) return { skills: [] };
+
+          const tokens = intent.split(/[^a-z0-9]+/).filter((t) => t.length > 0);
+          if (tokens.length === 0) return { skills: [] };
+
+          const catalog = await store.list(); // global catalog: SkillSummary[]
+          const scored = catalog
+            .map((s) => {
+              const hay = `${s.id} ${s.description}`.toLowerCase();
+              const score = tokens.reduce((n, t) => (hay.includes(t) ? n + 1 : n), 0);
+              return { s, score };
+            })
+            .filter((x) => x.score > 0)
+            .sort((a, b) => b.score - a.score || a.s.id.localeCompare(b.s.id))
+            .slice(0, limit);
+
+          return {
+            skills: scored.map(({ s }) => ({
+              id: s.id,
+              description: s.description,
+              tier: classifyTier(s.capabilities),
+              hosts: s.capabilities.allowedHosts,
+              slots: s.capabilities.credentials.map((c) => c.slot),
+            })),
+          };
+        },
+        { returns: SkillsSearchCatalogOutputSchema },
       );
 
       // Register admin + settings HTTP routes. Both batches are pushed into

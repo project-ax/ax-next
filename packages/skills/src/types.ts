@@ -8,7 +8,9 @@
 
 import { z, type ZodType } from 'zod';
 import type { SkillCapabilities } from '@ax/skills-parser';
+import type { SkillTier } from './catalog-tier.js';
 export type { CapabilitySlot, McpServerSpec, SkillCapabilities } from '@ax/skills-parser';
+export type { SkillTier } from './catalog-tier.js';
 
 export interface SkillSummary {
   id: string;
@@ -159,6 +161,33 @@ export interface SkillsListUserAttachmentsOutput {
 }
 
 // ---------------------------------------------------------------------------
+// Catalog search (TASK-34, JIT surfacing spine — design §11.1). Read-only:
+// match a free-text intent against the GLOBAL catalog and return candidate
+// summaries the model can act on. Storage-agnostic — `tier` is derived from
+// declared capabilities (one source of truth, no row), `hosts`/`slots` are
+// already public in the manifest. Alternate impl: keyword today, vector
+// tomorrow; the payload is impl-agnostic.
+// ---------------------------------------------------------------------------
+export interface SkillsSearchCatalogInput {
+  /** Free-text intent/keywords from the model. UNTRUSTED — never reaches SQL. */
+  intent: string;
+  /** Max candidates to return. Clamped to [1, 50]; defaults to 10. */
+  limit?: number;
+}
+export interface CatalogCandidate {
+  id: string;
+  description: string;
+  tier: SkillTier;
+  /** Hostnames the skill is allowed to reach (already public in the manifest). */
+  hosts: string[];
+  /** Credential slot names the skill declares. */
+  slots: string[];
+}
+export interface SkillsSearchCatalogOutput {
+  skills: CatalogCandidate[];
+}
+
+// ---------------------------------------------------------------------------
 // Runtime `returns` contracts for the `skills:*` service hooks (ARCH-13,
 // the non-IPC / non-boundary long tail spun out of ARCH-6 #150).
 //
@@ -281,3 +310,15 @@ export const SkillsListUserAttachmentsOutputSchema = z.object({
     }),
   ),
 }) as unknown as ZodType<SkillsListUserAttachmentsOutput>;
+
+const CatalogCandidateSchema = z.object({
+  id: z.string(),
+  description: z.string(),
+  tier: z.union([z.literal('inert'), z.literal('bounded'), z.literal('registry')]),
+  hosts: z.array(z.string()),
+  slots: z.array(z.string()),
+});
+
+export const SkillsSearchCatalogOutputSchema = z.object({
+  skills: z.array(CatalogCandidateSchema),
+}) as unknown as ZodType<SkillsSearchCatalogOutput>;

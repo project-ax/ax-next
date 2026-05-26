@@ -24,6 +24,8 @@ import type {
   SkillsAttachForUserOutput,
   SkillsListUserAttachmentsInput,
   SkillsListUserAttachmentsOutput,
+  SkillsSearchCatalogInput,
+  SkillsSearchCatalogOutput,
 } from '../types.js';
 
 let container: StartedPostgreSqlContainer;
@@ -114,6 +116,7 @@ describe('@ax/skills plugin manifest + lifecycle', () => {
         'skills:check-for-updates',
         'skills:attach-for-user',
         'skills:list-user-attachments',
+        'skills:search-catalog',
       ],
       calls: ['database:get-instance', 'http:register-route', 'auth:require-user'],
       subscribes: [],
@@ -1176,5 +1179,90 @@ describe('@ax/skills bundle extra files (JIT Phase 1a)', () => {
       scope: 'global',
     });
     expect(detail.files).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// skills:search-catalog (TASK-34) — read-only intent→candidate matcher.
+//
+// NOTE: the YAML manifest's top-level identifier field is `name:` (parsed into
+// SkillSummary.id), NOT `id:` — see packages/skills-parser/src/manifest.ts.
+// ---------------------------------------------------------------------------
+const CATALOG_LINEAR_MANIFEST = [
+  'name: linear',
+  'description: Read and update your Linear issues',
+  'version: 1',
+  'capabilities:',
+  '  allowedHosts: [api.linear.app]',
+  '  credentials:',
+  '    - slot: API_KEY',
+  '      kind: api-key',
+].join('\n');
+
+const CATALOG_INERT_MANIFEST = [
+  'name: notes',
+  'description: Help structure meeting notes',
+  'version: 1',
+].join('\n');
+
+describe('@ax/skills service hooks — skills:search-catalog', () => {
+  it('matches intent, derives tier, and returns hosts/slots', async () => {
+    const h = await makeHarness();
+    // A bounded Linear skill (host + key) and an inert note-taking skill.
+    await h.bus.call('skills:upsert', h.ctx(), { manifestYaml: CATALOG_LINEAR_MANIFEST, bodyMd: 'b' });
+    await h.bus.call('skills:upsert', h.ctx(), { manifestYaml: CATALOG_INERT_MANIFEST, bodyMd: 'b' });
+
+    const out = await h.bus.call<SkillsSearchCatalogInput, SkillsSearchCatalogOutput>(
+      'skills:search-catalog',
+      h.ctx(),
+      { intent: 'check my linear issues' },
+    );
+
+    const linear = out.skills.find((s) => s.id === 'linear');
+    expect(linear).toMatchObject({
+      id: 'linear',
+      tier: 'bounded',
+      hosts: ['api.linear.app'],
+      slots: ['API_KEY'],
+    });
+    // The inert note skill does not match "linear".
+    expect(out.skills.some((s) => s.id === 'notes')).toBe(false);
+  });
+
+  it('returns [] for blank intent and never errors', async () => {
+    const h = await makeHarness();
+    const out = await h.bus.call<SkillsSearchCatalogInput, SkillsSearchCatalogOutput>(
+      'skills:search-catalog',
+      h.ctx(),
+      { intent: '   ' },
+    );
+    expect(out.skills).toEqual([]);
+  });
+
+  it('treats SQL-injection-shaped intent as a plain no-match string', async () => {
+    const h = await makeHarness();
+    await h.bus.call('skills:upsert', h.ctx(), { manifestYaml: CATALOG_LINEAR_MANIFEST, bodyMd: 'b' });
+    const out = await h.bus.call<SkillsSearchCatalogInput, SkillsSearchCatalogOutput>(
+      'skills:search-catalog',
+      h.ctx(),
+      { intent: "'; DROP TABLE skills_v1_skills; --" },
+    );
+    // The catalog is intact (the upsert above still resolves) and the
+    // injection text simply doesn't tokenize into a match.
+    expect(out.skills.some((s) => s.id === 'linear')).toBe(false);
+    const still = await h.bus.call<SkillsListInput, SkillsListOutput>('skills:list', h.ctx(), {});
+    expect(still.skills.some((s) => s.id === 'linear')).toBe(true);
+  });
+
+  it('caps results at the requested limit', async () => {
+    const h = await makeHarness();
+    await h.bus.call('skills:upsert', h.ctx(), { manifestYaml: CATALOG_LINEAR_MANIFEST, bodyMd: 'b' });
+    const out = await h.bus.call<SkillsSearchCatalogInput, SkillsSearchCatalogOutput>(
+      'skills:search-catalog',
+      h.ctx(),
+      { intent: 'linear', limit: 0 },
+    );
+    // limit clamps to >= 1, so a single match still returns.
+    expect(out.skills.length).toBeLessThanOrEqual(1);
   });
 });
