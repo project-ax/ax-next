@@ -136,6 +136,23 @@ describe('materializeInstalledSkillsFromEnv', () => {
     await expect(materializeInstalledSkillsFromEnv()).rejects.toThrow(/invalid|escape/i);
   });
 
+  it('rejects a single-dot path segment (. and a/./b)', async () => {
+    const cases: Array<[string, string]> = [
+      ['dotseg-a', '.'],
+      ['dotseg-b', 'scripts/./run.py'],
+    ];
+    for (const [id, bad] of cases) {
+      // Distinct skill id per case so a prior iteration's read-only SKILL.md
+      // can't EACCES the next iteration's write before validation runs.
+      process.env['AX_INSTALLED_SKILLS_JSON'] = JSON.stringify([
+        { id, files: [{ path: 'SKILL.md', contents: '# x' }, { path: bad, contents: 'x' }] },
+      ]);
+      await expect(materializeInstalledSkillsFromEnv()).rejects.toThrow(/invalid skill file path/i);
+      // Unlock for the next iteration (a partial materialize may have chmod'd).
+      await fs.chmod(path.join(tmpRoot, 'skills'), 0o755).catch(() => undefined);
+    }
+  });
+
   it('rejects a reserved bundle path (.mcp.json) supplied as a file', async () => {
     process.env['AX_INSTALLED_SKILLS_JSON'] = JSON.stringify([
       {

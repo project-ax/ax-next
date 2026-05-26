@@ -183,9 +183,20 @@ export function createSkillsStore(db: Kysely<SkillsDatabase>): SkillsStore {
           .execute();
       }
 
-      // Replace the full extra-file set on every upsert (insert OR update) so a
-      // re-upsert with a new file set supersedes the old one byte-for-byte.
-      await replaceFiles(input.id, input.files ?? []);
+      // Replace the extra-file set ONLY when `files` is explicitly provided.
+      // `undefined` = "leave the current files unchanged" — the existing
+      // metadata-only routes (/admin/skills, /settings/skills, refresh) send no
+      // `files`, and treating that as an empty set would silently delete a
+      // multi-file bundle's extra files on a body/metadata edit (the §6D
+      // data-loss bug). An explicit `[]` still clears.
+      if (input.files !== undefined) {
+        await replaceFiles(input.id, input.files);
+      } else if (created) {
+        // A brand-new skill with no files declared starts with an empty set —
+        // nothing to delete, nothing to insert; replaceFiles([]) is a no-op
+        // delete that keeps the create path explicit.
+        await replaceFiles(input.id, []);
+      }
       return { created };
     },
 

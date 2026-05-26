@@ -21,6 +21,8 @@ describe('validateBundleFiles', () => {
     ['.claude/settings.json'], // SDK auto-config
     ['.git/config'], // git internals
     ['../escape.txt'], // parent traversal
+    ['.'], // single-dot segment normalizes to the skill dir itself
+    ['scripts/./run.py'], // mid-path single-dot segment (normalizes / collides)
     ['/abs.txt'], // absolute
     ['UP.txt'], // uppercase not allowed by charset
     ['a\\b.txt'], // backslash not allowed

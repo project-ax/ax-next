@@ -69,6 +69,11 @@ function assertSafeRelPath(p: unknown): asserts p is string {
   if (p.includes('..') || p.startsWith('/') || !(p === 'SKILL.md' || SKILL_FILE_PATH_RE.test(p))) {
     throw new Error(`invalid skill file path (traversal/charset): ${p}`);
   }
+  // Reject `.` / `..` path SEGMENTS — the charset allows a bare `.`, but
+  // path.join normalizes it (`.` → the skill dir itself; `a/./b` → `a/b`).
+  if (p.split('/').some((seg) => seg === '.' || seg === '..')) {
+    throw new Error(`invalid skill file path ('.' or '..' segment): ${p}`);
+  }
   if (p === '.mcp.json' || p.startsWith('.claude/') || p.startsWith('.git/')) {
     throw new Error(`reserved skill file path: ${p}`);
   }

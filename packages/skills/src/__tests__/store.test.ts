@@ -431,6 +431,43 @@ capabilities:
     expect(got2?.files).toEqual([{ path: 'data/x.json', contents: '{}' }]);
   });
 
+  it('re-upsert with files OMITTED preserves the existing extra files (no silent clear)', async () => {
+    const db = makeKysely();
+    await runSkillsMigration(db);
+    const store = createSkillsStore(db);
+
+    await store.upsert({
+      id: 'demo', description: 'd', manifestYaml: SAMPLE_MANIFEST, bodyMd: SAMPLE_BODY, version: 1,
+      files: [{ path: 'scripts/run.py', contents: 'print(1)' }],
+    });
+
+    // A metadata-only edit (the existing admin/settings/refresh route shape)
+    // sends no `files` — it MUST NOT wipe the stored bundle (the §6D data-loss
+    // bug codex flagged). `undefined` = leave files unchanged.
+    await store.upsert({
+      id: 'demo', description: 'edited', manifestYaml: SAMPLE_MANIFEST, bodyMd: '# edited\n', version: 2,
+    });
+    const got = await store.get('demo');
+    expect(got?.description).toBe('edited');
+    expect(got?.files).toEqual([{ path: 'scripts/run.py', contents: 'print(1)' }]);
+  });
+
+  it('re-upsert with an EXPLICIT empty files array clears the extra files', async () => {
+    const db = makeKysely();
+    await runSkillsMigration(db);
+    const store = createSkillsStore(db);
+    await store.upsert({
+      id: 'demo', description: 'd', manifestYaml: SAMPLE_MANIFEST, bodyMd: SAMPLE_BODY, version: 1,
+      files: [{ path: 'scripts/run.py', contents: 'print(1)' }],
+    });
+    await store.upsert({
+      id: 'demo', description: 'd', manifestYaml: SAMPLE_MANIFEST, bodyMd: SAMPLE_BODY, version: 2,
+      files: [],
+    });
+    const got = await store.get('demo');
+    expect(got?.files).toEqual([]);
+  });
+
   it('a skill with no extra files reports files: []', async () => {
     const db = makeKysely();
     await runSkillsMigration(db);

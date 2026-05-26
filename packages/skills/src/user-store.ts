@@ -185,9 +185,14 @@ export function createUserSkillsStore(db: Kysely<SkillsDatabase>): UserSkillsSto
           .execute();
       }
 
-      // Replace the full extra-file set on every upsert (insert OR update),
-      // scoped to this user — a user's re-upsert supersedes their old set.
-      await replaceFiles(input.ownerUserId, input.id, input.files ?? []);
+      // Replace the extra-file set ONLY when `files` is explicitly provided
+      // (scoped to this user). `undefined` = leave current files unchanged —
+      // see the store.ts rationale (the §6D metadata-only-edit data-loss bug).
+      if (input.files !== undefined) {
+        await replaceFiles(input.ownerUserId, input.id, input.files);
+      } else if (created) {
+        await replaceFiles(input.ownerUserId, input.id, []);
+      }
       return { created };
     },
 

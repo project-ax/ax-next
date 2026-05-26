@@ -128,7 +128,12 @@ export type McpServerSpec = z.infer<typeof McpServerSchema>;
 // literally) — every other path must satisfy this.
 const SKILL_FILE_PATH_RE = /^[a-z0-9._-]+(\/[a-z0-9._-]+)*$/;
 const isValidSkillFilePath = (p: string): boolean =>
-  !p.includes('..') && !p.startsWith('/') && (p === 'SKILL.md' || SKILL_FILE_PATH_RE.test(p));
+  !p.includes('..') &&
+  !p.startsWith('/') &&
+  // Reject `.` / `..` path SEGMENTS — the charset allows a bare `.`, but
+  // path.join normalizes it (`.` → the dir itself; `a/./b` → `a/b`).
+  !p.split('/').some((seg) => seg === '.' || seg === '..') &&
+  (p === 'SKILL.md' || SKILL_FILE_PATH_RE.test(p));
 
 export const InstalledSkillSchema = z.object({
   id: z.string().regex(ID_RE, 'invalid skill id shape'),

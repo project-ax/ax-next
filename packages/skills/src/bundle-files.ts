@@ -40,6 +40,13 @@ export function validateBundleFiles(files: BundleFile[]): void {
     if (f.path.includes('..') || f.path.startsWith('/') || !PATH_RE.test(f.path)) {
       throw new Error(`invalid path (must be relative, lowercase, no ../): ${f.path}`);
     }
+    // Reject `.` / `..` path segments: the charset allows a bare `.`, but
+    // path.join normalizes it (`.` → the skill dir itself; `a/./b` → `a/b`,
+    // which dodges the duplicate check). Rejecting the segment keeps the
+    // declared path === the materialized path.
+    if (f.path.split('/').some((seg) => seg === '.' || seg === '..')) {
+      throw new Error(`invalid path (no '.' or '..' segments): ${f.path}`);
+    }
     if (RESERVED.has(f.path) || f.path.startsWith('.claude/') || f.path.startsWith('.git/')) {
       throw new Error(`reserved bundle path may not be supplied: ${f.path}`);
     }

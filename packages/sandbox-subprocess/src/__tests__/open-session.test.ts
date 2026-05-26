@@ -1088,6 +1088,34 @@ describe('sandbox:open-session', () => {
     await fs.rm(ws, { recursive: true, force: true });
   });
 
+  it('rejects a single-dot bundle file path segment (e.g. scripts/./run.py)', async () => {
+    const ws = await mkWorkspace();
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    let caught: unknown;
+    try {
+      await h.bus.call('sandbox:open-session', ctx, {
+        sessionId: 'skills-dot-seg',
+        workspaceRoot: ws,
+        runnerBinary: ECHO_STUB,
+        installedSkills: [
+          {
+            id: 'demo',
+            files: [
+              { path: 'SKILL.md', contents: '# x' },
+              { path: 'scripts/./run.py', contents: 'x' },
+            ],
+          },
+        ],
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('invalid-payload');
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
   // ---------------------------------------------------------------------
   // Phase B (capabilities.mcpServers) — per-skill `.mcp.json` materialization.
   //

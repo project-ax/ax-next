@@ -254,6 +254,19 @@ describe('InstalledSkillSchema', () => {
     expect(result.success).toBe(false);
   });
 
+  it('rejects single-dot path segments (. and a/./b)', () => {
+    for (const bad of ['.', 'scripts/./run.py']) {
+      const result = InstalledSkillSchema.safeParse({
+        id: 'demo',
+        files: [
+          { path: 'SKILL.md', contents: '# x' },
+          { path: bad, contents: 'x' },
+        ],
+      });
+      expect(result.success).toBe(false);
+    }
+  });
+
   it('rejects a file over the 256 KiB per-file cap', () => {
     const result = InstalledSkillSchema.safeParse({
       id: 'github',
