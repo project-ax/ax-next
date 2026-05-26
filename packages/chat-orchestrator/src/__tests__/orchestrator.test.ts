@@ -1116,6 +1116,7 @@ describe('chat-orchestrator', () => {
       proxyEndpoint: string;
       caCertPem: string;
       envMap: Record<string, string>;
+      proxyAuthToken?: string;
     };
     openThrows?: Error;
     /** When true, `proxy:rotate-session` is also registered (Phase 3 I10). */
@@ -1240,6 +1241,79 @@ describe('chat-orchestrator', () => {
       caCertPem: 'TEST-CA-PEM',
       envMap: { ANTHROPIC_API_KEY: 'ax-cred:0123' },
     });
+  });
+
+  it('threads proxyAuthToken from proxy:open-session into proxyConfig (TASK-52)', async () => {
+    const proxy = buildProxyHooks({
+      openOutput: {
+        proxyEndpoint: 'tcp://127.0.0.1:54321',
+        caCertPem: 'TEST-CA-PEM',
+        envMap: { ANTHROPIC_API_KEY: 'ax-cred:0123' },
+        proxyAuthToken: 'a'.repeat(32),
+      },
+    });
+    let busRef: HookBus | null = null;
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: {
+            ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
+          },
+        },
+      }),
+      openSession: async (ctx, input: unknown) => {
+        const sessionId = (input as { sessionId: string }).sessionId;
+        const originatingReqId = ctx.reqId;
+        setImmediate(() => {
+          void busRef!.fire(
+            'chat:end',
+            makeAgentContext({
+              sessionId,
+              agentId: 'a',
+              userId: 'u',
+              reqId: originatingReqId,
+              logger: createLogger({ reqId: originatingReqId, writer: () => undefined }),
+            }),
+            { outcome: { kind: 'complete', messages: [] } },
+          );
+        });
+        return {
+          runnerEndpoint: 'unix:///tmp/x.sock',
+          handle: {
+            kill: async () => undefined,
+            exited: new Promise(() => undefined),
+          },
+        };
+      },
+    });
+    Object.assign(mocks.services, proxy.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinary: '/irrelevant',
+          chatTimeoutMs: 5_000,
+        }),
+      ],
+    });
+    busRef = h.bus;
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('proxy-token-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+
+    // The minted token lands on the proxyConfig the sandbox receives, alongside
+    // the translated endpoint — so the runner can embed it as Proxy-Authorization.
+    const sb = mocks.calls.lastSandboxInput as {
+      proxyConfig?: { proxyAuthToken?: string; endpoint?: string };
+    };
+    expect(sb.proxyConfig?.proxyAuthToken).toBe('a'.repeat(32));
+    expect(sb.proxyConfig?.endpoint).toBe('http://127.0.0.1:54321');
   });
 
   it('terminates with agent-proxy-config-incomplete when only allowedHosts is set on the agent', async () => {

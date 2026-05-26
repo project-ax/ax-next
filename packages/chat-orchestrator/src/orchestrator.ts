@@ -253,6 +253,13 @@ interface ProxyOpenSessionOutput {
   caCertPem: string;
   /** envName → opaque placeholder token (`ax-cred:<32-hex>`). */
   envMap: Record<string, string>;
+  /**
+   * Per-session proxy token (TASK-52). Threaded onto `proxyConfig` so the
+   * sandbox carries it as Proxy-Authorization for egress attribution.
+   * Attribution label only — never an authz input. Optional for back-compat
+   * with a proxy plugin build that predates the token.
+   */
+  proxyAuthToken?: string;
 }
 interface ProxyCloseSessionInput {
   sessionId: string;
@@ -1304,6 +1311,7 @@ export function createOrchestrator(
         opened.proxyEndpoint,
         opened.caCertPem,
         opened.envMap,
+        opened.proxyAuthToken,
       );
       // I10 — flag the session for per-turn rotation when ANY required
       // credential has a non-`api-key` kind. The credentials facade's
@@ -1805,12 +1813,18 @@ function endpointToProxyConfig(
   rawEndpoint: string,
   caCertPem: string,
   envMap: Record<string, string>,
+  proxyAuthToken?: string,
 ): ProxyConfig {
+  // Spread the token in conditionally so `exactOptionalPropertyTypes` doesn't
+  // reject `proxyAuthToken: undefined` (TASK-52). It's an attribution label;
+  // when the proxy plugin omits it, proxyConfig stays as it was before.
+  const token = proxyAuthToken !== undefined ? { proxyAuthToken } : {};
   if (rawEndpoint.startsWith('unix://')) {
     return {
       unixSocketPath: rawEndpoint.slice('unix://'.length),
       caCertPem,
       envMap,
+      ...token,
     };
   }
   if (rawEndpoint.startsWith('tcp://')) {
@@ -1818,6 +1832,7 @@ function endpointToProxyConfig(
       endpoint: 'http://' + rawEndpoint.slice('tcp://'.length),
       caCertPem,
       envMap,
+      ...token,
     };
   }
   throw new PluginError({
