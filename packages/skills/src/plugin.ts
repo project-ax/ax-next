@@ -1,3 +1,6 @@
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   makeAgentContext,
   PluginError,
@@ -7,6 +10,7 @@ import {
 } from '@ax/core';
 import type { Kysely } from 'kysely';
 import { checkForUpdates } from './check-updates.js';
+import { createBundleStore } from './bundle-store.js';
 import { validateBundleFiles } from './bundle-files.js';
 import { classifyTier } from './catalog-tier.js';
 import { parseSkillManifest } from './manifest.js';
@@ -139,7 +143,20 @@ async function purgeSkillCredentials(
   }
 }
 
-export function createSkillsPlugin(): Plugin {
+export interface SkillsPluginConfig {
+  /**
+   * Content-addressed bundle byte-store location. `repoRoot` hosts a bare git
+   * repo at `<repoRoot>/bundles.git`. Capabilities scoped to this dir only.
+   * OPTIONAL: when omitted the plugin uses an EPHEMERAL temp dir (and warns) —
+   * fine for tests, but production MUST wire a durable path (Task 6) or the
+   * catalog's extra-file bytes are lost on restart. Today every deployed skill
+   * has no extra files (the write path is half-wired until P5), so the
+   * ephemeral fallback is non-fatal until then.
+   */
+  bundleStore?: { repoRoot: string };
+}
+
+export function createSkillsPlugin(config: SkillsPluginConfig = {}): Plugin {
   let db: Kysely<SkillsDatabase> | undefined;
   let _busRef: HookBus | undefined;
   const routeUnregisters: Array<() => void> = [];
@@ -179,8 +196,20 @@ export function createSkillsPlugin(): Plugin {
       );
       db = shared as Kysely<SkillsDatabase>;
       await runSkillsMigration(db);
-      const store = createSkillsStore(db);
-      const userStore = createUserSkillsStore(db);
+
+      // Construct the content-addressed bundle byte-store ONCE and inject the
+      // SAME instance into both stores so identical bytes dedup across scopes.
+      let repoRoot = config.bundleStore?.repoRoot;
+      if (repoRoot === undefined) {
+        repoRoot = mkdtempSync(join(tmpdir(), 'ax-skills-bundles-'));
+        initCtx.logger.warn('skills_bundle_store_ephemeral', {
+          repoRoot,
+          note: 'no AX_SKILLS_BUNDLE_ROOT configured — bundle bytes are not durable across restarts',
+        });
+      }
+      const bundleStore = createBundleStore(repoRoot);
+      const store = createSkillsStore(db, bundleStore);
+      const userStore = createUserSkillsStore(db, bundleStore);
       const attachmentsStore = createUserAttachmentsStore(db);
 
       bus.registerService<SkillsListInput, SkillsListOutput>(

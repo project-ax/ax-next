@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   PostgreSqlContainer,
   type StartedPostgreSqlContainer,
@@ -6,7 +9,7 @@ import {
 import { createTestHarness, type TestHarness } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { PluginError } from '@ax/core';
-import { createSkillsPlugin } from '../plugin.js';
+import { createSkillsPlugin, type SkillsPluginConfig } from '../plugin.js';
 import type {
   SkillsDeleteInput,
   SkillsDeleteOutput,
@@ -57,6 +60,7 @@ const authRequireUserStub = async () => ({ user: { id: 'admin', isAdmin: true } 
 
 async function makeHarness(opts: {
   services?: Record<string, (ctx: unknown, input: unknown) => Promise<unknown>>;
+  skillsConfig?: SkillsPluginConfig;
 } = {}): Promise<TestHarness> {
   const h = await createTestHarness({
     services: {
@@ -66,7 +70,7 @@ async function makeHarness(opts: {
     },
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),
-      createSkillsPlugin(),
+      createSkillsPlugin(opts.skillsConfig),
     ],
   });
   harnesses.push(h);
@@ -158,6 +162,46 @@ describe('@ax/skills service hooks (round-trip)', () => {
       { skillId: 'github' },
     );
     expect(detail.bodyMd).toBe(updatedBody);
+  });
+
+  it('skills:upsert + skills:resolve round-trip a bundle via a durable repoRoot', async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'ax-skills-plugin-bundle-'));
+    const h = await makeHarness({ skillsConfig: { bundleStore: { repoRoot } } });
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
+      manifestYaml: SAMPLE_MANIFEST,
+      bodyMd: SAMPLE_BODY,
+      files: [{ path: 'scripts/run.py', contents: 'print(1)' }],
+    });
+    const out = await h.bus.call<SkillsResolveInput, SkillsResolveOutput>(
+      'skills:resolve',
+      h.ctx(),
+      { skillIds: ['github'] },
+    );
+    expect(out.skills[0]?.files).toEqual([{ path: 'scripts/run.py', contents: 'print(1)' }]);
+  });
+
+  it('a fresh plugin on the SAME durable repoRoot reads a previously-written tree', async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'ax-skills-plugin-durable-'));
+    // First plugin instance writes the bundle.
+    const h1 = await makeHarness({ skillsConfig: { bundleStore: { repoRoot } } });
+    await h1.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h1.ctx(), {
+      manifestYaml: SAMPLE_MANIFEST,
+      bodyMd: SAMPLE_BODY,
+      files: [{ path: 'data/x.json', contents: '{"k":1}' }],
+    });
+    await h1.close({ onError: () => {} });
+    // Drop it from the cleanup stack so afterEach doesn't double-close.
+    const idx = harnesses.indexOf(h1);
+    if (idx >= 0) harnesses.splice(idx, 1);
+
+    // A SECOND plugin instance pointed at the SAME repoRoot (the row's
+    // bundle_tree_sha survives in the shared DB) reconstructs the bytes from
+    // the durable bundle repo — proves the bytes aren't held in process memory.
+    const h2 = await makeHarness({ skillsConfig: { bundleStore: { repoRoot } } });
+    const got = await h2.bus.call<SkillsGetInput, SkillsGetOutput>('skills:get', h2.ctx(), {
+      skillId: 'github',
+    });
+    expect(got.files).toEqual([{ path: 'data/x.json', contents: '{"k":1}' }]);
   });
 
   it('skills:upsert of malformed manifest throws PluginError with manifest code', async () => {

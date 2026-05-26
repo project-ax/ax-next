@@ -5,8 +5,13 @@ import {
   type StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
 import pg from 'pg';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join as joinPath } from 'node:path';
 import { runSkillsMigration, type SkillsDatabase } from '../migrations.js';
 import { createSkillsStore } from '../store.js';
+import { createUserSkillsStore } from '../user-store.js';
+import { createBundleStore } from '../bundle-store.js';
 
 let container: StartedPostgreSqlContainer;
 let connectionString: string;
@@ -48,6 +53,11 @@ afterEach(async () => {
     const k = opened.pop()!;
     try {
       await k.schema.dropTable('skills_v1_skill_files').ifExists().execute();
+    } catch {
+      /* drained pool */
+    }
+    try {
+      await k.schema.dropTable('skills_v1_user_skills').ifExists().execute();
     } catch {
       /* drained pool */
     }
@@ -485,6 +495,48 @@ capabilities:
     expect(resolved?.files).toEqual([]);
   });
 
+  it('upsert writes a bundle_tree_sha; single-file skill leaves it NULL', async () => {
+    const db = makeKysely();
+    await runSkillsMigration(db);
+    const store = createSkillsStore(db); // default ephemeral bundle store
+
+    await store.upsert({
+      id: 'multi', description: 'd', manifestYaml: SAMPLE_MANIFEST, bodyMd: SAMPLE_BODY, version: 1,
+      files: [{ path: 'scripts/run.py', contents: 'print(1)' }],
+    });
+    await store.upsert({
+      id: 'single', description: 'd', manifestYaml: SAMPLE_MANIFEST, bodyMd: SAMPLE_BODY, version: 1,
+    });
+
+    const multiRow = await db.selectFrom('skills_v1_skills').select('bundle_tree_sha').where('skill_id', '=', 'multi').executeTakeFirstOrThrow();
+    const singleRow = await db.selectFrom('skills_v1_skills').select('bundle_tree_sha').where('skill_id', '=', 'single').executeTakeFirstOrThrow();
+    expect(multiRow.bundle_tree_sha).toMatch(/^[0-9a-f]{40}$/);
+    expect(singleRow.bundle_tree_sha).toBeNull();
+
+    // Round-trip still works (behavior contract unchanged).
+    expect((await store.get('multi'))?.files).toEqual([{ path: 'scripts/run.py', contents: 'print(1)' }]);
+    expect((await store.get('single'))?.files).toEqual([]);
+
+    // Re-upsert with a NEW file set replaces the tree (new SHA), and an explicit
+    // [] clears it back to NULL.
+    await store.upsert({ id: 'multi', description: 'd', manifestYaml: SAMPLE_MANIFEST, bodyMd: SAMPLE_BODY, version: 2, files: [{ path: 'data/x.json', contents: '{}' }] });
+    expect((await store.get('multi'))?.files).toEqual([{ path: 'data/x.json', contents: '{}' }]);
+    await store.upsert({ id: 'multi', description: 'd', manifestYaml: SAMPLE_MANIFEST, bodyMd: SAMPLE_BODY, version: 3, files: [] });
+    const cleared = await db.selectFrom('skills_v1_skills').select('bundle_tree_sha').where('skill_id', '=', 'multi').executeTakeFirstOrThrow();
+    expect(cleared.bundle_tree_sha).toBeNull();
+    expect((await store.get('multi'))?.files).toEqual([]);
+  });
+
+  it('upsert with files:undefined leaves an existing bundle untouched (no §6D data loss)', async () => {
+    const db = makeKysely();
+    await runSkillsMigration(db);
+    const store = createSkillsStore(db);
+    await store.upsert({ id: 'demo', description: 'd', manifestYaml: SAMPLE_MANIFEST, bodyMd: SAMPLE_BODY, version: 1, files: [{ path: 'a.txt', contents: '1' }] });
+    // Metadata-only edit (no `files` key) must NOT wipe the bundle.
+    await store.upsert({ id: 'demo', description: 'changed', manifestYaml: SAMPLE_MANIFEST, bodyMd: SAMPLE_BODY, version: 2 });
+    expect((await store.get('demo'))?.files).toEqual([{ path: 'a.txt', contents: '1' }]);
+  });
+
   it('resolve over multiple ids returns each skill its own files (no N+1 leak)', async () => {
     const db = makeKysely();
     await runSkillsMigration(db);
@@ -509,5 +561,32 @@ capabilities:
     expect(resolved.map((r) => r.id)).toEqual(['alpha', 'beta']);
     expect(resolved[0]?.files).toEqual([{ path: 'a.txt', contents: 'A' }]);
     expect(resolved[1]?.files).toEqual([{ path: 'b.txt', contents: 'B' }]);
+  });
+
+  it('user store round-trips a bundle via bundle_tree_sha', async () => {
+    const db = makeKysely();
+    await runSkillsMigration(db);
+    const userStore = createUserSkillsStore(db);
+    await userStore.upsert({
+      ownerUserId: 'alice', id: 'demo', description: 'd',
+      manifestYaml: SAMPLE_MANIFEST, bodyMd: SAMPLE_BODY, version: 1,
+      files: [{ path: 'scripts/run.py', contents: 'print(1)' }],
+    });
+    expect((await userStore.get('alice', 'demo'))?.files).toEqual([{ path: 'scripts/run.py', contents: 'print(1)' }]);
+    const [resolved] = await userStore.resolve('alice', ['demo']);
+    expect(resolved?.files).toEqual([{ path: 'scripts/run.py', contents: 'print(1)' }]);
+  });
+
+  it('global + user stores sharing one bundle repo dedup identical bytes', async () => {
+    const db = makeKysely();
+    await runSkillsMigration(db);
+    const bundleStore = createBundleStore(mkdtempSync(joinPath(tmpdir(), 'ax-shared-bundles-')));
+    const store = createSkillsStore(db, bundleStore);
+    const userStore = createUserSkillsStore(db, bundleStore);
+    await store.upsert({ id: 'demo', description: 'd', manifestYaml: SAMPLE_MANIFEST, bodyMd: SAMPLE_BODY, version: 1, files: [{ path: 'a.txt', contents: 'same' }] });
+    await userStore.upsert({ ownerUserId: 'alice', id: 'demo', description: 'd', manifestYaml: SAMPLE_MANIFEST, bodyMd: SAMPLE_BODY, version: 1, files: [{ path: 'a.txt', contents: 'same' }] });
+    const g = await db.selectFrom('skills_v1_skills').select('bundle_tree_sha').where('skill_id', '=', 'demo').executeTakeFirstOrThrow();
+    const u = await db.selectFrom('skills_v1_user_skills').select('bundle_tree_sha').where('owner_user_id', '=', 'alice').where('skill_id', '=', 'demo').executeTakeFirstOrThrow();
+    expect(g.bundle_tree_sha).toBe(u.bundle_tree_sha); // content-addressed: same bytes, same SHA
   });
 });

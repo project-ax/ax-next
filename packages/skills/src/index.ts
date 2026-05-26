@@ -21,4 +21,4 @@ export type {
 export { parseSkillManifest } from './manifest.js';
 export type { ManifestCode, ParsedManifest, ParseResult } from './manifest.js';
 
-export { createSkillsPlugin } from './plugin.js';
+export { createSkillsPlugin, type SkillsPluginConfig } from './plugin.js';

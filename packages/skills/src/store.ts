@@ -1,5 +1,9 @@
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { Kysely } from 'kysely';
 import type { SkillsDatabase } from './migrations.js';
+import { createBundleStore, type BundleStore } from './bundle-store.js';
 import {
   rowToGlobalDetail,
   rowToGlobalResolved,
@@ -53,67 +57,20 @@ export interface SkillsStore {
   getDefaults(): Promise<ResolvedSkill[]>;
 }
 
-export function createSkillsStore(db: Kysely<SkillsDatabase>): SkillsStore {
-  // ---- bundle extra-file helpers (global scope: scope='global', owner='') ----
+export function createSkillsStore(
+  db: Kysely<SkillsDatabase>,
+  // The content-addressed bundle byte-store. Optional so the existing
+  // `createSkillsStore(db)` unit-test call sites keep working — they get a
+  // fresh ephemeral repo (each test upserts+reads on one store instance).
+  // Production wires a durable repo via the plugin (Task 5).
+  bundleStore: BundleStore = createBundleStore(mkdtempSync(join(tmpdir(), 'ax-skills-bundles-'))),
+): SkillsStore {
+  // ---- bundle extra-file helpers (content-addressed git tree byte-store) ----
 
-  // Load a single skill's extra files, ordered by path for determinism.
-  async function loadFiles(skillId: string): Promise<BundleFile[]> {
-    const rows = await db
-      .selectFrom('skills_v1_skill_files')
-      .select(['path', 'contents'])
-      .where('scope', '=', 'global')
-      .where('owner_user_id', '=', '')
-      .where('skill_id', '=', skillId)
-      .orderBy('path')
-      .execute();
-    return rows.map((r) => ({ path: r.path, contents: r.contents }));
-  }
-
-  // Batched load for resolve/getDefaults — one query, grouped by skill_id, to
-  // avoid an N+1 fan-out over the resolved id list.
-  async function loadFilesFor(skillIds: string[]): Promise<Map<string, BundleFile[]>> {
-    const grouped = new Map<string, BundleFile[]>();
-    if (skillIds.length === 0) return grouped;
-    const rows = await db
-      .selectFrom('skills_v1_skill_files')
-      .select(['skill_id', 'path', 'contents'])
-      .where('scope', '=', 'global')
-      .where('owner_user_id', '=', '')
-      .where('skill_id', 'in', skillIds)
-      .orderBy('skill_id')
-      .orderBy('path')
-      .execute();
-    for (const r of rows) {
-      const list = grouped.get(r.skill_id) ?? [];
-      list.push({ path: r.path, contents: r.contents });
-      grouped.set(r.skill_id, list);
-    }
-    return grouped;
-  }
-
-  // Replace a skill's full extra-file set (delete-then-insert). Called inside
-  // upsert so a re-upsert with a new file set fully supersedes the old one.
-  async function replaceFiles(skillId: string, files: BundleFile[]): Promise<void> {
-    await db
-      .deleteFrom('skills_v1_skill_files')
-      .where('scope', '=', 'global')
-      .where('owner_user_id', '=', '')
-      .where('skill_id', '=', skillId)
-      .execute();
-    if (files.length > 0) {
-      await db
-        .insertInto('skills_v1_skill_files')
-        .values(
-          files.map((f) => ({
-            scope: 'global' as const,
-            owner_user_id: '',
-            skill_id: skillId,
-            path: f.path,
-            contents: f.contents,
-          })),
-        )
-        .execute();
-    }
+  // Load a single skill's extra files from its tree SHA (NULL → []). The
+  // git-extract boundary (bundle-store readTree) re-validates modes + paths.
+  async function loadFiles(treeSha: string | null): Promise<BundleFile[]> {
+    return treeSha === null ? [] : bundleStore.readTree(treeSha);
   }
 
   return {
@@ -136,10 +93,18 @@ export function createSkillsStore(db: Kysely<SkillsDatabase>): SkillsStore {
 
       if (row === undefined) return null;
 
-      return rowToGlobalDetail(row, await loadFiles(skillId));
+      return rowToGlobalDetail(row, await loadFiles(row.bundle_tree_sha));
     },
 
     async upsert(input) {
+      // Write the extra-file tree FIRST (only when `files` is explicitly
+      // provided). `undefined` = leave the current bundle unchanged (the
+      // metadata-only admin/settings/refresh routes send no `files`; treating
+      // that as [] would wipe a multi-file bundle on a body edit — the §6D
+      // data-loss bug). An explicit `[]` → null SHA → cleared bundle.
+      const filesProvided = input.files !== undefined;
+      const treeSha = filesProvided ? await bundleStore.writeTree(input.files!) : null;
+
       // SELECT → INSERT or UPDATE round-trip so `created` is accurate.
       // PRIMARY KEY guards against concurrency races — a race to insert
       // the same skill_id would surface as a unique-violation; that's
@@ -163,6 +128,8 @@ export function createSkillsStore(db: Kysely<SkillsDatabase>): SkillsStore {
             version: input.version,
             default_attached: input.defaultAttached ?? false,
             source_url: input.sourceUrl ?? null,
+            // null when no files provided on create (single-file skill).
+            bundle_tree_sha: treeSha,
             created_at: now,
             updated_at: now,
           })
@@ -177,34 +144,23 @@ export function createSkillsStore(db: Kysely<SkillsDatabase>): SkillsStore {
             version: input.version,
             default_attached: input.defaultAttached ?? false,
             source_url: input.sourceUrl ?? null,
+            // Only touch bundle_tree_sha when `files` was explicitly provided —
+            // a metadata-only edit must NOT wipe the bundle (§6D).
+            ...(filesProvided ? { bundle_tree_sha: treeSha } : {}),
             updated_at: new Date(),
           })
           .where('skill_id', '=', input.id)
           .execute();
-      }
-
-      // Replace the extra-file set ONLY when `files` is explicitly provided.
-      // `undefined` = "leave the current files unchanged" — the existing
-      // metadata-only routes (/admin/skills, /settings/skills, refresh) send no
-      // `files`, and treating that as an empty set would silently delete a
-      // multi-file bundle's extra files on a body/metadata edit (the §6D
-      // data-loss bug). An explicit `[]` still clears.
-      if (input.files !== undefined) {
-        await replaceFiles(input.id, input.files);
-      } else if (created) {
-        // A brand-new skill with no files declared starts with an empty set —
-        // nothing to delete, nothing to insert; replaceFiles([]) is a no-op
-        // delete that keeps the create path explicit.
-        await replaceFiles(input.id, []);
       }
       return { created };
     },
 
     async delete(skillId) {
       // Silent if the id doesn't exist — the plugin layer adds the not-found
-      // error when needed. The store is the dumb persistence layer. Also drop
-      // the skill's extra files so a later re-create starts from a clean set.
-      await replaceFiles(skillId, []);
+      // error when needed. The store is the dumb persistence layer. Just delete
+      // the row: orphaned bundle tree/blobs are content-addressed (dedup-shared,
+      // GC-reclaimable) — no explicit cleanup needed at the admin (~10 skills)
+      // scale.
       await db
         .deleteFrom('skills_v1_skills')
         .where('skill_id', '=', skillId)
@@ -219,8 +175,13 @@ export function createSkillsStore(db: Kysely<SkillsDatabase>): SkillsStore {
         .orderBy('skill_id', 'asc')
         .execute();
 
-      const filesById = await loadFilesFor(rows.map((r) => r.skill_id));
-      return rows.map((r) => rowToGlobalResolved(r, filesById.get(r.skill_id) ?? []));
+      // Per-row readTree over the (≤ ~10) default ids — in-process git object
+      // reads, no DB N+1 (the bytes already live in the bundle repo).
+      const out: ResolvedSkill[] = [];
+      for (const r of rows) {
+        out.push(rowToGlobalResolved(r, await loadFiles(r.bundle_tree_sha)));
+      }
+      return out;
     },
 
     async resolve(skillIds) {
@@ -233,14 +194,13 @@ export function createSkillsStore(db: Kysely<SkillsDatabase>): SkillsStore {
         .execute();
 
       const byId = new Map(rows.map((r) => [r.skill_id, r]));
-      const filesById = await loadFilesFor(rows.map((r) => r.skill_id));
 
       // Preserve input order; drop unknown ids silently.
       const result: ResolvedSkill[] = [];
       for (const id of skillIds) {
         const row = byId.get(id);
         if (row === undefined) continue;
-        result.push(rowToGlobalResolved(row, filesById.get(id) ?? []));
+        result.push(rowToGlobalResolved(row, await loadFiles(row.bundle_tree_sha)));
       }
       return result;
     },
