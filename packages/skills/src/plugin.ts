@@ -11,6 +11,8 @@ import { parseSkillManifest } from './manifest.js';
 import { runSkillsMigration, type SkillsDatabase } from './migrations.js';
 import { createSkillsStore } from './store.js';
 import { createUserSkillsStore } from './user-store.js';
+import { createUserAttachmentsStore } from './user-attachments-store.js';
+import { validateAttachmentBindings } from './attachment-validation.js';
 import { mergeUserWins, compareById } from './_merge.js';
 import { registerAdminSkillsRoutes } from './admin-routes.js';
 import { registerSettingsSkillsRoutes } from './settings-routes.js';
@@ -22,6 +24,8 @@ import {
   SkillsListOutputSchema,
   SkillsResolveOutputSchema,
   SkillsUpsertOutputSchema,
+  SkillsAttachForUserOutputSchema,
+  SkillsListUserAttachmentsOutputSchema,
 } from './types.js';
 import type {
   SkillsCheckForUpdatesInput,
@@ -38,6 +42,10 @@ import type {
   SkillsResolveOutput,
   SkillsUpsertInput,
   SkillsUpsertOutput,
+  SkillsAttachForUserInput,
+  SkillsAttachForUserOutput,
+  SkillsListUserAttachmentsInput,
+  SkillsListUserAttachmentsOutput,
 } from './types.js';
 
 const PLUGIN_NAME = '@ax/skills';
@@ -143,6 +151,8 @@ export function createSkillsPlugin(): Plugin {
         'skills:resolve',
         'skills:list-defaults',
         'skills:check-for-updates',
+        'skills:attach-for-user',
+        'skills:list-user-attachments',
       ],
       calls: ['database:get-instance', 'http:register-route', 'auth:require-user'],
       subscribes: [],
@@ -165,6 +175,7 @@ export function createSkillsPlugin(): Plugin {
       await runSkillsMigration(db);
       const store = createSkillsStore(db);
       const userStore = createUserSkillsStore(db);
+      const attachmentsStore = createUserAttachmentsStore(db);
 
       bus.registerService<SkillsListInput, SkillsListOutput>(
         'skills:list',
@@ -498,6 +509,68 @@ export function createSkillsPlugin(): Plugin {
           return checkForUpdates(detail, { fetch: globalThis.fetch.bind(globalThis) });
         },
         { returns: SkillsCheckForUpdatesOutputSchema },
+      );
+
+      // -----------------------------------------------------------------------
+      // Per-user skill attachment (TASK-33). Self-serve layer ABOVE the admin-
+      // managed agent-global attachments owned by @ax/agents. These hooks take
+      // NO `actor` — capability is minimized to validation + storage. The
+      // (host-side, authenticated) caller supplies `userId`. There is no
+      // agent-reachable caller in this slice (half-wired write path); TASK-36
+      // wires the post-approval host-side caller, which runs only after the
+      // user has authenticated and approved the bundled card.
+      // -----------------------------------------------------------------------
+      bus.registerService<SkillsAttachForUserInput, SkillsAttachForUserOutput>(
+        'skills:attach-for-user',
+        PLUGIN_NAME,
+        async (_ctx, input) => {
+          // Resolve the skill (user-scoped content wins over global of the same
+          // id — same precedence as skills:resolve) to read its declared slots.
+          const resolved =
+            (await userStore.resolve(input.userId, [input.skillId]))[0] ??
+            (await store.resolve([input.skillId]))[0];
+          if (resolved === undefined) {
+            throw new PluginError({
+              code: 'skill-not-found',
+              plugin: PLUGIN_NAME,
+              message: `skill '${input.skillId}' is not installed`,
+            });
+          }
+
+          const check = validateAttachmentBindings(
+            resolved.capabilities.credentials.map((c) => c.slot),
+            input.credentialBindings,
+          );
+          if (!check.ok) {
+            throw new PluginError({
+              code: check.code,
+              plugin: PLUGIN_NAME,
+              message: check.message,
+            });
+          }
+
+          const { created } = await attachmentsStore.upsert({
+            ownerUserId: input.userId,
+            agentId: input.agentId,
+            skillId: input.skillId,
+            credentialBindings: input.credentialBindings,
+          });
+          return { created };
+        },
+        { returns: SkillsAttachForUserOutputSchema },
+      );
+
+      bus.registerService<SkillsListUserAttachmentsInput, SkillsListUserAttachmentsOutput>(
+        'skills:list-user-attachments',
+        PLUGIN_NAME,
+        async (_ctx, input) => {
+          const attachments = await attachmentsStore.listForUserAgent(
+            input.userId,
+            input.agentId,
+          );
+          return { attachments };
+        },
+        { returns: SkillsListUserAttachmentsOutputSchema },
       );
 
       // Register admin + settings HTTP routes. Both batches are pushed into
