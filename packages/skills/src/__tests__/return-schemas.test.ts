@@ -9,6 +9,7 @@ import {
   SkillsUpsertOutputSchema,
   SkillsAttachForUserOutputSchema,
   SkillsListUserAttachmentsOutputSchema,
+  SkillsSearchCatalogOutputSchema,
   type ResolvedSkill,
   type SkillCapabilities,
   type SkillDetail,
@@ -21,6 +22,7 @@ import {
   type SkillsUpsertOutput,
   type SkillsAttachForUserOutput,
   type SkillsListUserAttachmentsOutput,
+  type SkillsSearchCatalogOutput,
 } from '../types.js';
 
 // ARCH-13 drift guard for the `skills:*` returns schemas. A fully-populated
@@ -152,5 +154,23 @@ describe('skills return schemas', () => {
   it('SkillsListUserAttachmentsOutputSchema round-trips empty attachments', () => {
     const v: SkillsListUserAttachmentsOutput = { attachments: [] };
     expect(SkillsListUserAttachmentsOutputSchema.parse(v)).toEqual(v);
+  });
+
+  it('SkillsSearchCatalogOutputSchema round-trips a fully-populated candidate list', () => {
+    const v: SkillsSearchCatalogOutput = {
+      skills: [
+        { id: 'linear', description: 'd', tier: 'bounded', hosts: ['api.linear.app'], slots: ['api_key'] },
+        { id: 'notes', description: 'n', tier: 'inert', hosts: [], slots: [] },
+      ],
+    };
+    expect(SkillsSearchCatalogOutputSchema.parse(v)).toEqual(v);
+  });
+
+  it('SkillsSearchCatalogOutputSchema rejects an unknown tier', () => {
+    expect(
+      SkillsSearchCatalogOutputSchema.safeParse({
+        skills: [{ id: 'x', description: 'd', tier: 'omnipotent', hosts: [], slots: [] }],
+      }).success,
+    ).toBe(false);
   });
 });
