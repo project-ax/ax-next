@@ -4,9 +4,10 @@
 // K8s pods can't have the host write files into them at create-time, so the
 // sandbox-k8s plugin passes installed-skill content as AX_INSTALLED_SKILLS_JSON
 // (JSON-encoded array). The runner reads it from process.env BEFORE the SDK
-// spawns and writes each skill's SKILL.md to
-// $CLAUDE_CONFIG_DIR/skills/<id>/SKILL.md, then chmods the parent dir to
-// 0555 so the runner's own tool calls can't extend or overwrite it.
+// spawns and writes each skill's bundle FILE TREE (SKILL.md + extra files) to
+// $CLAUDE_CONFIG_DIR/skills/<id>/, then chmods the parent dir to 0555 so the
+// runner's own tool calls can't extend or overwrite it. Every file path is
+// re-validated at this extract boundary (JIT Phase 1a — defense in depth).
 //
 // This is the symmetric peer of sandbox-subprocess's in-process
 // materialization (open-session.ts). The two providers' on-disk shape after
@@ -22,6 +23,28 @@ import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 
 const SKILL_ID_RE = /^[a-z][a-z0-9-]{0,63}$/;
+
+// JIT Phase 1a — extra-file path safety, re-validated at the runner's extract
+// boundary (defense in depth, the validateMcpEntry pattern). A buggy or
+// compromised host could otherwise write outside the skill dir or smuggle an
+// SDK-config file (`.mcp.json` is generated from mcpServers, NOT supplied;
+// `.claude/*` / `.git/*` are auto-config). `SKILL.md` is the one allowed
+// uppercase path (the bundle root). Mirrors @ax/skills bundle-files.ts and
+// @ax/sandbox-protocol's InstalledSkillSchema, kept independent per invariant
+// I2 (no cross-plugin import across the trust boundary).
+const SKILL_FILE_PATH_RE = /^[a-z0-9._-]+(\/[a-z0-9._-]+)*$/;
+
+function assertSafeRelPath(p: unknown): asserts p is string {
+  if (typeof p !== 'string' || p.length === 0 || p.length > 256) {
+    throw new Error(`invalid skill file path: ${String(p)}`);
+  }
+  if (p.includes('..') || p.startsWith('/') || !(p === 'SKILL.md' || SKILL_FILE_PATH_RE.test(p))) {
+    throw new Error(`invalid skill file path (traversal/charset): ${p}`);
+  }
+  if (p === '.mcp.json' || p.startsWith('.claude/') || p.startsWith('.git/')) {
+    throw new Error(`reserved skill file path: ${p}`);
+  }
+}
 
 // Phase B (capabilities.mcpServers) — translate the parsed McpServerSpec
 // into the Anthropic SDK's `.mcp.json` shape. stdio: { command, args, env }.
@@ -251,14 +274,11 @@ export async function materializeInstalledSkillsFromEnv(): Promise<void> {
       entry === null ||
       Array.isArray(entry)
     ) {
-      throw new Error('AX_INSTALLED_SKILLS_JSON entries must be { id, skillMd } objects');
+      throw new Error('AX_INSTALLED_SKILLS_JSON entries must be { id, files } objects');
     }
     const obj = entry as Record<string, unknown>;
     if (typeof obj['id'] !== 'string' || obj['id'].length === 0) {
-      throw new Error('AX_INSTALLED_SKILLS_JSON entries must be { id, skillMd } objects');
-    }
-    if (typeof obj['skillMd'] !== 'string' || obj['skillMd'].length === 0) {
-      throw new Error('AX_INSTALLED_SKILLS_JSON entries must be { id, skillMd } objects');
+      throw new Error('AX_INSTALLED_SKILLS_JSON entries must be { id, files } objects');
     }
     // mcpServers is optional but, if present, must be an array. Each entry is
     // re-validated below (defense in depth — the host-side sandbox already
@@ -270,11 +290,11 @@ export async function materializeInstalledSkillsFromEnv(): Promise<void> {
     }
     const e: {
       id: string;
-      skillMd: string;
+      files: unknown[];
       mcpServers?: unknown[];
     } = {
       id: obj['id'] as string,
-      skillMd: obj['skillMd'] as string,
+      files: Array.isArray(obj['files']) ? obj['files'] : [],
       ...(obj['mcpServers'] !== undefined
         ? { mcpServers: obj['mcpServers'] as unknown[] }
         : {}),
@@ -282,13 +302,40 @@ export async function materializeInstalledSkillsFromEnv(): Promise<void> {
     if (!SKILL_ID_RE.test(e.id)) {
       throw new Error(`installed skill id '${e.id}' has invalid shape`);
     }
+    if (!Array.isArray(obj['files']) || e.files.length === 0) {
+      throw new Error(`installed skill '${e.id}' must carry a non-empty files array`);
+    }
     const skillDir = path.join(skillsDir, e.id);
     await fs.mkdir(skillDir, { recursive: true, mode: 0o755 });
-    await fs.writeFile(
-      path.join(skillDir, 'SKILL.md'),
-      e.skillMd,
-      { mode: 0o444, encoding: 'utf-8' },
-    );
+
+    // JIT Phase 1a — materialize the bundle's file tree. Re-validate every path
+    // at this trust boundary (defense in depth) and add a post-join containment
+    // guard (belt-and-suspenders over the regex) so nothing escapes skillDir.
+    // Files are written read-only (0o444) — no exec bit; scripts run via their
+    // interpreter, never by exec permission.
+    let sawSkillMd = false;
+    for (const rawFile of e.files) {
+      if (typeof rawFile !== 'object' || rawFile === null || Array.isArray(rawFile)) {
+        throw new Error(`installed skill '${e.id}' has a non-object file entry`);
+      }
+      const fileObj = rawFile as Record<string, unknown>;
+      assertSafeRelPath(fileObj['path']);
+      const filePath = fileObj['path'];
+      if (typeof fileObj['contents'] !== 'string') {
+        throw new Error(`installed skill '${e.id}' file '${filePath}' contents must be a string`);
+      }
+      if (filePath === 'SKILL.md') sawSkillMd = true;
+      const full = path.join(skillDir, filePath);
+      if (full !== skillDir && !full.startsWith(skillDir + path.sep)) {
+        throw new Error(`skill file '${filePath}' escapes skill dir`);
+      }
+      await fs.mkdir(path.dirname(full), { recursive: true, mode: 0o755 });
+      await fs.writeFile(full, fileObj['contents'], { mode: 0o444, encoding: 'utf-8' });
+    }
+    if (!sawSkillMd) {
+      throw new Error(`installed skill '${e.id}' is missing SKILL.md`);
+    }
+
     // Phase B — write `.mcp.json` alongside SKILL.md so the SDK's `'project'`
     // setting source auto-discovers the bundled MCP servers. Validate each
     // entry first (defense-in-depth: even though sandbox-k8s ran zod
