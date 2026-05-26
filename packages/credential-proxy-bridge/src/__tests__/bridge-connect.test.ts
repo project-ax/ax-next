@@ -32,8 +32,11 @@ function tmpSocketPath(): string {
 async function startUnixCONNECTServer(
   socketPath: string,
   opts: { accept: boolean } = { accept: true },
-): Promise<{ close(): Promise<void>; targets: string[] }> {
+): Promise<{ close(): Promise<void>; targets: string[]; headers: string[] }> {
   const targets: string[] = [];
+  // Full CONNECT request-header block (up to the \r\n\r\n) as the host proxy
+  // saw it — lets a test assert which headers the bridge forwarded (TASK-52).
+  const headers: string[] = [];
   const server = net.createServer((sock) => {
     let buf = '';
     let headersDone = false;
@@ -45,6 +48,7 @@ async function startUnixCONNECTServer(
         const header = buf.slice(0, end);
         const remainder = Buffer.from(buf.slice(end + 4), 'utf8');
         headersDone = true;
+        headers.push(header);
 
         const m = header.match(/^CONNECT\s+(\S+)\s+HTTP\/1\.1/);
         if (m) targets.push(m[1] ?? '');
@@ -77,6 +81,7 @@ async function startUnixCONNECTServer(
         server.close(() => resolve());
       }),
     targets,
+    headers,
   };
 }
 
@@ -132,6 +137,52 @@ describe('startWebProxyBridge — CONNECT tunneling', () => {
     expect(echoed.startsWith('hello tunnel')).toBe(true);
 
     socket.destroy();
+  });
+
+  it('forwards Proxy-Authorization on the CONNECT it writes to the unix socket (TASK-52)', async () => {
+    // Egress attribution: the sandbox sends the per-session token as
+    // `Proxy-Authorization: Basic ax:<token>`. The bridge must carry that
+    // header on the CONNECT it rebuilds for the host proxy, or k8s-mode
+    // HTTPS egress arrives at the listener token-less (unattributed).
+    const socketPath = tmpSocketPath();
+    const upstream = await startUnixCONNECTServer(socketPath, { accept: true });
+
+    const bridge = await startWebProxyBridge(socketPath);
+    cleanups.push(() => bridge.stop());
+
+    const token = 'd'.repeat(32);
+    const authValue = 'Basic ' + Buffer.from('ax:' + token).toString('base64');
+
+    await new Promise<void>((resolve, reject) => {
+      const socket = net.connect(bridge.port, '127.0.0.1', () => {
+        // A real CONNECT request WITH the Proxy-Authorization header. Node's
+        // http server parses it into req.headers['proxy-authorization'].
+        socket.write(
+          `CONNECT api.example.com:443 HTTP/1.1\r\n` +
+            `Host: api.example.com:443\r\n` +
+            `Proxy-Authorization: ${authValue}\r\n` +
+            `\r\n`,
+        );
+      });
+      let buf = '';
+      const onData = (c: Buffer) => {
+        buf += c.toString();
+        if (buf.indexOf('\r\n\r\n') !== -1) {
+          socket.off('data', onData);
+          socket.destroy();
+          resolve();
+        }
+      };
+      socket.on('data', onData);
+      socket.on('error', reject);
+    });
+
+    // The host proxy received exactly one CONNECT; its header block carries
+    // the forwarded Proxy-Authorization (case-insensitive header name).
+    expect(upstream.headers).toHaveLength(1);
+    expect(upstream.headers[0]!.toLowerCase()).toContain(
+      `proxy-authorization: ${authValue.toLowerCase()}`,
+    );
   });
 
   it('forwards a non-200 CONNECT response from the host proxy', async () => {
