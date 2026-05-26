@@ -5,6 +5,7 @@ import {
   type Plugin,
 } from '@ax/core';
 import { createChunkBuffer, type ChunkBuffer } from './chunk-buffer.js';
+import { makeAllowHostHandler } from './routes-allow-host.js';
 import { registerAttachmentsRoutes } from './routes-attachments.js';
 import { registerChatRoutes } from './routes-chat.js';
 import {
@@ -103,6 +104,12 @@ export function createChannelWebServerPlugin(
         'attachments:store-temp',
         'attachments:commit',
         'attachments:download',
+        // TASK-37 — the reactive egress wall's grant route calls the
+        // host-internal proxy:add-host service hook. channel-web only loads in
+        // the k8s preset, which always loads @ax/credential-proxy, so this is a
+        // hard dep (the route is the ONLY caller — the untrusted runner can't
+        // reach this hook over IPC).
+        'proxy:add-host',
       ],
       subscribes: ['chat:stream-chunk', 'chat:phase', 'chat:turn-end', 'chat:turn-error', 'chat:permission-request', 'conversations:title-updated'],
     },
@@ -218,6 +225,26 @@ export function createChannelWebServerPlugin(
       // methods. See routes-chat.ts for per-endpoint details.
       const chatRouteUnregisters = await registerChatRoutes(bus, initCtx);
       for (const u of chatRouteUnregisters) unregisterRoutes.push(u);
+
+      // TASK-37 — the reactive egress wall's grant route. The <PermissionCard>
+      // host variant POSTs { sessionId, host } here on grant; this calls the
+      // host-internal proxy:add-host hook with the AUTHENTICATED user ctx (the
+      // proxy re-validates session ownership). CSRF-gated automatically by
+      // @ax/http-server's subscriber on state-changing methods. Ships with its
+      // consumer (the card) in the same PR (I3 — no half-wired surface).
+      const allowHost = makeAllowHostHandler({ bus, initCtx });
+      const allowHostRoute = await bus.call<
+        unknown,
+        { unregister: () => void }
+      >('http:register-route', initCtx, {
+        method: 'POST',
+        path: '/api/chat/allow-host',
+        handler: allowHost as unknown as (
+          req: RouteRequest,
+          res: RouteResponse,
+        ) => Promise<void>,
+      });
+      unregisterRoutes.push(allowHostRoute.unregister);
 
       // Phase 3 — attachments + downloads. Closes the half-wired window
       // opened in Phase 1 (routes-chat.ts already calls
