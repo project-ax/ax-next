@@ -111,13 +111,41 @@ export const McpServerSchema = z
   );
 export type McpServerSpec = z.infer<typeof McpServerSchema>;
 
-// An installed skill to materialize inside the sandbox: SKILL.md body plus
-// any bundled MCP servers. Subprocess writes these to disk before the runner
-// spawns; k8s passes them through AX_INSTALLED_SKILLS_JSON and the runner
-// materializes them. 512 KiB per-skill body cap.
+// JIT Phase 1a — a skill bundle is a FILE TREE, not a single SKILL.md string.
+// `files` carries SKILL.md (the root file at THIS hop — it's a legitimate
+// bundle file here, reconstructed by the orchestrator from the manifest
+// columns) plus zero-or-more extra files (scripts, data, templates). The
+// per-path charset/traversal rules are re-validated at the wire (trust
+// boundary re-validation, the validateMcpEntry pattern) so a drifted or
+// compromised host can't smuggle a path-traversal or an absolute path into
+// the sandbox; the runner materializers re-validate AGAIN at extract time.
+//
+// Caps: ≤24 files (16 extra + SKILL.md + headroom; the 16-extra cap is the
+// upstream @ax/skills rule), 256-char paths, 256 KiB per file. A SKILL.md
+// file is required — it's the root the SDK discovers.
+// Extra-file charset: relative, lowercase, dot/dash/underscore only, no `..`.
+// `SKILL.md` is the ONE allowed uppercase exception (the bundle root, matched
+// literally) — every other path must satisfy this.
+const SKILL_FILE_PATH_RE = /^[a-z0-9._-]+(\/[a-z0-9._-]+)*$/;
+const isValidSkillFilePath = (p: string): boolean =>
+  !p.includes('..') && !p.startsWith('/') && (p === 'SKILL.md' || SKILL_FILE_PATH_RE.test(p));
+
 export const InstalledSkillSchema = z.object({
   id: z.string().regex(ID_RE, 'invalid skill id shape'),
-  skillMd: z.string().min(1).max(512 * 1024),
+  files: z
+    .array(
+      z.object({
+        path: z
+          .string()
+          .min(1)
+          .max(256)
+          .refine(isValidSkillFilePath, 'invalid file path (traversal/absolute/charset)'),
+        contents: z.string().min(0).max(256 * 1024),
+      }),
+    )
+    .min(1)
+    .max(24)
+    .refine((fs) => fs.some((f) => f.path === 'SKILL.md'), 'files must include SKILL.md'),
   mcpServers: z.array(McpServerSchema).max(8).default([]),
   // TASK-14 (CLI-1 part 2) — the skill's top-level allowedHosts + credential
   // slots, forwarded so the runner can wire skill-declared credentials into
