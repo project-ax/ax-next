@@ -828,6 +828,7 @@ describe('permission-request frame', () => {
         'chat:permission-request',
         ctxWithConversation(initCtx, 'cnv_test'),
         {
+          kind: 'skill',
           skillId: 'linear',
           description: 'Read your Linear issues',
           hosts: ['api.linear.app'],
@@ -863,8 +864,67 @@ describe('permission-request frame', () => {
       await bus.fire(
         'chat:permission-request',
         ctxWithConversation(initCtx, 'cnv_OTHER'),
-        { skillId: 'linear', description: 'd', hosts: [], slots: [] },
+        { kind: 'skill', skillId: 'linear', description: 'd', hosts: [], slots: [] },
       );
+
+      const frames = captured.streamWrites
+        .filter((w) => w.startsWith('data: '))
+        .map((w) => JSON.parse(w.slice(6)) as Record<string, unknown>);
+      expect(frames.some((f) => 'permissionRequest' in f)).toBe(false);
+      expect(captured.streamClosed).toBe(false);
+    } finally {
+      buffer.dispose();
+    }
+  });
+
+  // TASK-37 — the host-grant variant. Unlike the skill variant (broker-fired,
+  // matched by conversationId), the host variant is orchestrator-fired carrying
+  // a routing reqId in the PAYLOAD and matched by payload.reqId (like
+  // chat:turn-error). The routing reqId is stripped from what the browser sees.
+  it('emits a host card frame matched by reqId and keeps the stream open', async () => {
+    const { bus, initCtx, handler, buffer } = bootHandler();
+    try {
+      const { res, captured } = fakeRes();
+      await handler(fakeReq({ reqId: 'r-test' }), res);
+
+      await bus.fire('chat:permission-request', initCtx, {
+        kind: 'host',
+        host: 'status.example.com',
+        sessionId: 's1',
+        reqId: 'r-test',
+      });
+
+      const frames = captured.streamWrites
+        .filter((w) => w.startsWith('data: '))
+        .map((w) => JSON.parse(w.slice(6)) as Record<string, unknown>);
+      const card = frames.find((f) => 'permissionRequest' in f);
+      expect(card).toMatchObject({
+        reqId: 'r-test',
+        permissionRequest: { kind: 'host', host: 'status.example.com', sessionId: 's1' },
+      });
+      // The routing reqId must NOT leak into the card payload (the browser
+      // already knows its reqId from the connection).
+      expect(
+        (card?.permissionRequest as Record<string, unknown>).reqId,
+      ).toBeUndefined();
+      expect(captured.streamClosed).toBe(false); // non-terminal
+    } finally {
+      buffer.dispose();
+    }
+  });
+
+  it('does NOT deliver a host card whose reqId differs from the connection', async () => {
+    const { bus, initCtx, handler, buffer } = bootHandler();
+    try {
+      const { res, captured } = fakeRes();
+      await handler(fakeReq({ reqId: 'r-test' }), res);
+
+      await bus.fire('chat:permission-request', initCtx, {
+        kind: 'host',
+        host: 'h.example.com',
+        sessionId: 's1',
+        reqId: 'r-OTHER',
+      });
 
       const frames = captured.streamWrites
         .filter((w) => w.startsWith('data: '))

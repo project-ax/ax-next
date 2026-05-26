@@ -47,7 +47,13 @@ interface CatalogSkillDetail {
 // public manifest data — never a secret (the card's key field posts straight to
 // the host credential store, §10). The matching SSE-frame + render side
 // re-declares this shape in @ax/channel-web (I2 — no shared import).
+//
+// `kind: 'skill'` discriminates this from the reactive egress-wall's
+// `kind: 'host'` variant (TASK-37, fired by @ax/chat-orchestrator). The
+// `chat:permission-request` payload is a union on `kind`; this producer always
+// fires the skill variant.
 interface PermissionRequestEvent {
+  kind: 'skill';
   skillId: string;
   description: string;
   hosts: string[];
@@ -103,6 +109,7 @@ export async function registerRequestCapability(bus: HookBus): Promise<void> {
       // (TASK-37 proxy:add-host), attach the skill, or pause -> re-spawn ->
       // resume the turn (TASK-36, using TASK-33's skills:attach-for-user).
       const card: PermissionRequestEvent = {
+        kind: 'skill',
         skillId,
         description: detail.description,
         hosts: detail.capabilities.allowedHosts,

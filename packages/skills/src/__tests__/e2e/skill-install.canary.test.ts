@@ -839,6 +839,7 @@ describe('skill-broker canary: search_catalog + request_capability reach the rea
     expect(ack).toEqual({ status: 'requested', skillId: 'github' });
     expect(cards).toHaveLength(1);
     expect(cards[0]).toMatchObject({
+      kind: 'skill',
       skillId: 'github',
       hosts: ['api.github.com'],
       slots: [{ slot: 'GITHUB_TOKEN', kind: 'api-key' }],

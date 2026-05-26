@@ -92,28 +92,42 @@ export type PhaseKind = 'sandbox-starting';
  */
 /**
  * Payload for the `chat:permission-request` subscriber hook AND the inner
- * object of the matching SSE frame. The JIT bundled approval card (design
- * §11.3): the skill id, its description, the hosts it would reach, and the
- * credential SLOT NAMES it declares. NEVER a secret value — the card's key
- * field posts straight to the host credential store (the §10 trust path), so
- * no credential ever rides this frame or the transcript. Backend-agnostic
- * (Invariant I1): hostnames + slot names are public manifest fields.
+ * object of the matching SSE frame. A discriminated union on `kind`:
  *
- * Re-declared here (not imported from @ax/skill-broker) — same cross-plugin
+ * - `kind: 'skill'` — the JIT bundled approval card (design §11.3, TASK-35):
+ *   the skill id, its description, the hosts it would reach, and the credential
+ *   SLOT NAMES it declares. Fired by @ax/skill-broker, SSE-matched by
+ *   ctx.conversationId. NEVER a secret value — the card's key field posts
+ *   straight to the host credential store (the §10 trust path), so no
+ *   credential ever rides this frame or the transcript.
+ *
+ * - `kind: 'host'` — the reactive egress-wall card (design §6B, TASK-37): the
+ *   single host a blocked egress tried to reach, plus the opaque sessionId the
+ *   browser echoes back on grant. Fired by @ax/chat-orchestrator, SSE-matched
+ *   by the routing reqId carried on the FIRED payload (stripped before the
+ *   browser sees it). Carries no secret; the grant route re-validates session
+ *   ownership host-side.
+ *
+ * Backend-agnostic (Invariant I1): hostnames, slot names, and the opaque
+ * sessionId are all public/transport-neutral fields. Re-declared here (not
+ * imported from @ax/skill-broker / @ax/credential-proxy) — same cross-plugin
  * duplication-with-a-comment posture as StreamChunk vs @ax/ipc-protocol (I2).
  */
-export interface PermissionRequest {
-  skillId: string;
-  description: string;
-  hosts: string[];
-  slots: { slot: string; kind: 'api-key' }[];
-  /**
-   * TASK-39 open-mode banner. When true, the skill was just AUTHORED by the
-   * agent (not a vetted catalog skill) — the card shows a warning. Optional +
-   * public (no secret); the SSE subscriber forwards it verbatim.
-   */
-  authored?: boolean;
-}
+export type PermissionRequest =
+  | {
+      kind: 'skill';
+      skillId: string;
+      description: string;
+      hosts: string[];
+      slots: { slot: string; kind: 'api-key' }[];
+      /**
+       * TASK-39 open-mode banner. When true, the skill was just AUTHORED by the
+       * agent (not a vetted catalog skill) — the card shows a warning. Optional
+       * + public (no secret); the SSE subscriber forwards it verbatim.
+       */
+      authored?: boolean;
+    }
+  | { kind: 'host'; host: string; sessionId: string };
 
 export type SseFrame =
   | StreamChunk
