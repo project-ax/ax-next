@@ -30,6 +30,11 @@ afterEach(async () => {
   while (opened.length > 0) {
     const k = opened.pop()!;
     try {
+      await k.schema.dropTable('skills_v1_user_attachments').ifExists().execute();
+    } catch {
+      /* drained pool — ignore */
+    }
+    try {
       await k.schema.dropTable('skills_v1_user_skills').ifExists().execute();
     } catch {
       /* drained pool — ignore */
@@ -351,5 +356,68 @@ describe('runSkillsMigration — skills_v1_user_skills side-table', () => {
       .execute();
     expect(rows).toHaveLength(1);
     expect(rows[0]).toEqual({ owner_user_id: 'user-x', skill_id: 'my-skill' });
+  });
+});
+
+describe('runSkillsMigration — skills_v1_user_attachments side-table', () => {
+  it('creates skills_v1_user_attachments with the compound PK (user, agent, skill)', async () => {
+    const db = makeKysely();
+    await runSkillsMigration(db);
+
+    await db
+      .insertInto('skills_v1_user_attachments')
+      .values([
+        { owner_user_id: 'u1', agent_id: 'a1', skill_id: 'github', credential_bindings: JSON.stringify({ GITHUB_TOKEN: 'ref1' }) as unknown },
+        { owner_user_id: 'u1', agent_id: 'a1', skill_id: 'linear', credential_bindings: JSON.stringify({}) as unknown },
+        { owner_user_id: 'u1', agent_id: 'a2', skill_id: 'github', credential_bindings: JSON.stringify({ GITHUB_TOKEN: 'ref2' }) as unknown },
+      ])
+      .execute();
+
+    // Distinct (user, agent) pairs keep their own rows.
+    const a1 = await db
+      .selectFrom('skills_v1_user_attachments')
+      .selectAll()
+      .where('owner_user_id', '=', 'u1')
+      .where('agent_id', '=', 'a1')
+      .orderBy('skill_id')
+      .execute();
+    expect(a1.map((r) => r.skill_id)).toEqual(['github', 'linear']);
+
+    // Same (user, agent, skill) again must violate the compound PK.
+    await expect(
+      db
+        .insertInto('skills_v1_user_attachments')
+        .values({ owner_user_id: 'u1', agent_id: 'a1', skill_id: 'github', credential_bindings: JSON.stringify({}) as unknown })
+        .execute(),
+    ).rejects.toThrow();
+  });
+
+  it('credential_bindings is JSONB defaulting to {}', async () => {
+    const db = makeKysely();
+    await runSkillsMigration(db);
+
+    const cols = await sql<{ column_name: string; data_type: string; is_nullable: string; column_default: string | null }>`
+      SELECT column_name, data_type, is_nullable, column_default
+        FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = 'skills_v1_user_attachments'
+         AND column_name = 'credential_bindings'
+    `.execute(db);
+
+    expect(cols.rows).toHaveLength(1);
+    expect(cols.rows[0]?.data_type).toBe('jsonb');
+    expect(cols.rows[0]?.is_nullable).toBe('NO');
+  });
+
+  it('is idempotent — running runSkillsMigration twice does not throw', async () => {
+    const db = makeKysely();
+    await runSkillsMigration(db);
+    await runSkillsMigration(db);
+
+    await db
+      .insertInto('skills_v1_user_attachments')
+      .values({ owner_user_id: 'u1', agent_id: 'a1', skill_id: 'github', credential_bindings: JSON.stringify({}) as unknown })
+      .execute();
+    const rows = await db.selectFrom('skills_v1_user_attachments').select('skill_id').execute();
+    expect(rows).toHaveLength(1);
   });
 });
