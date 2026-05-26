@@ -137,6 +137,7 @@ describe('PermissionCard', () => {
   it('shows the "new skill" banner when the request is authored', async () => {
     render(<PermissionCard />);
     permissionCardActions.show({
+      kind: 'skill',
       skillId: 'notes',
       description: 'Take notes',
       hosts: ['api.example.com'],

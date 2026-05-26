@@ -269,6 +269,7 @@ describe('install_authored_skill tool', () => {
     ]);
     expect(cards).toEqual([
       {
+        kind: 'skill',
         skillId: 'notes',
         description: 'Take notes',
         hosts: ['api.example.com'],

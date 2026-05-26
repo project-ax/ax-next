@@ -1056,6 +1056,7 @@ describe('skill-install canary: open-mode authoring → user-store bundle + reti
     expect(ack).toEqual({ status: 'requested', skillId: 'notes' });
     expect(cards).toEqual([
       {
+        kind: 'skill',
         skillId: 'notes',
         description: 'Take notes',
         hosts: ['api.example.com'],
