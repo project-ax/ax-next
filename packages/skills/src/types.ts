@@ -210,6 +210,7 @@ const CapabilitySlotSchema = z.object({
   slot: z.string(),
   kind: z.literal('api-key'),
   description: z.string().optional(),
+  account: z.string().optional(), // JIT P2/P7.2 — service-keyed vault tag
 });
 
 const McpServerSpecSchema = z.object({

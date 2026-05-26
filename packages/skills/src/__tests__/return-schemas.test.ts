@@ -89,6 +89,35 @@ describe('skills return schemas', () => {
     expect(SkillsGetOutputSchema.parse(full)).toEqual(full);
   });
 
+  // JIT P2/P7.2 — the credential `account` service tag must survive the
+  // return-validation strip (hook-bus strips keys absent from the schema), so
+  // skills:get / skills:resolve preserve it for the orchestrator + broker.
+  it('SkillsGetOutputSchema preserves the credential account tag', () => {
+    const detailWithAccount = {
+      id: 'linear',
+      description: 'd',
+      version: 1,
+      capabilities: {
+        allowedHosts: ['api.linear.app'],
+        credentials: [{ slot: 'LINEAR_TOKEN', kind: 'api-key', account: 'linear' }],
+        mcpServers: [],
+        packages: { npm: [], pypi: [] },
+      },
+      defaultAttached: false,
+      updatedAt: new Date(0).toISOString(),
+      scope: 'global',
+      bodyMd: '# x',
+      manifestYaml: 'name: linear',
+      files: [],
+    };
+    const parsed = (
+      SkillsGetOutputSchema as unknown as {
+        parse: (v: unknown) => typeof detailWithAccount;
+      }
+    ).parse(detailWithAccount);
+    expect(parsed.capabilities.credentials[0]!.account).toBe('linear');
+  });
+
   it('skills:upsert round-trips a fully-populated SkillsUpsertOutput', () => {
     const full: SkillsUpsertOutput = { skillId: 'github', created: true };
     expect(SkillsUpsertOutputSchema.parse(full)).toEqual(full);
