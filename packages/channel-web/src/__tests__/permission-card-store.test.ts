@@ -2,9 +2,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   getPermissionCardSnapshot,
   permissionCardActions,
+  type PermissionRequest,
 } from '../lib/permission-card-store';
 
-const sample = {
+const sample: PermissionRequest = {
+  kind: 'skill',
   skillId: 'linear',
   description: 'Read your Linear issues',
   hosts: ['api.linear.app'],
@@ -20,9 +22,21 @@ describe('permission-card-store', () => {
 
   it('show() stores the request; dismiss() clears it', () => {
     permissionCardActions.show(sample);
-    expect(getPermissionCardSnapshot().request?.skillId).toBe('linear');
+    const req = getPermissionCardSnapshot().request;
+    expect(req?.kind).toBe('skill');
+    expect(req).toEqual(sample);
     permissionCardActions.dismiss();
     expect(getPermissionCardSnapshot().request).toBeNull();
+  });
+
+  it('show() stores a host-grant request (TASK-37)', () => {
+    permissionCardActions.show({ kind: 'host', host: 'status.example.com', sessionId: 's1' });
+    expect(getPermissionCardSnapshot().request).toEqual({
+      kind: 'host',
+      host: 'status.example.com',
+      sessionId: 's1',
+    });
+    permissionCardActions.dismiss();
   });
 
   it('show() notifies subscribers', () => {

@@ -9,14 +9,28 @@
  */
 import { useSyncExternalStore } from 'react';
 
-export interface PermissionRequest {
-  skillId: string;
-  description: string;
-  hosts: string[];
-  slots: { slot: string; kind: 'api-key' }[];
-  /** TASK-39: open-mode banner — the agent just wrote this skill. */
-  authored?: boolean;
-}
+/**
+ * Discriminated union on `kind` — mirrors the server `PermissionRequest`
+ * (src/server/types.ts) and the SSE frame's inner object:
+ *
+ * - `kind: 'skill'` — the JIT bundled approval card (TASK-35): skill id, hosts,
+ *   credential slot names; `authored` flags an agent-written skill (TASK-39).
+ *   Never a secret.
+ * - `kind: 'host'` — the reactive egress-wall card (TASK-37): the single host a
+ *   blocked egress tried to reach + the opaque sessionId the browser echoes on
+ *   grant. Never a secret.
+ */
+export type PermissionRequest =
+  | {
+      kind: 'skill';
+      skillId: string;
+      description: string;
+      hosts: string[];
+      slots: { slot: string; kind: 'api-key' }[];
+      /** TASK-39: open-mode banner — the agent just wrote this skill. */
+      authored?: boolean;
+    }
+  | { kind: 'host'; host: string; sessionId: string };
 
 export interface PermissionCardState {
   request: PermissionRequest | null;
