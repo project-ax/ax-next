@@ -176,6 +176,29 @@ export async function setDestinationCredential(args: {
   }
 }
 
+/**
+ * Reactive-wall host grant (TASK-37). POSTs the blocked host + its opaque
+ * sessionId to the user-scoped, CSRF-gated `/api/chat/allow-host` route, which
+ * calls the host-internal `proxy:add-host` service hook to widen the LIVE
+ * session allowlist — no re-spawn. The route builds the caller identity from
+ * the auth cookie and re-validates session ownership, so the browser-supplied
+ * sessionId is echoed for routing, never trusted for authorization. Carries no
+ * secret. Mirrors `setDestinationCredential`'s CSRF posture
+ * (`x-requested-with: ax-admin`, `credentials: 'include'`).
+ */
+export async function grantHost(input: {
+  sessionId: string;
+  host: string;
+}): Promise<void> {
+  const res = await fetch('/api/chat/allow-host', {
+    method: 'POST',
+    headers: writeHeaders,
+    credentials: 'include',
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw new Error(`allow-host failed: ${res.status}`);
+}
+
 export async function clearDestinationCredential(args: {
   destination: Destination;
   scope: { scope: 'global' | 'user' | 'agent'; ownerId: string | null };
