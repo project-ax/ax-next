@@ -106,6 +106,14 @@ export function PermissionCard() {
         )}
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
+        {request.authored === true && (
+          <Alert>
+            <AlertDescription>
+              ⚠ This is a new skill your assistant just wrote. Approve the access
+              below only if you expected it.
+            </AlertDescription>
+          </Alert>
+        )}
         {request.hosts.length > 0 && (
           <div className="flex flex-col gap-1.5">
             <p className="text-xs text-muted-foreground">Will access</p>

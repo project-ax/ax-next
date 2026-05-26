@@ -131,4 +131,29 @@ describe('PermissionCard', () => {
     expect(fetchMock).not.toHaveBeenCalled();
     expect(continueSpy).not.toHaveBeenCalled();
   });
+
+  // TASK-39: open-mode authoring surfaces the same card with a warning banner.
+  it('shows the "new skill" banner when the request is authored', async () => {
+    render(<PermissionCard />);
+    permissionCardActions.show({
+      skillId: 'notes',
+      description: 'Take notes',
+      hosts: ['api.example.com'],
+      slots: [{ slot: 'API_KEY', kind: 'api-key' as const }],
+      authored: true,
+    });
+    expect(
+      await screen.findByText(/new skill your assistant just wrote/i),
+    ).toBeInTheDocument();
+  });
+
+  it('shows no authored banner for a curated (catalog) request', async () => {
+    render(<PermissionCard />);
+    permissionCardActions.show(linear);
+    // Wait for the card to render (its hosts badge), then assert no banner.
+    expect(await screen.findByText('api.linear.app')).toBeInTheDocument();
+    expect(
+      screen.queryByText(/new skill your assistant just wrote/i),
+    ).toBeNull();
+  });
 });

@@ -107,6 +107,12 @@ export interface PermissionRequest {
   description: string;
   hosts: string[];
   slots: { slot: string; kind: 'api-key' }[];
+  /**
+   * TASK-39 open-mode banner. When true, the skill was just AUTHORED by the
+   * agent (not a vetted catalog skill) — the card shows a warning. Optional +
+   * public (no secret); the SSE subscriber forwards it verbatim.
+   */
+  authored?: boolean;
 }
 
 export type SseFrame =
