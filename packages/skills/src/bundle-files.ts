@@ -60,4 +60,19 @@ export function validateBundleFiles(files: BundleFile[]): void {
     total += bytes;
   }
   if (total > MAX_TOTAL_BYTES) throw new Error(`bundle extra files exceed 512 KiB total`);
+
+  // Reject directory/file prefix collisions: a bundle declaring both `scripts`
+  // (a file) and `scripts/run.py` (a file under dir `scripts`) forces the
+  // materializer to create one path as BOTH a file and a directory → it fails
+  // at session start. Compare at `/` segment boundaries so siblings that share
+  // a textual prefix (`scripts/a.py` vs `scriptsx.py`) are fine. ≤16 files, so
+  // the O(n²) pair scan is trivial.
+  const paths = files.map((f) => f.path);
+  for (const a of paths) {
+    for (const b of paths) {
+      if (a !== b && b.startsWith(a + '/')) {
+        throw new Error(`bundle path '${a}' collides with '${b}' (both a file and a directory)`);
+      }
+    }
+  }
 }

@@ -363,6 +363,28 @@ export async function materializeInstalledSkillsFromEnv(): Promise<void> {
         { mode: 0o444, encoding: 'utf-8' },
       );
     }
+
+    // Lock the WHOLE bundle tree read-only — files are already 0o444; chmod
+    // every directory (this skill dir + any nested subdirs) to 0o555 so the
+    // model (which runs as the dir owner) can't unlink + recreate a
+    // supposedly read-only bundled file inside an otherwise-writable subdir.
+    // Deepest-first so traversal still works as we lock.
+    await lockDirsReadOnly(skillDir);
   }
   await fs.chmod(skillsDir, 0o555);
+}
+
+/**
+ * Recursively chmod every directory in the tree (deepest-first) to 0o555 so a
+ * read-only skill bundle can't have its files swapped out from under it. Files
+ * are written 0o444 separately; this only touches directories.
+ */
+async function lockDirsReadOnly(dir: string): Promise<void> {
+  const entries = await fs.readdir(dir, { withFileTypes: true });
+  for (const ent of entries) {
+    if (ent.isDirectory()) {
+      await lockDirsReadOnly(path.join(dir, ent.name));
+    }
+  }
+  await fs.chmod(dir, 0o555);
 }

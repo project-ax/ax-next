@@ -41,6 +41,32 @@ describe('validateBundleFiles', () => {
     ).toThrow(/duplicate/i);
   });
 
+  it('rejects a path that is both a file and a directory prefix (scripts + scripts/run.py)', () => {
+    expect(() =>
+      validateBundleFiles([
+        { path: 'scripts', contents: 'x' },
+        { path: 'scripts/run.py', contents: 'print(1)' },
+      ]),
+    ).toThrow(/collid|prefix|both a file and a director/i);
+    // Order-independent: declaring the nested path first must also reject.
+    expect(() =>
+      validateBundleFiles([
+        { path: 'scripts/run.py', contents: 'print(1)' },
+        { path: 'scripts', contents: 'x' },
+      ]),
+    ).toThrow(/collid|prefix|both a file and a director/i);
+  });
+
+  it('accepts sibling paths that share a prefix segment but do not collide', () => {
+    expect(() =>
+      validateBundleFiles([
+        { path: 'scripts/a.py', contents: '1' },
+        { path: 'scripts/b.py', contents: '2' },
+        { path: 'scriptsx.py', contents: '3' }, // shares the textual prefix "scripts" but not a path segment
+      ]),
+    ).not.toThrow();
+  });
+
   it('enforces caps', () => {
     const tooMany = Array.from({ length: 17 }, (_, i) => ({ path: `f${i}.txt`, contents: 'x' }));
     expect(() => validateBundleFiles(tooMany)).toThrow(/at most 16/);

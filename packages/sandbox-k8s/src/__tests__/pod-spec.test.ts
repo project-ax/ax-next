@@ -641,10 +641,13 @@ describe('buildPodSpec', () => {
       expect(env.find((e) => e.name === 'AX_INSTALLED_SKILLS_JSON')).toBeUndefined();
     });
 
-    it('throws when the total installedSkills payload exceeds 768 KiB', () => {
-      // A bundle is a file tree (bigger than a single SKILL.md string), so the
-      // env-var transport cap is 768 KiB. The combined JSON must still fit.
-      const hugeContents = 'x'.repeat(800 * 1024); // 800 KiB > 768 KiB cap
+    it('throws when the total installedSkills payload exceeds 96 KiB', () => {
+      // A single env-var string fed to execve is bounded by the kernel's
+      // MAX_ARG_STRLEN (~128 KiB on Linux); AX_INSTALLED_SKILLS_JSON is a
+      // single env value, so the cap stays well under that (96 KiB) to leave
+      // headroom for JSON overhead. A 120 KiB bundle is rejected here rather
+      // than producing a pod the runtime can't exec.
+      const hugeContents = 'x'.repeat(120 * 1024); // 120 KiB > 96 KiB cap
       expect(() =>
         buildPodSpec(
           'pod-huge',
@@ -656,7 +659,23 @@ describe('buildPodSpec', () => {
           },
           baseResolved(),
         ),
-      ).toThrow(/over 768 KiB/);
+      ).toThrow(/over 96 KiB/);
+    });
+
+    it('accepts a bundle just under the 96 KiB cap', () => {
+      const okContents = 'x'.repeat(80 * 1024); // 80 KiB, well under the cap
+      expect(() =>
+        buildPodSpec(
+          'pod-ok',
+          {
+            ...baseInput,
+            installedSkills: [
+              { id: 'okskill', files: [{ path: 'SKILL.md', contents: okContents }] },
+            ],
+          },
+          baseResolved(),
+        ),
+      ).not.toThrow();
     });
   });
 });

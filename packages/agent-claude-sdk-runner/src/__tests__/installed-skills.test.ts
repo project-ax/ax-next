@@ -43,12 +43,28 @@ beforeEach(async () => {
 
 afterEach(async () => {
   restoreEnvKeys();
-  // Unlock the skills dir before cleanup — materializeInstalledSkillsFromEnv
-  // chmods it to 0555, and fs.rm({ recursive: true }) cannot rmdir from a
-  // 0555 dir on macOS (EACCES). Best-effort: if it doesn't exist, ignore.
-  await fs.chmod(path.join(tmpRoot, 'skills'), 0o755).catch(() => undefined);
+  // Unlock the skills tree before cleanup — materializeInstalledSkillsFromEnv
+  // chmods every bundle dir to 0555, and fs.rm({ recursive: true }) cannot
+  // rmdir from a 0555 dir (EACCES). Recursively chmod all dirs back to 0755.
+  // Best-effort: if it doesn't exist, ignore.
+  await unlockTree(path.join(tmpRoot, 'skills')).catch(() => undefined);
   await fs.rm(tmpRoot, { recursive: true, force: true });
 });
+
+// Recursively chmod a tree's directories back to 0o755 so a locked (0o555)
+// bundle tree can be removed by fs.rm during teardown.
+async function unlockTree(dir: string): Promise<void> {
+  await fs.chmod(dir, 0o755).catch(() => undefined);
+  let entries: import('node:fs').Dirent[];
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const e of entries) {
+    if (e.isDirectory()) await unlockTree(path.join(dir, e.name));
+  }
+}
 
 describe('materializeInstalledSkillsFromEnv', () => {
   it('is a no-op when AX_INSTALLED_SKILLS_JSON is unset', async () => {
@@ -118,6 +134,14 @@ describe('materializeInstalledSkillsFromEnv', () => {
     // 0o444 = read-only for all (no write bits) — scripts run via interpreter,
     // never by exec permission.
     expect(st.mode & 0o222).toBe(0);
+
+    // The whole bundle tree is locked read-only (0o555 dirs), not just the
+    // top-level skills dir — otherwise the model (the dir owner) could unlink
+    // and recreate the read-only files inside a nested 0o755 subdir.
+    const skillDirStat = await fs.stat(path.join(tmpRoot, 'skills', 'demo'));
+    expect(skillDirStat.mode & 0o777).toBe(0o555);
+    const nestedDirStat = await fs.stat(path.join(tmpRoot, 'skills', 'demo', 'scripts'));
+    expect(nestedDirStat.mode & 0o777).toBe(0o555);
 
     // A second materialize with a traversal path must be rejected at the
     // runner's extract boundary (defense in depth — the wire schema also

@@ -40,14 +40,21 @@ const HOOK_NAME = 'sandbox:open-session';
 const SIGKILL_DELAY_MS = 5_000;
 
 // Reset installedSkillsDir permissions to 0755 before deleting the
-// socketDir tree. Phase 1 chmods it to 0555 after writing skills —
-// fs.rm({ recursive: true }) cannot remove subdirectories from within a
-// 0555-mode directory (EACCES on non-Linux, possibly on Linux too).
+// socketDir tree. Phase 1 chmods the WHOLE bundle tree to 0555 after writing
+// skills — fs.rm({ recursive: true }) cannot remove subdirectories from within
+// a 0555-mode directory (EACCES). Recurse so nested bundle subdirs (e.g.
+// scripts/) are unlocked too, not just the top-level skills dir.
 // Best-effort: if the dir doesn't exist or chmod fails, log nothing —
 // the caller's best-effort rm will cover ENOENT.
 async function unlockInstalledSkillsDir(installedSkillsDir: string): Promise<void> {
   try {
     await fs.chmod(installedSkillsDir, 0o755);
+    const entries = await fs.readdir(installedSkillsDir, { withFileTypes: true });
+    for (const ent of entries) {
+      if (ent.isDirectory()) {
+        await unlockInstalledSkillsDir(path.join(installedSkillsDir, ent.name));
+      }
+    }
   } catch {
     // ENOENT (never created) or other — swallow; caller's rm is best-effort.
   }
@@ -77,6 +84,19 @@ function assertSafeRelPath(p: unknown): asserts p is string {
   if (p === '.mcp.json' || p.startsWith('.claude/') || p.startsWith('.git/')) {
     throw new Error(`reserved skill file path: ${p}`);
   }
+}
+
+// Recursively chmod every directory in the tree (deepest-first) to 0o555 so a
+// read-only skill bundle can't have its files swapped out from under it. Files
+// are written 0o444 separately; this only touches directories.
+async function lockDirsReadOnly(dir: string): Promise<void> {
+  const entries = await fs.readdir(dir, { withFileTypes: true });
+  for (const ent of entries) {
+    if (ent.isDirectory()) {
+      await lockDirsReadOnly(path.join(dir, ent.name));
+    }
+  }
+  await fs.chmod(dir, 0o555);
 }
 
 // Translate an McpServerSpec into the Anthropic SDK's `.mcp.json` shape.
@@ -312,6 +332,11 @@ export async function openSessionImpl(
             { mode: 0o444, encoding: 'utf-8' },
           );
         }
+
+        // Lock the WHOLE bundle tree read-only (files are already 0o444; chmod
+        // every dir in this skill's subtree to 0o555) so the model can't unlink
+        // + recreate a read-only file inside an otherwise-writable nested dir.
+        await lockDirsReadOnly(skillDir);
       }
       await fs.chmod(installedSkillsDir, 0o555);
     }

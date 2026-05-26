@@ -107,8 +107,10 @@ export interface BuildPodSpecInput {
    * AX_INSTALLED_SKILLS_JSON. The runner reads this env var in main()
    * BEFORE the SDK spawns, materializes each skill's FILE TREE under
    * $CLAUDE_CONFIG_DIR/skills/<id>/ (SKILL.md + extra files), then chmods the
-   * parent dir to 0555. Capped at 768 KiB total payload (a file tree is
-   * larger than a single SKILL.md string); throws if exceeded.
+   * tree read-only. Capped at 96 KiB total payload — it's a single env-var
+   * string subject to the kernel's per-exec-string limit (MAX_ARG_STRLEN,
+   * ~128 KiB); throws if exceeded. Large reference data belongs in the
+   * workspace, not the skill bundle.
    *
    * The env var is consumed BY THE RUNNER, not forwarded into the SDK
    * subprocess — it is NOT in ENV_ALLOWLIST.
@@ -164,17 +166,21 @@ export function buildPodSpec(
   // Phase 1 (skill-install): encode installedSkills as JSON for the
   // AX_INSTALLED_SKILLS_JSON env var. The runner reads it before the SDK
   // spawns and materializes each skill's file tree under
-  // $CLAUDE_CONFIG_DIR/skills/. Cap at 768 KiB — k8s env var limit is ~1 MB
-  // and a bundle (a file tree) is larger than a single SKILL.md string, so the
-  // pre-bundle 256 KiB cap was too tight; 768 KiB keeps headroom under the k8s
-  // limit. Throw before building the spec so the caller sees a clear error
-  // rather than a silent k8s 422.
+  // $CLAUDE_CONFIG_DIR/skills/. Cap at 96 KiB. AX_INSTALLED_SKILLS_JSON is a
+  // SINGLE env-var string, and the kernel bounds any single argv/env string fed
+  // to execve at MAX_ARG_STRLEN (~128 KiB on Linux) — a larger value yields a
+  // pod whose entrypoint can't exec (E2BIG), not a clean error. 96 KiB stays
+  // safely under that with headroom for JSON overhead. (This is tighter than
+  // the pre-bundle 256 KiB cap, which already exceeded the exec limit; bundles
+  // legitimately need more files but each must stay small — large reference
+  // data belongs in the workspace, not an env var.) Throw before building the
+  // spec so the caller sees a clear error rather than a silent runtime failure.
   let installedSkillsEnv: EnvVar | undefined;
   if (input.installedSkills !== undefined && input.installedSkills.length > 0) {
     const encoded = JSON.stringify(input.installedSkills);
-    if (Buffer.byteLength(encoded, 'utf-8') > 768 * 1024) {
+    if (Buffer.byteLength(encoded, 'utf-8') > 96 * 1024) {
       throw new Error(
-        'AX_INSTALLED_SKILLS_JSON payload over 768 KiB — too large for env var transport',
+        'AX_INSTALLED_SKILLS_JSON payload over 96 KiB — too large for env var transport',
       );
     }
     installedSkillsEnv = { name: 'AX_INSTALLED_SKILLS_JSON', value: encoded };
