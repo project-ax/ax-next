@@ -532,6 +532,15 @@ export async function openSessionImpl(
       // this to a local TCP port and rewrites HTTP(S)_PROXY in-process.
       sessionEnv.AX_PROXY_UNIX_SOCKET = input.proxyConfig.unixSocketPath;
     }
+    if (input.proxyConfig.proxyAuthToken !== undefined) {
+      // TASK-52: per-session proxy token for egress attribution. The runner
+      // (proxy-startup.ts) reads AX_PROXY_TOKEN and embeds it as Basic
+      // userinfo on the proxy URL the SDK subprocess uses, so every egress
+      // client sends `Proxy-Authorization: Basic ax:<token>` automatically.
+      // We leave HTTPS_PROXY/HTTP_PROXY unchanged here — the token is the
+      // single source the runner reads; it owns the URL embedding.
+      sessionEnv.AX_PROXY_TOKEN = input.proxyConfig.proxyAuthToken;
+    }
     // Merge envMap LAST so per-session credential placeholders win over
     // anything we set above. (They shouldn't collide with HTTPS_PROXY etc.,
     // but be explicit so a future field collision doesn't silently do the

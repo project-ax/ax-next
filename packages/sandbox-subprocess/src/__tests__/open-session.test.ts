@@ -471,6 +471,59 @@ describe('sandbox:open-session', () => {
     await fs.rm(ws, { recursive: true, force: true });
   });
 
+  it('injects AX_PROXY_TOKEN into the child env when proxyConfig carries a token (TASK-52)', async () => {
+    const ws = await mkWorkspace();
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    const result = await h.bus.call<unknown, OpenSessionResult>(
+      'sandbox:open-session',
+      ctx,
+      {
+        sessionId: 'proxy-token-1',
+        workspaceRoot: ws,
+        runnerBinary: ECHO_STUB,
+        proxyConfig: {
+          endpoint: 'http://127.0.0.1:54321',
+          caCertPem: '-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n',
+          envMap: {},
+          proxyAuthToken: 'a'.repeat(32),
+        },
+      },
+    );
+    const line = await readFirstStdoutLine(result);
+    const parsed = JSON.parse(line) as Record<string, string | null>;
+    expect(parsed.AX_PROXY_TOKEN).toBe('a'.repeat(32));
+    await result.handle.kill();
+    await result.handle.exited;
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
+  it('does NOT set AX_PROXY_TOKEN when proxyConfig has no token (back-compat)', async () => {
+    const ws = await mkWorkspace();
+    const h = await makeHarness();
+    const ctx = h.ctx();
+    const result = await h.bus.call<unknown, OpenSessionResult>(
+      'sandbox:open-session',
+      ctx,
+      {
+        sessionId: 'proxy-notoken-1',
+        workspaceRoot: ws,
+        runnerBinary: ECHO_STUB,
+        proxyConfig: {
+          endpoint: 'http://127.0.0.1:54321',
+          caCertPem: '-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n',
+          envMap: {},
+        },
+      },
+    );
+    const line = await readFirstStdoutLine(result);
+    const parsed = JSON.parse(line) as Record<string, string | null>;
+    expect(parsed.AX_PROXY_TOKEN).toBeNull();
+    await result.handle.kill();
+    await result.handle.exited;
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
   it('passes through proxyConfig.unixSocketPath as AX_PROXY_UNIX_SOCKET (no HTTPS_PROXY rewrite)', async () => {
     // Subprocess sandbox passes the path through as-is; the runner-side
     // bridge owns the unix-socket → local-TCP-port translation. We verify
