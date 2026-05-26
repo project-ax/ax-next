@@ -167,6 +167,15 @@ export interface ProxyListenerOptions {
   onAudit?: (entry: ProxyAuditEntry) => void;
   /** Optional DNS resolver override — for tests. Default: dns.promises.lookup. */
   resolver?: Resolver;
+  /**
+   * Max bytes the plain-HTTP forward path buffers for a single request body
+   * before returning 413. The HTTP path reads the whole body into memory to
+   * re-forward via fetch; without a cap one large upload OOMs a memory-tight
+   * host (TASK-24). Default 16 MiB — generous for any legitimate API request
+   * body. Large *downloads* (responses) are streamed, not buffered, and the
+   * MITM path is backpressure-bounded, so this only governs plain-HTTP uploads.
+   */
+  maxHttpRequestBodyBytes?: number;
 }
 
 export interface ProxyListener {
@@ -255,10 +264,125 @@ function collectCanaryTokens(sessions: Map<string, SessionConfig>): string[] {
   return [...tokens];
 }
 
+/** Minimal pausable source the backpressure pump needs. */
+export interface PausableSource {
+  pause(): void;
+  resume(): void;
+}
+/** Minimal writable sink the backpressure pump needs. */
+export interface BackpressureSink {
+  /** Returns false when the internal buffer is full (Node stream contract). */
+  write(chunk: Buffer): boolean;
+  once(event: 'drain', listener: () => void): void;
+}
+
+/**
+ * Write `chunk` to `dest`, applying backpressure: when `dest.write` returns
+ * false (its buffer is full), pause `src` until `dest` emits `'drain'`, then
+ * resume. This bounds the host's per-connection memory to the sink's
+ * highWaterMark instead of letting a slow consumer accumulate an unbounded
+ * write queue — the multi-MB-download OOM vector (TASK-24). Both MITM pumps
+ * (download upstream→client, and the framed client→upstream write) route
+ * through this so neither can balloon host memory on a slow peer.
+ */
+export function writeWithBackpressure(
+  src: PausableSource,
+  dest: BackpressureSink,
+  chunk: Buffer,
+): void {
+  if (chunk.length === 0) return;
+  const ok = dest.write(chunk);
+  if (!ok) {
+    src.pause();
+    dest.once('drain', () => src.resume());
+  }
+}
+
+/** Minimal readable surface the capped-body reader needs (a subset of
+ *  IncomingMessage), so it's unit-testable with a fake. */
+export interface CappedBodySource {
+  readonly destroyed: boolean;
+  readonly readableEnded: boolean;
+  on(event: 'data', listener: (chunk: Buffer) => void): unknown;
+  on(event: 'end' | 'aborted' | 'close', listener: () => void): unknown;
+  on(event: 'error', listener: (err: Error) => void): unknown;
+}
+
+export interface CappedBodyResult {
+  body: Buffer;
+  /** True iff the body exceeded `maxBytes` (caller should 413). */
+  oversized: boolean;
+  bodyBytes: number;
+  /** True iff the client hung up before a clean 'end' (caller should bail). */
+  aborted: boolean;
+}
+
+/**
+ * Read a request body into memory, CAPPED at `maxBytes` (TASK-24). Over the cap
+ * it stops accumulating but keeps draining to 'end' (no destroy — destroying
+ * the readable can reset the socket before a 413 lands). The returned promise
+ * settles on EVERY terminal outcome: 'end' (complete), 'error' (stream error),
+ * 'close'/'aborted' without 'end' (client hung up), AND the already-terminated
+ * case checked up front (the request can close while the caller was awaiting a
+ * prior async step — slow DNS — so the terminal event fired before these
+ * listeners attached and EventEmitter won't replay it; without this guard the
+ * handler hangs forever — Codex).
+ */
+export function readCappedBody(
+  req: CappedBodySource,
+  maxBytes: number,
+): Promise<CappedBodyResult> {
+  return new Promise<CappedBodyResult>((resolve, reject) => {
+    const collected: Buffer[] = [];
+    let total = 0;
+    let over = false;
+    let settled = false;
+    const finish = (fn: () => void): void => {
+      if (settled) return;
+      settled = true;
+      fn();
+    };
+    // Already-terminated guard (see doc): `destroyed` after abort/close,
+    // `readableEnded` after a clean 'end' already passed.
+    if (req.destroyed || req.readableEnded) {
+      finish(() => resolve({ body: Buffer.alloc(0), oversized: false, bodyBytes: 0, aborted: true }));
+      return;
+    }
+    req.on('data', (chunk: Buffer) => {
+      total += chunk.length;
+      if (total > maxBytes) {
+        if (!over) {
+          over = true;
+          collected.length = 0; // stop buffering; keep draining to 'end'
+        }
+        return;
+      }
+      collected.push(chunk);
+    });
+    req.on('end', () =>
+      finish(() => resolve({ body: Buffer.concat(collected), oversized: over, bodyBytes: total, aborted: false })),
+    );
+    req.on('error', (err) => finish(() => reject(err)));
+    const onAbort = (): void =>
+      finish(() => {
+        collected.length = 0;
+        resolve({ body: Buffer.alloc(0), oversized: over, bodyBytes: total, aborted: true });
+      });
+    req.on('aborted', onAbort);
+    req.on('close', onAbort);
+  });
+}
+
 // ── Listener ─────────────────────────────────────────────────────────
+
+/** Default cap on a single plain-HTTP forwarded request body: 16 MiB. Over
+ *  this we 413 rather than let one upload OOM the host (TASK-24). */
+const DEFAULT_MAX_HTTP_REQUEST_BODY_BYTES = 16 * 1024 * 1024;
 
 export async function startProxyListener(opts: ProxyListenerOptions): Promise<ProxyListener> {
   const { listen, sessions, onAudit, resolver, registry, ca } = opts;
+  const maxHttpRequestBodyBytes =
+    opts.maxHttpRequestBodyBytes ?? DEFAULT_MAX_HTTP_REQUEST_BODY_BYTES;
   const activeSockets = new Set<net.Socket>();
 
   function audit(entry: ProxyAuditEntry): void {
@@ -334,12 +458,34 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
       // (DNS rebinding defense). See SECURITY note on resolveAndCheck.
       const resolvedIP = await resolveAndCheck(hostname, allowingSession.allowedIPs, resolver);
 
-      // Read request body
-      const chunks: Buffer[] = [];
-      for await (const chunk of req) {
-        chunks.push(chunk as Buffer);
+      // Read request body, CAPPED so one large upload can't OOM the host
+      // (TASK-24). Over the cap we 413 without forwarding; a client that hangs
+      // up mid-upload (including DURING the resolveAndCheck await above) settles
+      // as `aborted`. See readCappedBody.
+      const { body, oversized, bodyBytes, aborted } = await readCappedBody(
+        req,
+        maxHttpRequestBodyBytes,
+      );
+      if (aborted) {
+        // Client disconnected mid-upload — nothing to forward, nothing to
+        // respond to (the socket is gone). Just release the handler.
+        return;
       }
-      const body = Buffer.concat(chunks);
+      if (oversized) {
+        audit(stampSession({
+          action: 'proxy_request',
+          method,
+          url,
+          status: 413,
+          requestBytes: bodyBytes,
+          responseBytes: 0,
+          durationMs: Date.now() - startTime,
+          blocked: 'request_body_too_large',
+        }, allowingSession));
+        res.writeHead(413, { 'Content-Type': 'text/plain' });
+        res.end('Request body exceeds the proxy limit.');
+        return;
+      }
       requestBytes = body.length;
 
       // Forward headers (strip hop-by-hop and encoding headers — fetch handles these).
@@ -589,16 +735,20 @@ export async function startProxyListener(opts: ProxyListenerOptions): Promise<Pr
       if (injected) credentialInjected = true;
       // The framer holds bytes until end-of-head, so `out` is legitimately empty
       // while a head is still buffering — only write when there's something.
+      // Backpressure-aware: a slow upstream can't grow the host's write queue
+      // unboundedly (TASK-24).
       if (out.length > 0) {
-        targetTls.write(out);
+        writeWithBackpressure(clientTls, targetTls, out);
       }
     });
 
     // upstream → client (no substitution on response — placeholders should
-    // never originate upstream).
+    // never originate upstream). Backpressure-aware so a slow client (the
+    // common case for a multi-MB download into a runner pod) can't pile the
+    // response up in the host's socket buffer and OOM it (TASK-24).
     targetTls.on('data', (chunk: Buffer) => {
       responseBytes += chunk.length;
-      clientTls.write(chunk);
+      writeWithBackpressure(targetTls, clientTls, chunk);
     });
 
     // Flush any inner-TLS bytes the client sent before our upstream socket

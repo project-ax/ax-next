@@ -29,10 +29,18 @@ host:
   resources:
     requests:
       cpu: 100m
-      memory: 128Mi
+      # Bumped 128Mi -> 256Mi alongside the limit so the scheduler keeps a
+      # sane request/limit ratio (TASK-24).
+      memory: 256Mi
     limits:
       cpu: 500m
-      memory: 512Mi
+      # 512Mi was tipped over by a single heavy turn — the credential proxy
+      # MITM'ing a multi-MB binary download atop the chat orchestrator — which
+      # OOMKilled the host mid-turn and silently lost the turn (TASK-24). 2Gi
+      # gives a heavy turn real headroom. (The proxy also now caps plain-HTTP
+      # request buffering + applies MITM backpressure, so this is belt AND
+      # suspenders.)
+      memory: 2048Mi
   env:
     - name: LOG_LEVEL
       value: "debug"

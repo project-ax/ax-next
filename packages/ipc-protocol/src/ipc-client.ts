@@ -96,10 +96,41 @@ export interface IpcClientOptions {
   timeouts?: Partial<Record<IpcActionName, number>>;
   /** Defaults to an exponential-backoff schedule (100 → 30_000 ms cap). */
   retryBackoff?: (attempt: number) => number;
-  /** Max retry attempts on connection-level errors / 5xx. Default: 5. */
+  /**
+   * Hard cap on retry attempts (on top of the first try) for connection-level
+   * errors / 5xx. When set, the loop stops after this many retries regardless
+   * of the wall-clock deadline. When UNSET it defaults to effectively
+   * unbounded (Number.MAX_SAFE_INTEGER) so `maxElapsedMs` is the binding
+   * constraint — that's what lets the runner ride out a host restart. Existing
+   * callers that pass a number keep their exact attempt-count semantics.
+   */
   maxRetries?: number;
+  /**
+   * Wall-clock ceiling (ms) for the transient-error retry SERIES. Retries on
+   * connection-level / 5xx errors keep going (at the backoff cadence, capped
+   * at 30 s/attempt) until this much real time has elapsed since the first
+   * attempt, then the final error is rethrown. This is the knob that lets the
+   * runner survive a host OOMKill → reschedule → boot instead of giving up
+   * after the old ~3 s / 6-attempt budget and dropping the turn (commit-notify)
+   * or crashing (session.next-message poll). Default 120_000 (2 min). Distinct
+   * from the per-attempt wire timeout in IPC_TIMEOUTS_MS — that bounds ONE
+   * request; this bounds the whole retry series.
+   */
+  maxElapsedMs?: number;
   /** Testable seam. */
   now?: () => number;
+  /**
+   * Test-only override of the single-request transport (`requestOnce`).
+   * Underscore-prefixed so it stays off the real surface. When set, the
+   * retry loop calls THIS instead of issuing a real HTTP request — lets tests
+   * drive the loop's retry/deadline/retryable-classification logic without a
+   * live server. Production code never sets it.
+   */
+  __requestOnce?: (opts: {
+    method: 'GET' | 'POST';
+    pathWithQuery: string;
+    timeoutMs: number;
+  }) => Promise<{ status: number; body: Buffer }>;
 }
 
 export interface IpcClient {
@@ -132,7 +163,10 @@ const TRANSIENT_ERRNOS = new Set<string>([
 ]);
 
 function isTransientConnectionError(err: unknown): boolean {
-  if (err instanceof HostUnavailableError) return true;
+  // A HostUnavailableError is retryable UNLESS it flagged itself otherwise
+  // (e.g. a deterministic over-cap response body — retrying just re-transfers
+  // the same too-large bytes).
+  if (err instanceof HostUnavailableError) return err.retryable;
   const code = (err as NodeJS.ErrnoException | undefined)?.code;
   return code !== undefined && TRANSIENT_ERRNOS.has(code);
 }
@@ -142,6 +176,17 @@ function defaultBackoff(attempt: number): number {
   // the first retry waits 100 ms.
   return Math.min(100 * 2 ** attempt, 30_000);
 }
+
+/** Default wall-clock ceiling for the transient-error retry series: 2 min.
+ *  Long enough to ride out a host OOMKill → pod reschedule → boot. */
+const DEFAULT_MAX_ELAPSED_MS = 120_000;
+
+/** Small finite cap for HTTP 5xx (host application error) retries. These are
+ *  often DETERMINISTIC (a tool internal error, schema drift) and won't heal by
+ *  waiting, so they get a few quick attempts — NOT the 2-min wall-clock window
+ *  the connection-failure path uses (which would stall the runner for minutes
+ *  on a persistent app error). */
+const MAX_5XX_RETRIES = 3;
 
 interface RawResponse {
   status: number;
@@ -237,7 +282,14 @@ function requestOnce(
           const message = overflowed
             ? 'response body exceeded cap'
             : 'response stream error';
-          settle(() => reject(new HostUnavailableError(message, err)));
+          // An over-cap response is DETERMINISTIC — retrying re-fetches the
+          // same too-large bytes and fails identically, so mark it
+          // non-retryable. Otherwise the 2-min retry deadline would stall the
+          // runner re-transferring a large workspace.read for the full window
+          // (Codex). A bare stream error stays retryable (could be transient).
+          settle(() =>
+            reject(new HostUnavailableError(message, err, { retryable: !overflowed })),
+          );
         });
       },
     );
@@ -289,7 +341,14 @@ function parseErrorEnvelope(
 }
 
 export function createIpcClient(opts: IpcClientOptions): IpcClient {
-  const maxRetries = opts.maxRetries ?? 5;
+  // Default to effectively-unbounded attempts so `maxElapsedMs` (the 2-min
+  // wall-clock deadline) is the binding constraint for callers (like the
+  // runner) that don't set an explicit cap. Callers that DO pass maxRetries
+  // keep their exact attempt-count semantics — the loop exits on whichever of
+  // {count, deadline} fires first.
+  const maxRetries = opts.maxRetries ?? Number.MAX_SAFE_INTEGER;
+  const maxElapsedMs = opts.maxElapsedMs ?? DEFAULT_MAX_ELAPSED_MS;
+  const now = opts.now ?? Date.now;
   const backoff = opts.retryBackoff ?? defaultBackoff;
   // Resolve the transport target ONCE at construction. parseRunnerEndpoint
   // (in @ax/ipc-protocol) throws RunnerEndpointError on an invalid URI;
@@ -320,21 +379,73 @@ export function createIpcClient(opts: IpcClientOptions): IpcClient {
     return IPC_TIMEOUTS_MS[action];
   };
 
-  // Retry loop. `shouldRetry` decides whether the error is transient and
-  // another attempt is warranted. We run up to `maxRetries + 1` total
-  // attempts (the initial + N retries).
+  // Per-action wall-clock budget for the CONNECTION-error retry series.
+  //
+  // The long (2-min) restart-survival budget is ONLY for actions where a retry
+  // after a host restart is safe to replay:
+  //   - workspace.commit-notify  — parentVersion-idempotent host-side;
+  //   - session.next-message     — a cursor poll, no side effect;
+  //   - workspace.materialize / workspace.read / session.get-config /
+  //     conversation.store-runner-session — reads / idempotent upserts.
+  // `tool.execute-host` is NON-IDEMPOTENT: a host tool (MCP mutation,
+  // memory_note write, …) may have completed its external side effect before
+  // the response was lost, so replaying it across a 2-min window would DUPLICATE
+  // the action (Codex). It (and the cheap veto `tool.pre-call` / `tool.list`)
+  // keep a SHORT budget — a couple of quick connection retries, no long wait.
+  const SHORT_BUDGET_ACTIONS: ReadonlySet<IpcActionName> = new Set<IpcActionName>([
+    'tool.execute-host',
+    'tool.pre-call',
+    'tool.list',
+  ]);
+  const SHORT_ELAPSED_BUDGET_MS = 3_000;
+  const elapsedBudgetFor = (action: IpcActionName): number =>
+    SHORT_BUDGET_ACTIONS.has(action) ? SHORT_ELAPSED_BUDGET_MS : maxElapsedMs;
+
+  // Retry loop. `classify` decides whether/how an error retries:
+  //   - 'no'        → not retryable; throw immediately (incl. 4xx, schema
+  //                   drift, deterministic over-cap responses).
+  //   - 'connection'→ a host-unavailable / connection-level failure. Bounded by
+  //                   the WALL-CLOCK budget `elapsedBudgetMs`: for the
+  //                   runner-lifecycle actions (commit-notify, the inbox poll,
+  //                   reads) it's the full 2 min so the runner rides out a host
+  //                   OOMKill→reschedule→boot; for the NON-IDEMPOTENT
+  //                   `tool.execute-host` it's SHORT (a tool that completed an
+  //                   external side effect host-side but lost the response must
+  //                   NOT be replayed across a 2-min window — Codex).
+  //   - '5xx'       → a host APPLICATION error (HTTP 5xx envelope). DETERMINISTIC
+  //                   failures (tool internal error, schema drift) live here —
+  //                   they won't self-heal by waiting, so we cap them to a SMALL
+  //                   attempt count rather than stretching to the deadline.
+  // The loop also honors `maxRetries` as a hard attempt cap (default unbounded
+  // so the budget / 5xx-cap govern; explicit callers keep exact counts).
   const withRetry = async <T>(
-    shouldRetry: (err: unknown) => boolean,
+    classify: (err: unknown) => 'no' | 'connection' | '5xx',
+    elapsedBudgetMs: number,
     fn: () => Promise<T>,
   ): Promise<T> => {
+    const start = now();
     let lastErr: unknown;
+    let fiveXxAttempts = 0;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
         return await fn();
       } catch (err) {
         lastErr = err;
-        if (!shouldRetry(err) || attempt === maxRetries) throw err;
+        const kind = classify(err);
+        // Not retryable (incl. 4xx PluginError) OR the hard attempt cap is
+        // reached → throw immediately.
+        if (kind === 'no' || attempt === maxRetries) throw err;
         const wait = backoff(attempt);
+        if (kind === '5xx') {
+          // Deterministic application error → small finite cap, not the
+          // wall-clock window.
+          fiveXxAttempts += 1;
+          if (fiveXxAttempts > MAX_5XX_RETRIES) throw err;
+        } else {
+          // 'connection' → wall-clock bounded: if the next backoff would push
+          // us at/past the budget, give up now.
+          if (now() - start + wait >= elapsedBudgetMs) throw err;
+        }
         if (wait > 0) {
           await new Promise<void>((resolve) => setTimeout(resolve, wait));
         }
@@ -370,6 +481,16 @@ export function createIpcClient(opts: IpcClientOptions): IpcClient {
     return result.data;
   };
 
+  // Classify a failed attempt for the retry loop. Connection-level failures
+  // are wall-clock-bounded (ride out a host restart); 5xx app errors get a
+  // small finite cap (deterministic, won't heal by waiting); everything else
+  // (4xx, schema drift, deterministic over-cap responses) is not retried.
+  const classifyRetry = (err: unknown): 'no' | 'connection' | '5xx' => {
+    if (isTransientConnectionError(err)) return 'connection';
+    if (err instanceof IpcRequestError && err.status >= 500) return '5xx';
+    return 'no';
+  };
+
   const call = async <Action extends IpcActionName>(
     action: Action,
     payload: unknown,
@@ -378,21 +499,23 @@ export function createIpcClient(opts: IpcClientOptions): IpcClient {
     const timeoutMs = timeoutFor(action);
 
     return withRetry(
-      // Retry on transient (connection-level / timeout) + 5xx responses.
-      (err) => {
-        if (isTransientConnectionError(err)) return true;
-        if (err instanceof IpcRequestError && err.status >= 500) return true;
-        return false;
-      },
+      classifyRetry,
+      elapsedBudgetFor(action),
       async () => {
-        const raw = await requestOnce({
-          target,
-          method: 'POST',
-          pathWithQuery: `/${action}`,
-          token: opts.token,
-          body,
-          timeoutMs,
-        });
+        const raw = opts.__requestOnce
+          ? await opts.__requestOnce({
+              method: 'POST',
+              pathWithQuery: `/${action}`,
+              timeoutMs,
+            })
+          : await requestOnce({
+              target,
+              method: 'POST',
+              pathWithQuery: `/${action}`,
+              token: opts.token,
+              body,
+              timeoutMs,
+            });
         if (raw.status >= 200 && raw.status < 300) {
           return parseSuccessBody(action, raw.body);
         }
@@ -409,19 +532,18 @@ export function createIpcClient(opts: IpcClientOptions): IpcClient {
     const pathWithQuery = `/${action}${toQueryString(query)}`;
 
     return withRetry(
-      (err) => {
-        if (isTransientConnectionError(err)) return true;
-        if (err instanceof IpcRequestError && err.status >= 500) return true;
-        return false;
-      },
+      classifyRetry,
+      elapsedBudgetFor(action),
       async () => {
-        const raw = await requestOnce({
-          target,
-          method: 'GET',
-          pathWithQuery,
-          token: opts.token,
-          timeoutMs,
-        });
+        const raw = opts.__requestOnce
+          ? await opts.__requestOnce({ method: 'GET', pathWithQuery, timeoutMs })
+          : await requestOnce({
+              target,
+              method: 'GET',
+              pathWithQuery,
+              token: opts.token,
+              timeoutMs,
+            });
         if (raw.status >= 200 && raw.status < 300) {
           return parseSuccessBody(action, raw.body);
         }

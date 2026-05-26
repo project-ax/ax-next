@@ -38,23 +38,34 @@ const useChatThreadRuntime = (transport: AxChatTransport): AssistantRuntime => {
   // is enough.
   const attachments = useMemo(() => new AxAttachmentAdapter(), []);
 
-  // Turn-end error handling. The transport hands us an AI-SDK `error` chunk in
-  // two shapes:
+  // Turn-end error handling (TASK-24). The transport hands us an AI-SDK
+  // `error` chunk when a turn ends abnormally:
+  //   - Fault A — an orchestrator `error` SSE frame (runner died / timed out).
+  //   - CONNECTION_LOST — a bare mid-turn SSE drop (host bounce / network blip).
   //
-  //   - Fault A — an orchestrator-terminated turn (server `error` SSE frame)
-  //     with a mapped friendly label.
-  //   - Faults B/D (FAULTA-5) — a CONNECTION_LOST sentinel when the SSE stream
-  //     dropped mid-turn without a terminal frame (host bounce / network drop).
+  // Both surface the MANUAL-retry banner. We deliberately do NOT auto-retry:
+  // with the current non-idempotent / non-transactional turn model there is no
+  // client-side auto-retry that is both loss-free AND duplicate-free —
+  //   * a same-reqId silent resume TRUNCATES across a host restart (the host
+  //     chunk-buffer + its per-reqId seq cursor are in-memory and reset to 1,
+  //     so a replay is silently deduped against the client's higher last-seen
+  //     seq);
+  //   * an auto-`regenerate()` re-runs the whole turn, which can DUPLICATE a
+  //     turn whose runner is still alive (the IPC retry deadline keeps it
+  //     running across a host restart) AND re-run non-idempotent host-tool side
+  //     effects that already happened before the runner died.
+  // The user's explicit retry (the banner button) is the consent that makes a
+  // re-run acceptable. Crucially, the reported "turn silently lost" bug is fixed
+  // REGARDLESS: TASK-24's commit-notify retry deadline makes the runner survive
+  // a host restart and the turn COMMIT, so the durable transcript hydrates on
+  // reload instead of vanishing. A true auto-retry is a tracked follow-up gated
+  // on turn-level idempotency (server-side dedupe of a re-invoked reqId) +
+  // durable/seq-stable runner→host events.
   //
-  // Both flip the status row to error mode with a MANUAL retry. We don't auto-
-  // retry: a `regenerate()` re-POSTs and could duplicate a still-running server
-  // turn, and a loss-free silent resume needs a server-side per-chunk sequence
-  // number the SSE wire doesn't yet carry (see transport `buildTurnStream`).
-  // The retry BUTTON re-runs the last user turn via `regenerate()` — a
-  // deliberate user action, so re-POSTing a fresh turn is acceptable there.
-  //
-  // `chatRef` lets the retry handler reach `regenerate()` without a
-  // construction-order chicken-and-egg.
+  // `chatRef` lets the retry button reach `regenerate()` without a
+  // construction-order chicken-and-egg. `regenerate()` re-runs the last user
+  // turn; the dead session's active_session_id was cleared by
+  // session:terminate, so it routes to a fresh sandbox.
   const chatRef = useRef<ReturnType<typeof useChat> | null>(null);
   const chat = useChat({
     id,
