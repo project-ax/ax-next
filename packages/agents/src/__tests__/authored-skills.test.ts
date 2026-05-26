@@ -27,6 +27,7 @@ import {
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { makeAgentContext } from '@ax/core';
 import { createAgentsPlugin } from '../plugin.js';
+import { readAuthoredBundle } from '../authored-skills.js';
 import type { CreateInput, CreateOutput } from '../types.js';
 import type { AgentsListAuthoredSkillsInput, AgentsListAuthoredSkillsOutput } from '../types.js';
 
@@ -332,5 +333,82 @@ describe('agents:list-authored-skills', () => {
     // Only the valid one should appear.
     expect(result.skills).toHaveLength(1);
     expect(result.skills[0]!.id).toBe('valid');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// readAuthoredBundle (TASK-39) — read the FULL bundle (SKILL.md + helper files)
+// ---------------------------------------------------------------------------
+
+describe('readAuthoredBundle', () => {
+  it('returns the manifest body + extra files (paths relative to the skill dir)', async () => {
+    const h = await makeHarness();
+    const userId = 'u1';
+    const agentId = await createPersonalAgent(h, userId);
+
+    // Seed a multi-file draft under .ax/skills/notes/ (note the mock workspace
+    // is a single shared store — chain the parent through each seed).
+    const v1 = await seedFile(
+      h,
+      '.ax/skills/notes/SKILL.md',
+      '---\nname: notes\ndescription: Take notes\nversion: 2\n---\nBody here',
+      userId,
+      agentId,
+      null,
+    );
+    const v2 = await seedFile(
+      h, '.ax/skills/notes/scripts/run.py', 'print(1)', userId, agentId, v1,
+    );
+    await seedFile(
+      h, '.ax/skills/notes/data/x.json', '{}', userId, agentId, v2,
+    );
+
+    const bundle = await readAuthoredBundle(h.bus, userId, agentId, 'notes');
+    expect(bundle).not.toBeNull();
+    expect(bundle!.description).toBe('Take notes');
+    expect(bundle!.version).toBe(2);
+    expect(bundle!.bodyMd).toBe('Body here');
+    // SKILL.md is excluded from files[] (it becomes manifest+body); helper
+    // files are sorted by path.
+    expect(bundle!.files).toEqual([
+      { path: 'data/x.json', contents: '{}' },
+      { path: 'scripts/run.py', contents: 'print(1)' },
+    ]);
+  });
+
+  it('returns null when there is no SKILL.md for the id', async () => {
+    const h = await makeHarness();
+    const userId = 'u1';
+    const agentId = await createPersonalAgent(h, userId);
+    await seedFile(
+      h, '.ax/skills/empty/notes.txt', 'x', userId, agentId, null,
+    );
+
+    expect(await readAuthoredBundle(h.bus, userId, agentId, 'empty')).toBeNull();
+  });
+
+  it('returns null when the SKILL.md is malformed (no frontmatter)', async () => {
+    const h = await makeHarness();
+    const userId = 'u1';
+    const agentId = await createPersonalAgent(h, userId);
+    await seedFile(
+      h, '.ax/skills/broken/SKILL.md', 'not a valid skill md', userId, agentId, null,
+    );
+
+    expect(await readAuthoredBundle(h.bus, userId, agentId, 'broken')).toBeNull();
+  });
+
+  it('returns null when no workspace backend is loaded', async () => {
+    const h = await makeHarness(false); // omits createMockWorkspacePlugin
+    const agentId = await createPersonalAgent(h, 'u1');
+    expect(await readAuthoredBundle(h.bus, 'u1', agentId, 'notes')).toBeNull();
+  });
+
+  it('rejects a traversal-shaped skill id (never interpolated into a glob)', async () => {
+    const h = await makeHarness();
+    const agentId = await createPersonalAgent(h, 'u1');
+    await expect(
+      readAuthoredBundle(h.bus, 'u1', agentId, '../evil'),
+    ).rejects.toThrow(/invalid/i);
   });
 });
