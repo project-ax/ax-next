@@ -105,16 +105,25 @@ export interface BuildPodSpecInput {
   /**
    * Phase 1 (skill-install): installed skills to pass to the runner via
    * AX_INSTALLED_SKILLS_JSON. The runner reads this env var in main()
-   * BEFORE the SDK spawns, materializes each skill at
-   * $CLAUDE_CONFIG_DIR/skills/<id>/SKILL.md, then chmods the parent dir
-   * to 0555. Capped at 256 KiB total payload; throws if exceeded.
+   * BEFORE the SDK spawns, materializes each skill's FILE TREE under
+   * $CLAUDE_CONFIG_DIR/skills/<id>/ (SKILL.md + extra files), then chmods the
+   * tree read-only. Capped at 96 KiB total payload — it's a single env-var
+   * string subject to the kernel's per-exec-string limit (MAX_ARG_STRLEN,
+   * ~128 KiB); throws if exceeded. Large reference data belongs in the
+   * workspace, not the skill bundle.
    *
    * The env var is consumed BY THE RUNNER, not forwarded into the SDK
    * subprocess — it is NOT in ENV_ALLOWLIST.
    */
   installedSkills?: Array<{
     id: string;
-    skillMd: string;
+    /**
+     * JIT Phase 1a — the skill bundle as a FILE TREE (SKILL.md + extra files),
+     * replacing the former single `skillMd` string. The runner materializes
+     * each file under $CLAUDE_CONFIG_DIR/skills/<id>/ and re-validates every
+     * path at its extract boundary (defense in depth).
+     */
+    files: Array<{ path: string; contents: string }>;
     /**
      * TASK-14 (CLI-1 part 2) — the skill's top-level allowedHosts + credential
      * slots, used to wire skill-declared credentials into `git`'s HTTP Basic
@@ -156,16 +165,22 @@ export function buildPodSpec(
 ): PodSpec {
   // Phase 1 (skill-install): encode installedSkills as JSON for the
   // AX_INSTALLED_SKILLS_JSON env var. The runner reads it before the SDK
-  // spawns and materializes each skill under $CLAUDE_CONFIG_DIR/skills/.
-  // Cap at 256 KiB — k8s env var limit is ~1 MB but we're conservative to
-  // keep individual sessions manageable. Throw before building the spec so
-  // the caller sees a clear error rather than a silent k8s 422.
+  // spawns and materializes each skill's file tree under
+  // $CLAUDE_CONFIG_DIR/skills/. Cap at 96 KiB. AX_INSTALLED_SKILLS_JSON is a
+  // SINGLE env-var string, and the kernel bounds any single argv/env string fed
+  // to execve at MAX_ARG_STRLEN (~128 KiB on Linux) — a larger value yields a
+  // pod whose entrypoint can't exec (E2BIG), not a clean error. 96 KiB stays
+  // safely under that with headroom for JSON overhead. (This is tighter than
+  // the pre-bundle 256 KiB cap, which already exceeded the exec limit; bundles
+  // legitimately need more files but each must stay small — large reference
+  // data belongs in the workspace, not an env var.) Throw before building the
+  // spec so the caller sees a clear error rather than a silent runtime failure.
   let installedSkillsEnv: EnvVar | undefined;
   if (input.installedSkills !== undefined && input.installedSkills.length > 0) {
     const encoded = JSON.stringify(input.installedSkills);
-    if (Buffer.byteLength(encoded, 'utf-8') > 256 * 1024) {
+    if (Buffer.byteLength(encoded, 'utf-8') > 96 * 1024) {
       throw new Error(
-        'AX_INSTALLED_SKILLS_JSON payload over 256 KiB — too large for env var transport',
+        'AX_INSTALLED_SKILLS_JSON payload over 96 KiB — too large for env var transport',
       );
     }
     installedSkillsEnv = { name: 'AX_INSTALLED_SKILLS_JSON', value: encoded };

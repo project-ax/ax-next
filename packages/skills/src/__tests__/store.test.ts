@@ -47,6 +47,11 @@ afterEach(async () => {
   while (opened.length > 0) {
     const k = opened.pop()!;
     try {
+      await k.schema.dropTable('skills_v1_skill_files').ifExists().execute();
+    } catch {
+      /* drained pool */
+    }
+    try {
       await k.schema.dropTable('skills_v1_skills').ifExists().execute();
     } catch {
       /* drained pool */
@@ -391,5 +396,118 @@ capabilities:
     expect(resolved).toHaveLength(1);
     expect(resolved[0]?.capabilities.packages.npm).toEqual(['@linear/cli']);
     expect(resolved[0]?.capabilities.packages.pypi).toEqual([]);
+  });
+
+  it('upsert stores extra files; get/resolve return them; re-upsert replaces', async () => {
+    const db = makeKysely();
+    await runSkillsMigration(db);
+    const store = createSkillsStore(db);
+
+    await store.upsert({
+      id: 'demo',
+      description: 'd',
+      manifestYaml: SAMPLE_MANIFEST,
+      bodyMd: SAMPLE_BODY,
+      version: 1,
+      files: [{ path: 'scripts/run.py', contents: 'print(1)' }],
+    });
+
+    const got = await store.get('demo');
+    expect(got?.files).toEqual([{ path: 'scripts/run.py', contents: 'print(1)' }]);
+
+    const [resolved] = await store.resolve(['demo']);
+    expect(resolved?.files).toEqual([{ path: 'scripts/run.py', contents: 'print(1)' }]);
+
+    // Re-upsert with a different file set fully replaces the old set.
+    await store.upsert({
+      id: 'demo',
+      description: 'd',
+      manifestYaml: SAMPLE_MANIFEST,
+      bodyMd: SAMPLE_BODY,
+      version: 2,
+      files: [{ path: 'data/x.json', contents: '{}' }],
+    });
+    const got2 = await store.get('demo');
+    expect(got2?.files).toEqual([{ path: 'data/x.json', contents: '{}' }]);
+  });
+
+  it('re-upsert with files OMITTED preserves the existing extra files (no silent clear)', async () => {
+    const db = makeKysely();
+    await runSkillsMigration(db);
+    const store = createSkillsStore(db);
+
+    await store.upsert({
+      id: 'demo', description: 'd', manifestYaml: SAMPLE_MANIFEST, bodyMd: SAMPLE_BODY, version: 1,
+      files: [{ path: 'scripts/run.py', contents: 'print(1)' }],
+    });
+
+    // A metadata-only edit (the existing admin/settings/refresh route shape)
+    // sends no `files` — it MUST NOT wipe the stored bundle (the §6D data-loss
+    // bug codex flagged). `undefined` = leave files unchanged.
+    await store.upsert({
+      id: 'demo', description: 'edited', manifestYaml: SAMPLE_MANIFEST, bodyMd: '# edited\n', version: 2,
+    });
+    const got = await store.get('demo');
+    expect(got?.description).toBe('edited');
+    expect(got?.files).toEqual([{ path: 'scripts/run.py', contents: 'print(1)' }]);
+  });
+
+  it('re-upsert with an EXPLICIT empty files array clears the extra files', async () => {
+    const db = makeKysely();
+    await runSkillsMigration(db);
+    const store = createSkillsStore(db);
+    await store.upsert({
+      id: 'demo', description: 'd', manifestYaml: SAMPLE_MANIFEST, bodyMd: SAMPLE_BODY, version: 1,
+      files: [{ path: 'scripts/run.py', contents: 'print(1)' }],
+    });
+    await store.upsert({
+      id: 'demo', description: 'd', manifestYaml: SAMPLE_MANIFEST, bodyMd: SAMPLE_BODY, version: 2,
+      files: [],
+    });
+    const got = await store.get('demo');
+    expect(got?.files).toEqual([]);
+  });
+
+  it('a skill with no extra files reports files: []', async () => {
+    const db = makeKysely();
+    await runSkillsMigration(db);
+    const store = createSkillsStore(db);
+    await store.upsert({
+      id: 'demo',
+      description: 'd',
+      manifestYaml: SAMPLE_MANIFEST,
+      bodyMd: SAMPLE_BODY,
+      version: 1,
+    });
+    const got = await store.get('demo');
+    expect(got?.files).toEqual([]);
+    const [resolved] = await store.resolve(['demo']);
+    expect(resolved?.files).toEqual([]);
+  });
+
+  it('resolve over multiple ids returns each skill its own files (no N+1 leak)', async () => {
+    const db = makeKysely();
+    await runSkillsMigration(db);
+    const store = createSkillsStore(db);
+    await store.upsert({
+      id: 'alpha',
+      description: 'd',
+      manifestYaml: 'name: alpha\ndescription: d\n',
+      bodyMd: '# a\n',
+      version: 1,
+      files: [{ path: 'a.txt', contents: 'A' }],
+    });
+    await store.upsert({
+      id: 'beta',
+      description: 'd',
+      manifestYaml: 'name: beta\ndescription: d\n',
+      bodyMd: '# b\n',
+      version: 1,
+      files: [{ path: 'b.txt', contents: 'B' }],
+    });
+    const resolved = await store.resolve(['alpha', 'beta']);
+    expect(resolved.map((r) => r.id)).toEqual(['alpha', 'beta']);
+    expect(resolved[0]?.files).toEqual([{ path: 'a.txt', contents: 'A' }]);
+    expect(resolved[1]?.files).toEqual([{ path: 'b.txt', contents: 'B' }]);
   });
 });

@@ -24,9 +24,17 @@ export interface SkillSummary {
   ownerUserId?: string;
 }
 
+/** An extra (non-SKILL.md) bundle file. SKILL.md stays in manifestYaml/bodyMd. */
+export interface BundleFile {
+  path: string;
+  contents: string;
+}
+
 export interface SkillDetail extends SkillSummary {
   bodyMd: string;
   manifestYaml: string;
+  /** Extra (non-SKILL.md) bundle files. Empty for single-file skills. */
+  files: BundleFile[];
 }
 
 export interface ResolvedSkill {
@@ -34,6 +42,8 @@ export interface ResolvedSkill {
   capabilities: SkillCapabilities;
   bodyMd: string;
   manifestYaml: string;
+  /** Extra (non-SKILL.md) bundle files. Empty for single-file skills. */
+  files: BundleFile[];
 }
 
 export interface SkillsListInput {
@@ -57,6 +67,13 @@ export type SkillsGetOutput = SkillDetail;
 export interface SkillsUpsertInput {
   manifestYaml: string;
   bodyMd: string;
+  /**
+   * Extra (non-SKILL.md) bundle files to persist alongside the manifest.
+   * Optional — absent/empty means a single-file (SKILL.md-only) skill, the
+   * byte-identical behavior of pre-bundle skills. Validated host-side
+   * (validateBundleFiles) before the store writes them.
+   */
+  files?: BundleFile[];
   defaultAttached?: boolean;
   /** 'global' (default) = admin-managed table; 'user' = user-private table. */
   scope?: 'global' | 'user';
@@ -199,9 +216,19 @@ const SkillSummarySchema = z.object({
   ownerUserId: z.string().optional(),
 });
 
+// Bundle extra-file shape — present on SkillDetail and ResolvedSkill. The
+// HookBus strips undeclared keys against the `returns` schema, so `files`
+// MUST appear here or skills:get / skills:resolve would silently drop the
+// bundle's extra files. `return-schemas.test.ts` is the drift guard.
+const BundleFileSchema = z.object({
+  path: z.string(),
+  contents: z.string(),
+});
+
 const SkillDetailSchema = SkillSummarySchema.extend({
   bodyMd: z.string(),
   manifestYaml: z.string(),
+  files: z.array(BundleFileSchema),
 });
 
 const ResolvedSkillSchema = z.object({
@@ -209,6 +236,7 @@ const ResolvedSkillSchema = z.object({
   capabilities: SkillCapabilitiesSchema,
   bodyMd: z.string(),
   manifestYaml: z.string(),
+  files: z.array(BundleFileSchema),
 });
 
 export const SkillsListOutputSchema = z.object({

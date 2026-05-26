@@ -184,10 +184,21 @@ describe('McpServerSchema', () => {
 // --- InstalledSkillSchema ---------------------------------------------------
 
 describe('InstalledSkillSchema', () => {
-  it('accepts a valid skill', () => {
+  it('accepts a valid single-file skill (SKILL.md only)', () => {
     const result = InstalledSkillSchema.safeParse({
       id: 'github',
-      skillMd: '---\nname: github\n---\nbody',
+      files: [{ path: 'SKILL.md', contents: '---\nname: github\n---\nbody' }],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts a multi-file bundle (SKILL.md + extras)', () => {
+    const result = InstalledSkillSchema.safeParse({
+      id: 'demo',
+      files: [
+        { path: 'SKILL.md', contents: '# x' },
+        { path: 'scripts/a.py', contents: 'print(1)' },
+      ],
     });
     expect(result.success).toBe(true);
   });
@@ -195,7 +206,7 @@ describe('InstalledSkillSchema', () => {
   it('defaults mcpServers to an empty array', () => {
     const parsed = InstalledSkillSchema.parse({
       id: 'github',
-      skillMd: 'body',
+      files: [{ path: 'SKILL.md', contents: 'body' }],
     });
     expect(parsed.mcpServers).toEqual([]);
   });
@@ -203,21 +214,86 @@ describe('InstalledSkillSchema', () => {
   it('rejects an invalid id shape', () => {
     const result = InstalledSkillSchema.safeParse({
       id: 'Github',
-      skillMd: 'body',
+      files: [{ path: 'SKILL.md', contents: 'body' }],
     });
     expect(result.success).toBe(false);
   });
 
-  it('rejects an empty skillMd', () => {
-    const result = InstalledSkillSchema.safeParse({ id: 'github', skillMd: '' });
+  it('requires a SKILL.md file', () => {
+    const result = InstalledSkillSchema.safeParse({
+      id: 'demo',
+      files: [{ path: 'a.txt', contents: 'x' }],
+    });
     expect(result.success).toBe(false);
   });
 
-  it('rejects skillMd over the 512 KiB cap', () => {
+  it('rejects an empty files array', () => {
+    const result = InstalledSkillSchema.safeParse({ id: 'github', files: [] });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a file path that traverses out of the dir', () => {
+    const result = InstalledSkillSchema.safeParse({
+      id: 'demo',
+      files: [
+        { path: 'SKILL.md', contents: '# x' },
+        { path: '../escape.txt', contents: 'x' },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an absolute file path', () => {
+    const result = InstalledSkillSchema.safeParse({
+      id: 'demo',
+      files: [
+        { path: 'SKILL.md', contents: '# x' },
+        { path: '/abs.txt', contents: 'x' },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects single-dot path segments (. and a/./b)', () => {
+    for (const bad of ['.', 'scripts/./run.py']) {
+      const result = InstalledSkillSchema.safeParse({
+        id: 'demo',
+        files: [
+          { path: 'SKILL.md', contents: '# x' },
+          { path: bad, contents: 'x' },
+        ],
+      });
+      expect(result.success).toBe(false);
+    }
+  });
+
+  it('vetoes reserved paths at the wire (.mcp.json, .claude/*, .git/*) — SKILL.md is the only exception', () => {
+    for (const bad of ['.mcp.json', '.mcp.json/foo', '.claude', '.claude/settings.json', '.git', '.git/config']) {
+      const result = InstalledSkillSchema.safeParse({
+        id: 'demo',
+        files: [
+          { path: 'SKILL.md', contents: '# x' },
+          { path: bad, contents: 'x' },
+        ],
+      });
+      expect(result.success).toBe(false);
+    }
+  });
+
+  it('rejects a file over the 256 KiB per-file cap', () => {
     const result = InstalledSkillSchema.safeParse({
       id: 'github',
-      skillMd: 'x'.repeat(512 * 1024 + 1),
+      files: [{ path: 'SKILL.md', contents: 'x'.repeat(256 * 1024 + 1) }],
     });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects more than 24 files', () => {
+    const files = [
+      { path: 'SKILL.md', contents: '# x' },
+      ...Array.from({ length: 24 }, (_, i) => ({ path: `f${i}.txt`, contents: 'x' })),
+    ];
+    const result = InstalledSkillSchema.safeParse({ id: 'github', files });
     expect(result.success).toBe(false);
   });
 
@@ -233,7 +309,7 @@ describe('InstalledSkillSchema', () => {
     }));
     const result = InstalledSkillSchema.safeParse({
       id: 'github',
-      skillMd: 'body',
+      files: [{ path: 'SKILL.md', contents: 'body' }],
       mcpServers: tooMany,
     });
     expect(result.success).toBe(false);
@@ -336,7 +412,7 @@ function validOpenSessionInput(): unknown {
     installedSkills: [
       {
         id: 'github',
-        skillMd: '---\nname: github\n---\nbody',
+        files: [{ path: 'SKILL.md', contents: '---\nname: github\n---\nbody' }],
         mcpServers: [validStdioServer()],
       },
     ],
@@ -388,7 +464,7 @@ describe('OpenSessionInputSchema', () => {
   it('rejects more than 50 installedSkills', () => {
     const skills = Array.from({ length: 51 }, (_, i) => ({
       id: `skill-${i}`,
-      skillMd: 'body',
+      files: [{ path: 'SKILL.md', contents: 'body' }],
     }));
     const result = OpenSessionInputSchema.safeParse({
       sessionId: 'sess-1',

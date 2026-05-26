@@ -42,6 +42,7 @@ const DETAIL: SkillDetail = {
     '      kind: api-key',
     '      description: Personal access token',
   ].join('\n'),
+  files: [],
 };
 
 const VALID_MD = [

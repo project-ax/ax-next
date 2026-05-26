@@ -40,17 +40,67 @@ const HOOK_NAME = 'sandbox:open-session';
 const SIGKILL_DELAY_MS = 5_000;
 
 // Reset installedSkillsDir permissions to 0755 before deleting the
-// socketDir tree. Phase 1 chmods it to 0555 after writing skills —
-// fs.rm({ recursive: true }) cannot remove subdirectories from within a
-// 0555-mode directory (EACCES on non-Linux, possibly on Linux too).
+// socketDir tree. Phase 1 chmods the WHOLE bundle tree to 0555 after writing
+// skills — fs.rm({ recursive: true }) cannot remove subdirectories from within
+// a 0555-mode directory (EACCES). Recurse so nested bundle subdirs (e.g.
+// scripts/) are unlocked too, not just the top-level skills dir.
 // Best-effort: if the dir doesn't exist or chmod fails, log nothing —
 // the caller's best-effort rm will cover ENOENT.
 async function unlockInstalledSkillsDir(installedSkillsDir: string): Promise<void> {
   try {
     await fs.chmod(installedSkillsDir, 0o755);
+    const entries = await fs.readdir(installedSkillsDir, { withFileTypes: true });
+    for (const ent of entries) {
+      if (ent.isDirectory()) {
+        await unlockInstalledSkillsDir(path.join(installedSkillsDir, ent.name));
+      }
+    }
   } catch {
     // ENOENT (never created) or other — swallow; caller's rm is best-effort.
   }
+}
+
+// JIT Phase 1a — extra-file path safety, re-validated at the subprocess
+// extract boundary (defense in depth, the validateMcpEntry pattern). Even
+// though `OpenSessionInputSchema` already zod-validated paths upstream, the
+// materializer re-checks independently so a drifted host can't write outside
+// the skill dir or smuggle an SDK-config file. `SKILL.md` is the one allowed
+// uppercase path (the bundle root). Mirrors the k8s runner's assertSafeRelPath
+// and @ax/skills bundle-files.ts, kept independent per invariant I2.
+const SKILL_FILE_PATH_RE = /^[a-z0-9._-]+(\/[a-z0-9._-]+)*$/;
+const RESERVED_SKILL_NAMES = ['.mcp.json', '.claude', '.git'];
+
+function assertSafeRelPath(p: unknown): asserts p is string {
+  if (typeof p !== 'string' || p.length === 0 || p.length > 256) {
+    throw new Error(`invalid skill file path: ${String(p)}`);
+  }
+  if (p.includes('..') || p.startsWith('/') || !(p === 'SKILL.md' || SKILL_FILE_PATH_RE.test(p))) {
+    throw new Error(`invalid skill file path (traversal/charset): ${p}`);
+  }
+  // Reject `.` / `..` path SEGMENTS — the charset allows a bare `.`, but
+  // path.join normalizes it (`.` → the skill dir itself; `a/./b` → `a/b`).
+  if (p.split('/').some((seg) => seg === '.' || seg === '..')) {
+    throw new Error(`invalid skill file path ('.' or '..' segment): ${p}`);
+  }
+  // Reserved names vetoed BOTH as an exact path and as a directory prefix —
+  // `.mcp.json/foo` would otherwise force `.mcp.json` to be a dir and collide
+  // with the generated MCP config; `.claude`/`.git` are auto-config trees.
+  if (RESERVED_SKILL_NAMES.some((r) => p === r || p.startsWith(r + '/'))) {
+    throw new Error(`reserved skill file path: ${p}`);
+  }
+}
+
+// Recursively chmod every directory in the tree (deepest-first) to 0o555 so a
+// read-only skill bundle can't have its files swapped out from under it. Files
+// are written 0o444 separately; this only touches directories.
+async function lockDirsReadOnly(dir: string): Promise<void> {
+  const entries = await fs.readdir(dir, { withFileTypes: true });
+  for (const ent of entries) {
+    if (ent.isDirectory()) {
+      await lockDirsReadOnly(path.join(dir, ent.name));
+    }
+  }
+  await fs.chmod(dir, 0o555);
 }
 
 // Translate an McpServerSpec into the Anthropic SDK's `.mcp.json` shape.
@@ -246,11 +296,25 @@ export async function openSessionImpl(
         // so a leading slash or `..` segment is the relevant attack shape.
         const skillDir = path.join(installedSkillsDir, skill.id);
         await fs.mkdir(skillDir, { recursive: true, mode: 0o755 });
-        await fs.writeFile(
-          path.join(skillDir, 'SKILL.md'),
-          skill.skillMd,
-          { mode: 0o444, encoding: 'utf-8' },
-        );
+
+        // JIT Phase 1a — materialize the bundle's file tree (SKILL.md + extras).
+        // Re-validate every path here (defense in depth) and add a post-join
+        // containment guard so nothing escapes skillDir. Read-only (0o444) — no
+        // exec bit; scripts run via their interpreter, never by exec permission.
+        let sawSkillMd = false;
+        for (const file of skill.files) {
+          assertSafeRelPath(file.path);
+          if (file.path === 'SKILL.md') sawSkillMd = true;
+          const full = path.join(skillDir, file.path);
+          if (full !== skillDir && !full.startsWith(skillDir + path.sep)) {
+            throw new Error(`skill file '${file.path}' escapes skill dir`);
+          }
+          await fs.mkdir(path.dirname(full), { recursive: true, mode: 0o755 });
+          await fs.writeFile(full, file.contents, { mode: 0o444, encoding: 'utf-8' });
+        }
+        if (!sawSkillMd) {
+          throw new Error(`installed skill '${skill.id}' is missing SKILL.md`);
+        }
         // Phase B — write `.mcp.json` alongside SKILL.md when the skill
         // bundles MCP servers. The SDK auto-discovers it via its `'project'`
         // setting source; the file lives in the per-skill dir so each
@@ -272,6 +336,11 @@ export async function openSessionImpl(
             { mode: 0o444, encoding: 'utf-8' },
           );
         }
+
+        // Lock the WHOLE bundle tree read-only (files are already 0o444; chmod
+        // every dir in this skill's subtree to 0o555) so the model can't unlink
+        // + recreate a read-only file inside an otherwise-writable nested dir.
+        await lockDirsReadOnly(skillDir);
       }
       await fs.chmod(installedSkillsDir, 0o555);
     }

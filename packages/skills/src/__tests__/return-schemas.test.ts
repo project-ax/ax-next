@@ -62,6 +62,7 @@ const detail: SkillDetail = {
   ...summary,
   bodyMd: '# GitHub',
   manifestYaml: 'id: github',
+  files: [{ path: 'scripts/run.py', contents: 'print(1)' }],
 };
 
 const resolved: ResolvedSkill = {
@@ -69,6 +70,7 @@ const resolved: ResolvedSkill = {
   capabilities,
   bodyMd: '# GitHub',
   manifestYaml: 'id: github',
+  files: [{ path: 'scripts/run.py', contents: 'print(1)' }],
 };
 
 describe('skills return schemas', () => {

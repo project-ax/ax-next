@@ -1,0 +1,86 @@
+/**
+ * Bundle extra-file validation — the canonical rules for the non-SKILL.md
+ * files a skill bundle may carry (JIT Phase 1a, design §9.2).
+ *
+ * Pure function; deliberately re-implemented (NOT imported) at the
+ * sandbox-protocol wire schema and at the two runner extract boundaries per
+ * invariant I2 (no cross-plugin import across a trust boundary). This is the
+ * `validateMcpEntry` defense-in-depth pattern: each trust hop re-validates the
+ * untrusted bundle independently, so a buggy/compromised host can't smuggle a
+ * path-traversal or a reserved SDK-config file into the sandbox.
+ *
+ * A valid extra-file path is relative, POSIX, lowercase, dot/dash/underscore
+ * only, with no `..`, no leading `/`, no backslashes; and is NOT a reserved or
+ * generated path (`SKILL.md` is reconstructed from the manifest columns;
+ * `.mcp.json` is generated from `mcpServers`; `.claude/*` and `.git/*` are SDK
+ * / git auto-config that a bundle must never ship).
+ */
+export interface BundleFile {
+  path: string;
+  contents: string;
+}
+
+const PATH_RE = /^[a-z0-9._-]+(\/[a-z0-9._-]+)*$/;
+// Reserved names — vetoed BOTH as an exact path AND as a directory prefix.
+// `SKILL.md` is reconstructed from the manifest columns; `.mcp.json` is
+// generated from `mcpServers` (so `.mcp.json/foo` would force `.mcp.json` to
+// be a dir and collide with the generated file); `.claude`/`.git` are SDK/git
+// auto-config trees a bundle must never carry.
+const RESERVED_NAMES = ['SKILL.md', '.mcp.json', '.claude', '.git'];
+function isReservedBundlePath(p: string): boolean {
+  return RESERVED_NAMES.some((r) => p === r || p.startsWith(r + '/'));
+}
+const MAX_FILES = 16;
+const MAX_FILE_BYTES = 256 * 1024;
+const MAX_TOTAL_BYTES = 512 * 1024;
+const MAX_PATH_LEN = 256;
+
+export function validateBundleFiles(files: BundleFile[]): void {
+  if (files.length > MAX_FILES) {
+    throw new Error(`bundle may declare at most 16 extra files, got ${files.length}`);
+  }
+  const seen = new Set<string>();
+  let total = 0;
+  for (const f of files) {
+    if (typeof f.path !== 'string' || f.path.length === 0 || f.path.length > MAX_PATH_LEN) {
+      throw new Error(`invalid bundle file path: ${JSON.stringify(f.path)}`);
+    }
+    if (f.path.includes('..') || f.path.startsWith('/') || !PATH_RE.test(f.path)) {
+      throw new Error(`invalid path (must be relative, lowercase, no ../): ${f.path}`);
+    }
+    // Reject `.` / `..` path segments: the charset allows a bare `.`, but
+    // path.join normalizes it (`.` → the skill dir itself; `a/./b` → `a/b`,
+    // which dodges the duplicate check). Rejecting the segment keeps the
+    // declared path === the materialized path.
+    if (f.path.split('/').some((seg) => seg === '.' || seg === '..')) {
+      throw new Error(`invalid path (no '.' or '..' segments): ${f.path}`);
+    }
+    if (isReservedBundlePath(f.path)) {
+      throw new Error(`reserved bundle path may not be supplied: ${f.path}`);
+    }
+    if (seen.has(f.path)) throw new Error(`duplicate bundle path: ${f.path}`);
+    seen.add(f.path);
+    if (typeof f.contents !== 'string') {
+      throw new Error(`bundle file '${f.path}' contents must be a string`);
+    }
+    const bytes = Buffer.byteLength(f.contents, 'utf-8');
+    if (bytes > MAX_FILE_BYTES) throw new Error(`bundle file '${f.path}' exceeds 256 KiB`);
+    total += bytes;
+  }
+  if (total > MAX_TOTAL_BYTES) throw new Error(`bundle extra files exceed 512 KiB total`);
+
+  // Reject directory/file prefix collisions: a bundle declaring both `scripts`
+  // (a file) and `scripts/run.py` (a file under dir `scripts`) forces the
+  // materializer to create one path as BOTH a file and a directory → it fails
+  // at session start. Compare at `/` segment boundaries so siblings that share
+  // a textual prefix (`scripts/a.py` vs `scriptsx.py`) are fine. ≤16 files, so
+  // the O(n²) pair scan is trivial.
+  const paths = files.map((f) => f.path);
+  for (const a of paths) {
+    for (const b of paths) {
+      if (a !== b && b.startsWith(a + '/')) {
+        throw new Error(`bundle path '${a}' collides with '${b}' (both a file and a directory)`);
+      }
+    }
+  }
+}

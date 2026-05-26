@@ -214,6 +214,10 @@ interface ResolvedSkillForOrch {
   };
   bodyMd: string;
   manifestYaml: string;
+  // JIT Phase 1a — extra (non-SKILL.md) bundle files from skills:resolve.
+  // Optional + `?? []` at the construction site for back-compat with a
+  // skills:resolve impl that predates the bundle field.
+  files?: { path: string; contents: string }[];
 }
 interface SkillsResolveOutput {
   skills: ResolvedSkillForOrch[];
@@ -332,8 +336,14 @@ interface SystemPromptAugmentOutput {
 
 interface InstalledSkillForSandbox {
   id: string;
-  /** Full SKILL.md content: '---\n' + manifestYaml + '---\n' + bodyMd. */
-  skillMd: string;
+  /**
+   * JIT Phase 1a — the skill bundle as a FILE TREE. The first file is the
+   * reconstructed `SKILL.md` ('---\n' + manifestYaml + '---\n' + bodyMd);
+   * any extra (non-SKILL.md) files resolved from the store ride after it.
+   * Replaces the former single `skillMd` string so a skill can carry scripts /
+   * data / templates, not just instructions.
+   */
+  files: { path: string; contents: string }[];
   /**
    * Phase B (capabilities.mcpServers) — bundled MCP servers declared by the
    * skill's manifest. Sandbox plugins materialize one `.mcp.json` per skill
@@ -1242,7 +1252,22 @@ export function createOrchestrator(
 
     const installedSkillsForSandbox: InstalledSkillForSandbox[] = unionedSkills.map((s) => ({
       id: s.id,
-      skillMd: '---\n' + s.manifestYaml + (s.manifestYaml.endsWith('\n') ? '' : '\n') + '---\n' + s.bodyMd,
+      // JIT Phase 1a — the bundle as a file tree: SKILL.md (reconstructed from
+      // the manifest columns) first, then any extra files resolved from the
+      // store, verbatim. `?? []` is the back-compat defense for a skills:resolve
+      // that predates the `files` field.
+      files: [
+        {
+          path: 'SKILL.md',
+          contents:
+            '---\n' +
+            s.manifestYaml +
+            (s.manifestYaml.endsWith('\n') ? '' : '\n') +
+            '---\n' +
+            s.bodyMd,
+        },
+        ...(s.files ?? []).map((f) => ({ path: f.path, contents: f.contents })),
+      ],
       // Phase B — per-skill MCP server bundle. Defense-in-depth `?? []` in
       // case skills:resolve returned a ResolvedSkill without the field
       // (older impl, structural shape mismatch). No cross-skill union — each

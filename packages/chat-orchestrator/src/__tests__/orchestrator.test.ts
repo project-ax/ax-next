@@ -2098,6 +2098,8 @@ describe('chat-orchestrator', () => {
     };
     bodyMd: string;
     manifestYaml: string;
+    // JIT Phase 1a — extra (non-SKILL.md) bundle files. Optional in fixtures.
+    files?: Array<{ path: string; contents: string }>;
   }
 
   interface SkillsHookState {
@@ -2576,6 +2578,7 @@ describe('chat-orchestrator', () => {
           },
           bodyMd,
           manifestYaml,
+          files: [{ path: 'scripts/a.py', contents: 'print(1)' }],
         },
       },
     });
@@ -2613,16 +2616,23 @@ describe('chat-orchestrator', () => {
     const sandboxIn = mocks.calls.lastSandboxInput as {
       installedSkills?: Array<{
         id: string;
-        skillMd: string;
+        files: Array<{ path: string; contents: string }>;
         mcpServers: Array<unknown>;
       }>;
     };
     expect(sandboxIn.installedSkills).toHaveLength(1);
     const entry = sandboxIn.installedSkills![0]!;
     expect(entry.id).toBe('github');
-    // skillMd must start with the YAML front-matter block.
-    expect(entry.skillMd).toMatch(/^---\nname: github\nversion: 1\.0\.0\n---\n/);
-    expect(entry.skillMd).toContain('Use the GitHub API.');
+    // JIT Phase 1a — the bundle is a file tree. SKILL.md is reconstructed from
+    // the manifest columns; extra files ride alongside; the legacy `skillMd`
+    // string field is gone.
+    expect('skillMd' in entry).toBe(false);
+    const skillMd = entry.files.find((f) => f.path === 'SKILL.md');
+    expect(skillMd).toBeTruthy();
+    expect(skillMd!.contents).toMatch(/^---\nname: github\nversion: 1\.0\.0\n---\n/);
+    expect(skillMd!.contents).toContain('Use the GitHub API.');
+    // The resolved extra file is materialized verbatim alongside SKILL.md.
+    expect(entry.files.find((f) => f.path === 'scripts/a.py')?.contents).toBe('print(1)');
     // Phase B regression — a skill that declares NO mcpServers still threads
     // an EMPTY ARRAY (not undefined) through to the sandbox so downstream
     // .mcp.json materialization can branch on `length > 0` cleanly.
@@ -2689,7 +2699,7 @@ describe('chat-orchestrator', () => {
     const sandboxIn = mocks.calls.lastSandboxInput as {
       installedSkills?: Array<{
         id: string;
-        skillMd: string;
+        files: Array<{ path: string; contents: string }>;
         mcpServers: Array<{ name: string; transport: string; command?: string }>;
       }>;
     };
@@ -3109,7 +3119,7 @@ describe('chat-orchestrator', () => {
     expect(defaults.listDefaultsCalls.count).toBe(1);
 
     const sandboxIn = mocks.calls.lastSandboxInput as {
-      installedSkills?: Array<{ id: string; skillMd: string }>;
+      installedSkills?: Array<{ id: string; files: Array<{ path: string; contents: string }> }>;
     };
     expect(sandboxIn.installedSkills).toHaveLength(1);
     expect(sandboxIn.installedSkills![0]!.id).toBe('heartbeat');
@@ -3161,11 +3171,12 @@ describe('chat-orchestrator', () => {
     );
 
     const sandboxIn = mocks.calls.lastSandboxInput as {
-      installedSkills: Array<{ id: string; skillMd: string }>;
+      installedSkills: Array<{ id: string; files: Array<{ path: string; contents: string }> }>;
     };
     expect(sandboxIn.installedSkills).toHaveLength(1);
-    // Explicit body wins.
-    expect(sandboxIn.installedSkills[0]!.skillMd).toContain('# explicit body');
+    // Explicit body wins. (SKILL.md is reconstructed as a bundle file.)
+    const skillMd = sandboxIn.installedSkills[0]!.files.find((f) => f.path === 'SKILL.md');
+    expect(skillMd?.contents).toContain('# explicit body');
   });
 
   it('skips defaults entirely when skills:list-defaults service is not registered', async () => {
@@ -3200,7 +3211,7 @@ describe('chat-orchestrator', () => {
     expect(outcome.kind).toBe('complete');
 
     const sandboxIn = mocks.calls.lastSandboxInput as {
-      installedSkills?: Array<{ id: string; skillMd: string }>;
+      installedSkills?: Array<{ id: string; files: Array<{ path: string; contents: string }> }>;
     };
     expect(sandboxIn.installedSkills ?? []).toHaveLength(0);
   });
@@ -3236,7 +3247,7 @@ describe('chat-orchestrator', () => {
     expect(outcome.kind).toBe('complete'); // NOT terminated.
 
     const sandboxIn = mocks.calls.lastSandboxInput as {
-      installedSkills?: Array<{ id: string; skillMd: string }>;
+      installedSkills?: Array<{ id: string; files: Array<{ path: string; contents: string }> }>;
     };
     expect(sandboxIn.installedSkills ?? []).toHaveLength(0);
   });
@@ -3283,13 +3294,14 @@ describe('chat-orchestrator', () => {
     );
 
     const sandboxIn = mocks.calls.lastSandboxInput as {
-      installedSkills: Array<{ id: string; skillMd: string }>;
+      installedSkills: Array<{ id: string; files: Array<{ path: string; contents: string }> }>;
     };
     expect(sandboxIn.installedSkills).toHaveLength(1);
     const entry = sandboxIn.installedSkills[0]!;
     expect(entry.id).toBe('greeter');
-    // SKILL.md framing: --- yaml --- body
-    expect(entry.skillMd).toContain('---\nname: greeter\n');
-    expect(entry.skillMd).toContain('---\n# Greeter');
+    // SKILL.md framing: --- yaml --- body (reconstructed as a bundle file).
+    const skillMd = entry.files.find((f) => f.path === 'SKILL.md');
+    expect(skillMd?.contents).toContain('---\nname: greeter\n');
+    expect(skillMd?.contents).toContain('---\n# Greeter');
   });
 });

@@ -77,6 +77,25 @@ export async function runSkillsMigration<DB>(db: Kysely<DB>): Promise<void> {
       PRIMARY KEY (owner_user_id, agent_id, skill_id)
     )
   `.execute(db);
+
+  // skills_v1_skill_files — the *extra* (non-SKILL.md) files of a skill
+  // bundle (JIT Phase 1a). SKILL.md itself stays in the skills_v1_skills /
+  // skills_v1_user_skills manifest_yaml/body_md columns (the parsed index);
+  // this side-table holds only the additional bundle files (scripts, data,
+  // templates). `scope` + `owner_user_id` ('' for global) mirror the two
+  // owning tables so one files table serves both scopes; the compound PK
+  // (scope, owner_user_id, skill_id, path) makes a path unique within a
+  // single skill while allowing the same path across scopes/owners/skills.
+  await sql`
+    CREATE TABLE IF NOT EXISTS skills_v1_skill_files (
+      scope         TEXT NOT NULL,
+      owner_user_id TEXT NOT NULL DEFAULT '',
+      skill_id      TEXT NOT NULL,
+      path          TEXT NOT NULL,
+      contents      TEXT NOT NULL,
+      PRIMARY KEY (scope, owner_user_id, skill_id, path)
+    )
+  `.execute(db);
 }
 
 /**
@@ -130,8 +149,23 @@ export interface UserAttachmentRow {
   updated_at: Date;
 }
 
+/**
+ * Row shape for the bundle extra-files side-table. One row per non-SKILL.md
+ * file in a skill bundle. `scope` distinguishes global vs user skills;
+ * `owner_user_id` is '' for global rows and the user id for user-scoped rows,
+ * mirroring the owning skills table's keying.
+ */
+export interface SkillFileRow {
+  scope: 'global' | 'user';
+  owner_user_id: string; // '' for global
+  skill_id: string;
+  path: string;
+  contents: string;
+}
+
 export interface SkillsDatabase {
   skills_v1_skills: SkillsRow;
   skills_v1_user_skills: UserSkillsRow;
   skills_v1_user_attachments: UserAttachmentRow;
+  skills_v1_skill_files: SkillFileRow;
 }

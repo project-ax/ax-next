@@ -43,12 +43,28 @@ beforeEach(async () => {
 
 afterEach(async () => {
   restoreEnvKeys();
-  // Unlock the skills dir before cleanup — materializeInstalledSkillsFromEnv
-  // chmods it to 0555, and fs.rm({ recursive: true }) cannot rmdir from a
-  // 0555 dir on macOS (EACCES). Best-effort: if it doesn't exist, ignore.
-  await fs.chmod(path.join(tmpRoot, 'skills'), 0o755).catch(() => undefined);
+  // Unlock the skills tree before cleanup — materializeInstalledSkillsFromEnv
+  // chmods every bundle dir to 0555, and fs.rm({ recursive: true }) cannot
+  // rmdir from a 0555 dir (EACCES). Recursively chmod all dirs back to 0755.
+  // Best-effort: if it doesn't exist, ignore.
+  await unlockTree(path.join(tmpRoot, 'skills')).catch(() => undefined);
   await fs.rm(tmpRoot, { recursive: true, force: true });
 });
+
+// Recursively chmod a tree's directories back to 0o755 so a locked (0o555)
+// bundle tree can be removed by fs.rm during teardown.
+async function unlockTree(dir: string): Promise<void> {
+  await fs.chmod(dir, 0o755).catch(() => undefined);
+  let entries: import('node:fs').Dirent[];
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const e of entries) {
+    if (e.isDirectory()) await unlockTree(path.join(dir, e.name));
+  }
+}
 
 describe('materializeInstalledSkillsFromEnv', () => {
   it('is a no-op when AX_INSTALLED_SKILLS_JSON is unset', async () => {
@@ -77,8 +93,8 @@ describe('materializeInstalledSkillsFromEnv', () => {
 
   it('writes each skill SKILL.md and chmods parent dir to 0555', async () => {
     process.env['AX_INSTALLED_SKILLS_JSON'] = JSON.stringify([
-      { id: 'github', skillMd: '---\nname: github\ndescription: x\n---\nBody' },
-      { id: 'openai', skillMd: '---\nname: openai\ndescription: y\n---\nBody2' },
+      { id: 'github', files: [{ path: 'SKILL.md', contents: '---\nname: github\ndescription: x\n---\nBody' }] },
+      { id: 'openai', files: [{ path: 'SKILL.md', contents: '---\nname: openai\ndescription: y\n---\nBody2' }] },
     ]);
     await materializeInstalledSkillsFromEnv();
 
@@ -101,6 +117,110 @@ describe('materializeInstalledSkillsFromEnv', () => {
     expect(skillsDirStat.mode & 0o777).toBe(0o555);
   });
 
+  it('materializes a multi-file bundle read-only and rejects traversal', async () => {
+    process.env['AX_INSTALLED_SKILLS_JSON'] = JSON.stringify([
+      {
+        id: 'demo',
+        files: [
+          { path: 'SKILL.md', contents: '# x' },
+          { path: 'scripts/a.py', contents: 'print(1)' },
+        ],
+      },
+    ]);
+    await materializeInstalledSkillsFromEnv();
+    const body = await fs.readFile(path.join(tmpRoot, 'skills', 'demo', 'scripts', 'a.py'), 'utf8');
+    expect(body).toBe('print(1)');
+    const st = await fs.stat(path.join(tmpRoot, 'skills', 'demo', 'scripts', 'a.py'));
+    // 0o444 = read-only for all (no write bits) — scripts run via interpreter,
+    // never by exec permission.
+    expect(st.mode & 0o222).toBe(0);
+
+    // The whole bundle tree is locked read-only (0o555 dirs), not just the
+    // top-level skills dir — otherwise the model (the dir owner) could unlink
+    // and recreate the read-only files inside a nested 0o755 subdir.
+    const skillDirStat = await fs.stat(path.join(tmpRoot, 'skills', 'demo'));
+    expect(skillDirStat.mode & 0o777).toBe(0o555);
+    const nestedDirStat = await fs.stat(path.join(tmpRoot, 'skills', 'demo', 'scripts'));
+    expect(nestedDirStat.mode & 0o777).toBe(0o555);
+
+    // A second materialize with a traversal path must be rejected at the
+    // runner's extract boundary (defense in depth — the wire schema also
+    // rejects it, but the runner re-validates independently). Unlock the
+    // skills dir first (the prior materialize chmod'd it 0555).
+    await fs.chmod(path.join(tmpRoot, 'skills'), 0o755);
+    process.env['AX_INSTALLED_SKILLS_JSON'] = JSON.stringify([
+      {
+        id: 'demo2',
+        files: [
+          { path: 'SKILL.md', contents: '# x' },
+          { path: '../escape.txt', contents: 'x' },
+        ],
+      },
+    ]);
+    await expect(materializeInstalledSkillsFromEnv()).rejects.toThrow(/invalid|escape/i);
+  });
+
+  it('rejects a single-dot path segment (. and a/./b)', async () => {
+    const cases: Array<[string, string]> = [
+      ['dotseg-a', '.'],
+      ['dotseg-b', 'scripts/./run.py'],
+    ];
+    for (const [id, bad] of cases) {
+      // Distinct skill id per case so a prior iteration's read-only SKILL.md
+      // can't EACCES the next iteration's write before validation runs.
+      process.env['AX_INSTALLED_SKILLS_JSON'] = JSON.stringify([
+        { id, files: [{ path: 'SKILL.md', contents: '# x' }, { path: bad, contents: 'x' }] },
+      ]);
+      await expect(materializeInstalledSkillsFromEnv()).rejects.toThrow(/invalid skill file path/i);
+      // Unlock for the next iteration (a partial materialize may have chmod'd).
+      await fs.chmod(path.join(tmpRoot, 'skills'), 0o755).catch(() => undefined);
+    }
+  });
+
+  it('rejects a reserved bundle path (.mcp.json, .mcp.json/foo, .git) supplied as a file', async () => {
+    const cases: Array<[string, string]> = [
+      ['resv-a', '.mcp.json'],
+      ['resv-b', '.mcp.json/foo'],
+      ['resv-c', '.git'],
+      ['resv-d', '.git/config'],
+    ];
+    for (const [id, bad] of cases) {
+      // Distinct skill id per case so a prior iteration's read-only SKILL.md
+      // can't EACCES the next iteration's write before validation runs.
+      process.env['AX_INSTALLED_SKILLS_JSON'] = JSON.stringify([
+        {
+          id,
+          files: [
+            { path: 'SKILL.md', contents: '# x' },
+            { path: bad, contents: '{}' },
+          ],
+        },
+      ]);
+      await expect(materializeInstalledSkillsFromEnv()).rejects.toThrow(/reserved/i);
+      await fs.chmod(path.join(tmpRoot, 'skills'), 0o755).catch(() => undefined);
+    }
+  });
+
+  it('rejects a .claude/* SDK-config path supplied as a file', async () => {
+    process.env['AX_INSTALLED_SKILLS_JSON'] = JSON.stringify([
+      {
+        id: 'demo',
+        files: [
+          { path: 'SKILL.md', contents: '# x' },
+          { path: '.claude/settings.json', contents: '{}' },
+        ],
+      },
+    ]);
+    await expect(materializeInstalledSkillsFromEnv()).rejects.toThrow(/reserved/i);
+  });
+
+  it('throws when a bundle is missing SKILL.md', async () => {
+    process.env['AX_INSTALLED_SKILLS_JSON'] = JSON.stringify([
+      { id: 'demo', files: [{ path: 'a.txt', contents: 'x' }] },
+    ]);
+    await expect(materializeInstalledSkillsFromEnv()).rejects.toThrow(/missing SKILL\.md/);
+  });
+
   it('throws when AX_INSTALLED_SKILLS_JSON is set but CLAUDE_CONFIG_DIR is missing', async () => {
     delete process.env['CLAUDE_CONFIG_DIR'];
     process.env['AX_INSTALLED_SKILLS_JSON'] = '[]';
@@ -117,37 +237,39 @@ describe('materializeInstalledSkillsFromEnv', () => {
     await expect(materializeInstalledSkillsFromEnv()).rejects.toThrow(/must be an array/);
   });
 
-  it('throws when an entry is missing skillMd', async () => {
+  it('throws when an entry has no files array', async () => {
     process.env['AX_INSTALLED_SKILLS_JSON'] = JSON.stringify([{ id: 'github' }]);
     await expect(materializeInstalledSkillsFromEnv()).rejects.toThrow(
-      /must be { id, skillMd } objects/,
+      /non-empty files array/,
     );
   });
 
   it('throws when an entry is missing id', async () => {
-    process.env['AX_INSTALLED_SKILLS_JSON'] = JSON.stringify([{ skillMd: 'x' }]);
+    process.env['AX_INSTALLED_SKILLS_JSON'] = JSON.stringify([
+      { files: [{ path: 'SKILL.md', contents: 'x' }] },
+    ]);
     await expect(materializeInstalledSkillsFromEnv()).rejects.toThrow(
-      /must be { id, skillMd } objects/,
+      /must be { id, files } objects/,
     );
   });
 
   it('throws when entry is not an object', async () => {
     process.env['AX_INSTALLED_SKILLS_JSON'] = JSON.stringify(['not-an-object']);
     await expect(materializeInstalledSkillsFromEnv()).rejects.toThrow(
-      /must be { id, skillMd } objects/,
+      /must be { id, files } objects/,
     );
   });
 
   it('throws when skill id has invalid shape (path traversal attempt)', async () => {
     process.env['AX_INSTALLED_SKILLS_JSON'] = JSON.stringify([
-      { id: '../escape', skillMd: 'x' },
+      { id: '../escape', files: [{ path: 'SKILL.md', contents: 'x' }] },
     ]);
     await expect(materializeInstalledSkillsFromEnv()).rejects.toThrow(/invalid shape/);
   });
 
   it('throws when skill id starts with uppercase', async () => {
     process.env['AX_INSTALLED_SKILLS_JSON'] = JSON.stringify([
-      { id: 'GitHub', skillMd: 'x' },
+      { id: 'GitHub', files: [{ path: 'SKILL.md', contents: 'x' }] },
     ]);
     await expect(materializeInstalledSkillsFromEnv()).rejects.toThrow(/invalid shape/);
   });
@@ -163,7 +285,7 @@ describe('materializeInstalledSkillsFromEnv', () => {
     process.env['AX_INSTALLED_SKILLS_JSON'] = JSON.stringify([
       {
         id: 'github',
-        skillMd: '---\nname: github\n---\nbody',
+        files: [{ path: 'SKILL.md', contents: '---\nname: github\n---\nbody' }],
         mcpServers: [
           {
             name: 'github',
@@ -190,7 +312,7 @@ describe('materializeInstalledSkillsFromEnv', () => {
 
   it('does NOT write .mcp.json when the skill has no mcpServers', async () => {
     process.env['AX_INSTALLED_SKILLS_JSON'] = JSON.stringify([
-      { id: 'github', skillMd: '---\nname: github\n---\nbody' },
+      { id: 'github', files: [{ path: 'SKILL.md', contents: '---\nname: github\n---\nbody' }] },
     ]);
     await materializeInstalledSkillsFromEnv();
     await expect(
@@ -202,7 +324,7 @@ describe('materializeInstalledSkillsFromEnv', () => {
     process.env['AX_INSTALLED_SKILLS_JSON'] = JSON.stringify([
       {
         id: 'remote',
-        skillMd: '---\nname: remote\n---\nbody',
+        files: [{ path: 'SKILL.md', contents: '---\nname: remote\n---\nbody' }],
         mcpServers: [
           {
             name: 'remote',
@@ -237,7 +359,7 @@ describe('materializeInstalledSkillsFromEnv', () => {
     process.env['AX_INSTALLED_SKILLS_JSON'] = JSON.stringify([
       {
         id: 'github',
-        skillMd: '---\nname: github\n---\nbody',
+        files: [{ path: 'SKILL.md', contents: '---\nname: github\n---\nbody' }],
         mcpServers: [
           { name: 'github', transport: 'stdio', allowedHosts: [], credentials: [] },
         ],
@@ -252,7 +374,7 @@ describe('materializeInstalledSkillsFromEnv', () => {
     process.env['AX_INSTALLED_SKILLS_JSON'] = JSON.stringify([
       {
         id: 'remote',
-        skillMd: '---\nname: remote\n---\nbody',
+        files: [{ path: 'SKILL.md', contents: '---\nname: remote\n---\nbody' }],
         mcpServers: [
           { name: 'remote', transport: 'http', allowedHosts: [], credentials: [] },
         ],
@@ -267,7 +389,7 @@ describe('materializeInstalledSkillsFromEnv', () => {
     process.env['AX_INSTALLED_SKILLS_JSON'] = JSON.stringify([
       {
         id: 'github',
-        skillMd: '---\nname: github\n---\nbody',
+        files: [{ path: 'SKILL.md', contents: '---\nname: github\n---\nbody' }],
         mcpServers: [
           {
             name: 'github',
@@ -289,7 +411,7 @@ describe('materializeInstalledSkillsFromEnv', () => {
     process.env['AX_INSTALLED_SKILLS_JSON'] = JSON.stringify([
       {
         id: 'remote',
-        skillMd: '---\nname: remote\n---\nbody',
+        files: [{ path: 'SKILL.md', contents: '---\nname: remote\n---\nbody' }],
         mcpServers: [
           {
             name: 'remote',
@@ -312,7 +434,7 @@ describe('materializeInstalledSkillsFromEnv', () => {
     process.env['AX_INSTALLED_SKILLS_JSON'] = JSON.stringify([
       {
         id: 'github',
-        skillMd: '---\nname: github\n---\nbody',
+        files: [{ path: 'SKILL.md', contents: '---\nname: github\n---\nbody' }],
         mcpServers: [
           {
             name: 'github',
@@ -334,7 +456,7 @@ describe('materializeInstalledSkillsFromEnv', () => {
     process.env['AX_INSTALLED_SKILLS_JSON'] = JSON.stringify([
       {
         id: 'github',
-        skillMd: '---\nname: github\n---\nbody',
+        files: [{ path: 'SKILL.md', contents: '---\nname: github\n---\nbody' }],
         mcpServers: [
           {
             name: 'github',
