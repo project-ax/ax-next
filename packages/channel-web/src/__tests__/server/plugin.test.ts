@@ -238,6 +238,34 @@ function agentsMockPlugin(args: { allow: boolean }): Plugin {
   };
 }
 
+/**
+ * Stub for `skills:list` / `skills:list-user-attachments` /
+ * `skills:detach-for-user`. Channel-web declares all three as hard calls
+ * (TASK-42, the Settings Connections BFF). This SSE-wire-shape suite doesn't
+ * drive the connections routes, so no-op registrations satisfy the bootstrap
+ * verifyCalls walk.
+ */
+function skillsMockPlugin(): Plugin {
+  return {
+    manifest: {
+      name: 'mock-skills',
+      version: '0.0.0',
+      registers: ['skills:list', 'skills:list-user-attachments', 'skills:detach-for-user'],
+      calls: [],
+      subscribes: [],
+    },
+    init({ bus }) {
+      bus.registerService('skills:list', 'mock-skills', async () => ({ skills: [] }));
+      bus.registerService('skills:list-user-attachments', 'mock-skills', async () => ({
+        attachments: [],
+      }));
+      bus.registerService('skills:detach-for-user', 'mock-skills', async () => ({
+        removed: false,
+      }));
+    },
+  };
+}
+
 interface BootArgs {
   user?: { id: string; isAdmin: boolean } | null;
   byReqId?: Map<
@@ -286,6 +314,7 @@ async function boot(args: BootArgs = {}): Promise<{
       agentsMockPlugin({ allow: args.agentsAllow ?? true }),
       chatRunMockPlugin(),
       attachmentsMockPlugin(),
+      skillsMockPlugin(),
       createChannelWebServerPlugin({}),
     ],
   });
@@ -419,6 +448,9 @@ describe('@ax/channel-web server plugin (integration)', () => {
         'attachments:commit',
         'attachments:download',
         'proxy:add-host',
+        'skills:list',
+        'skills:list-user-attachments',
+        'skills:detach-for-user',
       ],
       optionalCalls: [
         {
@@ -428,6 +460,25 @@ describe('@ax/channel-web server plugin (integration)', () => {
         },
       ],
       subscribes: ['chat:stream-chunk', 'chat:phase', 'chat:turn-end', 'chat:turn-error', 'chat:permission-request', 'conversations:title-updated'],
+    });
+  });
+
+  describe('connections routes (TASK-42)', () => {
+    it('declares the Settings Connections skills hooks in manifest.calls', () => {
+      const plugin = createChannelWebServerPlugin();
+      expect(plugin.manifest.calls).toContain('skills:list');
+      expect(plugin.manifest.calls).toContain('skills:list-user-attachments');
+      expect(plugin.manifest.calls).toContain('skills:detach-for-user');
+    });
+
+    it('registers GET /api/chat/connections/:agentId at boot (401, not 404)', async () => {
+      const booted = await boot({ user: null });
+      harness = booted.harness;
+      // user=null → auth throws → 401 (a 404 would mean the route is missing).
+      const r = await fetch(
+        `http://127.0.0.1:${booted.port}/api/chat/connections/agt_test`,
+      );
+      expect(r.status).toBe(401);
     });
   });
 

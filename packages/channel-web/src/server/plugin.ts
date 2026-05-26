@@ -8,6 +8,7 @@ import { createChunkBuffer, type ChunkBuffer } from './chunk-buffer.js';
 import { makeAllowHostHandler } from './routes-allow-host.js';
 import { registerAttachmentsRoutes } from './routes-attachments.js';
 import { registerChatRoutes } from './routes-chat.js';
+import { makeConnectionsHandlers } from './routes-connections.js';
 import {
   createBufferFillSubscriber,
   createPhaseFillSubscriber,
@@ -110,6 +111,15 @@ export function createChannelWebServerPlugin(
         // hard dep (the route is the ONLY caller — the untrusted runner can't
         // reach this hook over IPC).
         'proxy:add-host',
+        // TASK-42 — the Settings "Connections" surface composes a per-(user,
+        // agent) merged skills read here (the BFF — it can't live in @ax/skills
+        // without forming a @ax/skills → agents:resolve boot cycle). channel-web
+        // always co-deploys with @ax/skills in presets/k8s, so these are hard
+        // deps. detach-for-user is host-internal: this CSRF-gated route is its
+        // only caller (the untrusted runner can't reach it over IPC).
+        'skills:list',
+        'skills:list-user-attachments',
+        'skills:detach-for-user',
       ],
       optionalCalls: [
         {
@@ -256,6 +266,36 @@ export function createChannelWebServerPlugin(
         ) => Promise<void>,
       });
       unregisterRoutes.push(allowHostRoute.unregister);
+
+      // TASK-42 — the Settings "Connections" surface. GET returns the per-(user,
+      // agent) merged skills list (default + agent-global + per-user); DELETE
+      // detaches one user-added skill. Both derive identity from the auth cookie
+      // (server-forced) and gate the agent via agents:resolve (ACL → 404, no
+      // existence leak). Ships with its consumer (the ConnectionsTab) in the
+      // same PR (I3 — no half-wired surface).
+      const connections = makeConnectionsHandlers({ bus, initCtx });
+      for (const route of [
+        { method: 'GET' as const, path: '/api/chat/connections/:agentId', handler: connections.get },
+        {
+          method: 'DELETE' as const,
+          path: '/api/chat/connections/:agentId/skills/:skillId',
+          handler: connections.detach,
+        },
+      ]) {
+        const r = await bus.call<unknown, { unregister: () => void }>(
+          'http:register-route',
+          initCtx,
+          {
+            method: route.method,
+            path: route.path,
+            handler: route.handler as unknown as (
+              req: RouteRequest,
+              res: RouteResponse,
+            ) => Promise<void>,
+          },
+        );
+        unregisterRoutes.push(r.unregister);
+      }
 
       // Phase 3 — attachments + downloads. Closes the half-wired window
       // opened in Phase 1 (routes-chat.ts already calls
