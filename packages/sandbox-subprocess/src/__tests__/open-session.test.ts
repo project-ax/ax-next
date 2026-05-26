@@ -541,7 +541,7 @@ describe('sandbox:open-session', () => {
         installedSkills: [
           {
             id: 'gitclonetest',
-            skillMd: '---\nname: gitclonetest\n---\nbody',
+            files: [{ path: 'SKILL.md', contents: '---\nname: gitclonetest\n---\nbody' }],
             allowedHosts: ['github.com'],
             credentials: [{ slot: 'GIT_TOKEN', kind: 'api-key' }],
           },
@@ -936,7 +936,13 @@ describe('sandbox:open-session', () => {
         workspaceRoot: ws,
         runnerBinary: ECHO_STUB,
         installedSkills: [
-          { id: 'github', skillMd: '---\nname: github\ndescription: x\n---\nBody' },
+          {
+            id: 'github',
+            files: [
+              { path: 'SKILL.md', contents: '---\nname: github\ndescription: x\n---\nBody' },
+              { path: 'scripts/a.py', contents: 'print(1)' },
+            ],
+          },
         ],
       },
     );
@@ -947,6 +953,12 @@ describe('sandbox:open-session', () => {
     const skillMdPath = path.join(ccd, 'skills', 'github', 'SKILL.md');
     const content = await fs.readFile(skillMdPath, 'utf-8');
     expect(content).toBe('---\nname: github\ndescription: x\n---\nBody');
+
+    // The extra bundle file is materialized verbatim, read-only (0o444).
+    const extraPath = path.join(ccd, 'skills', 'github', 'scripts', 'a.py');
+    expect(await fs.readFile(extraPath, 'utf-8')).toBe('print(1)');
+    const extraStat = await fs.stat(extraPath);
+    expect(extraStat.mode & 0o222).toBe(0);
 
     const skillsDirStat = await fs.stat(path.join(ccd, 'skills'));
     expect(skillsDirStat.mode & 0o777).toBe(0o555);
@@ -1015,7 +1027,7 @@ describe('sandbox:open-session', () => {
         sessionId: 'skills-overwrite-1',
         workspaceRoot: ws,
         runnerBinary: ECHO_STUB,
-        installedSkills: [{ id: 'github', skillMd: 'version-A' }],
+        installedSkills: [{ id: 'github', files: [{ path: 'SKILL.md', contents: 'version-A' }] }],
       },
     );
     const line1 = await readFirstStdoutLine(r1);
@@ -1037,7 +1049,7 @@ describe('sandbox:open-session', () => {
         sessionId: 'skills-overwrite-2',
         workspaceRoot: ws,
         runnerBinary: ECHO_STUB,
-        installedSkills: [{ id: 'github', skillMd: 'version-B' }],
+        installedSkills: [{ id: 'github', files: [{ path: 'SKILL.md', contents: 'version-B' }] }],
       },
     );
     const line2 = await readFirstStdoutLine(r2);
@@ -1065,7 +1077,7 @@ describe('sandbox:open-session', () => {
           sessionId: 'skills-bad-id',
           workspaceRoot: ws,
           runnerBinary: ECHO_STUB,
-          installedSkills: [{ id: '../escape', skillMd: 'x' }],
+          installedSkills: [{ id: '../escape', files: [{ path: 'SKILL.md', contents: 'x' }] }],
         },
       );
     } catch (err) {
@@ -1101,7 +1113,7 @@ describe('sandbox:open-session', () => {
         installedSkills: [
           {
             id: 'github',
-            skillMd: '---\nname: github\n---\nbody',
+            files: [{ path: 'SKILL.md', contents: '---\nname: github\n---\nbody' }],
             mcpServers: [
               {
                 name: 'github',
@@ -1150,7 +1162,7 @@ describe('sandbox:open-session', () => {
         installedSkills: [
           {
             id: 'github',
-            skillMd: '---\nname: github\n---\nbody',
+            files: [{ path: 'SKILL.md', contents: '---\nname: github\n---\nbody' }],
             mcpServers: [],
           },
         ],
@@ -1189,7 +1201,7 @@ describe('sandbox:open-session', () => {
         installedSkills: [
           {
             id: 'github',
-            skillMd: '---\nname: github\n---\nbody',
+            files: [{ path: 'SKILL.md', contents: '---\nname: github\n---\nbody' }],
             mcpServers: [
               {
                 name: 'github',
@@ -1241,7 +1253,7 @@ describe('sandbox:open-session', () => {
         installedSkills: [
           {
             id: 'github',
-            skillMd: '---\nname: github\n---\nbody',
+            files: [{ path: 'SKILL.md', contents: '---\nname: github\n---\nbody' }],
             mcpServers: [
               {
                 name: 'github',
@@ -1275,7 +1287,7 @@ describe('sandbox:open-session', () => {
         installedSkills: [
           {
             id: 'remote',
-            skillMd: '---\nname: remote\n---\nbody',
+            files: [{ path: 'SKILL.md', contents: '---\nname: remote\n---\nbody' }],
             mcpServers: [
               {
                 name: 'remote',
@@ -1309,7 +1321,7 @@ describe('sandbox:open-session', () => {
         installedSkills: [
           {
             id: 'github',
-            skillMd: '---\nname: github\n---\nbody',
+            files: [{ path: 'SKILL.md', contents: '---\nname: github\n---\nbody' }],
             mcpServers: [
               {
                 name: 'github',
@@ -1344,7 +1356,7 @@ describe('sandbox:open-session', () => {
         installedSkills: [
           {
             id: 'remote',
-            skillMd: '---\nname: remote\n---\nbody',
+            files: [{ path: 'SKILL.md', contents: '---\nname: remote\n---\nbody' }],
             mcpServers: [
               {
                 name: 'remote',
@@ -1380,7 +1392,7 @@ describe('sandbox:open-session', () => {
         installedSkills: [
           {
             id: 'remote',
-            skillMd: '---\nname: remote\n---\nbody',
+            files: [{ path: 'SKILL.md', contents: '---\nname: remote\n---\nbody' }],
             mcpServers: [
               {
                 name: 'remote',

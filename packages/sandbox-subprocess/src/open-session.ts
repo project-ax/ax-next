@@ -53,6 +53,27 @@ async function unlockInstalledSkillsDir(installedSkillsDir: string): Promise<voi
   }
 }
 
+// JIT Phase 1a — extra-file path safety, re-validated at the subprocess
+// extract boundary (defense in depth, the validateMcpEntry pattern). Even
+// though `OpenSessionInputSchema` already zod-validated paths upstream, the
+// materializer re-checks independently so a drifted host can't write outside
+// the skill dir or smuggle an SDK-config file. `SKILL.md` is the one allowed
+// uppercase path (the bundle root). Mirrors the k8s runner's assertSafeRelPath
+// and @ax/skills bundle-files.ts, kept independent per invariant I2.
+const SKILL_FILE_PATH_RE = /^[a-z0-9._-]+(\/[a-z0-9._-]+)*$/;
+
+function assertSafeRelPath(p: unknown): asserts p is string {
+  if (typeof p !== 'string' || p.length === 0 || p.length > 256) {
+    throw new Error(`invalid skill file path: ${String(p)}`);
+  }
+  if (p.includes('..') || p.startsWith('/') || !(p === 'SKILL.md' || SKILL_FILE_PATH_RE.test(p))) {
+    throw new Error(`invalid skill file path (traversal/charset): ${p}`);
+  }
+  if (p === '.mcp.json' || p.startsWith('.claude/') || p.startsWith('.git/')) {
+    throw new Error(`reserved skill file path: ${p}`);
+  }
+}
+
 // Translate an McpServerSpec into the Anthropic SDK's `.mcp.json` shape.
 // stdio: { command, args, env }. http: { url, type: 'http' }. The SDK accepts
 // either at top level under the `mcpServers` map; the per-skill dir's
@@ -246,11 +267,25 @@ export async function openSessionImpl(
         // so a leading slash or `..` segment is the relevant attack shape.
         const skillDir = path.join(installedSkillsDir, skill.id);
         await fs.mkdir(skillDir, { recursive: true, mode: 0o755 });
-        await fs.writeFile(
-          path.join(skillDir, 'SKILL.md'),
-          skill.skillMd,
-          { mode: 0o444, encoding: 'utf-8' },
-        );
+
+        // JIT Phase 1a — materialize the bundle's file tree (SKILL.md + extras).
+        // Re-validate every path here (defense in depth) and add a post-join
+        // containment guard so nothing escapes skillDir. Read-only (0o444) — no
+        // exec bit; scripts run via their interpreter, never by exec permission.
+        let sawSkillMd = false;
+        for (const file of skill.files) {
+          assertSafeRelPath(file.path);
+          if (file.path === 'SKILL.md') sawSkillMd = true;
+          const full = path.join(skillDir, file.path);
+          if (full !== skillDir && !full.startsWith(skillDir + path.sep)) {
+            throw new Error(`skill file '${file.path}' escapes skill dir`);
+          }
+          await fs.mkdir(path.dirname(full), { recursive: true, mode: 0o755 });
+          await fs.writeFile(full, file.contents, { mode: 0o444, encoding: 'utf-8' });
+        }
+        if (!sawSkillMd) {
+          throw new Error(`installed skill '${skill.id}' is missing SKILL.md`);
+        }
         // Phase B — write `.mcp.json` alongside SKILL.md when the skill
         // bundles MCP servers. The SDK auto-discovers it via its `'project'`
         // setting source; the file lives in the per-skill dir so each
