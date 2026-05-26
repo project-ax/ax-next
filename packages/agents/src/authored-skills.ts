@@ -100,3 +100,104 @@ export async function listAuthoredSkills(
 
   return out;
 }
+
+/** An extra (non-SKILL.md) bundle file, path relative to the skill dir. */
+export interface AuthoredBundleFile {
+  path: string;
+  contents: string;
+}
+
+/** A full agent-authored bundle read from `.ax/skills/<id>/`. */
+export interface AuthoredBundle {
+  id: string;
+  description: string;
+  version: number;
+  bodyMd: string;
+  files: AuthoredBundleFile[];
+  /**
+   * The workspace version (opaque token) the bundle was read from, when the
+   * backend reports one. The retire step passes it back as `parent` on the
+   * subsequent `workspace:apply` to satisfy the backend's optimistic-
+   * concurrency CAS (the mock + git backends both reject a stale parent).
+   * `null` when the backend doesn't populate a version.
+   */
+  bundleVersion: string | null;
+}
+
+// Re-validated at this trust boundary (I2/I5) — never interpolate an
+// unvalidated id into a workspace glob. Mirrors @ax/skill-broker's SKILL_ID_RE.
+const AUTHORED_SKILL_ID_RE = /^[a-z0-9][a-z0-9._-]{0,127}$/;
+
+/**
+ * Read the FULL agent-authored bundle (SKILL.md → manifest+body, plus every
+ * helper file) under `.ax/skills/<skillId>/`. Returns null when there is no
+ * canonical SKILL.md (missing / no frontmatter / malformed YAML) — the caller
+ * surfaces a friendly "author it first" message rather than throwing.
+ *
+ * Same ctx routing as listAuthoredSkills: workspace:list/read key off
+ * ctx.userId + ctx.agentId (hashed to a workspace shard), so we root a fresh
+ * ctx in the agent OWNER's identity to read THAT agent's workspace.
+ *
+ * SKILL.md is excluded from `files[]` (it becomes `description`/`version`/
+ * `bodyMd`); helper files are returned sorted by path for determinism.
+ */
+export async function readAuthoredBundle(
+  bus: HookBus,
+  ownerUserId: string,
+  agentId: string,
+  skillId: string,
+): Promise<AuthoredBundle | null> {
+  if (!AUTHORED_SKILL_ID_RE.test(skillId)) {
+    throw new Error(`invalid authored skill id: ${JSON.stringify(skillId)}`);
+  }
+  if (!bus.hasService('workspace:list') || !bus.hasService('workspace:read')) {
+    return null;
+  }
+  const ctx = makeAgentContext({
+    userId: ownerUserId,
+    agentId,
+    sessionId: 'authored-bundle-read',
+  });
+  const dir = `.ax/skills/${skillId}`;
+  const { paths } = await bus.call<{ pathGlob: string }, { paths: string[] }>(
+    'workspace:list',
+    ctx,
+    { pathGlob: `${dir}/**` },
+  );
+
+  let manifestSeen = false;
+  let description = '';
+  let version = 1;
+  let bodyMd = '';
+  let bundleVersion: string | null = null;
+  const files: AuthoredBundleFile[] = [];
+
+  for (const p of [...paths].sort()) {
+    const read = await bus.call<
+      { path: string },
+      { found: true; bytes: Uint8Array; version?: string } | { found: false }
+    >('workspace:read', ctx, { path: p });
+    if (!read.found) continue; // deleted between list and read — skip
+    if (read.version !== undefined) bundleVersion = read.version;
+    const rel = p.slice(dir.length + 1); // strip ".ax/skills/<id>/"
+    if (rel.length === 0) continue;
+
+    if (rel === 'SKILL.md') {
+      const content = new TextDecoder().decode(read.bytes);
+      const split = splitSkillMd(content);
+      if (split === null) return null; // not a canonical SKILL.md
+      const parsed = parseSkillManifest(split.manifestYaml);
+      if (!parsed.ok) return null; // malformed — let the agent fix it
+      manifestSeen = true;
+      description = parsed.value.description;
+      version = parsed.value.version;
+      bodyMd = split.bodyMd;
+    } else {
+      files.push({ path: rel, contents: new TextDecoder().decode(read.bytes) });
+    }
+  }
+
+  if (!manifestSeen) return null; // no SKILL.md → not an authored skill
+  files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  return { id: skillId, description, version, bodyMd, files, bundleVersion };
+}

@@ -14,6 +14,8 @@ export interface PermissionRequest {
   description: string;
   hosts: string[];
   slots: { slot: string; kind: 'api-key' }[];
+  /** TASK-39: open-mode banner — the agent just wrote this skill. */
+  authored?: boolean;
 }
 
 export interface PermissionCardState {

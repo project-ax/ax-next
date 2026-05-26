@@ -125,11 +125,35 @@ describe('@ax/agents plugin manifest + lifecycle', () => {
         'agents:list-ids',
         'agents:list-personal-owners',
         'agents:list-authored-skills',
+        'agents:install-authored-skill',
       ],
       // database:get-instance + http:register-route + auth:require-user are
       // hard. teams:is-member is graceful (handled inside checkAccess via
       // try/catch) and intentionally NOT declared in calls.
       calls: ['database:get-instance', 'http:register-route', 'auth:require-user'],
+      // Soft deps for the authored-skill hooks (TASK-39): skills:upsert +
+      // workspace:list/read/apply are hasService-guarded so a stripped preset
+      // degrades rather than fails to boot.
+      optionalCalls: [
+        {
+          hook: 'skills:upsert',
+          degradation:
+            'open-mode authoring (agents:install-authored-skill) cannot persist a skill; agent-authored installs are unavailable',
+        },
+        {
+          hook: 'workspace:list',
+          degradation: 'authored-skill discovery + retire are skipped (no workspace backend)',
+        },
+        {
+          hook: 'workspace:read',
+          degradation: 'authored-skill bodies cannot be read (no workspace backend)',
+        },
+        {
+          hook: 'workspace:apply',
+          degradation:
+            'the .ax/skills/<id>/ draft is not retired after install (leaves a duplicate-id risk if the same id is later attached)',
+        },
+      ],
       subscribes: ['bootstrap:reset-cleanup'],
     });
   });
