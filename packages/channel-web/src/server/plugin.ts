@@ -46,7 +46,11 @@ const PLUGIN_NAME = '@ax/channel-web';
 //   - subscribes: chat:stream-chunk (fills the buffer + per-connection
 //     filter), chat:phase (single-slot phase memory + per-connection
 //     filter), chat:turn-end (host-side eviction so the buffer doesn't
-//     grow unbounded for streams nobody listens to).
+//     grow unbounded for streams nobody listens to), chat:turn-error
+//     (durable terminal-error replay), chat:permission-request (the JIT
+//     bundled approval card — surfaced per-connection only, matched by
+//     ctx.conversationId; declared here for visibility, the subscription
+//     itself lives in createSseHandler's cleanup() lifecycle).
 // ---------------------------------------------------------------------------
 
 export interface ChannelWebServerConfig {
@@ -96,7 +100,7 @@ export function createChannelWebServerPlugin(
         'attachments:commit',
         'attachments:download',
       ],
-      subscribes: ['chat:stream-chunk', 'chat:phase', 'chat:turn-end', 'chat:turn-error', 'conversations:title-updated'],
+      subscribes: ['chat:stream-chunk', 'chat:phase', 'chat:turn-end', 'chat:turn-error', 'chat:permission-request', 'conversations:title-updated'],
     },
 
     async init({ bus }) {

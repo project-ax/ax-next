@@ -5,7 +5,7 @@ import {
   type HookBus,
 } from '@ax/core';
 import type { ChunkBuffer } from './chunk-buffer.js';
-import type { PhaseEvent, SseFrame, StreamChunk } from './types.js';
+import type { PermissionRequest, PhaseEvent, SseFrame, StreamChunk } from './types.js';
 
 // ---------------------------------------------------------------------------
 // SSE handler factory.
@@ -177,6 +177,7 @@ export function createSseHandler(deps: SseHandlerDeps) {
     const phaseSubKey = `${PLUGIN_NAME}/sse-phase/${subscriberSuffix}`;
     const turnEndSubKey = `${PLUGIN_NAME}/sse-turn-end/${subscriberSuffix}`;
     const turnErrorSubKey = `${PLUGIN_NAME}/sse-turn-error/${subscriberSuffix}`;
+    const permissionSubKey = `${PLUGIN_NAME}/sse-permission/${subscriberSuffix}`;
 
     const cleanup = (): void => {
       if (closed) return;
@@ -191,6 +192,7 @@ export function createSseHandler(deps: SseHandlerDeps) {
       deps.bus.unsubscribe('chat:phase', phaseSubKey);
       deps.bus.unsubscribe('chat:turn-end', turnEndSubKey);
       deps.bus.unsubscribe('chat:turn-error', turnErrorSubKey);
+      deps.bus.unsubscribe('chat:permission-request', permissionSubKey);
     };
 
     stream.onClose(() => {
@@ -334,6 +336,27 @@ export function createSseHandler(deps: SseHandlerDeps) {
         } catch {
           // already closed
         }
+        return undefined;
+      },
+    );
+
+    // 4c-ter) Attach the permission-request subscriber. @ax/skill-broker's
+    // request_capability fires `chat:permission-request` mid-turn to surface
+    // the bundled approval card (design §11.3). Match by ctx.conversationId —
+    // the firing ctx is the runner-driven IPC ctx (a FRESH reqId, but the REAL
+    // conversationId; see ipc-server/listener.ts), so reqId can't be the key
+    // here. One active turn per conversation makes the conversation the right
+    // grain. The card is NON-terminal: emit it and KEEP the stream open (unlike
+    // turn-error, which closes). We stamp the connection's own reqId onto the
+    // frame envelope. The card payload carries only public manifest data — no
+    // secret ever rides this frame (the key posts straight to the credential
+    // store; §10).
+    deps.bus.subscribe<PermissionRequest>(
+      'chat:permission-request',
+      permissionSubKey,
+      async (ctx, payload) => {
+        if (ctx.conversationId !== conversationId) return undefined;
+        safeWrite({ reqId, permissionRequest: payload });
         return undefined;
       },
     );
