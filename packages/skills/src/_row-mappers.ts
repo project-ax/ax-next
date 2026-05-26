@@ -11,6 +11,7 @@
  */
 import { parseSkillManifest } from './manifest.js';
 import type {
+  BundleFile,
   ResolvedSkill,
   SkillCapabilities,
   SkillDetail,
@@ -72,20 +73,28 @@ export function rowToGlobalSummary(row: BaseSkillRow): SkillSummary {
   };
 }
 
-export function rowToGlobalDetail(row: BaseSkillRow): SkillDetail {
+export function rowToGlobalDetail(
+  row: BaseSkillRow,
+  files: BundleFile[] = [],
+): SkillDetail {
   return {
     ...rowToGlobalSummary(row),
     bodyMd: row.body_md,
     manifestYaml: row.manifest_yaml,
+    files,
   };
 }
 
-export function rowToGlobalResolved(row: BaseSkillRow): ResolvedSkill {
+export function rowToGlobalResolved(
+  row: BaseSkillRow,
+  files: BundleFile[] = [],
+): ResolvedSkill {
   return {
     id: row.skill_id,
     capabilities: parseCapabilities(row.manifest_yaml, row.skill_id),
     bodyMd: row.body_md,
     manifestYaml: row.manifest_yaml,
+    files,
   };
 }
 
@@ -113,19 +122,25 @@ export function rowToUserSummary(
 export function rowToUserDetail(
   row: BaseSkillRow,
   ownerUserId: string,
+  files: BundleFile[] = [],
 ): SkillDetail {
   return {
     ...rowToUserSummary(row, ownerUserId),
     bodyMd: row.body_md,
     manifestYaml: row.manifest_yaml,
+    files,
   };
 }
 
-export function rowToUserResolved(row: BaseSkillRow): ResolvedSkill {
+export function rowToUserResolved(
+  row: BaseSkillRow,
+  files: BundleFile[] = [],
+): ResolvedSkill {
   return {
     id: row.skill_id,
     capabilities: parseCapabilities(row.manifest_yaml, row.skill_id),
     bodyMd: row.body_md,
     manifestYaml: row.manifest_yaml,
+    files,
   };
 }
