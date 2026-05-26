@@ -92,6 +92,35 @@ describe('sandbox:open-session (k8s)', () => {
     expect(env.AX_REQUEST_ID).toBeDefined();
   });
 
+  it('threads proxyConfig.proxyAuthToken into the runner pod env as AX_PROXY_TOKEN (TASK-52)', async () => {
+    // Regression: open-session.ts maps proxyConfig field-by-field into the
+    // pod-spec PodProxyConfig; a forgotten field is silently dropped at this
+    // boundary. This proves the token survives the mapping end-to-end (not
+    // just that buildPodSpec stamps it).
+    const api = makeMockK8sApi();
+    api.setReadResponses(readyPod());
+    const h = await makeHarness(api);
+    const ctx = h.ctx();
+    await h.bus.call<unknown, OpenSessionResult>('sandbox:open-session', ctx, {
+      sessionId: 'sess-proxy-token',
+      workspaceRoot: '/tmp/ws',
+      runnerBinary: '/opt/ax/runner.js',
+      proxyConfig: {
+        unixSocketPath: '/var/run/ax/proxy.sock',
+        caCertPem: '-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n',
+        envMap: {},
+        proxyAuthToken: 'c'.repeat(32),
+      },
+    });
+    const body = api.creates[0]!.body as {
+      spec: { containers: Array<{ env: Array<{ name: string; value: string }> }> };
+    };
+    const env = Object.fromEntries(
+      body.spec.containers[0]!.env.map((e) => [e.name, e.value]),
+    );
+    expect(env.AX_PROXY_TOKEN).toBe('c'.repeat(32));
+  });
+
   it('forwards AX_COMMIT_TRACE into the runner pod env only when set on the host', async () => {
     // The opt-in per-turn commit/resync trace (commit-trace.ts) is gated on
     // AX_COMMIT_TRACE in the RUNNER process; the runner pod env only carries it
