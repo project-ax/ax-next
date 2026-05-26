@@ -232,6 +232,42 @@ describe('runSkillsMigration', () => {
     ).rejects.toThrow();
   });
 
+  it('skills_v1_skills has a nullable bundle_tree_sha column', async () => {
+    const db = makeKysely();
+    await runSkillsMigration(db);
+
+    // Insert WITHOUT bundle_tree_sha → defaults to NULL.
+    await db
+      .insertInto('skills_v1_skills')
+      .values({
+        skill_id: 'demo',
+        description: 'd',
+        manifest_yaml: 'name: demo\ndescription: d\nversion: 1\n',
+        body_md: '# demo\n',
+        version: 1,
+      })
+      .execute();
+    const row = await db
+      .selectFrom('skills_v1_skills')
+      .select(['skill_id', 'bundle_tree_sha'])
+      .where('skill_id', '=', 'demo')
+      .executeTakeFirstOrThrow();
+    expect(row.bundle_tree_sha).toBeNull();
+
+    // And it accepts a SHA string.
+    await db
+      .updateTable('skills_v1_skills')
+      .set({ bundle_tree_sha: 'a'.repeat(40) })
+      .where('skill_id', '=', 'demo')
+      .execute();
+    const updated = await db
+      .selectFrom('skills_v1_skills')
+      .select('bundle_tree_sha')
+      .where('skill_id', '=', 'demo')
+      .executeTakeFirstOrThrow();
+    expect(updated.bundle_tree_sha).toBe('a'.repeat(40));
+  });
+
   it('source_url migration is idempotent on re-run', async () => {
     const db = makeKysely();
     await runSkillsMigration(db);
@@ -362,6 +398,29 @@ describe('runSkillsMigration — skills_v1_user_skills side-table', () => {
       caught = err;
     }
     expect((caught as { code?: string } | undefined)?.code).toBe('23505');
+  });
+
+  it('skills_v1_user_skills has a nullable bundle_tree_sha column', async () => {
+    const db = makeKysely();
+    await runSkillsMigration(db);
+    await db
+      .insertInto('skills_v1_user_skills')
+      .values({
+        owner_user_id: 'alice',
+        skill_id: 'demo',
+        description: 'd',
+        manifest_yaml: 'name: demo\ndescription: d\nversion: 1\n',
+        body_md: '# demo\n',
+        version: 1,
+      })
+      .execute();
+    const row = await db
+      .selectFrom('skills_v1_user_skills')
+      .select('bundle_tree_sha')
+      .where('owner_user_id', '=', 'alice')
+      .where('skill_id', '=', 'demo')
+      .executeTakeFirstOrThrow();
+    expect(row.bundle_tree_sha).toBeNull();
   });
 
   it('is idempotent — running runSkillsMigration twice does not throw and table stays usable', async () => {

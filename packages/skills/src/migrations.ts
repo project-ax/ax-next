@@ -50,6 +50,15 @@ export async function runSkillsMigration<DB>(db: Kysely<DB>): Promise<void> {
       ADD COLUMN IF NOT EXISTS source_url TEXT NULL
   `.execute(db);
 
+  // Root git tree SHA of the bundle's EXTRA (non-SKILL.md) files. NULL = a
+  // single-file (SKILL.md-only) skill. The content-addressed git bundle store
+  // (TASK-40) supersedes skills_v1_skill_files as the byte-store; this column
+  // is the row's pointer into that store.
+  await sql`
+    ALTER TABLE skills_v1_skills
+      ADD COLUMN IF NOT EXISTS bundle_tree_sha TEXT NULL
+  `.execute(db);
+
   await sql`
     CREATE TABLE IF NOT EXISTS skills_v1_user_skills (
       owner_user_id TEXT NOT NULL,
@@ -66,6 +75,12 @@ export async function runSkillsMigration<DB>(db: Kysely<DB>): Promise<void> {
     )
   `.execute(db);
 
+  // Same content-addressed bundle pointer for the user-scoped table (TASK-40).
+  await sql`
+    ALTER TABLE skills_v1_user_skills
+      ADD COLUMN IF NOT EXISTS bundle_tree_sha TEXT NULL
+  `.execute(db);
+
   await sql`
     CREATE TABLE IF NOT EXISTS skills_v1_user_attachments (
       owner_user_id       TEXT NOT NULL,
@@ -78,14 +93,16 @@ export async function runSkillsMigration<DB>(db: Kysely<DB>): Promise<void> {
     )
   `.execute(db);
 
-  // skills_v1_skill_files — the *extra* (non-SKILL.md) files of a skill
-  // bundle (JIT Phase 1a). SKILL.md itself stays in the skills_v1_skills /
-  // skills_v1_user_skills manifest_yaml/body_md columns (the parsed index);
-  // this side-table holds only the additional bundle files (scripts, data,
-  // templates). `scope` + `owner_user_id` ('' for global) mirror the two
-  // owning tables so one files table serves both scopes; the compound PK
-  // (scope, owner_user_id, skill_id, path) makes a path unique within a
-  // single skill while allowing the same path across scopes/owners/skills.
+  // skills_v1_skill_files — SUPERSEDED by the content-addressed git bundle
+  // store (TASK-40, JIT git-tree backing). Extra bundle files now live as a
+  // git tree keyed by skills_v1_skills.bundle_tree_sha /
+  // skills_v1_user_skills.bundle_tree_sha. This table is no longer read or
+  // written; it is RETAINED (not dropped) because the migration policy is
+  // additive-only (destructive changes require a skills_v2 side-table). No
+  // backfill: the multi-file write path was half-wired (no production caller)
+  // from TASK-32 until TASK-40, so this table is empty in every deployment.
+  // The CREATE remains so an old deployment's table keeps validating and the
+  // migration stays idempotent.
   await sql`
     CREATE TABLE IF NOT EXISTS skills_v1_skill_files (
       scope         TEXT NOT NULL,
@@ -110,6 +127,8 @@ export interface SkillsRow {
   version: number;
   default_attached: boolean;
   source_url: string | null;
+  /** Root git tree SHA of the bundle's EXTRA (non-SKILL.md) files. NULL = single-file skill. */
+  bundle_tree_sha: string | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -128,6 +147,8 @@ export interface UserSkillsRow {
   version: number;
   default_attached: boolean;
   source_url: string | null;
+  /** Root git tree SHA of the bundle's EXTRA (non-SKILL.md) files. NULL = single-file skill. */
+  bundle_tree_sha: string | null;
   created_at: Date;
   updated_at: Date;
 }

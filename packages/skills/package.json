@@ -24,6 +24,7 @@
   "dependencies": {
     "@ax/core": "workspace:*",
     "@ax/skills-parser": "workspace:*",
+    "isomorphic-git": "1.37.5",
     "js-yaml": "^4.1.0",
     "kysely": "0.28.17",
     "zod": "^3.23.8"
