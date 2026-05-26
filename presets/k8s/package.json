@@ -49,6 +49,7 @@
     "@ax/routines-admin-routes": "workspace:*",
     "@ax/sandbox-k8s": "workspace:*",
     "@ax/session-postgres": "workspace:*",
+    "@ax/skill-broker": "workspace:*",
     "@ax/skills": "workspace:*",
     "@ax/static-files": "workspace:*",
     "@ax/storage-postgres": "workspace:*",

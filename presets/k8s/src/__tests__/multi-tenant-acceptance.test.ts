@@ -152,6 +152,10 @@ const PLUGINS_TO_DROP = new Set<string>([
   // skill-union step is skipped — exactly the degraded path the multi-tenant
   // ACL canary actually wants.
   '@ax/skills',
+  // Skill broker (TASK-34): hard-declares calls:['skills:search-catalog',
+  // 'skills:get'] satisfied only by @ax/skills, which we just dropped — drop
+  // it too or bootstrap's verifyCalls fails. Not on this ACL canary's path.
+  '@ax/skill-broker',
 ]);
 
 // Stub producer for the dispatcher's REQUIRED dep this canary drops.

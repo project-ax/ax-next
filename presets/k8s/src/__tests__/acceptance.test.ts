@@ -201,6 +201,12 @@ const PLUGINS_TO_DROP = new Set<string>([
   // soft-couples via bus.hasService('skills:resolve') and degrades to
   // no-skill-unioning when @ax/skills is absent — exactly what we want.
   '@ax/skills',
+  // Skill broker (TASK-34): hard-declares calls:['skills:search-catalog',
+  // 'skills:get'] satisfied only by @ax/skills, which we just dropped. Drop
+  // it too or bootstrap's verifyCalls fails. Its always-on host tools aren't
+  // exercised by the chat-path canaries; the static wiring + reachability are
+  // pinned in preset.test.ts and the @ax/skills install canary.
+  '@ax/skill-broker',
 ]);
 
 // Stub `agents:resolve` — production presets register `@ax/agents` (postgres-

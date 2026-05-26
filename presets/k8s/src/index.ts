@@ -22,6 +22,7 @@ import { createAdminSettingsRoutesPlugin } from '@ax/admin-settings-routes';
 import { createIpcHttpPlugin } from '@ax/ipc-http';
 import { createAgentsPlugin } from '@ax/agents';
 import { createSkillsPlugin } from '@ax/skills';
+import { createSkillBrokerPlugin } from '@ax/skill-broker';
 import { createAttachmentsPlugin } from '@ax/attachments';
 import { createToolArtifactPublishPlugin } from '@ax/tool-artifact-publish';
 import { createHttpServerPlugin } from '@ax/http-server';
@@ -686,6 +687,15 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // skills:delete soft-couples to agents:any-attached-to-skill (registered
   // by @ax/agents above) so a delete that would orphan an attachment 409s.
   plugins.push(createSkillsPlugin());
+
+  // ----- 8a'. skill broker ----------------------------------------------
+  // @ax/skill-broker — always-on host tools (search_catalog +
+  // request_capability) that surface catalog skills to the agent (JIT
+  // surfacing spine, design §6A/§11 #1). Hard-depends on the tool-dispatcher
+  // (tool:register) + @ax/skills (skills:search-catalog / skills:get); both
+  // are loaded above. Pushed unconditionally — it needs no API key (unlike
+  // @ax/web-tools), and consumes only untrusted intent text in-memory.
+  plugins.push(createSkillBrokerPlugin());
 
   // ----- 8b. credentials admin routes (optional) -------------------------
   // Mounts /admin/credentials* (admin-only CRUD, new destination-based
