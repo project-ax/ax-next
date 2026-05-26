@@ -20,6 +20,10 @@ import type {
   SkillsResolveOutput,
   SkillsUpsertInput,
   SkillsUpsertOutput,
+  SkillsAttachForUserInput,
+  SkillsAttachForUserOutput,
+  SkillsListUserAttachmentsInput,
+  SkillsListUserAttachmentsOutput,
 } from '../types.js';
 
 let container: StartedPostgreSqlContainer;
@@ -80,7 +84,8 @@ afterEach(async () => {
   const cleanup = new (await import('pg')).default.Client({ connectionString });
   await cleanup.connect();
   try {
-    // Truncate both tables so user-scope rows don't bleed between tests.
+    // Truncate every table so user-scope rows don't bleed between tests.
+    await cleanup.query('DROP TABLE IF EXISTS skills_v1_user_attachments');
     await cleanup.query('DROP TABLE IF EXISTS skills_v1_user_skills');
     await cleanup.query('DROP TABLE IF EXISTS skills_v1_skills');
   } finally {
@@ -106,6 +111,8 @@ describe('@ax/skills plugin manifest + lifecycle', () => {
         'skills:resolve',
         'skills:list-defaults',
         'skills:check-for-updates',
+        'skills:attach-for-user',
+        'skills:list-user-attachments',
       ],
       calls: ['database:get-instance', 'http:register-route', 'auth:require-user'],
       subscribes: [],
@@ -1004,5 +1011,117 @@ describe('@ax/skills user-scope hooks (Phase D)', () => {
     }
     expect(caught).toBeInstanceOf(PluginError);
     expect((caught as PluginError).code).toBe('skill-in-use');
+  });
+});
+
+describe('@ax/skills per-user attachments', () => {
+  const HOSTED_SKILL = `name: github
+description: GitHub.
+version: 1
+capabilities:
+  allowedHosts:
+    - api.github.com
+  credentials:
+    - slot: GITHUB_TOKEN
+      kind: api-key
+`;
+
+  it('attach-for-user stores a binding; list-user-attachments returns it scoped', async () => {
+    const h = await makeHarness();
+    // The skill must exist (global) for the attach hook to resolve its slots.
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
+      manifestYaml: HOSTED_SKILL,
+      bodyMd: '# gh\n',
+    });
+
+    const r = await h.bus.call<SkillsAttachForUserInput, SkillsAttachForUserOutput>(
+      'skills:attach-for-user',
+      h.ctx(),
+      { userId: 'u1', agentId: 'a1', skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'ref1' } },
+    );
+    expect(r).toEqual({ created: true });
+
+    const list = await h.bus.call<SkillsListUserAttachmentsInput, SkillsListUserAttachmentsOutput>(
+      'skills:list-user-attachments',
+      h.ctx(),
+      { userId: 'u1', agentId: 'a1' },
+    );
+    expect(list.attachments).toEqual([
+      { skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'ref1' } },
+    ]);
+
+    // A different user sees nothing.
+    const other = await h.bus.call<SkillsListUserAttachmentsInput, SkillsListUserAttachmentsOutput>(
+      'skills:list-user-attachments',
+      h.ctx(),
+      { userId: 'u2', agentId: 'a1' },
+    );
+    expect(other.attachments).toEqual([]);
+  });
+
+  it('attach-for-user is idempotent — re-attach replaces bindings (created:false)', async () => {
+    const h = await makeHarness();
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
+      manifestYaml: HOSTED_SKILL,
+      bodyMd: '# gh\n',
+    });
+
+    const first = await h.bus.call<SkillsAttachForUserInput, SkillsAttachForUserOutput>(
+      'skills:attach-for-user',
+      h.ctx(),
+      { userId: 'u1', agentId: 'a1', skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'ref1' } },
+    );
+    expect(first.created).toBe(true);
+
+    const again = await h.bus.call<SkillsAttachForUserInput, SkillsAttachForUserOutput>(
+      'skills:attach-for-user',
+      h.ctx(),
+      { userId: 'u1', agentId: 'a1', skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'ref2' } },
+    );
+    expect(again.created).toBe(false);
+
+    const list = await h.bus.call<SkillsListUserAttachmentsInput, SkillsListUserAttachmentsOutput>(
+      'skills:list-user-attachments',
+      h.ctx(),
+      { userId: 'u1', agentId: 'a1' },
+    );
+    expect(list.attachments).toEqual([
+      { skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'ref2' } },
+    ]);
+  });
+
+  it('attach-for-user rejects an unknown skill', async () => {
+    const h = await makeHarness();
+    await expect(
+      h.bus.call<SkillsAttachForUserInput, SkillsAttachForUserOutput>('skills:attach-for-user', h.ctx(), {
+        userId: 'u1', agentId: 'a1', skillId: 'nope', credentialBindings: {},
+      }),
+    ).rejects.toThrow(/not installed|not-found/i);
+  });
+
+  it('attach-for-user rejects a binding for an undeclared slot (orphan)', async () => {
+    const h = await makeHarness();
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
+      manifestYaml: HOSTED_SKILL,
+      bodyMd: '# gh\n',
+    });
+    await expect(
+      h.bus.call<SkillsAttachForUserInput, SkillsAttachForUserOutput>('skills:attach-for-user', h.ctx(), {
+        userId: 'u1', agentId: 'a1', skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'ref', BOGUS: 'x' },
+      }),
+    ).rejects.toThrow(/binding-orphan|does not declare/i);
+  });
+
+  it('attach-for-user rejects a missing required slot binding', async () => {
+    const h = await makeHarness();
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
+      manifestYaml: HOSTED_SKILL,
+      bodyMd: '# gh\n',
+    });
+    await expect(
+      h.bus.call<SkillsAttachForUserInput, SkillsAttachForUserOutput>('skills:attach-for-user', h.ctx(), {
+        userId: 'u1', agentId: 'a1', skillId: 'github', credentialBindings: {},
+      }),
+    ).rejects.toThrow(/binding-missing|missing binding/i);
   });
 });

@@ -71,6 +71,8 @@ import type {
   SkillsListOutput,
   SkillsGetInput,
   SkillsGetOutput,
+  SkillsAttachForUserInput,
+  SkillsAttachForUserOutput,
 } from '../../types.js';
 
 // ---------------------------------------------------------------------------
@@ -104,6 +106,7 @@ afterEach(async () => {
     // shared across the whole file.)
     await cleanup.query('DROP TABLE IF EXISTS agents_v1_skill_attachments');
     await cleanup.query('DROP TABLE IF EXISTS agents_v1_agents');
+    await cleanup.query('DROP TABLE IF EXISTS skills_v1_user_attachments');
     await cleanup.query('DROP TABLE IF EXISTS skills_v1_user_skills');
     await cleanup.query('DROP TABLE IF EXISTS skills_v1_skills');
   } finally {
@@ -380,6 +383,162 @@ describe('skill-install canary: install → attach → invoke (real plugins)', (
     const installed = fakes.sandboxOpenInputs[0]!.installedSkills ?? [];
     expect(installed.length).toBeGreaterThanOrEqual(1);
     expect(installed.some((s) => s.skillMd.includes('name: github'))).toBe(true);
+  }, 60_000);
+});
+
+// ---------------------------------------------------------------------------
+// Case 1b (TASK-33) — per-user attachment unions through the real orchestrator
+//
+// A user activates a catalog skill on THEIR agent via skills:attach-for-user
+// (host-side, no agent path). The orchestrator's skills:list-user-attachments
+// fetch unions the per-user host + binding into proxy:open-session, and the
+// per-user binding WINS over an agent-global binding for the same skill id.
+// ---------------------------------------------------------------------------
+
+const LINEAR_MANIFEST = `name: linear
+description: Linear
+version: 1
+capabilities:
+  allowedHosts:
+    - api.linear.app
+  credentials:
+    - slot: LINEAR_TOKEN
+      kind: api-key
+`;
+
+describe('skill-install canary: per-user attachment union (TASK-33, real plugins)', () => {
+  function buildRealHarness(busRef: { current: HookBus | null }) {
+    const fakes = buildCaptureFakes(busRef);
+    return createTestHarness({
+      services: fakes.services,
+      plugins: [
+        createDatabasePostgresPlugin({ connectionString }),
+        createAgentsPlugin(),
+        createSkillsPlugin(),
+        createChatOrchestratorPlugin({
+          runnerBinary: '/irrelevant',
+          oneShot: true,
+          chatTimeoutMs: 5_000,
+        }),
+      ],
+    }).then((h) => ({ h, fakes }));
+  }
+
+  it('per-user attachment host + credential reach proxy:open-session', async () => {
+    const busRef: { current: HookBus | null } = { current: null };
+    const { h, fakes } = await buildRealHarness(busRef);
+    harnesses.push(h);
+    busRef.current = h.bus;
+
+    // 1. Install the linear skill (global catalog).
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
+      manifestYaml: LINEAR_MANIFEST,
+      bodyMd: 'Body.',
+    });
+
+    // 2. Create alice's agent. NO agent-global attachment — purely per-user.
+    const agentId = await createPersonalAgent(h, 'alice');
+
+    // 3. Alice self-serve activates linear on HER agent with her own binding.
+    const attached = await h.bus.call<SkillsAttachForUserInput, SkillsAttachForUserOutput>(
+      'skills:attach-for-user',
+      h.ctx({ userId: 'alice' }),
+      { userId: 'alice', agentId, skillId: 'linear', credentialBindings: { LINEAR_TOKEN: 'user-linear-ref' } },
+    );
+    expect(attached.created).toBe(true);
+
+    // 4. Invoke through the REAL orchestrator (alice's owner triple).
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      ctxFor(agentId, 'alice', 'per-user-walk'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+
+    // 5. proxy:open-session received the per-user host + binding.
+    expect(fakes.proxyOpenInputs).toHaveLength(1);
+    const proxyIn = fakes.proxyOpenInputs[0]!;
+    expect(proxyIn.allowlist).toContain('api.linear.app');
+    expect(proxyIn.credentials.LINEAR_TOKEN).toEqual({ ref: 'user-linear-ref', kind: 'api-key' });
+  }, 60_000);
+
+  it('per-user binding wins over an agent-global binding for the same skill', async () => {
+    const busRef: { current: HookBus | null } = { current: null };
+    const { h, fakes } = await buildRealHarness(busRef);
+    harnesses.push(h);
+    busRef.current = h.bus;
+
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
+      manifestYaml: LINEAR_MANIFEST,
+      bodyMd: 'Body.',
+    });
+    const agentId = await createPersonalAgent(h, 'alice');
+
+    // Agent-global attaches linear with one ref; per-user attaches it with another.
+    await attachSkill(h, agentId, 'alice', 'linear', { LINEAR_TOKEN: 'agent-global-ref' });
+    await h.bus.call<SkillsAttachForUserInput, SkillsAttachForUserOutput>(
+      'skills:attach-for-user',
+      h.ctx({ userId: 'alice' }),
+      { userId: 'alice', agentId, skillId: 'linear', credentialBindings: { LINEAR_TOKEN: 'user-linear-ref' } },
+    );
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      ctxFor(agentId, 'alice', 'per-user-precedence-walk'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+
+    expect(fakes.proxyOpenInputs).toHaveLength(1);
+    // Per-user ref wins; the agent-global copy of the same skill id is dropped
+    // (so no slot-collision termination — the skill never collides with itself).
+    expect(fakes.proxyOpenInputs[0]!.credentials.LINEAR_TOKEN).toEqual({
+      ref: 'user-linear-ref',
+      kind: 'api-key',
+    });
+  }, 60_000);
+
+  it('a user-scoped skill of the same id overrides the global content (skills:resolve ownerUserId)', async () => {
+    const busRef: { current: HookBus | null } = { current: null };
+    const { h, fakes } = await buildRealHarness(busRef);
+    harnesses.push(h);
+    busRef.current = h.bus;
+
+    // Global `gh` (one body) AND a user-scoped `gh` for alice (different body
+    // + different host). The user-scoped content must win at session open.
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
+      manifestYaml: 'name: gh\ndescription: global gh\nversion: 1\ncapabilities:\n  allowedHosts:\n    - global.example.com\n',
+      bodyMd: 'GLOBAL BODY',
+    });
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
+      scope: 'user',
+      ownerUserId: 'alice',
+      manifestYaml: 'name: gh\ndescription: alice gh\nversion: 1\ncapabilities:\n  allowedHosts:\n    - user.example.com\n',
+      bodyMd: 'USER BODY',
+    });
+
+    const agentId = await createPersonalAgent(h, 'alice');
+    await h.bus.call<SkillsAttachForUserInput, SkillsAttachForUserOutput>(
+      'skills:attach-for-user',
+      h.ctx({ userId: 'alice' }),
+      { userId: 'alice', agentId, skillId: 'gh', credentialBindings: {} },
+    );
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      ctxFor(agentId, 'alice', 'content-override-walk'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+
+    // The sandbox got the USER-scoped body + host, not the global one.
+    const installed = fakes.sandboxOpenInputs[0]!.installedSkills ?? [];
+    const gh = installed.find((s) => s.skillMd.includes('name: gh'));
+    expect(gh).toBeDefined();
+    expect(gh!.skillMd).toContain('USER BODY');
+    expect(gh!.skillMd).not.toContain('GLOBAL BODY');
+    expect(fakes.proxyOpenInputs[0]!.allowlist).toContain('user.example.com');
+    expect(fakes.proxyOpenInputs[0]!.allowlist).not.toContain('global.example.com');
   }, 60_000);
 });
 

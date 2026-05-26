@@ -17,6 +17,14 @@ import { sql, type Kysely } from 'kysely';
  *   admin-managed global list. Keyed by (owner_user_id, skill_id) compound
  *   primary key so the same skill_id can exist for multiple users
  *   independently.
+ *
+ *   skills_v1_user_attachments — per-(user, agent) skill activation (TASK-33).
+ *   A self-serve layer that sits ABOVE the admin-managed agent-global
+ *   attachments owned by @ax/agents: a user activates a catalog skill on
+ *   THEIR agent without affecting others. Keyed by the compound primary key
+ *   (owner_user_id, agent_id, skill_id). `agent_id` is an opaque scoping key
+ *   — no FK to agents_v1_agents (cross-plugin FKs are banned; a dangling row
+ *   to a deleted agent simply never resolves at session open).
  */
 // Schema-agnostic: the executor only needs to issue raw DDL.
 export async function runSkillsMigration<DB>(db: Kysely<DB>): Promise<void> {
@@ -57,6 +65,18 @@ export async function runSkillsMigration<DB>(db: Kysely<DB>): Promise<void> {
       PRIMARY KEY (owner_user_id, skill_id)
     )
   `.execute(db);
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS skills_v1_user_attachments (
+      owner_user_id       TEXT NOT NULL,
+      agent_id            TEXT NOT NULL,
+      skill_id            TEXT NOT NULL,
+      credential_bindings JSONB NOT NULL DEFAULT '{}',
+      created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (owner_user_id, agent_id, skill_id)
+    )
+  `.execute(db);
 }
 
 /**
@@ -93,7 +113,25 @@ export interface UserSkillsRow {
   updated_at: Date;
 }
 
+/**
+ * Per-(user, agent) skill activation. Self-serve layer that sits ABOVE the
+ * admin-managed agent-global attachments owned by @ax/agents. `agent_id` is
+ * an opaque scoping key — no FK to agents_v1_agents (cross-plugin FKs are
+ * banned; a dangling row to a deleted agent simply never resolves at session
+ * open). `credential_bindings` is a JSONB slot → opaque-ref map (never a
+ * secret), mirroring the agent-global attachment shape.
+ */
+export interface UserAttachmentRow {
+  owner_user_id: string;
+  agent_id: string;
+  skill_id: string;
+  credential_bindings: unknown; // JSONB Record<string,string>; store casts on read
+  created_at: Date;
+  updated_at: Date;
+}
+
 export interface SkillsDatabase {
   skills_v1_skills: SkillsRow;
   skills_v1_user_skills: UserSkillsRow;
+  skills_v1_user_attachments: UserAttachmentRow;
 }

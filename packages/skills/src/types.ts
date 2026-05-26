@@ -111,6 +111,37 @@ export interface SkillsCheckForUpdatesOutput {
 }
 
 // ---------------------------------------------------------------------------
+// Per-user skill attachment (TASK-33). Self-serve layer above the admin-managed
+// agent-global attachments owned by @ax/agents. A future @ax/skills-fs impl
+// would register these same hooks with these exact shapes — no field mentions
+// postgres, rows, or any storage detail. `agentId`/`skillId`/`userId` are
+// opaque ids; `credentialBindings` maps a declared slot to an opaque credential
+// ref (NEVER a secret — same posture as the agent-global attachment shape).
+// ---------------------------------------------------------------------------
+export interface UserSkillAttachment {
+  skillId: string;
+  credentialBindings: Record<string, string>;
+}
+
+export interface SkillsAttachForUserInput {
+  userId: string;
+  agentId: string;
+  skillId: string;
+  credentialBindings: Record<string, string>;
+}
+export interface SkillsAttachForUserOutput {
+  created: boolean;
+}
+
+export interface SkillsListUserAttachmentsInput {
+  userId: string;
+  agentId: string;
+}
+export interface SkillsListUserAttachmentsOutput {
+  attachments: UserSkillAttachment[];
+}
+
+// ---------------------------------------------------------------------------
 // Runtime `returns` contracts for the `skills:*` service hooks (ARCH-13,
 // the non-IPC / non-boundary long tail spun out of ARCH-6 #150).
 //
@@ -209,3 +240,16 @@ export const SkillsCheckForUpdatesOutputSchema = z.object({
   latestVersion: z.number().optional(),
   latestSkillMd: z.string().optional(),
 }) as unknown as ZodType<SkillsCheckForUpdatesOutput>;
+
+export const SkillsAttachForUserOutputSchema = z.object({
+  created: z.boolean(),
+}) as unknown as ZodType<SkillsAttachForUserOutput>;
+
+export const SkillsListUserAttachmentsOutputSchema = z.object({
+  attachments: z.array(
+    z.object({
+      skillId: z.string(),
+      credentialBindings: z.record(z.string()),
+    }),
+  ),
+}) as unknown as ZodType<SkillsListUserAttachmentsOutput>;

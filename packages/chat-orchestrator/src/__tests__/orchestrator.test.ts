@@ -2221,6 +2221,180 @@ describe('chat-orchestrator', () => {
     });
   });
 
+  it('TASK-33: per-user attachment beats agent-global on id collision and unions a per-user-only skill', async () => {
+    const proxy = buildProxyHooks();
+    const skillsHooks = buildSkillsHooks({
+      skills: {
+        github: {
+          id: 'github',
+          capabilities: { allowedHosts: ['api.github.com'], credentials: [{ slot: 'GITHUB_TOKEN', kind: 'api-key' }] },
+          bodyMd: 'gh', manifestYaml: 'name: github\nversion: 1\n',
+        },
+        linear: {
+          id: 'linear',
+          capabilities: { allowedHosts: ['api.linear.app'], credentials: [] },
+          bodyMd: 'ln', manifestYaml: 'name: linear\nversion: 1\n',
+        },
+      },
+    });
+
+    // Per-user attachments: github (overrides the agent-global binding) + a
+    // per-user-only linear. Record the query args to assert (user, agent) scope.
+    let listInput: unknown;
+    skillsHooks.services['skills:list-user-attachments'] = async (_ctx, input) => {
+      listInput = input;
+      return {
+        attachments: [
+          { skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'per-user-pat' } },
+          { skillId: 'linear', credentialBindings: {} },
+        ],
+      };
+    };
+
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: { ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' } },
+          // Agent-global attaches github with a DIFFERENT binding — per-user must win.
+          skillAttachments: [{ skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'agent-global-pat' } }],
+        },
+      }),
+      openSession: makeChatEndOpenSession(busRef),
+    });
+    Object.assign(mocks.services, proxy.services, skillsHooks.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+    });
+    busRef.current = h.bus;
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('per-user-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+
+    // Read hook queried per (user, agent).
+    expect(listInput).toEqual({ userId: 'test-user', agentId: 'test-agent' });
+    // resolve engaged the content-override path (ownerUserId threaded).
+    expect((skillsHooks.state.lastResolveInput as { ownerUserId?: string }).ownerUserId).toBe('test-user');
+
+    const openIn = proxy.state.lastOpenInput as {
+      allowlist: string[];
+      credentials: Record<string, { ref: string; kind: string }>;
+    };
+    // Per-user-only skill's host is unioned in.
+    expect(openIn.allowlist).toContain('api.linear.app');
+    expect(openIn.allowlist).toContain('api.github.com');
+    // Per-user binding WINS over the agent-global binding for the same skill+slot.
+    expect(openIn.credentials.GITHUB_TOKEN).toEqual({ ref: 'per-user-pat', kind: 'api-key' });
+  });
+
+  it('TASK-33: with no per-user attachments, agent-global behavior is unchanged', async () => {
+    const proxy = buildProxyHooks();
+    const skillsHooks = buildSkillsHooks({
+      skills: {
+        github: {
+          id: 'github',
+          capabilities: { allowedHosts: ['api.github.com'], credentials: [{ slot: 'GITHUB_TOKEN', kind: 'api-key' }] },
+          bodyMd: 'gh', manifestYaml: 'name: github\nversion: 1\n',
+        },
+      },
+    });
+    // Read hook returns empty → behavior identical to pre-TASK-33.
+    skillsHooks.services['skills:list-user-attachments'] = async () => ({ attachments: [] });
+
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: { ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' } },
+          skillAttachments: [{ skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'agent-global-pat' } }],
+        },
+      }),
+      openSession: makeChatEndOpenSession(busRef),
+    });
+    Object.assign(mocks.services, proxy.services, skillsHooks.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+    });
+    busRef.current = h.bus;
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('no-per-user-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+
+    const openIn = proxy.state.lastOpenInput as {
+      allowlist: string[];
+      credentials: Record<string, { ref: string; kind: string }>;
+    };
+    expect(openIn.allowlist).toContain('api.github.com');
+    // The agent-global binding is used unchanged when there's no per-user layer.
+    expect(openIn.credentials.GITHUB_TOKEN).toEqual({ ref: 'agent-global-pat', kind: 'api-key' });
+  });
+
+  it('TASK-33: a thrown skills:list-user-attachments FAILS CLOSED (does not silently use agent-global creds)', async () => {
+    // Codex P1: list-user-attachments is credential-bearing — it decides which
+    // refs reach proxy:open-session and the per-user > agent-global precedence.
+    // A transient read failure must NOT silently fall back to the agent-global
+    // binding for a slot the user meant to override; the turn must terminate
+    // (matching the skills:resolve fail-closed precedent in the same function).
+    const proxy = buildProxyHooks();
+    const skillsHooks = buildSkillsHooks({
+      skills: {
+        github: {
+          id: 'github',
+          capabilities: { allowedHosts: ['api.github.com'], credentials: [{ slot: 'GITHUB_TOKEN', kind: 'api-key' }] },
+          bodyMd: 'gh', manifestYaml: 'name: github\nversion: 1\n',
+        },
+      },
+    });
+    skillsHooks.services['skills:list-user-attachments'] = async () => {
+      throw new Error('transient per-user read failure');
+    };
+
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: { ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' } },
+          skillAttachments: [{ skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'agent-global-pat' } }],
+        },
+      }),
+      openSession: makeChatEndOpenSession(busRef),
+    });
+    Object.assign(mocks.services, proxy.services, skillsHooks.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+    });
+    busRef.current = h.bus;
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('per-user-read-fail-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    // Fail closed: terminated, and the session never opened with the fallback creds.
+    expect(outcome.kind).toBe('terminated');
+    if (outcome.kind === 'terminated') {
+      expect(outcome.reason).toBe('user-attachments-failed');
+    }
+    expect(proxy.state.lastOpenInput).toBeUndefined();
+  });
+
   it('auto-unions registry.npmjs.org when a skill declares packages.npm (D)', async () => {
     const proxy = buildProxyHooks();
     const skillsHooks = buildSkillsHooks({
