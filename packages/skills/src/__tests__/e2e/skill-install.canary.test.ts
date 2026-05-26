@@ -446,6 +446,20 @@ describe('skill-install canary: install → attach → invoke (real plugins)', (
     // SKILL.md (reconstructed) + the resolved extra file, both present.
     expect(gh.files.find((f) => f.path === 'SKILL.md')?.contents).toContain('name: github');
     expect(gh.files.find((f) => f.path === 'scripts/run.py')?.contents).toBe('print("hi")');
+
+    // TASK-40: the extra file is backed by the content-addressed git bundle
+    // store — the catalog row carries a 40-hex tree SHA, proving the internal
+    // swap actually went through the git store (not the legacy files table).
+    const probe = new (await import('pg')).default.Client({ connectionString });
+    await probe.connect();
+    try {
+      const treeRow = await probe.query(
+        "SELECT bundle_tree_sha FROM skills_v1_skills WHERE skill_id = 'github'",
+      );
+      expect(treeRow.rows[0]?.bundle_tree_sha).toMatch(/^[0-9a-f]{40}$/);
+    } finally {
+      await probe.end().catch(() => {});
+    }
   }, 60_000);
 });
 
