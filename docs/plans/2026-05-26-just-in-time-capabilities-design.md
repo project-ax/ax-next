@@ -183,6 +183,8 @@ A skill is upgraded from "two text columns" to a **bundle**: a file tree rooted 
 
 **Open-mode caveat:** an agent-authored bundle is **not** admin-reviewed. That's acceptable because bundled code grants nothing beyond what the agent can already do via its Bash tool in the same sandbox, and the approval card still gates the only thing that crosses a trust boundary (egress + credentials). The code-review safety only attaches when the skill is *admitted to the catalog*.
 
+**Phasing note (per the Phase 1a plan, `2026-05-26-jit-phase-1a-bundle-contract-impl.md`):** the bundle *model* (a skill is a set of files) and the materialization *contract* (`files[]`) are foundational and ship in Phase 1a on a **DB files-table backing** — `SKILL.md` stays in `manifest_yaml`/`body_md`, extra files in `skills_v1_skill_files`. The **git-tree backing** is deferred to P5/P6 (share-to-catalog), its first consumer of SHA-based promotion. Because the *model* is bundle-native day one, swapping the byte-store later is internal — no contract migration.
+
 **Sequencing — foundational.** Bundles are built into the skill model from the first slice (decision: *not* deferred). Storage, the materialization contract, and validation all handle file trees from the start, even though the earliest catalog skills are often single-file (a SKILL.md-only skill is just a one-file tree — instruction + declared hosts/creds + a body that drives `curl`/CLI). Building it bundle-native up front avoids a later migration off a text-column model. The vendored-`node`-as-MCP-server *use* of a bundle stays stdio-deferred (§9.1) — but the bundle *mechanism* is foundational.
 
 ## 10. Security model
