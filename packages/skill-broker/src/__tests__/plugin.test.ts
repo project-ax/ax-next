@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { HookBus, makeAgentContext, PluginError } from '@ax/core';
-import { createSkillBrokerPlugin } from '../plugin.js';
+import { createSkillBrokerPlugin, type SkillBrokerPlugin } from '../plugin.js';
 
 const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' });
 const convCtx = makeAgentContext({
@@ -167,5 +167,41 @@ describe('request_capability — bundled approval card (chat:permission-request)
     });
     expect(out).toEqual({ status: 'not-found', skillId: 'ghost' });
     expect(cards).toHaveLength(0);
+  });
+});
+
+describe('createSkillBrokerPlugin — open-mode gate (allow_user_installed_skills)', () => {
+  it('defaults the open-mode gate OFF when no config is passed', () => {
+    const p = createSkillBrokerPlugin() as SkillBrokerPlugin;
+    expect(p.allowUserInstalledSkills).toBe(false);
+  });
+
+  it('defaults OFF when config omits the flag', () => {
+    const p = createSkillBrokerPlugin({}) as SkillBrokerPlugin;
+    expect(p.allowUserInstalledSkills).toBe(false);
+  });
+
+  it('reflects allowUserInstalledSkills:true when enabled', () => {
+    const p = createSkillBrokerPlugin({ allowUserInstalledSkills: true }) as SkillBrokerPlugin;
+    expect(p.allowUserInstalledSkills).toBe(true);
+  });
+
+  // Half-wired window (TASK-38): the flag is stored + exposed, but the broker
+  // registers the SAME tool set in both modes — the authoring tool that the
+  // flag gates ships in TASK-39. This pins "behaviorally inert" so a future
+  // edit that wires authoring has to update this test deliberately.
+  it('registers the same tools whether open mode is on or off', async () => {
+    const off = busWithStubs();
+    await (createSkillBrokerPlugin({ allowUserInstalledSkills: false }) as SkillBrokerPlugin).init({
+      bus: off.bus,
+      config: {} as never,
+    });
+    const on = busWithStubs();
+    await (createSkillBrokerPlugin({ allowUserInstalledSkills: true }) as SkillBrokerPlugin).init({
+      bus: on.bus,
+      config: {} as never,
+    });
+    expect(off.registered.sort()).toEqual(['request_capability', 'search_catalog']);
+    expect(on.registered.sort()).toEqual(off.registered.sort());
   });
 });
