@@ -194,6 +194,68 @@ describe('@ax/credential-proxy plugin', () => {
     expect(result.envMap.ANTHROPIC_API_KEY).toMatch(/^ax-cred:[0-9a-f]{32}$/);
   });
 
+  it('proxy:open-session returns a 32-hex proxyAuthToken (egress attribution)', async () => {
+    // TASK-52: the proxy mints a per-session token the sandbox carries as
+    // Proxy-Authorization, so the listener can attribute even a blocked
+    // (allowlist-miss) request back to the session that made it.
+    kernel = await bootstrap({
+      bus,
+      plugins: [
+        memCredentialsPlugin(),
+        createCredentialProxyPlugin({
+          listen: { kind: 'tcp', host: '127.0.0.1', port: 0 },
+          caDir,
+        }),
+      ],
+      config: {},
+    });
+
+    const out = await bus.call<
+      {
+        sessionId: string;
+        userId: string;
+        agentId: string;
+        allowlist: string[];
+        credentials: Record<string, { ref: string; kind: string }>;
+      },
+      { proxyAuthToken: string }
+    >('proxy:open-session', ctx(), {
+      sessionId: 's1',
+      userId: 'u1',
+      agentId: 'a1',
+      allowlist: ['api.example.com'],
+      credentials: {},
+    });
+
+    expect(out.proxyAuthToken).toMatch(/^[0-9a-f]{32}$/);
+  });
+
+  it('mints a distinct proxyAuthToken per session', async () => {
+    kernel = await bootstrap({
+      bus,
+      plugins: [
+        memCredentialsPlugin(),
+        createCredentialProxyPlugin({
+          listen: { kind: 'tcp', host: '127.0.0.1', port: 0 },
+          caDir,
+        }),
+      ],
+      config: {},
+    });
+
+    const a = await bus.call<unknown, { proxyAuthToken: string }>(
+      'proxy:open-session',
+      ctx(),
+      { sessionId: 'sa', userId: 'u', agentId: 'a', allowlist: [], credentials: {} },
+    );
+    const b = await bus.call<unknown, { proxyAuthToken: string }>(
+      'proxy:open-session',
+      ctx(),
+      { sessionId: 'sb', userId: 'u', agentId: 'a', allowlist: [], credentials: {} },
+    );
+    expect(a.proxyAuthToken).not.toBe(b.proxyAuthToken);
+  });
+
   it('proxy:close-session deregisters placeholder map (substitution stops)', async () => {
     // Mint a CA in caDir up front so the upstream can be signed by it.
     // The plugin's getOrCreateCA will load this same CA on init.

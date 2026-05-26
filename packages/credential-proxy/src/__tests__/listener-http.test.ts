@@ -1,7 +1,12 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { createServer as httpCreate, type Server } from 'node:http';
 import { ProxyAgent } from 'undici';
-import { startProxyListener, type ProxyListener } from '../listener.js';
+import {
+  startProxyListener,
+  type ProxyListener,
+  type ProxyAuditEntry,
+  type SessionConfig,
+} from '../listener.js';
 import { SharedCredentialRegistry } from '../registry.js';
 import type { CAKeyPair } from '../ca.js';
 import forgeModule from 'node-forge';
@@ -97,6 +102,135 @@ describe('proxy listener — HTTP forwarding', () => {
     });
     const res = await fetch(`http://127.0.0.1:${upPort}/`, { dispatcher } as RequestInit);
     expect(res.status).toBe(403);
+  });
+
+  it('attributes an allowlist-miss 403 to its session when the request carries the proxy token (TASK-52)', async () => {
+    upstream = httpCreate((_req, res) => res.end('SHOULD NOT REACH'));
+    const upPort = await new Promise<number>((r) =>
+      upstream!.listen(0, '127.0.0.1', () => r((upstream!.address() as { port: number }).port)),
+    );
+
+    const token = 'a'.repeat(32);
+    const audits: ProxyAuditEntry[] = [];
+    const registry = new SharedCredentialRegistry();
+    const sessions = new Map<string, SessionConfig>([
+      [
+        's1',
+        {
+          // 'other.example.com' is allowed; the request targets 127.0.0.1 →
+          // allowlist MISS → 403, which matches NO session via findAllowing-
+          // Session. Attribution must come from the token instead.
+          allowlist: new Set(['other.example.com']),
+          sessionId: 's1',
+          userId: 'u1',
+          proxyToken: token,
+        },
+      ],
+    ]);
+    listener = await startProxyListener({
+      listen: { kind: 'tcp', host: '127.0.0.1', port: 0 },
+      registry,
+      ca: mintCA(),
+      sessions,
+      onAudit: (e) => audits.push(e),
+    });
+
+    const dispatcher = new ProxyAgent({
+      uri: `http://127.0.0.1:${listener.port}`,
+      proxyTunnel: false,
+      // undici sets Proxy-Authorization to this token string verbatim.
+      token: 'Basic ' + Buffer.from('ax:' + token).toString('base64'),
+    });
+    const res = await fetch(`http://127.0.0.1:${upPort}/x`, { dispatcher } as RequestInit);
+    expect(res.status).toBe(403);
+
+    const block = audits.find((a) => a.blocked?.startsWith('domain_denied:'));
+    expect(block).toBeDefined();
+    expect(block!.sessionId).toBe('s1');
+    expect(block!.userId).toBe('u1');
+  });
+
+  it('leaves the session unattributed on a blocked request with no token (no widening, just no attribution) (TASK-52)', async () => {
+    upstream = httpCreate((_req, res) => res.end('SHOULD NOT REACH'));
+    const upPort = await new Promise<number>((r) =>
+      upstream!.listen(0, '127.0.0.1', () => r((upstream!.address() as { port: number }).port)),
+    );
+
+    const audits: ProxyAuditEntry[] = [];
+    const registry = new SharedCredentialRegistry();
+    const sessions = new Map<string, SessionConfig>([
+      [
+        's1',
+        {
+          allowlist: new Set(['other.example.com']),
+          sessionId: 's1',
+          userId: 'u1',
+          proxyToken: 'a'.repeat(32),
+        },
+      ],
+    ]);
+    listener = await startProxyListener({
+      listen: { kind: 'tcp', host: '127.0.0.1', port: 0 },
+      registry,
+      ca: mintCA(),
+      sessions,
+      onAudit: (e) => audits.push(e),
+    });
+
+    const dispatcher = new ProxyAgent({
+      uri: `http://127.0.0.1:${listener.port}`,
+      proxyTunnel: false,
+      // No token at all.
+    });
+    const res = await fetch(`http://127.0.0.1:${upPort}/x`, { dispatcher } as RequestInit);
+    // Still blocked — the missing token never widens egress.
+    expect(res.status).toBe(403);
+
+    const block = audits.find((a) => a.blocked?.startsWith('domain_denied:'));
+    expect(block).toBeDefined();
+    expect(block!.sessionId).toBeUndefined();
+    expect(block!.userId).toBeUndefined();
+  });
+
+  it('leaves the session unattributed on a blocked request with an unknown/forged token (TASK-52)', async () => {
+    upstream = httpCreate((_req, res) => res.end('SHOULD NOT REACH'));
+    const upPort = await new Promise<number>((r) =>
+      upstream!.listen(0, '127.0.0.1', () => r((upstream!.address() as { port: number }).port)),
+    );
+
+    const audits: ProxyAuditEntry[] = [];
+    const registry = new SharedCredentialRegistry();
+    const sessions = new Map<string, SessionConfig>([
+      [
+        's1',
+        {
+          allowlist: new Set(['other.example.com']),
+          sessionId: 's1',
+          userId: 'u1',
+          proxyToken: 'a'.repeat(32),
+        },
+      ],
+    ]);
+    listener = await startProxyListener({
+      listen: { kind: 'tcp', host: '127.0.0.1', port: 0 },
+      registry,
+      ca: mintCA(),
+      sessions,
+      onAudit: (e) => audits.push(e),
+    });
+
+    const dispatcher = new ProxyAgent({
+      uri: `http://127.0.0.1:${listener.port}`,
+      proxyTunnel: false,
+      // A well-formed but UNREGISTERED token — matches no session.
+      token: 'Basic ' + Buffer.from('ax:' + 'f'.repeat(32)).toString('base64'),
+    });
+    const res = await fetch(`http://127.0.0.1:${upPort}/x`, { dispatcher } as RequestInit);
+    expect(res.status).toBe(403);
+
+    const block = audits.find((a) => a.blocked?.startsWith('domain_denied:'));
+    expect(block).toBeDefined();
+    expect(block!.sessionId).toBeUndefined();
   });
 
   it('returns 413 when a plain-HTTP request body exceeds the cap (does not buffer it all)', async () => {

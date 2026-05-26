@@ -36,6 +36,9 @@ const env = {
   // sandbox:open-session).
   AX_PROXY_ENDPOINT: process.env.AX_PROXY_ENDPOINT ?? null,
   AX_PROXY_UNIX_SOCKET: process.env.AX_PROXY_UNIX_SOCKET ?? null,
+  // TASK-52: per-session proxy token for egress attribution. The runner reads
+  // it and embeds it as Proxy-Authorization Basic userinfo on the proxy URL.
+  AX_PROXY_TOKEN: process.env.AX_PROXY_TOKEN ?? null,
   HTTPS_PROXY: process.env.HTTPS_PROXY ?? null,
   HTTP_PROXY: process.env.HTTP_PROXY ?? null,
   NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS ?? null,

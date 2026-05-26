@@ -105,12 +105,24 @@ export async function startWebProxyBridge(unixSocketPath: string): Promise<WebPr
   server.on('connect', (req: IncomingMessage, clientSocket: net.Socket, head: Buffer) => {
     const target = req.url ?? '';
 
+    // TASK-52: forward the per-session Proxy-Authorization (Basic ax:<token>)
+    // the sandbox sent, so the host listener can attribute this HTTPS egress
+    // (including an allowlist-miss 403) to its session. Attribution label
+    // only — the host's allow/deny decision never reads it. The HTTP-forward
+    // path above already forwards proxy-authorization (it's not in its strip
+    // list); the CONNECT path rebuilds the request line, so re-add it here.
+    const proxyAuth = req.headers['proxy-authorization'];
+    const proxyAuthLine =
+      typeof proxyAuth === 'string' ? `Proxy-Authorization: ${proxyAuth}\r\n` : '';
+
     // Open a raw connection to the Unix socket proxy
     const proxySocket = net.connect(unixSocketPath, () => {
       activeSockets.add(proxySocket);
 
       // Send the CONNECT request through to the host proxy
-      proxySocket.write(`CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n\r\n`);
+      proxySocket.write(
+        `CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n${proxyAuthLine}\r\n`,
+      );
 
       // Wait for the proxy's response before piping
       let headerBuffer = '';

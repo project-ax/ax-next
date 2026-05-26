@@ -27,6 +27,7 @@
 
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { PluginError, makeAgentContext, type AgentContext, type Plugin } from '@ax/core';
 import {
   startProxyListener,
@@ -211,6 +212,13 @@ interface OpenSessionOutput {
   caCertPem: string;
   /** envName → opaque placeholder token (`ax-cred:<32-hex>`). */
   envMap: Record<string, string>;
+  /**
+   * Per-session proxy token for egress attribution (TASK-52). The sandbox
+   * carries it as `Proxy-Authorization: Basic ax:<token>` so the listener
+   * can attribute every request — including an allowlist-miss 403 — to this
+   * session. Attribution label only; see SessionConfig.proxyToken.
+   */
+  proxyAuthToken: string;
 }
 
 interface CloseSessionInput {
@@ -380,11 +388,19 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
           // Also stamp sessionId/userId/classification so the listener can
           // attribute audit entries to the right session for the
           // event.http-egress emission.
+          // Mint a per-session proxy token (TASK-52). 16 random bytes →
+          // 32 hex chars. It rides into the sandbox as Proxy-Authorization
+          // Basic userinfo so the listener can attribute egress (including
+          // blocked, allowlist-miss requests) back to this session. It is an
+          // attribution LABEL only — never an allow/deny input.
+          const proxyToken = randomBytes(16).toString('hex');
+
           const sessionConfig: SessionConfig = {
             allowlist: new Set(input.allowlist),
             sessionId: input.sessionId,
             userId: input.userId,
             classification: classifyCredentials(input.credentials),
+            proxyToken,
           };
           if (input.allowedIPs && input.allowedIPs.length > 0) {
             sessionConfig.allowedIPs = new Set(input.allowedIPs);
@@ -409,6 +425,7 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
             proxyEndpoint: endpointString,
             caCertPem,
             envMap: map.toEnvMap(),
+            proxyAuthToken: proxyToken,
           };
         },
       );

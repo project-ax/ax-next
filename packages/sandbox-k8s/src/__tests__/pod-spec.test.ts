@@ -348,6 +348,30 @@ describe('buildPodSpec', () => {
       );
     });
 
+    it('stamps AX_PROXY_TOKEN on the pod env when proxyConfig carries a token (TASK-52)', () => {
+      const spec = buildPodSpec(
+        'p',
+        {
+          ...proxyInput,
+          proxyConfig: { ...proxyInput.proxyConfig, proxyAuthToken: 'b'.repeat(32) },
+        },
+        baseResolved(),
+      );
+      const env = (
+        spec.spec as { containers: Array<{ env: Array<{ name: string; value: string }> }> }
+      ).containers[0]!.env;
+      const byName = (n: string) => env.find((e) => e.name === n)?.value;
+      expect(byName('AX_PROXY_TOKEN')).toBe('b'.repeat(32));
+    });
+
+    it('does NOT stamp AX_PROXY_TOKEN when proxyConfig has no token (back-compat)', () => {
+      const spec = buildPodSpec('p', proxyInput, baseResolved());
+      const env = (
+        spec.spec as { containers: Array<{ env: Array<{ name: string }> }> }
+      ).containers[0]!.env;
+      expect(env.find((e) => e.name === 'AX_PROXY_TOKEN')).toBeUndefined();
+    });
+
     it('stamps GIT_SSL_CAINFO at the proxy CA path so git trusts the MITM cert (TASK-12)', () => {
       // TASK-12 regression: NODE_EXTRA_CA_CERTS / SSL_CERT_FILE only steer
       // Node's TLS (the SDK's undici fetch). The `git` binary the Bash tool

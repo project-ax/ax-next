@@ -70,6 +70,12 @@ export interface PodProxyConfig {
   unixSocketPath?: string;
   caCertPem: string;
   envMap: Record<string, string>;
+  /**
+   * Per-session proxy token for egress attribution (TASK-52). Stamped as
+   * AX_PROXY_TOKEN; the runner embeds it as Proxy-Authorization Basic
+   * userinfo. Attribution label only — never an authz input.
+   */
+  proxyAuthToken?: string;
 }
 
 export interface BuildPodSpecInput {
@@ -310,6 +316,13 @@ export function buildPodSpec(
         name: 'AX_PROXY_UNIX_SOCKET',
         value: pc.unixSocketPath,
       });
+    }
+    if (pc.proxyAuthToken !== undefined) {
+      // TASK-52: per-session proxy token for egress attribution. The runner
+      // reads AX_PROXY_TOKEN and embeds it as Proxy-Authorization Basic
+      // userinfo on the local bridge URL, so the host listener can attribute
+      // egress (including blocked, allowlist-miss requests) to this session.
+      proxyEnv.push({ name: 'AX_PROXY_TOKEN', value: pc.proxyAuthToken });
     }
     for (const [k, v] of Object.entries(pc.envMap)) {
       proxyEnv.push({ name: k, value: v });

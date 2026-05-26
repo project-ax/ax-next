@@ -198,6 +198,12 @@ export function createOpenSession(deps: OpenSessionDeps) {
                 ...(input.proxyConfig.unixSocketPath !== undefined
                   ? { unixSocketPath: input.proxyConfig.unixSocketPath }
                   : {}),
+                // TASK-52: thread the per-session egress-attribution token
+                // through to pod-spec (stamped as AX_PROXY_TOKEN). A dropped
+                // field here silently disables k8s-side attribution.
+                ...(input.proxyConfig.proxyAuthToken !== undefined
+                  ? { proxyAuthToken: input.proxyConfig.proxyAuthToken }
+                  : {}),
               },
             }
           : {}),
