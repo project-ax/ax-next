@@ -855,6 +855,42 @@ describe('permission-request frame', () => {
     }
   });
 
+  // JIT P2/P7.2 — the SSE forwarder relays the payload verbatim, so a slot's
+  // optional account + haveExisting fields must reach the browser frame intact.
+  it('forwards account + haveExisting on a skill card slot verbatim', async () => {
+    const { bus, initCtx, handler, buffer } = bootHandler();
+    try {
+      const { res, captured } = fakeRes();
+      await handler(fakeReq({ reqId: 'r-test' }), res);
+
+      await bus.fire(
+        'chat:permission-request',
+        ctxWithConversation(initCtx, 'cnv_test'),
+        {
+          kind: 'skill',
+          skillId: 'linear',
+          description: 'Read your Linear issues',
+          hosts: ['api.linear.app'],
+          slots: [{ slot: 'LINEAR_TOKEN', kind: 'api-key', account: 'linear', haveExisting: true }],
+        },
+      );
+
+      const frames = captured.streamWrites
+        .filter((w) => w.startsWith('data: '))
+        .map((w) => JSON.parse(w.slice(6)) as Record<string, unknown>);
+      const card = frames.find((f) => 'permissionRequest' in f);
+      const slots = (card?.permissionRequest as { slots: unknown[] }).slots;
+      expect(slots[0]).toEqual({
+        slot: 'LINEAR_TOKEN',
+        kind: 'api-key',
+        account: 'linear',
+        haveExisting: true,
+      });
+    } finally {
+      buffer.dispose();
+    }
+  });
+
   it('does NOT deliver a card raised on a different conversation', async () => {
     const { bus, initCtx, handler, buffer } = bootHandler();
     try {

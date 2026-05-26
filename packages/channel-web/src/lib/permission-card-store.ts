@@ -26,7 +26,14 @@ export type PermissionRequest =
       skillId: string;
       description: string;
       hosts: string[];
-      slots: { slot: string; kind: 'api-key' }[];
+      slots: {
+        slot: string;
+        kind: 'api-key';
+        /** JIT P2 — service slug; when set, the key binds the shared vault entry. */
+        account?: string;
+        /** JIT P2 — the user already has account:<service>; card shows "use existing". */
+        haveExisting?: boolean;
+      }[];
       /** TASK-39: open-mode banner — the agent just wrote this skill. */
       authored?: boolean;
     }

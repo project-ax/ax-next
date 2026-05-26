@@ -93,5 +93,7 @@ function humanDestination(d: Destination): string {
       return `MCP server ${d.serverId}`;
     case 'routine-hmac':
       return `routine ${d.routinePath}`;
+    case 'account':
+      return `account ${d.service}`;
   }
 }
