@@ -795,4 +795,61 @@ describe('skill-broker canary: search_catalog + request_capability reach the rea
     });
     expect(miss).toEqual({ status: 'not-found', skillId: 'does-not-exist' });
   }, 60_000);
+
+  it('request_capability surfaces the bundled approval card (chat:permission-request) over the real catalog', async () => {
+    const h = await createTestHarness({
+      services: {
+        'http:register-route': httpRegisterRouteStub,
+        'auth:require-user': authRequireUserStub,
+      },
+      plugins: [
+        createDatabasePostgresPlugin({ connectionString }),
+        createToolDispatcherPlugin(),
+        createSkillsPlugin(),
+        createSkillBrokerPlugin(),
+      ],
+    });
+    harnesses.push(h);
+
+    // Bounded GitHub skill: host + key slot (reuse the file's manifest).
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
+      manifestYaml: GITHUB_MANIFEST,
+      bodyMd: 'Body.',
+    });
+
+    const cards: Array<{
+      skillId: string;
+      description: string;
+      hosts: string[];
+      slots: { slot: string; kind: string }[];
+    }> = [];
+    h.bus.subscribe('chat:permission-request', 'canary/card-capture', async (_c, p) => {
+      cards.push(p as never);
+      return undefined;
+    });
+
+    // The fire forwards the firing ctx's conversationId; stamp one so the
+    // channel-web SSE handler (which matches by conversationId) would route it.
+    const convCtx = h.ctx({ conversationId: 'cnv_canary' });
+
+    const ack = await h.bus.call('tool:execute:request_capability', convCtx, {
+      name: 'request_capability',
+      input: { skillId: 'github' },
+    });
+    expect(ack).toEqual({ status: 'requested', skillId: 'github' });
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toMatchObject({
+      skillId: 'github',
+      hosts: ['api.github.com'],
+      slots: [{ slot: 'GITHUB_TOKEN', kind: 'api-key' }],
+    });
+
+    // A not-found request raises NO card.
+    const noCard = await h.bus.call('tool:execute:request_capability', convCtx, {
+      name: 'request_capability',
+      input: { skillId: 'does-not-exist' },
+    });
+    expect(noCard).toEqual({ status: 'not-found', skillId: 'does-not-exist' });
+    expect(cards).toHaveLength(1);
+  }, 60_000);
 });
