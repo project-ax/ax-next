@@ -84,6 +84,26 @@ export function pythonVenvNote(): string {
 }
 
 /**
+ * JIT capability-handoff note (design §7). When the agent connects a new
+ * capability mid-conversation (via a connect/approval tool like
+ * `request_capability`), the conversation re-spawns + resumes after the user
+ * approves — so the agent should NOT narrate the mechanics, restate keys, or
+ * ask the user to repeat their request; it should just answer the original
+ * ask once it continues. Fixed runner-authored prose for the LLM — no
+ * untrusted input. Harmless when no connect tool exists, so it's always
+ * present (the open-mode happy path reads as one continuous answer).
+ */
+export function capabilityHandoffNote(): string {
+  return [
+    `Connecting capabilities: when you connect a new capability mid-conversation`,
+    `(for example via a connect/approval tool), do not narrate the mechanics and do`,
+    `not restate any keys. Once the user approves, the conversation will continue`,
+    `automatically — so do not ask the user to re-ask or repeat their request; just`,
+    `answer their original request with the newly connected capability.`,
+  ].join(' ');
+}
+
+/**
  * Build the SDK `systemPrompt` value from the agent's frozen prompt, the
  * workspace root, and the optional ephemeral scratch root.
  *
@@ -105,6 +125,10 @@ export function buildSystemPrompt(
   const notes: string[] = [workspaceNote(workspaceRoot)];
   if (ephemeralRoot !== undefined) notes.push(ephemeralScratchNote(ephemeralRoot));
   if (pythonVenvActive) notes.push(pythonVenvNote());
+  // Always last: the JIT capability-handoff note (design §7) so the agent
+  // doesn't narrate a mid-conversation connect/approval handoff. Harmless when
+  // no connect tool exists.
+  notes.push(capabilityHandoffNote());
   // `note` is always non-empty (the workspace note is unconditional).
   const note = notes.join('\n\n');
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildSystemPrompt,
+  capabilityHandoffNote,
   ephemeralScratchNote,
   pythonVenvNote,
   workspaceNote,
@@ -33,7 +34,7 @@ describe('buildSystemPrompt', () => {
       expect(buildSystemPrompt('', WS, undefined)).toEqual({
         type: 'preset',
         preset: 'claude_code',
-        append: workspaceNote(WS),
+        append: `${workspaceNote(WS)}\n\n${capabilityHandoffNote()}`,
       });
     });
   });
@@ -55,7 +56,7 @@ describe('buildSystemPrompt', () => {
       expect(result).toEqual({
         type: 'preset',
         preset: 'claude_code',
-        append: `${workspaceNote(WS)}\n\n${ephemeralScratchNote('/tmp/ax-scratch')}`,
+        append: `${workspaceNote(WS)}\n\n${ephemeralScratchNote('/tmp/ax-scratch')}\n\n${capabilityHandoffNote()}`,
       });
     });
 
@@ -65,6 +66,27 @@ describe('buildSystemPrompt', () => {
       expect(note).toContain(`\`${root}\``);
       expect(note.toLowerCase()).toContain('discarded');
       expect(note.toLowerCase()).toContain('scratch');
+    });
+  });
+
+  describe('JIT capability-handoff note (always present)', () => {
+    it('includes the continue-automatically guidance for an empty prompt', () => {
+      const out = buildSystemPrompt('', WS, undefined);
+      const text = typeof out === 'string' ? out : (out.append ?? '');
+      expect(text.toLowerCase()).toContain('continue automatically');
+    });
+
+    it('appends the handoff note onto a custom string prompt', () => {
+      const out = buildSystemPrompt('You are helpful.', WS, undefined);
+      const text = out as string;
+      expect(text).toContain(capabilityHandoffNote());
+      expect(text.toLowerCase()).toContain('continue automatically');
+    });
+
+    it('the note steers away from narrating the handoff or re-asking', () => {
+      const note = capabilityHandoffNote().toLowerCase();
+      expect(note).toContain('do not narrate');
+      expect(note).toContain('re-ask');
     });
   });
 

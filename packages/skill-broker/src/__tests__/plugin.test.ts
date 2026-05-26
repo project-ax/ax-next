@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { HookBus, makeAgentContext, PluginError } from '@ax/core';
 import { createSkillBrokerPlugin, type SkillBrokerPlugin } from '../plugin.js';
+import { REQUEST_CAPABILITY_DESCRIPTOR } from '../tools/request-capability.js';
 
 const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' });
 const convCtx = makeAgentContext({
@@ -88,6 +89,13 @@ describe('createSkillBrokerPlugin — request_capability', () => {
     const { bus, registered } = busWithStubs();
     await createSkillBrokerPlugin().init({ bus, config: {} as never });
     expect(registered).toContain('request_capability');
+  });
+
+  it('description tells the model the conversation continues automatically (TASK-36)', () => {
+    const desc = REQUEST_CAPABILITY_DESCRIPTOR.description.toLowerCase();
+    expect(desc).toContain('continue automatically');
+    // TASK-34's "don't narrate / restate keys" guidance is preserved.
+    expect(desc).toContain('do not narrate');
   });
 
   it('returns { status: "requested" } for a real catalog skill', async () => {
