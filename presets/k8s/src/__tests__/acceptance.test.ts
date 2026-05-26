@@ -1778,7 +1778,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         manifest: {
           name: AGENT_INVOKE_STUB_NAME,
           version: '0.0.0',
-          registers: ['agent:invoke'],
+          registers: ['agent:invoke', 'agent:apply-capability-grant'],
           calls: [],
           subscribes: [],
         },
@@ -1790,6 +1790,14 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
               dispatchedMessages.push(input);
               return { kind: 'complete', messages: [] };
             },
+          );
+          // TASK-36 — channel-web declares agent:apply-capability-grant as a
+          // hard call; this wire-surface canary doesn't exercise the JIT grant
+          // path, so a no-op registration satisfies the verifyCalls walk.
+          bus.registerService(
+            'agent:apply-capability-grant',
+            AGENT_INVOKE_STUB_NAME,
+            async () => ({ attached: true }),
           );
         },
       };

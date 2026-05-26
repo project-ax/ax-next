@@ -12,6 +12,7 @@ import {
   extractText,
   GetConversationQuery,
   ListConversationsQuery,
+  PermissionDecisionRequest,
   PostMessageRequest,
 } from '../wire/chat.js';
 
@@ -522,6 +523,133 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
       res.status(202).json({ conversationId, reqId });
     },
 
+    /**
+     * POST /api/chat/permission-decision — apply a user-approved JIT
+     * capability grant (TASK-36, design §7). The card (TASK-35) already wrote
+     * the user's key to the host credential store; this endpoint attaches the
+     * catalog skill for the user + retires the conversation's warm session so
+     * the next turn re-spawns and resumes with the skill present.
+     *
+     * Auth-gated, scoped to the actor's OWN conversation (agentId resolved
+     * from the row, never the body), agent-ACL'd, and CSRF-guarded by the
+     * http-server's `http:request` subscriber (same as postMessage). No secret
+     * crosses this surface — only domain ids. The grant is host-side only
+     * (channel-web → orchestrator); the agent/runner never reaches it.
+     */
+    async postPermissionDecision(
+      req: RouteRequest,
+      res: RouteResponse,
+    ): Promise<void> {
+      // 1) Auth.
+      let userId: string;
+      try {
+        const result = await bus.call<
+          AuthRequireUserInput,
+          AuthRequireUserOutput
+        >('auth:require-user', initCtx, { req });
+        userId = result.user.id;
+      } catch (err) {
+        if (err instanceof PluginError || isRejection(err)) {
+          res.status(401).json({ error: 'unauthenticated' });
+          return;
+        }
+        throw err;
+      }
+
+      // 2) Parse + validate the body. (http-server caps the body at 1 MiB
+      // before we run.) Only `{ conversationId, skillId }` — the agentId is
+      // resolved from the conversation, never accepted from the client.
+      let body: { conversationId: string; skillId: string };
+      try {
+        const raw =
+          req.body.length === 0
+            ? {}
+            : (JSON.parse(req.body.toString('utf8')) as unknown);
+        const parsed = PermissionDecisionRequest.safeParse(raw);
+        if (!parsed.success) {
+          res.status(400).json({ error: 'invalid-payload' });
+          return;
+        }
+        body = parsed.data;
+      } catch {
+        res.status(400).json({ error: 'invalid-payload' });
+        return;
+      }
+
+      // 3) Resolve the conversation → its frozen agentId (ownership check).
+      // Cross-tenant / unknown collapses to 404 (no existence leak), same
+      // posture as getConversation.
+      let agentId: string;
+      try {
+        const got = await bus.call<ConversationsGetInput, ConversationsGetOutput>(
+          'conversations:get',
+          initCtx,
+          { conversationId: body.conversationId, userId },
+        );
+        agentId = got.conversation.agentId;
+      } catch (err) {
+        if (err instanceof PluginError) {
+          res.status(404).json({ error: 'conversation-not-found' });
+          return;
+        }
+        throw err;
+      }
+
+      // 4) Agent ACL gate (same posture as postMessage): forbidden → 403,
+      // not-found → 404.
+      try {
+        await bus.call<AgentsResolveInput, AgentsResolveOutput>(
+          'agents:resolve',
+          initCtx,
+          { agentId, userId },
+        );
+      } catch (err) {
+        if (err instanceof PluginError) {
+          if (err.code === 'forbidden') {
+            res.status(403).json({ error: 'forbidden' });
+            return;
+          }
+          res.status(404).json({ error: 'agent-not-found' });
+          return;
+        }
+        throw err;
+      }
+
+      // 5) Apply the grant (attach the skill + retire the warm session). On
+      // failure, surface a coarse 500 (the raw error stays on the host log).
+      const grantCtx = makeAgentContext({
+        sessionId: makeReqId(),
+        agentId,
+        userId,
+        conversationId: body.conversationId,
+        reqId: makeReqId(),
+      });
+      try {
+        const out = await bus.call<
+          {
+            conversationId: string;
+            userId: string;
+            agentId: string;
+            skillId: string;
+          },
+          { attached: boolean }
+        >('agent:apply-capability-grant', grantCtx, {
+          conversationId: body.conversationId,
+          userId,
+          agentId,
+          skillId: body.skillId,
+        });
+        res.status(200).json({ ok: true, attached: out.attached });
+      } catch (err) {
+        grantCtx.logger.warn('permission_decision_grant_failed', {
+          conversationId: body.conversationId,
+          skillId: body.skillId,
+          err: err instanceof Error ? err : new Error(String(err)),
+        });
+        res.status(500).json({ error: 'grant-failed' });
+      }
+    },
+
     /** GET /api/chat/conversations — list user's conversations. */
     async listConversations(
       req: RouteRequest,
@@ -741,6 +869,11 @@ export async function registerChatRoutes(
       method: 'POST',
       path: '/api/chat/messages',
       handler: handlers.postMessage as unknown as RouteHandler,
+    },
+    {
+      method: 'POST',
+      path: '/api/chat/permission-decision',
+      handler: handlers.postPermissionDecision as unknown as RouteHandler,
     },
     {
       method: 'GET',

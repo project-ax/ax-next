@@ -88,6 +88,26 @@ export const PostMessageResponse = z.object({
 });
 export type PostMessageResponse = z.infer<typeof PostMessageResponse>;
 
+// ---------------------------------------------------------------------------
+// POST /api/chat/permission-decision — apply a user-approved JIT capability
+// grant (TASK-36, design §7). The browser POSTs only domain identifiers:
+// the conversation the card belongs to and the catalog skill id the user
+// approved. The agentId is NOT accepted from the client — the handler
+// resolves it from the conversation row (ownership-checked), so a grant can
+// never be aimed at an agent the actor doesn't own. NO secret on this wire:
+// the key the user typed was already POSTed straight to the host credential
+// store by the card (TASK-35); this decision only triggers the attach + the
+// warm-session retire. `skillId` capped at 128 (catalog ids are short).
+// ---------------------------------------------------------------------------
+
+export const PermissionDecisionRequest = z.object({
+  conversationId: z.string().min(1),
+  skillId: z.string().min(1).max(128),
+});
+export type PermissionDecisionRequest = z.infer<
+  typeof PermissionDecisionRequest
+>;
+
 /**
  * Pull the first text block's `text` out of a content-blocks array. Used
  * by the route handler to feed `agent:invoke`'s flat-string `message` field

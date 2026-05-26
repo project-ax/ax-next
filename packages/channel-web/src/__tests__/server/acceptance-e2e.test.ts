@@ -97,7 +97,7 @@ function chatRunMockPlugin(): Plugin {
     manifest: {
       name: 'mock-chat-run',
       version: '0.0.0',
-      registers: ['agent:invoke'],
+      registers: ['agent:invoke', 'agent:apply-capability-grant'],
       calls: [],
       subscribes: [],
     },
@@ -105,6 +105,13 @@ function chatRunMockPlugin(): Plugin {
       bus.registerService('agent:invoke', 'mock-chat-run', async () => {
         return { kind: 'complete', messages: [] };
       });
+      // TASK-36 — channel-web declares agent:apply-capability-grant as a hard
+      // call; no-op registration satisfies the bootstrap verifyCalls walk.
+      bus.registerService(
+        'agent:apply-capability-grant',
+        'mock-chat-run',
+        async () => ({ attached: true }),
+      );
     },
   };
 }
