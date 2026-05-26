@@ -10,6 +10,9 @@ import {
   SkillsAttachForUserOutputSchema,
   SkillsListUserAttachmentsOutputSchema,
   SkillsSearchCatalogOutputSchema,
+  CatalogSubmitOutputSchema,
+  CatalogListRequestsOutputSchema,
+  CatalogAdmitOutputSchema,
   type ResolvedSkill,
   type SkillCapabilities,
   type SkillDetail,
@@ -172,5 +175,43 @@ describe('skills return schemas', () => {
         skills: [{ id: 'x', description: 'd', tier: 'omnipotent', hosts: [], slots: [] }],
       }).success,
     ).toBe(false);
+  });
+
+  it('CatalogSubmitOutputSchema parses + strips', () => {
+    const parsed = CatalogSubmitOutputSchema.parse({
+      requestId: 'r1',
+      created: true,
+      status: 'pending',
+      extra: 'drop me',
+    });
+    expect(parsed).toEqual({ requestId: 'r1', created: true, status: 'pending' });
+  });
+
+  it('CatalogListRequestsOutputSchema parses a request with files but NO tree sha', () => {
+    const parsed = CatalogListRequestsOutputSchema.parse({
+      requests: [
+        {
+          requestId: 'r1',
+          kind: 'share',
+          skillId: 'linear',
+          requestedByUserId: 'alice',
+          sourceOwnerUserId: 'alice',
+          status: 'pending',
+          description: 'd',
+          createdAt: '2026-05-26T00:00:00.000Z',
+          manifestYaml: 'name: linear\n',
+          bodyMd: '# l\n',
+          files: [{ path: 'scripts/a.py', contents: 'print(1)' }],
+          bundle_tree_sha: 'LEAK', // must be stripped — storage detail
+        },
+      ],
+    });
+    expect(parsed.requests[0]).not.toHaveProperty('bundle_tree_sha');
+    expect(parsed.requests[0]?.files).toEqual([{ path: 'scripts/a.py', contents: 'print(1)' }]);
+  });
+
+  it('CatalogAdmitOutputSchema parses + strips', () => {
+    const parsed = CatalogAdmitOutputSchema.parse({ skillId: 'linear', admitted: true, x: 1 });
+    expect(parsed).toEqual({ skillId: 'linear', admitted: true });
   });
 });

@@ -30,6 +30,11 @@ afterEach(async () => {
   while (opened.length > 0) {
     const k = opened.pop()!;
     try {
+      await k.schema.dropTable('skills_v1_catalog_requests').ifExists().execute();
+    } catch {
+      /* drained pool — ignore */
+    }
+    try {
       await k.schema.dropTable('skills_v1_user_attachments').ifExists().execute();
     } catch {
       /* drained pool — ignore */
@@ -512,6 +517,110 @@ describe('runSkillsMigration — skills_v1_user_attachments side-table', () => {
       .values({ owner_user_id: 'u1', agent_id: 'a1', skill_id: 'github', credential_bindings: JSON.stringify({}) as unknown })
       .execute();
     const rows = await db.selectFrom('skills_v1_user_attachments').select('skill_id').execute();
+    expect(rows).toHaveLength(1);
+  });
+});
+
+describe('runSkillsMigration — skills_v1_catalog_requests admit queue', () => {
+  it('creates skills_v1_catalog_requests; one pending request per skill_id', async () => {
+    const db = makeKysely();
+    await runSkillsMigration(db);
+
+    await db
+      .insertInto('skills_v1_catalog_requests')
+      .values({
+        request_id: 'req-1',
+        kind: 'share',
+        skill_id: 'linear',
+        requested_by_user_id: 'alice',
+        source_owner_user_id: 'alice',
+        status: 'pending',
+        description: 'share my linear skill',
+        manifest_yaml: 'name: linear\ndescription: d\nversion: 1\n',
+        body_md: '# linear\n',
+        bundle_tree_sha: null,
+      })
+      .execute();
+
+    const row = await db
+      .selectFrom('skills_v1_catalog_requests')
+      .selectAll()
+      .where('request_id', '=', 'req-1')
+      .executeTakeFirstOrThrow();
+    expect(row.status).toBe('pending');
+    expect(row.decided_at).toBeNull();
+
+    // A SECOND pending request for the same skill_id is rejected by the partial
+    // unique index (one pending per skill_id — the dedup guarantee).
+    await expect(
+      db
+        .insertInto('skills_v1_catalog_requests')
+        .values({
+          request_id: 'req-2',
+          kind: 'share',
+          skill_id: 'linear',
+          requested_by_user_id: 'bob',
+          source_owner_user_id: 'bob',
+          status: 'pending',
+          description: 'dup',
+          manifest_yaml: null,
+          body_md: null,
+          bundle_tree_sha: null,
+        })
+        .execute(),
+    ).rejects.toThrow();
+
+    // But once req-1 is decided, a fresh pending request for the same id is allowed.
+    await db
+      .updateTable('skills_v1_catalog_requests')
+      .set({ status: 'admitted', decided_at: new Date(), decided_by_user_id: 'admin' })
+      .where('request_id', '=', 'req-1')
+      .execute();
+    await db
+      .insertInto('skills_v1_catalog_requests')
+      .values({
+        request_id: 'req-3',
+        kind: 'share',
+        skill_id: 'linear',
+        requested_by_user_id: 'bob',
+        source_owner_user_id: 'bob',
+        status: 'pending',
+        description: 're-submit after decision',
+        manifest_yaml: null,
+        body_md: null,
+        bundle_tree_sha: null,
+      })
+      .execute();
+
+    const pending = await db
+      .selectFrom('skills_v1_catalog_requests')
+      .select('request_id')
+      .where('status', '=', 'pending')
+      .execute();
+    expect(pending.map((r) => r.request_id)).toEqual(['req-3']);
+  });
+
+  it('is idempotent — running runSkillsMigration twice does not throw', async () => {
+    const db = makeKysely();
+    await runSkillsMigration(db);
+    await runSkillsMigration(db);
+
+    await db
+      .insertInto('skills_v1_catalog_requests')
+      .values({
+        request_id: 'rerun-1',
+        kind: 'cold-start',
+        skill_id: 'jira',
+        requested_by_user_id: 'alice',
+        source_owner_user_id: null,
+        status: 'pending',
+        description: 'need jira',
+        manifest_yaml: null,
+        body_md: null,
+        bundle_tree_sha: null,
+      })
+      .execute();
+    const rows = await db.selectFrom('skills_v1_catalog_requests').select('request_id').execute();
     expect(rows).toHaveLength(1);
   });
 });
