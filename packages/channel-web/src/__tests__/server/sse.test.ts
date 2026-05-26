@@ -816,3 +816,63 @@ describe('@ax/channel-web SSE handler', () => {
     }
   });
 });
+
+describe('permission-request frame', () => {
+  it('emits a card frame for THIS conversation and keeps the stream open', async () => {
+    const { bus, initCtx, handler, buffer } = bootHandler();
+    try {
+      const { res, captured } = fakeRes();
+      await handler(fakeReq({ reqId: 'r-test' }), res);
+
+      await bus.fire(
+        'chat:permission-request',
+        ctxWithConversation(initCtx, 'cnv_test'),
+        {
+          skillId: 'linear',
+          description: 'Read your Linear issues',
+          hosts: ['api.linear.app'],
+          slots: [{ slot: 'api_key', kind: 'api-key' }],
+        },
+      );
+
+      const frames = captured.streamWrites
+        .filter((w) => w.startsWith('data: '))
+        .map((w) => JSON.parse(w.slice(6)) as Record<string, unknown>);
+      const card = frames.find((f) => 'permissionRequest' in f);
+      expect(card).toMatchObject({
+        reqId: 'r-test',
+        permissionRequest: {
+          skillId: 'linear',
+          hosts: ['api.linear.app'],
+          slots: [{ slot: 'api_key', kind: 'api-key' }],
+        },
+      });
+      // The card is NON-terminal — unlike turn-error it must not close us.
+      expect(captured.streamClosed).toBe(false);
+    } finally {
+      buffer.dispose();
+    }
+  });
+
+  it('does NOT deliver a card raised on a different conversation', async () => {
+    const { bus, initCtx, handler, buffer } = bootHandler();
+    try {
+      const { res, captured } = fakeRes();
+      await handler(fakeReq({ reqId: 'r-test' }), res);
+
+      await bus.fire(
+        'chat:permission-request',
+        ctxWithConversation(initCtx, 'cnv_OTHER'),
+        { skillId: 'linear', description: 'd', hosts: [], slots: [] },
+      );
+
+      const frames = captured.streamWrites
+        .filter((w) => w.startsWith('data: '))
+        .map((w) => JSON.parse(w.slice(6)) as Record<string, unknown>);
+      expect(frames.some((f) => 'permissionRequest' in f)).toBe(false);
+      expect(captured.streamClosed).toBe(false);
+    } finally {
+      buffer.dispose();
+    }
+  });
+});

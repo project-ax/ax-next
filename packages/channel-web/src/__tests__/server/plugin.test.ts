@@ -402,7 +402,7 @@ describe('@ax/channel-web server plugin (integration)', () => {
         'attachments:commit',
         'attachments:download',
       ],
-      subscribes: ['chat:stream-chunk', 'chat:phase', 'chat:turn-end', 'chat:turn-error', 'conversations:title-updated'],
+      subscribes: ['chat:stream-chunk', 'chat:phase', 'chat:turn-end', 'chat:turn-error', 'chat:permission-request', 'conversations:title-updated'],
     });
   });
 

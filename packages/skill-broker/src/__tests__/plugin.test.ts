@@ -3,6 +3,12 @@ import { HookBus, makeAgentContext, PluginError } from '@ax/core';
 import { createSkillBrokerPlugin } from '../plugin.js';
 
 const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' });
+const convCtx = makeAgentContext({
+  sessionId: 's',
+  agentId: 'a',
+  userId: 'u',
+  conversationId: 'cnv_1',
+});
 
 function busWithStubs() {
   const bus = new HookBus();
@@ -30,7 +36,15 @@ function busWithStubs() {
   bus.registerService('skills:get', 'skills', async (_c, input: unknown) => {
     const skillId = (input as { skillId: string }).skillId;
     if (skillId === 'linear') {
-      return { id: 'linear', description: 'Linear', version: 1 } as never;
+      return {
+        id: 'linear',
+        description: 'Read your Linear issues',
+        version: 1,
+        capabilities: {
+          allowedHosts: ['api.linear.app'],
+          credentials: [{ slot: 'api_key', kind: 'api-key' }],
+        },
+      } as never;
     }
     throw new PluginError({ code: 'skill-not-found', plugin: 'skills', message: 'nope' });
   });
@@ -105,5 +119,53 @@ describe('createSkillBrokerPlugin — request_capability', () => {
         input: { skillId: '../evil' },
       }),
     ).rejects.toThrow(/valid catalog/i);
+  });
+});
+
+describe('request_capability — bundled approval card (chat:permission-request)', () => {
+  it('fires chat:permission-request with the skill manifest hosts + slots', async () => {
+    const { bus } = busWithStubs();
+    await createSkillBrokerPlugin().init({ bus, config: {} as never });
+
+    const cards: Array<{
+      skillId: string;
+      description: string;
+      hosts: string[];
+      slots: { slot: string; kind: string }[];
+    }> = [];
+    bus.subscribe('chat:permission-request', 'test/capture', async (_c, p) => {
+      cards.push(p as never);
+      return undefined;
+    });
+
+    const ack = await bus.call('tool:execute:request_capability', convCtx, {
+      name: 'request_capability',
+      input: { skillId: 'linear' },
+    });
+
+    expect(ack).toEqual({ status: 'requested', skillId: 'linear' });
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toEqual({
+      skillId: 'linear',
+      description: 'Read your Linear issues',
+      hosts: ['api.linear.app'],
+      slots: [{ slot: 'api_key', kind: 'api-key' }],
+    });
+  });
+
+  it('raises NO card when the skill is not in the catalog', async () => {
+    const { bus } = busWithStubs();
+    await createSkillBrokerPlugin().init({ bus, config: {} as never });
+    const cards: unknown[] = [];
+    bus.subscribe('chat:permission-request', 'test/capture', async (_c, p) => {
+      cards.push(p);
+      return undefined;
+    });
+    const out = await bus.call('tool:execute:request_capability', convCtx, {
+      name: 'request_capability',
+      input: { skillId: 'ghost' },
+    });
+    expect(out).toEqual({ status: 'not-found', skillId: 'ghost' });
+    expect(cards).toHaveLength(0);
   });
 });

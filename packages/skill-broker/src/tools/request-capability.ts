@@ -30,6 +30,29 @@ interface RequestCapabilityResult {
   skillId: string;
 }
 
+// Mirrors the subset of @ax/skills' SkillDetail the broker reads. Re-declared
+// locally — the broker reaches the catalog only through the bus (I2). Kept
+// structurally in sync with SkillDetail.capabilities by the broker tests.
+interface CatalogSkillDetail {
+  id: string;
+  description: string;
+  capabilities: {
+    allowedHosts: string[];
+    credentials: { slot: string; kind: 'api-key' }[];
+  };
+}
+
+// The bundled approval card payload (design §11.3, decision #6). Carries only
+// public manifest data — never a secret (the card's key field posts straight to
+// the host credential store, §10). The matching SSE-frame + render side
+// re-declares this shape in @ax/channel-web (I2 — no shared import).
+interface PermissionRequestEvent {
+  skillId: string;
+  description: string;
+  hosts: string[];
+  slots: { slot: string; kind: 'api-key' }[];
+}
+
 export async function registerRequestCapability(bus: HookBus): Promise<void> {
   const initCtx = makeAgentContext({ sessionId: 'init', agentId: PLUGIN_NAME, userId: 'system' });
   await bus.call('tool:register', initCtx, REQUEST_CAPABILITY_DESCRIPTOR);
@@ -52,8 +75,13 @@ export async function registerRequestCapability(bus: HookBus): Promise<void> {
       // Validate the id resolves in the GLOBAL catalog. skills:get throws
       // skill-not-found when absent — translate to a structured result the
       // model can act on rather than surfacing a tool error.
+      let detail: CatalogSkillDetail;
       try {
-        await bus.call('skills:get', toolCtx, { skillId, scope: 'global' });
+        detail = await bus.call<{ skillId: string; scope: 'global' }, CatalogSkillDetail>(
+          'skills:get',
+          toolCtx,
+          { skillId, scope: 'global' },
+        );
       } catch (err) {
         if (err instanceof PluginError && err.code === 'skill-not-found') {
           return { status: 'not-found', skillId };
@@ -61,10 +89,29 @@ export async function registerRequestCapability(bus: HookBus): Promise<void> {
         throw err;
       }
 
-      // HALF-WIRED (TASK-34): the catalog skill exists. Nothing yet consumes
-      // this to surface an approval card (TASK-35) or to pause -> re-spawn ->
-      // resume and install via the per-user attach layer (TASK-36, using
-      // TASK-33's skills:attach-for-user). We return a structured ack only.
+      // Surface the ONE bundled approval card (design §11.3, decision #6) — the
+      // open-mode security boundary. Public manifest data only: hostnames + slot
+      // NAMES (never values). request_capability still returns the minimum to the
+      // model (it must NOT narrate hosts/keys; §7). Match key is the conversation
+      // (toolCtx carries the real conversationId; the runner-driven IPC ctx has a
+      // fresh reqId — see ipc-server/listener.ts). Firing a subscriber hook needs
+      // no manifest declaration (the orchestrator fires chat:turn-error undeclared).
+      //
+      // HALF-WIRED (TASK-35): the card surfaces + collects the user's key into
+      // their credential store, but does NOT yet widen the host allowlist
+      // (TASK-37 proxy:add-host), attach the skill, or pause -> re-spawn ->
+      // resume the turn (TASK-36, using TASK-33's skills:attach-for-user).
+      const card: PermissionRequestEvent = {
+        skillId,
+        description: detail.description,
+        hosts: detail.capabilities.allowedHosts,
+        slots: detail.capabilities.credentials.map((c) => ({
+          slot: c.slot,
+          kind: 'api-key' as const,
+        })),
+      };
+      await bus.fire('chat:permission-request', toolCtx, card);
+
       return { status: 'requested', skillId };
     },
     { timeoutMs: 30_000 },

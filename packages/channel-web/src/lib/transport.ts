@@ -45,6 +45,7 @@
 import type { ContentBlock } from '@ax/ipc-protocol';
 import { HttpChatTransport, type UIMessage, type UIMessageChunk } from 'ai';
 import { agentStatusActions } from './agent-status-store';
+import { permissionCardActions } from './permission-card-store';
 
 const DEFAULT_USER = 'guest';
 
@@ -122,7 +123,16 @@ type SseFrame =
     }
   | { reqId: string; phase: string }
   | { reqId: string; done: true }
-  | { reqId: string; error: string };
+  | { reqId: string; error: string }
+  | {
+      reqId: string;
+      permissionRequest: {
+        skillId: string;
+        description: string;
+        hosts: string[];
+        slots: { slot: string; kind: 'api-key' }[];
+      };
+    };
 
 interface AxChatTransportOptions {
   /**
@@ -654,6 +664,14 @@ async function consumeSseAttempt(
           if (ctx.contentSeen) continue; // pre-content only
           const label = PHASE_LABELS[frame.phase];
           if (label !== undefined) agentStatusActions.set(label);
+          continue;
+        }
+        // permissionRequest frame — out-of-band JIT bundled approval card
+        // (§11.3). Drives the card store; the stream keeps flowing
+        // (NON-terminal, like phase). Carries only public manifest data — no
+        // secret rides this frame.
+        if ('permissionRequest' in frame && frame.permissionRequest) {
+          permissionCardActions.show(frame.permissionRequest);
           continue;
         }
         // TASK-23 — per-chunk seq dedup + gap detection (content frames only).
