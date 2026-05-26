@@ -12,9 +12,23 @@ const convCtx = makeAgentContext({
   conversationId: 'cnv_1',
 });
 
-function busWithStubs() {
+function busWithStubs(
+  opts: {
+    /** credential slots the stub `linear` skill declares (default: one account-free slot). */
+    linearCredentials?: Array<{ slot: string; kind: 'api-key'; account?: string }>;
+    /** when true, register a credentials:list stub seeded with `vaultRefs`. */
+    withVault?: boolean;
+  } = {},
+) {
   const bus = new HookBus();
   const registered: string[] = [];
+  const linearCredentials = opts.linearCredentials ?? [{ slot: 'api_key', kind: 'api-key' }];
+  // The user's existing vault entries (account:<service> refs). A closure the
+  // test flips via setVault before invoking the tool.
+  let vaultRefs: string[] = [];
+  const setVault = (refs: string[]): void => {
+    vaultRefs = refs;
+  };
   bus.registerService('tool:register', 'disp', async (_c, d: unknown) => {
     registered.push((d as { name: string }).name);
     return { ok: true };
@@ -44,13 +58,25 @@ function busWithStubs() {
         version: 1,
         capabilities: {
           allowedHosts: ['api.linear.app'],
-          credentials: [{ slot: 'api_key', kind: 'api-key' }],
+          credentials: linearCredentials,
         },
       } as never;
     }
     throw new PluginError({ code: 'skill-not-found', plugin: 'skills', message: 'nope' });
   });
-  return { bus, registered };
+  if (opts.withVault === true) {
+    // Metadata-only vault listing — refs + kinds, NEVER a secret value.
+    bus.registerService('credentials:list', 'creds', async (_c, _input: unknown) => ({
+      credentials: vaultRefs.map((ref) => ({
+        scope: 'user' as const,
+        ownerId: 'u',
+        ref,
+        kind: 'api-key',
+        createdAt: new Date(0).toISOString(),
+      })),
+    }));
+  }
+  return { bus, registered, setVault };
 }
 
 describe('createSkillBrokerPlugin — search_catalog', () => {
@@ -159,7 +185,55 @@ describe('request_capability — bundled approval card (chat:permission-request)
       skillId: 'linear',
       description: 'Read your Linear issues',
       hosts: ['api.linear.app'],
-      slots: [{ slot: 'api_key', kind: 'api-key' }],
+      // Account-free slot: no `account` key, haveExisting false (never vaulted).
+      slots: [{ slot: 'api_key', kind: 'api-key', haveExisting: false }],
+    });
+  });
+
+  // JIT P2/P7.2 — when a slot declares `account: <svc>` and the user already
+  // has the vaulted key, the card marks haveExisting:true so the UI offers
+  // "use your existing <service> key" with no re-entry.
+  it('card marks haveExisting:true + account when the user already has the vaulted key', async () => {
+    const { bus, setVault } = busWithStubs({
+      linearCredentials: [{ slot: 'LINEAR_TOKEN', kind: 'api-key', account: 'linear' }],
+      withVault: true,
+    });
+    setVault(['account:linear']);
+    await createSkillBrokerPlugin().init({ bus, config: {} as never });
+    const cards: Array<{ slots: unknown[] }> = [];
+    bus.subscribe('chat:permission-request', 'test/capture', async (_c, p) => {
+      cards.push(p as never);
+      return undefined;
+    });
+    await bus.call('tool:execute:request_capability', convCtx, {
+      name: 'request_capability',
+      input: { skillId: 'linear' },
+    });
+    expect(cards[0]?.slots).toEqual([
+      { slot: 'LINEAR_TOKEN', kind: 'api-key', account: 'linear', haveExisting: true },
+    ]);
+  });
+
+  it('card marks haveExisting:false when the vault has no entry yet', async () => {
+    const { bus, setVault } = busWithStubs({
+      linearCredentials: [{ slot: 'LINEAR_TOKEN', kind: 'api-key', account: 'linear' }],
+      withVault: true,
+    });
+    setVault([]); // empty vault
+    await createSkillBrokerPlugin().init({ bus, config: {} as never });
+    const cards: Array<{ slots: Array<Record<string, unknown>> }> = [];
+    bus.subscribe('chat:permission-request', 'test/capture', async (_c, p) => {
+      cards.push(p as never);
+      return undefined;
+    });
+    await bus.call('tool:execute:request_capability', convCtx, {
+      name: 'request_capability',
+      input: { skillId: 'linear' },
+    });
+    expect(cards[0]?.slots[0]).toMatchObject({
+      slot: 'LINEAR_TOKEN',
+      account: 'linear',
+      haveExisting: false,
     });
   });
 

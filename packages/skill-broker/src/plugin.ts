@@ -63,18 +63,28 @@ export function createSkillBrokerPlugin(
       // Hard deps → init-ordering edges: the dispatcher (tool:register) and the
       // catalog owner (skills:search-catalog / skills:get) must init first.
       calls: ['tool:register', 'skills:search-catalog', 'skills:get'],
-      // The authoring tool calls agents:install-authored-skill — only in open
-      // mode, and it hasService-guards + surfaces a tool error if absent, so
-      // it's optional (not a hard boot dep).
-      optionalCalls: allowUserInstalledSkills
-        ? [
-            {
-              hook: 'agents:install-authored-skill',
-              degradation:
-                'open-mode authoring is unavailable; the agent cannot install user-scoped skills',
-            },
-          ]
-        : [],
+      // request_capability does a metadata-only vault lookup (credentials:list,
+      // user scope) so the approval card can offer "use your existing key" for an
+      // account-tagged slot (JIT P2). hasService-guarded + best-effort, so a
+      // credential-less preset degrades to always-prompt — optional, not a hard
+      // boot dep. The authoring tool calls agents:install-authored-skill — only
+      // in open mode, also hasService-guarded + surfaces a tool error if absent.
+      optionalCalls: [
+        {
+          hook: 'credentials:list',
+          degradation:
+            'the approval card cannot offer "use your existing key"; every credential slot is always prompted',
+        },
+        ...(allowUserInstalledSkills
+          ? [
+              {
+                hook: 'agents:install-authored-skill',
+                degradation:
+                  'open-mode authoring is unavailable; the agent cannot install user-scoped skills',
+              },
+            ]
+          : []),
+      ],
       subscribes: [],
     },
     async init({ bus }) {

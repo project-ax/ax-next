@@ -39,8 +39,17 @@ interface CatalogSkillDetail {
   description: string;
   capabilities: {
     allowedHosts: string[];
-    credentials: { slot: string; kind: 'api-key' }[];
+    // `account` (JIT P2/P7.2): a service slug tagging the slot to the user's
+    // shared `account:<service>` vault entry instead of a per-skill ref.
+    credentials: { slot: string; kind: 'api-key'; account?: string }[];
   };
+}
+
+// credentials:list returns METADATA ONLY — refs + kinds, NEVER a secret value.
+// Minimal local mirror (I2 — no @ax/credentials import). The broker only learns
+// whether an `account:<service>` ref EXISTS for the user, never its value.
+interface CredentialsListOutput {
+  credentials: Array<{ ref: string }>;
 }
 
 // The bundled approval card payload (design §11.3, decision #6). Carries only
@@ -57,7 +66,11 @@ interface PermissionRequestEvent {
   skillId: string;
   description: string;
   hosts: string[];
-  slots: { slot: string; kind: 'api-key' }[];
+  // `account` (JIT P2): the service slug, present iff the manifest slot declares
+  // it. `haveExisting`: the user already has the `account:<service>` vault entry,
+  // so the card offers "use your existing key" instead of prompting. Both are
+  // per-request card hints — never persisted on a manifest/store type.
+  slots: { slot: string; kind: 'api-key'; account?: string; haveExisting?: boolean }[];
 }
 
 export async function registerRequestCapability(bus: HookBus): Promise<void> {
@@ -96,6 +109,26 @@ export async function registerRequestCapability(bus: HookBus): Promise<void> {
         throw err;
       }
 
+      // Vault lookup (JIT P2): which `account:<service>` refs does this user
+      // already have? Metadata-only (credentials:list, user scope) — the secret
+      // NEVER crosses this boundary; we only learn EXISTENCE so the card can
+      // offer "use your existing <service> key". Gated by hasService so
+      // credential-less presets degrade to always-prompt; best-effort so a failed
+      // lookup just prompts rather than blocking the card.
+      const vaulted = new Set<string>();
+      if (bus.hasService('credentials:list')) {
+        try {
+          const list = await bus.call<{ scope: 'user'; ownerId: string }, CredentialsListOutput>(
+            'credentials:list',
+            toolCtx,
+            { scope: 'user', ownerId: toolCtx.userId },
+          );
+          for (const c of list.credentials) vaulted.add(c.ref);
+        } catch {
+          // A failed lookup just means the card prompts. Never block the card.
+        }
+      }
+
       // Surface the ONE bundled approval card (design §11.3, decision #6) — the
       // open-mode security boundary. Public manifest data only: hostnames + slot
       // NAMES (never values). request_capability still returns the minimum to the
@@ -104,10 +137,11 @@ export async function registerRequestCapability(bus: HookBus): Promise<void> {
       // fresh reqId — see ipc-server/listener.ts). Firing a subscriber hook needs
       // no manifest declaration (the orchestrator fires chat:turn-error undeclared).
       //
-      // HALF-WIRED (TASK-35): the card surfaces + collects the user's key into
-      // their credential store, but does NOT yet widen the host allowlist
-      // (TASK-37 proxy:add-host), attach the skill, or pause -> re-spawn ->
-      // resume the turn (TASK-36, using TASK-33's skills:attach-for-user).
+      // The card both collects/binds the key and (TASK-36) attaches + resumes;
+      // the binding ref is minted in chat-orchestrator's applyCapabilityGrant,
+      // where the `account`-vs-`skill` decision lives. For an account-tagged slot
+      // the card offers the user's existing vaulted key (haveExisting) — one tap,
+      // no re-entry.
       const card: PermissionRequestEvent = {
         kind: 'skill',
         skillId,
@@ -116,6 +150,8 @@ export async function registerRequestCapability(bus: HookBus): Promise<void> {
         slots: detail.capabilities.credentials.map((c) => ({
           slot: c.slot,
           kind: 'api-key' as const,
+          ...(c.account !== undefined ? { account: c.account } : {}),
+          haveExisting: c.account !== undefined && vaulted.has(`account:${c.account}`),
         })),
       };
       await bus.fire('chat:permission-request', toolCtx, card);
