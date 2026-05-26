@@ -171,16 +171,17 @@ function attachmentsMockPlugin(): Plugin {
 }
 
 /**
- * Stub for `agent:invoke`. The plugin manifest declares it as a hard call;
- * this suite doesn't drive the chat-flow producer endpoint, so a no-op
- * registration satisfies the bootstrap verifyCalls walk.
+ * Stub for `agent:invoke` + `agent:apply-capability-grant` (TASK-36). The
+ * plugin manifest declares both as hard calls; this suite doesn't drive the
+ * chat-flow producer or the permission-decision endpoint, so no-op
+ * registrations satisfy the bootstrap verifyCalls walk.
  */
 function chatRunMockPlugin(): Plugin {
   return {
     manifest: {
       name: 'mock-chat-run',
       version: '0.0.0',
-      registers: ['agent:invoke'],
+      registers: ['agent:invoke', 'agent:apply-capability-grant'],
       calls: [],
       subscribes: [],
     },
@@ -188,6 +189,11 @@ function chatRunMockPlugin(): Plugin {
       bus.registerService('agent:invoke', 'mock-chat-run', async () => {
         return { kind: 'complete', messages: [] };
       });
+      bus.registerService(
+        'agent:apply-capability-grant',
+        'mock-chat-run',
+        async () => ({ attached: true }),
+      );
     },
   };
 }
@@ -398,6 +404,7 @@ describe('@ax/channel-web server plugin (integration)', () => {
         'conversations:list',
         'conversations:delete',
         'agent:invoke',
+        'agent:apply-capability-grant',
         'attachments:store-temp',
         'attachments:commit',
         'attachments:download',

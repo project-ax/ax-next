@@ -16,6 +16,7 @@ import { useThinkingStore } from './thinking-store';
 import { AxAttachmentAdapter } from './ax-attachment-adapter';
 import { setActiveConversationId } from './use-conversation-id';
 import { applyTurnError } from './turn-error';
+import { resumeActions } from './resume-actions';
 
 const useChatThreadRuntime = (transport: AxChatTransport): AssistantRuntime => {
   const id = useAuiState(({ threadListItem }) => threadListItem.id);
@@ -77,6 +78,12 @@ const useChatThreadRuntime = (transport: AxChatTransport): AssistantRuntime => {
     },
   });
   chatRef.current = chat;
+  // JIT resume (design §7): expose this thread's regenerate so <PermissionCard>
+  // can re-issue the pending original turn after a capability grant lands. Same
+  // module-ref posture as the retry banner's chatRef.current?.regenerate().
+  resumeActions.registerRegenerate(() => {
+    void chatRef.current?.regenerate();
+  });
   return useAISDKRuntime(chat, {
     adapters: { history, attachments },
   });

@@ -189,6 +189,37 @@ function chatRunMockPlugin(captures: ChatRunCapture[]): Plugin {
   };
 }
 
+interface GrantCapture {
+  ctx: AgentContext;
+  input: { conversationId: string; userId: string; agentId: string; skillId: string };
+}
+
+// Mock `agent:apply-capability-grant` (TASK-36). Channel-web declares it as a
+// hard `call`, so bootstrap's verifyCalls needs SOMEONE registered. Captures
+// the inputs so the decision-endpoint test can assert the resolved agentId +
+// userId thread through.
+function grantMockPlugin(captures: GrantCapture[]): Plugin {
+  return {
+    manifest: {
+      name: 'mock-grant',
+      version: '0.0.0',
+      registers: ['agent:apply-capability-grant'],
+      calls: [],
+      subscribes: [],
+    },
+    init({ bus }) {
+      bus.registerService(
+        'agent:apply-capability-grant',
+        'mock-grant',
+        async (ctx, input: unknown) => {
+          captures.push({ ctx, input: input as GrantCapture['input'] });
+          return { attached: true };
+        },
+      );
+    },
+  };
+}
+
 let container: StartedPostgreSqlContainer;
 let connectionString: string;
 
@@ -228,6 +259,7 @@ interface BootResult {
   port: number;
   http: HttpServerPlugin;
   chatRunCaptures: ChatRunCapture[];
+  grantCaptures: GrantCapture[];
 }
 
 // In-memory workspace stub used by the Phase-3 attachment-ref tests. The
@@ -351,6 +383,7 @@ async function boot(args: BootArgs): Promise<BootResult> {
     allowedOrigins: args.allowedOrigins ?? [ALLOWED_ORIGIN],
   });
   const chatRunCaptures: ChatRunCapture[] = [];
+  const grantCaptures: GrantCapture[] = [];
   // When the attachments plugin is booted, swap in the permissive
   // workspace stub — `createMockWorkspacePlugin`'s parent-CAS rejects
   // the second `attachments:commit` (parent: null vs latest: 'mock-0').
@@ -376,6 +409,7 @@ async function boot(args: BootArgs): Promise<BootResult> {
     workspacePlugin,
     createConversationsPlugin(),
     chatRunMockPlugin(chatRunCaptures),
+    grantMockPlugin(grantCaptures),
   ];
   if (args.includeAttachments === true) {
     plugins.push(createAttachmentsPlugin(args.attachmentsConfig ?? {}));
@@ -387,7 +421,7 @@ async function boot(args: BootArgs): Promise<BootResult> {
   }
   plugins.push(createChannelWebServerPlugin({}));
   const harness = await createTestHarness({ plugins });
-  return { harness, port: http.boundPort(), http, chatRunCaptures };
+  return { harness, port: http.boundPort(), http, chatRunCaptures, grantCaptures };
 }
 
 const harnesses: TestHarness[] = [];
@@ -984,6 +1018,113 @@ async function softDeleteConversation(
     await client.end().catch(() => {});
   }
 }
+
+// ---------------------------------------------------------------------------
+// POST /api/chat/permission-decision — apply a user-approved JIT capability
+// grant (TASK-36). Auth-gated + agent-ACL'd + scoped to the actor's own
+// conversation (agentId resolved from conversations:get, not the body) +
+// CSRF-guarded (origin/x-requested-with) by http-server.
+// ---------------------------------------------------------------------------
+
+async function postDecision(
+  port: number,
+  body: unknown,
+  opts: { headers?: Record<string, string> } = {},
+): Promise<Response> {
+  return fetch(`http://127.0.0.1:${port}/api/chat/permission-decision`, {
+    method: 'POST',
+    headers: opts.headers ?? HEADERS_OK,
+    body: typeof body === 'string' ? body : JSON.stringify(body),
+  });
+}
+
+/**
+ * Mint a real conversation row tied to `agt_test` via the message route. The
+ * row is owned by whichever user the harness was booted with (the message
+ * route reads the authed user, not the body).
+ */
+async function createConversation(port: number): Promise<string> {
+  const r = await postMessage(port, {
+    conversationId: null,
+    agentId: 'agt_test',
+    contentBlocks: [{ type: 'text', text: 'hi' }],
+  });
+  const body = (await r.json()) as { conversationId: string };
+  return body.conversationId;
+}
+
+describe('@ax/channel-web POST /api/chat/permission-decision', () => {
+  it('auths, resolves the conversation owner + agent, and calls agent:apply-capability-grant', async () => {
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+    });
+    harnesses.push(booted.harness);
+
+    const conversationId = await createConversation(booted.port);
+
+    const r = await postDecision(booted.port, { conversationId, skillId: 'linear' });
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual({ ok: true, attached: true });
+
+    expect(booted.grantCaptures).toHaveLength(1);
+    const grant = booted.grantCaptures[0]!;
+    expect(grant.input).toEqual({
+      conversationId,
+      userId: 'userA',
+      agentId: 'agt_test',
+      skillId: 'linear',
+    });
+  });
+
+  it('401 when unauthenticated and never calls the grant', async () => {
+    const booted = await boot({ user: null, allowedFor: new Set() });
+    harnesses.push(booted.harness);
+    const r = await postDecision(booted.port, { conversationId: 'cnv-x', skillId: 'linear' });
+    expect(r.status).toBe(401);
+    expect(booted.grantCaptures).toHaveLength(0);
+  });
+
+  it('400 on a malformed body (missing skillId)', async () => {
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+    });
+    harnesses.push(booted.harness);
+    const r = await postDecision(booted.port, { conversationId: 'cnv-1' });
+    expect(r.status).toBe(400);
+    expect(booted.grantCaptures).toHaveLength(0);
+  });
+
+  it('404 when the conversation is unknown / not owned by the actor', async () => {
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+    });
+    harnesses.push(booted.harness);
+    const r = await postDecision(booted.port, {
+      conversationId: 'cnv-does-not-exist',
+      skillId: 'linear',
+    });
+    expect(r.status).toBe(404);
+    expect(booted.grantCaptures).toHaveLength(0);
+  });
+
+  it('403 (CSRF) on a foreign Origin', async () => {
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+    });
+    harnesses.push(booted.harness);
+    const r = await postDecision(
+      booted.port,
+      { conversationId: 'cnv-1', skillId: 'linear' },
+      { headers: { 'content-type': 'application/json', origin: 'https://evil.example' } },
+    );
+    expect(r.status).toBe(403);
+    expect(booted.grantCaptures).toHaveLength(0);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // GET /api/chat/conversations — list user's conversations (Task 10).

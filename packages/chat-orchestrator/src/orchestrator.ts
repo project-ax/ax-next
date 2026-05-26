@@ -108,6 +108,22 @@ export interface AgentInvokeInput {
   maxTurns?: number;
 }
 
+// JIT (design §7/§11.5) — apply a user-approved capability grant. All fields
+// are domain identifiers (a `skillId` is a catalog id); NO backend vocabulary
+// (sha/pod/socket/bucket/generation/session-row) and NO secret. The grant
+// widens only the user's OWN sandbox by exactly the vetted skill's declared
+// hosts/slots (decision #3); the secret lives in the host credential store
+// (TASK-35) and never enters this payload, the model, the transcript, or SSE.
+export interface ApplyCapabilityGrantInput {
+  conversationId: string;
+  userId: string;
+  agentId: string;
+  skillId: string;
+}
+export interface ApplyCapabilityGrantOutput {
+  attached: boolean;
+}
+
 // Shapes of the peer hooks we bus.call. Duplicated structurally on purpose —
 // I2 forbids cross-plugin imports. Drift would surface as a runtime shape
 // error at call time.
@@ -484,6 +500,10 @@ export function createOrchestrator(
   onChatEnd(ctx: AgentContext, payload: { outcome: AgentOutcome }): Promise<void>;
   onTurnEnd(ctx: AgentContext, payload?: { reqId?: string }): void;
   onSessionTerminate(ctx: AgentContext, payload: { sessionId?: string }): Promise<void>;
+  applyCapabilityGrant(
+    ctx: AgentContext,
+    input: ApplyCapabilityGrantInput,
+  ): Promise<ApplyCapabilityGrantOutput>;
 } {
   // Waiters are tracked by ctx.reqId (server-minted, J9, unique per
   // agent:invoke). On the J6 routed path, two concurrent agent:invokes for the
@@ -1789,7 +1809,98 @@ export function createOrchestrator(
       });
   }
 
-  return { runAgentInvoke, onChatEnd, onTurnEnd, onSessionTerminate };
+  // JIT (design §7/§11.5): apply a user-approved capability grant, then retire
+  // the conversation's warm session so the NEXT turn re-spawns and resumes
+  // (the runner reads skills only at session init — main.ts "frozen at spawn").
+  // Host-side only; never an IPC action. The channel re-issues the turn (web:
+  // chat.regenerate) — this hook is the control-plane prep, not the answer turn.
+  async function applyCapabilityGrant(
+    ctx: AgentContext,
+    input: ApplyCapabilityGrantInput,
+  ): Promise<ApplyCapabilityGrantOutput> {
+    // 1. Resolve the catalog skill's declared slots so we can bind every one
+    //    (skills:attach-for-user requires a binding for each — see
+    //    validateAttachmentBindings; a partially-bound attachment is rejected).
+    let declaredSlots: string[] = [];
+    if (bus.hasService('skills:resolve')) {
+      const r = await bus.call<SkillsResolveInput, SkillsResolveOutput>(
+        'skills:resolve',
+        ctx,
+        { skillIds: [input.skillId], ownerUserId: input.userId },
+      );
+      declaredSlots = r.skills[0]?.capabilities.credentials.map((c) => c.slot) ?? [];
+    }
+
+    // 2. Derive per-slot bindings: slot → `skill:<id>:<slot>` (the deterministic
+    //    ref TASK-35's card wrote each key to). Established local-re-derivation
+    //    convention — same posture as credentials-admin-routes inlining it from
+    //    @ax/credentials/refs.ts (no cross-plugin import, I2). A slotless skill
+    //    binds {}.
+    const credentialBindings: Record<string, string> = {};
+    for (const slot of declaredSlots) {
+      credentialBindings[slot] = `skill:${input.skillId}:${slot}`;
+    }
+
+    // 3. Attach for the user (TASK-33). Errors propagate as PluginError — the
+    //    caller (the decision endpoint) maps them to an HTTP error.
+    let attached = false;
+    if (bus.hasService('skills:attach-for-user')) {
+      const r = await bus.call<
+        {
+          userId: string;
+          agentId: string;
+          skillId: string;
+          credentialBindings: Record<string, string>;
+        },
+        { created: boolean }
+      >('skills:attach-for-user', ctx, {
+        userId: input.userId,
+        agentId: input.agentId,
+        skillId: input.skillId,
+        credentialBindings,
+      });
+      attached = r.created;
+    }
+
+    // 4. Retire the conversation's warm session (if any is alive) so the next
+    //    turn takes the fresh path → fresh sandbox + options.resume (it reads
+    //    the now-attached skill). session:terminate clears active_session_id
+    //    (not runner_session_id), so resume survives. No live waiter exists for
+    //    a finished keepAlive turn, so onSessionTerminate fires no turn-error.
+    if (bus.hasService('conversations:get') && bus.hasService('session:is-alive')) {
+      try {
+        const conv = await bus.call<ConversationsGetInput, ConversationsGetOutput>(
+          'conversations:get',
+          ctx,
+          { conversationId: input.conversationId, userId: input.userId },
+        );
+        const candidate = conv.conversation.activeSessionId;
+        if (candidate !== null && candidate.length > 0) {
+          const alive = await bus.call<SessionIsAliveInput, SessionIsAliveOutput>(
+            'session:is-alive',
+            ctx,
+            { sessionId: candidate },
+          );
+          if (alive.alive) {
+            await bus.call('session:terminate', ctx, { sessionId: candidate });
+          }
+        }
+      } catch (err) {
+        // Best-effort retire: if we can't read/terminate the warm session, the
+        // next turn's route-vs-fresh still picks fresh once is-alive sees it
+        // dead (or routes into a stale-but-skill-frozen session — degraded, not
+        // unsafe). Log and continue — the attach already landed.
+        ctx.logger.warn('apply_capability_grant_retire_failed', {
+          conversationId: input.conversationId,
+          err: err instanceof Error ? err : new Error(String(err)),
+        });
+      }
+    }
+
+    return { attached };
+  }
+
+  return { runAgentInvoke, onChatEnd, onTurnEnd, onSessionTerminate, applyCapabilityGrant };
 }
 
 // A distinct error type so the runAgentInvoke finally block can tell "we timed out"

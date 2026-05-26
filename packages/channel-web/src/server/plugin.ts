@@ -95,6 +95,10 @@ export function createChannelWebServerPlugin(
         'conversations:list',
         'conversations:delete',
         'agent:invoke',
+        // JIT (TASK-36) — the permission-decision endpoint applies a
+        // user-approved capability grant via the orchestrator. Orchestrator +
+        // channel-web always co-deploy in presets/k8s, so this is a hard dep.
+        'agent:apply-capability-grant',
         // Phase 3 — attachments & artifacts.
         'attachments:store-temp',
         'attachments:commit',

@@ -11,7 +11,8 @@ export const REQUEST_CAPABILITY_DESCRIPTOR: ToolDescriptor = {
     'Request that a catalog skill be connected for the user. Pass a skill id from ' +
     'search_catalog results. The user will be asked to approve the hosts it reaches and ' +
     'enter any required keys. Do not narrate this step or restate any keys — the approval ' +
-    'surface handles it.',
+    'surface handles it. Once the user approves, the conversation will continue ' +
+    'automatically; do not ask the user to repeat their request.',
   executesIn: 'host',
   inputSchema: {
     type: 'object',

@@ -853,3 +853,109 @@ describe('skill-broker canary: search_catalog + request_capability reach the rea
     expect(cards).toHaveLength(1);
   }, 60_000);
 });
+
+// ---------------------------------------------------------------------------
+// TASK-36 — the JIT happy path's last seam, end-to-end over the real catalog:
+// request_capability (broker) raises the card → agent:apply-capability-grant
+// (orchestrator) attaches the catalog skill for the user over the real
+// per-user attach store + retires the warm session → a FRESH agent:invoke
+// re-spawns and its sandbox:open-session carries the now-attached skill in
+// installedSkills. This proves the re-spawn picks up the just-granted skill.
+// Closes invariant #3 (no half-wired plugin) for the grant→re-spawn path.
+// ---------------------------------------------------------------------------
+describe('skill-install canary: approve → apply-capability-grant → fresh re-spawn includes the skill', () => {
+  function buildGrantHarness(busRef: { current: HookBus | null }) {
+    const fakes = buildCaptureFakes(busRef);
+    return createTestHarness({
+      services: fakes.services,
+      plugins: [
+        createDatabasePostgresPlugin({ connectionString }),
+        createAgentsPlugin(),
+        createSkillsPlugin(),
+        createToolDispatcherPlugin(),
+        createSkillBrokerPlugin(),
+        createChatOrchestratorPlugin({
+          runnerBinary: '/irrelevant',
+          oneShot: true,
+          chatTimeoutMs: 5_000,
+        }),
+      ],
+    }).then((h) => ({ h, fakes }));
+  }
+
+  it('request_capability raises the card; grant attaches over the real store; a fresh open includes the skill', async () => {
+    const busRef: { current: HookBus | null } = { current: null };
+    const { h, fakes } = await buildGrantHarness(busRef);
+    harnesses.push(h);
+    busRef.current = h.bus;
+
+    // 1. Install the bounded linear skill into the global catalog (host + slot).
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
+      manifestYaml: LINEAR_MANIFEST,
+      bodyMd: 'Body.',
+    });
+
+    // 2. alice's agent. No agent-global attachment — the grant is purely
+    //    per-user (the self-serve JIT path).
+    const agentId = await createPersonalAgent(h, 'alice');
+    const convCtx = ctxFor(agentId, 'alice', 'jit-walk');
+
+    // 3. (TASK-34/35) request_capability validates the id + raises the card.
+    const cards: Array<{ skillId: string; hosts: string[]; slots: unknown[] }> = [];
+    h.bus.subscribe('chat:permission-request', 'canary/grant-card', async (_c, p) => {
+      cards.push(p as never);
+      return undefined;
+    });
+    const ack = await h.bus.call('tool:execute:request_capability', convCtx, {
+      name: 'request_capability',
+      input: { skillId: 'linear' },
+    });
+    expect(ack).toEqual({ status: 'requested', skillId: 'linear' });
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toMatchObject({ skillId: 'linear', hosts: ['api.linear.app'] });
+
+    // 4. (TASK-36) apply the grant over the REAL per-user attach store. Every
+    //    declared slot is bound to skill:<id>:<slot>.
+    const grant = await h.bus.call('agent:apply-capability-grant', convCtx, {
+      conversationId: 'jit-walk',
+      userId: 'alice',
+      agentId,
+      skillId: 'linear',
+    });
+    expect(grant).toEqual({ attached: true });
+
+    const after = await h.bus.call('skills:list-user-attachments', convCtx, {
+      userId: 'alice',
+      agentId,
+    });
+    expect(
+      (after as { attachments: Array<{ skillId: string; credentialBindings: Record<string, string> }> })
+        .attachments,
+    ).toContainEqual({
+      skillId: 'linear',
+      credentialBindings: { LINEAR_TOKEN: 'skill:linear:LINEAR_TOKEN' },
+    });
+
+    // 5. A FRESH agent:invoke for alice/agent re-spawns and MUST carry the
+    //    now-attached skill in sandbox:open-session.installedSkills.
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      ctxFor(agentId, 'alice', 'jit-walk-respawn'),
+      { message: { role: 'user', content: 'check my linear issues' } },
+    );
+    expect(outcome.kind).toBe('complete');
+
+    expect(fakes.sandboxOpenInputs).toHaveLength(1);
+    const installed = fakes.sandboxOpenInputs[0]!.installedSkills ?? [];
+    expect(installed.map((s) => s.id)).toContain('linear');
+
+    // The re-spawn also threads the per-user binding ref into proxy:open-session.
+    expect(fakes.proxyOpenInputs).toHaveLength(1);
+    const proxyIn = fakes.proxyOpenInputs[0]!;
+    expect(proxyIn.allowlist).toContain('api.linear.app');
+    expect(proxyIn.credentials.LINEAR_TOKEN).toEqual({
+      ref: 'skill:linear:LINEAR_TOKEN',
+      kind: 'api-key',
+    });
+  }, 60_000);
+});
