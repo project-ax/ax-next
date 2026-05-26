@@ -97,7 +97,11 @@ function chatRunMockPlugin(): Plugin {
     manifest: {
       name: 'mock-chat-run',
       version: '0.0.0',
-      registers: ['agent:invoke', 'agent:apply-capability-grant'],
+      // channel-web hard-calls agent:apply-capability-grant (TASK-36) +
+      // proxy:add-host (TASK-37); no-op registrations satisfy bootstrap's
+      // verifyCalls walk for this suite, which boots channel-web without the
+      // orchestrator / @ax/credential-proxy.
+      registers: ['agent:invoke', 'agent:apply-capability-grant', 'proxy:add-host'],
       calls: [],
       subscribes: [],
     },
@@ -105,13 +109,14 @@ function chatRunMockPlugin(): Plugin {
       bus.registerService('agent:invoke', 'mock-chat-run', async () => {
         return { kind: 'complete', messages: [] };
       });
-      // TASK-36 — channel-web declares agent:apply-capability-grant as a hard
-      // call; no-op registration satisfies the bootstrap verifyCalls walk.
       bus.registerService(
         'agent:apply-capability-grant',
         'mock-chat-run',
         async () => ({ attached: true }),
       );
+      bus.registerService('proxy:add-host', 'mock-chat-run', async () => ({
+        added: true,
+      }));
     },
   };
 }

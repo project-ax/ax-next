@@ -18,6 +18,7 @@ vi.mock('../lib/use-conversation-id', () => ({
 }));
 
 const linear = {
+  kind: 'skill' as const,
   skillId: 'linear',
   description: 'Read your Linear issues',
   hosts: ['api.linear.app'],
@@ -136,6 +137,7 @@ describe('PermissionCard', () => {
   it('shows the "new skill" banner when the request is authored', async () => {
     render(<PermissionCard />);
     permissionCardActions.show({
+      kind: 'skill',
       skillId: 'notes',
       description: 'Take notes',
       hosts: ['api.example.com'],
@@ -155,5 +157,74 @@ describe('PermissionCard', () => {
     expect(
       screen.queryByText(/new skill your assistant just wrote/i),
     ).toBeNull();
+  });
+});
+
+describe('PermissionCard — host grant (TASK-37)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    permissionCardActions.reset();
+  });
+
+  it('renders the host + two grant buttons; "Just this once" POSTs the grant then dismisses', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(JSON.stringify({ added: true }), { status: 200 }));
+    render(<PermissionCard />);
+    permissionCardActions.show({ kind: 'host', host: 'status.example.com', sessionId: 's1' });
+
+    // The host appears in both the title and a Badge — assert the title.
+    expect(
+      await screen.findByText(/Allow access to status\.example\.com\?/),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /just this once/i }));
+
+    await waitFor(() => expect(getPermissionCardSnapshot().request).toBeNull());
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/chat/allow-host',
+      expect.objectContaining({
+        method: 'POST',
+        body: expect.stringContaining('"host":"status.example.com"'),
+      }),
+    );
+    // The grant body echoes the opaque sessionId; the route re-validates owner.
+    expect(fetchMock.mock.calls[0]?.[1]?.body).toContain('"sessionId":"s1"');
+    // CSRF posture: the user-scoped write header.
+    expect(fetchMock.mock.calls[0]?.[1]?.headers).toMatchObject({
+      'x-requested-with': 'ax-admin',
+    });
+  });
+
+  it('"Always for this agent" also grants (persistence is TASK-44)', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(JSON.stringify({ added: true }), { status: 200 }));
+    render(<PermissionCard />);
+    permissionCardActions.show({ kind: 'host', host: 'status.example.com', sessionId: 's1' });
+    fireEvent.click(await screen.findByRole('button', { name: /always for this agent/i }));
+    await waitFor(() => expect(getPermissionCardSnapshot().request).toBeNull());
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/chat/allow-host',
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
+  it('Not now dismisses a host card without granting', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+    render(<PermissionCard />);
+    permissionCardActions.show({ kind: 'host', host: 'status.example.com', sessionId: 's1' });
+    fireEvent.click(await screen.findByRole('button', { name: /not now/i }));
+    await waitFor(() => expect(getPermissionCardSnapshot().request).toBeNull());
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a grant failure in an Alert and keeps the card open', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 500 }));
+    render(<PermissionCard />);
+    permissionCardActions.show({ kind: 'host', host: 'status.example.com', sessionId: 's1' });
+    fireEvent.click(await screen.findByRole('button', { name: /just this once/i }));
+    expect(await screen.findByText(/allow-host failed: 500/i)).toBeInTheDocument();
+    // Still pending — the user can retry.
+    expect(getPermissionCardSnapshot().request).not.toBeNull();
   });
 });

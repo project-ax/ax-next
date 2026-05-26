@@ -49,6 +49,10 @@ export const INSTALL_AUTHORED_SKILL_DESCRIPTOR: ToolDescriptor = {
 // flag. Public manifest data only — never a secret. Re-declared (I2) on the
 // channel-web server + client; kept in sync by the canary + card tests.
 interface PermissionRequestEvent {
+  // `kind: 'skill'` discriminates this from the reactive egress-wall's
+  // `kind: 'host'` variant (TASK-37). The chat:permission-request payload is a
+  // union on `kind`; this producer always fires the skill variant.
+  kind: 'skill';
   skillId: string;
   description: string;
   hosts: string[];
@@ -117,6 +121,7 @@ export async function registerInstallAuthoredSkill(bus: HookBus): Promise<void> 
       // Surface the ONE bundled approval card with the open-mode banner
       // (design §6C/§10). The user approves hosts + enters keys — the backstop.
       const card: PermissionRequestEvent = {
+        kind: 'skill',
         skillId,
         description: out.description,
         hosts: out.hosts,

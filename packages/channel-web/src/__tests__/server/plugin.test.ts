@@ -181,7 +181,10 @@ function chatRunMockPlugin(): Plugin {
     manifest: {
       name: 'mock-chat-run',
       version: '0.0.0',
-      registers: ['agent:invoke', 'agent:apply-capability-grant'],
+      // agent:apply-capability-grant (TASK-36) + proxy:add-host (TASK-37) are
+      // hard calls of channel-web; no-op registrations satisfy the bootstrap
+      // verifyCalls walk for this SSE-wire-shape suite.
+      registers: ['agent:invoke', 'agent:apply-capability-grant', 'proxy:add-host'],
       calls: [],
       subscribes: [],
     },
@@ -194,6 +197,13 @@ function chatRunMockPlugin(): Plugin {
         'mock-chat-run',
         async () => ({ attached: true }),
       );
+      bus.registerService('proxy:add-host', 'mock-chat-run', async () => {
+        throw new PluginError({
+          code: 'not-implemented',
+          plugin: 'mock-chat-run',
+          message: 'proxy:add-host stub (not exercised by this suite)',
+        });
+      });
     },
   };
 }
@@ -408,6 +418,7 @@ describe('@ax/channel-web server plugin (integration)', () => {
         'attachments:store-temp',
         'attachments:commit',
         'attachments:download',
+        'proxy:add-host',
       ],
       subscribes: ['chat:stream-chunk', 'chat:phase', 'chat:turn-end', 'chat:turn-error', 'chat:permission-request', 'conversations:title-updated'],
     });

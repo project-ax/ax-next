@@ -126,15 +126,18 @@ type SseFrame =
   | { reqId: string; error: string }
   | {
       reqId: string;
-      permissionRequest: {
-        skillId: string;
-        description: string;
-        hosts: string[];
-        slots: { slot: string; kind: 'api-key' }[];
-        // TASK-39: open-mode banner flag — rides the SSE frame verbatim and is
-        // forwarded to the card store (drives the "new skill" warning).
-        authored?: boolean;
-      };
+      permissionRequest:
+        | {
+            kind: 'skill';
+            skillId: string;
+            description: string;
+            hosts: string[];
+            slots: { slot: string; kind: 'api-key' }[];
+            // TASK-39: open-mode banner flag — rides the SSE frame verbatim and
+            // is forwarded to the card store (drives the "new skill" warning).
+            authored?: boolean;
+          }
+        | { kind: 'host'; host: string; sessionId: string };
     };
 
 interface AxChatTransportOptions {

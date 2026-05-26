@@ -351,10 +351,29 @@ export function createSseHandler(deps: SseHandlerDeps) {
     // frame envelope. The card payload carries only public manifest data — no
     // secret ever rides this frame (the key posts straight to the credential
     // store; §10).
-    deps.bus.subscribe<PermissionRequest>(
+    deps.bus.subscribe<PermissionRequest & { reqId?: string }>(
       'chat:permission-request',
       permissionSubKey,
       async (ctx, payload) => {
+        if (payload.kind === 'host') {
+          // Host-grant card (TASK-37): orchestrator-fired, matched by the
+          // routing reqId carried on the payload (like chat:turn-error — the
+          // firing ctx is the proxy's synthetic egress ctx, NOT this turn's).
+          // Forward only the card data the browser needs; the routing reqId is
+          // stripped (the browser already knows its reqId from the connection).
+          if (payload.reqId !== reqId) return undefined;
+          safeWrite({
+            reqId,
+            permissionRequest: {
+              kind: 'host',
+              host: payload.host,
+              sessionId: payload.sessionId,
+            },
+          });
+          return undefined;
+        }
+        // Skill card (TASK-35): broker-fired, matched by conversation (the
+        // firing ctx carries the real conversationId; reqId is fresh).
         if (ctx.conversationId !== conversationId) return undefined;
         safeWrite({ reqId, permissionRequest: payload });
         return undefined;

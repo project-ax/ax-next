@@ -180,11 +180,11 @@ describe('AxChatTransport SSE chunk parsing', () => {
     expect([...textIds][0]).toMatch(/^text-/);
   });
 
-  it('a permissionRequest frame drives the permission-card store (non-terminal)', async () => {
+  it('a skill permissionRequest frame drives the permission-card store (non-terminal)', async () => {
     permissionCardActions.reset();
     const transport = new AxChatTransport({ getAgentId: () => 'a' });
     const body =
-      'data: {"reqId":"r1","permissionRequest":{"skillId":"linear","description":"Read your Linear issues","hosts":["api.linear.app"],"slots":[{"slot":"api_key","kind":"api-key"}]}}\n\n' +
+      'data: {"reqId":"r1","permissionRequest":{"kind":"skill","skillId":"linear","description":"Read your Linear issues","hosts":["api.linear.app"],"slots":[{"slot":"api_key","kind":"api-key"}]}}\n\n' +
       'data: {"reqId":"r1","text":"ok","kind":"text","seq":1}\n\n' +
       'data: {"reqId":"r1","done":true}\n\n';
 
@@ -194,11 +194,33 @@ describe('AxChatTransport SSE chunk parsing', () => {
 
     // The card landed in the store...
     expect(getPermissionCardSnapshot().request).toMatchObject({
+      kind: 'skill',
       skillId: 'linear',
       hosts: ['api.linear.app'],
       slots: [{ slot: 'api_key', kind: 'api-key' }],
     });
     // ...and the stream still produced the trailing content + finish (non-terminal).
+    expect(out.some((c) => c.type === 'finish')).toBe(true);
+    permissionCardActions.reset();
+  });
+
+  it('a host permissionRequest frame drives the permission-card store (non-terminal)', async () => {
+    permissionCardActions.reset();
+    const transport = new AxChatTransport({ getAgentId: () => 'a' });
+    const body =
+      'data: {"reqId":"r1","permissionRequest":{"kind":"host","host":"status.example.com","sessionId":"s1"}}\n\n' +
+      'data: {"reqId":"r1","text":"ok","kind":"text","seq":1}\n\n' +
+      'data: {"reqId":"r1","done":true}\n\n';
+
+    const out = (await drain(asProcess(transport)(sseStream(body)))) as Array<{
+      type?: string;
+    }>;
+
+    expect(getPermissionCardSnapshot().request).toEqual({
+      kind: 'host',
+      host: 'status.example.com',
+      sessionId: 's1',
+    });
     expect(out.some((c) => c.type === 'finish')).toBe(true);
     permissionCardActions.reset();
   });

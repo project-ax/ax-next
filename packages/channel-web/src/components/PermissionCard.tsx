@@ -12,7 +12,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
-import { setDestinationCredential } from '@/lib/credentials';
+import { grantHost, setDestinationCredential } from '@/lib/credentials';
 import {
   permissionCardActions,
   usePermissionCardStore,
@@ -21,21 +21,26 @@ import { resumeActions } from '@/lib/resume-actions';
 import { useConversationId } from '@/lib/use-conversation-id';
 
 /**
- * The ONE bundled approval card (JIT design §11.3, decision #6) — the open-mode
- * security boundary. Surfaced by a `chat:permission-request` SSE frame; shows
- * the hosts the skill reaches and one field per credential slot. The key never
- * touches the model or transcript: it posts straight to the host credential
- * store via the user-scoped destination route (`skill:<id>:<slot>`, §10).
+ * The ONE bundled approval card (JIT design §11.3/§6B, decision #6) — the
+ * open-mode security boundary. Surfaced by a `chat:permission-request` SSE
+ * frame. Two variants discriminated on `kind`:
  *
- * On Connect (TASK-36) the card: (1) writes each entered key to the host
- * credential store (TASK-35), (2) POSTs the decision to
- * `/api/chat/permission-decision` — which attaches the skill for the user and
- * retires the conversation's warm session — then (3) re-issues the pending
- * original turn via `resumeActions.continueAfterGrant()` so the conversation
- * re-spawns + resumes and the agent answers with the skill present (design §7).
- * Connect is gated on every declared slot being filled: a skill only becomes
- * USABLE once its keys are present (the re-spawn's proxy resolves each
- * `skill:<id>:<slot>`).
+ * - `kind: 'skill'` (TASK-35/36) — "Connect <skill>": shows the hosts the skill
+ *   reaches + one field per credential slot. On Connect the card (1) writes each
+ *   entered key straight to the host credential store (TASK-35; never the model
+ *   or transcript, §10), (2) POSTs the decision to
+ *   `/api/chat/permission-decision` — which attaches the skill for the user and
+ *   retires the conversation's warm session — then (3) re-issues the pending
+ *   original turn via `resumeActions.continueAfterGrant()` so the conversation
+ *   re-spawns + resumes and the agent answers with the skill present (TASK-36,
+ *   design §7). Connect is gated on every declared slot being filled.
+ *
+ * - `kind: 'host'` (TASK-37) — "Allow access to <host>?": the reactive egress
+ *   wall. Granting widens the LIVE session allowlist via `proxy:add-host` (the
+ *   CSRF-gated /api/chat/allow-host route) — no re-spawn — so the next egress
+ *   to that host succeeds. Carries no secret. "Always for this agent" performs
+ *   the same LIVE grant as "Just this once" this phase; per-(user, agent)
+ *   persistence is TASK-44, and seamless auto-retry is TASK-36.
  */
 export function PermissionCard() {
   const { request } = usePermissionCardStore();
@@ -47,8 +52,10 @@ export function PermissionCard() {
   // Every declared slot must have a non-empty value before Connect is enabled
   // (a slotless skill is immediately connectable). `request === null` short-
   // circuits so the hook order stays stable even when the card is hidden.
+  // Only the skill variant has slots; the host variant is always "fillable".
   const allSlotsFilled =
     request === null ||
+    request.kind !== 'skill' ||
     request.slots.every(({ slot }) => (values[slot] ?? '').trim().length > 0);
 
   if (!request) return null;
@@ -60,7 +67,13 @@ export function PermissionCard() {
   }
 
   async function connect(): Promise<void> {
-    if (busy || request === null || conversationId === null || !allSlotsFilled) {
+    if (
+      busy ||
+      request === null ||
+      request.kind !== 'skill' ||
+      conversationId === null ||
+      !allSlotsFilled
+    ) {
       return;
     }
     setBusy(true);
@@ -95,6 +108,56 @@ export function PermissionCard() {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function allow(): Promise<void> {
+    if (busy || request === null || request.kind !== 'host') return;
+    setBusy(true);
+    setError(null);
+    try {
+      await grantHost({ sessionId: request.sessionId, host: request.host });
+      close();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (request.kind === 'host') {
+    return (
+      <Card className="mb-3" data-testid="permission-card-host">
+        <CardHeader>
+          <CardTitle>Allow access to {request.host}?</CardTitle>
+          <CardDescription>
+            Your assistant tried to reach a site it isn’t allowed to yet.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          <div className="flex flex-wrap gap-1.5">
+            <Badge variant="secondary">{request.host}</Badge>
+          </div>
+          {error !== null && (
+            <Alert variant="destructive">
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          )}
+        </CardContent>
+        <CardFooter className="justify-end gap-2">
+          <Button variant="ghost" disabled={busy} onClick={close}>
+            Not now
+          </Button>
+          {/* "Always" does the same LIVE grant this phase; per-(user, agent)
+              persistence is TASK-44. */}
+          <Button variant="outline" disabled={busy} onClick={() => void allow()}>
+            Always for this agent
+          </Button>
+          <Button disabled={busy} onClick={() => void allow()}>
+            {busy ? 'Allowing…' : 'Just this once'}
+          </Button>
+        </CardFooter>
+      </Card>
+    );
   }
 
   return (

@@ -155,6 +155,7 @@ describe('request_capability — bundled approval card (chat:permission-request)
     expect(ack).toEqual({ status: 'requested', skillId: 'linear' });
     expect(cards).toHaveLength(1);
     expect(cards[0]).toEqual({
+      kind: 'skill',
       skillId: 'linear',
       description: 'Read your Linear issues',
       hosts: ['api.linear.app'],
@@ -268,6 +269,7 @@ describe('install_authored_skill tool', () => {
     ]);
     expect(cards).toEqual([
       {
+        kind: 'skill',
         skillId: 'notes',
         description: 'Take notes',
         hosts: ['api.example.com'],

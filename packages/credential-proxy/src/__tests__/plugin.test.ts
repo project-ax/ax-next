@@ -136,6 +136,11 @@ function ctx() {
   return makeAgentContext({ sessionId: 'test-session', agentId: 'test-agent', userId: 'test-user' });
 }
 
+// Parameterized ctx — proxy:add-host ownership checks key off ctx.userId.
+function ctxFor(userId: string) {
+  return makeAgentContext({ sessionId: 'test-session', agentId: 'test-agent', userId });
+}
+
 describe('@ax/credential-proxy plugin', () => {
   let caDir: string;
   let bus: HookBus;
@@ -524,4 +529,90 @@ describe('@ax/credential-proxy plugin', () => {
     expect((caught as PluginError).message).toMatch(/never-opened/);
     expect((caught as PluginError).message).toMatch(/not open/);
   });
+
+  // ── proxy:add-host (TASK-37 — reactive egress wall) ──────────────────
+  //
+  // Widens a LIVE session's allowlist with no re-spawn. Host-internal,
+  // owner-checked. We assert the bus contract + ownership/validation throws
+  // here; the live-widening EFFECT (blocked 403 → grant → retry no longer
+  // 403) is proven end-to-end through the real listener in
+  // reactive-wall.canary.test.ts (the plugin's `sessions` Map is internal —
+  // no test seam, same posture as TASK-52).
+
+  async function bootProxy(): Promise<void> {
+    kernel = await bootstrap({
+      bus,
+      plugins: [
+        memCredentialsPlugin(),
+        createCredentialProxyPlugin({
+          listen: { kind: 'tcp', host: '127.0.0.1', port: 0 },
+          caDir,
+        }),
+      ],
+      config: {},
+    });
+  }
+
+  async function openSession(userId: string, allowlist: string[]): Promise<void> {
+    await bus.call('proxy:open-session', ctxFor(userId), {
+      sessionId: 's1',
+      userId,
+      agentId: 'a1',
+      allowlist,
+      credentials: {},
+    });
+  }
+
+  it('proxy:add-host adds a host to the live session allowlist (owner only)', async () => {
+    await bootProxy();
+    await openSession('u1', ['a.example.com']);
+    const out = await bus.call<
+      { sessionId: string; host: string },
+      { added: boolean }
+    >('proxy:add-host', ctxFor('u1'), { sessionId: 's1', host: 'b.example.com' });
+    expect(out).toEqual({ added: true });
+  });
+
+  it('proxy:add-host rejects a grant from a different user (ownership)', async () => {
+    await bootProxy();
+    await openSession('u1', []);
+    let caught: unknown;
+    try {
+      await bus.call('proxy:add-host', ctxFor('attacker'), {
+        sessionId: 's1',
+        host: 'b.example.com',
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('forbidden');
+    expect((caught as PluginError).message).toMatch(/not the session owner/i);
+  });
+
+  it('proxy:add-host returns { added: false } for an unknown/closed session (no throw)', async () => {
+    await bootProxy();
+    const out = await bus.call<
+      { sessionId: string; host: string },
+      { added: boolean }
+    >('proxy:add-host', ctxFor('u1'), { sessionId: 'gone', host: 'b.example.com' });
+    expect(out).toEqual({ added: false });
+  });
+
+  it.each(['', 'a'.repeat(254), 'has space', 'UPPER.example.com', '*.example.com'])(
+    'proxy:add-host rejects an invalid host %p',
+    async (host) => {
+      await bootProxy();
+      await openSession('u1', []);
+      let caught: unknown;
+      try {
+        await bus.call('proxy:add-host', ctxFor('u1'), { sessionId: 's1', host });
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(PluginError);
+      expect((caught as PluginError).code).toBe('invalid-host');
+      expect((caught as PluginError).message).toMatch(/invalid host/i);
+    },
+  );
 });

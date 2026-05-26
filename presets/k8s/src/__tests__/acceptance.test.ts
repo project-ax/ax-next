@@ -1778,7 +1778,11 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         manifest: {
           name: AGENT_INVOKE_STUB_NAME,
           version: '0.0.0',
-          registers: ['agent:invoke', 'agent:apply-capability-grant'],
+          // channel-web hard-calls agent:apply-capability-grant (TASK-36) +
+          // proxy:add-host (TASK-37); this canary boots channel-web without the
+          // orchestrator / credential-proxy, so no-op registrations satisfy
+          // bootstrap's verifyCalls walk.
+          registers: ['agent:invoke', 'agent:apply-capability-grant', 'proxy:add-host'],
           calls: [],
           subscribes: [],
         },
@@ -1791,13 +1795,15 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
               return { kind: 'complete', messages: [] };
             },
           );
-          // TASK-36 — channel-web declares agent:apply-capability-grant as a
-          // hard call; this wire-surface canary doesn't exercise the JIT grant
-          // path, so a no-op registration satisfies the verifyCalls walk.
           bus.registerService(
             'agent:apply-capability-grant',
             AGENT_INVOKE_STUB_NAME,
             async () => ({ attached: true }),
+          );
+          bus.registerService(
+            'proxy:add-host',
+            AGENT_INVOKE_STUB_NAME,
+            async () => ({ added: true }),
           );
         },
       };
@@ -2198,7 +2204,11 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         manifest: {
           name: AGENT_INVOKE_STUB_NAME,
           version: '0.0.0',
-          registers: ['agent:invoke', 'agent:apply-capability-grant'],
+          // channel-web hard-calls agent:apply-capability-grant (TASK-36) +
+          // proxy:add-host (TASK-37); this artifact canary boots channel-web
+          // without the orchestrator / credential-proxy, so no-op registrations
+          // satisfy bootstrap's verifyCalls walk.
+          registers: ['agent:invoke', 'agent:apply-capability-grant', 'proxy:add-host'],
           calls: [],
           subscribes: [],
         },
@@ -2208,13 +2218,15 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
             AGENT_INVOKE_STUB_NAME,
             async () => ({ kind: 'complete', messages: [] }),
           );
-          // TASK-36 — channel-web declares agent:apply-capability-grant as a
-          // hard call; this artifact canary doesn't exercise the JIT grant
-          // path, so a no-op registration satisfies the verifyCalls walk.
           bus.registerService(
             'agent:apply-capability-grant',
             AGENT_INVOKE_STUB_NAME,
             async () => ({ attached: true }),
+          );
+          bus.registerService(
+            'proxy:add-host',
+            AGENT_INVOKE_STUB_NAME,
+            async () => ({ added: true }),
           );
         },
       };

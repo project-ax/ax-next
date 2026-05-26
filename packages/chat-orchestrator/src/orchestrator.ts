@@ -281,6 +281,23 @@ interface ProxyCloseSessionInput {
   sessionId: string;
 }
 
+// Public subset of @ax/credential-proxy's `event.http-egress` payload the
+// reactive egress wall (TASK-37) keys off. Re-declared locally (I2 — no
+// cross-plugin import); only the storage-agnostic fields we read. The proxy's
+// full HttpEgressEvent carries more, but a subscriber must never key off
+// backend-specific fields — `host`/`sessionId`/`blockedReason` are all public.
+interface HttpEgressEventLike {
+  sessionId: string;
+  userId: string;
+  host: string;
+  blockedReason?:
+    | 'allowlist'
+    | 'private-ip'
+    | 'canary'
+    | 'tls-error'
+    | 'request-body-too-large';
+}
+
 // AgentConfig (sent through sandbox:open-session and persisted on the session
 // row) now comes from @ax/sandbox-protocol (type-only import above). The
 // session-postgres / session-inmemory plugins declare the same shape; drift is
@@ -504,6 +521,7 @@ export function createOrchestrator(
     ctx: AgentContext,
     input: ApplyCapabilityGrantInput,
   ): Promise<ApplyCapabilityGrantOutput>;
+  onHttpEgress(ctx: AgentContext, payload: HttpEgressEventLike): Promise<void>;
 } {
   // Waiters are tracked by ctx.reqId (server-minted, J9, unique per
   // agent:invoke). On the J6 routed path, two concurrent agent:invokes for the
@@ -523,6 +541,11 @@ export function createOrchestrator(
   //     path always has exactly one waiter per sessionId.
   const waitersByReqId = new Map<string, Deferred<AgentOutcome>>();
   const reqIdsBySession = new Map<string, Set<string>>();
+  // Reactive egress wall (TASK-37) — dedup raised host-grant cards per
+  // (sessionId, host) so repeated 403s to the same blocked host don't spam the
+  // stream with duplicate cards. Cleared per session in onSessionTerminate (the
+  // session's egress is gone, so any future block under a reused id is new).
+  const wallCardsByHost = new Map<string, Set<string>>(); // sessionId → hosts already carded
   function registerWaiter(
     sessionId: string,
     reqId: string,
@@ -634,6 +657,58 @@ export function createOrchestrator(
       const deferred = waitersByReqId.get(reqId);
       if (deferred === undefined || deferred.settled) continue;
       await fireTurnError(ctx, reqId, 'sandbox-terminated');
+    }
+    // The session's egress is gone — drop its host-grant dedup set so a reused
+    // sessionId starts fresh (TASK-37).
+    wallCardsByHost.delete(sessionId);
+  }
+
+  // Reactive egress wall (TASK-37) — turn an allowlist-MISS 403 into the
+  // in-chat "Allow access to <host>?" card (design §6B, decision #4). The
+  // credential proxy attributes blocked egress to its session via a per-session
+  // proxy token (TASK-52), so `event.http-egress` carries a real sessionId. We
+  // resolve it to the in-flight reqId(s) via reqIdsBySession — the SAME map
+  // Fault A uses — and fire the TASK-35 `chat:permission-request` hook with the
+  // host-grant variant, stamped with reqId so the SSE matches the precise turn
+  // (the host variant matches by payload.reqId, like chat:turn-error; the skill
+  // variant matches by ctx.conversationId). Observation-only: a no-op when
+  // nothing is attributed (empty sessionId) or no turn is in flight. Dedups per
+  // (session, host) so a tight retry loop on the same blocked host raises ONE
+  // card. This never affects the egress allow/deny decision — the proxy already
+  // returned 403; this only surfaces the option to grant.
+  async function onHttpEgress(ctx: AgentContext, payload: HttpEgressEventLike): Promise<void> {
+    if (payload?.blockedReason !== 'allowlist') return;
+    const sessionId = payload.sessionId;
+    const host = payload.host;
+    if (typeof sessionId !== 'string' || sessionId.length === 0) return; // unattributed
+    if (typeof host !== 'string' || host.length === 0) return;
+    const reqIds = reqIdsBySession.get(sessionId);
+    if (reqIds === undefined || reqIds.size === 0) return; // no in-flight turn to surface on
+    // Only raise a card if at least one in-flight (unsettled) waiter exists —
+    // a settled-but-not-yet-unregistered reqId shouldn't surface a card on a
+    // turn that's already done.
+    const liveReqIds = [...reqIds].filter((reqId) => {
+      const deferred = waitersByReqId.get(reqId);
+      return deferred !== undefined && !deferred.settled;
+    });
+    if (liveReqIds.length === 0) return;
+    let carded = wallCardsByHost.get(sessionId);
+    if (carded === undefined) {
+      carded = new Set();
+      wallCardsByHost.set(sessionId, carded);
+    }
+    if (carded.has(host)) return; // already surfaced this host for this session
+    carded.add(host);
+    for (const reqId of liveReqIds) {
+      ctx.logger.info('reactive_wall_card', { sessionId, host, reqId });
+      // The bus isolates subscriber throws (HookBus.fire), so a misbehaving
+      // SSE handler can't break the egress audit path.
+      await bus.fire('chat:permission-request', ctx, {
+        kind: 'host',
+        host,
+        sessionId,
+        reqId,
+      });
     }
   }
 
@@ -1900,7 +1975,14 @@ export function createOrchestrator(
     return { attached };
   }
 
-  return { runAgentInvoke, onChatEnd, onTurnEnd, onSessionTerminate, applyCapabilityGrant };
+  return {
+    runAgentInvoke,
+    onChatEnd,
+    onTurnEnd,
+    onSessionTerminate,
+    applyCapabilityGrant,
+    onHttpEgress,
+  };
 }
 
 // A distinct error type so the runAgentInvoke finally block can tell "we timed out"

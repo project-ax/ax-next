@@ -165,11 +165,17 @@ function chatRunMockPlugin(captures: ChatRunCapture[]): Plugin {
     manifest: {
       name: 'mock-chat-run',
       version: '0.0.0',
-      registers: ['agent:invoke'],
+      // channel-web hard-calls proxy:add-host (TASK-37 reactive wall); a no-op
+      // registration satisfies bootstrap's verifyCalls walk for this suite,
+      // which boots channel-web without @ax/credential-proxy.
+      registers: ['agent:invoke', 'proxy:add-host'],
       calls: [],
       subscribes: [],
     },
     init({ bus }) {
+      bus.registerService('proxy:add-host', 'mock-chat-run', async () => ({
+        added: true,
+      }));
       bus.registerService(
         'agent:invoke',
         'mock-chat-run',

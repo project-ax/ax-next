@@ -853,6 +853,7 @@ describe('skill-broker canary: search_catalog + request_capability reach the rea
     expect(ack).toEqual({ status: 'requested', skillId: 'github' });
     expect(cards).toHaveLength(1);
     expect(cards[0]).toMatchObject({
+      kind: 'skill',
       skillId: 'github',
       hosts: ['api.github.com'],
       slots: [{ slot: 'GITHUB_TOKEN', kind: 'api-key' }],
@@ -1069,6 +1070,7 @@ describe('skill-install canary: open-mode authoring → user-store bundle + reti
     expect(ack).toEqual({ status: 'requested', skillId: 'notes' });
     expect(cards).toEqual([
       {
+        kind: 'skill',
         skillId: 'notes',
         description: 'Take notes',
         hosts: ['api.example.com'],
