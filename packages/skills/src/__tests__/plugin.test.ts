@@ -29,6 +29,12 @@ import type {
   SkillsListUserAttachmentsOutput,
   SkillsSearchCatalogInput,
   SkillsSearchCatalogOutput,
+  CatalogSubmitInput,
+  CatalogSubmitOutput,
+  CatalogListRequestsInput,
+  CatalogListRequestsOutput,
+  CatalogAdmitInput,
+  CatalogAdmitOutput,
 } from '../types.js';
 
 let container: StartedPostgreSqlContainer;
@@ -91,6 +97,7 @@ afterEach(async () => {
   await cleanup.connect();
   try {
     // Truncate every table so rows don't bleed between tests.
+    await cleanup.query('DROP TABLE IF EXISTS skills_v1_catalog_requests');
     await cleanup.query('DROP TABLE IF EXISTS skills_v1_user_attachments');
     await cleanup.query('DROP TABLE IF EXISTS skills_v1_skill_files');
     await cleanup.query('DROP TABLE IF EXISTS skills_v1_user_skills');
@@ -121,6 +128,9 @@ describe('@ax/skills plugin manifest + lifecycle', () => {
         'skills:attach-for-user',
         'skills:list-user-attachments',
         'skills:search-catalog',
+        'catalog:submit',
+        'catalog:list-requests',
+        'catalog:admit',
       ],
       calls: ['database:get-instance', 'http:register-route', 'auth:require-user'],
       subscribes: [],
@@ -1308,5 +1318,209 @@ describe('@ax/skills service hooks — skills:search-catalog', () => {
     );
     // limit clamps to >= 1, so a single match still returns.
     expect(out.skills.length).toBeLessThanOrEqual(1);
+  });
+});
+
+describe('@ax/skills catalog admit-queue hooks (TASK-41)', () => {
+  it("catalog:submit (share) snapshots the author's user-scoped skill", async () => {
+    const h = await makeHarness();
+    // Author a user-scoped multi-file skill (the post-TASK-39 "draft to share").
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
+      manifestYaml: SAMPLE_MANIFEST,
+      bodyMd: SAMPLE_BODY,
+      files: [{ path: 'scripts/run.py', contents: 'print(1)' }],
+      scope: 'user',
+      ownerUserId: 'alice',
+    });
+
+    const out = await h.bus.call<CatalogSubmitInput, CatalogSubmitOutput>('catalog:submit', h.ctx(), {
+      kind: 'share',
+      skillId: 'github',
+      requestedByUserId: 'alice',
+      description: 'share my github skill',
+    });
+    expect(out.created).toBe(true);
+    expect(out.status).toBe('pending');
+
+    const list = await h.bus.call<CatalogListRequestsInput, CatalogListRequestsOutput>(
+      'catalog:list-requests',
+      h.ctx(),
+      {},
+    );
+    const req = list.requests.find((r) => r.skillId === 'github')!;
+    expect(req.kind).toBe('share');
+    expect(req.sourceOwnerUserId).toBe('alice');
+    expect(req.files).toEqual([{ path: 'scripts/run.py', contents: 'print(1)' }]);
+    expect(req.manifestYaml).toContain('name: github');
+  });
+
+  it('catalog:submit (share) of a skill the user does not own throws skill-not-found', async () => {
+    const h = await makeHarness();
+    await expect(
+      h.bus.call<CatalogSubmitInput, CatalogSubmitOutput>('catalog:submit', h.ctx(), {
+        kind: 'share',
+        skillId: 'nope',
+        requestedByUserId: 'alice',
+        description: 'd',
+      }),
+    ).rejects.toMatchObject({ code: 'skill-not-found' });
+  });
+
+  it('catalog:submit (cold-start) files a bundle-less request; second dedups', async () => {
+    const h = await makeHarness();
+    const first = await h.bus.call<CatalogSubmitInput, CatalogSubmitOutput>('catalog:submit', h.ctx(), {
+      kind: 'cold-start',
+      skillId: 'jira',
+      requestedByUserId: 'alice',
+      description: 'I need Jira',
+    });
+    expect(first.created).toBe(true);
+    const second = await h.bus.call<CatalogSubmitInput, CatalogSubmitOutput>('catalog:submit', h.ctx(), {
+      kind: 'cold-start',
+      skillId: 'jira',
+      requestedByUserId: 'bob',
+      description: 'me too',
+    });
+    expect(second.created).toBe(false);
+    expect(second.requestId).toBe(first.requestId);
+  });
+
+  it('catalog:list-requests returns pending requests with reconstructed files, no tree sha', async () => {
+    const h = await makeHarness();
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
+      manifestYaml: SAMPLE_MANIFEST,
+      bodyMd: SAMPLE_BODY,
+      files: [{ path: 'scripts/run.py', contents: 'print(1)' }],
+      scope: 'user',
+      ownerUserId: 'alice',
+    });
+    await h.bus.call<CatalogSubmitInput, CatalogSubmitOutput>('catalog:submit', h.ctx(), {
+      kind: 'share',
+      skillId: 'github',
+      requestedByUserId: 'alice',
+      description: 'share',
+    });
+    await h.bus.call<CatalogSubmitInput, CatalogSubmitOutput>('catalog:submit', h.ctx(), {
+      kind: 'cold-start',
+      skillId: 'jira',
+      requestedByUserId: 'bob',
+      description: 'need jira',
+    });
+
+    const { requests } = await h.bus.call<CatalogListRequestsInput, CatalogListRequestsOutput>(
+      'catalog:list-requests',
+      h.ctx(),
+      {},
+    );
+    expect(requests.map((r) => r.skillId).sort()).toEqual(['github', 'jira']);
+    const share = requests.find((r) => r.skillId === 'github')!;
+    expect(share.files).toEqual([{ path: 'scripts/run.py', contents: 'print(1)' }]);
+    expect(share).not.toHaveProperty('bundle_tree_sha'); // storage detail must not leak
+    const cold = requests.find((r) => r.skillId === 'jira')!;
+    expect(cold.kind).toBe('cold-start');
+    expect(cold.files).toEqual([]);
+    expect(cold.manifestYaml).toBeNull();
+  });
+
+  it('catalog:admit promotes the share to the global catalog and retires the user copy', async () => {
+    const h = await makeHarness();
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
+      manifestYaml: SAMPLE_MANIFEST,
+      bodyMd: SAMPLE_BODY,
+      files: [{ path: 'scripts/run.py', contents: 'print(1)' }],
+      scope: 'user',
+      ownerUserId: 'alice',
+    });
+    const sub = await h.bus.call<CatalogSubmitInput, CatalogSubmitOutput>('catalog:submit', h.ctx(), {
+      kind: 'share',
+      skillId: 'github',
+      requestedByUserId: 'alice',
+      description: 'share',
+    });
+
+    // The user-scoped copy exists; the global one does not — yet.
+    const userBefore = await h.bus.call<SkillsGetInput, SkillsGetOutput>('skills:get', h.ctx(), {
+      skillId: 'github',
+      scope: 'user',
+      ownerUserId: 'alice',
+    });
+    expect(userBefore.files).toEqual([{ path: 'scripts/run.py', contents: 'print(1)' }]);
+    await expect(
+      h.bus.call<SkillsGetInput, SkillsGetOutput>('skills:get', h.ctx(), {
+        skillId: 'github',
+        scope: 'global',
+      }),
+    ).rejects.toMatchObject({ code: 'skill-not-found' });
+
+    const admit = await h.bus.call<CatalogAdmitInput, CatalogAdmitOutput>('catalog:admit', h.ctx(), {
+      requestId: sub.requestId,
+      decision: 'admit',
+      decidedByUserId: 'admin',
+    });
+    expect(admit).toEqual({ skillId: 'github', admitted: true });
+
+    // Promoted into the GLOBAL catalog with the bundle intact (shipped == reviewed).
+    const global = await h.bus.call<SkillsGetInput, SkillsGetOutput>('skills:get', h.ctx(), {
+      skillId: 'github',
+      scope: 'global',
+    });
+    expect(global.files).toEqual([{ path: 'scripts/run.py', contents: 'print(1)' }]);
+    expect(global.manifestYaml).toContain('name: github');
+
+    // The author's editable working copy is RETIRED.
+    await expect(
+      h.bus.call<SkillsGetInput, SkillsGetOutput>('skills:get', h.ctx(), {
+        skillId: 'github',
+        scope: 'user',
+        ownerUserId: 'alice',
+      }),
+    ).rejects.toMatchObject({ code: 'skill-not-found' });
+
+    // Request marked admitted; queue empty.
+    const { requests } = await h.bus.call<CatalogListRequestsInput, CatalogListRequestsOutput>(
+      'catalog:list-requests',
+      h.ctx(),
+      {},
+    );
+    expect(requests.length).toBe(0);
+  });
+
+  it('catalog:admit reject closes the request without promoting', async () => {
+    const h = await makeHarness();
+    const sub = await h.bus.call<CatalogSubmitInput, CatalogSubmitOutput>('catalog:submit', h.ctx(), {
+      kind: 'cold-start',
+      skillId: 'jira',
+      requestedByUserId: 'alice',
+      description: 'need jira',
+    });
+    const out = await h.bus.call<CatalogAdmitInput, CatalogAdmitOutput>('catalog:admit', h.ctx(), {
+      requestId: sub.requestId,
+      decision: 'reject',
+      decidedByUserId: 'admin',
+    });
+    expect(out.admitted).toBe(false);
+    await expect(
+      h.bus.call<SkillsGetInput, SkillsGetOutput>('skills:get', h.ctx(), {
+        skillId: 'jira',
+        scope: 'global',
+      }),
+    ).rejects.toMatchObject({ code: 'skill-not-found' });
+  });
+
+  it('catalog:admit of a cold-start request is not promotable', async () => {
+    const h = await makeHarness();
+    const sub = await h.bus.call<CatalogSubmitInput, CatalogSubmitOutput>('catalog:submit', h.ctx(), {
+      kind: 'cold-start',
+      skillId: 'jira',
+      requestedByUserId: 'alice',
+      description: 'need jira',
+    });
+    await expect(
+      h.bus.call<CatalogAdmitInput, CatalogAdmitOutput>('catalog:admit', h.ctx(), {
+        requestId: sub.requestId,
+        decision: 'admit',
+        decidedByUserId: 'admin',
+      }),
+    ).rejects.toMatchObject({ code: 'cold-start-not-promotable' });
   });
 });
