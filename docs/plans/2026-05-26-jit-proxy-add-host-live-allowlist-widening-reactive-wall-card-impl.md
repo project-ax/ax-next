@@ -4,31 +4,24 @@
 
 **Goal:** Make a blocked sandbox egress (a credential-proxy 403) surface as an in-chat **"Allow access to `<host>`?"** card with **Just this once** / **Always for this agent**; granting widens the **live** session allowlist via a new host-internal `proxy:add-host` service hook — **no re-spawn** — so the next egress to that host succeeds.
 
-**Architecture:** Three moving parts. (1) **Per-session attribution** — `proxy:open-session` mints a per-session **proxy token**; both sandbox backends carry it into the sandbox proxy env so every egress sends `Proxy-Authorization: Basic ax:<token>`; the credential-proxy listener resolves the token → session on *every* request, so an allowlist-miss 403 now carries a real `sessionId` on `event.http-egress` (today it's empty — `plugin.ts:62`). (2) **Surfacing** — `@ax/chat-orchestrator` subscribes to `event.http-egress`, filters allowlist-blocks, resolves `sessionId → reqId` via its in-memory `reqIdsBySession` map (the exact Fault-A `session:terminate → chat:turn-error` machinery), dedups per `(sessionId, host)`, and fires the TASK-35 `chat:permission-request` hook with a new **host-grant** payload variant. (3) **Grant** — the user clicks **Just this once**; the browser POSTs `{ sessionId, host }` to a CSRF-gated channel-web route which calls the **host-internal** `proxy:add-host` service hook (the agent can never reach it over IPC); the proxy validates session ownership (`SessionConfig.userId === ctx.userId`) and does `allowlist.add(host)` on the live `Set` shared by reference with the listener.
+**Architecture:** Two moving parts, on top of the per-session 403 attribution delivered by **TASK-52** (its dependency). (1) **Surfacing** — `@ax/chat-orchestrator` subscribes to `event.http-egress`, filters allowlist-blocks (which now carry a real `sessionId`, courtesy TASK-52), resolves `sessionId → reqId` via its in-memory `reqIdsBySession` map (the exact Fault-A `session:terminate → chat:turn-error` machinery), dedups per `(sessionId, host)`, and fires the TASK-35 `chat:permission-request` hook with a new **host-grant** payload variant. (2) **Grant** — the user clicks **Just this once**; the browser POSTs `{ sessionId, host }` to a CSRF-gated channel-web route which calls the **host-internal** `proxy:add-host` service hook (the agent can never reach it over IPC); the proxy validates session ownership (`SessionConfig.userId === ctx.userId`) and does `allowlist.add(host)` on the live `Set` shared by reference with the listener.
 
-**Tech Stack:** TypeScript, pnpm workspace, tsconfig project refs, the in-process hook bus (`bus.call`/`bus.fire`/`bus.subscribe`), zod (`@ax/sandbox-protocol`), Node `http`/`net` (the proxy listener + bridge), undici `ProxyAgent` (runner), React + shadcn primitives in `packages/channel-web`, vitest (+ `@testing-library/react` jsdom, + testcontainers in the canary).
+**Tech Stack:** TypeScript, pnpm workspace, tsconfig project refs, the in-process hook bus (`bus.call`/`bus.fire`/`bus.subscribe`), zod, React + shadcn primitives in `packages/channel-web`, vitest (+ `@testing-library/react` jsdom).
 
 ---
 
-## Scope & sequencing (read this first)
+## Dependencies (this card sits on two)
 
-This card is **large** — it touches the egress trust boundary across **8 packages**, because the design's premise ("a raw proxy 403 becomes a card for `{sessionId, host}`") assumed a per-session 403 attribution that **does not exist as-built**: the proxy is one shared listener whose allowlist is ORed across all sessions, so a blocked host matches no session and the deny path stamps **empty** `sessionId`/`userId` (`listener.ts:436-453`, `plugin.ts:62`). Building the wall therefore requires building attribution first.
-
-It is sequenced in five phases. **Phase A (per-session attribution) is a self-contained, separately-shippable unit** — if the team prefers smaller PRs, Phase A can be split into its own card and the rest of TASK-37 made to depend on it. Shipped together, it is one coherent plan.
-
-- **Phase A — per-session proxy token (attribution):** Tasks 1–8. Blocked egress carries a real `sessionId`.
-- **Phase B — `proxy:add-host` hook:** Task 9. Host-internal allowlist widening.
-- **Phase C — surfacing:** Task 10. Orchestrator turns an allowlist-block into the card.
-- **Phase D — card UI (reuses TASK-35):** Tasks 11–14. Host-grant payload variant + grant route.
-- **Phase E — canary + verification:** Task 15.
+- **TASK-52 — per-session proxy token (egress attribution).** Makes a blocked 403 carry a real `sessionId` on `event.http-egress` (today empty). Without it the orchestrator has no session to key the card on. Plan: `docs/plans/2026-05-26-jit-per-session-proxy-token-egress-attribution-impl.md`. **(Split out of this card on 2026-05-26 — it's a self-contained egress-boundary change.)**
+- **TASK-35 — bundled approval card + `chat:permission-request` SSE frame.** This card extends that hook's payload to a discriminated union and reuses its SSE frame / store / transport / `<PermissionCard>`.
 
 ## Implementation forks resolved (hard requirement #7)
 
 > **1. `proxy:add-host` wire surface — `IPC: yes` (design §11.4) is REJECTED; the hook is HOST-INTERNAL.**
 > The IPC dispatcher is a *fixed, hardcoded* runner→host action table (`ipc-core/dispatcher.ts:69-83`); plugins cannot contribute IPC schemas, so the design's "schema lives in @ax/credential-proxy" (for an IPC action) was never buildable. More importantly, **any** IPC action is callable by the untrusted runner — exposing `proxy:add-host` over IPC would let the agent widen its *own* egress allowlist, defeating the entire reactive wall (invariant #5; design §10 "human in the loop on every security decision"; decision #3 "hosts are always the user's own call"). **Resolution (confirmed with the human):** `proxy:add-host` is a host-bus **service hook**, never an IPC action; the only caller is the user's browser via a CSRF-gated channel-web route, and the proxy validates session ownership host-side. The design's `IPC: yes` boundary note is **stale** — flag it in the PR.
 >
-> **2. 403 → session attribution — per-session proxy token.**
-> Because a blocked request matches no session, the proxy can't attribute it (no `sessionId` on the egress event). **Resolution (confirmed with the human):** `proxy:open-session` mints a per-session token; the sandbox proxy env embeds it as `Proxy-Authorization: Basic ax:<token>`; the listener resolves token → session on every request and stamps the block audit. **Attribution-only:** the token is a *label*, never an authz input — the allow/deny gate (`findAllowingSession`, ORed) is **unchanged** (a missing/forged token degrades to today's empty-`sessionId` behavior, never widens egress). Ownership for `proxy:add-host` is validated separately via `SessionConfig.userId`, so the token confers **no** capability even if the model reads it from `$HTTPS_PROXY`.
+> **2. 403 → session attribution — delivered by TASK-52 (dependency).**
+> Because a blocked request matches no session, the proxy couldn't attribute it (no `sessionId` on the egress event — `listener.ts:436-453`, `plugin.ts:62`). **Resolution (confirmed with the human):** a per-session proxy token (`Proxy-Authorization`) makes blocked egress carry its `sessionId`. That work was **split into TASK-52** so it can ship and be reviewed as a self-contained egress-boundary change; this card depends on it.
 >
 > **3. Surfacing home + match key — the orchestrator, matched by `reqId`.**
 > `@ax/chat-orchestrator` already bridges session-events → chat-stream hooks (Fault A: `session:terminate → chat:turn-error`, `orchestrator.ts:586-601`) and holds `reqIdsBySession: Map<sessionId, Set<reqId>>` in memory (`orchestrator.ts:488-507`). It resolves the block's `sessionId → reqId` there and fires `chat:permission-request` stamped with that `reqId`; the SSE handler matches the host-grant variant by **`payload.reqId`** (exactly like `chat:turn-error`), while TASK-35's skill variant keeps matching by `ctx.conversationId`. No new `conversations` hook, no DB read.
@@ -38,569 +31,50 @@ It is sequenced in five phases. **Phase A (per-session attribution) is a self-co
 
 ## Dependency status & as-built re-verification (READ FIRST)
 
-This card **Depends on TASK-35** (bundled approval card + `chat:permission-request` SSE frame), which depends on TASK-34 → TASK-33 (merged, #182). `yolo-ship` only pulls this card once **TASK-35 is Done**, so by execution time TASK-34 + TASK-35 are merged to `main`. This plan was written against design §6B/§7/§10/§11 + decision #4 (reactive walls) + the committed TASK-35 impl plan + the **pre-34/35** as-built code. Before Task 1, **re-confirm against `main`** (hard requirement #1 — do not trust file:line anchors) and adjust if any moved:
+`yolo-ship` only pulls this card once **both TASK-35 and TASK-52 are Done**, so by execution time the card frame *and* per-session attribution are merged to `main`. This plan was written against design §6B/§7/§10/§11 + decision #4 (reactive walls) + the committed TASK-35 + TASK-52 plans + the **pre-34/35/52** as-built code. Before Task 1, **re-confirm against `main`** (hard requirement #1 — do not trust file:line anchors) and adjust if any moved:
 
-- [ ] **TASK-35 shipped `chat:permission-request`** as a subscriber hook fired by `@ax/skill-broker`, with channel-web server `PermissionRequest` payload (`{ skillId, description, hosts, slots }`) in `packages/channel-web/src/server/types.ts`, an `SseFrame` variant `{ reqId, permissionRequest }`, a per-connection subscriber in `sse.ts` (matched by `ctx.conversationId`), a client `permission-card-store.ts`, a transport `permissionRequest` dispatch branch, and `<PermissionCard>` mounted above `<AgentStatus />` in `Composer.tsx`. **This plan extends all of them** — if TASK-35 shipped different names, adapt the diffs. (If TASK-35's payload has no discriminant, Task 11 adds `kind: 'skill' | 'host'`.)
-- [ ] **`@ax/credential-proxy` shape** (`packages/credential-proxy/src/plugin.ts`): `proxy:open-session` returns `OpenSessionOutput { proxyEndpoint, caCertPem, envMap }` (≈207-214); the handler builds a `SessionConfig` and sets `userId: input.userId` on it (≈383-398); `registers: ['proxy:open-session','proxy:rotate-session','proxy:close-session']` (≈269). `SessionConfig` (`listener.ts:54-111`) carries `allowlist: Set<string>`, optional `userId`, `sessionId`. The shared `sessions: Map<string,SessionConfig>` is mutated by reference (plugin.ts:8-11).
-- [ ] **The proxy deny path leaves `sessionId` empty** (`listener.ts:434-453` HTTP, ≈846-880 CONNECT): `findAllowingSession` (`listener.ts:230-238`) ORs across all sessions; on miss the `domain_denied` audit has no session fields, and `plugin.ts`'s `onAudit` (≈296-333) emits `event.http-egress` with `sessionId: ''`. `HttpEgressEvent` carries `{ sessionId, userId, host, blockedReason?: 'allowlist'|… }` (`plugin.ts:62-81`). `@ax/audit-log` already subscribes to `event.http-egress` (`audit-log/src/plugin.ts:42`).
-- [ ] **Orchestrator routing state** (`packages/chat-orchestrator/src/orchestrator.ts`): `reqIdsBySession: Map<string, Set<string>>` + `waitersByReqId` (≈487-507); `onSessionTerminate` resolves `sessionId → reqIds` and calls `fireTurnError(ctx, reqId, reason)` per in-flight reqId (≈586-601); `fireTurnError` does `bus.fire('chat:turn-error', ctx, { reqId, reason })` (≈559-571). `endpointToProxyConfig(proxyEndpoint, caCertPem, envMap)` builds the `ProxyConfig` at the open-session call site (≈1303-1306). Plugin manifest `subscribes: ['chat:end','chat:turn-end','session:terminate']` (`plugin.ts:94`).
-- [ ] **`@ax/sandbox-protocol`** `ProxyConfigSchema` (`schemas.ts:186-200`) = `{ endpoint?, unixSocketPath?, caCertPem, envMap }` with the exactly-one-of refine; `OpenSessionInputSchema` carries `proxyConfig?` (≈220).
-- [ ] **Sandbox proxy env stamping:** `sandbox-subprocess/src/open-session.ts` sets `sessionEnv.HTTPS_PROXY = input.proxyConfig.endpoint` (≈457-458); `sandbox-k8s/src/pod-spec.ts` stamps `AX_PROXY_ENDPOINT`/`HTTPS_PROXY`/`HTTP_PROXY` from `pc.endpoint` and `AX_PROXY_UNIX_SOCKET` from `pc.unixSocketPath` (≈277-311). Runner `proxy-startup.ts` has **bridge mode** (`AX_PROXY_UNIX_SOCKET` → `@ax/credential-proxy-bridge` + `setGlobalDispatcher(new ProxyAgent(local))`, ≈153-177) and **direct mode** (`AX_PROXY_ENDPOINT`); it forwards `http_proxy`/`https_proxy` into the SDK subprocess via `ENV_ALLOWLIST` (≈64-67) and re-sets `anthropicEnv.HTTPS_PROXY` (≈241-246). `RunnerEnv` (`env.ts`) carries `proxyEndpoint?`/`proxyUnixSocket?`.
-- [ ] **The bridge** (`credential-proxy-bridge/src/bridge.ts`): the HTTP-forward path rebuilds headers but does **not** strip `proxy-authorization` (≈43-56); the CONNECT path **rebuilds** the request line with only `Host` and drops all other headers (≈105-134) — Task 8 fixes this to forward `Proxy-Authorization`.
-- [ ] **channel-web routes:** registered via `http:register-route` (`server/plugin.ts:173`); `routes-chat.ts` has `POST /api/chat/messages`, CSRF-gated by the http-server subscriber expecting `X-Requested-With: ax-admin` (≈62-79, route table ≈736-769). Manifest `calls` list at `server/plugin.ts:83-98`.
+- [ ] **TASK-52 shipped per-session attribution:** `proxy:open-session` returns `proxyAuthToken` (`credential-proxy/src/plugin.ts`); `SessionConfig.proxyToken` exists (`listener.ts`); a blocked (allowlist-miss) request carrying the token yields an `event.http-egress` with a **real `sessionId`/`userId`** (not empty) and `blockedReason: 'allowlist'`. **Task 6's canary depends on this** — if TASK-52 shipped a different field name, adapt.
+- [ ] **TASK-35 shipped `chat:permission-request`** as a subscriber hook fired by `@ax/skill-broker`, with channel-web server `PermissionRequest` payload (`{ skillId, description, hosts, slots }`) in `packages/channel-web/src/server/types.ts`, an `SseFrame` variant `{ reqId, permissionRequest }`, a per-connection subscriber in `sse.ts` (matched by `ctx.conversationId`), a client `permission-card-store.ts`, a transport `permissionRequest` dispatch branch, and `<PermissionCard>` mounted above `<AgentStatus />` in `Composer.tsx`. **This plan extends all of them** — if TASK-35 shipped different names, adapt the diffs. (If TASK-35's payload has no discriminant, Task 3 adds `kind: 'skill' | 'host'`.)
+- [ ] **`@ax/credential-proxy` shape** (`packages/credential-proxy/src/plugin.ts`): the `proxy:open-session` handler sets `userId: input.userId` on the `SessionConfig` (≈383-398); `registers: ['proxy:open-session','proxy:rotate-session','proxy:close-session']` (≈269). `SessionConfig` (`listener.ts:54-111`) carries `allowlist: Set<string>`, optional `userId`. The shared `sessions: Map<string,SessionConfig>` is mutated by reference (plugin.ts:8-11).
+- [ ] **`event.http-egress` shape:** `HttpEgressEvent { sessionId, userId, host, blockedReason?: 'allowlist'|… }` (`plugin.ts:62-81`). `@ax/audit-log` already subscribes (`audit-log/src/plugin.ts:42`).
+- [ ] **Orchestrator routing state** (`packages/chat-orchestrator/src/orchestrator.ts`): `reqIdsBySession: Map<string, Set<string>>` + `waitersByReqId` (≈487-507); `onSessionTerminate` resolves `sessionId → reqIds` and calls `fireTurnError(ctx, reqId, reason)` per in-flight reqId (≈586-601); `fireTurnError` does `bus.fire('chat:turn-error', ctx, { reqId, reason })` (≈559-571). Plugin manifest `subscribes: ['chat:end','chat:turn-end','session:terminate']` (`plugin.ts:94`).
+- [ ] **channel-web routes:** registered via `http:register-route` (`server/plugin.ts:173`); `routes-chat.ts` has `POST /api/chat/messages`, CSRF-gated by the http-server subscriber expecting `X-Requested-With: ax-admin` (≈62-79, route table ≈736-769). Manifest `calls` list at `server/plugin.ts:83-98`. The SSE handler (`sse.ts`) per-connection knows `reqId`/`conversationId`/`agentId`/`userId` (≈112-158).
 
 ---
 
-## Phase A — Per-session proxy token (attribution)
+## Shared rule: the `PermissionRequest` discriminated union (referenced by Tasks 1, 3, 4, 5)
 
-### Shared rule: the proxy token (referenced by Tasks 1, 3, 5–8)
+TASK-35 shipped a single `PermissionRequest` shape (the skill card). This card widens it to a **discriminated union on `kind`**, re-declared **locally** at each plugin boundary (I2 — no shared import), structurally aligned:
 
-A **proxy token** is a 32-hex secret minted per session. It rides as HTTP **Basic** proxy auth: clients send `Proxy-Authorization: Basic base64("ax:" + token)`. It is an **attribution label only** — never an allow/deny input, never a capability. Format (shared by mint + parse, asserted at both ends):
-
+```typescript
+type PermissionRequest =
+  | { kind: 'skill'; skillId: string; description: string; hosts: string[]; slots: { slot: string; kind: 'api-key' }[] }
+  | { kind: 'host'; host: string; sessionId: string };
 ```
-PROXY_TOKEN_RE = /^[0-9a-f]{32}$/
-header value   = "Basic " + base64("ax:" + token)
-```
+
+The **skill** variant is fired by `@ax/skill-broker` and SSE-matched by `ctx.conversationId` (TASK-35, unchanged). The **host** variant is fired by `@ax/chat-orchestrator` carrying a routing `reqId` and SSE-matched by `payload.reqId` (this card). The host variant carries **no secret** — `sessionId` is opaque + ownership-revalidated at the grant route. (If TASK-35 shipped the skill payload without a `kind` field, add `kind: 'skill'` to it here and update its producer/consumers in the same task.)
 
 ---
 
-### Task 1: Mint a per-session proxy token in `proxy:open-session`
+## File Structure
 
-**Files:**
-- Modify: `packages/credential-proxy/src/plugin.ts`, `packages/credential-proxy/src/listener.ts`
-- Test: `packages/credential-proxy/src/__tests__/plugin.test.ts`
-
-- [ ] **Step 1: Write the failing test**
-
-Add to `plugin.test.ts` (reuse the file's harness that boots the plugin + calls `proxy:open-session`):
-
-```typescript
-it('proxy:open-session returns a 32-hex proxyAuthToken and stamps it on the session', async () => {
-  const { bus, sessions } = await bootProxyPlugin(); // file's existing boot helper
-  const out = await bus.call('proxy:open-session', ctx(), {
-    sessionId: 's1', userId: 'u1', agentId: 'a1',
-    allowlist: ['api.example.com'], credentials: {},
-  });
-  expect(out.proxyAuthToken).toMatch(/^[0-9a-f]{32}$/);
-  expect(sessions.get('s1')?.proxyToken).toBe(out.proxyAuthToken);
-});
-
-it('mints a distinct token per session', async () => {
-  const { bus } = await bootProxyPlugin();
-  const a = await bus.call('proxy:open-session', ctx(), { sessionId: 'sa', userId: 'u', agentId: 'a', allowlist: [], credentials: {} });
-  const b = await bus.call('proxy:open-session', ctx(), { sessionId: 'sb', userId: 'u', agentId: 'a', allowlist: [], credentials: {} });
-  expect(a.proxyAuthToken).not.toBe(b.proxyAuthToken);
-});
-```
-
-(If the file has no `bootProxyPlugin`/`sessions` accessor, mirror the existing open-session test's setup; the listener's `sessions` Map is the one passed into `startProxyListener`.)
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `pnpm -F @ax/credential-proxy test -- src/__tests__/plugin.test.ts`
-Expected: FAIL — `proxyAuthToken` is undefined; `SessionConfig.proxyToken` doesn't exist.
-
-- [ ] **Step 3: Add `proxyToken` to `SessionConfig` and mint it on open**
-
-In `packages/credential-proxy/src/listener.ts`, add to `SessionConfig` (after `userId`):
-
-```typescript
-  /**
-   * Per-session proxy token (attribution label, NOT an authz input). Clients
-   * send it as `Proxy-Authorization: Basic ax:<token>`; the listener resolves
-   * token → session so even an allowlist-MISS (403) can be attributed to the
-   * session that made it. Optional for back-compat with tests that build
-   * SessionConfig directly. See findSessionByProxyToken.
-   */
-  proxyToken?: string;
-```
-
-In `packages/credential-proxy/src/plugin.ts`, add to `OpenSessionOutput` (≈207-214):
-
-```typescript
-  /** Per-session proxy token for egress attribution (Proxy-Authorization Basic). */
-  proxyAuthToken: string;
-```
-
-Import a hex generator (`randomBytes` from `node:crypto`) at the top, and inside the `proxy:open-session` handler, before building `sessionConfig`, mint the token and stamp it:
-
-```typescript
-import { randomBytes } from 'node:crypto';
-// ...
-const proxyToken = randomBytes(16).toString('hex'); // 32 hex chars
-```
-
-Set it on the `SessionConfig` (`sessionConfig.proxyToken = proxyToken;` after the existing assignments, ≈398) and add it to the return object (`proxyAuthToken: proxyToken,` alongside `proxyEndpoint`/`caCertPem`/`envMap`, ≈408-412).
-
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `pnpm -F @ax/credential-proxy test -- src/__tests__/plugin.test.ts`
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add packages/credential-proxy/src/plugin.ts packages/credential-proxy/src/listener.ts packages/credential-proxy/src/__tests__/plugin.test.ts
-git commit -m "feat(credential-proxy): mint per-session proxy token on open-session"
-```
+| File | Responsibility | Change |
+|---|---|---|
+| `packages/credential-proxy/src/plugin.ts` | hook registration | **add** the `proxy:add-host` service hook (ownership-checked) |
+| `packages/chat-orchestrator/src/orchestrator.ts` + `plugin.ts` | per-chat control plane | **add** `event.http-egress` subscriber → resolve session→reqId, dedup, fire the host card |
+| `packages/channel-web/src/server/types.ts` | `PermissionRequest` + `SseFrame` | **widen** to the `skill | host` union |
+| `packages/channel-web/src/server/sse.ts` | per-connection SSE handler | **branch** the `chat:permission-request` subscriber on `kind` (host → match by `payload.reqId`) |
+| `packages/channel-web/src/lib/permission-card-store.ts` | client card store | **widen** the request type to the union |
+| `packages/channel-web/src/lib/transport.ts` | SSE frame parsing | **widen** the client `permissionRequest` frame variant |
+| `packages/channel-web/src/components/PermissionCard.tsx` | the approval card | **branch** on `kind`; render the host-grant variant |
+| `packages/channel-web/src/lib/credentials.ts` | client fetch helpers | **add** `grantHost(...)` |
+| `packages/channel-web/src/server/routes-allow-host.ts` | **new** — `POST /api/chat/allow-host` | **create** → calls `proxy:add-host` |
+| `packages/channel-web/src/server/plugin.ts` | manifest + route wiring | **add** `proxy:add-host` to `calls`; register the route |
+| `packages/credential-proxy/src/__tests__/reactive-wall.canary.test.ts` | end-to-end canary | **create** |
 
 ---
 
-### Task 2: Listener attributes a blocked request to its session via the token
-
-**Files:**
-- Modify: `packages/credential-proxy/src/listener.ts`
-- Test: `packages/credential-proxy/src/__tests__/listener.test.ts`
-
-- [ ] **Step 1: Write the failing test**
-
-Add to `listener.test.ts` (reuse the file's `startProxyListener` + request helpers; build a session with a `proxyToken` + an allowlist that does NOT contain the requested host so the request is blocked):
-
-```typescript
-it('stamps the session on an allowlist-miss 403 when the request carries the proxy token', async () => {
-  const audits: ProxyAuditEntry[] = [];
-  const sessions = new Map<string, SessionConfig>([
-    ['s1', { allowlist: new Set(['allowed.example.com']), sessionId: 's1', userId: 'u1', proxyToken: 'a'.repeat(32) }],
-  ]);
-  const listener = await startProxyListener({ /* ...opts... */ sessions, onAudit: (e) => audits.push(e) });
-  // HTTP-forward a request to a BLOCKED host WITH the Proxy-Authorization header.
-  await httpForwardThroughProxy(listener, {
-    method: 'GET', url: 'http://blocked.example.com/x',
-    headers: { 'proxy-authorization': 'Basic ' + Buffer.from('ax:' + 'a'.repeat(32)).toString('base64') },
-  });
-  const block = audits.find((a) => a.blocked?.startsWith('domain_denied:'));
-  expect(block?.sessionId).toBe('s1');
-  expect(block?.userId).toBe('u1');
-  await listener.stop();
-});
-
-it('leaves the session empty on a blocked request with no/unknown token (no widening, just no attribution)', async () => {
-  const audits: ProxyAuditEntry[] = [];
-  const sessions = new Map<string, SessionConfig>([
-    ['s1', { allowlist: new Set(['allowed.example.com']), sessionId: 's1', userId: 'u1', proxyToken: 'a'.repeat(32) }],
-  ]);
-  const listener = await startProxyListener({ /* ...opts... */ sessions, onAudit: (e) => audits.push(e) });
-  await httpForwardThroughProxy(listener, { method: 'GET', url: 'http://blocked.example.com/x', headers: {} });
-  const block = audits.find((a) => a.blocked?.startsWith('domain_denied:'));
-  expect(block?.sessionId).toBeUndefined();
-  await listener.stop();
-});
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `pnpm -F @ax/credential-proxy test -- src/__tests__/listener.test.ts`
-Expected: FAIL — the block audit has no `sessionId`.
-
-- [ ] **Step 3: Parse the token + resolve the session, stamp the block**
-
-In `packages/credential-proxy/src/listener.ts`, add helpers near `findAllowingSession`:
-
-```typescript
-const PROXY_TOKEN_RE = /^[0-9a-f]{32}$/;
-
-/**
- * Parse a `Proxy-Authorization: Basic base64("ax:<token>")` header into the
- * 32-hex token, or undefined. Attribution-only — a malformed/absent header
- * just yields no attribution; it NEVER affects the allow/deny decision.
- */
-function parseProxyToken(headerValue: string | string[] | undefined): string | undefined {
-  const raw = Array.isArray(headerValue) ? headerValue[0] : headerValue;
-  if (typeof raw !== 'string' || !raw.startsWith('Basic ')) return undefined;
-  let decoded: string;
-  try { decoded = Buffer.from(raw.slice(6), 'base64').toString('utf-8'); } catch { return undefined; }
-  const sep = decoded.indexOf(':');
-  if (sep === -1) return undefined;
-  const token = decoded.slice(sep + 1);
-  return PROXY_TOKEN_RE.test(token) ? token : undefined;
-}
-
-/** Resolve token → SessionConfig (attribution). Linear scan; session counts are small. */
-function findSessionByProxyToken(
-  token: string | undefined,
-  sessions: Map<string, SessionConfig>,
-): SessionConfig | undefined {
-  if (token === undefined) return undefined;
-  for (const session of sessions.values()) {
-    if (session.proxyToken === token) return session;
-  }
-  return undefined;
-}
-```
-
-In **both** deny paths (HTTP `listener.ts:436-453`, CONNECT ≈846-880), before calling `audit({...blocked: 'domain_denied: …'})`, resolve the attributed session from the request's `Proxy-Authorization` header and stamp the audit. Concretely, in the HTTP handler replace the `audit({...})` block at the allowlist-miss with:
-
-```typescript
-const attributed = findSessionByProxyToken(parseProxyToken(req.headers['proxy-authorization']), sessions);
-audit({
-  action: 'proxy_request', method, url, status: 403,
-  requestBytes: 0, responseBytes: 0, durationMs: Date.now() - startTime,
-  blocked: `domain_denied: ${hostname}`,
-  ...(attributed?.sessionId !== undefined ? { sessionId: attributed.sessionId } : {}),
-  ...(attributed?.userId !== undefined ? { userId: attributed.userId } : {}),
-  ...(attributed?.classification !== undefined ? { classification: attributed.classification } : {}),
-});
-```
-
-Apply the same `attributed`-stamping to the CONNECT allowlist-miss audit. For CONNECT the header is on the CONNECT request — Node's `server.on('connect', (req, …))` exposes `req.headers['proxy-authorization']` the same way.
-
-(Leave `findAllowingSession` and the allow/deny logic untouched — attribution is additive.)
-
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `pnpm -F @ax/credential-proxy test -- src/__tests__/listener.test.ts`
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add packages/credential-proxy/src/listener.ts packages/credential-proxy/src/__tests__/listener.test.ts
-git commit -m "feat(credential-proxy): attribute blocked egress to its session via the proxy token"
-```
-
----
-
-### Task 3: Thread `proxyAuthToken` through the `sandbox-protocol` wire shape
-
-**Files:**
-- Modify: `packages/sandbox-protocol/src/schemas.ts`
-- Test: `packages/sandbox-protocol/src/__tests__/schemas.test.ts`
-
-- [ ] **Step 1: Write the failing test**
-
-```typescript
-it('ProxyConfigSchema accepts an optional proxyAuthToken', () => {
-  const ok = ProxyConfigSchema.safeParse({
-    endpoint: 'http://127.0.0.1:5432', caCertPem: '-----X-----', envMap: {}, proxyAuthToken: 'a'.repeat(32),
-  });
-  expect(ok.success).toBe(true);
-  // Back-compat: still valid without it.
-  const legacy = ProxyConfigSchema.safeParse({ endpoint: 'http://127.0.0.1:5432', caCertPem: '-----X-----', envMap: {} });
-  expect(legacy.success).toBe(true);
-});
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `pnpm -F @ax/sandbox-protocol test`
-Expected: FAIL — `proxyAuthToken` is stripped (or the shape is unchanged).
-
-- [ ] **Step 3: Add the field**
-
-In `packages/sandbox-protocol/src/schemas.ts`, add to the `ProxyConfigSchema` object (after `envMap`, before the `.refine`):
-
-```typescript
-    /**
-     * Per-session proxy token (egress attribution; Proxy-Authorization Basic).
-     * Optional + backend-agnostic (I1) — an opaque secret, no transport/storage
-     * vocabulary. The sandbox bootstrap embeds it into the proxy URL userinfo.
-     */
-    proxyAuthToken: z.string().regex(/^[0-9a-f]{32}$/).optional(),
-```
-
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `pnpm -F @ax/sandbox-protocol test`
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add packages/sandbox-protocol/src/schemas.ts packages/sandbox-protocol/src/__tests__/schemas.test.ts
-git commit -m "feat(sandbox-protocol): proxyConfig carries an optional per-session proxyAuthToken"
-```
-
----
-
-### Task 4: Orchestrator threads the token from `proxy:open-session` into `proxyConfig`
-
-**Files:**
-- Modify: `packages/chat-orchestrator/src/orchestrator.ts`
-- Test: `packages/chat-orchestrator/src/__tests__/orchestrator.test.ts`
-
-- [ ] **Step 1: Write the failing test**
-
-Extend the existing open-session test that captures the `sandbox:open-session` input. Stub `proxy:open-session` to return `proxyAuthToken: 'a'.repeat(32)` and assert it lands on the captured `proxyConfig`:
-
-```typescript
-const pc = captured.proxyConfig;
-expect(pc?.proxyAuthToken).toBe('a'.repeat(32));
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `pnpm -F @ax/chat-orchestrator test`
-Expected: FAIL — `proxyConfig.proxyAuthToken` undefined.
-
-- [ ] **Step 3: Thread it through `endpointToProxyConfig`**
-
-In `orchestrator.ts`: the `proxy:open-session` result type (the local `interface` near line 251, `{ proxyEndpoint, caCertPem, envMap }`) gains `proxyAuthToken: string`. `endpointToProxyConfig` (≈the helper invoked at 1303-1306) gains a `proxyAuthToken` parameter and sets it on the returned `ProxyConfig`. At the call site (1303-1306):
-
-```typescript
-proxyConfig = endpointToProxyConfig(
-  opened.proxyEndpoint,
-  opened.caCertPem,
-  opened.envMap,
-  opened.proxyAuthToken,
-);
-```
-
-In `endpointToProxyConfig`, spread it onto the result (preserve `exactOptionalPropertyTypes`):
-
-```typescript
-return {
-  ...(isUnix ? { unixSocketPath: socketPath } : { endpoint }),
-  caCertPem,
-  envMap,
-  ...(proxyAuthToken !== undefined ? { proxyAuthToken } : {}),
-};
-```
-
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `pnpm -F @ax/chat-orchestrator test`
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add packages/chat-orchestrator/src/orchestrator.ts packages/chat-orchestrator/src/__tests__/orchestrator.test.ts
-git commit -m "feat(orchestrator): thread proxyAuthToken from proxy:open-session into proxyConfig"
-```
-
----
-
-### Task 5: subprocess sandbox carries the token into the proxy env
-
-**Files:**
-- Modify: `packages/sandbox-subprocess/src/open-session.ts`
-- Test: `packages/sandbox-subprocess/src/__tests__/open-session.test.ts`
-
-- [ ] **Step 1: Write the failing test**
-
-```typescript
-it('sets AX_PROXY_TOKEN in the session env when proxyConfig carries a token', async () => {
-  const { sessionEnv } = await openSessionForTest({
-    proxyConfig: { endpoint: 'http://127.0.0.1:5432', caCertPem: 'x', envMap: {}, proxyAuthToken: 'a'.repeat(32) },
-  });
-  expect(sessionEnv.AX_PROXY_TOKEN).toBe('a'.repeat(32));
-});
-```
-
-(Use the file's existing open-session test helper that exposes the composed child env; mirror its setup.)
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `pnpm -F @ax/sandbox-subprocess test`
-Expected: FAIL — `AX_PROXY_TOKEN` not set.
-
-- [ ] **Step 3: Stamp the env var**
-
-In `packages/sandbox-subprocess/src/open-session.ts`, where the proxy env is built (≈457-458, next to `sessionEnv.HTTPS_PROXY = input.proxyConfig.endpoint`):
-
-```typescript
-if (input.proxyConfig.proxyAuthToken !== undefined) {
-  sessionEnv.AX_PROXY_TOKEN = input.proxyConfig.proxyAuthToken;
-}
-```
-
-(Keep `HTTPS_PROXY`/`HTTP_PROXY` exactly as-is — `proxy-startup.ts` (Task 7) embeds the token into the URL the SDK subprocess actually uses; the token in `AX_PROXY_TOKEN` is the single source the runner reads.)
-
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `pnpm -F @ax/sandbox-subprocess test`
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add packages/sandbox-subprocess/src/open-session.ts packages/sandbox-subprocess/src/__tests__/open-session.test.ts
-git commit -m "feat(sandbox-subprocess): pass AX_PROXY_TOKEN into the session env"
-```
-
----
-
-### Task 6: k8s sandbox carries the token into the pod env
-
-**Files:**
-- Modify: `packages/sandbox-k8s/src/pod-spec.ts`
-- Test: `packages/sandbox-k8s/src/__tests__/pod-spec.test.ts`
-
-- [ ] **Step 1: Write the failing test**
-
-```typescript
-it('stamps AX_PROXY_TOKEN on the pod env when proxyConfig carries a token', () => {
-  const spec = buildPodSpec({
-    /* ...existing required fields... */
-    proxyConfig: { endpoint: 'http://10.0.0.1:8080', caCertPem: 'x', envMap: {}, proxyAuthToken: 'b'.repeat(32) },
-  });
-  expect(findEnv(spec, 'AX_PROXY_TOKEN')?.value).toBe('b'.repeat(32));
-});
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `pnpm -F @ax/sandbox-k8s test`
-Expected: FAIL — no `AX_PROXY_TOKEN` env.
-
-- [ ] **Step 3: Add the field to `PodProxyConfig` + stamp it**
-
-In `pod-spec.ts`, add `proxyAuthToken?: string;` to the `PodProxyConfig` interface (≈69-71), and inside the `if (input.proxyConfig !== undefined)` block (≈277), after the endpoint/unixSocket stamping:
-
-```typescript
-if (pc.proxyAuthToken !== undefined) {
-  proxyEnv.push({ name: 'AX_PROXY_TOKEN', value: pc.proxyAuthToken });
-}
-```
-
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `pnpm -F @ax/sandbox-k8s test`
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add packages/sandbox-k8s/src/pod-spec.ts packages/sandbox-k8s/src/__tests__/pod-spec.test.ts
-git commit -m "feat(sandbox-k8s): stamp AX_PROXY_TOKEN on the runner pod env"
-```
-
----
-
-### Task 7: Runner embeds the token as `Proxy-Authorization` for both proxy modes
-
-**Files:**
-- Modify: `packages/agent-claude-sdk-runner/src/proxy-startup.ts`, `packages/agent-claude-sdk-runner/src/env.ts`
-- Test: `packages/agent-claude-sdk-runner/src/__tests__/proxy-startup.test.ts`
-
-- [ ] **Step 1: Write the failing test**
-
-```typescript
-it('embeds AX_PROXY_TOKEN as Basic userinfo in the SDK subprocess proxy URL (direct mode)', async () => {
-  process.env.AX_PROXY_TOKEN = 'c'.repeat(32);
-  const { anthropicEnv } = await setupProxy({ proxyEndpoint: 'http://127.0.0.1:9000' });
-  // ax:<token> as Basic userinfo on the proxy URL the SDK subprocess uses.
-  expect(anthropicEnv.HTTPS_PROXY).toBe(`http://ax:${'c'.repeat(32)}@127.0.0.1:9000`);
-  expect(anthropicEnv.HTTP_PROXY).toBe(`http://ax:${'c'.repeat(32)}@127.0.0.1:9000`);
-  delete process.env.AX_PROXY_TOKEN;
-});
-
-it('leaves the proxy URL untouched when no token is present (back-compat)', async () => {
-  delete process.env.AX_PROXY_TOKEN;
-  const { anthropicEnv } = await setupProxy({ proxyEndpoint: 'http://127.0.0.1:9000' });
-  expect(anthropicEnv.HTTPS_PROXY).toBe('http://127.0.0.1:9000');
-});
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `pnpm -F @ax/agent-claude-sdk-runner test -- src/__tests__/proxy-startup.test.ts`
-Expected: FAIL — no userinfo embedded.
-
-- [ ] **Step 3: Read the token + embed it as userinfo**
-
-In `packages/agent-claude-sdk-runner/src/env.ts`, add `proxyToken?: string;` to `RunnerEnv` and read `AX_PROXY_TOKEN` in `readRunnerEnv` (validate `^[0-9a-f]{32}$`; ignore if malformed).
-
-In `proxy-startup.ts`, add a pure helper near the top:
-
-```typescript
-const PROXY_TOKEN_RE = /^[0-9a-f]{32}$/;
-
-/**
- * Embed the per-session proxy token into an http(s) proxy URL as Basic
- * userinfo, so every client reading HTTP(S)_PROXY (curl, undici, python) sends
- * `Proxy-Authorization: Basic ax:<token>` automatically. The listener uses it
- * to attribute egress (incl. blocks) to this session. No token → URL unchanged.
- */
-export function withProxyToken(proxyUrl: string, token: string | undefined): string {
-  if (token === undefined || !PROXY_TOKEN_RE.test(token)) return proxyUrl;
-  try {
-    const u = new URL(proxyUrl);
-    u.username = 'ax';
-    u.password = token;
-    return u.toString().replace(/\/$/, ''); // URL adds a trailing slash on bare authority
-  } catch {
-    return proxyUrl;
-  }
-}
-```
-
-Read the token once (`const proxyToken = env.proxyToken;`). Apply it:
-- **Bridge mode** (≈158): `const local = withProxyToken(\`http://127.0.0.1:${bridge.port}\`, proxyToken);` — set `process.env.HTTP_PROXY`/`HTTPS_PROXY` to `local` (unchanged below), and pass the token to the parent dispatcher: `setGlobalDispatcher(new ProxyAgent({ uri: \`http://127.0.0.1:${bridge.port}\`, token: 'Basic ' + Buffer.from('ax:' + proxyToken).toString('base64') }))` **when** `proxyToken` is set (else `new ProxyAgent(local)` as today).
-- **Direct + the SDK subprocess env** (≈242-246): wrap the forwarded URL — `const proxyUrl = withProxyToken(env.proxyEndpoint ?? process.env.HTTPS_PROXY ?? '', proxyToken);` then `anthropicEnv.HTTPS_PROXY = anthropicEnv.HTTP_PROXY = proxyUrl;` (guard the empty-string case as today).
-
-(`ENV_ALLOWLIST` already forwards `http_proxy`/`https_proxy` to the SDK subprocess — no allowlist change. The token being readable by the model's Bash tool is acceptable: it's an attribution label, not a capability — see the security note.)
-
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `pnpm -F @ax/agent-claude-sdk-runner test -- src/__tests__/proxy-startup.test.ts`
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add packages/agent-claude-sdk-runner/src/proxy-startup.ts packages/agent-claude-sdk-runner/src/env.ts packages/agent-claude-sdk-runner/src/__tests__/proxy-startup.test.ts
-git commit -m "feat(runner): embed AX_PROXY_TOKEN as Proxy-Authorization for both proxy modes"
-```
-
----
-
-### Task 8: Bridge forwards `Proxy-Authorization` on CONNECT
-
-**Files:**
-- Modify: `packages/credential-proxy-bridge/src/bridge.ts`
-- Test: `packages/credential-proxy-bridge/src/__tests__/bridge.test.ts`
-
-- [ ] **Step 1: Write the failing test**
-
-Assert the CONNECT request line the bridge writes to the unix socket includes the `Proxy-Authorization` header it received (use the file's fake unix-socket-proxy harness; capture the bytes written by the bridge):
-
-```typescript
-it('forwards Proxy-Authorization on the CONNECT it writes to the unix socket', async () => {
-  const received = await captureCONNECTBytes(async (bridgeUrl) => {
-    await connectThroughBridge(bridgeUrl, {
-      target: 'api.example.com:443',
-      headers: { 'proxy-authorization': 'Basic ' + Buffer.from('ax:' + 'd'.repeat(32)).toString('base64') },
-    });
-  });
-  expect(received).toContain('Proxy-Authorization: Basic ' + Buffer.from('ax:' + 'd'.repeat(32)).toString('base64'));
-});
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `pnpm -F @ax/credential-proxy-bridge test`
-Expected: FAIL — the bridge writes only `CONNECT … Host: …`.
-
-- [ ] **Step 3: Forward the header**
-
-In `bridge.ts` CONNECT handler (≈113), build the request with the inbound `Proxy-Authorization` (if any) appended:
-
-```typescript
-const pa = req.headers['proxy-authorization'];
-const paLine = typeof pa === 'string' ? `Proxy-Authorization: ${pa}\r\n` : '';
-proxySocket.write(`CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n${paLine}\r\n`);
-```
-
-(The HTTP-forward path at ≈43-56 already forwards `proxy-authorization` — it's not in the strip list — so no change there.)
-
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `pnpm -F @ax/credential-proxy-bridge test`
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add packages/credential-proxy-bridge/src/bridge.ts packages/credential-proxy-bridge/src/__tests__/bridge.test.ts
-git commit -m "feat(credential-proxy-bridge): forward Proxy-Authorization on CONNECT (k8s attribution)"
-```
-
----
-
-## Phase B — `proxy:add-host` host-internal hook
-
-### Task 9: `proxy:add-host` widens the live session allowlist (ownership-checked)
+### Task 1: `proxy:add-host` widens the live session allowlist (ownership-checked)
 
 **Files:**
 - Modify: `packages/credential-proxy/src/plugin.ts`
@@ -716,9 +190,7 @@ git commit -m "feat(credential-proxy): proxy:add-host live allowlist widening (h
 
 ---
 
-## Phase C — Surfacing (orchestrator)
-
-### Task 10: Orchestrator fires the host-grant card on an allowlist-block
+### Task 2: Orchestrator fires the host-grant card on an allowlist-block
 
 **Files:**
 - Modify: `packages/chat-orchestrator/src/orchestrator.ts`, `packages/chat-orchestrator/src/plugin.ts`
@@ -793,13 +265,13 @@ Add `onHttpEgress` (mirrors `onSessionTerminate`'s sessionId→reqId resolution 
 ```typescript
 // Reactive egress wall — turn an allowlist-MISS 403 into the in-chat
 // "Allow access to <host>?" card (design §6B, decision #4). The credential
-// proxy now attributes blocked egress to its session (per-session token,
-// Phase A), so event.http-egress carries a real sessionId. We resolve it to
-// the in-flight reqId(s) via reqIdsBySession — the SAME map Fault A uses —
-// and fire the TASK-35 chat:permission-request hook with the host-grant
-// variant, stamped with reqId so the SSE matches the precise turn (the
-// host variant matches by payload.reqId, like chat:turn-error). Observation-
-// only; a no-op when nothing is attributed / no turn is in flight.
+// proxy attributes blocked egress to its session (per-session token, TASK-52),
+// so event.http-egress carries a real sessionId. We resolve it to the
+// in-flight reqId(s) via reqIdsBySession — the SAME map Fault A uses — and
+// fire the TASK-35 chat:permission-request hook with the host-grant variant,
+// stamped with reqId so the SSE matches the precise turn (the host variant
+// matches by payload.reqId, like chat:turn-error). Observation-only; a no-op
+// when nothing is attributed / no turn is in flight.
 async function onHttpEgress(ctx: AgentContext, payload: HttpEgressEventLike): Promise<void> {
   if (payload?.blockedReason !== 'allowlist') return;
   const sessionId = payload.sessionId;
@@ -863,23 +335,7 @@ git commit -m "feat(orchestrator): surface allowlist-block egress as a host-gran
 
 ---
 
-## Phase D — Card UI (reuses TASK-35)
-
-### Shared rule: the `PermissionRequest` discriminated union (referenced by Tasks 10–14)
-
-TASK-35 shipped a single `PermissionRequest` shape (the skill card). TASK-37 widens it to a **discriminated union on `kind`**, re-declared **locally** at each plugin boundary (I2 — no shared import), structurally aligned:
-
-```typescript
-type PermissionRequest =
-  | { kind: 'skill'; skillId: string; description: string; hosts: string[]; slots: { slot: string; kind: 'api-key' }[] }
-  | { kind: 'host'; host: string; sessionId: string };
-```
-
-The **skill** variant is fired by `@ax/skill-broker` and SSE-matched by `ctx.conversationId` (TASK-35, unchanged). The **host** variant is fired by `@ax/chat-orchestrator` carrying a routing `reqId` and SSE-matched by `payload.reqId` (this card). The host variant carries **no secret** — `sessionId` is opaque + ownership-revalidated at the grant route. (If TASK-35 shipped the skill payload without a `kind` field, add `kind: 'skill'` to it here and update its producer/consumers in the same task.)
-
----
-
-### Task 11: channel-web server — host variant in the payload union + SSE reqId match
+### Task 3: channel-web server — host variant in the payload union + SSE reqId match
 
 **Files:**
 - Modify: `packages/channel-web/src/server/types.ts`, `packages/channel-web/src/server/sse.ts`
@@ -961,7 +417,7 @@ git commit -m "feat(channel-web): host-grant permission-request variant + reqId-
 
 ---
 
-### Task 12: Client transport + store handle the host variant
+### Task 4: Client transport + store handle the host variant
 
 **Files:**
 - Modify: `packages/channel-web/src/lib/transport.ts`, `packages/channel-web/src/lib/permission-card-store.ts`
@@ -1029,7 +485,7 @@ git commit -m "feat(channel-web): client store + transport carry the host-grant 
 
 ---
 
-### Task 13: `<PermissionCard>` renders the host-grant variant
+### Task 5: `<PermissionCard>` renders the host-grant variant
 
 **Files:**
 - Modify: `packages/channel-web/src/components/PermissionCard.tsx`, `packages/channel-web/src/lib/credentials.ts` (add the grant helper)
@@ -1160,7 +616,7 @@ git commit -m "feat(channel-web): reactive-wall host-grant card UI (allow host, 
 
 ---
 
-### Task 14: Grant route — `POST /api/chat/allow-host` → `proxy:add-host`
+### Task 6: Grant route — `POST /api/chat/allow-host` → `proxy:add-host`
 
 **Files:**
 - Create: `packages/channel-web/src/server/routes-allow-host.ts`
@@ -1271,19 +727,17 @@ git commit -m "feat(channel-web): POST /api/chat/allow-host → host-internal pr
 
 ---
 
-## Phase E — Canary + verification
-
-### Task 15: End-to-end attribution+grant test, full verification, security-checklist, PR
+### Task 7: End-to-end reactive-wall canary, full verification, security-checklist, PR
 
 **Files:**
 - Create: `packages/credential-proxy/src/__tests__/reactive-wall.canary.test.ts`
 
-- [ ] **Step 1: Write the canary (attribution + live grant + retry, no re-spawn)**
+- [ ] **Step 1: Write the canary (attributed block → live grant → retry, no re-spawn)**
 
-Boot the credential-proxy plugin (real listener) + a host bus. Open a session with a token + an allowlist that excludes `blocked.example.com`. Assert the full reactive loop end to end:
+Boot the credential-proxy plugin (real listener) + a host bus. Open a session with a token (TASK-52) + an allowlist that excludes `blocked.example.com`. Assert the full reactive loop end to end:
 
 ```typescript
-it('reactive wall: blocked egress is attributed → proxy:add-host widens live → retry succeeds (no re-spawn)', async () => {
+it('reactive wall: attributed block → proxy:add-host widens live → retry succeeds (no re-spawn)', async () => {
   const { bus, sessions, listener } = await bootProxyPlugin();
   const audits: HttpEgressEvent[] = [];
   bus.subscribe('event.http-egress', 'canary/egress', async (_c, p) => { audits.push(p as never); return undefined; });
@@ -1291,27 +745,25 @@ it('reactive wall: blocked egress is attributed → proxy:add-host widens live �
   const open = await bus.call('proxy:open-session', ctx({ userId: 'u1' }), {
     sessionId: 's1', userId: 'u1', agentId: 'a1', allowlist: ['allowed.example.com'], credentials: {},
   });
-  const token = open.proxyAuthToken;
-  const auth = { 'proxy-authorization': 'Basic ' + Buffer.from('ax:' + token).toString('base64') };
+  const auth = { 'proxy-authorization': 'Basic ' + Buffer.from('ax:' + open.proxyAuthToken).toString('base64') };
 
-  // 1) Blocked request carrying the token → 403, attributed to s1.
+  // 1) Blocked request carrying the token → 403, attributed to s1 (TASK-52).
   const r1 = await httpForwardThroughProxy(listener, { method: 'GET', url: 'http://blocked.example.com/', headers: auth });
   expect(r1.status).toBe(403);
   const block = audits.find((a) => a.blockedReason === 'allowlist' && a.host === 'blocked.example.com');
-  expect(block?.sessionId).toBe('s1'); // attribution (Phase A) works
+  expect(block?.sessionId).toBe('s1');
 
   // 2) Owner grants the host live — no re-spawn.
   expect(await bus.call('proxy:add-host', ctx({ userId: 'u1' }), { sessionId: 's1', host: 'blocked.example.com' })).toEqual({ added: true });
 
-  // 3) Retry now passes the allowlist gate (we stub upstream so the assertion
-  //    is "no longer a domain_denied 403", not a real fetch).
+  // 3) Retry now passes the allowlist gate (assert it is no longer a domain_denied 403).
   const r2 = await httpForwardThroughProxy(listener, { method: 'GET', url: 'http://blocked.example.com/', headers: auth });
   expect(r2.status).not.toBe(403);
   await listener.stop();
 });
 ```
 
-(Mirror the file's existing real-listener request helpers; if the proxy package has no `bootProxyPlugin`, build the plugin via `createCredentialProxyPlugin({ listen: { kind: 'tcp', host: '127.0.0.1', port: 0 } }).init({ bus })` and reach the shared `sessions`/`listener` through the same seam the other tests use.)
+(Mirror the file's real-listener request helpers; if the proxy package has no `bootProxyPlugin`, build via `createCredentialProxyPlugin({ listen: { kind: 'tcp', host: '127.0.0.1', port: 0 } }).init({ bus })` and reach the shared `sessions`/`listener` through the same seam the other tests use.)
 
 - [ ] **Step 2: Run the canary**
 
@@ -1326,21 +778,21 @@ pnpm build
 pnpm test
 pnpm lint
 ```
-Expected: all green. `pnpm build` (tsc project refs) catches the new `proxyAuthToken` field not being threaded everywhere it's consumed and the `PermissionRequest` union not being handled in every `kind` switch; `pnpm lint` catches an accidental cross-plugin import (`no-restricted-imports`) in the orchestrator/channel-web, and a raw color / non-shadcn primitive in `PermissionCard.tsx`. Bug-fix-test policy: any bug found here gets a regression test before the fix is considered done.
+Expected: all green. `pnpm build` (tsc project refs) catches the `PermissionRequest` union not being handled in every `kind` switch; `pnpm lint` catches an accidental cross-plugin import (`no-restricted-imports`) in the orchestrator/channel-web, and a raw color / non-shadcn primitive in `PermissionCard.tsx`. Bug-fix-test policy: any bug found here gets a regression test before the fix is considered done.
 
 - [ ] **Step 4: Run the `security-checklist` skill (pre-PR gate)**
 
-Invoke the `security-checklist` skill and answer all three threat models against the [pre-stated model](#security-threat-model-pre-stated). Key items: (a) `proxy:add-host` is host-internal + owner-checked — confirm no IPC action was added; (b) the proxy token is attribution-only and confers no capability even when readable from `$HTTPS_PROXY`; (c) the grant route forces server-side identity + CSRF + zod, never trusting the browser's `sessionId` for authorization. Paste the structured note into the PR.
+Invoke the `security-checklist` skill and answer all three threat models against the [pre-stated model](#security-threat-model-pre-stated). Key items: (a) `proxy:add-host` is host-internal + owner-checked — confirm no IPC action was added; (b) the grant route forces server-side identity + CSRF + zod, never trusting the browser's `sessionId` for authorization; (c) untrusted content can only make the card request a host the model already tried to reach (the user is the backstop). Paste the structured note into the PR.
 
 - [ ] **Step 5: Commit + open the PR**
 
 ```bash
 git add packages/credential-proxy/src/__tests__/reactive-wall.canary.test.ts
-git commit -m "test(credential-proxy): reactive-wall canary (attribution → live grant → retry)"
+git commit -m "test(credential-proxy): reactive-wall canary (attributed block → live grant → retry)"
 ```
 
 PR description MUST include:
-- **Boundary review** — `proxy:add-host` `{ sessionId, host } → { added }`, host-internal service hook (alternate impl = any egress gate; no leak; subscriber risk none); the `chat:permission-request` host variant `{ kind:'host', host, sessionId }` (channel-agnostic, no secret). Explicitly note the design's "`IPC: yes`" boundary note is **stale/rejected** (fork #1) and the per-session-token attribution closes the design's missing 403→session link (fork #2).
+- **Boundary review** — `proxy:add-host` `{ sessionId, host } → { added }`, host-internal service hook (alternate impl = any egress gate; no leak; subscriber risk none); the `chat:permission-request` host variant `{ kind:'host', host, sessionId }` (channel-agnostic, no secret). Explicitly note the design's "`IPC: yes`" boundary note is **stale/rejected** (fork #1).
 - **Half-wired window OPEN** (see below).
 - The `security-checklist` structured note.
 
@@ -1351,20 +803,20 @@ PR description MUST include:
 Stated explicitly per hard requirement #5:
 
 1. **"Always for this agent" persistence is not built.** This phase, **both** buttons perform the same **live** grant via `proxy:add-host` (the host is widened for the session's life). The per-`(user, agent)` "always-allow" list that survives across sessions + its revoke path is **TASK-44** (design §P7.3). The button is present and functional (it grants now); only the durability is deferred. **CLOSES in TASK-44.**
-2. **Seamless auto-retry is not built.** Granting widens the live allowlist, so the *next* egress to that host succeeds (design §7: host-grant = no re-spawn). But this card does **not** inject a synthetic "retry now" turn — if the model already concluded its turn, the user re-prompts (or the model retries on its own). The seamless pause→grant→auto-continue is the same turn-injection machinery as **TASK-36** (pending-turn → resume) and is owned there. The wall's security-critical core (attribution + the user-gated live grant) is fully built and tested here.
-3. **What IS fully wired (no dead code — invariant #3):** per-session token attribution (proven by the canary — a blocked request carries its sessionId), `proxy:add-host` (proven by the proxy unit tests + canary live grant), the orchestrator surfacing (proven by the orchestrator tests), the SSE host frame (server test), the transport+store (client tests), the card UI + grant route (component + route tests). `proxy:add-host` has a real production caller (the grant route) — it is not half-wired.
+2. **Seamless auto-retry is not built.** Granting widens the live allowlist, so the *next* egress to that host succeeds (design §7: host-grant = no re-spawn). But this card does **not** inject a synthetic "retry now" turn — if the model already concluded its turn, the user re-prompts (or the model retries on its own). The seamless pause→grant→auto-continue is the same turn-injection machinery as **TASK-36** (pending-turn → resume) and is owned there. The wall's security-critical core (the user-gated live grant) is fully built and tested here.
+3. **What IS fully wired (no dead code — invariant #3):** `proxy:add-host` has a real production caller (the grant route — proven by the route test + canary live grant); the orchestrator surfacing fires the card (orchestrator tests); the SSE host frame (server test); the transport+store (client tests); the card UI + grant route (component + route tests). The per-session attribution this consumes is delivered by **TASK-52** (its dependency).
 
 ---
 
 ## Security threat model (pre-stated)
 
-The `security-checklist` skill is a **pre-PR gate** (Task 15 Step 4). This card touches the **egress trust boundary at runtime** — the flagged threat. Starting model:
+The `security-checklist` skill is a **pre-PR gate** (Task 7 Step 4). This card touches the **egress trust boundary at runtime** — the flagged threat. (The per-session proxy token's own threat model lives in TASK-52.) Starting model:
 
 - **Runtime egress widening (the flagged threat).** `proxy:add-host` widens a live session's allowlist with **no** spawn/credential/filesystem reach — it only `allowlist.add(host)` on the session's own `Set`. It is **host-internal** (never an IPC action — fork #1), so the untrusted runner cannot call it; the only caller is the authenticated owner's browser via a CSRF-gated route, and the proxy re-validates `SessionConfig.userId === ctx.userId`. A user can therefore widen only **their own** isolated sandbox's egress — exactly the capability the wall is designed to grant (decision #3, §10). The host is exact-match, hostname-validated (no wildcards/ports/schemes) at both the route and the proxy (defense-in-depth, I2). Capability minimized: a single host, a single session, no blanket egress.
-- **Per-session proxy token (new untrusted-content-adjacent surface).** The token rides in `$HTTPS_PROXY` and is **readable by the model's Bash tool** (`echo $HTTPS_PROXY`). This is acceptable because the token is an **attribution label, not an authz input**: the allow/deny gate ignores it (a missing/forged token degrades to today's unattributed behavior — it can never *widen* egress), and `proxy:add-host` ownership is validated via `SessionConfig.userId`, not the token. Worst case for a prompt-injected model: it makes the wall card appear on **its own** session's stream for a host it tried to reach — which is precisely the wall working as intended (the user is the backstop, §10). It cannot forge another session's token (each is random 16-byte per session) to surface a card elsewhere with any security consequence (the card is benign + the grant is owner-checked).
+- **Grant identity.** The card payload carries the opaque `sessionId`, but the route never trusts it for authorization — it builds the ctx from the authenticated session cookie and the proxy checks ownership. A forged/guessed `sessionId` for another user's session is rejected (`forbidden`).
 - **Prompt-injection steering the card.** The card's `host` is whatever the model tried to reach — by design (an ad-hoc fetch no skill declared). The user sees the exact hostname before allowing (the §10 card-as-backstop). The host string renders as a React text node (auto-escaped; no raw-HTML sink), so a hostile hostname can't inject markup.
-- **Sandbox / capability leakage.** No new IPC action (the agent→host wire surface is unchanged). No new filesystem/process/env reach. The proxy listener change is attribution-only (the SSRF/private-IP/canary/MITM guards are untouched). The orchestrator surfacing is host-side and observation-only.
-- **Supply chain.** No new third-party dependency: undici `ProxyAgent` (already used), Node `crypto`/`http`/`net` (stdlib), zod + shadcn primitives already installed. (Confirm `pnpm-lock.yaml` shows no new registry packages.)
+- **Sandbox / capability leakage.** No new IPC action (the agent→host wire surface is unchanged). No new filesystem/process/env reach. The orchestrator surfacing is host-side and observation-only.
+- **Supply chain.** No new third-party dependency: zod + shadcn primitives already installed. (Confirm `pnpm-lock.yaml` shows no new registry packages.)
 
 ---
 
@@ -1372,16 +824,17 @@ The `security-checklist` skill is a **pre-PR gate** (Task 15 Step 4). This card 
 
 **Spec coverage** (against design §6B flow B, §7 turn mechanics, §10 security, §11 component #4, decision #4, and the card body):
 
-- "A raw proxy 403 becomes an in-chat 'Allow access to host?' card" → Phase A makes the 403 attributable (Tasks 1–8) + Task 10 surfaces it + Tasks 11–13 render it. The as-built gap (no 403→session attribution) is closed by the per-session token, per the human's decision. ✓
-- "Just this once / Always for this agent" → Task 13's two buttons; "Always" persistence is the stated TASK-44 half-wired seam. ✓
-- "Granting widens the live session allowlist via `proxy:add-host` — no re-spawn — and the agent retries" → Task 9 (`allowlist.add`, live, no re-spawn) + Task 14 (grant route) + the canary's retry assertion (Task 15). Seamless auto-retry is the stated TASK-36 seam. ✓
-- "Capabilities minimized: a single host to a single session, never blanket egress" → Task 9 ownership check + exact-match host validation; threat model. ✓
+- "A raw proxy 403 becomes an in-chat 'Allow access to host?' card" → Task 2 surfaces the (TASK-52-)attributed block + Tasks 3–5 render it. ✓
+- "Just this once / Always for this agent" → Task 5's two buttons; "Always" persistence is the stated TASK-44 half-wired seam. ✓
+- "Granting widens the live session allowlist via `proxy:add-host` — no re-spawn — and the agent retries" → Task 1 (`allowlist.add`, live, no re-spawn) + Task 6 (grant route) + the canary's retry assertion (Task 7). Seamless auto-retry is the stated TASK-36 seam. ✓
+- "Capabilities minimized: a single host to a single session, never blanket egress" → Task 1 ownership check + exact-match host validation; threat model. ✓
 - "New hook + IPC `proxy:add-host {sessionId, host}` — schema in @ax/credential-proxy" → resolved: host-internal service hook (NOT IPC — fork #1), registered in `@ax/credential-proxy`. The design's "IPC: yes" is flagged stale in the PR. ✓
-- "Security-checklist (egress boundary widening at runtime)" → pre-PR gate (Task 15 Step 4) + pre-stated threat model. ✓
-- "Reuses the card/SSE frame from TASK-35" → Tasks 11–13 extend TASK-35's `chat:permission-request` hook, `permissionRequest` SSE frame, `permission-card-store`, transport branch, and `<PermissionCard>` to a discriminated union. ✓
+- "Security-checklist (egress boundary widening at runtime)" → pre-PR gate (Task 7 Step 4) + pre-stated threat model. ✓
+- "Reuses the card/SSE frame from TASK-35" → Tasks 3–5 extend TASK-35's `chat:permission-request` hook, `permissionRequest` SSE frame, `permission-card-store`, transport branch, and `<PermissionCard>` to a discriminated union. ✓
+- "Per-session 403 attribution" → delivered by **TASK-52** (dependency); the re-verify checklist confirms it merged. ✓
 
-**Placeholder scan:** every code step shows real code; every test step shows real assertions; every run step shows the exact `pnpm -F` command + expected result. Harness-bound steps (proxy listener request helpers, sandbox open-session test helpers, the SSE `bootHandler`/`fakeRes`, transport `sseStream`/`drain`/`run`) reference each file's existing helpers by name with concrete assertions — matching the template's harness-bound tasks. No TBD/TODO in shipped code. ✓
+**Placeholder scan:** every code step shows real code; every test step shows real assertions; every run step shows the exact `pnpm -F` command + expected result. Harness-bound steps (proxy listener helpers, the SSE `bootHandler`/`fakeRes`, transport `sseStream`/`drain`/`run`) reference each file's existing helpers by name with concrete assertions — matching the template's harness-bound tasks. No TBD/TODO in shipped code. ✓
 
-**Type consistency:** `proxyAuthToken: string` (32-hex) flows: `OpenSessionOutput` (credential-proxy) → orchestrator `endpointToProxyConfig` → `ProxyConfigSchema` (sandbox-protocol) → both sandbox backends' env (`AX_PROXY_TOKEN`) → runner `proxy-startup` userinfo → listener `parseProxyToken`. `SessionConfig.proxyToken` is the stored copy. The `PermissionRequest` union `{ kind:'skill'|'host' }` is identical at every hop (server `types.ts`, `sse.ts`, transport `SseFrame`, `permission-card-store`, `<PermissionCard>`); the host variant is `{ kind:'host', host, sessionId }` to the browser (+ a routing `reqId` on the hook payload, stripped before the frame). `proxy:add-host` is `{ sessionId, host } → { added: boolean }` at the hook, the route, and the client `grantHost`. The host-variant SSE match key is `payload.reqId` (distinct from the skill variant's `ctx.conversationId` — intentional, each producer's available key).
+**Type consistency:** the `PermissionRequest` union `{ kind:'skill'|'host' }` is identical at every hop (server `types.ts`, `sse.ts`, transport `SseFrame`, `permission-card-store`, `<PermissionCard>`); the host variant is `{ kind:'host', host, sessionId }` to the browser (+ a routing `reqId` on the hook payload, stripped before the frame). `proxy:add-host` is `{ sessionId, host } → { added: boolean }` at the hook, the route, and the client `grantHost`. The host-variant SSE match key is `payload.reqId` (distinct from the skill variant's `ctx.conversationId` — intentional, each producer's available key).
 
-**Known residual / forks (resolved):** (1) attribution is best-effort — a request with no/forged token degrades to no card (never to wider egress), acceptable; (2) the host-variant card is live-only (not buffered like content frames) — if no SSE is attached when the block fires, the card is lost and the egress stays blocked (same as today), acceptable for the wall; (3) the allow/deny gate stays ORed-across-sessions (unchanged) — per-session egress *isolation* via the token is a possible hardening follow-up, deliberately out of scope to avoid an allow/deny regression; (4) "Always" grants live but doesn't persist (TASK-44) and there's no seamless auto-retry (TASK-36) — both stated half-wired seams.
+**Known residual / forks (resolved):** (1) the host-variant card is live-only (not buffered like content frames) — if no SSE is attached when the block fires, the card is lost and the egress stays blocked (same as today), acceptable for the wall; (2) "Always" grants live but doesn't persist (TASK-44) and there's no seamless auto-retry (TASK-36) — both stated half-wired seams; (3) attribution best-effort is owned by TASK-52 (a missing token → no card, never wider egress).
