@@ -1038,8 +1038,12 @@ async function postDecision(
   });
 }
 
-/** Mint a real conversation row tied to `agt_test` via the message route. */
-async function createConversation(port: number, userId: string): Promise<string> {
+/**
+ * Mint a real conversation row tied to `agt_test` via the message route. The
+ * row is owned by whichever user the harness was booted with (the message
+ * route reads the authed user, not the body).
+ */
+async function createConversation(port: number): Promise<string> {
   const r = await postMessage(port, {
     conversationId: null,
     agentId: 'agt_test',
@@ -1057,7 +1061,7 @@ describe('@ax/channel-web POST /api/chat/permission-decision', () => {
     });
     harnesses.push(booted.harness);
 
-    const conversationId = await createConversation(booted.port, 'userA');
+    const conversationId = await createConversation(booted.port);
 
     const r = await postDecision(booted.port, { conversationId, skillId: 'linear' });
     expect(r.status).toBe(200);
