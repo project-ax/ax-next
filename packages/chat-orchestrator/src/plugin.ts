@@ -4,6 +4,8 @@ import {
   PLUGIN_NAME,
   type ChatOrchestratorConfig,
   type AgentInvokeInput,
+  type ApplyCapabilityGrantInput,
+  type ApplyCapabilityGrantOutput,
 } from './orchestrator.js';
 
 // ---------------------------------------------------------------------------
@@ -25,7 +27,7 @@ export function createChatOrchestratorPlugin(
     manifest: {
       name: PLUGIN_NAME,
       version: '0.0.0',
-      registers: ['agent:invoke'],
+      registers: ['agent:invoke', 'agent:apply-capability-grant'],
       // The orchestrator drives the per-chat lifecycle by calling these
       // peers. `session:create` is NOT listed — sandbox:open-session mints
       // the session itself; a double-create throws duplicate-session. The
@@ -100,6 +102,20 @@ export function createChatOrchestratorPlugin(
         'agent:invoke',
         PLUGIN_NAME,
         async (ctx, input) => orch.runAgentInvoke(ctx, input),
+      );
+
+      // JIT (design §7/§11.5) — apply a user-approved capability grant: attach
+      // the catalog skill for the user (TASK-33) + retire the conversation's
+      // warm session so the next turn re-spawns and resumes. Host-side only
+      // (channel-web → orchestrator); NOT an IPC action (the agent/runner can't
+      // reach it). Its `skills:resolve` / `skills:attach-for-user` peers are
+      // bus.hasService-gated (present only where @ax/skills is wired — the k8s
+      // preset), same convention as the conversations:* peers above, so they
+      // stay OUT of `calls`.
+      bus.registerService<ApplyCapabilityGrantInput, ApplyCapabilityGrantOutput>(
+        'agent:apply-capability-grant',
+        PLUGIN_NAME,
+        async (ctx, input) => orch.applyCapabilityGrant(ctx, input),
       );
 
       bus.subscribe<{ outcome: AgentOutcome }>(
