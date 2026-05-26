@@ -17,6 +17,8 @@ import {
   permissionCardActions,
   usePermissionCardStore,
 } from '@/lib/permission-card-store';
+import { resumeActions } from '@/lib/resume-actions';
+import { useConversationId } from '@/lib/use-conversation-id';
 
 /**
  * The ONE bundled approval card (JIT design §11.3, decision #6) — the open-mode
@@ -25,15 +27,29 @@ import {
  * touches the model or transcript: it posts straight to the host credential
  * store via the user-scoped destination route (`skill:<id>:<slot>`, §10).
  *
- * Half-wired this phase: Connect collects credentials + dismisses; it does not
- * yet allowlist hosts (TASK-37), attach the skill, or re-spawn/resume the turn
- * (TASK-36).
+ * On Connect (TASK-36) the card: (1) writes each entered key to the host
+ * credential store (TASK-35), (2) POSTs the decision to
+ * `/api/chat/permission-decision` — which attaches the skill for the user and
+ * retires the conversation's warm session — then (3) re-issues the pending
+ * original turn via `resumeActions.continueAfterGrant()` so the conversation
+ * re-spawns + resumes and the agent answers with the skill present (design §7).
+ * Connect is gated on every declared slot being filled: a skill only becomes
+ * USABLE once its keys are present (the re-spawn's proxy resolves each
+ * `skill:<id>:<slot>`).
  */
 export function PermissionCard() {
   const { request } = usePermissionCardStore();
+  const conversationId = useConversationId();
   const [values, setValues] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Every declared slot must have a non-empty value before Connect is enabled
+  // (a slotless skill is immediately connectable). `request === null` short-
+  // circuits so the hook order stays stable even when the card is hidden.
+  const allSlotsFilled =
+    request === null ||
+    request.slots.every(({ slot }) => (values[slot] ?? '').trim().length > 0);
 
   if (!request) return null;
 
@@ -44,13 +60,16 @@ export function PermissionCard() {
   }
 
   async function connect(): Promise<void> {
-    if (busy || request === null) return;
+    if (busy || request === null || conversationId === null || !allSlotsFilled) {
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
+      // (TASK-35) write each entered key straight to the host credential store.
       for (const { slot } of request.slots) {
         const payload = (values[slot] ?? '').trim();
-        if (payload.length === 0) continue; // a slot may be left blank
+        if (payload.length === 0) continue;
         await setDestinationCredential({
           destination: { kind: 'skill-slot', skillId: request.skillId, slot },
           slot: { kind: 'api-key' },
@@ -58,7 +77,19 @@ export function PermissionCard() {
           payload,
         });
       }
+      // (TASK-36) apply the grant: attach the skill + retire the warm session.
+      // No secret on this POST — only domain ids. CSRF-guarded via x-requested-with.
+      const resp = await fetch('/api/chat/permission-decision', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-requested-with': 'ax-admin' },
+        body: JSON.stringify({ conversationId, skillId: request.skillId }),
+        credentials: 'include',
+      });
+      if (!resp.ok) throw new Error(`connect failed: ${resp.status}`);
       close();
+      // (TASK-36) re-issue the pending original turn -> fresh re-spawn + resume
+      // -> the agent answers, with the now-attached skill (design §7).
+      resumeActions.continueAfterGrant();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -111,7 +142,10 @@ export function PermissionCard() {
         <Button variant="ghost" disabled={busy} onClick={close}>
           Not now
         </Button>
-        <Button disabled={busy} onClick={() => void connect()}>
+        <Button
+          disabled={busy || !allSlotsFilled || conversationId === null}
+          onClick={() => void connect()}
+        >
           {busy ? 'Connecting…' : 'Connect'}
         </Button>
       </CardFooter>
