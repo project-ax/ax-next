@@ -438,10 +438,12 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
           //    move): the canonical copy is now the user store. Prevents the
           //    project/user duplicate-id collision after re-spawn AND stops the
           //    agent editing the skill between request and approval (integrity).
-          //    Best-effort; on a workspace-less preset it no-ops. We pass the
-          //    bundle's read version as `parent` to satisfy the backend's
-          //    optimistic-concurrency CAS (re-listing right before the apply so
-          //    the version reflects the just-upserted state if it changed).
+          //    Best-effort; on a workspace-less preset it no-ops. The upsert
+          //    above wrote to the SKILL STORE, not the workspace, so the
+          //    workspace version is unchanged since readAuthoredBundle — we pass
+          //    that captured version as `parent` to satisfy the backend's
+          //    optimistic-concurrency CAS. `bundle.id` is the validated id
+          //    (readAuthoredBundle threw on a traversal-shaped skillId).
           if (bus.hasService('workspace:list') && bus.hasService('workspace:apply')) {
             const wsCtx = makeAgentContext({
               userId: ownerUserId,
@@ -451,7 +453,7 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
             const { paths } = await bus.call<{ pathGlob: string }, { paths: string[] }>(
               'workspace:list',
               wsCtx,
-              { pathGlob: `.ax/skills/${input.skillId}/**` },
+              { pathGlob: `.ax/skills/${bundle.id}/**` },
             );
             if (paths.length > 0) {
               await bus.call<
