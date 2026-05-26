@@ -35,6 +35,11 @@ afterEach(async () => {
       /* drained pool — ignore */
     }
     try {
+      await k.schema.dropTable('skills_v1_skill_files').ifExists().execute();
+    } catch {
+      /* drained pool — ignore */
+    }
+    try {
       await k.schema.dropTable('skills_v1_user_skills').ifExists().execute();
     } catch {
       /* drained pool — ignore */
@@ -195,6 +200,36 @@ describe('runSkillsMigration', () => {
     expect(cols.rows[0]?.data_type).toBe('text');
     expect(cols.rows[0]?.is_nullable).toBe('YES');
     expect(cols.rows[0]?.column_default).toBeNull();
+  });
+
+  it('creates skills_v1_skill_files with the compound PK', async () => {
+    const db = makeKysely();
+    await runSkillsMigration(db);
+
+    // Insert two files for one skill; the compound PK (scope, owner_user_id,
+    // skill_id, path) must allow distinct paths and reject a duplicate path.
+    await db
+      .insertInto('skills_v1_skill_files')
+      .values([
+        { scope: 'global', owner_user_id: '', skill_id: 'demo', path: 'scripts/a.py', contents: 'print(1)' },
+        { scope: 'global', owner_user_id: '', skill_id: 'demo', path: 'data/b.json', contents: '{}' },
+      ])
+      .execute();
+
+    const rows = await db
+      .selectFrom('skills_v1_skill_files')
+      .selectAll()
+      .where('skill_id', '=', 'demo')
+      .orderBy('path')
+      .execute();
+    expect(rows.map((r) => r.path)).toEqual(['data/b.json', 'scripts/a.py']);
+
+    await expect(
+      db
+        .insertInto('skills_v1_skill_files')
+        .values({ scope: 'global', owner_user_id: '', skill_id: 'demo', path: 'scripts/a.py', contents: 'dup' })
+        .execute(),
+    ).rejects.toThrow();
   });
 
   it('source_url migration is idempotent on re-run', async () => {
