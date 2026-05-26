@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { SkillBrokerPlugin } from '@ax/skill-broker';
 import {
   createK8sPlugins,
   loadK8sConfigFromEnv,
@@ -1007,5 +1008,63 @@ describe('createK8sPlugins — conditional title plugins', () => {
         titles: { model: 'openai/gpt-4' },
       }),
     ).toThrowError(/openai\/gpt-4/);
+  });
+});
+
+describe('@ax/preset-k8s — allow_user_installed_skills flag (TASK-38)', () => {
+  const HEX_KEY = '0'.repeat(64);
+  const baseEnv = (): NodeJS.ProcessEnv => ({
+    DATABASE_URL: 'postgres://u:p@db:5432/ax_next',
+    AX_K8S_HOST_IPC_URL: 'http://ax-next-host.ax-next.svc:80',
+    AX_WORKSPACE_BACKEND: 'git-protocol',
+    AX_WORKSPACE_GIT_SERVER_URL: 'http://git-server:7780',
+    AX_WORKSPACE_GIT_SERVER_TOKEN: 't',
+    AX_HTTP_HOST: '0.0.0.0',
+    AX_HTTP_PORT: '9090',
+    AX_HTTP_COOKIE_KEY: HEX_KEY,
+    AX_HTTP_ALLOWED_ORIGINS: '',
+  });
+
+  it('reads AX_ALLOW_USER_INSTALLED_SKILLS=true into config.allowUserInstalledSkills', () => {
+    const cfg = loadK8sConfigFromEnv({ ...baseEnv(), AX_ALLOW_USER_INSTALLED_SKILLS: 'true' });
+    expect(cfg.allowUserInstalledSkills).toBe(true);
+  });
+
+  it('leaves allowUserInstalledSkills unset when the env var is absent', () => {
+    const cfg = loadK8sConfigFromEnv(baseEnv());
+    expect(cfg.allowUserInstalledSkills).toBeUndefined();
+  });
+
+  it.each(['false', '0', '', 'TRUE-ish', 'yes'])(
+    'leaves allowUserInstalledSkills unset for non-"true" value %j',
+    (val) => {
+      const cfg = loadK8sConfigFromEnv({ ...baseEnv(), AX_ALLOW_USER_INSTALLED_SKILLS: val });
+      expect(cfg.allowUserInstalledSkills).toBeUndefined();
+    },
+  );
+
+  it('accepts case-insensitive "TRUE"', () => {
+    const cfg = loadK8sConfigFromEnv({ ...baseEnv(), AX_ALLOW_USER_INSTALLED_SKILLS: 'TRUE' });
+    expect(cfg.allowUserInstalledSkills).toBe(true);
+  });
+});
+
+describe('@ax/preset-k8s — broker receives the open-mode gate (TASK-38)', () => {
+  it('defaults the broker gate OFF when config omits the flag', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const broker = plugins.find((p) => p.manifest.name === '@ax/skill-broker') as
+      | SkillBrokerPlugin
+      | undefined;
+    expect(broker).toBeDefined();
+    expect(broker!.allowUserInstalledSkills).toBe(false);
+  });
+
+  it('passes allowUserInstalledSkills:true through to the broker', () => {
+    const plugins = createK8sPlugins({ ...stubConfig, allowUserInstalledSkills: true });
+    const broker = plugins.find((p) => p.manifest.name === '@ax/skill-broker') as
+      | SkillBrokerPlugin
+      | undefined;
+    expect(broker).toBeDefined();
+    expect(broker!.allowUserInstalledSkills).toBe(true);
   });
 });

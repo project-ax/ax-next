@@ -347,6 +347,17 @@ export interface K8sPresetConfig {
    */
   credentialsAdmin?: boolean;
   /**
+   * JIT open-mode gate (design decision #5, §10). When `true`, the deployment
+   * permits the agent to author + install user-scoped skills on the fly.
+   * OFF by default — agent-authoring is opt-in per deployment.
+   *
+   * Set by `loadK8sConfigFromEnv` from `AX_ALLOW_USER_INSTALLED_SKILLS`
+   * (the chart's `skills.allowUserInstalled=true`). Passed to
+   * @ax/skill-broker. HALF-WIRED in TASK-38 — nothing reads it to change
+   * behavior until TASK-39 (open-mode agent-authored skills).
+   */
+  allowUserInstalledSkills?: boolean;
+  /**
    * @ax/onboarding — first-run wizard. When set, the plugin loads and
    * serves the bootstrap wizard at /setup/*. The plugin reads
    * AX_BOOTSTRAP_TOKEN from process.env automatically; set `publicBaseUrl`
@@ -695,7 +706,11 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // (tool:register) + @ax/skills (skills:search-catalog / skills:get); both
   // are loaded above. Pushed unconditionally — it needs no API key (unlike
   // @ax/web-tools), and consumes only untrusted intent text in-memory.
-  plugins.push(createSkillBrokerPlugin());
+  plugins.push(
+    createSkillBrokerPlugin({
+      allowUserInstalledSkills: config.allowUserInstalledSkills ?? false,
+    }),
+  );
 
   // ----- 8b. credentials admin routes (optional) -------------------------
   // Mounts /admin/credentials* (admin-only CRUD, new destination-based
@@ -1176,6 +1191,16 @@ export function loadK8sConfigFromEnv(
   // createK8sPlugins skips the plugin.
   if ((env.AX_CREDENTIALS_ADMIN_ENABLED ?? '').toLowerCase() === 'true') {
     config.credentialsAdmin = true;
+  }
+
+  // ---- open-mode gate (allow_user_installed_skills) ----------------------
+  // Translates the chart's `skills.allowUserInstalled=true` (which lands as
+  // AX_ALLOW_USER_INSTALLED_SKILLS on the host pod) into the config flag.
+  // Only the literal string 'true' (case-insensitive) flips it on — anything
+  // else (unset, '', '0', 'false') leaves it undefined so createK8sPlugins
+  // defaults the broker's gate to false. Mirrors AX_CREDENTIALS_ADMIN_ENABLED.
+  if ((env.AX_ALLOW_USER_INSTALLED_SKILLS ?? '').toLowerCase() === 'true') {
+    config.allowUserInstalledSkills = true;
   }
 
   // ---- titles (auto-titling subscriber) -----------------------------------

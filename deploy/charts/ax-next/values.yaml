@@ -386,6 +386,17 @@ ingress:
   tls: false
   tlsSecretName: ""
 
+# ─── Skills / capability acquisition ─────────────────────────────
+# JIT open mode (design decision #5 / §10). When true, the agent may
+# author + install user-scoped skills on the fly — still gated by the
+# same in-chat host/credential approval card (the security backstop).
+# OFF by default: agent-authoring is opt-in per deployment. The host
+# pod reads this via AX_ALLOW_USER_INSTALLED_SKILLS; @ax/skill-broker
+# holds the gate. (Curated mode — the broker proposing vetted catalog
+# skills — is always on and unaffected by this flag.)
+skills:
+  allowUserInstalled: false
+
 # ─── ax-next runtime config ──────────────────────────────────────
 # This block is rendered into a ConfigMap and mounted at /etc/ax-next/.
 # It tells the CLI which providers to use; the corresponding plugins
