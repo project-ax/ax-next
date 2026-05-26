@@ -2,6 +2,12 @@ export interface CapabilitySlot {
   slot: string;
   kind: 'api-key';
   description?: string;
+  /**
+   * Optional service identifier (JIT P2/P7.2, decision #13). When set, the
+   * slot binds to the user's SHARED service-keyed vault entry (`account:<service>`)
+   * instead of a per-skill ref. Lowercase slug; absent = today's per-skill behavior.
+   */
+  account?: string;
 }
 
 export interface McpServerSpec {

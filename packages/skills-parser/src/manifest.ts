@@ -12,6 +12,7 @@ export type ManifestCode =
   | 'invalid-host'
   | 'invalid-slot'
   | 'duplicate-slot'
+  | 'invalid-account'
   | 'invalid-kind'
   | 'invalid-mcp-command'
   | 'invalid-mcp-transport'
@@ -70,6 +71,12 @@ const NAME_RE = /^[a-z][a-z0-9-]{0,63}$/;
 
 // Credential slot: SCREAMING_SNAKE_CASE, starts with A-Z.
 const SLOT_RE = /^[A-Z][A-Z0-9_]{0,63}$/;
+
+// Account (service) slug: lowercase, starts with a letter, no ':' (the
+// credential-ref separator). Re-validated independently at three trust
+// boundaries (parser here, the destination route schema, refForDestination's
+// colon guard) per invariant I2 — no shared import.
+const ACCOUNT_RE = /^[a-z][a-z0-9-]{0,63}$/;
 
 function err(code: ManifestCode, message: string): ParseResult {
   return { ok: false, code, message };
@@ -170,10 +177,27 @@ function parseCredentialList(
         message: `"${contextLabel}" entry "description" on slot "${rawSlot}" must be a string when provided, got: ${JSON.stringify(rawDescription)}`,
       };
     }
+
+    // Optional `account` service tag (JIT P2/P7.2, decision #13). When present,
+    // it must be a lowercase service slug (ACCOUNT_RE) — the slot then binds the
+    // user's shared `account:<service>` vault entry instead of a per-skill ref.
+    const rawAccount = cred['account'];
+    if (
+      rawAccount !== undefined &&
+      (typeof rawAccount !== 'string' || !ACCOUNT_RE.test(rawAccount))
+    ) {
+      return {
+        ok: false,
+        code: 'invalid-account',
+        message: `"${contextLabel}" entry "account" on slot "${rawSlot}" must match /^[a-z][a-z0-9-]{0,63}$/, got: ${JSON.stringify(rawAccount)}`,
+      };
+    }
+
     out.push({
       slot: rawSlot,
       kind: 'api-key',
       ...(rawDescription !== undefined ? { description: rawDescription } : {}),
+      ...(rawAccount !== undefined ? { account: rawAccount } : {}),
     });
   }
   return { ok: true, value: out };

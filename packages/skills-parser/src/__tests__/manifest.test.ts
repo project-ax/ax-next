@@ -197,4 +197,45 @@ describe('parseSkillManifest', () => {
     // unknown shape) or `ok:true` — either is fine; what matters is termination.
     expect(() => parseSkillManifest(cyclicYaml)).not.toThrow();
   });
+
+  // JIT P2/P7.2, decision #13 — optional `account` service tag on a credential slot.
+  it('parses an optional account tag on a credential slot', () => {
+    const r = parseSkillManifest(
+      [
+        'name: linear',
+        'description: Linear issues',
+        'capabilities:',
+        '  credentials:',
+        '    - slot: LINEAR_TOKEN',
+        '      kind: api-key',
+        '      account: linear',
+      ].join('\n'),
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.capabilities.credentials).toEqual([
+      { slot: 'LINEAR_TOKEN', kind: 'api-key', account: 'linear' },
+    ]);
+  });
+
+  it('omits account when absent (back-compat: today’s shape unchanged)', () => {
+    const r = parseSkillManifest(
+      'name: x\ndescription: x\ncapabilities:\n  credentials:\n    - slot: API_KEY\n      kind: api-key',
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.capabilities.credentials[0]).toEqual({ slot: 'API_KEY', kind: 'api-key' });
+    expect('account' in r.value.capabilities.credentials[0]!).toBe(false);
+  });
+
+  it.each([['Linear'], ['lin:ear'], ['linear_app'], ['-linear'], ['']])(
+    'rejects an invalid account value %j with invalid-account',
+    (bad) => {
+      const r = parseSkillManifest(
+        `name: x\ndescription: x\ncapabilities:\n  credentials:\n    - slot: API_KEY\n      kind: api-key\n      account: ${JSON.stringify(bad)}`,
+      );
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.code).toBe('invalid-account');
+    },
+  );
 });
