@@ -202,6 +202,12 @@ spec:
             # Workspace dir lives on the host pod's PVC.
             - name: AX_WORKSPACE_ROOT
               value: {{ .Values.workspace.mountPath | quote }}
+            # Skill bundle byte-store (JIT git-tree backing). A bare git repo
+            # under the host PVC, sibling to workspace-git's repo.git. Single-
+            # replica posture; multi-replica catalog durability is deferred
+            # (ARCH-9), same split as workspace-git local vs -server.
+            - name: AX_SKILLS_BUNDLE_ROOT
+              value: {{ printf "%s/skill-bundles" .Values.workspace.mountPath | quote }}
             {{- end }}
 
             # Workspace backend selection. The host's plugin loader reads

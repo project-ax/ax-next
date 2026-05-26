@@ -350,6 +350,30 @@ describeIfHelm('ax-next chart: workspace.backend wiring', () => {
     expect(names).not.toContain('AX_WORKSPACE_GIT_SERVER_TOKEN');
   });
 
+  it('backend=local: host has AX_SKILLS_BUNDLE_ROOT under the workspace PVC (TASK-40)', () => {
+    const docs = helmTemplate([]);
+    const env = findHostEnv(docs);
+    const names = env.map((e) => e.name);
+    const byName = Object.fromEntries(env.map((e) => [e.name, e]));
+
+    expect(names).toContain('AX_SKILLS_BUNDLE_ROOT');
+    const mountPath = byName.AX_WORKSPACE_ROOT?.value;
+    expect(mountPath).toBeDefined();
+    // The bundle repo is a sibling dir on the same workspace PVC.
+    expect(byName.AX_SKILLS_BUNDLE_ROOT?.value).toBe(`${mountPath}/skill-bundles`);
+  });
+
+  it('backend=git-protocol: host has no AX_SKILLS_BUNDLE_ROOT (TASK-40)', () => {
+    const docs = helmTemplate([
+      '--set', 'workspace.backend=git-protocol',
+      '--set', 'gitServer.enabled=true',
+      '--set', 'gitServer.storage=10Gi',
+    ]);
+    const env = findHostEnv(docs);
+    const names = env.map((e) => e.name);
+    expect(names).not.toContain('AX_SKILLS_BUNDLE_ROOT');
+  });
+
   it('backend=git-protocol + gitServer.enabled: host has AX_WORKSPACE_GIT_SERVER_*, StatefulSet renders', () => {
     const docs = helmTemplate([
       '--set', 'workspace.backend=git-protocol',

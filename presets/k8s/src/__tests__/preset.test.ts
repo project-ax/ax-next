@@ -287,6 +287,69 @@ describe('@ax/preset-k8s — onboarding wiring (I3: half-wired window closed)', 
     expect(cfg.onboarding).toBeUndefined();
   });
 
+  // TASK-40 — AX_SKILLS_BUNDLE_ROOT → skills.bundleStore.repoRoot.
+  it('loadK8sConfigFromEnv reads AX_SKILLS_BUNDLE_ROOT into skills.bundleStore.repoRoot', () => {
+    const HEX_KEY = '0'.repeat(64);
+    const env: NodeJS.ProcessEnv = {
+      DATABASE_URL: 'postgres://u:p@db:5432/ax_next',
+      AX_K8S_HOST_IPC_URL: 'http://ax-next-host.ax-next.svc:80',
+      AX_WORKSPACE_BACKEND: 'local',
+      AX_WORKSPACE_ROOT: '/var/lib/ax-next/workspaces',
+      AX_SKILLS_BUNDLE_ROOT: '/var/lib/ax-next/workspaces/skill-bundles',
+      AX_HTTP_HOST: '0.0.0.0',
+      AX_HTTP_PORT: '9090',
+      AX_HTTP_COOKIE_KEY: HEX_KEY,
+      AX_HTTP_ALLOWED_ORIGINS: '',
+    };
+    const cfg = loadK8sConfigFromEnv(env);
+    expect(cfg.skills?.bundleStore?.repoRoot).toBe(
+      '/var/lib/ax-next/workspaces/skill-bundles',
+    );
+  });
+
+  it('loadK8sConfigFromEnv leaves skills unset when AX_SKILLS_BUNDLE_ROOT is absent', () => {
+    const HEX_KEY = '0'.repeat(64);
+    const env: NodeJS.ProcessEnv = {
+      DATABASE_URL: 'postgres://u:p@db:5432/ax_next',
+      AX_K8S_HOST_IPC_URL: 'http://ax-next-host.ax-next.svc:80',
+      AX_WORKSPACE_BACKEND: 'git-protocol',
+      AX_WORKSPACE_GIT_SERVER_URL: 'http://git-server:7780',
+      AX_WORKSPACE_GIT_SERVER_TOKEN: 't',
+      AX_HTTP_HOST: '0.0.0.0',
+      AX_HTTP_PORT: '9090',
+      AX_HTTP_COOKIE_KEY: HEX_KEY,
+      AX_HTTP_ALLOWED_ORIGINS: '',
+    };
+    const cfg = loadK8sConfigFromEnv(env);
+    expect(cfg.skills).toBeUndefined();
+  });
+
+  it('loadK8sConfigFromEnv treats an empty AX_SKILLS_BUNDLE_ROOT as unset', () => {
+    const HEX_KEY = '0'.repeat(64);
+    const env: NodeJS.ProcessEnv = {
+      DATABASE_URL: 'postgres://u:p@db:5432/ax_next',
+      AX_K8S_HOST_IPC_URL: 'http://ax-next-host.ax-next.svc:80',
+      AX_WORKSPACE_BACKEND: 'local',
+      AX_WORKSPACE_ROOT: '/var/lib/ax-next/workspaces',
+      AX_SKILLS_BUNDLE_ROOT: '',
+      AX_HTTP_HOST: '0.0.0.0',
+      AX_HTTP_PORT: '9090',
+      AX_HTTP_COOKIE_KEY: HEX_KEY,
+      AX_HTTP_ALLOWED_ORIGINS: '',
+    };
+    const cfg = loadK8sConfigFromEnv(env);
+    expect(cfg.skills).toBeUndefined();
+  });
+
+  it('createK8sPlugins still includes @ax/skills when skills.bundleStore.repoRoot is set', () => {
+    const plugins = createK8sPlugins({
+      ...stubConfig,
+      skills: { bundleStore: { repoRoot: '/var/lib/ax-next/workspaces/skill-bundles' } },
+    });
+    const names = plugins.map((p) => p.manifest.name);
+    expect(names).toContain('@ax/skills');
+  });
+
   // FU-2 — auth.trustedOrigins inherits from AX_PUBLIC_BASE_URL.
   // No separate env var: the public base URL is the source of truth for
   // "where users hit this server", and that's exactly what better-auth's
