@@ -40,6 +40,15 @@ import { getOrCreateCA } from './ca.js';
 
 const PLUGIN_NAME = '@ax/credential-proxy';
 
+/**
+ * Exact-match allowlist hostname validator (TASK-37). Mirrors the listener's
+ * exact-match egress gate — no wildcards, no ports, no schemes, lowercase
+ * only. Capability minimized: a host added to a session's allowlist must be a
+ * single concrete hostname the listener can compare with `===`.
+ */
+const HOST_RE =
+  /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/;
+
 // ── event.http-egress payload shape (architecture spec) ───────────────
 
 /**
@@ -225,6 +234,18 @@ interface CloseSessionInput {
   sessionId: string;
 }
 
+interface AddHostInput {
+  /** Opaque session token whose live allowlist to widen. */
+  sessionId: string;
+  /** Exact-match hostname to allow (HOST_RE-validated). */
+  host: string;
+}
+
+interface AddHostOutput {
+  /** True if the host was added; false for an unknown/closed session. */
+  added: boolean;
+}
+
 interface RotateSessionInput {
   sessionId: string;
 }
@@ -274,7 +295,12 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
     manifest: {
       name: PLUGIN_NAME,
       version: '0.0.0',
-      registers: ['proxy:open-session', 'proxy:rotate-session', 'proxy:close-session'],
+      registers: [
+        'proxy:open-session',
+        'proxy:rotate-session',
+        'proxy:close-session',
+        'proxy:add-host',
+      ],
       calls: ['credentials:get'],
       subscribes: [],
     },
@@ -510,6 +536,62 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
           sessions.delete(sessionId);
           sessionCredentialRefs.delete(sessionId);
           return {};
+        },
+      );
+
+      // 4d. proxy:add-host — widen a LIVE session's allowlist (TASK-37, the
+      //     reactive egress wall). The widened host lands on the session's
+      //     own `allowlist` Set, which the listener reads BY REFERENCE on
+      //     every request — so the next egress to that host passes the gate
+      //     with NO re-spawn.
+      //
+      //     HOST-INTERNAL ONLY — deliberately NOT an IPC action. The IPC
+      //     dispatcher is a fixed runner→host table and any IPC action is
+      //     callable by the UNTRUSTED runner; exposing this over IPC would let
+      //     the agent widen its own egress allowlist and defeat the entire
+      //     reactive wall (invariant #5; design §10 — human in the loop on
+      //     every security decision). The only caller is the authenticated
+      //     owner's browser via a CSRF-gated channel-web route. Ownership is
+      //     re-validated here against SessionConfig.userId — the proxy owns
+      //     the session→owner fact (one source of truth, I4), so a forged
+      //     sessionId can never widen another user's session. Capability
+      //     minimized: a single host to a single session, never blanket egress.
+      bus.registerService<AddHostInput, AddHostOutput>(
+        'proxy:add-host',
+        PLUGIN_NAME,
+        async (ctx: AgentContext, { sessionId, host }) => {
+          if (!sessions) {
+            throw new PluginError({
+              code: 'not-initialized',
+              plugin: PLUGIN_NAME,
+              message: 'credential-proxy plugin handler invoked before init completed',
+            });
+          }
+          // Validate the host BEFORE the ownership lookup — a malformed host is
+          // a 400 regardless of who asked, and we never want to leak whether a
+          // session exists via a different error on bad input.
+          if (typeof host !== 'string' || !HOST_RE.test(host)) {
+            throw new PluginError({
+              code: 'invalid-host',
+              plugin: PLUGIN_NAME,
+              message: `invalid host: ${String(host)}`,
+            });
+          }
+          const sess = sessions.get(sessionId);
+          // Unknown/closed session — graceful no-op (the session's egress is
+          // already gone; widening a dead allowlist is harmless and the route
+          // surfaces it as a benign result, not an error).
+          if (sess === undefined) return { added: false };
+          // Ownership: only the session's own user may widen its egress.
+          if (sess.userId === undefined || sess.userId !== ctx.userId) {
+            throw new PluginError({
+              code: 'forbidden',
+              plugin: PLUGIN_NAME,
+              message: 'caller is not the session owner',
+            });
+          }
+          sess.allowlist.add(host);
+          return { added: true };
         },
       );
     },
