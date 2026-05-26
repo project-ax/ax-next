@@ -31,6 +31,8 @@ export interface UserAttachmentsStore {
   upsert(input: UpsertUserAttachmentInput): Promise<{ created: boolean }>;
   /** List a user's attachments on one agent, ordered by skill_id (deterministic). */
   listForUserAgent(ownerUserId: string, agentId: string): Promise<UserAttachment[]>;
+  /** Remove one (user, agent, skill) attachment. Idempotent: removed:false when absent. */
+  delete(ownerUserId: string, agentId: string, skillId: string): Promise<{ removed: boolean }>;
 }
 
 export function createUserAttachmentsStore(
@@ -93,6 +95,18 @@ export function createUserAttachmentsStore(
         skillId: r.skill_id,
         credentialBindings: (r.credential_bindings ?? {}) as Record<string, string>,
       }));
+    },
+
+    async delete(ownerUserId, agentId, skillId) {
+      // Scope-keyed to the full compound PRIMARY KEY (owner_user_id, agent_id,
+      // skill_id): a caller can only ever remove their own (user, agent) row.
+      const res = await db
+        .deleteFrom('skills_v1_user_attachments')
+        .where('owner_user_id', '=', ownerUserId)
+        .where('agent_id', '=', agentId)
+        .where('skill_id', '=', skillId)
+        .executeTakeFirst();
+      return { removed: Number(res.numDeletedRows ?? 0n) > 0 };
     },
   };
 }
