@@ -108,6 +108,17 @@ export interface SessionConfig {
    * plugin's onAudit callback defaults to `'other'` if missing.
    */
   classification?: 'llm' | 'mcp' | 'other';
+  /**
+   * Per-session proxy token (TASK-52). An ATTRIBUTION LABEL, not an authz
+   * input. Clients send it as `Proxy-Authorization: Basic ax:<token>`; the
+   * listener resolves token → session (see findSessionByProxyToken) so even
+   * an allowlist-MISS (403) — which matches no session via findAllowingSession
+   * — can be attributed to the session that made the request. A missing or
+   * forged token degrades to "no attribution" (today's behavior); it NEVER
+   * affects the allow/deny decision and can never widen egress. Optional for
+   * back-compat with tests that build SessionConfig directly.
+   */
+  proxyToken?: string;
 }
 
 /**
