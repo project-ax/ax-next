@@ -2343,6 +2343,58 @@ describe('chat-orchestrator', () => {
     expect(openIn.credentials.GITHUB_TOKEN).toEqual({ ref: 'agent-global-pat', kind: 'api-key' });
   });
 
+  it('TASK-33: a thrown skills:list-user-attachments FAILS CLOSED (does not silently use agent-global creds)', async () => {
+    // Codex P1: list-user-attachments is credential-bearing — it decides which
+    // refs reach proxy:open-session and the per-user > agent-global precedence.
+    // A transient read failure must NOT silently fall back to the agent-global
+    // binding for a slot the user meant to override; the turn must terminate
+    // (matching the skills:resolve fail-closed precedent in the same function).
+    const proxy = buildProxyHooks();
+    const skillsHooks = buildSkillsHooks({
+      skills: {
+        github: {
+          id: 'github',
+          capabilities: { allowedHosts: ['api.github.com'], credentials: [{ slot: 'GITHUB_TOKEN', kind: 'api-key' }] },
+          bodyMd: 'gh', manifestYaml: 'name: github\nversion: 1\n',
+        },
+      },
+    });
+    skillsHooks.services['skills:list-user-attachments'] = async () => {
+      throw new Error('transient per-user read failure');
+    };
+
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: { ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' } },
+          skillAttachments: [{ skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'agent-global-pat' } }],
+        },
+      }),
+      openSession: makeChatEndOpenSession(busRef),
+    });
+    Object.assign(mocks.services, proxy.services, skillsHooks.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+    });
+    busRef.current = h.bus;
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('per-user-read-fail-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    // Fail closed: terminated, and the session never opened with the fallback creds.
+    expect(outcome.kind).toBe('terminated');
+    if (outcome.kind === 'terminated') {
+      expect(outcome.reason).toBe('user-attachments-failed');
+    }
+    expect(proxy.state.lastOpenInput).toBeUndefined();
+  });
+
   it('auto-unions registry.npmjs.org when a skill declares packages.npm (D)', async () => {
     const proxy = buildProxyHooks();
     const skillsHooks = buildSkillsHooks({

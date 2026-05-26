@@ -1061,8 +1061,16 @@ export function createOrchestrator(
     // Union precedence is per-user > agent-global > default-attached. Gated by
     // hasService (same convention as skills:resolve / skills:list-defaults —
     // conditionally called, NOT declared in the manifest): stripped presets
-    // without @ax/skills no-op. Throws are non-fatal — log + treat as empty so
-    // the session still opens on its agent-global + default skills.
+    // without @ax/skills no-op.
+    //
+    // This read is CREDENTIAL-BEARING: it decides which credential refs reach
+    // proxy:open-session and the per-user > agent-global precedence on slot
+    // collision. So a throw FAILS CLOSED (terminate the turn), matching the
+    // skills:resolve precedent below — NOT the skills:list-defaults fail-open
+    // path (defaults are instruction-only and can't carry credentials). Failing
+    // open here could silently spawn the session with the agent-global ref for a
+    // slot the user activated a per-user override on — a credential the user
+    // never chose for their session. (Codex P1.)
     let userAttachments: Array<{
       skillId: string;
       credentialBindings: Record<string, string>;
@@ -1078,10 +1086,17 @@ export function createOrchestrator(
         });
         userAttachments = r.attachments;
       } catch (err) {
-        ctx.logger.warn('skills_list_user_attachments_failed', {
-          error: err instanceof Error ? err.message : String(err),
-        });
-        userAttachments = [];
+        const outcome: AgentOutcome = {
+          kind: 'terminated',
+          reason: 'user-attachments-failed',
+          error: err,
+        };
+        // TASK-22 — pre-waiter early-return: surface on the SSE so the client
+        // doesn't hang (coarse `reason` only; the raw `err` stays on the audit
+        // chat:end outcome — same pattern as skill-resolve-failed below).
+        await fireTurnError(ctx, ctx.reqId, outcome.reason);
+        await bus.fire('chat:end', ctx, { outcome });
+        return outcome;
       }
     }
 
