@@ -267,6 +267,19 @@ describe('InstalledSkillSchema', () => {
     }
   });
 
+  it('vetoes reserved paths at the wire (.mcp.json, .claude/*, .git/*) — SKILL.md is the only exception', () => {
+    for (const bad of ['.mcp.json', '.mcp.json/foo', '.claude', '.claude/settings.json', '.git', '.git/config']) {
+      const result = InstalledSkillSchema.safeParse({
+        id: 'demo',
+        files: [
+          { path: 'SKILL.md', contents: '# x' },
+          { path: bad, contents: 'x' },
+        ],
+      });
+      expect(result.success).toBe(false);
+    }
+  });
+
   it('rejects a file over the 256 KiB per-file cap', () => {
     const result = InstalledSkillSchema.safeParse({
       id: 'github',

@@ -177,17 +177,28 @@ describe('materializeInstalledSkillsFromEnv', () => {
     }
   });
 
-  it('rejects a reserved bundle path (.mcp.json) supplied as a file', async () => {
-    process.env['AX_INSTALLED_SKILLS_JSON'] = JSON.stringify([
-      {
-        id: 'demo',
-        files: [
-          { path: 'SKILL.md', contents: '# x' },
-          { path: '.mcp.json', contents: '{}' },
-        ],
-      },
-    ]);
-    await expect(materializeInstalledSkillsFromEnv()).rejects.toThrow(/reserved/i);
+  it('rejects a reserved bundle path (.mcp.json, .mcp.json/foo, .git) supplied as a file', async () => {
+    const cases: Array<[string, string]> = [
+      ['resv-a', '.mcp.json'],
+      ['resv-b', '.mcp.json/foo'],
+      ['resv-c', '.git'],
+      ['resv-d', '.git/config'],
+    ];
+    for (const [id, bad] of cases) {
+      // Distinct skill id per case so a prior iteration's read-only SKILL.md
+      // can't EACCES the next iteration's write before validation runs.
+      process.env['AX_INSTALLED_SKILLS_JSON'] = JSON.stringify([
+        {
+          id,
+          files: [
+            { path: 'SKILL.md', contents: '# x' },
+            { path: bad, contents: '{}' },
+          ],
+        },
+      ]);
+      await expect(materializeInstalledSkillsFromEnv()).rejects.toThrow(/reserved/i);
+      await fs.chmod(path.join(tmpRoot, 'skills'), 0o755).catch(() => undefined);
+    }
   });
 
   it('rejects a .claude/* SDK-config path supplied as a file', async () => {

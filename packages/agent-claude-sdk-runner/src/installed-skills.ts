@@ -33,6 +33,7 @@ const SKILL_ID_RE = /^[a-z][a-z0-9-]{0,63}$/;
 // @ax/sandbox-protocol's InstalledSkillSchema, kept independent per invariant
 // I2 (no cross-plugin import across the trust boundary).
 const SKILL_FILE_PATH_RE = /^[a-z0-9._-]+(\/[a-z0-9._-]+)*$/;
+const RESERVED_RUNNER_NAMES = ['.mcp.json', '.claude', '.git'];
 
 function assertSafeRelPath(p: unknown): asserts p is string {
   if (typeof p !== 'string' || p.length === 0 || p.length > 256) {
@@ -46,7 +47,10 @@ function assertSafeRelPath(p: unknown): asserts p is string {
   if (p.split('/').some((seg) => seg === '.' || seg === '..')) {
     throw new Error(`invalid skill file path ('.' or '..' segment): ${p}`);
   }
-  if (p === '.mcp.json' || p.startsWith('.claude/') || p.startsWith('.git/')) {
+  // Reserved names vetoed BOTH as an exact path and as a directory prefix —
+  // `.mcp.json/foo` would otherwise force `.mcp.json` to be a dir and collide
+  // with the generated MCP config; `.claude`/`.git` are auto-config trees.
+  if (RESERVED_RUNNER_NAMES.some((r) => p === r || p.startsWith(r + '/'))) {
     throw new Error(`reserved skill file path: ${p}`);
   }
 }

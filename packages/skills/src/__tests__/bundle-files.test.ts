@@ -18,7 +18,10 @@ describe('validateBundleFiles', () => {
   it.each([
     ['SKILL.md'], // reconstructed from columns — never an extra file
     ['.mcp.json'], // generated from mcpServers
+    ['.mcp.json/foo'], // would force .mcp.json to be a dir, colliding with the generated file
+    ['.claude'], // reserved dir, exact
     ['.claude/settings.json'], // SDK auto-config
+    ['.git'], // reserved dir, exact
     ['.git/config'], // git internals
     ['../escape.txt'], // parent traversal
     ['.'], // single-dot segment normalizes to the skill dir itself

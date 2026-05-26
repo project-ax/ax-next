@@ -21,7 +21,15 @@ export interface BundleFile {
 }
 
 const PATH_RE = /^[a-z0-9._-]+(\/[a-z0-9._-]+)*$/;
-const RESERVED = new Set(['SKILL.md', '.mcp.json']);
+// Reserved names — vetoed BOTH as an exact path AND as a directory prefix.
+// `SKILL.md` is reconstructed from the manifest columns; `.mcp.json` is
+// generated from `mcpServers` (so `.mcp.json/foo` would force `.mcp.json` to
+// be a dir and collide with the generated file); `.claude`/`.git` are SDK/git
+// auto-config trees a bundle must never carry.
+const RESERVED_NAMES = ['SKILL.md', '.mcp.json', '.claude', '.git'];
+function isReservedBundlePath(p: string): boolean {
+  return RESERVED_NAMES.some((r) => p === r || p.startsWith(r + '/'));
+}
 const MAX_FILES = 16;
 const MAX_FILE_BYTES = 256 * 1024;
 const MAX_TOTAL_BYTES = 512 * 1024;
@@ -47,7 +55,7 @@ export function validateBundleFiles(files: BundleFile[]): void {
     if (f.path.split('/').some((seg) => seg === '.' || seg === '..')) {
       throw new Error(`invalid path (no '.' or '..' segments): ${f.path}`);
     }
-    if (RESERVED.has(f.path) || f.path.startsWith('.claude/') || f.path.startsWith('.git/')) {
+    if (isReservedBundlePath(f.path)) {
       throw new Error(`reserved bundle path may not be supplied: ${f.path}`);
     }
     if (seen.has(f.path)) throw new Error(`duplicate bundle path: ${f.path}`);

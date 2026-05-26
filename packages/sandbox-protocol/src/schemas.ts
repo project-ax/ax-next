@@ -127,12 +127,23 @@ export type McpServerSpec = z.infer<typeof McpServerSchema>;
 // `SKILL.md` is the ONE allowed uppercase exception (the bundle root, matched
 // literally) — every other path must satisfy this.
 const SKILL_FILE_PATH_RE = /^[a-z0-9._-]+(\/[a-z0-9._-]+)*$/;
+// Reserved names vetoed BOTH as an exact path and as a directory prefix.
+// `.mcp.json` is generated from mcpServers; `.claude`/`.git` are SDK/git
+// auto-config. (`SKILL.md` is NOT here — it's the bundle root, legitimately
+// present at this hop. The upstream @ax/skills layer reserves SKILL.md as an
+// EXTRA-file name; here it's required.)
+const RESERVED_WIRE_NAMES = ['.mcp.json', '.claude', '.git'];
+const isReservedWirePath = (p: string): boolean =>
+  RESERVED_WIRE_NAMES.some((r) => p === r || p.startsWith(r + '/'));
 const isValidSkillFilePath = (p: string): boolean =>
   !p.includes('..') &&
   !p.startsWith('/') &&
   // Reject `.` / `..` path SEGMENTS — the charset allows a bare `.`, but
   // path.join normalizes it (`.` → the dir itself; `a/./b` → `a/b`).
   !p.split('/').some((seg) => seg === '.' || seg === '..') &&
+  // Veto reserved/generated/SDK-config paths so a direct (non-@ax/skills)
+  // sandbox caller can't smuggle one through — the extractors re-check too.
+  !isReservedWirePath(p) &&
   (p === 'SKILL.md' || SKILL_FILE_PATH_RE.test(p));
 
 export const InstalledSkillSchema = z.object({
