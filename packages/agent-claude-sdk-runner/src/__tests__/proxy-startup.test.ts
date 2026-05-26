@@ -3,7 +3,7 @@ import * as fs from 'node:fs/promises';
 import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { setupProxy } from '../proxy-startup.js';
+import { setupProxy, withProxyToken } from '../proxy-startup.js';
 import type { RunnerEnv } from '../env.js';
 import { MissingEnvError } from '../env.js';
 
@@ -21,6 +21,34 @@ const ENV_KEYS_TO_SAVE = [
   'SOME_REAL_SECRET',
   'GIT_SSL_CAINFO',
 ] as const;
+
+describe('withProxyToken (TASK-52)', () => {
+  const TOKEN = 'a'.repeat(32);
+
+  it('embeds the token as Basic ax:<token> userinfo on an http proxy URL', () => {
+    expect(withProxyToken('http://127.0.0.1:9000', TOKEN)).toBe(
+      `http://ax:${TOKEN}@127.0.0.1:9000`,
+    );
+  });
+
+  it('returns the URL unchanged when the token is undefined (back-compat)', () => {
+    expect(withProxyToken('http://127.0.0.1:9000', undefined)).toBe(
+      'http://127.0.0.1:9000',
+    );
+  });
+
+  it('returns the URL unchanged for a malformed (non-32-hex) token', () => {
+    expect(withProxyToken('http://127.0.0.1:9000', 'not-a-hex-token')).toBe(
+      'http://127.0.0.1:9000',
+    );
+  });
+
+  it('does not append a trailing slash to a bare-authority URL', () => {
+    // new URL() canonicalizes a bare authority by appending '/'; the helper
+    // strips it so the proxy URL stays byte-identical to the no-token form.
+    expect(withProxyToken('http://127.0.0.1:9000', TOKEN)).not.toMatch(/\/$/);
+  });
+});
 
 describe('setupProxy', () => {
   let savedEnv: Record<string, string | undefined> = {};
@@ -76,6 +104,40 @@ describe('setupProxy', () => {
     // this test process either, so it stays undefined.
     expect(process.env.HTTP_PROXY).toBeUndefined();
     expect(process.env.HTTPS_PROXY).toBeUndefined();
+  });
+
+  it('direct mode: embeds proxyToken as Basic userinfo in the SDK subprocess proxy URL (TASK-52)', async () => {
+    process.env.ANTHROPIC_API_KEY = 'ax-cred:0123456789abcdef0123456789abcdef';
+    const token = 'c'.repeat(32);
+    const env: RunnerEnv = {
+      runnerEndpoint: 'unix:///tmp/x.sock',
+      sessionId: 's',
+      authToken: 'ipc-bearer',
+      workspaceRoot: '/ws',
+      proxyEndpoint: 'http://127.0.0.1:9000',
+      proxyToken: token,
+    };
+    const out = await setupProxy(env);
+    // The SDK subprocess reads HTTP(S)_PROXY; with the token embedded as
+    // Basic userinfo, curl/undici/python all auto-send
+    // `Proxy-Authorization: Basic ax:<token>` so the listener can attribute
+    // their egress (incl. blocks) to this session.
+    expect(out.anthropicEnv.HTTPS_PROXY).toBe(`http://ax:${token}@127.0.0.1:9000`);
+    expect(out.anthropicEnv.HTTP_PROXY).toBe(`http://ax:${token}@127.0.0.1:9000`);
+  });
+
+  it('direct mode: leaves the proxy URL untouched when no token is present (back-compat)', async () => {
+    process.env.ANTHROPIC_API_KEY = 'ax-cred:0123456789abcdef0123456789abcdef';
+    const env: RunnerEnv = {
+      runnerEndpoint: 'unix:///tmp/x.sock',
+      sessionId: 's',
+      authToken: 'ipc-bearer',
+      workspaceRoot: '/ws',
+      proxyEndpoint: 'http://127.0.0.1:9000',
+    };
+    const out = await setupProxy(env);
+    expect(out.anthropicEnv.HTTPS_PROXY).toBe('http://127.0.0.1:9000');
+    expect(out.anthropicEnv.HTTP_PROXY).toBe('http://127.0.0.1:9000');
   });
 
   it('direct mode: throws if ANTHROPIC_API_KEY placeholder is missing', async () => {
@@ -354,6 +416,44 @@ describe('setupProxy', () => {
       await new Promise<void>((resolve) =>
         server.close(() => resolve()),
       );
+      await fs.rm(sockDir, { recursive: true, force: true });
+    }
+  });
+
+  it('bridge mode: embeds proxyToken as Basic userinfo on the local bridge proxy URL (TASK-52)', async () => {
+    process.env.ANTHROPIC_API_KEY = 'ax-cred:fedcba9876543210fedcba9876543210';
+    const token = 'd'.repeat(32);
+    const sockDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-test-bridge-'));
+    const sockPath = path.join(sockDir, 'proxy.sock');
+    const server = net.createServer();
+    await new Promise<void>((resolve) => server.listen(sockPath, resolve));
+
+    try {
+      const env: RunnerEnv = {
+        runnerEndpoint: 'unix:///tmp/x.sock',
+        sessionId: 's',
+        authToken: 'ipc-bearer',
+        workspaceRoot: '/ws',
+        proxyUnixSocket: sockPath,
+        proxyToken: token,
+      };
+      const out = await setupProxy(env);
+      try {
+        // The local bridge URL the SDK subprocess + the runner's own
+        // dispatcher use now carries the token as Basic userinfo, so
+        // Proxy-Authorization rides on every request through the bridge.
+        const expected = new RegExp(`^http://ax:${token}@127\\.0\\.0\\.1:\\d+$`);
+        expect(out.anthropicEnv.HTTPS_PROXY).toMatch(expected);
+        expect(out.anthropicEnv.HTTP_PROXY).toBe(out.anthropicEnv.HTTPS_PROXY);
+        // process.env (the runner's own dispatcher reads this) carries the
+        // token-bearing URL too.
+        expect(process.env.HTTP_PROXY).toMatch(expected);
+        expect(process.env.HTTPS_PROXY).toBe(process.env.HTTP_PROXY);
+      } finally {
+        out.stop?.();
+      }
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
       await fs.rm(sockDir, { recursive: true, force: true });
     }
   });

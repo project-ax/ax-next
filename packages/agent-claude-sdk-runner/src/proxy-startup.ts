@@ -36,6 +36,37 @@ function proxyBootstrapPath(): string {
   return path.join(path.dirname(fileURLToPath(import.meta.url)), 'proxy-bootstrap.cjs');
 }
 
+// TASK-52: validated at this trust boundary (defense in depth — the listener
+// re-parses independently; no shared helper crosses the plugin boundary, per I2).
+const PROXY_TOKEN_RE = /^[0-9a-f]{32}$/;
+
+/**
+ * Embed the per-session proxy token into an http(s) proxy URL as HTTP Basic
+ * userinfo (`http://ax:<token>@host:port`), so every client that reads
+ * HTTP(S)_PROXY — curl, undici, python — automatically sends
+ * `Proxy-Authorization: Basic ax:<token>`. The host listener resolves that
+ * token → session to attribute egress (including blocked, allowlist-miss
+ * requests) back to this session.
+ *
+ * Attribution label only — it never changes the allow/deny decision. With no
+ * token (or a malformed one) the URL is returned unchanged, degrading to
+ * today's empty-`sessionId` behavior; it can never widen egress.
+ */
+export function withProxyToken(proxyUrl: string, token: string | undefined): string {
+  if (token === undefined || !PROXY_TOKEN_RE.test(token)) return proxyUrl;
+  try {
+    const u = new URL(proxyUrl);
+    u.username = 'ax';
+    u.password = token;
+    // new URL() canonicalizes a bare authority by appending '/'; strip it so
+    // the proxy URL stays byte-identical to the no-token form (some proxy
+    // clients are picky about a trailing slash on the authority).
+    return u.toString().replace(/\/$/, '');
+  } catch {
+    return proxyUrl;
+  }
+}
+
 // Explicit allowlist of process.env keys to forward into the SDK
 // subprocess. Anything not here (and not matching ENV_ALLOWLIST_PREFIXES
 // below) is dropped. Notably excludes AX_* — the runner's IPC bearer
@@ -155,7 +186,12 @@ export async function setupProxy(env: RunnerEnv): Promise<ProxyStartup> {
     // sandbox path). The package is a workspace dep so the import is in-tree.
     const { startWebProxyBridge } = await import('@ax/credential-proxy-bridge');
     const bridge = await startWebProxyBridge(env.proxyUnixSocket);
-    const local = `http://127.0.0.1:${bridge.port}`;
+    const bare = `http://127.0.0.1:${bridge.port}`;
+    // TASK-52: embed the per-session token as Basic userinfo so the SDK
+    // subprocess + any Bash-tool client reading HTTP(S)_PROXY auto-sends
+    // Proxy-Authorization; the bridge forwards that header over CONNECT and
+    // the HTTP path, and the host listener attributes the egress.
+    const local = withProxyToken(bare, env.proxyToken);
     priorHttpProxy = process.env.HTTP_PROXY;
     priorHttpsProxy = process.env.HTTPS_PROXY;
     envMutated = true;
@@ -170,8 +206,21 @@ export async function setupProxy(env: RunnerEnv): Promise<ProxyStartup> {
     // substitutes, and the upstream rejects with "Invalid API key".
     // Library users that explicitly set their own dispatcher win;
     // we only override the global, which the bare fetch() reads.
+    //
+    // The runner's OWN dispatcher dials the bare loopback URL but must
+    // still carry the Proxy-Authorization header — ProxyAgent's userinfo
+    // parsing isn't relied upon; pass it explicitly via the `token`
+    // option (the same option main.ts uses for the IPC bearer) when a
+    // token is present, else the plain agent as before.
     const { ProxyAgent, setGlobalDispatcher } = await import('undici');
-    setGlobalDispatcher(new ProxyAgent(local));
+    const dispatcher =
+      env.proxyToken !== undefined && PROXY_TOKEN_RE.test(env.proxyToken)
+        ? new ProxyAgent({
+            uri: bare,
+            token: `Basic ${Buffer.from(`ax:${env.proxyToken}`).toString('base64')}`,
+          })
+        : new ProxyAgent(bare);
+    setGlobalDispatcher(dispatcher);
 
     stop = bridge.stop;
   }
@@ -239,7 +288,15 @@ export async function setupProxy(env: RunnerEnv): Promise<ProxyStartup> {
     // which the subprocess doesn't inherit either, but THAT path needs
     // the same fix for the same reason. Wiring it for both is harmless.
     if (env.proxyUnixSocket !== undefined || env.proxyEndpoint !== undefined) {
-      const proxyUrl = env.proxyEndpoint ?? process.env.HTTPS_PROXY;
+      // TASK-52: in DIRECT mode `env.proxyEndpoint` is the bare proxy URL —
+      // embed the per-session token here so the SDK subprocess sends
+      // Proxy-Authorization. In BRIDGE mode `process.env.HTTPS_PROXY` was
+      // already set to the token-bearing local bridge URL above, so we read
+      // it as-is (no double-embed). No token → withProxyToken is a no-op.
+      const proxyUrl =
+        env.proxyEndpoint !== undefined
+          ? withProxyToken(env.proxyEndpoint, env.proxyToken)
+          : process.env.HTTPS_PROXY;
       if (proxyUrl !== undefined) {
         anthropicEnv.HTTPS_PROXY = proxyUrl;
         anthropicEnv.HTTP_PROXY = proxyUrl;

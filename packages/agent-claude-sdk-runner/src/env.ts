@@ -50,6 +50,16 @@ export interface RunnerEnv {
    * Unix socket directly; the bridge gives them a loopback TCP target.
    */
   proxyUnixSocket?: string;
+  /**
+   * Per-session proxy token for egress attribution (TASK-52). When present,
+   * proxy-startup embeds it as `Proxy-Authorization: Basic ax:<token>` (HTTP
+   * Basic userinfo on the proxy URL), so the host listener can attribute
+   * every request — including an allowlist-miss 403 — to this session. An
+   * attribution LABEL only: a missing or malformed token degrades to "no
+   * attribution" (today's behavior) and NEVER widens egress. Validated as
+   * 32 lowercase hex chars at read time; a malformed value is ignored.
+   */
+  proxyToken?: string;
 }
 
 export class MissingEnvError extends Error {
@@ -111,5 +121,13 @@ export function readRunnerEnv(env: NodeJS.ProcessEnv = process.env): RunnerEnv {
   if (ephemeralRoot !== undefined) result.ephemeralRoot = ephemeralRoot;
   if (proxyEndpoint !== undefined) result.proxyEndpoint = proxyEndpoint;
   if (proxyUnixSocket !== undefined) result.proxyUnixSocket = proxyUnixSocket;
+  // TASK-52: per-session egress-attribution token. Validate the format at the
+  // trust boundary (defense in depth, mirroring the listener's parse) — a
+  // malformed value is ignored, not forwarded, so a garbled env can't produce
+  // a weird Proxy-Authorization header. Attribution-only; never an authz input.
+  const proxyToken = opt('AX_PROXY_TOKEN');
+  if (proxyToken !== undefined && /^[0-9a-f]{32}$/.test(proxyToken)) {
+    result.proxyToken = proxyToken;
+  }
   return result;
 }
