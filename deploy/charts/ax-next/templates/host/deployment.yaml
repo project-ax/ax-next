@@ -249,6 +249,15 @@ spec:
               value: "true"
             {{- end }}
 
+            # JIT open-mode gate. Stamped only when the operator opts in via
+            # skills.allowUserInstalled=true; the preset's loadK8sConfigFromEnv
+            # reads it and hands it to @ax/skill-broker. Absent by default
+            # (curated mode), which the broker treats as gate-off.
+            {{- if .Values.skills.allowUserInstalled }}
+            - name: AX_ALLOW_USER_INSTALLED_SKILLS
+              value: "true"
+            {{- end }}
+
             # Anthropic API key — optional. The first-run wizard collects
             # one and stores it in the credentials table; this env-var is
             # only the bottom-of-precedence fallback (and the gate that
