@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Phase D — Routines modal mockup</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  /* Mirror the channel-web semantic tokens (light theme) just enough to
+     preview the design. Real app gets these from packages/channel-web's
+     CSS layer. */
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 224 14% 13%;
+    --muted: 220 14% 96%;
+    --muted-foreground: 220 9% 46%;
+    --border: 220 13% 91%;
+    --rule-soft: 220 13% 94%;
+    --card: 0 0% 100%;
+    --destructive: 0 72% 51%;
+    --primary: 220 14% 13%;
+  }
+  body { background: hsl(var(--muted)); color: hsl(var(--foreground)); font-family: ui-sans-serif, system-ui, -apple-system; }
+  .bg-background { background: hsl(var(--background)); }
+  .bg-card { background: hsl(var(--card)); }
+  .bg-muted { background: hsl(var(--muted)); }
+  .bg-destructive\/10 { background: hsl(var(--destructive) / 0.1); }
+  .text-foreground { color: hsl(var(--foreground)); }
+  .text-foreground\/85 { color: hsl(var(--foreground) / 0.85); }
+  .text-foreground\/60 { color: hsl(var(--foreground) / 0.6); }
+  .text-muted-foreground { color: hsl(var(--muted-foreground)); }
+  .text-destructive { color: hsl(var(--destructive)); }
+  .border-border { border-color: hsl(var(--border)); }
+  .border-rule-soft { border-color: hsl(var(--rule-soft)); }
+  .border-destructive\/25 { border-color: hsl(var(--destructive) / 0.25); }
+  .font-mono { font-family: ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace; }
+</style>
+</head>
+<body class="p-8">
+
+<div class="max-w-[720px] mx-auto bg-card border border-border rounded-xl shadow-lg p-6 font-sans">
+  <h2 class="text-[17px] font-medium tracking-[-0.01em] mb-4">Routines</h2>
+
+  <div class="flex flex-col max-h-[60vh] overflow-y-auto">
+
+    <!-- ROW 1 — webhook, expanded -->
+    <div class="border-b border-rule-soft">
+      <div class="py-[1.125rem] flex items-center gap-3.5">
+        <button class="w-8 h-8 rounded-md bg-muted inline-flex items-center justify-center shrink-0 text-muted-foreground" aria-expanded="true">
+          <svg class="h-3.5 w-3.5" style="transform: rotate(90deg);" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4 L10 8 L6 12"/></svg>
+        </button>
+        <span class="flex flex-col gap-0.5 flex-1 min-w-0">
+          <span class="text-[15px] font-medium tracking-[-0.01em] truncate">fixed</span>
+          <span class="text-[12.5px] text-muted-foreground font-mono tracking-[0.02em] truncate">agt_RpigE1XjEzmgwGHB34QcHA · .ax/routines/fixed-1778930880.md</span>
+        </span>
+        <span class="inline-flex items-center px-1.5 py-0.5 rounded-sm bg-muted text-[11px] font-mono tracking-[0.02em] text-muted-foreground shrink-0">webhook /fixed (hmac)</span>
+        <span class="inline-flex items-center justify-center w-[58px] py-0.5 rounded-sm bg-muted text-foreground text-[11px] font-mono tracking-[0.02em] shrink-0">ok</span>
+        <span class="text-[12px] text-muted-foreground tabular-nums w-[5.5rem] text-right shrink-0">2m ago</span>
+        <button class="px-2.5 py-1 rounded-md border border-border text-[12px] hover:bg-muted transition-colors shrink-0">Fire now</button>
+      </div>
+
+      <!-- Expanded body — recent fires -->
+      <div class="pb-4 pl-[2.875rem] pr-2">
+        <div class="flex flex-col border border-rule-soft rounded-md overflow-hidden">
+
+          <div class="px-3 py-2 border-b border-rule-soft flex flex-col gap-1">
+            <div class="flex items-center gap-3">
+              <span class="text-[11.5px] text-muted-foreground tabular-nums w-[6.5rem] shrink-0">Today 17:01</span>
+              <span class="inline-flex items-center justify-center w-[58px] py-0.5 rounded-sm bg-muted text-foreground text-[11px] font-mono tracking-[0.02em] shrink-0">ok</span>
+              <span class="text-[11px] text-muted-foreground font-mono uppercase tracking-[0.04em]">webhook</span>
+            </div>
+            <span class="font-mono text-[11.5px] text-foreground/85 break-all">fixed: hmac-test</span>
+          </div>
+
+          <div class="px-3 py-2 border-b border-rule-soft flex flex-col gap-1">
+            <div class="flex items-center gap-3">
+              <span class="text-[11.5px] text-muted-foreground tabular-nums w-[6.5rem] shrink-0">Today 14:45</span>
+              <span class="inline-flex items-center justify-center w-[58px] py-0.5 rounded-sm bg-muted text-foreground/60 text-[11px] font-mono tracking-[0.02em] shrink-0">silenced</span>
+              <span class="text-[11px] text-muted-foreground font-mono uppercase tracking-[0.04em]">tick</span>
+            </div>
+            <span class="font-mono text-[11.5px] text-foreground/85 break-all">If nothing's outstanding, say HEARTBEAT_OK and nothing else.</span>
+          </div>
+
+          <div class="px-3 py-2 flex flex-col gap-1">
+            <div class="flex items-center gap-3">
+              <span class="text-[11.5px] text-muted-foreground tabular-nums w-[6.5rem] shrink-0">Yesterday 21:45</span>
+              <span class="inline-flex items-center justify-center w-[58px] py-0.5 rounded-sm bg-destructive/10 text-destructive border border-destructive/25 text-[11px] font-mono tracking-[0.02em] shrink-0">error</span>
+              <span class="text-[11px] text-muted-foreground font-mono uppercase tracking-[0.04em]">manual</span>
+            </div>
+            <span class="font-mono text-[11.5px] text-foreground/85 break-all">fixed: …</span>
+            <span class="text-[11.5px] text-destructive break-words">unknown-credential: gh-webhook-secret</span>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    <!-- ROW 2 — interval, collapsed -->
+    <div class="border-b border-rule-soft">
+      <div class="py-[1.125rem] flex items-center gap-3.5">
+        <button class="w-8 h-8 rounded-md bg-muted inline-flex items-center justify-center shrink-0 text-muted-foreground" aria-expanded="false">
+          <svg class="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4 L10 8 L6 12"/></svg>
+        </button>
+        <span class="flex flex-col gap-0.5 flex-1 min-w-0">
+          <span class="text-[15px] font-medium tracking-[-0.01em] truncate">heartbeat</span>
+          <span class="text-[12.5px] text-muted-foreground font-mono tracking-[0.02em] truncate">agt_RpigE1XjEzmgwGHB34QcHA · .ax/routines/heartbeat.md</span>
+        </span>
+        <span class="inline-flex items-center px-1.5 py-0.5 rounded-sm bg-muted text-[11px] font-mono tracking-[0.02em] text-muted-foreground shrink-0">interval 24h</span>
+        <span class="inline-flex items-center justify-center w-[58px] py-0.5 rounded-sm bg-muted text-foreground/60 text-[11px] font-mono tracking-[0.02em] shrink-0">silenced</span>
+        <span class="text-[12px] text-muted-foreground tabular-nums w-[5.5rem] text-right shrink-0">3h ago</span>
+        <button class="px-2.5 py-1 rounded-md border border-border text-[12px] hover:bg-muted transition-colors shrink-0">Fire now</button>
+      </div>
+    </div>
+
+    <!-- ROW 3 — cron, never-fired, FireNow expanded for webhook elsewhere -->
+    <div class="border-b border-rule-soft last:border-b-0">
+      <div class="py-[1.125rem] flex items-center gap-3.5">
+        <button class="w-8 h-8 rounded-md bg-muted inline-flex items-center justify-center shrink-0 text-muted-foreground" aria-expanded="false">
+          <svg class="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4 L10 8 L6 12"/></svg>
+        </button>
+        <span class="flex flex-col gap-0.5 flex-1 min-w-0">
+          <span class="text-[15px] font-medium tracking-[-0.01em] truncate">morning-summary</span>
+          <span class="text-[12.5px] text-muted-foreground font-mono tracking-[0.02em] truncate">agt_RpigE1XjEzmgwGHB34QcHA · .ax/routines/morning-summary.md</span>
+        </span>
+        <span class="inline-flex items-center px-1.5 py-0.5 rounded-sm bg-muted text-[11px] font-mono tracking-[0.02em] text-muted-foreground shrink-0">cron 0 9 * * *</span>
+        <span class="inline-flex items-center justify-center w-[58px] py-0.5 rounded-sm bg-muted text-muted-foreground text-[11px] shrink-0">—</span>
+        <span class="text-[12px] text-muted-foreground tabular-nums w-[5.5rem] text-right shrink-0">never</span>
+        <button class="px-2.5 py-1 rounded-md border border-border text-[12px] hover:bg-muted transition-colors shrink-0">Fire now</button>
+      </div>
+    </div>
+
+  </div>
+
+  <hr class="my-6 border-border" />
+
+  <!-- Fire-now webhook payload form, shown inline for ROW 1 if expanded -->
+  <h3 class="text-[13px] text-muted-foreground font-mono uppercase tracking-[0.05em] mb-2">Fire now (webhook) — inline payload form</h3>
+  <div class="ml-auto w-[300px]">
+    <textarea class="w-full px-2 py-1.5 rounded-md border border-border bg-background font-mono text-[11.5px]" rows="3">{"ok":"manual-test"}</textarea>
+    <div class="flex justify-end gap-1.5 mt-1.5">
+      <button class="px-2.5 py-1 text-[12px] text-muted-foreground hover:text-foreground">Cancel</button>
+      <button class="px-2.5 py-1 rounded-md bg-foreground text-background text-[12px]">Submit</button>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>
