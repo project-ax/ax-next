@@ -1,7 +1,7 @@
 # Just-in-Time Capability Acquisition — Design
 
 **Status:** Draft for review · **Date:** 2026-05-26
-**Scope:** The in-chat "spine" by which a user (and the agent on their behalf) acquires a missing capability — a skill, a host, a credential — at the moment the conversation needs it, with the human in the loop. Smart defaults, the out-of-band settings mirror, and the full admin experience are **derived** pieces, deferred to a follow-up pass (see §12).
+**Scope:** The in-chat "spine" by which a user (and the agent on their behalf) acquires a missing capability — a skill, a host, a credential — at the moment the conversation needs it, with the human in the loop. Smart defaults, the out-of-band settings mirror, and the full admin experience are **derived** pieces, designed in **Part II** of this doc (see §12).
 
 ---
 
@@ -215,9 +215,9 @@ This design touches sandbox boundaries, egress, credentials, and untrusted conte
 7. **`allow_user_installed_skills`** deployment flag — preset + chart; read by orchestrator/broker to gate open mode.
 8. **Skill bundles** (§9.2) — *foundational storage + contract change, built in the first slice.* Skills are stored as **content-addressed git trees** in the existing host-side git storage; a catalog row is `{ skillId, scope, version, treeSha }` + a parsed SKILL.md index. The sandbox materialization contract carries a **tree**, not an inline `skillMd` string — and the current `AX_INSTALLED_SKILLS_JSON` env-var inlining doesn't scale to trees, so the plan must choose between extracting host-side vs. having the runner **fetch-by-SHA over the git wire it already speaks**. Host-side validation + runner-side re-validation of paths/modes/caps/veto-list at the **extract** boundary (git can store symlinks + exec bits); read-only tree materialization; an admit-time file/diff view.
 
-## 12. Deferred (derived) — separate spec pass
+## 12. Derived pieces (designed in Part II)
 
-Explicitly **out of scope** for this doc, to be designed next:
+These were the deferred set; they are now designed in **Part II** of this doc:
 
 - **Smart defaults** — what a fresh agent ships with (e.g. default Inert skills, web tools, memory) so the common path needs zero card.
 - **Settings mirror** — the out-of-band home: a per-user "Connections" view (your installed catalog skills, host grants, credentials) and the admin "Catalog" view — the same controls the in-chat cards write, reachable intentionally.
@@ -242,6 +242,89 @@ Explicitly **out of scope** for this doc, to be designed next:
 
 ---
 
+# Part II — Derived pieces (the out-of-band mirror)
+
+**Principle:** settings is the *mirror* of the cards, not a parallel system — every capability the spine grants has exactly one home where you see, manage, and revoke it (invariants #4 and #6). The cards are the *just-in-time* face; settings is the *deliberate* face of the same records.
+
+## P1. Scope of a user's capabilities
+
+- **Skills (which are active) and host-grants are per-`(user, agent)`** — a research agent and a coding agent do different jobs.
+- **Credentials are user-scoped and shared** — entered once, reused across all the user's agents and every skill that needs the same service.
+
+So a user's world is two-level: a per-agent *"what this agent can do"* plus a shared *"my keys"* vault.
+
+## P2. Credential vault — service-keyed
+
+A credential slot in the manifest gains an optional **`account`** tag (e.g. `account: linear`). The vault holds **one entry per service** for the user; any skill whose slot declares `account: linear` binds to that entry automatically. Backward-compatible: a slot with **no** `account` keeps today's per-skill behavior (`skill:<id>:<slot>`).
+
+Effects:
+- The bundled card (§6A) checks the vault first: a Linear key already there → *"use your existing Linear key"* (one tap, no re-entry); otherwise prompt once and store it under `account: linear`.
+- Revoking a vault entry pulls the credential out from under every skill that referenced it (surfaced via the "used by" hint).
+
+## P3. The user's home — "Connections"
+
+Promote user settings from the `UserMenu` modals to a **real user-facing Settings surface** that reuses the `AdminShell` shadcn chrome; admins simply see *additional* tabs. (Not a third modal dialect — invariant #6. Alternatives — a bigger modal, an in-chat side panel — don't scale to the two-level structure.)
+
+```
+┌─ Settings ─────────────────────────────────────────────┐
+│  Connections   Keys   [Routines]        (admin: Catalog…)│
+├─────────────────────────────────────────────────────────┤
+│  CONNECTIONS                          Agent: [Research ▾] │
+│                                                           │
+│  What this agent can do                                   │
+│   ● Web search          default        (on, can't remove) │
+│   ● Memory              default                           │
+│   ● Linear              you · 2d ago         [Remove]     │
+│                                                           │
+│  Allowed sites (this agent)                               │
+│   • status.example.com   always · 5d ago     [Revoke]     │
+│                                                           │
+│  ───────────────────────────────────────────────────     │
+│  MY KEYS  (shared across all your agents)                 │
+│   🔑 Linear      ●●●●●●  used by: Linear        [Replace] │
+│   🔑 GitHub      — not set —                     [Add]    │
+└─────────────────────────────────────────────────────────┘
+```
+
+- **Per-agent** ("what this agent can do"): active skills (defaults marked + locked; user-added removable) and the always-allow **host grants**, with an agent switcher. Per-`(user, agent)`.
+- **Shared "My Keys"** vault: service-keyed credentials with a "used by" hint — the out-of-band twin of the card's key field.
+
+## P4. Smart defaults — how they surface
+
+The first-party baseline (broker, web search/extract, memory, the wizard's default model) appears in every agent's skill list **marked `default` and locked** — the floor, not removable. Admin **org defaults** (the existing `default_attached` machinery, extended) also render as `default`. A user's own in-chat installs stack above, per-agent and removable. "Default" is an honest, visible label; the only things a user manages are the things *they* added.
+
+## P5. Admin experience
+
+- **Catalog** (reframe the existing admin "Skills" tab): browse + version skills, the read-only **bundle file-view** (§9.2 tree), admit-from-source, mark **org defaults**, show each skill's tier. This is the set the broker proposes from.
+- **Admit queue** (new admin inbox, Needs-Input-lane shape): cold-start *"a user needed X"* requests **and** share-to-catalog submissions land here. Review = **read the bundle** (file/diff view — admit now means code review, §9.2) → **Admit** (promote + retire the author's working copy, §6D) / **Reject**. Dedup on skill id.
+- **Mode toggle:** `allow_user_installed_skills`, a plain deployment setting (off by default).
+
+## P6. The mirror property
+
+Every card action has exactly one settings home; revoke works from either side (invariant #4 — card and settings row read/write the *same* record):
+
+| In-chat card | settings home | revoke from |
+|---|---|---|
+| Connect a skill | agent's skill list | either |
+| Enter a key | My Keys vault | either |
+| Allow a host ("always") | agent's allowed sites | either |
+| Submit to catalog | admin Admit queue | — |
+
+## P7. Build additions (beyond §11)
+
+1. **User Settings surface** in `channel-web` — reuse the `AdminShell` chrome; new `Connections` + `Keys` tabs, with admin-only tabs gated as today.
+2. **Manifest `account` tag** + a **service-keyed credential vault** (`account:<service>` destination alongside `skill:<id>:<slot>`) + the card's "use existing key" lookup.
+3. **Per-`(user, agent)` host-grant store** (the persistent "always-allow" list) loaded into the allowlist at session open + a revoke path — complements the live `proxy:add-host` (§11.4).
+4. **Catalog tab** (extend the Skills tab) + the **Admit queue** (the `catalog:submit`/`list-requests`/`admit` hooks named in §11) with a bundle file/diff view.
+5. **Org-default editing** layered on `default_attached`.
+
+## P8. Testing (derived)
+
+- **Canary/e2e:** a card grant appears in the right settings home and revoking *there* propagates (the mirror property); a second skill declaring the same `account` reuses the vaulted key with no re-prompt; an admit approve promotes + retires the working copy.
+- **Manual acceptance:** connect a skill in chat → see it under Connections → revoke → confirm the next turn no longer has it.
+
+---
+
 ## Appendix — decisions log (for traceability)
 
 1. Anchor = the just-in-time spine.
@@ -254,3 +337,12 @@ Explicitly **out of scope** for this doc, to be designed next:
 8. On-disk = `.ax/skills` (RW, authored) vs `.ax/session/skills` (RO, catalog); promotion is a cross-domain move with working-copy retirement.
 9. stdio MCP out of MVP broker; http MCP in.
 10. Catalog skills carry **bundles** (file trees), not just SKILL.md — **foundational** (bundle-native from the first slice), stored **content-addressed as git trees** (integrity via tree SHA, free dedup/versioning, drift-free promotion), materialized read-only + path-safe + no-exec-bit + veto-listed at the extract boundary.
+
+### Part II (derived)
+
+11. Settings is the **mirror** of the cards — one source of truth, one design language (invariants #4/#6).
+12. Scope: **skills + host-grants per-`(user, agent)`; credentials user-scoped + shared**.
+13. Credential vault is **service-keyed** via an optional manifest **`account`** tag; backward-compatible (no tag = today's per-skill behavior).
+14. Smart defaults = a **first-party baseline** (broker, web, memory, model) + admin org-defaults, surfaced **marked + locked** in each agent.
+15. User settings **promoted to a real surface** (reusing `AdminShell` chrome), not modals.
+16. Admin gets a **Catalog** (reframed Skills tab) + an **Admit queue** (Needs-Input shape, bundle code review) + the **`allow_user_installed_skills`** toggle.
