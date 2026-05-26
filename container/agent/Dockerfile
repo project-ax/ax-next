@@ -112,8 +112,11 @@ FROM node:20-bookworm-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d
 # attempt is dropped at the network layer, not trusted to env vars.
 # tini: clean PID-1 reaping for the short-lived Claude SDK children the
 # runner spawns.
+# xz-utils: xz/unxz/lzma. Many release tarballs and toolchains ship as
+# .tar.xz; this lets agent Bash sessions and on-demand installers unpack them.
+# Like curl, it adds NO network reach — it's purely a local codec.
 #
-# All six apt deps are version-pinned (was: unpinned, floated with the
+# All seven apt deps are version-pinned (was: unpinned, floated with the
 # pocket) so the install is reproducible — the signed Debian archive already
 # content-addresses each .deb by checksum on download; the pin makes WHICH
 # .deb deterministic. Versions are the current Debian bookworm/main binaries
@@ -131,6 +134,7 @@ RUN apt-get update \
       git=1:2.39.5-0+deb12u3 \
       git-lfs=3.3.0-1+deb12u1 \
       python3=3.11.2-1+b1 \
+      xz-utils=5.4.1-1 \
  && rm -rf /var/lib/apt/lists/*
 # `git` is needed by the host pod's @ax/ipc-core workspace.materialize
 # handler (it runs `git bundle` to seed the runner's /permanent dir at
@@ -147,6 +151,42 @@ RUN apt-get update \
 # bytes rather than as LFS pointer text. The runner runs
 # `git lfs install --local` in /permanent after clone (see
 # packages/agent-claude-sdk-runner/src/git-workspace.ts).
+
+# amd64 ELF loader (multi-arch libc6:amd64). Lets x86-64-only Linux binaries
+# load and run inside this image. They don't run natively — Docker Desktop's
+# Rosetta (Apple Silicon) or qemu-user translates the x86-64 instructions — but
+# the translator can only start a dynamically-linked binary once its ELF
+# interpreter, /lib64/ld-linux-x86-64.so.2, exists on disk. A native arm64 image
+# ships only the aarch64 loader, so an amd64 binary dies with
+# `rosetta error: failed to open elf at /lib64/ld-linux-x86-64.so.2`. libc6:amd64
+# supplies that loader plus the core glibc shared objects.
+#
+# Capability note (invariant #5): this is the *minimal* addition — just the
+# loader + glibc, not the amd64 cross-toolchain or any compiler. It widens only
+# what the sandbox can EXECUTE (x86-64 ELF binaries, under emulation); it grants
+# no new network reach (the `sandbox-restrict` NetworkPolicy + credential-proxy
+# egress fence are unchanged) and no new filesystem reach. On a native amd64 image
+# this is a harmless few-MB addition; it earns its keep only when the image runs
+# on an arm64 host. If a given amd64 binary links beyond glibc (libstdc++, libssl,
+# …), add those `:amd64` variants here too — keep the set as small as the binary
+# actually needs.
+#
+# libc6 is the ONE package here we deliberately do NOT pin to a literal, and the
+# reason is multi-arch + how Debian pockets retire point releases. Multi-arch apt
+# refuses to install libc6:amd64 at a different version than the installed
+# libc6:arm64 — the two must match exactly. The digest-pinned base freezes
+# libc6:arm64 at whatever it shipped (e.g. 2.36-9+deb12u13), but bookworm/main
+# keeps only the LATEST point release of a package, so by the time you build, that
+# exact version is gone from the amd64 pocket and `=<frozen version>` fails to
+# resolve. Leaving it unpinned lets apt pull the current amd64 candidate and
+# upgrade libc6:arm64 to match in lockstep (so both land on, e.g., u14). It's still
+# a signed glibc point release from the same bookworm/main archive — we trade a
+# frozen byte-for-byte pin (impossible to honor here) for "current patched glibc,
+# both arches in sync", which is the safe direction to float.
+RUN dpkg --add-architecture amd64 \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends libc6:amd64 \
+ && rm -rf /var/lib/apt/lists/*
 
 # Non-root user. The node:bookworm-slim base ships with a `node` user at
 # UID 1000; we drop it and create our own `axagent` so usernames in `ps`,
