@@ -7,6 +7,7 @@ import {
 } from '@ax/core';
 import type { Kysely } from 'kysely';
 import { checkForUpdates } from './check-updates.js';
+import { validateBundleFiles } from './bundle-files.js';
 import { parseSkillManifest } from './manifest.js';
 import { runSkillsMigration, type SkillsDatabase } from './migrations.js';
 import { createSkillsStore } from './store.js';
@@ -293,6 +294,23 @@ export function createSkillsPlugin(): Plugin {
             });
           }
 
+          // JIT Phase 1a — validate the optional bundle extra files (path
+          // safety + veto list + caps) BEFORE any write. The validator throws
+          // a plain Error; re-wrap as a PluginError so the host surfaces a
+          // typed code while preserving the (test-asserted) message. This is
+          // the host-side gate; the wire schema + both runner materializers
+          // re-validate independently (validateMcpEntry defense-in-depth).
+          const files = input.files ?? [];
+          try {
+            validateBundleFiles(files);
+          } catch (err) {
+            throw new PluginError({
+              code: 'invalid-bundle-file',
+              plugin: PLUGIN_NAME,
+              message: err instanceof Error ? err.message : String(err),
+            });
+          }
+
           const scope = input.scope ?? 'global';
 
           if (scope === 'user') {
@@ -307,6 +325,7 @@ export function createSkillsPlugin(): Plugin {
               version: parsed.value.version,
               defaultAttached: input.defaultAttached ?? false,
               sourceUrl: parsed.value.sourceUrl ?? null,
+              files,
             });
             // NOTE: credential purge is intentionally SKIPPED for user-scoped skills.
             // The `skill:<id>:<slot>` ref scheme is global-namespaced. Running purge
@@ -347,6 +366,7 @@ export function createSkillsPlugin(): Plugin {
             // manifest so the column is the source of truth, kept in sync
             // with the manifest_yaml on every upsert.
             sourceUrl: parsed.value.sourceUrl ?? null,
+            files,
           });
 
           // Purge credentials for slots that no longer exist in the manifest.

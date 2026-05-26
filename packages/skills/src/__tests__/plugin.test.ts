@@ -84,8 +84,9 @@ afterEach(async () => {
   const cleanup = new (await import('pg')).default.Client({ connectionString });
   await cleanup.connect();
   try {
-    // Truncate every table so user-scope rows don't bleed between tests.
+    // Truncate every table so rows don't bleed between tests.
     await cleanup.query('DROP TABLE IF EXISTS skills_v1_user_attachments');
+    await cleanup.query('DROP TABLE IF EXISTS skills_v1_skill_files');
     await cleanup.query('DROP TABLE IF EXISTS skills_v1_user_skills');
     await cleanup.query('DROP TABLE IF EXISTS skills_v1_skills');
   } finally {
@@ -1123,5 +1124,57 @@ capabilities:
         userId: 'u1', agentId: 'a1', skillId: 'github', credentialBindings: {},
       }),
     ).rejects.toThrow(/binding-missing|missing binding/i);
+  });
+});
+
+describe('@ax/skills bundle extra files (JIT Phase 1a)', () => {
+  it('skills:upsert rejects a bundle file that escapes the dir', async () => {
+    const h = await makeHarness();
+    await expect(
+      h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
+        manifestYaml: SAMPLE_MANIFEST,
+        bodyMd: SAMPLE_BODY,
+        files: [{ path: '../evil.txt', contents: 'x' }],
+      }),
+    ).rejects.toThrow(/invalid path/i);
+  });
+
+  it('skills:upsert rejects a reserved bundle path (.mcp.json)', async () => {
+    const h = await makeHarness();
+    await expect(
+      h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
+        manifestYaml: SAMPLE_MANIFEST,
+        bodyMd: SAMPLE_BODY,
+        files: [{ path: '.mcp.json', contents: '{}' }],
+      }),
+    ).rejects.toThrow(/reserved/i);
+  });
+
+  it('skills:resolve returns bundle files for a multi-file skill', async () => {
+    const h = await makeHarness();
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
+      manifestYaml: SAMPLE_MANIFEST,
+      bodyMd: SAMPLE_BODY,
+      files: [{ path: 'scripts/run.py', contents: 'print(1)' }],
+    });
+    const out = await h.bus.call<SkillsResolveInput, SkillsResolveOutput>(
+      'skills:resolve',
+      h.ctx(),
+      { skillIds: ['github'] },
+    );
+    expect(out.skills[0]?.files).toEqual([{ path: 'scripts/run.py', contents: 'print(1)' }]);
+  });
+
+  it('skills:get returns bundle files; a single-file skill reports files: []', async () => {
+    const h = await makeHarness();
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
+      manifestYaml: SAMPLE_MANIFEST,
+      bodyMd: SAMPLE_BODY,
+    });
+    const detail = await h.bus.call<SkillsGetInput, SkillsGetOutput>('skills:get', h.ctx(), {
+      skillId: 'github',
+      scope: 'global',
+    });
+    expect(detail.files).toEqual([]);
   });
 });
