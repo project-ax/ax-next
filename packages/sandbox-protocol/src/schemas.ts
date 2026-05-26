@@ -193,6 +193,17 @@ export const ProxyConfigSchema = z
     caCertPem: z.string().min(1),
     /** env-var name → `ax-cred:<hex>` placeholder map the proxy recognizes. */
     envMap: z.record(z.string(), z.string()),
+    /**
+     * Per-session proxy token for egress attribution (TASK-52;
+     * Proxy-Authorization Basic). Optional + backend-agnostic (I1) — an
+     * opaque secret, no transport/storage vocabulary. The sandbox bootstrap
+     * embeds it into the proxy URL userinfo so every egress client sends it
+     * automatically. It is an attribution label, never an authz input.
+     */
+    proxyAuthToken: z
+      .string()
+      .regex(/^[0-9a-f]{32}$/)
+      .optional(),
   })
   .refine((v) => (v.endpoint !== undefined) !== (v.unixSocketPath !== undefined), {
     message: 'proxyConfig must set exactly one of endpoint or unixSocketPath',

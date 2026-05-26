@@ -361,6 +361,33 @@ describe('ProxyConfigSchema', () => {
     expect(result.success).toBe(false);
   });
 
+  it('accepts an optional 32-hex proxyAuthToken (TASK-52)', () => {
+    const result = ProxyConfigSchema.safeParse({
+      endpoint: 'http://127.0.0.1:54321',
+      caCertPem: 'PEM',
+      envMap: {},
+      proxyAuthToken: 'a'.repeat(32),
+    });
+    expect(result.success).toBe(true);
+    // Back-compat: still valid without it.
+    const legacy = ProxyConfigSchema.safeParse({
+      endpoint: 'http://127.0.0.1:54321',
+      caCertPem: 'PEM',
+      envMap: {},
+    });
+    expect(legacy.success).toBe(true);
+  });
+
+  it('rejects a malformed proxyAuthToken (not 32-hex)', () => {
+    const result = ProxyConfigSchema.safeParse({
+      endpoint: 'http://127.0.0.1:54321',
+      caCertPem: 'PEM',
+      envMap: {},
+      proxyAuthToken: 'not-a-hex-token',
+    });
+    expect(result.success).toBe(false);
+  });
+
   it('rejects a missing caCertPem', () => {
     const result = ProxyConfigSchema.safeParse({
       endpoint: 'http://127.0.0.1:54321',
