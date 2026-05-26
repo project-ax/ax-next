@@ -588,13 +588,19 @@ describe('buildPodSpec', () => {
   // 0555. The Phase 0 init container created the empty dir; Phase 1's
   // runner-side step fills + locks it.
   describe('AX_INSTALLED_SKILLS_JSON wiring (I-P1-3)', () => {
-    it('stamps AX_INSTALLED_SKILLS_JSON when installedSkills is non-empty', () => {
+    it('encodes installedSkills files into AX_INSTALLED_SKILLS_JSON', () => {
       const spec = buildPodSpec(
         'pod-skills',
         {
           ...baseInput,
           installedSkills: [
-            { id: 'github', skillMd: '---\nname: github\ndescription: x\n---\nBody' },
+            {
+              id: 'github',
+              files: [
+                { path: 'SKILL.md', contents: '---\nname: github\ndescription: x\n---\nBody' },
+                { path: 'scripts/a.py', contents: 'print(1)' },
+              ],
+            },
           ],
         },
         baseResolved(),
@@ -604,9 +610,14 @@ describe('buildPodSpec', () => {
       ).containers[0]!.env;
       const entry = env.find((e) => e.name === 'AX_INSTALLED_SKILLS_JSON');
       expect(entry).toBeDefined();
-      const parsed = JSON.parse(entry!.value) as unknown;
-      expect(parsed).toEqual([
-        { id: 'github', skillMd: '---\nname: github\ndescription: x\n---\nBody' },
+      const parsed = JSON.parse(entry!.value) as Array<{
+        id: string;
+        files: Array<{ path: string; contents: string }>;
+      }>;
+      expect(parsed[0]!.id).toBe('github');
+      expect(parsed[0]!.files).toEqual([
+        { path: 'SKILL.md', contents: '---\nname: github\ndescription: x\n---\nBody' },
+        { path: 'scripts/a.py', contents: 'print(1)' },
       ]);
     });
 
@@ -630,20 +641,22 @@ describe('buildPodSpec', () => {
       expect(env.find((e) => e.name === 'AX_INSTALLED_SKILLS_JSON')).toBeUndefined();
     });
 
-    it('throws when the total installedSkills payload exceeds 256 KiB', () => {
-      // Each skill can be up to 512 KiB individually (schema cap), but the
-      // combined JSON env var must fit in 256 KiB to stay manageable.
-      const hugeSkillMd = 'x'.repeat(300 * 1024); // 300 KiB
+    it('throws when the total installedSkills payload exceeds 768 KiB', () => {
+      // A bundle is a file tree (bigger than a single SKILL.md string), so the
+      // env-var transport cap is 768 KiB. The combined JSON must still fit.
+      const hugeContents = 'x'.repeat(800 * 1024); // 800 KiB > 768 KiB cap
       expect(() =>
         buildPodSpec(
           'pod-huge',
           {
             ...baseInput,
-            installedSkills: [{ id: 'giant', skillMd: hugeSkillMd }],
+            installedSkills: [
+              { id: 'giant', files: [{ path: 'SKILL.md', contents: hugeContents }] },
+            ],
           },
           baseResolved(),
         ),
-      ).toThrow(/over 256 KiB/);
+      ).toThrow(/over 768 KiB/);
     });
   });
 });

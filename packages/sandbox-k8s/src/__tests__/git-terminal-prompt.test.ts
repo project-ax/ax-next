@@ -56,7 +56,7 @@ describe('sandbox-k8s git env', () => {
     };
     const credentialedSkill = {
       id: 'gitclonetest',
-      skillMd: '---\nname: gitclonetest\n---\nbody',
+      files: [{ path: 'SKILL.md', contents: '---\nname: gitclonetest\n---\nbody' }],
       allowedHosts: ['github.com'],
       credentials: [{ slot: 'GIT_TOKEN' as const, kind: 'api-key' as const }],
     };
@@ -98,7 +98,7 @@ describe('sandbox-k8s git env', () => {
           ...baseInput,
           proxyConfig,
           installedSkills: [
-            { id: 'plain', skillMd: '---\nname: plain\n---\nb', allowedHosts: ['example.com'], credentials: [] },
+            { id: 'plain', files: [{ path: 'SKILL.md', contents: '---\nname: plain\n---\nb' }], allowedHosts: ['example.com'], credentials: [] },
           ],
         },
         baseResolved(),

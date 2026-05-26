@@ -26,7 +26,7 @@ function validBaseInput(): unknown {
     installedSkills: [
       {
         id: 'github',
-        skillMd: '---\nname: github\n---\nbody',
+        files: [{ path: 'SKILL.md', contents: '---\nname: github\n---\nbody' }],
         mcpServers: [
           {
             name: 'github',
