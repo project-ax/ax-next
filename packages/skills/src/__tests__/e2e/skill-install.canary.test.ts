@@ -9,8 +9,9 @@
  *
  *   - `proxy:open-session` receives the UNIONED allowlist + credential map
  *     (agent defaults ∪ each attached skill's declared hosts/slots).
- *   - `sandbox:open-session` receives the installed SKILL.md as
- *     `installedSkills: [{ id, skillMd, mcpServers }]`.
+ *   - `sandbox:open-session` receives the installed bundle as a file tree:
+ *     `installedSkills: [{ id, files: [{ path, contents }], mcpServers }]`
+ *     (SKILL.md reconstructed from the manifest columns + any extra files).
  *
  * This replaces the manual skill-install acceptance walk for the install path:
  * a regression in the resolve→union→materialize chain now fails CI instead of
@@ -107,6 +108,7 @@ afterEach(async () => {
     await cleanup.query('DROP TABLE IF EXISTS agents_v1_skill_attachments');
     await cleanup.query('DROP TABLE IF EXISTS agents_v1_agents');
     await cleanup.query('DROP TABLE IF EXISTS skills_v1_user_attachments');
+    await cleanup.query('DROP TABLE IF EXISTS skills_v1_skill_files');
     await cleanup.query('DROP TABLE IF EXISTS skills_v1_user_skills');
     await cleanup.query('DROP TABLE IF EXISTS skills_v1_skills');
   } finally {
@@ -152,7 +154,11 @@ interface CaptureBundle {
   }>;
   sandboxOpenInputs: Array<{
     sessionId: string;
-    installedSkills?: Array<{ id: string; skillMd: string; mcpServers: unknown[] }>;
+    installedSkills?: Array<{
+      id: string;
+      files: Array<{ path: string; contents: string }>;
+      mcpServers: unknown[];
+    }>;
   }>;
   services: Record<string, ServiceHandler>;
 }
@@ -378,11 +384,66 @@ describe('skill-install canary: install → attach → invoke (real plugins)', (
       kind: 'api-key',
     });
 
-    // 5. sandbox:open-session received the installed SKILL.md.
+    // 5. sandbox:open-session received the installed bundle as a file tree
+    //    whose SKILL.md (reconstructed from the manifest columns) carries the
+    //    manifest. The legacy single `skillMd` string field is gone.
     expect(fakes.sandboxOpenInputs).toHaveLength(1);
     const installed = fakes.sandboxOpenInputs[0]!.installedSkills ?? [];
     expect(installed.length).toBeGreaterThanOrEqual(1);
-    expect(installed.some((s) => s.skillMd.includes('name: github'))).toBe(true);
+    const gh = installed.find((s) => s.id === 'github')!;
+    expect('skillMd' in gh).toBe(false);
+    const skillMd = gh.files.find((f) => f.path === 'SKILL.md');
+    expect(skillMd?.contents).toContain('name: github');
+    // Single-file (SKILL.md-only) skill materializes EXACTLY one file — the
+    // byte-identical-behavior guarantee for pre-bundle skills.
+    expect(gh.files.map((f) => f.path)).toEqual(['SKILL.md']);
+  }, 60_000);
+
+  it('a multi-file bundle threads SKILL.md + extra files through to sandbox:open-session', async () => {
+    const busRef: { current: HookBus | null } = { current: null };
+    const fakes = buildCaptureFakes(busRef);
+
+    const h = await createTestHarness({
+      services: fakes.services,
+      plugins: [
+        createDatabasePostgresPlugin({ connectionString }),
+        createAgentsPlugin(),
+        createSkillsPlugin(),
+        createChatOrchestratorPlugin({
+          runnerBinary: '/irrelevant',
+          oneShot: true,
+          chatTimeoutMs: 5_000,
+        }),
+      ],
+    });
+    harnesses.push(h);
+    busRef.current = h.bus;
+
+    // Install a bundle skill carrying an EXTRA file alongside SKILL.md.
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
+      manifestYaml: GITHUB_MANIFEST,
+      bodyMd: 'Body.',
+      files: [{ path: 'scripts/run.py', contents: 'print("hi")' }],
+    });
+
+    const agentId = await createPersonalAgent(h, 'alice');
+    await attachSkill(h, agentId, 'alice', 'github', {
+      GITHUB_TOKEN: 'cred-ref-alice-gh',
+    });
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      ctxFor(agentId, 'alice', 'canary-bundle-walk'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+
+    expect(fakes.sandboxOpenInputs).toHaveLength(1);
+    const installed = fakes.sandboxOpenInputs[0]!.installedSkills ?? [];
+    const gh = installed.find((s) => s.id === 'github')!;
+    // SKILL.md (reconstructed) + the resolved extra file, both present.
+    expect(gh.files.find((f) => f.path === 'SKILL.md')?.contents).toContain('name: github');
+    expect(gh.files.find((f) => f.path === 'scripts/run.py')?.contents).toBe('print("hi")');
   }, 60_000);
 });
 
@@ -531,12 +592,16 @@ describe('skill-install canary: per-user attachment union (TASK-33, real plugins
     );
     expect(outcome.kind).toBe('complete');
 
-    // The sandbox got the USER-scoped body + host, not the global one.
+    // The sandbox got the USER-scoped body + host, not the global one. JIT
+    // Phase 1a — the SKILL.md content lives in the bundle file tree's
+    // `SKILL.md` entry, not a top-level skillMd string.
     const installed = fakes.sandboxOpenInputs[0]!.installedSkills ?? [];
-    const gh = installed.find((s) => s.skillMd.includes('name: gh'));
+    const gh = installed.find((s) => s.id === 'gh');
     expect(gh).toBeDefined();
-    expect(gh!.skillMd).toContain('USER BODY');
-    expect(gh!.skillMd).not.toContain('GLOBAL BODY');
+    const ghSkillMd = gh!.files.find((f) => f.path === 'SKILL.md')?.contents ?? '';
+    expect(ghSkillMd).toContain('name: gh');
+    expect(ghSkillMd).toContain('USER BODY');
+    expect(ghSkillMd).not.toContain('GLOBAL BODY');
     expect(fakes.proxyOpenInputs[0]!.allowlist).toContain('user.example.com');
     expect(fakes.proxyOpenInputs[0]!.allowlist).not.toContain('global.example.com');
   }, 60_000);
