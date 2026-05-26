@@ -93,6 +93,13 @@ export interface SessionConfig {
    */
   userId?: string;
   /**
+   * The agent this session was opened for. The plugin sets it on open-session;
+   * proxy:add-host returns it so a host-side caller can persist a per-(user,
+   * agent) "always-allow" grant (TASK-44) without trusting a browser-supplied
+   * agentId. Optional for back-compat with SessionConfigs tests build directly.
+   */
+  agentId?: string;
+  /**
    * Coarse traffic class derived from the session's credential kinds.
    * Computed once at open-session time (cheap; kinds don't change for the
    * life of a session) and stamped onto every audit entry the listener

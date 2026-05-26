@@ -244,6 +244,8 @@ interface AddHostInput {
 interface AddHostOutput {
   /** True if the host was added; false for an unknown/closed session. */
   added: boolean;
+  /** The session's agentId — present iff added. Authoritative grant key for TASK-44. */
+  agentId?: string;
 }
 
 interface RotateSessionInput {
@@ -425,6 +427,7 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
             allowlist: new Set(input.allowlist),
             sessionId: input.sessionId,
             userId: input.userId,
+            agentId: input.agentId,
             classification: classifyCredentials(input.credentials),
             proxyToken,
           };
@@ -591,7 +594,7 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
             });
           }
           sess.allowlist.add(host);
-          return { added: true };
+          return { added: true, agentId: sess.agentId };
         },
       );
     },

@@ -568,9 +568,27 @@ describe('@ax/credential-proxy plugin', () => {
     await openSession('u1', ['a.example.com']);
     const out = await bus.call<
       { sessionId: string; host: string },
-      { added: boolean }
+      { added: boolean; agentId?: string }
     >('proxy:add-host', ctxFor('u1'), { sessionId: 's1', host: 'b.example.com' });
-    expect(out).toEqual({ added: true });
+    // openSession opens with agentId 'a1' — proxy:add-host returns it so the
+    // host-side caller can persist a per-(user, agent) grant (TASK-44).
+    expect(out).toEqual({ added: true, agentId: 'a1' });
+  });
+
+  it('proxy:add-host returns the session agentId on a successful grant', async () => {
+    await bootProxy();
+    await bus.call('proxy:open-session', ctxFor('u1'), {
+      sessionId: 's-agent',
+      userId: 'u1',
+      agentId: 'agent-7',
+      allowlist: ['a.example.com'],
+      credentials: {},
+    });
+    const out = await bus.call<
+      { sessionId: string; host: string },
+      { added: boolean; agentId?: string }
+    >('proxy:add-host', ctxFor('u1'), { sessionId: 's-agent', host: 'b.example.com' });
+    expect(out).toEqual({ added: true, agentId: 'agent-7' });
   });
 
   it('proxy:add-host rejects a grant from a different user (ownership)', async () => {
