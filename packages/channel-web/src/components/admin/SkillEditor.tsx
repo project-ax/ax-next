@@ -38,15 +38,19 @@ export interface SkillEditorApi {
 // validateBundleFiles rules (path-safety + reserved-name veto). The SERVER
 // stays the source of truth; this only gives instant feedback and gates the
 // Save button so we don't round-trip an obviously-bad path. Keep these in sync
-// with `bundle-files.ts` in @ax/skills.
+// with `bundle-files.ts` in @ax/skills — the reserved set is matched EXACTLY
+// (case-sensitive) just like the server's `RESERVED_NAMES`, so a legitimate
+// lowercase `skill.md` extra file (which the server permits — only the exact
+// uppercase `SKILL.md`, the generated manifest file, is reserved) isn't blocked.
 const BUNDLE_PATH_RE = /^[a-z0-9._-]+(\/[a-z0-9._-]+)*$/;
-const RESERVED_BUNDLE_NAMES = ['skill.md', '.mcp.json', '.claude', '.git'];
+const RESERVED_BUNDLE_NAMES = ['SKILL.md', '.mcp.json', '.claude', '.git'];
 
 /**
  * Returns a human hint string when `path` is invalid for a bundle file, or
- * null when it's acceptable. `reserved` is matched case-insensitively for
- * SKILL.md (the server reserves the exact `SKILL.md`, but the path charset is
- * lowercase, so a lowercased compare catches the user's likely typo).
+ * null when it's acceptable. Mirrors `validateBundleFiles` exactly so the
+ * client never blocks a path the server would accept (nor accepts one it would
+ * reject for the rules a flat string can check; bytes/total-size/collision
+ * checks remain server-only and surface as a 400 on save).
  */
 function bundlePathHint(path: string): string | null {
   const p = path.trim();
@@ -60,12 +64,8 @@ function bundlePathHint(path: string): string | null {
   if (!BUNDLE_PATH_RE.test(p)) {
     return 'Use lowercase letters, digits, dot, dash, underscore, and "/" only.';
   }
-  const lower = p.toLowerCase();
-  if (
-    RESERVED_BUNDLE_NAMES.some(
-      (r) => lower === r || lower.startsWith(r + '/'),
-    )
-  ) {
+  // Case-sensitive, matching the server's exact-name veto.
+  if (RESERVED_BUNDLE_NAMES.some((r) => p === r || p.startsWith(r + '/'))) {
     return 'Reserved path (SKILL.md / .mcp.json / .claude / .git are generated).';
   }
   return null;

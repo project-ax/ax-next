@@ -455,6 +455,47 @@ describe('SkillEditor', () => {
     });
   });
 
+  it('accepts a lowercase skill.md bundle file (only the exact SKILL.md is reserved)', async () => {
+    // The server reserves the EXACT `SKILL.md` (the generated manifest file);
+    // a lowercase `skill.md` is a legitimate distinct extra file. The client
+    // hint must mirror the server case-sensitively and NOT block it.
+    render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
+
+    const skillMdArea = (await screen.findAllByRole('textbox'))[0] as HTMLTextAreaElement;
+    fireEvent.change(skillMdArea, { target: { value: VALID_MD } });
+
+    fireEvent.click(screen.getByRole('button', { name: /add file/i }));
+    fireEvent.change(await screen.findByLabelText('Bundle file path 1'), {
+      target: { value: 'skill.md' },
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText(/reserved path/i)).toBeNull();
+      expect(screen.getByRole('button', { name: 'Install' }).hasAttribute('disabled')).toBe(
+        false,
+      );
+    });
+  });
+
+  it('flags the reserved .mcp.json bundle file path', async () => {
+    render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
+
+    const skillMdArea = (await screen.findAllByRole('textbox'))[0] as HTMLTextAreaElement;
+    fireEvent.change(skillMdArea, { target: { value: VALID_MD } });
+
+    fireEvent.click(screen.getByRole('button', { name: /add file/i }));
+    fireEvent.change(await screen.findByLabelText('Bundle file path 1'), {
+      target: { value: '.mcp.json' },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/reserved path/i)).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Install' }).hasAttribute('disabled')).toBe(
+        true,
+      );
+    });
+  });
+
   it('disables Save and flags a duplicate bundle file path', async () => {
     render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
 
