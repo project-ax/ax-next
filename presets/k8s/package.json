@@ -38,6 +38,7 @@
     "@ax/credentials-store-db": "workspace:*",
     "@ax/database-postgres": "workspace:*",
     "@ax/eventbus-postgres": "workspace:*",
+    "@ax/host-grants": "workspace:*",
     "@ax/http-server": "workspace:*",
     "@ax/ipc-http": "workspace:*",
     "@ax/llm-anthropic": "workspace:*",
