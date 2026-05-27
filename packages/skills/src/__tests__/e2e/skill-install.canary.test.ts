@@ -1079,6 +1079,7 @@ describe('skill-install canary: open-mode authoring → user-store bundle + reti
       description: string;
       hosts: string[];
       slots: { slot: string; kind: string }[];
+      packages?: { npm: string[]; pypi: string[] };
       authored?: boolean;
     }> = [];
     h.bus.subscribe('chat:permission-request', 'canary/authored-card', async (_c, p) => {
@@ -1101,6 +1102,7 @@ describe('skill-install canary: open-mode authoring → user-store bundle + reti
         description: 'Take notes',
         hosts: ['api.example.com'],
         slots: [{ slot: 'NOTES_KEY', kind: 'api-key' }],
+        packages: { npm: [], pypi: [] },
         authored: true,
       },
     ]);
