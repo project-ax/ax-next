@@ -110,12 +110,12 @@ export function PermissionCard() {
     }
   }
 
-  async function allow(): Promise<void> {
+  async function allow(persist: boolean): Promise<void> {
     if (busy || request === null || request.kind !== 'host') return;
     setBusy(true);
     setError(null);
     try {
-      await grantHost({ sessionId: request.sessionId, host: request.host });
+      await grantHost({ sessionId: request.sessionId, host: request.host, persist });
       close();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -147,12 +147,10 @@ export function PermissionCard() {
           <Button variant="ghost" disabled={busy} onClick={close}>
             Not now
           </Button>
-          {/* "Always" does the same LIVE grant this phase; per-(user, agent)
-              persistence is TASK-44. */}
-          <Button variant="outline" disabled={busy} onClick={() => void allow()}>
+          <Button variant="outline" disabled={busy} onClick={() => void allow(true)}>
             Always for this agent
           </Button>
-          <Button disabled={busy} onClick={() => void allow()}>
+          <Button disabled={busy} onClick={() => void allow(false)}>
             {busy ? 'Allowing…' : 'Just this once'}
           </Button>
         </CardFooter>

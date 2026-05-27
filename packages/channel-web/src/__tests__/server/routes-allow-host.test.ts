@@ -119,4 +119,94 @@ describe('POST /api/chat/allow-host', () => {
     );
     expect(r2.captured.statusCode).toBe(400);
   });
+
+  it('TASK-44: persist:true → calls host-grants:grant with the authed userId + proxy-returned agentId', async () => {
+    const grants: unknown[] = [];
+    const bus = new HookBus();
+    bus.registerService('auth:require-user', 'auth', async () => ({
+      user: { id: 'u1', isAdmin: false },
+    }));
+    bus.registerService('proxy:add-host', 'proxy', async () => ({ added: true, agentId: 'agent-7' }));
+    bus.registerService('host-grants:grant', 'hg', async (_ctx, input) => {
+      grants.push(input);
+      return { created: true };
+    });
+    const handler = makeAllowHostHandler({ bus, initCtx });
+
+    const { res, captured } = fakeRes();
+    await handler(
+      fakeReq({
+        body: Buffer.from(JSON.stringify({ sessionId: 's1', host: 'x.example.com', persist: true })),
+      }),
+      res,
+    );
+    expect(captured.statusCode).toBe(200);
+    // The live-grant response shape is unchanged (agentId never reaches the browser).
+    expect(captured.body).toEqual({ added: true });
+    // The grant key is server-authoritative: userId from auth, agentId from the proxy.
+    expect(grants).toEqual([{ ownerUserId: 'u1', agentId: 'agent-7', host: 'x.example.com' }]);
+  });
+
+  it('TASK-44: persist omitted/false → does NOT persist (live grant only, TASK-37 behavior preserved)', async () => {
+    const grants: unknown[] = [];
+    const bus = new HookBus();
+    bus.registerService('auth:require-user', 'auth', async () => ({
+      user: { id: 'u1', isAdmin: false },
+    }));
+    bus.registerService('proxy:add-host', 'proxy', async () => ({ added: true, agentId: 'agent-7' }));
+    bus.registerService('host-grants:grant', 'hg', async (_ctx, input) => {
+      grants.push(input);
+      return { created: true };
+    });
+    const handler = makeAllowHostHandler({ bus, initCtx });
+    const { res, captured } = fakeRes();
+    await handler(
+      fakeReq({ body: Buffer.from(JSON.stringify({ sessionId: 's1', host: 'x.example.com' })) }),
+      res,
+    );
+    expect(captured.statusCode).toBe(200);
+    expect(grants).toEqual([]);
+  });
+
+  it('TASK-44: a host-grants:grant failure does NOT fail the request (live grant already succeeded → 200)', async () => {
+    // The live proxy:add-host widen already applied, so the host works for THIS
+    // session; a persist failure (e.g. grant-limit at the 256-host cap, or a
+    // transient DB blip) is logged + swallowed, never a 500.
+    const bus = new HookBus();
+    bus.registerService('auth:require-user', 'auth', async () => ({
+      user: { id: 'u1', isAdmin: false },
+    }));
+    bus.registerService('proxy:add-host', 'proxy', async () => ({ added: true, agentId: 'agent-7' }));
+    bus.registerService('host-grants:grant', 'hg', async () => {
+      throw new PluginError({ code: 'grant-limit', plugin: 'hg', message: 'at most 256' });
+    });
+    const handler = makeAllowHostHandler({ bus, initCtx });
+    const { res, captured } = fakeRes();
+    await handler(
+      fakeReq({
+        body: Buffer.from(JSON.stringify({ sessionId: 's1', host: 'x.example.com', persist: true })),
+      }),
+      res,
+    );
+    expect(captured.statusCode).toBe(200);
+    expect(captured.body).toEqual({ added: true });
+  });
+
+  it('TASK-44: persist:true still returns 200 when @ax/host-grants is absent (degrades — no persistence)', async () => {
+    const bus = new HookBus();
+    bus.registerService('auth:require-user', 'auth', async () => ({
+      user: { id: 'u1', isAdmin: false },
+    }));
+    bus.registerService('proxy:add-host', 'proxy', async () => ({ added: true, agentId: 'agent-7' }));
+    // no host-grants:grant registered
+    const handler = makeAllowHostHandler({ bus, initCtx });
+    const { res, captured } = fakeRes();
+    await handler(
+      fakeReq({
+        body: Buffer.from(JSON.stringify({ sessionId: 's1', host: 'x.example.com', persist: true })),
+      }),
+      res,
+    );
+    expect(captured.statusCode).toBe(200);
+  });
 });

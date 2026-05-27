@@ -52,6 +52,7 @@
     { "path": "packages/skill-broker" },
     { "path": "packages/skills" },
     { "path": "packages/skills-parser" },
+    { "path": "packages/host-grants" },
     { "path": "packages/sandbox-protocol" },
     { "path": "packages/workspace-bundle-protocol" }
   ]

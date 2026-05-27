@@ -189,6 +189,8 @@ export async function setDestinationCredential(args: {
 export async function grantHost(input: {
   sessionId: string;
   host: string;
+  /** "Always for this agent" → durably persist a per-(user, agent) grant (TASK-44). */
+  persist?: boolean;
 }): Promise<void> {
   const res = await fetch('/api/chat/allow-host', {
     method: 'POST',

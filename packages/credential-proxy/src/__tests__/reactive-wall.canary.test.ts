@@ -173,12 +173,13 @@ describe('TASK-37 reactive-wall canary', () => {
     expect(block!.sessionId).toBe('s1');
 
     // 2) Owner grants the host LIVE — no re-spawn, same session.
-    const grant = await bus.call<{ sessionId: string; host: string }, { added: boolean }>(
-      'proxy:add-host',
-      ctx('u1'),
-      { sessionId: 's1', host: '127.0.0.1' },
-    );
-    expect(grant).toEqual({ added: true });
+    const grant = await bus.call<
+      { sessionId: string; host: string },
+      { added: boolean; agentId?: string }
+    >('proxy:add-host', ctx('u1'), { sessionId: 's1', host: '127.0.0.1' });
+    // The session was opened with agentId 'a1'; proxy:add-host returns it (the
+    // authoritative grant key the channel-web route persists for TASK-44).
+    expect(grant).toEqual({ added: true, agentId: 'a1' });
 
     // 3) Retry now passes the allowlist gate — no longer a domain_denied 403.
     const r2 = await fetch(`http://127.0.0.1:${upPort}/`, { dispatcher } as RequestInit);

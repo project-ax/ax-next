@@ -160,6 +160,7 @@ describe('@ax/preset-k8s wiring', () => {
         '@ax/credentials-store-db',
         '@ax/database-postgres',
         '@ax/eventbus-postgres',
+        '@ax/host-grants',
         '@ax/http-server',
         '@ax/ipc-http',
         '@ax/mcp-client',
@@ -198,6 +199,17 @@ describe('@ax/preset-k8s wiring', () => {
     ]) {
       expect(names.has(forbidden)).toBe(false);
     }
+  });
+
+  it('loads @ax/host-grants and registers host-grants:grant/list/revoke (TASK-44)', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const hg = plugins.find((p) => p.manifest.name === '@ax/host-grants');
+    expect(hg).toBeDefined();
+    expect(hg!.manifest.registers).toEqual([
+      'host-grants:grant',
+      'host-grants:list',
+      'host-grants:revoke',
+    ]);
   });
 
   it('includes @ax/skill-broker and its calls are satisfied (TASK-34)', () => {

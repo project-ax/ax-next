@@ -35,6 +35,7 @@
     { "path": "../../packages/agents" },
     { "path": "../../packages/skills" },
     { "path": "../../packages/skill-broker" },
+    { "path": "../../packages/host-grants" },
     { "path": "../../packages/http-server" },
     { "path": "../../packages/auth-better" },
     { "path": "../../packages/teams" },

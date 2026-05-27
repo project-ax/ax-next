@@ -420,6 +420,13 @@ describe('@ax/channel-web server plugin (integration)', () => {
         'attachments:download',
         'proxy:add-host',
       ],
+      optionalCalls: [
+        {
+          hook: 'host-grants:grant',
+          degradation:
+            'the reactive-wall "Always for this agent" button persists nothing across sessions; the live proxy:add-host grant still applies for the current session',
+        },
+      ],
       subscribes: ['chat:stream-chunk', 'chat:phase', 'chat:turn-end', 'chat:turn-error', 'chat:permission-request', 'conversations:title-updated'],
     });
   });

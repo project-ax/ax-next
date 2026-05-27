@@ -2471,6 +2471,83 @@ describe('chat-orchestrator', () => {
     expect(proxy.state.lastOpenInput).toBeUndefined();
   });
 
+  it('TASK-44: unions persisted host grants into the proxy:open-session allowlist', async () => {
+    const proxy = buildProxyHooks();
+    let listInput: unknown;
+    const hostGrants: Record<string, ServiceHandler> = {
+      'host-grants:list': async (_ctx, input) => {
+        listInput = input;
+        return { hosts: [{ host: 'persisted.example.com', grantedAt: new Date().toISOString() }] };
+      },
+    };
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: { ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' } },
+        },
+      }),
+      openSession: makeChatEndOpenSession(busRef),
+    });
+    Object.assign(mocks.services, proxy.services, hostGrants);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+    });
+    busRef.current = h.bus;
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('host-grants-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+    // Keyed by (user, agent) — never a browser-supplied id.
+    expect(listInput).toEqual({ ownerUserId: 'test-user', agentId: 'test-agent' });
+    const openIn = proxy.state.lastOpenInput as { allowlist: string[] };
+    expect(openIn.allowlist).toContain('persisted.example.com');
+  });
+
+  it('TASK-44: fails OPEN when host-grants:list throws — session still opens, host absent', async () => {
+    const proxy = buildProxyHooks();
+    const hostGrants: Record<string, ServiceHandler> = {
+      'host-grants:list': async () => {
+        throw new Error('db down');
+      },
+    };
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: { ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' } },
+        },
+      }),
+      openSession: makeChatEndOpenSession(busRef),
+    });
+    Object.assign(mocks.services, proxy.services, hostGrants);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+    });
+    busRef.current = h.bus;
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('host-grants-failopen-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    // Credential-free read: a throw FAILS OPEN — the turn completes and the
+    // session opens; the persisted host is simply absent (fewer, never more).
+    expect(outcome.kind).toBe('complete');
+    const openIn = proxy.state.lastOpenInput as { allowlist: string[] };
+    expect(openIn).toBeDefined();
+    expect(openIn.allowlist).not.toContain('persisted.example.com');
+  });
+
   it('auto-unions registry.npmjs.org when a skill declares packages.npm (D)', async () => {
     const proxy = buildProxyHooks();
     const skillsHooks = buildSkillsHooks({

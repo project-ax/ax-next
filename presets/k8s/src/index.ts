@@ -23,6 +23,7 @@ import { createIpcHttpPlugin } from '@ax/ipc-http';
 import { createAgentsPlugin } from '@ax/agents';
 import { createSkillsPlugin } from '@ax/skills';
 import { createSkillBrokerPlugin } from '@ax/skill-broker';
+import { createHostGrantsPlugin } from '@ax/host-grants';
 import { createAttachmentsPlugin } from '@ax/attachments';
 import { createToolArtifactPublishPlugin } from '@ax/tool-artifact-publish';
 import { createHttpServerPlugin } from '@ax/http-server';
@@ -726,6 +727,18 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
       allowUserInstalledSkills: config.allowUserInstalledSkills ?? false,
     }),
   );
+
+  // ----- 8a''. host grants ----------------------------------------------
+  // @ax/host-grants — the persistent per-(user, agent) "always-allow" egress
+  // host store (JIT design §6B / §P7.3 / decision #12, TASK-44). The durable
+  // twin of the LIVE proxy:add-host grant (TASK-37): the chat-orchestrator
+  // loads these hosts into the egress allowlist at session open (hasService-
+  // gated), and the channel-web allow-host route writes one when the user
+  // clicks "Always for this agent". Reuses the shared postgres pool via
+  // database:get-instance. host-grants:revoke's settings-UI caller lands in
+  // TASK-42 (half-wired window OPEN until then; reachable + tested via the
+  // package canary here).
+  plugins.push(createHostGrantsPlugin());
 
   // ----- 8b. credentials admin routes (optional) -------------------------
   // Mounts /admin/credentials* (admin-only CRUD, new destination-based
