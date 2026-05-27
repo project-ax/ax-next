@@ -1,4 +1,4 @@
-import { makeAgentContext, type AgentContext, type HookBus } from '@ax/core';
+import { makeAgentContext, PluginError, type AgentContext, type HookBus } from '@ax/core';
 import type {
   SkillsCheckForUpdatesOutput,
   SkillsListOutput,
@@ -103,7 +103,16 @@ export function createAdminSkillsHandlers(deps: AdminRouteDeps): {
       }
     },
 
-    /** GET /admin/skills/:id */
+    /** GET /admin/skills/:id
+     *
+     * `?missingOk=1` (query keys are lowercased by http-server) turns a
+     * missing skill into a clean `200 { skill: null }` instead of a `404`,
+     * and wraps a found skill as `200 { skill: detail }`. The Admit-queue
+     * diff probe asks "is there a current catalog version?" for a net-new
+     * share request — without the opt-in param the route 404s (correct REST),
+     * and the browser auto-logs that *expected* 404 as a console error. The
+     * param lets the probe avoid provoking the 404 at all. The default
+     * (no param) behavior is unchanged: found → bare detail, missing → 404. */
     async get(req: RouteRequest, res: RouteResponse): Promise<void> {
       const actor = await requireAdmin(deps.bus, ctx, req, res);
       if (actor === null) return;
@@ -112,6 +121,7 @@ export function createAdminSkillsHandlers(deps: AdminRouteDeps): {
         res.status(400).json({ error: 'missing skill id' });
         return;
       }
+      const missingOk = req.query.missingok === '1';
       try {
         // Explicitly scope=global so the admin UI always shows only the
         // admin-managed skill, not the user's private copy of the same id.
@@ -120,8 +130,12 @@ export function createAdminSkillsHandlers(deps: AdminRouteDeps): {
           ctx,
           { skillId: id, scope: 'global' },
         );
-        res.status(200).json(detail);
+        res.status(200).json(missingOk ? { skill: detail } : detail);
       } catch (err) {
+        if (missingOk && err instanceof PluginError && err.code === 'skill-not-found') {
+          res.status(200).json({ skill: null });
+          return;
+        }
         if (writeServiceError(res, err)) return;
         throw err;
       }

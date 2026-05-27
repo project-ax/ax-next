@@ -1,5 +1,11 @@
 import { useEffect, useState } from 'react';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { getSkillOrNull } from '@/lib/skills';
@@ -101,11 +107,13 @@ export function BundleReviewDialog({ request, onClose, onDecided }: BundleReview
           <DialogTitle>
             Review {request.kind} request: {request.skillId}
           </DialogTitle>
+          {/* Renders via Radix DialogDescription so aria-describedby is wired
+              on the content automatically (kills the missing-description a11y
+              warning) and AT users hear the request's own description. */}
+          <DialogDescription>{request.description}</DialogDescription>
         </DialogHeader>
 
         <div className="flex flex-col gap-3">
-          <p className="text-sm text-muted-foreground">{request.description}</p>
-
           {!isShare ? (
             <Alert>
               <AlertDescription>

@@ -54,14 +54,22 @@ export async function getSkill(skillId: string): Promise<SkillDetail> {
   return (await handleResponse(res)) as SkillDetail;
 }
 
-/** Like getSkill, but returns null on 404 (used by the admit review's diff:
- * a share request for a brand-new id has no existing catalog version). */
+/** Like getSkill, but resolves to null for a missing skill instead of throwing
+ * (used by the Admit-queue review's diff: a share request for a brand-new id has
+ * no existing catalog version).
+ *
+ * Sends `?missingOk=1` so the server answers a missing skill with a clean
+ * `200 { skill: null }` rather than a `404`. That matters because the browser
+ * auto-logs every failed (4xx/5xx) request to the console regardless of how
+ * `fetch` handles the resolved Response — a plain 404 here would surface as a
+ * red console error for an outcome that is entirely expected. The 200 keeps the
+ * net-new-skill diff probe silent. */
 export async function getSkillOrNull(skillId: string): Promise<SkillDetail | null> {
-  const res = await fetch(`/admin/skills/${encodeURIComponent(skillId)}`, {
+  const res = await fetch(`/admin/skills/${encodeURIComponent(skillId)}?missingOk=1`, {
     credentials: 'include',
   });
-  if (res.status === 404) return null;
-  return (await handleResponse(res)) as SkillDetail;
+  const body = (await handleResponse(res)) as { skill: SkillDetail | null };
+  return body.skill;
 }
 
 /** Flip a catalog skill's org-default flag without re-sending SKILL.md.

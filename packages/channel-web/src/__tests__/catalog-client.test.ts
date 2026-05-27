@@ -38,9 +38,37 @@ describe('skills wire client (catalog additions)', () => {
     expect(skills[0]?.tier).toBe('bounded');
   });
 
-  it('getSkillOrNull returns null on 404', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse({ error: 'not found' }, 404));
+  it('getSkillOrNull requests ?missingOk=1 and returns null for a missing skill', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      // Server answers a missing skill with a clean 200 { skill: null } (not a
+      // 404) so the net-new-skill diff probe makes no console noise.
+      .mockResolvedValue(jsonResponse({ skill: null }, 200));
     expect(await getSkillOrNull('nope')).toBeNull();
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/admin/skills/nope?missingOk=1',
+      expect.objectContaining({ credentials: 'include' }),
+    );
+  });
+
+  it('getSkillOrNull unwraps an existing skill from the { skill } envelope', async () => {
+    const detail = {
+      id: 'gh',
+      manifestYaml: 'name: gh\n',
+      bodyMd: '# gh\n',
+      files: [],
+      version: 1,
+      scope: 'global',
+      defaultAttached: false,
+    };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse({ skill: detail }, 200));
+    const out = await getSkillOrNull('gh');
+    expect(out?.id).toBe('gh');
+  });
+
+  it('getSkillOrNull still throws on a real error status (not a missing skill)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse({ error: 'boom' }, 500));
+    await expect(getSkillOrNull('gh')).rejects.toThrow(/skills API 500/);
   });
 
   it('setSkillDefaultAttached PATCHes with the CSRF header', async () => {
