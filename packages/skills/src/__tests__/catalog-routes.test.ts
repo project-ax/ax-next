@@ -5,8 +5,9 @@ import {
 } from '@testcontainers/postgresql';
 import { createTestHarness, type TestHarness } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
+import { makeAgentContext, type HookBus } from '@ax/core';
 import { createSkillsPlugin } from '../plugin.js';
-import { createCatalogHandlers } from '../catalog-routes.js';
+import { createCatalogHandlers, registerCatalogRoutes } from '../catalog-routes.js';
 import type { RouteRequest, RouteResponse } from '../catalog-routes.js';
 import type { CatalogSubmitInput, CatalogSubmitOutput } from '../types.js';
 
@@ -211,5 +212,25 @@ describe('/admin/catalog/* handlers', () => {
       res,
     );
     expect(statusOf()).toBe(403);
+  });
+
+  it('registerCatalogRoutes unwinds already-registered routes if a later one fails', async () => {
+    // First http:register-route succeeds; the second throws. The function must
+    // unwind the first (call its unregister) before rethrowing, so no route is
+    // left live after a partial-init failure.
+    const unregistered: string[] = [];
+    let calls = 0;
+    const fakeBus = {
+      call: async (_hook: string, _ctx: unknown, route: { path: string }) => {
+        calls += 1;
+        if (calls === 2) throw new Error('duplicate route');
+        return { unregister: () => unregistered.push(route.path) };
+      },
+    } as unknown as HookBus;
+    const ctx = makeAgentContext({ sessionId: 's', agentId: '@ax/skills', userId: 'admin' });
+
+    await expect(registerCatalogRoutes(fakeBus, ctx)).rejects.toThrow('duplicate route');
+    // The one route that did register must have been unwound.
+    expect(unregistered).toEqual(['/admin/catalog/requests']);
   });
 });

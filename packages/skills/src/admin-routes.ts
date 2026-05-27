@@ -338,8 +338,17 @@ export function createAdminSkillsHandlers(deps: AdminRouteDeps): {
      * Re-upserts with the existing manifest/body (skills:upsert needs them) but
      * OMITS `files`: an absent `files` key leaves the current bundle untouched
      * (store.upsert only rewrites the tree when `files !== undefined`). Omitting
-     * is both the bundle-preserving AND the race-safe choice — re-sending a
-     * stale `detail.files` read could clobber a concurrent file change. */
+     * is both the bundle-preserving AND the race-safe choice for the bundle —
+     * re-sending a stale `detail.files` read could clobber a concurrent file
+     * change.
+     *
+     * KNOWN LIMITATION (same class as plugin.ts's credential-purge race): the
+     * manifest/body are still read-then-written here because the store exposes
+     * only a full `upsert`, no flag-only setter. If a SKILL.md edit lands
+     * between this read and write, that edit is lost. The window is small and
+     * a default-flag toggle is rare; a proper fix needs a store-level atomic
+     * partial-update (or optimistic version check) primitive that doesn't yet
+     * exist — tracked as a follow-up. */
     async setDefaultAttached(req: RouteRequest, res: RouteResponse): Promise<void> {
       const actor = await requireAdmin(deps.bus, ctx, req, res);
       if (actor === null) return;

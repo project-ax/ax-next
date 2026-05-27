@@ -125,13 +125,31 @@ export async function registerCatalogRoutes(
     },
   ];
   const unregisters: Array<() => void> = [];
-  for (const route of routes) {
-    const result = await bus.call<unknown, { unregister: () => void }>(
-      'http:register-route',
-      initCtx,
-      route,
-    );
-    unregisters.push(result.unregister);
+  try {
+    for (const route of routes) {
+      const result = await bus.call<unknown, { unregister: () => void }>(
+        'http:register-route',
+        initCtx,
+        route,
+      );
+      unregisters.push(result.unregister);
+    }
+  } catch (err) {
+    // If a later route fails to register (e.g. duplicate path), unwind the
+    // ones that already went live before rethrowing — otherwise this throws
+    // before returning `unregisters` and the plugin-level catch can't reach
+    // the already-registered route, leaking it. (The /admin/skills and
+    // /settings/skills registrars share this latent gap; aligning them is a
+    // deferred follow-up.)
+    while (unregisters.length > 0) {
+      const fn = unregisters.pop();
+      try {
+        fn?.();
+      } catch {
+        // best-effort unwind
+      }
+    }
+    throw err;
   }
   return unregisters;
 }
