@@ -181,11 +181,23 @@ export function createAdminSkillsHandlers(deps: AdminRouteDeps): {
         return;
       }
 
+      // Forward `files` ONLY when the caller supplied the key. Omitting it
+      // tells skills:upsert to leave the current bundle unchanged (store.upsert
+      // rewrites the tree only when `files !== undefined`); a present array —
+      // even `[]` — replaces it. The host gate (validateBundleFiles) is the
+      // source of truth and surfaces invalid-bundle-file as a 400 below.
+      const filesPatch =
+        zodResult.data.files !== undefined ? { files: zodResult.data.files } : {};
+
       try {
         const out = await deps.bus.call<SkillsUpsertInput, SkillsUpsertOutput>(
           'skills:upsert',
           ctx,
-          { ...split, defaultAttached: zodResult.data.defaultAttached ?? false },
+          {
+            ...split,
+            ...filesPatch,
+            defaultAttached: zodResult.data.defaultAttached ?? false,
+          },
         );
         res.status(201).json({ skillId: out.skillId, created: out.created });
       } catch (err) {
@@ -249,18 +261,26 @@ export function createAdminSkillsHandlers(deps: AdminRouteDeps): {
         return;
       }
 
-      // Preserve a bundle's extra files on a SKILL.md-only edit by OMITTING
-      // `files` entirely: skills:upsert treats an absent `files` key as "leave
-      // the current bundle unchanged" (store.upsert only rewrites the tree when
-      // `files !== undefined`). Re-reading + re-sending the existing files would
-      // be redundant AND unsafe — a stale read could clobber a concurrent file
+      // `files` semantics: a SKILL.md-only caller (no `files` key) preserves the
+      // current bundle — skills:upsert treats an absent `files` as "leave the
+      // current bundle unchanged" (store.upsert only rewrites the tree when
+      // `files !== undefined`). The multi-file editor sends the full intended
+      // set (even `[]` to clear), which REPLACES the bundle. We forward `files`
+      // verbatim only when present; we never re-read + re-send the existing
+      // files on the caller's behalf — a stale read could clobber a concurrent
       // change, and on a name-mismatch (caught only after the upsert below) it
       // would copy this id's files onto the wrong parsed id before the 400.
+      const filesPatch =
+        zodResult.data.files !== undefined ? { files: zodResult.data.files } : {};
       try {
         const out = await deps.bus.call<SkillsUpsertInput, SkillsUpsertOutput>(
           'skills:upsert',
           ctx,
-          { ...split, defaultAttached: zodResult.data.defaultAttached ?? false },
+          {
+            ...split,
+            ...filesPatch,
+            defaultAttached: zodResult.data.defaultAttached ?? false,
+          },
         );
 
         // Double-check after the parse in case our quick regex missed something.

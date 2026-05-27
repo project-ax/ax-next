@@ -17,7 +17,7 @@
  * convenience; the gate is on the server.
  */
 
-import type { SkillDetail, SkillSummary, SkillTier } from '@ax/skills';
+import type { BundleFile, SkillDetail, SkillSummary, SkillTier } from '@ax/skills';
 
 /** A catalog row as the admin Catalog tab sees it: a summary plus the
  * server-derived risk tier (the set the broker proposes from). `tier` is
@@ -94,10 +94,15 @@ export async function setSkillDefaultAttached(
  * `opts.defaultAttached` flips the skill onto every agent at session-open
  * (admin-only). Skills declaring credential slots cannot be default-attached;
  * the server rejects such writes with `default-attached-requires-no-credentials`.
+ *
+ * `opts.files` are the bundle's extra (non-SKILL.md) files. The key is sent
+ * ONLY when defined — omitting it tells the server to leave the current bundle
+ * unchanged; a present array (even `[]`) replaces it. The server re-validates
+ * paths/bytes via validateBundleFiles.
  */
 export async function upsertSkill(
   skillMd: string,
-  opts?: { defaultAttached?: boolean },
+  opts?: { defaultAttached?: boolean; files?: BundleFile[] },
 ): Promise<{ skillId: string; created: boolean }> {
   const res = await fetch('/admin/skills', {
     method: 'POST',
@@ -108,6 +113,7 @@ export async function upsertSkill(
       ...(opts?.defaultAttached !== undefined
         ? { defaultAttached: opts.defaultAttached }
         : {}),
+      ...(opts?.files !== undefined ? { files: opts.files } : {}),
     }),
   });
   return (await handleResponse(res)) as { skillId: string; created: boolean };
@@ -116,11 +122,13 @@ export async function upsertSkill(
 /**
  * Update an existing skill identified by `skillId`. The manifest `name`
  * field in `skillMd` must match `skillId`; the server enforces this.
+ *
+ * `opts.files` follows the same omit-vs-replace contract as `upsertSkill`.
  */
 export async function updateSkill(
   skillId: string,
   skillMd: string,
-  opts?: { defaultAttached?: boolean },
+  opts?: { defaultAttached?: boolean; files?: BundleFile[] },
 ): Promise<{ skillId: string; created: boolean }> {
   const res = await fetch(`/admin/skills/${encodeURIComponent(skillId)}`, {
     method: 'PUT',
@@ -131,6 +139,7 @@ export async function updateSkill(
       ...(opts?.defaultAttached !== undefined
         ? { defaultAttached: opts.defaultAttached }
         : {}),
+      ...(opts?.files !== undefined ? { files: opts.files } : {}),
     }),
   });
   return (await handleResponse(res)) as { skillId: string; created: boolean };

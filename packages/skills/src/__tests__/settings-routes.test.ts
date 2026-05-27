@@ -282,6 +282,61 @@ describe('/settings/skills handlers', () => {
     expect((b3() as { bodyMd: string }).bodyMd).toContain('Updated body.');
   });
 
+  it('POST /settings/skills with files persists the bundle (user scope) and GET returns them', async () => {
+    const h = await makeHarness({ authedUser: { id: 'alice', isAdmin: false } });
+    const handlers = createSettingsSkillsHandlers({ bus: h.bus });
+
+    const { res: r1, statusOf: s1 } = mkRes();
+    await handlers.create(
+      mkReq({
+        body: {
+          skillMd: ALICE_SKILL_MD,
+          files: [{ path: 'notes.md', contents: 'alice notes\n' }],
+        },
+      }),
+      r1,
+    );
+    expect(s1()).toBe(201);
+
+    const { res: r2, bodyOf: b2 } = mkRes();
+    await handlers.get(mkReq({ params: { id: 'my-github' } }), r2);
+    const detail = b2() as { files: { path: string; contents: string }[] };
+    expect(detail.files).toEqual([{ path: 'notes.md', contents: 'alice notes\n' }]);
+  });
+
+  it('PUT /settings/skills/:id without files preserves the bundle (user scope)', async () => {
+    const h = await makeHarness({ authedUser: { id: 'alice', isAdmin: false } });
+    const handlers = createSettingsSkillsHandlers({ bus: h.bus });
+
+    const { res: r1 } = mkRes();
+    await handlers.create(
+      mkReq({
+        body: {
+          skillMd: ALICE_SKILL_MD,
+          files: [{ path: 'notes.md', contents: 'alice notes\n' }],
+        },
+      }),
+      r1,
+    );
+
+    const updatedMd = ALICE_SKILL_MD.replace(
+      "Alice's personal skill body.",
+      'Body edit only.',
+    );
+    const { res: r2, statusOf: s2 } = mkRes();
+    await handlers.update(
+      mkReq({ body: { skillMd: updatedMd }, params: { id: 'my-github' } }),
+      r2,
+    );
+    expect(s2()).toBe(200);
+
+    const { res: r3, bodyOf: b3 } = mkRes();
+    await handlers.get(mkReq({ params: { id: 'my-github' } }), r3);
+    const detail = b3() as { bodyMd: string; files: { path: string }[] };
+    expect(detail.bodyMd).toContain('Body edit only.');
+    expect(detail.files.map((f) => f.path)).toEqual(['notes.md']);
+  });
+
   it('DELETE /settings/skills/:id removes alice\'s skill and returns 204', async () => {
     const h = await makeHarness({ authedUser: { id: 'alice', isAdmin: false } });
     const handlers = createSettingsSkillsHandlers({ bus: h.bus });

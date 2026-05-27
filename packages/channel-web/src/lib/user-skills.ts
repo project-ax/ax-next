@@ -17,7 +17,7 @@
  * admin-only actions have no equivalent on `/settings/skills*`.
  */
 
-import type { SkillDetail, SkillSummary } from '@ax/skills';
+import type { BundleFile, SkillDetail, SkillSummary } from '@ax/skills';
 
 const writeHeaders = {
   'content-type': 'application/json',
@@ -52,10 +52,13 @@ export async function getUserSkill(skillId: string): Promise<SkillDetail> {
  * Create a user-scoped skill from a full SKILL.md string (frontmatter
  * fence + body). The server splits the fence, validates the manifest, and
  * forces scope='user' + ownerUserId from the session.
+ *
+ * `opts.files` are the bundle's extra (non-SKILL.md) files; sent only when
+ * defined (omit = preserve current bundle, present array = replace).
  */
 export async function createUserSkill(
   skillMd: string,
-  opts?: { defaultAttached?: boolean },
+  opts?: { defaultAttached?: boolean; files?: BundleFile[] },
 ): Promise<{ skillId: string; created: boolean }> {
   const res = await fetch('/settings/skills', {
     method: 'POST',
@@ -66,6 +69,7 @@ export async function createUserSkill(
       ...(opts?.defaultAttached !== undefined
         ? { defaultAttached: opts.defaultAttached }
         : {}),
+      ...(opts?.files !== undefined ? { files: opts.files } : {}),
     }),
   });
   return (await handleResponse(res)) as { skillId: string; created: boolean };
@@ -74,11 +78,13 @@ export async function createUserSkill(
 /**
  * Update an existing user-scoped skill. The manifest `name` field in
  * `skillMd` must match `skillId`; the server enforces this.
+ *
+ * `opts.files` follows the same omit-vs-replace contract as `createUserSkill`.
  */
 export async function updateUserSkill(
   skillId: string,
   skillMd: string,
-  opts?: { defaultAttached?: boolean },
+  opts?: { defaultAttached?: boolean; files?: BundleFile[] },
 ): Promise<{ skillId: string; created: boolean }> {
   const res = await fetch(`/settings/skills/${encodeURIComponent(skillId)}`, {
     method: 'PUT',
@@ -89,6 +95,7 @@ export async function updateUserSkill(
       ...(opts?.defaultAttached !== undefined
         ? { defaultAttached: opts.defaultAttached }
         : {}),
+      ...(opts?.files !== undefined ? { files: opts.files } : {}),
     }),
   });
   return (await handleResponse(res)) as { skillId: string; created: boolean };

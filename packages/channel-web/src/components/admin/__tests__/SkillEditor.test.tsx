@@ -163,7 +163,10 @@ describe('SkillEditor', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Install' }));
 
     await waitFor(() => {
-      expect(mockUpsertSkill).toHaveBeenCalledWith(VALID_MD, { defaultAttached: false });
+      expect(mockUpsertSkill).toHaveBeenCalledWith(VALID_MD, {
+        defaultAttached: false,
+        files: [],
+      });
       expect(onSaved).toHaveBeenCalledTimes(1);
     });
   });
@@ -189,7 +192,7 @@ describe('SkillEditor', () => {
       expect(mockUpdateSkill).toHaveBeenCalledWith(
         'github-api',
         expect.stringContaining('name: github-api'),
-        { defaultAttached: false },
+        { defaultAttached: false, files: [] },
       );
       expect(onSaved).toHaveBeenCalledTimes(1);
     });
@@ -240,7 +243,7 @@ describe('SkillEditor', () => {
     await waitFor(() => {
       expect(mockUpsertSkill).toHaveBeenCalledWith(
         VALID_INSTRUCTION_ONLY,
-        { defaultAttached: true },
+        { defaultAttached: true, files: [] },
       );
     });
   });
@@ -325,5 +328,194 @@ describe('SkillEditor', () => {
 
     await waitFor(() => expect(checkbox).toBeDisabled());
     expect(checkbox).not.toBeChecked();
+  });
+
+  // ── Bundle multi-file authoring (TASK-59) ────────────────────────────────
+
+  it('loads an existing skill\'s bundle files into the editor', async () => {
+    mockGetSkill.mockResolvedValueOnce({
+      ...DETAIL,
+      files: [
+        { path: 'scripts/run.py', contents: 'print("hi")\n' },
+        { path: 'reference.md', contents: '# Ref\n' },
+      ],
+    });
+    render(<SkillEditor skillId="github-api" onSaved={vi.fn()} onCancel={vi.fn()} />);
+
+    const pathInput = await screen.findByLabelText('Bundle file path 1');
+    expect((pathInput as HTMLInputElement).value).toBe('scripts/run.py');
+    const contents1 = screen.getByLabelText('Bundle file contents 1') as HTMLTextAreaElement;
+    expect(contents1.value).toBe('print("hi")\n');
+    expect((screen.getByLabelText('Bundle file path 2') as HTMLInputElement).value).toBe(
+      'reference.md',
+    );
+  });
+
+  it('adds a bundle file and forwards it through upsertSkill', async () => {
+    render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
+
+    // The SKILL.md textarea is the first textbox.
+    const skillMdArea = (await screen.findAllByRole('textbox'))[0] as HTMLTextAreaElement;
+    fireEvent.change(skillMdArea, { target: { value: VALID_MD } });
+
+    fireEvent.click(screen.getByRole('button', { name: /add file/i }));
+
+    const pathInput = await screen.findByLabelText('Bundle file path 1');
+    fireEvent.change(pathInput, { target: { value: 'scripts/run.py' } });
+    const contentsArea = screen.getByLabelText('Bundle file contents 1');
+    fireEvent.change(contentsArea, { target: { value: 'print(1)\n' } });
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Install' }).hasAttribute('disabled')).toBe(
+        false,
+      );
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Install' }));
+
+    await waitFor(() => {
+      expect(mockUpsertSkill).toHaveBeenCalledWith(VALID_MD, {
+        defaultAttached: false,
+        files: [{ path: 'scripts/run.py', contents: 'print(1)\n' }],
+      });
+    });
+  });
+
+  it('round-trips loaded bundle files on a SKILL.md-only edit', async () => {
+    mockGetSkill.mockResolvedValueOnce({
+      ...DETAIL,
+      files: [{ path: 'helper.md', contents: 'help\n' }],
+    });
+    const onSaved = vi.fn();
+    render(<SkillEditor skillId="github-api" onSaved={onSaved} onCancel={vi.fn()} />);
+
+    // Wait for the loaded file to appear, then save without touching it.
+    await screen.findByLabelText('Bundle file path 1');
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Update' }).hasAttribute('disabled')).toBe(
+        false,
+      ),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Update' }));
+
+    await waitFor(() => {
+      expect(mockUpdateSkill).toHaveBeenCalledWith(
+        'github-api',
+        expect.stringContaining('name: github-api'),
+        { defaultAttached: false, files: [{ path: 'helper.md', contents: 'help\n' }] },
+      );
+    });
+  });
+
+  it('removes a bundle file so it is no longer sent', async () => {
+    mockGetSkill.mockResolvedValueOnce({
+      ...DETAIL,
+      files: [
+        { path: 'a.md', contents: 'a\n' },
+        { path: 'b.md', contents: 'b\n' },
+      ],
+    });
+    render(<SkillEditor skillId="github-api" onSaved={vi.fn()} onCancel={vi.fn()} />);
+
+    const removeFirst = await screen.findByLabelText(/remove bundle file a\.md/i);
+    fireEvent.click(removeFirst);
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Update' }).hasAttribute('disabled')).toBe(
+        false,
+      ),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Update' }));
+
+    await waitFor(() => {
+      expect(mockUpdateSkill).toHaveBeenCalledWith(
+        'github-api',
+        expect.any(String),
+        { defaultAttached: false, files: [{ path: 'b.md', contents: 'b\n' }] },
+      );
+    });
+  });
+
+  it('disables Save when a bundle file path is invalid', async () => {
+    render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
+
+    const skillMdArea = (await screen.findAllByRole('textbox'))[0] as HTMLTextAreaElement;
+    fireEvent.change(skillMdArea, { target: { value: VALID_MD } });
+
+    fireEvent.click(screen.getByRole('button', { name: /add file/i }));
+    const pathInput = await screen.findByLabelText('Bundle file path 1');
+    // A path-traversal — the client hint must engage and block Save.
+    fireEvent.change(pathInput, { target: { value: '../escape.md' } });
+
+    await waitFor(() => {
+      expect(screen.getByText(/may not contain ".."/i)).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Install' }).hasAttribute('disabled')).toBe(
+        true,
+      );
+    });
+  });
+
+  it('accepts a lowercase skill.md bundle file (only the exact SKILL.md is reserved)', async () => {
+    // The server reserves the EXACT `SKILL.md` (the generated manifest file);
+    // a lowercase `skill.md` is a legitimate distinct extra file. The client
+    // hint must mirror the server case-sensitively and NOT block it.
+    render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
+
+    const skillMdArea = (await screen.findAllByRole('textbox'))[0] as HTMLTextAreaElement;
+    fireEvent.change(skillMdArea, { target: { value: VALID_MD } });
+
+    fireEvent.click(screen.getByRole('button', { name: /add file/i }));
+    fireEvent.change(await screen.findByLabelText('Bundle file path 1'), {
+      target: { value: 'skill.md' },
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText(/reserved path/i)).toBeNull();
+      expect(screen.getByRole('button', { name: 'Install' }).hasAttribute('disabled')).toBe(
+        false,
+      );
+    });
+  });
+
+  it('flags the reserved .mcp.json bundle file path', async () => {
+    render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
+
+    const skillMdArea = (await screen.findAllByRole('textbox'))[0] as HTMLTextAreaElement;
+    fireEvent.change(skillMdArea, { target: { value: VALID_MD } });
+
+    fireEvent.click(screen.getByRole('button', { name: /add file/i }));
+    fireEvent.change(await screen.findByLabelText('Bundle file path 1'), {
+      target: { value: '.mcp.json' },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/reserved path/i)).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Install' }).hasAttribute('disabled')).toBe(
+        true,
+      );
+    });
+  });
+
+  it('disables Save and flags a duplicate bundle file path', async () => {
+    render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
+
+    const skillMdArea = (await screen.findAllByRole('textbox'))[0] as HTMLTextAreaElement;
+    fireEvent.change(skillMdArea, { target: { value: VALID_MD } });
+
+    fireEvent.click(screen.getByRole('button', { name: /add file/i }));
+    fireEvent.click(screen.getByRole('button', { name: /add file/i }));
+    fireEvent.change(await screen.findByLabelText('Bundle file path 1'), {
+      target: { value: 'dup.md' },
+    });
+    fireEvent.change(screen.getByLabelText('Bundle file path 2'), {
+      target: { value: 'dup.md' },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/duplicate path/i)).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Install' }).hasAttribute('disabled')).toBe(
+        true,
+      );
+    });
   });
 });
