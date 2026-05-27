@@ -189,13 +189,15 @@ describe('PermissionCard — host grant (TASK-37)', () => {
     );
     // The grant body echoes the opaque sessionId; the route re-validates owner.
     expect(fetchMock.mock.calls[0]?.[1]?.body).toContain('"sessionId":"s1"');
+    // "Just this once" → no durable grant (TASK-37 behavior; persist absent/false).
+    expect(fetchMock.mock.calls[0]?.[1]?.body).not.toContain('"persist":true');
     // CSRF posture: the user-scoped write header.
     expect(fetchMock.mock.calls[0]?.[1]?.headers).toMatchObject({
       'x-requested-with': 'ax-admin',
     });
   });
 
-  it('"Always for this agent" also grants (persistence is TASK-44)', async () => {
+  it('"Always for this agent" POSTs persist:true (TASK-44 durable grant)', async () => {
     const fetchMock = vi
       .spyOn(globalThis, 'fetch')
       .mockResolvedValue(new Response(JSON.stringify({ added: true }), { status: 200 }));
@@ -207,6 +209,7 @@ describe('PermissionCard — host grant (TASK-37)', () => {
       '/api/chat/allow-host',
       expect.objectContaining({ method: 'POST' }),
     );
+    expect(fetchMock.mock.calls[0]?.[1]?.body).toContain('"persist":true');
   });
 
   it('Not now dismisses a host card without granting', async () => {
