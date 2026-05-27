@@ -5,6 +5,7 @@ import type { Kysely } from 'kysely';
 import type { SkillsDatabase } from './migrations.js';
 import { createBundleStore, type BundleStore } from './bundle-store.js';
 import {
+  parseCapabilities,
   rowToGlobalDetail,
   rowToGlobalResolved,
   rowToGlobalSummary,
@@ -55,6 +56,27 @@ export interface SkillsStore {
   delete(skillId: string): Promise<void>;
   resolve(skillIds: string[]): Promise<ResolvedSkill[]>;
   getDefaults(): Promise<ResolvedSkill[]>;
+  /**
+   * Atomic partial-update: flip ONLY the `default_attached` flag (plus
+   * `updated_at`) for an existing skill — never re-writing manifest/body/bundle.
+   * This is the race-safe replacement for the PATCH route's old
+   * read-full-detail + re-upsert-the-whole-bundle dance: a concurrent SKILL.md
+   * edit can no longer be clobbered, because the SELECT … FOR UPDATE + flag-only
+   * UPDATE run inside one transaction and we touch only the flag column.
+   *
+   * When flipping to `true`, the I-S2 constraint is enforced INSIDE the locked
+   * transaction (default-attached skills must be instruction-only): the locked
+   * row's manifest is re-parsed and a credential-bearing skill throws
+   * `Error('default-attached-requires-no-credentials: …')` — the plugin layer
+   * re-wraps it as the matching `PluginError`.
+   *
+   * Returns `{ found, defaultAttached }`: `found:false` (no row) lets the caller
+   * 404 without a separate read.
+   */
+  setDefaultAttached(
+    skillId: string,
+    defaultAttached: boolean,
+  ): Promise<{ found: boolean; defaultAttached: boolean }>;
 }
 
 export function createSkillsStore(
@@ -182,6 +204,52 @@ export function createSkillsStore(
         out.push(rowToGlobalResolved(r, await loadFiles(r.bundle_tree_sha)));
       }
       return out;
+    },
+
+    async setDefaultAttached(skillId, defaultAttached) {
+      // Single transaction with a row-level lock (FOR UPDATE) so the
+      // read-the-manifest / enforce-I-S2 / flip-the-flag sequence is atomic.
+      // A concurrent SKILL.md edit (skills:upsert) either commits before our
+      // SELECT (we then read its manifest) or blocks on the lock until we
+      // commit — and because we only UPDATE the flag column, we can never
+      // clobber a manifest/body edit (the old get+upsert PATCH race).
+      // Mirrors @ax/onboarding store.resetToPending's txn + .forUpdate() shape.
+      return db.transaction().execute(async (tx) => {
+        const row = await tx
+          .selectFrom('skills_v1_skills')
+          .select(['skill_id', 'manifest_yaml'])
+          .where('skill_id', '=', skillId)
+          .forUpdate()
+          .executeTakeFirst();
+
+        if (row === undefined) {
+          return { found: false, defaultAttached };
+        }
+
+        // I-S2: default-attached skills are instruction-only — a skill that
+        // declares credential slots can't be "everyone gets this". Enforced
+        // inside the lock against the row's own (just-read) manifest so a
+        // concurrent edit that adds slots can't slip a credentialed skill into
+        // the defaults set. The plugin layer re-wraps this Error as the
+        // matching PluginError (single source of truth for the code string).
+        if (defaultAttached) {
+          const caps = parseCapabilities(row.manifest_yaml, skillId);
+          if (caps.credentials.length > 0) {
+            throw new Error(
+              `default-attached-requires-no-credentials: skill '${skillId}' declares ` +
+                `credential slots; default-attached skills must be instruction-only`,
+            );
+          }
+        }
+
+        await tx
+          .updateTable('skills_v1_skills')
+          .set({ default_attached: defaultAttached, updated_at: new Date() })
+          .where('skill_id', '=', skillId)
+          .execute();
+
+        return { found: true, defaultAttached };
+      });
     },
 
     async resolve(skillIds) {
