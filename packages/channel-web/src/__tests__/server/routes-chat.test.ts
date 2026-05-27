@@ -380,6 +380,32 @@ function attachmentsStubPlugin(): Plugin {
   };
 }
 
+/**
+ * Channel-web declares the Settings Connections skills hooks as hard calls
+ * (TASK-42). These chat-route cases don't drive the connections surface, so
+ * no-op registrations satisfy the bootstrap verifyCalls walk.
+ */
+function skillsStubPlugin(): Plugin {
+  return {
+    manifest: {
+      name: 'mock-skills-stub',
+      version: '0.0.0',
+      registers: ['skills:list', 'skills:list-user-attachments', 'skills:detach-for-user'],
+      calls: [],
+      subscribes: [],
+    },
+    init({ bus }) {
+      bus.registerService('skills:list', 'mock-skills-stub', async () => ({ skills: [] }));
+      bus.registerService('skills:list-user-attachments', 'mock-skills-stub', async () => ({
+        attachments: [],
+      }));
+      bus.registerService('skills:detach-for-user', 'mock-skills-stub', async () => ({
+        removed: false,
+      }));
+    },
+  };
+}
+
 async function boot(args: BootArgs): Promise<BootResult> {
   process.env.AX_HTTP_ALLOW_NO_ORIGINS = '1';
   const http = createHttpServerPlugin({
@@ -425,6 +451,7 @@ async function boot(args: BootArgs): Promise<BootResult> {
     // registered for those hooks.
     plugins.push(attachmentsStubPlugin());
   }
+  plugins.push(skillsStubPlugin());
   plugins.push(createChannelWebServerPlugin({}));
   const harness = await createTestHarness({ plugins });
   return { harness, port: http.boundPort(), http, chatRunCaptures, grantCaptures };

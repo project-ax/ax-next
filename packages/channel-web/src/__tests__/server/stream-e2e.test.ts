@@ -101,6 +101,32 @@ function attachmentsMockPlugin(): Plugin {
 }
 
 /**
+ * Stub for the Settings Connections skills hooks (TASK-42), which channel-web
+ * declares as hard calls. This suite doesn't drive Connections, so no-op
+ * registrations satisfy bootstrap's verifyCalls.
+ */
+function skillsMockPlugin(): Plugin {
+  return {
+    manifest: {
+      name: 'mock-skills',
+      version: '0.0.0',
+      registers: ['skills:list', 'skills:list-user-attachments', 'skills:detach-for-user'],
+      calls: [],
+      subscribes: [],
+    },
+    init({ bus }) {
+      bus.registerService('skills:list', 'mock-skills', async () => ({ skills: [] }));
+      bus.registerService('skills:list-user-attachments', 'mock-skills', async () => ({
+        attachments: [],
+      }));
+      bus.registerService('skills:detach-for-user', 'mock-skills', async () => ({
+        removed: false,
+      }));
+    },
+  };
+}
+
+/**
  * Stub for `agent:invoke`. The channel-web plugin's manifest declares it as a
  * hard call (Task 9 — POST /api/chat/messages); this suite doesn't
  * exercise the chat-flow producer endpoint, so a no-op registration is
@@ -218,6 +244,7 @@ async function boot(args: BootArgs): Promise<{
       createConversationsPlugin(),
       chatRunMockPlugin(),
       attachmentsMockPlugin(),
+      skillsMockPlugin(),
       createChannelWebServerPlugin({}),
     ],
   });

@@ -156,6 +156,66 @@ describe('admin credentials handlers', () => {
     expect(statusOf()).toBe(401);
   });
 
+  it('GET /settings/credentials lists ONLY the caller user-scoped credentials', async () => {
+    const bus = await makeBus({ id: 'u1', isAdmin: false });
+    const sysCtx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'system' });
+    // Seed: one user-scoped cred for u1, one global cred (must NOT appear),
+    // and a user-scoped cred for u2 (cross-user — must NOT appear).
+    await bus.call('credentials:set', sysCtx, {
+      scope: 'user', ownerId: 'u1', ref: 'skill:linear:LINEAR_API_KEY', kind: 'api-key',
+      payload: new TextEncoder().encode('secret'),
+    });
+    await bus.call('credentials:set', sysCtx, {
+      scope: 'global', ownerId: null, ref: 'provider:anthropic', kind: 'api-key',
+      payload: new TextEncoder().encode('secret'),
+    });
+    await bus.call('credentials:set', sysCtx, {
+      scope: 'user', ownerId: 'u2', ref: 'skill:github:GH_TOKEN', kind: 'api-key',
+      payload: new TextEncoder().encode('secret'),
+    });
+
+    const handlers = createAdminCredentialsHandlers({ bus });
+    const { res, statusOf, bodyOf } = mkRes();
+    await handlers.listSettings(mkReq({}), res);
+
+    expect(statusOf()).toBe(200);
+    const body = bodyOf() as {
+      credentials: Array<{ ref: string; scope: string; ownerId: string | null; kind: string; createdAt: string }>;
+    };
+    expect(body.credentials).toEqual([
+      {
+        scope: 'user',
+        ownerId: 'u1',
+        ref: 'skill:linear:LINEAR_API_KEY',
+        kind: 'api-key',
+        createdAt: expect.any(String),
+      },
+    ]);
+    // Defense: no secret bytes anywhere in the response.
+    expect(JSON.stringify(body)).not.toContain('secret');
+  });
+
+  it('GET /settings/credentials returns 401 when auth:require-user rejects', async () => {
+    const bus = new HookBus();
+    await bootstrap({
+      bus,
+      plugins: [
+        createStorageSqlitePlugin({ databasePath: ':memory:' }),
+        createCredentialsStoreDbPlugin(),
+        createCredentialsPlugin(),
+      ],
+      config: {},
+    });
+    const { PluginError } = await import('@ax/core');
+    bus.registerService('auth:require-user', 'test', async () => {
+      throw new PluginError({ code: 'unauthenticated', plugin: 'test', message: 'no cookie' });
+    });
+    const handlers = createAdminCredentialsHandlers({ bus });
+    const { res, statusOf } = mkRes();
+    await handlers.listSettings(mkReq({}), res);
+    expect(statusOf()).toBe(401);
+  });
+
   it('GET /admin/credentials returns 401 when auth:require-user rejects', async () => {
     const bus = new HookBus();
     await bootstrap({

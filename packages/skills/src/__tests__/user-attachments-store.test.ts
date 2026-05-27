@@ -98,4 +98,27 @@ describe('createUserAttachmentsStore', () => {
       { skillId: 'multi', credentialBindings: { A_TOKEN: 'refA', B_TOKEN: 'refB' } },
     ]);
   });
+
+  it('delete removes one scoped attachment and reports whether a row was removed', async () => {
+    const db = makeKysely();
+    await runSkillsMigration(db);
+    const store = createUserAttachmentsStore(db);
+
+    await store.upsert({ ownerUserId: 'u1', agentId: 'a1', skillId: 'linear', credentialBindings: {} });
+    await store.upsert({ ownerUserId: 'u1', agentId: 'a1', skillId: 'github', credentialBindings: {} });
+
+    const removed = await store.delete('u1', 'a1', 'linear');
+    expect(removed).toEqual({ removed: true });
+
+    const left = await store.listForUserAgent('u1', 'a1');
+    expect(left.map((a) => a.skillId)).toEqual(['github']);
+
+    // Idempotent: deleting an absent row reports removed:false (no throw).
+    expect(await store.delete('u1', 'a1', 'linear')).toEqual({ removed: false });
+
+    // Scope isolation: u2 cannot delete u1's row.
+    await store.upsert({ ownerUserId: 'u2', agentId: 'a1', skillId: 'github', credentialBindings: {} });
+    expect(await store.delete('u2', 'a1', 'github')).toEqual({ removed: true });
+    expect((await store.listForUserAgent('u1', 'a1')).map((a) => a.skillId)).toEqual(['github']);
+  });
 });

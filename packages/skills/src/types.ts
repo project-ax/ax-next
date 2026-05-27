@@ -160,6 +160,21 @@ export interface SkillsListUserAttachmentsOutput {
   attachments: UserSkillAttachment[];
 }
 
+// Detach (TASK-42, Settings "Connections" mirror property — design P6). The
+// out-of-band twin of skills:attach-for-user: removes one per-(user, agent)
+// attachment so a user can revoke a skill they self-attached. Host-internal,
+// NOT an IPC action — the untrusted runner must never detach a user's skills;
+// the sole caller is the authenticated, CSRF-gated channel-web detach route.
+// Same storage-agnostic posture as attach: opaque ids in, a plain boolean out.
+export interface SkillsDetachForUserInput {
+  userId: string;
+  agentId: string;
+  skillId: string;
+}
+export interface SkillsDetachForUserOutput {
+  removed: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Catalog search (TASK-34, JIT surfacing spine — design §11.1). Read-only:
 // match a free-text intent against the GLOBAL catalog and return candidate
@@ -311,6 +326,10 @@ export const SkillsListUserAttachmentsOutputSchema = z.object({
     }),
   ),
 }) as unknown as ZodType<SkillsListUserAttachmentsOutput>;
+
+export const SkillsDetachForUserOutputSchema = z.object({
+  removed: z.boolean(),
+}) as unknown as ZodType<SkillsDetachForUserOutput>;
 
 const CatalogCandidateSchema = z.object({
   id: z.string(),

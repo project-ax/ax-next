@@ -9,8 +9,17 @@ import { AgentForm } from './AgentForm';
 import { McpServerForm } from './McpServerForm';
 import { TeamList } from './TeamList';
 import { SkillsTab } from './SkillsTab';
+import { ConnectionsTab } from '../settings/ConnectionsTab';
+import { KeysTab } from '../settings/KeysTab';
 
 export interface AdminShellProps {
+  /**
+   * Admins get the full set of admin tabs; every user gets the two Settings
+   * tabs (Connections, Keys). The admin-only tabs are gated here AND on the
+   * server — every /admin/* route enforces role === 'admin' regardless of what
+   * the in-shell nav shows, so hiding the tabs is a UX nicety, not the boundary.
+   */
+  isAdmin: boolean;
   onClose: () => void;
 }
 
@@ -20,6 +29,8 @@ interface TabMeta {
 }
 
 const TAB_META: Record<AdminTabId, TabMeta> = {
+  connections: { eyebrow: 'Settings', title: 'Connections' },
+  keys: { eyebrow: 'Settings', title: 'Keys' },
   providers: { eyebrow: 'Admin', title: 'Providers' },
   'model-config': { eyebrow: 'Admin', title: 'Model config' },
   'auth-providers': { eyebrow: 'Admin', title: 'Auth providers' },
@@ -29,20 +40,23 @@ const TAB_META: Record<AdminTabId, TabMeta> = {
   teams: { eyebrow: 'Admin', title: 'Teams' },
 };
 
-export function AdminShell({ onClose }: AdminShellProps) {
-  const [activeTab, setActiveTab] = useState<AdminTabId>('providers');
+export function AdminShell({ isAdmin, onClose }: AdminShellProps) {
+  const [activeTab, setActiveTab] = useState<AdminTabId>('connections');
   const meta = TAB_META[activeTab];
 
   return (
     <div className="flex flex-1 min-w-0 h-full bg-background">
       <AdminSidebar
         activeTab={activeTab}
+        isAdmin={isAdmin}
         onTabChange={setActiveTab}
         onBackToChat={onClose}
       />
       <AdminPane
         header={<AdminPaneHeader eyebrow={meta.eyebrow} title={meta.title} />}
       >
+        {activeTab === 'connections' && <ConnectionsTab />}
+        {activeTab === 'keys' && <KeysTab />}
         {activeTab === 'providers' && <ProvidersPanel />}
         {activeTab === 'model-config' && <ModelConfigTab />}
         {activeTab === 'auth-providers' && <AuthProvidersTab />}

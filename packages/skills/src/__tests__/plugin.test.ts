@@ -27,6 +27,8 @@ import type {
   SkillsAttachForUserOutput,
   SkillsListUserAttachmentsInput,
   SkillsListUserAttachmentsOutput,
+  SkillsDetachForUserInput,
+  SkillsDetachForUserOutput,
   SkillsSearchCatalogInput,
   SkillsSearchCatalogOutput,
   CatalogSubmitInput,
@@ -127,6 +129,7 @@ describe('@ax/skills plugin manifest + lifecycle', () => {
         'skills:check-for-updates',
         'skills:attach-for-user',
         'skills:list-user-attachments',
+        'skills:detach-for-user',
         'skills:search-catalog',
         'catalog:submit',
         'catalog:list-requests',
@@ -1181,6 +1184,49 @@ capabilities:
         userId: 'u1', agentId: 'a1', skillId: 'github', credentialBindings: {},
       }),
     ).rejects.toThrow(/binding-missing|missing binding/i);
+  });
+
+  it('skills:detach-for-user removes a per-user attachment and is idempotent', async () => {
+    const h = await makeHarness();
+    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
+      manifestYaml: HOSTED_SKILL,
+      bodyMd: '# gh\n',
+    });
+    await h.bus.call<SkillsAttachForUserInput, SkillsAttachForUserOutput>(
+      'skills:attach-for-user',
+      h.ctx(),
+      { userId: 'u1', agentId: 'a1', skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'ref1' } },
+    );
+
+    const before = await h.bus.call<SkillsListUserAttachmentsInput, SkillsListUserAttachmentsOutput>(
+      'skills:list-user-attachments',
+      h.ctx(),
+      { userId: 'u1', agentId: 'a1' },
+    );
+    expect(before.attachments.map((a) => a.skillId)).toEqual(['github']);
+
+    const out = await h.bus.call<SkillsDetachForUserInput, SkillsDetachForUserOutput>(
+      'skills:detach-for-user',
+      h.ctx(),
+      { userId: 'u1', agentId: 'a1', skillId: 'github' },
+    );
+    expect(out).toEqual({ removed: true });
+
+    const after = await h.bus.call<SkillsListUserAttachmentsInput, SkillsListUserAttachmentsOutput>(
+      'skills:list-user-attachments',
+      h.ctx(),
+      { userId: 'u1', agentId: 'a1' },
+    );
+    expect(after.attachments).toEqual([]);
+
+    // Idempotent — removing again is not an error.
+    expect(
+      await h.bus.call<SkillsDetachForUserInput, SkillsDetachForUserOutput>(
+        'skills:detach-for-user',
+        h.ctx(),
+        { userId: 'u1', agentId: 'a1', skillId: 'github' },
+      ),
+    ).toEqual({ removed: false });
   });
 });
 

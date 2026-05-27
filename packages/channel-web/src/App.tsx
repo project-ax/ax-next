@@ -197,7 +197,10 @@ const AppContent = ({ user }: { user: AuthUser }) => {
       <AssistantRuntimeProvider runtime={runtime}>
         <div className="flex h-screen bg-background text-foreground font-sans">
           {adminSettingsOpen ? (
-            <AdminShell onClose={() => setAdminSettingsOpen(false)} />
+            <AdminShell
+              isAdmin={user.role === 'admin'}
+              onClose={() => setAdminSettingsOpen(false)}
+            />
           ) : (
             <>
               <Sidebar
