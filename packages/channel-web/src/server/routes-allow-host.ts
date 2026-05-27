@@ -117,17 +117,31 @@ export function makeAllowHostHandler(deps: { bus: HookBus; initCtx: AgentContext
       // auth (above), agentId from the proxy's own SessionConfig (returned by
       // proxy:add-host). The browser supplied neither. Guarded by hasService so
       // a preset without @ax/host-grants degrades to live-only.
+      //
+      // BEST-EFFORT: the LIVE widen already succeeded (out.added), so the host
+      // works for THIS session regardless. A persist failure (e.g. grant-limit
+      // at the 256-host cap, or a transient DB blip) must NOT turn a successful
+      // live grant into a 500 — we log + swallow and still return { added }.
+      // The user simply re-hits the wall next fresh spawn (same fail-direction
+      // as the orchestrator's fail-open load); it can never widen egress.
       if (
         body.persist &&
         out.added &&
         out.agentId !== undefined &&
         deps.bus.hasService('host-grants:grant')
       ) {
-        await deps.bus.call<HostGrantsGrantInput, { created: boolean }>('host-grants:grant', ctx, {
-          ownerUserId: userId,
-          agentId: out.agentId,
-          host: body.host,
-        });
+        try {
+          await deps.bus.call<HostGrantsGrantInput, { created: boolean }>(
+            'host-grants:grant',
+            ctx,
+            { ownerUserId: userId, agentId: out.agentId, host: body.host },
+          );
+        } catch (persistErr) {
+          ctx.logger.warn('host_grant_persist_failed', {
+            host: body.host,
+            error: persistErr instanceof Error ? persistErr.message : String(persistErr),
+          });
+        }
       }
 
       // Respond with the live-grant result only — agentId never reaches the
