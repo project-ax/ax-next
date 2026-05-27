@@ -31,6 +31,9 @@ import type { RouteRequest, RouteResponse } from './routes-chat.js';
 const BodySchema = z.object({
   sessionId: z.string().min(1).max(128),
   host: z.string().min(1).max(253),
+  // "Always for this agent" → persist a durable per-(user, agent) grant in
+  // addition to the live widen. Default false = TASK-37 "just this once".
+  persist: z.boolean().optional().default(false),
 });
 
 interface AuthRequireUserInput {
@@ -46,6 +49,16 @@ interface AddHostInput {
 }
 interface AddHostOutput {
   added: boolean;
+  /** The session's agentId — present iff added. The server-authoritative half
+   * of the persist grant key (TASK-44). Derived by the proxy from its own
+   * SessionConfig, never supplied by the browser. */
+  agentId?: string;
+}
+
+interface HostGrantsGrantInput {
+  ownerUserId: string;
+  agentId: string;
+  host: string;
 }
 
 export function makeAllowHostHandler(deps: { bus: HookBus; initCtx: AgentContext }) {
@@ -98,7 +111,28 @@ export function makeAllowHostHandler(deps: { bus: HookBus; initCtx: AgentContext
         sessionId: body.sessionId,
         host: body.host,
       });
-      res.status(200).json(out);
+
+      // "Always for this agent": durably persist the grant so future sessions
+      // load it (TASK-44). The grant key is server-authoritative — userId from
+      // auth (above), agentId from the proxy's own SessionConfig (returned by
+      // proxy:add-host). The browser supplied neither. Guarded by hasService so
+      // a preset without @ax/host-grants degrades to live-only.
+      if (
+        body.persist &&
+        out.added &&
+        out.agentId !== undefined &&
+        deps.bus.hasService('host-grants:grant')
+      ) {
+        await deps.bus.call<HostGrantsGrantInput, { created: boolean }>('host-grants:grant', ctx, {
+          ownerUserId: userId,
+          agentId: out.agentId,
+          host: body.host,
+        });
+      }
+
+      // Respond with the live-grant result only — agentId never reaches the
+      // browser (fork #2; the client only needs to know the host was allowed).
+      res.status(200).json({ added: out.added });
     } catch (err) {
       if (err instanceof PluginError && err.code === 'forbidden') {
         res.status(403).json({ error: 'forbidden' });

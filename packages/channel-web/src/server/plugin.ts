@@ -111,6 +111,17 @@ export function createChannelWebServerPlugin(
         // reach this hook over IPC).
         'proxy:add-host',
       ],
+      optionalCalls: [
+        {
+          // TASK-44 — when the user clicks "Always for this agent" on the
+          // reactive-wall card, the allow-host route persists a durable
+          // per-(user, agent) grant via host-grants:grant (after the live
+          // proxy:add-host widen).
+          hook: 'host-grants:grant',
+          degradation:
+            'the reactive-wall "Always for this agent" button persists nothing across sessions; the live proxy:add-host grant still applies for the current session',
+        },
+      ],
       subscribes: ['chat:stream-chunk', 'chat:phase', 'chat:turn-end', 'chat:turn-error', 'chat:permission-request', 'conversations:title-updated'],
     },
 
