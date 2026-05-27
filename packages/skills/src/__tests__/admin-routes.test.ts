@@ -750,6 +750,30 @@ version: 1
     expect(detail.files).toEqual([{ path: 'scripts/run.py', contents: 'print(1)' }]); // NOT wiped
   });
 
+  it('PUT with a name not matching the path id is 400 and copies no files', async () => {
+    // A manifest whose `name` differs from the path id must be rejected and
+    // must NOT promote/copy the path id's bundle onto the parsed id. (Regression
+    // for the metadata-only-save / name-mismatch file-copy edge.)
+    const h = await makeHarness();
+    const handlers = createAdminSkillsHandlers({ bus: h.bus });
+    await h.bus.call('skills:upsert', h.ctx(), {
+      manifestYaml: 'name: helper\ndescription: A helper.\nversion: 1\n',
+      bodyMd: '# helper\n',
+      files: [{ path: 'scripts/run.py', contents: 'print(1)' }],
+      scope: 'global',
+    });
+
+    const { res, statusOf, bodyOf } = mkRes();
+    const mismatched = '---\nname: somethingelse\ndescription: x\nversion: 2\n---\n# x\n';
+    await handlers.update(mkReq({ params: { id: 'helper' }, body: { skillMd: mismatched } }), res);
+    expect(statusOf()).toBe(400);
+    expect((bodyOf() as { error?: string }).error).toMatch(/does not match/i);
+    // The would-be target id must not have been created (no file copy).
+    await expect(
+      h.bus.call('skills:get', h.ctx(), { skillId: 'somethingelse', scope: 'global' }),
+    ).rejects.toThrow();
+  });
+
   it('maps catalog admit error codes to HTTP statuses', () => {
     const cases: Array<[string, number]> = [
       ['request-not-found', 404],

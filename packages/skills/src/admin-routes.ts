@@ -1,4 +1,4 @@
-import { makeAgentContext, PluginError, type AgentContext, type HookBus } from '@ax/core';
+import { makeAgentContext, type AgentContext, type HookBus } from '@ax/core';
 import type {
   SkillsCheckForUpdatesOutput,
   SkillsListOutput,
@@ -6,7 +6,6 @@ import type {
   SkillsUpsertInput,
   SkillsUpsertOutput,
   SkillTier,
-  BundleFile,
 } from './types.js';
 import { classifyTier } from './catalog-tier.js';
 import {
@@ -225,30 +224,18 @@ export function createAdminSkillsHandlers(deps: AdminRouteDeps): {
         return;
       }
 
-      // Preserve a bundle's extra files. Post-bundles, skills:upsert replaces
-      // the file set with `input.files ?? []`, so a SKILL.md-only edit (the
-      // shape the PUT route + SkillEditor send) would otherwise silently WIPE
-      // every extra file. Fetch the current bundle and thread its files back
-      // through the upsert. PUT may also create — tolerate a not-yet-existing
-      // skill (skill-not-found → nothing to preserve); any other error
-      // propagates into the catch below.
-      let existingFiles: BundleFile[] = [];
-      try {
-        const existing = await deps.bus.call<{ skillId: string; scope: 'global' }, SkillsGetOutput>(
-          'skills:get',
-          ctx,
-          { skillId: id, scope: 'global' },
-        );
-        existingFiles = existing.files;
-      } catch (err) {
-        if (!(err instanceof PluginError && err.code === 'skill-not-found')) throw err;
-      }
-
+      // Preserve a bundle's extra files on a SKILL.md-only edit by OMITTING
+      // `files` entirely: skills:upsert treats an absent `files` key as "leave
+      // the current bundle unchanged" (store.upsert only rewrites the tree when
+      // `files !== undefined`). Re-reading + re-sending the existing files would
+      // be redundant AND unsafe — a stale read could clobber a concurrent file
+      // change, and on a name-mismatch (caught only after the upsert below) it
+      // would copy this id's files onto the wrong parsed id before the 400.
       try {
         const out = await deps.bus.call<SkillsUpsertInput, SkillsUpsertOutput>(
           'skills:upsert',
           ctx,
-          { ...split, files: existingFiles, defaultAttached: zodResult.data.defaultAttached ?? false },
+          { ...split, defaultAttached: zodResult.data.defaultAttached ?? false },
         );
 
         // Double-check after the parse in case our quick regex missed something.
@@ -348,10 +335,11 @@ export function createAdminSkillsHandlers(deps: AdminRouteDeps): {
     },
 
     /** PATCH /admin/skills/:id — partial update: flip defaultAttached only.
-     * Re-upserts with the existing manifest/body/files so a bundle's extra
-     * files are NEVER dropped by a default-flag toggle (the SKILL.md-only
-     * round-trip would otherwise wipe them — same hazard the update handler
-     * fixes). */
+     * Re-upserts with the existing manifest/body (skills:upsert needs them) but
+     * OMITS `files`: an absent `files` key leaves the current bundle untouched
+     * (store.upsert only rewrites the tree when `files !== undefined`). Omitting
+     * is both the bundle-preserving AND the race-safe choice — re-sending a
+     * stale `detail.files` read could clobber a concurrent file change. */
     async setDefaultAttached(req: RouteRequest, res: RouteResponse): Promise<void> {
       const actor = await requireAdmin(deps.bus, ctx, req, res);
       if (actor === null) return;
@@ -379,7 +367,6 @@ export function createAdminSkillsHandlers(deps: AdminRouteDeps): {
         await deps.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', ctx, {
           manifestYaml: detail.manifestYaml,
           bodyMd: detail.bodyMd,
-          files: detail.files,
           defaultAttached: zr.data.defaultAttached,
           scope: 'global',
         });
