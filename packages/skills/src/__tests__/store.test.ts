@@ -589,4 +589,127 @@ capabilities:
     const u = await db.selectFrom('skills_v1_user_skills').select('bundle_tree_sha').where('owner_user_id', '=', 'alice').where('skill_id', '=', 'demo').executeTakeFirstOrThrow();
     expect(g.bundle_tree_sha).toBe(u.bundle_tree_sha); // content-addressed: same bytes, same SHA
   });
+
+  // -------------------------------------------------------------------------
+  // TASK-57: store-level atomic partial-update for the default-attached toggle.
+  // The flag-only setter must NOT read-then-write the whole manifest/body/bundle
+  // (the documented PATCH /admin/skills/:id race). It flips one column inside a
+  // single transaction with a row lock.
+  // -------------------------------------------------------------------------
+  describe('setDefaultAttached (atomic partial-update)', () => {
+    const INSTRUCTION_ONLY = `name: heartbeat
+description: Daily check-in skill.
+version: 1
+`;
+
+    it('flips false -> true and reads back via get(), leaving manifest/body untouched', async () => {
+      const db = makeKysely();
+      await runSkillsMigration(db);
+      const store = createSkillsStore(db);
+
+      await store.upsert({
+        id: 'heartbeat',
+        description: 'Daily check-in skill.',
+        manifestYaml: INSTRUCTION_ONLY,
+        bodyMd: '# Heartbeat\n',
+        version: 1,
+      });
+
+      const r = await store.setDefaultAttached('heartbeat', true);
+      expect(r).toEqual({ found: true, defaultAttached: true });
+
+      const detail = await store.get('heartbeat');
+      expect(detail!.defaultAttached).toBe(true);
+      // manifest + body are exactly what upsert wrote — not re-derived.
+      expect(detail!.manifestYaml).toBe(INSTRUCTION_ONLY);
+      expect(detail!.bodyMd).toBe('# Heartbeat\n');
+    });
+
+    it('flips true -> false', async () => {
+      const db = makeKysely();
+      await runSkillsMigration(db);
+      const store = createSkillsStore(db);
+      await store.upsert({
+        id: 'heartbeat',
+        description: 'd',
+        manifestYaml: INSTRUCTION_ONLY,
+        bodyMd: '# h\n',
+        version: 1,
+        defaultAttached: true,
+      });
+
+      const r = await store.setDefaultAttached('heartbeat', false);
+      expect(r).toEqual({ found: true, defaultAttached: false });
+      expect((await store.get('heartbeat'))!.defaultAttached).toBe(false);
+    });
+
+    it('returns { found: false } for an unknown id and creates no row', async () => {
+      const db = makeKysely();
+      await runSkillsMigration(db);
+      const store = createSkillsStore(db);
+
+      const r = await store.setDefaultAttached('nope', true);
+      expect(r).toEqual({ found: false, defaultAttached: true });
+      expect(await store.get('nope')).toBeNull();
+    });
+
+    it('rejects flip to true on a credentialed manifest (I-S2) and does NOT mutate the row', async () => {
+      const db = makeKysely();
+      await runSkillsMigration(db);
+      const store = createSkillsStore(db);
+      await store.upsert({
+        id: 'github',
+        description: 'd',
+        manifestYaml: SAMPLE_MANIFEST, // declares GITHUB_TOKEN
+        bodyMd: SAMPLE_BODY,
+        version: 1,
+      });
+
+      await expect(store.setDefaultAttached('github', true)).rejects.toThrow(
+        /default-attached-requires-no-credentials/,
+      );
+      // Untouched.
+      expect((await store.get('github'))!.defaultAttached).toBe(false);
+    });
+
+    it('writes ONLY the flag + updated_at — manifest/body/bundle bytes are identical before & after (race-safe)', async () => {
+      const db = makeKysely();
+      await runSkillsMigration(db);
+      const store = createSkillsStore(db);
+
+      await store.upsert({
+        id: 'demo',
+        description: 'd',
+        manifestYaml: INSTRUCTION_ONLY,
+        bodyMd: '# demo\n',
+        version: 7,
+        files: [{ path: 'scripts/run.py', contents: 'print(1)' }],
+      });
+
+      const before = await db
+        .selectFrom('skills_v1_skills')
+        .select(['manifest_yaml', 'body_md', 'version', 'bundle_tree_sha', 'description'])
+        .where('skill_id', '=', 'demo')
+        .executeTakeFirstOrThrow();
+
+      await store.setDefaultAttached('demo', true);
+
+      const after = await db
+        .selectFrom('skills_v1_skills')
+        .select(['manifest_yaml', 'body_md', 'version', 'bundle_tree_sha', 'description', 'default_attached'])
+        .where('skill_id', '=', 'demo')
+        .executeTakeFirstOrThrow();
+
+      // Everything except the flag is byte-identical — the old get+upsert path
+      // would have re-written all of these from a (possibly stale) read.
+      expect(after.manifest_yaml).toBe(before.manifest_yaml);
+      expect(after.body_md).toBe(before.body_md);
+      expect(after.version).toBe(before.version);
+      expect(after.bundle_tree_sha).toBe(before.bundle_tree_sha);
+      expect(after.description).toBe(before.description);
+      expect(after.default_attached).toBe(true);
+      // Bundle still round-trips.
+      expect((await store.get('demo'))!.files).toEqual([{ path: 'scripts/run.py', contents: 'print(1)' }]);
+    });
+  });
 });

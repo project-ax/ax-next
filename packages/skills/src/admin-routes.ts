@@ -1,4 +1,5 @@
 import { makeAgentContext, PluginError, type AgentContext, type HookBus } from '@ax/core';
+import type { SkillsStore } from './store.js';
 import type {
   SkillsCheckForUpdatesOutput,
   SkillsListOutput,
@@ -57,6 +58,16 @@ const PLUGIN_NAME = '@ax/skills';
 
 export interface AdminRouteDeps {
   bus: HookBus;
+  /**
+   * The plugin's own global skills store. OPTIONAL so the bus-only handler
+   * construction the unit tests use (`{ bus }`) keeps compiling. When present,
+   * the PATCH default-toggle route uses the store's ATOMIC partial-update
+   * (`setDefaultAttached`) instead of the racy read-detail + re-upsert path —
+   * the whole point of TASK-57. Production (plugin.ts) always injects it.
+   * Same package (no cross-plugin import), so the route may hold a direct store
+   * reference without violating I2.
+   */
+  store?: SkillsStore;
 }
 
 export function createAdminSkillsHandlers(deps: AdminRouteDeps): {
@@ -349,20 +360,21 @@ export function createAdminSkillsHandlers(deps: AdminRouteDeps): {
     },
 
     /** PATCH /admin/skills/:id — partial update: flip defaultAttached only.
-     * Re-upserts with the existing manifest/body (skills:upsert needs them) but
-     * OMITS `files`: an absent `files` key leaves the current bundle untouched
-     * (store.upsert only rewrites the tree when `files !== undefined`). Omitting
-     * is both the bundle-preserving AND the race-safe choice for the bundle —
-     * re-sending a stale `detail.files` read could clobber a concurrent file
-     * change.
      *
-     * KNOWN LIMITATION (same class as plugin.ts's credential-purge race): the
-     * manifest/body are still read-then-written here because the store exposes
-     * only a full `upsert`, no flag-only setter. If a SKILL.md edit lands
-     * between this read and write, that edit is lost. The window is small and
-     * a default-flag toggle is rare; a proper fix needs a store-level atomic
-     * partial-update (or optimistic version check) primitive that doesn't yet
-     * exist — tracked as a follow-up. */
+     * Race-safe via the store's ATOMIC partial-update (TASK-57): when a `store`
+     * is injected (production), the flag flip is a single SELECT … FOR UPDATE +
+     * flag-only UPDATE inside one transaction (store.setDefaultAttached). It
+     * never reads-then-rewrites the manifest/body/bundle, so a concurrent
+     * SKILL.md edit can no longer be clobbered (the documented read-then-write
+     * race this route used to carry — same class as plugin.ts's credential-purge
+     * `previous` read). The I-S2 "default skills are instruction-only" guard runs
+     * inside the same lock; a credentialed skill is rejected as
+     * `default-attached-requires-no-credentials` (→ 400).
+     *
+     * FALLBACK (no `store`, e.g. a bus-only handler in a stripped harness): the
+     * original `skills:get` + `skills:upsert` path. It OMITS `files` so the
+     * bundle is preserved, but the manifest/body are read-then-written and so
+     * still carry the small race window. Production never takes this path. */
     async setDefaultAttached(req: RouteRequest, res: RouteResponse): Promise<void> {
       const actor = await requireAdmin(deps.bus, ctx, req, res);
       if (actor === null) return;
@@ -382,6 +394,37 @@ export function createAdminSkillsHandlers(deps: AdminRouteDeps): {
         return;
       }
       try {
+        if (deps.store !== undefined) {
+          // Atomic path: one transaction, flag-only write.
+          let result: { found: boolean; defaultAttached: boolean };
+          try {
+            result = await deps.store.setDefaultAttached(id, zr.data.defaultAttached);
+          } catch (err) {
+            // The store throws a plain Error for the I-S2 credential rejection;
+            // re-wrap it as the PluginError code writeServiceError maps to 400
+            // (same code the full-upsert path surfaces — one source of truth).
+            const msg = err instanceof Error ? err.message : String(err);
+            if (msg.startsWith('default-attached-requires-no-credentials')) {
+              throw new PluginError({
+                code: 'default-attached-requires-no-credentials',
+                plugin: PLUGIN_NAME,
+                message: msg,
+              });
+            }
+            throw err;
+          }
+          if (!result.found) {
+            throw new PluginError({
+              code: 'skill-not-found',
+              plugin: PLUGIN_NAME,
+              message: `skill '${id}' does not exist`,
+            });
+          }
+          res.status(200).json({ skillId: id, defaultAttached: result.defaultAttached });
+          return;
+        }
+
+        // Fallback (no store injected): the original read-then-write path.
         const detail = await deps.bus.call<{ skillId: string; scope: 'global' }, SkillsGetOutput>(
           'skills:get',
           ctx,
@@ -409,8 +452,12 @@ export function createAdminSkillsHandlers(deps: AdminRouteDeps): {
 export async function registerAdminSkillsRoutes(
   bus: HookBus,
   initCtx: AgentContext,
+  // The plugin's own global store, forwarded so the PATCH default-toggle route
+  // uses the atomic partial-update (TASK-57). Optional to keep test call sites
+  // that don't need it (register-routes-unwind) compiling unchanged.
+  store?: SkillsStore,
 ): Promise<Array<() => void>> {
-  const handlers = createAdminSkillsHandlers({ bus });
+  const handlers = createAdminSkillsHandlers(store !== undefined ? { bus, store } : { bus });
   const routes: Array<{
     method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
     path: string;

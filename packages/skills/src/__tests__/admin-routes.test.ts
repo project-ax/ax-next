@@ -6,9 +6,12 @@ import {
 import { createTestHarness, type TestHarness } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { PluginError } from '@ax/core';
+import type { Kysely } from 'kysely';
 import { createSkillsPlugin } from '../plugin.js';
 import { createAdminSkillsHandlers, writeServiceError } from '../admin-routes.js';
 import type { RouteRequest, RouteResponse } from '../admin-routes.js';
+import { createSkillsStore, type SkillsStore } from '../store.js';
+import type { SkillsDatabase } from '../migrations.js';
 
 // ---------------------------------------------------------------------------
 // /admin/skills* CRUD handler tests.
@@ -122,6 +125,19 @@ async function makeHarness(opts: {
   });
   harnesses.push(h);
   return h;
+}
+
+// Build a real global store backed by the SAME db the booted plugin uses, so
+// the store-injected PATCH path (TASK-57) can be exercised at the route layer.
+// The store shares the plugin's tables (just a different ephemeral bundle repo,
+// which is irrelevant for the flag-only toggle).
+async function storeFor(h: TestHarness): Promise<SkillsStore> {
+  const { db } = await h.bus.call<unknown, { db: Kysely<SkillsDatabase> }>(
+    'database:get-instance',
+    h.ctx(),
+    {},
+  );
+  return createSkillsStore(db);
 }
 
 beforeAll(async () => {
@@ -761,6 +777,151 @@ version: 1
       res,
     );
     expect(statusOf()).toBe(404);
+  });
+
+  // -------------------------------------------------------------------------
+  // TASK-57: PATCH via the injected store's ATOMIC partial-update.
+  // -------------------------------------------------------------------------
+  it('PATCH (store path) flips defaultAttached and preserves the bundle extra files', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminSkillsHandlers({ bus: h.bus, store: await storeFor(h) });
+
+    await h.bus.call('skills:upsert', h.ctx(), {
+      manifestYaml: 'name: helper\ndescription: A helper.\nversion: 1\n',
+      bodyMd: '# helper\n',
+      files: [{ path: 'scripts/run.py', contents: 'print(1)' }],
+      scope: 'global',
+    });
+
+    const { res, statusOf, bodyOf } = mkRes();
+    await handlers.setDefaultAttached(
+      mkReq({ params: { id: 'helper' }, body: { defaultAttached: true } }),
+      res,
+    );
+    expect(statusOf()).toBe(200);
+    expect(bodyOf()).toMatchObject({ skillId: 'helper', defaultAttached: true });
+
+    const detail = await h.bus.call<
+      { skillId: string; scope: 'global' },
+      { defaultAttached: boolean; files: Array<{ path: string; contents: string }> }
+    >('skills:get', h.ctx(), { skillId: 'helper', scope: 'global' });
+    expect(detail.defaultAttached).toBe(true);
+    expect(detail.files).toEqual([{ path: 'scripts/run.py', contents: 'print(1)' }]);
+  });
+
+  it('PATCH (store path) does not clobber a concurrent SKILL.md edit (the race the card fixes)', async () => {
+    const h = await makeHarness();
+    const store = await storeFor(h);
+    const handlers = createAdminSkillsHandlers({ bus: h.bus, store });
+
+    // Seed an instruction-only skill.
+    await h.bus.call('skills:upsert', h.ctx(), {
+      manifestYaml: 'name: helper\ndescription: original.\nversion: 1\n',
+      bodyMd: '# original body\n',
+      scope: 'global',
+    });
+
+    // A SKILL.md edit lands (new body + bumped version). The OLD read-then-write
+    // PATCH path would, on a stale read, re-write the body back to the original.
+    await h.bus.call('skills:upsert', h.ctx(), {
+      manifestYaml: 'name: helper\ndescription: edited.\nversion: 2\n',
+      bodyMd: '# EDITED body\n',
+      scope: 'global',
+    });
+
+    // Now flip the default flag. The atomic primitive touches only the flag.
+    const { res, statusOf } = mkRes();
+    await handlers.setDefaultAttached(
+      mkReq({ params: { id: 'helper' }, body: { defaultAttached: true } }),
+      res,
+    );
+    expect(statusOf()).toBe(200);
+
+    const detail = await h.bus.call<
+      { skillId: string; scope: 'global' },
+      { defaultAttached: boolean; bodyMd: string; version: number }
+    >('skills:get', h.ctx(), { skillId: 'helper', scope: 'global' });
+    expect(detail.defaultAttached).toBe(true);
+    expect(detail.bodyMd).toBe('# EDITED body\n'); // edit survived
+    expect(detail.version).toBe(2);
+  });
+
+  it('PATCH (store path) on a credential-bearing skill is rejected 400', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminSkillsHandlers({ bus: h.bus, store: await storeFor(h) });
+    await h.bus.call('skills:upsert', h.ctx(), {
+      manifestYaml:
+        'name: gh\ndescription: GitHub.\nversion: 1\ncapabilities:\n  credentials:\n    - slot: GITHUB_TOKEN\n      kind: api-key\n',
+      bodyMd: '# gh\n',
+      scope: 'global',
+    });
+    const { res, statusOf, bodyOf } = mkRes();
+    await handlers.setDefaultAttached(
+      mkReq({ params: { id: 'gh' }, body: { defaultAttached: true } }),
+      res,
+    );
+    expect(statusOf()).toBe(400);
+    expect((bodyOf() as { code?: string }).code).toBe('default-attached-requires-no-credentials');
+  });
+
+  it('PATCH (store path) on an unknown id is 404', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminSkillsHandlers({ bus: h.bus, store: await storeFor(h) });
+    const { res, statusOf } = mkRes();
+    await handlers.setDefaultAttached(
+      mkReq({ params: { id: 'nope' }, body: { defaultAttached: true } }),
+      res,
+    );
+    expect(statusOf()).toBe(404);
+  });
+
+  it('PATCH (store path) via the booted plugin route uses the atomic primitive end to end', async () => {
+    // The production wiring (plugin.ts → registerAdminSkillsRoutes(bus, ctx,
+    // store)) injects the store. Capture the handler the route registers and
+    // confirm it flips the flag without a body round-trip clobber.
+    const captured: Array<{
+      handler: (req: RouteRequest, res: RouteResponse) => Promise<void>;
+      method: string;
+      path: string;
+    }> = [];
+    const h = await createTestHarness({
+      services: {
+        'http:register-route': async (_ctx, input) => {
+          const route = input as {
+            method: string;
+            path: string;
+            handler: (req: RouteRequest, res: RouteResponse) => Promise<void>;
+          };
+          captured.push(route);
+          return { unregister: () => {} };
+        },
+        'auth:require-user': async () => ({ user: { id: 'admin', isAdmin: true } }),
+      },
+      plugins: [createDatabasePostgresPlugin({ connectionString }), createSkillsPlugin()],
+    });
+    harnesses.push(h);
+
+    await h.bus.call('skills:upsert', h.ctx(), {
+      manifestYaml: 'name: helper\ndescription: d.\nversion: 1\n',
+      bodyMd: '# body\n',
+      scope: 'global',
+    });
+
+    const patch = captured.find((r) => r.method === 'PATCH' && r.path === '/admin/skills/:id');
+    expect(patch).toBeDefined();
+
+    const { res, statusOf } = mkRes();
+    await patch!.handler(
+      mkReq({ params: { id: 'helper' }, body: { defaultAttached: true } }),
+      res,
+    );
+    expect(statusOf()).toBe(200);
+
+    const detail = await h.bus.call<
+      { skillId: string; scope: 'global' },
+      { defaultAttached: boolean }
+    >('skills:get', h.ctx(), { skillId: 'helper', scope: 'global' });
+    expect(detail.defaultAttached).toBe(true);
   });
 
   it("PUT preserves a bundle's extra files when only SKILL.md is edited", async () => {

@@ -906,7 +906,7 @@ export function createSkillsPlugin(config: SkillsPluginConfig = {}): Plugin {
       // unwound before rethrowing (bootstrap marks the plugin failed and won't
       // call shutdown, so the unwind must happen here).
       try {
-        const adminUnregisters = await registerAdminSkillsRoutes(bus, initCtx);
+        const adminUnregisters = await registerAdminSkillsRoutes(bus, initCtx, store);
         routeUnregisters.push(...adminUnregisters);
         const settingsUnregisters = await registerSettingsSkillsRoutes(bus, initCtx);
         routeUnregisters.push(...settingsUnregisters);
