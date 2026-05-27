@@ -97,6 +97,9 @@ export interface ChatOrchestratorConfig {
   idleWindowMs?: number;
   /** Grace after the cancel before a force handle.kill() (ms). Default 10 s. */
   idleGraceMs?: number;
+  /** System/built-in skills materialized into every session at LOWEST precedence
+   *  (an explicit or default-attached skill of the same id wins). Empty by default. */
+  builtinSkills?: ResolvedSkillForOrch[];
 }
 
 export interface AgentInvokeInput {
@@ -220,7 +223,7 @@ interface McpServerSpecForOrch {
   allowedHosts: string[];
   credentials: Array<{ slot: string; kind: string; description?: string; account?: string }>;
 }
-interface ResolvedSkillForOrch {
+export interface ResolvedSkillForOrch {
   id: string;
   capabilities: {
     allowedHosts: string[];
@@ -1391,9 +1394,14 @@ export function createOrchestrator(
       }
     }
     const explicitIds = new Set(resolvedSkills.map((s) => s.id));
-    const unionedSkills = [
+    const withDefaults = [
       ...resolvedSkills,
       ...defaultSkillsForUnion.filter((s) => !explicitIds.has(s.id)),
+    ];
+    const presentIds = new Set(withDefaults.map((s) => s.id));
+    const unionedSkills = [
+      ...withDefaults,
+      ...(config.builtinSkills ?? []).filter((s) => !presentIds.has(s.id)),
     ];
 
     // D: auto-allowlist public package registries for any skill in the union —
