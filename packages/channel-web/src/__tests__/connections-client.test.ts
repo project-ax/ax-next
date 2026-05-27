@@ -1,6 +1,12 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { listChatAgents } from '../lib/agents.js';
-import { getConnections, detachConnectionSkill } from '../lib/connections.js';
+import {
+  getConnections,
+  detachConnectionSkill,
+  getAllowedSites,
+  revokeAllowedSite,
+  getAccountUsage,
+} from '../lib/connections.js';
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -48,5 +54,52 @@ describe('agents + connections wire clients', () => {
   it('detachConnectionSkill throws on a non-204 error', async () => {
     vi.spyOn(global, 'fetch').mockResolvedValue(new Response(null, { status: 500 }));
     await expect(detachConnectionSkill('a1', 'linear')).rejects.toThrow(/500/);
+  });
+
+  it('getAllowedSites GETs /api/chat/allowed-sites/:agentId (url-encoded)', async () => {
+    const fetchMock = vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({ agentId: 'a1', hosts: [{ host: 'x.example.com', grantedAt: 't' }] }),
+        { status: 200 },
+      ),
+    );
+    const out = await getAllowedSites('a1');
+    expect(fetchMock).toHaveBeenCalledWith('/api/chat/allowed-sites/a1', {
+      credentials: 'include',
+    });
+    expect(out).toEqual({ agentId: 'a1', hosts: [{ host: 'x.example.com', grantedAt: 't' }] });
+  });
+
+  it('revokeAllowedSite DELETEs the (url-encoded) host with the CSRF header', async () => {
+    const fetchMock = vi
+      .spyOn(global, 'fetch')
+      .mockResolvedValue(new Response(null, { status: 204 }));
+    await revokeAllowedSite('a1', 'status.example.com');
+    expect(fetchMock).toHaveBeenCalledWith('/api/chat/allowed-sites/a1/status.example.com', {
+      method: 'DELETE',
+      headers: { 'x-requested-with': 'ax-admin' },
+      credentials: 'include',
+    });
+  });
+
+  it('revokeAllowedSite throws on a non-204 error', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValue(new Response(null, { status: 500 }));
+    await expect(revokeAllowedSite('a1', 'x.example.com')).rejects.toThrow(/500/);
+  });
+
+  it('getAccountUsage GETs /api/chat/account-usage and unwraps the usage map', async () => {
+    const fetchMock = vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ usage: { linear: ['linear', 'linear-search'] } }), {
+        status: 200,
+      }),
+    );
+    const out = await getAccountUsage();
+    expect(fetchMock).toHaveBeenCalledWith('/api/chat/account-usage', { credentials: 'include' });
+    expect(out).toEqual({ linear: ['linear', 'linear-search'] });
+  });
+
+  it('getAccountUsage throws on a non-ok response', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValue(new Response(null, { status: 500 }));
+    await expect(getAccountUsage()).rejects.toThrow(/500/);
   });
 });

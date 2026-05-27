@@ -44,13 +44,39 @@ interface SkillsListInput {
   scope: 'all';
   ownerUserId: string;
 }
+interface SkillCapabilitySlotLite {
+  slot: string;
+  /** JIT P2 — when set, the slot binds the user's shared `account:<service>` vault. */
+  account?: string;
+}
 interface SkillSummaryLite {
   id: string;
   description: string;
   defaultAttached: boolean;
+  capabilities?: { credentials?: SkillCapabilitySlotLite[] };
 }
 interface SkillsListOutput {
   skills: SkillSummaryLite[];
+}
+
+// TASK-54 — host-grants (per-(user, agent) "always allow" sites). Host-internal
+// hooks shipped by @ax/host-grants (TASK-44); this CSRF-gated route is the
+// settings consumer. Conditionally called (optionalCalls + hasService) so a
+// preset without @ax/host-grants degrades to empty.
+interface HostGrantsListInput {
+  ownerUserId: string;
+  agentId: string;
+}
+interface HostGrantsListOutput {
+  hosts: Array<{ host: string; grantedAt: string }>;
+}
+interface HostGrantsRevokeInput {
+  ownerUserId: string;
+  agentId: string;
+  host: string;
+}
+interface HostGrantsRevokeOutput {
+  revoked: boolean;
 }
 
 interface ListUserAttachmentsInput {
@@ -79,6 +105,16 @@ export interface ConnectionSkill {
 export interface ConnectionsResponse {
   agentId: string;
   skills: ConnectionSkill[];
+}
+
+export interface AllowedSitesResponse {
+  agentId: string;
+  hosts: Array<{ host: string; grantedAt: string }>;
+}
+
+/** service → sorted, deduped skill ids whose manifest declares `account: <service>`. */
+export interface AccountUsageResponse {
+  usage: Record<string, string[]>;
 }
 
 /** Resolve the authenticated caller, or write 401 and return null. */
@@ -208,6 +244,110 @@ export function makeConnectionsHandlers(deps: { bus: HookBus; initCtx: AgentCont
         skillId,
       });
       res.status(204).end(); // idempotent — 204 whether or not a row existed
+    },
+
+    // TASK-54 — Allowed-sites panel (design P3/P6/P7.3). The Settings mirror of
+    // the reactive wall's "Always for this agent" choice (TASK-44). Same posture
+    // as the connections reads: auth → agents:resolve ACL (404, no leak) →
+    // host-grants:* with a SERVER-FORCED ownerUserId. host-grants:* are
+    // host-internal hooks (the untrusted runner can never grant/revoke its own
+    // persistent egress — same reasoning as proxy:add-host); this CSRF-gated
+    // route is the only settings caller. Conditionally called + hasService-gated:
+    // a preset without @ax/host-grants degrades to empty / idempotent-204.
+
+    /** GET /api/chat/allowed-sites/:agentId */
+    async listAllowedSites(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      const agentId = req.params.agentId ?? '';
+      if (agentId.length === 0) {
+        res.status(400).json({ error: 'missing-agent-id' });
+        return;
+      }
+      const agent = await resolveAgentOr404(bus, initCtx, agentId, userId, res);
+      if (agent === null) return;
+
+      let hosts: AllowedSitesResponse['hosts'] = [];
+      if (bus.hasService('host-grants:list')) {
+        const r = await bus.call<HostGrantsListInput, HostGrantsListOutput>(
+          'host-grants:list',
+          initCtx,
+          { ownerUserId: userId, agentId },
+        );
+        hosts = r.hosts;
+      }
+      res.status(200).json({ agentId, hosts } satisfies AllowedSitesResponse);
+    },
+
+    /** DELETE /api/chat/allowed-sites/:agentId/:host
+     *
+     * Mirror property (design P6): revoking removes the DURABLE grant so it is
+     * not re-loaded into the next session's allowlist at open (the grant store
+     * is the source of truth; the live allowlist is a per-session snapshot built
+     * at open). The current live session keeps the host until it ends — there is
+     * no live-removal hook, and absence fails SAFE (a stale live host dies with
+     * the session, never widens egress). Idempotent: 204 whether or not a row
+     * existed (and whether or not @ax/host-grants is present). */
+    async revokeAllowedSite(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      const agentId = req.params.agentId ?? '';
+      const host = req.params.host ?? '';
+      if (agentId.length === 0 || host.length === 0) {
+        res.status(400).json({ error: 'missing-id' });
+        return;
+      }
+      // ACL: a not-accessible agent → 404 (no cross-user revoke, no leak).
+      const agent = await resolveAgentOr404(bus, initCtx, agentId, userId, res);
+      if (agent === null) return;
+      if (bus.hasService('host-grants:revoke')) {
+        // ownerUserId SERVER-FORCED from auth — never from the request.
+        await bus.call<HostGrantsRevokeInput, HostGrantsRevokeOutput>(
+          'host-grants:revoke',
+          initCtx,
+          { ownerUserId: userId, agentId, host },
+        );
+      }
+      res.status(204).end();
+    },
+
+    /** GET /api/chat/account-usage
+     *
+     * The "used by" hint for the Settings "Keys" service-keyed vault (design
+     * P2/P6, decision #13): which skills declare `account: <service>`. Derived
+     * from skills:list (which already carries each slot's optional `account`) —
+     * NO new hook. Auth-gated; degrades to {} when skills:list is absent. The
+     * derivation is metadata-only (skill ids + service names), never secrets. */
+    async accountUsage(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+
+      // Null-prototype map so a manifest-supplied `account` value can never
+      // pollute Object.prototype via a key like __proto__/constructor (defense
+      // in depth — invariant #5: skill manifests are untrusted at this hop, and
+      // open-mode agent-authored skills can reach the catalog). The manifest
+      // grammar /^[a-z][a-z0-9-]{0,63}$/ already forbids those keys; this makes
+      // the guarantee structural rather than grammar-dependent.
+      const usage: Record<string, Set<string>> = Object.create(null) as Record<string, Set<string>>;
+      if (bus.hasService('skills:list')) {
+        const listed = await bus.call<SkillsListInput, SkillsListOutput>(
+          'skills:list',
+          initCtx,
+          { scope: 'all', ownerUserId: userId },
+        );
+        for (const s of listed.skills) {
+          for (const slot of s.capabilities?.credentials ?? []) {
+            if (slot.account !== undefined && slot.account.length > 0) {
+              (usage[slot.account] ??= new Set()).add(s.id);
+            }
+          }
+        }
+      }
+      const out: AccountUsageResponse['usage'] = Object.create(null) as AccountUsageResponse['usage'];
+      for (const service of Object.keys(usage)) {
+        out[service] = [...usage[service]!].sort();
+      }
+      res.status(200).json({ usage: out } satisfies AccountUsageResponse);
     },
   };
 }
