@@ -1350,6 +1350,28 @@ export function createOrchestrator(
       baseAllowSet.add('pypi.org');
       baseAllowSet.add('files.pythonhosted.org');
     }
+    // TASK-44 — persistent per-(user, agent) host grants ("always allow", design
+    // §6B / §P7.3 / decision #12). The durable twin of the LIVE proxy:add-host
+    // grant (TASK-37): hosts the user previously chose "Always for this agent"
+    // for are loaded into THIS session's egress allowlist at open. Gated by
+    // hasService (conditionally called, NOT declared in the manifest — same
+    // convention as skills:list-user-attachments above): stripped presets without
+    // @ax/host-grants no-op. CREDENTIAL-FREE (hosts only), so a throw FAILS OPEN
+    // (log + empty) — an empty result yields FEWER hosts (user re-hits the wall),
+    // never more, so it can't widen egress.
+    if (bus.hasService('host-grants:list')) {
+      try {
+        const r = await bus.call<
+          { ownerUserId: string; agentId: string },
+          { hosts: Array<{ host: string; grantedAt: string }> }
+        >('host-grants:list', ctx, { ownerUserId: ctx.userId, agentId: agent.id });
+        for (const g of r.hosts) baseAllowSet.add(g.host);
+      } catch (err) {
+        ctx.logger.warn('host_grants_list_failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
     const unionedAllowlist = [...baseAllowSet];
 
     const installedSkillsForSandbox: InstalledSkillForSandbox[] = unionedSkills.map((s) => ({
