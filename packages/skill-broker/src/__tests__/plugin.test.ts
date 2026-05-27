@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { HookBus, makeAgentContext, PluginError } from '@ax/core';
 import { createSkillBrokerPlugin, type SkillBrokerPlugin } from '../plugin.js';
 import { REQUEST_CAPABILITY_DESCRIPTOR } from '../tools/request-capability.js';
+import { SEARCH_CATALOG_DESCRIPTOR } from '../tools/search-catalog.js';
 import { registerInstallAuthoredSkill } from '../tools/install-authored-skill.js';
 
 const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' });
@@ -115,6 +116,15 @@ describe('createSkillBrokerPlugin — search_catalog', () => {
     expect(registered).toContain('search_catalog');
   });
 
+  // TASK-56 (design §13): on an empty result the broker has filed an admit
+  // request; the descriptor steers the model to narrate "asked your admin",
+  // not an error.
+  it('descriptor steers cold-start narration on an empty result (TASK-56)', () => {
+    const desc = SEARCH_CATALOG_DESCRIPTOR.description.toLowerCase();
+    expect(desc).toContain('asked your admin');
+    expect(desc).toContain('not an error');
+  });
+
   it('search_catalog forwards intent to skills:search-catalog and returns candidates', async () => {
     const { bus } = busWithStubs();
     await createSkillBrokerPlugin().init({ bus, config: {} as never });
@@ -192,6 +202,15 @@ describe('createSkillBrokerPlugin — request_capability', () => {
     const { bus, registered } = busWithStubs();
     await createSkillBrokerPlugin().init({ bus, config: {} as never });
     expect(registered).toContain('request_capability');
+  });
+
+  // TASK-56 (design §13): on a not-found result the broker has filed an admit
+  // request; the descriptor steers the model to narrate "asked your admin",
+  // not an error.
+  it('descriptor steers cold-start narration on a not-found result (TASK-56)', () => {
+    const desc = REQUEST_CAPABILITY_DESCRIPTOR.description.toLowerCase();
+    expect(desc).toContain('asked your admin');
+    expect(desc).toContain('not an error');
   });
 
   it('description tells the model the conversation continues automatically (TASK-36)', () => {
