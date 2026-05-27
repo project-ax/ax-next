@@ -204,6 +204,26 @@ describe('AxChatTransport SSE chunk parsing', () => {
     permissionCardActions.reset();
   });
 
+  // JIT P2/P7.2 — an account-tagged, already-vaulted slot's optional fields
+  // (`account`, `haveExisting`) must survive the typed decode to the store.
+  it('a skill permissionRequest frame preserves account + haveExisting on the slot', async () => {
+    permissionCardActions.reset();
+    const transport = new AxChatTransport({ getAgentId: () => 'a' });
+    const body =
+      'data: {"reqId":"r1","permissionRequest":{"kind":"skill","skillId":"linear","description":"Read your Linear issues","hosts":["api.linear.app"],"slots":[{"slot":"LINEAR_TOKEN","kind":"api-key","account":"linear","haveExisting":true}]}}\n\n' +
+      'data: {"reqId":"r1","done":true}\n\n';
+
+    await drain(asProcess(transport)(sseStream(body)));
+
+    const req = getPermissionCardSnapshot().request;
+    expect(req?.kind).toBe('skill');
+    if (req?.kind !== 'skill') return;
+    expect(req.slots).toEqual([
+      { slot: 'LINEAR_TOKEN', kind: 'api-key', account: 'linear', haveExisting: true },
+    ]);
+    permissionCardActions.reset();
+  });
+
   it('a host permissionRequest frame drives the permission-card store (non-terminal)', async () => {
     permissionCardActions.reset();
     const transport = new AxChatTransport({ getAgentId: () => 'a' });

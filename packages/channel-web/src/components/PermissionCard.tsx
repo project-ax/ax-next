@@ -53,10 +53,14 @@ export function PermissionCard() {
   // (a slotless skill is immediately connectable). `request === null` short-
   // circuits so the hook order stays stable even when the card is hidden.
   // Only the skill variant has slots; the host variant is always "fillable".
+  // A slot already in the user's shared vault (haveExisting) needs no input —
+  // it counts as filled (JIT P2). Otherwise the user must type a value.
   const allSlotsFilled =
     request === null ||
     request.kind !== 'skill' ||
-    request.slots.every(({ slot }) => (values[slot] ?? '').trim().length > 0);
+    request.slots.every(
+      (s) => s.haveExisting === true || (values[s.slot] ?? '').trim().length > 0,
+    );
 
   if (!request) return null;
 
@@ -80,11 +84,20 @@ export function PermissionCard() {
     setError(null);
     try {
       // (TASK-35) write each entered key straight to the host credential store.
-      for (const { slot } of request.slots) {
-        const payload = (values[slot] ?? '').trim();
+      // Route by destination kind (JIT P2): a slot tagged `account: <svc>` posts
+      // to the shared `account:<service>` vault entry; an untagged slot keeps the
+      // per-skill `skill-slot` destination. A slot already in the vault
+      // (haveExisting) writes nothing — the key is already there.
+      for (const s of request.slots) {
+        if (s.haveExisting === true) continue; // already in the vault — nothing to write
+        const payload = (values[s.slot] ?? '').trim();
         if (payload.length === 0) continue;
+        const destination =
+          s.account !== undefined
+            ? ({ kind: 'account', service: s.account } as const)
+            : ({ kind: 'skill-slot', skillId: request.skillId, slot: s.slot } as const);
         await setDestinationCredential({
-          destination: { kind: 'skill-slot', skillId: request.skillId, slot },
+          destination,
           slot: { kind: 'api-key' },
           scope: { scope: 'user', ownerId: null },
           payload,
@@ -187,20 +200,37 @@ export function PermissionCard() {
             </div>
           </div>
         )}
-        {request.slots.map(({ slot }) => (
-          <div key={slot} className="grid gap-1.5">
-            <Label htmlFor={`perm-cred-${slot}`}>{slot}</Label>
-            <Input
-              id={`perm-cred-${slot}`}
-              type="password"
-              autoComplete="off"
-              value={values[slot] ?? ''}
-              onChange={(e) =>
-                setValues((v) => ({ ...v, [slot]: e.target.value }))
-              }
-            />
-          </div>
-        ))}
+        {request.slots.map((s) =>
+          s.haveExisting === true ? (
+            // (JIT P2) the user already has this service key in their shared
+            // vault — offer it with one tap, no re-entry. No input, no POST.
+            <div
+              key={s.slot}
+              className="flex items-center gap-2 text-sm text-muted-foreground"
+            >
+              <Badge variant="secondary">{s.account ?? s.slot}</Badge>
+              <span>
+                Using your existing{' '}
+                {(s.account ?? s.slot).charAt(0).toUpperCase() +
+                  (s.account ?? s.slot).slice(1)}{' '}
+                key
+              </span>
+            </div>
+          ) : (
+            <div key={s.slot} className="grid gap-1.5">
+              <Label htmlFor={`perm-cred-${s.slot}`}>{s.slot}</Label>
+              <Input
+                id={`perm-cred-${s.slot}`}
+                type="password"
+                autoComplete="off"
+                value={values[s.slot] ?? ''}
+                onChange={(e) =>
+                  setValues((v) => ({ ...v, [s.slot]: e.target.value }))
+                }
+              />
+            </div>
+          ),
+        )}
         {error !== null && (
           <Alert variant="destructive">
             <AlertDescription>{error}</AlertDescription>

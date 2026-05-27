@@ -1221,3 +1221,167 @@ describe('skill-install canary: share-to-catalog promotion (§6D, real plugins)'
     expect(gh[0]!.files.find((f) => f.path === 'scripts/run.py')?.contents).toBe('print("hi")');
   }, 60_000);
 });
+
+// ---------------------------------------------------------------------------
+// TASK-43 — service-keyed credential vault (JIT P2/P7.2, decision #13),
+// end-to-end over the real catalog + real per-user attach store. Two GLOBAL
+// catalog skills each declare a slot tagged `account: linear`; a third is
+// account-free (back-compat). Walks:
+//   - request_capability (broker) → the card slot carries `account: linear`
+//     (and haveExisting:false here — no credentials:list provider in this
+//     harness, so the lookup degrades to prompt; the haveExisting:true path is
+//     unit-covered in @ax/skill-broker plugin.test.ts);
+//   - agent:apply-capability-grant (orchestrator) binds BOTH account skills to
+//     the SHARED `account:linear` ref over the real store, while the
+//     account-free skill keeps `skill:<id>:<slot>` (back-compat);
+//   - a fresh agent:invoke threads `account:linear` into proxy:open-session for
+//     both, proving the shared ref reaches the resolution boundary.
+// The credential-resolution reuse + revoke-pulls-from-all property is proven
+// over the REAL credentials store in @ax/credentials vault.test.ts (that stack
+// can't be wired here — @ax/skills doesn't depend on @ax/credentials).
+// Closes invariant #3 (no half-wired plugin) for the account-binding path.
+// ---------------------------------------------------------------------------
+const LINEAR_ACCOUNT_MANIFEST_A = `name: linear-a
+description: Linear A
+version: 1
+capabilities:
+  allowedHosts:
+    - api.linear.app
+  credentials:
+    - slot: LINEAR_TOKEN
+      kind: api-key
+      account: linear
+`;
+const LINEAR_ACCOUNT_MANIFEST_B = `name: linear-b
+description: Linear B
+version: 1
+capabilities:
+  allowedHosts:
+    - api.linear.app
+  credentials:
+    - slot: LIN_KEY
+      kind: api-key
+      account: linear
+`;
+const PLAIN_MANIFEST = `name: plain
+description: Plain
+version: 1
+capabilities:
+  allowedHosts:
+    - api.example.com
+  credentials:
+    - slot: PLAIN_TOKEN
+      kind: api-key
+`;
+
+describe('skill-install canary: account-tagged slots bind the shared vault ref (TASK-43)', () => {
+  function buildAccountHarness(busRef: { current: HookBus | null }) {
+    const fakes = buildCaptureFakes(busRef);
+    return createTestHarness({
+      services: fakes.services,
+      plugins: [
+        createDatabasePostgresPlugin({ connectionString }),
+        createAgentsPlugin(),
+        createSkillsPlugin(),
+        createToolDispatcherPlugin(),
+        createSkillBrokerPlugin(),
+        createChatOrchestratorPlugin({
+          runnerBinary: '/irrelevant',
+          oneShot: true,
+          chatTimeoutMs: 5_000,
+        }),
+      ],
+    }).then((h) => ({ h, fakes }));
+  }
+
+  it('two account:linear skills both bind the shared ref; an account-free skill keeps skill:<id>:<slot>', async () => {
+    const busRef: { current: HookBus | null } = { current: null };
+    const { h, fakes } = await buildAccountHarness(busRef);
+    harnesses.push(h);
+    busRef.current = h.bus;
+
+    // 1. Two account: linear catalog skills (distinct slots/ids) + a plain one.
+    for (const manifestYaml of [
+      LINEAR_ACCOUNT_MANIFEST_A,
+      LINEAR_ACCOUNT_MANIFEST_B,
+      PLAIN_MANIFEST,
+    ]) {
+      await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
+        manifestYaml,
+        bodyMd: 'Body.',
+      });
+    }
+
+    const agentId = await createPersonalAgent(h, 'alice');
+    const convCtx = ctxFor(agentId, 'alice', 'acct-walk');
+
+    // 2. request_capability for skill A → the card slot carries account: linear.
+    const cards: Array<{ skillId: string; slots: Array<Record<string, unknown>> }> = [];
+    h.bus.subscribe('chat:permission-request', 'canary/acct-card', async (_c, p) => {
+      cards.push(p as never);
+      return undefined;
+    });
+    await h.bus.call('tool:execute:request_capability', convCtx, {
+      name: 'request_capability',
+      input: { skillId: 'linear-a' },
+    });
+    expect(cards).toHaveLength(1);
+    expect(cards[0]!.slots[0]).toMatchObject({
+      slot: 'LINEAR_TOKEN',
+      account: 'linear',
+      // No credentials:list provider in this harness → degrades to prompt.
+      haveExisting: false,
+    });
+
+    // The account-free skill's card slot carries NO account tag.
+    await h.bus.call('tool:execute:request_capability', convCtx, {
+      name: 'request_capability',
+      input: { skillId: 'plain' },
+    });
+    const plainCard = cards.find((c) => c.skillId === 'plain');
+    expect(plainCard!.slots[0]).toEqual({
+      slot: 'PLAIN_TOKEN',
+      kind: 'api-key',
+      haveExisting: false,
+    });
+    expect('account' in (plainCard!.slots[0] as object)).toBe(false);
+
+    // 3. apply-capability-grant over the REAL per-user attach store: both
+    //    account skills bind the SHARED account:linear ref; plain keeps
+    //    skill:<id>:<slot>.
+    for (const skillId of ['linear-a', 'linear-b', 'plain']) {
+      const grant = await h.bus.call('agent:apply-capability-grant', convCtx, {
+        conversationId: 'acct-walk',
+        userId: 'alice',
+        agentId,
+        skillId,
+      });
+      expect(grant).toEqual({ attached: true });
+    }
+    const after = (await h.bus.call('skills:list-user-attachments', convCtx, {
+      userId: 'alice',
+      agentId,
+    })) as {
+      attachments: Array<{ skillId: string; credentialBindings: Record<string, string> }>;
+    };
+    const bindFor = (id: string): Record<string, string> =>
+      after.attachments.find((a) => a.skillId === id)!.credentialBindings;
+    expect(bindFor('linear-a')).toEqual({ LINEAR_TOKEN: 'account:linear' });
+    expect(bindFor('linear-b')).toEqual({ LIN_KEY: 'account:linear' });
+    expect(bindFor('plain')).toEqual({ PLAIN_TOKEN: 'skill:plain:PLAIN_TOKEN' });
+
+    // 4. A fresh agent:invoke threads the SHARED ref into proxy:open-session for
+    //    both account skills (they're both attached on the same agent now).
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      ctxFor(agentId, 'alice', 'acct-walk-respawn'),
+      { message: { role: 'user', content: 'check linear' } },
+    );
+    expect(outcome.kind).toBe('complete');
+    expect(fakes.proxyOpenInputs).toHaveLength(1);
+    const creds = fakes.proxyOpenInputs[0]!.credentials;
+    expect(creds.LINEAR_TOKEN).toEqual({ ref: 'account:linear', kind: 'api-key' });
+    expect(creds.LIN_KEY).toEqual({ ref: 'account:linear', kind: 'api-key' });
+    expect(creds.PLAIN_TOKEN).toEqual({ ref: 'skill:plain:PLAIN_TOKEN', kind: 'api-key' });
+  }, 60_000);
+});

@@ -158,6 +158,75 @@ describe('PermissionCard', () => {
       screen.queryByText(/new skill your assistant just wrote/i),
     ).toBeNull();
   });
+
+  // JIT P2/P7.2 — a slot the user already has vaulted (haveExisting) shows a
+  // "use your existing key" hint, renders NO input, counts as filled, and posts
+  // NO credential on Connect (the key is already in the vault).
+  it('skips the field and posts no credential for a slot already in the vault', async () => {
+    vi.spyOn(resumeActions, 'continueAfterGrant').mockImplementation(() => undefined);
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(null, { status: 204 }));
+    render(<PermissionCard />);
+    permissionCardActions.show({
+      kind: 'skill',
+      skillId: 'linear',
+      description: 'd',
+      hosts: ['api.linear.app'],
+      slots: [{ slot: 'LINEAR_TOKEN', kind: 'api-key', account: 'linear', haveExisting: true }],
+    });
+
+    // No password input for the vaulted slot; the "use existing" hint is shown.
+    // The hint text is split across nodes (Badge + interpolated service name),
+    // so match on the normalized textContent of the containing element.
+    expect(
+      await screen.findByText(
+        (_content, el) =>
+          el?.tagName === 'SPAN' &&
+          el.textContent?.toLowerCase().includes('using your existing') === true,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText('LINEAR_TOKEN')).toBeNull();
+
+    // Connect is enabled with no typing (the slot counts as filled).
+    fireEvent.click(screen.getByRole('button', { name: /^connect$/i }));
+    await waitFor(() => expect(getPermissionCardSnapshot().request).toBeNull());
+
+    // Only the decision POST happened — NO credential write for the vaulted slot.
+    const urls = fetchMock.mock.calls.map((c) => c[0]);
+    expect(urls).toContain('/api/chat/permission-decision');
+    expect(urls.some((u) => String(u).includes('/destinations/'))).toBe(false);
+  });
+
+  it('posts an account-tagged (not yet vaulted) slot to the account destination', async () => {
+    vi.spyOn(resumeActions, 'continueAfterGrant').mockImplementation(() => undefined);
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(null, { status: 204 }));
+    render(<PermissionCard />);
+    permissionCardActions.show({
+      kind: 'skill',
+      skillId: 'linear',
+      description: 'd',
+      hosts: ['api.linear.app'],
+      slots: [{ slot: 'LINEAR_TOKEN', kind: 'api-key', account: 'linear', haveExisting: false }],
+    });
+
+    fireEvent.change(await screen.findByLabelText('LINEAR_TOKEN'), {
+      target: { value: 'lin-secret' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /^connect$/i }));
+    await waitFor(() => expect(getPermissionCardSnapshot().request).toBeNull());
+
+    // The credential POST routed to the ACCOUNT destination at user scope.
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/settings/destinations/account/credential',
+      expect.objectContaining({
+        method: 'POST',
+        body: expect.stringContaining('"kind":"account"'),
+      }),
+    );
+  });
 });
 
 describe('PermissionCard — host grant (TASK-37)', () => {

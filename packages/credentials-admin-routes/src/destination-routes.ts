@@ -75,6 +75,9 @@ export function refForDestination(dest: Destination): string {
       assertNoColon('agentId', dest.agentId);
       assertNoColon('routinePath', dest.routinePath);
       return `routine:${dest.agentId}:${dest.routinePath}:hmac`;
+    case 'account':
+      assertNoColon('service', dest.service);
+      return `account:${dest.service}`;
   }
 }
 
@@ -112,6 +115,20 @@ const DestinationSchema = z.discriminatedUnion('kind', [
       kind: z.literal('routine-hmac'),
       agentId: z.string().min(1).max(64),
       routinePath: z.string().min(1).max(256),
+    })
+    .strict(),
+  // JIT P2 — service-keyed user vault. The service grammar is re-validated
+  // independently here (no shared import — invariant I2): lowercase slug,
+  // starts with a letter, no ':' (also re-asserted by refForDestination's
+  // assertNoColon). Identical to ACCOUNT_RE in @ax/skills-parser.
+  z
+    .object({
+      kind: z.literal('account'),
+      service: z
+        .string()
+        .min(1)
+        .max(64)
+        .regex(/^[a-z][a-z0-9-]{0,63}$/, 'invalid account service'),
     })
     .strict(),
 ]);

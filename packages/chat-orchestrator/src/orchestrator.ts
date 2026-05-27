@@ -218,13 +218,13 @@ interface McpServerSpecForOrch {
   env?: Record<string, string>;
   url?: string;
   allowedHosts: string[];
-  credentials: Array<{ slot: string; kind: string; description?: string }>;
+  credentials: Array<{ slot: string; kind: string; description?: string; account?: string }>;
 }
 interface ResolvedSkillForOrch {
   id: string;
   capabilities: {
     allowedHosts: string[];
-    credentials: Array<{ slot: string; kind: string; description?: string }>;
+    credentials: Array<{ slot: string; kind: string; description?: string; account?: string }>;
     mcpServers: McpServerSpecForOrch[];
     packages?: { npm?: string[]; pypi?: string[] };
   };
@@ -1918,24 +1918,34 @@ export function createOrchestrator(
     // 1. Resolve the catalog skill's declared slots so we can bind every one
     //    (skills:attach-for-user requires a binding for each — see
     //    validateAttachmentBindings; a partially-bound attachment is rejected).
-    let declaredSlots: string[] = [];
+    let declaredSlots: Array<{ slot: string; account?: string }> = [];
     if (bus.hasService('skills:resolve')) {
       const r = await bus.call<SkillsResolveInput, SkillsResolveOutput>(
         'skills:resolve',
         ctx,
         { skillIds: [input.skillId], ownerUserId: input.userId },
       );
-      declaredSlots = r.skills[0]?.capabilities.credentials.map((c) => c.slot) ?? [];
+      declaredSlots =
+        r.skills[0]?.capabilities.credentials.map((c) => ({
+          slot: c.slot,
+          ...(c.account !== undefined ? { account: c.account } : {}),
+        })) ?? [];
     }
 
-    // 2. Derive per-slot bindings: slot → `skill:<id>:<slot>` (the deterministic
-    //    ref TASK-35's card wrote each key to). Established local-re-derivation
-    //    convention — same posture as credentials-admin-routes inlining it from
-    //    @ax/credentials/refs.ts (no cross-plugin import, I2). A slotless skill
+    // 2. Derive per-slot bindings. A slot tagged `account: <svc>` binds the
+    //    SHARED user vault entry `account:<svc>` (JIT P2/decision #13) — entered
+    //    once, reused by every skill naming the same service. An untagged slot
+    //    keeps the per-skill `skill:<id>:<slot>` ref (the deterministic ref the
+    //    card wrote each key to). The card (request_capability + the
+    //    PermissionCard POST) derives the IDENTICAL ref from the same manifest,
+    //    so the stored key and this binding always address the same row.
+    //    Local re-derivation — no @ax/credentials import (I2), same posture as
+    //    credentials-admin-routes inlining refForDestination. A slotless skill
     //    binds {}.
     const credentialBindings: Record<string, string> = {};
-    for (const slot of declaredSlots) {
-      credentialBindings[slot] = `skill:${input.skillId}:${slot}`;
+    for (const s of declaredSlots) {
+      credentialBindings[s.slot] =
+        s.account !== undefined ? `account:${s.account}` : `skill:${input.skillId}:${s.slot}`;
     }
 
     // 3. Attach for the user (TASK-33). Errors propagate as PluginError — the

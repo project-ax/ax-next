@@ -147,6 +147,8 @@ export function refForDestination(dest: Destination): string {
       return `mcp:${dest.serverId}:header:${dest.headerName}`;
     case 'routine-hmac':
       return `routine:${dest.agentId}:${dest.routinePath}:hmac`;
+    case 'account':
+      return `account:${dest.service}`;
   }
 }
 

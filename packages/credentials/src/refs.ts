@@ -7,7 +7,8 @@ export type Destination =
   | { kind: 'skill-slot'; skillId: string; slot: string }
   | { kind: 'mcp-env'; serverId: string; envName: string }
   | { kind: 'mcp-header'; serverId: string; headerName: string }
-  | { kind: 'routine-hmac'; agentId: string; routinePath: string };
+  | { kind: 'routine-hmac'; agentId: string; routinePath: string }
+  | { kind: 'account'; service: string }; // JIT P2 — service-keyed user vault
 
 function assertNoColon(field: string, value: string): void {
   if (value.includes(':')) {
@@ -40,5 +41,8 @@ export function refForDestination(dest: Destination): string {
       assertNoColon('agentId', dest.agentId);
       assertNoColon('routinePath', dest.routinePath);
       return `routine:${dest.agentId}:${dest.routinePath}:hmac`;
+    case 'account':
+      assertNoColon('service', dest.service);
+      return `account:${dest.service}`;
   }
 }

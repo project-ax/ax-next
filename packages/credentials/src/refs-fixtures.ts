@@ -52,4 +52,8 @@ export const KNOWN_DESTINATION_FIXTURES: ReadonlyArray<DestinationFixture> = [
     },
     expectedRef: 'routine:agt-1:.ax/routines/cron.md:hmac',
   },
+  {
+    destination: { kind: 'account', service: 'linear' },
+    expectedRef: 'account:linear',
+  },
 ];

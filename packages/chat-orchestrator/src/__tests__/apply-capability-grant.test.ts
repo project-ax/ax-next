@@ -175,4 +175,46 @@ describe('agent:apply-capability-grant', () => {
     expect(mocks.trace.isAlive).toEqual(['sess-stale']);
     expect(mocks.trace.terminate).toEqual([]);
   });
+
+  // JIT P2/P7.2, decision #13 — a slot tagged `account: <svc>` binds the SHARED
+  // user vault entry `account:<svc>`; an untagged slot keeps the per-skill ref.
+  // The card POSTs the IDENTICAL ref, so stored key and binding always agree.
+  it('binds an account-tagged slot to account:<service> and a plain slot to skill:<id>:<slot>', async () => {
+    const mocks = buildMocks({
+      slots: [],
+      activeSessionId: null,
+      liveSessions: new Set(),
+    });
+    // Override skills:resolve to return one account-tagged slot + one plain slot.
+    mocks.services['skills:resolve'] = async (_c, input: unknown) => {
+      const ids = (input as { skillIds: string[] }).skillIds;
+      return {
+        skills: ids.map((id) => ({
+          id,
+          manifestYaml: '',
+          bodyMd: '',
+          capabilities: {
+            allowedHosts: ['api.linear.app'],
+            credentials: [
+              { slot: 'LINEAR_TOKEN', kind: 'api-key' as const, account: 'linear' },
+              { slot: 'EXTRA', kind: 'api-key' as const },
+            ],
+            mcpServers: [],
+            packages: { npm: [], pypi: [] },
+          },
+        })),
+      };
+    };
+    const h = await harnessFor(mocks);
+    await h.bus.call('agent:apply-capability-grant', ctx(), {
+      conversationId: 'cnv-1',
+      userId: 'user-1',
+      agentId: 'agent-1',
+      skillId: 'linear',
+    });
+    expect(mocks.trace.attach[0]?.credentialBindings).toEqual({
+      LINEAR_TOKEN: 'account:linear',
+      EXTRA: 'skill:linear:EXTRA',
+    });
+  });
 });
