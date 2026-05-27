@@ -16,12 +16,31 @@ export interface DiffLine {
   text: string;
 }
 
+/**
+ * Cap on the LCS dp-table dimension. The bundle content is UNTRUSTED and a
+ * single file may be up to 256 KiB (validateBundleFiles); a file with tens of
+ * thousands of short lines would make the O(m·n) table allocate billions of
+ * cells and hang/OOM the admin tab on opening the review dialog. Above this
+ * line count on either side we degrade to a faithful whole-file replace
+ * (remove-all + add-all) — no byte is dropped, the work is bounded O(m+n).
+ */
+const DIFF_LCS_MAX_LINES = 2000;
+
 /** Line-level LCS diff. `before`/`after` are whole-file strings. */
 export function diffLines(before: string, after: string): DiffLine[] {
   const a = before.length === 0 ? [] : before.split('\n');
   const b = after.length === 0 ? [] : after.split('\n');
   const m = a.length;
   const n = b.length;
+  // Untrusted-content guard: above the cap, skip the quadratic LCS and show a
+  // whole-file replace. Still renders every line, just without intra-file
+  // context matching (an honest, bounded fallback for very large files).
+  if (m > DIFF_LCS_MAX_LINES || n > DIFF_LCS_MAX_LINES) {
+    const out: DiffLine[] = [];
+    for (const text of a) out.push({ type: 'remove', text });
+    for (const text of b) out.push({ type: 'add', text });
+    return out;
+  }
   // dp[i][j] = LCS length of a[i:] and b[j:]
   const dp: number[][] = Array.from({ length: m + 1 }, () => new Array<number>(n + 1).fill(0));
   for (let i = m - 1; i >= 0; i--) {

@@ -69,6 +69,26 @@ describe('BundleReviewDialog', () => {
     );
   });
 
+  it('keeps Admit disabled while the bundle diff is still loading', async () => {
+    // getSkillOrNull never resolves → entries stays null (loading).
+    mockGetOrNull.mockReturnValue(new Promise(() => {}));
+    render(<BundleReviewDialog request={SHARE_REQ} onClose={vi.fn()} onDecided={vi.fn()} />);
+    const admit = (await screen.findByRole('button', { name: /^admit$/i })) as HTMLButtonElement;
+    expect(admit.disabled).toBe(true);
+    // The loading state is shown, not a reviewable diff.
+    expect(screen.getByText(/loading bundle/i)).toBeTruthy();
+  });
+
+  it('keeps Admit disabled if the current-version fetch fails (un-reviewable)', async () => {
+    mockGetOrNull.mockRejectedValue(new Error('skills API 500'));
+    render(<BundleReviewDialog request={SHARE_REQ} onClose={vi.fn()} onDecided={vi.fn()} />);
+    // The error surfaces and Admit stays disabled — no admitting un-reviewed bytes.
+    await waitFor(() => expect(screen.getByText(/skills API 500/)).toBeTruthy());
+    expect((screen.getByRole('button', { name: /^admit$/i }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+  });
+
   it('renders untrusted submitted contents as escaped text (no HTML injection)', async () => {
     mockGetOrNull.mockResolvedValue(null);
     render(

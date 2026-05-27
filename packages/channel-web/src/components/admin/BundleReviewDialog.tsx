@@ -27,7 +27,11 @@ function submittedFiles(req: CatalogRequest): Record<string, string> {
 export function BundleReviewDialog({ request, onClose, onDecided }: BundleReviewDialogProps) {
   const isShare = request.kind === 'share' && request.manifestYaml !== null;
   const [entries, setEntries] = useState<BundleFileEntry[] | null>(isShare ? null : []);
-  const [error, setError] = useState<string | null>(null);
+  // loadError = the bundle couldn't be assembled for review (blocks Admit — you
+  // can't admit bytes you couldn't see). decideError = the admit/reject call
+  // itself failed (post-review; doesn't block re-trying).
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [decideError, setDecideError] = useState<string | null>(null);
   const [deciding, setDeciding] = useState(false);
 
   useEffect(() => {
@@ -45,7 +49,7 @@ export function BundleReviewDialog({ request, onClose, onDecided }: BundleReview
         }
         setEntries(compareBundles(before, submittedFiles(request)));
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+        if (!cancelled) setLoadError(err instanceof Error ? err.message : String(err));
       }
     })();
     return () => {
@@ -55,16 +59,26 @@ export function BundleReviewDialog({ request, onClose, onDecided }: BundleReview
 
   async function decide(decision: 'admit' | 'reject') {
     setDeciding(true);
-    setError(null);
+    setDecideError(null);
     try {
       await decideCatalogRequest(request.requestId, decision);
       onDecided();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setDecideError(err instanceof Error ? err.message : String(err));
     } finally {
       setDeciding(false);
     }
   }
+
+  const error = loadError ?? decideError;
+
+  // Admit promotes the submitted (untrusted) bytes org-wide, so it must be
+  // gated on the reviewer having actually SEEN them: only enable once this is
+  // a share AND the diff loaded successfully (entries !== null) AND there was
+  // no load error. Otherwise an admin could admit from the loading/error state
+  // and bypass the review surface this dialog exists to enforce. A *decide*
+  // error (the admit/reject call failed) does not block — the bytes were seen.
+  const canAdmit = isShare && entries !== null && loadError === null && !deciding;
 
   return (
     <Dialog
@@ -109,7 +123,7 @@ export function BundleReviewDialog({ request, onClose, onDecided }: BundleReview
             <Button variant="destructive" onClick={() => void decide('reject')} disabled={deciding}>
               Reject
             </Button>
-            <Button onClick={() => void decide('admit')} disabled={deciding || !isShare}>
+            <Button onClick={() => void decide('admit')} disabled={!canAdmit}>
               Admit
             </Button>
           </div>

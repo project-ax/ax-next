@@ -26,6 +26,29 @@ describe('diffLines', () => {
       { type: 'add', text: 'y' },
     ]);
   });
+
+  it('falls back to a whole-file replace above the line cap (no quadratic blowup)', () => {
+    // Untrusted bundle files can be hundreds of KiB; an LCS dp table of
+    // (m+1)*(n+1) cells would OOM/hang. Above the cap we degrade to a
+    // remove-all-then-add-all diff — still shows every byte, bounded work.
+    const before = Array.from({ length: 3000 }, (_, i) => `b${i}`).join('\n');
+    const after = Array.from({ length: 3000 }, (_, i) => `a${i}`).join('\n');
+    const start = Date.now();
+    const out = diffLines(before, after);
+    expect(Date.now() - start).toBeLessThan(2000); // would be many seconds with full LCS
+    // Every original line removed, every new line added; nothing dropped.
+    expect(out.filter((l) => l.type === 'remove')).toHaveLength(3000);
+    expect(out.filter((l) => l.type === 'add')).toHaveLength(3000);
+    expect(out.filter((l) => l.type === 'context')).toHaveLength(0);
+    expect(out[0]).toEqual({ type: 'remove', text: 'b0' });
+    expect(out[out.length - 1]).toEqual({ type: 'add', text: 'a2999' });
+  });
+
+  it('still does a real line-level diff below the cap', () => {
+    // Identical-but-for-one-line files under the cap keep the LCS context.
+    const out = diffLines('a\nb\nc\nd', 'a\nb\nX\nd');
+    expect(out.filter((l) => l.type === 'context').map((l) => l.text)).toEqual(['a', 'b', 'd']);
+  });
 });
 
 describe('compareBundles', () => {
