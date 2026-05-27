@@ -111,8 +111,8 @@ export function capabilityHandoffNote(): string {
     `automatically — so do not ask the user to re-ask or repeat their request; just`,
     `answer their original request with the newly connected capability.`,
     `If a capability you need isn't available yet (a catalog search or capability`,
-    `request comes back empty or not-found), the request to add it has already been`,
-    `filed for your administrator — so tell the user you've asked your admin to add it`,
+    `request comes back empty or not-found), a request to add it is filed for your`,
+    `administrator automatically — so tell the user you've asked your admin to add it`,
     `and that you'll be able to help once it's approved. That is the expected outcome,`,
     `not an error: say it warmly and don't report a failure.`,
   ].join(' ');

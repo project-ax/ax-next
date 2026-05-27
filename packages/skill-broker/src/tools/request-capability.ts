@@ -15,7 +15,7 @@ export const REQUEST_CAPABILITY_DESCRIPTOR: ToolDescriptor = {
     'surface handles it. Once the user approves, the conversation will continue ' +
     'automatically; do not ask the user to repeat their request. ' +
     'If the result is { status: "not-found" }, the capability is not in the catalog yet ' +
-    'and the request to add it has already been filed for the administrator — tell the user ' +
+    'and a request to add it is filed for the administrator automatically — tell the user ' +
     'you have asked your admin to add it and that you will be able to help once it is approved. ' +
     'That is the expected outcome, not an error.',
   executesIn: 'host',
