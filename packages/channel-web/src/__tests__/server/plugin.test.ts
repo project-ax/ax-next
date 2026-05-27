@@ -458,6 +458,16 @@ describe('@ax/channel-web server plugin (integration)', () => {
           degradation:
             'the reactive-wall "Always for this agent" button persists nothing across sessions; the live proxy:add-host grant still applies for the current session',
         },
+        {
+          hook: 'host-grants:list',
+          degradation:
+            'the Settings "Allowed sites" panel shows no persisted hosts (the live reactive wall still applies per session)',
+        },
+        {
+          hook: 'host-grants:revoke',
+          degradation:
+            'the Settings "Allowed sites" Revoke control is a no-op (no persisted grants to remove)',
+        },
       ],
       subscribes: ['chat:stream-chunk', 'chat:phase', 'chat:turn-end', 'chat:turn-error', 'chat:permission-request', 'conversations:title-updated'],
     });
@@ -478,6 +488,31 @@ describe('@ax/channel-web server plugin (integration)', () => {
       const r = await fetch(
         `http://127.0.0.1:${booted.port}/api/chat/connections/agt_test`,
       );
+      expect(r.status).toBe(401);
+    });
+  });
+
+  describe('Settings panels (TASK-54)', () => {
+    it('declares the host-grants list/revoke hooks in manifest.optionalCalls', () => {
+      const plugin = createChannelWebServerPlugin();
+      const hooks = (plugin.manifest.optionalCalls ?? []).map((o) => o.hook);
+      expect(hooks).toContain('host-grants:list');
+      expect(hooks).toContain('host-grants:revoke');
+    });
+
+    it('registers GET /api/chat/allowed-sites/:agentId at boot (401, not 404)', async () => {
+      const booted = await boot({ user: null });
+      harness = booted.harness;
+      const r = await fetch(
+        `http://127.0.0.1:${booted.port}/api/chat/allowed-sites/agt_test`,
+      );
+      expect(r.status).toBe(401);
+    });
+
+    it('registers GET /api/chat/account-usage at boot (401, not 404)', async () => {
+      const booted = await boot({ user: null });
+      harness = booted.harness;
+      const r = await fetch(`http://127.0.0.1:${booted.port}/api/chat/account-usage`);
       expect(r.status).toBe(401);
     });
   });

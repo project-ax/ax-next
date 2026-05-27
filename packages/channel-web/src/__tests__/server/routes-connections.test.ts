@@ -47,10 +47,14 @@ const initCtx: AgentContext = makeAgentContext({
 describe('channel-web Connections BFF', () => {
   let bus: HookBus;
   let detachCalls: Array<{ userId: string; agentId: string; skillId: string }>;
+  let grantListCalls: Array<{ ownerUserId: string; agentId: string }>;
+  let revokeCalls: Array<{ ownerUserId: string; agentId: string; host: string }>;
 
   beforeEach(() => {
     bus = new HookBus();
     detachCalls = [];
+    grantListCalls = [];
+    revokeCalls = [];
     bus.registerService('auth:require-user', 'auth', async () => ({
       user: { id: 'u1', isAdmin: false },
     }));
@@ -79,12 +83,31 @@ describe('channel-web Connections BFF', () => {
       skills: [
         { id: 'web_search', description: 'Search the web', defaultAttached: true },
         { id: 'memory', description: 'Long-term memory', defaultAttached: false },
-        { id: 'linear', description: 'Linear issues', defaultAttached: false },
+        {
+          id: 'linear',
+          description: 'Linear issues',
+          defaultAttached: false,
+          capabilities: { credentials: [{ slot: 'LINEAR_API_KEY', kind: 'api-key', account: 'linear' }] },
+        },
+        {
+          id: 'linear-search',
+          description: 'Linear search',
+          defaultAttached: false,
+          capabilities: { credentials: [{ slot: 'LINEAR_API_KEY', kind: 'api-key', account: 'linear' }] },
+        },
       ],
     }));
     bus.registerService('skills:detach-for-user', 'skills', async (_c, i: unknown) => {
       detachCalls.push(i as { userId: string; agentId: string; skillId: string });
       return { removed: true };
+    });
+    bus.registerService('host-grants:list', 'host-grants', async (_c, i: unknown) => {
+      grantListCalls.push(i as { ownerUserId: string; agentId: string });
+      return { hosts: [{ host: 'status.example.com', grantedAt: '2026-05-20T00:00:00Z' }] };
+    });
+    bus.registerService('host-grants:revoke', 'host-grants', async (_c, i: unknown) => {
+      revokeCalls.push(i as { ownerUserId: string; agentId: string; host: string });
+      return { revoked: true };
     });
   });
 
@@ -143,6 +166,132 @@ describe('channel-web Connections BFF', () => {
       await h.detach(mkReq({ agentId: 'nope', skillId: 'linear' }), res);
       expect(captured.statusCode).toBe(404);
       expect(detachCalls).toEqual([]);
+    });
+  });
+
+  describe('GET /api/chat/allowed-sites/:agentId (TASK-54)', () => {
+    it('lists the per-(user, agent) host grants', async () => {
+      const h = makeConnectionsHandlers({ bus, initCtx });
+      const { res, captured } = mkRes();
+      await h.listAllowedSites(mkReq({ agentId: 'a1' }), res);
+      expect(captured.statusCode).toBe(200);
+      expect(captured.body).toEqual({
+        agentId: 'a1',
+        hosts: [{ host: 'status.example.com', grantedAt: '2026-05-20T00:00:00Z' }],
+      });
+      // ownerUserId is SERVER-FORCED from auth ('u1'), never read from the request.
+      expect(grantListCalls).toEqual([{ ownerUserId: 'u1', agentId: 'a1' }]);
+    });
+
+    it('404s an agent the caller cannot access (no existence leak)', async () => {
+      const h = makeConnectionsHandlers({ bus, initCtx });
+      const { res, captured } = mkRes();
+      await h.listAllowedSites(mkReq({ agentId: 'nope' }), res);
+      expect(captured.statusCode).toBe(404);
+      expect(grantListCalls).toEqual([]);
+    });
+
+    it('401s an unauthenticated caller', async () => {
+      const b = new HookBus();
+      b.registerService('auth:require-user', 'auth', async () => {
+        throw new (await import('@ax/core')).PluginError({
+          code: 'unauthenticated',
+          plugin: 'auth',
+          message: 'no cookie',
+        });
+      });
+      const h = makeConnectionsHandlers({ bus: b, initCtx });
+      const { res, captured } = mkRes();
+      await h.listAllowedSites(mkReq({ agentId: 'a1' }), res);
+      expect(captured.statusCode).toBe(401);
+    });
+
+    it('degrades to empty when @ax/host-grants is absent', async () => {
+      const b = new HookBus();
+      b.registerService('auth:require-user', 'auth', async () => ({
+        user: { id: 'u1', isAdmin: false },
+      }));
+      b.registerService('agents:resolve', 'agents', async () => ({
+        agent: { id: 'a1', displayName: 'Research', skillAttachments: [] },
+      }));
+      const h = makeConnectionsHandlers({ bus: b, initCtx });
+      const { res, captured } = mkRes();
+      await h.listAllowedSites(mkReq({ agentId: 'a1' }), res);
+      expect(captured.statusCode).toBe(200);
+      expect(captured.body).toEqual({ agentId: 'a1', hosts: [] });
+    });
+  });
+
+  describe('DELETE /api/chat/allowed-sites/:agentId/:host (TASK-54)', () => {
+    it('revokes the durable grant and returns 204', async () => {
+      const h = makeConnectionsHandlers({ bus, initCtx });
+      const { res, captured } = mkRes();
+      await h.revokeAllowedSite(mkReq({ agentId: 'a1', host: 'status.example.com' }), res);
+      expect(captured.statusCode).toBe(204);
+      // ownerUserId SERVER-FORCED from auth ('u1'); host from the path param.
+      expect(revokeCalls).toEqual([
+        { ownerUserId: 'u1', agentId: 'a1', host: 'status.example.com' },
+      ]);
+    });
+
+    it('404s an agent the caller cannot access (no cross-user revoke)', async () => {
+      const h = makeConnectionsHandlers({ bus, initCtx });
+      const { res, captured } = mkRes();
+      await h.revokeAllowedSite(mkReq({ agentId: 'nope', host: 'status.example.com' }), res);
+      expect(captured.statusCode).toBe(404);
+      expect(revokeCalls).toEqual([]);
+    });
+
+    it('is idempotent (204) when @ax/host-grants is absent', async () => {
+      const b = new HookBus();
+      b.registerService('auth:require-user', 'auth', async () => ({
+        user: { id: 'u1', isAdmin: false },
+      }));
+      b.registerService('agents:resolve', 'agents', async () => ({
+        agent: { id: 'a1', displayName: 'Research', skillAttachments: [] },
+      }));
+      const h = makeConnectionsHandlers({ bus: b, initCtx });
+      const { res, captured } = mkRes();
+      await h.revokeAllowedSite(mkReq({ agentId: 'a1', host: 'x.example.com' }), res);
+      expect(captured.statusCode).toBe(204);
+    });
+  });
+
+  describe('GET /api/chat/account-usage (TASK-54)', () => {
+    it('derives service → referencing skill ids from skills:list', async () => {
+      const h = makeConnectionsHandlers({ bus, initCtx });
+      const { res, captured } = mkRes();
+      await h.accountUsage(mkReq({}), res);
+      expect(captured.statusCode).toBe(200);
+      // Two skills declare account: linear; sorted, deduped per service.
+      expect(captured.body).toEqual({ usage: { linear: ['linear', 'linear-search'] } });
+    });
+
+    it('401s an unauthenticated caller', async () => {
+      const b = new HookBus();
+      b.registerService('auth:require-user', 'auth', async () => {
+        throw new (await import('@ax/core')).PluginError({
+          code: 'unauthenticated',
+          plugin: 'auth',
+          message: 'no cookie',
+        });
+      });
+      const h = makeConnectionsHandlers({ bus: b, initCtx });
+      const { res, captured } = mkRes();
+      await h.accountUsage(mkReq({}), res);
+      expect(captured.statusCode).toBe(401);
+    });
+
+    it('degrades to empty when skills:list is absent', async () => {
+      const b = new HookBus();
+      b.registerService('auth:require-user', 'auth', async () => ({
+        user: { id: 'u1', isAdmin: false },
+      }));
+      const h = makeConnectionsHandlers({ bus: b, initCtx });
+      const { res, captured } = mkRes();
+      await h.accountUsage(mkReq({}), res);
+      expect(captured.statusCode).toBe(200);
+      expect(captured.body).toEqual({ usage: {} });
     });
   });
 });

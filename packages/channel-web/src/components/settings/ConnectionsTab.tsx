@@ -24,7 +24,10 @@ import { listChatAgents, type ChatAgentSummary } from '@/lib/agents';
 import {
   getConnections,
   detachConnectionSkill,
+  getAllowedSites,
+  revokeAllowedSite,
   type ConnectionSkill,
+  type AllowedSite,
 } from '@/lib/connections';
 
 const SOURCE_LABEL: Record<ConnectionSkill['source'], string> = {
@@ -33,10 +36,17 @@ const SOURCE_LABEL: Record<ConnectionSkill['source'], string> = {
   user: 'you',
 };
 
+/** ISO timestamp → short locale date for the "always · <when>" hint. */
+function shortDate(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString();
+}
+
 export function ConnectionsTab() {
   const [agents, setAgents] = useState<ChatAgentSummary[]>([]);
   const [agentId, setAgentId] = useState<string>('');
   const [skills, setSkills] = useState<ConnectionSkill[] | null>(null);
+  const [sites, setSites] = useState<AllowedSite[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -51,9 +61,13 @@ export function ConnectionsTab() {
   const load = useCallback((id: string) => {
     if (!id) return;
     setSkills(null);
+    setSites(null);
     setError(null);
     getConnections(id)
       .then((r) => setSkills(r.skills))
+      .catch((e: unknown) => setError(String(e)));
+    getAllowedSites(id)
+      .then((r) => setSites(r.hosts))
       .catch((e: unknown) => setError(String(e)));
   }, []);
 
@@ -64,6 +78,15 @@ export function ConnectionsTab() {
   const remove = async (skillId: string) => {
     try {
       await detachConnectionSkill(agentId, skillId);
+      load(agentId);
+    } catch (e: unknown) {
+      setError(String(e));
+    }
+  };
+
+  const revokeSite = async (host: string) => {
+    try {
+      await revokeAllowedSite(agentId, host);
       load(agentId);
     } catch (e: unknown) {
       setError(String(e));
@@ -116,6 +139,31 @@ export function ConnectionsTab() {
                 locked
               </span>
             )}
+          </div>
+        ))}
+      </Card>
+
+      {/* Allowed sites — the durable "always for this agent" host grants
+          (design P3/P6). Revoking removes the durable grant so it is not
+          re-loaded into the next session's allowlist. Hosts are untrusted text
+          → React text nodes (auto-escaped); never raw inner HTML. */}
+      <h3 className="text-sm font-medium text-foreground">Allowed sites (this agent)</h3>
+      <Card className="divide-y divide-border">
+        {sites === null && !error && (
+          <div className="px-4 py-3 text-sm text-muted-foreground">Loading…</div>
+        )}
+        {sites?.length === 0 && (
+          <div className="px-4 py-3 text-sm text-muted-foreground">No allowed sites.</div>
+        )}
+        {sites?.map((site) => (
+          <div key={site.host} className="flex items-center gap-3 px-4 py-2.5">
+            <span className="flex-1 min-w-0 truncate text-sm text-foreground">{site.host}</span>
+            <span className="text-[11px] text-muted-foreground">
+              always · {shortDate(site.grantedAt)}
+            </span>
+            <Button variant="ghost" size="sm" onClick={() => revokeSite(site.host)}>
+              Revoke
+            </Button>
           </div>
         ))}
       </Card>

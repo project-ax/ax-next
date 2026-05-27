@@ -131,6 +131,22 @@ export function createChannelWebServerPlugin(
           degradation:
             'the reactive-wall "Always for this agent" button persists nothing across sessions; the live proxy:add-host grant still applies for the current session',
         },
+        {
+          // TASK-54 — the Settings "Allowed sites" panel reads the durable
+          // per-(user, agent) grants. host-grants is k8s-preset-only; a preset
+          // without it degrades the panel to empty.
+          hook: 'host-grants:list',
+          degradation:
+            'the Settings "Allowed sites" panel shows no persisted hosts (the live reactive wall still applies per session)',
+        },
+        {
+          // TASK-54 — the Settings "Allowed sites" panel's Revoke control removes
+          // a durable grant so it is not re-loaded into the next session's
+          // allowlist. Degrades to an idempotent no-op without host-grants.
+          hook: 'host-grants:revoke',
+          degradation:
+            'the Settings "Allowed sites" Revoke control is a no-op (no persisted grants to remove)',
+        },
       ],
       subscribes: ['chat:stream-chunk', 'chat:phase', 'chat:turn-end', 'chat:turn-error', 'chat:permission-request', 'conversations:title-updated'],
     },
@@ -273,6 +289,12 @@ export function createChannelWebServerPlugin(
       // (server-forced) and gate the agent via agents:resolve (ACL → 404, no
       // existence leak). Ships with its consumer (the ConnectionsTab) in the
       // same PR (I3 — no half-wired surface).
+      // TASK-54 — the Settings "Allowed sites" panel (host-grants list/revoke,
+      // the durable twin of the reactive wall — design P3/P6) and the "Keys"
+      // tab's service-keyed "used by" derivation (account-usage from skills:list)
+      // ride on the same Connections-surface BFF handlers + ctx. Both ship with
+      // their consumers (ConnectionsTab + KeysTab) in the same PR (I3 — no
+      // half-wired surface), closing TASK-44/43's deferred-UI windows.
       const connections = makeConnectionsHandlers({ bus, initCtx });
       for (const route of [
         { method: 'GET' as const, path: '/api/chat/connections/:agentId', handler: connections.get },
@@ -280,6 +302,21 @@ export function createChannelWebServerPlugin(
           method: 'DELETE' as const,
           path: '/api/chat/connections/:agentId/skills/:skillId',
           handler: connections.detach,
+        },
+        {
+          method: 'GET' as const,
+          path: '/api/chat/allowed-sites/:agentId',
+          handler: connections.listAllowedSites,
+        },
+        {
+          method: 'DELETE' as const,
+          path: '/api/chat/allowed-sites/:agentId/:host',
+          handler: connections.revokeAllowedSite,
+        },
+        {
+          method: 'GET' as const,
+          path: '/api/chat/account-usage',
+          handler: connections.accountUsage,
         },
       ]) {
         const r = await bus.call<unknown, { unregister: () => void }>(

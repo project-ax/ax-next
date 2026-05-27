@@ -16,6 +16,10 @@ describe('ConnectionsTab', () => {
         { skillId: 'linear', description: 'Linear issues', source: 'user', removable: true },
       ],
     });
+    vi.spyOn(connLib, 'getAllowedSites').mockResolvedValue({
+      agentId: 'a1',
+      hosts: [{ host: 'status.example.com', grantedAt: '2026-05-20T00:00:00Z' }],
+    });
   });
   afterEach(() => vi.restoreAllMocks());
 
@@ -40,5 +44,28 @@ describe('ConnectionsTab', () => {
     vi.spyOn(connLib, 'getConnections').mockRejectedValue(new Error('connections: 500'));
     render(<ConnectionsTab />);
     expect(await screen.findByText(/connections: 500/)).toBeInTheDocument();
+  });
+
+  it('renders the Allowed sites panel (TASK-54)', async () => {
+    render(<ConnectionsTab />);
+    expect(await screen.findByText('Allowed sites (this agent)')).toBeInTheDocument();
+    // host rows appear once getAllowedSites resolves.
+    expect(await screen.findByText('status.example.com')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /revoke/i })).toBeInTheDocument();
+  });
+
+  it('Revoke calls revokeAllowedSite and refetches', async () => {
+    const revoke = vi.spyOn(connLib, 'revokeAllowedSite').mockResolvedValue();
+    render(<ConnectionsTab />);
+    fireEvent.click(await screen.findByRole('button', { name: /revoke/i }));
+    await waitFor(() => expect(revoke).toHaveBeenCalledWith('a1', 'status.example.com'));
+    // refetch after revoke (initial load + post-revoke reload).
+    await waitFor(() => expect(connLib.getAllowedSites).toHaveBeenCalledTimes(2));
+  });
+
+  it('shows an empty-state when there are no allowed sites', async () => {
+    vi.spyOn(connLib, 'getAllowedSites').mockResolvedValue({ agentId: 'a1', hosts: [] });
+    render(<ConnectionsTab />);
+    expect(await screen.findByText(/no allowed sites/i)).toBeInTheDocument();
   });
 });
