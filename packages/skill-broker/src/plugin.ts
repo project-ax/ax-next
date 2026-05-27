@@ -75,6 +75,15 @@ export function createSkillBrokerPlugin(
           degradation:
             'the approval card cannot offer "use your existing key"; every credential slot is always prompted',
         },
+        // Cold-start admit-queue trigger (TASK-53, design §13): on a search/request
+        // MISS the broker files a "a user needed X" request for the admin to source.
+        // hasService-guarded + best-effort, so a catalog-less/queue-less preset just
+        // returns the miss to the model — optional, not a hard boot dep.
+        {
+          hook: 'catalog:submit',
+          degradation:
+            'an unmet-capability need is not filed to the admin admit queue; the miss is still returned to the model as not-found/empty',
+        },
         ...(allowUserInstalledSkills
           ? [
               {

@@ -80,6 +80,8 @@ import type {
   CatalogSubmitOutput,
   CatalogAdmitInput,
   CatalogAdmitOutput,
+  CatalogListRequestsInput,
+  CatalogListRequestsOutput,
 } from '../../types.js';
 
 // ---------------------------------------------------------------------------
@@ -813,6 +815,25 @@ describe('skill-broker canary: search_catalog + request_capability reach the rea
       input: { skillId: 'does-not-exist' },
     });
     expect(miss).toEqual({ status: 'not-found', skillId: 'does-not-exist' });
+
+    // TASK-53 (design §13) — the miss filed a cold-start admit-queue request to
+    // the REAL @ax/skills catalog so the unmet need reaches the admin. Closes
+    // invariant #3 (no half-wired): the broker's cold-start trigger is reachable
+    // from the canary, end-to-end over the real queue.
+    const pending = await h.bus.call<CatalogListRequestsInput, CatalogListRequestsOutput>(
+      'catalog:list-requests',
+      h.ctx(),
+      {},
+    );
+    const coldStart = pending.requests.find((r) => r.skillId === 'does-not-exist');
+    expect(coldStart).toBeDefined();
+    expect(coldStart?.kind).toBe('cold-start');
+    expect(coldStart?.status).toBe('pending');
+    // requestedByUserId is the authenticated caller (harness default), never
+    // model input; a cold-start carries no bundle snapshot.
+    expect(coldStart?.requestedByUserId).toBe('test-user');
+    expect(coldStart?.manifestYaml).toBeNull();
+    expect(coldStart?.files).toEqual([]);
   }, 60_000);
 
   it('request_capability surfaces the bundled approval card (chat:permission-request) over the real catalog', async () => {

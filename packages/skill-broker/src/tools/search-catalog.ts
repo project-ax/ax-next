@@ -1,4 +1,5 @@
 import { makeAgentContext, type HookBus, type ToolDescriptor } from '@ax/core';
+import { clampNeed, deriveColdStartSlug, fireColdStartSubmit } from './coldstart.js';
 
 const PLUGIN_NAME = '@ax/skill-broker';
 
@@ -45,11 +46,27 @@ export async function registerSearchCatalog(bus: HookBus): Promise<void> {
       const input = (call?.input ?? {}) as { intent?: unknown };
       const intent = typeof input.intent === 'string' ? input.intent : '';
       // The catalog owner does the matching + tier derivation (one source of truth).
-      return bus.call<{ intent: string }, SearchCatalogResult>(
+      const result = await bus.call<{ intent: string }, SearchCatalogResult>(
         'skills:search-catalog',
         toolCtx,
         { intent },
       );
+
+      // Cold-start (design §13): the catalog matched nothing for a real intent —
+      // file a deduped admit-queue request so the unmet need reaches the admin.
+      // The free-text intent is UNTRUSTED model output: it rides only as the
+      // request description (data an admin triages, never a manifest), clamped to
+      // a bounded length; the dedup slug is derived + re-validated locally (I5).
+      // Best-effort: a failed/absent submit never changes this (empty) result.
+      // An empty/whitespace intent is no signal — file nothing.
+      if (result.skills.length === 0 && intent.trim().length > 0) {
+        await fireColdStartSubmit(bus, toolCtx, {
+          skillId: deriveColdStartSlug(intent),
+          description: clampNeed(intent),
+        });
+      }
+
+      return result;
     },
     { timeoutMs: 30_000 },
   );
