@@ -17,7 +17,12 @@
  * admin-only actions have no equivalent on `/settings/skills*`.
  */
 
-import type { BundleFile, SkillDetail, SkillSummary } from '@ax/skills';
+import type {
+  BundleFile,
+  SkillDetail,
+  SkillSummary,
+  CatalogSubmitOutput,
+} from '@ax/skills';
 
 const writeHeaders = {
   'content-type': 'application/json',
@@ -108,4 +113,29 @@ export async function deleteUserSkill(skillId: string): Promise<void> {
     credentials: 'include',
   });
   await handleResponse(res);
+}
+
+/**
+ * Submit the caller's own user-scoped skill to the org catalog (the
+ * user-facing share-to-catalog producer, TASK-60 / §6D). Fires the host's
+ * `catalog:submit` hook via `POST /settings/skills/:id/share` — the server
+ * snapshots the skill's bytes and files an admit-queue request for an admin to
+ * review. The caller's identity is the session; nothing is sent in the body.
+ *
+ * Returns `{ created: false }` when a request for this skill is already pending
+ * review (dedup) — that's a normal, non-error result, surfaced as "already
+ * submitted" in the UI.
+ */
+export async function shareUserSkill(
+  skillId: string,
+): Promise<CatalogSubmitOutput> {
+  const res = await fetch(
+    `/settings/skills/${encodeURIComponent(skillId)}/share`,
+    {
+      method: 'POST',
+      headers: csrfHeader,
+      credentials: 'include',
+    },
+  );
+  return (await handleResponse(res)) as CatalogSubmitOutput;
 }

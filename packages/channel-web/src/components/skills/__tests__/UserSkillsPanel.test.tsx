@@ -10,6 +10,7 @@ vi.mock('@/lib/user-skills', () => ({
   createUserSkill: vi.fn(),
   updateUserSkill: vi.fn(),
   deleteUserSkill: vi.fn(),
+  shareUserSkill: vi.fn(),
 }));
 
 // Mock SkillEditor so tests don't depend on its internals (parser + form).
@@ -33,10 +34,12 @@ vi.mock('@/components/admin/SkillEditor', () => ({
 import {
   listUserSkills,
   deleteUserSkill,
+  shareUserSkill,
 } from '@/lib/user-skills';
 
 const mockListUserSkills = vi.mocked(listUserSkills);
 const mockDeleteUserSkill = vi.mocked(deleteUserSkill);
+const mockShareUserSkill = vi.mocked(shareUserSkill);
 
 const SKILL_A: SkillSummary = {
   id: 'my-github',
@@ -247,5 +250,110 @@ describe('UserSkillsPanel', () => {
       // listUserSkills was called again (refresh after save).
       expect(mockListUserSkills).toHaveBeenCalledTimes(2);
     });
+  });
+
+  // -------------------------------------------------------------------------
+  // Share to catalog (TASK-60)
+  // -------------------------------------------------------------------------
+
+  it('share button → confirmation dialog → calls shareUserSkill and shows success banner', async () => {
+    mockListUserSkills.mockResolvedValue([SKILL_A]);
+    mockShareUserSkill.mockResolvedValue({
+      requestId: 'r-1',
+      created: true,
+      status: 'pending',
+    });
+    render(<UserSkillsPanel open={true} onClose={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('my-github')).toBeTruthy();
+    });
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Share my-github to catalog' }),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Submit to catalog?')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
+
+    await waitFor(() => {
+      expect(mockShareUserSkill).toHaveBeenCalledWith('my-github');
+      expect(screen.getByText(/was\s+submitted for admin review/i)).toBeTruthy();
+    });
+  });
+
+  it('a dedup share (created:false) shows the "already submitted" banner, not an error', async () => {
+    mockListUserSkills.mockResolvedValue([SKILL_A]);
+    mockShareUserSkill.mockResolvedValue({
+      requestId: 'r-1',
+      created: false,
+      status: 'pending',
+    });
+    render(<UserSkillsPanel open={true} onClose={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('my-github')).toBeTruthy();
+    });
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Share my-github to catalog' }),
+    );
+    await waitFor(() => {
+      expect(screen.getByText('Submit to catalog?')).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/already submitted and pending admin review/i),
+      ).toBeTruthy();
+    });
+  });
+
+  it('share error surfaces in the alert', async () => {
+    mockListUserSkills.mockResolvedValue([SKILL_A]);
+    mockShareUserSkill.mockRejectedValueOnce(new Error('share failed'));
+    render(<UserSkillsPanel open={true} onClose={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('my-github')).toBeTruthy();
+    });
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Share my-github to catalog' }),
+    );
+    await waitFor(() => {
+      expect(screen.getByText('Submit to catalog?')).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('share failed')).toBeTruthy();
+    });
+  });
+
+  it('cancelling the share dialog does NOT call shareUserSkill', async () => {
+    mockListUserSkills.mockResolvedValue([SKILL_A]);
+    render(<UserSkillsPanel open={true} onClose={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('my-github')).toBeTruthy();
+    });
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Share my-github to catalog' }),
+    );
+    await waitFor(() => {
+      expect(screen.getByText('Submit to catalog?')).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    await waitFor(() => {
+      expect(screen.queryByText('Submit to catalog?')).toBeNull();
+    });
+    expect(mockShareUserSkill).not.toHaveBeenCalled();
   });
 });

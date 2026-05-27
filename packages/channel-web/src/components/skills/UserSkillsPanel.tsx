@@ -12,7 +12,7 @@
  * features here is UX convenience only.
  */
 import { useEffect, useState } from 'react';
-import { Trash2, Pencil, Plus } from 'lucide-react';
+import { Trash2, Pencil, Plus, Share2 } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -36,6 +36,7 @@ import {
   createUserSkill,
   updateUserSkill,
   deleteUserSkill,
+  shareUserSkill,
 } from '@/lib/user-skills';
 import type { SkillSummary } from '@ax/skills';
 import { SkillEditor } from '@/components/admin/SkillEditor';
@@ -64,6 +65,13 @@ export function UserSkillsPanel({
   const [showNew, setShowNew] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
+  // Share-to-catalog flow: the skill id awaiting submit confirmation, whether a
+  // submit is in flight, and a one-shot result banner ('submitted' | 'pending').
+  const [pendingShare, setPendingShare] = useState<string | null>(null);
+  const [sharing, setSharing] = useState(false);
+  const [shareResult, setShareResult] = useState<
+    { kind: 'submitted' | 'pending'; skillId: string } | null
+  >(null);
 
   async function refresh() {
     setError(null);
@@ -92,6 +100,23 @@ export function UserSkillsPanel({
     }
   }
 
+  async function handleShare(skillId: string) {
+    setSharing(true);
+    setError(null);
+    try {
+      const out = await shareUserSkill(skillId);
+      setPendingShare(null);
+      // `created:false` means a request for this skill is already pending admin
+      // review (dedup) — not an error, just a different banner.
+      setShareResult({ kind: out.created ? 'submitted' : 'pending', skillId });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setPendingShare(null);
+    } finally {
+      setSharing(false);
+    }
+  }
+
   return (
     <>
       <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
@@ -116,6 +141,25 @@ export function UserSkillsPanel({
             {error && (
               <Alert variant="destructive">
                 <AlertDescription>{error}</AlertDescription>
+              </Alert>
+            )}
+
+            {shareResult && (
+              <Alert>
+                <AlertDescription>
+                  {shareResult.kind === 'submitted' ? (
+                    <>
+                      <code className="font-mono">{shareResult.skillId}</code> was
+                      submitted for admin review. Once admitted, it ships to
+                      everyone and your editable copy is retired.
+                    </>
+                  ) : (
+                    <>
+                      <code className="font-mono">{shareResult.skillId}</code> is
+                      already submitted and pending admin review.
+                    </>
+                  )}
+                </AlertDescription>
               </Alert>
             )}
 
@@ -190,6 +234,17 @@ export function UserSkillsPanel({
                           aria-label={`Edit ${s.id}`}
                         >
                           <Pencil className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => {
+                            setShareResult(null);
+                            setPendingShare(s.id);
+                          }}
+                          aria-label={`Share ${s.id} to catalog`}
+                        >
+                          <Share2 className="h-3.5 w-3.5" />
                         </Button>
                         <Button
                           variant="ghost"
@@ -282,6 +337,44 @@ export function UserSkillsPanel({
                 onClick={() => void handleDelete(pendingDelete)}
               >
                 Delete
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {/* Share-to-catalog confirmation dialog */}
+      {pendingShare !== null && (
+        <Dialog
+          open={true}
+          onOpenChange={(v) => {
+            if (!v && !sharing) setPendingShare(null);
+          }}
+        >
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Submit to catalog?</DialogTitle>
+            </DialogHeader>
+            <p className="text-sm text-muted-foreground">
+              Submit <code className="font-mono">{pendingShare}</code> for
+              org-wide use. An admin reviews the skill before it goes live.
+              Once admitted, it ships to everyone read-only and your editable
+              copy is retired — to change it later, you'd author a new skill and
+              re-submit.
+            </p>
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="outline"
+                onClick={() => setPendingShare(null)}
+                disabled={sharing}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={() => void handleShare(pendingShare)}
+                disabled={sharing}
+              >
+                {sharing ? 'Submitting…' : 'Submit'}
               </Button>
             </div>
           </DialogContent>

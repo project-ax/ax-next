@@ -9,6 +9,10 @@ import { PluginError } from '@ax/core';
 import { createSkillsPlugin } from '../plugin.js';
 import { createSettingsSkillsHandlers } from '../settings-routes.js';
 import type { RouteRequest, RouteResponse } from '../admin-routes.js';
+import type {
+  CatalogListRequestsInput,
+  CatalogListRequestsOutput,
+} from '../types.js';
 
 // ---------------------------------------------------------------------------
 // /settings/skills* CRUD handler tests.
@@ -165,6 +169,12 @@ afterEach(async () => {
   const cleanup = new (await import('pg')).default.Client({ connectionString });
   await cleanup.connect();
   try {
+    // Order matters: catalog_requests / skill_files reference (logically) the
+    // skill rows. The share tests insert into skills_v1_catalog_requests, so it
+    // must be dropped alongside the skill tables for per-test isolation.
+    await cleanup.query('DROP TABLE IF EXISTS skills_v1_catalog_requests');
+    await cleanup.query('DROP TABLE IF EXISTS skills_v1_skill_files');
+    await cleanup.query('DROP TABLE IF EXISTS skills_v1_user_attachments');
     await cleanup.query('DROP TABLE IF EXISTS skills_v1_user_skills');
     await cleanup.query('DROP TABLE IF EXISTS skills_v1_skills');
   } finally {
@@ -584,5 +594,102 @@ describe('/settings/skills handlers', () => {
     );
     expect(statusOf()).toBe(201);
     expect((bodyOf() as { skillId: string }).skillId).toBe('greeter');
+  });
+
+  // -------------------------------------------------------------------------
+  // Share to catalog (TASK-60) — POST /settings/skills/:id/share fires the
+  // existing catalog:submit hook with kind:'share', requestedByUserId = actor.
+  // -------------------------------------------------------------------------
+
+  it('POST /settings/skills/:id/share returns 401 when anonymous', async () => {
+    const h = await makeHarness({ authedUser: null });
+    const handlers = createSettingsSkillsHandlers({ bus: h.bus });
+    const { res, statusOf } = mkRes();
+    await handlers.share(mkReq({ params: { id: 'my-github' } }), res);
+    expect(statusOf()).toBe(401);
+  });
+
+  it('POST /settings/skills/:id/share submits the caller\'s own skill (200, created:true) and a pending request appears', async () => {
+    const h = await makeHarness({ authedUser: { id: 'alice', isAdmin: false } });
+    const handlers = createSettingsSkillsHandlers({ bus: h.bus });
+
+    // Alice authors a skill, then shares it.
+    const { res: r1 } = mkRes();
+    await handlers.create(mkReq({ body: { skillMd: ALICE_SKILL_MD } }), r1);
+
+    const { res, statusOf, bodyOf } = mkRes();
+    await handlers.share(mkReq({ params: { id: 'my-github' } }), res);
+    expect(statusOf()).toBe(200);
+    const body = bodyOf() as { requestId: string; created: boolean; status: string };
+    expect(body.created).toBe(true);
+    expect(body.status).toBe('pending');
+    expect(typeof body.requestId).toBe('string');
+
+    // A pending share request for 'my-github' now exists in the admit queue,
+    // sourced from alice.
+    const queue = await h.bus.call<CatalogListRequestsInput, CatalogListRequestsOutput>(
+      'catalog:list-requests',
+      h.ctx(),
+      { status: 'pending' },
+    );
+    const reqRow = queue.requests.find((r) => r.skillId === 'my-github');
+    expect(reqRow?.kind).toBe('share');
+    expect(reqRow?.requestedByUserId).toBe('alice');
+    expect(reqRow?.sourceOwnerUserId).toBe('alice');
+  });
+
+  it('POST /settings/skills/:id/share is idempotent — a second submit dedups (created:false)', async () => {
+    const h = await makeHarness({ authedUser: { id: 'alice', isAdmin: false } });
+    const handlers = createSettingsSkillsHandlers({ bus: h.bus });
+    const { res: r1 } = mkRes();
+    await handlers.create(mkReq({ body: { skillMd: ALICE_SKILL_MD } }), r1);
+
+    const { res: rA, bodyOf: bA } = mkRes();
+    await handlers.share(mkReq({ params: { id: 'my-github' } }), rA);
+    expect((bA() as { created: boolean }).created).toBe(true);
+
+    const { res: rB, statusOf: sB, bodyOf: bB } = mkRes();
+    await handlers.share(mkReq({ params: { id: 'my-github' } }), rB);
+    expect(sB()).toBe(200);
+    expect((bB() as { created: boolean }).created).toBe(false);
+  });
+
+  it('POST /settings/skills/:id/share on a skill the caller does NOT own returns 404', async () => {
+    // Alice authors a skill; Bob (different session) tries to share alice's id.
+    const hAlice = await makeHarness({ authedUser: { id: 'alice', isAdmin: false } });
+    const handlersAlice = createSettingsSkillsHandlers({ bus: hAlice.bus });
+    const { res: r1 } = mkRes();
+    await handlersAlice.create(mkReq({ body: { skillMd: ALICE_SKILL_MD } }), r1);
+
+    const hBob = await makeHarness({ authedUser: { id: 'bob', isAdmin: false } });
+    const handlersBob = createSettingsSkillsHandlers({ bus: hBob.bus });
+    const { res, statusOf } = mkRes();
+    await handlersBob.share(mkReq({ params: { id: 'my-github' } }), res);
+    expect(statusOf()).toBe(404);
+  });
+
+  it('POST /settings/skills/:id/share ignores a spoofed requestedByUserId in the body (I5)', async () => {
+    const h = await makeHarness({ authedUser: { id: 'alice', isAdmin: false } });
+    const handlers = createSettingsSkillsHandlers({ bus: h.bus });
+    const { res: r1 } = mkRes();
+    await handlers.create(mkReq({ body: { skillMd: ALICE_SKILL_MD } }), r1);
+
+    // Attacker appends a spoofed requestedByUserId — must be ignored; the share
+    // lands under the authenticated actor (alice), not 'u-evil'.
+    const { res, statusOf } = mkRes();
+    await handlers.share(
+      mkReq({ params: { id: 'my-github' }, body: { requestedByUserId: 'u-evil' } }),
+      res,
+    );
+    expect(statusOf()).toBe(200);
+
+    const queue = await h.bus.call<CatalogListRequestsInput, CatalogListRequestsOutput>(
+      'catalog:list-requests',
+      h.ctx(),
+      { status: 'pending' },
+    );
+    const reqRow = queue.requests.find((r) => r.skillId === 'my-github');
+    expect(reqRow?.requestedByUserId).toBe('alice');
+    expect(reqRow?.requestedByUserId).not.toBe('u-evil');
   });
 });

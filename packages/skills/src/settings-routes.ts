@@ -4,6 +4,8 @@ import type {
   SkillsGetOutput,
   SkillsUpsertInput,
   SkillsUpsertOutput,
+  CatalogSubmitInput,
+  CatalogSubmitOutput,
 } from './types.js';
 import {
   requireAuthenticated,
@@ -24,6 +26,7 @@ import {
 //   POST   /settings/skills          → create/upsert caller's user-scoped skill
 //   PUT    /settings/skills/:id      → update caller's user-scoped skill
 //   DELETE /settings/skills/:id      → delete caller's user-scoped skill
+//   POST   /settings/skills/:id/share → submit caller's own skill to the catalog
 //
 // Security contract:
 //   - Every hook call forces scope:'user' + ownerUserId: actor.id.
@@ -44,6 +47,7 @@ export function createSettingsSkillsHandlers(deps: SettingsRouteDeps): {
   create: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   update: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   destroy: (req: RouteRequest, res: RouteResponse) => Promise<void>;
+  share: (req: RouteRequest, res: RouteResponse) => Promise<void>;
 } {
   // The ctx here is the HTTP-server identity; actual scope isolation is
   // enforced by passing ownerUserId: actor.id to every hook call, NOT by ctx.
@@ -250,6 +254,52 @@ export function createSettingsSkillsHandlers(deps: SettingsRouteDeps): {
         throw err;
       }
     },
+
+    /**
+     * POST /settings/skills/:id/share — submit the caller's OWN user-scoped
+     * skill to the org catalog (fires the existing `catalog:submit` hook with
+     * kind:'share', TASK-41/§6D). This is the user-facing producer for the
+     * admit-to-catalog queue: the host snapshots the skill's bytes, an admin
+     * reviews them, and on admission they ship read-only org-wide while the
+     * author's editable copy is retired.
+     *
+     * Security (invariant I5): the sharer identity (`requestedByUserId`) is
+     * ALWAYS the authenticated actor — never the request body. `catalog:submit`
+     * only allows sharing the requester's OWN skill, so a user can never propose
+     * someone else's skill. The body is ignored entirely (no client fields are
+     * needed — the skill id comes from the path, the bytes from the host-side
+     * snapshot).
+     *
+     * Dedup: a second submission while one is pending returns `created:false`
+     * (HTTP 200, not an error). Sharing an id the caller doesn't own throws
+     * `skill-not-found` → 404 via `writeServiceError`.
+     */
+    async share(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const actor = await requireAuthenticated(deps.bus, ctx, req, res);
+      if (actor === null) return;
+
+      const { id } = req.params;
+      if (!id) {
+        res.status(400).json({ error: 'missing skill id' });
+        return;
+      }
+
+      try {
+        const out = await deps.bus.call<CatalogSubmitInput, CatalogSubmitOutput>(
+          'catalog:submit',
+          ctx,
+          {
+            kind: 'share',
+            skillId: id,
+            requestedByUserId: actor.id, // host-supplied; body is ignored (I5)
+          },
+        );
+        res.status(200).json(out);
+      } catch (err) {
+        if (writeServiceError(res, err)) return;
+        throw err;
+      }
+    },
   };
 }
 
@@ -272,6 +322,7 @@ export async function registerSettingsSkillsRoutes(
     { method: 'POST', path: '/settings/skills', handler: handlers.create },
     { method: 'PUT', path: '/settings/skills/:id', handler: handlers.update },
     { method: 'DELETE', path: '/settings/skills/:id', handler: handlers.destroy },
+    { method: 'POST', path: '/settings/skills/:id/share', handler: handlers.share },
   ];
   const unregisters: Array<() => void> = [];
   try {
