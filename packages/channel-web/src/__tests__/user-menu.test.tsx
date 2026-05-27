@@ -49,14 +49,15 @@ describe('UserMenu', () => {
     expect(onOpenAdminSettings).toHaveBeenCalledTimes(1);
   });
 
-  it('regular user does not see the Settings entry', () => {
+  it('regular user DOES see the Settings entry (TASK-42 — user Settings surface)', () => {
     render(
       <UserProvider value={regularUser}>
         <UserMenu />
       </UserProvider>,
     );
     fireEvent.click(screen.getByRole('button', { name: /Alice/i }));
-    expect(screen.queryByRole('menuitem', { name: 'Settings' })).toBeNull();
+    // Every user can now open Settings; admin-only TABS are gated in-shell.
+    expect(screen.getByRole('menuitem', { name: 'Settings' })).toBeTruthy();
     expect(screen.queryByText('Admin Settings')).toBeNull();
   });
 

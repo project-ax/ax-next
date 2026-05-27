@@ -154,6 +154,32 @@ function attachmentsMockPlugin(): Plugin {
   };
 }
 
+/**
+ * Stub for the Settings Connections skills hooks (TASK-42) — channel-web
+ * declares them as hard calls. This suite doesn't drive Connections, so no-op
+ * registrations satisfy bootstrap's verifyCalls.
+ */
+function skillsMockPlugin(): Plugin {
+  return {
+    manifest: {
+      name: 'mock-skills',
+      version: '0.0.0',
+      registers: ['skills:list', 'skills:list-user-attachments', 'skills:detach-for-user'],
+      calls: [],
+      subscribes: [],
+    },
+    init({ bus }) {
+      bus.registerService('skills:list', 'mock-skills', async () => ({ skills: [] }));
+      bus.registerService('skills:list-user-attachments', 'mock-skills', async () => ({
+        attachments: [],
+      }));
+      bus.registerService('skills:detach-for-user', 'mock-skills', async () => ({
+        removed: false,
+      }));
+    },
+  };
+}
+
 function agentsMockPlugin(args: { allowedFor: Set<string> }): Plugin {
   return {
     manifest: {
@@ -232,6 +258,7 @@ async function boot(args: BootArgs): Promise<{
       createConversationsPlugin(),
       chatRunMockPlugin(),
       attachmentsMockPlugin(),
+      skillsMockPlugin(),
       createChannelWebServerPlugin({}),
     ],
   });
