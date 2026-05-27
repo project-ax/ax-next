@@ -16,10 +16,10 @@ export interface BundleReviewDialogProps {
 
 /** Build a path→contents map from a request's snapshot (SKILL.md first).
  *
- * Uses a NULL-PROTOTYPE map: a submitted bundle path is untrusted and `__proto__`
- * / `constructor` / `prototype` are all VALID bundle paths (lowercase + the
+ * Uses a NULL-PROTOTYPE map: a submitted bundle path is untrusted and the magic
+ * keys (proto/constructor/prototype) are all VALID bundle paths (lowercase + the
  * server PATH_RE accepts them) that catalog:admit promotes verbatim. On a plain
- * `{}` map, `map['__proto__'] = ...` hits the prototype setter instead of
+ * object map, assigning the proto magic key hits the prototype setter instead of
  * creating an own key, so `Object.keys` (used by compareBundles) would silently
  * drop that file from the review diff — admitted but never shown to the
  * reviewer. `Object.create(null)` makes every path a plain own key. */

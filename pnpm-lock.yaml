@@ -15,6 +15,7 @@ overrides:
   brace-expansion@>=5.0.0 <5.0.6: '>=5.0.6'
   ws@>=8.0.0 <8.20.1: '>=8.20.1'
   qs@>=6.11.1 <=6.15.1: '>=6.15.2'
+  tmp@<0.2.6: '>=0.2.6'
 
 importers:
 
@@ -6796,8 +6797,8 @@ packages:
     resolution: {integrity: sha512-WMi/OQ2axVTf/ykqCQgXiIct+mSQDFdH2fkwhPwgEwvJ1kSzZRiinb0zF2Xb8u4+OqPChmyI6MEu4EezNJz+FQ==}
     hasBin: true
 
-  tmp@0.2.5:
-    resolution: {integrity: sha512-voyz6MApa1rQGUxT3E+BK7/ROe8itEx7vD8/HEvt4xwXucvQ5G5oeEiHkmHZJuBO21RpOf+YYm9MOivj709jow==}
+  tmp@0.2.6:
+    resolution: {integrity: sha512-5sJPdPjfI5Kx+qbrDesxkglRBxW//g7hCsqspEjwkewGvBMGIKMOTKzLt1hFVJzyadba3lDUN20O9qhvbQUSTA==}
     engines: {node: '>=14.14'}
 
   to-buffer@1.2.2:
@@ -12249,7 +12250,7 @@ snapshots:
       properties-reader: 3.0.1
       ssh-remote-port-forward: 1.0.4
       tar-fs: 3.1.2
-      tmp: 0.2.5
+      tmp: 0.2.6
       undici: 7.25.0
     transitivePeerDependencies:
       - bare-abort-controller
@@ -12290,7 +12291,7 @@ snapshots:
     dependencies:
       tldts-core: 6.1.86
 
-  tmp@0.2.5: {}
+  tmp@0.2.6: {}
 
   to-buffer@1.2.2:
     dependencies:
